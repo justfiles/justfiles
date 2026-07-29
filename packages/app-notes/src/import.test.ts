@@ -143,6 +143,23 @@ test('an oversized file is reported rather than pulled into memory-sized batches
 	expect(plan.stopped).toBe(false) // one absurd file is not a ceiling
 })
 
+test('a member that could climb out of the volume is not a member', () => {
+	// The names in an archive are untrusted. `..` is refused per segment, and so is a
+	// backslash — one segment to every check here, two path components to `node:path.join`,
+	// which is the whole trick on a host where `\\` separates.
+	const plan = planDrop(
+		{
+			'MyVault/Kyoto.md': bytes('# Kyoto'),
+			'MyVault/../../etc/notes/payload.md': bytes('nope'),
+			'MyVault/..\\..\\system\\payload.md': bytes('nope'),
+			'..\\Kyoto.md': bytes('nope')
+		},
+		'vault.zip'
+	)
+	expect(plan.files.map((file) => file.path)).toEqual(['Kyoto.md'])
+	expect(plan.skipped).toBe(3)
+})
+
 test('loose notes with no wrapping folder keep their names', () => {
 	const plan = planDrop({ 'hello.md': bytes('42\n'), 'notes.txt': bytes('hi') }, 'Imported')
 	expect(plan.name).toBe('Imported')

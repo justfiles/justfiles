@@ -64,6 +64,12 @@ export function joinPath(dir: string, name: string): string {
 export function isCanonicalPath(path: string): boolean {
 	if (path === '/') return true
 	if (!path.startsWith('/') || path.endsWith('/')) return false
+	// A backslash is a separator on some hosts and an ordinary letter on others, so a name
+	// containing one does not mean one thing — and this predicate's whole job is that there
+	// is only one spelling. It matters most where the names are untrusted: a dropped
+	// archive offering `..\\system\\payload.md` is one segment to every check here and two
+	// path components to `node:path.join`, which is how a member escapes the volume.
+	if (path.includes('\\')) return false
 	return path
 		.slice(1)
 		.split('/')

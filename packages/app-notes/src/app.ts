@@ -85,6 +85,8 @@ async function isFolder(
 	}
 }
 
+const MOVE_TRAIL = 8
+
 // Reducer state holds only the app-session facts that survive reload and that
 // the agent should read: which note is open, and change counters for the open file
 // and for the tree. Body bytes and the note list are NOT here — both are re-read from
@@ -94,18 +96,17 @@ async function isFolder(
 // in state for someone to notice later.
 export type NotesState = {
 	openPath: string | null
-	// Where the open note USED to be, so a GUI holding it can follow it instead of
-	// re-reading (and, if it has unsaved edits, instead of saving them to a path that no
-	// longer exists). `openPath` alone cannot say WHY it changed — "the agent renamed this"
-	// and "the agent opened something else" are the same change to it, and they call for
-	// opposite handling.
+	// Where the open note HAS BEEN, oldest first, so a client holding any of those
+	// addresses can follow it forward. `openPath` alone cannot say WHY it changed — "the
+	// agent renamed this" and "the agent opened something else" are the same change to it,
+	// and they call for opposite handling (carry the buffer, or settle it where it is).
 	//
-	// It is the move that MOVED THIS NOTE, not the last move that happened: a client sees
-	// state, not each transition, so several renames can land between two views of it and
-	// an unrelated one must not be mistaken for this note's. Composed for the same reason —
-	// two moves of the same note leave the address the buffer still holds. Cleared as soon
-	// as something else moves the selection.
-	movedFrom?: string
+	// A trail rather than a single previous address, because a client sees STATE, not each
+	// transition: of two renames it may have followed the first and missed the second, or
+	// missed both, and the answer has to fit either. Only moves that carried THIS note are
+	// recorded — an unrelated rename must not answer the question. Cleared as soon as
+	// something else moves the selection.
+	movedFrom?: string[]
 	// Optional: both counters were added after the first release, and persisted
 	// state is loaded verbatim — every reader defaults them.
 	revision?: number
@@ -208,7 +209,9 @@ export const app = defineApp({
 			return {
 				...state,
 				openPath: `${to}${open.slice(from.length)}`,
-				movedFrom: state.movedFrom ?? open
+				// A trail, not a log: enough to bridge the renames a client can miss between two
+				// views of state, bounded so a script renaming in a loop cannot grow it.
+				movedFrom: [...(state.movedFrom ?? []), open].slice(-MOVE_TRAIL)
 			}
 		}),
 

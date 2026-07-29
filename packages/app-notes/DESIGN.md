@@ -326,11 +326,18 @@ carries the buffer to the new address, the second settles it at the old one. So 
 note *used to be* (`movedFrom`) and the GUI carries the buffer there; without that, an agent rename during an
 unsaved edit tried to save to a path that no longer existed, detached on ENOENT, and left a duplicate.
 
-That field is **the move that moved this note, not the last move that happened** — a client sees state, not
-each transition, so several renames land between two views of it and an unrelated one must not answer the
-question. Composed, too: two moves of the same note still leave the address the buffer holds. It is the general
-hazard with signalling through state — a signal that can be overwritten by an unrelated event is not a signal,
-so the field is scoped to the *subject* it speaks about rather than to the latest event.
+That field is **a trail of the addresses this note has had**, not the last move that happened. A client sees
+state, not each transition, and the two failures it has to survive pull in opposite directions: of two renames
+it may have *missed both* (so the previous address is wrong) or *followed the first and missed the second* (so
+the original address is wrong). Only the trail answers both — the GUI maps whatever address its buffer holds
+forward to `openPath`. Bounded to the last eight, because a trail is not a log; only moves that carried *this*
+note are recorded, because a signal an unrelated event can overwrite is not a signal.
+
+The same round found its twin inside the machine: **a failure about an address the buffer has left is not a
+diagnosis.** An autosave in flight to the old path fails ENOENT after a rename, and reading that as "the note is
+gone" detaches the buffer *from its new address* and turns the unsaved words into a duplicate. So a write
+carries the generation it started from, and a stale failure just means: write these words where the note lives
+now.
 
 **1a⁗ · A content write must not orphan, and must not resurrect.** `update: true` proves the path *at the
 resolve*, and the bytes are stored a moment later — so the note can be deleted in between. Every backend

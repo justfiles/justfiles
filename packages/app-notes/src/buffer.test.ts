@@ -20,6 +20,9 @@ function fakeIO(disk: Record<string, string> = {}) {
 			if (hold) await hold.promise
 			const failure = failures.shift()
 			if (failure) throw failure
+			// A save EDITS: the real one asks for `update: true`, so a note that is not there
+			// is ENOENT rather than a file conjured at that path (DESIGN.md §1a‴).
+			if (disk[path] === undefined) throw new Error(`ENOENT: ${path}`)
 			disk[path] = text
 		},
 		async create(text) {
@@ -309,6 +312,31 @@ test('the way back declines once the user has typed into the emptied buffer', as
 	expect(buf.snapshot()).toEqual({ text: 'a fresh thought', dirty: true, path: null })
 })
 
+test('a save that fails about an address the buffer has left is not a diagnosis', async () => {
+	// An agent rename moves the open note while an autosave to its old address is in
+	// flight. That save fails ENOENT about a path nobody is at any more; taking it for "the
+	// note is gone" would detach the buffer from its NEW address and turn the unsaved words
+	// into a duplicate. They belong to the note, wherever it now lives.
+	const { buf, disk, calls, freeze } = buffer({ '/Kyoto.md': 'kyoto' })
+	await buf.open('/Kyoto.md')
+	buf.type('edited while it moved')
+	const release = freeze()
+	const settling = buf.settle()
+	await inFlight()
+	delete disk['/Kyoto.md'] // the rename happened first…
+	disk['/Travel/Kyoto.md'] = 'kyoto'
+	buf.moved('/Kyoto.md', '/Travel/Kyoto.md') // …and the GUI followed it
+	release()
+	expect(await settling).toEqual({ settled: true })
+	expect(buf.snapshot()).toEqual({
+		text: 'edited while it moved',
+		dirty: false,
+		path: '/Travel/Kyoto.md'
+	})
+	expect(disk['/Travel/Kyoto.md']).toBe('edited while it moved')
+	expect(calls).toEqual(['read /Kyoto.md', 'save /Kyoto.md', 'save /Travel/Kyoto.md'])
+})
+
 test('a read that resolves after the buffer moved on is discarded', async () => {
 	const { buf, disk, freeze } = buffer({ '/Kyoto.md': 'kyoto body', '/Osaka.md': 'osaka body' })
 	const release = freeze()
@@ -342,11 +370,13 @@ test('a move carries the buffer with it, so the next save lands at the new path'
 	const { buf, disk } = buffer({ '/Trips/Kyoto.md': 'body' })
 	await buf.open('/Trips/Kyoto.md')
 	buf.type('edited')
-	buf.moved('/Trips', '/Journeys') // the FOLDER moved, taking the note with it
+	disk['/Journeys/Kyoto.md'] = 'body' // the volume did the move…
+	delete disk['/Trips/Kyoto.md']
+	buf.moved('/Trips', '/Journeys') // …of the FOLDER, taking the note with it
 	expect(buf.snapshot().path).toBe('/Journeys/Kyoto.md')
 	expect(await buf.settle()).toEqual({ settled: true })
 	expect(disk['/Journeys/Kyoto.md']).toBe('edited')
-	expect(disk['/Trips/Kyoto.md']).toBe('body') // the old path was not rewritten
+	expect(disk['/Trips/Kyoto.md']).toBeUndefined() // the old path was not rewritten
 })
 
 test('a deleted note is DISCARDED, not settled', async () => {

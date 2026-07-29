@@ -93,8 +93,11 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 	// One write of the current text. `dirty` is cleared before the await so the caller's
 	// debounce does not re-fire for bytes already on their way; if the write fails it
 	// goes straight back, because the bytes are not on disk.
-	const writeOnce = async (): Promise<SettleOutcome> => {
+	// `null` means "the buffer moved while these bytes were in flight — go round again":
+	// the failure is about an address the buffer no longer has, so it diagnoses nothing.
+	const writeOnce = async (): Promise<SettleOutcome | null> => {
 		const { text, path } = state
+		const mine = generation
 		if (path !== null) {
 			set({ dirty: false })
 			try {
@@ -103,6 +106,12 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 			} catch (thrown) {
 				const error = asError(thrown)
 				set({ dirty: true })
+				// An agent rename can move the open note while an autosave to its old address is
+				// on its way. That save then fails ENOENT about a path nobody is at any more, and
+				// treating it as "the note is gone" would detach the buffer FROM ITS NEW ADDRESS
+				// and turn the unsaved words into a duplicate. The words simply get written where
+				// the note lives now.
+				if (generation !== mine) return null
 				if (gone(error)) {
 					generation++
 					set({ path: null })
@@ -137,6 +146,7 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 		for (;;) {
 			if (!state.dirty) return { settled: true }
 			const outcome = await writeOnce()
+			if (outcome === null) continue // the buffer moved; write to where it is now
 			if (!outcome.settled) return outcome
 		}
 	}

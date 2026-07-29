@@ -81,6 +81,16 @@ test('a filesystem code is what the volume said, not text found in the message',
 	expect(failedWith('ENOENT: a string, not an Error', 'ENOENT')).toBe(true)
 })
 
+test('a backslash is not a letter in a name — it is a separator somewhere', () => {
+	// The check that matters for untrusted names: a dropped archive offering
+	// `..\\system\\payload.md` is ONE segment to every check here and two path components
+	// to `node:path.join`, which is how a member climbs out of the volume.
+	expect(isCanonicalPath('/..\\system\\payload.md')).toBe(false)
+	expect(isCanonicalPath('/Trips\\Kyoto.md')).toBe(false)
+	expect(namesEntry('/AC\\DC.md')).toBe(false)
+	expect(isCanonicalPath('/Trips/Kyoto.md')).toBe(true)
+})
+
 test('a path has exactly one accepted spelling', () => {
 	expect(isCanonicalPath('/')).toBe(true)
 	expect(isCanonicalPath('/Trips/Kyoto.md')).toBe(true)

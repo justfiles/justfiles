@@ -348,8 +348,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		// trying to save them to a path that no longer exists (which would fail ENOENT,
 		// detach, and leave a duplicate). The GUI's own moves call `moved` directly; this is
 		// the same thing for a rename the agent did.
-		if (movedFrom !== undefined && buf.snapshot().path === movedFrom) {
-			buf.moved(movedFrom, openPath)
+		// Wherever the buffer's address sits on the trail, the note is at `openPath` now.
+		const held = buf.snapshot().path
+		if (held !== null && held !== openPath && movedFrom?.includes(held)) {
+			buf.moved(held, openPath)
 			return
 		}
 		// The selection can move on while a read is in flight. This effect re-runs when it

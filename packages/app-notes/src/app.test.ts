@@ -391,31 +391,36 @@ test('a move follows the open note, including when its folder is the thing moved
 	expect(other.state?.openPath).toBe('/Trips/Kyoto.md')
 })
 
-test('the remembered move is the one that moved THIS note, however many followed', async () => {
-	// A client sees state, not each transition, so several renames can land between two
-	// views of it. What a GUI holding the open note needs is where IT used to be — an
-	// unrelated rename must not answer that question, or the buffer settles at a vanished
-	// path, detaches on ENOENT, and forks a duplicate.
+test('the trail records where THIS note has been, so a client can follow from wherever it is', async () => {
+	// A client sees state, not each transition. Of two renames it may have followed the
+	// first and missed the second, or missed both — so a single "previous address" answers
+	// only one of those, and either way the buffer ends up settling at a vanished path,
+	// detaching on ENOENT, and forking a duplicate.
 	const move = (state: NotesState, from: string, to: string) =>
 		app
 			.dispatch({ type: 'moved', params: { from, to } }, { state })
 			.then((r) => r.state as NotesState)
 
 	let state = await move({ ...initialState, openPath: '/Trips/Kyoto.md' }, '/Trips', '/Travel')
-	expect(state).toMatchObject({ openPath: '/Travel/Kyoto.md', movedFrom: '/Trips/Kyoto.md' })
+	expect(state).toMatchObject({ openPath: '/Travel/Kyoto.md', movedFrom: ['/Trips/Kyoto.md'] })
 
 	state = await move(state, '/Shopping.md', '/Lists/Shopping.md') // nothing to do with us
-	expect(state).toMatchObject({ openPath: '/Travel/Kyoto.md', movedFrom: '/Trips/Kyoto.md' })
+	expect(state).toMatchObject({ openPath: '/Travel/Kyoto.md', movedFrom: ['/Trips/Kyoto.md'] })
 
-	// Moved again: the address the buffer still holds is the FIRST one.
+	// Moved again: BOTH addresses answer, because either could be the one a client holds.
 	state = await move(state, '/Travel/Kyoto.md', '/Travel/Kyoto trip.md')
-	expect(state).toMatchObject({ openPath: '/Travel/Kyoto trip.md', movedFrom: '/Trips/Kyoto.md' })
+	expect(state).toMatchObject({
+		openPath: '/Travel/Kyoto trip.md',
+		movedFrom: ['/Trips/Kyoto.md', '/Travel/Kyoto.md']
+	})
+
+	// A trail, not a log.
+	for (let i = 0; i < 20; i++) state = await move(state, state.openPath as string, `/Kyoto ${i}.md`)
+	expect(state.movedFrom).toHaveLength(8)
+	expect(state.movedFrom?.at(-1)).toBe('/Kyoto 18.md')
 
 	// Opening anything settles the question.
-	const opened = await app.dispatch(
-		{ type: 'open', params: { path: '/Travel/Kyoto trip.md' } },
-		{ state }
-	)
+	const opened = await app.dispatch({ type: 'open', params: { path: '/Kyoto 19.md' } }, { state })
 	expect(opened.state?.movedFrom).toBeUndefined()
 })
 
