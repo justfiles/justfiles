@@ -716,13 +716,21 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// Webview flush gotcha (DESIGN.md §4): the window can tear down before a save
 	// lands. Best-effort flush as the page hides; the host's windowShouldClose path
 	// awaits the real final flush.
+	// Both listeners come off again: an anonymous one cannot, so it outlived every remount
+	// inside the shared shell document and a later page hide would settle a buffer from a
+	// dead instance over what the live one had written.
 	useEffect(() => {
-		const onHide = () => {
-			if (document.visibilityState === 'hidden') void settle()
+		const onHide = () => void settle()
+		// A tab switch is not a teardown, so that one flushes only when actually hidden.
+		const onVisibility = () => {
+			if (document.visibilityState === 'hidden') onHide()
 		}
-		window.addEventListener('pagehide', () => void settle())
-		document.addEventListener('visibilitychange', onHide)
-		return () => document.removeEventListener('visibilitychange', onHide)
+		window.addEventListener('pagehide', onHide)
+		document.addEventListener('visibilitychange', onVisibility)
+		return () => {
+			window.removeEventListener('pagehide', onHide)
+			document.removeEventListener('visibilitychange', onVisibility)
+		}
 	}, [settle])
 
 	const filtered = useMemo(() => matchNotes(notes, query.trim()), [notes, query])

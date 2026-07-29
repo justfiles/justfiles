@@ -314,6 +314,13 @@ Three of those are worth naming, because they generalise:
   the delete lands (a pending write would put the note straight back), so a delete that fails has to restore
   what it emptied — `restore(snapshot)`, one method, one test, and the user keeps both the note and the edits.
 
+A smaller one, but the same family: **a listener that cannot be removed is a rule that outlives its buffer.**
+The page-hide flush was registered anonymously, so an unmounted instance kept flushing — and a stale buffer
+left dirty by a failed save could later land on top of what the live instance had written. Every listener the
+GUI adds now comes off in the cleanup; the mount/unmount seam in `packages/app/react.ts` is a real lifecycle,
+not a formality (verified by mounting and unmounting the GUI three times and counting: 1,2,3,4 before, 1,1,1,1
+after).
+
 Two more arrived the round after, and both are the same shape: **the way back must be offered only to the
 buffer that was emptied** (`discard` returns the undo, `null` when it was holding something else — and the undo
 *declines* if the user typed meanwhile, because their newest words outrank a snapshot taken before them), and
