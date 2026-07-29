@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import {
 	displayPath,
+	failedWith,
 	illegalMove,
 	isCanonicalPath,
 	isUnder,
@@ -68,6 +69,16 @@ test('a renamed note keeps its extension when the typed name has none', () => {
 	// must move, not "keep" an extension it never earned and become a no-op.
 	expect(renameTarget('/Archive.md', '/Archive', false)).toBe('/Archive')
 	expect(renameTarget('/Archive.md', '/Archive', true)).toBe('/Archive.md')
+})
+
+test('a filesystem code is what the volume said, not text found in the message', () => {
+	expect(failedWith(new Error('ENOENT: /notes/Kyoto.md'), 'ENOENT', 'EISDIR')).toBe(true)
+	expect(failedWith(new Error('EISDIR: /notes/Archive.md'), 'ENOENT', 'EISDIR')).toBe(true)
+	// A note called `ENOENT.md` that could not be read is still very much there — reading
+	// this as "gone" detaches a dirty buffer and the retry forks a duplicate beside it.
+	expect(failedWith(new Error('EACCES: /notes/ENOENT.md'), 'ENOENT', 'EISDIR')).toBe(false)
+	expect(failedWith(new Error('the volume is unreachable'), 'ENOENT')).toBe(false)
+	expect(failedWith('ENOENT: a string, not an Error', 'ENOENT')).toBe(true)
 })
 
 test('a path has exactly one accepted spelling', () => {

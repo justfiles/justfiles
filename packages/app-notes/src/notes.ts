@@ -84,6 +84,18 @@ export function namesEntry(path: string): boolean {
 }
 
 /** True when `path` is `dir` itself or lives under it (for folder renames). */
+/**
+ * Did this failure carry one of these filesystem codes? Read from the START of the
+ * message, because a code is what the volume *said* — not text that happens to appear
+ * somewhere inside it. `EACCES: /notes/ENOENT.md` is a note that is very much still
+ * there, and taking it for "gone" would detach a dirty buffer and fork a duplicate.
+ */
+export function failedWith(failure: unknown, ...codes: string[]): boolean {
+	const message = failure instanceof Error ? failure.message : String(failure)
+	const said = /^([A-Z]{4,10})\b/.exec(message)?.[1]
+	return said !== undefined && codes.includes(said)
+}
+
 export function isUnder(path: string, dir: string): boolean {
 	return path === dir || path.startsWith(dir === '/' ? '/' : `${dir}/`)
 }

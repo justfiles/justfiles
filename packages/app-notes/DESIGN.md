@@ -314,11 +314,23 @@ Three of those are worth naming, because they generalise:
   the delete lands (a pending write would put the note straight back), so a delete that fails has to restore
   what it emptied — `restore(snapshot)`, one method, one test, and the user keeps both the note and the edits.
 
+Two more arrived the round after, and both are the same shape: **the way back must be offered only to the
+buffer that was emptied** (`discard` returns the undo, `null` when it was holding something else — and the undo
+*declines* if the user typed meanwhile, because their newest words outrank a snapshot taken before them), and
+**a filesystem code is what the volume said, not text found in the message** (`failedWith` reads the code from
+the front: a note called `ENOENT.md` that hit an EACCES is very much still there).
+
 And one rule the reducer had to grow for: **`openPath` cannot say why it changed.** "The agent renamed the open
 note" and "the agent opened something else" look identical to it, and they need opposite handling — the first
-carries the buffer to the new address, the second settles it at the old one. So the `moved` edge records
-`lastMove: { from, to }` and the GUI follows it; without that, an agent rename during an unsaved edit tried to
-save to a path that no longer existed, detached on ENOENT, and left a duplicate.
+carries the buffer to the new address, the second settles it at the old one. So the `moved` edge records where the open
+note *used to be* (`movedFrom`) and the GUI carries the buffer there; without that, an agent rename during an
+unsaved edit tried to save to a path that no longer existed, detached on ENOENT, and left a duplicate.
+
+That field is **the move that moved this note, not the last move that happened** — a client sees state, not
+each transition, so several renames land between two views of it and an unrelated one must not answer the
+question. Composed, too: two moves of the same note still leave the address the buffer holds. It is the general
+hazard with signalling through state — a signal that can be overwritten by an unrelated event is not a signal,
+so the field is scoped to the *subject* it speaks about rather than to the latest event.
 
 **1a⁗ · A content write must not orphan, and must not resurrect.** `update: true` proves the path *at the
 resolve*, and the bytes are stored a moment later — so the note can be deleted in between. Every backend

@@ -15,7 +15,7 @@ import {
 	type Screen,
 	screenEntry
 } from './import.ts'
-import { displayPath, isUnder, matchNotes, parentDir } from './notes.ts'
+import { displayPath, failedWith, isUnder, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
 
@@ -29,8 +29,7 @@ const REFRESH_MS = 250
 // (`buffer.ts`); this is the only place that decides how to say it.
 // The folder a note was aimed at is not there — as opposed to being unwritable for the
 // moment. ENOTDIR: something that is not a folder holds the name.
-const missingFolder = (failure: unknown) =>
-	/ENOENT|ENOTDIR/.test(failure instanceof Error ? failure.message : String(failure))
+const missingFolder = (failure: unknown) => failedWith(failure, 'ENOENT', 'ENOTDIR')
 
 const explain = (outcome: Unsettled) =>
 	outcome.because === 'gone'
@@ -246,7 +245,7 @@ function relativeTime(mtimeNs: number): string {
 export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// Both counters are optional in persisted state (added after the first release,
 	// and `init` is never re-merged) — default them at the door.
-	const { openPath, revision = 0, treeRevision = 0, lastMove } = state
+	const { openPath, revision = 0, treeRevision = 0, movedFrom } = state
 
 	// The editor buffer is transient GUI-local state; the body bytes never enter the
 	// reducer (DESIGN.md §3). It is a MACHINE, not a set of flags — `src/buffer.ts` owns
@@ -349,15 +348,18 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		// trying to save them to a path that no longer exists (which would fail ENOENT,
 		// detach, and leave a duplicate). The GUI's own moves call `moved` directly; this is
 		// the same thing for a rename the agent did.
-		const held = buf.snapshot().path
-		if (lastMove && held !== null && isUnder(held, lastMove.from)) {
-			buf.moved(lastMove.from, lastMove.to)
+		if (movedFrom !== undefined && buf.snapshot().path === movedFrom) {
+			buf.moved(movedFrom, openPath)
 			return
 		}
+		// The selection can move on while a read is in flight. This effect re-runs when it
+		// does, so the older run must not report on, or act for, a note nobody is looking at
+		// any more — its `newNote` would overwrite the newer selection.
+		let current = true
 		void (async () => {
 			const outcome =
 				openPath === buf.snapshot().path ? await buf.reload(openPath) : await buf.open(openPath)
-			if (outcome.opened) return
+			if (outcome.opened || !current) return
 			if (outcome.because === 'unsettled') {
 				setStatus(explain(outcome.outcome))
 				return
@@ -368,7 +370,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			setStatus(`Cannot open ${displayPath(outcome.path)} — ${outcome.error.message}`)
 			if (outcome.gone) await actions.newNote({})
 		})()
-	}, [openPath, revision, lastMove, buf, actions])
+		return () => {
+			current = false
+		}
+	}, [openPath, revision, movedFrom, buf, actions])
 
 	// The reducer says nothing is open (the user pressed New, or the agent dispatched it)
 	// while the buffer still holds a note. Letting go means SETTLING first, so unsaved
@@ -560,18 +565,34 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		[actions, buf, settle, refresh]
 	)
 
+	// The menu is already closed by the time this runs, so a failure has nowhere to appear
+	// but the status line — and "the name is taken by a note" is a thing users do.
+	const createFolder = useCallback(
+		async (path: string) => {
+			try {
+				await actions.mkdir({ path })
+			} catch (failure) {
+				setStatus(
+					`Could not create ${displayPath(path)} — ${failure instanceof Error ? failure.message : String(failure)}`
+				)
+			}
+		},
+		[actions]
+	)
+
 	const removeNote = useCallback(
 		async (path: string) => {
 			// Deleting the open note DISCARDS its buffer — settling it would write the note
 			// straight back, and the machine also cancels a read in flight for it. Discarded
 			// BEFORE the delete for that reason, and put back if the delete does not happen:
-			// a failed remove must not cost the user the note *and* their unsaved edits.
-			const before = buf.snapshot()
-			buf.discard(path)
+			// a failed remove must not cost the user the note *and* their unsaved edits. The
+			// machine hands back the way in, so deleting a DIFFERENT note cannot restore over
+			// the one being edited.
+			const undiscard = buf.discard(path)
 			try {
 				await actions.remove({ path })
 			} catch (failure) {
-				buf.restore(before)
+				undiscard?.()
 				setStatus(
 					`Could not delete ${displayPath(path)} — ${failure instanceof Error ? failure.message : String(failure)}`
 				)
@@ -872,7 +893,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 								selectedDirRef.current = dir
 							}}
 							onCreate={(dir, title) => void createNote(title, dir)}
-							onMkdir={(path) => void actions.mkdir({ path })}
+							onMkdir={(path) => void createFolder(path)}
 							onRename={moveNote}
 							onRemove={(path) => void removeNote(path)}
 						/>

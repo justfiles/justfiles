@@ -18,7 +18,7 @@
  * whole machine is exercised by `buffer.test.ts` with no browser and no filesystem.
  */
 
-import { isUnder } from './notes.ts'
+import { failedWith, isUnder } from './notes.ts'
 
 export type BufferState = {
 	readonly text: string
@@ -61,7 +61,7 @@ export type BufferIO = {
 }
 
 // A note that no longer exists cannot be saved to, ever; anything else can be retried.
-const gone = (error: Error) => /ENOENT|EISDIR/.test(error.message)
+const gone = (error: Error) => failedWith(error, 'ENOENT', 'EISDIR')
 const asError = (value: unknown) => (value instanceof Error ? value : new Error(String(value)))
 
 export function createBuffer(io: BufferIO, onChange: (state: BufferState) => void) {
@@ -200,16 +200,6 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 			set({ text, dirty: true })
 		},
 
-		/**
-		 * Put the buffer back as it was. For an operation that must UN-happen: deleting the
-		 * open note discards its buffer before the delete is known to have worked, and a
-		 * delete that fails has to leave the user's note (and their unsaved edits) alone.
-		 */
-		restore(previous: BufferState) {
-			generation++
-			set(previous)
-		},
-
 		/** Land the buffer. Check the answer before replacing anything. */
 		settle: (): Promise<SettleOutcome> => enqueue(settleNow),
 
@@ -255,15 +245,28 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 		/**
 		 * `path` (or a folder containing it) is being deleted, so the buffer is DISCARDED
 		 * rather than settled — a pending write would put the note straight back.
+		 *
+		 * Returns THE WAY BACK, because the discard happens before the delete is known to
+		 * have worked: a delete that fails must cost the user neither the note nor the
+		 * unsaved edits. `null` when the buffer was holding something else, and the way back
+		 * declines if anything happened to the buffer meanwhile — words typed after the
+		 * discard are the user's newest and outrank a snapshot taken before them.
 		 */
-		discard(path: string) {
-			if (!involves(path)) return
+		discard(path: string): (() => void) | null {
+			if (!involves(path)) return null
+			const previous = { ...state }
 			// Covers a read in flight too: a note deleted while its body is on the way must
 			// not be adopted when it lands, or the editor shows a note that no longer exists
 			// and the next keystroke tries to save it back.
 			generation++
 			pending = null
 			set({ text: '', dirty: false, path: null })
+			const undiscarded = generation
+			return () => {
+				if (generation !== undiscarded) return
+				generation++
+				set(previous)
+			}
 		}
 	}
 }

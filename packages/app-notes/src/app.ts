@@ -94,12 +94,18 @@ async function isFolder(
 // in state for someone to notice later.
 export type NotesState = {
 	openPath: string | null
-	// The last move, so a GUI holding the moved note can follow it instead of re-reading
-	// (and, if it has unsaved edits, instead of saving them to a path that no longer
-	// exists). `openPath` alone cannot say WHY it changed — "the agent renamed this" and
-	// "the agent opened something else" are the same change to it, and they call for
-	// opposite handling. Cleared as soon as something else moves the selection.
-	lastMove?: { from: string; to: string }
+	// Where the open note USED to be, so a GUI holding it can follow it instead of
+	// re-reading (and, if it has unsaved edits, instead of saving them to a path that no
+	// longer exists). `openPath` alone cannot say WHY it changed — "the agent renamed this"
+	// and "the agent opened something else" are the same change to it, and they call for
+	// opposite handling.
+	//
+	// It is the move that MOVED THIS NOTE, not the last move that happened: a client sees
+	// state, not each transition, so several renames can land between two views of it and
+	// an unrelated one must not be mistaken for this note's. Composed for the same reason —
+	// two moves of the same note leave the address the buffer still holds. Cleared as soon
+	// as something else moves the selection.
+	movedFrom?: string
 	// Optional: both counters were added after the first release, and persisted
 	// state is loaded verbatim — every reader defaults them.
 	revision?: number
@@ -182,13 +188,13 @@ export const app = defineApp({
 		// — pure mutations (agent-visible) —
 		open: t.on(
 			v.object({ path: noteSchema }),
-			(state, { path }) => ({ ...state, openPath: path, lastMove: undefined }),
+			(state, { path }) => ({ ...state, openPath: path, movedFrom: undefined }),
 			{
 				description: 'Open a note in the editor — surfaces it in the user’s window.',
 				examples: [{ params: { path: '/Remember the milk.md' } }]
 			}
 		),
-		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, lastMove: undefined }), {
+		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, movedFrom: undefined }), {
 			description: 'Start a fresh blank note (clears the editor).'
 		}),
 
@@ -196,14 +202,15 @@ export const app = defineApp({
 		// renaming a folder. Internal (a `commit` edge): only the `rename` procedure
 		// dispatches it, once the move has landed and its real destination is known.
 		// `openPath` follows the moved file, or the moved folder it lives under.
-		moved: t.commit(v.object({ from: pathSchema, to: pathSchema }), (state, { from, to }) => ({
-			...state,
-			openPath:
-				state.openPath && isUnder(state.openPath, from)
-					? `${to}${state.openPath.slice(from.length)}`
-					: state.openPath,
-			lastMove: { from, to }
-		})),
+		moved: t.commit(v.object({ from: pathSchema, to: pathSchema }), (state, { from, to }) => {
+			const open = state.openPath
+			if (open === null || !isUnder(open, from)) return state // a move of something else
+			return {
+				...state,
+				openPath: `${to}${open.slice(from.length)}`,
+				movedFrom: state.movedFrom ?? open
+			}
+		}),
 
 		// — external change to the OPEN file (the agent or Files edits it on disk) —
 		fileChanged: t.fromEvent('volume', 'watch', (state) => ({

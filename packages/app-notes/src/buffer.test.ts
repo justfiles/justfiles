@@ -281,12 +281,32 @@ test('a buffer can be put back when the operation that emptied it did not happen
 	await buf.open('/Kyoto.md')
 	buf.type('unsaved edits')
 	const before = buf.snapshot()
-	buf.discard('/Kyoto.md')
+	const undiscard = buf.discard('/Kyoto.md')
 	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
-	buf.restore(before) // …the delete failed
+	undiscard?.() // …the delete failed
 	expect(buf.snapshot()).toEqual(before)
 	expect(await buf.settle()).toEqual({ settled: true })
 	expect(disk['/Kyoto.md']).toBe('unsaved edits')
+})
+
+test('the way back is only offered for the buffer the discard emptied', async () => {
+	// Deleting some OTHER note must not touch the note being edited — and if that delete
+	// fails, there is nothing to put back.
+	const { buf } = buffer({ '/Kyoto.md': 'kyoto', '/Osaka.md': 'osaka' })
+	await buf.open('/Kyoto.md')
+	buf.type('being edited')
+	expect(buf.discard('/Osaka.md')).toBe(null)
+	expect(buf.snapshot()).toMatchObject({ text: 'being edited', path: '/Kyoto.md' })
+})
+
+test('the way back declines once the user has typed into the emptied buffer', async () => {
+	// The snapshot is older than those keystrokes, and the newest words win.
+	const { buf } = buffer({ '/Kyoto.md': 'kyoto' })
+	await buf.open('/Kyoto.md')
+	const undiscard = buf.discard('/Kyoto.md')
+	buf.type('a fresh thought')
+	undiscard?.() // …the delete failed, but the buffer has moved on
+	expect(buf.snapshot()).toEqual({ text: 'a fresh thought', dirty: true, path: null })
 })
 
 test('a read that resolves after the buffer moved on is discarded', async () => {
