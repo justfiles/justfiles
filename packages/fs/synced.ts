@@ -3,7 +3,6 @@ import type { Storage } from './storage'
 import {
 	type BlobStore,
 	GenerationStaleError,
-	HOST_PRIVATE_PREFIXES,
 	isHostPrivatePath,
 	journaledChangeSource,
 	LineageStaleError,
@@ -279,25 +278,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	/**
-	 * Recursive delete that PRESERVES host-private subtrees. `/system` is an ordinary
-	 * synced directory, so a plain `rm -r` on it would take the credentials nested
-	 * under it with it: an ancestor of a host-private prefix is traversed instead, and
-	 * only removed if nothing host-private actually survived beneath it.
-	 */
-	async function rmKeepingHostPrivate(path: string): Promise<void> {
-		if (isHostPrivatePath(path)) return
-		const prefix = path === '/' ? '/' : `${path}/`
-		if (!HOST_PRIVATE_PREFIXES.some((d) => d.startsWith(prefix))) {
-			await localVol.rm(path, { recursive: true, force: true })
-			return
-		}
-		for (const e of await localVol.readdir(path)) await rmKeepingHostPrivate(`${prefix}${e.name}`)
-		if (path !== '/' && (await localVol.readdir(path)).length === 0) await localVol.rm(path)
-	}
-
-	/**
 	 * Delete local paths absent from the remote snapshot (child-before-parent),
-	 * skipping host-private subtrees (`/.state`, credentials). Path-keyed (today's
+	 * skipping host-private subtrees (`/.state`, `/host`). Path-keyed (today's
 	 * ino-based reconcile is replaced).
 	 */
 	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {
@@ -316,18 +298,25 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		const absent = localPaths
 			.filter((p) => !remotePaths.has(p))
 			.sort((a, b) => b.split('/').length - a.split('/').length)
-		for (const p of absent) await rmKeepingHostPrivate(p)
+		for (const p of absent) await localVol.rm(p, { recursive: true, force: true })
 	}
 
 	/**
 	 * "Take theirs": discard this device's local replica and re-pull. Delete every
-	 * synced path (keeping host-private subtrees), then clear the cursors
+	 * synced path (host-private roots are skipped — they are this host's, not the
+	 * server's to discard), then clear the cursors
 	 * so the next cycle re-bootstraps fresh against the current server lineage. The
 	 * cleared `pushCursor` also resets `everPushed`, so the re-bootstrap adopts the
 	 * server verbatim (nothing local left to keep).
 	 */
 	async function clientReset(): Promise<void> {
-		await rmKeepingHostPrivate('/')
+		// Host-private roots are top-level, so skipping them here is sufficient: no synced
+		// path is their ancestor, hence no recursive delete can reach them.
+		for (const entry of await localVol.readdir('/')) {
+			const p = `/${entry.name}`
+			if (isHostPrivatePath(p)) continue
+			await localVol.rm(p, { recursive: true, force: true })
+		}
 		// Drop the local journal + version tombstones the deletes just wrote: after a
 		// lineage reset the server's versions aren't comparable to ours, so a leftover
 		// tombstone would outrank a re-pulled put and strand that path. Owned backends

@@ -306,6 +306,32 @@ export function accountsCapabilities(
 	}
 }
 
+// One-off: the credential lane moved out of `/system` into the host-private `/host`
+// root, so it can never replicate (see @justfiles/fs HOST_PRIVATE_PREFIXES). Rename
+// rather than copy — the vacated `/system` paths are ordinary synced paths again, so the
+// delete propagates and clears the stale copies earlier sync left in client replicas.
+// Best-effort by design: a host must boot even if this fails, and the only record on a
+// real volume is the credential-less platform AI account, which `ensureAccount` reseeds.
+// Delete this function and its call sites once no live volume carries the old paths.
+export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
+	for (const [from, to] of [
+		['/system/accounts', '/host/accounts'],
+		['/system/connections', '/host/connections']
+	] as const) {
+		try {
+			if (!(await volume.exists(from))) continue
+			// Already relocated (or re-seeded): the new tree wins, the old one is dropped.
+			if (await volume.exists(to)) await volume.rm(from, { recursive: true, force: true })
+			else {
+				await volume.mkdir('/host', { recursive: true })
+				await volume.rename(from, to)
+			}
+		} catch (e) {
+			console.warn(`accounts: could not relocate ${from} to ${to}`, e)
+		}
+	}
+}
+
 // Seed a credential-less account once, if it doesn't already exist — for a platform-
 // managed provider (the built-in AI) that should be present and, on a fresh install, the
 // active AI by default. Idempotent: a returning user's active-AI choice is left untouched.

@@ -206,19 +206,19 @@ describe('isHostPrivatePath', () => {
 	it('matches each prefix itself AND its children', () => {
 		expect(isHostPrivatePath('/.state')).toBe(true)
 		expect(isHostPrivatePath('/.state/sync')).toBe(true)
-		expect(isHostPrivatePath('/system/accounts')).toBe(true)
-		expect(isHostPrivatePath('/system/accounts/a%40b.json')).toBe(true)
-		expect(isHostPrivatePath('/system/connections')).toBe(true)
-		expect(isHostPrivatePath('/system/connections/chatgpt/default.json')).toBe(true)
+		expect(isHostPrivatePath('/host')).toBe(true)
+		expect(isHostPrivatePath('/host/accounts')).toBe(true)
+		expect(isHostPrivatePath('/host/accounts/a%40b.json')).toBe(true)
+		expect(isHostPrivatePath('/host/connections/chatgpt/default.json')).toBe(true)
 	})
 
 	it('matches per path SEGMENT — a sibling is not a child', () => {
 		expect(isHostPrivatePath('/.stateful')).toBe(false)
-		expect(isHostPrivatePath('/system/accountsX')).toBe(false)
-		expect(isHostPrivatePath('/system/account')).toBe(false)
+		expect(isHostPrivatePath('/hostage')).toBe(false)
+		expect(isHostPrivatePath('/hosts.md')).toBe(false)
+		expect(isHostPrivatePath('/system/accounts')).toBe(false) // relocated to /host
 		expect(isHostPrivatePath('/system/user.md')).toBe(false)
-		expect(isHostPrivatePath('/system/agents/main/soul.md')).toBe(false)
-		expect(isHostPrivatePath('/notes/accounts.md')).toBe(false)
+		expect(isHostPrivatePath('/notes/host.md')).toBe(false)
 		expect(isHostPrivatePath('/notes/a')).toBe(false)
 	})
 })

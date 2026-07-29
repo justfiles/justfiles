@@ -41,9 +41,9 @@ To recall an earlier conversation, SEARCH the transcripts — never guess:
 
 ## Not yours — ask instead of reading
 
-- `/system/accounts/`, `/system/connections/` — the user's credentials. Not
-  readable, by design; do not try. To see what they are signed into, use the `app`
-  command against the settings app.
+- `/host/` — this machine's private tree: the user's credentials and other
+  host-only state. Not readable, by design; do not try. To see what they are signed
+  into, use the `app` command against the settings app.
 - `/system/os-state.json`, `/system/notifications.json`, `/system/active-ai.json`,
   `/system/context/`, `/system/tmp/` — host bookkeeping in machine formats that
   change without notice. Never parse them.

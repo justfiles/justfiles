@@ -295,10 +295,9 @@ describe('synced (lifecycle)', () => {
 		expect(await volume(local).exists('/.state')).toBe(true) // local-only preserved
 	})
 
-	// Host-private paths survive a destructive reconcile even when their ANCESTOR is
-	// absent from the remote (`/system` never syncs the creds under it, so the remote
-	// snapshot can legitimately lack the whole subtree).
-	it('reconcile keeps host-private paths nested under an ancestor absent from remote', async () => {
+	// Host-private roots survive a destructive reconcile: the remote never had them, so
+	// "absent from the remote" must not mean "delete locally".
+	it('reconcile keeps the host-private root the remote never had', async () => {
 		const remote = memStorage()
 		await volume(remote).writeFile('/keep.txt', enc.encode('keep'))
 
@@ -310,9 +309,9 @@ describe('synced (lifecycle)', () => {
 		vol1.destroy()
 
 		const lv = volume(local)
-		await lv.mkdir('/system/accounts', { recursive: true })
-		await lv.writeFile('/system/accounts/cred.json', enc.encode('CRED'))
-		await lv.writeFile('/system/stray.md', enc.encode('x'))
+		await lv.mkdir('/host/accounts', { recursive: true })
+		await lv.writeFile('/host/accounts/cred.json', enc.encode('CRED'))
+		await lv.writeFile('/stray.md', enc.encode('x'))
 
 		const state = JSON.parse(dec.decode(await lv.readFile('/.state/sync'))) as {
 			pullCursor?: string
@@ -322,8 +321,8 @@ describe('synced (lifecycle)', () => {
 
 		const vol2 = track(await synced({ local, remote, interval: 99_999 }))
 		await vol2.flush()
-		expect(await vol2.exists('/system/stray.md')).toBe(false) // reconciled away
-		expect(dec.decode(await vol2.readFile('/system/accounts/cred.json'))).toBe('CRED')
+		expect(await vol2.exists('/stray.md')).toBe(false) // reconciled away
+		expect(dec.decode(await vol2.readFile('/host/accounts/cred.json'))).toBe('CRED')
 	})
 
 	it('re-bootstrap pulls post-snapshot updates before reconciling missing paths', async () => {
@@ -651,21 +650,20 @@ describe('synced (generation / client-reset)', () => {
 		expect(await vol.exists('/server.txt')).toBe(true) // re-pulled from the server
 	})
 
-	// A reset discards the SYNCED replica, not the credentials this host acquired — they
-	// are nested under `/system`, which is itself a perfectly ordinary synced directory.
-	it('takeTheirs() keeps host-private paths nested under a synced ancestor', async () => {
+	// A reset discards the SYNCED replica, not the credentials this host acquired.
+	it('takeTheirs() keeps the host-private root', async () => {
 		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
 		const local = memStorage()
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
-		await vol.mkdir('/system/accounts', { recursive: true })
-		await vol.mkdir('/system/connections/chatgpt', { recursive: true })
-		await vol.writeFile('/system/accounts/a.json', enc.encode('CRED'))
-		await vol.writeFile('/system/connections/chatgpt/default.json', enc.encode('CONN'))
-		await vol.writeFile('/system/user.md', enc.encode('mine'))
+		await vol.mkdir('/host/accounts', { recursive: true })
+		await vol.mkdir('/host/connections/chatgpt', { recursive: true })
+		await vol.writeFile('/host/accounts/a.json', enc.encode('CRED'))
+		await vol.writeFile('/host/connections/chatgpt/default.json', enc.encode('CONN'))
+		await vol.writeFile('/mine.md', enc.encode('mine'))
 		await vol.takeTheirs()
-		expect(dec.decode(await vol.readFile('/system/accounts/a.json'))).toBe('CRED')
-		expect(dec.decode(await vol.readFile('/system/connections/chatgpt/default.json'))).toBe('CONN')
-		expect(await vol.exists('/system/user.md')).toBe(false) // synced data still discarded
+		expect(dec.decode(await vol.readFile('/host/accounts/a.json'))).toBe('CRED')
+		expect(dec.decode(await vol.readFile('/host/connections/chatgpt/default.json'))).toBe('CONN')
+		expect(await vol.exists('/mine.md')).toBe(false) // synced data still discarded
 	})
 
 	// takeMine(): CAS the server's lineage, then re-tag local as mine + rewind the

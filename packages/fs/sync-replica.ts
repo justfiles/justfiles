@@ -462,15 +462,17 @@ export type SyncState = {
 
 /**
  * Prefixes that never cross the wire, in EITHER direction:
- *   /.state              — this replica's own sync bookkeeping
- *   /system/accounts     — credentials: owned by the host that acquired them
- *   /system/connections  —      "
+ *   /.state — this replica's own sync bookkeeping (engine-private, frozen)
+ *   /host   — this host's private tree: `/host/accounts`, `/host/connections`, …
  *
- * Credentials do not sync because no peer needs them: a capability routes to the
- * host that owns the credential, so the bytes are only ever read by the host that
- * wrote them. Matching is path-SEGMENT-aware (`/system/accountsX` is a sibling).
+ * Credentials do not sync because no peer needs them: a capability routes to the host
+ * that owns the credential, so the bytes are only ever read by the host that wrote
+ * them. A top-level ROOT, not a subtree of `/system`: a never-sync lane nested under a
+ * synced tree dies with any `rm -r` of its ancestor (`clientReset` / `reconcileLocal`),
+ * and `/system` is exactly the tree we merge across hosts. Matching is path-SEGMENT-
+ * aware, so `/hostage` is a sibling, not a child.
  */
-export const HOST_PRIVATE_PREFIXES = ['/.state', '/system/accounts', '/system/connections'] as const
+export const HOST_PRIVATE_PREFIXES = ['/.state', '/host'] as const
 
 export function isHostPrivatePath(p: string): boolean {
 	return HOST_PRIVATE_PREFIXES.some((d) => p === d || p.startsWith(`${d}/`))

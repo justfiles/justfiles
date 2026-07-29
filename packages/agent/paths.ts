@@ -35,4 +35,6 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 // prompt — a prompt is not an access-control mechanism. The list is owned by
 // @justfiles/fs (which also refuses to replicate them) so the two can't drift; the agent
 // shell still needs the deny-list because the agent runs INSIDE the host that holds them.
+// `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
+// prompt as host bookkeeping and harmless to `ls`.
 export const SECRET_PREFIXES = HOST_PRIVATE_PREFIXES.filter((p) => p !== '/.state')
