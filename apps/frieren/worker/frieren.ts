@@ -35,7 +35,8 @@ import {
 	ensureAccount,
 	migrateHostPrivateLane,
 	resolveAiAccount,
-	type SecretCodec
+	type SecretCodec,
+	sealAccounts
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
@@ -364,6 +365,9 @@ export class Frieren extends DurableObject<Env> {
 			},
 			{ secretCodec: this.secretCodec }
 		)
+		// Anything still in the clear (written before the key existed, or while it was missing)
+		// gets sealed now — nothing else would ever rewrite a credential that doesn't rotate.
+		await sealAccounts(this.vol, { secretCodec: this.secretCodec })
 		this.session?.abort()
 		this.text = text(this.meteredBackend(models, model))
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps

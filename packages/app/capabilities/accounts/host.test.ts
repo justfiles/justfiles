@@ -9,7 +9,8 @@ import {
 	ensureAccount,
 	migrateHostPrivateLane,
 	renameAccount,
-	resolveAiAccount
+	resolveAiAccount,
+	sealAccounts
 } from './host.ts'
 import type { Auth, Provider } from './provider.ts'
 import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
@@ -536,6 +537,23 @@ describe('secretCodec wiring', () => {
 		expect((await volumeAccountStore(vol, { secretCodec: codec }).get('frieren'))?.creds).toEqual(
 			{}
 		)
+	})
+
+	test('sealAccounts is a no-op without a key, and seals with one', async () => {
+		const vol = volume(memStorage())
+		await volumeAccountStore(vol).put({ id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
+		const path = '/private/accounts/u%40me.com.json'
+		const clear = await vol.readFile(path)
+
+		// No key ⇒ nothing to seal with, so the record is left exactly as it was.
+		await sealAccounts(vol)
+		expect(await vol.readFile(path)).toEqual(clear)
+
+		await sealAccounts(vol, { secretCodec: codec })
+		expect(new TextDecoder().decode(await vol.readFile(path))).not.toContain('PW')
+		expect(await volumeAccountStore(vol, { secretCodec: codec }).get('u@me.com')).toMatchObject({
+			creds: { p: 'PW' }
+		})
 	})
 
 	test('a rename leaves a record it cannot read where it is', async () => {

@@ -11,7 +11,7 @@
 // (see @justfiles/fs PRIVATE_PREFIXES).
 
 import type { Volume } from '@justfiles/fs'
-import { clearSecretCodec } from './secret-codec.ts'
+import { clearSecretCodec, isSealed } from './secret-codec.ts'
 
 // Transforms the `creds` lane on the way to/from disk. Default = clear (but never hands
 // out a sealed value, see `clearSecretCodec`); the encrypting one is `aesGcmSecretCodec`.
@@ -42,6 +42,10 @@ export interface AccountStore {
 	get(id: string): Promise<Account | undefined>
 	put(account: Account): Promise<void>
 	delete(id: string): Promise<void>
+	// Seal every record still in the clear (see `sealAccounts` in host.ts for why a lazy
+	// "encrypt on next write" is not enough). Idempotent: already-sealed records are
+	// skipped, so it costs one read per record on a boot with nothing to do.
+	reseal(): Promise<void>
 }
 
 const DIR = '/private/accounts'
@@ -84,13 +88,33 @@ export function volumeAccountStore(
 			return { ...stored, creds: undefined, lastError: DECODE_FAILED }
 		}
 	}
+	const paths = async (): Promise<string[]> =>
+		(await fs.exists(DIR))
+			? (await fs.readdir(DIR))
+					.filter((e) => e.name.endsWith('.json'))
+					.map((e) => `${DIR}/${e.name}`)
+			: []
+	const put = async (account: Account): Promise<void> => {
+		await fs.mkdir(DIR, { recursive: true })
+		const path = pathFor(account.id)
+		// `creds: undefined` means "this host could not read them" (see `read`), NEVER "there
+		// are none" — so keep the sealed bytes already on disk instead of overwriting them.
+		// Otherwise a key that is missing only for now (deployed before the secret was set,
+		// a mistyped rotation) turns any ordinary write — toggling a capability off in
+		// Settings — into the permanent loss of a credential the restored key could still
+		// open. Every mutation funnels through here, so this is the one place to hold that line.
+		const creds =
+			account.creds === undefined
+				? (await readStored(path))?.creds
+				: await codec.encode(account.creds, account.id)
+		const stored = { ...account, creds }
+		await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
+	}
 	return {
 		list: async () => {
-			if (!(await fs.exists(DIR))) return []
 			const out: Account[] = []
-			for (const entry of await fs.readdir(DIR)) {
-				if (!entry.name.endsWith('.json')) continue
-				const account = await read(`${DIR}/${entry.name}`)
+			for (const path of await paths()) {
+				const account = await read(path)
 				if (account) out.push(account)
 			}
 			return out
@@ -99,21 +123,17 @@ export function volumeAccountStore(
 			const path = pathFor(id)
 			return (await fs.exists(path)) ? read(path) : undefined
 		},
-		put: async (account) => {
-			await fs.mkdir(DIR, { recursive: true })
-			const path = pathFor(account.id)
-			// `creds: undefined` means "this host could not read them" (see `read`), NEVER "there
-			// are none" — so keep the sealed bytes already on disk instead of overwriting them.
-			// Otherwise a key that is missing only for now (deployed before the secret was set,
-			// a mistyped rotation) turns any ordinary write — toggling a capability off in
-			// Settings — into the permanent loss of a credential the restored key could still
-			// open. Every mutation funnels through here, so this is the one place to hold that line.
-			const creds =
-				account.creds === undefined
-					? (await readStored(path))?.creds
-					: await codec.encode(account.creds, account.id)
-			const stored = { ...account, creds }
-			await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
+		put,
+		reseal: async () => {
+			for (const path of await paths()) {
+				const stored = await readStored(path)
+				// Nothing to seal: not this schema, no creds lane, or already sealed (skipping is
+				// what keeps a boot with nothing to do free of writes). An unreadable record is
+				// sealed by definition, so it is skipped too — never rewritten, never lost.
+				if (typeof stored?.id !== 'string' || typeof stored.provider !== 'string') continue
+				if (stored.creds === undefined || isSealed(stored.creds)) continue
+				await put(stored)
+			}
 		},
 		delete: async (id) => {
 			await fs.rm(pathFor(id), { force: true })

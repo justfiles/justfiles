@@ -116,6 +116,42 @@ describe('volumeAccountStore', () => {
 		expect(await sealed.get('u@openai.com')).toMatchObject({ creds: account().creds })
 	})
 
+	test('reseal seals what is in the clear, and rewrites nothing else', async () => {
+		// The lane a lazy "encrypt on next write" never reaches: an iCloud app-specific
+		// password is written once, at connect, and no provider persists rotated creds today.
+		const fs = volume(memStorage())
+		const clear = volumeAccountStore(fs)
+		await clear.put(account({ id: 'u@me.com', provider: 'icloud', creds: { password: 'APPSPEC' } }))
+		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('real-key') })
+		await store.put(account())
+
+		const path = '/private/accounts/u%40openai.com.json'
+		const sealedBefore = await fs.readFile(path)
+		await store.reseal()
+
+		const icloud = new TextDecoder().decode(await fs.readFile('/private/accounts/u%40me.com.json'))
+		expect(icloud).not.toContain('APPSPEC')
+		expect(JSON.parse(icloud).creds).toMatchObject({ v: 1, alg: 'A256GCM' })
+		expect(await store.get('u@me.com')).toMatchObject({ creds: { password: 'APPSPEC' } })
+		// An already-sealed record is left byte-identical: a boot with nothing to do writes nothing.
+		expect(await fs.readFile(path)).toEqual(sealedBefore)
+	})
+
+	test('reseal never touches a record it cannot open', async () => {
+		const fs = volume(memStorage())
+		const old = { secretCodec: aesGcmSecretCodec('old-key') }
+		await volumeAccountStore(fs, old).put(account())
+		const path = '/private/accounts/u%40openai.com.json'
+		const before = await fs.readFile(path)
+
+		await volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('new-key') }).reseal()
+
+		expect(await fs.readFile(path)).toEqual(before)
+		expect(await volumeAccountStore(fs, old).get('u@openai.com')).toMatchObject({
+			creds: account().creds
+		})
+	})
+
 	test('a record this key cannot open still lists, without creds and flagged', async () => {
 		// The rotated-the-key path: the account must stay visible (Settings shows it, the
 		// user re-connects) and must not take the rest of the list down with it.

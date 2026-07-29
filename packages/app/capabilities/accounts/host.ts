@@ -352,6 +352,31 @@ export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
 	}
 }
 
+// Seal every account record still sitting in the clear, with this host's key. Best-effort:
+// a host must boot even if it fails.
+//
+// Needed because `decode` deliberately passes a non-envelope through (that is what makes
+// turning encryption on a no-flag-day change) — so nothing else would ever rewrite a
+// credential that does not rotate. No provider persists rotated creds today, and an iCloud
+// app-specific password is written exactly once, at connect: "it gets sealed on the next
+// write" means "never" for those, leaving plaintext in every dump and backup taken after we
+// believed the lane was encrypted. Same story for records a host wrote while its key was
+// missing. This closes both, on the next boot after the key lands.
+//
+// A no-op without a key (nothing to seal with) and cheap with one: already-sealed records
+// are skipped, so a steady-state boot writes nothing.
+export async function sealAccounts(
+	volume: Volume,
+	opts: { secretCodec?: SecretCodec } = {}
+): Promise<void> {
+	if (!opts.secretCodec) return
+	try {
+		await volumeAccountStore(volume, opts).reseal()
+	} catch (e) {
+		console.warn('accounts: could not seal credentials at rest', e)
+	}
+}
+
 // Seed a credential-less account once, if it doesn't already exist — for a platform-
 // managed provider (the built-in AI) that should be present and, on a fresh install, the
 // active AI by default. Idempotent: a returning user's active-AI choice is left untouched.

@@ -115,3 +115,7 @@ export const clearSecretCodec: SecretCodec = {
 		return raw
 	}
 }
+
+// Is this stored value already sealed? Lets the re-seal sweep skip the records that need no
+// work — without it, "seal what is in the clear" would rewrite every record on every boot.
+export const isSealed = (raw: unknown): boolean => isEnvelope(raw)
