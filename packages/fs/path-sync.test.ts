@@ -137,6 +137,92 @@ describe('path-sync semantics', () => {
 		expect(pushed.some((p) => p === '/.state' || p.startsWith('/.state/'))).toBe(false)
 	})
 
+	// Host-private credentials never cross the wire, and the lane is symmetrical
+	test('private paths are never pushed, while /system still syncs', async () => {
+		const { client, server, syncBoth, pushedChanges } = twoPeers()
+		await client.writeFile('/private/accounts/a.json', bytes('CLIENT-CRED'))
+		await client.writeFile('/system/user.md', bytes('me'))
+		await client.writeFile('/system/agents/main/sessions/x.jsonl', bytes('{}'))
+		await syncBoth()
+		expect(await server.exists('/private/accounts/a.json')).toBe(false)
+		expect(await server.exists('/private')).toBe(false)
+		expect(pushedChanges().map((c) => c.path)).not.toContain('/private/accounts/a.json')
+		// No collateral: the shared system tree syncs in the same cycle
+		expect(text(await server.readFile('/system/user.md'))).toBe('me')
+		expect(text(await server.readFile('/system/agents/main/sessions/x.jsonl'))).toBe('{}')
+	})
+
+	test('a private path written on the server is never admitted by the client', async () => {
+		const { client, server, syncBoth } = twoPeers()
+		await server.writeFile('/private/accounts/b.json', bytes('SERVER-CRED'))
+		await server.writeFile('/system/user.md', bytes('you'))
+		await syncBoth()
+		expect(await client.exists('/private/accounts/b.json')).toBe(false)
+		expect((await client.readdir('/')).map((e) => e.name)).not.toContain('private')
+		expect(text(await client.readFile('/system/user.md'))).toBe('you')
+	})
+
+	test('the private lane is inert both ways: each peer keeps its own, deletes stay local', async () => {
+		const { client, server, syncBoth } = twoPeers()
+		await client.writeFile('/private/accounts/x.json', bytes('C'))
+		await server.writeFile('/private/accounts/x.json', bytes('S'))
+		await client.writeFile('/private/connections/chatgpt/default.json', bytes('C'))
+		await server.writeFile('/private/connections/chatgpt/default.json', bytes('S'))
+		await syncBoth()
+		// Not a delete-on-sync: both sides still read back their OWN bytes
+		expect(text(await client.readFile('/private/accounts/x.json'))).toBe('C')
+		expect(text(await server.readFile('/private/accounts/x.json'))).toBe('S')
+
+		// A client-side delete does not propagate (and the server copy is not pulled back)
+		await client.rm('/private/accounts/x.json')
+		await syncBoth()
+		expect(text(await server.readFile('/private/accounts/x.json'))).toBe('S')
+		expect(await client.exists('/private/accounts/x.json')).toBe(false)
+
+		// Nor does a server-side one
+		await server.rm('/private/connections/chatgpt/default.json')
+		await syncBoth()
+		expect(text(await client.readFile('/private/connections/chatgpt/default.json'))).toBe('C')
+		expect(await server.exists('/private/connections/chatgpt/default.json')).toBe(false)
+	})
+
+	// A host's OWN never-sync paths (`ignore`) behave exactly
+	// like the built-in class: filtered on the way out, refused on the way in.
+	test('a host ignore never crosses the wire, in either direction', async () => {
+		const cache = (p: string) => p.startsWith('/state/cache/') || p.endsWith('.DS_Store')
+		const { client, server, syncBoth, pushedChanges } = twoPeers({
+			clientIgnore: cache,
+			serverIgnore: cache
+		})
+		await client.writeFile('/state/cache/blob', bytes('C'))
+		await client.writeFile('/notes/.DS_Store', bytes('junk'))
+		await client.writeFile('/notes/keep.md', bytes('note'))
+		await server.writeFile('/state/cache/other', bytes('S'))
+		await syncBoth()
+		expect(await server.exists('/state/cache/blob')).toBe(false)
+		expect(await server.exists('/notes/.DS_Store')).toBe(false)
+		expect(await client.exists('/state/cache/other')).toBe(false)
+		expect(pushedChanges().map((c) => c.path)).not.toContain('/state/cache/blob')
+		// The sibling under the SAME parent still syncs — the rule is per path, not per dir
+		expect(text(await server.readFile('/notes/keep.md'))).toBe('note')
+		// And each side keeps its own copy: the lane is inert, not one-way
+		expect(text(await client.readFile('/state/cache/blob'))).toBe('C')
+		expect(text(await server.readFile('/state/cache/other'))).toBe('S')
+	})
+
+	// Asymmetry is legal (each host states its own policy) and must stay inert rather
+	// than fight: the strict peer neither sends nor accepts, the lax peer keeps its own.
+	test('an ignore on ONE peer only still cannot leak in either direction', async () => {
+		const { client, server, syncBoth } = twoPeers({
+			clientIgnore: (p) => p.startsWith('/state/cache/')
+		})
+		await client.writeFile('/state/cache/blob', bytes('C'))
+		await server.writeFile('/state/cache/blob', bytes('S'))
+		await syncBoth()
+		expect(text(await client.readFile('/state/cache/blob'))).toBe('C') // refused the pull
+		expect(text(await server.readFile('/state/cache/blob'))).toBe('S') // never got the push
+	})
+
 	// Directory rename with children across a page boundary
 	test('renaming a directory moves every descendant, even across delta pages', async () => {
 		const { client, server, syncBoth } = twoPeers()

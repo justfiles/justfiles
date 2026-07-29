@@ -32,6 +32,7 @@ import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
 	ensureAccount,
+	migrateHostPrivateLane,
 	resolveAiAccount
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
@@ -344,6 +345,7 @@ export class Frieren extends DurableObject<Env> {
 		// The built-in AI account: the platform-provided, always-on default backend. Seed it
 		// once with `ai` enabled so a fresh user has a working agent; a returning user's toggle
 		// (they may have turned it off or switched to another AI) is left untouched.
+		await migrateHostPrivateLane(this.vol)
 		await migratePlatformAccountId(this.vol)
 		await ensureAccount(this.vol, {
 			accountId: 'frieren',

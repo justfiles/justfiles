@@ -4,7 +4,7 @@ import { codexModels, resolveAgentBackend } from './chatgpt.ts'
 
 // `resolveAgentBackend` borrows the active-AI account from the Volume-backed stores
 // (internal to @justfiles/app) and mints a token-sealed backend. We seed the way those
-// stores persist — one JSON file per account under /system/accounts, plus the
+// stores persist — one JSON file per account under /private/accounts, plus the
 // /system/active-ai.json selection — and drive resolution against a real in-memory
 // Volume. `ai` toggles whether this account is the active AI.
 
@@ -15,9 +15,10 @@ async function seed(
 ): Promise<Volume> {
 	const fs = volume(memStorage())
 	const enc = new TextEncoder()
-	await fs.mkdir('/system/accounts', { recursive: true })
+	await fs.mkdir('/private/accounts', { recursive: true })
+	await fs.mkdir('/system', { recursive: true })
 	await fs.writeFile(
-		`/system/accounts/${encodeURIComponent(ID)}.json`,
+		`/private/accounts/${encodeURIComponent(ID)}.json`,
 		enc.encode(
 			JSON.stringify({
 				id: ID,

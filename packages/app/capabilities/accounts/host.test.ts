@@ -3,7 +3,12 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import { volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
-import { accountsCapabilities, renameAccount, resolveAiAccount } from './host.ts'
+import {
+	accountsCapabilities,
+	migrateHostPrivateLane,
+	renameAccount,
+	resolveAiAccount
+} from './host.ts'
 import type { Auth, Provider } from './provider.ts'
 import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
 import { icloudProvider } from './providers/icloud.ts'
@@ -384,5 +389,80 @@ describe('renameAccount', () => {
 		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
 		expect(await accounts.list()).toEqual([])
 		expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
+	})
+})
+
+// The credential lane moved out of `/system` into the private `/private` root. The
+// relocation is a rename on the owning host, and it must never be able to break a boot.
+describe('migrateHostPrivateLane', () => {
+	const enc = new TextEncoder()
+	const dec = new TextDecoder()
+
+	test('renames the legacy dirs so the store reads its records at the new path', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/system/accounts', { recursive: true })
+		await vol.writeFile(
+			'/system/accounts/u%40openai.json',
+			enc.encode(JSON.stringify({ id: 'u@openai', provider: 'chatgpt', creds: { r: 'SEKRIT' } }))
+		)
+		await vol.mkdir('/system/connections/chatgpt', { recursive: true })
+		await vol.writeFile('/system/connections/chatgpt/default.json', enc.encode('CONN'))
+
+		await migrateHostPrivateLane(vol)
+
+		expect(await volumeAccountStore(vol).get('u@openai')).toMatchObject({ provider: 'chatgpt' })
+		expect(dec.decode(await vol.readFile('/private/connections/chatgpt/default.json'))).toBe('CONN')
+		// Vacated: an ordinary synced path again, so the delete clears stale replicas
+		expect(await vol.exists('/system/accounts')).toBe(false)
+		expect(await vol.exists('/system/connections')).toBe(false)
+	})
+
+	test('is a no-op on a volume that never had the legacy dirs, and is idempotent', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
+		await migrateHostPrivateLane(vol)
+		await migrateHostPrivateLane(vol)
+		expect(await accounts.list()).toMatchObject([{ id: 'frieren' }])
+	})
+
+	// A first attempt that failed (or a reseed that ran first) leaves BOTH trees. The
+	// legacy tree must not be dropped wholesale then: a record the host does not already
+	// have is a credential the user would otherwise have to re-connect.
+	test('fills gaps from the legacy dir, and the host’s own record wins a collision', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
+		await vol.mkdir('/system/accounts', { recursive: true })
+		await vol.writeFile(
+			'/system/accounts/u%40gmail.com.json',
+			enc.encode(
+				JSON.stringify({ id: 'u@gmail.com', provider: 'google', creds: { refresh: 'KEEP' } })
+			)
+		)
+		// Same id on both sides: the host's live record must not be overwritten by the copy.
+		await vol.writeFile(
+			'/system/accounts/frieren.json',
+			enc.encode(JSON.stringify({ id: 'frieren', provider: 'frieren', creds: { stale: true } }))
+		)
+
+		await migrateHostPrivateLane(vol)
+
+		expect(await accounts.get('u@gmail.com')).toMatchObject({ creds: { refresh: 'KEEP' } })
+		expect(await accounts.get('frieren')).toMatchObject({ creds: {} })
+		expect(await vol.exists('/system/accounts')).toBe(false)
+	})
+
+	test('never throws: a volume that refuses the move still lets the host boot', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/system/accounts', { recursive: true })
+		await vol.writeFile('/system/accounts/a.json', enc.encode('{}'))
+		const boom = { ...vol, rename: async () => Promise.reject(new Error('EPERM')) }
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+		await expect(migrateHostPrivateLane(boom)).resolves.toBeUndefined()
+		expect(warn).toHaveBeenCalled()
+		// The legacy record is left where it is — a failed move must not delete it.
+		expect(await vol.exists('/system/accounts/a.json')).toBe(true)
+		warn.mockRestore()
 	})
 })

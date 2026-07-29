@@ -192,12 +192,13 @@ function parentDir(path: string): string {
 function makePeer(
 	storage: ReturnType<typeof memStorage>,
 	orphanCount: () => Promise<number>,
-	opts: { id: string; lazyContent?: boolean }
+	opts: { id: string; lazyContent?: boolean; ignore?: (path: string) => boolean }
 ): Peer {
 	const vol = volume(storage)
 	const replica = localSyncReplica(storage, journaledChangeSource(storage), {
 		lazyContent: opts.lazyContent ?? false,
-		localActorId: opts.id
+		localActorId: opts.id,
+		ignore: opts.ignore
 	})
 
 	const peer: Peer = {
@@ -293,14 +294,21 @@ export function wire(
 		lazyContent?: boolean
 		clientOrphans?: () => Promise<number>
 		serverOrphans?: () => Promise<number>
+		/** Extra never-sync paths, per peer (a host's own policy — see syncIgnore). */
+		clientIgnore?: (path: string) => boolean
+		serverIgnore?: (path: string) => boolean
 	}
 ): TwoPeers {
 	const zero = async () => 0
 	const client = makePeer(clientStorage, opts?.clientOrphans ?? zero, {
 		id: 'client',
-		lazyContent: opts?.lazyContent
+		lazyContent: opts?.lazyContent,
+		ignore: opts?.clientIgnore
 	})
-	const server = makePeer(serverStorage, opts?.serverOrphans ?? zero, { id: 'server' })
+	const server = makePeer(serverStorage, opts?.serverOrphans ?? zero, {
+		id: 'server',
+		ignore: opts?.serverIgnore
+	})
 	client.remoteReplica = server.replica
 	server.remoteReplica = client.replica
 
@@ -386,14 +394,21 @@ export function wire(
 }
 
 /** Two fresh backends (UUID inos) wired bidirectionally. */
-export function twoPeers(opts?: { lazyContent?: boolean; makeBackend?: BackendFactory }): TwoPeers {
+export function twoPeers(opts?: {
+	lazyContent?: boolean
+	makeBackend?: BackendFactory
+	clientIgnore?: (path: string) => boolean
+	serverIgnore?: (path: string) => boolean
+}): TwoPeers {
 	const make = opts?.makeBackend ?? memStorage
 	const c = trackedStorage(make)
 	const s = trackedStorage(make)
 	return wire(c.storage, s.storage, {
 		lazyContent: opts?.lazyContent,
 		clientOrphans: c.orphanCount,
-		serverOrphans: s.orphanCount
+		serverOrphans: s.orphanCount,
+		clientIgnore: opts?.clientIgnore,
+		serverIgnore: opts?.serverIgnore
 	})
 }
 

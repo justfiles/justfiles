@@ -30,13 +30,13 @@ describe('volumeAccountStore', () => {
 	})
 
 	test('ignores pre-registry records ({ accountId, providerId }) at the same path', async () => {
-		// A legacy install wrote this shape into /system/accounts; read as the current
+		// A legacy install wrote this shape into the accounts dir; read as the current
 		// schema it would yield { id: undefined, provider: undefined }. It must be
 		// treated as absent so callers can reseed / re-connect over it.
 		const fs = volume(memStorage())
-		await fs.mkdir('/system/accounts', { recursive: true })
+		await fs.mkdir('/private/accounts', { recursive: true })
 		await fs.writeFile(
-			'/system/accounts/legacy.json',
+			'/private/accounts/legacy.json',
 			new TextEncoder().encode(
 				JSON.stringify({
 					accountId: 'legacy',
@@ -62,7 +62,7 @@ describe('volumeAccountStore', () => {
 		await store.put(a)
 
 		const onDisk = JSON.parse(
-			new TextDecoder().decode(await fs.readFile('/system/accounts/u%40openai.com.json'))
+			new TextDecoder().decode(await fs.readFile('/private/accounts/u%40openai.com.json'))
 		)
 		expect(onDisk.creds).toEqual({ sealed: JSON.stringify(a.creds) })
 		expect(onDisk.id).toBe('u@openai.com')

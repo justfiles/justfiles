@@ -1,7 +1,10 @@
 import { aiCapability, text } from '@justfiles/agent'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
-import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
+import {
+	accountsCapabilities,
+	migrateHostPrivateLane
+} from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
@@ -52,6 +55,7 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 			return text(backend).gen(system, prompt)
 		}
 	})
+	await migrateHostPrivateLane(fs)
 	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
 		firstParty: ['app.justfiles.frieren.settings']
 	})

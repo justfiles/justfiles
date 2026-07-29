@@ -13,6 +13,8 @@ import type { ContentStore, Storage } from './storage'
 import { incomingWins, orderForApply } from './storage.shared'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath } from './sync-wire'
+import { FileType } from './types'
+import { volume } from './volume'
 
 /**
  * A cursor is an opaque, monotonically increasing position in one replica's
@@ -345,14 +347,51 @@ export function nativeChangeSource(
  * `ChangeSource` (journaled for owned backends, native for scan+diff). It
  * delegates detection to `changes` and adds `ChangeApplier` + `BlobStore` over
  * the `Storage` (`caps.pathApply` + the content store). `lazyContent` fixes
- * eager vs lazy hydration; the `/.state/**` prefix is excluded here (hard path
- * rule) on top of the delegated `changes`.
+ * eager vs lazy hydration; `ignore` marks paths this replica never sends, never
+ * accepts and never sweeps — composed with the built-in private class, which it
+ * cannot weaken (see `syncIgnore`).
  */
 export function localSyncReplica(
 	storage: Storage,
 	changes: ChangeSource,
-	opts: { lazyContent: boolean; localActorId: string }
+	opts: { lazyContent: boolean; localActorId: string; ignore?: (path: string) => boolean }
 ): SyncReplica {
+	const isIgnored = syncIgnore(opts.ignore)
+	// Only a CUSTOM ignore can be nested: the built-in class is top-level roots, and the
+	// one path above those (`/`) is never replaced. So this whole check costs nothing
+	// until a host declares its own.
+	const nestedIgnorePossible = opts.ignore !== undefined
+	const vol = volume(storage)
+
+	/**
+	 * Would applying `c` destroy a directory that currently holds an ignored path?
+	 *
+	 * A peer replacing `/state` with a regular file (or deleting it) is a legal change
+	 * for the peer, but locally `/state/cache/**` is ignored and must survive — and a
+	 * regular-file inode cannot hold dirents, so applying it would leave the preserved
+	 * child attached to a file: unreachable, and a corrupt tree shape.
+	 *
+	 * The only coherent answer is to skip: the local tree keeps its directory and
+	 * diverges from the peer at that path, which is what ignoring already means. It does
+	 * not flap — skipping mutates nothing, so there is no new local change to push back.
+	 */
+	async function shieldsIgnored(c: PathChange): Promise<boolean> {
+		if (!nestedIgnorePossible) return false
+		if (c.kind === 'put' && c.meta.type === FileType.Directory) return false
+		const st = await vol.lstat(c.path).catch(() => undefined)
+		if (st?.type !== FileType.Directory) return false
+		return hasIgnoredDescendant(c.path)
+	}
+
+	async function hasIgnoredDescendant(dir: string): Promise<boolean> {
+		for (const e of await vol.readdir(dir).catch(() => [])) {
+			const child = `${dir}/${e.name}`
+			if (isIgnored(child)) return true
+			if (e.type === FileType.Directory && (await hasIgnoredDescendant(child))) return true
+		}
+		return false
+	}
+
 	const requireContent = (): ContentStore => {
 		const content = storage.caps?.content
 		if (!content) throw new Error('backend exposes no content store (caps.content)')
@@ -365,19 +404,24 @@ export function localSyncReplica(
 	}
 	return {
 		async pathDeltas(cursor, opts) {
-			// Hard /.state exclusion (see isLocalOnlyPath): local-only state never
-			// crosses the wire, enforced here so a second volume(storage) can't bypass it.
+			// Hard exclusion (see syncIgnore): local-only state, credentials and this host's
+			// own ignores never cross the wire, enforced here so a second volume(storage)
+			// can't bypass it.
 			const res = await changes.pathDeltas(cursor, opts)
-			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isIgnored(c.path)) }
 		},
 		async pathScan(page, opts) {
 			const res = await changes.pathScan(page, opts)
-			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isIgnored(c.path)) }
 		},
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
-			// Hard /.state exclusion (see isLocalOnlyPath): a peer can never inject
-			// local-only state, enforced here so a second volume(storage) can't bypass it.
-			const admissible = incoming.filter((c) => !isLocalOnlyPath(c.path))
+			// Hard exclusion (see syncIgnore): a peer can never inject local-only state or a
+			// credential, enforced here so a second volume(storage) can't bypass it.
+			// An ignored path only survives if its ANCESTORS do, so a change that would
+			// replace or remove a directory holding one is dropped too (see shieldsIgnored).
+			const admissible: PathChange[] = []
+			for (const c of incoming)
+				if (!isIgnored(c.path) && !(await shieldsIgnored(c))) admissible.push(c)
 			const pathApply = requirePathApply()
 			// Deterministic LWW against the CURRENT local state, read before applying:
 			// keep only changes that beat their local path (numeric version, then a
@@ -458,9 +502,52 @@ export type SyncState = {
 	// PathSyncState records are stored per-path under the same /.state/sync tree.
 }
 
-/** The `/.state/**` hard exclusion (local-only subtree; never crosses the wire). */
-export function isLocalOnlyPath(p: string): boolean {
-	return p === '/.state' || p.startsWith('/.state/')
+/**
+ * Prefixes that never cross the wire, in EITHER direction:
+ *   /.state  — this replica's own sync bookkeeping (engine-private, frozen)
+ *   /private — this host's private tree: `/private/accounts`, `/private/connections`, …
+ *
+ * Named for ACCESSIBILITY, like an access modifier: nobody outside this replica may
+ * have it. Ownership follows (the host that acquired a credential is the only one that
+ * can read it), but reachability is the rule being enforced.
+ *
+ * Credentials do not sync because no peer needs them: a capability routes to the host
+ * that owns the credential, so the bytes are only ever read by the host that wrote
+ * them. A top-level ROOT, not a subtree of `/system`: a never-sync lane nested under a
+ * synced tree dies with any `rm -r` of its ancestor (`clientReset` / `reconcileLocal`),
+ * and `/system` is exactly the tree we merge across hosts.
+ *
+ * Kept as an enumerable LIST, not just a predicate, because three consumers outside
+ * sync need to name these paths: the agent shell's deny-list (`paths.SECRET_PREFIXES`),
+ * the server reset (which resolves them to inodes in SQL), and frieren's profile-migration
+ * skip list.
+ */
+export const PRIVATE_PREFIXES = ['/.state', '/private'] as const
+
+/**
+ * A segment-aware prefix matcher — the primitive the built-in class and a host's own
+ * `ignore` both use, so `/privateer` is a sibling of `/private`, not a child. Hand-rolling
+ * `startsWith` is the classic way to get this wrong.
+ */
+export function ignorePrefixes(prefixes: readonly string[]): (path: string) => boolean {
+	return (p) => prefixes.some((d) => p === d || p.startsWith(`${d}/`))
+}
+
+const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
+
+/**
+ * What a replica ignores: never sent, never accepted, and never swept by a reset —
+ * the built-in private class, OR whatever else THIS host declines to replicate
+ * (a native daemon's `.DS_Store`, a build cache, …).
+ *
+ * The built-in class is a FLOOR, not a default: composing by OR means a host's `ignore`
+ * can only widen the boundary, so no caller — present or future — can make credentials
+ * sync by passing the wrong thing (or by forgetting to include them). And it stays a
+ * predicate in CODE rather than a `.syncignore` file, so an app, the agent's shell or a
+ * peer's push cannot edit it (see #290 D2).
+ */
+export function syncIgnore(ignore?: (path: string) => boolean): (path: string) => boolean {
+	return ignore === undefined ? isPrivatePath : (p) => isPrivatePath(p) || ignore(p)
 }
 
 /**

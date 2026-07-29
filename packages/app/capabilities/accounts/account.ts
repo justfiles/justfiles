@@ -3,10 +3,12 @@
 // account backs is DERIVED from its provider's bindings + granted scopes (see
 // host.ts); the single active AI is a separate pointer (see active-ai.ts).
 //
-// Storage: one JSON file per account under `/system/accounts/`, keyed by a
+// Storage: one JSON file per account under `/private/accounts/`, keyed by a
 // URL-encoded id, with `creds` the single encryptable lane via an optional
 // SecretCodec (default identity — clear). `creds` are opaque here: only the owning
-// provider ever interprets them.
+// provider ever interprets them. `/private` never replicates, in either direction:
+// a capability routes to the host that owns the credential, so no peer needs the bytes
+// (see @justfiles/fs PRIVATE_PREFIXES).
 
 import type { Volume } from '@justfiles/fs'
 
@@ -34,7 +36,7 @@ export interface AccountStore {
 	delete(id: string): Promise<void>
 }
 
-const DIR = '/system/accounts'
+const DIR = '/private/accounts'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 const pathFor = (id: string) => `${DIR}/${encodeURIComponent(id)}.json`

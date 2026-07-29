@@ -3,9 +3,10 @@
 // layout — is asserted against these constants in paths.test.ts, so the prose and the
 // code cannot drift.
 //
-// Deliberately dependency-free (like agent-defaults.ts) and package-internal: it is not
-// re-exported from index.ts. The few paths a host needs are the public names in
-// `@justfiles/agent/defaults`.
+// Package-internal: it is not re-exported from index.ts. The few paths a host needs are
+// the public names in `@justfiles/agent/defaults`.
+
+import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
 
 export const NOTES_DIR = '/notes'
 export const PICTURES_DIR = '/pictures' // == GENERATED_IMAGES_DIR (image capability); asserted in the test
@@ -31,5 +32,22 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 	`${sessionsDir(agentId)}/${at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}Z-${sessionId}.jsonl`
 
 // Prefixes the agent's shell must never read. ENFORCED in volumeFs, not asked for in the
-// prompt — a prompt is not an access-control mechanism.
-export const SECRET_PREFIXES = ['/system/accounts', '/system/connections'] as const
+// prompt — a prompt is not an access-control mechanism. The list is owned by
+// @justfiles/fs (which also refuses to replicate them) so the two can't drift; the agent
+// shell still needs the deny-list because the agent runs INSIDE the host that holds them.
+// `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
+// prompt as host bookkeeping and harmless to `ls`. What remains is `/private` — private
+// in the access-modifier sense: not reachable from outside the host, the agent included.
+//
+// The pre-`/private` locations (`/system/accounts`, `/system/connections`) are DELIBERATELY
+// not listed, and that is load-bearing rather than an oversight:
+//   - they MUST be ordinary synced paths, so the relocation's delete propagates and clears
+//     the stale plaintext copies earlier sync pushed into every client replica — re-denying
+//     them would strand those bytes on each browser profile forever;
+//   - re-forking this list from the fs one is the drift the derivation above exists to stop;
+//   - nothing is exposed either way: a live volume still holds a legacy record only if
+//     `migrateHostPrivateLane` threw on this boot, and pre-release the only record any
+//     volume carries is the platform AI account, whose creds are `{}`.
+// Reviewers: "a transitional pre-release volume behaves differently" is not a finding here
+// — the bar is that a host boots, not that every intermediate state is guarded.
+export const SECRET_PREFIXES = PRIVATE_PREFIXES.filter((p) => p !== '/.state')

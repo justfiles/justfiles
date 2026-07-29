@@ -136,6 +136,50 @@ describe('reset — transaction body', () => {
 		expect(await storage.caps?.content?.hasByHash(hash)).toBe(true)
 	})
 
+	// An `adopt-mine` truncates the tree so the initiator can republish it — but the
+	// initiator CANNOT republish `/private`: it never crosses the wire (that is the point),
+	// so truncating it would destroy THIS host's credentials with no way back.
+	it('adopt-mine keeps the private tree the republish cannot restore', async () => {
+		const { db, storage } = makeDb()
+		const vol = volume(storage)
+		await vol.mkdir('/private/accounts', { recursive: true })
+		await vol.writeFile('/private/accounts/google.json', enc.encode('{"refresh":"SEKRIT"}'))
+		await vol.mkdir('/private/connections/chatgpt', { recursive: true })
+		await vol.writeFile('/private/connections/chatgpt/default.json', enc.encode('CONN'))
+		await vol.mkdir('/notes', { recursive: true })
+		await vol.writeFile('/notes/mine.md', enc.encode('note'))
+		const { lineageId } = await readGenerationState(db)
+
+		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1', lineageId })
+
+		const fresh = volume(storage)
+		expect(new TextDecoder().decode(await fresh.readFile('/private/accounts/google.json'))).toBe(
+			'{"refresh":"SEKRIT"}'
+		)
+		expect(
+			new TextDecoder().decode(await fresh.readFile('/private/connections/chatgpt/default.json'))
+		).toBe('CONN')
+		// Everything the initiator CAN republish is still truncated.
+		expect(await fresh.exists('/notes/mine.md')).toBe(false)
+		expect((await fresh.readdir('/')).map((e) => e.name)).toEqual(['private'])
+		// And the reset volume still works: a fresh write lands next to the kept tree.
+		await fresh.writeFile('/after.txt', enc.encode('new'))
+		expect(new TextDecoder().decode(await fresh.readFile('/after.txt'))).toBe('new')
+	})
+
+	it('wipe deletes the private tree too — an explicit wipe keeps no secrets', async () => {
+		const { db, storage } = makeDb()
+		const vol = volume(storage)
+		await vol.mkdir('/private/accounts', { recursive: true })
+		await vol.writeFile('/private/accounts/google.json', enc.encode('{"refresh":"SEKRIT"}'))
+
+		await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
+
+		const fresh = volume(storage)
+		expect(await fresh.exists('/private')).toBe(false)
+		expect((await fresh.readdir('/')).length).toBe(0)
+	})
+
 	it('rolls back the whole reset if the transaction throws (atomicity path)', async () => {
 		const { db, storage } = makeDb()
 		const vol = volume(storage)
