@@ -17,6 +17,7 @@
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
+import { HOST_PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
 import type { DbAdapter } from './db'
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
@@ -36,6 +37,51 @@ const SYNC_TABLES = ['fs_path_journal', 'fs_path_version'] as const
 const CONTENT_TABLES = ['fs_contents', 'fs_content_fts'] as const
 
 export type ResetMode = 'adopt-mine' | 'wipe'
+
+/**
+ * Every inode of the host-private roots (`/host`, `/.state`) plus the root itself,
+ * resolved through dirents.
+ *
+ * An `adopt-mine` truncates the tree so the initiator can republish it — but the
+ * initiator CANNOT republish these: they never cross the wire, by design, so
+ * truncating them would destroy THIS host's own credentials with no way back (the
+ * client's snapshot has never contained them). A `wipe` is an explicit "delete
+ * everything", so it keeps deleting them.
+ *
+ * A plain BFS, not a recursive CTE: the tree is a handful of small JSON files, and
+ * this stays portable across the DO and node:sqlite with no JSON1/CTE assumptions.
+ */
+async function hostPrivateInos(tx: DbAdapter): Promise<string[]> {
+	const keep = new Set<string>()
+	const queue: string[] = []
+	for (const prefix of HOST_PRIVATE_PREFIXES) {
+		let ino: string | undefined = ROOT_INO
+		for (const segment of prefix.split('/').filter(Boolean)) {
+			const rows: { ino: unknown }[] = await tx.query<{ ino: unknown }>(
+				'SELECT ino FROM fs_dirents WHERE dir_ino = ? AND name = ? LIMIT 1',
+				[ino, segment]
+			)
+			ino = rows[0] === undefined ? undefined : String(rows[0].ino)
+			if (ino === undefined) break
+		}
+		if (ino !== undefined) queue.push(ino)
+	}
+	if (queue.length === 0) return []
+	// The root is kept too: a preserved subtree's dirent FK-references it (ON DELETE
+	// RESTRICT), so deleting the root would fail — and the volume needs one anyway.
+	keep.add(ROOT_INO)
+	while (queue.length > 0) {
+		const ino = queue.pop() as string
+		if (keep.has(ino)) continue
+		keep.add(ino)
+		for (const row of await tx.query<{ ino: unknown }>(
+			'SELECT ino FROM fs_dirents WHERE dir_ino = ?',
+			[ino]
+		))
+			queue.push(String(row.ino))
+	}
+	return [...keep]
+}
 
 /** The `fs_generation` row, decoded. */
 export interface GenerationState {
@@ -136,7 +182,8 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
  * Apply a reset in ONE transaction: CAS, truncate the tree + sync tables (+ the
  * content tables for `wipe`, so no client can fetch/search discarded bytes),
  * recreate the root inode, bump the generation, and store `resetId`. `adopt-mine`
- * keeps the content tables — lazy blobs the republish reuses.
+ * keeps the content tables — lazy blobs the republish reuses — and the host-private
+ * subtrees, which no republish could restore (see `hostPrivateInos`).
  */
 export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<ResetDecision> {
 	let result: ResetDecision | undefined
@@ -147,16 +194,24 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 			result = decision
 			return
 		}
-		const tables: string[] = [...TREE_TABLES, ...SYNC_TABLES]
-		if (req.mode === 'wipe') tables.push(...CONTENT_TABLES)
-		for (const table of tables) await tx.run(`DELETE FROM ${table}`)
+		const keep = req.mode === 'adopt-mine' ? await hostPrivateInos(tx) : []
+		const survives = keep.length > 0 ? ` WHERE ino NOT IN (${keep.map(() => '?').join(',')})` : ''
+		// Child rows first (FK RESTRICT), and the kept closure is complete — every
+		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.
+		for (const table of TREE_TABLES) await tx.run(`DELETE FROM ${table}${survives}`, keep)
+		for (const table of SYNC_TABLES) await tx.run(`DELETE FROM ${table}`)
+		if (req.mode === 'wipe')
+			for (const table of CONTENT_TABLES) await tx.run(`DELETE FROM ${table}`)
 		// Recreate root ino=1 so the volume has a root immediately (the storage's
-		// ensureBootstrapped cache would otherwise skip re-seeding it).
+		// ensureBootstrapped cache would otherwise skip re-seeding it). DO NOTHING, not
+		// REPLACE: a preserved root must keep its identity (REPLACE is delete+insert,
+		// which a kept dirent's FK would refuse). Identical when the tree was truncated.
 		const now = BigInt(Date.now()) * 1_000_000n
 		await tx.run(
-			`INSERT OR REPLACE INTO fs_inodes(
+			`INSERT INTO fs_inodes(
 				ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-			) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+			 ON CONFLICT(ino) DO NOTHING`,
 			[ROOT_INO, TYPE_DIRECTORY, 0o755, 0, now, now, STORAGE_NONE]
 		)
 		await writeGenerationState(tx, decision.next)
