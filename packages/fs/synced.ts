@@ -3,7 +3,7 @@ import type { Storage } from './storage'
 import {
 	type BlobStore,
 	GenerationStaleError,
-	isLocalOnlyPath,
+	isHostPrivatePath,
 	journaledChangeSource,
 	LineageStaleError,
 	localSyncReplica,
@@ -279,17 +279,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * Delete local paths absent from the remote snapshot (child-before-parent),
-	 * skipping the local-only `/.state` subtree. Path-keyed (today's ino-based
-	 * reconcile is replaced).
+	 * skipping host-private subtrees (`/.state`, credentials). Path-keyed (today's
+	 * ino-based reconcile is replaced).
 	 */
 	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {
 		// Delete local paths absent from the remote snapshot, child-before-parent,
-		// skipping the local-only /.state subtree.
+		// skipping host-private subtrees (the remote never had them to begin with).
 		const localPaths: string[] = []
 		async function walk(dir: string): Promise<void> {
 			for (const e of await localVol.readdir(dir)) {
 				const p = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
-				if (isLocalOnlyPath(p)) continue
+				if (isHostPrivatePath(p)) continue
 				localPaths.push(p)
 				if (e.type === FileType.Directory) await walk(p)
 			}
@@ -303,7 +303,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * "Take theirs": discard this device's local replica and re-pull. Delete every
-	 * synced path (keeping the local-only `/.state` subtree), then clear the cursors
+	 * synced path (keeping host-private subtrees), then clear the cursors
 	 * so the next cycle re-bootstraps fresh against the current server lineage. The
 	 * cleared `pushCursor` also resets `everPushed`, so the re-bootstrap adopts the
 	 * server verbatim (nothing local left to keep).
@@ -311,7 +311,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	async function clientReset(): Promise<void> {
 		for (const entry of await localVol.readdir('/')) {
 			const p = `/${entry.name}`
-			if (isLocalOnlyPath(p)) continue
+			if (isHostPrivatePath(p)) continue
 			await localVol.rm(p, { recursive: true, force: true })
 		}
 		// Drop the local journal + version tombstones the deletes just wrote: after a

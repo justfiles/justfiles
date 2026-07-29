@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest'
 import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
-import { isLocalOnlyPath, journaledChangeSource, localSyncReplica } from './sync-replica'
+import { isHostPrivatePath, journaledChangeSource, localSyncReplica } from './sync-replica'
 import { bytes, sha256, text } from './sync-test-harness'
 import type { PathChange, SyncMeta } from './sync-wire'
 import {
@@ -202,12 +202,24 @@ describe('isCanonicalPath', () => {
 	})
 })
 
-describe('isLocalOnlyPath', () => {
-	it('matches /.state itself AND /.state/**', () => {
-		expect(isLocalOnlyPath('/.state')).toBe(true)
-		expect(isLocalOnlyPath('/.state/sync')).toBe(true)
-		expect(isLocalOnlyPath('/.stateful')).toBe(false)
-		expect(isLocalOnlyPath('/notes/a')).toBe(false)
+describe('isHostPrivatePath', () => {
+	it('matches each prefix itself AND its children', () => {
+		expect(isHostPrivatePath('/.state')).toBe(true)
+		expect(isHostPrivatePath('/.state/sync')).toBe(true)
+		expect(isHostPrivatePath('/system/accounts')).toBe(true)
+		expect(isHostPrivatePath('/system/accounts/a%40b.json')).toBe(true)
+		expect(isHostPrivatePath('/system/connections')).toBe(true)
+		expect(isHostPrivatePath('/system/connections/chatgpt/default.json')).toBe(true)
+	})
+
+	it('matches per path SEGMENT — a sibling is not a child', () => {
+		expect(isHostPrivatePath('/.stateful')).toBe(false)
+		expect(isHostPrivatePath('/system/accountsX')).toBe(false)
+		expect(isHostPrivatePath('/system/account')).toBe(false)
+		expect(isHostPrivatePath('/system/user.md')).toBe(false)
+		expect(isHostPrivatePath('/system/agents/main/soul.md')).toBe(false)
+		expect(isHostPrivatePath('/notes/accounts.md')).toBe(false)
+		expect(isHostPrivatePath('/notes/a')).toBe(false)
 	})
 })
 

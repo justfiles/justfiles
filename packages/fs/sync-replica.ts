@@ -345,8 +345,8 @@ export function nativeChangeSource(
  * `ChangeSource` (journaled for owned backends, native for scan+diff). It
  * delegates detection to `changes` and adds `ChangeApplier` + `BlobStore` over
  * the `Storage` (`caps.pathApply` + the content store). `lazyContent` fixes
- * eager vs lazy hydration; the `/.state/**` prefix is excluded here (hard path
- * rule) on top of the delegated `changes`.
+ * eager vs lazy hydration; the host-private prefixes are excluded here (hard
+ * path rule) on top of the delegated `changes`.
  */
 export function localSyncReplica(
 	storage: Storage,
@@ -365,19 +365,21 @@ export function localSyncReplica(
 	}
 	return {
 		async pathDeltas(cursor, opts) {
-			// Hard /.state exclusion (see isLocalOnlyPath): local-only state never
-			// crosses the wire, enforced here so a second volume(storage) can't bypass it.
+			// Hard host-private exclusion (see isHostPrivatePath): local-only state and
+			// credentials never cross the wire, enforced here so a second volume(storage)
+			// can't bypass it.
 			const res = await changes.pathDeltas(cursor, opts)
-			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isHostPrivatePath(c.path)) }
 		},
 		async pathScan(page, opts) {
 			const res = await changes.pathScan(page, opts)
-			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isHostPrivatePath(c.path)) }
 		},
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
-			// Hard /.state exclusion (see isLocalOnlyPath): a peer can never inject
-			// local-only state, enforced here so a second volume(storage) can't bypass it.
-			const admissible = incoming.filter((c) => !isLocalOnlyPath(c.path))
+			// Hard host-private exclusion (see isHostPrivatePath): a peer can never inject
+			// local-only state or a credential, enforced here so a second volume(storage)
+			// can't bypass it.
+			const admissible = incoming.filter((c) => !isHostPrivatePath(c.path))
 			const pathApply = requirePathApply()
 			// Deterministic LWW against the CURRENT local state, read before applying:
 			// keep only changes that beat their local path (numeric version, then a
@@ -458,9 +460,20 @@ export type SyncState = {
 	// PathSyncState records are stored per-path under the same /.state/sync tree.
 }
 
-/** The `/.state/**` hard exclusion (local-only subtree; never crosses the wire). */
-export function isLocalOnlyPath(p: string): boolean {
-	return p === '/.state' || p.startsWith('/.state/')
+/**
+ * Prefixes that never cross the wire, in EITHER direction:
+ *   /.state              — this replica's own sync bookkeeping
+ *   /system/accounts     — credentials: owned by the host that acquired them
+ *   /system/connections  —      "
+ *
+ * Credentials do not sync because no peer needs them: a capability routes to the
+ * host that owns the credential, so the bytes are only ever read by the host that
+ * wrote them. Matching is path-SEGMENT-aware (`/system/accountsX` is a sibling).
+ */
+export const HOST_PRIVATE_PREFIXES = ['/.state', '/system/accounts', '/system/connections'] as const
+
+export function isHostPrivatePath(p: string): boolean {
+	return HOST_PRIVATE_PREFIXES.some((d) => p === d || p.startsWith(`${d}/`))
 }
 
 /**

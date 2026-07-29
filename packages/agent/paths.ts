@@ -3,9 +3,10 @@
 // layout — is asserted against these constants in paths.test.ts, so the prose and the
 // code cannot drift.
 //
-// Deliberately dependency-free (like agent-defaults.ts) and package-internal: it is not
-// re-exported from index.ts. The few paths a host needs are the public names in
-// `@justfiles/agent/defaults`.
+// Package-internal: it is not re-exported from index.ts. The few paths a host needs are
+// the public names in `@justfiles/agent/defaults`.
+
+import { HOST_PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
 
 export const NOTES_DIR = '/notes'
 export const PICTURES_DIR = '/pictures' // == GENERATED_IMAGES_DIR (image capability); asserted in the test
@@ -31,5 +32,7 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 	`${sessionsDir(agentId)}/${at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}Z-${sessionId}.jsonl`
 
 // Prefixes the agent's shell must never read. ENFORCED in volumeFs, not asked for in the
-// prompt — a prompt is not an access-control mechanism.
-export const SECRET_PREFIXES = ['/system/accounts', '/system/connections'] as const
+// prompt — a prompt is not an access-control mechanism. The list is owned by
+// @justfiles/fs (which also refuses to replicate them) so the two can't drift; the agent
+// shell still needs the deny-list because the agent runs INSIDE the host that holds them.
+export const SECRET_PREFIXES = HOST_PRIVATE_PREFIXES.filter((p) => p !== '/.state')
