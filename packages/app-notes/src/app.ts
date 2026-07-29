@@ -282,7 +282,13 @@ export const app = defineApp({
 					})
 				)
 				const { seq } = await app.dispatch({ type: 'open', params: { path } })
-				return app.settled(seq)
+				// `settled` is asked for ORDERING — that the selection is visible before the
+				// caller acts on it — never for the answer. It resolves with the state after the
+				// queue drains, which may carry another client's `open`; returning that would
+				// hand the caller someone else's note as the identity of the bytes it just wrote,
+				// and the next save would land there. The path we claimed is a local fact.
+				await app.settled(seq)
+				return { path }
 			}
 		}),
 

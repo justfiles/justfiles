@@ -294,7 +294,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		create: async (text) => {
 			const dir = dirRef.current
 			try {
-				return (await actionsRef.current.create({ text, dir })).openPath ?? '/'
+				return (await actionsRef.current.create({ text, dir })).path
 			} catch (failure) {
 				// Only "that folder is not there" is grounds for putting the note somewhere
 				// else. An EACCES or an EIO on the folder is a passing problem with the RIGHT
@@ -303,7 +303,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				// buffer stays unsaved for the retry.
 				if (dir === '/' || !missingFolder(failure)) throw failure
 				setStatus('That folder is gone — saved at the top level instead')
-				return (await actionsRef.current.create({ text, dir: '/' })).openPath ?? '/'
+				return (await actionsRef.current.create({ text, dir: '/' })).path
 			}
 		},
 		read: async (path) => (await actionsRef.current.readNote({ path })).text
@@ -734,6 +734,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	}, [settle])
 
 	const filtered = useMemo(() => matchNotes(notes, query.trim()), [notes, query])
+	// Which row the keyboard is on. Clamped rather than reset, because the listing is live:
+	// results disappearing under the user must not move their place any further than it has
+	// to, and must never leave it pointing past the end.
+	const selected = Math.min(active, filtered.length - 1)
 
 	const focusSearch = useCallback(() => {
 		searchRef.current?.focus()
@@ -769,12 +773,16 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			setActive((i) => Math.max(i - 1, 0))
 		} else if (e.key === 'Enter') {
 			e.preventDefault()
-			const note = filtered[active]
+			const note = filtered[selected]
 			if (note) void openNote(note.path)
-			else if (query.trim()) void createNote(query.trim(), createDir())
+			// Creating belongs to an EMPTY result set — never to a missing index. The listing
+			// is live, so results can vanish under a selection that was pointing at one, and
+			// "there is nothing at this index" would then mean "make a new note" while matches
+			// are still on screen.
+			else if (filtered.length === 0 && query.trim()) void createNote(query.trim(), createDir())
 		} else if (e.key === 'Delete') {
 			e.preventDefault()
-			const note = filtered[active]
+			const note = filtered[selected]
 			if (note) void removeNote(note.path)
 		} else if (e.key === 'Escape') {
 			e.preventDefault()
@@ -793,7 +801,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					type="button"
 					key={note.path}
 					className="ds-menu-item notes-item"
-					data-active={searchFocused && i === active}
+					data-active={searchFocused && i === selected}
 					data-open={note.path === openPath || undefined}
 					onMouseEnter={() => setActive(i)}
 					onClick={() => void openNote(note.path)}

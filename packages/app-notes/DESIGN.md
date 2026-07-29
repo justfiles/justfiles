@@ -314,6 +314,15 @@ Three of those are worth naming, because they generalise:
   the delete lands (a pending write would put the note straight back), so a delete that fails has to restore
   what it emptied — `restore(snapshot)`, one method, one test, and the user keeps both the note and the edits.
 
+Two more, both about **reading an answer out of something that only guarantees order**. `create` returned
+`app.settled(seq)`, which resolves with the state after the app's queue drains — so another client's `open`
+landing in that window renamed the bytes we had just written, and the user's next keystrokes went into a
+stranger's note. The path we claimed is a local fact; `settled` is asked for sequencing and nothing else. And in
+the palette, `filtered[active]` being `undefined` was read as "no results", when it also means "the results
+moved under a selection that outlived them" — so a live listing shrinking made Enter create a duplicate named
+after the query. **Creating belongs to an empty result set, never to a missing index**, and the index is clamped
+rather than reset, because results vanishing under the user should move their place as little as it has to.
+
 A smaller one, but the same family: **a listener that cannot be removed is a rule that outlives its buffer.**
 The page-hide flush was registered anonymously, so an unmounted instance kept flushing — and a stale buffer
 left dirty by a failed save could later land on top of what the live instance had written. Every listener the

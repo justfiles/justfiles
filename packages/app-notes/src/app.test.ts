@@ -100,7 +100,13 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 	return { store, folders, invoke }
 }
 
-function handle(state: NotesState, invoke: ReturnType<typeof fakeVolume>['invoke']) {
+function handle(
+	state: NotesState,
+	invoke: ReturnType<typeof fakeVolume>['invoke'],
+	// Models the contract: `settled(seq)` resolves with the state after the per-app queue
+	// DRAINS, which can include another client's `open` — it orders, it does not answer.
+	settledAs: NotesState = state
+) {
 	const dispatched: string[] = []
 	return {
 		dispatched,
@@ -111,7 +117,7 @@ function handle(state: NotesState, invoke: ReturnType<typeof fakeVolume>['invoke
 				dispatched.push(message.type)
 				return { seq: 1 }
 			},
-			settled: async () => state
+			settled: async () => settledAs
 		} as never
 	}
 }
@@ -281,6 +287,17 @@ test('a folder that looks like a note is refused by the read, not by its name', 
 	// And a note that is simply gone says so, instead of reading as an empty note that
 	// the editor would then save over whatever the path has become.
 	await expect(app.runProcedure('readNote', { path: '/Gone.md' }, h.app)).rejects.toThrow(/ENOENT/)
+})
+
+test('create answers with the note it wrote, not with whatever is open when the queue drains', async () => {
+	// Another client dispatching `open` while this create settles must not rename the bytes
+	// we just wrote: the caller would then save the user's next keystrokes into someone
+	// else's note.
+	const vol = fakeVolume({}, [])
+	const h = handle(initialState, vol.invoke, { openPath: '/Someone elses note.md' })
+	const result = (await app.runProcedure('create', { text: 'Kyoto' }, h.app)) as { path: string }
+	expect(result.path).toBe('/Kyoto.md')
+	expect([...vol.store.keys()]).toEqual(['/Kyoto.md'])
 })
 
 test('a folder that is spelled like a note still renames like a folder', async () => {
