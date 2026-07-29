@@ -59,11 +59,15 @@ test('search matches folders and titles, ranking titles first then recency', () 
 })
 
 test('a renamed note keeps its extension when the typed name has none', () => {
-	expect(renameTarget('/Trips/Kyoto.md', '/Trips/Kyoto 2023')).toBe('/Trips/Kyoto 2023.md')
-	expect(renameTarget('/Old.txt', '/New')).toBe('/New.txt')
+	expect(renameTarget('/Trips/Kyoto.md', '/Trips/Kyoto 2023', true)).toBe('/Trips/Kyoto 2023.md')
+	expect(renameTarget('/Old.txt', '/New', true)).toBe('/New.txt')
 	// An explicit extension is respected, and folders are left alone.
-	expect(renameTarget('/Kyoto.md', '/Kyoto.txt')).toBe('/Kyoto.txt')
-	expect(renameTarget('/Trips', '/Travel')).toBe('/Travel')
+	expect(renameTarget('/Kyoto.md', '/Kyoto.txt', true)).toBe('/Kyoto.txt')
+	expect(renameTarget('/Trips', '/Travel', false)).toBe('/Travel')
+	// The spelling is not the fact: a FOLDER called `Archive.md` renamed to `/Archive`
+	// must move, not "keep" an extension it never earned and become a no-op.
+	expect(renameTarget('/Archive.md', '/Archive', false)).toBe('/Archive')
+	expect(renameTarget('/Archive.md', '/Archive', true)).toBe('/Archive.md')
 })
 
 test('a path has exactly one accepted spelling', () => {

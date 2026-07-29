@@ -169,16 +169,17 @@ test('a folder pretending to be a note is refused by the read, and nothing is op
 	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
 })
 
-test('an unreadable note keeps words typed while its body was on the way', async () => {
-	const { buf, failNext, freeze } = buffer({ '/Kyoto.md': 'body' })
+test('words typed while an unreadable note was on its way become a note of their own', async () => {
+	const { buf, freeze, disk } = buffer({ '/Kyoto.md': 'body' })
 	const release = freeze()
-	failNext(new Error('ENOENT: /notes/Gone.md'))
-	const opening = buf.open('/Gone.md')
+	const opening = buf.open('/Gone.md') // there is no such note
 	await inFlight()
-	buf.type('half-written thought') // the user does not wait for reads
+	buf.type('Half a thought\nkeep me') // the user does not wait for reads
 	release()
-	expect(await opening).toMatchObject({ because: 'unreadable' })
-	expect(buf.snapshot()).toMatchObject({ text: 'half-written thought', dirty: true, path: null })
+	// The note asked for cannot be opened, and the words typed meanwhile are not collateral
+	// damage: they are written, because they were never anywhere else.
+	expect(await opening).toMatchObject({ because: 'unreadable', gone: true })
+	expect(disk['/Half a thought.md']).toBe('Half a thought\nkeep me')
 })
 
 test('nothing replaces a buffer that would not settle', async () => {
@@ -228,6 +229,64 @@ test('a settle during a write does not report the other write’s optimism', asy
 	expect((await settling).settled).toBe(false)
 	expect(await opening).toMatchObject({ opened: false, because: 'unsettled' })
 	expect(buf.snapshot()).toMatchObject({ text: 'precious words', path: '/Kyoto.md' })
+})
+
+test('typing during a read keeps the keystrokes, saves them, and still opens the note', async () => {
+	// The read was already on its way when the user typed. Those words belong to the note
+	// they were typed into, so they are saved there — and the note that was asked for
+	// still ends up open.
+	const { buf, disk, calls, freeze } = buffer({ '/Kyoto.md': 'kyoto', '/Osaka.md': 'osaka' })
+	await buf.open('/Kyoto.md')
+	const release = freeze()
+	const opening = buf.open('/Osaka.md')
+	await inFlight()
+	buf.type('kyoto, half a thought')
+	release()
+	expect(await opening).toEqual({ opened: true })
+	expect(disk['/Kyoto.md']).toBe('kyoto, half a thought') // saved where it was typed
+	expect(buf.snapshot()).toEqual({ text: 'osaka', dirty: false, path: '/Osaka.md' })
+	expect(calls).toEqual(['read /Kyoto.md', 'read /Osaka.md', 'save /Kyoto.md', 'read /Osaka.md'])
+})
+
+test('a read that fails for a passing reason changes nothing', async () => {
+	// EIO, EACCES, the volume briefly unreachable: the note is still there, so a buffer
+	// that was holding it goes on holding it — detaching would send the next autosave
+	// through `create` and leave a duplicate beside the note being edited.
+	const { buf, failNext, disk } = buffer({ '/Kyoto.md': 'kyoto' })
+	await buf.open('/Kyoto.md')
+	buf.type('edited')
+	expect(await buf.reload('/Kyoto.md')).toEqual({ opened: true }) // dirty: nothing to do
+	expect(await buf.settle()).toEqual({ settled: true })
+	expect(disk['/Kyoto.md']).toBe('edited')
+	// An outright failed read of the open note keeps it attached.
+	failNext(new Error('EACCES: /notes/Kyoto.md'))
+	const reopened = await buf.open('/Kyoto.md')
+	expect(reopened).toMatchObject({ opened: false, because: 'unreadable', gone: false })
+	expect(buf.snapshot()).toMatchObject({ path: '/Kyoto.md', text: 'edited' })
+})
+
+test('a read that fails because the note is GONE lets go of it', async () => {
+	const { buf, failNext } = buffer({ '/Kyoto.md': 'kyoto' })
+	await buf.open('/Kyoto.md')
+	failNext(new Error('ENOENT: /notes/Kyoto.md'))
+	expect(await buf.open('/Kyoto.md')).toMatchObject({ gone: true })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+})
+
+test('a buffer can be put back when the operation that emptied it did not happen', async () => {
+	// Deleting the open note discards its buffer before the delete is known to have
+	// worked — a pending write would otherwise put the note straight back. If the delete
+	// fails, the note is still there and so are the user's edits.
+	const { buf, disk } = buffer({ '/Kyoto.md': 'kyoto' })
+	await buf.open('/Kyoto.md')
+	buf.type('unsaved edits')
+	const before = buf.snapshot()
+	buf.discard('/Kyoto.md')
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	buf.restore(before) // …the delete failed
+	expect(buf.snapshot()).toEqual(before)
+	expect(await buf.settle()).toEqual({ settled: true })
+	expect(disk['/Kyoto.md']).toBe('unsaved edits')
 })
 
 test('a read that resolves after the buffer moved on is discarded', async () => {

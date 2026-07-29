@@ -68,6 +68,23 @@ async function claimPath(wanted: string, create: (path: string) => Promise<void>
 	}
 }
 
+// Is this path a FOLDER? Asked by doing something only a folder can do, rather than by
+// reading a type constant across the capability seam: `scan` of a file is ENOTDIR. A
+// spelling cannot answer it — `Archive.md` is a legal folder name — and the two callers
+// that care (`rename`, `mkdir`) both used to be wrong about it.
+async function isFolder(
+	app: { invoke: (cap: 'volume', method: 'scan', input: { path: string }) => Promise<unknown> },
+	path: string
+): Promise<boolean> {
+	try {
+		await app.invoke('volume', 'scan', { path })
+		return true
+	} catch (thrown) {
+		if (/^ENOTDIR/.test((thrown as Error).message)) return false
+		throw thrown
+	}
+}
+
 // Reducer state holds only the app-session facts that survive reload and that
 // the agent should read: which note is open, and change counters for the open file
 // and for the tree. Body bytes and the note list are NOT here — both are re-read from
@@ -77,6 +94,12 @@ async function claimPath(wanted: string, create: (path: string) => Promise<void>
 // in state for someone to notice later.
 export type NotesState = {
 	openPath: string | null
+	// The last move, so a GUI holding the moved note can follow it instead of re-reading
+	// (and, if it has unsaved edits, instead of saving them to a path that no longer
+	// exists). `openPath` alone cannot say WHY it changed — "the agent renamed this" and
+	// "the agent opened something else" are the same change to it, and they call for
+	// opposite handling. Cleared as soon as something else moves the selection.
+	lastMove?: { from: string; to: string }
 	// Optional: both counters were added after the first release, and persisted
 	// state is loaded verbatim — every reader defaults them.
 	revision?: number
@@ -159,13 +182,13 @@ export const app = defineApp({
 		// — pure mutations (agent-visible) —
 		open: t.on(
 			v.object({ path: noteSchema }),
-			(state, { path }) => ({ ...state, openPath: path }),
+			(state, { path }) => ({ ...state, openPath: path, lastMove: undefined }),
 			{
 				description: 'Open a note in the editor — surfaces it in the user’s window.',
 				examples: [{ params: { path: '/Remember the milk.md' } }]
 			}
 		),
-		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null }), {
+		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, lastMove: undefined }), {
 			description: 'Start a fresh blank note (clears the editor).'
 		}),
 
@@ -178,7 +201,8 @@ export const app = defineApp({
 			openPath:
 				state.openPath && isUnder(state.openPath, from)
 					? `${to}${state.openPath.slice(from.length)}`
-					: state.openPath
+					: state.openPath,
+			lastMove: { from, to }
 		})),
 
 		// — external change to the OPEN file (the agent or Files edits it on disk) —
@@ -275,7 +299,7 @@ export const app = defineApp({
 				// the user's note invisible and unsavable. The source's extension is carried
 				// over when the destination has none — here, not in the GUI, so the agent and
 				// the tree get the same answer.
-				const target = renameTarget(from, to)
+				const target = renameTarget(from, to, !(await isFolder(app, from)))
 				if (target === from) return { path: from }
 				// One guard for every caller — GUI, tree drag/drop and agent alike. See
 				// `illegalMove`: `volume.rename` is a POSIX primitive and will cheerfully
@@ -293,10 +317,16 @@ export const app = defineApp({
 
 		// Folders are ordinary directories; `writeFile` auto-creates parents, so
 		// this exists only to make an EMPTY folder.
+		// `mkdir -p` walks past a final component that already exists WITHOUT looking at what
+		// it is, so asking for a folder where a note already sits used to report success and
+		// create nothing. The name has to be free, or already a folder.
 		mkdir: p.procedure({
 			description: 'Create a folder, e.g. "/Trips".',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
+				if ((await app.invoke('volume', 'exists', path)) && !(await isFolder(app, path))) {
+					throw new Error(`EEXIST: ${path} is already a note`)
+				}
 				await app.invoke('volume', 'mkdir', path, { recursive: true })
 			}
 		}),

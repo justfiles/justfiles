@@ -244,3 +244,25 @@ test('a write refuses a pathname that now holds a different file', async () => {
 	// The stranger's bytes are intact: it was neither truncated nor written.
 	expect(readFileSync(join(dir, 'Kyoto.md'), 'utf8')).toBe('theirs')
 })
+
+test('a write is not a success if the name was replaced while it happened', async () => {
+	// The window the pre-write check cannot cover: the swap lands after the handle was
+	// verified. Those bytes went to an inode nothing can reach, so reporting success would
+	// tell the caller its note is saved when the name now holds someone else's.
+	const dir = mkdtempSync(join(tmpdir(), 'excl-'))
+	dirs.push(dir)
+	const storage = await nativeStorage(dir)
+	const vol = volume(storage)
+	await vol.writeFile('/Kyoto.md', enc.encode('mine'))
+	const ino = String((await vol.stat('/Kyoto.md')).ino)
+	// Replace the name the moment the write is in flight.
+	const swap = (async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		writeFileSync(join(dir, 'Other.md'), 'theirs')
+		renameSync(join(dir, 'Other.md'), join(dir, 'Kyoto.md'))
+	})()
+	const writing = storage.putBlob(ino, enc.encode('a'.repeat(2_000_000)))
+	await swap
+	await expect(writing).rejects.toThrow(/^ENOENT/)
+	expect(readFileSync(join(dir, 'Kyoto.md'), 'utf8')).toBe('theirs')
+})

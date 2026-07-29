@@ -13,11 +13,18 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 	const invoke = async (_cap: string, method: string, ...args: unknown[]): Promise<unknown> => {
 		const path = args[0] as string
 		switch (method) {
-			case 'scan':
+			case 'scan': {
+				// Models the contract: scanning something that is not a directory is ENOTDIR,
+				// which is how the app asks "is this a folder?" without a type constant.
+				const at = (args[0] as { path: string }).path
+				if (at !== '/' && !folders.has(at)) {
+					throw new Error(store.has(at) ? `ENOTDIR: ${at}` : `ENOENT: ${at}`)
+				}
 				return [
 					...[...folders].map((p) => ({ path: p, type: 'dir' as const })),
 					...[...store.keys()].map((p, i) => ({ path: p, type: 'file' as const, mtimeNs: i }))
 				]
+			}
 			case 'exists':
 				return store.has(path) || folders.has(path)
 			case 'writeFile': {
@@ -271,6 +278,32 @@ test('a folder that looks like a note is refused by the read, not by its name', 
 	// And a note that is simply gone says so, instead of reading as an empty note that
 	// the editor would then save over whatever the path has become.
 	await expect(app.runProcedure('readNote', { path: '/Gone.md' }, h.app)).rejects.toThrow(/ENOENT/)
+})
+
+test('a folder that is spelled like a note still renames like a folder', async () => {
+	// `/Archive.md` is a DIRECTORY. Preserving "its extension" would rename it to the name
+	// it already has — a move that silently does nothing.
+	const vol = fakeVolume({ '/Archive.md/Kyoto.md': 'inside' }, ['/Archive.md'])
+	const h = handle(initialState, vol.invoke)
+	const result = (await app.runProcedure(
+		'rename',
+		{ from: '/Archive.md', to: '/Archive' },
+		h.app
+	)) as { path: string }
+	expect(result.path).toBe('/Archive')
+	expect([...vol.store.keys()]).toEqual(['/Archive/Kyoto.md'])
+})
+
+test('a folder is not created where a note already sits', async () => {
+	// `mkdir -p` walks past an existing final component without looking at what it is, so
+	// this used to report success and create nothing.
+	const vol = fakeVolume({ '/Kyoto.md': 'note' }, [])
+	const h = handle(initialState, vol.invoke)
+	await expect(app.runProcedure('mkdir', { path: '/Kyoto.md' }, h.app)).rejects.toThrow(/EEXIST/)
+	// An existing folder is fine (idempotent), and a free name is created.
+	await app.runProcedure('mkdir', { path: '/Trips' }, h.app)
+	await app.runProcedure('mkdir', { path: '/Trips' }, h.app)
+	expect([...vol.folders]).toContain('/Trips')
 })
 
 test('a folder cannot be opened as a note', async () => {

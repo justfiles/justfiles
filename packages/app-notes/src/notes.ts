@@ -136,13 +136,17 @@ export function firstLine(text: string): string {
 }
 
 /**
- * Where a rename should actually land. A user retyping a note's name drops the
- * extension (`Kyoto`, not `Kyoto.md`), and a note that stops being `.md`/`.txt`
- * stops being a note — so the source's extension is carried over when the new
- * name has none. Folders keep whatever was typed.
+ * Where a rename should actually land. A user retyping a note's name drops the extension
+ * (`Kyoto`, not `Kyoto.md`), and a note that stops being `.md`/`.txt` stops being a note
+ * — so the source's extension is carried over when the new name has none.
+ *
+ * `sourceIsNote` is passed in rather than inferred from the spelling, because the
+ * spelling lies: a FOLDER called `Archive.md` reads as a note to any suffix test, and
+ * renaming it to `/Archive` would then "preserve" its way straight back to `/Archive.md`
+ * — a rename that silently does nothing. Only the entry itself knows which it is.
  */
-export function renameTarget(from: string, to: string): string {
-	if (!isNotePath(from) || isNotePath(to)) return to
+export function renameTarget(from: string, to: string, sourceIsNote: boolean): string {
+	if (!sourceIsNote || isNotePath(to)) return to
 	const ext = NOTE_EXTS.find((candidate) => from.toLowerCase().endsWith(candidate)) ?? NOTE_EXT
 	return `${to}${ext}`
 }

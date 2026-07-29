@@ -27,6 +27,11 @@ const REFRESH_MS = 250
 // small enough that the status line moves and one message stays modest.
 // How a buffer that would not land is explained. The machine decides WHAT happened
 // (`buffer.ts`); this is the only place that decides how to say it.
+// The folder a note was aimed at is not there — as opposed to being unwritable for the
+// moment. ENOTDIR: something that is not a folder holds the name.
+const missingFolder = (failure: unknown) =>
+	/ENOENT|ENOTDIR/.test(failure instanceof Error ? failure.message : String(failure))
+
 const explain = (outcome: Unsettled) =>
 	outcome.because === 'gone'
 		? 'The note you were editing was moved or deleted — your changes are kept here'
@@ -241,7 +246,7 @@ function relativeTime(mtimeNs: number): string {
 export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// Both counters are optional in persisted state (added after the first release,
 	// and `init` is never re-merged) — default them at the door.
-	const { openPath, revision = 0, treeRevision = 0 } = state
+	const { openPath, revision = 0, treeRevision = 0, lastMove } = state
 
 	// The editor buffer is transient GUI-local state; the body bytes never enter the
 	// reducer (DESIGN.md §3). It is a MACHINE, not a set of flags — `src/buffer.ts` owns
@@ -292,9 +297,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			try {
 				return (await actionsRef.current.create({ text, dir })).openPath ?? '/'
 			} catch (failure) {
-				// The folder was deleted since the listing said otherwise (`create` refuses to
-				// rebuild it). The root is the last resort, so ITS failure belongs to the caller.
-				if (dir === '/') throw failure
+				// Only "that folder is not there" is grounds for putting the note somewhere
+				// else. An EACCES or an EIO on the folder is a passing problem with the RIGHT
+				// place, and relocating on it would file the note in the wrong folder while
+				// blaming a deletion that never happened — so those are rethrown, and the
+				// buffer stays unsaved for the retry.
+				if (dir === '/' || !missingFolder(failure)) throw failure
 				setStatus('That folder is gone — saved at the top level instead')
 				return (await actionsRef.current.create({ text, dir: '/' })).openPath ?? '/'
 			}
@@ -335,12 +343,15 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// pointed at, so the buffer detaches and this says why.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `revision` is a cache-busting trigger — a bump means the open file changed on disk.
 	useEffect(() => {
-		if (openPath === null) {
-			// The reducer says nothing is open, so a buffer still holding a note has to let
-			// go — `create` dispatches `open`, and that push can land after a "New" that
-			// followed it. A DETACHED buffer (text, no path) is not this case and is left
-			// alone: those words are unsaved and the debounce is about to write them.
-			if (buf.snapshot().path !== null && !buf.snapshot().dirty) void buf.clear()
+		if (openPath === null) return
+		// A MOVE is not an open. `openPath` cannot say why it changed, so the reducer says:
+		// the buffer follows the note to its new address, keeping unsaved edits, instead of
+		// trying to save them to a path that no longer exists (which would fail ENOENT,
+		// detach, and leave a duplicate). The GUI's own moves call `moved` directly; this is
+		// the same thing for a rename the agent did.
+		const held = buf.snapshot().path
+		if (lastMove && held !== null && isUnder(held, lastMove.from)) {
+			buf.moved(lastMove.from, lastMove.to)
 			return
 		}
 		void (async () => {
@@ -351,10 +362,27 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				setStatus(explain(outcome.outcome))
 				return
 			}
+			// Only a note that is GONE loses the editor's selection: a transient read failure
+			// leaves the buffer attached (see `buffer.ts`), so `openPath` must stay too, or the
+			// next save would go through `create` and leave a duplicate.
 			setStatus(`Cannot open ${displayPath(outcome.path)} — ${outcome.error.message}`)
-			await actions.newNote({})
+			if (outcome.gone) await actions.newNote({})
 		})()
-	}, [openPath, revision, buf, actions])
+	}, [openPath, revision, lastMove, buf, actions])
+
+	// The reducer says nothing is open (the user pressed New, or the agent dispatched it)
+	// while the buffer still holds a note. Letting go means SETTLING first, so unsaved
+	// edits are written rather than dropped — and if that write cannot land, this comes
+	// round again when the buffer changes, instead of leaving the editor attached to a note
+	// the rest of the app considers closed.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `buffer.dirty` is the RETRY trigger — a write that lands makes the buffer clean, which is when letting go can succeed.
+	useEffect(() => {
+		if (openPath !== null || buffer.path === null) return
+		void (async () => {
+			const outcome = await buf.clear()
+			if (!outcome.settled) setStatus(explain(outcome))
+		})()
+	}, [openPath, buffer.path, buffer.dirty, buf])
 
 	// Launch = blank editor (DESIGN.md §5). Reopen is always blank — capture-first.
 	const mounted = useRef(false)
@@ -535,9 +563,20 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const removeNote = useCallback(
 		async (path: string) => {
 			// Deleting the open note DISCARDS its buffer — settling it would write the note
-			// straight back. The machine also cancels a read in flight for it.
+			// straight back, and the machine also cancels a read in flight for it. Discarded
+			// BEFORE the delete for that reason, and put back if the delete does not happen:
+			// a failed remove must not cost the user the note *and* their unsaved edits.
+			const before = buf.snapshot()
 			buf.discard(path)
-			await actions.remove({ path })
+			try {
+				await actions.remove({ path })
+			} catch (failure) {
+				buf.restore(before)
+				setStatus(
+					`Could not delete ${displayPath(path)} — ${failure instanceof Error ? failure.message : String(failure)}`
+				)
+				return
+			}
 			setActive(0)
 			void refresh()
 		},

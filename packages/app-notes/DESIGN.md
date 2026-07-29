@@ -296,7 +296,29 @@ two that no amount of care at call sites was going to get right). `gui.tsx` lost
 `explain()` for how a failure is worded.
 
 The exchange rate is worth stating: **a rule you have to remember is a defect with a delay.** The machine is
-not fewer lines than the flags were — it is the same rules in a place where a test can reach them.
+not fewer lines than the flags were — it is the same rules in a place where a test can reach them. The round
+after the extraction proved the point twice over: four more findings arrived, and each one was a *rule the
+machine did not yet state* rather than a call site that had forgotten it — so each fix was one place and one
+test.
+
+Three of those are worth naming, because they generalise:
+
+- **Typing takes over the buffer.** A read already in flight would otherwise land on top of the keystrokes and
+  mark the result clean. So `type()` invalidates a pending read, and `open` comes round again: it settles those
+  words to the note they were typed into, *then* reads the note that was asked for. Nothing is dropped and the
+  selection still lands where the user pointed it.
+- **Only "it is gone" may detach.** That rule was applied to save failures and not to read failures, so an EIO
+  during a refresh detached a dirty buffer and the next autosave forked a duplicate. `OpenOutcome` carries
+  `gone` now, and a transient read failure changes *nothing at all*.
+- **An operation that must un-happen needs a way back.** Deleting the open note discards its buffer *before*
+  the delete lands (a pending write would put the note straight back), so a delete that fails has to restore
+  what it emptied — `restore(snapshot)`, one method, one test, and the user keeps both the note and the edits.
+
+And one rule the reducer had to grow for: **`openPath` cannot say why it changed.** "The agent renamed the open
+note" and "the agent opened something else" look identical to it, and they need opposite handling — the first
+carries the buffer to the new address, the second settles it at the old one. So the `moved` edge records
+`lastMove: { from, to }` and the GUI follows it; without that, an agent rename during an unsaved edit tried to
+save to a path that no longer existed, detached on ENOENT, and left a duplicate.
 
 **1a⁗ · A content write must not orphan, and must not resurrect.** `update: true` proves the path *at the
 resolve*, and the bytes are stored a moment later — so the note can be deleted in between. Every backend

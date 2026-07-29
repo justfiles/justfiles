@@ -45,9 +45,11 @@ export type OpenOutcome =
 	// The buffer would not settle, so nothing was replaced. Carries the reason, since
 	// the caller is the one showing it.
 	| { opened: false; because: 'unsettled'; outcome: Unsettled }
-	// Settled, but the note could not be read: it is not there, or not a note at all
-	// (a folder called `Archive.md`). The buffer points at nothing now.
-	| { opened: false; because: 'unreadable'; path: string; error: Error }
+	// Settled, but the note could not be read. `gone` separates the two answers that
+	// matter: it is not there (or is a folder called `Archive.md`), so the buffer has let
+	// go of it — versus a read that merely failed, which changes nothing at all, because
+	// an EIO must not turn an attached buffer into a duplicate-in-waiting.
+	| { opened: false; because: 'unreadable'; path: string; error: Error; gone: boolean }
 
 export type BufferIO = {
 	/** Overwrite an existing note. Rejects if it is gone (ENOENT) or a folder (EISDIR). */
@@ -140,26 +142,42 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 	}
 
 	const openNow = async (path: string): Promise<OpenOutcome> => {
-		const settled = await settleNow()
-		if (!settled.settled) return { opened: false, because: 'unsettled', outcome: settled }
-		const mine = ++generation
-		pending = path
-		try {
-			const text = await io.read(path)
-			if (mine !== generation) return { opened: true } // superseded; not ours to apply
-			set({ text, dirty: false, path })
-			return { opened: true }
-		} catch (thrown) {
-			const error = asError(thrown)
-			if (mine !== generation) return { opened: true }
-			// We cannot read it, so we do not stay pointed at it. A dirty buffer keeps its
-			// text — typed while the read was in flight, so it is the user's and becomes a
-			// scratch note; a clean one held the previous note's body, which would be a lie
-			// about what is open.
-			set({ path: null, ...(state.dirty ? {} : { text: '' }) })
-			return { opened: false, because: 'unreadable', path, error }
-		} finally {
-			if (pending === path) pending = null
+		// Loops for the same reason `settleNow` does: the user may type while the body is on
+		// its way, and those keystrokes belong to the note they were typed into. So the
+		// buffer settles them (to the OLD path) and then reads again — nothing is dropped,
+		// and the requested note still ends up open.
+		for (;;) {
+			const settled = await settleNow()
+			if (!settled.settled) return { opened: false, because: 'unsettled', outcome: settled }
+			const mine = ++generation
+			pending = path
+			try {
+				const text = await io.read(path)
+				if (mine !== generation) {
+					// Superseded. If the buffer went dirty under us, that was the user typing:
+					// go round, save their words, read again. Anything else moved on for good.
+					if (state.dirty) continue
+					return { opened: true }
+				}
+				set({ text, dirty: false, path })
+				return { opened: true }
+			} catch (thrown) {
+				const error = asError(thrown)
+				if (mine !== generation) {
+					if (state.dirty) continue
+					return { opened: true }
+				}
+				const missing = gone(error)
+				// Only "it is not there" is grounds for letting go: a transient failure leaves
+				// the buffer exactly as it was, so a retry updates the note instead of creating
+				// a duplicate beside it. When it IS gone, a dirty buffer keeps its text (typed
+				// while the read was in flight, so it is the user's) and a clean one is emptied
+				// rather than showing the previous note as though it were this one.
+				if (missing) set({ path: null, ...(state.dirty ? {} : { text: '' }) })
+				return { opened: false, because: 'unreadable', path, error, gone: missing }
+			} finally {
+				if (pending === path) pending = null
+			}
 		}
 	}
 
@@ -171,9 +189,25 @@ export function createBuffer(io: BufferIO, onChange: (state: BufferState) => voi
 	return {
 		snapshot: (): BufferState => state,
 
-		/** The user typed. The only entry point that makes a buffer dirty. */
+		/**
+		 * The user typed. The only entry point that makes a buffer dirty — and it TAKES
+		 * OVER the buffer: a read still in flight would otherwise land on top of these
+		 * keystrokes and mark the result clean, which is the user watching their words
+		 * vanish. `open` notices and comes round again (see `openNow`).
+		 */
 		type(text: string) {
+			generation++
 			set({ text, dirty: true })
+		},
+
+		/**
+		 * Put the buffer back as it was. For an operation that must UN-happen: deleting the
+		 * open note discards its buffer before the delete is known to have worked, and a
+		 * delete that fails has to leave the user's note (and their unsaved edits) alone.
+		 */
+		restore(previous: BufferState) {
+			generation++
+			set(previous)
 		},
 
 		/** Land the buffer. Check the answer before replacing anything. */
