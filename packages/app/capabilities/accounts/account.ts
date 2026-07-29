@@ -28,7 +28,8 @@ export interface Account {
 	provider: string
 	// `undefined` for a record whose creds could not be decoded (this host's key is gone
 	// or rotated): the account still lists, so Settings can show it and the user can
-	// re-connect, but every credential path treats it as unconfigured (see host.ts).
+	// re-connect, but every credential path treats it as unconfigured (see host.ts), and a
+	// write preserves the sealed bytes rather than destroying them (see `put`).
 	creds: unknown
 	// OAuth grants on this account's creds (oauth providers only); drives
 	// incremental consent when a capability that needs a wider scope is enabled.
@@ -55,13 +56,18 @@ export function volumeAccountStore(
 	opts: { secretCodec?: SecretCodec } = {}
 ): AccountStore {
 	const codec = opts.secretCodec ?? clearSecretCodec
-	const read = async (path: string): Promise<Account | undefined> => {
-		let stored: Account
+	// The stored record, exactly as it sits on disk (creds still in whatever form the codec
+	// wrote them). Shared by `read` and by `put`'s preserve path.
+	const readStored = async (path: string): Promise<Account | undefined> => {
 		try {
-			stored = JSON.parse(dec.decode(await fs.readFile(path))) as Account
+			return JSON.parse(dec.decode(await fs.readFile(path))) as Account
 		} catch {
 			return undefined
 		}
+	}
+	const read = async (path: string): Promise<Account | undefined> => {
+		const stored = await readStored(path)
+		if (!stored) return undefined
 		// Ignore records that aren't this schema. A pre-registry install wrote
 		// `{ accountId, providerId }` to this same dir; read as `Account` those
 		// surface as `{ id: undefined, provider: undefined }`, which breaks callers
@@ -95,8 +101,19 @@ export function volumeAccountStore(
 		},
 		put: async (account) => {
 			await fs.mkdir(DIR, { recursive: true })
-			const stored = { ...account, creds: await codec.encode(account.creds, account.id) }
-			await fs.writeFile(pathFor(account.id), enc.encode(JSON.stringify(stored, null, 2)))
+			const path = pathFor(account.id)
+			// `creds: undefined` means "this host could not read them" (see `read`), NEVER "there
+			// are none" — so keep the sealed bytes already on disk instead of overwriting them.
+			// Otherwise a key that is missing only for now (deployed before the secret was set,
+			// a mistyped rotation) turns any ordinary write — toggling a capability off in
+			// Settings — into the permanent loss of a credential the restored key could still
+			// open. Every mutation funnels through here, so this is the one place to hold that line.
+			const creds =
+				account.creds === undefined
+					? (await readStored(path))?.creds
+					: await codec.encode(account.creds, account.id)
+			const stored = { ...account, creds }
+			await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
 		},
 		delete: async (id) => {
 			await fs.rm(pathFor(id), { force: true })

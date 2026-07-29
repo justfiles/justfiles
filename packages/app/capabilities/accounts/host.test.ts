@@ -538,6 +538,24 @@ describe('secretCodec wiring', () => {
 		)
 	})
 
+	test('a rename leaves a record it cannot read where it is', async () => {
+		// A rename deletes the source, so it is the one write the store cannot make
+		// non-destructive: skip it, and a boot with the right key finishes the job.
+		const vol = volume(memStorage())
+		const old = { secretCodec: aesGcmSecretCodec('old-key') }
+		await volumeAccountStore(vol, old).put({ id: 'spud', provider: 'frieren', creds: { k: 'v' } })
+		await renameAccount(
+			vol,
+			'spud',
+			{ accountId: 'frieren', providerId: 'frieren' },
+			{
+				secretCodec: codec
+			}
+		)
+		expect(await volumeAccountStore(vol, old).get('spud')).toMatchObject({ creds: { k: 'v' } })
+		expect(await volumeAccountStore(vol, old).get('frieren')).toBeUndefined()
+	})
+
 	test('a record this host cannot decrypt lists with an error and is unusable', async () => {
 		// The rotated/missing-key path, end to end: Settings still renders the account (so
 		// the user can re-connect it) and a credential-using call reports UNAVAILABLE rather

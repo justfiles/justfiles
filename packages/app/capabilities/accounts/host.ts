@@ -378,7 +378,9 @@ export async function ensureAccount(
 // — for a builtin provider whose ids were renamed. No-op when `from` is absent; never
 // clobbers an existing `to`. Re-`put`s through the store rather than moving the file,
 // because the codec binds a record's ciphertext to its account id: a new id needs a
-// re-seal.
+// re-seal — which is also why a record this host cannot read is left where it is. Moving
+// it would delete the source and re-seal nothing; leaving it lets a boot with the right
+// key finish the job.
 export async function renameAccount(
 	volume: Volume,
 	from: string,
@@ -387,7 +389,7 @@ export async function renameAccount(
 ): Promise<void> {
 	const accounts = volumeAccountStore(volume, opts)
 	const existing = await accounts.get(from)
-	if (!existing) return
+	if (!existing || existing.creds === undefined) return
 	if (!(await accounts.get(to.accountId))) {
 		await accounts.put({ ...existing, id: to.accountId, provider: to.providerId })
 	}

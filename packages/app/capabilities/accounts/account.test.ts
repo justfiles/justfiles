@@ -99,6 +99,23 @@ describe('volumeAccountStore', () => {
 		expect(only.lastError).toBeTruthy()
 	})
 
+	test('a write that carries unreadable creds keeps the sealed bytes', async () => {
+		// A key missing only for NOW (deployed before the secret was set, a mistyped
+		// rotation) must not make an ordinary write destructive: Settings toggling a
+		// capability off writes back the creds it was handed, which is `undefined` here.
+		const fs = volume(memStorage())
+		const sealed = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('real-key') })
+		await sealed.put(account({ scopes: ['openid'] }))
+
+		const blind = volumeAccountStore(fs)
+		const broken = await blind.get('u@openai.com')
+		expect(broken?.creds).toBeUndefined()
+		await blind.put({ id: broken!.id, provider: broken!.provider, creds: broken!.creds })
+
+		// The key comes back and the credential is still there — untouched, still sealed.
+		expect(await sealed.get('u@openai.com')).toMatchObject({ creds: account().creds })
+	})
+
 	test('a record this key cannot open still lists, without creds and flagged', async () => {
 		// The rotated-the-key path: the account must stay visible (Settings shows it, the
 		// user re-connects) and must not take the rest of the list down with it.
