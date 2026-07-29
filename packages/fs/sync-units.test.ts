@@ -15,10 +15,10 @@ import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
 import {
-	HOST_PRIVATE_PREFIXES,
 	ignorePrefixes,
 	journaledChangeSource,
 	localSyncReplica,
+	PRIVATE_PREFIXES,
 	syncIgnore
 } from './sync-replica'
 import { bytes, sha256, text } from './sync-test-harness'
@@ -209,25 +209,25 @@ describe('isCanonicalPath', () => {
 	})
 })
 
-describe('the built-in host-private class', () => {
-	const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
+describe('the built-in private class', () => {
+	const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
 	it('matches each prefix itself AND its children', () => {
-		expect(isHostPrivate('/.state')).toBe(true)
-		expect(isHostPrivate('/.state/sync')).toBe(true)
-		expect(isHostPrivate('/host')).toBe(true)
-		expect(isHostPrivate('/host/accounts')).toBe(true)
-		expect(isHostPrivate('/host/accounts/a%40b.json')).toBe(true)
-		expect(isHostPrivate('/host/connections/chatgpt/default.json')).toBe(true)
+		expect(isPrivatePath('/.state')).toBe(true)
+		expect(isPrivatePath('/.state/sync')).toBe(true)
+		expect(isPrivatePath('/private')).toBe(true)
+		expect(isPrivatePath('/private/accounts')).toBe(true)
+		expect(isPrivatePath('/private/accounts/a%40b.json')).toBe(true)
+		expect(isPrivatePath('/private/connections/chatgpt/default.json')).toBe(true)
 	})
 
 	it('matches per path SEGMENT — a sibling is not a child', () => {
-		expect(isHostPrivate('/.stateful')).toBe(false)
-		expect(isHostPrivate('/hostage')).toBe(false)
-		expect(isHostPrivate('/hosts.md')).toBe(false)
-		expect(isHostPrivate('/system/accounts')).toBe(false) // relocated to /host
-		expect(isHostPrivate('/system/user.md')).toBe(false)
-		expect(isHostPrivate('/notes/host.md')).toBe(false)
-		expect(isHostPrivate('/notes/a')).toBe(false)
+		expect(isPrivatePath('/.stateful')).toBe(false)
+		expect(isPrivatePath('/privateer')).toBe(false)
+		expect(isPrivatePath('/private.md')).toBe(false)
+		expect(isPrivatePath('/system/accounts')).toBe(false) // relocated to /host
+		expect(isPrivatePath('/system/user.md')).toBe(false)
+		expect(isPrivatePath('/notes/host.md')).toBe(false)
+		expect(isPrivatePath('/notes/a')).toBe(false)
 	})
 })
 
@@ -235,27 +235,33 @@ describe('the built-in host-private class', () => {
 // is by OR, which is the whole safety property: an `ignore` can widen the boundary, never
 // narrow it — so no host (or future caller) can make credentials sync.
 describe('syncIgnore', () => {
-	const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
+	const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
 
 	it('with no ignore is exactly the built-in class', () => {
 		const p = syncIgnore()
-		for (const path of ['/host', '/host/accounts/a.json', '/.state/sync', '/notes/a', '/hostage'])
-			expect(p(path)).toBe(isHostPrivate(path))
+		for (const path of [
+			'/private',
+			'/private/accounts/a.json',
+			'/.state/sync',
+			'/notes/a',
+			'/privateer'
+		])
+			expect(p(path)).toBe(isPrivatePath(path))
 	})
 
 	it('adds the host’s own paths, keeping the built-in class', () => {
 		const p = syncIgnore((path) => path.startsWith('/state/cache/') || path.endsWith('.DS_Store'))
 		expect(p('/state/cache/blobs')).toBe(true)
 		expect(p('/notes/.DS_Store')).toBe(true)
-		expect(p('/host/accounts/a.json')).toBe(true) // built-in, still private
+		expect(p('/private/accounts/a.json')).toBe(true) // built-in, still private
 		expect(p('/notes/a.md')).toBe(false) // untouched
 		expect(p('/state/other')).toBe(false)
 	})
 
 	it('CANNOT be weakened: an ignore that says "nothing is ignored" changes nothing', () => {
 		const p = syncIgnore(() => false)
-		expect(p('/host')).toBe(true)
-		expect(p('/host/accounts/a.json')).toBe(true)
+		expect(p('/private')).toBe(true)
+		expect(p('/private/accounts/a.json')).toBe(true)
 		expect(p('/.state/sync')).toBe(true)
 		expect(p('/notes/a')).toBe(false)
 	})
@@ -266,7 +272,7 @@ describe('syncIgnore', () => {
 			seen.push(path)
 			return false
 		})
-		expect(p('/host/accounts/a.json')).toBe(true)
+		expect(p('/private/accounts/a.json')).toBe(true)
 		expect(seen).toEqual([]) // short-circuited by the built-in class
 		expect(p('/notes/a')).toBe(false)
 		expect(seen).toEqual(['/notes/a'])
@@ -276,7 +282,7 @@ describe('syncIgnore', () => {
 		const p = syncIgnore(() => {
 			throw new Error('bad predicate')
 		})
-		expect(p('/host')).toBe(true) // built-in short-circuit, never reaches it
+		expect(p('/private')).toBe(true) // built-in short-circuit, never reaches it
 		expect(() => p('/notes/a')).toThrow('bad predicate')
 	})
 })

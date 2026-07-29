@@ -6,7 +6,7 @@
 // Package-internal: it is not re-exported from index.ts. The few paths a host needs are
 // the public names in `@justfiles/agent/defaults`.
 
-import { HOST_PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
 
 export const NOTES_DIR = '/notes'
 export const PICTURES_DIR = '/pictures' // == GENERATED_IMAGES_DIR (image capability); asserted in the test
@@ -36,5 +36,6 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 // @justfiles/fs (which also refuses to replicate them) so the two can't drift; the agent
 // shell still needs the deny-list because the agent runs INSIDE the host that holds them.
 // `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
-// prompt as host bookkeeping and harmless to `ls`.
-export const SECRET_PREFIXES = HOST_PRIVATE_PREFIXES.filter((p) => p !== '/.state')
+// prompt as host bookkeeping and harmless to `ls`. What remains is `/private` — private
+// in the access-modifier sense: not reachable from outside the host, the agent included.
+export const SECRET_PREFIXES = PRIVATE_PREFIXES.filter((p) => p !== '/.state')

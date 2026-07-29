@@ -224,7 +224,7 @@ describe('local → account migration', () => {
 			'/system/agents/main/soul.md': '---\nagent_name: Custom\n---\nsoul\n',
 			'/system/user.md': '---\nname: Xiao\n---\n',
 			'/system/os-state.json': '{"windows":{}}',
-			'/host/accounts/frieren.json': 'secret',
+			'/private/accounts/frieren.json': 'secret',
 			'/system/accounts/legacy.json': 'secret',
 			'/system/connections/u%40openai.com.json': 'oauth-secret',
 			'/system/active-ai.json': '{"connectionId":"u@openai.com"}',
@@ -242,7 +242,7 @@ describe('local → account migration', () => {
 		expect(files).toContain('/system/agents/main/soul.md')
 		expect(files).toContain('/system/user.md')
 		expect(files).toContain('/system/os-state.json')
-		expect(files).not.toContain('/host/accounts/frieren.json')
+		expect(files).not.toContain('/private/accounts/frieren.json')
 		expect(files).not.toContain('/system/accounts/legacy.json')
 		expect(files).not.toContain('/system/connections/u%40openai.com.json')
 		expect(files).not.toContain('/system/active-ai.json')

@@ -138,52 +138,52 @@ describe('path-sync semantics', () => {
 	})
 
 	// Host-private credentials never cross the wire, and the lane is symmetrical
-	test('host-private paths are never pushed, while /system still syncs', async () => {
+	test('private paths are never pushed, while /system still syncs', async () => {
 		const { client, server, syncBoth, pushedChanges } = twoPeers()
-		await client.writeFile('/host/accounts/a.json', bytes('CLIENT-CRED'))
+		await client.writeFile('/private/accounts/a.json', bytes('CLIENT-CRED'))
 		await client.writeFile('/system/user.md', bytes('me'))
 		await client.writeFile('/system/agents/main/sessions/x.jsonl', bytes('{}'))
 		await syncBoth()
-		expect(await server.exists('/host/accounts/a.json')).toBe(false)
-		expect(await server.exists('/host')).toBe(false)
-		expect(pushedChanges().map((c) => c.path)).not.toContain('/host/accounts/a.json')
+		expect(await server.exists('/private/accounts/a.json')).toBe(false)
+		expect(await server.exists('/private')).toBe(false)
+		expect(pushedChanges().map((c) => c.path)).not.toContain('/private/accounts/a.json')
 		// No collateral: the shared system tree syncs in the same cycle
 		expect(text(await server.readFile('/system/user.md'))).toBe('me')
 		expect(text(await server.readFile('/system/agents/main/sessions/x.jsonl'))).toBe('{}')
 	})
 
-	test('a host-private path written on the server is never admitted by the client', async () => {
+	test('a private path written on the server is never admitted by the client', async () => {
 		const { client, server, syncBoth } = twoPeers()
-		await server.writeFile('/host/accounts/b.json', bytes('SERVER-CRED'))
+		await server.writeFile('/private/accounts/b.json', bytes('SERVER-CRED'))
 		await server.writeFile('/system/user.md', bytes('you'))
 		await syncBoth()
-		expect(await client.exists('/host/accounts/b.json')).toBe(false)
-		expect((await client.readdir('/')).map((e) => e.name)).not.toContain('host')
+		expect(await client.exists('/private/accounts/b.json')).toBe(false)
+		expect((await client.readdir('/')).map((e) => e.name)).not.toContain('private')
 		expect(text(await client.readFile('/system/user.md'))).toBe('you')
 	})
 
-	test('the host-private lane is inert both ways: each peer keeps its own, deletes stay local', async () => {
+	test('the private lane is inert both ways: each peer keeps its own, deletes stay local', async () => {
 		const { client, server, syncBoth } = twoPeers()
-		await client.writeFile('/host/accounts/x.json', bytes('C'))
-		await server.writeFile('/host/accounts/x.json', bytes('S'))
-		await client.writeFile('/host/connections/chatgpt/default.json', bytes('C'))
-		await server.writeFile('/host/connections/chatgpt/default.json', bytes('S'))
+		await client.writeFile('/private/accounts/x.json', bytes('C'))
+		await server.writeFile('/private/accounts/x.json', bytes('S'))
+		await client.writeFile('/private/connections/chatgpt/default.json', bytes('C'))
+		await server.writeFile('/private/connections/chatgpt/default.json', bytes('S'))
 		await syncBoth()
 		// Not a delete-on-sync: both sides still read back their OWN bytes
-		expect(text(await client.readFile('/host/accounts/x.json'))).toBe('C')
-		expect(text(await server.readFile('/host/accounts/x.json'))).toBe('S')
+		expect(text(await client.readFile('/private/accounts/x.json'))).toBe('C')
+		expect(text(await server.readFile('/private/accounts/x.json'))).toBe('S')
 
 		// A client-side delete does not propagate (and the server copy is not pulled back)
-		await client.rm('/host/accounts/x.json')
+		await client.rm('/private/accounts/x.json')
 		await syncBoth()
-		expect(text(await server.readFile('/host/accounts/x.json'))).toBe('S')
-		expect(await client.exists('/host/accounts/x.json')).toBe(false)
+		expect(text(await server.readFile('/private/accounts/x.json'))).toBe('S')
+		expect(await client.exists('/private/accounts/x.json')).toBe(false)
 
 		// Nor does a server-side one
-		await server.rm('/host/connections/chatgpt/default.json')
+		await server.rm('/private/connections/chatgpt/default.json')
 		await syncBoth()
-		expect(text(await client.readFile('/host/connections/chatgpt/default.json'))).toBe('C')
-		expect(await server.exists('/host/connections/chatgpt/default.json')).toBe(false)
+		expect(text(await client.readFile('/private/connections/chatgpt/default.json'))).toBe('C')
+		expect(await server.exists('/private/connections/chatgpt/default.json')).toBe(false)
 	})
 
 	// A host's OWN never-sync paths (`ignore`) behave exactly

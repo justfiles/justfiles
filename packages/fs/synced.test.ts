@@ -327,7 +327,7 @@ describe('synced (lifecycle)', () => {
 
 	// Host-private roots survive a destructive reconcile: the remote never had them, so
 	// "absent from the remote" must not mean "delete locally".
-	it('reconcile keeps the host-private root the remote never had', async () => {
+	it('reconcile keeps the private root the remote never had', async () => {
 		const remote = memStorage()
 		await volume(remote).writeFile('/keep.txt', enc.encode('keep'))
 
@@ -339,8 +339,8 @@ describe('synced (lifecycle)', () => {
 		vol1.destroy()
 
 		const lv = volume(local)
-		await lv.mkdir('/host/accounts', { recursive: true })
-		await lv.writeFile('/host/accounts/cred.json', enc.encode('CRED'))
+		await lv.mkdir('/private/accounts', { recursive: true })
+		await lv.writeFile('/private/accounts/cred.json', enc.encode('CRED'))
 		await lv.writeFile('/stray.md', enc.encode('x'))
 
 		const state = JSON.parse(dec.decode(await lv.readFile('/.state/sync'))) as {
@@ -352,7 +352,7 @@ describe('synced (lifecycle)', () => {
 		const vol2 = track(await synced({ local, remote, interval: 99_999 }))
 		await vol2.flush()
 		expect(await vol2.exists('/stray.md')).toBe(false) // reconciled away
-		expect(dec.decode(await vol2.readFile('/host/accounts/cred.json'))).toBe('CRED')
+		expect(dec.decode(await vol2.readFile('/private/accounts/cred.json'))).toBe('CRED')
 	})
 
 	it('re-bootstrap pulls post-snapshot updates before reconciling missing paths', async () => {
@@ -701,7 +701,7 @@ describe('synced (generation / client-reset)', () => {
 		expect(dec.decode(await vol.readFile('/state/cache/blob'))).toBe('MINE') // target intact
 	})
 
-	// A host's OWN ignores are host-private in the FULL sense: a reset must not discard
+	// A host's OWN ignores are private in the FULL sense: a reset must not discard
 	// them either, or `ignore` would be a wire filter with a data-loss hole.
 	it('takeTheirs() keeps a host ignore, not just the built-in root', async () => {
 		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
@@ -723,18 +723,18 @@ describe('synced (generation / client-reset)', () => {
 	})
 
 	// A reset discards the SYNCED replica, not the credentials this host acquired.
-	it('takeTheirs() keeps the host-private root', async () => {
+	it('takeTheirs() keeps the private root', async () => {
 		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
 		const local = memStorage()
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
-		await vol.mkdir('/host/accounts', { recursive: true })
-		await vol.mkdir('/host/connections/chatgpt', { recursive: true })
-		await vol.writeFile('/host/accounts/a.json', enc.encode('CRED'))
-		await vol.writeFile('/host/connections/chatgpt/default.json', enc.encode('CONN'))
+		await vol.mkdir('/private/accounts', { recursive: true })
+		await vol.mkdir('/private/connections/chatgpt', { recursive: true })
+		await vol.writeFile('/private/accounts/a.json', enc.encode('CRED'))
+		await vol.writeFile('/private/connections/chatgpt/default.json', enc.encode('CONN'))
 		await vol.writeFile('/mine.md', enc.encode('mine'))
 		await vol.takeTheirs()
-		expect(dec.decode(await vol.readFile('/host/accounts/a.json'))).toBe('CRED')
-		expect(dec.decode(await vol.readFile('/host/connections/chatgpt/default.json'))).toBe('CONN')
+		expect(dec.decode(await vol.readFile('/private/accounts/a.json'))).toBe('CRED')
+		expect(dec.decode(await vol.readFile('/private/connections/chatgpt/default.json'))).toBe('CONN')
 		expect(await vol.exists('/mine.md')).toBe(false) // synced data still discarded
 	})
 

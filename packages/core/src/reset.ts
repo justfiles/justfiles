@@ -17,7 +17,7 @@
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
-import { HOST_PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
 import type { DbAdapter } from './db'
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
@@ -39,7 +39,7 @@ const CONTENT_TABLES = ['fs_contents', 'fs_content_fts'] as const
 export type ResetMode = 'adopt-mine' | 'wipe'
 
 /**
- * Every inode of the host-private roots (`/host`, `/.state`) plus the root itself,
+ * Every inode of the private roots (`/private`, `/.state`) plus the root itself,
  * resolved through dirents.
  *
  * An `adopt-mine` truncates the tree so the initiator can republish it — but the
@@ -51,10 +51,10 @@ export type ResetMode = 'adopt-mine' | 'wipe'
  * A plain BFS, not a recursive CTE: the tree is a handful of small JSON files, and
  * this stays portable across the DO and node:sqlite with no JSON1/CTE assumptions.
  */
-async function hostPrivateInos(tx: DbAdapter): Promise<string[]> {
+async function privateInos(tx: DbAdapter): Promise<string[]> {
 	const keep = new Set<string>()
 	const queue: string[] = []
-	for (const prefix of HOST_PRIVATE_PREFIXES) {
+	for (const prefix of PRIVATE_PREFIXES) {
 		let ino: string | undefined = ROOT_INO
 		for (const segment of prefix.split('/').filter(Boolean)) {
 			const rows: { ino: unknown }[] = await tx.query<{ ino: unknown }>(
@@ -182,8 +182,8 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
  * Apply a reset in ONE transaction: CAS, truncate the tree + sync tables (+ the
  * content tables for `wipe`, so no client can fetch/search discarded bytes),
  * recreate the root inode, bump the generation, and store `resetId`. `adopt-mine`
- * keeps the content tables — lazy blobs the republish reuses — and the host-private
- * subtrees, which no republish could restore (see `hostPrivateInos`).
+ * keeps the content tables — lazy blobs the republish reuses — and the private
+ * subtrees, which no republish could restore (see `privateInos`).
  */
 export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<ResetDecision> {
 	let result: ResetDecision | undefined
@@ -194,7 +194,7 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 			result = decision
 			return
 		}
-		const keep = req.mode === 'adopt-mine' ? await hostPrivateInos(tx) : []
+		const keep = req.mode === 'adopt-mine' ? await privateInos(tx) : []
 		const survives = keep.length > 0 ? ` WHERE ino NOT IN (${keep.map(() => '?').join(',')})` : ''
 		// Child rows first (FK RESTRICT), and the kept closure is complete — every
 		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.

@@ -34,9 +34,9 @@ describe('volumeAccountStore', () => {
 		// schema it would yield { id: undefined, provider: undefined }. It must be
 		// treated as absent so callers can reseed / re-connect over it.
 		const fs = volume(memStorage())
-		await fs.mkdir('/host/accounts', { recursive: true })
+		await fs.mkdir('/private/accounts', { recursive: true })
 		await fs.writeFile(
-			'/host/accounts/legacy.json',
+			'/private/accounts/legacy.json',
 			new TextEncoder().encode(
 				JSON.stringify({
 					accountId: 'legacy',
@@ -62,7 +62,7 @@ describe('volumeAccountStore', () => {
 		await store.put(a)
 
 		const onDisk = JSON.parse(
-			new TextDecoder().decode(await fs.readFile('/host/accounts/u%40openai.com.json'))
+			new TextDecoder().decode(await fs.readFile('/private/accounts/u%40openai.com.json'))
 		)
 		expect(onDisk.creds).toEqual({ sealed: JSON.stringify(a.creds) })
 		expect(onDisk.id).toBe('u@openai.com')

@@ -200,17 +200,17 @@ describe('drives a real Bash over the volume', () => {
 	})
 })
 
-// The secret boundary (#284 §7): `/host/accounts` holds live OAuth tokens in clear text
+// The secret boundary (#284 §7): `/private/accounts` holds live OAuth tokens in clear text
 // and the agent's shell is rooted at `/`. It is enforced HERE, at the one seam all ~83
 // commands share, so no clever command line can route around it — and the NAMES stay
 // invisible too, not just the bytes.
 describe('denied prefixes', () => {
-	const DENY = ['/host/accounts']
+	const DENY = ['/private/accounts']
 
 	async function denied(): Promise<{ vol: Volume; bash: Bash }> {
 		const vol = volume(memStorage())
-		await vol.mkdir('/host/accounts', { recursive: true })
-		await vol.writeFile('/host/accounts/google.json', enc('{"token":"SECRET"}'))
+		await vol.mkdir('/private/accounts', { recursive: true })
+		await vol.writeFile('/private/accounts/google.json', enc('{"token":"SECRET"}'))
 		await vol.mkdir('/system', { recursive: true })
 		await vol.writeFile('/system/user.md', enc('name: Ada\n'))
 		const bash = new Bash({ fs: volumeFs(vol, DENY), cwd: '/' })
@@ -221,12 +221,12 @@ describe('denied prefixes', () => {
 	test('no command reads a denied file, however it is reached', async () => {
 		const { bash } = await denied()
 		for (const command of [
-			'cat /host/accounts/google.json',
-			'head -1 /host/accounts/google.json',
-			'grep token /host/accounts/google.json',
-			'cp /host/accounts/google.json /leak.json',
-			'tar -cf /leak.tar /host/accounts',
-			'find /host/accounts -type f'
+			'cat /private/accounts/google.json',
+			'head -1 /private/accounts/google.json',
+			'grep token /private/accounts/google.json',
+			'cp /private/accounts/google.json /leak.json',
+			'tar -cf /leak.tar /private/accounts',
+			'find /private/accounts -type f'
 		]) {
 			const result = await bash.exec(command)
 			expect(result.exitCode, command).not.toBe(0)
@@ -240,8 +240,8 @@ describe('denied prefixes', () => {
 		const ls = await bash.exec('ls /host')
 		expect(ls.stdout).not.toContain('accounts')
 		expect((await bash.exec('find /host')).stdout).not.toContain('accounts')
-		expect((await bash.exec('echo /host/*')).stdout).not.toContain('accounts')
-		expect((await bash.exec('echo /host/accounts/*')).stdout).not.toContain('google.json')
+		expect((await bash.exec('echo /private/*')).stdout).not.toContain('accounts')
+		expect((await bash.exec('echo /private/accounts/*')).stdout).not.toContain('google.json')
 		expect((await bash.exec('ls /system')).stdout).toContain('user.md')
 		const grep = await bash.exec('grep -r SECRET /')
 		expect(`${grep.stdout}${grep.stderr}`).not.toContain('SECRET')
@@ -256,17 +256,17 @@ describe('denied prefixes', () => {
 
 	test('exists reads as absent (not an error), and writes are refused', async () => {
 		const vol = volume(memStorage())
-		await vol.mkdir('/host/accounts', { recursive: true })
-		await vol.writeFile('/host/accounts/google.json', enc('{}'))
+		await vol.mkdir('/private/accounts', { recursive: true })
+		await vol.writeFile('/private/accounts/google.json', enc('{}'))
 		const fs = volumeFs(vol, DENY)
-		expect(await fs.exists('/host/accounts/google.json')).toBe(false)
-		await expect(fs.readFile('/host/accounts/google.json')).rejects.toMatchObject({
+		expect(await fs.exists('/private/accounts/google.json')).toBe(false)
+		await expect(fs.readFile('/private/accounts/google.json')).rejects.toMatchObject({
 			code: 'EACCES'
 		})
-		await expect(fs.writeFile('/host/accounts/evil.json', 'x')).rejects.toMatchObject({
+		await expect(fs.writeFile('/private/accounts/evil.json', 'x')).rejects.toMatchObject({
 			code: 'EACCES'
 		})
-		await expect(fs.rm('/host/accounts', { recursive: true })).rejects.toMatchObject({
+		await expect(fs.rm('/private/accounts', { recursive: true })).rejects.toMatchObject({
 			code: 'EACCES'
 		})
 	})

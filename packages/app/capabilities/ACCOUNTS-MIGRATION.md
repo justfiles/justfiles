@@ -247,8 +247,8 @@ export function resolveAgentBackend(fs: Volume): Promise<AgentBackend | null> {
 - **Plaintext creds on the Volume (decision #2).** frieren's at-rest encryption is gone
   until a `secretCodec` is supplied. Re-introduce by passing an encrypting codec to
   `volumeAccountsStore` — no store-logic change. Track as a security follow-up.
-  **Update (#290/#291):** the lane moved from `/system/accounts` to the host-private
-  `/host/accounts`, which never replicates in either direction, so the bytes no longer
+  **Update (#290/#291):** the lane moved from `/system/accounts` to the private
+  `/private/accounts`, which never replicates in either direction, so the bytes no longer
   reach a client at all. Encryption at rest is #292 (this same codec seam).
 - **Dropped write ops (decision #3).** Agent loses `email send` / `calendar create/delete`
   in frieren. Re-add by expanding the `email`/`calendar` contracts + provider mints

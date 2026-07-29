@@ -1,5 +1,5 @@
 import { GENERATED_IMAGES_DIR } from '@justfiles/app/capabilities/image'
-import { HOST_PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
 import { describe, expect, test } from 'vitest'
 import * as paths from './paths.ts'
 import FILESYSTEM from './prompts/filesystem.md?raw'
@@ -43,8 +43,8 @@ describe('paths', () => {
 		expect(paths.PICTURES_DIR).toBe(GENERATED_IMAGES_DIR)
 	})
 
-	test('SECRET_PREFIXES derives from the fs host-private list (no second copy)', () => {
-		expect([...paths.SECRET_PREFIXES]).toEqual(HOST_PRIVATE_PREFIXES.filter((p) => p !== '/.state'))
+	test('SECRET_PREFIXES derives from the fs private list (no second copy)', () => {
+		expect([...paths.SECRET_PREFIXES]).toEqual(PRIVATE_PREFIXES.filter((p) => p !== '/.state'))
 	})
 
 	test('a session file sorts chronologically and carries its id', () => {

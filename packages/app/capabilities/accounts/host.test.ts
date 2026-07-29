@@ -392,7 +392,7 @@ describe('renameAccount', () => {
 	})
 })
 
-// The credential lane moved out of `/system` into the host-private `/host` root. The
+// The credential lane moved out of `/system` into the private `/private` root. The
 // relocation is a rename on the owning host, and it must never be able to break a boot.
 describe('migrateHostPrivateLane', () => {
 	const enc = new TextEncoder()
@@ -411,10 +411,29 @@ describe('migrateHostPrivateLane', () => {
 		await migrateHostPrivateLane(vol)
 
 		expect(await volumeAccountStore(vol).get('u@openai')).toMatchObject({ provider: 'chatgpt' })
-		expect(dec.decode(await vol.readFile('/host/connections/chatgpt/default.json'))).toBe('CONN')
+		expect(dec.decode(await vol.readFile('/private/connections/chatgpt/default.json'))).toBe('CONN')
 		// Vacated: an ordinary synced path again, so the delete clears stale replicas
 		expect(await vol.exists('/system/accounts')).toBe(false)
 		expect(await vol.exists('/system/connections')).toBe(false)
+	})
+
+	// `/host` was this lane's name for one unreleased branch. A dev volume that ran it
+	// must still end up at `/private` — and must not be left holding credentials at a
+	// path that is no longer private, hence no longer excluded from sync.
+	test('also relocates the unreleased /host name', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/host/accounts', { recursive: true })
+		await vol.writeFile(
+			'/host/accounts/u%40gmail.com.json',
+			enc.encode(
+				JSON.stringify({ id: 'u@gmail.com', provider: 'google', creds: { refresh: 'KEEP' } })
+			)
+		)
+		await migrateHostPrivateLane(vol)
+		expect(await volumeAccountStore(vol).get('u@gmail.com')).toMatchObject({
+			creds: { refresh: 'KEEP' }
+		})
+		expect(await vol.exists('/host/accounts')).toBe(false)
 	})
 
 	test('is a no-op on a volume that never had the legacy dirs, and is idempotent', async () => {

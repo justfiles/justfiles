@@ -46,7 +46,7 @@ type Props = {
 	// Local-first boot: return the local volume immediately and run the first
 	// sync in the background, instead of blocking boot until it settles.
 	localFirst?: boolean
-	// Paths THIS host never syncs, on top of the built-in host-private class (`/host`,
+	// Paths THIS host never syncs, on top of the built-in private class (`/private`,
 	// `/.state`) which it cannot weaken — see `syncIgnore`. Threaded to EVERY seam that
 	// cares: the wire filters, and the two destructive ones (`reconcileLocal`,
 	// `clientReset`), so an ignored path is also never deleted for being absent from a
@@ -143,7 +143,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	// ONE predicate for every ignore decision in this engine: the wire filters (inside
-	// the replicas) and the two destructive sweeps below. Built-in host-private class +
+	// the replicas) and the two destructive sweeps below. Built-in private class +
 	// this host's own `ignore`; a host can only widen it.
 	const isIgnored = syncIgnore(props.ignore)
 
@@ -323,7 +323,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * Delete local paths absent from the remote snapshot (child-before-parent),
-	 * skipping ignored subtrees (`/.state`, `/host`, this host's own ignores).
+	 * skipping ignored subtrees (`/.state`, `/private`, this host's own ignores).
 	 * Path-keyed (today's ino-based reconcile is replaced).
 	 */
 	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {

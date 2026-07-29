@@ -306,10 +306,10 @@ export function accountsCapabilities(
 	}
 }
 
-// One-off: the credential lane moved out of `/system` into the host-private `/host`
-// root, so it can never replicate (see @justfiles/fs HOST_PRIVATE_PREFIXES). Move rather
-// than copy — the vacated `/system` paths are ordinary synced paths again, so the delete
-// propagates and clears the stale copies earlier sync left in client replicas.
+// One-off: the credential lane moved out of `/system` into the `/private` root, so it
+// can never replicate (see @justfiles/fs PRIVATE_PREFIXES). Move rather than copy — the
+// vacated `/system` paths are ordinary synced paths again, so the delete propagates and
+// clears the stale copies earlier sync left in client replicas.
 // Entry-by-entry, because a failed first attempt (or a reseed that ran first) leaves BOTH
 // trees, and dropping the legacy one wholesale would discard a credential the user would
 // have to re-connect. The host's own record always wins; a legacy one only fills a gap.
@@ -318,8 +318,13 @@ export function accountsCapabilities(
 // Delete this function and its call sites once no live volume carries the old paths.
 export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
 	for (const [from, to] of [
-		['/system/accounts', '/host/accounts'],
-		['/system/connections', '/host/connections']
+		['/system/accounts', '/private/accounts'],
+		['/system/connections', '/private/connections'],
+		// `/host` was this lane's name for one unreleased branch: only a dev volume that
+		// ran it can carry these, and leaving them behind would let a path that is no
+		// longer private start replicating. Drop the pair once those volumes are gone.
+		['/host/accounts', '/private/accounts'],
+		['/host/connections', '/private/connections']
 	] as const) {
 		try {
 			if (!(await volume.exists(from))) continue

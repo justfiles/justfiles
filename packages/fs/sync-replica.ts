@@ -346,7 +346,7 @@ export function nativeChangeSource(
  * delegates detection to `changes` and adds `ChangeApplier` + `BlobStore` over
  * the `Storage` (`caps.pathApply` + the content store). `lazyContent` fixes
  * eager vs lazy hydration; `ignore` marks paths this replica never sends, never
- * accepts and never sweeps — composed with the built-in host-private class, which it
+ * accepts and never sweeps — composed with the built-in private class, which it
  * cannot weaken (see `syncIgnore`).
  */
 export function localSyncReplica(
@@ -463,8 +463,12 @@ export type SyncState = {
 
 /**
  * Prefixes that never cross the wire, in EITHER direction:
- *   /.state — this replica's own sync bookkeeping (engine-private, frozen)
- *   /host   — this host's private tree: `/host/accounts`, `/host/connections`, …
+ *   /.state  — this replica's own sync bookkeeping (engine-private, frozen)
+ *   /private — this host's private tree: `/private/accounts`, `/private/connections`, …
+ *
+ * Named for ACCESSIBILITY, like an access modifier: nobody outside this replica may
+ * have it. Ownership follows (the host that acquired a credential is the only one that
+ * can read it), but reachability is the rule being enforced.
  *
  * Credentials do not sync because no peer needs them: a capability routes to the host
  * that owns the credential, so the bytes are only ever read by the host that wrote
@@ -477,22 +481,22 @@ export type SyncState = {
  * the server reset (which resolves them to inodes in SQL), and frieren's profile-migration
  * skip list.
  */
-export const HOST_PRIVATE_PREFIXES = ['/.state', '/host'] as const
+export const PRIVATE_PREFIXES = ['/.state', '/private'] as const
 
 /**
  * A segment-aware prefix matcher — the primitive the built-in class and a host's own
- * `ignore` both use, so `/hostage` is a sibling of `/host`, not a child. Hand-rolling
+ * `ignore` both use, so `/privateer` is a sibling of `/private`, not a child. Hand-rolling
  * `startsWith` is the classic way to get this wrong.
  */
 export function ignorePrefixes(prefixes: readonly string[]): (path: string) => boolean {
 	return (p) => prefixes.some((d) => p === d || p.startsWith(`${d}/`))
 }
 
-const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
+const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
 
 /**
  * What a replica ignores: never sent, never accepted, and never swept by a reset —
- * the built-in host-private class, OR whatever else THIS host declines to replicate
+ * the built-in private class, OR whatever else THIS host declines to replicate
  * (a native daemon's `.DS_Store`, a build cache, …).
  *
  * The built-in class is a FLOOR, not a default: composing by OR means a host's `ignore`
@@ -502,7 +506,7 @@ const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
  * peer's push cannot edit it (see #290 D2).
  */
 export function syncIgnore(ignore?: (path: string) => boolean): (path: string) => boolean {
-	return ignore === undefined ? isHostPrivate : (p) => isHostPrivate(p) || ignore(p)
+	return ignore === undefined ? isPrivatePath : (p) => isPrivatePath(p) || ignore(p)
 }
 
 /**
