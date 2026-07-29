@@ -15,10 +15,11 @@ import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
 import {
-	hostPrivate,
-	isHostPrivatePath,
+	HOST_PRIVATE_PREFIXES,
+	ignorePrefixes,
 	journaledChangeSource,
-	localSyncReplica
+	localSyncReplica,
+	syncIgnore
 } from './sync-replica'
 import { bytes, sha256, text } from './sync-test-harness'
 import type { PathChange, SyncMeta } from './sync-wire'
@@ -94,11 +95,11 @@ function symlink(
 	}
 }
 
-function makeReplica(store: Storage, lazyContent = false, alsoPrivate?: (path: string) => boolean) {
+function makeReplica(store: Storage, lazyContent = false, ignore?: (path: string) => boolean) {
 	return localSyncReplica(store, journaledChangeSource(store), {
 		lazyContent,
 		localActorId: 'me',
-		alsoPrivate
+		ignore
 	})
 }
 
@@ -208,39 +209,42 @@ describe('isCanonicalPath', () => {
 	})
 })
 
-describe('isHostPrivatePath', () => {
+describe('the built-in host-private class', () => {
+	const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
 	it('matches each prefix itself AND its children', () => {
-		expect(isHostPrivatePath('/.state')).toBe(true)
-		expect(isHostPrivatePath('/.state/sync')).toBe(true)
-		expect(isHostPrivatePath('/host')).toBe(true)
-		expect(isHostPrivatePath('/host/accounts')).toBe(true)
-		expect(isHostPrivatePath('/host/accounts/a%40b.json')).toBe(true)
-		expect(isHostPrivatePath('/host/connections/chatgpt/default.json')).toBe(true)
+		expect(isHostPrivate('/.state')).toBe(true)
+		expect(isHostPrivate('/.state/sync')).toBe(true)
+		expect(isHostPrivate('/host')).toBe(true)
+		expect(isHostPrivate('/host/accounts')).toBe(true)
+		expect(isHostPrivate('/host/accounts/a%40b.json')).toBe(true)
+		expect(isHostPrivate('/host/connections/chatgpt/default.json')).toBe(true)
 	})
 
 	it('matches per path SEGMENT — a sibling is not a child', () => {
-		expect(isHostPrivatePath('/.stateful')).toBe(false)
-		expect(isHostPrivatePath('/hostage')).toBe(false)
-		expect(isHostPrivatePath('/hosts.md')).toBe(false)
-		expect(isHostPrivatePath('/system/accounts')).toBe(false) // relocated to /host
-		expect(isHostPrivatePath('/system/user.md')).toBe(false)
-		expect(isHostPrivatePath('/notes/host.md')).toBe(false)
-		expect(isHostPrivatePath('/notes/a')).toBe(false)
+		expect(isHostPrivate('/.stateful')).toBe(false)
+		expect(isHostPrivate('/hostage')).toBe(false)
+		expect(isHostPrivate('/hosts.md')).toBe(false)
+		expect(isHostPrivate('/system/accounts')).toBe(false) // relocated to /host
+		expect(isHostPrivate('/system/user.md')).toBe(false)
+		expect(isHostPrivate('/notes/host.md')).toBe(false)
+		expect(isHostPrivate('/notes/a')).toBe(false)
 	})
 })
 
-// A host composes its OWN never-replicate paths on top of the built-in class. The
-// composition is by OR, which is the whole safety property: an addition can widen the
-// boundary, never narrow it — so no host (or future caller) can make credentials sync.
-describe('hostPrivate', () => {
-	it('with no addition is exactly the built-in predicate', () => {
-		const p = hostPrivate()
+// A host composes its OWN never-sync paths on top of the built-in class. The composition
+// is by OR, which is the whole safety property: an `ignore` can widen the boundary, never
+// narrow it — so no host (or future caller) can make credentials sync.
+describe('syncIgnore', () => {
+	const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
+
+	it('with no ignore is exactly the built-in class', () => {
+		const p = syncIgnore()
 		for (const path of ['/host', '/host/accounts/a.json', '/.state/sync', '/notes/a', '/hostage'])
-			expect(p(path)).toBe(isHostPrivatePath(path))
+			expect(p(path)).toBe(isHostPrivate(path))
 	})
 
 	it('adds the host’s own paths, keeping the built-in class', () => {
-		const p = hostPrivate((path) => path.startsWith('/state/cache/') || path.endsWith('.DS_Store'))
+		const p = syncIgnore((path) => path.startsWith('/state/cache/') || path.endsWith('.DS_Store'))
 		expect(p('/state/cache/blobs')).toBe(true)
 		expect(p('/notes/.DS_Store')).toBe(true)
 		expect(p('/host/accounts/a.json')).toBe(true) // built-in, still private
@@ -248,8 +252,8 @@ describe('hostPrivate', () => {
 		expect(p('/state/other')).toBe(false)
 	})
 
-	it('CANNOT be weakened: an addition that says "nothing is private" changes nothing', () => {
-		const p = hostPrivate(() => false)
+	it('CANNOT be weakened: an ignore that says "nothing is ignored" changes nothing', () => {
+		const p = syncIgnore(() => false)
 		expect(p('/host')).toBe(true)
 		expect(p('/host/accounts/a.json')).toBe(true)
 		expect(p('/.state/sync')).toBe(true)
@@ -258,7 +262,7 @@ describe('hostPrivate', () => {
 
 	it('is not consulted for a path the built-in class already covers', () => {
 		const seen: string[] = []
-		const p = hostPrivate((path) => {
+		const p = syncIgnore((path) => {
 			seen.push(path)
 			return false
 		})
@@ -268,8 +272,8 @@ describe('hostPrivate', () => {
 		expect(seen).toEqual(['/notes/a'])
 	})
 
-	it('a throwing addition is the caller’s bug, surfaced not swallowed', () => {
-		const p = hostPrivate(() => {
+	it('a throwing ignore is the caller’s bug, surfaced not swallowed', () => {
+		const p = syncIgnore(() => {
 			throw new Error('bad predicate')
 		})
 		expect(p('/host')).toBe(true) // built-in short-circuit, never reaches it
@@ -455,23 +459,20 @@ describe('localSyncReplica', () => {
 		expect(await vol.exists('/.state/x')).toBe(false)
 	})
 
-	it('never emits a host addition from pathDeltas or pathScan', async () => {
+	it('never emits an ignored path from pathDeltas or pathScan', async () => {
 		const rows = [
 			{ seq: 1, change: put('/notes/a', '1', 'x') },
 			{ seq: 2, change: put('/state/cache/blob', '1', 'c') },
 			{ seq: 3, change: put('/notes/.DS_Store', '1', 'junk') }
 		]
-		const alsoPrivate = (p: string) => p.startsWith('/state/cache/') || p.endsWith('.DS_Store')
-		const deltas = await makeReplica(fakeJournalStore(rows), false, alsoPrivate).pathDeltas('', {})
+		const ignore = (p: string) => p.startsWith('/state/cache/') || p.endsWith('.DS_Store')
+		const deltas = await makeReplica(fakeJournalStore(rows), false, ignore).pathDeltas('', {})
 		expect(deltas.changes.map((c) => c.path)).toEqual(['/notes/a'])
-		const scan = await makeReplica(fakeJournalStore(rows), false, alsoPrivate).pathScan(
-			undefined,
-			{}
-		)
+		const scan = await makeReplica(fakeJournalStore(rows), false, ignore).pathScan(undefined, {})
 		expect(scan.changes.map((c) => c.path)).toEqual(['/notes/a'])
 	})
 
-	it('refuses to apply a host addition a peer sent, and keeps the local copy', async () => {
+	it('refuses to apply an ignored path a peer sent, and keeps the local copy', async () => {
 		const store = memStorage()
 		const vol = volume(store)
 		const replica = makeReplica(store, false, (p) => p.startsWith('/state/cache/'))

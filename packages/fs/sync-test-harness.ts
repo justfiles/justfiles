@@ -192,13 +192,13 @@ function parentDir(path: string): string {
 function makePeer(
 	storage: ReturnType<typeof memStorage>,
 	orphanCount: () => Promise<number>,
-	opts: { id: string; lazyContent?: boolean; alsoPrivate?: (path: string) => boolean }
+	opts: { id: string; lazyContent?: boolean; ignore?: (path: string) => boolean }
 ): Peer {
 	const vol = volume(storage)
 	const replica = localSyncReplica(storage, journaledChangeSource(storage), {
 		lazyContent: opts.lazyContent ?? false,
 		localActorId: opts.id,
-		alsoPrivate: opts.alsoPrivate
+		ignore: opts.ignore
 	})
 
 	const peer: Peer = {
@@ -294,20 +294,20 @@ export function wire(
 		lazyContent?: boolean
 		clientOrphans?: () => Promise<number>
 		serverOrphans?: () => Promise<number>
-		/** Extra never-replicate paths, per peer (a host's own policy — see hostPrivate). */
-		clientAlsoPrivate?: (path: string) => boolean
-		serverAlsoPrivate?: (path: string) => boolean
+		/** Extra never-sync paths, per peer (a host's own policy — see syncIgnore). */
+		clientIgnore?: (path: string) => boolean
+		serverIgnore?: (path: string) => boolean
 	}
 ): TwoPeers {
 	const zero = async () => 0
 	const client = makePeer(clientStorage, opts?.clientOrphans ?? zero, {
 		id: 'client',
 		lazyContent: opts?.lazyContent,
-		alsoPrivate: opts?.clientAlsoPrivate
+		ignore: opts?.clientIgnore
 	})
 	const server = makePeer(serverStorage, opts?.serverOrphans ?? zero, {
 		id: 'server',
-		alsoPrivate: opts?.serverAlsoPrivate
+		ignore: opts?.serverIgnore
 	})
 	client.remoteReplica = server.replica
 	server.remoteReplica = client.replica
@@ -397,8 +397,8 @@ export function wire(
 export function twoPeers(opts?: {
 	lazyContent?: boolean
 	makeBackend?: BackendFactory
-	clientAlsoPrivate?: (path: string) => boolean
-	serverAlsoPrivate?: (path: string) => boolean
+	clientIgnore?: (path: string) => boolean
+	serverIgnore?: (path: string) => boolean
 }): TwoPeers {
 	const make = opts?.makeBackend ?? memStorage
 	const c = trackedStorage(make)
@@ -407,8 +407,8 @@ export function twoPeers(opts?: {
 		lazyContent: opts?.lazyContent,
 		clientOrphans: c.orphanCount,
 		serverOrphans: s.orphanCount,
-		clientAlsoPrivate: opts?.clientAlsoPrivate,
-		serverAlsoPrivate: opts?.serverAlsoPrivate
+		clientIgnore: opts?.clientIgnore,
+		serverIgnore: opts?.serverIgnore
 	})
 }
 

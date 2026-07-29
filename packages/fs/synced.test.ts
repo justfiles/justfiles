@@ -297,13 +297,13 @@ describe('synced (lifecycle)', () => {
 
 	// Same for reconcile: a path the peer was never allowed to have must not be deleted
 	// for being "absent from the remote".
-	it('reconcile keeps a host addition the remote never had', async () => {
+	it('reconcile keeps a host ignore the remote never had', async () => {
 		const remote = memStorage()
 		await volume(remote).writeFile('/keep.txt', enc.encode('keep'))
 		const local = memStorage()
-		const alsoPrivate = (p: string) => p.startsWith('/state/cache/')
+		const ignore = (p: string) => p.startsWith('/state/cache/')
 
-		const vol1 = await synced({ local, remote, interval: 99_999, alsoPrivate })
+		const vol1 = await synced({ local, remote, interval: 99_999, ignore })
 		await vol1.flush()
 		await vol1.writeFile('/pushed.txt', enc.encode('mine'))
 		await vol1.flush() // everPushed => reconcile runs on re-bootstrap
@@ -319,7 +319,7 @@ describe('synced (lifecycle)', () => {
 		delete state.pullCursor
 		await lv.writeFile('/.state/sync', enc.encode(JSON.stringify(state)))
 
-		const vol2 = track(await synced({ local, remote, interval: 99_999, alsoPrivate }))
+		const vol2 = track(await synced({ local, remote, interval: 99_999, ignore }))
 		await vol2.flush()
 		expect(await vol2.exists('/stray.md')).toBe(false) // reconciled away
 		expect(dec.decode(await vol2.readFile('/state/cache/blob'))).toBe('MINE')
@@ -690,7 +690,7 @@ describe('synced (generation / client-reset)', () => {
 				local,
 				remote: () => server.replica,
 				interval: 99_999,
-				alsoPrivate: (p) => p.startsWith('/state/cache/')
+				ignore: (p) => p.startsWith('/state/cache/')
 			})
 		)
 		await vol.mkdir('/state/cache', { recursive: true })
@@ -701,9 +701,9 @@ describe('synced (generation / client-reset)', () => {
 		expect(dec.decode(await vol.readFile('/state/cache/blob'))).toBe('MINE') // target intact
 	})
 
-	// The host's OWN additions are host-private in the FULL sense: a reset must not
-	// discard them either, or `alsoPrivate` would be a wire filter with a data-loss hole.
-	it('takeTheirs() keeps a host addition, not just the built-in root', async () => {
+	// A host's OWN ignores are host-private in the FULL sense: a reset must not discard
+	// them either, or `ignore` would be a wire filter with a data-loss hole.
+	it('takeTheirs() keeps a host ignore, not just the built-in root', async () => {
 		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
 		const local = memStorage()
 		const vol = track(
@@ -711,7 +711,7 @@ describe('synced (generation / client-reset)', () => {
 				local,
 				remote: () => server.replica,
 				interval: 99_999,
-				alsoPrivate: (p) => p.startsWith('/state/cache/')
+				ignore: (p) => p.startsWith('/state/cache/')
 			})
 		)
 		await vol.mkdir('/state/cache', { recursive: true })

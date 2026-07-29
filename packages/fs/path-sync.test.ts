@@ -186,13 +186,13 @@ describe('path-sync semantics', () => {
 		expect(await server.exists('/host/connections/chatgpt/default.json')).toBe(false)
 	})
 
-	// A host's OWN never-replicate paths (hostPrivate's `alsoPrivate`) behave exactly
+	// A host's OWN never-sync paths (`ignore`) behave exactly
 	// like the built-in class: filtered on the way out, refused on the way in.
-	test('a host addition never crosses the wire, in either direction', async () => {
+	test('a host ignore never crosses the wire, in either direction', async () => {
 		const cache = (p: string) => p.startsWith('/state/cache/') || p.endsWith('.DS_Store')
 		const { client, server, syncBoth, pushedChanges } = twoPeers({
-			clientAlsoPrivate: cache,
-			serverAlsoPrivate: cache
+			clientIgnore: cache,
+			serverIgnore: cache
 		})
 		await client.writeFile('/state/cache/blob', bytes('C'))
 		await client.writeFile('/notes/.DS_Store', bytes('junk'))
@@ -212,9 +212,9 @@ describe('path-sync semantics', () => {
 
 	// Asymmetry is legal (each host states its own policy) and must stay inert rather
 	// than fight: the strict peer neither sends nor accepts, the lax peer keeps its own.
-	test('an addition on ONE peer only still cannot leak in either direction', async () => {
+	test('an ignore on ONE peer only still cannot leak in either direction', async () => {
 		const { client, server, syncBoth } = twoPeers({
-			clientAlsoPrivate: (p) => p.startsWith('/state/cache/')
+			clientIgnore: (p) => p.startsWith('/state/cache/')
 		})
 		await client.writeFile('/state/cache/blob', bytes('C'))
 		await server.writeFile('/state/cache/blob', bytes('S'))

@@ -345,16 +345,16 @@ export function nativeChangeSource(
  * `ChangeSource` (journaled for owned backends, native for scan+diff). It
  * delegates detection to `changes` and adds `ChangeApplier` + `BlobStore` over
  * the `Storage` (`caps.pathApply` + the content store). `lazyContent` fixes
- * eager vs lazy hydration; the host-private paths are excluded here (hard path
- * rule) on top of the delegated `changes` — `alsoPrivate` adds this host's own
- * never-replicate paths to the built-in class (see `hostPrivate`).
+ * eager vs lazy hydration; `ignore` marks paths this replica never sends, never
+ * accepts and never sweeps — composed with the built-in host-private class, which it
+ * cannot weaken (see `syncIgnore`).
  */
 export function localSyncReplica(
 	storage: Storage,
 	changes: ChangeSource,
-	opts: { lazyContent: boolean; localActorId: string; alsoPrivate?: (path: string) => boolean }
+	opts: { lazyContent: boolean; localActorId: string; ignore?: (path: string) => boolean }
 ): SyncReplica {
-	const isPrivate = hostPrivate(opts.alsoPrivate)
+	const isIgnored = syncIgnore(opts.ignore)
 	const requireContent = (): ContentStore => {
 		const content = storage.caps?.content
 		if (!content) throw new Error('backend exposes no content store (caps.content)')
@@ -367,21 +367,20 @@ export function localSyncReplica(
 	}
 	return {
 		async pathDeltas(cursor, opts) {
-			// Hard host-private exclusion (see hostPrivate): local-only state, credentials
-			// and this host's own additions never cross the wire, enforced here so a second
-			// volume(storage) can't bypass it.
+			// Hard exclusion (see syncIgnore): local-only state, credentials and this host's
+			// own ignores never cross the wire, enforced here so a second volume(storage)
+			// can't bypass it.
 			const res = await changes.pathDeltas(cursor, opts)
-			return { ...res, changes: res.changes.filter((c) => !isPrivate(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isIgnored(c.path)) }
 		},
 		async pathScan(page, opts) {
 			const res = await changes.pathScan(page, opts)
-			return { ...res, changes: res.changes.filter((c) => !isPrivate(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isIgnored(c.path)) }
 		},
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
-			// Hard host-private exclusion (see hostPrivate): a peer can never inject
-			// local-only state or a credential, enforced here so a second volume(storage)
-			// can't bypass it.
-			const admissible = incoming.filter((c) => !isPrivate(c.path))
+			// Hard exclusion (see syncIgnore): a peer can never inject local-only state or a
+			// credential, enforced here so a second volume(storage) can't bypass it.
+			const admissible = incoming.filter((c) => !isIgnored(c.path))
 			const pathApply = requirePathApply()
 			// Deterministic LWW against the CURRENT local state, read before applying:
 			// keep only changes that beat their local path (numeric version, then a
@@ -471,28 +470,39 @@ export type SyncState = {
  * that owns the credential, so the bytes are only ever read by the host that wrote
  * them. A top-level ROOT, not a subtree of `/system`: a never-sync lane nested under a
  * synced tree dies with any `rm -r` of its ancestor (`clientReset` / `reconcileLocal`),
- * and `/system` is exactly the tree we merge across hosts. Matching is path-SEGMENT-
- * aware, so `/hostage` is a sibling, not a child.
+ * and `/system` is exactly the tree we merge across hosts.
+ *
+ * Kept as an enumerable LIST, not just a predicate, because three consumers outside
+ * sync need to name these paths: the agent shell's deny-list (`paths.SECRET_PREFIXES`),
+ * the server reset (which resolves them to inodes in SQL), and frieren's profile-migration
+ * skip list.
  */
 export const HOST_PRIVATE_PREFIXES = ['/.state', '/host'] as const
 
-export function isHostPrivatePath(p: string): boolean {
-	return HOST_PRIVATE_PREFIXES.some((d) => p === d || p.startsWith(`${d}/`))
+/**
+ * A segment-aware prefix matcher — the primitive the built-in class and a host's own
+ * `ignore` both use, so `/hostage` is a sibling of `/host`, not a child. Hand-rolling
+ * `startsWith` is the classic way to get this wrong.
+ */
+export function ignorePrefixes(prefixes: readonly string[]): (path: string) => boolean {
+	return (p) => prefixes.some((d) => p === d || p.startsWith(`${d}/`))
 }
 
+const isHostPrivate = ignorePrefixes(HOST_PRIVATE_PREFIXES)
+
 /**
- * The effective host-private predicate: the built-in class ABOVE, plus whatever else
- * THIS host never replicates (a native daemon's `.DS_Store`, a build cache, …).
+ * What a replica ignores: never sent, never accepted, and never swept by a reset —
+ * the built-in host-private class, OR whatever else THIS host declines to replicate
+ * (a native daemon's `.DS_Store`, a build cache, …).
  *
- * Composed by OR, so a host addition can only ever widen the boundary — it cannot
- * weaken the credential class, whoever passes it. Kept a predicate rather than a file
- * format on purpose: the rule stays code-owned, so it cannot be edited by an app, the
- * agent's shell, or a peer's push (see #290 D2), and every whole-tree deleter
- * (`clientReset`, `reconcileLocal`, the server reset) can still be reviewed against a
- * set its host states in source.
+ * The built-in class is a FLOOR, not a default: composing by OR means a host's `ignore`
+ * can only widen the boundary, so no caller — present or future — can make credentials
+ * sync by passing the wrong thing (or by forgetting to include them). And it stays a
+ * predicate in CODE rather than a `.syncignore` file, so an app, the agent's shell or a
+ * peer's push cannot edit it (see #290 D2).
  */
-export function hostPrivate(also?: (path: string) => boolean): (path: string) => boolean {
-	return also === undefined ? isHostPrivatePath : (p) => isHostPrivatePath(p) || also(p)
+export function syncIgnore(ignore?: (path: string) => boolean): (path: string) => boolean {
+	return ignore === undefined ? isHostPrivate : (p) => isHostPrivate(p) || ignore(p)
 }
 
 /**

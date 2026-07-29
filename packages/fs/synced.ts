@@ -3,13 +3,13 @@ import type { Storage } from './storage'
 import {
 	type BlobStore,
 	GenerationStaleError,
-	hostPrivate,
 	journaledChangeSource,
 	LineageStaleError,
 	localSyncReplica,
 	PAGE,
 	type SyncReplica,
-	type SyncState
+	type SyncState,
+	syncIgnore
 } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { parseVersion } from './sync-wire'
@@ -46,17 +46,17 @@ type Props = {
 	// Local-first boot: return the local volume immediately and run the first
 	// sync in the background, instead of blocking boot until it settles.
 	localFirst?: boolean
-	// Paths THIS host never replicates, on top of the built-in host-private class
-	// (`/host`, `/.state`) which it cannot weaken — see `hostPrivate`. Threaded to
-	// EVERY seam that cares: the wire filters, and the two destructive ones
-	// (`reconcileLocal`, `clientReset`), so an excluded path is also never deleted
-	// for being absent from a peer that was never allowed to have it.
+	// Paths THIS host never syncs, on top of the built-in host-private class (`/host`,
+	// `/.state`) which it cannot weaken — see `syncIgnore`. Threaded to EVERY seam that
+	// cares: the wire filters, and the two destructive ones (`reconcileLocal`,
+	// `clientReset`), so an ignored path is also never deleted for being absent from a
+	// peer that was never allowed to have it.
 	//
 	// CLIENT/DAEMON side only. The server's replica (`createFsApi`) deliberately does
 	// not take this: its reset (`resetVolume`) preserves the built-in class by walking
-	// dirents in SQL, and it cannot evaluate a predicate — so a server-side addition
+	// dirents in SQL, and it cannot evaluate a predicate — so a server-side ignore
 	// would silently not survive a take-mine.
-	alsoPrivate?: (path: string) => boolean
+	ignore?: (path: string) => boolean
 }
 
 // What the sync loop knows about replication. Network/auth states (offline,
@@ -142,16 +142,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		} catch {}
 	}
 
-	// ONE predicate for every host-private decision in this engine: the wire filters
-	// (inside the replicas) and the two destructive paths below. Built-in class + this
-	// host's own additions; a host can only widen it.
-	const isPrivate = hostPrivate(props.alsoPrivate)
+	// ONE predicate for every ignore decision in this engine: the wire filters (inside
+	// the replicas) and the two destructive sweeps below. Built-in host-private class +
+	// this host's own `ignore`; a host can only widen it.
+	const isIgnored = syncIgnore(props.ignore)
 
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
 		lazyContent,
 		localActorId: id,
-		alsoPrivate: props.alsoPrivate
+		ignore: props.ignore
 	})
 
 	// Topology selection — the ONE place client<->server differs from P2P. Both
@@ -172,7 +172,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
 					lazyContent,
 					localActorId: id,
-					alsoPrivate: props.alsoPrivate
+					ignore: props.ignore
 				})
 
 	// The client<->server handshake, run ONCE before the first sync. A local peer
@@ -296,17 +296,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	/**
-	 * Delete a synced path, PRESERVING host-private paths at any depth: recurse, skip
-	 * what `isPrivate` claims, and drop a directory only once it is empty.
+	 * Delete a synced path, PRESERVING ignored paths at any depth: recurse, skip what
+	 * `isIgnored` claims, and drop a directory only once it is empty.
 	 *
-	 * A plain `rm -r` of an ancestor would take a nested private path with it — the
-	 * built-in class is top-level roots, but `alsoPrivate` is a predicate, so a host's
-	 * own additions can sit anywhere (`/state/cache/**`, `**\/.DS_Store`). Walking costs
+	 * A plain `rm -r` of an ancestor would take a nested ignored path with it — the
+	 * built-in class is top-level roots, but `ignore` is a predicate, so a host's own
+	 * ignores can sit anywhere (`/state/cache/**`, `**\/.DS_Store`). Walking costs
 	 * one readdir per directory, on operations (a lineage reset, a re-bootstrap) that are
 	 * exceptional by nature.
 	 */
 	async function rmSynced(path: string): Promise<void> {
-		if (isPrivate(path)) return
+		if (isIgnored(path)) return
 		// lstat, not readdir: a symlink to a directory must be unlinked, never descended.
 		const st = await localVol.lstat(path).catch(() => undefined)
 		if (st === undefined) return
@@ -323,17 +323,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * Delete local paths absent from the remote snapshot (child-before-parent),
-	 * skipping host-private subtrees (`/.state`, `/host`, this host's additions).
+	 * skipping ignored subtrees (`/.state`, `/host`, this host's own ignores).
 	 * Path-keyed (today's ino-based reconcile is replaced).
 	 */
 	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {
 		// Delete local paths absent from the remote snapshot, child-before-parent,
-		// skipping host-private subtrees (the remote never had them to begin with).
+		// skipping ignored subtrees (the remote never had them to begin with).
 		const localPaths: string[] = []
 		async function walk(dir: string): Promise<void> {
 			for (const e of await localVol.readdir(dir)) {
 				const p = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
-				if (isPrivate(p)) continue
+				if (isIgnored(p)) continue
 				localPaths.push(p)
 				if (e.type === FileType.Directory) await walk(p)
 			}
@@ -347,7 +347,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * "Take theirs": discard this device's local replica and re-pull. Delete every
-	 * synced path (host-private roots are skipped — they are this host's, not the
+	 * synced path (ignored paths are skipped — they are this host's, not the
 	 * server's to discard), then clear the cursors
 	 * so the next cycle re-bootstraps fresh against the current server lineage. The
 	 * cleared `pushCursor` also resets `everPushed`, so the re-bootstrap adopts the
