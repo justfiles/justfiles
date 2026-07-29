@@ -307,9 +307,12 @@ export function accountsCapabilities(
 }
 
 // One-off: the credential lane moved out of `/system` into the host-private `/host`
-// root, so it can never replicate (see @justfiles/fs HOST_PRIVATE_PREFIXES). Rename
-// rather than copy — the vacated `/system` paths are ordinary synced paths again, so the
-// delete propagates and clears the stale copies earlier sync left in client replicas.
+// root, so it can never replicate (see @justfiles/fs HOST_PRIVATE_PREFIXES). Move rather
+// than copy — the vacated `/system` paths are ordinary synced paths again, so the delete
+// propagates and clears the stale copies earlier sync left in client replicas.
+// Entry-by-entry, because a failed first attempt (or a reseed that ran first) leaves BOTH
+// trees, and dropping the legacy one wholesale would discard a credential the user would
+// have to re-connect. The host's own record always wins; a legacy one only fills a gap.
 // Best-effort by design: a host must boot even if this fails, and the only record on a
 // real volume is the credential-less platform AI account, which `ensureAccount` reseeds.
 // Delete this function and its call sites once no live volume carries the old paths.
@@ -320,12 +323,12 @@ export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
 	] as const) {
 		try {
 			if (!(await volume.exists(from))) continue
-			// Already relocated (or re-seeded): the new tree wins, the old one is dropped.
-			if (await volume.exists(to)) await volume.rm(from, { recursive: true, force: true })
-			else {
-				await volume.mkdir('/host', { recursive: true })
-				await volume.rename(from, to)
+			await volume.mkdir(to, { recursive: true })
+			for (const entry of await volume.readdir(from)) {
+				const target = `${to}/${entry.name}`
+				if (!(await volume.exists(target))) await volume.rename(`${from}/${entry.name}`, target)
 			}
+			await volume.rm(from, { recursive: true, force: true })
 		} catch (e) {
 			console.warn(`accounts: could not relocate ${from} to ${to}`, e)
 		}

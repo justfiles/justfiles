@@ -426,23 +426,43 @@ describe('migrateHostPrivateLane', () => {
 		expect(await accounts.list()).toMatchObject([{ id: 'frieren' }])
 	})
 
-	test('drops the legacy dir when the host already has records at the new path', async () => {
+	// A first attempt that failed (or a reseed that ran first) leaves BOTH trees. The
+	// legacy tree must not be dropped wholesale then: a record the host does not already
+	// have is a credential the user would otherwise have to re-connect.
+	test('fills gaps from the legacy dir, and the host’s own record wins a collision', async () => {
 		const vol = volume(memStorage())
-		await volumeAccountStore(vol).put({ id: 'frieren', provider: 'frieren', creds: {} })
+		const accounts = volumeAccountStore(vol)
+		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
 		await vol.mkdir('/system/accounts', { recursive: true })
-		await vol.writeFile('/system/accounts/stale.json', enc.encode('{}'))
+		await vol.writeFile(
+			'/system/accounts/u%40gmail.com.json',
+			enc.encode(
+				JSON.stringify({ id: 'u@gmail.com', provider: 'google', creds: { refresh: 'KEEP' } })
+			)
+		)
+		// Same id on both sides: the host's live record must not be overwritten by the copy.
+		await vol.writeFile(
+			'/system/accounts/frieren.json',
+			enc.encode(JSON.stringify({ id: 'frieren', provider: 'frieren', creds: { stale: true } }))
+		)
+
 		await migrateHostPrivateLane(vol)
+
+		expect(await accounts.get('u@gmail.com')).toMatchObject({ creds: { refresh: 'KEEP' } })
+		expect(await accounts.get('frieren')).toMatchObject({ creds: {} })
 		expect(await vol.exists('/system/accounts')).toBe(false)
-		expect(await volumeAccountStore(vol).get('frieren')).toMatchObject({ id: 'frieren' })
 	})
 
 	test('never throws: a volume that refuses the move still lets the host boot', async () => {
 		const vol = volume(memStorage())
 		await vol.mkdir('/system/accounts', { recursive: true })
+		await vol.writeFile('/system/accounts/a.json', enc.encode('{}'))
 		const boom = { ...vol, rename: async () => Promise.reject(new Error('EPERM')) }
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 		await expect(migrateHostPrivateLane(boom)).resolves.toBeUndefined()
 		expect(warn).toHaveBeenCalled()
+		// The legacy record is left where it is — a failed move must not delete it.
+		expect(await vol.exists('/system/accounts/a.json')).toBe(true)
 		warn.mockRestore()
 	})
 })
