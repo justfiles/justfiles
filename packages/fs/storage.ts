@@ -233,6 +233,13 @@ export interface Storage {
 
 	/**
 	 * Replace the entire content of an inode atomically.
+	 *
+	 * Throws ENOENT if the inode is gone. It is not enough to skip the metadata update
+	 * (which is what "silently" looked like): a caller that resolved a path a moment ago
+	 * and is now writing its bytes has to hear that the file was removed underneath it,
+	 * or it reports a save that stored nothing reachable. The check belongs in the same
+	 * commit as the write — so it is the backend's, not the VFS's.
+	 *
 	 * The backend MUST update size and contentHash in metadata as a side effect,
 	 * and MUST stamp `mtimeNs`/`ctimeNs` with the time of the write — in the same
 	 * commit, so the journal row a peer receives carries the new time. Callers that

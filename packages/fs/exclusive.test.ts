@@ -67,6 +67,23 @@ test('an update edits what is there and refuses to invent it', async () => {
 	expect(dec.decode(await vol.readFile('/Journeys/Kyoto.md'))).toBe('edited')
 })
 
+test('a write whose file was removed mid-flight fails instead of storing an orphan', async () => {
+	// The gap `update: true` cannot close on its own: the path resolved, and the file was
+	// removed before the bytes were stored. Skipping the metadata update (what the
+	// backends used to do) leaves content nothing can reach and tells the caller it saved
+	// — which is how an editor clears its unsaved marker over a note that is gone.
+	const vol = makeVol()
+	await vol.writeFile('/Kyoto.md', enc.encode('first'))
+	const ino = (await vol.stat('/Kyoto.md')).ino
+	const write = vol.writeFile('/Kyoto.md', enc.encode('second'), { update: true })
+	await vol.rm('/Kyoto.md') // …while those bytes are in flight
+	await expect(write).rejects.toThrow(/^ENOENT/)
+	expect(await vol.exists('/Kyoto.md')).toBe(false)
+	// And nothing was left behind under the old inode.
+	await expect(vol.readFile('/Kyoto.md')).rejects.toThrow()
+	expect(ino).toBeTruthy()
+})
+
 test('a directory in the way is refused, not clobbered', async () => {
 	const vol = makeVol()
 	await vol.mkdir('/Trips')

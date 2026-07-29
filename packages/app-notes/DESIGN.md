@@ -278,6 +278,25 @@ So `save` is a **procedure**: `flush()` awaits the actual write and answers its 
 buffer that produced it is still the buffer. The `error` field left reducer state entirely with it — "the last
 error" was never a fact about the session, it was a message in a bottle. Nothing else in this app files one.
 
+Symmetrically: **a write that did not land leaves the buffer unsaved.** `flush` clears `dirty` optimistically
+because the debounce and every transition read it, so the one thing each of its branches has to do on failure
+is put it back (`stillUnsaved`). Missing that in the *create* branch was the quieter half of the same bug: the
+text sits in the editor looking saved, and the next New/open/close skips the flush that would have retried it —
+the user's words dropped with no error anywhere. With it, a create that fails everywhere (disk full, volume
+unreachable) keeps the buffer, says so, and the next transition writes it:
+
+```
+type into a scratch note, with `create` failing at the wire
+  status: Could not save this note — the volume is unreachable
+  editor: "Doomed note\nsome words"        ← kept, and still unsaved
+unbreak, press New (which flushes first)
+  /Doomed note.md                          ← the flush retried, because `dirty` was still true
+```
+
+The same shape one level down: a read in flight when the selection moves on must be **discarded**, not
+applied. Otherwise "New" during a read repopulates the editor with a note nothing is pointing at — clean, so
+the next keystroke would fork it into a copy.
+
 The read side is the same rule pointed the other way: `readNote` does no `exists` probe and no type check,
 because **the read is the check** and its two errors are exactly the two questions worth asking. `noteSchema`
 can only judge a spelling, and a *folder* called `Archive.md` passes every lexical test there is — `readFile`
@@ -285,6 +304,19 @@ answers EISDIR; a note that has been moved or deleted answers ENOENT. Answering 
 string was the trap: it hands the editor a blank buffer to save over whatever the path has become. Now a path
 we cannot read is one we do not stay pointed at, and both failures get one recovery — detach, keep a dirty
 buffer, say which happened.
+
+**1a⁗ · A content write must not orphan, and must not resurrect.** `update: true` proves the path *at the
+resolve*, and the bytes are stored a moment later — so the note can be deleted in between. Every backend
+handled that by skipping the metadata update and returning success: the content went into the store attached
+to nothing, and the editor cleared its unsaved marker over a note that no longer existed. Silent data loss
+dressed as a successful save.
+
+The requirement therefore lives where the content lands, not one layer up: `putBlob` throws ENOENT if the
+inode is gone (`packages/fs/storage.ts`). Memory checks in the same synchronous step that writes, IndexedDB
+reads the inode *first* inside the transaction that writes, and the native backend opens `r+` rather than `w`
+— the OS resolves the path and hands back a handle to the file that is *there*, so a deleted note cannot be
+written back into existence. Three backends, one sentence in the contract: **a write to something that is gone
+is a failure, not a no-op.**
 
 **1b · A check is not a guarantee unless it is the operation — WHERE THE OPERATION EXISTS.** The first
 version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is a *hint*

@@ -462,11 +462,18 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			// in one turn coalesce into a single watch event. The signal is a
 			// change-notification only; `putBlob` resolves after the store commits, and
 			// its awaiting caller (writeFile) sees the new content/hash.
+			// Fail before announcing anything if the inode has already gone.
+			if (!metas.has(ino)) throw new Error(`ENOENT: ino ${ino}`)
 			emit({ ino, kind: 'content', source: options?.source })
 			const hash = await sha256Hex(data)
 			hashBlobs.set(hash, data.slice())
+			// Re-read AFTER the hash: that await is a window, and this is the check that
+			// matters because nothing separates it from the write below. Storing the content
+			// of an inode that no longer exists would be an orphan blob and a lie to the
+			// caller — a save that saved nothing reachable.
 			const meta = metas.get(ino)
-			if (meta) {
+			if (!meta) throw new Error(`ENOENT: ino ${ino}`)
+			{
 				// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
 				// stamped before the journal row is built so the new time ships with it.
 				const stamp = BigInt(Date.now()) * 1_000_000n

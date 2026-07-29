@@ -10,8 +10,7 @@ import {
 	readdir,
 	readFile,
 	rmdir,
-	unlink,
-	writeFile
+	unlink
 } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
@@ -187,7 +186,17 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		},
 
 		async putBlob(ino, data, options) {
-			await writeFile(getPath(ino), data)
+			// `r+`, never `w`: the OS resolves the path and hands back a handle to the file
+			// that is THERE, so a note deleted since it was resolved fails ENOENT instead of
+			// being written back into existence. `writeFile` would recreate it, and the
+			// caller would be told its save succeeded.
+			const handle = await open(getPath(ino), 'r+')
+			try {
+				await handle.truncate(0)
+				await handle.write(data, 0)
+			} finally {
+				await handle.close()
+			}
 			emit({ ino, kind: 'content', source: options?.source })
 		},
 
