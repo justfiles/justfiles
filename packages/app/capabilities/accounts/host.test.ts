@@ -417,25 +417,6 @@ describe('migrateHostPrivateLane', () => {
 		expect(await vol.exists('/system/connections')).toBe(false)
 	})
 
-	// `/host` was this lane's name for one unreleased branch. A dev volume that ran it
-	// must still end up at `/private` — and must not be left holding credentials at a
-	// path that is no longer private, hence no longer excluded from sync.
-	test('also relocates the unreleased /host name', async () => {
-		const vol = volume(memStorage())
-		await vol.mkdir('/host/accounts', { recursive: true })
-		await vol.writeFile(
-			'/host/accounts/u%40gmail.com.json',
-			enc.encode(
-				JSON.stringify({ id: 'u@gmail.com', provider: 'google', creds: { refresh: 'KEEP' } })
-			)
-		)
-		await migrateHostPrivateLane(vol)
-		expect(await volumeAccountStore(vol).get('u@gmail.com')).toMatchObject({
-			creds: { refresh: 'KEEP' }
-		})
-		expect(await vol.exists('/host/accounts')).toBe(false)
-	})
-
 	test('is a no-op on a volume that never had the legacy dirs, and is idempotent', async () => {
 		const vol = volume(memStorage())
 		const accounts = volumeAccountStore(vol)

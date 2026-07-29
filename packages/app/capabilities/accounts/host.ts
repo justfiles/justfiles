@@ -319,12 +319,7 @@ export function accountsCapabilities(
 export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
 	for (const [from, to] of [
 		['/system/accounts', '/private/accounts'],
-		['/system/connections', '/private/connections'],
-		// `/host` was this lane's name for one unreleased branch: only a dev volume that
-		// ran it can carry these, and leaving them behind would let a path that is no
-		// longer private start replicating. Drop the pair once those volumes are gone.
-		['/host/accounts', '/private/accounts'],
-		['/host/connections', '/private/connections']
+		['/system/connections', '/private/connections']
 	] as const) {
 		try {
 			if (!(await volume.exists(from))) continue

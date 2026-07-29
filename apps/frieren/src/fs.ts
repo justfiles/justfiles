@@ -353,13 +353,12 @@ export function flushActiveVolume(): void {
 const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'private', 'state', 'system'])
 // Copied subtree: user data + personalized identity only — never the sync journal, the
 // `/private` tree (credentials!), the active-AI selection, app bytes, or per-app UI
-// state. `/system/accounts`, `/system/connections` and `/host` are where credentials
-// lived before `/private`: kept here so a migration from a not-yet-relocated volume
-// can't carry them over.
+// state. `/system/accounts` + `/system/connections` are where credentials lived before
+// `/private`: kept here so a migration from a not-yet-relocated volume can't carry them
+// over.
 const MIGRATE_SKIP = [
 	'/.state',
 	'/private',
-	'/host',
 	'/system/accounts',
 	'/system/connections',
 	'/system/active-ai.json',
