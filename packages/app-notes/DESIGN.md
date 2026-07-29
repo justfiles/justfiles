@@ -120,7 +120,7 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
 | `readNote({ path })` | procedure | both | Body as text |
 | `importNotes({ dir?, files })` | procedure | both | Bulk write, relative to `dir` (default `/`); merges folders, numbers a clashing note rather than overwriting — the vault-import half (§9) |
-| `remove({ path })` | procedure | **gui** | Destructive: a note, or a folder and everything in it. Clears the editor if the open note went with it |
+| `remove({ path })` | procedure | **gui** | Destructive: a note, or a folder and everything in it. Reports the deletion through an internal `deleted` edge, which clears the editor if the open note went with it |
 | `fileChanged` / `treeChanged` | `t.fromEvent` | internal | The two watch signals below |
 
 Notes on choices:
@@ -313,6 +313,13 @@ Three of those are worth naming, because they generalise:
 - **An operation that must un-happen needs a way back.** Deleting the open note discards its buffer *before*
   the delete lands (a pending write would put the note straight back), so a delete that fails has to restore
   what it emptied — `restore(snapshot)`, one method, one test, and the user keeps both the note and the edits.
+
+And its sibling, found the same way: **a procedure's `app.state` is a snapshot, so a question about the
+current selection cannot be answered inside one.** `remove` used to test containment itself and then dispatch
+an unconditional `newNote`, which cleared a selection another client had moved elsewhere while `rm` was in
+flight — and left a note *opened under the doomed folder* in that window selected. So the procedure reports
+what it deleted (`deleted`) and the reducer, which sees the current queued state, decides what that means.
+Same shape as `moved`: **procedures report facts, edges apply rules.**
 
 Two more, both about **reading an answer out of something that only guarantees order**. `create` returned
 `app.settled(seq)`, which resolves with the state after the app's queue drains — so another client's `open`

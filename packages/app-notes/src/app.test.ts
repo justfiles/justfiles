@@ -494,7 +494,30 @@ test('removing the folder the open note lives in clears the editor', async () =>
 	const h = handle({ ...initialState, openPath: '/Trips/Kyoto.md' }, vol.invoke)
 	await app.runProcedure('remove', { path: '/Trips' }, h.app)
 	expect(vol.store.size).toBe(0)
-	expect(h.dispatched).toEqual(['newNote'])
+	// The procedure reports the deletion; whether it clears the editor is the reducer's
+	// call, made against the state at that moment.
+	expect(h.dispatched).toEqual(['deleted'])
+
+	const cleared = await app.dispatch(
+		{ type: 'deleted', params: { path: '/Trips' } },
+		{ state: { ...initialState, openPath: '/Trips/Kyoto.md' } }
+	)
+	expect(cleared.state?.openPath).toBeNull()
+
+	// A selection somebody moved elsewhere while `rm` was in flight is NOT cleared…
+	const elsewhere = await app.dispatch(
+		{ type: 'deleted', params: { path: '/Trips' } },
+		{ state: { ...initialState, openPath: '/Groceries.md' } }
+	)
+	expect(elsewhere.state?.openPath).toBe('/Groceries.md')
+
+	// …and one opened UNDER the doomed folder in that window is, which a snapshot taken
+	// before the delete could not have known.
+	const under = await app.dispatch(
+		{ type: 'deleted', params: { path: '/Trips' } },
+		{ state: { ...initialState, openPath: '/Trips/Osaka.md' } }
+	)
+	expect(under.state?.openPath).toBeNull()
 })
 
 test('importNotes merges into the knowledge base root, with names untouched', async () => {

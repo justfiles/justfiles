@@ -199,6 +199,18 @@ export const app = defineApp({
 			description: 'Start a fresh blank note (clears the editor).'
 		}),
 
+		// Internal, like `moved`: the `remove` procedure reports WHAT WAS DELETED and the
+		// reducer decides what that means for the selection. It cannot decide that itself —
+		// `app.state` inside a procedure is the snapshot from when it started, so a selection
+		// another client changed while `rm` was in flight would be cleared for no reason, and
+		// a note opened UNDER the deleted folder in that window would stay selected. The
+		// containment question has one right place to be asked: where the current state is.
+		deleted: t.commit(v.object({ path: pathSchema }), (state, { path }) =>
+			state.openPath !== null && isUnder(state.openPath, path)
+				? { ...state, openPath: null, movedFrom: undefined }
+				: state
+		),
+
 		// — rename IS move: one op covers retitling, dragging into a folder, and
 		// renaming a folder. Internal (a `commit` edge): only the `rename` procedure
 		// dispatches it, once the move has landed and its real destination is known.
@@ -431,10 +443,8 @@ export const app = defineApp({
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
 				await app.invoke('volume', 'rm', path, { force: true, recursive: true })
-				if (app.state.openPath && isUnder(app.state.openPath, path)) {
-					const { seq } = await app.dispatch({ type: 'newNote', params: {} })
-					await app.settled(seq)
-				}
+				const { seq } = await app.dispatch({ type: 'deleted', params: { path } })
+				await app.settled(seq)
 			}
 		})
 	})
