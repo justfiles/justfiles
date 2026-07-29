@@ -175,6 +175,63 @@ test('concurrent renames to one name are ordered, not raced', async () => {
 	])
 })
 
+test('an import racing a move cannot have its note replaced', async () => {
+	// The two ways of taking a name are not equally atomic: the exclusive write is, the
+	// move is a check and then a move. Mixing them is the dangerous case — the move sees
+	// a free destination, the import claims it, and the move's second step lands on top
+	// while both callers report success. Both go through the same chain, so neither can.
+	const vol = fakeVolume({ '/A/Kyoto.md': 'the moved one' }, ['/A'])
+	const h = handle(initialState, vol.invoke)
+	const [moved, imported] = (await Promise.all([
+		app.runProcedure('rename', { from: '/A/Kyoto.md', to: '/Kyoto.md' }, h.app),
+		app.runProcedure(
+			'importNotes',
+			{ files: [{ path: 'Kyoto.md', text: 'the imported one' }] },
+			h.app
+		)
+	])) as [{ path: string }, { written: number }]
+	expect(imported.written).toBe(1)
+	// Both survive, whichever got there first, and neither body was overwritten.
+	expect([...vol.store.values()].sort()).toEqual(['the imported one', 'the moved one'])
+	expect([...vol.store.keys()].sort()).toEqual(['/Kyoto 2.md', '/Kyoto.md'])
+	expect(moved.path).toMatch(/^\/Kyoto( 2)?\.md$/)
+})
+
+test('a rename keeps a note a note, and an import member has to be one', async () => {
+	// `/Groceries.md` → `/Shopping` moved the file happily and then it was invisible:
+	// `list` filters it out, `readNote`/`save` refuse it. The extension the source had
+	// is carried over, in the procedure, so the tree menu and the agent agree.
+	const vol = fakeVolume({ '/Groceries.md': 'eggs', '/Notes.txt': 'plain' }, [])
+	const h = handle(initialState, vol.invoke)
+	expect(
+		(
+			(await app.runProcedure('rename', { from: '/Groceries.md', to: '/Shopping' }, h.app)) as {
+				path: string
+			}
+		).path
+	).toBe('/Shopping.md')
+	expect(
+		(
+			(await app.runProcedure('rename', { from: '/Notes.txt', to: '/Plain' }, h.app)) as {
+				path: string
+			}
+		).path
+	).toBe('/Plain.txt')
+	// A folder keeps whatever was typed — it is not a note and never was.
+	await app.runProcedure('mkdir', { path: '/Trips' }, h.app)
+	expect(
+		(
+			(await app.runProcedure('rename', { from: '/Trips', to: '/Journeys' }, h.app)) as {
+				path: string
+			}
+		).path
+	).toBe('/Journeys')
+	// And an import cannot smuggle in a file the app could never show.
+	await expect(
+		app.runProcedure('importNotes', { files: [{ path: 'image.png', text: 'binary-ish' }] }, h.app)
+	).rejects.toThrow()
+})
+
 test('a folder cannot be opened as a note', async () => {
 	// `list` returns folders, so the agent can hand one back. Refused at the schema:
 	// the editor pointing at a directory has nothing to show and no way out.

@@ -3,7 +3,7 @@ import { FileTree, useFileTree } from '@pierre/trees/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Entry } from './app.ts'
-import { joinPath, matchNotes, parentDir, renameTarget } from './notes.ts'
+import { joinPath, matchNotes, parentDir } from './notes.ts'
 
 // The docked pane's tree. `@pierre/trees` owns the hard parts — virtualized
 // rows, expansion, drag-and-drop, the context-menu trigger — so this file is
@@ -260,7 +260,9 @@ function RowMenu(
 					close()
 					if (mode === 'note') props.onCreate(dirOf(item), name)
 					else if (mode === 'folder') props.onMkdir(joinPath(dirOf(item), name))
-					else void props.onRename(path, renameTarget(path, joinPath(parentDir(path), name)))
+					// Just the new name in the same folder — keeping a note's extension is the
+					// `rename` procedure's job, so the agent and this menu cannot disagree.
+					else void props.onRename(path, joinPath(parentDir(path), name))
 				}}
 			/>
 		)

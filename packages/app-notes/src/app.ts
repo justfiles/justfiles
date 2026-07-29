@@ -12,6 +12,7 @@ import {
 	namesEntry,
 	noteTitle,
 	numberedPath,
+	renameTarget,
 	sanitizeName
 } from './notes.ts'
 
@@ -30,12 +31,22 @@ const dec = new TextDecoder()
 // Used by create, move and import — the single reason nothing in `/notes` is ever
 // silently overwritten (DESIGN.md §3).
 // Procedures run OFF the kernel's per-app queue (packages/app/kernel.ts), so two of
-// them overlap: a drag in the GUI and an agent tool call can both be claiming a name.
-// `writeFile`'s claim is atomic and needs nothing from us, but a MOVE's cannot be — no
-// POSIX rename is both atomic and no-replace (packages/fs/volume.ts) — so the two
-// steps have to not interleave, and the cheap way to guarantee that is to stop making
-// them concurrently. One chain: every claim sees the previous one's result. Writers in
-// other processes are outside this, and that window is documented where the check is.
+// them overlap: a drag in the GUI and an agent tool call can both be taking a name.
+// One of the two ways to take a name is atomic (`writeFile`'s exclusive create) and
+// the other cannot be — no POSIX rename is both atomic and no-replace
+// (packages/fs/volume.ts) — and mixing them is what makes ordering necessary even for
+// the atomic one: a move can see a free destination, an import can then claim it
+// exclusively, and the move's second step replaces the note that just landed while
+// both callers report success.
+//
+// So the chain sits INSIDE `claimPath`, not at one call site. Taking a name is a
+// single serialized act however it is done, which is the only version of this that
+// stays true when a fourth caller appears. Writers in other processes are outside it,
+// and that window is documented where the check is.
+//
+// One level, and only one: a caller that wraps a `claimPath` in `serially` deadlocks
+// itself — it holds the chain while waiting for the chain. That is the price of a
+// mutex, and the reason this one is taken in exactly one place.
 let tail: Promise<unknown> = Promise.resolve()
 function serially<T>(task: () => Promise<T>): Promise<T> {
 	const run = tail.then(task, task)
@@ -47,7 +58,7 @@ async function claimPath(wanted: string, create: (path: string) => Promise<void>
 	for (let n = 1; ; n++) {
 		const candidate = n === 1 ? wanted : numberedPath(wanted, n)
 		try {
-			await create(candidate)
+			await serially(() => create(candidate))
 			return candidate
 		} catch (e) {
 			// EEXIST: someone holds the name. EISDIR: a folder holds it. Anything else
@@ -123,8 +134,8 @@ const noteSchema = v.pipe(
 const memberSchema = v.pipe(
 	v.string(),
 	v.check(
-		(path) => namesEntry(`/${path}`),
-		'path must be a relative path naming a note, with no empty, "." or ".." segments'
+		(path) => namesEntry(`/${path}`) && isNotePath(path),
+		'path must be a relative path naming a note (.md or .txt), with no empty, "." or ".." segments'
 	)
 )
 
@@ -278,14 +289,20 @@ export const app = defineApp({
 				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',
 			schema: v.object({ from: pathSchema, to: pathSchema }),
 			async run({ from, to }, app) {
-				if (to === from) return { path: from }
+				// A note that stops being `.md`/`.txt` stops being a note: `list` hides it and
+				// `readNote`/`save` refuse it, so "rename Groceries.md to Shopping" would leave
+				// the user's note invisible and unsavable. The source's extension is carried
+				// over when the destination has none — here, not in the GUI, so the agent and
+				// the tree get the same answer.
+				const target = renameTarget(from, to)
+				if (target === from) return { path: from }
 				// One guard for every caller — GUI, tree drag/drop and agent alike. See
 				// `illegalMove`: `volume.rename` is a POSIX primitive and will cheerfully
 				// strand a folder inside itself.
-				const illegal = illegalMove(from, to)
+				const illegal = illegalMove(from, target)
 				if (illegal) throw new Error(illegal)
-				const path = await serially(() =>
-					claimPath(to, (probe) => app.invoke('volume', 'rename', from, probe, { exclusive: true }))
+				const path = await claimPath(target, (probe) =>
+					app.invoke('volume', 'rename', from, probe, { exclusive: true })
 				)
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
 				await app.settled(seq)

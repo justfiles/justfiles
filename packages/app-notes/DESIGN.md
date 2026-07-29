@@ -233,7 +233,14 @@ folder, `dirSchema` for a *place to put* one (where the root is the default and 
 `noteSchema` for the actions that act on a note's BODY — because `list` returns folders too and the agent can
 hand one straight back, and `open('/Trips')` used to leave the editor pointing at a directory whose read fails
 EISDIR, with nothing to show and nothing to fix it. A relative import member is judged as what it becomes,
-`namesEntry('/' + path)`, which is what refuses the empty string.
+`namesEntry('/' + path)` *and* `isNotePath`, which is what refuses both the empty string and `image.png`.
+
+The closure property behind all of it: **this app must not be able to produce a path it cannot then manage.**
+`list` shows only `.md`/`.txt`, and `open`/`readNote`/`save` accept only those — so anything that *writes* a
+path has to land inside that set, or the note it made is invisible and unsavable with no way back. That is why
+`rename` carries the source's extension over a destination that has none (`renameTarget`, in the procedure
+where the agent and the tree both pass through), and why an import member must be a note before it is written,
+not merely a legal path.
 
 **1a″ · A remembered path is a claim, and the WRITE is where it is proven.** The GUI holds `openPath` and
 autosaves to it. Nothing keeps that path true: rename `/Trips` from Files or the agent while `Kyoto.md` is
@@ -277,13 +284,23 @@ name — is the guarantee the app needs.
 
 "Sequential" is a claim about the app, though, and the app has to *make* it true rather than observe it: the
 kernel runs procedures **off** its per-app queue, so a GUI drag and an agent tool call genuinely overlap. So
-the claim runs on one chain (`serially` in `app.ts`), and every claim sees the previous one's result. That is
-three lines against a backend primitive POSIX does not have, and it is the honest place for it: the two steps
-are ours, so the ordering is ours. Writers in *other processes* reaching for the same new name in the same
-instant can still lose one — a knowingly accepted window, stated where the check is.
+taking a name runs on one chain (`serially`), and every claim sees the previous one's result. That is three
+lines against a backend primitive POSIX does not have, and it is the honest place for it: the two steps are
+ours, so the ordering is ours. Writers in *other processes* reaching for the same new name in the same instant
+can still lose one — a knowingly accepted window, stated where the check is.
+
+The chain belongs **inside `claimPath`**, not around one call site, and the reason is the mix rather than
+either half: an exclusive create is atomic and needs no help, a move is not, and when the two race the atomic
+one loses — the move sees a free destination, the import claims it exclusively, the move's second step lands on
+top, and *both* callers report success. Serializing only moves protects moves from moves and leaves the import
+to be silently overwritten. Taking a name is one serialized act however it is done. One level, too: wrapping a
+`claimPath` in another `serially` deadlocks — it holds the chain while waiting for it — which is the ordinary
+price of a mutex and the reason there is exactly one.
 
 A test that asserts ordering has to be able to fail: the volume double had no `await` between its check and
-its move, so it was accidentally atomic and the test passed with the ordering removed. The double now yields
+its move, so it was accidentally atomic and the tests passed with the ordering removed. With the yield in
+place, dropping the chain loses the imported note outright (`['the moved one']`), which is the defect stated
+as an assertion. The double now yields
 where the contract admits a gap, and two concurrent renames onto one name collapse to a single note without
 `serially` — which is the point.
 
