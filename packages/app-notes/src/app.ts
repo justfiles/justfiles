@@ -131,14 +131,24 @@ export const app = defineApp({
 		}),
 
 		// — autosave for an existing note (the GUI dispatches on a debounced pause) —
+		//
+		// `update: true` — a save EDITS a note, it never brings one into being. The path
+		// here is always remembered from earlier (the GUI's open note, the agent's last
+		// listing), and a plain write would recreate whatever has since been moved or
+		// deleted, parent folders included: rename `/Trips` from Files while `Kyoto.md`
+		// is open, and the next autosave would rebuild `/Trips` and leave a stale
+		// duplicate in it. So the write is where the path is proven, and ENOENT is the
+		// signal that the note moved (the GUI turns it into "…was moved or deleted", and
+		// keeps the buffer). Creating is `create`'s job.
 		save: t.on(
 			v.object({ path: pathSchema, text: v.string() }),
 			(state, { path, text }) => [
 				state,
-				t.cmd('volume', 'writeFile', path, enc.encode(text)).to('saved')
+				t.cmd('volume', 'writeFile', path, enc.encode(text), { update: true }).to('saved')
 			],
 			{
-				description: 'Overwrite a note’s body.',
+				description:
+					'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one).',
 				examples: [{ params: { path: '/Groceries.md', text: 'eggs, milk' } }]
 			}
 		),

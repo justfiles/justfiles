@@ -66,6 +66,10 @@ export interface Volume {
 	 * carries the ORIGIN's mtime (it is the same edit, not a new one). Directory
 	 * mtime is NOT maintained — no caller reads it.
 	 *
+	 * `exclusive` and `update` are the two ends of one question — what must be true of
+	 * the path before these bytes land — and this call is the only place it can be
+	 * asked without a gap, because it is the call that resolves the path.
+	 *
 	 * With `exclusive: true` this is a CREATE, not a write: it throws EEXIST if the
 	 * path is already taken. That makes it a *claim* on a name rather than a probe —
 	 * `exists()` followed by `writeFile` is a TOCTOU, and the loser of the race has
@@ -73,8 +77,19 @@ export interface Volume {
 	 * backend (`atomicCreate`: `O_EXCL`, a single IndexedDB transaction, a
 	 * synchronous map check), so concurrent writers are decided by the storage. A
 	 * backend without that capability falls back to a best-effort pre-check.
+	 *
+	 * With `update: true` it is an EDIT, not a create: ENOENT if nothing is there
+	 * (`open` without `O_CREAT`). A plain write brings a file into being, and with it
+	 * every missing parent folder — so a caller holding a path that has since been
+	 * moved or deleted silently *recreates* the tree it remembers instead of failing.
+	 * An editor autosaving to the note it has open wants this: the write is where the
+	 * path is proven still real, so it cannot be stale by the time the bytes land.
 	 */
-	writeFile(path: string, data: Uint8Array, opts?: { exclusive?: boolean }): Promise<void>
+	writeFile(
+		path: string,
+		data: Uint8Array,
+		opts?: { exclusive?: boolean; update?: boolean }
+	): Promise<void>
 
 	/**
 	 * Append data to a file, creating it if it does not exist.
@@ -508,6 +523,10 @@ export function volume(storage: Storage): Volume {
 				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
 			} else {
+				// An edit has nothing to edit. Refused HERE, where the path was just
+				// resolved, so no caller can create a file (and its parents) from a path it
+				// no longer holds.
+				if (opts?.update) throw new Error(`ENOENT: ${path}`)
 				const { dirIno, name } = await resolveParent(path)
 				const now = nowNs()
 				// `createNode` throws EEXIST when a concurrent writer took the name

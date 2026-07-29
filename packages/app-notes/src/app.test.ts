@@ -23,10 +23,13 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 			case 'writeFile': {
 				// Models the contract: `exclusive` is a claim, so a taken name throws
 				// rather than overwriting (packages/fs/volume.ts).
-				const exclusive = (args[2] as { exclusive?: boolean } | undefined)?.exclusive
+				const opts = args[2] as { exclusive?: boolean; update?: boolean } | undefined
+				const exclusive = opts?.exclusive
 				if (failOn?.test(path)) throw new Error(`EACCES: ${path}`)
 				if (exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
 				if (exclusive && folders.has(path)) throw new Error(`EISDIR: ${path}`)
+				// `update` is an edit: there has to be something to edit (see volume.ts).
+				if (opts?.update && !store.has(path)) throw new Error(`ENOENT: ${path}`)
 				store.set(path, dec.decode(args[1] as Uint8Array))
 				return undefined
 			}
@@ -124,6 +127,29 @@ test('state persisted before the revision counters existed still counts up', asy
 	expect(tree.state?.treeRevision).toBe(1)
 	const file = await app.dispatch({ type: '__sub/fileChanged', params: {} }, { state: legacy })
 	expect(file.state?.revision).toBe(1)
+})
+
+test('a save cannot bring a note — or its folder — back from the dead', async () => {
+	// The agent renames /Trips while /Trips/Kyoto.md is open: `openPath` still says the
+	// old path (no watch can tell us — see app.ts), and a plain write would rebuild
+	// /Trips and leave a stale duplicate in it. The write refuses instead, and the
+	// error is what the GUI turns into "…was moved or deleted".
+	const vol = fakeVolume({ '/Journeys/Kyoto.md': 'moved here' }, ['/Journeys'])
+	const { command } = await app.dispatch(
+		{ type: 'save', params: { path: '/Trips/Kyoto.md', text: 'edited while it moved' } },
+		{ state: { ...initialState, openPath: '/Trips/Kyoto.md' } }
+	)
+	const write = command as unknown as { capability: string; method: string; args: unknown[] }
+	expect(write.method).toBe('writeFile')
+	await expect(vol.invoke(write.capability, write.method, ...write.args)).rejects.toThrow(/ENOENT/)
+	// Nothing was created: no note, and no folder to hold it.
+	expect([...vol.store.keys()]).toEqual(['/Journeys/Kyoto.md'])
+	// And the failure reaches state, which is what the GUI reads to detach the buffer.
+	const failed = await app.dispatch(
+		{ type: '__cmd/saved', params: { ok: false, error: { message: 'ENOENT: /Trips/Kyoto.md' } } },
+		{ state: { ...initialState, openPath: '/Trips/Kyoto.md' } }
+	)
+	expect(failed.state?.error).toMatch(/ENOENT/)
 })
 
 test('rename never overwrites: an occupied destination is numbered instead', async () => {

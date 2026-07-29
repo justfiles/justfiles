@@ -305,8 +305,14 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		if (openPath === null) {
 			pendingPathRef.current = null
 			loadedRef.current = null
-			setText('')
-			setDirty(false)
+			// Nothing open = a blank scratch, EXCEPT when the buffer holds unsaved edits:
+			// those are the user's, and the editor detaching from a path (see the ENOENT
+			// effect below) must not take them with it. A deliberate "New" flushes first,
+			// so it arrives here clean and does clear.
+			if (!liveRef.current.dirty) {
+				setText('')
+				setDirty(false)
+			}
 			return
 		}
 		// A `revision` bump from our OWN autosave (writeFile re-fires the watch) must
@@ -324,6 +330,25 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			loadedRef.current = openPath
 		})
 	}, [openPath, revision, actions])
+
+	// The open note's path can stop being real while we hold it: the agent or Files
+	// renames a folder above it, and neither watch can tell us — the recursive one
+	// carries no path, and the file's own dentry never moved. So we do not track it;
+	// the SAVE finds out, because `save` never creates (`update: true` in app.ts).
+	// ENOENT means the note we were editing is gone: detach from the dead path, keep
+	// the text (the next flush writes it as a new note in a folder that exists), say so.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: openPath is read to know whether a path was being held, not to re-run on every switch.
+	useEffect(() => {
+		if (error === null || !/ENOENT/.test(error) || openPath === null) return
+		// The bytes are NOT on disk, so the buffer is unsaved again — `flush` clears
+		// `dirty` optimistically, and without this the detach below would read a clean
+		// buffer and wipe the user's text. Ref too: the read effect runs before the
+		// re-render lands.
+		liveRef.current.dirty = true
+		setDirty(true)
+		setStatus('The note you were editing was moved or deleted — your changes are kept here')
+		void actions.newNote({})
+	}, [error, actions])
 
 	// Debounced autosave: `text` is the reset trigger — each keystroke restarts
 	// the timer, so the flush fires once the user pauses, not after the first key.

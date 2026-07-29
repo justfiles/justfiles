@@ -44,6 +44,29 @@ test('an exclusive write creates, then refuses a taken name', async () => {
 	expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('theirs')
 })
 
+test('an update edits what is there and refuses to invent it', async () => {
+	// The mirror of `exclusive`, and the reason it exists: a plain write CREATES, and
+	// with it every missing parent. A caller holding a path that has since been moved
+	// (an editor autosaving its open note) would silently rebuild the tree it
+	// remembers. The write is the only place that check has no gap.
+	const vol = makeVol()
+	await expect(
+		vol.writeFile('/Trips/Kyoto.md', enc.encode('edited'), { update: true })
+	).rejects.toThrow(/^ENOENT/)
+	expect(await vol.exists('/Trips')).toBe(false) // no folder conjured on the way
+	await vol.mkdir('/Trips')
+	await vol.writeFile('/Trips/Kyoto.md', enc.encode('first'))
+	await vol.writeFile('/Trips/Kyoto.md', enc.encode('edited'), { update: true })
+	expect(dec.decode(await vol.readFile('/Trips/Kyoto.md'))).toBe('edited')
+	// Gone again (the folder was renamed away) — the same edit now fails.
+	await vol.rename('/Trips', '/Journeys')
+	await expect(
+		vol.writeFile('/Trips/Kyoto.md', enc.encode('later'), { update: true })
+	).rejects.toThrow(/^ENOENT/)
+	expect(await vol.exists('/Trips')).toBe(false)
+	expect(dec.decode(await vol.readFile('/Journeys/Kyoto.md'))).toBe('edited')
+})
+
 test('a directory in the way is refused, not clobbered', async () => {
 	const vol = makeVol()
 	await vol.mkdir('/Trips')

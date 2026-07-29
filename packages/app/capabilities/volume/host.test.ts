@@ -161,6 +161,26 @@ describe('volume capability', () => {
 		expect(await fs.exists('/data/x/deeply/nested/dir')).toBe(true)
 	})
 
+	test('an update writes no parent folders — it edits what is there', async () => {
+		// The host's one convenience is auto-creating the parent dir, and for an UPDATE
+		// that convenience is the bug: an editor autosaving to a note whose folder was
+		// renamed away would rebuild the folder and leave a stale duplicate in it.
+		const { cap, fs } = setup()
+		const appId = 'app.justfiles.frieren.code'
+		await expect(
+			cap.invoke(
+				call('writeFile', ['/gone/x.txt', enc.encode('edit'), { update: true }], { appId })
+			)
+		).rejects.toThrow(/ENOENT/)
+		expect(await fs.exists('/data/app.justfiles.frieren.code/gone')).toBe(false)
+		// A plain write still creates the folder — the convenience is intact.
+		await cap.invoke(call('writeFile', ['/here/x.txt', enc.encode('new')], { appId }))
+		await cap.invoke(
+			call('writeFile', ['/here/x.txt', enc.encode('edit'), { update: true }], { appId })
+		)
+		expect(dec.decode(await cap.invoke(call('readFile', ['/here/x.txt'], { appId })))).toBe('edit')
+	})
+
 	test('rm drops a subtree; rename moves it', async () => {
 		const { cap } = setup()
 		await cap.invoke(

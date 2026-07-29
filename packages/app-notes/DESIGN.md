@@ -232,6 +232,24 @@ two schemas over one extra predicate: `pathSchema` (`namesEntry`) for anything t
 `dirSchema` for a *place to put* one, where the root is the default and perfectly valid. A relative import
 member is judged as what it becomes, `namesEntry('/' + path)`, which is what refuses the empty string.
 
+**1a″ · A remembered path is a claim, and the WRITE is where it is proven.** The GUI holds `openPath` and
+autosaves to it. Nothing keeps that path true: rename `/Trips` from Files or the agent while `Kyoto.md` is
+open, and neither watch can say so — the recursive one is structural but carries no path, and the file's own
+dentry never moved (its *parent* did). The old shape of this bug is what makes it nasty: a plain `writeFile`
+**creates**, and the host helpfully creates missing parents too, so the next autosave rebuilt `/Trips` and left
+a stale duplicate in it while the real note sat in `/Journeys`.
+
+Tracking the path harder is the wrong answer (that is §2 again: a second pointer to a location). Instead the
+write refuses to invent anything: `save` passes `update: true`, which is `open` without `O_CREAT` — ENOENT if
+the path is not there, and no parent folders on the way. That check has no gap, because it happens in the call
+that resolves the path. The host skips its `mkdir -p` for an update for the same reason.
+
+ENOENT is then a *signal*, not just a failure: the note we were editing is gone, so the GUI detaches the
+buffer from the dead path (`openPath` → null), marks it unsaved again — a failed write means the bytes are not
+on disk, whatever `flush` optimistically assumed — and says so. The text becomes a scratch buffer, which the
+next flush writes as a new note in a folder that exists. Nothing is resurrected, nothing is lost, and the user
+is told which of the two happened.
+
 **1b · A check is not a guarantee unless it is the operation — WHERE THE OPERATION EXISTS.** The first
 version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is a *hint*
 about a moment that has already passed. For a create, `Volume` had the real primitive all along — every
