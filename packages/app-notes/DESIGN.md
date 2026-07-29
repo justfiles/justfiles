@@ -268,60 +268,35 @@ on disk, whatever `flush` optimistically assumed — and says so. The text becom
 next flush writes as a new note in a folder that exists. Nothing is resurrected, nothing is lost, and the user
 is told which of the two happened.
 
-**1a‴ · If a write can fail, the caller has to still be holding what failed.** `save` was an edge, so the
-write ran off-queue and its result arrived as reducer state for a GUI effect to notice. That is fine until the
-failure *matters*: every transition (open another note, start a new one, drag this one) flushes first, and a
-fire-and-forget write reports ENOENT after the transition — against a different `openPath`, with the text it
-could not save already replaced. The recovery would then detach the wrong note and drop the user's words.
+**1a‴ · The buffer is a MACHINE, because it was a discipline and the discipline kept losing.** The text being
+edited, whether it is saved, and where it belongs are one fact with one set of rules — and each rule arrived as
+a separate defect:
 
-So `save` is a **procedure**: `flush()` awaits the actual write and answers its own failure, inline, while the
-buffer that produced it is still the buffer. The `error` field left reducer state entirely with it — "the last
-error" was never a fact about the session, it was a message in a bottle. Nothing else in this app files one.
+1. Nothing may replace the buffer until it is **settled**, and "settled" is an answer a caller has to look at.
+2. A write that did not land leaves the buffer **unsaved**. Always — including the create branch, which is the
+   one I forgot, and which left text on screen looking saved while the next transition skipped the retry.
+3. A failure is **not a diagnosis**: ENOENT/EISDIR mean nothing will ever save to that path (detach, keep the
+   words, they become a new note); anything else is the same note with a temporary problem (stay attached, so
+   the retry *updates* it rather than leaving a numbered duplicate beside it).
+4. Writes never **overlap**, and keystrokes typed *during* a write are not lost — the buffer settles again
+   instead of reporting a stale success. `dirty` is cleared on the way into a write, so a caller that raced one
+   used to read that flag, conclude "settled", and clear the editor over words still in flight and about to
+   fail.
+5. A read that resolves after the buffer **moved on** is discarded — including a read whose note was deleted
+   while its body was in flight, which is why the machine remembers what it is *about* to hold, not only what
+   it holds.
 
-Symmetrically: **a write that did not land leaves the buffer unsaved.** `flush` clears `dirty` optimistically
-because the debounce and every transition read it, so the one thing each of its branches has to do on failure
-is put it back (`stillUnsaved`). Missing that in the *create* branch was the quieter half of the same bug: the
-text sits in the editor looking saved, and the next New/open/close skips the flush that would have retried it —
-the user's words dropped with no error anywhere. With it, a create that fails everywhere (disk full, volume
-unreachable) keeps the buffer, says so, and the next transition writes it:
+Those rules lived across eight call sites in `gui.tsx` as five mutable refs plus a habit, which is why four
+successive review rounds found four more instances of the same shape: every new failure mode was a new branch
+to remember at each site. They now live in `src/buffer.ts` — no React, no volume, IO as three injected
+functions — with the rules above as its unit tests (`buffer.test.ts`, including "keystrokes during a write are
+not reported as saved" and "a settle during a write does not report the other write's optimism", which are the
+two that no amount of care at call sites was going to get right). `gui.tsx` lost 100 lines and now only
+*drives* it: `if (!(await settle())) return` before anything that changes what the editor shows, and one
+`explain()` for how a failure is worded.
 
-```
-type into a scratch note, with `create` failing at the wire
-  status: Could not save this note — the volume is unreachable
-  editor: "Doomed note\nsome words"        ← kept, and still unsaved
-unbreak, press New (which flushes first)
-  /Doomed note.md                          ← the flush retried, because `dirty` was still true
-```
-
-Two more consequences, both found by review after the first fix looked complete:
-
-- **A failure is not a diagnosis.** The first version treated every rejected save as "the note is gone" and
-  detached — so a temporary outage (EACCES, ENOSPC, the capability unreachable) sent the retry through
-  `create` and left the user a numbered *duplicate* beside the note they were editing. ENOENT/EISDIR mean
-  nothing will ever save to that path again; everything else is the same note with a temporary problem, and
-  the buffer stays attached so the retry updates it.
-- **`flush` has to say whether the buffer is settled, and callers have to obey it.** Restoring `dirty` is not
-  enough: `flush()` resolving normally let `startNewNote`/`openNote`/`createNote`/`moveNote` carry on and
-  clear or replace the editor over text that had just failed to save. It returns a boolean now, and every
-  path-changing caller starts with `if (!(await flush())) return`.
-- **Flushes are serialised.** `dirty` is cleared optimistically on the way into a write, so a transition that
-  flushed while the debounce was mid-write read that flag, concluded "settled", and cleared the editor over
-  words whose write was still in flight *and about to fail*. Chaining the flushes fixes it: a caller cannot be
-  told "settled" by a promise it is racing. (Third time this app has needed "these must not overlap" —
-  `claimPath`, the refresh debounce, and now the buffer. Sequencing is a first-class concern here, not a
-  detail.)
-
-The same shape one level down: a read in flight when the selection moves on must be **discarded**, not
-applied. Otherwise "New" during a read repopulates the editor with a note nothing is pointing at — clean, so
-the next keystroke would fork it into a copy.
-
-The read side is the same rule pointed the other way: `readNote` does no `exists` probe and no type check,
-because **the read is the check** and its two errors are exactly the two questions worth asking. `noteSchema`
-can only judge a spelling, and a *folder* called `Archive.md` passes every lexical test there is — `readFile`
-answers EISDIR; a note that has been moved or deleted answers ENOENT. Answering "not there" with an empty
-string was the trap: it hands the editor a blank buffer to save over whatever the path has become. Now a path
-we cannot read is one we do not stay pointed at, and both failures get one recovery — detach, keep a dirty
-buffer, say which happened.
+The exchange rate is worth stating: **a rule you have to remember is a defect with a delay.** The machine is
+not fewer lines than the flags were — it is the same rules in a place where a test can reach them.
 
 **1a⁗ · A content write must not orphan, and must not resurrect.** `update: true` proves the path *at the
 resolve*, and the bytes are stored a moment later — so the note can be deleted in between. Every backend

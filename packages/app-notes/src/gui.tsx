@@ -3,6 +3,8 @@ import type { AsyncFlateStreamHandler, UnzipDecoder, UnzipDecoderConstructor } f
 import { Unzip, UnzipInflate, UnzipPassThrough } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
+import type { Buffer, BufferIO, BufferState, Unsettled } from './buffer.ts'
+import { createBuffer } from './buffer.ts'
 import {
 	admit,
 	createScreen,
@@ -23,14 +25,12 @@ const AUTOSAVE_MS = 800
 const REFRESH_MS = 250
 // One import call per batch of notes: big enough to keep the round trips down,
 // small enough that the status line moves and one message stays modest.
-// Two kinds of save failure, and telling them apart is the difference between
-// recovering and duplicating. ENOENT/EISDIR mean the note is not there any more (moved,
-// deleted, or the path is a folder now) — nothing will ever save to it, so the buffer
-// has to leave it. Anything else — the volume unreachable, EACCES, ENOSPC — is the same
-// note with a temporary problem, and detaching would send the retry through `create`,
-// leaving a numbered duplicate beside the note the user was editing.
-const noteIsGone = (failure: unknown) =>
-	/ENOENT|EISDIR/.test(failure instanceof Error ? failure.message : String(failure))
+// How a buffer that would not land is explained. The machine decides WHAT happened
+// (`buffer.ts`); this is the only place that decides how to say it.
+const explain = (outcome: Unsettled) =>
+	outcome.because === 'gone'
+		? 'The note you were editing was moved or deleted — your changes are kept here'
+		: `Could not save ${outcome.path ? displayPath(outcome.path) : 'this note'} — ${outcome.error.message}`
 
 const IMPORT_CHUNK = 50
 // How much of an archive is handed to the unzipper at once (see `readZip`).
@@ -243,10 +243,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// and `init` is never re-merged) — default them at the door.
 	const { openPath, revision = 0, treeRevision = 0 } = state
 
-	// The editor buffer is transient GUI-local state; the body bytes never enter
-	// the reducer. `dirty` tracks unsaved edits (DESIGN.md §3).
-	const [text, setText] = useState('')
-	const [dirty, setDirty] = useState(false)
+	// The editor buffer is transient GUI-local state; the body bytes never enter the
+	// reducer (DESIGN.md §3). It is a MACHINE, not a set of flags — `src/buffer.ts` owns
+	// the rules ("nothing replaces an unsettled buffer", "a failed write stays unsaved",
+	// "gone and busy call for opposite recoveries", "writes do not overlap", "a stale read
+	// is discarded"), and this component only drives it and renders its state.
+	const [buffer, setBuffer] = useState<BufferState>({ text: '', dirty: false, path: null })
 
 	// The bar's search field doubles as the palette (DESIGN.md §5): focusing it
 	// drops the recency list down; typing filters; Enter opens-or-creates. The
@@ -268,184 +270,91 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// needs no bookkeeping here.
 	const selectedDirRef = useRef<string | null>(null)
 
-	// Refs so async flushes/effects read the latest values without re-binding.
-	const liveRef = useRef({ text, openPath, dirty, dir: '/' })
-	liveRef.current = { text, openPath, dirty, dir: '/' } // `dir` filled in below
-	const loadedRef = useRef<string | null>(null) // path whose body is in the buffer
-	const pendingPathRef = useRef<string | null>(null) // created path before the state push catches up
-	const creatingRef = useRef(false)
-	const readTokenRef = useRef(0)
+	// `dir` is where a new note would go, recomputed every render (see `createDir`) and
+	// read at write time — never remembered, because folders are deleted underneath it.
+	const dirRef = useRef('/')
 	const editorRef = useRef<HTMLTextAreaElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
 
-	// Create a note, and answer the one failure the caller cannot prevent: the folder it
-	// aimed at stopped existing. `create` refuses to rebuild it (`parents: false`), so a
-	// vanished folder is an ENOENT rather than a resurrection — and the note lands at the
-	// top level instead, which is somewhere the user can see it. Retried once, because
-	// the root cannot go missing.
-	const createSomewhere = useCallback(
-		async (text: string, dir: string) => {
+	// The volume, as the four functions the buffer needs. Everything app-specific stays
+	// here: the fallback when the folder a scratch note was aimed at has been deleted
+	// (`create` refuses to rebuild it, so the note lands at the top level and the user is
+	// told), and the fact that `save`/`readNote` are procedures that throw.
+	// Read through a ref, so the machine — built once — always calls the current actions.
+	const actionsRef = useRef(actions)
+	actionsRef.current = actions
+	const io = useRef<BufferIO>({
+		save: async (path, text) => {
+			await actionsRef.current.save({ path, text })
+		},
+		create: async (text) => {
+			const dir = dirRef.current
 			try {
-				return await actions.create({ text, dir })
+				return (await actionsRef.current.create({ text, dir })).openPath ?? '/'
 			} catch (failure) {
-				// The root is the last resort, so its failure is the caller's to report — and
-				// with the real reason, not one invented here.
+				// The folder was deleted since the listing said otherwise (`create` refuses to
+				// rebuild it). The root is the last resort, so ITS failure belongs to the caller.
 				if (dir === '/') throw failure
 				setStatus('That folder is gone — saved at the top level instead')
-				return await actions.create({ text, dir: '/' })
+				return (await actionsRef.current.create({ text, dir: '/' })).openPath ?? '/'
 			}
 		},
-		[actions]
-	)
+		read: async (path) => (await actionsRef.current.readNote({ path })).text
+	})
 
-	// A write that did not land leaves the buffer UNSAVED. `flush` clears `dirty`
-	// optimistically — the debounce and every transition read it — so the one thing both
-	// of its branches must do on failure is put it back. Without that the text sits in
-	// the editor looking saved, and the next New/open/close skips the flush that would
-	// have retried it: the user's words are dropped with no error anywhere.
-	const stillUnsaved = useCallback(() => {
-		liveRef.current.dirty = true // the timer and the next flush read the ref, not the state
-		setDirty(true)
-	}, [])
+	// One machine for the lifetime of the component. Its state is mirrored into React
+	// state so the editor re-renders; the machine, not the component, is the truth.
+	const bufferRef = useRef<Buffer | null>(null)
+	if (bufferRef.current === null) bufferRef.current = createBuffer(io.current, setBuffer)
+	const buf = bufferRef.current
 
-	// Persist the dirty buffer. Correctness comes from flush-if-dirty on every
-	// transition (switch, new note, blur, close); the debounce is only a perf win
-	// (DESIGN.md §4). A blank scratch becomes a real file as soon as it holds any
-	// non-whitespace content — an empty/whitespace buffer is never written.
-	//
-	// RETURNS WHETHER THE BUFFER IS SETTLED, and every caller that is about to change
-	// what the editor points at has to check it: clearing the editor or loading another
-	// note on top of text that failed to save is the same data loss the retry was meant
-	// to prevent. `false` means "still holding unsaved words" — the user has been told,
-	// and the debounce will keep trying.
-	const runFlush = useCallback(async (): Promise<boolean> => {
-		const { text, dirty } = liveRef.current
-		if (!dirty) return true
-		const path = liveRef.current.openPath ?? pendingPathRef.current
-		if (path) {
-			setDirty(false)
-			try {
-				// AWAITED: every transition flushes first, so the write has to be finished —
-				// not merely started — before the buffer it came from can be replaced.
-				await actions.save({ path, text })
-				return true
-			} catch (failure) {
-				stillUnsaved()
-				if (!noteIsGone(failure)) {
-					// The note is still there; keep pointing at it so the retry UPDATES it.
-					setStatus(
-						`Could not save ${displayPath(path)} — ${failure instanceof Error ? failure.message : String(failure)}`
-					)
-					return false
-				}
-				// It is gone (`update: true` refuses to recreate it, or its folder). Detach, so
-				// this text becomes a scratch buffer the next flush writes as a new note in a
-				// folder that exists — and the caller still stops, because those words are not
-				// on disk yet.
-				setStatus('The note you were editing was moved or deleted — your changes are kept here')
-				if (liveRef.current.openPath !== null) await actions.newNote({})
-				else pendingPathRef.current = null
-				return false
-			}
-		}
-		if (text.trim().length === 0 || creatingRef.current) return true
-		creatingRef.current = true
-		setDirty(false)
-		try {
-			const settled = await createSomewhere(text, liveRef.current.dir)
-			if (settled?.openPath) {
-				pendingPathRef.current = settled.openPath
-				loadedRef.current = settled.openPath
-			}
-			return true
-		} catch (failure) {
-			// A scratch note that could not be written anywhere — the disk is full, the
-			// volume is unreachable. There is nothing to detach from and nowhere else to try
-			// (the root was the fallback), so keep the text and stop pretending it is saved.
-			stillUnsaved()
-			setStatus(
-				`Could not save this note — ${failure instanceof Error ? failure.message : String(failure)}`
-			)
-			return false
-		} finally {
-			creatingRef.current = false
-		}
-	}, [actions, createSomewhere, stillUnsaved])
+	// `settle` returns whether the buffer is landed, and every caller that is about to
+	// change what the editor shows has to obey it (DESIGN.md §1a‴). Reporting is the
+	// GUI's half: the machine decides what happened, this decides how to say it.
+	const settle = useCallback(async (): Promise<boolean> => {
+		const outcome = await buf.settle()
+		if (outcome.settled) return true
+		setStatus(explain(outcome))
+		return false
+	}, [buf])
 
-	// Flushes never overlap. `dirty` is cleared optimistically on the way into a write, so
-	// a transition that flushes while the debounce is mid-write would read that flag,
-	// conclude the buffer is settled and clear the editor — over words whose write is
-	// still in flight and about to fail. Chained, each flush answers for the state AFTER
-	// every earlier one, and a caller cannot be told "settled" by a promise it is racing.
-	const flushTailRef = useRef<Promise<boolean>>(Promise.resolve(true))
-	const flush = useCallback((): Promise<boolean> => {
-		const run = flushTailRef.current.then(runFlush, runFlush)
-		flushTailRef.current = run.then(
-			(ok) => ok,
-			() => false
-		)
-		return run
-	}, [runFlush])
+	// Debounced autosave: `text` is the reset trigger — each keystroke restarts the
+	// timer, so the write fires once the user pauses, not after the first key. A failure
+	// leaves the buffer dirty, so this effect simply comes round again.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `buffer.text` is the debounce RESET — each keystroke must restart the timer, even though the body does not read it.
+	useEffect(() => {
+		if (!buffer.dirty) return
+		const id = setTimeout(() => void settle(), AUTOSAVE_MS)
+		return () => clearTimeout(id)
+	}, [buffer.text, buffer.dirty, settle])
 
-	// Load the open note's body when the selection changes, and re-read it when
-	// the file changes on disk (a `revision` bump from an agent/Files edit). A
-	// token drops stale reads if the user switches notes mid-flight.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: revision is a cache-busting trigger — a bump means the open file changed on disk, so re-read even though the body doesn't reference it.
+	// The buffer follows `openPath`, which is the reducer's (and the agent's) idea of what
+	// the user is looking at. Two triggers, one call: a different note (`openPath`), and
+	// the open note changing on disk (`revision` — `reload` ignores it while dirty, since
+	// the buffer is then newer than the disk). A path we cannot read is not one to stay
+	// pointed at, so the buffer detaches and this says why.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `revision` is a cache-busting trigger — a bump means the open file changed on disk.
 	useEffect(() => {
 		if (openPath === null) {
-			pendingPathRef.current = null
-			loadedRef.current = null
-			// Nothing open = a blank scratch, EXCEPT when the buffer holds unsaved edits:
-			// those are the user's, and the editor detaching from a path (see the ENOENT
-			// effect below) must not take them with it. A deliberate "New" flushes first,
-			// so it arrives here clean and does clear.
-			if (!liveRef.current.dirty) {
-				setText('')
-				setDirty(false)
-			}
+			// The reducer says nothing is open, so a buffer still holding a note has to let
+			// go — `create` dispatches `open`, and that push can land after a "New" that
+			// followed it. A DETACHED buffer (text, no path) is not this case and is left
+			// alone: those words are unsaved and the debounce is about to write them.
+			if (buf.snapshot().path !== null && !buf.snapshot().dirty) void buf.clear()
 			return
 		}
-		// A `revision` bump from our OWN autosave (writeFile re-fires the watch) must
-		// not clobber edits typed since the flush — only reload disk when not dirty.
-		// Checked again when the read resolves: a local create may race this effect
-		// (the state push can render before the creator assigns loadedRef), so the
-		// buffer can become the newer truth while the read is in flight.
-		if (loadedRef.current === openPath && liveRef.current.dirty) return
-		const token = ++readTokenRef.current
-		void actions.readNote({ path: openPath }).then(
-			(result) => {
-				// Two ways this read can be stale: a newer read started (the token), or the
-				// selection moved on entirely — "New" while a read is in flight would
-				// otherwise repopulate the editor with a note nothing is pointing at.
-				if (readTokenRef.current !== token || liveRef.current.openPath !== openPath) return
-				if (loadedRef.current === openPath && liveRef.current.dirty) return
-				setText(result.text)
-				setDirty(false)
-				loadedRef.current = openPath
-			},
-			(failure: unknown) => {
-				// We cannot read what is open, so we do not stay pointed at it. One answer for
-				// every reason: the note was deleted or moved out from under us, or the path
-				// turned out to be a folder that merely LOOKS like a note (`Archive.md`), which
-				// no suffix test can tell apart from the note it is not. A dirty buffer is
-				// kept — it is the user's, and it becomes a scratch note.
-				if (readTokenRef.current !== token || liveRef.current.openPath !== openPath) return
-				setStatus(
-					`Cannot open ${displayPath(openPath)} — ${failure instanceof Error ? failure.message : String(failure)}`
-				)
-				void actions.newNote({})
+		void (async () => {
+			const outcome =
+				openPath === buf.snapshot().path ? await buf.reload(openPath) : await buf.open(openPath)
+			if (outcome.opened) return
+			if (outcome.because === 'unsettled') {
+				setStatus(explain(outcome.outcome))
+				return
 			}
-		)
-	}, [openPath, revision, actions])
-
-	// Debounced autosave: `text` is the reset trigger — each keystroke restarts
-	// the timer, so the flush fires once the user pauses, not after the first key.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: text drives the debounce reset even though the body reads it via liveRef, not directly.
-	useEffect(() => {
-		if (!dirty) return
-		const id = setTimeout(() => void flush(), AUTOSAVE_MS)
-		return () => clearTimeout(id)
-	}, [text, dirty, flush])
+			setStatus(`Cannot open ${displayPath(outcome.path)} — ${outcome.error.message}`)
+			await actions.newNote({})
+		})()
+	}, [openPath, revision, buf, actions])
 
 	// Launch = blank editor (DESIGN.md §5). Reopen is always blank — capture-first.
 	const mounted = useRef(false)
@@ -505,7 +414,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		() => liveDir(selectedDirRef.current) ?? liveDir(parentDir(openPath ?? '/')) ?? '/',
 		[liveDir, openPath]
 	)
-	liveRef.current.dir = createDir()
+	dirRef.current = createDir()
 
 	// Either surface can be showing the listing: the docked pane, or the dropdown
 	// palette over the editor. Both go stale the same way, so both keep it live.
@@ -532,8 +441,8 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	const openNote = useCallback(
 		async (path: string) => {
-			// Nothing may replace the buffer until it is settled — `flush` says whether it is.
-			if (!(await flush())) return
+			// Nothing may replace the buffer until it is settled; `settle` says whether it is.
+			if (!(await settle())) return
 			setDropOpen(false)
 			setQuery('')
 			// Opening a note supersedes a folder click as the "where am I" hint.
@@ -542,24 +451,24 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			editorRef.current?.focus()
 			if (listing) void refresh() // the flushed note's mtime may reorder the list
 		},
-		[flush, actions, listing, refresh]
+		[settle, actions, listing, refresh]
 	)
 
 	const startNewNote = useCallback(async () => {
-		if (!(await flush())) return
+		// `clear` is settle-then-empty, so an unsaved buffer is written (or reported) before
+		// the editor is blanked — and it clears the buffer itself, which `newNote` alone
+		// cannot do when `openPath` is already null.
+		const outcome = await buf.clear()
+		if (!outcome.settled) {
+			await settle() // reports it, and leaves the words where they are
+			return
+		}
 		setDropOpen(false)
 		setQuery('')
-		// Clear the buffer directly: when already on a blank note (openPath null),
-		// newNote() doesn't change openPath, so the read effect won't fire — without
-		// this, "New" on a fresh note would be a no-op.
-		setText('')
-		setDirty(false)
-		pendingPathRef.current = null
-		loadedRef.current = null
 		await actions.newNote({})
 		editorRef.current?.focus()
 		if (listOpen) void refresh()
-	}, [flush, actions, listOpen, refresh])
+	}, [buf, settle, actions, listOpen, refresh])
 
 	// Create a note whose first line — and therefore filename — is `title`. Two
 	// callers: Enter on an empty result set (the nvAlt move: search and create are
@@ -567,34 +476,25 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// in a folder, like Obsidian's "same folder as the current file".
 	const createNote = useCallback(
 		async (title: string, dir: string) => {
-			if (!(await flush())) return
+			// Empty the buffer first (settling whatever was in it), then type the title into
+			// it and let the machine write it: one path for "a note is created from text",
+			// instead of a second copy of the create rules here.
+			if (!(await buf.clear()).settled) {
+				await settle()
+				return
+			}
 			setDropOpen(false)
 			setQuery('')
-			const body = `${title}\n`
-			creatingRef.current = true
-			try {
-				// The listing is a snapshot, so `liveDir` is a hint, not a fact; `create`
-				// itself refuses to rebuild a folder that has gone (`parents: false`), and
-				// `createSomewhere` puts the note at the top level when that happens.
-				const settled = await createSomewhere(body, liveDir(dir) ?? '/')
-				if (settled.openPath) {
-					pendingPathRef.current = settled.openPath
-					loadedRef.current = settled.openPath
-				}
-			} catch (failure) {
-				// Nothing was written, so nothing is shown as written: the editor keeps
-				// whatever it had, and the title the user typed is still in the search field
-				// for them to try again.
-				setStatus(
-					`Could not create that note — ${failure instanceof Error ? failure.message : String(failure)}`
-				)
-				setQuery(title)
+			// Aim at the folder through the HINT, not by writing `dirRef` directly: every
+			// render recomputes that from the hint (`createDir`), so a render between here and
+			// the write — and typing causes one — would otherwise put the note back at the root.
+			selectedDirRef.current = dir
+			dirRef.current = liveDir(dir) ?? '/'
+			buf.type(`${title}\n`)
+			if (!(await settle())) {
+				setQuery(title) // nothing was written, so the title stays where they typed it
 				return
-			} finally {
-				creatingRef.current = false
 			}
-			setText(body)
-			setDirty(false)
 			// Focus once the buffer has rendered, cursor on the line under the title.
 			requestAnimationFrame(() => {
 				const el = editorRef.current
@@ -603,7 +503,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			})
 			if (listing) void refresh()
 		},
-		[flush, createSomewhere, liveDir, listing, refresh]
+		[buf, settle, liveDir, listing, refresh]
 	)
 
 	// A move can land somewhere other than asked (the name was taken) or be refused
@@ -611,38 +511,37 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// tree, which moved the row optimistically, has to be put back.
 	const moveNote = useCallback(
 		async (from: string, to: string) => {
-			// The buffer has to land at the OLD path before the move: a pending save would
-			// otherwise write after it (recreating what we just moved), and the read effect
-			// would replace the buffer with the last saved body once `openPath` follows. If it
-			// cannot land, the move waits — the words matter more than the rename.
-			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, from)) {
-				if (!(await flush())) return
+			// The buffer lands at the OLD path first: a pending write afterwards would
+			// recreate what we just moved. If it cannot land, the move waits — the words
+			// matter more than the rename.
+			const held = buf.snapshot().path
+			if (held !== null && isUnder(held, from)) {
+				if (!(await settle())) return
 			}
 			try {
 				const { path } = await actions.rename({ from, to })
+				// The bytes did not change, only their address — so the buffer follows, and no
+				// re-read is needed when `openPath` catches up.
+				buf.moved(from, path)
 				if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
 			} catch (error) {
 				setStatus(error instanceof Error ? error.message : String(error))
 			}
 			void refresh()
 		},
-		[actions, flush, refresh]
+		[actions, buf, settle, refresh]
 	)
 
 	const removeNote = useCallback(
 		async (path: string) => {
-			// Deleting the open note means DISCARDING its buffer — a pending autosave
-			// would write it straight back. Set the ref too: the timer reads that, and a
-			// re-render is a tick away.
-			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, path)) {
-				liveRef.current.dirty = false
-				setDirty(false)
-			}
+			// Deleting the open note DISCARDS its buffer — settling it would write the note
+			// straight back. The machine also cancels a read in flight for it.
+			buf.discard(path)
 			await actions.remove({ path })
 			setActive(0)
 			void refresh()
 		},
-		[actions, refresh]
+		[actions, buf, refresh]
 	)
 
 	// Import a drop: unzip + plan in the GUI, write in chunks through the reducer
@@ -757,12 +656,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// awaits the real final flush.
 	useEffect(() => {
 		const onHide = () => {
-			if (document.visibilityState === 'hidden') void flush()
+			if (document.visibilityState === 'hidden') void settle()
 		}
-		window.addEventListener('pagehide', () => void flush())
+		window.addEventListener('pagehide', () => void settle())
 		document.addEventListener('visibilitychange', onHide)
 		return () => document.removeEventListener('visibilitychange', onHide)
-	}, [flush])
+	}, [settle])
 
 	const filtered = useMemo(() => matchNotes(notes, query.trim()), [notes, query])
 
@@ -969,12 +868,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					ref={editorRef}
 					className="notes-editor"
 					placeholder="Start typing…"
-					value={text}
-					onChange={(e) => {
-						setText(e.target.value)
-						setDirty(true)
-					}}
-					onBlur={() => void flush()}
+					value={buffer.text}
+					onChange={(e) => buf.type(e.target.value)}
+					onBlur={() => void settle()}
 					// Clicking into the editor dismisses an open dropdown (there's no backdrop).
 					onMouseDown={() => {
 						if (dropOpen) setDropOpen(false)
