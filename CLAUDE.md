@@ -78,27 +78,3 @@ the pnpm catalog (`pnpm-workspace.yaml`) — a skew means `typecheck` and a pack
 Note `include`/`exclude` and path-valued options (`outDir`, `rootDir`, `paths`) resolve
 relative to the file they are written in, so they must live in the package's own
 tsconfig — never in a shared base.
-
-# Pre-release: no migration or back-compat debt
-
-This product has not shipped. A handful of accounts exist on the hosted frieren, the
-mac app has never been released, and no volume out there holds data we would be sorry
-to lose (the one account record every volume has is the platform AI account, which is
-credential-less and reseeded on every boot).
-
-So: **change the shape, don't carry the old one.** Rename a path, drop a field, move a
-store — no dual-read, no legacy branch, no compatibility shim, no version negotiation.
-The bar a change must clear is only this:
-
-- it must not **crash or wedge** a host on the first boot after deploy (a migration that
-  can fail is fine, as long as failing leaves the host bootable);
-- a user re-connecting an account or losing a scratch file is an acceptable outcome, and
-  cheaper than a permanent branch in the code.
-
-A one-off migration is worth writing when it is a handful of lines AND it saves a real
-re-connect (see `migrateHostPrivateLane`). It is not worth writing to protect a state
-that only a failed migration could produce — that is speculative complexity guarding a
-window measured in one boot.
-
-Reviewers (human or agent): a finding whose only impact is "a pre-release volume in a
-transitional state behaves differently" is not a finding. Say so and move on.
