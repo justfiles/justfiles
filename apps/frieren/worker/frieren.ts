@@ -147,15 +147,15 @@ export class Frieren extends DurableObject<Env> {
 	private readonly facesInFlight = new Map<string, Promise<GeneratedImage | null>>()
 	private cfTimezone?: string
 	private apps?: FrierenApps
-	// Seals account creds at rest, keyed by a Worker secret — so the key never lives in the
-	// Volume it protects (a DO SQLite dump / R2 object / backup carries only envelopes).
+	// Seals account creds at rest, keyed by this host's root secret — so the key never lives in
+	// the Volume it protects (a DO SQLite dump / R2 object / backup carries only envelopes).
 	// Absent locally ⇒ clear, so dev without the secret still runs.
 	private readonly secretCodec?: SecretCodec
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
-		if (env.ACCOUNTS_KEY) this.secretCodec = aesGcmSecretCodec(env.ACCOUNTS_KEY)
-		else console.warn('ACCOUNTS_KEY is not set — account credentials are stored in the clear')
+		if (env.ENCRYPTION_KEY) this.secretCodec = aesGcmSecretCodec(env.ENCRYPTION_KEY)
+		else console.warn('ENCRYPTION_KEY is not set — account credentials are stored in the clear')
 		const namespace = ctx.id.toString()
 		const adapter = createDOSqliteAdapter(ctx.storage)
 		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)

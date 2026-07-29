@@ -20,8 +20,9 @@ import { accountsAdmin } from './index.ts'
 import type { Binding, Provider } from './provider.ts'
 
 export type { SecretCodec } from './account.ts'
-// The at-rest seal for the creds lane, re-exported for hosts: each supplies its own key
-// (frieren a Worker secret, mac the Keychain) and passes the codec to the entry points below.
+// The at-rest seal for the creds lane, re-exported for hosts: each supplies its own root
+// secret (frieren `ENCRYPTION_KEY`, mac the Keychain) and passes the codec to the entry
+// points below.
 export { aesGcmSecretCodec } from './secret-codec.ts'
 
 export interface AccountsOptions {
