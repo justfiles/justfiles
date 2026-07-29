@@ -232,7 +232,7 @@ function relativeTime(mtimeNs: number): string {
 export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// Both counters are optional in persisted state (added after the first release,
 	// and `init` is never re-merged) — default them at the door.
-	const { openPath, revision = 0, treeRevision = 0, error } = state
+	const { openPath, revision = 0, treeRevision = 0 } = state
 
 	// The editor buffer is transient GUI-local state; the body bytes never enter
 	// the reducer. `dirty` tracks unsaved edits (DESIGN.md §3).
@@ -269,6 +269,24 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const editorRef = useRef<HTMLTextAreaElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
 
+	// Create a note, and answer the one failure the caller cannot prevent: the folder it
+	// aimed at stopped existing. `create` refuses to rebuild it (`parents: false`), so a
+	// vanished folder is an ENOENT rather than a resurrection — and the note lands at the
+	// top level instead, which is somewhere the user can see it. Retried once, because
+	// the root cannot go missing.
+	const createSomewhere = useCallback(
+		async (text: string, dir: string) => {
+			try {
+				return await actions.create({ text, dir })
+			} catch {
+				if (dir === '/') throw new Error('Could not save this note')
+				setStatus(`That folder is gone — saved at the top level instead`)
+				return await actions.create({ text, dir: '/' })
+			}
+		},
+		[actions]
+	)
+
 	// Persist the dirty buffer. Correctness comes from flush-if-dirty on every
 	// transition (switch, new note, blur, close); the debounce is only a perf win
 	// (DESIGN.md §4). A blank scratch becomes a real file as soon as it holds any
@@ -279,15 +297,31 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		const path = liveRef.current.openPath ?? pendingPathRef.current
 		if (path) {
 			setDirty(false)
-			await actions.save({ path, text })
+			try {
+				// AWAITED: every transition (open another note, start a new one, move this
+				// one) flushes first, so the write has to be finished — not merely started —
+				// before the buffer it came from can be replaced.
+				await actions.save({ path, text })
+			} catch {
+				// The note is gone (`update: true` refuses to recreate it, and refuses to
+				// rebuild the folder it was in). The bytes are not on disk, so the buffer is
+				// unsaved again — and it detaches from the dead path, which makes it a
+				// scratch buffer the next flush writes as a new note in a folder that exists.
+				// Answered HERE, in the flush that failed, while this text is still the text.
+				liveRef.current.dirty = true
+				setDirty(true)
+				setStatus('The note you were editing was moved or deleted — your changes are kept here')
+				if (liveRef.current.openPath !== null) await actions.newNote({})
+				else pendingPathRef.current = null
+			}
 			return
 		}
 		if (text.trim().length > 0 && !creatingRef.current) {
 			creatingRef.current = true
 			setDirty(false)
 			try {
-				const settled = await actions.create({ text, dir: liveRef.current.dir })
-				if (settled.openPath) {
+				const settled = await createSomewhere(text, liveRef.current.dir)
+				if (settled?.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
 				}
@@ -295,7 +329,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				creatingRef.current = false
 			}
 		}
-	}, [actions])
+	}, [actions, createSomewhere])
 
 	// Load the open note's body when the selection changes, and re-read it when
 	// the file changes on disk (a `revision` bump from an agent/Files edit). A
@@ -322,33 +356,28 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		// buffer can become the newer truth while the read is in flight.
 		if (loadedRef.current === openPath && liveRef.current.dirty) return
 		const token = ++readTokenRef.current
-		void actions.readNote({ path: openPath }).then((result) => {
-			if (readTokenRef.current !== token) return
-			if (loadedRef.current === openPath && liveRef.current.dirty) return
-			setText(result.text)
-			setDirty(false)
-			loadedRef.current = openPath
-		})
+		void actions.readNote({ path: openPath }).then(
+			(result) => {
+				if (readTokenRef.current !== token) return
+				if (loadedRef.current === openPath && liveRef.current.dirty) return
+				setText(result.text)
+				setDirty(false)
+				loadedRef.current = openPath
+			},
+			(failure: unknown) => {
+				// We cannot read what is open, so we do not stay pointed at it. One answer for
+				// every reason: the note was deleted or moved out from under us, or the path
+				// turned out to be a folder that merely LOOKS like a note (`Archive.md`), which
+				// no suffix test can tell apart from the note it is not. A dirty buffer is
+				// kept — it is the user's, and it becomes a scratch note.
+				if (readTokenRef.current !== token) return
+				setStatus(
+					`Cannot open ${displayPath(openPath)} — ${failure instanceof Error ? failure.message : String(failure)}`
+				)
+				void actions.newNote({})
+			}
+		)
 	}, [openPath, revision, actions])
-
-	// The open note's path can stop being real while we hold it: the agent or Files
-	// renames a folder above it, and neither watch can tell us — the recursive one
-	// carries no path, and the file's own dentry never moved. So we do not track it;
-	// the SAVE finds out, because `save` never creates (`update: true` in app.ts).
-	// ENOENT means the note we were editing is gone: detach from the dead path, keep
-	// the text (the next flush writes it as a new note in a folder that exists), say so.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: openPath is read to know whether a path was being held, not to re-run on every switch.
-	useEffect(() => {
-		if (error === null || !/ENOENT/.test(error) || openPath === null) return
-		// The bytes are NOT on disk, so the buffer is unsaved again — `flush` clears
-		// `dirty` optimistically, and without this the detach below would read a clean
-		// buffer and wipe the user's text. Ref too: the read effect runs before the
-		// re-render lands.
-		liveRef.current.dirty = true
-		setDirty(true)
-		setStatus('The note you were editing was moved or deleted — your changes are kept here')
-		void actions.newNote({})
-	}, [error, actions])
 
 	// Debounced autosave: `text` is the reset trigger — each keystroke restarts
 	// the timer, so the flush fires once the user pauses, not after the first key.
@@ -484,10 +513,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			const body = `${title}\n`
 			creatingRef.current = true
 			try {
-				// Re-checked here, not only where the dir was picked: a tree row's folder can
-				// be gone by the time the name is typed, and this is the last moment before
-				// `writeFile` would recreate it.
-				const settled = await actions.create({ text: body, dir: liveDir(dir) ?? '/' })
+				// The listing is a snapshot, so `liveDir` is a hint, not a fact; `create`
+				// itself refuses to rebuild a folder that has gone (`parents: false`), and
+				// `createSomewhere` puts the note at the top level when that happens.
+				const settled = await createSomewhere(body, liveDir(dir) ?? '/')
 				if (settled.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
@@ -505,7 +534,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			})
 			if (listing) void refresh()
 		},
-		[flush, actions, liveDir, listing, refresh]
+		[flush, createSomewhere, liveDir, listing, refresh]
 	)
 
 	// A move can land somewhere other than asked (the name was taken) or be refused
@@ -817,7 +846,6 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					</button>
 				</div>
 			) : null}
-			{error ? <p className="notes-error">{error}</p> : null}
 			{status ? <p className="notes-status">{status}</p> : null}
 			<div className="notes-body" ref={bodyRef} data-dragging={dragging || undefined}>
 				{listOpen ? (

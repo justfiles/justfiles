@@ -48,9 +48,11 @@ export interface VolumeCapabilityOptions {
 // The contract now IS `Volume` (minus the callback-shaped `scan`/`watch`), so
 // every data method is a thin scope-resolving passthrough: bind the volume the
 // app's scopes grant, then delegate with the same arguments. `writeFile` keeps
-// the one host convenience — auto-creating the parent dir — that apps rely on,
-// EXCEPT for an update: `update: true` means "edit what is there", and creating the
-// folder it should have been in is the opposite of that (see `Volume.writeFile`).
+// the one host convenience — auto-creating the parent dir — that apps rely on, except
+// when the caller says otherwise: `update: true` means "edit what is there", and
+// creating the folder it should have been in is the opposite of that; `parents: false`
+// declines it outright, for a caller that wants a vanished folder to be an error rather
+// than something to rebuild (see `VolumeCapability` in contract.ts).
 export const volumeCapability = (fs: Volume, opts: VolumeCapabilityOptions = {}) => {
 	const allow = new Set(opts.systemAllowlist ?? [])
 
@@ -74,7 +76,7 @@ export const volumeCapability = (fs: Volume, opts: VolumeCapabilityOptions = {})
 		readFile: async (ctx, path) => (await bind(ctx)).readFile(path),
 		writeFile: async (ctx, path, data, opts) => {
 			const vol = await bind(ctx)
-			if (!opts?.update) await mkdirParent(vol, path)
+			if (!opts?.update && opts?.parents !== false) await mkdirParent(vol, path)
 			await vol.writeFile(path, data, opts)
 		},
 		appendFile: async (ctx, path, data) => (await bind(ctx)).appendFile(path, data),

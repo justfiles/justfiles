@@ -25,8 +25,19 @@ export interface VolumeEntry {
 //   - `watch(path, listener)` → a `Stream` (see `VolumeStreams` below)
 // Note: `stat`/`lstat`/`utimes` carry `bigint` and reads carry `Uint8Array`,
 // neither of which survives a JSON wire — so volume binds as a LOCAL capability.
-export type VolumeCapability = Omit<Volume, 'watch' | 'scan'> & {
+export type VolumeCapability = Omit<Volume, 'watch' | 'scan' | 'writeFile'> & {
 	scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
+	// The one place the capability ADDS to `Volume`, because the addition is the host's
+	// and not the filesystem's: the host creates missing parent directories for a write,
+	// which apps rely on. `parents: false` declines it, so a write into a folder that has
+	// since been deleted or renamed fails ENOENT instead of quietly rebuilding it — the
+	// only way to check "is that folder still there" without a gap, since the check is
+	// then the write itself.
+	writeFile(
+		path: string,
+		data: Uint8Array,
+		opts?: { exclusive?: boolean; update?: boolean; parents?: boolean }
+	): Promise<void>
 }
 
 // Payload delivered to a `volume.watch` subscriber. `source` is the tag the

@@ -69,16 +69,18 @@ async function claimPath(wanted: string, create: (path: string) => Promise<void>
 }
 
 // Reducer state holds only the app-session facts that survive reload and that
-// the agent should read: which note is open, change counters for the open file
-// and for the tree, and the last error. Body bytes and the note list are NOT
-// here — both are re-read from disk on demand (DESIGN.md §3).
+// the agent should read: which note is open, and change counters for the open file
+// and for the tree. Body bytes and the note list are NOT here — both are re-read from
+// disk on demand (DESIGN.md §3). Nor is "the last error": a write that fails has to be
+// answered by whoever asked for it, while it is still holding the buffer that failed
+// to land — so `save` is a procedure that throws, not an edge that files a complaint
+// in state for someone to notice later.
 export type NotesState = {
 	openPath: string | null
 	// Optional: both counters were added after the first release, and persisted
 	// state is loaded verbatim — every reader defaults them.
 	revision?: number
 	treeRevision?: number
-	error: string | null
 }
 
 // The shape `list` returns (never folded into state). Folders are included so
@@ -88,8 +90,7 @@ export type Entry = { path: string; type: 'file' | 'dir'; title: string; mtime: 
 export const initialState: NotesState = {
 	openPath: null,
 	revision: 0,
-	treeRevision: 0,
-	error: null
+	treeRevision: 0
 }
 
 // A path this app will act on: the CANONICAL spelling, or nothing. Not a blacklist of
@@ -158,41 +159,15 @@ export const app = defineApp({
 		// — pure mutations (agent-visible) —
 		open: t.on(
 			v.object({ path: noteSchema }),
-			(state, { path }) => ({ ...state, openPath: path, error: null }),
+			(state, { path }) => ({ ...state, openPath: path }),
 			{
 				description: 'Open a note in the editor — surfaces it in the user’s window.',
 				examples: [{ params: { path: '/Remember the milk.md' } }]
 			}
 		),
-		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, error: null }), {
+		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null }), {
 			description: 'Start a fresh blank note (clears the editor).'
 		}),
-
-		// — autosave for an existing note (the GUI dispatches on a debounced pause) —
-		//
-		// `update: true` — a save EDITS a note, it never brings one into being. The path
-		// here is always remembered from earlier (the GUI's open note, the agent's last
-		// listing), and a plain write would recreate whatever has since been moved or
-		// deleted, parent folders included: rename `/Trips` from Files while `Kyoto.md`
-		// is open, and the next autosave would rebuild `/Trips` and leave a stale
-		// duplicate in it. So the write is where the path is proven, and ENOENT is the
-		// signal that the note moved (the GUI turns it into "…was moved or deleted", and
-		// keeps the buffer). Creating is `create`'s job.
-		save: t.on(
-			v.object({ path: noteSchema, text: v.string() }),
-			(state, { path, text }) => [
-				state,
-				t.cmd('volume', 'writeFile', path, enc.encode(text), { update: true }).to('saved')
-			],
-			{
-				description:
-					'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one).',
-				examples: [{ params: { path: '/Groceries.md', text: 'eggs, milk' } }]
-			}
-		),
-		saved: t.fromResult('volume', 'writeFile', (state, r) =>
-			r.ok ? { ...state, error: null } : { ...state, error: r.error.message }
-		),
 
 		// — rename IS move: one op covers retitling, dragging into a folder, and
 		// renaming a folder. Internal (a `commit` edge): only the `rename` procedure
@@ -203,8 +178,7 @@ export const app = defineApp({
 			openPath:
 				state.openPath && isUnder(state.openPath, from)
 					? `${to}${state.openPath.slice(from.length)}`
-					: state.openPath,
-			error: null
+					: state.openPath
 		})),
 
 		// — external change to the OPEN file (the agent or Files edits it on disk) —
@@ -263,8 +237,15 @@ export const app = defineApp({
 			schema: v.object({ text: v.string(), dir: v.optional(dirSchema) }),
 			async run({ text, dir }, app) {
 				const wanted = joinPath(dir ?? '/', `${sanitizeName(firstLine(text))}${NOTE_EXT}`)
+				// `parents: false`: the folder has to be there ALREADY. The GUI decides where a
+				// new note goes from its listing, which is a snapshot — a folder the agent
+				// deleted a moment ago still looks live in it — and the host would otherwise
+				// rebuild the folder around the note. The write is the only check with no gap.
 				const path = await claimPath(wanted, (probe) =>
-					app.invoke('volume', 'writeFile', probe, enc.encode(text), { exclusive: true })
+					app.invoke('volume', 'writeFile', probe, enc.encode(text), {
+						exclusive: true,
+						parents: false
+					})
 				)
 				const { seq } = await app.dispatch({ type: 'open', params: { path } })
 				return app.settled(seq)
@@ -359,11 +340,42 @@ export const app = defineApp({
 			}
 		}),
 
+		// Persist a note's body. A PROCEDURE, not an edge, because the caller has to know
+		// whether the bytes landed while it still holds them: the GUI flushes before it
+		// opens another note, starts a new one, or moves this one, and a fire-and-forget
+		// write would report its failure after that transition — against a different
+		// `openPath`, with the text it failed to save already gone from the buffer.
+		//
+		// `update: true` — a save EDITS a note, it never brings one into being. The path
+		// is always remembered from earlier (the GUI's open note, the agent's last
+		// listing), and a plain write would recreate whatever has since been moved or
+		// deleted, parent folders included: rename `/Trips` from Files while `Kyoto.md` is
+		// open, and the next autosave would rebuild `/Trips` and leave a stale duplicate
+		// in it. So the write is where the path is proven, and ENOENT is the signal that
+		// the note is gone — which the GUI answers by keeping the buffer and detaching it
+		// (see `gui.tsx`). Creating is `create`'s job.
+		save: p.procedure({
+			description:
+				'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one).',
+			schema: v.object({ path: noteSchema, text: v.string() }),
+			async run({ path, text }, app) {
+				await app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+				return { path }
+			}
+		}),
+
+		// No `exists` probe, no type check: the READ is the check, and its errors are
+		// exactly the two questions worth asking. `noteSchema` can only judge the spelling,
+		// and a folder called `Archive.md` passes every lexical test there is — `readFile`
+		// says EISDIR. A note that was moved or deleted says ENOENT. Neither could be
+		// established before the read anyway, and answering "not there" with an empty string
+		// hands the editor a blank buffer to save over whatever the path has become. So it
+		// throws, and a path we cannot read is not one to stay pointed at: the GUI answers
+		// both the same way, by detaching (see `gui.tsx`).
 		readNote: p.procedure({
 			description: 'Read a note’s body as text, e.g. path "/Remember the milk.md".',
 			schema: v.object({ path: noteSchema }),
 			async run({ path }, app) {
-				if (!(await app.invoke('volume', 'exists', path))) return { path, text: '' }
 				return { path, text: dec.decode(await app.invoke('volume', 'readFile', path)) }
 			}
 		}),

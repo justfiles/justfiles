@@ -23,18 +23,34 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 			case 'writeFile': {
 				// Models the contract: `exclusive` is a claim, so a taken name throws
 				// rather than overwriting (packages/fs/volume.ts).
-				const opts = args[2] as { exclusive?: boolean; update?: boolean } | undefined
+				const opts = args[2] as
+					| { exclusive?: boolean; update?: boolean; parents?: boolean }
+					| undefined
 				const exclusive = opts?.exclusive
 				if (failOn?.test(path)) throw new Error(`EACCES: ${path}`)
 				if (exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
 				if (exclusive && folders.has(path)) throw new Error(`EISDIR: ${path}`)
 				// `update` is an edit: there has to be something to edit (see volume.ts).
 				if (opts?.update && !store.has(path)) throw new Error(`ENOENT: ${path}`)
+				// `parents: false` declines the host's folder-creating convenience, so the
+				// parent has to exist already (see capabilities/volume/contract.ts).
+				const parent = path.slice(0, path.lastIndexOf('/')) || '/'
+				if (opts?.parents === false && parent !== '/' && !folders.has(parent))
+					throw new Error(`ENOENT: ${parent}`)
+				// Otherwise the host creates them, which is what an import relies on.
+				for (let at = parent; at !== '/' && at !== ''; at = at.slice(0, at.lastIndexOf('/')))
+					folders.add(at)
 				store.set(path, dec.decode(args[1] as Uint8Array))
 				return undefined
 			}
-			case 'readFile':
-				return new TextEncoder().encode(store.get(path) ?? '')
+			case 'readFile': {
+				// The volume's own answers: a folder is EISDIR, a missing note ENOENT — which
+				// is what `readNote` relies on instead of probing (see app.ts).
+				if (folders.has(path)) throw new Error(`EISDIR: ${path}`)
+				const body = store.get(path)
+				if (body === undefined) throw new Error(`ENOENT: ${path}`)
+				return new TextEncoder().encode(body)
+			}
 			case 'mkdir':
 				folders.add(path)
 				return undefined
@@ -133,27 +149,39 @@ test('state persisted before the revision counters existed still counts up', asy
 	expect(file.state?.revision).toBe(1)
 })
 
-test('a save cannot bring a note — or its folder — back from the dead', async () => {
+test('a save cannot bring a note — or its folder — back from the dead, and it THROWS', async () => {
 	// The agent renames /Trips while /Trips/Kyoto.md is open: `openPath` still says the
 	// old path (no watch can tell us — see app.ts), and a plain write would rebuild
-	// /Trips and leave a stale duplicate in it. The write refuses instead, and the
-	// error is what the GUI turns into "…was moved or deleted".
+	// /Trips and leave a stale duplicate in it.
 	const vol = fakeVolume({ '/Journeys/Kyoto.md': 'moved here' }, ['/Journeys'])
-	const { command } = await app.dispatch(
-		{ type: 'save', params: { path: '/Trips/Kyoto.md', text: 'edited while it moved' } },
-		{ state: { ...initialState, openPath: '/Trips/Kyoto.md' } }
-	)
-	const write = command as unknown as { capability: string; method: string; args: unknown[] }
-	expect(write.method).toBe('writeFile')
-	await expect(vol.invoke(write.capability, write.method, ...write.args)).rejects.toThrow(/ENOENT/)
+	const h = handle({ ...initialState, openPath: '/Trips/Kyoto.md' }, vol.invoke)
+	// A procedure, so the caller learns this while it still holds the text that failed
+	// to land — an edge would report it after the next transition (see gui.tsx `flush`).
+	await expect(
+		app.runProcedure('save', { path: '/Trips/Kyoto.md', text: 'edited while it moved' }, h.app)
+	).rejects.toThrow(/ENOENT/)
 	// Nothing was created: no note, and no folder to hold it.
 	expect([...vol.store.keys()]).toEqual(['/Journeys/Kyoto.md'])
-	// And the failure reaches state, which is what the GUI reads to detach the buffer.
-	const failed = await app.dispatch(
-		{ type: '__cmd/saved', params: { ok: false, error: { message: 'ENOENT: /Trips/Kyoto.md' } } },
-		{ state: { ...initialState, openPath: '/Trips/Kyoto.md' } }
+	// A save of a note that IS there still just saves.
+	await app.runProcedure('save', { path: '/Journeys/Kyoto.md', text: 'edited' }, h.app)
+	expect(vol.store.get('/Journeys/Kyoto.md')).toBe('edited')
+})
+
+test('a create will not rebuild the folder it was aimed at', async () => {
+	// The GUI picks the folder from its listing, which is a snapshot: the agent can have
+	// deleted it a moment ago. `parents: false` makes that an error instead of a folder
+	// quietly coming back around the new note (the GUI then saves it at the top level).
+	const vol = fakeVolume({}, ['/Trips'])
+	const h = handle(initialState, vol.invoke)
+	await app.runProcedure('create', { text: 'Kyoto', dir: '/Trips' }, h.app)
+	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
+	await expect(app.runProcedure('create', { text: 'Osaka', dir: '/Gone' }, h.app)).rejects.toThrow(
+		/ENOENT/
 	)
-	expect(failed.state?.error).toMatch(/ENOENT/)
+	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
+	// An IMPORT still creates its folders — that is what an import is for.
+	await app.runProcedure('importNotes', { files: [{ path: 'New/Nara.md', text: 'x' }] }, h.app)
+	expect([...vol.store.keys()].sort()).toEqual(['/New/Nara.md', '/Trips/Kyoto.md'])
 })
 
 test('concurrent renames to one name are ordered, not raced', async () => {
@@ -230,6 +258,19 @@ test('a rename keeps a note a note, and an import member has to be one', async (
 	await expect(
 		app.runProcedure('importNotes', { files: [{ path: 'image.png', text: 'binary-ish' }] }, h.app)
 	).rejects.toThrow()
+})
+
+test('a folder that looks like a note is refused by the read, not by its name', async () => {
+	// `Archive.md` is a directory. No spelling rule can tell it from a note, so the read
+	// is the check — and the GUI turns the failure into "cannot open", detaching.
+	const vol = fakeVolume({ '/Archive.md/Kyoto.md': 'inside' }, ['/Archive.md'])
+	const h = handle(initialState, vol.invoke)
+	await expect(app.runProcedure('readNote', { path: '/Archive.md' }, h.app)).rejects.toThrow(
+		/EISDIR/
+	)
+	// And a note that is simply gone says so, instead of reading as an empty note that
+	// the editor would then save over whatever the path has become.
+	await expect(app.runProcedure('readNote', { path: '/Gone.md' }, h.app)).rejects.toThrow(/ENOENT/)
 })
 
 test('a folder cannot be opened as a note', async () => {
@@ -346,7 +387,8 @@ test('list walks nested folders, keeps .md and .txt, and returns folders too', a
 })
 
 test('create names the file after the first line, in the folder asked for', async () => {
-	const vol = fakeVolume()
+	// `/Trips` has to exist: a create will not rebuild a folder (see the test above).
+	const vol = fakeVolume({}, ['/Trips'])
 	const h = handle(initialState, vol.invoke)
 	await app.runProcedure('create', { text: 'Remember the milk\nand eggs' }, h.app)
 	expect([...vol.store.keys()]).toEqual(['/Remember the milk.md'])

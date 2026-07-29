@@ -91,14 +91,13 @@ demand (the `app-files` pattern).
 | `openPath` — which note is shown ("what is the user viewing"); a *pointer*, not a copy of disk | the editor's in-progress text buffer (GUI-local) |
 | `revision` — bumped when the open file changes on disk | `dirty` flag; search query; docked-pane preference; which folders are expanded; the folder new notes land in; cursor / scroll (all GUI-local) |
 | `treeRevision` — bumped when anything in `/notes` is created / removed / renamed | **the note list** — derived from `/notes` on demand via `list()`, never cached (see below) |
-| `error` | |
+| | **the last error** — a failed write is answered by whoever asked for it, while it still holds the buffer that failed to land (§1a‴), not filed in state for someone to notice later |
 
 ```ts
 type NotesState = {
 	openPath: string | null  // null = blank scratch — the agent's "what is the user viewing"
 	revision: number         // the OPEN file changed on disk (external/agent edit)
 	treeRevision: number     // the SHAPE of /notes changed (create/remove/rename anywhere)
-	error: string | null
 }
 // The listing is NOT state — it is derived from /notes on demand (the `list` procedure).
 // Folders are included, so an empty folder exists and CRUD has something to act on.
@@ -140,7 +139,7 @@ Notes on choices:
   tree and the list refresh when anything appears, disappears or moves — including an import. Neither
   event carries data; the GUI re-reads via `list`/`readNote`.
 - **Only app-session facts live in state:** `openPath` (a *pointer/selection*, not a copy of disk contents
-  — app.md §3 endorses "what is the user looking at"), the two revisions, `error`. Re-deriving the list
+  — app.md §3 endorses "what is the user looking at") and the two revisions. Re-deriving the list
   also gives true `mtime` recency on every call — no stale cache, no optimistic-mtime hack.
 - **`rename` is one op, deliberately.** Retitle, move-into-folder and folder-rename are the same
   filesystem operation; giving the agent (and the tree's drag/drop) one `{ from, to }` beats three
@@ -254,11 +253,38 @@ write refuses to invent anything: `save` passes `update: true`, which is `open` 
 the path is not there, and no parent folders on the way. That check has no gap, because it happens in the call
 that resolves the path. The host skips its `mkdir -p` for an update for the same reason.
 
+`create` needs the other half of that, because it *does* create the file and must not create the folder: the
+GUI picks the destination from its listing, which is a snapshot — the agent can have deleted that folder a
+moment ago, and the host's convenience would rebuild it around the new note. So the capability grows the one
+thing it adds to `Volume` (`parents: false` in `capabilities/volume/contract.ts`), the host declines its own
+`mkdir -p`, and a vanished folder is an ENOENT at the write instead of a resurrection. The GUI answers that by
+putting the note at the top level and saying so — "that folder is gone — saved at the top level instead" —
+because the one thing that must not happen is losing the text. An import keeps `parents: true`: creating
+folders is what an import is for.
+
 ENOENT is then a *signal*, not just a failure: the note we were editing is gone, so the GUI detaches the
 buffer from the dead path (`openPath` → null), marks it unsaved again — a failed write means the bytes are not
 on disk, whatever `flush` optimistically assumed — and says so. The text becomes a scratch buffer, which the
 next flush writes as a new note in a folder that exists. Nothing is resurrected, nothing is lost, and the user
 is told which of the two happened.
+
+**1a‴ · If a write can fail, the caller has to still be holding what failed.** `save` was an edge, so the
+write ran off-queue and its result arrived as reducer state for a GUI effect to notice. That is fine until the
+failure *matters*: every transition (open another note, start a new one, drag this one) flushes first, and a
+fire-and-forget write reports ENOENT after the transition — against a different `openPath`, with the text it
+could not save already replaced. The recovery would then detach the wrong note and drop the user's words.
+
+So `save` is a **procedure**: `flush()` awaits the actual write and answers its own failure, inline, while the
+buffer that produced it is still the buffer. The `error` field left reducer state entirely with it — "the last
+error" was never a fact about the session, it was a message in a bottle. Nothing else in this app files one.
+
+The read side is the same rule pointed the other way: `readNote` does no `exists` probe and no type check,
+because **the read is the check** and its two errors are exactly the two questions worth asking. `noteSchema`
+can only judge a spelling, and a *folder* called `Archive.md` passes every lexical test there is — `readFile`
+answers EISDIR; a note that has been moved or deleted answers ENOENT. Answering "not there" with an empty
+string was the trap: it hands the editor a blank buffer to save over whatever the path has become. Now a path
+we cannot read is one we do not stay pointed at, and both failures get one recovery — detach, keep a dirty
+buffer, say which happened.
 
 **1b · A check is not a guarantee unless it is the operation — WHERE THE OPERATION EXISTS.** The first
 version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is a *hint*
