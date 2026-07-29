@@ -327,16 +327,13 @@ export const app = defineApp({
 
 		// Folders are ordinary directories; `writeFile` auto-creates parents, so
 		// this exists only to make an EMPTY folder.
-		// `mkdir -p` walks past a final component that already exists WITHOUT looking at what
-		// it is, so asking for a folder where a note already sits used to report success and
-		// create nothing. The name has to be free, or already a folder.
+		// Asking for a folder where a note already sits is EEXIST — from `mkdir` itself, not
+		// from a check here. A check here could be overtaken by the import writing that same
+		// name, and `mkdir -p` would then walk past the file and report success.
 		mkdir: p.procedure({
 			description: 'Create a folder, e.g. "/Trips".',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
-				if ((await app.invoke('volume', 'exists', path)) && !(await isFolder(app, path))) {
-					throw new Error(`EEXIST: ${path} is already a note`)
-				}
 				await app.invoke('volume', 'mkdir', path, { recursive: true })
 			}
 		}),

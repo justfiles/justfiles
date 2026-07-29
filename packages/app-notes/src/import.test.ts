@@ -160,6 +160,32 @@ test('a member that could climb out of the volume is not a member', () => {
 	expect(plan.skipped).toBe(3)
 })
 
+test('a skipped member still describes the archive layout', () => {
+	// Which members are interesting and which describe the SHAPE are different questions.
+	// A conflicted copy is not worth importing, but the vault put it where it is — and a
+	// vault-contents archive with one beside a real folder must not have that folder
+	// mistaken for packaging and stripped.
+	const plan = planDrop(
+		{
+			'Trips/Kyoto.md': bytes('# Kyoto'),
+			'Kyoto (conflicted copy 2024-01-01).md': bytes('dupe')
+		},
+		'vault.zip'
+	)
+	// `Trips/` survives: it is the user's folder, not a wrapper. (The name then comes from
+	// the zip, since the archive has no single root folder to take it from.)
+	expect(plan.files.map((file) => file.path)).toEqual(['Trips/Kyoto.md'])
+	expect(plan.name).toBe('vault')
+
+	// OS packaging is the one exception: the zipper added it, so it says nothing.
+	const packaged = planDrop(
+		{ 'MyVault/Kyoto.md': bytes('# Kyoto'), '__MACOSX/._MyVault': bytes('junk') },
+		'vault.zip'
+	)
+	expect(packaged.files.map((file) => file.path)).toEqual(['Kyoto.md'])
+	expect(packaged.name).toBe('MyVault')
+})
+
 test('loose notes with no wrapping folder keep their names', () => {
 	const plan = planDrop({ 'hello.md': bytes('42\n'), 'notes.txt': bytes('hi') }, 'Imported')
 	expect(plan.name).toBe('Imported')

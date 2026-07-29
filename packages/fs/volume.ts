@@ -590,7 +590,17 @@ export function volume(storage: Storage): Volume {
 					current = current === '/' ? `/${part}` : `${current}/${part}`
 					const parentIno = await resolvePath(parentPath, true)
 					const existingIno = await lookupIno(parentIno, part)
-					if (existingIno !== null) continue
+					if (existingIno !== null) {
+						// `mkdir -p` may pass over a component that is already a DIRECTORY. It may not
+						// pass over a file and report that the folder exists: the caller asked for a
+						// place to put things, and a caller that has to check first can always be
+						// overtaken between the check and this call.
+						const existing = await getMetaOrThrow(existingIno)
+						if (existing.type !== FileType.Directory) {
+							throw new Error(current === path ? `EEXIST: ${path}` : `ENOTDIR: ${current}`)
+						}
+						continue
+					}
 					try {
 						const now = nowNs()
 						await createNode(parentIno, part, {

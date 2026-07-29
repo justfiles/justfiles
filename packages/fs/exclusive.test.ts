@@ -266,3 +266,20 @@ test('a write is not a success if the name was replaced while it happened', asyn
 	await expect(writing).rejects.toThrow(/^ENOENT/)
 	expect(readFileSync(join(dir, 'Kyoto.md'), 'utf8')).toBe('theirs')
 })
+
+test('mkdir -p passes over a folder, never over a file', async () => {
+	// A caller that checks first can always be overtaken between the check and the call, so
+	// the refusal belongs here: `mkdir` is where the name is taken. Reporting success while
+	// a note holds the name hands back a folder that does not exist.
+	const vol = volume(memStorage())
+	await vol.mkdir('/Trips', { recursive: true })
+	await vol.mkdir('/Trips', { recursive: true }) // a folder: idempotent, as `-p` promises
+	await vol.writeFile('/Kyoto.md', enc.encode('note'))
+	await expect(vol.mkdir('/Kyoto.md', { recursive: true })).rejects.toThrow(/^EEXIST/)
+	// …and a file part-way along the path is ENOTDIR, naming the component that blocks.
+	await expect(vol.mkdir('/Kyoto.md/Sub/Deeper', { recursive: true })).rejects.toThrow(
+		/^ENOTDIR: \/Kyoto\.md$/
+	)
+	expect((await vol.stat('/Kyoto.md')).type).toBe(0) // still a regular file
+	expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('note')
+})

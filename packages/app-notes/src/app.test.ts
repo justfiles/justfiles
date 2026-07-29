@@ -59,6 +59,9 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 				return new TextEncoder().encode(body)
 			}
 			case 'mkdir':
+				// Models the contract: `mkdir -p` passes over a component that is already a
+				// directory, never over a file (packages/fs/volume.ts).
+				if (store.has(path)) throw new Error(`EEXIST: ${path}`)
 				folders.add(path)
 				return undefined
 			case 'rename': {
@@ -295,8 +298,9 @@ test('a folder that is spelled like a note still renames like a folder', async (
 })
 
 test('a folder is not created where a note already sits', async () => {
-	// `mkdir -p` walks past an existing final component without looking at what it is, so
-	// this used to report success and create nothing.
+	// `mkdir -p` used to walk past an existing final component without looking at what it
+	// is, so this reported success and created nothing. The refusal belongs to `mkdir`
+	// itself (packages/fs/volume.ts) — a check here can be overtaken by the import.
 	const vol = fakeVolume({ '/Kyoto.md': 'note' }, [])
 	const h = handle(initialState, vol.invoke)
 	await expect(app.runProcedure('mkdir', { path: '/Kyoto.md' }, h.app)).rejects.toThrow(/EEXIST/)

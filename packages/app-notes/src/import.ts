@@ -136,8 +136,17 @@ export function createScreen(
 	// Bounded to one remembered name, because two different tops is already the answer.
 	let top: string | null = null
 	let manyTops = false
-	const layout = (path: string, evidence: boolean) => {
-		if (!evidence || manyTops) return
+	const layout = (path: string) => {
+		// OS packaging was added by whatever zipped the folder and says nothing about where
+		// the vault's root is. Everything else sits exactly where the VAULT put it —
+		// `.obsidian/`, a `.trash/`, an attachment, a conflicted copy — so it is evidence
+		// whether or not we keep it. Which members are *interesting* is a different question
+		// from which members describe the shape, and this asks only the second one.
+		if (manyTops || JUNK.test(path)) return
+		// …and a name we could not even spell describes nothing trustworthy: an archive is
+		// untrusted input, so a member that would climb out of the volume must not get a say
+		// in where the vault's root is. (Directory entries keep their trailing slash.)
+		if (!isCanonicalPath(`/${path.replace(/\/+$/, '')}`)) return
 		const cut = path.indexOf('/')
 		// No slash = a member at the archive's own root, so there is no root folder.
 		const head = cut <= 0 ? '' : path.slice(0, cut)
@@ -147,7 +156,7 @@ export function createScreen(
 	return {
 		charge(raw, size) {
 			const path = normalize(raw)
-			layout(path, true)
+			layout(path)
 			if (!member() || files + 1 > maxFiles || bytes + size > maxTotalBytes) {
 				stopped = true
 				refuse(path, 'too much')
@@ -159,14 +168,13 @@ export function createScreen(
 		},
 		skip(raw, reason) {
 			const path = normalize(raw)
-			// `.obsidian/` is evidence of where the vault's root is; `__MACOSX/` is not.
-			layout(path, reason !== 'junk')
+			layout(path)
 			member()
 			refuse(path, reason)
 		},
 		ignore(raw) {
 			const path = normalize(raw)
-			layout(path, !JUNK.test(path))
+			layout(path)
 			member()
 		},
 		get skipped() {
