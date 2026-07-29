@@ -29,6 +29,20 @@ const dec = new TextDecoder()
 // the backend, so the filesystem decides the winner and the loser just numbers up.
 // Used by create, move and import — the single reason nothing in `/notes` is ever
 // silently overwritten (DESIGN.md §3).
+// Procedures run OFF the kernel's per-app queue (packages/app/kernel.ts), so two of
+// them overlap: a drag in the GUI and an agent tool call can both be claiming a name.
+// `writeFile`'s claim is atomic and needs nothing from us, but a MOVE's cannot be — no
+// POSIX rename is both atomic and no-replace (packages/fs/volume.ts) — so the two
+// steps have to not interleave, and the cheap way to guarantee that is to stop making
+// them concurrently. One chain: every claim sees the previous one's result. Writers in
+// other processes are outside this, and that window is documented where the check is.
+let tail: Promise<unknown> = Promise.resolve()
+function serially<T>(task: () => Promise<T>): Promise<T> {
+	const run = tail.then(task, task)
+	tail = run.catch(() => {})
+	return run
+}
+
 async function claimPath(wanted: string, create: (path: string) => Promise<void>): Promise<string> {
 	for (let n = 1; ; n++) {
 		const candidate = n === 1 ? wanted : numberedPath(wanted, n)
@@ -90,6 +104,19 @@ const pathSchema = v.pipe(
 )
 const dirSchema = v.pipe(v.string(), v.check(isCanonicalPath, CANONICAL))
 
+// …and a third, for the actions that act on a NOTE's body. `list` returns folders
+// too and the agent can hand one straight back: `open('/Trips')` used to leave the
+// editor pointing at a directory whose read fails EISDIR, with nothing to show and
+// nothing to fix it. Folder CRUD (`rename`, `remove`, `mkdir`) keeps `pathSchema`,
+// because moving or deleting a folder is a real thing to want.
+const noteSchema = v.pipe(
+	v.string(),
+	v.check(
+		(path) => namesEntry(path) && isNotePath(path),
+		`${CANONICAL} — and it must name a note (.md or .txt)`
+	)
+)
+
 // `files[].path` inside an import is RELATIVE to `dir`, so it is judged as the thing
 // it becomes — an entry under the knowledge base — by the same predicate. That is what
 // refuses `''`: it joins to the root, which is not a note.
@@ -119,7 +146,7 @@ export const app = defineApp({
 	update: (t) => ({
 		// — pure mutations (agent-visible) —
 		open: t.on(
-			v.object({ path: pathSchema }),
+			v.object({ path: noteSchema }),
 			(state, { path }) => ({ ...state, openPath: path, error: null }),
 			{
 				description: 'Open a note in the editor — surfaces it in the user’s window.',
@@ -141,7 +168,7 @@ export const app = defineApp({
 		// signal that the note moved (the GUI turns it into "…was moved or deleted", and
 		// keeps the buffer). Creating is `create`'s job.
 		save: t.on(
-			v.object({ path: pathSchema, text: v.string() }),
+			v.object({ path: noteSchema, text: v.string() }),
 			(state, { path, text }) => [
 				state,
 				t.cmd('volume', 'writeFile', path, enc.encode(text), { update: true }).to('saved')
@@ -257,8 +284,8 @@ export const app = defineApp({
 				// strand a folder inside itself.
 				const illegal = illegalMove(from, to)
 				if (illegal) throw new Error(illegal)
-				const path = await claimPath(to, (probe) =>
-					app.invoke('volume', 'rename', from, probe, { exclusive: true })
+				const path = await serially(() =>
+					claimPath(to, (probe) => app.invoke('volume', 'rename', from, probe, { exclusive: true }))
 				)
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
 				await app.settled(seq)
@@ -317,7 +344,7 @@ export const app = defineApp({
 
 		readNote: p.procedure({
 			description: 'Read a note’s body as text, e.g. path "/Remember the milk.md".',
-			schema: v.object({ path: pathSchema }),
+			schema: v.object({ path: noteSchema }),
 			async run({ path }, app) {
 				if (!(await app.invoke('volume', 'exists', path))) return { path, text: '' }
 				return { path, text: dec.decode(await app.invoke('volume', 'readFile', path)) }

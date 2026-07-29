@@ -228,9 +228,12 @@ one odd name must not cost the user the other thousand notes.
 on a *thing* has to refuse it, and the two cases that proved it are the two that would have hurt most:
 `remove('/')` deleted every note in one call, and an import member of `''` joined to `/`, which `claimPath`
 numbered into ` 2` — an invisible file the listing does not even show, because it is not a note. So there are
-two schemas over one extra predicate: `pathSchema` (`namesEntry`) for anything that acts on a note or folder,
-`dirSchema` for a *place to put* one, where the root is the default and perfectly valid. A relative import
-member is judged as what it becomes, `namesEntry('/' + path)`, which is what refuses the empty string.
+three schemas over two extra predicates: `pathSchema` (`namesEntry`) for anything that acts on a note *or*
+folder, `dirSchema` for a *place to put* one (where the root is the default and perfectly valid), and
+`noteSchema` for the actions that act on a note's BODY — because `list` returns folders too and the agent can
+hand one straight back, and `open('/Trips')` used to leave the editor pointing at a directory whose read fails
+EISDIR, with nothing to show and nothing to fix it. A relative import member is judged as what it becomes,
+`namesEntry('/' + path)`, which is what refuses the empty string.
 
 **1a″ · A remembered path is a claim, and the WRITE is where it is proven.** The GUI holds `openPath` and
 autosaves to it. Nothing keeps that path true: rename `/Trips` from Files or the agent while `Kyoto.md` is
@@ -267,12 +270,22 @@ leaves the file under both names.
 
 **The right move was to size the problem before solving it.** Who actually races for a destination here? The
 import loop is sequential (`for … await` over one chunk at a time), an agent tool call is one call, and the
-GUI has exactly one gesture that produces several moves — a multi-item drop — which the tree now applies one
-at a time (`persistDrop`). Nothing in this system races itself. So `rename(…, { exclusive: true })` is a
-check and *then* a move, documented as exactly that, and the guarantee it gives — sequential writers never
-overwrite each other, whatever type holds the name — is the guarantee the app needs. Two writers in different
-processes reaching for the same new name in the same instant can still lose one; that is a knowingly accepted
-window, not an oversight, and it costs a fraction of what emulating atomicity cost.
+GUI has exactly one gesture that produces several moves — a multi-item drop — which the tree applies one at a
+time (`persistDrop`). So `rename(…, { exclusive: true })` is a check and *then* a move, documented as exactly
+that, and the guarantee it gives — sequential writers never overwrite each other, whatever type holds the
+name — is the guarantee the app needs.
+
+"Sequential" is a claim about the app, though, and the app has to *make* it true rather than observe it: the
+kernel runs procedures **off** its per-app queue, so a GUI drag and an agent tool call genuinely overlap. So
+the claim runs on one chain (`serially` in `app.ts`), and every claim sees the previous one's result. That is
+three lines against a backend primitive POSIX does not have, and it is the honest place for it: the two steps
+are ours, so the ordering is ours. Writers in *other processes* reaching for the same new name in the same
+instant can still lose one — a knowingly accepted window, stated where the check is.
+
+A test that asserts ordering has to be able to fail: the volume double had no `await` between its check and
+its move, so it was accidentally atomic and the test passed with the ordering removed. The double now yields
+where the contract admits a gap, and two concurrent renames onto one name collapse to a single note without
+`serially` — which is the point.
 
 **Push a guarantee down when the primitive is already there. When it is not, remove the concurrency instead
 of emulating the primitive** — ordering your own writes is cheap, and an emulated atomic is a defect surface
@@ -643,7 +656,12 @@ What it does:
   copy)*`, and everything that isn't a note — attachments, `.canvas`, `.base`, plugin data. Attachments are
   out because the GUI→reducer seam carries JSON-safe values, so the importer ships **strings**; the day we
   want binaries they need base64 or a host-level file-drop capability, which is a separate decision.
-- **The root is computed over kept paths only.** A macOS zip carries `__MACOSX/` beside the vault folder;
-  counting it would look like a second root and leave the whole vault nested one level too deep.
+- **The vault root is read from the archive's LAYOUT, not from the notes we kept.** Both of the obvious
+  shortcuts are wrong in opposite directions: counting *every* member sees macOS's `__MACOSX/` beside the
+  vault folder as a second root and leaves the vault a level too deep, while counting *only kept notes* sees
+  a contents-zip's `.obsidian/` disappear and mistakes the user's own `Trips/` for packaging — flattening a
+  folder they made, and with it any relative links. So every member is evidence **except OS packaging**, and
+  the `Screen` witnesses it as the archive streams past, bounded to one remembered name (two different tops
+  is already the answer).
 - **Not ported at all:** canvas, bases, Dataview/Templater code, plugins, `.obsidian` config. Their text is
   kept as-is where it lives inside a note; nothing is rewritten.

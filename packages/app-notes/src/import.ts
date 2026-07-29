@@ -78,6 +78,8 @@ export type Screen = {
 	charge(path: string, size: number): boolean
 	/** Record a refusal: a name/size rule, or an entry that outgrew its own header. */
 	skip(path: string, reason: SkipReason): void
+	/** The archive's own root folder, if it has exactly one — see `createScreen`. */
+	readonly root: string
 	/**
 	 * A member that is neither content nor a refusal — a zip's folder entries, which
 	 * are not notes and are not worth reporting (folders come from their children).
@@ -85,7 +87,7 @@ export type Screen = {
 	 * the member ceiling like any other, and a ceiling only what-we-keep can reach is
 	 * no ceiling at all.
 	 */
-	ignore(): void
+	ignore(path: string): void
 	/** How many members were refused — a count, never a list (see `MAX_EXAMPLES`). */
 	readonly skipped: number
 	/** How many members were examined at all: kept + refused + ignored. */
@@ -120,9 +122,32 @@ export function createScreen(
 		skipped++
 		if (examples.length < MAX_EXAMPLES) examples.push({ path, reason })
 	}
+	// The archive's layout, witnessed as it streams past: does every member sit under
+	// ONE top-level folder (a vault zipped on the desktop is `MyVault/Notes/Kyoto.md`,
+	// and importing that nested inside another folder would double the nesting)?
+	//
+	// It has to be judged on the LAYOUT, not on the notes we kept. Kept-only gets both
+	// of the real cases wrong in opposite directions: a macOS zip carries `__MACOSX/`
+	// beside the vault, so counting everything sees two roots and leaves the vault a
+	// level too deep — while a zip of a vault's *contents* has `.obsidian/` beside the
+	// user's own `Trips/`, so counting only notes sees `Trips` as packaging and flattens
+	// a folder the user made. So: every member is evidence EXCEPT OS packaging.
+	//
+	// Bounded to one remembered name, because two different tops is already the answer.
+	let top: string | null = null
+	let manyTops = false
+	const layout = (path: string, evidence: boolean) => {
+		if (!evidence || manyTops) return
+		const cut = path.indexOf('/')
+		// No slash = a member at the archive's own root, so there is no root folder.
+		const head = cut <= 0 ? '' : path.slice(0, cut)
+		if (top === null) top = head
+		else if (top !== head) manyTops = true
+	}
 	return {
 		charge(raw, size) {
 			const path = normalize(raw)
+			layout(path, true)
 			if (!member() || files + 1 > maxFiles || bytes + size > maxTotalBytes) {
 				stopped = true
 				refuse(path, 'too much')
@@ -133,10 +158,15 @@ export function createScreen(
 			return true
 		},
 		skip(raw, reason) {
+			const path = normalize(raw)
+			// `.obsidian/` is evidence of where the vault's root is; `__MACOSX/` is not.
+			layout(path, reason !== 'junk')
 			member()
-			refuse(normalize(raw), reason)
+			refuse(path, reason)
 		},
-		ignore() {
+		ignore(raw) {
+			const path = normalize(raw)
+			layout(path, !JUNK.test(path))
 			member()
 		},
 		get skipped() {
@@ -150,6 +180,9 @@ export function createScreen(
 		},
 		get stopped() {
 			return stopped
+		},
+		get root() {
+			return manyTops || top === null || top === '' ? '' : top
 		}
 	}
 }
@@ -171,7 +204,7 @@ export function admit(
 	// other reasons an entry does not become a note; the ledger still hears about it,
 	// so every member touches it exactly once whichever seam saw it.
 	if (path.endsWith('/')) {
-		screen.ignore()
+		screen.ignore(path)
 		return null
 	}
 	const reason = screenEntry(path, entry.bytes.length, maxBytes)
@@ -202,23 +235,6 @@ function classify(path: string): SkipReason | null {
 	return null
 }
 
-/**
- * The single top folder every entry shares, if there is one — a vault zipped on
- * the desktop is `MyVault/Notes/Kyoto.md`, and importing that nested inside
- * another folder would double the nesting.
- */
-export function commonRoot(paths: readonly string[]): string {
-	let root: string | null = null
-	for (const path of paths) {
-		const cut = path.indexOf('/')
-		if (cut <= 0) return ''
-		const head = path.slice(0, cut)
-		if (root === null) root = head
-		else if (root !== head) return ''
-	}
-	return root ?? ''
-}
-
 // macOS zips store decomposed unicode (NFD): "Kyōto" arrives as "Kyo\u0304to".
 // Left alone it looks identical but compares unequal, so a re-import (or a
 // wikilink) silently misses. Normalizing per segment is the whole fix.
@@ -242,10 +258,9 @@ export function planImport(
 	zipName: string,
 	screen: Screen = createScreen()
 ): ImportPlan {
-	// The root is computed over KEPT paths only — a macOS zip carries `__MACOSX/`
-	// beside the vault folder, which would otherwise look like a second root and
-	// leave the whole vault nested one level deeper than it should be.
-	const root = commonRoot(entries.map((entry) => entry.path))
+	// The vault's own root folder, witnessed by the screen as the archive streamed
+	// past — every member is evidence, not just the notes we kept (see `createScreen`).
+	const root = screen.root
 	const strip = root ? root.length + 1 : 0
 
 	const files: ImportFile[] = []

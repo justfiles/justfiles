@@ -103,7 +103,7 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 		// Not content, but still a member: it counts as work, or an archive of nothing
 		// but directories never reaches the ceiling meant to stop it.
 		if (entry.name.endsWith('/')) {
-			screen.ignore()
+			screen.ignore(entry.name)
 			return
 		}
 		// A cheap pre-check, from the local header: skip what we can already tell we

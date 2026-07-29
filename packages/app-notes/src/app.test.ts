@@ -44,6 +44,10 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 				// name of ANY type; without it, POSIX replace (packages/fs/volume.ts).
 				const exclusive = (args[2] as { exclusive?: boolean } | undefined)?.exclusive
 				if (exclusive && (store.has(to) || folders.has(to))) throw new Error(`EEXIST: ${to}`)
+				// …and models the WEAKNESS the contract admits to: the check and the move are
+				// two steps, so a yield belongs between them. Without it this double is
+				// accidentally atomic and a test about ordering asserts nothing.
+				await Promise.resolve()
 				store.delete(to)
 				for (const [key, value] of [...store]) {
 					if (key === path) {
@@ -150,6 +154,39 @@ test('a save cannot bring a note — or its folder — back from the dead', asyn
 		{ state: { ...initialState, openPath: '/Trips/Kyoto.md' } }
 	)
 	expect(failed.state?.error).toMatch(/ENOENT/)
+})
+
+test('concurrent renames to one name are ordered, not raced', async () => {
+	// The kernel runs procedures off its per-app queue, so a GUI drag and an agent call
+	// really can overlap. The move's claim is two steps (check, then move — no POSIX
+	// rename is both atomic and no-replace), so the app orders them instead: both notes
+	// survive, one numbered, and neither reports a success it did not have.
+	const vol = fakeVolume({ '/A/Kyoto.md': 'from A', '/B/Kyoto.md': 'from B' }, ['/A', '/B'])
+	const h = handle(initialState, vol.invoke)
+	const landed = (await Promise.all([
+		app.runProcedure('rename', { from: '/A/Kyoto.md', to: '/Kyoto.md' }, h.app),
+		app.runProcedure('rename', { from: '/B/Kyoto.md', to: '/Kyoto.md' }, h.app)
+	])) as Array<{ path: string }>
+	expect(landed.map((r) => r.path).sort()).toEqual(['/Kyoto 2.md', '/Kyoto.md'])
+	expect([...vol.store.keys()].sort()).toEqual(['/Kyoto 2.md', '/Kyoto.md'])
+	expect([vol.store.get('/Kyoto.md'), vol.store.get('/Kyoto 2.md')].sort()).toEqual([
+		'from A',
+		'from B'
+	])
+})
+
+test('a folder cannot be opened as a note', async () => {
+	// `list` returns folders, so the agent can hand one back. Refused at the schema:
+	// the editor pointing at a directory has nothing to show and no way out.
+	const vol = fakeVolume({ '/Trips/Kyoto.md': 'x' }, ['/Trips'])
+	const h = handle(initialState, vol.invoke)
+	await expect(
+		app.dispatch({ type: 'open', params: { path: '/Trips' } }, { state: initialState })
+	).rejects.toThrow()
+	await expect(app.runProcedure('readNote', { path: '/Trips' }, h.app)).rejects.toThrow()
+	// A folder is still a fine thing to move or delete.
+	await app.runProcedure('rename', { from: '/Trips', to: '/Journeys' }, h.app)
+	expect([...vol.store.keys()]).toEqual(['/Journeys/Kyoto.md'])
 })
 
 test('rename never overwrites: an occupied destination is numbered instead', async () => {

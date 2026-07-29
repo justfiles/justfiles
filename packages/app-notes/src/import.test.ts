@@ -1,7 +1,6 @@
 import { expect, test } from 'vitest'
 import {
 	admit,
-	commonRoot,
 	createScreen,
 	MAX_FILES,
 	MAX_TOTAL_BYTES,
@@ -26,12 +25,56 @@ const planDrop = (map: Record<string, Uint8Array>, zipName: string, screen = cre
 		screen
 	)
 
-test('a single shared top folder is the vault root; anything else is not', () => {
-	expect(commonRoot(['MyVault/a.md', 'MyVault/Notes/b.md'])).toBe('MyVault')
-	expect(commonRoot(['MyVault/a.md', 'Other/b.md'])).toBe('')
-	// A file at the archive root means there is no wrapping folder to strip.
-	expect(commonRoot(['a.md', 'MyVault/b.md'])).toBe('')
-	expect(commonRoot([])).toBe('')
+// The screen witnesses the layout as members stream past, so a root is asserted by
+// showing it the members — junk and config included, which is the whole point.
+const layoutOf = (members: Array<[string, 'note' | 'junk' | 'config' | 'folder']>) => {
+	const screen = createScreen()
+	for (const [path, kind] of members) {
+		if (kind === 'note') screen.charge(path, 10)
+		else if (kind === 'folder') screen.ignore(path)
+		else screen.skip(path, kind === 'junk' ? 'junk' : 'config')
+	}
+	return screen.root
+}
+
+test('the vault root is read from the archive LAYOUT, not from the notes we kept', () => {
+	// A vault zipped on the desktop: one folder, everything under it.
+	expect(
+		layoutOf([
+			['MyVault/a.md', 'note'],
+			['MyVault/Notes/b.md', 'note']
+		])
+	).toBe('MyVault')
+	// macOS adds `__MACOSX/` beside it. Packaging is not evidence, so the root stands.
+	expect(
+		layoutOf([
+			['MyVault/a.md', 'note'],
+			['__MACOSX/', 'folder'],
+			['__MACOSX/MyVault/._a.md', 'junk']
+		])
+	).toBe('MyVault')
+	// A vault's CONTENTS zipped: `.obsidian/` sits beside the user's own folder, so
+	// `Trips` is a folder they made — flattening it would silently restructure the KB.
+	expect(
+		layoutOf([
+			['.obsidian/app.json', 'config'],
+			['Trips/Kyoto.md', 'note']
+		])
+	).toBe('')
+	// Two real folders, or anything at the archive root, means nothing to strip.
+	expect(
+		layoutOf([
+			['MyVault/a.md', 'note'],
+			['Other/b.md', 'note']
+		])
+	).toBe('')
+	expect(
+		layoutOf([
+			['a.md', 'note'],
+			['MyVault/b.md', 'note']
+		])
+	).toBe('')
+	expect(layoutOf([])).toBe('')
 })
 
 test('the vault folder name comes from its own root folder, else the archive', () => {
@@ -222,11 +265,11 @@ test('members are counted whether they are kept, refused or ignored', () => {
 	screen.skip('b.png', 'attachment')
 	// A folder entry produces nothing and reports nothing, but it is still work: an
 	// archive of a million empty directories has to reach the ceiling too.
-	screen.ignore()
+	screen.ignore('vault/folder/')
 	expect(screen.stopped).toBe(false)
 	expect(screen.skipped).toBe(1)
 	const folders = createScreen({ maxMembers: 5 })
-	for (let i = 0; i < 40; i++) folders.ignore()
+	for (let i = 0; i < 40; i++) folders.ignore(`vault/folder-${i}/`)
 	expect(folders.stopped).toBe(true)
 	expect(folders.skipped).toBe(0)
 	expect(screen.charge('c.md', 10)).toBe(false)
