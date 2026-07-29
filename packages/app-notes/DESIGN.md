@@ -679,6 +679,11 @@ What it does:
   a contents-zip's `.obsidian/` disappear and mistakes the user's own `Trips/` for packaging — flattening a
   folder they made, and with it any relative links. So every member is evidence **except OS packaging**, and
   the `Screen` witnesses it as the archive streams past, bounded to one remembered name (two different tops
-  is already the answer).
+  is already the answer). And a root is only stripped when the whole archive was **seen**: a drop that hit a
+  ceiling was abandoned mid-stream, so "every member shares this top folder" is a claim about the prefix we
+  read — the entry that would disprove it may be one of the ones we never looked at. A partial import
+  therefore keeps the archive's own shape, one level deeper than a whole one (visible, and a drag from being
+  fixed) rather than flattening a folder the user made. **Evidence gathered up to the point you stopped is
+  evidence about the part you saw.**
 - **Not ported at all:** canvas, bases, Dataview/Templater code, plugins, `.obsidian` config. Their text is
   kept as-is where it lives inside a note; nothing is rewritten.

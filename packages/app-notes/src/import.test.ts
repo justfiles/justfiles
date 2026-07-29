@@ -275,3 +275,30 @@ test('members are counted whether they are kept, refused or ignored', () => {
 	expect(screen.charge('c.md', 10)).toBe(false)
 	expect(screen.stopped).toBe(true)
 })
+
+test('a partial import keeps the shape it saw, instead of stripping a root it guessed', () => {
+	// Everything read so far sits under `Trips/`, so the layout SAYS one root — but the
+	// stream was abandoned, and the entry at the archive root that would disprove it is
+	// among the ones never read. Stripping here would flatten a folder the user made.
+	const screen = createScreen({ maxFiles: 2 })
+	const kept = [
+		{ path: 'Trips/Kyoto.md', bytes: bytes('Kyoto') },
+		{ path: 'Trips/Osaka.md', bytes: bytes('Osaka') },
+		{ path: 'Trips/Nara.md', bytes: bytes('Nara') }
+	].flatMap((entry) => admit(entry, screen) ?? [])
+	expect(screen.stopped).toBe(true)
+	expect(screen.root).toBe('Trips') // the layout, as far as it was seen
+	const plan = planImport(kept, 'vault.zip', screen)
+	expect(plan.files.map((f) => f.path)).toEqual(['Trips/Kyoto.md', 'Trips/Osaka.md'])
+	expect(plan.stopped).toBe(true)
+	// A complete read of the same archive is free to strip it.
+	const whole = createScreen()
+	const all = [
+		{ path: 'Trips/Kyoto.md', bytes: bytes('Kyoto') },
+		{ path: 'Trips/Osaka.md', bytes: bytes('Osaka') }
+	].flatMap((entry) => admit(entry, whole) ?? [])
+	expect(planImport(all, 'vault.zip', whole).files.map((f) => f.path)).toEqual([
+		'Kyoto.md',
+		'Osaka.md'
+	])
+})

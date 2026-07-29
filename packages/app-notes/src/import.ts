@@ -260,7 +260,14 @@ export function planImport(
 ): ImportPlan {
 	// The vault's own root folder, witnessed by the screen as the archive streamed
 	// past — every member is evidence, not just the notes we kept (see `createScreen`).
-	const root = screen.root
+	//
+	// …but only if it saw the WHOLE archive. A drop that hit a ceiling was abandoned
+	// mid-stream, so "every member shares this top folder" is a statement about the
+	// prefix we read: the entry that would have disproved it may be one of the ones we
+	// never looked at. Stripping on that evidence flattens a folder the user made. So a
+	// partial import keeps the archive's own shape, one level deeper than a whole one —
+	// visible, and a drag away from fixing — instead of guessing.
+	const root = screen.stopped ? '' : screen.root
 	const strip = root ? root.length + 1 : 0
 
 	const files: ImportFile[] = []
