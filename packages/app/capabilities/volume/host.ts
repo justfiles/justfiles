@@ -48,7 +48,11 @@ export interface VolumeCapabilityOptions {
 // The contract now IS `Volume` (minus the callback-shaped `scan`/`watch`), so
 // every data method is a thin scope-resolving passthrough: bind the volume the
 // app's scopes grant, then delegate with the same arguments. `writeFile` keeps
-// the one host convenience — auto-creating the parent dir — that apps rely on.
+// the one host convenience — auto-creating the parent dir — that apps rely on, except
+// when the caller says otherwise: `update: true` means "edit what is there", and
+// creating the folder it should have been in is the opposite of that; `parents: false`
+// declines it outright, for a caller that wants a vanished folder to be an error rather
+// than something to rebuild (see `VolumeCapability` in contract.ts).
 export const volumeCapability = (fs: Volume, opts: VolumeCapabilityOptions = {}) => {
 	const allow = new Set(opts.systemAllowlist ?? [])
 
@@ -70,16 +74,16 @@ export const volumeCapability = (fs: Volume, opts: VolumeCapabilityOptions = {})
 		listXattr: async (ctx, path) => (await bind(ctx)).listXattr(path),
 		removeXattr: async (ctx, path, name) => (await bind(ctx)).removeXattr(path, name),
 		readFile: async (ctx, path) => (await bind(ctx)).readFile(path),
-		writeFile: async (ctx, path, data) => {
+		writeFile: async (ctx, path, data, opts) => {
 			const vol = await bind(ctx)
-			await mkdirParent(vol, path)
-			await vol.writeFile(path, data)
+			if (!opts?.update && opts?.parents !== false) await mkdirParent(vol, path)
+			await vol.writeFile(path, data, opts)
 		},
 		appendFile: async (ctx, path, data) => (await bind(ctx)).appendFile(path, data),
 		mkdir: async (ctx, path, opts) => (await bind(ctx)).mkdir(path, opts),
 		readdir: async (ctx, path) => (await bind(ctx)).readdir(path),
 		rm: async (ctx, path, opts) => (await bind(ctx)).rm(path, opts),
-		rename: async (ctx, oldPath, newPath) => (await bind(ctx)).rename(oldPath, newPath),
+		rename: async (ctx, oldPath, newPath, opts) => (await bind(ctx)).rename(oldPath, newPath, opts),
 		cp: async (ctx, src, dest, opts) => (await bind(ctx)).cp(src, dest, opts),
 		symlink: async (ctx, target, path) => (await bind(ctx)).symlink(target, path),
 		readlink: async (ctx, path) => (await bind(ctx)).readlink(path),
@@ -118,19 +122,21 @@ async function scanDir(
 
 // Recursive walk that hits the storage layer's full-volume cursor (one
 // network round trip when the backing storage supports it), so callers
-// avoid N+1 capability invocations from the sandboxed worker.
+// avoid N+1 capability invocations from the sandboxed worker. The walk already
+// holds each entry's stat, so mtime rides along (see `VolumeEntry.mtimeNs`).
 async function scanTree(
 	vol: Volume,
 	path: string
-): Promise<Array<{ path: string; type: 'file' | 'dir' }>> {
+): Promise<Array<{ path: string; type: 'file' | 'dir'; mtimeNs: number }>> {
 	if (!(await vol.exists(path))) return []
-	const out: Array<{ path: string; type: 'file' | 'dir' }> = []
+	const out: Array<{ path: string; type: 'file' | 'dir'; mtimeNs: number }> = []
 	await vol.scan(path, async (entryPath, stat) => {
 		if (entryPath === path) return
 		if (stat.type === FileType.Symlink) return
 		out.push({
 			path: entryPath,
-			type: stat.type === FileType.Directory ? 'dir' : 'file'
+			type: stat.type === FileType.Directory ? 'dir' : 'file',
+			mtimeNs: Number(stat.mtimeNs)
 		})
 	})
 	return out

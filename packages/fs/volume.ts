@@ -65,8 +65,31 @@ export interface Volume {
 	 * last changed" and an app can sort by recency. A sync-applied write instead
 	 * carries the ORIGIN's mtime (it is the same edit, not a new one). Directory
 	 * mtime is NOT maintained — no caller reads it.
+	 *
+	 * `exclusive` and `update` are the two ends of one question — what must be true of
+	 * the path before these bytes land — and this call is the only place it can be
+	 * asked without a gap, because it is the call that resolves the path.
+	 *
+	 * With `exclusive: true` this is a CREATE, not a write: it throws EEXIST if the
+	 * path is already taken. That makes it a *claim* on a name rather than a probe —
+	 * `exists()` followed by `writeFile` is a TOCTOU, and the loser of the race has
+	 * its file overwritten. The check and the create are one operation in the
+	 * backend (`atomicCreate`: `O_EXCL`, a single IndexedDB transaction, a
+	 * synchronous map check), so concurrent writers are decided by the storage. A
+	 * backend without that capability falls back to a best-effort pre-check.
+	 *
+	 * With `update: true` it is an EDIT, not a create: ENOENT if nothing is there
+	 * (`open` without `O_CREAT`). A plain write brings a file into being, and with it
+	 * every missing parent folder — so a caller holding a path that has since been
+	 * moved or deleted silently *recreates* the tree it remembers instead of failing.
+	 * An editor autosaving to the note it has open wants this: the write is where the
+	 * path is proven still real, so it cannot be stale by the time the bytes land.
 	 */
-	writeFile(path: string, data: Uint8Array): Promise<void>
+	writeFile(
+		path: string,
+		data: Uint8Array,
+		opts?: { exclusive?: boolean; update?: boolean }
+	): Promise<void>
 
 	/**
 	 * Append data to a file, creating it if it does not exist.
@@ -110,8 +133,22 @@ export interface Volume {
 	 * Move or rename a file, symlink, or directory.
 	 * If newPath already exists it is replaced atomically (POSIX rename
 	 * semantics). Throws ENOENT if oldPath does not exist.
+	 *
+	 * With `exclusive: true` the destination must be FREE: EEXIST if a file or a
+	 * directory already holds that name, so a caller can retry under another name
+	 * instead of destroying a stranger's data.
+	 *
+	 * Unlike `writeFile`'s `exclusive`, this is a CHECK AND THEN a move, not one
+	 * operation — no POSIX rename is both atomic and no-replace (`renameat2` and
+	 * `renamex_np` are not reachable from Node), and emulating one costs more than it
+	 * buys: claiming the destination first is not a reservation in a shared store,
+	 * and `link`+`unlink` is no longer a move. So the guarantee here is scoped
+	 * honestly: sequential writers never overwrite each other, and two writers
+	 * racing for the SAME new name in the same instant can still have one replaced.
+	 * Order your own writes if that matters; this refuses the destination that is
+	 * taken when it looks.
 	 */
-	rename(oldPath: string, newPath: string): Promise<void>
+	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
 
 	/**
 	 * Copy a file or directory.
@@ -471,7 +508,7 @@ export function volume(storage: Storage): Volume {
 			return storage.getBlob(resolved.ino)
 		},
 
-		async writeFile(path, data) {
+		async writeFile(path, data, opts) {
 			let ino: Ino
 			let resolved: Ino | null = null
 			try {
@@ -481,12 +518,20 @@ export function volume(storage: Storage): Volume {
 			}
 
 			if (resolved !== null) {
+				if (opts?.exclusive) throw new Error(`EEXIST: ${path}`)
 				const meta = await getMetaOrThrow(resolved)
 				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
 			} else {
+				// An edit has nothing to edit. Refused HERE, where the path was just
+				// resolved, so no caller can create a file (and its parents) from a path it
+				// no longer holds.
+				if (opts?.update) throw new Error(`ENOENT: ${path}`)
 				const { dirIno, name } = await resolveParent(path)
 				const now = nowNs()
+				// `createNode` throws EEXIST when a concurrent writer took the name
+				// between the resolve above and here — which is what makes `exclusive` a
+				// claim and not just a probe.
 				ino = await createNode(dirIno, name, {
 					type: FileType.Regular,
 					size: 0n,
@@ -545,7 +590,17 @@ export function volume(storage: Storage): Volume {
 					current = current === '/' ? `/${part}` : `${current}/${part}`
 					const parentIno = await resolvePath(parentPath, true)
 					const existingIno = await lookupIno(parentIno, part)
-					if (existingIno !== null) continue
+					if (existingIno !== null) {
+						// `mkdir -p` may pass over a component that is already a DIRECTORY. It may not
+						// pass over a file and report that the folder exists: the caller asked for a
+						// place to put things, and a caller that has to check first can always be
+						// overtaken between the check and this call.
+						const existing = await getMetaOrThrow(existingIno)
+						if (existing.type !== FileType.Directory) {
+							throw new Error(current === path ? `EEXIST: ${path}` : `ENOTDIR: ${current}`)
+						}
+						continue
+					}
 					try {
 						const now = nowNs()
 						await createNode(parentIno, part, {
@@ -616,9 +671,15 @@ export function volume(storage: Storage): Volume {
 			await unlinkIno(dirIno, name)
 		},
 
-		async rename(oldPath, newPath) {
+		async rename(oldPath, newPath, opts) {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
+
+			if (opts?.exclusive) {
+				const taken = await storage.getDirent(newDirIno, newName)
+				const source = await storage.getDirent(oldDirIno, oldName)
+				if (taken && taken.ino !== source?.ino) throw new Error(`EEXIST: ${newPath}`)
+			}
 
 			if (storage.caps?.atomicMove) {
 				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
@@ -937,12 +998,12 @@ export function chroot(fs: Volume, root: string): Volume {
 		listXattr: (path) => fs.listXattr(at(path)),
 		removeXattr: (path, name) => fs.removeXattr(at(path), name),
 		readFile: (path) => fs.readFile(at(path)),
-		writeFile: (path, data) => fs.writeFile(at(path), data),
+		writeFile: (path, data, opts) => fs.writeFile(at(path), data, opts),
 		appendFile: (path, data) => fs.appendFile(at(path), data),
 		mkdir: (path, opts) => fs.mkdir(at(path), opts),
 		readdir: (path) => fs.readdir(at(path)),
 		rm: (path, opts) => fs.rm(at(path), opts),
-		rename: (oldPath, newPath) => fs.rename(at(oldPath), at(newPath)),
+		rename: (oldPath, newPath, opts) => fs.rename(at(oldPath), at(newPath), opts),
 		cp: (src, dest, opts) => fs.cp(at(src), at(dest), opts),
 		symlink: async () => {
 			throw new Error('symlink not supported in chroot')

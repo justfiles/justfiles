@@ -10,8 +10,7 @@ import {
 	readdir,
 	readFile,
 	rmdir,
-	unlink,
-	writeFile
+	unlink
 } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
@@ -187,7 +186,33 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		},
 
 		async putBlob(ino, data, options) {
-			await writeFile(getPath(ino), data)
+			// `r+`, never `w`: the OS resolves the path and hands back a handle to the file
+			// that is THERE, so a note deleted since it was resolved fails ENOENT instead of
+			// being written back into existence.
+			const handle = await open(getPath(ino), 'r+')
+			try {
+				// …but a PATH is not an identity. Unlink-and-recreate (what a sync client, an
+				// editor's atomic save, or `rm` + touch does) leaves the name pointing at a
+				// different inode, and this handle would then truncate a stranger's file and
+				// report success. The handle knows what it opened, so ask it: content is
+				// addressed by inode here, and only the inode we were given may be written.
+				if (String((await handle.stat()).ino) !== ino) throw new Error(`ENOENT: ino ${ino}`)
+				await handle.truncate(0)
+				// `writeFile` on the handle, not `write`: a short write leaves the file holding
+				// a prefix of the note while we report success. The full-buffer API loops.
+				await handle.writeFile(data)
+				// …and asked again afterwards, because the check above only covers a swap that
+				// had ALREADY happened. A replace that lands mid-write leaves this handle
+				// writing an inode nothing can reach any more, and reporting success would tell
+				// the caller its note is saved when the name it saved under holds someone
+				// else's. There is no POSIX way to hold a name still, so the honest answer is
+				// to notice and fail: a reported failure is recoverable, a false success is not.
+				if (String((await lstat(getPath(ino))).ino) !== ino) {
+					throw new Error(`ENOENT: ino ${ino} was replaced while it was being written`)
+				}
+			} finally {
+				await handle.close()
+			}
 			emit({ ino, kind: 'content', source: options?.source })
 		},
 

@@ -1,0 +1,326 @@
+import type { ContextMenuItem, ContextMenuOpenContext } from '@pierre/trees'
+import { FileTree, useFileTree } from '@pierre/trees/react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import type { Entry } from './app.ts'
+import { joinPath, matchNotes, parentDir } from './notes.ts'
+
+// The docked pane's tree. `@pierre/trees` owns the hard parts — virtualized
+// rows, expansion, drag-and-drop, the context-menu trigger — so this file is
+// only the seam between its path-first model and our volume paths: it feeds
+// paths in and turns each gesture into one of the app's actions.
+//
+// The model is a PROJECTION, never the truth: every gesture persists through an
+// action, and the `treeRevision` watch re-lists `/notes` and `resetPaths`. A
+// failed write therefore self-heals on the next scan.
+//
+// Naming (new note, new folder, rename) is done by OUR menu, not the library's
+// inline rename: the inline input is torn down by the context menu's own close /
+// focus path, so it never survives long enough to type into. One text field in
+// the menu covers all three, and it keeps the app's rule that a new note's title
+// is its first line.
+
+// The model speaks relative paths and marks folders with a trailing slash;
+// the volume speaks absolute paths.
+const toTree = (path: string, isDir: boolean) => `${path.slice(1)}${isDir ? '/' : ''}`
+const fromTree = (path: string) => `/${path.replace(/\/+$/, '')}`
+
+export type NotesTreeProps = {
+	entries: Entry[]
+	openPath: string | null
+	// The bar's field is the only search box; it filters the tree in place.
+	query: string
+	onOpen: (path: string) => void
+	onSelectDir: (dir: string) => void
+	onCreate: (dir: string, title: string) => void
+	onMkdir: (path: string) => void
+	// Awaited: a multi-item drop is applied ONE AT A TIME (see `persistDrop`).
+	onRename: (from: string, to: string) => Promise<void>
+	onRemove: (path: string) => void
+}
+
+export function NotesTree(props: NotesTreeProps) {
+	// The hook builds the model once, so the handlers it captured must read the
+	// latest props through a ref (the `app-code` pattern).
+	const latest = useRef(props)
+	latest.current = props
+
+	// One drop can carry several items, and two of them can want the SAME
+	// destination name (`/A/Kyoto.md` and `/B/Kyoto.md` dropped on the root). Applied
+	// in sequence, so the second one finds the name taken and gets numbered; fired in
+	// parallel they would race for it, and no filesystem primitive can decide that
+	// race for us (packages/fs/volume.ts `rename`). Ordering our own writes is the
+	// cheap half of that problem — this is the only place this app makes more than
+	// one at a time.
+	const persistDrop = async (
+		draggedPaths: readonly string[],
+		target: { kind: 'directory' | 'root'; directoryPath: string | null }
+	) => {
+		const dir = target.kind === 'root' ? '/' : fromTree(target.directoryPath ?? '')
+		for (const dragged of draggedPaths) {
+			const from = fromTree(dragged)
+			const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
+			if (to !== from) await latest.current.onRename(from, to)
+		}
+	}
+
+	// Filtering is OUR matcher (the same one the dropdown ranks with), applied to
+	// the paths we feed — not the tree's own search session. One search rule for
+	// both surfaces, and no session state to keep in sync. Folders are implied by
+	// their children, so a filtered view feeds matching notes only.
+	const paths = useMemo(() => {
+		const query = props.query.trim()
+		const files = props.entries.filter((entry) => entry.type === 'file')
+		if (query) return matchNotes(files, query).map((entry) => toTree(entry.path, false))
+		return props.entries.map((entry) => toTree(entry.path, entry.type === 'dir'))
+	}, [props.entries, props.query])
+
+	const { model } = useFileTree({
+		paths,
+		initialExpansion: 'open',
+		itemHeight: 24,
+		density: 0.9,
+		composition: { contextMenu: { enabled: true, triggerMode: 'both' } },
+		dragAndDrop: {
+			// One move per dragged row. Both callbacks persist, because the model's own
+			// move is optimistic AND collision-strict: dropping onto a folder that
+			// already holds that name throws inside the store (`collision: 'error'`), so
+			// `onDropComplete` never fires and the drag would look like a no-op. The
+			// reducer dedups instead (`Kyoto 2.md`), and the `treeRevision` watch redraws
+			// whatever actually landed — the disk stays the truth either way.
+			onDropComplete: ({ draggedPaths, target }) => void persistDrop(draggedPaths, target),
+			onDropError: (_error, { draggedPaths, target }) => void persistDrop(draggedPaths, target)
+		},
+		onSelectionChange: (selected) => {
+			const path = selected[0]
+			if (path === undefined) return
+			const { onOpen, onSelectDir } = latest.current
+			if (model.getItem(path)?.isDirectory()) onSelectDir(fromTree(path))
+			else onOpen(fromTree(path))
+		}
+	})
+
+	useEffect(() => {
+		model.resetPaths(paths)
+	}, [model, paths])
+
+	// Follow the open note when it changed elsewhere (search field, agent).
+	useEffect(() => {
+		if (!props.openPath) return
+		const path = toTree(props.openPath, false)
+		if (!model.getItem(path)) return
+		const selected = model.getSelectedPaths()
+		if (selected.length === 1 && selected[0] === path) return
+		for (const other of selected) model.getItem(other)?.deselect()
+		model.getItem(path)?.select()
+		model.scrollToPath(path, { focus: false })
+	}, [model, props.openPath])
+
+	// Dropping on the blank area below the rows moves an item to the top level —
+	// the standard file-tree affordance (Finder sidebar, VS Code), which the library
+	// doesn't cover: it resolves a drop target from ROW elements only, so a drop
+	// past the last row resolves to nothing. Drags are native HTML5 and carry the
+	// dragged path as `text/plain`, and drag events cross the shadow boundary, so
+	// this wrapper can serve as the root zone. `composedPath` tells the two apart:
+	// if the drop landed on a row, the tree owns it.
+	const [rootDrop, setRootDrop] = useState(false)
+	const overRow = (event: React.DragEvent) =>
+		event.nativeEvent
+			.composedPath()
+			.some((node) => node instanceof HTMLElement && node.dataset.type === 'item')
+
+	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: a drop zone, not a control — the tree's rows own the keyboard/ARIA surface.
+		<div
+			className="notes-tree-wrap"
+			data-root-drop={rootDrop || undefined}
+			onDragOver={(event) => {
+				// A file drag is an import: not ours, and not a "move to top level".
+				if (isFileDrag(event) || overRow(event)) {
+					setRootDrop(false)
+					return
+				}
+				event.preventDefault()
+				event.dataTransfer.dropEffect = 'move'
+				setRootDrop(true)
+			}}
+			onDragLeave={(event) => {
+				if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRootDrop(false)
+			}}
+			onDrop={(event) => {
+				setRootDrop(false)
+				if (isFileDrag(event) || overRow(event)) return
+				const dragged = event.dataTransfer.getData('text/plain')
+				if (!dragged) return
+				event.preventDefault()
+				const from = fromTree(dragged)
+				const to = joinPath('/', from.slice(from.lastIndexOf('/') + 1))
+				if (to !== from) void props.onRename(from, to)
+			}}
+		>
+			<FileTree
+				model={model}
+				className="notes-tree"
+				renderContextMenu={(item, context) => (
+					<MenuLayer item={item} context={context} {...props} />
+				)}
+			/>
+		</div>
+	)
+}
+
+// The menu is PORTALED out of the tree and pinned to the viewport at the
+// trigger's rect. Rendered in place it would be both clipped by the tree host's
+// `overflow: hidden` and painted under the editor (it is a static, z-index-less
+// child of the pane). `data-file-tree-context-menu-root` tells the tree that
+// clicks inside this portaled surface are not outside clicks.
+function MenuLayer(
+	props: NotesTreeProps & { item: ContextMenuItem; context: ContextMenuOpenContext }
+) {
+	const { anchorRect } = props.context
+	// Flip up / pull left near an edge, sized off the menu's own max box — enough
+	// for a 4-row menu, and cheaper than a measure-then-reposition pass.
+	const place = {
+		left: Math.max(4, Math.min(anchorRect.left, window.innerWidth - MENU_W - 4)),
+		...(anchorRect.bottom + MENU_H > window.innerHeight
+			? { bottom: Math.max(4, window.innerHeight - anchorRect.top + 2) }
+			: { top: anchorRect.bottom + 2 })
+	}
+	return createPortal(
+		<div className="notes-menu-layer" data-file-tree-context-menu-root="true" style={place}>
+			<RowMenu {...props} />
+		</div>,
+		document.body
+	)
+}
+
+const MENU_W = 180
+const MENU_H = 160
+
+// ————— OS file drags —————
+// A dropped file is an IMPORT, handled by the app root (gui.tsx) so it works
+// wherever it lands — pane, editor or bar. Here it only has to be told apart
+// from an internal row drag (which carries `text/plain`, not `Files`) and left
+// alone so it bubbles out.
+const isFileDrag = (event: React.DragEvent) =>
+	Array.from(event.dataTransfer.types).includes('Files')
+
+// A new child of a folder, or a new sibling of a file.
+function dirOf(item: ContextMenuItem): string {
+	const path = fromTree(item.path)
+	return item.kind === 'directory' ? path : parentDir(path)
+}
+
+type MenuMode = 'menu' | 'note' | 'folder' | 'rename' | 'delete'
+
+// The row menu is a plain `ds-menu` (it is slotted into the tree's light DOM, so
+// the app's stylesheet applies). Everything that needs input or confirmation
+// happens IN the menu: the app runs in a sandboxed iframe with no
+// `allow-modals`, so `prompt()`/`confirm()` are not available either.
+function RowMenu(
+	props: NotesTreeProps & { item: ContextMenuItem; context: ContextMenuOpenContext }
+) {
+	const [mode, setMode] = useState<MenuMode>('menu')
+	const { item } = props
+	const folder = item.kind === 'directory'
+	const path = fromTree(item.path)
+	const close = () => props.context.close({ restoreFocus: false })
+
+	if (mode === 'delete') {
+		return (
+			<div className="ds-menu notes-menu">
+				<div className="notes-menu-note">
+					Delete {folder ? 'folder and contents' : 'note'} “{item.name}”?
+				</div>
+				<button
+					type="button"
+					className="ds-menu-item notes-menu-danger"
+					onClick={() => {
+						close()
+						props.onRemove(path)
+					}}
+				>
+					Delete
+				</button>
+				<button type="button" className="ds-menu-item" onClick={() => setMode('menu')}>
+					Cancel
+				</button>
+			</div>
+		)
+	}
+
+	if (mode !== 'menu') {
+		const label = mode === 'note' ? 'New note' : mode === 'folder' ? 'New folder' : 'Rename to'
+		return (
+			<NameForm
+				label={label}
+				initial={mode === 'rename' ? item.name : ''}
+				onCancel={() => setMode('menu')}
+				onSubmit={(name) => {
+					close()
+					if (mode === 'note') props.onCreate(dirOf(item), name)
+					else if (mode === 'folder') props.onMkdir(joinPath(dirOf(item), name))
+					// Just the new name in the same folder — keeping a note's extension is the
+					// `rename` procedure's job, so the agent and this menu cannot disagree.
+					else void props.onRename(path, joinPath(parentDir(path), name))
+				}}
+			/>
+		)
+	}
+
+	return (
+		<div className="ds-menu notes-menu">
+			<button type="button" className="ds-menu-item" onClick={() => setMode('note')}>
+				New note{folder ? ' here' : ''}
+			</button>
+			<button type="button" className="ds-menu-item" onClick={() => setMode('folder')}>
+				New folder{folder ? ' here' : ''}
+			</button>
+			<button type="button" className="ds-menu-item" onClick={() => setMode('rename')}>
+				Rename…
+			</button>
+			<button
+				type="button"
+				className="ds-menu-item notes-menu-danger"
+				onClick={() => setMode('delete')}
+			>
+				Delete…
+			</button>
+		</div>
+	)
+}
+
+function NameForm(props: {
+	label: string
+	initial: string
+	onCancel: () => void
+	onSubmit: (name: string) => void
+}) {
+	const [name, setName] = useState(props.initial)
+	const submit = () => {
+		const trimmed = name.trim()
+		if (trimmed) props.onSubmit(trimmed)
+		else props.onCancel()
+	}
+	return (
+		<div className="ds-menu notes-menu">
+			<div className="notes-menu-note">{props.label}</div>
+			<input
+				// biome-ignore lint/a11y/noAutofocus: the menu opened for this field — typing must land in it without a second click.
+				autoFocus
+				className="notes-menu-input"
+				value={name}
+				placeholder="Name"
+				onChange={(e) => setName(e.target.value)}
+				onKeyDown={(e) => {
+					e.stopPropagation()
+					if (e.key === 'Enter') submit()
+					else if (e.key === 'Escape') props.onCancel()
+				}}
+			/>
+			<button type="button" className="ds-menu-item" onClick={submit}>
+				OK
+			</button>
+		</div>
+	)
+}

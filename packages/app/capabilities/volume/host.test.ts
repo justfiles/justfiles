@@ -122,15 +122,22 @@ describe('volume capability', () => {
 		])
 	})
 
-	test('scan with recursive=true returns the full descendant tree', async () => {
+	test('scan with recursive=true returns the full descendant tree, with mtimes', async () => {
 		const { fs, cap } = setup()
 		await seed(fs, '/data/x/a.txt', 'a')
 		await seed(fs, '/data/x/sub/b.txt', 'b')
 		await seed(fs, '/data/x/sub/deep/c.txt', 'c')
 		const entries = (await cap.invoke(
 			call('scan', [{ path: '/', recursive: true }], { appId: 'x' })
-		)) as Array<{ path: string; type: 'file' | 'dir' }>
-		expect(entries.sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+		)) as Array<{ path: string; type: 'file' | 'dir'; mtimeNs: number }>
+		// The tree walk already holds each stat, so mtime rides along — callers sort
+		// by recency without an N+1 `stat` storm.
+		expect(entries.every((entry) => typeof entry.mtimeNs === 'number' && entry.mtimeNs > 0)).toBe(
+			true
+		)
+		expect(
+			entries.map(({ path, type }) => ({ path, type })).sort((a, b) => a.path.localeCompare(b.path))
+		).toEqual([
 			{ path: '/a.txt', type: 'file' },
 			{ path: '/sub', type: 'dir' },
 			{ path: '/sub/b.txt', type: 'file' },
@@ -152,6 +159,26 @@ describe('volume capability', () => {
 		const { fs, cap } = setup()
 		await cap.invoke(call('mkdir', ['/deeply/nested/dir', { recursive: true }], { appId: 'x' }))
 		expect(await fs.exists('/data/x/deeply/nested/dir')).toBe(true)
+	})
+
+	test('an update writes no parent folders — it edits what is there', async () => {
+		// The host's one convenience is auto-creating the parent dir, and for an UPDATE
+		// that convenience is the bug: an editor autosaving to a note whose folder was
+		// renamed away would rebuild the folder and leave a stale duplicate in it.
+		const { cap, fs } = setup()
+		const appId = 'app.justfiles.frieren.code'
+		await expect(
+			cap.invoke(
+				call('writeFile', ['/gone/x.txt', enc.encode('edit'), { update: true }], { appId })
+			)
+		).rejects.toThrow(/ENOENT/)
+		expect(await fs.exists('/data/app.justfiles.frieren.code/gone')).toBe(false)
+		// A plain write still creates the folder — the convenience is intact.
+		await cap.invoke(call('writeFile', ['/here/x.txt', enc.encode('new')], { appId }))
+		await cap.invoke(
+			call('writeFile', ['/here/x.txt', enc.encode('edit'), { update: true }], { appId })
+		)
+		expect(dec.decode(await cap.invoke(call('readFile', ['/here/x.txt'], { appId })))).toBe('edit')
 	})
 
 	test('rm drops a subtree; rename moves it', async () => {

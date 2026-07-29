@@ -5,7 +5,13 @@
 	width: 100%;
 	background: var(--window-bg);
 	color: var(--text);
-	outline: none;
+	outline: 2px solid transparent;
+	outline-offset: -2px;
+}
+/* A dropped file is an import — dashed, because it is a copy, not a move. */
+.notes[data-file-drop] {
+	outline: 2px dashed var(--focus);
+	background: color-mix(in srgb, var(--focus) 6%, var(--window-bg));
 }
 /* The bar: list toggle · search-or-create field · New. Bare controls — mac.css
    styles them; only layout lives here. */
@@ -46,6 +52,13 @@
 	font-size: 12px;
 	color: var(--danger);
 }
+/* Import progress + report: a notice, not an error. */
+.notes-status {
+	flex: none;
+	padding: 4px 12px;
+	font-size: 12px;
+	opacity: 0.7;
+}
 .notes-body {
 	position: relative;
 	flex: 1;
@@ -56,7 +69,8 @@
    toggle + search (header) and New (footer); the editor side stays bare. */
 .notes-side {
 	flex: none;
-	width: 220px;
+	/* width is GUI state (the splitter); min-width keeps a squeezed pane usable */
+	min-width: 0;
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
@@ -79,11 +93,93 @@
 .notes-side-foot button {
 	width: 100%;
 }
-.notes-list {
+/* The splitter: a hairline hit-target that widens its grab area with padding,
+   not with pixels, so the layout doesn't shift. */
+.notes-splitter {
+	flex: none;
+	align-self: stretch;
+	width: 5px;
+	height: auto;
+	border: 0;
+	margin: 0 -2px;
+	cursor: col-resize;
+	background: transparent;
+	outline: none;
+	touch-action: none;
+	z-index: 1;
+}
+.notes-splitter:hover,
+.notes-splitter:focus-visible,
+.notes-body[data-dragging] .notes-splitter {
+	/* a 1px accent line inside the 5px hit-target, not a 5px slab */
+	background: linear-gradient(
+		to right,
+		transparent 2px,
+		var(--focus) 2px,
+		var(--focus) 3px,
+		transparent 3px
+	);
+}
+/* A drag must not select text in the editor it passes over. */
+.notes-body[data-dragging] {
+	user-select: none;
+	cursor: col-resize;
+}
+
+/* The tree plus the blank space under it: that space is the "move to top level"
+   drop zone (see tree.tsx), outlined while a drag hovers it. */
+.notes-tree-wrap {
+	display: flex;
 	flex: 1;
 	min-height: 0;
-	overflow-y: auto;
-	padding: 4px 0;
+	outline: 2px solid transparent;
+	outline-offset: -2px;
+}
+.notes-tree-wrap[data-root-drop] {
+	outline-color: var(--focus);
+	background: color-mix(in srgb, var(--focus) 8%, transparent);
+}
+
+/* The tree renders in a shadow root, so it is themed through its own CSS
+   variables — pointed at the same design tokens as everything else, which is
+   also how it inherits dark mode. */
+.notes-tree {
+	display: block;
+	flex: 1;
+	min-height: 0;
+	width: 100%;
+	--trees-bg-override: var(--surface);
+	--trees-fg-override: var(--text);
+	--trees-border-color-override: var(--rule);
+	--trees-selected-bg-override: color-mix(in srgb, var(--focus) 18%, transparent);
+	--trees-selected-fg-override: var(--text);
+	--trees-focus-ring-color-override: var(--focus);
+	--trees-font-family-override: var(--font-ui);
+	--trees-font-size-override: 12px;
+	--trees-padding-inline-override: 6px;
+}
+/* The row menu is portaled to the body and pinned to the trigger's rect (see
+   tree.tsx): in place it would be clipped by the tree host's `overflow: hidden`
+   and painted under the editor. */
+.notes-menu-layer {
+	position: fixed;
+	z-index: 50;
+}
+.notes-menu {
+	min-width: 180px;
+}
+.notes-menu-note {
+	padding: 6px 10px;
+	font-size: 11px;
+	opacity: 0.6;
+}
+.notes-menu-danger {
+	color: var(--danger);
+}
+.notes-menu-input {
+	margin: 2px 6px 4px;
+	width: calc(100% - 12px);
+	box-sizing: border-box;
 }
 .notes-editor {
 	flex: 1;

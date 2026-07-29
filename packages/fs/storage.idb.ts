@@ -939,9 +939,15 @@ export function idbStorage(
 				['content', 'inodes', 'dirty', 'meta', 'dirs', 'xattrs', 'pathver', 'journal'],
 				'readwrite'
 			) as FullTx
-			await storeContentByHashTx(tx, hash, bytes)
+			// Read the inode FIRST, in the transaction that will write: a deleted inode must
+			// fail the write rather than leave its content behind as an orphan.
 			const inode = await tx.objectStore('inodes').get(ino)
-			if (inode) {
+			if (!inode) {
+				await tx.done
+				throw new Error(`ENOENT: ino ${ino}`)
+			}
+			await storeContentByHashTx(tx, hash, bytes)
+			{
 				// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
 				// stamped before the journal row is built so the new time ships with it.
 				const stamp = BigInt(Date.now()) * 1_000_000n
