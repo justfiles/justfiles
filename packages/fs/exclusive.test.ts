@@ -16,7 +16,7 @@
  * atomicity the platform does not have, which costs more than it buys.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'vitest'
@@ -220,4 +220,27 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 		}
 		expect((await vol.readdir('/Inbox')).map((e) => e.name)).toEqual([])
 	})
+})
+
+test('a write refuses a pathname that now holds a different file', async () => {
+	// The native backend addresses content by inode but reaches it through a pathname,
+	// and a replace-under-the-same-name (a sync client, another editor's atomic save)
+	// leaves that name pointing at a stranger. A save that resolved before the swap must
+	// not truncate what is there now — the handle is asked what it actually opened.
+	const dir = mkdtempSync(join(tmpdir(), 'excl-'))
+	dirs.push(dir)
+	const storage = await nativeStorage(dir)
+	const vol = volume(storage)
+	await vol.writeFile('/Kyoto.md', enc.encode('mine'))
+	const stale = String((await vol.stat('/Kyoto.md')).ino)
+	// Renamed over, so the name keeps a DIFFERENT inode (unlink + create can reuse one).
+	writeFileSync(join(dir, 'Other.md'), 'theirs')
+	renameSync(join(dir, 'Other.md'), join(dir, 'Kyoto.md'))
+	// Asked of the OS, not the volume: the volume caches meta by inode, which is exactly
+	// the staleness this test is about.
+	expect(String(statSync(join(dir, 'Kyoto.md')).ino)).not.toBe(stale)
+	// A write aimed at the inode we no longer have has nothing to write to…
+	await expect(storage.putBlob(stale, enc.encode('stale bytes'))).rejects.toThrow(/^ENOENT/)
+	// The stranger's bytes are intact: it was neither truncated nor written.
+	expect(readFileSync(join(dir, 'Kyoto.md'), 'utf8')).toBe('theirs')
 })

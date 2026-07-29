@@ -188,12 +188,19 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		async putBlob(ino, data, options) {
 			// `r+`, never `w`: the OS resolves the path and hands back a handle to the file
 			// that is THERE, so a note deleted since it was resolved fails ENOENT instead of
-			// being written back into existence. `writeFile` would recreate it, and the
-			// caller would be told its save succeeded.
+			// being written back into existence.
 			const handle = await open(getPath(ino), 'r+')
 			try {
+				// …but a PATH is not an identity. Unlink-and-recreate (what a sync client, an
+				// editor's atomic save, or `rm` + touch does) leaves the name pointing at a
+				// different inode, and this handle would then truncate a stranger's file and
+				// report success. The handle knows what it opened, so ask it: content is
+				// addressed by inode here, and only the inode we were given may be written.
+				if (String((await handle.stat()).ino) !== ino) throw new Error(`ENOENT: ino ${ino}`)
 				await handle.truncate(0)
-				await handle.write(data, 0)
+				// `writeFile` on the handle, not `write`: a short write leaves the file holding
+				// a prefix of the note while we report success. The full-buffer API loops.
+				await handle.writeFile(data)
 			} finally {
 				await handle.close()
 			}

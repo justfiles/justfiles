@@ -293,6 +293,24 @@ unbreak, press New (which flushes first)
   /Doomed note.md                          ← the flush retried, because `dirty` was still true
 ```
 
+Two more consequences, both found by review after the first fix looked complete:
+
+- **A failure is not a diagnosis.** The first version treated every rejected save as "the note is gone" and
+  detached — so a temporary outage (EACCES, ENOSPC, the capability unreachable) sent the retry through
+  `create` and left the user a numbered *duplicate* beside the note they were editing. ENOENT/EISDIR mean
+  nothing will ever save to that path again; everything else is the same note with a temporary problem, and
+  the buffer stays attached so the retry updates it.
+- **`flush` has to say whether the buffer is settled, and callers have to obey it.** Restoring `dirty` is not
+  enough: `flush()` resolving normally let `startNewNote`/`openNote`/`createNote`/`moveNote` carry on and
+  clear or replace the editor over text that had just failed to save. It returns a boolean now, and every
+  path-changing caller starts with `if (!(await flush())) return`.
+- **Flushes are serialised.** `dirty` is cleared optimistically on the way into a write, so a transition that
+  flushed while the debounce was mid-write read that flag, concluded "settled", and cleared the editor over
+  words whose write was still in flight *and about to fail*. Chaining the flushes fixes it: a caller cannot be
+  told "settled" by a promise it is racing. (Third time this app has needed "these must not overlap" —
+  `claimPath`, the refresh debounce, and now the buffer. Sequencing is a first-class concern here, not a
+  detail.)
+
 The same shape one level down: a read in flight when the selection moves on must be **discarded**, not
 applied. Otherwise "New" during a read repopulates the editor with a note nothing is pointing at — clean, so
 the next keystroke would fork it into a copy.
@@ -317,6 +335,13 @@ reads the inode *first* inside the transaction that writes, and the native backe
 — the OS resolves the path and hands back a handle to the file that is *there*, so a deleted note cannot be
 written back into existence. Three backends, one sentence in the contract: **a write to something that is gone
 is a failure, not a no-op.**
+
+And on that backend, two more things a hand-written syscall sequence has to remember. **A pathname is not an
+identity:** replace-under-the-same-name (a sync client, another editor's atomic save) leaves the name pointing
+at a different inode, so the handle is asked what it actually opened (`handle.stat().ino`) before anything is
+truncated — content is addressed by inode here, and only that inode may be written. **A write is not a write
+until all of it is written:** `handle.write` may report fewer bytes than it was given, leaving a prefix of the
+note on disk under a successful-looking save, so it is `handle.writeFile` (which loops) instead.
 
 **1b · A check is not a guarantee unless it is the operation — WHERE THE OPERATION EXISTS.** The first
 version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is a *hint*

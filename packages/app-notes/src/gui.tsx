@@ -23,6 +23,15 @@ const AUTOSAVE_MS = 800
 const REFRESH_MS = 250
 // One import call per batch of notes: big enough to keep the round trips down,
 // small enough that the status line moves and one message stays modest.
+// Two kinds of save failure, and telling them apart is the difference between
+// recovering and duplicating. ENOENT/EISDIR mean the note is not there any more (moved,
+// deleted, or the path is a folder now) — nothing will ever save to it, so the buffer
+// has to leave it. Anything else — the volume unreachable, EACCES, ENOSPC — is the same
+// note with a temporary problem, and detaching would send the retry through `create`,
+// leaving a numbered duplicate beside the note the user was editing.
+const noteIsGone = (failure: unknown) =>
+	/ENOENT|EISDIR/.test(failure instanceof Error ? failure.message : String(failure))
+
 const IMPORT_CHUNK = 50
 // How much of an archive is handed to the unzipper at once (see `readZip`).
 const PUSH_SLICE = 65_536
@@ -303,53 +312,80 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// transition (switch, new note, blur, close); the debounce is only a perf win
 	// (DESIGN.md §4). A blank scratch becomes a real file as soon as it holds any
 	// non-whitespace content — an empty/whitespace buffer is never written.
-	const flush = useCallback(async () => {
+	//
+	// RETURNS WHETHER THE BUFFER IS SETTLED, and every caller that is about to change
+	// what the editor points at has to check it: clearing the editor or loading another
+	// note on top of text that failed to save is the same data loss the retry was meant
+	// to prevent. `false` means "still holding unsaved words" — the user has been told,
+	// and the debounce will keep trying.
+	const runFlush = useCallback(async (): Promise<boolean> => {
 		const { text, dirty } = liveRef.current
-		if (!dirty) return
+		if (!dirty) return true
 		const path = liveRef.current.openPath ?? pendingPathRef.current
 		if (path) {
 			setDirty(false)
 			try {
-				// AWAITED: every transition (open another note, start a new one, move this
-				// one) flushes first, so the write has to be finished — not merely started —
-				// before the buffer it came from can be replaced.
+				// AWAITED: every transition flushes first, so the write has to be finished —
+				// not merely started — before the buffer it came from can be replaced.
 				await actions.save({ path, text })
-			} catch {
-				// The note is gone (`update: true` refuses to recreate it, and refuses to
-				// rebuild the folder it was in), so this text is unsaved again — and it
-				// detaches from the dead path, which makes it a scratch buffer the next flush
-				// writes as a new note in a folder that exists. Answered HERE, in the flush
-				// that failed, while this text is still the text.
+				return true
+			} catch (failure) {
 				stillUnsaved()
+				if (!noteIsGone(failure)) {
+					// The note is still there; keep pointing at it so the retry UPDATES it.
+					setStatus(
+						`Could not save ${displayPath(path)} — ${failure instanceof Error ? failure.message : String(failure)}`
+					)
+					return false
+				}
+				// It is gone (`update: true` refuses to recreate it, or its folder). Detach, so
+				// this text becomes a scratch buffer the next flush writes as a new note in a
+				// folder that exists — and the caller still stops, because those words are not
+				// on disk yet.
 				setStatus('The note you were editing was moved or deleted — your changes are kept here')
 				if (liveRef.current.openPath !== null) await actions.newNote({})
 				else pendingPathRef.current = null
+				return false
 			}
-			return
 		}
-		if (text.trim().length > 0 && !creatingRef.current) {
-			creatingRef.current = true
-			setDirty(false)
-			try {
-				const settled = await createSomewhere(text, liveRef.current.dir)
-				if (settled?.openPath) {
-					pendingPathRef.current = settled.openPath
-					loadedRef.current = settled.openPath
-				}
-			} catch (failure) {
-				// A scratch note that could not be written anywhere — the disk is full, the
-				// volume is unreachable. There is nothing to detach from and nowhere else to
-				// try (the root was the fallback), so the only correct thing left is to keep
-				// the text and stop pretending it was saved.
-				stillUnsaved()
-				setStatus(
-					`Could not save this note — ${failure instanceof Error ? failure.message : String(failure)}`
-				)
-			} finally {
-				creatingRef.current = false
+		if (text.trim().length === 0 || creatingRef.current) return true
+		creatingRef.current = true
+		setDirty(false)
+		try {
+			const settled = await createSomewhere(text, liveRef.current.dir)
+			if (settled?.openPath) {
+				pendingPathRef.current = settled.openPath
+				loadedRef.current = settled.openPath
 			}
+			return true
+		} catch (failure) {
+			// A scratch note that could not be written anywhere — the disk is full, the
+			// volume is unreachable. There is nothing to detach from and nowhere else to try
+			// (the root was the fallback), so keep the text and stop pretending it is saved.
+			stillUnsaved()
+			setStatus(
+				`Could not save this note — ${failure instanceof Error ? failure.message : String(failure)}`
+			)
+			return false
+		} finally {
+			creatingRef.current = false
 		}
 	}, [actions, createSomewhere, stillUnsaved])
+
+	// Flushes never overlap. `dirty` is cleared optimistically on the way into a write, so
+	// a transition that flushes while the debounce is mid-write would read that flag,
+	// conclude the buffer is settled and clear the editor — over words whose write is
+	// still in flight and about to fail. Chained, each flush answers for the state AFTER
+	// every earlier one, and a caller cannot be told "settled" by a promise it is racing.
+	const flushTailRef = useRef<Promise<boolean>>(Promise.resolve(true))
+	const flush = useCallback((): Promise<boolean> => {
+		const run = flushTailRef.current.then(runFlush, runFlush)
+		flushTailRef.current = run.then(
+			(ok) => ok,
+			() => false
+		)
+		return run
+	}, [runFlush])
 
 	// Load the open note's body when the selection changes, and re-read it when
 	// the file changes on disk (a `revision` bump from an agent/Files edit). A
@@ -496,7 +532,8 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	const openNote = useCallback(
 		async (path: string) => {
-			await flush()
+			// Nothing may replace the buffer until it is settled — `flush` says whether it is.
+			if (!(await flush())) return
 			setDropOpen(false)
 			setQuery('')
 			// Opening a note supersedes a folder click as the "where am I" hint.
@@ -509,7 +546,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	)
 
 	const startNewNote = useCallback(async () => {
-		await flush()
+		if (!(await flush())) return
 		setDropOpen(false)
 		setQuery('')
 		// Clear the buffer directly: when already on a blank note (openPath null),
@@ -530,7 +567,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// in a folder, like Obsidian's "same folder as the current file".
 	const createNote = useCallback(
 		async (title: string, dir: string) => {
-			await flush()
+			if (!(await flush())) return
 			setDropOpen(false)
 			setQuery('')
 			const body = `${title}\n`
@@ -574,11 +611,13 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// tree, which moved the row optimistically, has to be put back.
 	const moveNote = useCallback(
 		async (from: string, to: string) => {
-			// Land a dirty buffer at the OLD path FIRST. Otherwise the pending save
-			// (debounce or blur) writes after the move — recreating the file we just
-			// moved — or the read effect replaces the buffer with the last saved body
-			// when `openPath` follows the move.
-			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, from)) await flush()
+			// The buffer has to land at the OLD path before the move: a pending save would
+			// otherwise write after it (recreating what we just moved), and the read effect
+			// would replace the buffer with the last saved body once `openPath` follows. If it
+			// cannot land, the move waits — the words matter more than the rename.
+			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, from)) {
+				if (!(await flush())) return
+			}
 			try {
 				const { path } = await actions.rename({ from, to })
 				if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
