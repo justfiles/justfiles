@@ -583,8 +583,21 @@ export function volume(storage: Storage): Volume {
 					}
 				} catch (e) {
 					if (!(e instanceof Error) || !e.message.startsWith('EEXIST') || opts?.exclusive) throw e
-					const winner = await lookupIno(dirIno, name)
-					if (winner === null) throw e // vanished again — report the race, not a lie
+					// Re-resolve the FULL PATH the same way the top of this function does --
+					// NOT the raw dirent via lookupIno, which would land on a SYMLINK's own
+					// inode instead of its target. A dangling symlink already occupying `name`
+					// makes createNode throw this exact EEXIST with no writer racing at all;
+					// writing straight into that raw ino would silently strand the bytes in a
+					// slot nothing ever reads through the path again.
+					let winner: Ino
+					try {
+						winner = await resolvePath(path, true)
+					} catch (e2) {
+						if (!(e2 as Error).message.startsWith('ENOENT')) throw e2
+						throw e // the name IS taken (that's what EEXIST just proved), but the
+						// path still doesn't resolve to anything -- e.g. a dangling symlink.
+						// The original EEXIST says that more honestly than the ENOENT would.
+					}
 					const winnerMeta = await getMetaOrThrow(winner)
 					if (winnerMeta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 					await storage.putBlob(winner, data)

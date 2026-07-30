@@ -31,6 +31,7 @@ import { afterAll, describe, expect, test } from 'vitest'
 import { nativeStorage } from './storage.fs.ts'
 import { idbStorage } from './storage.idb.ts'
 import { memStorage } from './storage.mem.ts'
+import { FileType } from './types.ts'
 import { volume } from './volume.ts'
 
 const enc = new TextEncoder()
@@ -252,6 +253,35 @@ describe.each(backends)('a plain writeFile race on %s', (_name, make) => {
 		// One write wins the underlying create race and the other becomes an update
 		// against it — either order is fine, silently losing the byte content is not.
 		expect(['a', 'b']).toContain(dec.decode(await vol.readFile('/app.json')))
+	})
+
+	test('a write through a dangling symlink refuses, never stranding the bytes in the link itself', async () => {
+		// createNode throws this exact EEXIST deterministically here -- the symlink
+		// itself already occupies `name` -- with no concurrent writer involved at all.
+		// The catch above must not treat "the raw dirent is a symlink" the same as "a
+		// regular file won the race": writing into the symlink's own inode succeeds
+		// silently while the bytes become unreachable through the path forever.
+		const vol = await make()
+		await vol.symlink('/missing-target', '/link')
+		await expect(vol.writeFile('/link', enc.encode('hello'))).rejects.toThrow()
+		// The link itself must still BE a symlink, not silently turned into a regular
+		// file holding the bytes that should have gone through it.
+		expect((await vol.lstat('/link')).type).toBe(FileType.Symlink)
+	})
+})
+
+// mem/idb only: nativeStorage does not populate meta.symlinkTarget from lstat (it
+// would need a separate readlink() syscall), so symlink-FOLLOWING is independently
+// broken there even for a plain readFile with no writeFile involved at all -- a
+// pre-existing gap, unrelated to this fix, out of scope here.
+describe.each(backends.slice(0, 2))('a plain writeFile race on %s', (_name, make) => {
+	test('a write through a LIVE symlink lands on the target, not the link', async () => {
+		const vol = await make()
+		await vol.writeFile('/target.txt', enc.encode('original'))
+		await vol.symlink('/target.txt', '/link')
+		await vol.writeFile('/link', enc.encode('via the link'))
+		expect(dec.decode(await vol.readFile('/target.txt'))).toBe('via the link')
+		expect(dec.decode(await vol.readFile('/link'))).toBe('via the link')
 	})
 })
 
