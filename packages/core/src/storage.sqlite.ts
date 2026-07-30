@@ -752,10 +752,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			})
 		},
 
+		// `content` (see @justfiles/fs's storage.ts) is never passed to this backend: it
+		// has a hash-addressed content store (`fs_contents`), so the VFS publishes the
+		// bytes under their hash first and this claim carries `meta.contentHash`.
 		async atomicCreate(
 			dirIno: Ino,
 			name: string,
 			meta: InodeMeta,
+			_content?: Uint8Array,
 			options?: MutationOptions
 		): Promise<Ino> {
 			await ensureBootstrapped()

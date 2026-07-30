@@ -101,9 +101,10 @@ function trackedStorage(
 							dirIno: Ino,
 							name: string,
 							meta: Parameters<typeof atomicCreate>[2],
-							options?: Parameters<typeof atomicCreate>[3]
+							content?: Parameters<typeof atomicCreate>[3],
+							options?: Parameters<typeof atomicCreate>[4]
 						) => {
-							const ino = await atomicCreate(dirIno, name, meta, options)
+							const ino = await atomicCreate(dirIno, name, meta, content, options)
 							live.add(ino)
 							return ino
 						}

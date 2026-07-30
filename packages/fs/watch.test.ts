@@ -383,9 +383,13 @@ describe('volume.watch over the atomic-cap backend (nativeStorage)', () => {
 		})
 
 		// createNode → atomicCreate (emits meta + dirent for the new path).
+		// `waitFor`, not `flush()`: the watch listener re-resolves the path before it
+		// fires, and on this backend that is real filesystem I/O. A fixed number of timer
+		// turns is a proxy for "long enough", not a statement of what is being asserted,
+		// which is that the event ARRIVES. The proxy got tighter when a fresh create
+		// stopped needing a trailing putBlob (#324), and then stopped holding.
 		await vol.writeFile('/note.txt', enc.encode('hello'))
-		await flush()
-		expect(fired).toBeGreaterThanOrEqual(1)
+		await waitFor(() => expect(fired).toBeGreaterThanOrEqual(1))
 
 		// rename → atomicMove (emits a dirent rebind on the destination path).
 		const settled = fired

@@ -267,9 +267,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 
 		// Atomic alloc + dirAdd using the caller-supplied minter. Only present when
 		// `mintIno` is set; otherwise the VFS mints UUIDs via setMeta + putDirent.
+		// `content` (see storage.ts) is never passed: this backend has a hash-addressed
+		// content store, so the claim carries a `meta.contentHash` reference instead.
 		...(mintIno
 			? {
-					async atomicCreate(dirIno, name, meta, options) {
+					async atomicCreate(dirIno, name, meta, _content, options) {
 						const key = dirKey(dirIno, name)
 						if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
 						const ino = mintIno()

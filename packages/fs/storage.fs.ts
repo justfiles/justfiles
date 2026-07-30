@@ -4,6 +4,7 @@ import {
 	rename as _rename,
 	symlink as _symlink,
 	chmod,
+	link,
 	lutimes,
 	mkdir,
 	open,
@@ -21,6 +22,61 @@ import { FileType } from './types'
 const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
 
 /**
+ * Write `data` under a private sibling name, then take `name` in ONE operation.
+ *
+ * POSIX has no atomic content write. `open(O_CREAT|O_EXCL)` publishes an EMPTY name
+ * and `write()` fills it afterwards, so a concurrent reader can resolve the name and
+ * read nothing — or, past Node's write chunk, a prefix. Every system that needs this
+ * guarantee answers it the same way: put the payload somewhere uncontested, publish
+ * the name last. Maildir writes into `tmp/` and renames into `new/`; git writes a
+ * loose object to a temp file and links it to its sha1 name; dpkg uses `.dpkg-tmp`;
+ * RocksDB writes the SSTable and only then flips MANIFEST.
+ *
+ * `link`, not `rename`, and both halves of why are load-bearing. `link` is the only
+ * POSIX call that is BOTH atomic AND no-replace. Atomic is the point. No-replace is
+ * what makes the `EEXIST` of a lost race (or of an already-occupied name) come from
+ * the publish ITSELF rather than from a check before it — and a check before it is
+ * exactly the TOCTOU this closes.
+ *
+ * The temp file is a SIBLING of the target, not a file in one shared temp directory:
+ * `link(2)` cannot cross a filesystem, and a volume root can have another mount
+ * underneath it. A sibling is on the target's own filesystem by construction.
+ *
+ * This is a hard link, so the inode carries two names between `link` and `unlink`.
+ * `Storage` already permits exactly that shape transiently (see the interface note on
+ * rename/move), and `inflight` hides the second one from this instance's read paths.
+ */
+async function publish(
+	inflight: Set<string>,
+	dir: string,
+	name: string,
+	data: Uint8Array,
+	mode: number
+): Promise<void> {
+	const tmp = join(dir, `.jfs-publish-${crypto.randomUUID()}`)
+	inflight.add(tmp)
+	try {
+		const fh = await open(tmp, 'wx', mode)
+		try {
+			// `writeFile` on the handle, not `write`: the full-buffer API loops, so a short
+			// write cannot publish a prefix. This is the whole reason the payload goes here
+			// first — it can take as many syscalls as it likes under a name nobody reads.
+			await fh.writeFile(data)
+		} finally {
+			await fh.close()
+		}
+		await link(tmp, join(dir, name))
+	} finally {
+		// Covers the WHOLE lifecycle, not just the link: a write or close that fails
+		// (ENOSPC, EIO) would otherwise strand the temp file, and repeated failures would
+		// quietly consume the disk. Swallowed because there may be nothing to remove —
+		// `open` itself can be what failed.
+		await unlink(tmp).catch(() => {})
+		inflight.delete(tmp)
+	}
+}
+
+/**
  * A Storage backed directly by the local filesystem.
  *
  * Ino = OS inode number (stat.ino, stringified). The pathMap bridges the
@@ -33,6 +89,26 @@ const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
  */
 export async function nativeStorage(root: string): Promise<Storage> {
 	const pathMap = new Map<Ino, string>()
+
+	/**
+	 * Temp files this instance is publishing RIGHT NOW, by absolute OS path. The read
+	 * paths below hide exactly these, and nothing else.
+	 *
+	 * NOT a reserved filename prefix. Hiding every name matching a pattern destroys a
+	 * user's own file called `.jfs-publish-notes.md`: the create SUCCEEDS and the file is
+	 * then unreadable, unlistable and undeletable through the volume — a write that
+	 * reports success and vanishes, which is the worst failure in this file. Scoping the
+	 * hiding to publishes actually in flight costs nothing and cannot do that.
+	 *
+	 * The flip side is deliberate: a temp file orphaned by a crash is NOT hidden. It is
+	 * an ordinary file holding partial content, which is the honest thing for it to be —
+	 * visible means a user or a sweep can delete it, hidden would mean nothing ever
+	 * could. dpkg's `.dpkg-tmp` and git's `tmp_obj_*` are visible for the same reason. A
+	 * scan from ANOTHER process can likewise still catch one mid-publish; that window is
+	 * short, and replicating a file that then vanishes is recoverable in a way that
+	 * eating a note is not.
+	 */
+	const inflight = new Set<string>()
 
 	const rootStat = await lstat(root)
 	const rootIno = String(rootStat.ino)
@@ -77,15 +153,21 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	}
 
 	const caps: StorageCapabilities = {
-		async atomicCreate(dirIno, name, meta, options) {
-			const childPath = join(getPath(dirIno), name)
+		async atomicCreate(dirIno, name, meta, content, options) {
+			const dirPath = getPath(dirIno)
+			const childPath = join(dirPath, name)
 			if (meta.type === FileType.Directory) {
 				await mkdir(childPath, { mode: meta.mode })
 			} else if (meta.type === FileType.Symlink) {
 				await _symlink(meta.symlinkTarget ?? '', childPath)
-			} else {
+			} else if (content === undefined) {
+				// No content to publish, so the name is the whole claim (`O_EXCL`).
 				const fh = await open(childPath, 'wx', meta.mode)
 				await fh.close()
+			} else {
+				// This backend has no hash-addressed content store, so the bytes are handed
+				// to it directly and the name must not appear until they are all there.
+				await publish(inflight, dirPath, name, content, meta.mode)
 			}
 			const s = await lstat(childPath)
 			const ino = String(s.ino)
@@ -218,6 +300,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 
 		async getDirent(dirIno, name) {
 			const childPath = join(getPath(dirIno), name)
+			if (inflight.has(childPath)) return null // a publish in flight is not addressable
 			try {
 				const s = await lstat(childPath)
 				const ino = String(s.ino)
@@ -247,19 +330,38 @@ export async function nativeStorage(root: string): Promise<Storage> {
 
 		async listDirents(dirIno, cursor) {
 			const dirPath = getPath(dirIno)
-			const names = (await readdir(dirPath)).sort()
+			// Filtered BEFORE the cursor slice, so a hidden name can never be handed out as
+			// a cursor position a later page resumes from.
+			const names = (await readdir(dirPath)).filter((n) => !inflight.has(join(dirPath, n))).sort()
 			const start = cursor === '' ? 0 : names.findIndex((n) => n > cursor)
 			const slice = start === -1 ? [] : names.slice(start)
 
-			const entries = await Promise.all(
-				slice.map(async (name) => {
-					const childPath = join(dirPath, name)
-					const s = await lstat(childPath)
-					const ino = String(s.ino)
-					pathMap.set(ino, childPath)
-					return { name, ino, type: toFileType(s) }
-				})
-			)
+			const entries = (
+				await Promise.all(
+					slice.map(async (name) => {
+						const childPath = join(dirPath, name)
+						// `readdir` gives NAMES; each one then needs its own `lstat`. A name that
+						// vanished in between is simply NOT IN the listing — it is not a listing
+						// FAILURE. POSIX promises nothing about an entry removed during iteration,
+						// and rejecting means any concurrent `rm` (or a publish temp finishing
+						// between the filter above and here) blows up an unrelated `readdir`.
+						//
+						// ENOENT only, not any failure: EACCES or EIO on an entry that IS there is a
+						// real fault, and silently dropping it would report a listing that is short
+						// by a file nobody can see is missing.
+						let s: Stats
+						try {
+							s = await lstat(childPath)
+						} catch (e) {
+							if ((e as { code?: string }).code !== 'ENOENT') throw e
+							return null
+						}
+						const ino = String(s.ino)
+						pathMap.set(ino, childPath)
+						return { name, ino, type: toFileType(s) }
+					})
+				)
+			).filter((e) => e !== null)
 
 			return { entries, next: '' }
 		}
