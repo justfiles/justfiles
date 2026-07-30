@@ -1,3 +1,4 @@
+import { hostname } from 'node:os'
 import { aiCapability, text } from '@justfiles/agent'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
@@ -52,7 +53,12 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 			return text(backend).gen(system, prompt)
 		}
 	})
-	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs)
+	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
+		// Every account this daemon holds was connected directly on this Mac (D1) — the
+		// `device` lane in the "one account, many hosts" design (#296). Labelled by
+		// hostname so Settings can tell two Macs apart once E1/E2 land.
+		origin: { kind: 'device', label: hostname() }
+	})
 
 	const k = kernel({
 		fs,

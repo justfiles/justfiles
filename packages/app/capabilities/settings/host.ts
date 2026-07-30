@@ -1,6 +1,6 @@
 // How a host serves `settings`. This file composes what already exists — the accounts
 // admin impl, a usage thunk, an identity thunk — and implements no admin logic itself.
-// Two things make it unlike the other capability hosts:
+// Three things make it unlike the other capability hosts:
 //
 //  • THE GATE IS APP IDENTITY. One allowlist check covers every method, reported as
 //    UNAVAILABLE (not DENIED) so a non-first-party app cannot tell the capability
@@ -12,10 +12,34 @@
 //    and delegates `accounts.*`/`host.usage` to the DO (credentials live under
 //    `/private/**`, which never replicates), the DO wires both and delegates nothing,
 //    and the Mac daemon wires `accounts` only — so its Usage pane hides itself.
+//  • THE READ UNION: `listAccounts` CONCATENATES, `listProviders` DEDUPES.
+//    A signed-in device can hold accounts in BOTH lanes at once — some connected
+//    directly on it, some owned by the cloud and reached through `remote` (#305) —
+//    and the user expects to see all of them in one Settings list, each tagged by
+//    `AccountInfo.origin` (#296). So when `accounts` AND `remote` are both
+//    configured, `listAccounts` fans out to both and concatenates (accounts never
+//    collide across hosts). `listProviders` fans out too, but DEDUPES by id
+//    (this side wins on a collision, e.g. both may offer 'google') — a remote-only
+//    entry still has to reach here, because a merged account's `ProviderInfo` (in
+//    particular `builtin`) has to be resolvable on THIS side too, or Settings can't
+//    tell a remote built-in account from an ordinary one and renders a Disconnect
+//    button for it (see the mutation-routing note below — that button is live).
+//  • MUTATING BY OWNER. The merged list can show an account this side does NOT
+//    own, so mutating one (`setEnabled`/`disconnect`) first checks whether the
+//    local store actually has it — local if so, `remote` if not (D1: administer an
+//    account where it lives). `connect` needs no such check: it creates a NEW
+//    account, always on this side. With only one lane configured, every check above
+//    is a no-op — unchanged from before any of this existed.
 
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
-import type { AccountsAdmin, SettingsCapability, UsageSnapshot, UserProfile } from './contract.ts'
+import type {
+	AccountsAdmin,
+	ProviderInfo,
+	SettingsCapability,
+	UsageSnapshot,
+	UserProfile
+} from './contract.ts'
 
 // The one identity gate. Not a scope: a declared scope would hand the host admin
 // surface to any sideloaded app that declares `settings`.
@@ -56,9 +80,42 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 	}
 	const unavailable = (method: string) =>
 		new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings', method)
+	// Does THIS host's own store have `accountId`? The merged list can show an account
+	// this side doesn't own, so a mutation checks before running — see the file header.
+	const ownsLocally = async (accountId: string): Promise<boolean> =>
+		!!accounts && (await accounts.listAccounts({})).some((a) => a.accountId === accountId)
 	return {
 		invoke: async (call) => {
 			if (!SETTINGS_ALLOWLIST.has(call.appId)) throw unavailable(call.method)
+			// The read union (see the file header): both lanes configured ⇒ both queried.
+			// One lane configured ⇒ that lane alone, unchanged from before this existed
+			// (the DO has no `remote`; the browser has no `accounts`).
+			if (call.method === 'accounts.listAccounts' && accounts && remote) {
+				const [local, cloud] = await Promise.all([
+					accounts.listAccounts(...(call.args as [Record<string, never>])),
+					remote.invoke(call) as Promise<unknown[]>
+				])
+				return [...local, ...cloud]
+			}
+			if (call.method === 'accounts.listProviders' && accounts && remote) {
+				const [local, cloud] = await Promise.all([
+					accounts.listProviders(...(call.args as [Record<string, never>])),
+					remote.invoke(call) as Promise<ProviderInfo[]>
+				])
+				const ids = new Set(local.map((p) => p.id))
+				return [...local, ...cloud.filter((p) => !ids.has(p.id))]
+			}
+			// Mutating an EXISTING account by id must reach whichever side actually owns
+			// it: `setEnabled`/`disconnect` route local only when the local store has the
+			// account, remote otherwise — a no-op (both configured) when it's neither.
+			if (
+				(call.method === 'accounts.setEnabled' || call.method === 'accounts.disconnect') &&
+				accounts &&
+				remote
+			) {
+				const { accountId } = call.args[0] as { accountId: string }
+				if (!(await ownsLocally(accountId))) return remote.invoke(call)
+			}
 			const method = served[call.method as keyof SettingsCapability]
 			// The frame rides on unchanged, so the far end gates on the same appId.
 			if (!method) {

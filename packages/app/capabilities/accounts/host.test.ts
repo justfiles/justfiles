@@ -163,6 +163,37 @@ describe('accounts admin impl', () => {
 		})
 	})
 
+	// D1/D2 ("one account, many hosts", #290): a host stamps who it is onto every
+	// account it projects, so Settings can label which lane an account lives in (#296).
+	describe('origin', () => {
+		test('every account is stamped with the configured origin', async () => {
+			const vol = volume(memStorage())
+			const caps = accountsCapabilities(testProviders(), vol, {
+				origin: { kind: 'device', label: 'Fern’s MacBook' }
+			})
+			await caps.accounts.connect({ providerId: 'chatgpt' })
+			const [account] = await caps.accounts.listAccounts({})
+			expect(account?.origin).toEqual({ kind: 'device', label: 'Fern’s MacBook' })
+		})
+
+		test('the cloud variant stamps the same way', async () => {
+			const vol = volume(memStorage())
+			const caps = accountsCapabilities(testProviders(), vol, { origin: { kind: 'cloud' } })
+			await caps.accounts.connect({ providerId: 'chatgpt' })
+			const [account] = await caps.accounts.listAccounts({})
+			expect(account?.origin).toEqual({ kind: 'cloud' })
+		})
+
+		test('no configured origin leaves AccountInfo.origin undefined', async () => {
+			// Today's DO/mac callers, before this field existed — forward compatibility with
+			// a reader that defaults an absent origin to 'cloud' (see app-settings).
+			const { caps } = await setup()
+			await caps.accounts.connect({ providerId: 'chatgpt' })
+			const [account] = await caps.accounts.listAccounts({})
+			expect(account?.origin).toBeUndefined()
+		})
+	})
+
 	test('enabling email widens scope via incremental consent; disabling drops it', async () => {
 		const { caps, accounts } = await setup()
 		await accounts.put({ id: 'me@gmail.com', provider: 'google', creds: { refresh: 'R' } })

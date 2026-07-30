@@ -9,7 +9,14 @@ import type {
 } from '@justfiles/app/capabilities/settings'
 import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { type Category, initialState, type SettingsApp, type SettingsState } from './app.ts'
+import {
+	type Category,
+	hasBothOrigins,
+	initialState,
+	originKind,
+	type SettingsApp,
+	type SettingsState
+} from './app.ts'
 
 // How a provider projects an `ai`-capability account's config for the picker
 // (see the host `describe`): the selected model + the list to choose from.
@@ -58,6 +65,7 @@ button.settings-account:hover { background: var(--surface); }
 .settings-connected-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .settings-account-status { margin: 0; font-size: 11px; }
 .settings-account-status.is-connected { color: #047857; }
+.settings-origin-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; padding: 2px 7px; border-radius: 999px; background: var(--rule); opacity: 0.7; }
 
 .settings-caps { display: flex; flex-wrap: wrap; gap: 14px; }
 .settings-cap-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; }
@@ -244,11 +252,17 @@ function Sidebar({
 function AccountsPanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
 	const connectedIds = new Set(state.accounts.map((a) => a.providerId))
 	const available = state.providers.filter((p) => !connectedIds.has(p.id))
+	const twoLanes = hasBothOrigins(state.accounts)
 	return (
 		<div className="settings-pane">
 			<header className="settings-pane-header">
 				<h1 className="settings-pane-title">Accounts</h1>
 				<p className="settings-pane-copy">Connect an account, then choose what it powers.</p>
+				{twoLanes ? (
+					<p className="settings-pane-copy">
+						Some accounts sync across your devices; others are connected only on this one.
+					</p>
+				) : null}
 			</header>
 			{state.loading ? <p className="settings-muted">Loading…</p> : null}
 			{!state.loading && state.providers.length === 0 ? (
@@ -418,6 +432,18 @@ function Meter({
 	)
 }
 
+// The badge text + tooltip Settings renders per lane (#296). `originKind` already
+// degrades an absent `origin` (an older host) to 'cloud'.
+function originLabel(account: AccountInfo): string {
+	return originKind(account) === 'device' ? 'This device' : 'Synced'
+}
+
+function originHint(account: AccountInfo): string {
+	if (originKind(account) !== 'device') return 'Synced across your devices'
+	const label = account.origin?.kind === 'device' ? account.origin.label : undefined
+	return label ? `Connected on ${label} only` : 'Connected on this device only'
+}
+
 function ConnectedAccount({
 	account,
 	provider,
@@ -479,6 +505,9 @@ function ConnectedAccount({
 						</p>
 					</div>
 				</div>
+				<span className="settings-origin-badge" title={originHint(account)}>
+					{originLabel(account)}
+				</span>
 				{provider?.builtin ? null : (
 					<button
 						type="button"

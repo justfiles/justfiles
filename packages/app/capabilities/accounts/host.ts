@@ -15,7 +15,13 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { type ActiveAiStore, volumeActiveAi } from './active-ai.ts'
-import type { AccountInfo, AccountsAdmin, CapabilityId, ProviderInfo } from './contract.ts'
+import type {
+	AccountInfo,
+	AccountOrigin,
+	AccountsAdmin,
+	CapabilityId,
+	ProviderInfo
+} from './contract.ts'
 import type { Binding, Provider } from './provider.ts'
 
 export type { SecretCodec } from './account.ts'
@@ -29,6 +35,10 @@ export interface AccountsOptions {
 	// Absent = clear. EVERY entry point below takes it: they all build the same store,
 	// and a codec on some but not all of them means half the reads can't decrypt.
 	secretCodec?: SecretCodec
+	// Who this host is, stamped onto every AccountInfo it projects (D1/D2, #290/#296).
+	// The DO passes `{ kind: 'cloud' }`; the mac daemon passes `{ kind: 'device', label:
+	// <hostname> }`. Omitted → `AccountInfo.origin` stays undefined.
+	origin?: AccountOrigin
 }
 
 type Registry = Map<string, Provider>
@@ -209,7 +219,8 @@ function aiConfig(provider: Provider | undefined, model: string | undefined): un
 function toAccountInfo(
 	account: Account,
 	sel: { accountId: string; model?: string } | null,
-	registry: Registry
+	registry: Registry,
+	origin: AccountOrigin | undefined
 ): AccountInfo {
 	const provider = registry.get(account.provider)
 	const enabled: CapabilityId[] = []
@@ -225,6 +236,7 @@ function toAccountInfo(
 	if (isActiveAi) config.ai = aiConfig(provider, sel?.model)
 	const info: AccountInfo = { accountId: account.id, providerId: account.provider, enabled, config }
 	if (account.lastError) info.lastError = account.lastError
+	if (origin) info.origin = origin
 	return info
 }
 
@@ -235,7 +247,8 @@ function accountsAdminImpl(
 	providers: Provider[],
 	registry: Registry,
 	accounts: AccountStore,
-	activeAi: ActiveAiStore
+	activeAi: ActiveAiStore,
+	origin: AccountOrigin | undefined
 ): AccountsAdmin {
 	const invalid = (method: string) =>
 		new CapabilityError('CAPABILITY_INVALID_INPUT', 'accounts', method)
@@ -259,7 +272,7 @@ function accountsAdminImpl(
 		},
 		listAccounts: async () => {
 			const [all, sel] = await Promise.all([accounts.list(), activeAi.get()])
-			return all.map((account) => toAccountInfo(account, sel, registry))
+			return all.map((account) => toAccountInfo(account, sel, registry, origin))
 		},
 		connect: async ({ providerId, credentials }) => {
 			const provider = registry.get(providerId)
@@ -356,7 +369,7 @@ export function accountsCapabilities(
 		image: imageHost(accounts, activeAi, registry),
 		email: emailHost(accounts, registry),
 		calendar: calendarHost(accounts, registry),
-		accounts: accountsAdminImpl(providers, registry, accounts, activeAi)
+		accounts: accountsAdminImpl(providers, registry, accounts, activeAi, opts.origin)
 	}
 }
 
