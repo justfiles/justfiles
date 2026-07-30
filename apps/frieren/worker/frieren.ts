@@ -346,9 +346,11 @@ export class Frieren extends DurableObject<Env> {
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)
-		// The built-in AI account: the platform-provided, always-on default backend. Seed it
-		// once with `ai` enabled so a fresh user has a working agent; a returning user's toggle
-		// (they may have turned it off or switched to another AI) is left untouched.
+		// The built-in AI account: the platform-provided, always-on default backend. Seeded with
+		// `ai` enabled, and re-claimed as the active AI whenever the selection names an account
+		// this host doesn't have (a retired id, or one connected on another host — the credential
+		// lane is host-only), so a signed-in user is never left with no backend. A returning
+		// user's real choice — another AI account, or AI switched off — is left untouched.
 		await ensureAccount(
 			this.vol,
 			{
