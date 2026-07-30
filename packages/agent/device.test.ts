@@ -3,16 +3,22 @@ import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
 import { deviceId } from './device.ts'
 
+// `atomicCreate` is only offered when the backend mints inodes — the shipped
+// configuration (mem, IDB and node all provide it); see @justfiles/fs's
+// exclusive.test.ts. The claim/race behaviour itself is pinned in
+// @justfiles/fs's persistedState.test.ts (device.ts delegates to it entirely).
+const storage = () => memStorage({ mintIno: () => crypto.randomUUID() })
+
 describe('deviceId', () => {
 	test('first call creates /.state/clientid and returns 8 lowercase hex chars', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(storage())
 		const id = await deviceId(vol)
 		expect(id).toMatch(/^[a-f0-9]{8}$/)
 		expect(await vol.exists('/.state/clientid')).toBe(true)
 	})
 
 	test('second call is memoised and does not rewrite the file', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(storage())
 		const first = await deviceId(vol)
 		const before = await vol.readFile('/.state/clientid')
 		const second = await deviceId(vol)
@@ -22,21 +28,21 @@ describe('deviceId', () => {
 	})
 
 	test('a new accessor over the same volume returns the same value', async () => {
-		const storage = memStorage()
-		const first = await deviceId(volume(storage))
-		const second = await deviceId(volume(storage))
+		const backing = storage()
+		const first = await deviceId(volume(backing))
+		const second = await deviceId(volume(backing))
 		expect(second).toBe(first)
 	})
 
 	test('two different volumes yield different ids', async () => {
-		const a = await deviceId(volume(memStorage()))
-		const b = await deviceId(volume(memStorage()))
+		const a = await deviceId(volume(storage()))
+		const b = await deviceId(volume(storage()))
 		expect(a).not.toBe(b)
 	})
 
 	test('interop with synced(): derives from an existing clientid without rewriting it', async () => {
-		const storage = memStorage()
-		const vol = volume(storage)
+		const backing = storage()
+		const vol = volume(backing)
 		const uuid = crypto.randomUUID()
 		await vol.mkdir('/.state', { recursive: true })
 		await vol.writeFile('/.state/clientid', new TextEncoder().encode(JSON.stringify(uuid)))
@@ -52,51 +58,24 @@ describe('deviceId', () => {
 	})
 
 	test('filename-safe', async () => {
-		const id = await deviceId(volume(memStorage()))
+		const id = await deviceId(volume(storage()))
 		expect(id).toMatch(/^[a-z0-9]+$/)
 	})
 
 	test('two Volume wrappers over the same storage racing to mint converge on one id', async () => {
-		// `atomicCreate` is only offered when the backend mints inodes — the shipped
-		// configuration (mem, IDB and node all provide it); see exclusive.test.ts.
-		const storage = memStorage({ mintIno: () => crypto.randomUUID() })
-		const [a, b] = await Promise.all([deviceId(volume(storage)), deviceId(volume(storage))])
+		const backing = storage()
+		const [a, b] = await Promise.all([deviceId(volume(backing)), deviceId(volume(backing))])
 		expect(a).toBe(b)
 		// Exactly one clientid file, holding the winner — no overwrite, no divergence.
 		const raw = JSON.parse(
-			new TextDecoder().decode(await volume(storage).readFile('/.state/clientid'))
+			new TextDecoder().decode(await volume(backing).readFile('/.state/clientid'))
 		)
 		expect(raw.replace(/-/g, '').slice(0, 8)).toBe(a)
 	})
 
-	test('a rejected load is evicted from the memo so a later call can retry', async () => {
-		const real = volume(memStorage())
-		let calls = 0
-		const flaky = {
-			...real,
-			exists: (path: string) => {
-				calls++
-				return calls === 1 ? Promise.reject(new Error('boom')) : real.exists(path)
-			}
-		}
-		await expect(deviceId(flaky)).rejects.toThrow('boom')
-		const id = await deviceId(flaky)
-		expect(id).toMatch(/^[a-f0-9]{8}$/)
-	})
-
-	test('concurrency: two parallel first-calls resolve to the same id and write once', async () => {
-		const storage = memStorage()
-		let writes = 0
-		const tracked = {
-			...storage,
-			putBlob: (...args: Parameters<typeof storage.putBlob>) => {
-				writes++
-				return storage.putBlob(...args)
-			}
-		}
-		const vol = volume(tracked)
+	test('concurrency: two parallel first-calls on the same volume resolve to the same id', async () => {
+		const vol = volume(storage())
 		const [a, b] = await Promise.all([deviceId(vol), deviceId(vol)])
 		expect(a).toBe(b)
-		expect(writes).toBe(1)
 	})
 })

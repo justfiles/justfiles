@@ -35,12 +35,46 @@ export function persistedState<T>(
 	async function get(): Promise<T> {
 		if (_cache !== undefined) return _cache
 		if (await vol.exists(path)) {
-			_cache = JSON.parse(dec.decode(await vol.readFile(path))) as T
+			_cache = await read()
 			return _cache
 		}
 		const value = typeof init === 'function' ? await (init as () => T | Promise<T>)() : init
-		await set(value)
-		return _cache as T
+		_cache = await claim(value)
+		return _cache
+	}
+
+	async function read(): Promise<T> {
+		return JSON.parse(dec.decode(await vol.readFile(path))) as T
+	}
+
+	// First touch must be a CLAIM, not exists()-then-write: a second cell over the
+	// SAME underlying storage (a different Volume wrapper — e.g. `synced()` racing an
+	// app-level reader/writer of this same path) initializing at the same moment must
+	// converge on ONE value, never mint two and silently overwrite one with the other.
+	async function claim(value: T): Promise<T> {
+		await vol.mkdir(dir, { recursive: true })
+		try {
+			await vol.writeFile(path, enc.encode(JSON.stringify(value)), { exclusive: true })
+			return value
+		} catch (e) {
+			if (!(e as Error).message.startsWith('EEXIST')) throw e
+			return awaitWinner() // lost the claim — read back whichever cell won it
+		}
+	}
+
+	// The winner's dirent commits (atomicCreate) before its blob content does
+	// (`writeFile` is createNode THEN putBlob) — a loser that just lost the claim
+	// above can briefly see the path exist with no bytes yet. Poll a few event-loop
+	// turns; on every real backend the winner's write lands well inside that window.
+	async function awaitWinner(): Promise<T> {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await read()
+			} catch (e) {
+				if (attempt >= 50) throw e
+				await new Promise((resolve) => setTimeout(resolve, 0))
+			}
+		}
 	}
 
 	async function set(value: T): Promise<void> {
