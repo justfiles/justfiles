@@ -15,8 +15,7 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { type ActiveAiStore, volumeActiveAi } from './active-ai.ts'
-import type { AccountInfo, CapabilityId, ProviderInfo } from './contract.ts'
-import { accountsAdmin } from './index.ts'
+import type { AccountInfo, AccountsAdmin, CapabilityId, ProviderInfo } from './contract.ts'
 import type { Binding, Provider } from './provider.ts'
 
 export type { SecretCodec } from './account.ts'
@@ -26,8 +25,6 @@ export type { SecretCodec } from './account.ts'
 export { aesGcmSecretCodec } from './secret-codec.ts'
 
 export interface AccountsOptions {
-	// App ids permitted to reach the admin facet (the first-party Settings app).
-	firstParty?: Iterable<string>
 	// Seals the `creds` lane at rest with this host's own key (see secret-codec.ts).
 	// Absent = clear. EVERY entry point below takes it: they all build the same store,
 	// and a codec on some but not all of them means half the reads can't decrypt.
@@ -150,7 +147,7 @@ function imageHost(
 	})
 }
 
-// ── Admin facet ─────────────────────────────────────────────────────────
+// ── Admin surface ───────────────────────────────────────────────────────
 
 // The per-capability config the UI renders: only `ai` is meaningful, and only when
 // its provider carries a model catalogue (the Settings model picker).
@@ -184,25 +181,20 @@ function toAccountInfo(
 	return info
 }
 
-// Admin-facet host. Every method is privileged, so one identity check covers them all;
-// reported as UNAVAILABLE (not DENIED) so a non-first-party app can't tell it exists.
-function accountsAdminHost(
+// The admin impl. Every method is privileged, but the identity gate is NOT here: the
+// admin surface reaches apps only through the `settings` capability, which gates on
+// first-party app identity once, for every method (see settings/host.ts).
+function accountsAdminImpl(
 	providers: Provider[],
 	registry: Registry,
 	accounts: AccountStore,
-	activeAi: ActiveAiStore,
-	opts: AccountsOptions = {}
-): Capability {
-	const allow = new Set(opts.firstParty ?? [])
-	const guard = (ctx: { appId: string }) => {
-		if (!allow.has(ctx.appId)) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'accounts')
-	}
+	activeAi: ActiveAiStore
+): AccountsAdmin {
 	const invalid = (method: string) =>
 		new CapabilityError('CAPABILITY_INVALID_INPUT', 'accounts', method)
 
-	return implementCapability(accountsAdmin, {
-		listProviders: async (ctx) => {
-			guard(ctx)
+	return {
+		listProviders: async () => {
 			return providers.map((p) => {
 				const ui = p.auth.ui
 				const info: ProviderInfo = {
@@ -218,13 +210,11 @@ function accountsAdminHost(
 				return info
 			})
 		},
-		listAccounts: async (ctx) => {
-			guard(ctx)
+		listAccounts: async () => {
 			const [all, sel] = await Promise.all([accounts.list(), activeAi.get()])
 			return all.map((account) => toAccountInfo(account, sel, registry))
 		},
-		connect: async (ctx, { providerId, credentials }) => {
-			guard(ctx)
+		connect: async ({ providerId, credentials }) => {
 			const provider = registry.get(providerId)
 			if (!provider) throw invalid('connect')
 			if (provider.auth.ui.kind === 'form' && !credentials) throw invalid('connect')
@@ -242,8 +232,7 @@ function accountsAdminHost(
 			await accounts.put(account)
 			return { accountId }
 		},
-		setEnabled: async (ctx, { accountId, capability, enabled, config }) => {
-			guard(ctx)
+		setEnabled: async ({ accountId, capability, enabled, config }) => {
 			const account = await accounts.get(accountId)
 			if (!account) throw invalid('setEnabled')
 			// ai is single-active: the selection pointer, not a scope.
@@ -283,12 +272,11 @@ function accountsAdminHost(
 				await accounts.put(next)
 			}
 		},
-		disconnect: async (ctx, { accountId }) => {
-			guard(ctx)
+		disconnect: async ({ accountId }) => {
 			await accounts.delete(accountId)
 			if ((await activeAi.get())?.accountId === accountId) await activeAi.set(null)
 		}
-	})
+	}
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────
@@ -306,7 +294,8 @@ export function accountsCapabilities(
 	image: Capability
 	email: Capability
 	calendar: Capability
-	accounts: Capability
+	// Not a capability: the admin impl `settingsHost` exposes as `accounts.*`.
+	accounts: AccountsAdmin
 } {
 	const registry: Registry = new Map(providers.map((p) => [p.id, p]))
 	const accounts = volumeAccountStore(volume, opts)
@@ -315,7 +304,7 @@ export function accountsCapabilities(
 		image: imageHost(accounts, activeAi, registry),
 		email: emailHost(accounts, registry),
 		calendar: calendarHost(accounts, registry),
-		accounts: accountsAdminHost(providers, registry, accounts, activeAi, opts)
+		accounts: accountsAdminImpl(providers, registry, accounts, activeAi)
 	}
 }
 

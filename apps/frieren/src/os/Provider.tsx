@@ -1,5 +1,5 @@
 import { useAuth, useUser } from '@clerk/clerk-react'
-import type { UserProfile } from '@justfiles/app/capabilities/user'
+import type { UserProfile } from '@justfiles/app/capabilities/settings'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'

@@ -1,5 +1,5 @@
 import { type Kernel, kernel } from '@justfiles/app'
-import type { GetUser } from '@justfiles/app/capabilities/user/host'
+import type { GetUser } from '@justfiles/app/capabilities/settings/host'
 import type { Volume } from '@justfiles/fs'
 import { clientCapabilities } from './capabilities.client'
 import { notifyCatalog } from './host'

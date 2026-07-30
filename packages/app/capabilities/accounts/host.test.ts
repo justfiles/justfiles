@@ -17,12 +17,12 @@ import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
 import { icloudProvider } from './providers/icloud.ts'
 import { platformProvider } from './providers/platform.ts'
 
-// The credential-bearing stores are internal, so tests drive the four facets through
-// `accountsCapabilities` over a real in-memory Volume. State the admin facet can't
+// The credential-bearing stores are internal, so tests drive the facets through
+// `accountsCapabilities` over a real in-memory Volume. State the admin impl can't
 // express (pre-granted scopes, a specific active selection) is written straight to the
 // account store / active-AI pointer — the same Volume the capabilities read.
-
-const SETTINGS = 'app.justfiles.frieren.settings'
+// The admin impl is a plain object (it reaches apps only through the gated `settings`
+// capability — see settings/host.test.ts for the gate), so it is called directly here.
 
 // Real providers with fake acquisition: a provider is data, so a test swaps its
 // `auth` by spread. Google's `acquire` echoes the requested scopes as granted
@@ -84,13 +84,10 @@ function testProviders(
 
 async function setup(providers: Provider[] = testProviders()) {
 	const vol = volume(memStorage())
-	const caps = accountsCapabilities(providers, vol, { firstParty: [SETTINGS] })
+	const caps = accountsCapabilities(providers, vol)
 	return { caps, vol, accounts: volumeAccountStore(vol), activeAi: volumeActiveAi(vol) }
 }
 
-function admin(method: string, args: unknown): CapabilityCall {
-	return { appId: SETTINGS, capability: 'accounts', method, args: [args], scopes: ['admin'] }
-}
 function use(capability: string, method: string, input: unknown): CapabilityCall {
 	return { appId: 'app.any', capability, method, args: [input], scopes: [] }
 }
@@ -100,16 +97,10 @@ function json(body: unknown): Response {
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('accounts admin host', () => {
+describe('accounts admin impl', () => {
 	test('listProviders projects the registry', async () => {
 		const { caps } = await setup()
-		const list = (await caps.accounts.invoke(admin('listProviders', {}))) as {
-			id: string
-			authKind: string
-			capabilities: string[]
-			builtin?: boolean
-			credentialsSchema?: unknown
-		}[]
+		const list = await caps.accounts.listProviders({})
 		expect(list.map((p) => [p.id, p.authKind, p.capabilities.sort().join('+')])).toEqual([
 			['google', 'interactive', 'calendar+email'],
 			['icloud', 'form', 'calendar'],
@@ -123,7 +114,7 @@ describe('accounts admin host', () => {
 
 	test('connect (interactive) derives accountId; connect requests no scopes yet', async () => {
 		const { caps, accounts } = await setup()
-		expect(await caps.accounts.invoke(admin('connect', { providerId: 'google' }))).toEqual({
+		expect(await caps.accounts.connect({ providerId: 'google' })).toEqual({
 			accountId: 'me@gmail.com'
 		})
 		const account = await accounts.get('me@gmail.com')
@@ -138,12 +129,10 @@ describe('accounts admin host', () => {
 	test('connect (form) keys the account by the acquired identity', async () => {
 		const { caps, accounts } = await setup()
 		expect(
-			await caps.accounts.invoke(
-				admin('connect', {
-					providerId: 'icloud',
-					credentials: { username: 'u@me.com', password: 'p' }
-				})
-			)
+			await caps.accounts.connect({
+				providerId: 'icloud',
+				credentials: { username: 'u@me.com', password: 'p' }
+			})
 		).toEqual({ accountId: 'u@me.com' })
 		expect(await accounts.get('u@me.com')).toMatchObject({
 			id: 'u@me.com',
@@ -157,11 +146,7 @@ describe('accounts admin host', () => {
 		await accounts.put({ id: 'g', provider: 'google', creds: {}, scopes: [GMAIL_SCOPE] })
 		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai', model: 'default' })
-		const list = (await caps.accounts.invoke(admin('listAccounts', {}))) as {
-			accountId: string
-			enabled: string[]
-			config: { ai?: { model: string; models: unknown[] } }
-		}[]
+		const list = await caps.accounts.listAccounts({})
 		expect(list.find((a) => a.accountId === 'g')?.enabled).toEqual(['email'])
 		const ai = list.find((a) => a.accountId === 'u@openai')
 		expect(ai?.enabled).toEqual(['ai'])
@@ -174,13 +159,17 @@ describe('accounts admin host', () => {
 	test('enabling email widens scope via incremental consent; disabling drops it', async () => {
 		const { caps, accounts } = await setup()
 		await accounts.put({ id: 'me@gmail.com', provider: 'google', creds: { access: 'g' } })
-		await caps.accounts.invoke(
-			admin('setEnabled', { accountId: 'me@gmail.com', capability: 'email', enabled: true })
-		)
+		await caps.accounts.setEnabled({
+			accountId: 'me@gmail.com',
+			capability: 'email',
+			enabled: true
+		})
 		expect((await accounts.get('me@gmail.com'))?.scopes).toContain(GMAIL_SCOPE)
-		await caps.accounts.invoke(
-			admin('setEnabled', { accountId: 'me@gmail.com', capability: 'email', enabled: false })
-		)
+		await caps.accounts.setEnabled({
+			accountId: 'me@gmail.com',
+			capability: 'email',
+			enabled: false
+		})
 		expect((await accounts.get('me@gmail.com'))?.scopes ?? []).not.toContain(GMAIL_SCOPE)
 	})
 
@@ -197,27 +186,26 @@ describe('accounts admin host', () => {
 			creds: { access: 'g' },
 			scopes: [GMAIL_SCOPE]
 		})
-		await caps.accounts.invoke(
-			admin('setEnabled', { accountId: 'me@gmail.com', capability: 'email', enabled: true })
-		)
+		await caps.accounts.setEnabled({
+			accountId: 'me@gmail.com',
+			capability: 'email',
+			enabled: true
+		})
 		expect(acquire).not.toHaveBeenCalled()
 	})
 
 	test('a form provider capability cannot be soft-disabled (disconnect instead)', async () => {
 		const { caps } = await setup()
-		await caps.accounts.invoke(
-			admin('connect', {
-				providerId: 'icloud',
-				credentials: { username: 'u@me.com', password: 'p' }
-			})
-		)
-		await caps.accounts.invoke(
-			admin('setEnabled', { accountId: 'u@me.com', capability: 'calendar', enabled: false })
-		)
-		const list = (await caps.accounts.invoke(admin('listAccounts', {}))) as {
-			accountId: string
-			enabled: string[]
-		}[]
+		await caps.accounts.connect({
+			providerId: 'icloud',
+			credentials: { username: 'u@me.com', password: 'p' }
+		})
+		await caps.accounts.setEnabled({
+			accountId: 'u@me.com',
+			capability: 'calendar',
+			enabled: false
+		})
+		const list = await caps.accounts.listAccounts({})
 		expect(list.find((a) => a.accountId === 'u@me.com')?.enabled).toContain('calendar')
 	})
 
@@ -226,14 +214,12 @@ describe('accounts admin host', () => {
 		await accounts.put({ id: 'a1', provider: 'chatgpt', creds: {} })
 		await accounts.put({ id: 'a2', provider: 'chatgpt', creds: {} })
 		await activeAi.set({ accountId: 'a1' })
-		await caps.accounts.invoke(
-			admin('setEnabled', {
-				accountId: 'a2',
-				capability: 'ai',
-				enabled: true,
-				config: { model: 'default' }
-			})
-		)
+		await caps.accounts.setEnabled({
+			accountId: 'a2',
+			capability: 'ai',
+			enabled: true,
+			config: { model: 'default' }
+		})
 		expect(await activeAi.get()).toEqual({ accountId: 'a2', model: 'default' })
 	})
 
@@ -241,16 +227,9 @@ describe('accounts admin host', () => {
 		const { caps, accounts, activeAi } = await setup()
 		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: {} })
 		await activeAi.set({ accountId: 'u@openai' })
-		await caps.accounts.invoke(admin('disconnect', { accountId: 'u@openai' }))
+		await caps.accounts.disconnect({ accountId: 'u@openai' })
 		expect(await accounts.get('u@openai')).toBeUndefined()
 		expect(await activeAi.get()).toBeNull()
-	})
-
-	test('non-first-party app cannot tell the facet exists', async () => {
-		const { caps } = await setup()
-		await expect(
-			caps.accounts.invoke({ ...admin('listAccounts', {}), appId: 'app.evil' })
-		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 	})
 })
 
@@ -478,14 +457,9 @@ describe('secretCodec wiring', () => {
 
 	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount, renameAccount', async () => {
 		const vol = volume(memStorage())
-		const caps = accountsCapabilities(testProviders(), vol, {
-			firstParty: [SETTINGS],
-			secretCodec: codec
-		})
-		await caps.accounts.invoke(admin('connect', { providerId: 'chatgpt' }))
-		await caps.accounts.invoke(
-			admin('setEnabled', { accountId: 'u@openai', capability: 'ai', enabled: true })
-		)
+		const caps = accountsCapabilities(testProviders(), vol, { secretCodec: codec })
+		await caps.accounts.connect({ providerId: 'chatgpt' })
+		await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
 		// On disk the creds are sealed; the facet that needs them still reads them.
 		const raw = new TextDecoder().decode(await vol.readFile('/private/accounts/u%40openai.json'))
 		expect(raw).not.toContain('tok')
@@ -585,15 +559,8 @@ describe('secretCodec wiring', () => {
 			creds: { refresh: 'r' },
 			scopes: [GMAIL_SCOPE]
 		})
-		const caps = accountsCapabilities(testProviders(), vol, {
-			firstParty: [SETTINGS],
-			secretCodec: codec
-		})
-		const list = (await caps.accounts.invoke(admin('listAccounts', {}))) as {
-			accountId: string
-			providerId: string
-			lastError?: string
-		}[]
+		const caps = accountsCapabilities(testProviders(), vol, { secretCodec: codec })
+		const list = await caps.accounts.listAccounts({})
 		expect(list).toMatchObject([{ accountId: 'me@gmail.com', providerId: 'google' }])
 		expect(list[0].lastError).toBeTruthy()
 		await expect(caps.email.invoke(use('email', 'listUnread', { limit: 1 }))).rejects.toMatchObject(

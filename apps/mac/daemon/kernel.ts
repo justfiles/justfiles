@@ -8,7 +8,7 @@ import {
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
-import { userCapability } from '@justfiles/app/capabilities/user/host'
+import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
@@ -38,7 +38,7 @@ export function getKernel(): Promise<Kernel> {
 	return kernelOnce
 }
 
-// Build the kernel over a given Volume: the capability registry (volume/devkit/accounts/
+// Build the kernel over a given Volume: the capability registry (volume/devkit/settings/
 // email/calendar/ai/notify), the reducer sandbox pool, and the seeded builtin catalog.
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
@@ -56,9 +56,7 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 		}
 	})
 	await migrateHostPrivateLane(fs)
-	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
-		firstParty: ['app.justfiles.frieren.settings']
-	})
+	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs)
 
 	const k = kernel({
 		fs,
@@ -81,13 +79,13 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 					overwrite: true
 				})
 			},
-			accounts,
+			// The host admin surface, reachable only by the first-party Settings app. No
+			// usage meter here (its pane hides itself) and no native sign-in yet, so
+			// `host.user` answers null ("Local user") until that lands.
+			settings: settingsHost({ accounts }),
 			email,
 			calendar,
 			ai,
-			// Identity: no native sign-in yet, so the user is null (Settings shows
-			// "Not signed in"). Swap in the real account when native auth lands.
-			user: userCapability(() => null),
 			// Sandboxed apps reach the host's notification channel here; the kernel stamps
 			// `source = appId` so a banner routes back to the app that raised it.
 			notify: notifyHost(notificationChannel)

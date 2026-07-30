@@ -28,15 +28,12 @@
 		"./capabilities/volume/host": "./capabilities/volume/host.ts",
 		"./capabilities/notify": "./capabilities/notify/index.ts",
 		"./capabilities/notify/host": "./capabilities/notify/host.ts",
-		"./capabilities/user": "./capabilities/user/index.ts",
-		"./capabilities/user/host": "./capabilities/user/host.ts",
-		"./capabilities/usage": "./capabilities/usage/index.ts",
-		"./capabilities/usage/host": "./capabilities/usage/host.ts",
+		"./capabilities/settings": "./capabilities/settings/index.ts",
+		"./capabilities/settings/host": "./capabilities/settings/host.ts",
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/devkit/host": "./capabilities/devkit/host.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
 		"./capabilities/image": "./capabilities/image/index.ts",
-		"./capabilities/accounts": "./capabilities/accounts/index.ts",
 		"./capabilities/accounts/host": "./capabilities/accounts/host.ts",
 		"./capabilities/accounts/providers": "./capabilities/accounts/providers/index.ts",
 		"./capabilities/accounts/providers/google": "./capabilities/accounts/providers/google.ts",
@@ -158,21 +155,17 @@
 				"types": "./dist/capabilities/image/index.d.ts",
 				"default": "./dist/capabilities/image/index.js"
 			},
-			"./capabilities/accounts": {
-				"types": "./dist/capabilities/accounts/index.d.ts",
-				"default": "./dist/capabilities/accounts/index.js"
-			},
 			"./capabilities/accounts/host": {
 				"types": "./dist/capabilities/accounts/host.d.ts",
 				"default": "./dist/capabilities/accounts/host.js"
 			},
-			"./capabilities/usage": {
-				"types": "./dist/capabilities/usage/index.d.ts",
-				"default": "./dist/capabilities/usage/index.js"
+			"./capabilities/settings": {
+				"types": "./dist/capabilities/settings/index.d.ts",
+				"default": "./dist/capabilities/settings/index.js"
 			},
-			"./capabilities/usage/host": {
-				"types": "./dist/capabilities/usage/host.d.ts",
-				"default": "./dist/capabilities/usage/host.js"
+			"./capabilities/settings/host": {
+				"types": "./dist/capabilities/settings/host.d.ts",
+				"default": "./dist/capabilities/settings/host.js"
 			}
 		}
 	},

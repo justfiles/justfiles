@@ -103,3 +103,36 @@ test('an app notify is stamped with the trusted appId and routes back to that ap
 	expect(active?.notification.route).toEqual({ kind: 'app', id: 'app.example' })
 	notificationStore.clear()
 })
+
+// `settings` is the host admin surface, served LOCALLY here (identity lives where the
+// session does) and gated on app identity — a declared scope would hand it to any
+// sideloaded app. The former `accounts`/`usage` capabilities are gone from this
+// registry: a frame for either misses it and takes the network fallback (offline in
+// tests), which is exactly the "not served here" signal.
+test('settings is local and allowlist-gated; accounts/usage are no longer registered', async () => {
+	const caps = clientCapabilities(
+		undefined as unknown as Volume,
+		async () => null,
+		() => ({
+			id: 'u1',
+			name: 'Fern'
+		})
+	)(undefined as unknown as Kernel)
+	const settings = (appId: string): CapabilityCall => ({
+		...call('settings', 'host.user', {}),
+		appId
+	})
+
+	expect(await caps.invoke(settings('app.justfiles.frieren.settings'))).toEqual({
+		id: 'u1',
+		name: 'Fern'
+	})
+	await expect(caps.invoke(settings('app.evil'))).rejects.toMatchObject({
+		code: 'CAPABILITY_UNAVAILABLE'
+	})
+	for (const gone of ['accounts', 'usage']) {
+		await expect(caps.invoke(call(gone, 'listAccounts', {}))).rejects.toMatchObject({
+			code: 'CAPABILITY_OFFLINE'
+		})
+	}
+})

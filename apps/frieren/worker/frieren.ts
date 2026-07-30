@@ -40,8 +40,8 @@ import {
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
-import type { UsageSnapshot } from '@justfiles/app/capabilities/usage'
-import { usageCapability } from '@justfiles/app/capabilities/usage/host'
+import type { UsageSnapshot } from '@justfiles/app/capabilities/settings'
+import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import {
 	clearReset,
 	createFsApi,
@@ -66,9 +66,6 @@ import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
 import { type AdmitHandle, admit, ensureUsageSchema, readUsage, record } from './usage.ts'
-
-// Only the first-party Settings app may reach the `accounts` admin facet.
-const ACCOUNTS_FIRST_PARTY = ['app.justfiles.frieren.settings']
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -308,7 +305,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
-	// The `usage` capability's read: the per-user meter + quota, projected into the
+	// What `host.usage` reads: the per-user meter + quota, projected into the
 	// host-agnostic snapshot the Settings app renders.
 	private async usageSnapshot(): Promise<UsageSnapshot> {
 		const report = await readUsage(this.db, this.ctx.storage.sql.databaseSize)
@@ -376,10 +373,7 @@ export class Frieren extends DurableObject<Env> {
 		// the agent no longer reaches them directly (that returns as capability-provided agent
 		// tools; see the plan's Step 3.5).
 		const providers = buildProviders({ text: this.text, generateImage })
-		const caps = accountsCapabilities(providers, this.vol, {
-			firstParty: ACCOUNTS_FIRST_PARTY,
-			secretCodec: this.secretCodec
-		})
+		const caps = accountsCapabilities(providers, this.vol, { secretCodec: this.secretCodec })
 		const audit = new AuditLog(this.ctx.storage)
 		const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
 		const email = guardCapability(caps.email, { capability: 'email', audit, rateLimit })
@@ -393,8 +387,13 @@ export class Frieren extends DurableObject<Env> {
 			image: caps.image,
 			email,
 			calendar,
-			accounts: caps.accounts,
-			usage: usageCapability(() => this.usageSnapshot())
+			// The host admin surface Settings talks to. Both halves are served here: the
+			// browser half delegates `accounts.*` (credentials never replicate) and
+			// `host.usage` (the meter lives with the DO) to this one.
+			settings: settingsHost({
+				accounts: caps.accounts,
+				usage: () => this.usageSnapshot()
+			})
 		})
 		// The agent's LLM backend resolves from the enabled `ai` account (single-active):
 		// the built-in AI → the platform env backend; nothing enabled → no backend, so a turn

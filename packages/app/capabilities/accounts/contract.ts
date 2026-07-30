@@ -1,10 +1,10 @@
-// One capability id `accounts`, ADMIN facet only. It subsumes the former
-// `integrations` and `ai/admin`: the user connects a provider account once, then
-// toggles which capabilities (email/calendar/ai) that account backs — the macOS
-// "Internet Accounts" shape. The use facets stay separate capabilities
-// (`email`/`calendar`/`ai`) any app may call; `accounts` is reachable only by the
-// first-party Settings app, gated host-side on `ctx.appId` like the volume
-// `system` allowlist. No Cloudflare imports, no provider clients — app-safe.
+// The accounts model's ADMIN surface and its UI projections. The user connects a
+// provider account once, then toggles which capabilities (email/calendar/ai) that
+// account backs — the macOS "Internet Accounts" shape. The use facets are separate
+// capabilities (`email`/`calendar`/`ai`) any app may call; administration is NOT a
+// capability of its own — it reaches apps only through `settings` (`accounts.*`),
+// which is gated on first-party app identity. No Cloudflare imports, no provider
+// clients — app-safe.
 
 export type CapabilityId = 'email' | 'calendar' | 'ai'
 
@@ -48,7 +48,9 @@ export interface AccountInfo {
 	lastError?: string
 }
 
-export interface AccountsAdminCapability {
+// The admin methods, as `accountsCapabilities` hands them to `settingsHost`. Not a
+// capability: a plain impl, so composing it needs no second contract.
+export interface AccountsAdmin {
 	listProviders(input: Record<string, never>): Promise<ProviderInfo[]>
 	listAccounts(input: Record<string, never>): Promise<AccountInfo[]>
 	// `form` providers: pass `credentials`. `interactive` providers: omit — the host

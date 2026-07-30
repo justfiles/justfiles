@@ -1,8 +1,12 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
-import type { AccountInfo, CapabilityId, ProviderInfo } from '@justfiles/app/capabilities/accounts'
-import type { UsageResource } from '@justfiles/app/capabilities/usage'
-import type { UserProfile } from '@justfiles/app/capabilities/user'
+import type {
+	AccountInfo,
+	CapabilityId,
+	ProviderInfo,
+	UsageResource,
+	UserProfile
+} from '@justfiles/app/capabilities/settings'
 import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type Category, initialState, type SettingsApp, type SettingsState } from './app.ts'
