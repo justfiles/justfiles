@@ -48,8 +48,18 @@ export function persistedState<T>(
 		return _cache
 	}
 
+	// The ONLY retryable read failure -- see readSettled below. A native-style
+	// create-then-fill gap is always fully empty, never partial (putBlob's
+	// handle.writeFile writes the whole buffer, and the preceding truncate(0) is
+	// the only other state a concurrent reader can observe) -- so "empty" is a
+	// precise, not a heuristic, signature for "still mid-write", and anything else
+	// read() throws (EISDIR, a deleted file, real corruption) is permanent.
+	class EmptyRead extends Error {}
+
 	async function read(): Promise<T> {
-		return JSON.parse(dec.decode(await vol.readFile(path))) as T
+		const raw = dec.decode(await vol.readFile(path))
+		if (raw === '') throw new EmptyRead(`empty read: ${path}`)
+		return JSON.parse(raw) as T
 	}
 
 	// First touch must be a CLAIM, not exists()-then-write: a second cell over the
@@ -92,7 +102,7 @@ export function persistedState<T>(
 			try {
 				return await read()
 			} catch (e) {
-				if (Date.now() >= deadline) throw e
+				if (!(e instanceof EmptyRead) || Date.now() >= deadline) throw e
 				await new Promise((resolve) => setTimeout(resolve, 0))
 			}
 		}

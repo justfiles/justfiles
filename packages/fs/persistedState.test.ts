@@ -139,6 +139,19 @@ describe('persistedState', () => {
 		}
 	})
 
+	test('a permanent read failure (EISDIR) propagates immediately, never waiting out the deadline', async () => {
+		// The retry above exists for exactly one signature: an empty read. Anything
+		// else -- the path turned out to be a directory, a permission error, real
+		// corruption -- is never going to resolve by waiting, so it must not pay
+		// readSettled's full deadline before surfacing.
+		const vol = volume(storage())
+		await vol.mkdir('/.state/id', { recursive: true }) // a DIRECTORY at the cell's own path
+		const state = persistedState<string>(vol, '/.state/id', () => 'minted')
+		const start = Date.now()
+		await expect(state.get()).rejects.toThrow(/^EISDIR/)
+		expect(Date.now() - start).toBeLessThan(500) // nowhere near the 2000ms deadline
+	})
+
 	test('a rejected first get() is not poisoned: a later get() on the same cell can retry', async () => {
 		const real = volume(storage())
 		let calls = 0
