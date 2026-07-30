@@ -2,7 +2,11 @@ import { hostname } from 'node:os'
 import { aiCapability, text } from '@justfiles/agent'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
-import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
+import {
+	accountsCapabilities,
+	aesGcmSecretCodec,
+	type SecretCodec
+} from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
@@ -14,6 +18,7 @@ import { builtinStore } from './builtins'
 import { chatgptProvider, resolveAgentBackend } from './chatgpt'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
+import { getOrCreateKey } from './keychain'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
@@ -31,8 +36,23 @@ const accountsProviders = () => [
 	chatgptProvider()
 ]
 
+// The daemon's own root secret for A2's codec (the `creds` lane, encrypted at rest): a
+// macOS Keychain item (see keychain.ts), turned into the string `aesGcmSecretCodec` derives
+// its subkey from. Memoised once per process — every consumer (this kernel's `ai`/`accounts`
+// wiring below, and agent.ts's own chat session) must seal/unseal with the SAME codec, and
+// `getOrCreateKey` already memoises the one Keychain read underneath it.
+let secretCodecOnce: Promise<SecretCodec> | undefined
+export function accountsSecretCodec(): Promise<SecretCodec> {
+	secretCodecOnce ??= getOrCreateKey().then((key) =>
+		aesGcmSecretCodec(Buffer.from(key).toString('base64'))
+	)
+	return secretCodecOnce
+}
+
 export function getKernel(): Promise<Kernel> {
-	kernelOnce ??= getVolume().then(buildKernel)
+	kernelOnce ??= Promise.all([getVolume(), accountsSecretCodec()]).then(([fs, secretCodec]) =>
+		buildKernel(fs, { secretCodec })
+	)
 	return kernelOnce
 }
 
@@ -40,7 +60,13 @@ export function getKernel(): Promise<Kernel> {
 // email/calendar/ai/notify), the reducer sandbox pool, and the seeded builtin catalog.
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
-export async function buildKernel(fs: Volume): Promise<Kernel> {
+// `secretCodec` seals the accounts store at rest — `getKernel` supplies the real
+// Keychain-backed one; a test may supply its own (or none, for the pre-A4 clear default).
+export async function buildKernel(
+	fs: Volume,
+	opts: { secretCodec?: SecretCodec } = {}
+): Promise<Kernel> {
+	const { secretCodec } = opts
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
@@ -48,7 +74,7 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 	const ai = aiCapability({
 		volume: fs,
 		generate: async ({ system, prompt }) => {
-			const backend = await resolveAgentBackend(fs)
+			const backend = await resolveAgentBackend(fs, { secretCodec })
 			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return text(backend).gen(system, prompt)
 		}
@@ -57,7 +83,8 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
 		// hostname so Settings can tell two Macs apart once E1/E2 land.
-		origin: { kind: 'device', label: hostname() }
+		origin: { kind: 'device', label: hostname() },
+		secretCodec
 	})
 
 	const k = kernel({

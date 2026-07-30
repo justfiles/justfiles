@@ -8,9 +8,10 @@
 // own wiring. Bun-only (`bun test`): the reducer sandbox uses blob-URL Workers.
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { aesGcmSecretCodec } from '@justfiles/app/capabilities/accounts/host'
 import type { Kernel, Message } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
@@ -64,4 +65,39 @@ test('Files reads the real volume through the system-scoped volume capability', 
 	expect(state.files.some((f) => f.path.startsWith('/applications/'))).toBe(true)
 
 	sandboxes.release(FILES)
+})
+
+test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)', async () => {
+	const SETTINGS = 'app.justfiles.frieren.settings'
+	const sealedRoot = await mkdtemp(join(tmpdir(), 'daemon-kernel-sealed-'))
+	const sealed = await buildKernel(volume(await nativeStorage(sealedRoot)), {
+		secretCodec: aesGcmSecretCodec('a-test-root-secret')
+	})
+
+	// A form provider (iCloud) round-tripped through the daemon's REAL wiring: the
+	// settings app's `connectAccount` procedure invoking the `settings` capability's
+	// `accounts.connect`, which is `buildKernel`'s own `accountsCapabilities(...)`.
+	await sealed.dispatch(SETTINGS, {
+		type: 'connectAccount',
+		params: {
+			providerId: 'icloud',
+			credentials: { username: 'me@example.com', password: 'SEKRIT-APP-PASSWORD' }
+		}
+	} as Message)
+
+	// The raw file on disk carries no plaintext credential substring.
+	const raw = await readFile(
+		join(sealedRoot, 'private', 'accounts', `${encodeURIComponent('me@example.com')}.json`),
+		'utf8'
+	)
+	expect(raw).not.toContain('SEKRIT-APP-PASSWORD')
+
+	// And it reads back through the SAME kernel/codec — the round trip.
+	const state = await poll(
+		() => sealed.state(SETTINGS) as Promise<{ accounts: Array<{ accountId: string }> }>,
+		(s) => s.accounts.length > 0
+	)
+	expect(state.accounts.map((a) => a.accountId)).toContain('me@example.com')
+
+	await rm(sealedRoot, { recursive: true, force: true })
 })
