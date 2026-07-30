@@ -80,10 +80,10 @@ test('loses a create race but returns the Keychain winner, not its own bytes', a
 		if (cmd[1] === 'find-generic-password') {
 			return lostTheRace
 				? { exited: Promise.resolve(0), text: async () => winner }
-				: { exited: Promise.resolve(1), text: async () => '' }
+				: { exited: Promise.resolve(44), text: async () => '' }
 		}
 		lostTheRace = true // the `add` lost to a concurrent writer
-		return { exited: Promise.resolve(1), text: async () => '' }
+		return { exited: Promise.resolve(45), text: async () => '' }
 	}
 	const key = await getOrCreateKey('kodama.test.race', ACCOUNT, spawn)
 	expect(b64(key)).toBe(winner)
@@ -92,18 +92,46 @@ test('loses a create race but returns the Keychain winner, not its own bytes', a
 test('a new key is written on stdin, never in argv — `ps -Ao args` shows another user command line', async () => {
 	let addCmd: readonly string[] = []
 	let addInput: string | undefined
+	// A `security` faithful enough to matter: the `add` stores the FIRST stdin line (that is
+	// what the prompt consumes) and later reads serve it back.
+	let item = '' // the Keychain: empty until the add lands
 	const spawn: Spawn = (cmd, input) => {
-		const adding = cmd[1] === 'add-generic-password'
-		if (adding) {
+		if (cmd[1] === 'add-generic-password') {
 			addCmd = cmd
 			addInput = input
+			item = input?.split('\n')[0] ?? ''
+			return { exited: Promise.resolve(0), text: async () => '' }
 		}
-		return { exited: Promise.resolve(adding ? 0 : 1), text: async () => '' }
+		return item
+			? { exited: Promise.resolve(0), text: async () => item }
+			: { exited: Promise.resolve(44), text: async () => '' }
 	}
 	const key = await getOrCreateKey('kodama.test.argv', ACCOUNT, spawn)
-	expect(addCmd.at(-1)).toBe('-w') // the flag, with no value after it
+	expect(addCmd.at(-1)).toBe('-w') // the flag last, with no value — `security`'s prompt form
 	expect(addCmd).not.toContain(b64(key))
 	expect(addInput).toBe(`${b64(key)}\n${b64(key)}\n`) // prompt + confirmation
+	expect(b64(key)).toBe(item) // and the key we return is the one the item holds
+})
+
+test('an add that exits 0 while storing something else never returns the bytes we minted', async () => {
+	// The prompt form's sharp edge: fed a partial stdin, `security` re-prompts, takes the empty
+	// second read, and stores an EMPTY password — exiting 0 all the same (verified against the
+	// real CLI). Trusting that exit code would seal every record under a key the Keychain does
+	// not hold, which surfaces only as "re-connect" for ALL accounts after the next restart.
+	let finds = 0
+	const spawn: Spawn = (cmd) => {
+		if (cmd[1] === 'add-generic-password')
+			return { exited: Promise.resolve(0), text: async () => '' } // "succeeded"
+		finds++
+		// First read: no such item (44). Read-back after the add: found, but EMPTY — what the
+		// real CLI stores when its prompt consumes a partial stdin and takes the empty retype.
+		return finds === 1
+			? { exited: Promise.resolve(44), text: async () => '' }
+			: { exited: Promise.resolve(0), text: async () => '' }
+	}
+	await expect(getOrCreateKey('kodama.test.emptied', ACCOUNT, spawn)).rejects.toThrow(
+		'not a valid 32-byte key'
+	)
 })
 
 // The codec the kernel is actually wired with. Its whole point is WHEN the key is read:

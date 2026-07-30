@@ -91,9 +91,9 @@ export async function getOrCreateKey(
 	// Not found (the common case) — mint one and store it WITHOUT replacing an existing item
 	// (no `-U`): the daemon has no single-writer lock yet (Launcher.swift), so two processes
 	// starting concurrently on a fresh install can both miss the read above. Only one `add`
-	// wins; the loser's bytes are never stored, so returning them would encrypt with a key
-	// nothing else agrees on. Keychain is the source of truth either way — re-read on a lost
-	// race (or any other add failure) and use whatever is actually stored.
+	// wins. `-w` LAST, with no value, is the documented argv-safe form — `security`'s own help
+	// says "Specify -w as the last option to be prompted" — and it reads the value from stdin
+	// twice (prompt, then confirmation).
 	const bytes = crypto.getRandomValues(new Uint8Array(KEY_BYTES))
 	const b64 = Buffer.from(bytes).toString('base64')
 	const created = await run(
@@ -101,10 +101,16 @@ export async function getOrCreateKey(
 		['security', 'add-generic-password', '-s', service, '-a', account, '-w'],
 		`${b64}\n${b64}\n`
 	)
-	if (created.code === 0) return bytes
 
-	const winner = await readItem(spawn, service, account)
-	if (winner) return winner
+	// Return what the Keychain HOLDS, never the bytes we just generated — they can differ even
+	// on a zero exit, and sealing records under a key the item does not contain is the one
+	// unrecoverable outcome here (every credential reads as "re-connect" after a restart, with
+	// nothing to point at). Two ways they diverge: a concurrent create won the name, or the
+	// prompt above consumed a partial stdin, re-prompted, and stored an EMPTY password while
+	// still exiting 0. So the item is the source of truth, and a value that is not a 32-byte
+	// key fails closed via `readItem` rather than being used.
+	const stored = await readItem(spawn, service, account)
+	if (stored) return stored
 	// The exit code is the diagnosis (44 = no such item, 45 = duplicate item, and `security
 	// error <code>` decodes the rest) — worth carrying, since `security`'s own stderr is
 	// discarded so that a prompt or a password never reaches the daemon's log.
