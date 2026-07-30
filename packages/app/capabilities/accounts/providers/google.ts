@@ -28,13 +28,34 @@ export interface GoogleClient {
 	secret: string
 }
 
-// What an account from this provider stores. `expires` is epoch ms.
+// What an account from this provider stores: the refresh token IS the account, plus the
+// identity it names. Nothing else — the access token is short-lived and re-derivable from
+// the refresh token at any time, so it never reaches a record; it lives in memory for this
+// process's lifetime (see `Live` below).
 export interface GoogleCreds {
-	access: string
 	refresh: string
-	expires: number
 	accountId: string
 }
+
+// The live access token, in memory only. Held per account for the lifetime of the
+// provider (one per host process), so a cold start costs ONE exchange rather than one per
+// capability call — the host binds a fresh client for every call.
+interface Live {
+	access: string
+	expires: number // epoch ms
+}
+
+// A cache entry: the token, or the exchange still fetching it. `expires` is readable
+// WITHOUT awaiting (Infinity while in flight) — that is what lets the freshness check and
+// the write happen in one turn, so two clients can't both decide to refresh.
+interface Cached {
+	expires: number
+	live: Promise<Live>
+}
+
+type LiveTokens = Map<string, Cached>
+
+const NEAR_EXPIRY_MS = 60_000
 
 interface TokenResponse {
 	access_token: string
@@ -62,42 +83,91 @@ async function googleExchange(
 	return (await res.json()) as TokenResponse
 }
 
-// Google omits `refresh_token` on refresh, so the old one carries.
-async function googleRefresh(creds: GoogleCreds, client: GoogleClient): Promise<GoogleCreds> {
+// Split in two by where each half is allowed to live: `creds` is the record, `live` never
+// leaves memory. Google omits `refresh_token` on refresh, so the old one carries.
+async function googleRefresh(
+	creds: GoogleCreds,
+	client: GoogleClient
+): Promise<{ creds: GoogleCreds; live: Live }> {
 	const token = await googleExchange(client, {
 		grant_type: 'refresh_token',
 		refresh_token: creds.refresh
 	})
 	return {
-		access: token.access_token,
-		refresh: token.refresh_token ?? creds.refresh,
-		expires: Date.now() + token.expires_in * 1000,
-		accountId: creds.accountId
+		creds: { refresh: token.refresh_token ?? creds.refresh, accountId: creds.accountId },
+		live: { access: token.access_token, expires: Date.now() + token.expires_in * 1000 }
 	}
 }
 
 type AuthedFetch = (path: string, init?: { method?: string; body?: string }) => Promise<Response>
 
-// A bearer-attaching fetch over an account's creds, refreshing once on near expiry
-// when a `refreshClient` is available. Mint has no store, so the rotated token isn't
-// persisted — the next call refreshes again; a failed/absent refresh falls through
-// to a 401 that surfaces as re-auth.
-function authedFetch(creds: GoogleCreds, refreshClient: GoogleClient | null): AuthedFetch {
-	let access = creds.access
-	let refreshed = false
+// The account's live token, minting one at most ONCE per expiry across every client in this
+// process. Deliberately synchronous — read, freshness check and write in a single turn — so
+// clients racing a cold start await the same exchange instead of each spending the refresh
+// token: Google may rotate it, which invalidates the loser's grant and can leave the last
+// writeback storing a dead one. No client (or nothing to refresh with) serves whatever is
+// already there; a resulting 401 surfaces as re-auth.
+function liveToken(
+	account: BoundAccount,
+	creds: GoogleCreds,
+	client: GoogleClient | null,
+	tokens: LiveTokens
+): Cached | undefined {
+	const id = creds.accountId
+	const cached = tokens.get(id)
+	if (cached && cached.expires - Date.now() >= NEAR_EXPIRY_MS) return cached
+	if (!client || !creds.refresh) return cached
+	const entry: Cached = {
+		expires: Number.POSITIVE_INFINITY,
+		live: googleRefresh(creds, client)
+			.then(async ({ creds: rotated, live }) => {
+				entry.expires = live.expires
+				await account.persist(rotated)
+				return live
+			})
+			.catch((failure: unknown) => {
+				// Neither a failed exchange nor a failed writeback is cached: drop the entry so the
+				// next call retries rather than reusing a token whose rotation nobody recorded.
+				if (tokens.get(id) === entry) tokens.delete(id)
+				// A refresh inside the near-expiry window replaced a token that is usually good for
+				// another minute. Serve THAT rather than an empty bearer — a blip at the token
+				// endpoint must not turn a working call into a failure.
+				if (cached) return cached.live
+				throw failure
+			})
+	}
+	tokens.set(id, entry)
+	return entry
+}
+
+// A refresh that failed must not fail the request: fall through with whatever token we have
+// and let the 401 surface as re-auth.
+async function settled(pending: Promise<Live> | undefined): Promise<Live | undefined> {
+	try {
+		return await pending
+	} catch {
+		return undefined
+	}
+}
+
+// A bearer-attaching fetch over an account, minting/refreshing the token it needs when a
+// `refreshClient` is available. Every refresh persists the record, so a rotated refresh
+// token survives.
+function authedFetch(
+	account: BoundAccount,
+	refreshClient: GoogleClient | null,
+	tokens: LiveTokens
+): AuthedFetch {
+	const creds = account.creds as GoogleCreds
 	return async (path, init = {}) => {
-		if (!refreshed && refreshClient && creds.refresh && creds.expires - Date.now() < 60_000) {
-			refreshed = true
-			try {
-				access = (await googleRefresh(creds, refreshClient)).access
-			} catch {
-				// keep the stale token; the request below 401s into re-auth
-			}
-		}
+		const live = await settled(liveToken(account, creds, refreshClient, tokens)?.live)
 		const res = await fetch(path, {
 			method: init.method,
 			body: init.body,
-			headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' }
+			headers: {
+				authorization: `Bearer ${live?.access ?? ''}`,
+				'content-type': 'application/json'
+			}
 		})
 		if (!res.ok) throw new Error(`Google API ${res.status}: ${await res.text()}`)
 		return res
@@ -298,11 +368,13 @@ export interface GoogleProviderDeps {
 }
 
 export function googleProvider(deps: GoogleProviderDeps): Provider {
-	const authed = (account: BoundAccount) => authedFetch(account.creds as GoogleCreds, deps.client)
+	// One live-token cache per provider instance = per host process (see `Live`).
+	const tokens: LiveTokens = new Map()
+	const authed = (account: BoundAccount) => authedFetch(account, deps.client, tokens)
 	return {
 		id: 'google',
 		name: 'Google',
-		auth: { ui: { kind: 'interactive' }, acquire: (input) => acquire(deps, input.scopes) },
+		auth: { ui: { kind: 'interactive' }, acquire: (input) => acquire(deps, input.scopes, tokens) },
 		capabilities: {
 			email: { scope: GMAIL_SCOPE, bind: (account) => createGmailEmail(authed(account)) },
 			calendar: {
@@ -316,7 +388,13 @@ export function googleProvider(deps: GoogleProviderDeps): Provider {
 // Run the consent flow (PKCE) for the union of identity + `requested` scopes through
 // the platform's AuthFlow, exchange the code, and return the tokens, the account's
 // email, and the scopes Google actually granted (recorded for incremental consent).
-async function acquire(deps: GoogleProviderDeps, requested: string[]): Promise<AcquiredAccount> {
+// The access token the exchange yields goes into `tokens` — in memory, so connecting and
+// then immediately using the account costs no second exchange — and never into the record.
+async function acquire(
+	deps: GoogleProviderDeps,
+	requested: string[],
+	tokens: LiveTokens
+): Promise<AcquiredAccount> {
 	const { flow, client } = deps
 	const verifier = randomB64url(32)
 	const challenge = b64url(
@@ -356,12 +434,9 @@ async function acquire(deps: GoogleProviderDeps, requested: string[]): Promise<A
 		code_verifier: verifier
 	})
 	const accountId = emailFromIdToken(token.id_token) ?? ''
-	const creds: GoogleCreds = {
-		access: token.access_token,
-		refresh: token.refresh_token ?? '',
-		expires: Date.now() + token.expires_in * 1000,
-		accountId
-	}
+	const creds: GoogleCreds = { refresh: token.refresh_token ?? '', accountId }
+	const live: Live = { access: token.access_token, expires: Date.now() + token.expires_in * 1000 }
+	tokens.set(accountId, { expires: live.expires, live: Promise.resolve(live) })
 	return { accountId, creds, scopes: (token.scope ?? scope).split(' ').filter(Boolean) }
 }
 

@@ -53,11 +53,35 @@ function bound<T>(
 	return binding.bind({
 		creds: account.creds,
 		config,
-		persist: async (creds) => {
-			await accounts.put({ ...account, creds })
-		}
+		persist: writebackFor(accounts, account)
 	})
 }
+
+// The one writeback: rotated creds go back to the account record (a provider whose tokens
+// refresh mid-use MUST call it, or a later mint reuses a consumed grant). A call is bound over
+// a SNAPSHOT and a token exchange can land long after it was taken, so the write is a
+// compare-and-set on the creds lane — it only ever replaces the value this client last saw
+// there. Two lost updates fall out of that:
+//   - the account was disconnected mid-flight — writing would resurrect the record, credential
+//     and all, after a disconnect that already reported success;
+//   - the account was re-connected, or widened by incremental consent — `setEnabled` writes a
+//     whole new grant, and overwriting it with an older refresh result is the lost update that
+//     leaves the user re-connecting.
+// `expected` advances on every write, so a provider that rotates repeatedly (pi-ai's Codex
+// credential store does) still lands every rotation.
+// Not atomic — the store has no compare-and-set — but it never replaces a value it did not read.
+function writebackFor(accounts: AccountStore, account: Account): (creds: unknown) => Promise<void> {
+	let expected = account.creds
+	return async (creds) => {
+		const current = await accounts.get(account.id)
+		if (!current || !sameCreds(current.creds, expected)) return
+		await accounts.put({ ...current, creds })
+		expected = creds
+	}
+}
+
+// Creds are plain JSON (a provider's own token record), so structural equality is text equality.
+const sameCreds = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 // Accounts backing `capability` (optionally one), each turned into a live client.
 async function resolveClients<C>(
@@ -443,8 +467,6 @@ export async function resolveAiAccount<T>(
 		creds: account.creds,
 		config: sel.model !== undefined ? { model: sel.model } : {},
 		providerId: account.provider,
-		persist: async (creds) => {
-			await accounts.put({ ...account, creds })
-		}
+		persist: writebackFor(accounts, account)
 	})
 }
