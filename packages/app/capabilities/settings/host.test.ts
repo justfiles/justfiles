@@ -197,8 +197,45 @@ test('every other accounts.* method stays routed to the local dep, never the rem
 		call('accounts.setEnabled', { accountId: 'frieren', capability: 'ai', enabled: true })
 	)
 	await caps.invoke(call('accounts.disconnect', { accountId: 'frieren' }))
-	// Only `accounts.listAccounts` ever consults `remote` — none of the above did.
+	// `frieren` was connected locally, so setEnabled/disconnect find it in the local
+	// store and never reach `remote` — only the ownership check (a local read) ran.
 	expect(forwarded).toEqual([])
+})
+
+// The merged list (above) can show an account this host does NOT own — mutating one
+// must reach whichever side actually has it, or a cloud account becomes untoggleable
+// (setEnabled: CAPABILITY_INVALID_INPUT) or, worse, silently un-disconnectable (a
+// `rm --force` on a path that was never there).
+test('setEnabled on a cloud-only account routes to remote, not the local store', async () => {
+	const forwarded: CapabilityCall[] = []
+	const remote: Capabilities = {
+		invoke: async (c) => {
+			forwarded.push(c)
+			return undefined
+		},
+		subscribe: async () => () => {}
+	}
+	const caps = host({ remote }) // local store starts empty — nothing is "mine"
+	await caps.invoke(
+		call('accounts.setEnabled', { accountId: 'g@gmail.com', capability: 'email', enabled: true })
+	)
+	expect(forwarded).toEqual([
+		call('accounts.setEnabled', { accountId: 'g@gmail.com', capability: 'email', enabled: true })
+	])
+})
+
+test('disconnect on a cloud-only account routes to remote, not a local no-op', async () => {
+	const forwarded: CapabilityCall[] = []
+	const remote: Capabilities = {
+		invoke: async (c) => {
+			forwarded.push(c)
+			return undefined
+		},
+		subscribe: async () => () => {}
+	}
+	const caps = host({ remote })
+	await caps.invoke(call('accounts.disconnect', { accountId: 'g@gmail.com' }))
+	expect(forwarded).toEqual([call('accounts.disconnect', { accountId: 'g@gmail.com' })])
 })
 
 test('an unknown method (or a subscribe) is UNAVAILABLE, never a crash', async () => {

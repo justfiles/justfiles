@@ -12,14 +12,18 @@
 //    and delegates `accounts.*`/`host.usage` to the DO (credentials live under
 //    `/private/**`, which never replicates), the DO wires both and delegates nothing,
 //    and the Mac daemon wires `accounts` only — so its Usage pane hides itself.
-//  • `accounts.listAccounts` IS THE ONE UNION. A signed-in device can hold accounts in
-//    BOTH lanes at once — some connected directly on it, some owned by the cloud and
-//    reached through `remote` (#305) — and the user expects to see all of them in one
-//    Settings list, each tagged by `AccountInfo.origin` (#296). So when `accounts` AND
-//    `remote` are both configured, the list call alone fans out to both and
-//    concatenates; every OTHER `accounts.*` method (mutating one account) stays
-//    routed to wherever its dep is — an account is administered where it lives, never
-//    both places.
+//  • `accounts.listAccounts` IS THE ONE UNION; SETENABLED/DISCONNECT ROUTE BY OWNER.
+//    A signed-in device can hold accounts in BOTH lanes at once — some connected
+//    directly on it, some owned by the cloud and reached through `remote` (#305) —
+//    and the user expects to see all of them in one Settings list, each tagged by
+//    `AccountInfo.origin` (#296). So when `accounts` AND `remote` are both
+//    configured, the list call fans out to both and concatenates. But the merged
+//    list can show an account this side does NOT own, so mutating one
+//    (`setEnabled`/`disconnect`) first checks whether the local store actually has
+//    it — local if so, `remote` if not (D1: administer an account where it lives).
+//    `connect` needs no such check: it creates a NEW account, always on this side.
+//    With only one lane configured, both checks are no-ops — unchanged from before
+//    this existed.
 
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
@@ -64,6 +68,10 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 	}
 	const unavailable = (method: string) =>
 		new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings', method)
+	// Does THIS host's own store have `accountId`? The merged list can show an account
+	// this side doesn't own, so a mutation checks before running — see the file header.
+	const ownsLocally = async (accountId: string): Promise<boolean> =>
+		!!accounts && (await accounts.listAccounts({})).some((a) => a.accountId === accountId)
 	return {
 		invoke: async (call) => {
 			if (!SETTINGS_ALLOWLIST.has(call.appId)) throw unavailable(call.method)
@@ -76,6 +84,17 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 					remote.invoke(call) as Promise<unknown[]>
 				])
 				return [...local, ...cloud]
+			}
+			// Mutating an EXISTING account by id must reach whichever side actually owns
+			// it: `setEnabled`/`disconnect` route local only when the local store has the
+			// account, remote otherwise — a no-op (both configured) when it's neither.
+			if (
+				(call.method === 'accounts.setEnabled' || call.method === 'accounts.disconnect') &&
+				accounts &&
+				remote
+			) {
+				const { accountId } = call.args[0] as { accountId: string }
+				if (!(await ownsLocally(accountId))) return remote.invoke(call)
 			}
 			const method = served[call.method as keyof SettingsCapability]
 			// The frame rides on unchanged, so the far end gates on the same appId.
