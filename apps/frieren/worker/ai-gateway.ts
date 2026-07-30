@@ -12,7 +12,15 @@
 // THAT, never from what the client claims it received.
 import { type Api, calculateCost, type Model, type Usage } from '@earendil-works/pi-ai'
 import { Hono } from 'hono'
-import type { AiMeter } from './quota.ts'
+import { type AiMeter, QuotaExceededError } from './quota.ts'
+
+// The upstream statuses that mean "the caller's request itself is wrong" — bad params, an
+// unsupported option, a moderation refusal. Everything else non-2xx (401/402/403 — OUR key is
+// invalid or the platform's OpenRouter account is out of credit, not something the caller ever
+// supplied — 404, 429, 5xx) is a PLATFORM problem: relaying it would tell an authenticated
+// caller their auth/request failed when the outage is ours, and could leak provider-account
+// details from the response body. Only these two get passed through verbatim.
+const CALLER_ACTIONABLE_STATUS = new Set([400, 422])
 
 export interface AiGatewayDeps {
 	meter: AiMeter
@@ -170,15 +178,18 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 			try {
 				handle = await deps.meter.admitOrThrow()
 			} catch (err) {
-				return c.json(
-					{
-						error: {
-							code: 'quota_exceeded',
-							message: err instanceof Error ? err.message : 'AI limit reached'
-						}
-					},
-					429
-				)
+				// Only the INTENTIONAL case — the cap is genuinely spent — is the caller's to act on.
+				// Anything else (the tier read or the SQLite admit statement failing operationally,
+				// e.g. storage unavailable) is ours, not theirs: reporting it as "you're over quota"
+				// would tell a client to upgrade or wait out a window that was never the problem, and
+				// leaks our exception message to them besides.
+				if (!(err instanceof QuotaExceededError)) {
+					return c.json(
+						{ error: { code: 'meter_unavailable', message: 'the usage meter is unavailable' } },
+						502
+					)
+				}
+				return c.json({ error: { code: 'quota_exceeded', message: err.message } }, 429)
 			}
 
 			// Force usage reporting regardless of what the caller asked for — otherwise the
@@ -212,12 +223,10 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 			if (!upstreamRes.ok) {
 				// Admit checks caps up front but adds no cost of its own (only `record` does), so a
 				// failed call leaves the counters exactly where admit found them — nothing to refund.
-				if (upstreamRes.status >= 400 && upstreamRes.status < 500) {
-					// A 4xx from upstream (a bad param, an unsupported option, a moderation refusal) is
-					// the CALLER's to fix — pass it through verbatim rather than flattening it into our
-					// own generic 502, which reads as "try again later" for a request that will never
-					// succeed unmodified. Reserve 502 for an upstream/network failure that ISN'T the
-					// caller's fault.
+				if (CALLER_ACTIONABLE_STATUS.has(upstreamRes.status)) {
+					// A bad param or an unsupported option is the CALLER's to fix — pass it through
+					// verbatim rather than flattening it into our own generic 502, which reads as "try
+					// again later" for a request that will never succeed unmodified.
 					return new Response(upstreamRes.body, {
 						status: upstreamRes.status,
 						statusText: upstreamRes.statusText,

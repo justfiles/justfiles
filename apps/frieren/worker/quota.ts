@@ -102,6 +102,13 @@ export interface AiMeter {
 	record(handle: AdmitHandle, usage: Usage): Promise<void>
 }
 
+// Thrown ONLY for the intentional case — `admit` found the cap already spent. Callers (the
+// gateway) key off this type, not "admitOrThrow threw", to tell an over-quota user apart from
+// an operational failure (KV/SQLite unavailable): the tier read or the SQLite admit statement
+// can reject for reasons that have nothing to do with the user's quota, and reporting THOSE as
+// "you're over quota, upgrade or wait" is a wrong diagnosis a client would act on incorrectly.
+export class QuotaExceededError extends Error {}
+
 export function createAiMeter(
 	db: DbAdapter,
 	storage: KvStorage,
@@ -117,7 +124,7 @@ export function createAiMeter(
 				limits.weekly ?? Number.MAX_SAFE_INTEGER
 			)
 			if (handle === null)
-				throw new Error('AI limit reached — it resets soon, or upgrade your plan.')
+				throw new QuotaExceededError('AI limit reached — it resets soon, or upgrade your plan.')
 			return handle
 		},
 		record: (handle, usage) => record(db, handle, usage)

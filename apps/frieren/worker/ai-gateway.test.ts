@@ -4,7 +4,7 @@ import type { DbAdapter, SqlValue } from '@justfiles/core'
 import { describe, expect, test, vi } from 'vitest'
 import { createAiGateway, meterSseStream } from './ai-gateway.ts'
 import type { KvStorage } from './integrations/storage.ts'
-import { type AiMeter, createAiMeter } from './quota.ts'
+import { type AiMeter, createAiMeter, QuotaExceededError } from './quota.ts'
 import { type AdmitHandle, ensureUsageSchema, readAiUsage } from './usage.ts'
 
 // ── Shared fixtures ─────────────────────────────────────────────────────────
@@ -243,7 +243,8 @@ describe('createAiGateway', () => {
 
 	test('over quota: 429, no upstream call', async () => {
 		const meter: AiMeter = {
-			admitOrThrow: () => Promise.reject(new Error('AI limit reached — it resets soon.')),
+			admitOrThrow: () =>
+				Promise.reject(new QuotaExceededError('AI limit reached — it resets soon.')),
 			record: vi.fn()
 		}
 		const upstream = vi.fn()
@@ -254,6 +255,25 @@ describe('createAiGateway', () => {
 		})
 		expect(res.status).toBe(429)
 		expect(((await res.json()) as { error: { code: string } }).error.code).toBe('quota_exceeded')
+		expect(upstream).not.toHaveBeenCalled()
+	})
+
+	test('a meter failure that is NOT quota exhaustion is a 502, not a 429', async () => {
+		const meter: AiMeter = {
+			admitOrThrow: () => Promise.reject(new Error('SQLITE_BUSY: database is locked')),
+			record: vi.fn()
+		}
+		const upstream = vi.fn()
+		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(502)
+		const body = (await res.json()) as { error: { code: string; message: string } }
+		expect(body.error.code).toBe('meter_unavailable')
+		// The raw exception text never reaches the caller.
+		expect(body.error.message).not.toContain('SQLITE_BUSY')
 		expect(upstream).not.toHaveBeenCalled()
 	})
 
@@ -421,6 +441,31 @@ describe('createAiGateway', () => {
 		})
 		expect(res.status).toBe(400)
 		expect(await res.json()).toEqual({ error: { message: 'messages is required' } })
+		expect(meter.records).toHaveLength(0)
+	})
+
+	test("upstream 401/403 (OUR key, not the caller's) is a 502, never relayed to the caller", async () => {
+		const meter = fakeMeter()
+		const upstream = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({ error: { message: 'Invalid API key', account: 'acct_secret' } }),
+					{
+						status: 401,
+						headers: { 'content-type': 'application/json' }
+					}
+				)
+		)
+		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(502)
+		const text = await res.text()
+		// The platform's own key/account details never reach the caller.
+		expect(text).not.toContain('acct_secret')
+		expect(text).not.toContain('Invalid API key')
 		expect(meter.records).toHaveLength(0)
 	})
 })
