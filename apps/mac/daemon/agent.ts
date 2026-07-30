@@ -10,7 +10,8 @@ import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
-import { accountsSecretCodec, getKernel } from './kernel'
+import { getKernel } from './kernel'
+import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
 import type { AgentEvent } from './protocol'
 import { DOCS_DIR } from './resources'
@@ -61,16 +62,7 @@ const nativeWindows: AppControllerPorts['windows'] = {
 let sessionPromise: Promise<AgentSession> | null = null
 
 function getSession(): Promise<AgentSession> {
-	// A failed build (e.g. the login Keychain locked, so `getKernel`/`accountsSecretCodec`
-	// reject) must not wedge every later call behind the same rejected promise — evict, like
-	// `getOrCreateKey`/`accountsSecretCodec`/`getKernel` already do, so the NEXT `/agent`
-	// message retries instead of failing until the daemon restarts.
-	if (!sessionPromise) {
-		sessionPromise = buildSession().catch((error: unknown) => {
-			sessionPromise = null
-			throw error
-		})
-	}
+	if (!sessionPromise) sessionPromise = buildSession()
 	return sessionPromise
 }
 
@@ -82,7 +74,7 @@ async function buildSession(): Promise<AgentSession> {
 		// the next prompt without restarting the daemon (resolveAgentBackend rotates near-expiry
 		// tokens; the session keys its build on model + revision and rebuilds losslessly).
 		backend: async () => {
-			const llm = await resolveAgentBackend(fs, { secretCodec: await accountsSecretCodec() })
+			const llm = await resolveAgentBackend(fs, { secretCodec: accountsSecretCodec })
 			if (!llm) throw new Error('failed to get llm config')
 			return llm
 		},

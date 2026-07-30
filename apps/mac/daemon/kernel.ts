@@ -4,7 +4,6 @@ import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
-	aesGcmSecretCodec,
 	type SecretCodec,
 	sealAccounts
 } from '@justfiles/app/capabilities/accounts/host'
@@ -19,7 +18,7 @@ import { builtinStore } from './builtins'
 import { chatgptProvider, resolveAgentBackend } from './chatgpt'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
-import { getOrCreateKey } from './keychain'
+import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
@@ -37,31 +36,11 @@ const accountsProviders = () => [
 	chatgptProvider()
 ]
 
-// The daemon's own root secret for A2's codec (the `creds` lane, encrypted at rest): a
-// macOS Keychain item (see keychain.ts), turned into the string `aesGcmSecretCodec` derives
-// its subkey from. Memoised once per process — every consumer (this kernel's `ai`/`accounts`
-// wiring below, and agent.ts's own chat session) must seal/unseal with the SAME codec, and
-// `getOrCreateKey` already memoises the one Keychain read underneath it. A transient failure
-// evicts itself (mirroring `getOrCreateKey`'s own cache), so a later call retries Keychain
-// access instead of the daemon being stuck failing until restart.
-let secretCodecOnce: Promise<SecretCodec> | undefined
-export function accountsSecretCodec(): Promise<SecretCodec> {
-	secretCodecOnce ??= getOrCreateKey()
-		.then((key) => aesGcmSecretCodec(Buffer.from(key).toString('base64')))
-		.catch((error: unknown) => {
-			secretCodecOnce = undefined
-			throw error
-		})
-	return secretCodecOnce
-}
-
 export function getKernel(): Promise<Kernel> {
-	kernelOnce ??= Promise.all([getVolume(), accountsSecretCodec()])
-		.then(([fs, secretCodec]) => buildKernel(fs, { secretCodec }))
-		.catch((error: unknown) => {
-			kernelOnce = undefined
-			throw error
-		})
+	// The Keychain key lives behind `accountsSecretCodec`, which resolves it on first USE — so
+	// boot never touches the Keychain, and a Keychain this daemon cannot read costs the
+	// credential lane (A2 lists the record as "re-connect") rather than the whole daemon.
+	kernelOnce ??= getVolume().then((fs) => buildKernel(fs, { secretCodec: accountsSecretCodec }))
 	return kernelOnce
 }
 
@@ -69,8 +48,9 @@ export function getKernel(): Promise<Kernel> {
 // email/calendar/ai/notify), the reducer sandbox pool, and the seeded builtin catalog.
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
-// `secretCodec` seals the accounts store at rest — `getKernel` supplies the real
-// Keychain-backed one; a test may supply its own (or none, for the pre-A4 clear default).
+// `secretCodec` seals the accounts store at rest. `getKernel` — the only production caller —
+// supplies the real Keychain-backed one; the default stays the pre-A4 clear codec so a test
+// that never opts in is hermetic (it mints no Keychain item on the machine running it).
 export async function buildKernel(
 	fs: Volume,
 	opts: { secretCodec?: SecretCodec } = {}

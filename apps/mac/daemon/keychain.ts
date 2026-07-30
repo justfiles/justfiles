@@ -4,50 +4,48 @@
 // scoped to the user's login keychain. Never written to the Volume: deleting the
 // volume must not delete this, and deleting this must not resurrect plaintext (A2's
 // `clearSecretCodec` refuses a sealed record with no key rather than reading it as-is).
+//
+// The key is resolved on FIRST USE of the codec, never at boot (see `lazySecretCodec`):
+// a Keychain this daemon cannot read must break the ONE lane that needs it — where A2
+// already degrades a record to "re-connect" — not the kernel, which also carries files,
+// apps, devkit and notify.
+
+import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/capabilities/accounts/host'
 
 const SERVICE = 'app.justfiles.kodama'
 const ACCOUNT = 'accounts-key'
 const KEY_BYTES = 32
 
-// The seam a test stubs (a `security` call that never succeeds must make
-// `getOrCreateKey` throw, never fall back to an unkeyed — plaintext — codec).
-// Real callers never pass this; it defaults to a real `Bun.spawn`.
-export type Spawn = (cmd: readonly string[]) => {
+// The seam a test stubs: a `security` that never succeeds must make key resolution THROW,
+// never fall back to an unkeyed — plaintext — codec. Real callers never pass this.
+export type Spawn = (
+	cmd: readonly string[],
+	input?: string
+) => {
 	readonly exited: Promise<number>
 	text(): Promise<string>
 }
 
-const realSpawn: Spawn = (cmd) => {
-	const proc = Bun.spawn([...cmd], { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' })
+// A new key goes in on `input` (stdin), never in argv: on macOS `ps -Ao args` shows another
+// user's full command line, and `add-generic-password -w` with no value reads the password
+// from stdin — twice, the way it would from a terminal (prompt, then confirmation).
+const realSpawn: Spawn = (cmd, input) => {
+	const proc = Bun.spawn([...cmd], {
+		stdin: input === undefined ? 'ignore' : new Blob([input]),
+		stdout: 'pipe',
+		stderr: 'ignore'
+	})
 	return { exited: proc.exited, text: () => new Response(proc.stdout).text() }
 }
 
-async function run(spawn: Spawn, cmd: readonly string[]): Promise<{ code: number; out: string }> {
-	const proc = spawn(cmd)
+async function run(
+	spawn: Spawn,
+	cmd: readonly string[],
+	input?: string
+): Promise<{ code: number; out: string }> {
+	const proc = spawn(cmd, input)
 	const [code, out] = await Promise.all([proc.exited, proc.text()])
 	return { code, out }
-}
-
-// One Keychain hit per (service, account) per process — a prompt-free read for an
-// item this process created, never re-derived on every call. A failed attempt is
-// evicted so a transient error doesn't poison every later call.
-const pending = new Map<string, Promise<Uint8Array>>()
-
-export function getOrCreateKey(
-	service = SERVICE,
-	account = ACCOUNT,
-	spawn: Spawn = realSpawn
-): Promise<Uint8Array> {
-	const cacheKey = `${service}\u0000${account}`
-	let promise = pending.get(cacheKey)
-	if (!promise) {
-		promise = resolve(service, account, spawn).catch((error: unknown) => {
-			pending.delete(cacheKey)
-			throw error
-		})
-		pending.set(cacheKey, promise)
-	}
-	return promise
 }
 
 async function readItem(
@@ -70,7 +68,7 @@ async function readItem(
 	// from it: `Buffer.from(_, 'base64')` is permissive, and a wrong-length "key" would seal
 	// new records under a weak root while making every existing envelope unreadable — both
 	// indistinguishable from a rotated key until it's too late. `security delete-generic-
-	// password` + a restart re-mints a clean one.
+	// password -s app.justfiles.kodama` re-mints a clean one on the next account operation.
 	if (bytes.length !== KEY_BYTES) {
 		throw new Error(
 			`keychain: stored item ${service}/${account} is not a valid ${KEY_BYTES}-byte key`
@@ -79,7 +77,14 @@ async function readItem(
 	return bytes
 }
 
-async function resolve(service: string, account: string, spawn: Spawn): Promise<Uint8Array> {
+// Read this daemon's key, minting it on first run. Deliberately NOT memoised — the one
+// read-per-process cache belongs to `lazySecretCodec` below, which leaves this a plain
+// function whose tests really do drive a (test-scoped) Keychain item instead of a cache.
+export async function getOrCreateKey(
+	service = SERVICE,
+	account = ACCOUNT,
+	spawn: Spawn = realSpawn
+): Promise<Uint8Array> {
 	const found = await readItem(spawn, service, account)
 	if (found) return found
 
@@ -90,19 +95,45 @@ async function resolve(service: string, account: string, spawn: Spawn): Promise<
 	// nothing else agrees on. Keychain is the source of truth either way — re-read on a lost
 	// race (or any other add failure) and use whatever is actually stored.
 	const bytes = crypto.getRandomValues(new Uint8Array(KEY_BYTES))
-	const created = await run(spawn, [
-		'security',
-		'add-generic-password',
-		'-s',
-		service,
-		'-a',
-		account,
-		'-w',
-		Buffer.from(bytes).toString('base64')
-	])
+	const b64 = Buffer.from(bytes).toString('base64')
+	const created = await run(
+		spawn,
+		['security', 'add-generic-password', '-s', service, '-a', account, '-w'],
+		`${b64}\n${b64}\n`
+	)
 	if (created.code === 0) return bytes
 
 	const winner = await readItem(spawn, service, account)
 	if (winner) return winner
-	throw new Error(`keychain: could not create item ${service}/${account}`)
+	// The exit code is the diagnosis (44 = no such item, 45 = duplicate item, and `security
+	// error <code>` decodes the rest) — worth carrying, since `security`'s own stderr is
+	// discarded so that a prompt or a password never reaches the daemon's log.
+	throw new Error(
+		`keychain: could not create item ${service}/${account} (security exit ${created.code})`
+	)
 }
+
+// A2's codec over a key fetched on FIRST USE and cached for the process: building this reads
+// nothing, so a kernel boots (and a steady-state boot with nothing to reseal stays) free of
+// Keychain access, and one hit then serves every account read/write. A failed fetch is
+// evicted, so the next account operation retries rather than the lane staying dead until the
+// daemon restarts.
+export function lazySecretCodec(key: () => Promise<Uint8Array>): SecretCodec {
+	let once: Promise<SecretCodec> | undefined
+	const codec = (): Promise<SecretCodec> => {
+		once ??= key()
+			.then((bytes) => aesGcmSecretCodec(Buffer.from(bytes).toString('base64')))
+			.catch((error: unknown) => {
+				once = undefined
+				throw error
+			})
+		return once
+	}
+	return {
+		encode: async (creds, accountId) => (await codec()).encode(creds, accountId),
+		decode: async (raw, accountId) => (await codec()).decode(raw, accountId)
+	}
+}
+
+// The daemon's one codec — every reader and writer of the accounts store shares it.
+export const accountsSecretCodec: SecretCodec = lazySecretCodec(() => getOrCreateKey())
