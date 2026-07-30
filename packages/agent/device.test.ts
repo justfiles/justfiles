@@ -56,6 +56,34 @@ describe('deviceId', () => {
 		expect(id).toMatch(/^[a-z0-9]+$/)
 	})
 
+	test('two Volume wrappers over the same storage racing to mint converge on one id', async () => {
+		// `atomicCreate` is only offered when the backend mints inodes — the shipped
+		// configuration (mem, IDB and node all provide it); see exclusive.test.ts.
+		const storage = memStorage({ mintIno: () => crypto.randomUUID() })
+		const [a, b] = await Promise.all([deviceId(volume(storage)), deviceId(volume(storage))])
+		expect(a).toBe(b)
+		// Exactly one clientid file, holding the winner — no overwrite, no divergence.
+		const raw = JSON.parse(
+			new TextDecoder().decode(await volume(storage).readFile('/.state/clientid'))
+		)
+		expect(raw.replace(/-/g, '').slice(0, 8)).toBe(a)
+	})
+
+	test('a rejected load is evicted from the memo so a later call can retry', async () => {
+		const real = volume(memStorage())
+		let calls = 0
+		const flaky = {
+			...real,
+			exists: (path: string) => {
+				calls++
+				return calls === 1 ? Promise.reject(new Error('boom')) : real.exists(path)
+			}
+		}
+		await expect(deviceId(flaky)).rejects.toThrow('boom')
+		const id = await deviceId(flaky)
+		expect(id).toMatch(/^[a-f0-9]{8}$/)
+	})
+
 	test('concurrency: two parallel first-calls resolve to the same id and write once', async () => {
 		const storage = memStorage()
 		let writes = 0
