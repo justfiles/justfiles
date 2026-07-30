@@ -212,6 +212,18 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 			if (!upstreamRes.ok) {
 				// Admit checks caps up front but adds no cost of its own (only `record` does), so a
 				// failed call leaves the counters exactly where admit found them — nothing to refund.
+				if (upstreamRes.status >= 400 && upstreamRes.status < 500) {
+					// A 4xx from upstream (a bad param, an unsupported option, a moderation refusal) is
+					// the CALLER's to fix — pass it through verbatim rather than flattening it into our
+					// own generic 502, which reads as "try again later" for a request that will never
+					// succeed unmodified. Reserve 502 for an upstream/network failure that ISN'T the
+					// caller's fault.
+					return new Response(upstreamRes.body, {
+						status: upstreamRes.status,
+						statusText: upstreamRes.statusText,
+						headers: upstreamRes.headers
+					})
+				}
 				return c.json(
 					{
 						error: { code: 'upstream_error', message: `upstream responded ${upstreamRes.status}` }

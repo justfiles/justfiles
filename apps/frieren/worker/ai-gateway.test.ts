@@ -404,4 +404,23 @@ describe('createAiGateway', () => {
 		expect(usage.weekly.costUsd).toBe(0)
 		expect(usage.burst.costUsd).toBe(0)
 	})
+
+	test('upstream 4xx (a bad request the caller can fix) is passed through verbatim, not flattened to 502', async () => {
+		const meter = fakeMeter()
+		const upstream = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ error: { message: 'messages is required' } }), {
+					status: 400,
+					headers: { 'content-type': 'application/json' }
+				})
+		)
+		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(400)
+		expect(await res.json()).toEqual({ error: { message: 'messages is required' } })
+		expect(meter.records).toHaveLength(0)
+	})
 })
