@@ -53,10 +53,22 @@ function bound<T>(
 	return binding.bind({
 		creds: account.creds,
 		config,
-		persist: async (creds) => {
-			await accounts.put({ ...account, creds })
-		}
+		persist: (creds) => writeback(accounts, account.id, creds)
 	})
+}
+
+// The one writeback: rotated creds go back to the account record (a provider whose tokens
+// refresh mid-use MUST call it, or a later mint reuses a consumed grant). A call is bound
+// over a SNAPSHOT, and a token exchange can land long after — so the write is conditional
+// on the record still existing, and merges into the record as it is NOW. Otherwise a
+// refresh that lost the race to `disconnect` would resurrect the account (credential and
+// all) after a successful disconnect, and one that lost it to a scope change would revert
+// that change. The read-then-write gap is a residual race: the store has no
+// compare-and-set, and closing a window as wide as a network round-trip is the point.
+async function writeback(accounts: AccountStore, id: string, creds: unknown): Promise<void> {
+	const current = await accounts.get(id)
+	if (!current) return
+	await accounts.put({ ...current, creds })
 }
 
 // Accounts backing `capability` (optionally one), each turned into a live client.
@@ -443,8 +455,6 @@ export async function resolveAiAccount<T>(
 		creds: account.creds,
 		config: sel.model !== undefined ? { model: sel.model } : {},
 		providerId: account.provider,
-		persist: async (creds) => {
-			await accounts.put({ ...account, creds })
-		}
+		persist: (creds) => writeback(accounts, account.id, creds)
 	})
 }

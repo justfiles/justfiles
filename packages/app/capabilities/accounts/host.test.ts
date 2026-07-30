@@ -303,6 +303,38 @@ describe('use-facet dispatch', () => {
 		])
 	})
 
+	test('a writeback that lost the race to disconnect does not resurrect the account', async () => {
+		// A capability call is bound over a SNAPSHOT of the account. A provider whose token
+		// refreshes mid-call writes back when the exchange lands — which can be after the user
+		// disconnected. Recreating the record there would bring the credential back after a
+		// successful disconnect, so the writeback is conditional on the record still existing.
+		const { caps, accounts } = await setup(
+			testProviders({
+				google: {
+					...fakeGoogle(),
+					capabilities: {
+						email: {
+							bind: (account) => ({
+								listUnread: async () => {
+									await caps.accounts.invoke(admin('disconnect', { accountId: 'g1' }))
+									await account.persist({ refresh: 'rotated' })
+									return []
+								},
+								readDetail: async () => {
+									throw new Error('not used')
+								},
+								markRead: async () => ({ success: true })
+							})
+						}
+					}
+				}
+			})
+		)
+		await accounts.put({ id: 'g1', provider: 'google', creds: { refresh: 'R' } })
+		await caps.email.invoke(use('email', 'listUnread', {}))
+		expect(await accounts.get('g1')).toBeUndefined()
+	})
+
 	test('a use facet with no backing account is UNAVAILABLE', async () => {
 		const { caps } = await setup()
 		await expect(
@@ -342,6 +374,21 @@ describe('resolveAiAccount', () => {
 		await activeAi.set({ accountId: 'u@openai' })
 		await resolveAiAccount(vol, (l) => l.persist({ access: 'rotated' }))
 		expect((await accounts.get('u@openai'))?.creds).toEqual({ access: 'rotated' })
+	})
+
+	test('persist after a disconnect does not resurrect the account', async () => {
+		// Same rule as the use facets: the lease holds a snapshot, and a token refresh landing
+		// after the account was disconnected must not write the credential back.
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		const activeAi = volumeActiveAi(vol)
+		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		await activeAi.set({ accountId: 'u@openai' })
+		await resolveAiAccount(vol, async (l) => {
+			await accounts.delete('u@openai')
+			await l.persist({ access: 'rotated' })
+		})
+		expect(await accounts.get('u@openai')).toBeUndefined()
 	})
 
 	test('is null with no active selection', async () => {
