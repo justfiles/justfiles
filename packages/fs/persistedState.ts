@@ -34,8 +34,13 @@ export function persistedState<T>(
 
 	async function get(): Promise<T> {
 		if (_cache !== undefined) return _cache
+		// exists() can observe a native-style backend's create-then-fill gap mid-flight
+		// (the dirent published, putBlob not landed yet) just as easily as losing the
+		// claim below does — same torn window, different entry point. readSettled()
+		// covers both: it is NOT "a loser reads back the winner", it is "read this path
+		// tolerantly, because someone else may still be mid-write".
 		if (await vol.exists(path)) {
-			_cache = await read()
+			_cache = await readSettled()
 			return _cache
 		}
 		const value = typeof init === 'function' ? await (init as () => T | Promise<T>)() : init
@@ -58,7 +63,7 @@ export function persistedState<T>(
 			return value
 		} catch (e) {
 			if (!(e as Error).message.startsWith('EEXIST')) throw e
-			return awaitWinner() // lost the claim — read back whichever cell won it
+			return readSettled() // lost the claim — read back whichever cell won it
 		}
 	}
 
@@ -67,12 +72,13 @@ export function persistedState<T>(
 	// durable before its name is, so the first read below always succeeds — verified
 	// empirically (0 of 300 trials needed a second attempt). The loop earns its keep
 	// only for a backend WITHOUT that store (nativeStorage today), which still
-	// commits createNode THEN putBlob — there, a loser can briefly see the path exist
-	// with no bytes yet, and this polls a few event-loop turns for the winner's write
-	// to land. Kept general (not backend-conditional) because `Volume` doesn't expose
-	// which backend it's over, and shouldn't — that would leak a storage detail
-	// through the one abstraction that's supposed to hide it.
-	async function awaitWinner(): Promise<T> {
+	// commits createNode THEN putBlob — there, a concurrent reader (whether it just
+	// lost the claim above, or merely found the path via exists() in get()) can
+	// briefly see it exist with no bytes yet, and this polls a few event-loop turns
+	// for the writer to land. Kept general (not backend-conditional) because `Volume`
+	// doesn't expose which backend it's over, and shouldn't — that would leak a
+	// storage detail through the one abstraction that's supposed to hide it.
+	async function readSettled(): Promise<T> {
 		for (let attempt = 0; ; attempt++) {
 			try {
 				return await read()

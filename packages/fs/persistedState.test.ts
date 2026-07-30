@@ -1,5 +1,10 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { persistedState } from './persistedState'
+import type { Storage } from './storage'
+import { nativeStorage } from './storage.fs'
 import { memStorage } from './storage.mem'
 import { volume } from './volume'
 
@@ -68,7 +73,7 @@ describe('persistedState', () => {
 	test('a claim loser reads a complete value on the very first attempt, never a poll', async () => {
 		// Pins the dependency on write-then-publish (#321/#322): on a backend with a
 		// hash-addressed content store, the winner's content is durable BEFORE its
-		// name is, so awaitWinner's retry loop is provably a no-op here, not just
+		// name is, so readSettled's retry loop is provably a no-op here, not just
 		// usually fast. If this ever needed a real retry, `read` (and therefore
 		// `vol.readFile`) would have to be called more than once per loser.
 		const backing = storage()
@@ -86,6 +91,35 @@ describe('persistedState', () => {
 		const [x, y] = await Promise.all([a.get(), b.get()])
 		expect(x).toBe(y)
 		expect(reads).toBe(1) // exactly the loser's one read — no second attempt
+	})
+
+	test('a reader that finds the path via exists() tolerates a native-style create-then-fill gap', async () => {
+		// nativeStorage has no hash-addressed content store, so writeFile keeps the OLD
+		// create-then-fill order: the dirent (and so exists()) can go true a moment
+		// before putBlob lands. A cell whose get() lands in exactly that gap must not
+		// crash trying to JSON.parse an empty read -- it must tolerate it exactly like a
+		// claim loser does.
+		const dir = mkdtempSync(join(tmpdir(), 'persisted-torn-'))
+		try {
+			const real = await nativeStorage(dir)
+			// Widen the real (but normally narrow) native create-then-fill window so the
+			// second cell's exists()-check reliably lands inside it.
+			const slow: Storage = {
+				...real,
+				async putBlob(ino, data, opts) {
+					await new Promise((r) => setTimeout(r, 30))
+					return real.putBlob(ino, data, opts)
+				}
+			}
+			const winner = persistedState<string>(volume(slow), '/.state/id', () => 'from-a')
+			const loser = new Promise((r) => setTimeout(r, 5)).then(() =>
+				persistedState<string>(volume(real), '/.state/id', () => 'from-b').get()
+			)
+			const [, loserResult] = await Promise.all([winner.get(), loser])
+			expect(loserResult).toBe('from-a')
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
 	})
 
 	test('a rejected first get() is not poisoned: a later get() on the same cell can retry', async () => {
