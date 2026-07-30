@@ -216,7 +216,7 @@ describe('local → account migration', () => {
 		expect(await fs.shouldOfferMigration()).toBe(false)
 	})
 
-	test('copies user data + identity, skips journal/accounts/apps/state', async () => {
+	test('copies user data + identity, skips journal/private/apps/state', async () => {
 		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
 		await seedProfile('local', {
 			'/notes/a.txt': 'note body',
@@ -225,8 +225,6 @@ describe('local → account migration', () => {
 			'/system/user.md': '---\nname: Xiao\n---\n',
 			'/system/os-state.json': '{"windows":{}}',
 			'/private/accounts/frieren.json': 'secret',
-			'/system/accounts/legacy.json': 'secret',
-			'/system/connections/u%40openai.com.json': 'oauth-secret',
 			'/system/active-ai.json': '{"connectionId":"u@openai.com"}',
 			'/.state/clientid': 'uuid',
 			'/applications/paint/app.js': 'code',
@@ -243,8 +241,6 @@ describe('local → account migration', () => {
 		expect(files).toContain('/system/user.md')
 		expect(files).toContain('/system/os-state.json')
 		expect(files).not.toContain('/private/accounts/frieren.json')
-		expect(files).not.toContain('/system/accounts/legacy.json')
-		expect(files).not.toContain('/system/connections/u%40openai.com.json')
 		expect(files).not.toContain('/system/active-ai.json')
 		expect(files).not.toContain('/.state/clientid')
 		expect(files).not.toContain('/applications/paint/app.js')

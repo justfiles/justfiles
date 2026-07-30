@@ -33,7 +33,6 @@ import {
 	accountsCapabilities,
 	aesGcmSecretCodec,
 	ensureAccount,
-	migrateHostPrivateLane,
 	resolveAiAccount,
 	type SecretCodec,
 	sealAccounts
@@ -351,7 +350,6 @@ export class Frieren extends DurableObject<Env> {
 		// The built-in AI account: the platform-provided, always-on default backend. Seed it
 		// once with `ai` enabled so a fresh user has a working agent; a returning user's toggle
 		// (they may have turned it off or switched to another AI) is left untouched.
-		await migrateHostPrivateLane(this.vol)
 		await migratePlatformAccountId(this.vol, this.secretCodec)
 		await ensureAccount(
 			this.vol,

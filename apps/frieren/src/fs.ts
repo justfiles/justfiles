@@ -352,19 +352,8 @@ export function flushActiveVolume(): void {
 // a denylist is more robust than an allowlist and needs no per-app knowledge.
 const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'private', 'state', 'system'])
 // Copied subtree: user data + personalized identity only — never the sync journal, the
-// `/private` tree (credentials!), the active-AI selection, app bytes, or per-app UI
-// state. `/system/accounts` + `/system/connections` are where credentials lived before
-// `/private`: kept here so a migration from a not-yet-relocated volume can't carry them
-// over.
-const MIGRATE_SKIP = [
-	'/.state',
-	'/private',
-	'/system/accounts',
-	'/system/connections',
-	'/system/active-ai.json',
-	'/applications',
-	'/state'
-]
+// `/private` tree (credentials!), the active-AI selection, app bytes, or per-app UI state.
+const MIGRATE_SKIP = ['/.state', '/private', '/system/active-ai.json', '/applications', '/state']
 // The two identity files the DO seeds as `seeded: true` defaults — the only paths
 // a migration is allowed to overwrite (with the user's personalized version).
 const IDENTITY_PATHS = new Set([SOUL_PATH, PROFILE_PATH])

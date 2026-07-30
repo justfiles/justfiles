@@ -224,7 +224,7 @@ describe('the built-in private class', () => {
 		expect(isPrivatePath('/.stateful')).toBe(false)
 		expect(isPrivatePath('/privateer')).toBe(false)
 		expect(isPrivatePath('/private.md')).toBe(false)
-		expect(isPrivatePath('/system/accounts')).toBe(false) // relocated to /host
+		expect(isPrivatePath('/system/accounts')).toBe(false)
 		expect(isPrivatePath('/system/user.md')).toBe(false)
 		expect(isPrivatePath('/notes/host.md')).toBe(false)
 		expect(isPrivatePath('/notes/a')).toBe(false)
