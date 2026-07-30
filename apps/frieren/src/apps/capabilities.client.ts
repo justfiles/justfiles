@@ -10,7 +10,7 @@ import {
 import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devkit/host'
 import type { Channel } from '@justfiles/app/capabilities/notify'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
-import { type GetUser, userCapability } from '@justfiles/app/capabilities/user/host'
+import { type GetUser, settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
@@ -31,26 +31,28 @@ const browserNotifyChannel: Channel = (notification) =>
 		route: notification.route ?? { kind: 'app', id: notification.source }
 	})
 
-// The browser kernel's capability seam. `volume`, `devkit`, `user` and `notify`
-// run locally on this thread; everything else (ai/accounts) proxies to the server
-// through the network fallback over ONE shared WebSocket. `user` is local because
-// identity lives where the session does (Clerk in the browser) — no round-trip,
-// works offline. Only `devkit` needs the kernel — a per-entry factory the kernel
-// resolves with ITSELF, so it reads sysroots + installs into the exact kernel it
-// lives in.
+// The browser kernel's capability seam. `volume`, `devkit`, `settings` and `notify`
+// run locally on this thread; everything else (ai/email/calendar/image) proxies to the
+// server through the network fallback over ONE shared WebSocket. `settings` is local
+// so identity comes from where the session is (Clerk in the browser) with no
+// round-trip; its `accounts.*`/`host.usage` methods have no dep here, so they ride the
+// same fallback to the DO — credentials live under `/private/**`, which never
+// replicates. Only `devkit` needs the kernel — a per-entry factory the kernel resolves
+// with ITSELF, so it reads sysroots + installs into the exact kernel it lives in.
 export function clientCapabilities(
 	fs: Volume,
 	getToken: GetToken,
 	getUser: GetUser = () => null
 ): (kernel: Kernel) => Capabilities {
+	const fallback = networkFallback(getToken)
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
-			user: userCapability(getUser),
+			settings: settingsHost({ user: getUser, remote: fallback }),
 			notify: notifyHost(browserNotifyChannel),
 			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},
-		{ fallback: networkFallback(getToken) }
+		{ fallback }
 	)
 }
 

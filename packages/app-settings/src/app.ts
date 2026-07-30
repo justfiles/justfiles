@@ -1,20 +1,21 @@
 import { defineApp } from '@justfiles/app'
 import {
 	type AccountInfo,
-	accountsAdmin,
 	type CapabilityId,
-	type ProviderInfo
-} from '@justfiles/app/capabilities/accounts'
-import { type UsageSnapshot, usage } from '@justfiles/app/capabilities/usage'
-import { type UserProfile, user } from '@justfiles/app/capabilities/user'
+	type ProviderInfo,
+	settings,
+	type UsageSnapshot,
+	type UserProfile
+} from '@justfiles/app/capabilities/settings'
 import * as v from 'valibot'
 
-// Settings is a thin façade over the one `accounts` admin facet: connect a
-// provider, then toggle which capabilities it backs — the macOS "Internet
-// Accounts" shape. ChatGPT is just an oauth provider that backs `ai`; its model
-// pick rides as that capability's per-account config (no separate `ai/admin`
-// facet). State is only what survives a reload: the selected category, the
-// provider catalog + connected accounts, a loading flag, and an inline error.
+// Settings is a thin façade over the one `settings` capability — the host admin
+// surface, reachable only by this app (the host gates on app identity). Its
+// `accounts.*` methods are the macOS "Internet Accounts" shape: connect a provider,
+// then toggle which capabilities it backs. ChatGPT is just an oauth provider that
+// backs `ai`; its model pick rides as that capability's per-account config. State is
+// only what survives a reload: the selected category, the provider catalog +
+// connected accounts, a loading flag, and an inline error.
 // Transient form/busy markers stay in GUI-local React state — handlers are
 // atomic, so a `busy` flag in reducer state would only be observable as null
 // between dispatches.
@@ -26,7 +27,7 @@ export type SettingsState = {
 	providers: ProviderInfo[]
 	accounts: AccountInfo[]
 	usage: UsageSnapshot | null
-	// Whether the host provides the `usage` capability (the Mac app doesn't yet). False hides
+	// Whether the host provides `host.usage` (the Mac app doesn't yet). False hides
 	// the Usage category rather than surfacing an error the user can't act on.
 	usageAvailable: boolean
 	// A transient usage-load failure, shown inside the Usage pane (never the global banner).
@@ -52,51 +53,51 @@ const capabilitySchema = v.picklist(['email', 'calendar', 'ai'] satisfies Capabi
 export const app = defineApp({
 	init: initialState,
 	capabilities: {
-		accounts: accountsAdmin({ scopes: ['admin'] }),
-		user: user({ scopes: [] }),
-		usage: usage({ scopes: [] })
+		// No scopes: the host gates this on first-party app identity, so a declared
+		// scope would only be decoration.
+		settings: settings({ scopes: [] })
 	},
 	// Pure edges drive state; the host reads (`accounts.list*`) are the effects,
 	// each emitted as command data and folded back via `fromResult`.
 	update: (t) => ({
 		loadProviders: t.on(
 			v.object({}),
-			(state) => [state, t.cmd('accounts', 'listProviders', {}).to('providersLoaded')],
+			(state) => [state, t.cmd('settings', 'accounts.listProviders', {}).to('providersLoaded')],
 			{ description: 'Load the catalog of connectable account providers.' }
 		),
-		providersLoaded: t.fromResult('accounts', 'listProviders', (state, r) =>
+		providersLoaded: t.fromResult('settings', 'accounts.listProviders', (state, r) =>
 			r.ok
 				? { ...state, providers: r.value, loading: false, error: null }
 				: { ...state, loading: false, error: r.error.message }
 		),
 		loadAccounts: t.on(
 			v.object({}),
-			(state) => [state, t.cmd('accounts', 'listAccounts', {}).to('accountsLoaded')],
+			(state) => [state, t.cmd('settings', 'accounts.listAccounts', {}).to('accountsLoaded')],
 			{ description: 'Load connected accounts and their enabled capabilities.' }
 		),
-		accountsLoaded: t.fromResult('accounts', 'listAccounts', (state, r) =>
+		accountsLoaded: t.fromResult('settings', 'accounts.listAccounts', (state, r) =>
 			r.ok ? { ...state, accounts: r.value } : { ...state, error: r.error.message }
 		),
 		loadUser: t.on(
 			v.object({}),
-			(state) => [state, t.cmd('user', 'current', {}).to('userLoaded')],
+			(state) => [state, t.cmd('settings', 'host.user', {}).to('userLoaded')],
 			{ description: 'Load the signed-in user for the account header.' }
 		),
-		userLoaded: t.fromResult('user', 'current', (state, r) =>
+		userLoaded: t.fromResult('settings', 'host.user', (state, r) =>
 			r.ok ? { ...state, user: r.value } : state
 		),
 		loadUsage: t.on(
 			v.object({}),
-			(state) => [state, t.cmd('usage', 'current', {}).to('usageLoaded')],
+			(state) => [state, t.cmd('settings', 'host.usage', {}).to('usageLoaded')],
 			{ description: 'Load the metered usage + plan caps for the usage panel.' }
 		),
-		usageLoaded: t.fromResult('usage', 'current', (state, r) => {
+		usageLoaded: t.fromResult('settings', 'host.usage', (state, r) => {
 			// Success restores availability (a prior host without the capability may have synced
 			// usageAvailable=false into this state).
 			if (r.ok) return { ...state, usage: r.value, usageAvailable: true, usageError: null }
-			// A host without the `usage` capability (e.g. the Mac app) reports it unavailable — hide
-			// the category, and switch off it if it was selected, so the detail pane isn't
-			// stranded on a panel for a capability that will never load.
+			// A host with no meter (e.g. the Mac app) reports it unavailable — hide the
+			// category, and switch off it if it was selected, so the detail pane isn't
+			// stranded on a panel that will never load.
 			if (r.error.message === 'CAPABILITY_UNAVAILABLE')
 				return {
 					...state,
@@ -125,7 +126,7 @@ export const app = defineApp({
 				credentials: v.optional(v.record(v.string(), v.string()))
 			}),
 			async run(input, app) {
-				await app.invoke('accounts', 'connect', input)
+				await app.invoke('settings', 'accounts.connect', input)
 				await app.settled((await app.dispatch({ type: 'loadAccounts', params: {} })).seq, {
 					timeout: 10_000
 				})
@@ -142,7 +143,7 @@ export const app = defineApp({
 				config: v.optional(v.unknown())
 			}),
 			async run(input, app) {
-				await app.invoke('accounts', 'setEnabled', input)
+				await app.invoke('settings', 'accounts.setEnabled', input)
 				await app.settled((await app.dispatch({ type: 'loadAccounts', params: {} })).seq, {
 					timeout: 10_000
 				})
@@ -152,7 +153,7 @@ export const app = defineApp({
 			description: 'Disconnect a connected account.',
 			schema: v.object({ accountId: v.string() }),
 			async run(input, app) {
-				await app.invoke('accounts', 'disconnect', input)
+				await app.invoke('settings', 'accounts.disconnect', input)
 				await app.settled((await app.dispatch({ type: 'loadAccounts', params: {} })).seq, {
 					timeout: 10_000
 				})

@@ -145,7 +145,7 @@ other bare imports. The only supplied bare imports are:
 @justfiles/app/capabilities/calendar
 @justfiles/app/capabilities/ai
 @justfiles/app/capabilities/devkit
-@justfiles/app/capabilities/accounts
+@justfiles/app/capabilities/settings
 valibot
 react
 react-dom
@@ -155,8 +155,7 @@ react/jsx-dev-runtime
 ```
 
 Relative imports within the project work, including explicit CSS imports. The compiler folds CSS into
-`gui.js`. `image`, `user`, and `usage` are platform capabilities but are not currently in the App Code
-draft sysroot.
+`gui.js`. `image` is a platform capability but is not currently in the App Code draft sysroot.
 
 When driving Code as an agent:
 
@@ -429,9 +428,7 @@ Availability differs by host and user configuration:
 | Email | `capabilities/email`: `email` | Account-dependent | Account-dependent | Yes |
 | Calendar | `capabilities/calendar`: `calendar` | Account-dependent | Account-dependent | Yes |
 | Notifications | `capabilities/notify`: `notify` | Yes | Yes | Yes |
-| Current user | `capabilities/user`: `user` | Yes | Returns `null` | No |
-| Plan usage | `capabilities/usage`: `usage` | Yes | No | No |
-| Account administration | `capabilities/accounts`: `accountsAdmin` | First-party Settings only | First-party Settings only | Importable, but not granted to drafts |
+| Host settings (accounts, plan usage, current user) | `capabilities/settings`: `settings` | First-party Settings only | First-party Settings only | Importable, but not granted to drafts |
 | App compiler/installer | `capabilities/devkit`: `devkit` | First-party Code only | Yes | Yes; Frieren denies authored apps at runtime |
 
 The standalone Vite development host implements only `volume`. Test other capabilities inside Frieren
@@ -580,16 +577,28 @@ notify(input: {
 		| { kind: 'app'; id: string }
 		| { kind: 'settings'; pane?: string }
 }): void
+```
 
-// user
-current(input: {}): Promise<{
-	id: string
-	name?: string
-	avatarUrl?: string
-} | null>
+Privileged capability signatures:
 
-// usage
-current(input: {}): Promise<{
+```ts
+// settings — the host admin surface, gated on first-party app identity (not on a
+// declared scope). Methods are area-prefixed.
+'accounts.listProviders'(input: {}): Promise<ProviderInfo[]>
+'accounts.listAccounts'(input: {}): Promise<AccountInfo[]>
+'accounts.connect'(input: {
+	providerId: string
+	credentials?: Record<string, string>
+}): Promise<{ accountId: string }>
+'accounts.setEnabled'(input: {
+	accountId: string
+	capability: 'email' | 'calendar' | 'ai'
+	enabled: boolean
+	config?: unknown
+}): Promise<void>
+'accounts.disconnect'(input: { accountId: string }): Promise<void>
+// UNAVAILABLE on a host with no meter (the Mac app).
+'host.usage'(input: {}): Promise<{
 	tier: string
 	aiBurst: UsageWindow
 	aiWeekly: UsageWindow
@@ -597,6 +606,13 @@ current(input: {}): Promise<{
 	aiTokens: number
 	aiRequests: number
 }>
+// Null when no one is signed in — a valid state, not an error.
+'host.user'(input: {}): Promise<{
+	id: string
+	name?: string
+	avatarUrl?: string
+} | null>
+
 type UsageResource = {
 	used: number
 	limit: number | null
@@ -605,25 +621,6 @@ type UsageResource = {
 	fraction: number
 }
 type UsageWindow = UsageResource & { resetsAt: number | null }
-```
-
-Privileged capability signatures:
-
-```ts
-// accountsAdmin
-listProviders(input: {}): Promise<ProviderInfo[]>
-listAccounts(input: {}): Promise<AccountInfo[]>
-connect(input: {
-	providerId: string
-	credentials?: Record<string, string>
-}): Promise<{ accountId: string }>
-setEnabled(input: {
-	accountId: string
-	capability: 'email' | 'calendar' | 'ai'
-	enabled: boolean
-	config?: unknown
-}): Promise<void>
-disconnect(input: { accountId: string }): Promise<void>
 
 type ProviderInfo = {
 	id: string

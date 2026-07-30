@@ -24,7 +24,7 @@ export const reactExternals = [
 // GUI-only and may pull React, so they're `reducer: false` and excluded from the guard.
 //
 // This list must enumerate every SDK subpath app-code may import so the virtual devkit
-// resolver can map it to bundled runtime source. `devkit` (Code) and `accounts` (Settings)
+// resolver can map it to bundled runtime source. `devkit` (Code) and `settings` (Settings)
 // are gated at the host, but their client factories are imported by those apps, so they're
 // present like the rest; the grant is enforced on invocation, never on import.
 export const sdkRuntimeSpecs: readonly { spec: string; reducer: boolean }[] = [
@@ -37,7 +37,7 @@ export const sdkRuntimeSpecs: readonly { spec: string; reducer: boolean }[] = [
 	{ spec: '@justfiles/app/capabilities/calendar', reducer: true },
 	{ spec: '@justfiles/app/capabilities/ai', reducer: true },
 	{ spec: '@justfiles/app/capabilities/devkit', reducer: true },
-	{ spec: '@justfiles/app/capabilities/accounts', reducer: true },
+	{ spec: '@justfiles/app/capabilities/settings', reducer: true },
 	{ spec: 'valibot', reducer: true }
 ]
 

@@ -35,8 +35,8 @@ interface FrierenAppsDeps {
 	image: Capability
 	email: Capability
 	calendar: Capability
-	accounts: Capability
-	usage: Capability
+	// The host admin surface (the first-party Settings app's back-channel).
+	settings: Capability
 }
 
 export interface FrierenApps {
@@ -64,10 +64,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
 
 	// The server kernel's capability seam: `volume` and `ai` are local units; the
-	// account-backed `email`/`calendar`/`accounts` are handed in ready (built over
-	// the Volume store, guarded with audit + rate-limit). `ai` composes purpose-scoped
-	// context (learning) from the Volume internally, and generates over the resolved
-	// text service.
+	// account-backed `email`/`calendar` and the `settings` admin surface are handed in
+	// ready (built over the Volume store, guarded with audit + rate-limit). `ai` composes
+	// purpose-scoped context (learning) from the Volume internally, and generates over the
+	// resolved text service.
 	const ai = aiCapability({
 		volume: deps.fs,
 		generate: ({ system, prompt }) => deps.text.gen(system, prompt)
@@ -78,20 +78,20 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
-		accounts: deps.accounts,
-		usage: deps.usage
+		settings: deps.settings
 	})
 	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
 	// always served locally by the browser kernel against the synced volume and so
 	// must never be re-served here. A `volume` frame misses this registry and comes
 	// back as CAPABILITY_UNAVAILABLE — the old explicit rejection, now structural.
+	// `settings` is here because the browser half delegates the methods only this side
+	// can serve (`accounts.*`, `host.usage`) to it.
 	const proxied: Capabilities = capabilityRegistry({
 		ai,
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
-		accounts: deps.accounts,
-		usage: deps.usage
+		settings: deps.settings
 	})
 
 	function getKernel(): Kernel {
