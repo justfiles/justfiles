@@ -18,6 +18,7 @@
 		"deploy": "pnpm run build && wrangler deploy",
 		"cf-typegen": "wrangler types",
 		"icons": "tsx scripts/generate-icons.ts",
+		"faces": "tsx scripts/generate-faces.ts",
 		"typecheck": "tsc -b --noEmit"
 	},
 	"dependencies": {

@@ -55,6 +55,11 @@ export function facePrompt(expression: Expression): string {
 		`Change only the facial expression to ${FACE_DIRECTION[expression]}.`,
 		'Keep the same character, art style, colours, lighting, framing, crop and background.',
 		'Do not change identity, hair, clothing or composition.',
+		// Without this an editor re-draws a feature in its own idiom rather than the art's — a
+		// solid pupil comes back as an outlined ring, a carried object changes shape — which is
+		// invisible in one image and reads as a glitch across a set that swaps in place.
+		'Redraw each feature in the style it is already drawn in: the same line weight, the same fills and highlights.',
+		'Anything the character wears or carries stays exactly as it is.',
 		'Output one square image.'
 	].join(' ')
 }

@@ -1,0 +1,38 @@
+<!--
+  The mascot, as vector: the ONE file to replace when the character changes.
+
+  `scripts/generate-faces.ts` renders this file as the base image and has the image model
+  edit it into the whole built-in matrix (4 variants x 6 expressions). It reads three things
+  out of it by id, so replacing the character is replacing this file:
+
+    #head       the silhouette. Its `stroke`/`stroke-width` set the palette and the line
+                weight the whole matrix is snapped back to.
+    #eye-left   the eyes, highlight included: the model propagates whatever the base has, so
+    #eye-right  the spark has to live HERE rather than in a script.
+    #mouth      the resting mouth. `neutral` is this file, not a model paraphrase of it.
+
+  Traced from icon.png (1024^2, mean abs error 0.85/255), so the coordinate space is the
+  raster's and the two can be diffed.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+	<path
+		id="head"
+		d="M831.6 521.7C835.1 539.2 840.5 562.5 840.9 580.6C841.3 598.8 838.8 614.1 834 630.5C829.2 647 822 663.8 812.1 679.4C802.2 694.9 785.4 712.9 774.6 724C763.8 735 757.5 738.7 747.4 745.7C737.3 752.7 732.9 756.9 714.2 765.9C695.5 775 659.7 791.1 635.3 800C610.9 808.9 589.2 815.2 567.8 819.3C546.3 823.5 529.3 825.5 506.7 824.7C484.1 824 457.9 820.5 432.2 814.8C406.5 809 377.4 799.3 352.6 790.4C327.8 781.6 302.8 772.1 283.4 761.7C264 751.4 247.6 737.8 236.4 728.3C225.1 718.9 221.4 712.5 215.7 705.2C210.1 697.8 206.4 691.9 202.3 684.1C198.2 676.3 194.1 666.8 191.3 658.5C188.4 650.2 186.3 646.3 185 634.2C183.7 622.1 181.4 604.7 183.4 585.9C185.4 567.1 191.2 554.7 197 521.5C202.9 488.3 211.9 416.1 218.6 386.8C225.3 357.4 229.5 358.6 237.3 345.6C245 332.7 251.3 323.1 264.9 309.2C278.5 295.2 304.4 273.4 318.9 262C333.4 250.7 340.8 247.2 351.9 240.8C363.1 234.5 369.8 230 385.8 223.9C401.8 217.8 427.2 208.4 448.2 204.2C469.1 199.9 491.3 198.1 511.7 198.5C532.1 198.9 549.4 201.4 570.7 206.6C592.1 211.8 616.9 220.5 639.8 229.6C662.8 238.7 689.1 250.1 708.2 261.2C727.3 272.2 742.5 284.8 754.5 295.8C766.6 306.8 772.9 315.4 780.4 327.1C787.8 338.9 794.5 353.7 799.2 366.1C803.8 378.5 804.8 383.4 808.2 401.7C811.7 420 816 455.8 819.9 475.8C823.8 495.8 828.1 504.2 831.6 521.7Z"
+		fill="#fff"
+		stroke="#474745"
+		stroke-width="25.5"
+		stroke-linejoin="round"
+	/>
+	<path
+		id="mouth"
+		d="M413 629Q515 700.3 617 618.5"
+		fill="none"
+		stroke="#474745"
+		stroke-width="25.5"
+		stroke-linecap="round"
+	/>
+	<circle id="eye-left" cx="336.5" cy="491.6" r="45" fill="#474745" />
+	<circle id="eye-right" cx="683.1" cy="482.5" r="44.9" fill="#474745" />
+	<circle cx="322.1" cy="476.3" r="10.8" fill="#fff" />
+	<circle cx="668.7" cy="467.2" r="10.8" fill="#fff" />
+</svg>

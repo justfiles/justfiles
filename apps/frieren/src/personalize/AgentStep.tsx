@@ -1,7 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { PencilSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
-import agentAvatarUrl from '../agent/agent-avatar.png'
+import agentAvatarUrl from '../agent/faces/vanilla/neutral.png'
 import assistantImage from '../assets/assistant.png'
 import companionImage from '../assets/companion.png'
 import teacherImage from '../assets/teacher.png'

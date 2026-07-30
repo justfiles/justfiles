@@ -7,6 +7,7 @@ export default defineConfig({
 			'apps/frieren/shared/**/*.test.ts',
 			'apps/frieren/src/os/**/*.test.ts',
 			'apps/frieren/src/apps/**/*.test.ts',
+			'apps/frieren/src/agent/**/*.test.ts',
 			'apps/frieren/src/notifications/**/*.test.ts',
 			'apps/worker/**/*.test.ts',
 			'apps/mac/**/*.test.ts',
@@ -19,7 +20,7 @@ export default defineConfig({
 			'**/node_modules/**',
 			'**/dist/**',
 			'**/*.bun.test.ts',
-			'apps/frieren/src/!(os|apps|notifications)/**'
+			'apps/frieren/src/!(os|apps|agent|notifications)/**'
 		]
 	}
 })

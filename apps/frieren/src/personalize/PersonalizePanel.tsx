@@ -1,6 +1,6 @@
 import { UserIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
-import agentAvatarUrl from '../agent/agent-avatar.png'
+import agentAvatarUrl from '../agent/faces/vanilla/neutral.png'
 import { openProfile, type ProfileVolume } from '../fs'
 import { AgentStep } from './AgentStep'
 import { ProfileStep } from './ProfileStep'

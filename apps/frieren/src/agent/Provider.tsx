@@ -11,8 +11,8 @@ import {
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
 import { readAgentSoul, readAvatar, readAvatarFaces } from '../personalize/state'
-import agentAvatarUrl from './agent-avatar.png'
 import { requestFace } from './faces'
+import agentAvatarUrl from './faces/vanilla/neutral.png'
 import { AgentContext, type AgentContextValue } from './hooks'
 
 // How long a tab waits before asking for the same face again. A skip is often transient —
