@@ -119,18 +119,24 @@ function liveToken(
 	if (!client || !creds.refresh) return cached
 	const entry: Cached = {
 		expires: Number.POSITIVE_INFINITY,
-		live: googleRefresh(creds, client).then(async ({ creds: rotated, live }) => {
-			entry.expires = live.expires
-			await account.persist(rotated)
-			return live
-		})
+		live: googleRefresh(creds, client)
+			.then(async ({ creds: rotated, live }) => {
+				entry.expires = live.expires
+				await account.persist(rotated)
+				return live
+			})
+			.catch((failure: unknown) => {
+				// Neither a failed exchange nor a failed writeback is cached: drop the entry so the
+				// next call retries rather than reusing a token whose rotation nobody recorded.
+				if (tokens.get(id) === entry) tokens.delete(id)
+				// A refresh inside the near-expiry window replaced a token that is usually good for
+				// another minute. Serve THAT rather than an empty bearer — a blip at the token
+				// endpoint must not turn a working call into a failure.
+				if (cached) return cached.live
+				throw failure
+			})
 	}
 	tokens.set(id, entry)
-	// Neither a failed exchange nor a failed writeback is cached: drop the entry so the next
-	// call retries rather than reusing a token whose rotation nobody recorded.
-	entry.live.catch(() => {
-		if (tokens.get(id) === entry) tokens.delete(id)
-	})
 	return entry
 }
 

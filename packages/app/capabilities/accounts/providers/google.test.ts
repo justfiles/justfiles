@@ -24,7 +24,12 @@ function json(body: unknown): Response {
 // call records the bearer it carried. Access tokens are minted `fresh-1`, `fresh-2`, …
 // so a test can tell which exchange a request is using.
 function stubGoogle(
-	opts: { apiStatus?: number; rotateRefreshTo?: string; failExchanges?: number } = {}
+	opts: {
+		apiStatus?: number
+		rotateRefreshTo?: string
+		expiresIn?: number
+		failExchange?: (n: number) => boolean
+	} = {}
 ) {
 	const calls = { exchanges: [] as URLSearchParams[], bearers: [] as (string | undefined)[] }
 	vi.stubGlobal(
@@ -32,11 +37,11 @@ function stubGoogle(
 		async (url: string, init?: { body?: string; headers?: Record<string, string> }) => {
 			if (url === TOKEN_URL) {
 				calls.exchanges.push(new URLSearchParams(init?.body ?? ''))
-				if (calls.exchanges.length <= (opts.failExchanges ?? 0))
+				if (opts.failExchange?.(calls.exchanges.length))
 					return new Response('nope', { status: 500 })
 				const body: Record<string, unknown> = {
 					access_token: `fresh-${calls.exchanges.length}`,
-					expires_in: 3600,
+					expires_in: opts.expiresIn ?? 3600,
 					id_token: idToken('me@gmail.com'),
 					scope: 'openid email'
 				}
@@ -176,12 +181,27 @@ describe('Google provider — the access token lives in memory', () => {
 	})
 
 	test('a failed exchange is not cached: the next call retries', async () => {
-		const calls = stubGoogle({ failExchanges: 1 })
+		const calls = stubGoogle({ failExchange: (n) => n === 1 })
 		const { bindEmail } = host()
 		await bindEmail(REFRESH_ONLY).listUnread({})
 		await bindEmail(REFRESH_ONLY).listUnread({})
 		expect(calls.exchanges).toHaveLength(2)
 		expect(calls.bearers).toEqual(['Bearer ', 'Bearer fresh-2'])
+	})
+
+	test('a failed refresh falls back to the token it was replacing', async () => {
+		// The token is inside the near-expiry window but usually still good for another minute,
+		// so a blip at the token endpoint must not turn a working call into a failure.
+		const calls = stubGoogle({ expiresIn: 30, failExchange: (n) => n === 2 })
+		const { bindEmail } = host()
+		await bindEmail(REFRESH_ONLY).listUnread({})
+		await bindEmail(REFRESH_ONLY).listUnread({})
+		expect(calls.exchanges).toHaveLength(2)
+		expect(calls.bearers).toEqual(['Bearer fresh-1', 'Bearer fresh-1'])
+		// The failed refresh left nothing cached, so the next call tries again.
+		await bindEmail(REFRESH_ONLY).listUnread({})
+		expect(calls.exchanges).toHaveLength(3)
+		expect(calls.bearers.at(-1)).toBe('Bearer fresh-3')
 	})
 })
 
