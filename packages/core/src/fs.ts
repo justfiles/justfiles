@@ -396,7 +396,16 @@ export function createFsApi(
 					let ino: string
 					try {
 						if (backend.caps?.atomicCreate) {
-							ino = await backend.caps.atomicCreate(dirIno, name, meta, mutationOptions(c.req.raw))
+							// No `content`: the server's own backend has a hash-addressed content
+							// store, and the client already PUT the bytes under their hash before
+							// this claim (`meta.contentHash` references them).
+							ino = await backend.caps.atomicCreate(
+								dirIno,
+								name,
+								meta,
+								undefined,
+								mutationOptions(c.req.raw)
+							)
 						} else {
 							ino = crypto.randomUUID()
 							await backend.setMeta(ino, meta, mutationOptions(c.req.raw))

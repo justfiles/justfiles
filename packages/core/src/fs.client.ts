@@ -93,6 +93,11 @@ function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 	return body
 }
 
+async function sha256Hex(data: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', toArrayBuffer(data))
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 export function createFsClient(options: FsClientOptions = {}): FsClient {
 	return hc<FsApiType>(options.baseUrl ?? '', {
 		headers: options.headers,
@@ -215,9 +220,30 @@ export async function apiStorage(
 		},
 
 		caps: {
-			async atomicCreate(dirIno, name, meta, options) {
+			// `content` (see @justfiles/fs's storage.ts) IS passed to this backend: it has
+			// no `caps.content`, so the VFS hands over the bytes and this claim owes them
+			// write-then-publish. Done over the wire the same way a local hash-addressed
+			// store does it — PUT the bytes under their hash first (the server verifies the
+			// hash and stores them content-addressed), then claim the name carrying the
+			// reference. Two round trips, but in the order that matters: the name cannot
+			// exist until the bytes it names already do.
+			async atomicCreate(dirIno, name, meta, content, options) {
+				let claimed = meta
+				if (content !== undefined) {
+					const hash = await sha256Hex(content)
+					const blob = await client.blob[':hash'].$put(
+						withHeaders(
+							{ param: { hash }, header: { 'Content-Type': 'application/octet-stream' } },
+							options
+						) as Parameters<(typeof client.blob)[':hash']['$put']>[0],
+						{ init: { body: toArrayBuffer(content) } }
+					)
+					await throwIfStale(blob)
+					if (!blob.ok) throw new Error(`atomicCreate content failed: ${blob.status}`)
+					claimed = { ...meta, size: BigInt(content.length), contentHash: hash }
+				}
 				const res = await client.inodes.$post(
-					withHeaders({ json: { dirIno, name, meta: wireFromMeta(meta) } }, options)
+					withHeaders({ json: { dirIno, name, meta: wireFromMeta(claimed) } }, options)
 				)
 				await throwIfStale(res)
 				if (res.status === 409) throw new Error(`EEXIST: ${name}`)

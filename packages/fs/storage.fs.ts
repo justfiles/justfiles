@@ -4,6 +4,7 @@ import {
 	rename as _rename,
 	symlink as _symlink,
 	chmod,
+	link,
 	lutimes,
 	mkdir,
 	open,
@@ -19,6 +20,63 @@ import { FileType } from './types'
 
 // Pin lstat to the non-bigint overload so Stats fields are number, not number|bigint
 const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
+
+/**
+ * A publish in progress (see `publish`). This prefix is RESERVED: every read path
+ * below hides names carrying it, so no caller can list, resolve or address one.
+ * Without that, a `readdir` concurrent with a create would see a file that is about
+ * to stop existing — and native sync's scan+diff would try to replicate it.
+ *
+ * Real filesystems reserve names for the same reason (NFS's `.nfsXXXX` silly-renames,
+ * Samba's `.smbdeleteXXX`).
+ */
+const PUBLISH_TMP = '.jfs-publish-'
+const isPublishTmp = (name: string): boolean => name.startsWith(PUBLISH_TMP)
+
+/**
+ * Write `data` under a private sibling name, then take `name` in ONE operation.
+ *
+ * POSIX has no atomic content write. `open(O_CREAT|O_EXCL)` publishes an EMPTY name
+ * and `write()` fills it afterwards, so a concurrent reader can resolve the name and
+ * read nothing — or, past Node's write chunk, a prefix. Every system that needs this
+ * guarantee answers it the same way: put the payload somewhere uncontested, publish
+ * the name last. Maildir writes into `tmp/` and renames into `new/`; git writes a
+ * loose object to a temp file and links it to its sha1 name; dpkg uses `.dpkg-tmp`;
+ * RocksDB writes the SSTable and only then flips MANIFEST.
+ *
+ * `link`, not `rename`, and both halves of why are load-bearing. `link` is the only
+ * POSIX call that is BOTH atomic AND no-replace. Atomic is the point. No-replace is
+ * what makes the `EEXIST` of a lost race (or of an already-occupied name) come from
+ * the publish ITSELF rather than from a check before it — and a check before it is
+ * exactly the TOCTOU this closes.
+ *
+ * The temp file is a SIBLING of the target, not a file in one shared temp directory:
+ * `link(2)` cannot cross a filesystem, and a volume root can have another mount
+ * underneath it. A sibling is on the target's own filesystem by construction.
+ *
+ * This is a hard link, so the inode carries two names between `link` and `unlink`.
+ * `Storage` already permits exactly that shape transiently (see the interface note on
+ * rename/move), and the second name is hidden from every read path here.
+ */
+async function publish(dir: string, name: string, data: Uint8Array, mode: number): Promise<void> {
+	const tmp = join(dir, `${PUBLISH_TMP}${crypto.randomUUID()}`)
+	const fh = await open(tmp, 'wx', mode)
+	try {
+		// `writeFile` on the handle, not `write`: the full-buffer API loops, so a short
+		// write cannot publish a prefix. This is the whole reason the payload goes here
+		// first — it can take as many syscalls as it likes under a name nobody reads.
+		await fh.writeFile(data)
+	} finally {
+		await fh.close()
+	}
+	try {
+		await link(tmp, join(dir, name))
+	} finally {
+		// No residue on either outcome: after a successful link the target holds the only
+		// name worth keeping, and a failed link leaves nothing at all.
+		await unlink(tmp).catch(() => {})
+	}
+}
 
 /**
  * A Storage backed directly by the local filesystem.
@@ -77,15 +135,21 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	}
 
 	const caps: StorageCapabilities = {
-		async atomicCreate(dirIno, name, meta, options) {
-			const childPath = join(getPath(dirIno), name)
+		async atomicCreate(dirIno, name, meta, content, options) {
+			const dirPath = getPath(dirIno)
+			const childPath = join(dirPath, name)
 			if (meta.type === FileType.Directory) {
 				await mkdir(childPath, { mode: meta.mode })
 			} else if (meta.type === FileType.Symlink) {
 				await _symlink(meta.symlinkTarget ?? '', childPath)
-			} else {
+			} else if (content === undefined) {
+				// No content to publish, so the name is the whole claim (`O_EXCL`).
 				const fh = await open(childPath, 'wx', meta.mode)
 				await fh.close()
+			} else {
+				// This backend has no hash-addressed content store, so the bytes are handed
+				// to it directly and the name must not appear until they are all there.
+				await publish(dirPath, name, content, meta.mode)
 			}
 			const s = await lstat(childPath)
 			const ino = String(s.ino)
@@ -217,6 +281,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		},
 
 		async getDirent(dirIno, name) {
+			if (isPublishTmp(name)) return null // a publish in flight is not addressable
 			const childPath = join(getPath(dirIno), name)
 			try {
 				const s = await lstat(childPath)
@@ -247,7 +312,9 @@ export async function nativeStorage(root: string): Promise<Storage> {
 
 		async listDirents(dirIno, cursor) {
 			const dirPath = getPath(dirIno)
-			const names = (await readdir(dirPath)).sort()
+			// Filtered BEFORE the cursor slice, so a hidden name can never be handed out as
+			// a cursor position a later page resumes from.
+			const names = (await readdir(dirPath)).filter((n) => !isPublishTmp(n)).sort()
 			const start = cursor === '' ? 0 : names.findIndex((n) => n > cursor)
 			const slice = start === -1 ? [] : names.slice(start)
 

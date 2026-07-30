@@ -550,7 +550,10 @@ export function idbStorage(
 			await tx.done
 		},
 
-		async atomicCreate(dirIno, name, meta, options) {
+		// `content` (see storage.ts) is never passed to this backend: it has a
+		// hash-addressed content store, so the VFS publishes the bytes under their hash
+		// first and this claim carries the reference in `meta.contentHash`.
+		async atomicCreate(dirIno, name, meta, _content, options) {
 			const db = await getDb()
 			const tx = db.transaction(
 				['inodes', 'dirs', 'xattrs', 'pathver', 'journal', 'dirty'],

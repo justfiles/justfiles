@@ -68,8 +68,30 @@ export interface StorageCapabilities {
 	 * Atomic alloc + dirAdd in one operation — eliminates the orphaned-inode
 	 * window between a bare setMeta + putDirent two-step.
 	 * Returns the new ino. Throws EEXIST if name already exists in dirIno.
+	 *
+	 * `content` is a regular file's COMPLETE bytes, and publishing them is part of
+	 * the SAME atomic fact as taking the name: a concurrent reader that resolves
+	 * the name observes all of `content`, or no name at all — never a name holding
+	 * a prefix. Claiming the name first and filling it afterwards is what
+	 * `Volume.writeFile`'s documented create atomicity forbids (#324): a reader
+	 * cannot defend itself against a torn writer, because the intermediate states
+	 * a torn writer exposes are not enumerable from the reader's side (empty, then
+	 * a short prefix, then a prefix that happens to parse as a different value…).
+	 *
+	 * Only ever passed to a backend WITHOUT `caps.content`. A hash-addressed store
+	 * publishes the bytes under their hash first and the VFS carries the resulting
+	 * reference in `meta` (`contentHash`/`size`) — the same guarantee by a cheaper
+	 * route, since the bytes are already durable before the claim is even
+	 * attempted. A backend that declares `atomicCreate` and has no content store
+	 * MUST honour `content`; `exclusive.test.ts` holds every shipped backend to it.
 	 */
-	atomicCreate?(dirIno: Ino, name: string, meta: InodeMeta, options?: MutationOptions): Promise<Ino>
+	atomicCreate?(
+		dirIno: Ino,
+		name: string,
+		meta: InodeMeta,
+		content?: Uint8Array,
+		options?: MutationOptions
+	): Promise<Ino>
 
 	/**
 	 * Atomic rename — moves a name from one directory to another without a
