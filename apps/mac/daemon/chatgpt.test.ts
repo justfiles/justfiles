@@ -5,7 +5,7 @@ import { codexModels, resolveAgentBackend } from './chatgpt.ts'
 // `resolveAgentBackend` borrows the active-AI account from the Volume-backed stores
 // (internal to @justfiles/app) and mints a token-sealed backend. We seed the way those
 // stores persist — one JSON file per account under /private/accounts, plus the
-// /system/active-ai.json selection — and drive resolution against a real in-memory
+// /private/active-ai.json selection — and drive resolution against a real in-memory
 // Volume. `ai` toggles whether this account is the active AI.
 
 const ID = 'u@openai.com'
@@ -34,7 +34,7 @@ async function seed(
 	)
 	if (opts.ai) {
 		await fs.writeFile(
-			'/system/active-ai.json',
+			'/private/active-ai.json',
 			enc.encode(
 				JSON.stringify(
 					opts.model !== undefined ? { accountId: ID, model: opts.model } : { accountId: ID }

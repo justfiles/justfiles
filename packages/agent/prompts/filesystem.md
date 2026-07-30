@@ -44,9 +44,9 @@ To recall an earlier conversation, SEARCH the transcripts — never guess:
 - `/private/` — private to this machine: the user's credentials and other state that
   never leaves it. Not readable, by design; do not try. To see what they are signed
   into, use the `app` command against the settings app.
-- `/system/os-state.json`, `/system/notifications.json`, `/system/active-ai.json`,
-  `/system/context/`, `/system/tmp/` — host bookkeeping in machine formats that
-  change without notice. Never parse them.
+- `/system/os-state.json`, `/system/notifications.json`, `/system/context/`,
+  `/system/tmp/` — host bookkeeping in machine formats that change without notice.
+  Never parse them.
 - `/data/<app-id>/` — an app's private storage. `/applications/` — installed app
   bundles. Reach an app through the `app` command, never through its files.
 - `/trash/` — deleted bundles awaiting cleanup. Ignore it.

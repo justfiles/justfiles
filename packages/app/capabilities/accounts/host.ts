@@ -405,13 +405,13 @@ export async function ensureAccount(
 	if (!input.enabled.includes('ai')) return
 	const activeAi = volumeActiveAi(volume)
 	const selected = await activeAi.get()
-	// Anything that doesn't resolve to an account HERE is not a choice. Absent is a fresh
-	// install; naming an account this host doesn't have is a leftover — the credential lane is
-	// host-only (`/private`) while the selection rides synced `/system`, so a pointer written
-	// by another host, or left by a retired account id, outlives the account it names and can
-	// never resolve. Honouring one strands the user with no backend at all
-	// (`resolveAiAccount` → null → "AI is turned off") with nothing to heal it but a manual
-	// toggle in Settings.
+	// Anything that doesn't resolve to an account here is not a choice — absent is a fresh
+	// install, and a name with no record behind it is a leftover (an account removed outside
+	// the admin facet, or a volume written before the selection joined the credential lane).
+	// Honouring one strands the user with no backend at all (`resolveAiAccount` → null → "AI
+	// is turned off") with nothing to heal it but a manual toggle in Settings. Safe to claim
+	// because selection and accounts share the SAME host-private lane: this write is invisible
+	// to every other host, so it can never deselect a provider another host is happily using.
 	if (selected && (await accounts.get(selected.accountId))) return
 	await activeAi.set({ accountId: input.accountId })
 }

@@ -225,7 +225,7 @@ describe('local → account migration', () => {
 			'/system/user.md': '---\nname: Xiao\n---\n',
 			'/system/os-state.json': '{"windows":{}}',
 			'/private/accounts/frieren.json': 'secret',
-			'/system/active-ai.json': '{"connectionId":"u@openai.com"}',
+			'/private/active-ai.json': '{"accountId":"u@openai.com"}',
 			'/.state/clientid': 'uuid',
 			'/applications/paint/app.js': 'code',
 			'/state/app.justfiles.frieren.paint.json': '{}'
@@ -241,7 +241,7 @@ describe('local → account migration', () => {
 		expect(files).toContain('/system/user.md')
 		expect(files).toContain('/system/os-state.json')
 		expect(files).not.toContain('/private/accounts/frieren.json')
-		expect(files).not.toContain('/system/active-ai.json')
+		expect(files).not.toContain('/private/active-ai.json')
 		expect(files).not.toContain('/.state/clientid')
 		expect(files).not.toContain('/applications/paint/app.js')
 		expect(files).not.toContain('/state/app.justfiles.frieren.paint.json')
