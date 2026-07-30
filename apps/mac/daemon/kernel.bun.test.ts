@@ -95,19 +95,21 @@ test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)'
 		}
 	} as Message)
 
-	// The raw file on disk carries no plaintext credential substring.
-	const raw = await readFile(
-		join(sealedRoot, 'private', 'accounts', `${encodeURIComponent('me@example.com')}.json`),
-		'utf8'
-	)
-	expect(raw).not.toContain('SEKRIT-APP-PASSWORD')
-
-	// And it reads back through the SAME kernel/codec — the round trip.
+	// It reads back through the SAME kernel/codec — the round trip. Polled first, because
+	// `connectAccount` completes asynchronously: the account surfacing in state is what proves
+	// the record has been written, so the raw file below is there to read.
 	const state = await poll(
 		() => sealed.state(SETTINGS) as Promise<{ accounts: Array<{ accountId: string }> }>,
 		(s) => s.accounts.length > 0
 	)
 	expect(state.accounts.map((a) => a.accountId)).toContain('me@example.com')
+
+	// And the raw file on disk carries no plaintext credential substring.
+	const raw = await readFile(
+		join(sealedRoot, 'private', 'accounts', `${encodeURIComponent('me@example.com')}.json`),
+		'utf8'
+	)
+	expect(raw).not.toContain('SEKRIT-APP-PASSWORD')
 })
 
 test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts on boot (upgrade path)', async () => {
@@ -129,7 +131,11 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 		'accounts',
 		`${encodeURIComponent('old@example.com')}.json`
 	)
-	expect(await readFile(accountPath, 'utf8')).toContain('PRE-EXISTING-PW')
+	// Polled, not read once: `connectAccount` completes asynchronously.
+	await poll(
+		() => readFile(accountPath, 'utf8').catch(() => ''),
+		(raw) => raw.includes('PRE-EXISTING-PW')
+	)
 
 	// Reboot the SAME Volume with a key now available — nothing ever rewrites this record
 	// (an iCloud app-specific password is written once, at connect), so only a reseal sweep
