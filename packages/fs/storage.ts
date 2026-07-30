@@ -81,9 +81,15 @@ export interface StorageCapabilities {
 	 * Only ever passed to a backend WITHOUT `caps.content`. A hash-addressed store
 	 * publishes the bytes under their hash first and the VFS carries the resulting
 	 * reference in `meta` (`contentHash`/`size`) — the same guarantee by a cheaper
-	 * route, since the bytes are already durable before the claim is even
-	 * attempted. A backend that declares `atomicCreate` and has no content store
-	 * MUST honour `content`; `exclusive.test.ts` holds every shipped backend to it.
+	 * route, since the bytes are already durable before the claim is even attempted.
+	 *
+	 * A backend handed `content` MUST NOT lose it, and MUST publish it atomically with
+	 * the name wherever the substrate allows one — `exclusive.test.ts` holds every LOCAL
+	 * backend to that. `apiStorage` is the one shipped exception, and only against a
+	 * server whose own backend has no content store: `PUT /blob/:hash` needs somewhere
+	 * to park a blob no inode references yet, so there is no atomic publish on that wire
+	 * at all. It negotiates, falls back to claim-then-fill, and keeps the bytes. Closing
+	 * that needs a create route that carries its own content.
 	 */
 	atomicCreate?(
 		dirIno: Ino,

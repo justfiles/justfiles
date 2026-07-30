@@ -126,6 +126,21 @@ export async function apiStorage(
 		return Object.keys(header).length > 0 ? ({ ...req, header } as T) : req
 	}
 
+	// Does the SERVER's backend have a hash-addressed content store? NEGOTIATED, not
+	// assumed: `PUT /blob/:hash` stores a blob no inode references yet, which a backend
+	// without `caps.content` has nowhere to put — it rejects, and a create that assumed
+	// otherwise would fail before ever reaching `/inodes`. Fetched once and memoised,
+	// lazily, so an apiStorage that never creates a file pays nothing for the answer.
+	let contentStore: Promise<boolean> | undefined
+	const serverHasContentStore = (): Promise<boolean> => {
+		contentStore ??= (async () => {
+			const res = await client.index.$get()
+			if (!res.ok) return false
+			return (await res.json()).contentStore === true
+		})()
+		return contentStore
+	}
+
 	const backend: Storage = {
 		rootIno,
 
@@ -222,25 +237,39 @@ export async function apiStorage(
 		caps: {
 			// `content` (see @justfiles/fs's storage.ts) IS passed to this backend: it has
 			// no `caps.content`, so the VFS hands over the bytes and this claim owes them
-			// write-then-publish. Done over the wire the same way a local hash-addressed
-			// store does it — PUT the bytes under their hash first (the server verifies the
-			// hash and stores them content-addressed), then claim the name carrying the
+			// write-then-publish.
+			//
+			// Where the server can, that is done the same way a local hash-addressed store
+			// does it — PUT the bytes under their hash first (the server verifies the hash
+			// and stores them content-addressed), then claim the name carrying the
 			// reference. Two round trips, but in the order that matters: the name cannot
 			// exist until the bytes it names already do.
+			//
+			// Where it cannot — a server over a backend with no content store — there is no
+			// atomic publish available over this wire at all, so it falls back to claiming
+			// the name and filling it (exactly what the VFS used to do itself). The content
+			// is never lost; the create is simply not atomic there, and a reader can catch
+			// it mid-fill. Closing that needs a create route that CARRIES its bytes, which
+			// is a wire change and its own issue — named here rather than left implied.
 			async atomicCreate(dirIno, name, meta, content, options) {
 				let claimed = meta
+				let fill: Uint8Array | undefined
 				if (content !== undefined) {
-					const hash = await sha256Hex(content)
-					const blob = await client.blob[':hash'].$put(
-						withHeaders(
-							{ param: { hash }, header: { 'Content-Type': 'application/octet-stream' } },
-							options
-						) as Parameters<(typeof client.blob)[':hash']['$put']>[0],
-						{ init: { body: toArrayBuffer(content) } }
-					)
-					await throwIfStale(blob)
-					if (!blob.ok) throw new Error(`atomicCreate content failed: ${blob.status}`)
-					claimed = { ...meta, size: BigInt(content.length), contentHash: hash }
+					if (await serverHasContentStore()) {
+						const hash = await sha256Hex(content)
+						const blob = await client.blob[':hash'].$put(
+							withHeaders(
+								{ param: { hash }, header: { 'Content-Type': 'application/octet-stream' } },
+								options
+							) as Parameters<(typeof client.blob)[':hash']['$put']>[0],
+							{ init: { body: toArrayBuffer(content) } }
+						)
+						await throwIfStale(blob)
+						if (!blob.ok) throw new Error(`atomicCreate content failed: ${blob.status}`)
+						claimed = { ...meta, size: BigInt(content.length), contentHash: hash }
+					} else {
+						fill = content
+					}
 				}
 				const res = await client.inodes.$post(
 					withHeaders({ json: { dirIno, name, meta: wireFromMeta(claimed) } }, options)
@@ -249,6 +278,7 @@ export async function apiStorage(
 				if (res.status === 409) throw new Error(`EEXIST: ${name}`)
 				if (!res.ok) throw new Error(`atomicCreate failed: ${res.status}`)
 				const data = await res.json()
+				if (fill !== undefined) await backend.putBlob(data.ino, fill, options)
 				return data.ino
 			},
 

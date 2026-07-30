@@ -17,12 +17,14 @@
  */
 
 import {
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
+	unlinkSync,
 	writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -496,14 +498,81 @@ test('a publish in flight is never listed, and leaves no residue', async () => {
 	expect(readdirSync(join(dir, 'Trips'))).toEqual(['Kyoto.md'])
 })
 
-test('a temp file left behind by a killed publish is unreachable', async () => {
-	// Crash residue: the process died between writing the temp file and linking it. Half
-	// a note under a reserved name is not a file — it must not be listable, resolvable
-	// or readable through the volume, or the next scan would replicate it.
+test('a temp file orphaned by a killed publish is an ordinary, deletable file', async () => {
+	// Crash residue: the process died between writing the temp file and linking it. It is
+	// NOT hidden, and that is the deliberate choice — half a note under an odd name is
+	// exactly what it is, and visible means a user or a sweep can remove it, where hidden
+	// would mean nothing ever could. dpkg's `.dpkg-tmp` and git's `tmp_obj_*` are visible
+	// for the same reason. Only publishes actually in flight are hidden, and only from the
+	// instance running them.
 	const dir = nativeDir()
 	writeFileSync(join(dir, '.jfs-publish-orphan'), 'half a note')
 	const vol = volume(await nativeStorage(dir))
-	expect((await vol.readdir('/')).map((e) => e.name)).toEqual([])
-	expect(await vol.exists('/.jfs-publish-orphan')).toBe(false)
-	await expect(vol.readFile('/.jfs-publish-orphan')).rejects.toThrow(/^ENOENT/)
+	expect((await vol.readdir('/')).map((e) => e.name)).toEqual(['.jfs-publish-orphan'])
+	await vol.rm('/.jfs-publish-orphan')
+	expect(readdirSync(dir)).toEqual([])
+})
+
+test('a name that merely LOOKS like a publish temp is an ordinary file', async () => {
+	// The publish temp is tracked by exact path while it is in flight, NOT reserved as a
+	// filename pattern. Hiding a pattern means this create succeeds and then the file is
+	// unreadable, unlistable and undeletable through the volume — a write that reports
+	// success and vanishes, which is a worse bug than the one publishing solves.
+	const vol = volume(await nativeStorage(nativeDir()))
+	await vol.writeFile('/.jfs-publish-notes.md', enc.encode('mine'))
+	expect(await vol.exists('/.jfs-publish-notes.md')).toBe(true)
+	expect(dec.decode(await vol.readFile('/.jfs-publish-notes.md'))).toBe('mine')
+	expect((await vol.readdir('/')).map((e) => e.name)).toEqual(['.jfs-publish-notes.md'])
+	await vol.rm('/.jfs-publish-notes.md')
+	expect(await vol.exists('/.jfs-publish-notes.md')).toBe(false)
+})
+
+test('a publish that fails mid-write leaves no temp file behind', async () => {
+	// The cleanup has to cover the whole lifecycle, not just the link: a write or close
+	// that fails (ENOSPC, EIO) would otherwise strand the temp file, and repeated
+	// failures would quietly consume the disk. Provoked with a payload the filesystem
+	// cannot represent — a length past what the handle will accept.
+	const dir = nativeDir()
+	const vol = volume(await nativeStorage(dir))
+	// A Proxy that reports an enormous length: `writeFile` trusts it and throws.
+	const hostile = new Proxy(enc.encode('x'), {
+		get: (t, p) =>
+			p === 'byteLength' || p === 'length' ? Number.MAX_SAFE_INTEGER : (t as never)[p]
+	}) as Uint8Array
+	await expect(vol.writeFile('/doomed.md', hostile)).rejects.toThrow()
+	expect(readdirSync(dir)).toEqual([]) // no residue, hidden or otherwise
+})
+
+test('a listing survives an entry vanishing mid-scan', async () => {
+	// `readdir` reports NAMES; each one then needs its own `lstat`, and an entry removed
+	// in between must not fail the whole listing. Pre-existing on the node backend — any
+	// concurrent `rm` could do it — and only ever surfaced because publish temps are
+	// created and unlinked constantly, which made the window easy to hit under 12-way
+	// parallel load.
+	//
+	// Every `lstat` is issued in one batch, so the interleaving is driven by making the
+	// directory big enough that the batch outlives a macrotask. RETRIED until the window
+	// is actually observed, rather than assumed after one attempt: under load the timer
+	// below can fire after the whole listing has already settled, and a run that never
+	// caught a vanishing entry proves nothing. A listing that REJECTS on any attempt is
+	// the bug, so the retry cannot mask it.
+	const dir = nativeDir()
+	const name = (i: number) => `n${String(i).padStart(4, '0')}.md`
+	let observed = false
+	for (let attempt = 0; attempt < 25 && !observed; attempt++) {
+		const sub = join(dir, `try${attempt}`)
+		mkdirSync(sub)
+		for (let i = 0; i < 400; i++) writeFileSync(join(sub, name(i)), 'x')
+		const storage = await nativeStorage(sub)
+		const pending = storage.listDirents(storage.rootIno, '')
+		await new Promise((resolve) => setTimeout(resolve, 0)) // readdir done, lstats queued
+		for (let i = 300; i < 400; i++) unlinkSync(join(sub, name(i)))
+		const { entries } = await pending // rejecting here is the bug, on ANY attempt
+		const listed = new Set(entries.map((e) => e.name))
+		// Tolerating a vanished entry must not mean quietly dropping entries that are
+		// there: everything outside the removed range is still reported, every attempt.
+		for (let i = 0; i < 300; i++) expect(listed.has(name(i))).toBe(true)
+		observed = listed.size < 400
+	}
+	expect(observed).toBe(true) // the interleaving really was exercised
 })

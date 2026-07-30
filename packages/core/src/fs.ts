@@ -117,7 +117,13 @@ const Handshake = z.object({
 	// `generation` (the CAS/fence epoch): a client whose stored `lineageId` differs
 	// from the observed one is talking to a genuinely different volume and
 	// re-bootstraps. Optional — a host that injects no lineage source omits it.
-	lineageId: z.string().optional()
+	lineageId: z.string().optional(),
+	// Does this server's backend have a hash-addressed content store (`caps.content`)?
+	// A client create can only publish its bytes BEFORE claiming the name if it does,
+	// because `PUT /blob/:hash` has nowhere to put a blob no inode references yet on a
+	// backend without one. Optional: absent (an older server) reads as false, which
+	// selects the claim-then-fill path that works everywhere.
+	contentStore: z.boolean().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
@@ -281,7 +287,8 @@ export function createFsApi(
 						schemaVersion: SCHEMA_VERSION,
 						generation: lineage?.generation,
 						resetId: lineage?.resetId,
-						lineageId: lineage?.lineageId
+						lineageId: lineage?.lineageId,
+						contentStore: backend.caps?.content !== undefined
 					})
 				)
 			})
