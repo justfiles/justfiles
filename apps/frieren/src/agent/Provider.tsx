@@ -1,5 +1,4 @@
 import { useAuth } from '@clerk/clerk-react'
-import type { Expression } from '@justfiles/agent/expression'
 import {
 	type ReactNode,
 	useCallback,
@@ -11,7 +10,7 @@ import {
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
 import { readAgentSoul, readAvatar, readAvatarFaces } from '../personalize/state'
-import agentAvatarUrl from './agent-avatar.png'
+import { builtinFaces } from './builtin'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
 
@@ -32,22 +31,26 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	const [input, setInput] = useState('')
 	const [identity, setIdentity] = useState({
 		agentName: undefined as string | undefined,
-		avatarUrl: agentAvatarUrl,
-		// Null while on the bundled default avatar: nothing to derive faces from.
+		avatarUrl: builtinFaces(undefined).url,
+		// Null on built-in art — there is nothing to derive faces FROM, and nothing to derive:
+		// the set arrives complete (see ./builtin.ts).
 		hash: null as string | null,
-		faces: {} as Partial<Record<Expression, string>>,
+		faces: builtinFaces(undefined).faces,
 		personalized: false
 	})
 
 	const refreshIdentity = useCallback(async () => {
 		const volume = await openProfile()
 		const soul = await readAgentSoul(volume)
+		// `avatar.png` exists only when the user uploaded their own photo; a built-in variant is
+		// a word in the soul, so it costs no bytes and rides along with the identity file.
 		const avatar = await readAvatar(volume)
+		const builtin = builtinFaces(soul?.frontmatter.avatar_variant)
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
-			avatarUrl: avatar?.url ?? agentAvatarUrl,
+			avatarUrl: avatar?.url ?? builtin.url,
 			hash: avatar?.hash ?? null,
-			faces: avatar ? await readAvatarFaces(volume, avatar.hash) : {},
+			faces: avatar ? await readAvatarFaces(volume, avatar.hash) : builtin.faces,
 			personalized: soul?.frontmatter.seeded !== 'true' && soul !== null
 		})
 	}, [])
@@ -56,10 +59,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		void refreshIdentity().catch(() => {})
 	}, [refreshIdentity])
 
-	// Lazily fill in the face for an expression the agent just used. Fire-and-forget: the
-	// base avatar stays on screen and the generated face lands on a later turn. Throttled per
-	// (avatar, expression) rather than asked once — the worker owns the real dedupe and the
-	// 24h backoff, this only keeps a tab from asking on every turn.
+	// Lazily fill in the face for an expression the agent just used — only reachable for an
+	// UPLOADED avatar, since a built-in variant arrives with its whole set and leaves `hash`
+	// null. Fire-and-forget: the base avatar stays on screen and the generated face lands on a
+	// later turn. Throttled per (avatar, expression) rather than asked once — the worker owns
+	// the real dedupe and the 24h backoff, this only keeps a tab from asking on every turn.
 	const askedAt = useRef(new Map<string, number>())
 	const { hash, faces } = identity
 	const expression = snapshot.expression

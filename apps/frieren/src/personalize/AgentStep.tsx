@@ -1,10 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { PencilSimpleIcon, PlusIcon } from '@phosphor-icons/react'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
-import agentAvatarUrl from '../agent/agent-avatar.png'
-import assistantImage from '../assets/assistant.png'
-import companionImage from '../assets/companion.png'
-import teacherImage from '../assets/teacher.png'
+import { builtinFaces } from '../agent/builtin'
 import type { Volume } from '../fs'
 import { RitualCircle } from './RitualCircle'
 import { squarePng } from './squarePng'
@@ -23,26 +20,28 @@ type ArchetypeInfo = {
 	disposition: [number, number, number]
 }
 
+// Each card shows the art the choice actually lands on: the mascot wearing that archetype's
+// accessory, from the built-in sets (src/agent/builtin.ts). What you pick is what you get.
 const ARCHETYPES: ArchetypeInfo[] = [
 	{
 		id: 'teacher',
 		title: 'Teacher',
 		tagline: 'Leads you to your own answers.',
-		image: teacherImage,
+		image: builtinFaces('teacher').url,
 		disposition: [4, 2, 2]
 	},
 	{
 		id: 'companion',
 		title: 'Companion',
 		tagline: 'Beside you, not above you.',
-		image: companionImage,
+		image: builtinFaces('companion').url,
 		disposition: [4, 2, 3]
 	},
 	{
 		id: 'assistant',
 		title: 'Assistant',
 		tagline: 'Gets things done.',
-		image: assistantImage,
+		image: builtinFaces('assistant').url,
 		disposition: [2, 5, 5]
 	}
 ]
@@ -78,10 +77,14 @@ function safeLine(value: string): string {
 	return value.trim().replace(/[\r\n]+/g, ' ')
 }
 
-function buildSoulFile(draft: Draft, body: string): string {
+function buildSoulFile(draft: Draft, body: string, variant?: string): string {
 	const lines = ['---', 'schema: frieren/agent-soul/v1', `agent_name: ${safeLine(draft.name)}`]
 	if (draft.gender !== 'none') lines.push(`agent_gender: ${draft.gender}`)
-	lines.push(`archetype: ${draft.archetype}`, '---', '', body.trim(), '')
+	lines.push(`archetype: ${draft.archetype}`)
+	// Which built-in face set to wear. Absent means "the photo on the volume" — and, for every
+	// soul written before this existed, the default set.
+	if (variant) lines.push(`avatar_variant: ${variant}`)
+	lines.push('---', '', body.trim(), '')
 	return lines.join('\n')
 }
 
@@ -141,13 +144,16 @@ export function AgentStep({
 	const selectedArchetype = ARCHETYPES.find((item) => item.id === draft.archetype) ?? ARCHETYPES[1]
 	const faceUrl =
 		face === 'spirit'
-			? agentAvatarUrl
+			? builtinFaces(undefined).url
 			: face === 'upload' && uploadedFace
 				? uploadedFace
 				: selectedArchetype.image
 
 	useEffect(() => {
 		if (!initialSoul) return
+		// Restore what was chosen last time: an uploaded photo is on the volume, a built-in
+		// variant is the word the soul recorded.
+		if (initialSoul.frontmatter.avatar_variant === 'vanilla') setFace('spirit')
 		void (async () => {
 			const avatar = await readAvatar(volume)
 			if (!avatar) return
@@ -214,9 +220,19 @@ export function AgentStep({
 		setSaving(true)
 		setError(null)
 		try {
-			const avatar = await squarePng(faceUrl)
-			await volume.writeFile(PATHS.soul, encoder.encode(buildSoulFile(draft, soulText)))
-			await volume.writeFile(PATHS.avatar, avatar)
+			// A built-in face is a CHOICE, so it goes in the soul as a word and the volume carries no
+			// image at all: no bytes to replicate to every device, and nothing for the image engine
+			// to re-derive art we already ship. Only a photo the user supplied is stored.
+			const variant =
+				face === 'upload' ? undefined : face === 'spirit' ? 'vanilla' : draft.archetype
+			await volume.writeFile(PATHS.soul, encoder.encode(buildSoulFile(draft, soulText, variant)))
+			if (face === 'upload' && uploadedFace) {
+				await volume.writeFile(PATHS.avatar, await squarePng(uploadedFace))
+			} else {
+				// Switching back to a built-in face has to clear the photo, or the stale bytes keep
+				// winning: `readAvatar` is what decides which of the two the shell shows.
+				await volume.rm(PATHS.avatar, { force: true })
+			}
 			onDone()
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause))
@@ -258,7 +274,7 @@ export function AgentStep({
 									data-selected={face === 'spirit'}
 									onClick={() => setFace('spirit')}
 								>
-									<img src={agentAvatarUrl} alt="The pixel spirit" data-pixel="true" />
+									<img src={builtinFaces(undefined).url} alt="The spirit" />
 								</button>
 								<button
 									type="button"

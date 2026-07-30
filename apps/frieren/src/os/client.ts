@@ -14,6 +14,16 @@ const SOCKET_OPEN = 1
 // reconnected on next use). Caps at 30s; reset on a healthy `ready`.
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 15_000, 30_000] as const
 
+// Expression pacing. An emotion earns a minimum time on screen: tags arrive far faster than a
+// face can be read — two sentences of a reply can land inside the same second — so a
+// replacement waits its turn. Only the NEWEST waiting emotion is kept: a beat nobody saw is
+// not worth a queue. Nothing is ever shown for less than this, a turn boundary included, which
+// is what stops a quick follow-up prompt from wiping a face the user never registered.
+//
+// This is the floor. The cap at the other end — how long a held emotion survives the silence
+// after a reply — is the avatar's REST_DELAY_MS.
+const HOLD_MS = 3_000
+
 // Minimal socket surface the client drives; the real `WebSocket` satisfies it.
 // Tests inject a fake via `createSocket`.
 export interface SocketLike {
@@ -35,9 +45,10 @@ export interface AgentSnapshot {
 	agentName: string
 	messages: AgentMessage[]
 	isStreaming: boolean
-	// The last expression tag the agent emitted (null until it tags one). Last tag wins: a
-	// reply that tags several sentences ends on its final one. The tags themselves never
-	// reach `messages`.
+	// The emotion the agent last tagged, or null until it tags one — and null again once it has
+	// been on screen long enough, because calm is not a tag but where the face rests. The last
+	// emotion wins, paced so each one is seen (see HOLD_MS). The tags themselves never reach
+	// `messages`.
 	expression: Expression | null
 }
 
@@ -152,6 +163,10 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// held inside the parser until the next delta (or `flush` at end of message).
 	let expressionParser = createExpressionParser()
 	let expression: Expression | null = null
+	let heldUntil = 0
+	// `undefined` is nothing waiting; `null` is a rest waiting its turn.
+	let pending: Expression | null | undefined
+	let holdTimer: ReturnType<typeof setTimeout> | null = null
 	const agentListeners = new Set<() => void>()
 	let agentSnapshot: AgentSnapshot = buildAgentSnapshot()
 
@@ -171,6 +186,29 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	function mapMessages(fn: (message: AgentMessage) => AgentMessage): void {
 		setMessages(messages.map(fn))
+	}
+
+	// Show an emotion (or `null` to rest) as soon as whatever is on screen has served its
+	// minimum — immediately, when nothing is being held.
+	function showExpression(next: Expression | null): void {
+		if (next === expression && pending === undefined) return
+		const wait = heldUntil - Date.now()
+		if (wait > 0) {
+			pending = next
+			if (!holdTimer) {
+				holdTimer = setTimeout(() => {
+					holdTimer = null
+					const waiting = pending
+					pending = undefined
+					if (waiting !== undefined) showExpression(waiting)
+				}, wait)
+			}
+			return
+		}
+		pending = undefined
+		expression = next
+		heldUntil = next ? Date.now() + HOLD_MS : 0
+		emitAgent()
 	}
 
 	// --- installed-app catalog ---
@@ -235,8 +273,10 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				// assistant message: `isStreaming` flips on now, which un-rests the avatar, and the
 				// model's first token is a second or more away — long enough to flash the previous
 				// reply's emotion. "Omit the tag to continue" holds WITHIN a turn (across tool
-				// calls), never across turns.
-				expression = null
+				// calls), never across turns. Going through `showExpression` is what keeps the
+				// previous emotion from being cut short by an eager follow-up prompt: it rests now if
+				// the minimum has been served, and as soon as it has otherwise.
+				showExpression(null)
 				isStreaming = true
 				emitAgent()
 				break
@@ -266,7 +306,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				const delta = event.assistantMessageEvent
 				if (delta?.type === 'text_delta' && delta.delta) {
 					const { text, expression: tagged } = expressionParser.push(delta.delta)
-					if (tagged) expression = tagged
+					// Only emotions can reach here: there is no tag for calm, because calm is where the
+					// face rests rather than something the agent claims.
+					if (tagged) showExpression(tagged)
 					mapMessages((message) =>
 						message.id === id ? { ...message, content: message.content + text } : message
 					)
@@ -525,6 +567,10 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (reconnectTimer) {
 				clearTimeout(reconnectTimer)
 				reconnectTimer = null
+			}
+			if (holdTimer) {
+				clearTimeout(holdTimer)
+				holdTimer = null
 			}
 			generation++
 			closeSocket()

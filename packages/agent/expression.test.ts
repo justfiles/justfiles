@@ -115,11 +115,22 @@ describe('streaming', () => {
 	})
 
 	test('one tag per delta is observed, in order', () => {
-		expect(stream(['[thinking]a. ', '[pleased]b. ', '[neutral]c.']).seen).toEqual([
+		expect(stream(['[thinking]a. ', '[pleased]b. ', '[concerned]c.']).seen).toEqual([
 			'thinking',
 			'pleased',
-			'neutral'
+			'concerned'
 		])
+	})
+
+	// There is no tag for calm, so `[neutral]` is not markup any more — it is a tag the agent
+	// invented, and an invented tag is prose. Pinned because it is a deliberate trade: shredding
+	// a reply to hide a model's slip is worse than letting the slip show, and a bracket word in
+	// the transcript is loud enough that we would notice within a session.
+	test('a tag outside the vocabulary stays as prose', () => {
+		expect(stream(['[pleased]Haha, nice one. ', '[neutral]That was a good setup.'])).toEqual({
+			text: 'Haha, nice one. [neutral]That was a good setup.',
+			seen: ['pleased']
+		})
 	})
 
 	// The tag/link lookahead must not depend on where the stream happens to break.
@@ -131,7 +142,7 @@ describe('streaming', () => {
 	})
 })
 
-test('the prompt lists every expression', () => {
+test('the prompt lists every expression, and offers no tag for calm', () => {
 	expect(EXPRESSION_PROMPT).toContain('[apologetic]')
-	expect(EXPRESSION_PROMPT).toContain('[neutral]')
+	expect(EXPRESSION_PROMPT).not.toContain('[neutral]')
 })
