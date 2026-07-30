@@ -38,16 +38,4 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 // `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
 // prompt as host bookkeeping and harmless to `ls`. What remains is `/private` — private
 // in the access-modifier sense: not reachable from outside the host, the agent included.
-//
-// The pre-`/private` locations (`/system/accounts`, `/system/connections`) are DELIBERATELY
-// not listed, and that is load-bearing rather than an oversight:
-//   - they MUST be ordinary synced paths, so the relocation's delete propagates and clears
-//     the stale plaintext copies earlier sync pushed into every client replica — re-denying
-//     them would strand those bytes on each browser profile forever;
-//   - re-forking this list from the fs one is the drift the derivation above exists to stop;
-//   - nothing is exposed either way: a live volume still holds a legacy record only if
-//     `migrateHostPrivateLane` threw on this boot, and pre-release the only record any
-//     volume carries is the platform AI account, whose creds are `{}`.
-// Reviewers: "a transitional pre-release volume behaves differently" is not a finding here
-// — the bar is that a host boots, not that every intermediate state is guarded.
 export const SECRET_PREFIXES = PRIVATE_PREFIXES.filter((p) => p !== '/.state')

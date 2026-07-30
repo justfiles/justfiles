@@ -332,40 +332,6 @@ export function accountsCapabilities(
 	}
 }
 
-// One-off: the credential lane moved out of `/system` into the `/private` root, so it
-// can never replicate (see @justfiles/fs PRIVATE_PREFIXES). Move rather than copy — the
-// vacated `/system` paths are ordinary synced paths again, so the delete propagates and
-// clears the stale copies earlier sync left in client replicas.
-// Entry-by-entry, because a failed first attempt (or a reseed that ran first) leaves BOTH
-// trees, and dropping the legacy one wholesale would discard a credential the user would
-// have to re-connect. The host's own record always wins; a legacy one only fills a gap.
-// Best-effort by design: a host must boot even if this fails, and the only record on a
-// real volume is the credential-less platform AI account, which `ensureAccount` reseeds.
-// The failure path therefore needs no compensating guard anywhere else — no legacy entry in
-// the agent's deny-list, no dual-read in the store, no version negotiation. Pre-release,
-// the worst outcome of a failed move is a user re-connecting an account, which is cheaper
-// than a permanent branch in the code; the only bar this has to clear is that the host
-// still boots (hence the catch).
-// Delete this function and its call sites once no live volume carries the old paths.
-export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
-	for (const [from, to] of [
-		['/system/accounts', '/private/accounts'],
-		['/system/connections', '/private/connections']
-	] as const) {
-		try {
-			if (!(await volume.exists(from))) continue
-			await volume.mkdir(to, { recursive: true })
-			for (const entry of await volume.readdir(from)) {
-				const target = `${to}/${entry.name}`
-				if (!(await volume.exists(target))) await volume.rename(`${from}/${entry.name}`, target)
-			}
-			await volume.rm(from, { recursive: true, force: true })
-		} catch (e) {
-			console.warn(`accounts: could not relocate ${from} to ${to}`, e)
-		}
-	}
-}
-
 // Seal every account record still sitting in the clear, with this host's key. Best-effort:
 // a host must boot even if it fails.
 //
@@ -411,31 +377,6 @@ export async function ensureAccount(
 		const activeAi = volumeActiveAi(volume)
 		if ((await activeAi.get()) === null) await activeAi.set({ accountId: input.accountId })
 	}
-}
-
-// Move an existing account to a new id/provider id, carrying the active-AI pointer with it
-// — for a builtin provider whose ids were renamed. No-op when `from` is absent; never
-// clobbers an existing `to`. Re-`put`s through the store rather than moving the file,
-// because the codec binds a record's ciphertext to its account id: a new id needs a
-// re-seal — which is also why a record this host cannot read is left where it is. Moving
-// it would delete the source and re-seal nothing; leaving it lets a boot with the right
-// key finish the job.
-export async function renameAccount(
-	volume: Volume,
-	from: string,
-	to: { accountId: string; providerId: string },
-	opts: { secretCodec?: SecretCodec } = {}
-): Promise<void> {
-	const accounts = volumeAccountStore(volume, opts)
-	const existing = await accounts.get(from)
-	if (!existing || existing.creds === undefined) return
-	if (!(await accounts.get(to.accountId))) {
-		await accounts.put({ ...existing, id: to.accountId, provider: to.providerId })
-	}
-	await accounts.delete(from)
-	const activeAi = volumeActiveAi(volume)
-	const active = await activeAi.get()
-	if (active?.accountId === from) await activeAi.set({ ...active, accountId: to.accountId })
 }
 
 // A short-lived borrow of the active-AI account, for building the agent's own LLM

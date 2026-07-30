@@ -7,8 +7,6 @@ import {
 	accountsCapabilities,
 	aesGcmSecretCodec,
 	ensureAccount,
-	migrateHostPrivateLane,
-	renameAccount,
 	resolveAiAccount,
 	sealAccounts
 } from './host.ts'
@@ -469,112 +467,13 @@ describe('resolveAiAccount', () => {
 	})
 })
 
-describe('renameAccount', () => {
-	test('moves the account and the active-AI pointer to the new ids', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await accounts.put({ id: 'old', provider: 'old', creds: {} })
-		await activeAi.set({ accountId: 'old', model: 'default' })
-		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
-		expect(await accounts.get('old')).toBeUndefined()
-		expect(await accounts.get('new')).toMatchObject({ id: 'new', provider: 'new' })
-		expect(await activeAi.get()).toEqual({ accountId: 'new', model: 'default' })
-	})
-
-	test('is a no-op with no old account, and leaves another active selection alone', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await activeAi.set({ accountId: 'u@openai' })
-		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
-		expect(await accounts.list()).toEqual([])
-		expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
-	})
-})
-
-// The credential lane moved out of `/system` into the private `/private` root. The
-// relocation is a rename on the owning host, and it must never be able to break a boot.
-describe('migrateHostPrivateLane', () => {
-	const enc = new TextEncoder()
-	const dec = new TextDecoder()
-
-	test('renames the legacy dirs so the store reads its records at the new path', async () => {
-		const vol = volume(memStorage())
-		await vol.mkdir('/system/accounts', { recursive: true })
-		await vol.writeFile(
-			'/system/accounts/u%40openai.json',
-			enc.encode(JSON.stringify({ id: 'u@openai', provider: 'chatgpt', creds: { r: 'SEKRIT' } }))
-		)
-		await vol.mkdir('/system/connections/chatgpt', { recursive: true })
-		await vol.writeFile('/system/connections/chatgpt/default.json', enc.encode('CONN'))
-
-		await migrateHostPrivateLane(vol)
-
-		expect(await volumeAccountStore(vol).get('u@openai')).toMatchObject({ provider: 'chatgpt' })
-		expect(dec.decode(await vol.readFile('/private/connections/chatgpt/default.json'))).toBe('CONN')
-		// Vacated: an ordinary synced path again, so the delete clears stale replicas
-		expect(await vol.exists('/system/accounts')).toBe(false)
-		expect(await vol.exists('/system/connections')).toBe(false)
-	})
-
-	test('is a no-op on a volume that never had the legacy dirs, and is idempotent', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
-		await migrateHostPrivateLane(vol)
-		await migrateHostPrivateLane(vol)
-		expect(await accounts.list()).toMatchObject([{ id: 'frieren' }])
-	})
-
-	// A first attempt that failed (or a reseed that ran first) leaves BOTH trees. The
-	// legacy tree must not be dropped wholesale then: a record the host does not already
-	// have is a credential the user would otherwise have to re-connect.
-	test('fills gaps from the legacy dir, and the host’s own record wins a collision', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
-		await vol.mkdir('/system/accounts', { recursive: true })
-		await vol.writeFile(
-			'/system/accounts/u%40gmail.com.json',
-			enc.encode(
-				JSON.stringify({ id: 'u@gmail.com', provider: 'google', creds: { refresh: 'KEEP' } })
-			)
-		)
-		// Same id on both sides: the host's live record must not be overwritten by the copy.
-		await vol.writeFile(
-			'/system/accounts/frieren.json',
-			enc.encode(JSON.stringify({ id: 'frieren', provider: 'frieren', creds: { stale: true } }))
-		)
-
-		await migrateHostPrivateLane(vol)
-
-		expect(await accounts.get('u@gmail.com')).toMatchObject({ creds: { refresh: 'KEEP' } })
-		expect(await accounts.get('frieren')).toMatchObject({ creds: {} })
-		expect(await vol.exists('/system/accounts')).toBe(false)
-	})
-
-	test('never throws: a volume that refuses the move still lets the host boot', async () => {
-		const vol = volume(memStorage())
-		await vol.mkdir('/system/accounts', { recursive: true })
-		await vol.writeFile('/system/accounts/a.json', enc.encode('{}'))
-		const boom = { ...vol, rename: async () => Promise.reject(new Error('EPERM')) }
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-		await expect(migrateHostPrivateLane(boom)).resolves.toBeUndefined()
-		expect(warn).toHaveBeenCalled()
-		// The legacy record is left where it is — a failed move must not delete it.
-		expect(await vol.exists('/system/accounts/a.json')).toBe(true)
-		warn.mockRestore()
-	})
-})
-
 // Encryption at rest is one codec shared by EVERY entry point that builds the store: a
 // codec on some but not all of them means half the reads can't decrypt, so these tests
 // pin the wiring, not the crypto (see secret-codec.test.ts for that).
 describe('secretCodec wiring', () => {
 	const codec = aesGcmSecretCodec('host-key')
 
-	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount, renameAccount', async () => {
+	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount', async () => {
 		const vol = volume(memStorage())
 		const caps = accountsCapabilities(testProviders(), vol, { secretCodec: codec })
 		await caps.accounts.connect({ providerId: 'chatgpt' })
@@ -582,18 +481,6 @@ describe('secretCodec wiring', () => {
 		// On disk the creds are sealed; the facet that needs them still reads them.
 		const raw = new TextDecoder().decode(await vol.readFile('/private/accounts/u%40openai.json'))
 		expect(raw).not.toContain('tok')
-		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
-			access: 'tok'
-		})
-		// A rename re-seals under the new id (the id is the AAD), so the record still opens.
-		await renameAccount(
-			vol,
-			'u@openai',
-			{ accountId: 'moved', providerId: 'chatgpt' },
-			{
-				secretCodec: codec
-			}
-		)
 		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
 			access: 'tok'
 		})
@@ -647,24 +534,6 @@ describe('secretCodec wiring', () => {
 		expect(await volumeAccountStore(vol, { secretCodec: codec }).get('u@me.com')).toMatchObject({
 			creds: { p: 'PW' }
 		})
-	})
-
-	test('a rename leaves a record it cannot read where it is', async () => {
-		// A rename deletes the source, so it is the one write the store cannot make
-		// non-destructive: skip it, and a boot with the right key finishes the job.
-		const vol = volume(memStorage())
-		const old = { secretCodec: aesGcmSecretCodec('old-key') }
-		await volumeAccountStore(vol, old).put({ id: 'spud', provider: 'frieren', creds: { k: 'v' } })
-		await renameAccount(
-			vol,
-			'spud',
-			{ accountId: 'frieren', providerId: 'frieren' },
-			{
-				secretCodec: codec
-			}
-		)
-		expect(await volumeAccountStore(vol, old).get('spud')).toMatchObject({ creds: { k: 'v' } })
-		expect(await volumeAccountStore(vol, old).get('frieren')).toBeUndefined()
 	})
 
 	test('a record this host cannot decrypt lists with an error and is unusable', async () => {

@@ -21,8 +21,7 @@ const SCAN_EXT = /\.(tsx?|jsx?|mjs|cjs|json|jsonc|swift|sh|css|yaml|yml|plist)$/
 const EXEMPT_FILES = new Set([
 	'apps/frieren/worker/appstore/denylist.ts', // retired npm names, banned from the store
 	'apps/frieren/worker/appstore/feed.ts', // still searches the retired npm keyword
-	'apps/frieren/worker/appstore/indexer.ts', // keeps retired id prefixes reserved (anti-squat)
-	'apps/frieren/worker/accounts/migrate-platform-id.ts' // one-off account-id migration
+	'apps/frieren/worker/appstore/indexer.ts' // keeps retired id prefixes reserved (anti-squat)
 ])
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.wrangler', 'out'])
 
