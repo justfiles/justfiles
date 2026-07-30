@@ -132,35 +132,7 @@ describe('FrierenClient agent', () => {
 		}
 	})
 
-	test('a reply that signs off calm keeps the emotion it earned', async () => {
-		// Verbatim from a real session. A model habitually closes on a calm sentence, and when
-		// `neutral` was allowed to win the last-tag race the face flashed `pleased` for a few
-		// hundred milliseconds and was already resting by the time the reply finished landing —
-		// so the avatar's reading window never even armed. Neutral is the resting face, and the
-		// avatar's own timer owns the return to it.
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-		socket.emit({ type: 'event', event: { type: 'agent_start' } })
-		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
-		for (const delta of ['[pleased]Haha, nice one. ', '[neutral]That was a good setup.']) {
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } }
-			})
-		}
-		socket.emit({ type: 'event', event: { type: 'message_end' } })
-		socket.emit({ type: 'event', event: { type: 'agent_end' } })
-
-		const snapshot = client.agent.snapshot()
-		expect(snapshot.expression).toBe('pleased')
-		// The tag is still markup: it leaves the text, whether or not it moves the face.
-		expect(snapshot.messages.at(-1)).toMatchObject({
-			content: 'Haha, nice one. That was a good setup.'
-		})
-	})
-
-	test('a reply that only ever tags neutral rests, rather than wearing the last turn', async () => {
+	test('an untagged reply rests, rather than wearing the last turn', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
@@ -177,8 +149,9 @@ describe('FrierenClient agent', () => {
 		socket.emit({ type: 'event', event: { type: 'agent_end' } })
 		expect(client.agent.snapshot().expression).toBe('concerned')
 
-		// ...must not lend it to the next one just because that one stayed calm. The rest lands
-		// once the emotion has served its minimum on screen.
+		// ...must not lend it to the next one just because that one had no feeling to report.
+		// There is no tag for calm: a plain sentence is how the agent stays quiet, and the rest
+		// lands once the emotion has served its minimum on screen.
 		vi.useFakeTimers()
 		try {
 			socket.emit({ type: 'event', event: { type: 'agent_start' } })
@@ -190,7 +163,7 @@ describe('FrierenClient agent', () => {
 				type: 'event',
 				event: {
 					type: 'message_update',
-					assistantMessageEvent: { type: 'text_delta', delta: '[neutral]Done.' }
+					assistantMessageEvent: { type: 'text_delta', delta: 'Done.' }
 				}
 			})
 			socket.emit({ type: 'event', event: { type: 'agent_end' } })

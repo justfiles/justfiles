@@ -122,15 +122,15 @@ describe('streaming', () => {
 		])
 	})
 
-	// `neutral` is not an emotion the agent may claim (it is where the face rests), but a model
-	// will still emit it. It has to vanish like any other tag rather than print as text, and it
-	// must not disturb the emotion the reply had already earned.
-	test('a neutral tag is swallowed without moving the face', () => {
+	// There is no tag for calm, so `[neutral]` is not markup any more — it is a tag the agent
+	// invented, and an invented tag is prose. Pinned because it is a deliberate trade: shredding
+	// a reply to hide a model's slip is worse than letting the slip show, and a bracket word in
+	// the transcript is loud enough that we would notice within a session.
+	test('a tag outside the vocabulary stays as prose', () => {
 		expect(stream(['[pleased]Haha, nice one. ', '[neutral]That was a good setup.'])).toEqual({
-			text: 'Haha, nice one. That was a good setup.',
+			text: 'Haha, nice one. [neutral]That was a good setup.',
 			seen: ['pleased']
 		})
-		expect(stream(['[neutral]Done.'])).toEqual({ text: 'Done.', seen: [] })
 	})
 
 	// The tag/link lookahead must not depend on where the stream happens to break.

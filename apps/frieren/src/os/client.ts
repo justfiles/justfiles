@@ -45,10 +45,10 @@ export interface AgentSnapshot {
 	agentName: string
 	messages: AgentMessage[]
 	isStreaming: boolean
-	// The emotion the agent last tagged, or null until it tags one. The last EMOTION wins: a
-	// reply that tags several sentences ends on its final non-neutral one, and `neutral` is not
-	// an emotion here but the resting face the avatar drifts back to on its own. The tags
-	// themselves never reach `messages`.
+	// The emotion the agent last tagged, or null until it tags one — and null again once it has
+	// been on screen long enough, because calm is not a tag but where the face rests. The last
+	// emotion wins, paced so each one is seen (see HOLD_MS). The tags themselves never reach
+	// `messages`.
 	expression: Expression | null
 }
 
@@ -306,6 +306,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				const delta = event.assistantMessageEvent
 				if (delta?.type === 'text_delta' && delta.delta) {
 					const { text, expression: tagged } = expressionParser.push(delta.delta)
+					// Only emotions can reach here: there is no tag for calm, because calm is where the
+					// face rests rather than something the agent claims.
 					if (tagged) showExpression(tagged)
 					mapMessages((message) =>
 						message.id === id ? { ...message, content: message.content + text } : message

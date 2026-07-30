@@ -4,8 +4,11 @@
 // tag arrives before its sentence) and degrades to harmless text if the model ignores the
 // contract.
 //
-// There is deliberately no tag for calm: it is the state the face returns to on its own, so
-// the vocabulary is emotions only (see IGNORED below).
+// There is deliberately no tag for calm: it is the state the face returns to on its own — when
+// a turn opens, when a held emotion times out, and (once mood lands) by gravitating there — so
+// the vocabulary is emotions only. A model that sends `[neutral]` anyway is a model inventing a
+// tag, and it prints as text like any other invention; that is loud enough to notice and cheap
+// enough to fix if it turns out to happen.
 //
 // Deliberately dependency-free: the browser imports this to strip live token deltas, the
 // worker to strip replayed history. Import from `@justfiles/agent/expression`.
@@ -14,18 +17,8 @@ export const EXPRESSIONS = ['thinking', 'pleased', 'curious', 'concerned', 'apol
 
 export type Expression = (typeof EXPRESSIONS)[number]
 
-// Tags that are markup but carry no emotion. `neutral` used to be an expression, and the
-// agent has no business claiming it: calm is where the face RESTS — the host returns to it
-// when a turn opens and when a held emotion times out (and, once mood lands, gravitates to it
-// anyway). A model will still emit it now and then (an old session replaying, an example it
-// half-remembers), and that has to be SWALLOWED rather than leaked into the prose as visible
-// text, which is the whole reason this list exists instead of a shorter EXPRESSIONS.
-const IGNORED = ['neutral'] as const
-
-// Markup, whether or not it moves the face.
-const TAGS: ReadonlySet<string> = new Set<string>([...EXPRESSIONS, ...IGNORED])
 const KNOWN: ReadonlySet<string> = new Set<string>(EXPRESSIONS)
-const LONGEST = Math.max(...[...TAGS].map((name) => name.length))
+const LONGEST = Math.max(...EXPRESSIONS.map((name) => name.length))
 
 // The system-prompt contract. The examples carry more weight than the rule — a small model
 // copies the shape it has seen. Added by `createAgentSession({ expressions: true })`.
@@ -73,10 +66,9 @@ export function facePrompt(expression: Expression): string {
 }
 
 export interface ExpressionParser {
-	// Feed a token delta; returns the text to render plus the last EMOTION seen in it (a chunk
-	// can carry several sentences — the newest tag is the one the face shows). A tag that
-	// carries no emotion is stripped and reported as nothing. An unterminated tag at the tail
-	// is held back until the next delta completes it.
+	// Feed a token delta; returns the text to render plus the last emotion seen in it (a chunk
+	// can carry several sentences — the newest tag is the one the face shows). An unterminated
+	// tag at the tail is held back until the next delta completes it.
 	push(delta: string): { text: string; expression: Expression | null }
 	// Release whatever is still held (end of message) — an incomplete tag was just text.
 	flush(): string
@@ -126,14 +118,13 @@ export function createExpressionParser(): ExpressionParser {
 			const raw = carry.slice(0, close + 1)
 			const rest = carry.slice(close + 1)
 			const name = raw.slice(1, -1).toLowerCase()
-			if (opens && TAGS.has(name)) {
+			if (opens && KNOWN.has(name)) {
 				// `[thinking]` and `[thinking](url)` differ only in the character after `]`, so a
 				// tag needs one character of lookahead: hold until the next delta brings it.
 				if (rest === '') break
 				if (rest[0] !== '(') {
 					carry = rest
-					// An ignored tag is still markup: swallowed here, it just moves no face.
-					if (KNOWN.has(name)) expression = name as Expression
+					expression = name as Expression
 					skipSpace = true
 					// A stripped tag leaves the position as open as a fresh line, so `[a][b]` works.
 					tail = '\n'
@@ -152,7 +143,7 @@ export function createExpressionParser(): ExpressionParser {
 		// A message ending on a bare tag has no sentence for it: drop the markup rather than
 		// print it. Anything else that is still held was never a tag, so it was always text.
 		const held = carry
-		const wasTag = opensSentence() && TAGS.has(held.slice(1, -1).toLowerCase())
+		const wasTag = opensSentence() && KNOWN.has(held.slice(1, -1).toLowerCase())
 		carry = ''
 		return wasTag && held.endsWith(']') ? '' : emit(held)
 	}
@@ -193,5 +184,5 @@ function isTagPrefix(carry: string): boolean {
 	const body = carry.slice(1)
 	if (body.length > LONGEST || !/^[a-zA-Z]*$/.test(body)) return false
 	const lower = body.toLowerCase()
-	return [...TAGS].some((name) => name.startsWith(lower))
+	return EXPRESSIONS.some((name) => name.startsWith(lower))
 }
