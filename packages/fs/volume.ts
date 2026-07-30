@@ -321,7 +321,13 @@ export function volume(storage: Storage): Volume {
 
 		return dirLookupRequests.run(key, async () => {
 			const entry = await storage.getDirent(dirIno, name)
-			dirCache.set(key, entry)
+			// Cache a HIT, never a MISS: a miss is only ever true "as of the last check" --
+			// any writer this Volume can't observe (a different tab, process, or Storage
+			// instance over the same backing store) can falsify it at any moment, with no
+			// event to correct it by. A stale hit just risks briefly-wrong content
+			// (recoverable); a stale miss is a permanent, self-inflicted ENOENT/false
+			// "doesn't exist" that nothing will ever revisit.
+			if (entry !== null) dirCache.set(key, entry)
 			return entry
 		})
 	}
