@@ -35,12 +35,41 @@ export function persistedState<T>(
 	async function get(): Promise<T> {
 		if (_cache !== undefined) return _cache
 		if (await vol.exists(path)) {
-			_cache = JSON.parse(dec.decode(await vol.readFile(path))) as T
+			_cache = await read()
 			return _cache
 		}
 		const value = typeof init === 'function' ? await (init as () => T | Promise<T>)() : init
-		await set(value)
-		return _cache as T
+		_cache = await claim(value)
+		return _cache
+	}
+
+	async function read(): Promise<T> {
+		return JSON.parse(dec.decode(await vol.readFile(path))) as T
+	}
+
+	// First touch is a CLAIM, not exists()-then-write. Two cells over the SAME
+	// underlying storage can initialize at the same moment — `synced()` mints
+	// `/.state/clientid` through this very primitive while an app-level reader of that
+	// same path is doing it too — and they must converge on ONE value rather than mint
+	// two and silently overwrite one with the other. `exists()` then `set()` is a TOCTOU
+	// where both cells see nothing and both write.
+	//
+	// The loser reads the winner back with a single read, no retry and no deadline:
+	// `writeFile`'s create commits the bytes and the name as one atomic fact (#324), so
+	// there is no window in which the path exists holding anything but the winner's
+	// complete value.
+	//
+	// `set()`/`patch()` stay plain writes — they are deliberate updates by whoever
+	// already owns the value, not a first touch, so there is nothing to claim.
+	async function claim(value: T): Promise<T> {
+		await vol.mkdir(dir, { recursive: true })
+		try {
+			await vol.writeFile(path, enc.encode(JSON.stringify(value)), { exclusive: true })
+			return value
+		} catch (e) {
+			if (!(e as Error).message.startsWith('EEXIST')) throw e
+			return read()
+		}
 	}
 
 	async function set(value: T): Promise<void> {
