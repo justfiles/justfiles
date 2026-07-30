@@ -1,5 +1,7 @@
+import type { Usage } from '@earendil-works/pi-ai'
+import type { DbAdapter } from '@justfiles/core'
 import type { KvStorage } from './integrations/storage.ts'
-import { MICROS_PER_USD, type UsageReport } from './usage.ts'
+import { type AdmitHandle, admit, MICROS_PER_USD, record, type UsageReport } from './usage.ts'
 
 // Free-vs-paid caps. A cap is a ceiling on the billable metrics the meter produces: AI cost
 // per window and deduped logical storage bytes. AI is capped in TWO windows, Claude-Code
@@ -89,6 +91,37 @@ export interface QuotaReport {
 	aiBurst: AiWindowQuota
 	aiWeekly: AiWindowQuota
 	storage: Quota
+}
+
+// The one admit -> run -> record seam, shared by the agent's own metered backend
+// (`Frieren.meteredBackend`) and the `/api/ai` gateway — so a platform-key call is billed
+// exactly the same way regardless of which caller made it. `admitOrThrow` re-reads the tier
+// on every call (a plan change takes effect on the next request, not the next deploy).
+export interface AiMeter {
+	admitOrThrow(): Promise<AdmitHandle>
+	record(handle: AdmitHandle, usage: Usage): Promise<void>
+}
+
+export function createAiMeter(
+	db: DbAdapter,
+	storage: KvStorage,
+	devTierOverride?: string
+): AiMeter {
+	return {
+		async admitOrThrow() {
+			const limits = aiLimitsMicros(await readTier(storage, devTierOverride))
+			const handle = await admit(
+				db,
+				Date.now(),
+				limits.burst ?? Number.MAX_SAFE_INTEGER,
+				limits.weekly ?? Number.MAX_SAFE_INTEGER
+			)
+			if (handle === null)
+				throw new Error('AI limit reached — it resets soon, or upgrade your plan.')
+			return handle
+		},
+		record: (handle, usage) => record(db, handle, usage)
+	}
 }
 
 export function evaluate(usage: UsageReport, tier: TierId): QuotaReport {
