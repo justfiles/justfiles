@@ -38,4 +38,6 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 // `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
 // prompt as host bookkeeping and harmless to `ls`. What remains is `/private` — private
 // in the access-modifier sense: not reachable from outside the host, the agent included.
+// (`/.state/clientid` — the per-install id `device.ts` reads — lives in that same
+// bookkeeping lane; no constant here, it has no reader outside `device.ts` and `synced()`.)
 export const SECRET_PREFIXES = PRIVATE_PREFIXES.filter((p) => p !== '/.state')

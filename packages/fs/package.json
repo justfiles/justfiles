@@ -8,6 +8,7 @@
 		"./storage.shared": "./storage.shared.ts",
 		"./sync-wire": "./sync-wire.ts",
 		"./sync-replica": "./sync-replica.ts",
+		"./persistedState": "./persistedState.ts",
 		"./storage/mem": "./storage.mem.ts",
 		"./storage/idb": "./storage.idb.ts",
 		"./storage/fs": "./storage.fs.ts",
@@ -43,6 +44,11 @@
 				"types": "./dist/sync-replica.d.ts",
 				"import": "./dist/sync-replica.js",
 				"default": "./dist/sync-replica.js"
+			},
+			"./persistedState": {
+				"types": "./dist/persistedState.d.ts",
+				"import": "./dist/persistedState.js",
+				"default": "./dist/persistedState.js"
 			},
 			"./storage/mem": {
 				"types": "./dist/storage.mem.d.ts",
