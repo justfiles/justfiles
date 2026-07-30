@@ -9,7 +9,7 @@
 //
 //   art/mascot.svg ──render──▶ art/bases/vanilla.png        (1024², the brand mark)
 //         ├─[edit] "add round spectacles…" ─▶ art/bases/teacher.png     ┐ frozen, checked
-//         ├─[edit] "add a wooden sword…"   ─▶ art/bases/companion.png   │ in, and reviewed
+//         ├─[edit] "add a football…"       ─▶ art/bases/companion.png   │ in, and reviewed
 //         └─[edit] "add a pencil…"         ─▶ art/bases/assistant.png   ┘ before stage two
 //                                    │
 //                                    ▼
