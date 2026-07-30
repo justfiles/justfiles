@@ -231,12 +231,49 @@ describe('accounts admin impl', () => {
 	})
 
 	test('disconnect removes the account and clears the active-AI pointer', async () => {
+		// No builtin AI account on this volume, so there is no floor to fall back to.
 		const { caps, accounts, activeAi } = await setup()
 		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: {} })
 		await activeAi.set({ accountId: 'u@openai' })
 		await caps.accounts.disconnect({ accountId: 'u@openai' })
 		expect(await accounts.get('u@openai')).toBeUndefined()
 		expect(await activeAi.get()).toBeNull()
+	})
+
+	// The builtin AI needs no credentials, so it is the floor: a user's own AI account takes
+	// over while it is selected, and everything that would clear the selection lands back on
+	// the builtin instead of leaving the user with no AI at all.
+	describe('the builtin AI is the floor', () => {
+		const withFloor = async () => {
+			const s = await setup()
+			await s.accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
+			await s.activeAi.set({ accountId: 'frieren' })
+			await s.accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+			return s
+		}
+
+		test('turning a user AI account off hands the selection back to the builtin', async () => {
+			const { caps, activeAi } = await withFloor()
+			await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
+			expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
+			await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: false })
+			expect(await activeAi.get()).toEqual({ accountId: 'frieren' })
+		})
+
+		test('disconnecting the active user AI account falls back to the builtin', async () => {
+			const { caps, activeAi } = await withFloor()
+			await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
+			await caps.accounts.disconnect({ accountId: 'u@openai' })
+			expect(await activeAi.get()).toEqual({ accountId: 'frieren' })
+		})
+
+		test('the builtin has no off state — unchecking it re-selects it', async () => {
+			const { caps, activeAi } = await withFloor()
+			await caps.accounts.setEnabled({ accountId: 'frieren', capability: 'ai', enabled: false })
+			expect(await activeAi.get()).toEqual({ accountId: 'frieren' })
+			const list = await caps.accounts.listAccounts({})
+			expect(list.find((a) => a.accountId === 'frieren')?.enabled).toContain('ai')
+		})
 	})
 })
 
@@ -464,6 +501,57 @@ describe('resolveAiAccount', () => {
 	test('is null with no active selection', async () => {
 		const vol = volume(memStorage())
 		expect(await resolveAiAccount(vol, () => 'x')).toBeNull()
+	})
+})
+
+// The platform AI is the floor: a signed-in user must always end up with a backend, so
+// this seeds the account AND claims the single-active selection whenever nothing live
+// answers. The selection rides synced `/system` while the accounts it names live on
+// host-only `/private`, so a pointer can outlive its account — that is a leftover, not a
+// choice, and honouring it would leave the agent with no backend until the user toggled AI
+// on by hand in Settings.
+describe('ensureAccount', () => {
+	const platform = { accountId: 'frieren', providerId: 'frieren', enabled: ['ai' as const] }
+
+	test('a fresh volume gets the account and the active-AI selection', async () => {
+		const vol = volume(memStorage())
+		await ensureAccount(vol, platform)
+		expect(await volumeAccountStore(vol).get('frieren')).toMatchObject({ provider: 'frieren' })
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
+	})
+
+	test('a selection naming an account this host does not have is claimed, not honoured', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
+		// e.g. a retired account id, or an account connected on another host.
+		await volumeActiveAi(vol).set({ accountId: 'spud' })
+		await ensureAccount(vol, platform)
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
+		await expect(resolveAiAccount(vol, (l) => l.providerId)).resolves.toBe('frieren')
+	})
+
+	test('another live account keeps the selection, model and all', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
+		await ensureAccount(vol, platform)
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'u@openai', model: 'gpt' })
+	})
+
+	test('AI is never off: the floor takes the selection back after a switch away', async () => {
+		// The user's own account takes over while it is selected; unchecking it (or losing it)
+		// lands back on the platform AI rather than on "no AI at all".
+		const vol = volume(memStorage())
+		const caps = accountsCapabilities(testProviders(), vol)
+		await ensureAccount(vol, platform)
+		await volumeAccountStore(vol).put({ id: 'u@openai', provider: 'chatgpt', creds: {} })
+		await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
+		await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: false })
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
+		await ensureAccount(vol, platform)
+		await expect(resolveAiAccount(vol, (l) => l.providerId)).resolves.toBe('frieren')
 	})
 })
 

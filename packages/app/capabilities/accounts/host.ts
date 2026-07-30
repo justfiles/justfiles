@@ -173,6 +173,29 @@ function imageHost(
 
 // ── Admin surface ───────────────────────────────────────────────────────
 
+// The floor under the single-active AI: the platform's builtin AI account. It carries no
+// credentials, so it is always usable and never "off" — a user's own AI account takes over
+// while it is selected, and clearing that selection lands back here rather than leaving the
+// user with no AI at all. Derived, not configured: a builtin provider that backs `ai` is
+// the platform's own (Settings offers it toggles, never connect/disconnect).
+async function floorAi(accounts: AccountStore, registry: Registry): Promise<string | undefined> {
+	for (const account of await accounts.list()) {
+		const provider = registry.get(account.provider)
+		if (provider?.builtin && provider.capabilities.ai) return account.id
+	}
+	return undefined
+}
+
+// Hand the selection back to the floor (or clear it, on a host with no builtin AI).
+async function fallBackToFloor(
+	accounts: AccountStore,
+	activeAi: ActiveAiStore,
+	registry: Registry
+): Promise<void> {
+	const floor = await floorAi(accounts, registry)
+	await activeAi.set(floor !== undefined ? { accountId: floor } : null)
+}
+
 // The per-capability config the UI renders: only `ai` is meaningful, and only when
 // its provider carries a model catalogue (the Settings model picker).
 function aiConfig(provider: Provider | undefined, model: string | undefined): unknown {
@@ -267,7 +290,10 @@ function accountsAdminImpl(
 					const chosen = model ?? (prev?.accountId === accountId ? prev.model : undefined)
 					await activeAi.set(chosen !== undefined ? { accountId, model: chosen } : { accountId })
 				} else if ((await activeAi.get())?.accountId === accountId) {
-					await activeAi.set(null)
+					// Turning the active AI off hands the selection back to the builtin AI, so there is
+					// always a backend. Turning the BUILTIN off therefore re-selects it: the floor has
+					// no off state, it is only taken over (Settings renders that toggle uncheckable).
+					await fallBackToFloor(accounts, activeAi, registry)
 				}
 				return
 			}
@@ -298,7 +324,9 @@ function accountsAdminImpl(
 		},
 		disconnect: async ({ accountId }) => {
 			await accounts.delete(accountId)
-			if ((await activeAi.get())?.accountId === accountId) await activeAi.set(null)
+			// Deleted first, so the floor lookup can never land back on the account just removed.
+			if ((await activeAi.get())?.accountId === accountId)
+				await fallBackToFloor(accounts, activeAi, registry)
 		}
 	}
 }
@@ -357,9 +385,10 @@ export async function sealAccounts(
 	}
 }
 
-// Seed a credential-less account once, if it doesn't already exist — for a platform-
-// managed provider (the built-in AI) that should be present and, on a fresh install, the
-// active AI by default. Idempotent: a returning user's active-AI choice is left untouched.
+// Seed a credential-less account for a platform-managed provider (the built-in AI) that
+// should be present, and make it the active AI unless a live selection already answers —
+// the platform AI is the floor, so a signed-in user always has a working agent. Idempotent:
+// a user's own AI account keeps the selection (model and all) while it resolves here.
 export async function ensureAccount(
 	volume: Volume,
 	input: { accountId: string; providerId: string; enabled: CapabilityId[] },
@@ -371,12 +400,20 @@ export async function ensureAccount(
 	// seeds is the platform one, which is credential-less, so re-seeding it heals a rotated
 	// key instead of leaving the agent with no backend. (A user's own account is never
 	// seeded here — it lists as broken and is re-connected.)
-	if (existing && existing.creds !== undefined) return
-	await accounts.put({ id: input.accountId, provider: input.providerId, creds: {} })
-	if (input.enabled.includes('ai')) {
-		const activeAi = volumeActiveAi(volume)
-		if ((await activeAi.get()) === null) await activeAi.set({ accountId: input.accountId })
-	}
+	if (!existing || existing.creds === undefined)
+		await accounts.put({ id: input.accountId, provider: input.providerId, creds: {} })
+	if (!input.enabled.includes('ai')) return
+	const activeAi = volumeActiveAi(volume)
+	const selected = await activeAi.get()
+	// Anything that doesn't resolve to an account HERE is not a choice. Absent is a fresh
+	// install; naming an account this host doesn't have is a leftover — the credential lane is
+	// host-only (`/private`) while the selection rides synced `/system`, so a pointer written
+	// by another host, or left by a retired account id, outlives the account it names and can
+	// never resolve. Honouring one strands the user with no backend at all
+	// (`resolveAiAccount` → null → "AI is turned off") with nothing to heal it but a manual
+	// toggle in Settings.
+	if (selected && (await accounts.get(selected.accountId))) return
+	await activeAi.set({ accountId: input.accountId })
 }
 
 // A short-lived borrow of the active-AI account, for building the agent's own LLM

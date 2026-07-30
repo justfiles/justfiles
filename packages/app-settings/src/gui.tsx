@@ -493,12 +493,23 @@ function ConnectedAccount({
 			<div className="settings-caps">
 				{caps.map((cap) => {
 					const on = account.enabled.includes(cap)
+					// The built-in AI is the floor, not a peer: it needs no credentials, so it is what
+					// runs whenever no other AI account is selected. It can be taken over (check another
+					// provider's AI) but not switched off, so while it IS the active AI its toggle is
+					// uncheckable rather than a click the host would silently undo.
+					const floor = cap === 'ai' && on && provider?.builtin === true
 					return (
-						<label key={cap} className="settings-cap-toggle">
+						<label
+							key={cap}
+							className="settings-cap-toggle"
+							title={
+								floor ? 'Always available — enable another provider’s AI to take over' : undefined
+							}
+						>
 							<input
 								type="checkbox"
 								checked={on}
-								disabled={busy}
+								disabled={busy || floor}
 								onChange={() =>
 									void run(() =>
 										client.setAccountEnabled({
