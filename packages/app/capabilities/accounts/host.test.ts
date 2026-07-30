@@ -34,14 +34,23 @@ const neverFlow = {
 	}
 }
 
+// Google's real bindings need client creds to turn a refresh token into a bearer; the
+// stubbed token endpoint in the fan-out test mints `<refresh>-tok`, so each account's
+// calls stay distinguishable.
+const GOOGLE_CLIENT = { id: 'cid', secret: 'csec' }
+
 function fakeGoogle(acquire?: Auth['acquire']): Provider {
 	return {
-		...googleProvider({ flow: neverFlow, client: null }),
+		...googleProvider({ flow: neverFlow, client: GOOGLE_CLIENT }),
 		auth: {
 			ui: { kind: 'interactive' },
 			acquire:
 				acquire ??
-				(async ({ scopes }) => ({ accountId: 'me@gmail.com', creds: { access: 'g' }, scopes }))
+				(async ({ scopes }) => ({
+					accountId: 'me@gmail.com',
+					creds: { refresh: 'R', accountId: 'me@gmail.com' },
+					scopes
+				}))
 		}
 	}
 }
@@ -121,7 +130,7 @@ describe('accounts admin impl', () => {
 		expect(account).toMatchObject({
 			id: 'me@gmail.com',
 			provider: 'google',
-			creds: { access: 'g' }
+			creds: { refresh: 'R', accountId: 'me@gmail.com' }
 		})
 		expect(account?.scopes ?? []).toEqual([]) // no capability enabled until toggled on
 	})
@@ -158,7 +167,7 @@ describe('accounts admin impl', () => {
 
 	test('enabling email widens scope via incremental consent; disabling drops it', async () => {
 		const { caps, accounts } = await setup()
-		await accounts.put({ id: 'me@gmail.com', provider: 'google', creds: { access: 'g' } })
+		await accounts.put({ id: 'me@gmail.com', provider: 'google', creds: { refresh: 'R' } })
 		await caps.accounts.setEnabled({
 			accountId: 'me@gmail.com',
 			capability: 'email',
@@ -176,14 +185,14 @@ describe('accounts admin impl', () => {
 	test('re-enabling a capability whose scope is already granted skips acquisition', async () => {
 		const acquire = vi.fn(async ({ scopes }: { scopes: string[] }) => ({
 			accountId: 'me@gmail.com',
-			creds: { access: 'g2' },
+			creds: { refresh: 'R2', accountId: 'me@gmail.com' },
 			scopes
 		}))
 		const { caps, accounts } = await setup(testProviders({ google: fakeGoogle(acquire) }))
 		await accounts.put({
 			id: 'me@gmail.com',
 			provider: 'google',
-			creds: { access: 'g' },
+			creds: { refresh: 'R' },
 			scopes: [GMAIL_SCOPE]
 		})
 		await caps.accounts.setEnabled({
@@ -262,35 +271,44 @@ describe('use-facet dispatch', () => {
 	})
 
 	test('email.listUnread fans out across backing accounts, each stamped', async () => {
-		// Gmail returns one unread per account, keyed by the bearer token so each
-		// account yields a distinct message.
-		vi.stubGlobal('fetch', async (url: string, init?: { headers?: Record<string, string> }) => {
-			const token = init?.headers?.authorization?.replace('Bearer ', '')
-			if (url.includes('/messages?q=is:unread')) return json({ messages: [{ id: `${token}-m1` }] })
-			const id = url.split('/messages/')[1]?.split('?')[0]
-			return json({
-				id,
-				internalDate: '1',
-				labelIds: ['UNREAD'],
-				payload: {
-					headers: [
-						{ name: 'From', value: 'a@x.com' },
-						{ name: 'Subject', value: 'hi' }
-					]
+		// Each account mints its own bearer from its own refresh token (`<refresh>-tok`), and
+		// Gmail returns one unread keyed by that bearer — so each account yields a distinct
+		// message and the fan-out is visible in the ids.
+		vi.stubGlobal(
+			'fetch',
+			async (url: string, init?: { body?: string; headers?: Record<string, string> }) => {
+				if (url === 'https://oauth2.googleapis.com/token') {
+					const refresh = new URLSearchParams(init?.body ?? '').get('refresh_token')
+					return json({ access_token: `${refresh}-tok`, expires_in: 3600 })
 				}
-			})
-		})
+				const token = init?.headers?.authorization?.replace('Bearer ', '')
+				if (url.includes('/messages?q=is:unread'))
+					return json({ messages: [{ id: `${token}-m1` }] })
+				const id = url.split('/messages/')[1]?.split('?')[0]
+				return json({
+					id,
+					internalDate: '1',
+					labelIds: ['UNREAD'],
+					payload: {
+						headers: [
+							{ name: 'From', value: 'a@x.com' },
+							{ name: 'Subject', value: 'hi' }
+						]
+					}
+				})
+			}
+		)
 		const { caps, accounts } = await setup()
 		await accounts.put({
 			id: 'g1',
 			provider: 'google',
-			creds: { access: 't1' },
+			creds: { refresh: 't1', accountId: 'g1' },
 			scopes: [GMAIL_SCOPE]
 		})
 		await accounts.put({
 			id: 'g2',
 			provider: 'google',
-			creds: { access: 't2' },
+			creds: { refresh: 't2', accountId: 'g2' },
 			scopes: [GMAIL_SCOPE]
 		})
 		const unread = (await caps.email.invoke(use('email', 'listUnread', {}))) as {
@@ -298,8 +316,8 @@ describe('use-facet dispatch', () => {
 			accountId: string
 		}[]
 		expect(unread.map((m) => [m.accountId, m.id]).sort()).toEqual([
-			['g1', 't1-m1'],
-			['g2', 't2-m1']
+			['g1', 't1-tok-m1'],
+			['g2', 't2-tok-m1']
 		])
 	})
 

@@ -79,6 +79,7 @@ function idToken(email: string): string {
 	return `header.${payload}.signature`
 }
 
+// The record: everything an account carries at rest.
 const REFRESH_ONLY: GoogleCreds = { refresh: 'R', accountId: 'me@gmail.com' }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -184,37 +185,15 @@ describe('Google provider — the access token lives in memory', () => {
 	})
 })
 
-describe('Google provider — legacy records with a stored access token', () => {
-	test('an unexpired stored token is used as-is (no exchange)', async () => {
-		const calls = stubGoogle()
-		const { bindEmail, persisted } = host()
-		await bindEmail({
-			...REFRESH_ONLY,
-			access: 'legacy',
-			expires: Date.now() + 3_600_000
-		}).listUnread({})
-		expect(calls.exchanges).toHaveLength(0)
-		expect(calls.bearers).toEqual(['Bearer legacy'])
-		expect(persisted).toEqual([])
-	})
-
-	test('the next refresh drops the legacy keys (migration by attrition)', async () => {
-		stubGoogle()
-		const { bindEmail, persisted } = host()
-		await bindEmail({ ...REFRESH_ONLY, access: 'legacy', expires: Date.now() - 1 }).listUnread({})
-		expect(persisted).toEqual([{ refresh: 'R', accountId: 'me@gmail.com' }])
-	})
-})
-
 describe('Google provider — no OAuth client configured', () => {
-	test('no refresh is attempted; a 401 surfaces for re-auth', async () => {
+	test('no exchange is attempted; the call proceeds and 401s into re-auth', async () => {
+		// Documented degradation: without client credentials there is no way to turn the refresh
+		// token into a bearer, so the request goes out unauthorized and the 401 surfaces.
 		const calls = stubGoogle({ apiStatus: 401 })
 		const { bindEmail, persisted } = host(null)
-		await expect(
-			bindEmail({ ...REFRESH_ONLY, access: 'stale', expires: Date.now() - 1 }).listUnread({})
-		).rejects.toThrow('Google API 401')
+		await expect(bindEmail(REFRESH_ONLY).listUnread({})).rejects.toThrow('Google API 401')
 		expect(calls.exchanges).toHaveLength(0)
-		expect(calls.bearers).toEqual(['Bearer stale'])
+		expect(calls.bearers).toEqual(['Bearer '])
 		expect(persisted).toEqual([])
 	})
 })

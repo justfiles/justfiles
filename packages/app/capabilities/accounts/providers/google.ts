@@ -28,16 +28,13 @@ export interface GoogleClient {
 	secret: string
 }
 
-// What an account from this provider stores: the refresh token IS the account (plus the
-// identity it names). The access token is short-lived and re-derivable from it at any
-// time, so it is never written down — it lives in memory for this process's lifetime (see
-// `Live` below). `access`/`expires` are LEGACY READ-ONLY: records written before that rule
-// still read cleanly, and lose the keys on their next refresh. Never write them.
+// What an account from this provider stores: the refresh token IS the account, plus the
+// identity it names. Nothing else — the access token is short-lived and re-derivable from
+// the refresh token at any time, so it never reaches a record; it lives in memory for this
+// process's lifetime (see `Live` below).
 export interface GoogleCreds {
 	refresh: string
 	accountId: string
-	access?: string
-	expires?: number // epoch ms
 }
 
 // The live access token, in memory only. Held per account for the lifetime of the
@@ -59,8 +56,6 @@ interface Cached {
 type LiveTokens = Map<string, Cached>
 
 const NEAR_EXPIRY_MS = 60_000
-
-const cachedNow = (live: Live): Cached => ({ expires: live.expires, live: Promise.resolve(live) })
 
 interface TokenResponse {
 	access_token: string
@@ -88,8 +83,7 @@ async function googleExchange(
 	return (await res.json()) as TokenResponse
 }
 
-// Split in two by where each half is allowed to live: `creds` is the record (rebuilt from
-// scratch, so a legacy `access`/`expires` is dropped on the way through), `live` never
+// Split in two by where each half is allowed to live: `creds` is the record, `live` never
 // leaves memory. Google omits `refresh_token` on refresh, so the old one carries.
 async function googleRefresh(
 	creds: GoogleCreds,
@@ -117,11 +111,10 @@ function liveToken(
 	account: BoundAccount,
 	creds: GoogleCreds,
 	client: GoogleClient | null,
-	tokens: LiveTokens,
-	stored: Cached | undefined
+	tokens: LiveTokens
 ): Cached | undefined {
 	const id = creds.accountId
-	const cached = tokens.get(id) ?? stored
+	const cached = tokens.get(id)
 	if (cached && cached.expires - Date.now() >= NEAR_EXPIRY_MS) return cached
 	if (!client || !creds.refresh) return cached
 	const entry: Cached = {
@@ -151,23 +144,17 @@ async function settled(pending: Promise<Live> | undefined): Promise<Live | undef
 	}
 }
 
-// A bearer-attaching fetch over an account, refreshing on near expiry when a `refreshClient`
-// is available. Every refresh persists the record, so a rotated refresh token survives and a
-// legacy record loses its stored token.
+// A bearer-attaching fetch over an account, minting/refreshing the token it needs when a
+// `refreshClient` is available. Every refresh persists the record, so a rotated refresh
+// token survives.
 function authedFetch(
 	account: BoundAccount,
 	refreshClient: GoogleClient | null,
 	tokens: LiveTokens
 ): AuthedFetch {
 	const creds = account.creds as GoogleCreds
-	// A legacy record's stored token still serves until it expires — and is never written
-	// again. A token this process minted for the account wins over it.
-	const stored =
-		creds.access !== undefined
-			? cachedNow({ access: creds.access, expires: creds.expires ?? 0 })
-			: undefined
 	return async (path, init = {}) => {
-		const live = await settled(liveToken(account, creds, refreshClient, tokens, stored)?.live)
+		const live = await settled(liveToken(account, creds, refreshClient, tokens)?.live)
 		const res = await fetch(path, {
 			method: init.method,
 			body: init.body,
@@ -442,10 +429,8 @@ async function acquire(
 	})
 	const accountId = emailFromIdToken(token.id_token) ?? ''
 	const creds: GoogleCreds = { refresh: token.refresh_token ?? '', accountId }
-	tokens.set(
-		accountId,
-		cachedNow({ access: token.access_token, expires: Date.now() + token.expires_in * 1000 })
-	)
+	const live: Live = { access: token.access_token, expires: Date.now() + token.expires_in * 1000 }
+	tokens.set(accountId, { expires: live.expires, live: Promise.resolve(live) })
 	return { accountId, creds, scopes: (token.scope ?? scope).split(' ').filter(Boolean) }
 }
 
