@@ -74,16 +74,25 @@ export function persistedState<T>(
 	// only for a backend WITHOUT that store (nativeStorage today), which still
 	// commits createNode THEN putBlob — there, a concurrent reader (whether it just
 	// lost the claim above, or merely found the path via exists() in get()) can
-	// briefly see it exist with no bytes yet, and this polls a few event-loop turns
-	// for the writer to land. Kept general (not backend-conditional) because `Volume`
-	// doesn't expose which backend it's over, and shouldn't — that would leak a
-	// storage detail through the one abstraction that's supposed to hide it.
+	// briefly see it exist with no bytes yet, and this polls for the writer to land.
+	// Kept general (not backend-conditional) because `Volume` doesn't expose which
+	// backend it's over, and shouldn't — that would leak a storage detail through the
+	// one abstraction that's supposed to hide it.
+	//
+	// Bounded by ELAPSED TIME, not attempt count: 50 zero-delay turns measured ~55ms
+	// on a plain dev machine (Node's setTimeout floor, not disk speed), so a fixed
+	// count is really a proxy for wall-clock time that a slower or busier filesystem
+	// can blow through for a write that is still going to land. A deadline says what
+	// is actually meant: give the winner a genuinely generous window, not a lucky
+	// number of ticks.
+	const READ_SETTLED_DEADLINE_MS = 2000
 	async function readSettled(): Promise<T> {
-		for (let attempt = 0; ; attempt++) {
+		const deadline = Date.now() + READ_SETTLED_DEADLINE_MS
+		for (;;) {
 			try {
 				return await read()
 			} catch (e) {
-				if (attempt >= 50) throw e
+				if (Date.now() >= deadline) throw e
 				await new Promise((resolve) => setTimeout(resolve, 0))
 			}
 		}

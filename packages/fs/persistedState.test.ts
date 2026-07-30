@@ -93,30 +93,47 @@ describe('persistedState', () => {
 		expect(reads).toBe(1) // exactly the loser's one read — no second attempt
 	})
 
-	test('a reader that finds the path via exists() tolerates a native-style create-then-fill gap', async () => {
+	test('a reader that finds the path via exists() tolerates a native-style create-then-fill gap, even a slow one', async () => {
 		// nativeStorage has no hash-addressed content store, so writeFile keeps the OLD
 		// create-then-fill order: the dirent (and so exists()) can go true a moment
 		// before putBlob lands. A cell whose get() lands in exactly that gap must not
 		// crash trying to JSON.parse an empty read -- it must tolerate it exactly like a
 		// claim loser does.
+		//
+		// 200ms is deliberately well past readSettled's OLD bound (a fixed 50 zero-delay
+		// attempts, which measured ~55ms on a plain dev machine -- a proxy for wall-clock
+		// time, not an actual deadline) and comfortably under its current one (elapsed
+		// time, not attempt count) -- pinning that a genuinely slow but eventually-
+		// landing write is tolerated, not just a fast one.
+		//
+		// A SINGLE writer, deliberately -- who wins a create race is a different property
+		// (pinned elsewhere); racing two claims here would make this test's own outcome
+		// depend on which one wins under load, not on the thing actually under test.
 		const dir = mkdtempSync(join(tmpdir(), 'persisted-torn-'))
 		try {
 			const real = await nativeStorage(dir)
-			// Widen the real (but normally narrow) native create-then-fill window so the
-			// second cell's exists()-check reliably lands inside it.
 			const slow: Storage = {
 				...real,
 				async putBlob(ino, data, opts) {
-					await new Promise((r) => setTimeout(r, 30))
+					await new Promise((r) => setTimeout(r, 200))
 					return real.putBlob(ino, data, opts)
 				}
 			}
-			const winner = persistedState<string>(volume(slow), '/.state/id', () => 'from-a')
-			const loser = new Promise((r) => setTimeout(r, 5)).then(() =>
-				persistedState<string>(volume(real), '/.state/id', () => 'from-b').get()
+			const path = '/.state/id'
+			await volume(real).mkdir('/.state', { recursive: true })
+			const writing = volume(slow).writeFile(
+				path,
+				new TextEncoder().encode(JSON.stringify('from-a'))
 			)
-			const [, loserResult] = await Promise.all([winner.get(), loser])
-			expect(loserResult).toBe('from-a')
+			// createNode is NOT delayed, only putBlob is -- wait for the dirent to actually
+			// publish (however long that takes) rather than guessing a fixed delay, so the
+			// read below is guaranteed to land in the gap regardless of system load.
+			while (!(await volume(real).exists(path))) {
+				await new Promise((r) => setTimeout(r, 0))
+			}
+			const readerResult = await persistedState<string>(volume(real), path, () => 'from-b').get()
+			await writing
+			expect(readerResult).toBe('from-a')
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
