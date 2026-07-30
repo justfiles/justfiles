@@ -30,28 +30,6 @@ describe('volumeAccountStore', () => {
 		expect(await store.get('nobody')).toBeUndefined()
 	})
 
-	test('ignores pre-registry records ({ accountId, providerId }) at the same path', async () => {
-		// A legacy install wrote this shape into the accounts dir; read as the current
-		// schema it would yield { id: undefined, provider: undefined }. It must be
-		// treated as absent so callers can reseed / re-connect over it.
-		const fs = volume(memStorage())
-		await fs.mkdir('/private/accounts', { recursive: true })
-		await fs.writeFile(
-			'/private/accounts/legacy.json',
-			new TextEncoder().encode(
-				JSON.stringify({
-					accountId: 'legacy',
-					providerId: 'legacy',
-					creds: {},
-					enabled: { ai: {} }
-				})
-			)
-		)
-		const store = volumeAccountStore(fs)
-		expect(await store.list()).toEqual([])
-		expect(await store.get('legacy')).toBeUndefined()
-	})
-
 	test('secretCodec transforms only the creds lane on disk; reads decode it back', async () => {
 		const fs = volume(memStorage())
 		const codec: SecretCodec = {

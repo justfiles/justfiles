@@ -72,13 +72,6 @@ export function volumeAccountStore(
 	const read = async (path: string): Promise<Account | undefined> => {
 		const stored = await readStored(path)
 		if (!stored) return undefined
-		// Ignore records that aren't this schema. A pre-registry install wrote
-		// `{ accountId, providerId }` to this same dir; read as `Account` those
-		// surface as `{ id: undefined, provider: undefined }`, which breaks callers
-		// (ensureAccount can't reseed past the file; the admin facet emits an
-		// undefined providerId that crashes the Settings card). Treated as absent,
-		// they stay inert — overwritten by a reseed / re-connected by the user.
-		if (typeof stored.id !== 'string' || typeof stored.provider !== 'string') return undefined
 		try {
 			return { ...stored, creds: await codec.decode(stored.creds, stored.id) }
 		} catch {
@@ -127,10 +120,10 @@ export function volumeAccountStore(
 		reseal: async () => {
 			for (const path of await paths()) {
 				const stored = await readStored(path)
-				// Nothing to seal: not this schema, no creds lane, or already sealed (skipping is
-				// what keeps a boot with nothing to do free of writes). An unreadable record is
-				// sealed by definition, so it is skipped too — never rewritten, never lost.
-				if (typeof stored?.id !== 'string' || typeof stored.provider !== 'string') continue
+				// Nothing to seal: no record, no creds lane, or already sealed (skipping is what
+				// keeps a boot with nothing to do free of writes). An unreadable record is sealed by
+				// definition, so it is skipped too — never rewritten, never lost.
+				if (!stored) continue
 				if (stored.creds === undefined || isSealed(stored.creds)) continue
 				await put(stored)
 			}
