@@ -23,13 +23,17 @@ function json(body: unknown): Response {
 // A stubbed Google: every token exchange is recorded (with its form body), every API
 // call records the bearer it carried. Access tokens are minted `fresh-1`, `fresh-2`, …
 // so a test can tell which exchange a request is using.
-function stubGoogle(opts: { apiStatus?: number; rotateRefreshTo?: string } = {}) {
+function stubGoogle(
+	opts: { apiStatus?: number; rotateRefreshTo?: string; failExchanges?: number } = {}
+) {
 	const calls = { exchanges: [] as URLSearchParams[], bearers: [] as (string | undefined)[] }
 	vi.stubGlobal(
 		'fetch',
 		async (url: string, init?: { body?: string; headers?: Record<string, string> }) => {
 			if (url === TOKEN_URL) {
 				calls.exchanges.push(new URLSearchParams(init?.body ?? ''))
+				if (calls.exchanges.length <= (opts.failExchanges ?? 0))
+					return new Response('nope', { status: 500 })
 				const body: Record<string, unknown> = {
 					access_token: `fresh-${calls.exchanges.length}`,
 					expires_in: 3600,
@@ -154,6 +158,29 @@ describe('Google provider — the access token lives in memory', () => {
 		await host().bindEmail(REFRESH_ONLY).listUnread({})
 		await host().bindEmail(REFRESH_ONLY).listUnread({})
 		expect(calls.exchanges).toHaveLength(2)
+	})
+
+	test('clients racing a cold start await the same exchange', async () => {
+		// Two exchanges of the same refresh token is not just waste: Google may rotate it, so
+		// the loser's grant is invalidated and whichever `persist` lands last can store a dead
+		// one. The cache holds the in-flight exchange, so the second caller awaits the first.
+		const calls = stubGoogle({ rotateRefreshTo: 'R2' })
+		const { bindEmail, persisted } = host()
+		const first = bindEmail(REFRESH_ONLY)
+		const second = bindEmail(REFRESH_ONLY)
+		await Promise.all([first.listUnread({}), second.listUnread({})])
+		expect(calls.exchanges).toHaveLength(1)
+		expect(calls.bearers).toEqual(['Bearer fresh-1', 'Bearer fresh-1'])
+		expect(persisted).toEqual([{ refresh: 'R2', accountId: 'me@gmail.com' }])
+	})
+
+	test('a failed exchange is not cached: the next call retries', async () => {
+		const calls = stubGoogle({ failExchanges: 1 })
+		const { bindEmail } = host()
+		await bindEmail(REFRESH_ONLY).listUnread({})
+		await bindEmail(REFRESH_ONLY).listUnread({})
+		expect(calls.exchanges).toHaveLength(2)
+		expect(calls.bearers).toEqual(['Bearer ', 'Bearer fresh-2'])
 	})
 })
 
