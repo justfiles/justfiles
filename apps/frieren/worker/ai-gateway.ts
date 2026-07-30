@@ -146,9 +146,14 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 		.post('/v1/chat/completions', async (c) => {
 			let body: Record<string, unknown>
 			try {
-				body = await c.req.json()
+				const parsed = await c.req.json()
+				if (!isRecord(parsed)) throw new TypeError('body must be a JSON object')
+				body = parsed
 			} catch {
-				return c.json({ error: { code: 'invalid_request', message: 'body must be JSON' } }, 400)
+				return c.json(
+					{ error: { code: 'invalid_request', message: 'body must be a JSON object' } },
+					400
+				)
 			}
 
 			// Model allowlist: only ids from the platform catalogue. An unknown model is an
@@ -178,9 +183,16 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 
 			// Force usage reporting regardless of what the caller asked for — otherwise the
 			// terminal chunk (streaming) or the body (non-streaming) carries no cost, and this
-			// bills zero for a real call.
+			// bills zero for a real call. `models`/`fallbacks` are OpenRouter's OWN alternate-model
+			// routing fields (tried when the primary model errors, moderates, or rate-limits) —
+			// stripped, never forwarded: honouring them would let a request that names an allowed
+			// `model` still execute a DIFFERENT one we never validated (and never priced this
+			// call's abort-time estimate against), turning one allowlist check into a bypassable
+			// formality.
+			const { models: _alternateModels, fallbacks: _fallbacks, ...safeBody } = body
 			const forwardBody = {
-				...body,
+				...safeBody,
+				model: model.id,
 				stream_options: {
 					...(isRecord(body.stream_options) ? body.stream_options : {}),
 					include_usage: true

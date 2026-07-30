@@ -202,6 +202,45 @@ describe('createAiGateway', () => {
 		expect(upstream).not.toHaveBeenCalled()
 	})
 
+	test('a non-object JSON body (null) is rejected as invalid_request, not a 500', async () => {
+		const meter = fakeMeter()
+		const upstream = vi.fn()
+		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: 'null'
+		})
+		expect(res.status).toBe(400)
+		expect(((await res.json()) as { error: { code: string } }).error.code).toBe('invalid_request')
+		expect(upstream).not.toHaveBeenCalled()
+	})
+
+	test("strips OpenRouter's models/fallbacks alternate-routing fields before forwarding", async () => {
+		let captured: Record<string, unknown> | undefined
+		const upstream = vi.fn(async (body: Record<string, unknown>) => {
+			captured = body
+			return Response.json({ choices: [], usage: { cost: 0.0001 } })
+		})
+		const app = createAiGateway({
+			meter: fakeMeter(),
+			models: [testModel()],
+			upstream,
+			waitUntil: () => {}
+		})
+		await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({
+				model: 'test/model',
+				messages: [],
+				models: ['some/expensive-model'],
+				fallbacks: [{ model: 'some/expensive-model' }]
+			})
+		})
+		expect(captured?.models).toBeUndefined()
+		expect(captured?.fallbacks).toBeUndefined()
+		expect(captured?.model).toBe('test/model')
+	})
+
 	test('over quota: 429, no upstream call', async () => {
 		const meter: AiMeter = {
 			admitOrThrow: () => Promise.reject(new Error('AI limit reached — it resets soon.')),
