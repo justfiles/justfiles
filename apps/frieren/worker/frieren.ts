@@ -53,7 +53,6 @@ import {
 import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
 import { guardCapability } from './accounts/guard.ts'
-import { migratePlatformAccountId } from './accounts/migrate-platform-id.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
@@ -350,7 +349,6 @@ export class Frieren extends DurableObject<Env> {
 		// The built-in AI account: the platform-provided, always-on default backend. Seed it
 		// once with `ai` enabled so a fresh user has a working agent; a returning user's toggle
 		// (they may have turned it off or switched to another AI) is left untouched.
-		await migratePlatformAccountId(this.vol, this.secretCodec)
 		await ensureAccount(
 			this.vol,
 			{

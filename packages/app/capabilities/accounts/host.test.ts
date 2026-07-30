@@ -7,7 +7,6 @@ import {
 	accountsCapabilities,
 	aesGcmSecretCodec,
 	ensureAccount,
-	renameAccount,
 	resolveAiAccount,
 	sealAccounts
 } from './host.ts'
@@ -468,37 +467,13 @@ describe('resolveAiAccount', () => {
 	})
 })
 
-describe('renameAccount', () => {
-	test('moves the account and the active-AI pointer to the new ids', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await accounts.put({ id: 'old', provider: 'old', creds: {} })
-		await activeAi.set({ accountId: 'old', model: 'default' })
-		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
-		expect(await accounts.get('old')).toBeUndefined()
-		expect(await accounts.get('new')).toMatchObject({ id: 'new', provider: 'new' })
-		expect(await activeAi.get()).toEqual({ accountId: 'new', model: 'default' })
-	})
-
-	test('is a no-op with no old account, and leaves another active selection alone', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await activeAi.set({ accountId: 'u@openai' })
-		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
-		expect(await accounts.list()).toEqual([])
-		expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
-	})
-})
-
 // Encryption at rest is one codec shared by EVERY entry point that builds the store: a
 // codec on some but not all of them means half the reads can't decrypt, so these tests
 // pin the wiring, not the crypto (see secret-codec.test.ts for that).
 describe('secretCodec wiring', () => {
 	const codec = aesGcmSecretCodec('host-key')
 
-	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount, renameAccount', async () => {
+	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount', async () => {
 		const vol = volume(memStorage())
 		const caps = accountsCapabilities(testProviders(), vol, { secretCodec: codec })
 		await caps.accounts.connect({ providerId: 'chatgpt' })
@@ -506,18 +481,6 @@ describe('secretCodec wiring', () => {
 		// On disk the creds are sealed; the facet that needs them still reads them.
 		const raw = new TextDecoder().decode(await vol.readFile('/private/accounts/u%40openai.json'))
 		expect(raw).not.toContain('tok')
-		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
-			access: 'tok'
-		})
-		// A rename re-seals under the new id (the id is the AAD), so the record still opens.
-		await renameAccount(
-			vol,
-			'u@openai',
-			{ accountId: 'moved', providerId: 'chatgpt' },
-			{
-				secretCodec: codec
-			}
-		)
 		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
 			access: 'tok'
 		})
@@ -571,24 +534,6 @@ describe('secretCodec wiring', () => {
 		expect(await volumeAccountStore(vol, { secretCodec: codec }).get('u@me.com')).toMatchObject({
 			creds: { p: 'PW' }
 		})
-	})
-
-	test('a rename leaves a record it cannot read where it is', async () => {
-		// A rename deletes the source, so it is the one write the store cannot make
-		// non-destructive: skip it, and a boot with the right key finishes the job.
-		const vol = volume(memStorage())
-		const old = { secretCodec: aesGcmSecretCodec('old-key') }
-		await volumeAccountStore(vol, old).put({ id: 'spud', provider: 'frieren', creds: { k: 'v' } })
-		await renameAccount(
-			vol,
-			'spud',
-			{ accountId: 'frieren', providerId: 'frieren' },
-			{
-				secretCodec: codec
-			}
-		)
-		expect(await volumeAccountStore(vol, old).get('spud')).toMatchObject({ creds: { k: 'v' } })
-		expect(await volumeAccountStore(vol, old).get('frieren')).toBeUndefined()
 	})
 
 	test('a record this host cannot decrypt lists with an error and is unusable', async () => {

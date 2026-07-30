@@ -379,31 +379,6 @@ export async function ensureAccount(
 	}
 }
 
-// Move an existing account to a new id/provider id, carrying the active-AI pointer with it
-// — for a builtin provider whose ids were renamed. No-op when `from` is absent; never
-// clobbers an existing `to`. Re-`put`s through the store rather than moving the file,
-// because the codec binds a record's ciphertext to its account id: a new id needs a
-// re-seal — which is also why a record this host cannot read is left where it is. Moving
-// it would delete the source and re-seal nothing; leaving it lets a boot with the right
-// key finish the job.
-export async function renameAccount(
-	volume: Volume,
-	from: string,
-	to: { accountId: string; providerId: string },
-	opts: { secretCodec?: SecretCodec } = {}
-): Promise<void> {
-	const accounts = volumeAccountStore(volume, opts)
-	const existing = await accounts.get(from)
-	if (!existing || existing.creds === undefined) return
-	if (!(await accounts.get(to.accountId))) {
-		await accounts.put({ ...existing, id: to.accountId, provider: to.providerId })
-	}
-	await accounts.delete(from)
-	const activeAi = volumeActiveAi(volume)
-	const active = await activeAi.get()
-	if (active?.accountId === from) await activeAi.set({ ...active, accountId: to.accountId })
-}
-
 // A short-lived borrow of the active-AI account, for building the agent's own LLM
 // runtime — the one consumer that legitimately needs the creds (to *construct* a
 // runtime), so it gets a lease, not the store. `creds` stay inside the caller's `mint`
