@@ -4,16 +4,10 @@ import { describe, expect, test } from 'vitest'
 import { deviceId } from './device.ts'
 
 // The claim/race behaviour itself is pinned in @justfiles/fs's persistedState.test.ts —
-// device.ts delegates to it entirely.
-//
-// `mintIno` is supplied because `memStorage()` only installs `atomicCreate` when it is,
-// and without that cap `writeFile({ exclusive: true })` degrades to a best-effort
-// pre-check, so the convergence tests below would be testing the fallback rather than
-// the claim. Every backend a real host runs on (idb, sqlite, native) claims atomically
-// with no such condition; bare `memStorage()` is the one that does not, and making it
-// unconditional is a separate fs fix (it also changes what a plain create-race does, so
-// it does not belong in this PR).
-const storage = () => memStorage({ mintIno: () => crypto.randomUUID() })
+// device.ts delegates to it entirely. A BARE `memStorage()` on purpose: every backend now
+// claims a name atomically with no condition attached, so the convergence tests below
+// exercise the real claim rather than volume.ts's non-atomic fallback.
+const storage = () => memStorage()
 
 describe('deviceId', () => {
 	test('first call creates /.state/clientid and returns 8 lowercase hex chars', async () => {
