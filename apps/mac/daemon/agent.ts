@@ -61,7 +61,16 @@ const nativeWindows: AppControllerPorts['windows'] = {
 let sessionPromise: Promise<AgentSession> | null = null
 
 function getSession(): Promise<AgentSession> {
-	if (!sessionPromise) sessionPromise = buildSession()
+	// A failed build (e.g. the login Keychain locked, so `getKernel`/`accountsSecretCodec`
+	// reject) must not wedge every later call behind the same rejected promise — evict, like
+	// `getOrCreateKey`/`accountsSecretCodec`/`getKernel` already do, so the NEXT `/agent`
+	// message retries instead of failing until the daemon restarts.
+	if (!sessionPromise) {
+		sessionPromise = buildSession().catch((error: unknown) => {
+			sessionPromise = null
+			throw error
+		})
+	}
 	return sessionPromise
 }
 

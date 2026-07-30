@@ -41,6 +41,14 @@ test('a spawn that cannot read or write throws — never falls back to an unkeye
 	await expect(getOrCreateKey('kodama.test.unreadable', ACCOUNT, failing)).rejects.toThrow()
 })
 
+test('a malformed stored key (wrong length) throws — fails closed rather than deriving from garbage', async () => {
+	const malformed = () => ({
+		exited: Promise.resolve(0),
+		text: async () => Buffer.from('too-short').toString('base64')
+	})
+	await expect(getOrCreateKey('kodama.test.malformed', ACCOUNT, malformed)).rejects.toThrow()
+})
+
 test('loses a create race but returns the Keychain winner, not its own bytes', async () => {
 	// Two daemons starting concurrently on a fresh install can both miss the initial read (no
 	// single-writer lock yet — Launcher.swift). Only one `add` wins; the loser must re-read and

@@ -64,7 +64,19 @@ async function readItem(
 		account,
 		'-w'
 	])
-	return found.code === 0 ? Buffer.from(found.out.trim(), 'base64') : undefined
+	if (found.code !== 0) return undefined
+	const bytes = Buffer.from(found.out.trim(), 'base64')
+	// Fail closed on a malformed item (empty/truncated/garbage) rather than silently deriving
+	// from it: `Buffer.from(_, 'base64')` is permissive, and a wrong-length "key" would seal
+	// new records under a weak root while making every existing envelope unreadable — both
+	// indistinguishable from a rotated key until it's too late. `security delete-generic-
+	// password` + a restart re-mints a clean one.
+	if (bytes.length !== KEY_BYTES) {
+		throw new Error(
+			`keychain: stored item ${service}/${account} is not a valid ${KEY_BYTES}-byte key`
+		)
+	}
+	return bytes
 }
 
 async function resolve(service: string, account: string, spawn: Spawn): Promise<Uint8Array> {
