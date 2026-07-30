@@ -8,6 +8,13 @@
  * `writeFile` would be a TOCTOU, and the loser has its note overwritten — these
  * tests pin the race.
  *
+ * Without `exclusive`, `writeFile` promises the OPPOSITE: create-or-overwrite,
+ * unconditionally, never a claim. `createNode`'s EEXIST from a lost create race
+ * is the same backend detail either way — it just must not leak past writeFile
+ * for a caller who never asked for a claim. Run across every shipped backend
+ * below, on purpose: this exact contract went unenforced on one backend at a
+ * time, undetected, until whichever one happened to be under test that day.
+ *
  * `rename` cannot be that: no POSIX rename is both atomic and no-replace, and
  * nothing in Node reaches `renameat2`. So it is a check and THEN a move, and what it
  * promises is what these tests pin — sequential writers never overwrite each other,
@@ -19,8 +26,10 @@
 import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import 'fake-indexeddb/auto'
 import { afterAll, describe, expect, test } from 'vitest'
 import { nativeStorage } from './storage.fs.ts'
+import { idbStorage } from './storage.idb.ts'
 import { memStorage } from './storage.mem.ts'
 import { volume } from './volume.ts'
 
@@ -211,6 +220,7 @@ afterAll(() => {
 })
 const backends: Array<[string, () => Promise<ReturnType<typeof volume>>]> = [
 	['mem', async () => makeVol()],
+	['idb', async () => volume(idbStorage(`excl-${crypto.randomUUID()}`))],
 	[
 		'node',
 		async () => {
@@ -220,6 +230,30 @@ const backends: Array<[string, () => Promise<ReturnType<typeof volume>>]> = [
 		}
 	]
 ]
+
+// --- writeFile(...) WITHOUT `exclusive` is never a claim ---
+//
+// The mirror image of the race pinned above: a PLAIN write promises create-OR-
+// overwrite, unconditionally, on every backend — `createNode`'s EEXIST (thrown
+// when a concurrent writer takes the name first) is an internal implementation
+// detail of how a claim is decided, not a contract a non-claiming caller should
+// ever see. This is deliberately run against every shipped local backend via
+// the SAME array as the rename tests below: the fix lives once in volume.ts,
+// so one accidental backend-specific quirk (which errors a backend happens to
+// throw) can't silently reopen this for a backend nobody thought to re-check.
+describe.each(backends)('a plain writeFile race on %s', (_name, make) => {
+	test('two concurrent creates of a brand-new path both survive, neither throws', async () => {
+		const vol = await make()
+		const results = await Promise.allSettled([
+			vol.writeFile('/app.json', enc.encode('a')),
+			vol.writeFile('/app.json', enc.encode('b'))
+		])
+		for (const r of results) expect(r.status).toBe('fulfilled')
+		// One write wins the underlying create race and the other becomes an update
+		// against it — either order is fine, silently losing the byte content is not.
+		expect(['a', 'b']).toContain(dec.decode(await vol.readFile('/app.json')))
+	})
+})
 
 describe.each(backends)('exclusive rename on %s', (_name, make) => {
 	test('an occupied destination is refused, and both notes survive', async () => {

@@ -568,12 +568,27 @@ export function volume(storage: Storage): Volume {
 					meta.contentHash = hash
 					contentWritten = true
 				}
-				// `createNode` throws EEXIST when a concurrent writer took the name
-				// between the resolve above and here — which is what makes `exclusive` a
-				// claim and not just a probe.
-				ino = await createNode(dirIno, name, meta)
-				if (!contentWritten) {
-					await storage.putBlob(ino, data)
+				// `createNode` throws EEXIST when a concurrent writer took the name between
+				// the resolve above and here. For `exclusive: true` that IS the claim working
+				// as intended — propagate it. A PLAIN write promises create-OR-overwrite,
+				// never a claim, so it must not surface that internal detail: catch it and
+				// retry as an update against whoever won, the same as if resolvePath above
+				// had found them first. Safe to retry — atomicCreate throws before any
+				// mutation, so a failed attempt (and an already-written write-then-publish
+				// blob, if any) leaves nothing to undo.
+				try {
+					ino = await createNode(dirIno, name, meta)
+					if (!contentWritten) {
+						await storage.putBlob(ino, data)
+					}
+				} catch (e) {
+					if (!(e instanceof Error) || !e.message.startsWith('EEXIST') || opts?.exclusive) throw e
+					const winner = await lookupIno(dirIno, name)
+					if (winner === null) throw e // vanished again — report the race, not a lie
+					const winnerMeta = await getMetaOrThrow(winner)
+					if (winnerMeta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
+					await storage.putBlob(winner, data)
+					ino = winner
 				}
 			}
 
