@@ -761,7 +761,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			await ensureBootstrapped()
 			const ino = randomId()
 			const stamp = nowNs()
-			const size = meta.type === FileType.Regular ? 0 : Number(meta.size)
 			// The new entry's path, resolved inside the txn and reported on the emit.
 			let path: string | undefined
 
@@ -770,17 +769,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				const existing = await getDirent(tx, dirIno, name)
 				if (existing) throw new Error(`EEXIST: ${name}`)
 
+				// Trust `meta` verbatim (mem.ts/idb.ts already do) — a caller with content
+				// already durable under `content.putByHash` (write-then-publish, see
+				// docs/write-then-publish.html) passes its real size/contentHash here, so the
+				// claim and "the content is there" commit as one fact. A caller with nothing
+				// yet still passes size:0n/no contentHash, same as today.
 				await tx.run(
 					`INSERT INTO fs_inodes(
 						ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-					) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
 					[
 						ino,
 						meta.type,
 						meta.mode,
-						size,
+						Number(meta.size),
 						meta.mtimeNs ?? stamp,
 						meta.ctimeNs ?? stamp,
+						meta.contentHash ?? null,
 						meta.symlinkTarget ?? null,
 						STORAGE_NONE
 					]
