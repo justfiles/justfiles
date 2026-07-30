@@ -3,11 +3,11 @@ import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
 import { deviceId } from './device.ts'
 
-// `atomicCreate` is only offered when the backend mints inodes — the shipped
-// configuration (mem, IDB and node all provide it); see @justfiles/fs's
-// exclusive.test.ts. The claim/race behaviour itself is pinned in
-// @justfiles/fs's persistedState.test.ts (device.ts delegates to it entirely).
-const storage = () => memStorage({ mintIno: () => crypto.randomUUID() })
+// Every shipped backend (mem, idb, node, sqlite) claims a name atomically —
+// memStorage() needs no mintIno override for that. The claim/race behaviour
+// itself is pinned in @justfiles/fs's persistedState.test.ts (device.ts
+// delegates to it entirely).
+const storage = () => memStorage()
 
 describe('deviceId', () => {
 	test('first call creates /.state/clientid and returns 8 lowercase hex chars', async () => {

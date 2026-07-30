@@ -3,8 +3,6 @@ import { persistedState } from './persistedState'
 import { memStorage } from './storage.mem'
 import { volume } from './volume'
 
-// `atomicCreate` is only offered when the backend mints inodes — the shipped
-// configuration (mem, IDB and node all provide it); see exclusive.test.ts.
 const storage = () => memStorage({ mintIno: () => crypto.randomUUID() })
 
 describe('persistedState', () => {
@@ -51,6 +49,20 @@ describe('persistedState', () => {
 		// Exactly one write survives — the loser's candidate is never persisted.
 		const vol = volume(backing)
 		expect(JSON.parse(new TextDecoder().decode(await vol.readFile('/.state/id')))).toBe(x)
+	})
+
+	test('two cells over a BARE memStorage() (no mintIno) still converge', async () => {
+		// memStorage() always installs atomicCreate (defaulting the minter to
+		// crypto.randomUUID) — a caller-supplied mintIno customizes inode identity,
+		// it never gates whether creates are atomic. Every shipped backend (mem,
+		// idb, node, sqlite) claims a name atomically; persistedState's guarantee
+		// does not have a silent exception for "mem, if you forgot mintIno".
+		const backing = memStorage()
+		let minted = 0
+		const a = persistedState<string>(volume(backing), '/.state/id', () => `id-${++minted}`)
+		const b = persistedState<string>(volume(backing), '/.state/id', () => `id-${++minted}`)
+		const [x, y] = await Promise.all([a.get(), b.get()])
+		expect(x).toBe(y)
 	})
 
 	test('a claim loser reads a complete value on the very first attempt, never a poll', async () => {

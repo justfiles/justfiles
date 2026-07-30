@@ -27,8 +27,9 @@ import { volume } from './volume.ts'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-// `atomicCreate` is only offered when the backend mints inodes, so pass a minter:
-// that is the shipped configuration (mem, IDB and node all provide the cap).
+// A custom mintIno is NOT needed for atomicCreate — every shipped backend
+// (mem, idb, node, sqlite) claims a name atomically regardless. It is supplied
+// here purely for short, readable, deterministic ino values in test failures.
 let next = 0
 const makeVol = () => volume(memStorage({ mintIno: () => `ino-${++next}` }))
 

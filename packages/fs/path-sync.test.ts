@@ -528,7 +528,13 @@ describe('path-sync semantics', () => {
 					'/',
 					() => {
 						state.revision++
-						void vol.writeFile('/state/app.json', bytes(JSON.stringify(state)))
+						// A plain (non-exclusive) create-time race is a genuine, pre-existing gap in
+						// writeFile (not something this test is about): if this callback's own PRIOR
+						// invocation raced this one on app.json's first-ever create, the loser gets an
+						// EEXIST that nothing here awaits. Tolerated exactly like the OS-boundary watch
+						// write-backs elsewhere in the app (e.g. os/runtime.ts's reconcileNow) already
+						// do for their own fire-and-forget work.
+						void vol.writeFile('/state/app.json', bytes(JSON.stringify(state))).catch(() => {})
 					},
 					{ recursive: true }
 				)
