@@ -553,6 +553,30 @@ describe('ensureAccount', () => {
 		await ensureAccount(vol, platform)
 		await expect(resolveAiAccount(vol, (l) => l.providerId)).resolves.toBe('frieren')
 	})
+
+	test('a selection whose credentials this host cannot read is claimed too', async () => {
+		// The key rotated (or is not deployed yet), so the selected account reads back with
+		// `creds: undefined` and mints nothing. Existence is not enough: `resolveAiAccount` would
+		// hand back no backend, i.e. a dead agent, so the floor takes over. The record itself is
+		// left alone — its sealed bytes wait for the restored key, and re-selecting it is a click.
+		const vol = volume(memStorage())
+		const codec = aesGcmSecretCodec('host-key')
+		await volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }).put({
+			id: 'u@openai',
+			provider: 'chatgpt',
+			creds: { access: 'tok' }
+		})
+		const sealed = await vol.readFile('/private/accounts/u%40openai.json')
+		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
+
+		await ensureAccount(vol, platform, { secretCodec: codec })
+
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
+		await expect(resolveAiAccount(vol, (l) => l.providerId, { secretCodec: codec })).resolves.toBe(
+			'frieren'
+		)
+		expect(await vol.readFile('/private/accounts/u%40openai.json')).toEqual(sealed)
+	})
 })
 
 // Encryption at rest is one codec shared by EVERY entry point that builds the store: a
