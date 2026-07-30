@@ -28,13 +28,27 @@ export interface GoogleClient {
 	secret: string
 }
 
-// What an account from this provider stores. `expires` is epoch ms.
+// What an account from this provider stores: the refresh token IS the account (plus the
+// identity it names). The access token is short-lived and re-derivable from it at any
+// time, so it is never written down — it lives in memory for this process's lifetime (see
+// `Live` below). `access`/`expires` are LEGACY READ-ONLY: records written before that rule
+// still read cleanly, and lose the keys on their next refresh. Never write them.
 export interface GoogleCreds {
-	access: string
 	refresh: string
-	expires: number
 	accountId: string
+	access?: string
+	expires?: number // epoch ms
 }
+
+// The live access token, in memory only. Held per account for the lifetime of the
+// provider (one per host process), so a cold start costs ONE exchange rather than one per
+// capability call — the host binds a fresh client for every call.
+interface Live {
+	access: string
+	expires: number // epoch ms
+}
+
+type LiveTokens = Map<string, Live>
 
 interface TokenResponse {
 	access_token: string
@@ -62,34 +76,53 @@ async function googleExchange(
 	return (await res.json()) as TokenResponse
 }
 
-// Google omits `refresh_token` on refresh, so the old one carries.
-async function googleRefresh(creds: GoogleCreds, client: GoogleClient): Promise<GoogleCreds> {
+// Split in two by where each half is allowed to live: `creds` is the record (rebuilt from
+// scratch, so a legacy `access`/`expires` is dropped on the way through), `live` never
+// leaves memory. Google omits `refresh_token` on refresh, so the old one carries.
+async function googleRefresh(
+	creds: GoogleCreds,
+	client: GoogleClient
+): Promise<{ creds: GoogleCreds; live: Live }> {
 	const token = await googleExchange(client, {
 		grant_type: 'refresh_token',
 		refresh_token: creds.refresh
 	})
 	return {
-		access: token.access_token,
-		refresh: token.refresh_token ?? creds.refresh,
-		expires: Date.now() + token.expires_in * 1000,
-		accountId: creds.accountId
+		creds: { refresh: token.refresh_token ?? creds.refresh, accountId: creds.accountId },
+		live: { access: token.access_token, expires: Date.now() + token.expires_in * 1000 }
 	}
 }
 
 type AuthedFetch = (path: string, init?: { method?: string; body?: string }) => Promise<Response>
 
-// A bearer-attaching fetch over an account's creds, refreshing once on near expiry
-// when a `refreshClient` is available. Mint has no store, so the rotated token isn't
-// persisted — the next call refreshes again; a failed/absent refresh falls through
-// to a 401 that surfaces as re-auth.
-function authedFetch(creds: GoogleCreds, refreshClient: GoogleClient | null): AuthedFetch {
-	let access = creds.access
+// A bearer-attaching fetch over an account, refreshing once on near expiry when a
+// `refreshClient` is available. The bearer comes from `tokens` (this process's live one)
+// or, for a legacy record, from the record itself until it expires. A refresh persists the
+// record, so a rotated refresh token survives and a legacy record loses its stored token.
+// A failed/absent refresh falls through to a 401 that surfaces as re-auth.
+function authedFetch(
+	account: BoundAccount,
+	refreshClient: GoogleClient | null,
+	tokens: LiveTokens
+): AuthedFetch {
+	const creds = account.creds as GoogleCreds
+	let live =
+		tokens.get(creds.accountId) ??
+		(creds.access ? { access: creds.access, expires: creds.expires ?? 0 } : undefined)
 	let refreshed = false
 	return async (path, init = {}) => {
-		if (!refreshed && refreshClient && creds.refresh && creds.expires - Date.now() < 60_000) {
+		if (
+			!refreshed &&
+			refreshClient &&
+			creds.refresh &&
+			(live?.expires ?? 0) - Date.now() < 60_000
+		) {
 			refreshed = true
 			try {
-				access = (await googleRefresh(creds, refreshClient)).access
+				const next = await googleRefresh(creds, refreshClient)
+				live = next.live
+				tokens.set(creds.accountId, next.live)
+				await account.persist(next.creds)
 			} catch {
 				// keep the stale token; the request below 401s into re-auth
 			}
@@ -97,7 +130,10 @@ function authedFetch(creds: GoogleCreds, refreshClient: GoogleClient | null): Au
 		const res = await fetch(path, {
 			method: init.method,
 			body: init.body,
-			headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' }
+			headers: {
+				authorization: `Bearer ${live?.access ?? ''}`,
+				'content-type': 'application/json'
+			}
 		})
 		if (!res.ok) throw new Error(`Google API ${res.status}: ${await res.text()}`)
 		return res
@@ -298,11 +334,13 @@ export interface GoogleProviderDeps {
 }
 
 export function googleProvider(deps: GoogleProviderDeps): Provider {
-	const authed = (account: BoundAccount) => authedFetch(account.creds as GoogleCreds, deps.client)
+	// One live-token cache per provider instance = per host process (see `Live`).
+	const tokens: LiveTokens = new Map()
+	const authed = (account: BoundAccount) => authedFetch(account, deps.client, tokens)
 	return {
 		id: 'google',
 		name: 'Google',
-		auth: { ui: { kind: 'interactive' }, acquire: (input) => acquire(deps, input.scopes) },
+		auth: { ui: { kind: 'interactive' }, acquire: (input) => acquire(deps, input.scopes, tokens) },
 		capabilities: {
 			email: { scope: GMAIL_SCOPE, bind: (account) => createGmailEmail(authed(account)) },
 			calendar: {
@@ -316,7 +354,13 @@ export function googleProvider(deps: GoogleProviderDeps): Provider {
 // Run the consent flow (PKCE) for the union of identity + `requested` scopes through
 // the platform's AuthFlow, exchange the code, and return the tokens, the account's
 // email, and the scopes Google actually granted (recorded for incremental consent).
-async function acquire(deps: GoogleProviderDeps, requested: string[]): Promise<AcquiredAccount> {
+// The access token the exchange yields goes into `tokens` — in memory, so connecting and
+// then immediately using the account costs no second exchange — and never into the record.
+async function acquire(
+	deps: GoogleProviderDeps,
+	requested: string[],
+	tokens: LiveTokens
+): Promise<AcquiredAccount> {
 	const { flow, client } = deps
 	const verifier = randomB64url(32)
 	const challenge = b64url(
@@ -356,12 +400,11 @@ async function acquire(deps: GoogleProviderDeps, requested: string[]): Promise<A
 		code_verifier: verifier
 	})
 	const accountId = emailFromIdToken(token.id_token) ?? ''
-	const creds: GoogleCreds = {
+	const creds: GoogleCreds = { refresh: token.refresh_token ?? '', accountId }
+	tokens.set(accountId, {
 		access: token.access_token,
-		refresh: token.refresh_token ?? '',
-		expires: Date.now() + token.expires_in * 1000,
-		accountId
-	}
+		expires: Date.now() + token.expires_in * 1000
+	})
 	return { accountId, creds, scopes: (token.scope ?? scope).split(' ').filter(Boolean) }
 }
 
