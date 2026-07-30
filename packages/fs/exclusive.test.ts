@@ -106,6 +106,77 @@ test('exactly one of N concurrent claimants wins each name', async () => {
 	expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe(`writer ${winner}`)
 })
 
+// Write-then-publish (docs/write-then-publish.html): a fresh create hashes and
+// stores its bytes under a content-addressed key BEFORE claiming the name, so the
+// claim and "the content is there" commit as one fact — see #321.
+describe('write-then-publish: the claim carries its content, not a promise of it', () => {
+	test('a fresh write commits content via putByHash and never calls the old putBlob-after-create path', async () => {
+		let putByHashCalls = 0
+		let putBlobCalls = 0
+		const base = memStorage({ mintIno: () => `ino-${++next}` })
+		const tracked = {
+			...base,
+			caps: {
+				...base.caps,
+				content: {
+					...base.caps!.content!,
+					putByHash: async (hash: string, data: Uint8Array) => {
+						putByHashCalls++
+						return base.caps!.content!.putByHash(hash, data)
+					}
+				}
+			},
+			putBlob: async (...args: Parameters<typeof base.putBlob>) => {
+				putBlobCalls++
+				return base.putBlob(...args)
+			}
+		}
+		const vol = volume(tracked)
+		await vol.writeFile('/id', enc.encode('hello'))
+		expect(putByHashCalls).toBe(1)
+		expect(putBlobCalls).toBe(0)
+		expect(dec.decode(await vol.readFile('/id'))).toBe('hello')
+	})
+
+	test('a loser of an exclusive-write race never observes a transiently empty file', async () => {
+		// The window this pins: the LOSER's own catch handler fires the instant ITS
+		// write rejects with EEXIST — independent of whether the WINNER's write has
+		// finished yet. Waiting on Promise.allSettled for BOTH writes first (as an
+		// earlier version of this test did) can never observe the gap, because the
+		// winner's own promise only resolves once its content is already committed.
+		// Repeat many times: a timing-dependent gap would show up as an occasional
+		// empty read, not a hard failure on every run — one pass proves nothing.
+		for (let trial = 0; trial < 30; trial++) {
+			const vol = makeVol()
+			let loserRead: string | undefined
+			const attempt = (label: string) =>
+				vol.writeFile('/id', enc.encode(label), { exclusive: true }).catch(async () => {
+					// Lost the race — read back immediately, no delay, no retry, exactly
+					// like a caller (persistedState.ts's claim()) recovering from EEXIST.
+					loserRead = dec.decode(await vol.readFile('/id'))
+				})
+			await Promise.all([attempt(`a-${trial}`), attempt(`b-${trial}`)])
+			expect(loserRead).toBeDefined()
+			expect(loserRead).toMatch(/^[ab]-\d+$/) // never empty, never garbage
+		}
+	})
+
+	test('a lost race leaves an orphan blob that gcUnreferenced reclaims without touching the winner', async () => {
+		const storage = memStorage({ mintIno: () => `ino-${++next}` })
+		const vol = volume(storage)
+		const results = await Promise.allSettled([
+			vol.writeFile('/id', enc.encode('AAAA'), { exclusive: true }),
+			vol.writeFile('/id', enc.encode('BBBB'), { exclusive: true })
+		])
+		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+		const winner = dec.decode(await vol.readFile('/id'))
+		expect(['AAAA', 'BBBB']).toContain(winner)
+		const reclaimed = await storage.caps!.content!.gcUnreferenced!()
+		expect(reclaimed).toBeGreaterThanOrEqual(1) // the loser's candidate, orphaned
+		expect(dec.decode(await vol.readFile('/id'))).toBe(winner) // winner untouched
+	})
+})
+
 test('claimants racing for the same name settle on distinct numbered paths', async () => {
 	// The pattern app-notes uses: on EEXIST, number up and claim again. With the
 	// probe-then-write version these 10 writers would collapse onto one path.

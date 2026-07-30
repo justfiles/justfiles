@@ -632,10 +632,13 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 	{
 		name: 'converges an empty regular file (zero-byte content)',
 		run: async (makeBackend) => {
-			// Diagnostic for the buildPutChange self-skip (ROADMAP item 3): a fresh
-			// regular file journals nothing until its content write. writeFile always
-			// ends in putBlob (empty content hashes to sha256('')), so an empty file
-			// MUST still converge — proving the self-skip is benign via the public VFS.
+			// Diagnostic for the buildPutChange self-skip (ROADMAP item 3): a backend
+			// WITHOUT a hash-addressed content store still creates a fresh regular file
+			// with no contentHash, journals nothing until the follow-up content write
+			// (empty content hashes to sha256('')). A backend WITH the cap resolves the
+			// hash before the claim (write-then-publish, docs/write-then-publish.html)
+			// and journals it immediately instead. Either way the empty file MUST
+			// converge — this proves both paths benign via the public VFS.
 			const { client, server, syncBoth } = twoPeers({ makeBackend })
 			await server.writeFile('/empty.txt', bytes(''))
 			await syncBoth()

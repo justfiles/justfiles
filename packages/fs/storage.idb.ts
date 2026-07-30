@@ -553,7 +553,7 @@ export function idbStorage(
 		async atomicCreate(dirIno, name, meta, options) {
 			const db = await getDb()
 			const tx = db.transaction(
-				['inodes', 'dirs', 'xattrs', 'pathver', 'journal'],
+				['inodes', 'dirs', 'xattrs', 'pathver', 'journal', 'dirty'],
 				'readwrite'
 			) as FullTx
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
@@ -565,7 +565,21 @@ export function idbStorage(
 			const now = Date.now()
 			await tx.objectStore('inodes').put({ ino, ...meta, lastAccessedAt: now })
 			await tx.objectStore('dirs').put({ dirIno, name, ino, type: meta.type })
-			// Regular files are journaled by the following putBlob (once hashed).
+			// A create that already carries a contentHash (write-then-publish — see
+			// volume.ts's writeFile) is a content-bearing LOCAL write, exactly like an
+			// in-place edit through putBlob — mark it dirty here, in the SAME
+			// transaction, or evictContent's "never reclaim a dirty inode's bytes"
+			// guarantee never applies to a freshly created file, and a later write's
+			// eviction sweep can silently drop its unsynced content. Sync-pulled
+			// creates never reach this function (they go through
+			// upsertInodeFromSyncTx, which correctly never marks dirty — pulled
+			// content is safely re-fetchable), so this can't misfire on remote writes.
+			if (meta.contentHash) {
+				await tx.objectStore('dirty').put({ ino, markedAt: now })
+			}
+			// A file with no content yet is journaled by the following putBlob (once
+			// hashed) — see buildPutChange's self-skip. One already carrying a
+			// contentHash journals right here, below.
 			const dirPath = await pathOfTx(tx, dirIno)
 			if (dirPath !== null)
 				await journalPutOver(

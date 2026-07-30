@@ -158,11 +158,15 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 		expect(await rowsFor(s, '/a')).toEqual([{ kind: 'put', version: '1', contentHash: undefined }])
 	})
 
-	it('journals a regular file on the content write (not create), carrying contentHash', async () => {
+	it('journals a regular file with its contentHash in exactly one put', async () => {
 		const s = makeSqlite()
 		await volume(s).writeFile('/f', bytes('hello'))
 		const rows = await rowsFor(s, '/f')
-		expect(rows.length).toBe(1) // one put, emitted by putBlob once hashed
+		// Write-then-publish (docs/write-then-publish.html): the bytes are durable
+		// and the contentHash known BEFORE the claim, so atomicCreate's own journal
+		// call carries it immediately — there is no separate, content-less create
+		// row followed by a second one once hashed.
+		expect(rows.length).toBe(1)
 		expect(rows[0].kind).toBe('put')
 		expect(rows[0].contentHash).toMatch(/^[0-9a-f]{64}$/)
 	})
@@ -205,5 +209,71 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 		await volume(s).mkdir('/a')
 		const [row] = await s.caps!.journal!.readFrom(0, 1)
 		expect(row.localSource).toBeUndefined() // set only by the remote apply seam (slice 4)
+	})
+})
+
+// #321: atomicCreate previously hardcoded content_hash=NULL and size=0 for a
+// regular file, silently discarding any pre-set values in `meta` — the SQLite
+// backend was the one real backend that did NOT honour write-then-publish
+// (docs/write-then-publish.html in the repo root's docs/). mem.ts and idb.ts
+// already spread `meta` verbatim; this pins the SQLite backend to the same
+// contract now that it does too.
+describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash', () => {
+	it('a fresh write commits content via putByHash and never calls the old putBlob-after-create path', async () => {
+		const s = makeSqlite()
+		let putByHashCalls = 0
+		let putBlobCalls = 0
+		const tracked = {
+			...s,
+			caps: {
+				...s.caps,
+				content: {
+					...s.caps!.content!,
+					putByHash: async (hash: string, data: Uint8Array) => {
+						putByHashCalls++
+						return s.caps!.content!.putByHash(hash, data)
+					}
+				}
+			},
+			putBlob: async (...args: Parameters<typeof s.putBlob>) => {
+				putBlobCalls++
+				return s.putBlob(...args)
+			}
+		}
+		const vol = volume(tracked)
+		await vol.writeFile('/id', bytes('hello'))
+		expect(putByHashCalls).toBe(1)
+		expect(putBlobCalls).toBe(0)
+		expect(text(await vol.readFile('/id'))).toBe('hello')
+		const st = await vol.stat('/id')
+		expect(st.contentHash).toMatch(/^[0-9a-f]{64}$/)
+		expect(st.size).toBe(5n)
+	})
+
+	it('a loser of an exclusive-write race never observes a transiently empty file', async () => {
+		const vol = volume(makeSqlite())
+		let loserRead: string | undefined
+		const attempt = (label: string) =>
+			vol.writeFile('/id', bytes(label), { exclusive: true }).catch(async () => {
+				loserRead = text(await vol.readFile('/id'))
+			})
+		await Promise.all([attempt('a'), attempt('b')])
+		expect(loserRead).toBeDefined()
+		expect(loserRead).toMatch(/^[ab]$/) // never empty, never garbage
+	})
+
+	it('a lost race leaves an orphan blob that gcUnreferenced reclaims without touching the winner', async () => {
+		const s = makeSqlite()
+		const vol = volume(s)
+		const results = await Promise.allSettled([
+			vol.writeFile('/id', bytes('AAAA'), { exclusive: true }),
+			vol.writeFile('/id', bytes('BBBB'), { exclusive: true })
+		])
+		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+		const winner = text(await vol.readFile('/id'))
+		expect(['AAAA', 'BBBB']).toContain(winner)
+		const reclaimed = await s.caps!.content!.gcUnreferenced!()
+		expect(reclaimed).toBeGreaterThanOrEqual(1)
+		expect(text(await vol.readFile('/id'))).toBe(winner)
 	})
 })

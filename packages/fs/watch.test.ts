@@ -32,7 +32,7 @@ async function waitFor(assertion: () => void): Promise<void> {
 }
 
 describe('storage subscribe cap', () => {
-	it('fires meta, content and dirent changes with their source', async () => {
+	it('fires meta and dirent on a fresh create, then content on a later byte-level update', async () => {
 		const storage = memStorage()
 		const changes: StorageChange[] = []
 		storage.caps?.subscribe?.((c) => changes.push(c))
@@ -42,7 +42,10 @@ describe('storage subscribe cap', () => {
 		const kinds = changes.map((c) => c.kind)
 		expect(kinds).toContain('meta') // inode created
 		expect(kinds).toContain('dirent') // entry bound in parent
-		expect(kinds).toContain('content') // bytes written
+		// No SEPARATE 'content' event here: write-then-publish (docs/write-then-
+		// publish.html) makes the bytes durable and claims the name in one atomic
+		// step for a fresh create, so there is nothing left to signal separately —
+		// the 'meta' event above already carries the final contentHash.
 		expect(changes.every((c) => c.source === undefined)).toBe(true)
 
 		const ino = (await vol.stat('/a.txt')).ino
@@ -50,7 +53,9 @@ describe('storage subscribe cap', () => {
 		expect(dirent?.name).toBe('a.txt')
 		expect(dirent?.ino).toBe(ino)
 
-		// A tagged write carries its source through the feed.
+		// A tagged write to an EXISTING inode still fires its own 'content' event —
+		// this is the update path (writeFile's other branch / a direct putBlob),
+		// untouched by write-then-publish.
 		changes.length = 0
 		await storage.putBlob(ino, enc.encode('bye'), { source: 'remote' })
 		expect(changes).toEqual([{ ino, kind: 'content', source: 'remote' }])

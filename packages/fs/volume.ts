@@ -246,6 +246,16 @@ export interface WatchEvent {
 	source?: string
 }
 
+// Used ONLY to pre-compute a content hash before a create-with-content-already-
+// known claim (see write-then-publish in `writeFile`) — every backend already
+// implements the same algorithm privately for its own `putBlob`; this one has no
+// closure state, so it stays module-level rather than being re-created per `volume()`.
+async function sha256Hex(data: Uint8Array): Promise<string> {
+	const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+	const digest = await crypto.subtle.digest('SHA-256', buf)
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 export function volume(storage: Storage): Volume {
 	const MAX_SYMLINK_DEPTH = 40
 
@@ -522,6 +532,7 @@ export function volume(storage: Storage): Volume {
 				const meta = await getMetaOrThrow(resolved)
 				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
+				await storage.putBlob(ino, data)
 			} else {
 				// An edit has nothing to edit. Refused HERE, where the path was just
 				// resolved, so no caller can create a file (and its parents) from a path it
@@ -529,19 +540,37 @@ export function volume(storage: Storage): Volume {
 				if (opts?.update) throw new Error(`ENOENT: ${path}`)
 				const { dirIno, name } = await resolveParent(path)
 				const now = nowNs()
-				// `createNode` throws EEXIST when a concurrent writer took the name
-				// between the resolve above and here — which is what makes `exclusive` a
-				// claim and not just a probe.
-				ino = await createNode(dirIno, name, {
+				const meta: InodeMeta = {
 					type: FileType.Regular,
 					size: 0n,
 					mode: 0o644,
 					mtimeNs: now,
 					ctimeNs: now
-				})
+				}
+				// Write-then-publish (docs/write-then-publish.html): on a backend with a
+				// hash-addressed content store, make the bytes durable BEFORE the name is
+				// claimed, and carry the resulting `contentHash` in the claim's own meta. The
+				// claim and "the content is there" then become ONE atomic fact, so a caller
+				// that loses the race below and reads back the winner never observes a
+				// transiently empty file. Backends without the cap keep the old create-then-
+				// fill order (the trailing putBlob below).
+				let contentWritten = false
+				if (storage.caps?.content) {
+					const hash = await sha256Hex(data)
+					await storage.caps.content.putByHash(hash, data)
+					meta.size = BigInt(data.length)
+					meta.contentHash = hash
+					contentWritten = true
+				}
+				// `createNode` throws EEXIST when a concurrent writer took the name
+				// between the resolve above and here — which is what makes `exclusive` a
+				// claim and not just a probe.
+				ino = await createNode(dirIno, name, meta)
+				if (!contentWritten) {
+					await storage.putBlob(ino, data)
+				}
 			}
 
-			await storage.putBlob(ino, data)
 			invalidateIno(ino)
 		},
 
