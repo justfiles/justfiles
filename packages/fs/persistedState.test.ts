@@ -53,6 +53,29 @@ describe('persistedState', () => {
 		expect(JSON.parse(new TextDecoder().decode(await vol.readFile('/.state/id')))).toBe(x)
 	})
 
+	test('a claim loser reads a complete value on the very first attempt, never a poll', async () => {
+		// Pins the dependency on write-then-publish (#321/#322): on a backend with a
+		// hash-addressed content store, the winner's content is durable BEFORE its
+		// name is, so awaitWinner's retry loop is provably a no-op here, not just
+		// usually fast. If this ever needed a real retry, `read` (and therefore
+		// `vol.readFile`) would have to be called more than once per loser.
+		const backing = storage()
+		let reads = 0
+		const tracked = {
+			...volume(backing),
+			readFile: (path: string) => {
+				reads++
+				return volume(backing).readFile(path)
+			}
+		}
+		let minted = 0
+		const a = persistedState<string>(tracked, '/.state/id', () => `id-${++minted}`)
+		const b = persistedState<string>(tracked, '/.state/id', () => `id-${++minted}`)
+		const [x, y] = await Promise.all([a.get(), b.get()])
+		expect(x).toBe(y)
+		expect(reads).toBe(1) // exactly the loser's one read — no second attempt
+	})
+
 	test('a rejected first get() is not poisoned: a later get() on the same cell can retry', async () => {
 		const real = volume(storage())
 		let calls = 0

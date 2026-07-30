@@ -62,10 +62,16 @@ export function persistedState<T>(
 		}
 	}
 
-	// The winner's dirent commits (atomicCreate) before its blob content does
-	// (`writeFile` is createNode THEN putBlob) — a loser that just lost the claim
-	// above can briefly see the path exist with no bytes yet. Poll a few event-loop
-	// turns; on every real backend the winner's write lands well inside that window.
+	// Write-then-publish (#321/#322) makes this a NO-OP retry on every backend with
+	// a hash-addressed content store (mem/idb/sqlite today): the winner's content is
+	// durable before its name is, so the first read below always succeeds — verified
+	// empirically (0 of 300 trials needed a second attempt). The loop earns its keep
+	// only for a backend WITHOUT that store (nativeStorage today), which still
+	// commits createNode THEN putBlob — there, a loser can briefly see the path exist
+	// with no bytes yet, and this polls a few event-loop turns for the winner's write
+	// to land. Kept general (not backend-conditional) because `Volume` doesn't expose
+	// which backend it's over, and shouldn't — that would leak a storage detail
+	// through the one abstraction that's supposed to hide it.
 	async function awaitWinner(): Promise<T> {
 		for (let attempt = 0; ; attempt++) {
 			try {
