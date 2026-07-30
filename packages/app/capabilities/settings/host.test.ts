@@ -168,6 +168,42 @@ test('accounts.listAccounts unions the local list with the remote one when both 
 	expect(list.map((a) => a.accountId).sort()).toEqual(['g@gmail.com', 'u@me.com'])
 })
 
+// The Mac's own catalog never carries the cloud's built-in AI provider (its
+// `accountsProviders()` is google/icloud/chatgpt — see `apps/mac/daemon/kernel.ts`).
+// Without this, a merged built-in account has no local `ProviderInfo`, so
+// `provider?.builtin` reads as `undefined` in the GUI and it renders a Disconnect
+// button for the platform's floor AI account — clicking it would delete it (routed
+// to remote by the ownership check above, since the Mac never has that account
+// locally). `listProviders` merges too, so that metadata reaches every host that
+// can show a remote account.
+test('accounts.listProviders unions the catalog, deduped by id (this side wins)', async () => {
+	const vol = volume(memStorage())
+	// This host's own catalog lacks the cloud-only built-in — the real shape of the
+	// Mac daemon.
+	const { accounts } = accountsCapabilities([icloudProvider()], vol)
+	const cloudProviders = [
+		{ id: 'frieren', name: 'Kodama', authKind: 'none', builtin: true, capabilities: ['ai'] },
+		// Same id as the local catalog's — the collision case.
+		{ id: 'icloud', name: 'iCloud (cloud copy)', authKind: 'form', capabilities: ['calendar'] }
+	]
+	const remote: Capabilities = {
+		invoke: async () => cloudProviders,
+		subscribe: async () => () => {}
+	}
+	const caps = settingsHost({ accounts, remote })
+
+	const providers = (await caps.invoke(call('accounts.listProviders'))) as {
+		id: string
+		name: string
+		builtin?: boolean
+	}[]
+	expect(providers.map((p) => p.id).sort()).toEqual(['frieren', 'icloud'])
+	expect(providers.find((p) => p.id === 'frieren')?.builtin).toBe(true)
+	// The local `icloud` entry wins — not the remote's same-id one.
+	expect(providers.filter((p) => p.id === 'icloud')).toHaveLength(1)
+	expect(providers.find((p) => p.id === 'icloud')?.name).not.toBe('iCloud (cloud copy)')
+})
+
 test('with only the local lane configured (no remote), the list is local alone — unchanged', async () => {
 	// The DO's own shape today: `accounts` with no `remote`.
 	const caps = host()
@@ -181,7 +217,7 @@ test('with only the local lane configured (no remote), the list is local alone �
 	expect(list.map((a) => a.accountId)).toEqual(['u@me.com'])
 })
 
-test('every other accounts.* method stays routed to the local dep, never the remote', async () => {
+test('connect/setEnabled/disconnect stay routed to the local dep, never the remote', async () => {
 	const forwarded: CapabilityCall[] = []
 	const remote: Capabilities = {
 		invoke: async (c) => {
@@ -191,7 +227,6 @@ test('every other accounts.* method stays routed to the local dep, never the rem
 		subscribe: async () => () => {}
 	}
 	const caps = host({ remote })
-	await caps.invoke(call('accounts.listProviders'))
 	await caps.invoke(call('accounts.connect', { providerId: 'frieren' }))
 	await caps.invoke(
 		call('accounts.setEnabled', { accountId: 'frieren', capability: 'ai', enabled: true })
@@ -199,6 +234,8 @@ test('every other accounts.* method stays routed to the local dep, never the rem
 	await caps.invoke(call('accounts.disconnect', { accountId: 'frieren' }))
 	// `frieren` was connected locally, so setEnabled/disconnect find it in the local
 	// store and never reach `remote` — only the ownership check (a local read) ran.
+	// (`listProviders`/`listAccounts` DO reach remote — that's the read union, tested
+	// separately — so this only exercises the three write methods.)
 	expect(forwarded).toEqual([])
 })
 
