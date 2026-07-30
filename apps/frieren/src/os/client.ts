@@ -267,14 +267,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				const delta = event.assistantMessageEvent
 				if (delta?.type === 'text_delta' && delta.delta) {
 					const { text, expression: tagged } = expressionParser.push(delta.delta)
-					// `neutral` is the RESTING face, not a beat, and the return to it belongs to the
-					// avatar's timer (AgentAvatar's REST_DELAY_MS) rather than to the tag stream. Letting
-					// a closing "[neutral]" win the last-tag race is what made an emotion flash for one
-					// sentence and then vanish before the reply had even finished landing — models
-					// habitually sign off calm ("[pleased]Haha, nice one. [neutral]That was a good
-					// setup."). A turn that only ever tags neutral still shows the resting face, because
-					// `agent_start` cleared the previous one.
-					if (tagged && tagged !== 'neutral') expression = tagged
+					// Only emotions reach here: the parser swallows `[neutral]` without reporting it,
+					// because calm is where the face rests rather than something the agent claims.
+					if (tagged) expression = tagged
 					mapMessages((message) =>
 						message.id === id ? { ...message, content: message.content + text } : message
 					)

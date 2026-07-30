@@ -19,8 +19,8 @@
 // the runtime path sends for an uploaded avatar. One definition of "pleased", so a built-in
 // face and a generated one are siblings rather than two unrelated ideas.
 //
-// `neutral` is never generated: the mascot's resting face already IS "relaxed brows, mouth
-// closed and level", so it is the base itself. The brand is not a paraphrase of itself.
+// `neutral` is never generated — calm is not an emotion the agent tags, it is where the face
+// rests, so `resting.png` is the base itself. The brand is not a paraphrase of itself.
 //
 // Cost is ~$0.004 an image, so a full bake is about ten cents. Every cell is cached on
 // disk anyway: a re-run pays for nothing that already exists. `--force` re-bakes the pixels
@@ -58,6 +58,12 @@ const MODEL = 'google/gemini-3.1-flash-image'
 // outline) without touching WHAT it drew. Turn this OFF for a detailed mascot — on an
 // illustration it would flatten real shading.
 const FLATTEN = true
+
+// `neutral` is not one of them: calm is where the face RESTS, not something the agent claims
+// (see @justfiles/agent/expression), so each variant gets a `resting.png` — the base itself,
+// never a model paraphrase of the brand — plus one file per emotion.
+const RESTING = 'resting'
+const COLUMNS: readonly (typeof RESTING | Expression)[] = [RESTING, ...EXPRESSIONS]
 
 // The three archetypes the summoning ritual offers (AgentStep.tsx), plus the one a user who
 // never personalised is already wearing. No gender variants: the character has no gender
@@ -105,8 +111,8 @@ const onlyExpression = flag('expression')
 // A cell is redrawn when it is missing, or when --force/--reroll names it. `--expression`
 // narrows to faces, so it never re-rolls a base out from under the other five.
 const redraw = force || reroll
-const inScope = (variant: string, expression?: Expression) =>
-	(!onlyVariant || onlyVariant === variant) && (!onlyExpression || onlyExpression === expression)
+const inScope = (variant: string, face?: string) =>
+	(!onlyVariant || onlyVariant === variant) && (!onlyExpression || onlyExpression === face)
 
 // ── the engine ─────────────────────────────────────────────────────────────────────────
 
@@ -368,32 +374,32 @@ for (const variant of VARIANTS) {
 
 // ── stage two: an expression for every base ────────────────────────────────────────────
 
-const written: { variant: string; expression: Expression; png: Buffer }[] = []
+const written: { variant: string; face: string; png: Buffer }[] = []
 for (const variant of VARIANTS) {
 	mkdirSync(path.join(OUT, variant.id), { recursive: true })
 	const base = readFileSync(basePath(variant.id))
-	for (const expression of EXPRESSIONS) {
-		const target = path.join(OUT, variant.id, `${expression}.png`)
+	for (const face of COLUMNS) {
+		const target = path.join(OUT, variant.id, `${face}.png`)
 		const done = existsSync(target)
-		if (done && !(redraw && inScope(variant.id, expression))) {
-			written.push({ variant: variant.id, expression, png: readFileSync(target) })
+		if (done && !(redraw && inScope(variant.id, face))) {
+			written.push({ variant: variant.id, face, png: readFileSync(target) })
 			continue
 		}
-		if (!done && !inScope(variant.id, expression)) continue
-		// The resting face IS the mark — never paraphrase the brand through the model.
+		if (!done && !inScope(variant.id, face)) continue
+		// The face at rest IS the mark — never paraphrase the brand through the model.
 		const png =
-			expression === 'neutral'
+			face === RESTING
 				? await normalise(base, SIZE)
 				: await draw(
-						`${variant.id}/${expression}`,
-						facePrompt(expression),
+						`${variant.id}/${face}`,
+						facePrompt(face),
 						base,
 						SIZE,
-						path.join(RAW, variant.id, `${expression}.png`)
+						path.join(RAW, variant.id, `${face}.png`)
 					)
 		writeFileSync(target, png)
-		written.push({ variant: variant.id, expression, png })
-		console.log(`src/agent/faces/${variant.id}/${expression}.png`)
+		written.push({ variant: variant.id, face, png })
+		console.log(`src/agent/faces/${variant.id}/${face}.png`)
 	}
 }
 
@@ -402,13 +408,13 @@ for (const variant of VARIANTS) {
 const TILE = 128
 const PAD = 8
 const LABEL = 92
-const sheetW = LABEL + EXPRESSIONS.length * (TILE + PAD) + PAD
+const sheetW = LABEL + COLUMNS.length * (TILE + PAD) + PAD
 const sheetH = 30 + VARIANTS.length * (TILE + PAD) + PAD
 const text = (x: number, y: number, anchor: string, value: string) =>
 	`<text x="${x}" y="${y}" fill="#bdbdbd" font-family="sans-serif" font-size="15" text-anchor="${anchor}">${value}</text>`
 const labels =
 	`<svg xmlns="http://www.w3.org/2000/svg" width="${sheetW}" height="${sheetH}">` +
-	EXPRESSIONS.map((e, i) => text(LABEL + i * (TILE + PAD) + TILE / 2, 20, 'middle', e)).join('') +
+	COLUMNS.map((face, i) => text(LABEL + i * (TILE + PAD) + TILE / 2, 20, 'middle', face)).join('') +
 	VARIANTS.map((v, row) =>
 		text(LABEL - 12, 30 + row * (TILE + PAD) + TILE / 2 + 5, 'end', v.id)
 	).join('') +
@@ -418,7 +424,7 @@ await sharp({ create: { width: sheetW, height: sheetH, channels: 3, background: 
 		...(await Promise.all(
 			written.map(async (tile) => ({
 				input: await sharp(tile.png).resize(TILE, TILE).toBuffer(),
-				left: LABEL + EXPRESSIONS.indexOf(tile.expression) * (TILE + PAD),
+				left: LABEL + COLUMNS.indexOf(tile.face as Expression) * (TILE + PAD),
 				top: 30 + VARIANTS.findIndex((v) => v.id === tile.variant) * (TILE + PAD)
 			}))
 		)),
@@ -428,7 +434,7 @@ await sharp({ create: { width: sheetW, height: sheetH, channels: 3, background: 
 	.toFile(SHEET)
 
 console.log(
-	`\n${written.length} faces in src/agent/faces (${VARIANTS.length} variants x ${EXPRESSIONS.length} expressions)`
+	`\n${written.length} faces in src/agent/faces (${VARIANTS.length} variants x ${COLUMNS.length} faces)`
 )
 console.log(`${calls} engine calls, $${spent.toFixed(3)}`)
 console.log(`contact sheet: ${path.relative(root, SHEET)}`)

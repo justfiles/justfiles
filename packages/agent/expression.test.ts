@@ -115,11 +115,22 @@ describe('streaming', () => {
 	})
 
 	test('one tag per delta is observed, in order', () => {
-		expect(stream(['[thinking]a. ', '[pleased]b. ', '[neutral]c.']).seen).toEqual([
+		expect(stream(['[thinking]a. ', '[pleased]b. ', '[concerned]c.']).seen).toEqual([
 			'thinking',
 			'pleased',
-			'neutral'
+			'concerned'
 		])
+	})
+
+	// `neutral` is not an emotion the agent may claim (it is where the face rests), but a model
+	// will still emit it. It has to vanish like any other tag rather than print as text, and it
+	// must not disturb the emotion the reply had already earned.
+	test('a neutral tag is swallowed without moving the face', () => {
+		expect(stream(['[pleased]Haha, nice one. ', '[neutral]That was a good setup.'])).toEqual({
+			text: 'Haha, nice one. That was a good setup.',
+			seen: ['pleased']
+		})
+		expect(stream(['[neutral]Done.'])).toEqual({ text: 'Done.', seen: [] })
 	})
 
 	// The tag/link lookahead must not depend on where the stream happens to break.
@@ -131,7 +142,7 @@ describe('streaming', () => {
 	})
 })
 
-test('the prompt lists every expression', () => {
+test('the prompt lists every expression, and offers no tag for calm', () => {
 	expect(EXPRESSION_PROMPT).toContain('[apologetic]')
-	expect(EXPRESSION_PROMPT).toContain('[neutral]')
+	expect(EXPRESSION_PROMPT).not.toContain('[neutral]')
 })
