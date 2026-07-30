@@ -56,10 +56,28 @@ export interface Volume {
 	readFile(path: string): Promise<Uint8Array>
 
 	/**
-	 * Write (create or overwrite) a file atomically.
+	 * Write (create or overwrite) a file.
 	 * Parent directory must exist.
 	 * Throws ENOENT if a parent directory is missing.
 	 * Throws EISDIR if the path refers to a directory.
+	 *
+	 * A CREATE is ATOMIC: the path does not exist, and then it exists holding exactly
+	 * `data`. A concurrent reader never resolves it and finds a prefix (#324) — the
+	 * bytes and the name commit as one fact, so a reader needs no retry, no deadline
+	 * and no way to tell "still being written" from "corrupt". It cannot have one: the
+	 * intermediate states a torn writer exposes are not enumerable from the reader's
+	 * side, and the last of them (a prefix that happens to parse) is silent.
+	 *
+	 * An OVERWRITE is NOT atomic, deliberately. Making it atomic means publishing a
+	 * new inode under the same name, which churns everything keyed by inode (the
+	 * native backend's path map, `metaCache`, `watch`'s change feed, native sync's
+	 * scan+diff) and defeats `putBlob`'s check that the inode it opened is still the
+	 * one the name points at. So a reader concurrent with an overwrite observes the
+	 * old bytes or the new ones, and on a backend that fills in place (native) a torn
+	 * state in between — the same as POSIX, and as Node's `fs.writeFile`. Order it, or
+	 * write to a fresh name and `rename`.
+	 *
+	 * Atomicity here is about VISIBILITY, not durability: nothing is fsynced.
 	 *
 	 * Moves the file's `mtimeNs`/`ctimeNs` to now, so mtime means "when these bytes
 	 * last changed" and an app can sort by recency. A sync-applied write instead
@@ -73,10 +91,11 @@ export interface Volume {
 	 * With `exclusive: true` this is a CREATE, not a write: it throws EEXIST if the
 	 * path is already taken. That makes it a *claim* on a name rather than a probe —
 	 * `exists()` followed by `writeFile` is a TOCTOU, and the loser of the race has
-	 * its file overwritten. The check and the create are one operation in the
-	 * backend (`atomicCreate`: `O_EXCL`, a single IndexedDB transaction, a
-	 * synchronous map check), so concurrent writers are decided by the storage. A
-	 * backend without that capability falls back to a best-effort pre-check.
+	 * its file overwritten. The check, the create and the content are one operation in
+	 * the backend (`atomicCreate`: `O_EXCL` + `link`, a single IndexedDB transaction, a
+	 * synchronous map check), so concurrent writers are decided by the storage and the
+	 * loser can read the winner back immediately. A backend without that capability
+	 * falls back to a best-effort pre-check.
 	 *
 	 * With `update: true` it is an EDIT, not a create: ENOENT if nothing is there
 	 * (`open` without `O_CREAT`). A plain write brings a file into being, and with it
@@ -321,7 +340,15 @@ export function volume(storage: Storage): Volume {
 
 		return dirLookupRequests.run(key, async () => {
 			const entry = await storage.getDirent(dirIno, name)
-			dirCache.set(key, entry)
+			// Only ever cache a HIT. A cached miss has no way to be corrected: this `set`
+			// runs AFTER the await, so it can land after the `invalidateDirCache` of the
+			// very create that filled the name in — writing a stale absence that nothing
+			// invalidates again, and a caller polling the path is then stuck forever. The
+			// asymmetry is the standard one (DNS negative-caching TTLs, HTTP 404-caching
+			// guidance): a stale hit is recoverable, a stale miss is a livelock.
+			// `dirLookupRequests` is single-flight, not a cache, so concurrent misses are
+			// still deduped for free — they just stop being remembered past that.
+			if (entry !== null) dirCache.set(key, entry)
 			return entry
 		})
 	}
@@ -446,16 +473,38 @@ export function volume(storage: Storage): Volume {
 		return entries
 	}
 
-	async function createNode(dirIno: Ino, name: string, meta: InodeMeta): Promise<Ino> {
+	async function createNode(
+		dirIno: Ino,
+		name: string,
+		meta: InodeMeta,
+		content?: Uint8Array
+	): Promise<Ino> {
 		if (storage.caps?.atomicCreate) {
-			const ino = await storage.caps.atomicCreate(dirIno, name, meta)
+			// Write-then-publish (#321/#322/#324): a name must never become reachable
+			// holding anything but `content`. TWO backend shapes, ONE guarantee, and this
+			// is the only place that has to know which is which — a hash-addressed store
+			// publishes the bytes under their hash and the claim carries the reference in
+			// its own meta; a backend without one is handed the bytes and publishes them
+			// together with the name (`storage.fs.ts`'s temp file + `link`).
+			let carried = content
+			if (content !== undefined && storage.caps.content) {
+				const hash = await sha256Hex(content)
+				await storage.caps.content.putByHash(hash, content)
+				meta = { ...meta, size: BigInt(content.length), contentHash: hash }
+				carried = undefined // already durable; nothing left for the backend to write
+			}
+			const ino = await storage.caps.atomicCreate(dirIno, name, meta, carried)
 			invalidateDirCache(dirIno)
 			return ino
 		}
 
+		// No atomic create, so nothing here is atomic: both the orphaned-inode window
+		// this cap exists to close and the create-then-fill one are open. No shipped
+		// backend takes this path.
 		const ino = crypto.randomUUID()
 		await storage.setMeta(ino, meta)
 		await storage.putDirent(dirIno, name, { ino, type: meta.type })
+		if (content !== undefined) await storage.putBlob(ino, content)
 		dirCache.set(dirCacheKey(dirIno, name), { ino, type: meta.type })
 		metaCache.set(ino, meta)
 		return ino
@@ -547,28 +596,12 @@ export function volume(storage: Storage): Volume {
 					mtimeNs: now,
 					ctimeNs: now
 				}
-				// Write-then-publish (docs/write-then-publish.html): on a backend with a
-				// hash-addressed content store, make the bytes durable BEFORE the name is
-				// claimed, and carry the resulting `contentHash` in the claim's own meta. The
-				// claim and "the content is there" then become ONE atomic fact, so a caller
-				// that loses the race below and reads back the winner never observes a
-				// transiently empty file. Backends without the cap keep the old create-then-
-				// fill order (the trailing putBlob below).
-				let contentWritten = false
-				if (storage.caps?.content) {
-					const hash = await sha256Hex(data)
-					await storage.caps.content.putByHash(hash, data)
-					meta.size = BigInt(data.length)
-					meta.contentHash = hash
-					contentWritten = true
-				}
-				// `createNode` throws EEXIST when a concurrent writer took the name
-				// between the resolve above and here — which is what makes `exclusive` a
-				// claim and not just a probe.
-				ino = await createNode(dirIno, name, meta)
-				if (!contentWritten) {
-					await storage.putBlob(ino, data)
-				}
+				// Write-then-publish: `createNode` commits these bytes and this name as ONE
+				// fact, so no reader ever resolves the path and finds a prefix of `data`
+				// (#324). It throws EEXIST when a concurrent writer took the name between
+				// the resolve above and here — which is what makes `exclusive` a claim and
+				// not just a probe.
+				ino = await createNode(dirIno, name, meta, data)
 			}
 
 			invalidateIno(ino)
@@ -595,14 +628,18 @@ export function volume(storage: Storage): Volume {
 			} else {
 				const { dirIno, name } = await resolveParent(path)
 				const now = nowNs()
-				ino = await createNode(dirIno, name, {
-					type: FileType.Regular,
-					size: 0n,
-					mode: 0o644,
-					mtimeNs: now,
-					ctimeNs: now
-				})
-				await storage.putBlob(ino, data)
+				ino = await createNode(
+					dirIno,
+					name,
+					{
+						type: FileType.Regular,
+						size: 0n,
+						mode: 0o644,
+						mtimeNs: now,
+						ctimeNs: now
+					},
+					data // appending to nothing is a create, and it publishes atomically too
+				)
 			}
 			invalidateIno(ino)
 		},
