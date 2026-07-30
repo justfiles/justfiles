@@ -40,3 +40,22 @@ test('a spawn that cannot read or write throws — never falls back to an unkeye
 	const failing = () => ({ exited: Promise.resolve(1), text: async () => '' })
 	await expect(getOrCreateKey('kodama.test.unreadable', ACCOUNT, failing)).rejects.toThrow()
 })
+
+test('loses a create race but returns the Keychain winner, not its own bytes', async () => {
+	// Two daemons starting concurrently on a fresh install can both miss the initial read (no
+	// single-writer lock yet — Launcher.swift). Only one `add` wins; the loser must re-read and
+	// return the WINNER's bytes, or it would encrypt with a key nothing else agrees on.
+	const winner = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64')
+	let lostTheRace = false
+	const spawn = (cmd: readonly string[]) => {
+		if (cmd[1] === 'find-generic-password') {
+			return lostTheRace
+				? { exited: Promise.resolve(0), text: async () => winner }
+				: { exited: Promise.resolve(1), text: async () => '' }
+		}
+		lostTheRace = true // the `add` lost to a concurrent writer
+		return { exited: Promise.resolve(1), text: async () => '' }
+	}
+	const key = await getOrCreateKey('kodama.test.race', ACCOUNT, spawn)
+	expect(Buffer.from(key).toString('base64')).toBe(winner)
+})

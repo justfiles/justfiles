@@ -101,3 +101,36 @@ test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)'
 
 	await rm(sealedRoot, { recursive: true, force: true })
 })
+
+test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts on boot (upgrade path)', async () => {
+	const SETTINGS = 'app.justfiles.frieren.settings'
+	const upgradeRoot = await mkdtemp(join(tmpdir(), 'daemon-kernel-upgrade-'))
+
+	// Connect an account with no codec — exactly what every account on disk before this
+	// feature landed looks like.
+	const clear = await buildKernel(volume(await nativeStorage(upgradeRoot)))
+	await clear.dispatch(SETTINGS, {
+		type: 'connectAccount',
+		params: {
+			providerId: 'icloud',
+			credentials: { username: 'old@example.com', password: 'PRE-EXISTING-PW' }
+		}
+	} as Message)
+	const accountPath = join(
+		upgradeRoot,
+		'private',
+		'accounts',
+		`${encodeURIComponent('old@example.com')}.json`
+	)
+	expect(await readFile(accountPath, 'utf8')).toContain('PRE-EXISTING-PW')
+
+	// Reboot the SAME Volume with a key now available — nothing ever rewrites this record
+	// (an iCloud app-specific password is written once, at connect), so only a reseal sweep
+	// on boot can close the gap.
+	await buildKernel(volume(await nativeStorage(upgradeRoot)), {
+		secretCodec: aesGcmSecretCodec('a-test-root-secret')
+	})
+	expect(await readFile(accountPath, 'utf8')).not.toContain('PRE-EXISTING-PW')
+
+	await rm(upgradeRoot, { recursive: true, force: true })
+})

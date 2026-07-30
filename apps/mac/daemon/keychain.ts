@@ -50,7 +50,11 @@ export function getOrCreateKey(
 	return promise
 }
 
-async function resolve(service: string, account: string, spawn: Spawn): Promise<Uint8Array> {
+async function readItem(
+	spawn: Spawn,
+	service: string,
+	account: string
+): Promise<Uint8Array | undefined> {
 	const found = await run(spawn, [
 		'security',
 		'find-generic-password',
@@ -60,10 +64,19 @@ async function resolve(service: string, account: string, spawn: Spawn): Promise<
 		account,
 		'-w'
 	])
-	if (found.code === 0) return Buffer.from(found.out.trim(), 'base64')
+	return found.code === 0 ? Buffer.from(found.out.trim(), 'base64') : undefined
+}
 
-	// Not found (the common case) — mint one and store it. `-U` upserts, so a race with
-	// another process creating the same item lands as an update, not a duplicate-item error.
+async function resolve(service: string, account: string, spawn: Spawn): Promise<Uint8Array> {
+	const found = await readItem(spawn, service, account)
+	if (found) return found
+
+	// Not found (the common case) — mint one and store it WITHOUT replacing an existing item
+	// (no `-U`): the daemon has no single-writer lock yet (Launcher.swift), so two processes
+	// starting concurrently on a fresh install can both miss the read above. Only one `add`
+	// wins; the loser's bytes are never stored, so returning them would encrypt with a key
+	// nothing else agrees on. Keychain is the source of truth either way — re-read on a lost
+	// race (or any other add failure) and use whatever is actually stored.
 	const bytes = crypto.getRandomValues(new Uint8Array(KEY_BYTES))
 	const created = await run(spawn, [
 		'security',
@@ -73,9 +86,11 @@ async function resolve(service: string, account: string, spawn: Spawn): Promise<
 		'-a',
 		account,
 		'-w',
-		Buffer.from(bytes).toString('base64'),
-		'-U'
+		Buffer.from(bytes).toString('base64')
 	])
-	if (created.code !== 0) throw new Error(`keychain: could not create item ${service}/${account}`)
-	return bytes
+	if (created.code === 0) return bytes
+
+	const winner = await readItem(spawn, service, account)
+	if (winner) return winner
+	throw new Error(`keychain: could not create item ${service}/${account}`)
 }

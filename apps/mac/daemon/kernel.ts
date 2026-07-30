@@ -5,7 +5,8 @@ import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities
 import {
 	accountsCapabilities,
 	aesGcmSecretCodec,
-	type SecretCodec
+	type SecretCodec,
+	sealAccounts
 } from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
@@ -40,19 +41,27 @@ const accountsProviders = () => [
 // macOS Keychain item (see keychain.ts), turned into the string `aesGcmSecretCodec` derives
 // its subkey from. Memoised once per process — every consumer (this kernel's `ai`/`accounts`
 // wiring below, and agent.ts's own chat session) must seal/unseal with the SAME codec, and
-// `getOrCreateKey` already memoises the one Keychain read underneath it.
+// `getOrCreateKey` already memoises the one Keychain read underneath it. A transient failure
+// evicts itself (mirroring `getOrCreateKey`'s own cache), so a later call retries Keychain
+// access instead of the daemon being stuck failing until restart.
 let secretCodecOnce: Promise<SecretCodec> | undefined
 export function accountsSecretCodec(): Promise<SecretCodec> {
-	secretCodecOnce ??= getOrCreateKey().then((key) =>
-		aesGcmSecretCodec(Buffer.from(key).toString('base64'))
-	)
+	secretCodecOnce ??= getOrCreateKey()
+		.then((key) => aesGcmSecretCodec(Buffer.from(key).toString('base64')))
+		.catch((error: unknown) => {
+			secretCodecOnce = undefined
+			throw error
+		})
 	return secretCodecOnce
 }
 
 export function getKernel(): Promise<Kernel> {
-	kernelOnce ??= Promise.all([getVolume(), accountsSecretCodec()]).then(([fs, secretCodec]) =>
-		buildKernel(fs, { secretCodec })
-	)
+	kernelOnce ??= Promise.all([getVolume(), accountsSecretCodec()])
+		.then(([fs, secretCodec]) => buildKernel(fs, { secretCodec }))
+		.catch((error: unknown) => {
+			kernelOnce = undefined
+			throw error
+		})
 	return kernelOnce
 }
 
@@ -67,6 +76,13 @@ export async function buildKernel(
 	opts: { secretCodec?: SecretCodec } = {}
 ): Promise<Kernel> {
 	const { secretCodec } = opts
+	// Anything already on disk in the clear (an account connected before the Keychain key
+	// existed, or while it was unreadable) gets sealed now: `decode` deliberately passes a
+	// non-envelope through unchanged (that's what makes turning encryption on a no-flag-day
+	// change), so nothing else would ever rewrite a credential that doesn't rotate — iCloud's
+	// app-specific password is written once, at connect, and never again. Best-effort: a boot
+	// must succeed even if this fails.
+	await sealAccounts(fs, { secretCodec })
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
