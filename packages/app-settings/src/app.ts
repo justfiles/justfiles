@@ -21,6 +21,19 @@ import * as v from 'valibot'
 // between dispatches.
 export type Category = 'accounts' | 'usage'
 
+// Which lane an account's credential lives in. An older host that hasn't deployed
+// `AccountInfo.origin` yet omits it — degrade to 'cloud' rather than crash (#296).
+export function originKind(account: AccountInfo): 'cloud' | 'device' {
+	return account.origin?.kind ?? 'cloud'
+}
+
+// True once the connected accounts span both lanes — only then does the two-lane
+// explainer in the GUI earn its place; a single-lane list needs no extra copy.
+export function hasBothOrigins(accounts: AccountInfo[]): boolean {
+	const kinds = new Set(accounts.map(originKind))
+	return kinds.has('cloud') && kinds.has('device')
+}
+
 export type SettingsState = {
 	category: Category
 	user: UserProfile | null

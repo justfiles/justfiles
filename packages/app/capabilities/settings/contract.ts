@@ -18,6 +18,7 @@ import type { AccountsAdmin } from '../accounts/contract.ts'
 // surface. They belong to the accounts model; this capability only carries them.
 export type {
 	AccountInfo,
+	AccountOrigin,
 	AccountsAdmin,
 	CapabilityId,
 	CredentialField,

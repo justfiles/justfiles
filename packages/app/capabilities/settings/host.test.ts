@@ -137,6 +137,70 @@ test('a method with no dep here goes to the remote, frame intact; the rest stay 
 	expect(forwarded).toHaveLength(2)
 })
 
+// D1's "two lanes" on one device (#290/#296): a signed-in Mac can hold accounts both
+// connected directly on it AND owned by the cloud, reached through `remote` (#305).
+// `accounts.listAccounts` is the one method that unions them; every other accounts.*
+// method stays single-sided.
+test('accounts.listAccounts unions the local list with the remote one when both are wired', async () => {
+	const vol = volume(memStorage())
+	const providers = [icloudProvider(), platformProvider({ generate: async () => 'x' })]
+	const { accounts } = accountsCapabilities(providers, vol, {
+		origin: { kind: 'device', label: 'This Mac' }
+	})
+	await accounts.connect({
+		providerId: 'icloud',
+		credentials: { username: 'u@me.com', password: 'p' }
+	})
+	const cloudAccount = {
+		accountId: 'g@gmail.com',
+		providerId: 'google',
+		enabled: [],
+		config: {},
+		origin: { kind: 'cloud' }
+	}
+	const remote: Capabilities = {
+		invoke: async () => [cloudAccount],
+		subscribe: async () => () => {}
+	}
+	const caps = settingsHost({ accounts, remote })
+
+	const list = (await caps.invoke(call('accounts.listAccounts'))) as { accountId: string }[]
+	expect(list.map((a) => a.accountId).sort()).toEqual(['g@gmail.com', 'u@me.com'])
+})
+
+test('with only the local lane configured (no remote), the list is local alone — unchanged', async () => {
+	// The DO's own shape today: `accounts` with no `remote`.
+	const caps = host()
+	await caps.invoke(
+		call('accounts.connect', {
+			providerId: 'icloud',
+			credentials: { username: 'u@me.com', password: 'p' }
+		})
+	)
+	const list = (await caps.invoke(call('accounts.listAccounts'))) as { accountId: string }[]
+	expect(list.map((a) => a.accountId)).toEqual(['u@me.com'])
+})
+
+test('every other accounts.* method stays routed to the local dep, never the remote', async () => {
+	const forwarded: CapabilityCall[] = []
+	const remote: Capabilities = {
+		invoke: async (c) => {
+			forwarded.push(c)
+			return []
+		},
+		subscribe: async () => () => {}
+	}
+	const caps = host({ remote })
+	await caps.invoke(call('accounts.listProviders'))
+	await caps.invoke(call('accounts.connect', { providerId: 'frieren' }))
+	await caps.invoke(
+		call('accounts.setEnabled', { accountId: 'frieren', capability: 'ai', enabled: true })
+	)
+	await caps.invoke(call('accounts.disconnect', { accountId: 'frieren' }))
+	// Only `accounts.listAccounts` ever consults `remote` — none of the above did.
+	expect(forwarded).toEqual([])
+})
+
 test('an unknown method (or a subscribe) is UNAVAILABLE, never a crash', async () => {
 	const caps = host()
 	await expect(caps.invoke(call('accounts.nope'))).rejects.toMatchObject({

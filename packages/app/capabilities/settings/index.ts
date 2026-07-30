@@ -3,6 +3,7 @@ import type { SettingsCapability } from './contract.ts'
 
 export type {
 	AccountInfo,
+	AccountOrigin,
 	CapabilityId,
 	CredentialField,
 	CredentialsSchema,

@@ -1,6 +1,6 @@
 // How a host serves `settings`. This file composes what already exists — the accounts
 // admin impl, a usage thunk, an identity thunk — and implements no admin logic itself.
-// Two things make it unlike the other capability hosts:
+// Three things make it unlike the other capability hosts:
 //
 //  • THE GATE IS APP IDENTITY. One allowlist check covers every method, reported as
 //    UNAVAILABLE (not DENIED) so a non-first-party app cannot tell the capability
@@ -12,6 +12,14 @@
 //    and delegates `accounts.*`/`host.usage` to the DO (credentials live under
 //    `/private/**`, which never replicates), the DO wires both and delegates nothing,
 //    and the Mac daemon wires `accounts` only — so its Usage pane hides itself.
+//  • `accounts.listAccounts` IS THE ONE UNION. A signed-in device can hold accounts in
+//    BOTH lanes at once — some connected directly on it, some owned by the cloud and
+//    reached through `remote` (#305) — and the user expects to see all of them in one
+//    Settings list, each tagged by `AccountInfo.origin` (#296). So when `accounts` AND
+//    `remote` are both configured, the list call alone fans out to both and
+//    concatenates; every OTHER `accounts.*` method (mutating one account) stays
+//    routed to wherever its dep is — an account is administered where it lives, never
+//    both places.
 
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
@@ -59,6 +67,16 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 	return {
 		invoke: async (call) => {
 			if (!SETTINGS_ALLOWLIST.has(call.appId)) throw unavailable(call.method)
+			// The one union (see the file header): both lanes configured ⇒ both queried,
+			// concatenated. One lane configured ⇒ that lane alone, unchanged from before
+			// this existed (the DO has no `remote`; the browser has no `accounts`).
+			if (call.method === 'accounts.listAccounts' && accounts && remote) {
+				const [local, cloud] = await Promise.all([
+					accounts.listAccounts(...(call.args as [Record<string, never>])),
+					remote.invoke(call) as Promise<unknown[]>
+				])
+				return [...local, ...cloud]
+			}
 			const method = served[call.method as keyof SettingsCapability]
 			// The frame rides on unchanged, so the far end gates on the same appId.
 			if (!method) {

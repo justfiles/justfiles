@@ -37,6 +37,14 @@ export interface ProviderInfo {
 	credentialsSchema?: CredentialsSchema
 }
 
+// Who acquired this account's credential — the only thing D1/D2 ("one account, many
+// hosts", #290) let a device read without holding the bytes. The DO is always
+// `cloud`; a device that connected an account directly (e.g. the mac daemon) is
+// `device`, labelled for display (a hostname) — not a boolean, so a third owner
+// never needs a breaking change. Optional: an older host that hasn't deployed this
+// field omits it, and a reader treats that as `cloud`.
+export type AccountOrigin = { kind: 'cloud' } | { kind: 'device'; label: string }
+
 // A connected account, projected for the UI. NEVER carries credentials.
 export interface AccountInfo {
 	accountId: string
@@ -46,6 +54,7 @@ export interface AccountInfo {
 	// models). Opaque to the contract; the provider/host shapes it.
 	config: Partial<Record<CapabilityId, unknown>>
 	lastError?: string
+	origin?: AccountOrigin
 }
 
 // The admin methods, as `accountsCapabilities` hands them to `settingsHost`. Not a
