@@ -321,36 +321,90 @@ describe('use-facet dispatch', () => {
 		])
 	})
 
-	test('a writeback that lost the race to disconnect does not resurrect the account', async () => {
-		// A capability call is bound over a SNAPSHOT of the account. A provider whose token
-		// refreshes mid-call writes back when the exchange lands — which can be after the user
-		// disconnected. Recreating the record there would bring the credential back after a
-		// successful disconnect, so the writeback is conditional on the record still existing.
-		const { caps, accounts } = await setup(
-			testProviders({
-				google: {
-					...fakeGoogle(),
-					capabilities: {
-						email: {
-							bind: (account) => ({
-								listUnread: async () => {
-									await caps.accounts.invoke(admin('disconnect', { accountId: 'g1' }))
-									await account.persist({ refresh: 'rotated' })
-									return []
-								},
-								readDetail: async () => {
-									throw new Error('not used')
-								},
-								markRead: async () => ({ success: true })
-							})
-						}
+	// A capability call is bound over a SNAPSHOT of the account, and a provider whose token
+	// refreshes mid-call writes back when the exchange lands — which can be long after. These
+	// three pin the writeback's compare-and-set: it replaces only the value this client last saw.
+	describe('credential writeback', () => {
+		// A Google-shaped provider whose one email call does `duringCall` (the race), then writes
+		// back rotated creds — exactly the ordering a mid-call token refresh produces.
+		function persistingGoogle(duringCall: () => Promise<void>, rotated: unknown): Provider {
+			return {
+				...fakeGoogle(),
+				capabilities: {
+					email: {
+						bind: (account) => ({
+							listUnread: async () => {
+								await duringCall()
+								await account.persist(rotated)
+								return []
+							},
+							readDetail: async () => {
+								throw new Error('not used')
+							},
+							markRead: async () => ({ success: true })
+						})
 					}
 				}
+			}
+		}
+
+		test('one that lost the race to disconnect does not resurrect the account', async () => {
+			// Writing here would bring the credential back after a disconnect that already
+			// reported success.
+			const { caps, accounts } = await setup(
+				testProviders({
+					google: persistingGoogle(() => caps.accounts.disconnect({ accountId: 'g1' }), {
+						refresh: 'rotated'
+					})
+				})
+			)
+			await accounts.put({ id: 'g1', provider: 'google', creds: { refresh: 'R' } })
+			await caps.email.invoke(use('email', 'listUnread', {}))
+			expect(await accounts.get('g1')).toBeUndefined()
+		})
+
+		test('one superseded by a newer grant is dropped, scopes and all', async () => {
+			// Incremental consent (setEnabled) and a re-connect both replace the whole grant while
+			// a refresh is in flight. Overwriting it with the older refresh result is the lost
+			// update that leaves the user re-connecting.
+			const vol = volume(memStorage())
+			const accounts = volumeAccountStore(vol)
+			await accounts.put({ id: 'g1', provider: 'google', creds: { refresh: 'R' } })
+			const caps = accountsCapabilities(
+				testProviders({
+					google: persistingGoogle(
+						() =>
+							accounts.put({
+								id: 'g1',
+								provider: 'google',
+								creds: { refresh: 'NEWLY-CONSENTED' },
+								scopes: [GMAIL_SCOPE]
+							}),
+						{ refresh: 'rotated-from-the-old-grant' }
+					)
+				}),
+				vol
+			)
+			await caps.email.invoke(use('email', 'listUnread', {}))
+			expect(await accounts.get('g1')).toMatchObject({
+				creds: { refresh: 'NEWLY-CONSENTED' },
+				scopes: [GMAIL_SCOPE]
 			})
-		)
-		await accounts.put({ id: 'g1', provider: 'google', creds: { refresh: 'R' } })
-		await caps.email.invoke(use('email', 'listUnread', {}))
-		expect(await accounts.get('g1')).toBeUndefined()
+		})
+
+		test('successive rotations from one client all land', async () => {
+			// The compare-and-set must not be a one-shot: pi-ai's Codex store rotates repeatedly
+			// through the same lease, and every rotation has to reach the record.
+			const vol = volume(memStorage())
+			const accounts = volumeAccountStore(vol)
+			await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+			await volumeActiveAi(vol).set({ accountId: 'u@openai' })
+			await resolveAiAccount(vol, async (l) => {
+				await l.persist({ access: 'r1' })
+				await l.persist({ access: 'r2' })
+			})
+			expect((await accounts.get('u@openai'))?.creds).toEqual({ access: 'r2' })
+		})
 	})
 
 	test('a use facet with no backing account is UNAVAILABLE', async () => {
