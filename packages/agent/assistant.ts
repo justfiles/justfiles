@@ -184,7 +184,11 @@ export async function createAssistant({
 		}
 
 		if (shouldCompact(agent, compaction)) {
-			const branch = await session.walkActiveBranch()
+			// Pinned to the append cursor: this reads the branch the turn just extended and is
+			// about to append a summary node to. Left unpinned, a peer entry arriving in this
+			// window would move the walk to its branch — the compaction node would attach there and
+			// `firstKeptEntryId` would point into a lineage the summary is not about.
+			const branch = await session.walkActiveBranch(session.activeLeafId)
 			const prepared = prepareCompaction(branch, compaction)
 			const notes = await text.takeNotes(prepared.content)
 			if (notes) {
@@ -526,6 +530,13 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 // to the previous session. No content is lost (there was none); the INTENT is. Recording it
 // would mean host-private state under /.state, which #300 leaves optional and nothing has
 // asked for.
+//
+// And note what `route()` being called ONCE per host costs (#337, pre-existing): a warm host
+// never re-evaluates, so it never rolls over on idle and never joins a session a PEER started.
+// Two devices already in the same session converge fine — that is what the turn-boundary
+// rehydrate and the derived-leaf read handle — but a peer starting a NEW one splits them until
+// a restart. Fixing it needs a guard so `newSession()` does not become a no-op, and #334 first
+// so the scan is not paid per turn.
 async function createSession(
 	ctx: MessageContext,
 	volume: Volume,

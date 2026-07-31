@@ -10,6 +10,7 @@ import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
+import type { SessionEntry } from './session.manager.ts'
 import { createAgentSession, type SessionEvent } from './session.ts'
 
 const encoder = new TextEncoder()
@@ -45,10 +46,26 @@ function assistant(
 // `complete` backs the text helper (compaction notes / memory consolidation).
 // `seen` records the context handed to the model on each call — the only way to assert what
 // the model actually got, rather than what we hoped it got.
-function scriptedBackend(messages: AssistantMessage[], complete = '', seen: unknown[] = []) {
+function scriptedBackend(
+	messages: AssistantMessage[],
+	complete = '',
+	hooks: {
+		// The context handed to the model on each call — the only way to assert what the model
+		// actually got, rather than what we hoped it got.
+		seen?: unknown[]
+		// Runs before a turn's stream is produced, so a test can land a peer's shard exactly
+		// where sync would: mid-turn, after the context was built and before it is persisted.
+		beforeStream?: (call: number) => Promise<void>
+		// `shouldCompact` reads it off the model; without one the comparison is NaN and
+		// compaction never fires.
+		contextWindow?: number
+	} = {}
+) {
 	const queue = [...messages]
-	const streamFn: StreamFn = (_model, context) => {
-		seen.push(context)
+	let calls = 0
+	const streamFn: StreamFn = async (_model, context) => {
+		hooks.seen?.push(context)
+		await hooks.beforeStream?.(++calls)
 		const stream = createAssistantMessageEventStream()
 		const message = queue.shift() ?? assistant([])
 		stream.push({ type: 'done', reason: 'stop', message })
@@ -58,7 +75,7 @@ function scriptedBackend(messages: AssistantMessage[], complete = '', seen: unkn
 	const completeFn: AgentBackend['completeFn'] = async () =>
 		assistant(complete ? [{ type: 'text', text: complete }] : [])
 	return {
-		model: { id: 'test' } as Model<Api>,
+		model: { id: 'test', contextWindow: hooks.contextWindow } as Model<Api>,
 		streamFn,
 		completeFn,
 		revision: 'r1'
@@ -374,7 +391,7 @@ describe('createAgentSession', () => {
 					assistant([{ type: 'text', text: 'second reply' }])
 				],
 				'',
-				seen
+				{ seen }
 			),
 			compaction: NO_COMPACTION
 		})
@@ -437,6 +454,118 @@ describe('createAgentSession', () => {
 			'my second question',
 			'second reply'
 		])
+	})
+
+	// The reconnect path: a warm host (`getBuilt` memoises the assistant) serving a transcript
+	// snapshot to a UI that just reconnected. No prompt is involved, so this must not depend on
+	// the turn boundary — otherwise reopening the tab shows a conversation missing the turn the
+	// other device just had, which is the exact promise of #300.
+	test('history shows a peer turn on a warm host with no prompt in between', async () => {
+		const vol = volume(memStorage())
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'answered here' }])]),
+			compaction: NO_COMPACTION
+		})
+		await session.prompt('asked here')
+
+		const dir = '/system/agents/main/sessions'
+		const mine = (await vol.readdir(dir)).map((e) => e.name).find((n) => n.endsWith('.jsonl'))
+		const lines = new TextDecoder()
+			.decode(await vol.readFile(`${dir}/${mine}`))
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l))
+		const shard = parseSessionShard(mine as string)
+		await vol.writeFile(
+			sessionShard('main', shard?.sessionId as string, shard?.startTs as Date, 'bbbb2222'),
+			new TextEncoder().encode(
+				`${JSON.stringify({
+					type: 'message',
+					role: 'user',
+					content: 'a peer turn, arriving by sync',
+					id: 'bbbb0001',
+					parentId: lines.at(-1).id,
+					ts: new Date(Date.now() + 60_000).toISOString()
+				})}\n`
+			)
+		)
+
+		expect((await session.history()).map((e) => ('content' in e ? e.content : e.type))).toEqual([
+			'asked here',
+			'answered here',
+			'a peer turn, arriving by sync'
+		])
+	})
+
+	// The assistant-level wiring of the pinned compaction read. Without a test here, the
+	// `session.activeLeafId` argument in assistant.ts could be "simplified" away and every
+	// other test would still pass — the manager-level test only proves the manager honours
+	// the argument, not that the caller passes it.
+	test('compaction after a peer arrives mid-turn stays on the local branch', async () => {
+		const vol = volume(memStorage())
+		const dir = '/system/agents/main/sessions'
+
+		// Lands while the model is streaming turn 2: after that turn's context was built, before
+		// its entries are persisted — precisely the window the compaction read sits in.
+		const landPeerShard = async (call: number) => {
+			if (call !== 2) return
+			const mine = (await vol.readdir(dir)).map((e) => e.name).find((n) => n.endsWith('.jsonl'))
+			const shard = parseSessionShard(mine as string)
+			await vol.writeFile(
+				sessionShard('main', shard?.sessionId as string, shard?.startTs as Date, 'bbbb2222'),
+				encoder.encode(
+					`${JSON.stringify({
+						type: 'message',
+						role: 'user',
+						content: 'a peer, while I was streaming',
+						id: 'bbbb0001',
+						parentId: null,
+						ts: new Date(Date.now() + 60_000).toISOString()
+					})}\n`
+				)
+			)
+		}
+
+		const busy = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 5000,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+		}
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend(
+				[
+					assistant([{ type: 'text', text: 'first reply' }]),
+					// Only this turn reports enough tokens to trigger compaction.
+					assistant([{ type: 'text', text: 'second reply' }], { usage: busy })
+				],
+				'a summary of the local conversation',
+				{ beforeStream: landPeerShard, contextWindow: 1000 }
+			),
+			compaction: { enabled: true, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+
+		await session.prompt('first question')
+		await session.prompt('second question')
+
+		const mine = (await vol.readdir(dir))
+			.map((e) => e.name)
+			.find((n) => n.includes('bbbb2222') === false && n.endsWith('.jsonl')) as string
+		const written = new TextDecoder()
+			.decode(await vol.readFile(`${dir}/${mine}`))
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l) as SessionEntry)
+		const node = written.find((e) => e.type === 'compaction')
+		const localTail = written.filter((e) => e.type === 'message').at(-1)
+
+		expect(node).toBeDefined()
+		expect(node?.parentId).toBe(localTail?.id)
+		expect(node?.parentId).not.toBe('bbbb0001')
 	})
 
 	// The payload of #300: pick up on another device. A peer's shard is on disk (it arrived by

@@ -159,32 +159,24 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 	// Appends go HERE and nowhere else. A peer's shard is read-only to this device, and that
 	// single-writer rule is what makes whole-file LWW harmless.
 	const ownShard = file(volume, sessionShard(ref.agentId, ref.sessionId, ref.startTs, ref.deviceId))
-	let activeLeafId: EntryId | null = null
+	// TWO leaves, deliberately, because conflating them is what the last two rounds of review
+	// were about:
+	//
+	// - the APPEND CURSOR (`cursor`) — where this device is writing. Advanced by `append`, and
+	//   adopted at the turn boundary. A turn is several appends (its messages, then a compaction
+	//   node), so nothing else may move it: a peer entry arriving between them would otherwise
+	//   capture the compaction and drop the turn that just finished.
+	// - the DERIVED leaf — the conversation as it stands right now, recomputed per read and
+	//   never stored, so computing it cannot disturb the cursor.
+	let cursor: EntryId | null = null
 	let loaded = false
 
-	// The leaf advances at exactly ONE place: `buildSessionContext`, which IS the turn boundary
-	// (assistant.ts rehydrates from it before every prompt). That single point is what lets a
-	// long-lived host pick up a peer's turn — sync can deliver a shard at any moment, and a
-	// manager that resolved its leaf once would walk from a leaf that was true only at
-	// construction, forking the next local turn off a stale tip.
-	async function refresh(): Promise<SessionEntry[]> {
-		const all = await readSession(volume, dir, ref.sessionId)
-		activeLeafId = activeLeaf(all)
-		loaded = true
-		return all
-	}
+	const readAll = () => readSession(volume, dir, ref.sessionId)
 
-	// Every OTHER read gets fresh entries but walks from wherever the writer currently is.
-	//
-	// Refreshing here instead looks harmless and is not: a turn is several appends — its
-	// messages, then a compaction node — and `walkActiveBranch` sits BETWEEN them, because
-	// compaction reads the branch it is about to summarise. A peer entry arriving in that window
-	// would move the leaf, so the compaction node would attach to the peer's branch and drop the
-	// turn that just finished; `prepareCompaction` would also take `firstKeptEntryId` from a
-	// lineage the summary is not about. A read must never move the writer's cursor.
-	async function entries(): Promise<SessionEntry[]> {
-		if (!loaded) return refresh()
-		return readSession(volume, dir, ref.sessionId)
+	async function ensureCursor(): Promise<void> {
+		if (loaded) return
+		cursor = activeLeaf(await readAll())
+		loaded = true
 	}
 
 	async function appendEntries(entries: SessionEntry[]): Promise<void> {
@@ -195,17 +187,17 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 	const mgr: SessionManager = {
 		sessionId: ref.sessionId,
 		get activeLeafId() {
-			return activeLeafId
+			return cursor
 		},
 
 		async append(payloads) {
-			// Same reason as `entries()`: continue the lineage this device is writing. Only the
-			// very first call needs to find out where that is.
-			if (!loaded) await refresh()
+			// Always the cursor: continue the lineage this device is writing. Only the first call
+			// has to find out where that is.
+			await ensureCursor()
 
 			const now = new Date().toISOString()
 			const newEntries: SessionEntry[] = []
-			let parentId = activeLeafId
+			let parentId = cursor
 
 			for (const p of payloads) {
 				const entry = { ...p, id: entryId(), parentId, ts: now } as SessionEntry
@@ -215,13 +207,18 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 
 			await appendEntries(newEntries)
 			const lastEntry = newEntries.at(-1)
-			if (lastEntry) activeLeafId = lastEntry.id
+			if (lastEntry) cursor = lastEntry.id
 			return { compacted: false }
 		},
 
+		// The turn boundary, and the ONE place the cursor adopts the derived leaf: this is what
+		// lets a long-lived host continue a peer's lineage instead of forking off whatever was
+		// newest when it booted.
 		async buildSessionContext() {
-			const all = await refresh()
-			const branch = walkBranch(all, activeLeafId)
+			const all = await readAll()
+			cursor = activeLeaf(all)
+			loaded = true
+			const branch = walkBranch(all, cursor)
 			const messages: ContextMessage[] = []
 
 			let startIdx = 0
@@ -247,8 +244,15 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 			return messages
 		},
 
-		async walkActiveBranch() {
-			return walkBranch(await entries(), activeLeafId)
+		// Fresh by default — "active" means active NOW, so a reconnecting UI sees a peer's turn
+		// without having to prompt first. Deriving here does NOT move the cursor, so a read
+		// arriving mid-turn (a UI poll, say) cannot steal the compaction that follows.
+		//
+		// `fromLeaf` is for the one caller that needs the other leaf: compaction reads the branch
+		// it is about to summarise and append to, so it must pin to the cursor.
+		async walkActiveBranch(fromLeaf) {
+			const all = await readAll()
+			return walkBranch(all, fromLeaf === undefined ? activeLeaf(all) : fromLeaf)
 		},
 		branch() {
 			throw new Error('not implemented')

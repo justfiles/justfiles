@@ -553,6 +553,64 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 		expect(node?.parentId).not.toBe('bbbb0001')
 	})
 
+	// A reconnecting UI (frieren tab reload, mac daemon resnapshot) hits a WARM host, so
+	// `history()` is a standalone read with no prompt behind it. It has to show the
+	// conversation as it stands, or #300's headline — open the other device and see the same
+	// conversation — fails on exactly the path a user takes.
+	test('a standalone read shows a peer arrival without needing a prompt', async () => {
+		const vol = volume(memStorage())
+		const manager = await makeManager(vol, 'aaaa1111')
+		await manager.append([user('asked here'), assistant('answered here')])
+
+		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.bbbb2222.jsonl', [
+			entry({
+				id: 'bbbb0001',
+				content: 'a peer turn, arriving by sync',
+				parentId: manager.activeLeafId,
+				ts: new Date(Date.now() + 60_000).toISOString()
+			})
+		])
+
+		// No prompt, no rebuild, no restart.
+		expect(
+			(await manager.walkActiveBranch()).map((e) => ('content' in e ? e.content : e.type))
+		).toEqual(['asked here', 'answered here', 'a peer turn, arriving by sync'])
+	})
+
+	// ...and deriving for display must not disturb the writer, or the compaction bug comes
+	// back through the UI instead of through the compaction flow itself. A polling transcript
+	// view is a read that can land at any moment, including mid-turn.
+	test('a display read mid-turn does not steal the compaction', async () => {
+		const vol = volume(memStorage())
+		const manager = await makeManager(vol, 'aaaa1111')
+		await manager.append([user('my question'), assistant('my reply')])
+		const myTail = manager.activeLeafId as string
+
+		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.bbbb2222.jsonl', [
+			entry({
+				id: 'bbbb0001',
+				content: 'a peer, while I was mid-turn',
+				parentId: null,
+				ts: new Date(Date.now() + 60_000).toISOString()
+			})
+		])
+
+		// The UI polls. It legitimately sees the peer's branch — that IS the active one now.
+		expect(
+			(await manager.walkActiveBranch()).map((e) => ('content' in e ? e.content : e.type))
+		).toEqual(['a peer, while I was mid-turn'])
+
+		// The writer is unmoved by that read.
+		expect(manager.activeLeafId).toBe(myTail)
+		await manager.append([compactionPayload('summary of my turn', myTail)])
+		const written = new TextDecoder()
+			.decode(await vol.readFile(`${SESSIONS}/2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl`))
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l) as SessionEntry)
+		expect(written.find((e) => e.type === 'compaction')?.parentId).toBe(myTail)
+	})
+
 	// The reviewer's sequence on #335, and the reason a read must not move the writer's cursor:
 	// compaction reads the branch it is about to summarise, and that read sits BETWEEN the
 	// turn's messages and the compaction node (assistant.ts). A peer arriving in that window
@@ -573,8 +631,9 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 			})
 		])
 
-		// What the compaction flow does: read the branch, then append the summary node.
-		const branch = await manager.walkActiveBranch()
+		// What the compaction flow does: read the branch it is about to summarise — PINNED to the
+		// append cursor, because it is about to append to it — then append the summary node.
+		const branch = await manager.walkActiveBranch(manager.activeLeafId)
 		expect(branch.map((e) => ('content' in e ? e.content : e.type))).toEqual([
 			'my question',
 			'my reply'

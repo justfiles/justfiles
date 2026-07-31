@@ -197,15 +197,25 @@ export interface SessionManager {
 	buildSessionContext(): Promise<ReadonlyArray<ContextMessage>>
 
 	/**
-	 * Walk the entire active branch root → leaf, returning all raw entries.
-	 * Compaction nodes are included as data — this walk does not stop at them.
-	 * Pure read — never writes to the tree.
+	 * Walk a branch root → leaf, returning all raw entries. Compaction nodes are
+	 * included as data — this walk does not stop at them. Pure read — never writes
+	 * to the tree, and never moves the append cursor.
+	 *
+	 * By default it walks the branch that is active NOW, derived from the merged
+	 * shards, so a reconnecting UI sees another device's turn without prompting
+	 * first.
+	 *
+	 * Pass `fromLeaf` to walk a specific branch instead. The caller that needs this
+	 * is compaction: it reads the branch it is about to summarise AND append to, so
+	 * it must pin to `activeLeafId` — otherwise a peer entry arriving in that window
+	 * would move the walk to another branch and the summary would describe a
+	 * conversation it is not about.
 	 *
 	 * Used for UI history projection (users see their full conversation, not
 	 * just the post-compaction tail), session-close archival, and memory
 	 * extraction.
 	 */
-	walkActiveBranch(): Promise<ReadonlyArray<SessionEntry>>
+	walkActiveBranch(fromLeaf?: EntryId | null): Promise<ReadonlyArray<SessionEntry>>
 
 	// ── Power User Features (NOT IMPLEMENTED) ────────────────────────
 	// These methods reserve the API surface for future power-user UI.
