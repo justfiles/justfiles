@@ -475,3 +475,81 @@ describe('session shards merge across devices', () => {
 		expect(reopened.activeLeafId).toBe(branch.at(-1)?.id)
 	})
 })
+
+// A host is long-lived: frieren's DO and the mac daemon build a manager once and keep it.
+// Sync delivers a peer's shard AFTER that, so "merge on read" has to mean every read, not
+// the first one.
+describe('a long-lived manager keeps up with arriving shards', () => {
+	test('a peer shard that lands after the first read advances the leaf', async () => {
+		const vol = volume(memStorage())
+		const manager = await makeManager(vol, 'aaaa1111')
+		await manager.append([user('asked here')])
+		const localLeaf = manager.activeLeafId as string
+
+		// The sync tick: a peer's turn, continuing OUR lineage.
+		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.bbbb2222.jsonl', [
+			entry({
+				id: 'bbbb0001',
+				role: 'assistant',
+				content: 'answered on the other device',
+				parentId: localLeaf,
+				ts: '2026-07-27T00:00:00.000Z'
+			})
+		])
+
+		expect(stripContext(await manager.buildSessionContext())).toEqual([
+			{ role: 'user', content: 'asked here' },
+			{ role: 'assistant', content: 'answered on the other device' }
+		])
+		expect(manager.activeLeafId).toBe('bbbb0001')
+
+		// And the next local turn continues that lineage rather than forking off the tip this
+		// device happened to know about.
+		await manager.append([user('and now back here')])
+		const branch = await manager.walkActiveBranch()
+		expect(branch.map((e) => ('content' in e ? e.content : e.type))).toEqual([
+			'asked here',
+			'answered on the other device',
+			'and now back here'
+		])
+	})
+
+	// The other half of the same rule, and the reason `append` must NOT refresh: a turn is
+	// several appends (its messages, then a compaction node). A peer entry landing between
+	// them must not splice itself into the middle of this device's turn.
+	test('a peer arrival mid-turn does not splice into the local lineage', async () => {
+		const vol = volume(memStorage())
+		const manager = await makeManager(vol, 'aaaa1111')
+		await manager.append([user('start of my turn'), assistant('my reply')])
+		const myTail = manager.activeLeafId as string
+
+		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.bbbb2222.jsonl', [
+			entry({
+				id: 'bbbb0001',
+				content: 'a peer, mid-turn',
+				parentId: null,
+				// NEWER than the turn in progress — local appends stamp with the real clock, so a
+				// fixed date here would lose the (ts, id) comparison and the test would pass even if
+				// `append` did refresh. That is exactly what it happened to do at first.
+				ts: new Date(Date.now() + 60_000).toISOString()
+			})
+		])
+
+		// The compaction node belongs to MY turn, whatever arrived in the meantime.
+		await manager.append([compactionPayload('summary of my turn', myTail)])
+
+		// Asserted on what was WRITTEN, not on what a read returns: the peer's entry is newer,
+		// so the active branch legitimately becomes the peer's (that is the leaf rule resolving a
+		// fork). The invariant here is narrower and it is about the writer — an append continues
+		// the lineage it is part of.
+		const mine = await vol.readFile(`${SESSIONS}/2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl`)
+		const written = new TextDecoder()
+			.decode(mine)
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l) as SessionEntry)
+		const compaction = written.find((e) => e.type === 'compaction')
+		expect(compaction?.parentId).toBe(myTail)
+		expect(compaction?.parentId).not.toBe('bbbb0001')
+	})
+})

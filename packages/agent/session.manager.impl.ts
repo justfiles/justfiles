@@ -160,12 +160,28 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 	// single-writer rule is what makes whole-file LWW harmless.
 	const ownShard = file(volume, sessionShard(ref.agentId, ref.sessionId, ref.startTs, ref.deviceId))
 	let activeLeafId: EntryId | null = null
-	let initialized = false
+	let loaded = false
 
-	async function init(): Promise<void> {
-		if (initialized) return
-		initialized = true
-		activeLeafId = activeLeaf(await readSession(volume, dir, ref.sessionId))
+	// Every READ recomputes the leaf from the union it just loaded. Resolving it once was a
+	// bug: sync can deliver a peer's shard at any moment, so a long-lived manager kept walking
+	// from a leaf that was true only at construction — the peer's newer lineage invisible, and
+	// the next local turn parented onto the stale tip, forking for no reason. Recomputing is
+	// free; the entries are already in hand, and the old code read them twice anyway.
+	async function load(): Promise<SessionEntry[]> {
+		const all = await readSession(volume, dir, ref.sessionId)
+		activeLeafId = activeLeaf(all)
+		loaded = true
+		return all
+	}
+
+	// `append`, by contrast, must NOT refresh. Within a turn the LOCAL lineage has to win: a
+	// peer entry landing between a turn's messages and the compaction node that follows them
+	// would otherwise splice itself into the middle of that turn. The refresh point is the TURN
+	// boundary, and it belongs to the caller — assistant.ts rehydrates from the merged session
+	// before each prompt. All this needs is a leaf on the first call, before anything is known.
+	async function leafForAppend(): Promise<EntryId | null> {
+		if (!loaded) await load()
+		return activeLeafId
 	}
 
 	async function appendEntries(entries: SessionEntry[]): Promise<void> {
@@ -180,11 +196,9 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 		},
 
 		async append(payloads) {
-			await init()
-
 			const now = new Date().toISOString()
 			const newEntries: SessionEntry[] = []
-			let parentId = activeLeafId
+			let parentId = await leafForAppend()
 
 			for (const p of payloads) {
 				const entry = { ...p, id: entryId(), parentId, ts: now } as SessionEntry
@@ -199,8 +213,7 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 		},
 
 		async buildSessionContext() {
-			await init()
-			const all = await readSession(volume, dir, ref.sessionId)
+			const all = await load()
 			const branch = walkBranch(all, activeLeafId)
 			const messages: ContextMessage[] = []
 
@@ -228,8 +241,7 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 		},
 
 		async walkActiveBranch() {
-			await init()
-			const all = await readSession(volume, dir, ref.sessionId)
+			const all = await load()
 			return walkBranch(all, activeLeafId)
 		},
 		branch() {

@@ -109,7 +109,7 @@ export async function createAssistant({
 
 	const agentId = 'main'
 	let session = await route({ agentId }, volume, text)
-	await initSession(session)
+	await initSession()
 
 	return {
 		prompt,
@@ -129,7 +129,7 @@ export async function createAssistant({
 
 	async function newSession() {
 		session = await createSession({ agentId }, volume)
-		await initSession(session)
+		await initSession()
 	}
 
 	function addTools(tools: readonly AgentTool[]) {
@@ -142,6 +142,12 @@ export async function createAssistant({
 	}
 
 	async function prompt(message: string, source: PromptSource = 'user') {
+		// The turn boundary, and the point where a peer's turns join this device's conversation:
+		// `agent.state.messages` is a CACHE of the transcript, not the source of truth, and sync
+		// may have delivered a shard since the last turn. Rehydrating here also refreshes the
+		// session's active leaf, so this turn parents onto the merged lineage instead of forking
+		// off whatever was newest when this host booted (#300).
+		await rehydrate()
 		const offset = agent.state.messages.length
 		let promptError: unknown
 		try {
@@ -185,7 +191,10 @@ export async function createAssistant({
 				await file(volume, paths.daily()).append(`\n\n${notes}`)
 			}
 			const result = await compact(text, prepared)
-			session.append([
+			// Awaited, unlike before: `initSession` below now recomputes the active leaf from
+			// disk, so an in-flight append would race it — the leaf could come back as the
+			// pre-compaction tip and then be overwritten when the append lands.
+			await session.append([
 				{
 					type: 'compaction',
 					summary: result.summary,
@@ -193,7 +202,7 @@ export async function createAssistant({
 					tokensBefore: result.tokensBefore
 				}
 			])
-			await initSession(session)
+			await initSession()
 		}
 		return answer
 	}
@@ -207,8 +216,18 @@ export async function createAssistant({
 		await agent.continue()
 	}
 
-	async function initSession(session: SessionManager) {
+	// Both halves read the CURRENT `session`, so neither takes it as an argument: passing one
+	// would imply a choice the body does not honour.
+	async function initSession() {
 		agent.state.systemPrompt = await resolveSystemPrompt()
+		await rehydrate()
+	}
+
+	// Replace the in-memory messages with the merged session's context. Note this drops tool
+	// calls/results from earlier turns, which is what the transcript already says should happen
+	// ("old tool output should not live in active context") — so a long-lived host now sees the
+	// same context a freshly-started one does, instead of quietly diverging from it.
+	async function rehydrate() {
 		const msg = await session.buildSessionContext()
 		agent.state.messages = msg.map(contextMessageToAgentMessage)
 	}

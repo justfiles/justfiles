@@ -9,6 +9,7 @@ import { volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
 import type { AgentBackend } from './llm.ts'
+import { parseSessionShard, sessionShard } from './paths.ts'
 import { createAgentSession, type SessionEvent } from './session.ts'
 
 const encoder = new TextEncoder()
@@ -42,9 +43,12 @@ function assistant(
 // A credential-sealed backend whose stream returns the scripted assistant messages one per
 // turn-step (so a tool-call message + a follow-up text message drive a full ask_user turn).
 // `complete` backs the text helper (compaction notes / memory consolidation).
-function scriptedBackend(messages: AssistantMessage[], complete = ''): AgentBackend {
+// `seen` records the context handed to the model on each call — the only way to assert what
+// the model actually got, rather than what we hoped it got.
+function scriptedBackend(messages: AssistantMessage[], complete = '', seen: unknown[] = []) {
 	const queue = [...messages]
-	const streamFn: StreamFn = () => {
+	const streamFn: StreamFn = (_model, context) => {
+		seen.push(context)
 		const stream = createAssistantMessageEventStream()
 		const message = queue.shift() ?? assistant([])
 		stream.push({ type: 'done', reason: 'stop', message })
@@ -58,7 +62,7 @@ function scriptedBackend(messages: AssistantMessage[], complete = ''): AgentBack
 		streamFn,
 		completeFn,
 		revision: 'r1'
-	}
+	} satisfies AgentBackend
 }
 
 const NO_COMPACTION = { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -345,6 +349,94 @@ describe('createAgentSession', () => {
 		})
 
 		expect((await session.history()).map((e) => 'content' in e && e.content)).toEqual(['aaaa'])
+	})
+
+	// The live half of #300, and the one the automated suite nearly missed: a host is
+	// long-lived (`getBuilt` memoises the assistant across turns), so the peer's shard arrives
+	// while an assistant is ALREADY running. Its in-memory messages are a cache of the
+	// transcript, so the turn boundary has to refresh them — otherwise this device neither shows
+	// nor continues the peer's newer lineage until it is restarted.
+	//
+	// The peer's shard here holds a COMPLETE turn, which is what a synced device normally has.
+	// Worth knowing about the other case: if a peer's newest entry is an unanswered USER
+	// message, pi's agent loop treats the trailing user message as a draft and replaces it with
+	// this turn's prompt, so the model does not see that question. The transcript keeps it and
+	// the new turn still parents onto it, so nothing is lost and the lineage is right — and two
+	// consecutive user messages is a shape most APIs reject anyway.
+	test('an already-running assistant picks up a peer turn on its next prompt', async () => {
+		const vol = volume(memStorage())
+		const seen: unknown[] = []
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend(
+				[
+					assistant([{ type: 'text', text: 'first reply' }]),
+					assistant([{ type: 'text', text: 'second reply' }])
+				],
+				'',
+				seen
+			),
+			compaction: NO_COMPACTION
+		})
+		await session.prompt('my first question')
+
+		// The sync tick, landing mid-life: a peer continues the conversation from our reply.
+		const dir = '/system/agents/main/sessions'
+		const mine = (await vol.readdir(dir)).map((e) => e.name).find((n) => n.endsWith('.jsonl'))
+		const parsed = new TextDecoder()
+			.decode(await vol.readFile(`${dir}/${mine}`))
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l))
+		// Built through the real parser/writer rather than string surgery, so the peer's shard
+		// groups under the same session exactly as a synced one would.
+		const shard = parseSessionShard(mine as string)
+		await vol.writeFile(
+			sessionShard('main', shard?.sessionId as string, shard?.startTs as Date, 'bbbb2222'),
+			new TextEncoder().encode(
+				`${JSON.stringify({
+					type: 'message',
+					role: 'user',
+					content: 'asked from the other device',
+					id: 'bbbb0001',
+					parentId: parsed.at(-1).id,
+					ts: new Date().toISOString()
+				})}\n${JSON.stringify({
+					type: 'message',
+					role: 'assistant',
+					content: 'answered on the other device',
+					id: 'bbbb0002',
+					parentId: 'bbbb0001',
+					ts: new Date().toISOString()
+				})}\n`
+			)
+		)
+
+		await session.prompt('my second question')
+
+		// What the MODEL was given on the second turn — not merely what the transcript holds.
+		// A peer's whole turn, in place, between this device's two turns.
+		expect(
+			(seen.at(-1) as { messages: { content: unknown }[] }).messages.map((m) =>
+				typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+			)
+		).toEqual([
+			'my first question',
+			'[{"type":"text","text":"first reply"}]',
+			'asked from the other device',
+			'[{"type":"text","text":"answered on the other device"}]',
+			'[{"type":"text","text":"my second question"}]'
+		])
+
+		// And the merged lineage is one conversation, in order.
+		expect((await session.history()).map((e) => ('content' in e ? e.content : e.type))).toEqual([
+			'my first question',
+			'first reply',
+			'asked from the other device',
+			'answered on the other device',
+			'my second question',
+			'second reply'
+		])
 	})
 
 	// The payload of #300: pick up on another device. A peer's shard is on disk (it arrived by
