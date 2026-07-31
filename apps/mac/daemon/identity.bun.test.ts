@@ -11,7 +11,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AuthFlow } from '@justfiles/app/capabilities/accounts/providers'
-import { createIdentity, type IdentityDeps } from './identity.ts'
+import { createIdentity, custodyAccount, type IdentityDeps } from './identity.ts'
 import { keychainStore, type SecretStore } from './keychain.ts'
 
 const CLIENT_ID = 'test-client'
@@ -672,8 +672,43 @@ test('no token of any kind reaches the support dir', async () => {
 // The one test that really goes to the Keychain, under a test-scoped service name so it can
 // never touch the daemon's own `app.justfiles.kodama` items.
 const SERVICE = `app.justfiles.kodama.test.${Date.now()}`
+const PROD = custodyAccount('https://clerk.mykodama.app')
+const DEV = custodyAccount('https://capable-spider-79.clerk.accounts.dev')
 afterAll(() => {
-	Bun.spawnSync(['security', 'delete-generic-password', '-s', SERVICE, '-a', 'kodama-oauth'])
+	for (const account of ['kodama-oauth', PROD, DEV]) {
+		Bun.spawnSync(['security', 'delete-generic-password', '-s', SERVICE, '-a', account])
+	}
+})
+
+test('custody is namespaced per Clerk instance, and the host is legible in the name', () => {
+	expect(PROD).not.toBe(DEV)
+	expect(PROD).toContain('clerk.mykodama.app')
+	// Stable across runs — it IS the lookup key for a grant that must survive restarts.
+	expect(custodyAccount('https://clerk.mykodama.app')).toBe(PROD)
+})
+
+test('a dev daemon cannot delete the production grant it is not entitled to read', async () => {
+	// Both run under the same macOS account. Sharing one item meant a dev refresh of a PRODUCTION
+	// token was answered `invalid_grant` — correctly, it is not that instance's token — and the
+	// clear path then deleted it, signing the shipped app out. Opening Settings in dev did it.
+	const production = identityOver(keychainStore(PROD, SERVICE))
+	await production.signIn()
+
+	const held = () =>
+		Bun.spawnSync(['security', 'find-generic-password', '-s', SERVICE, '-a', PROD, '-w'])
+			.stdout.toString()
+			.trim()
+	expect(held()).toBe('rt-1')
+
+	// The dev daemon comes up against the same Keychain and is told its (absent) grant is invalid.
+	server.serve(() => Response.json({ error: 'invalid_grant' }, { status: 400 }))
+	const dev = identityOver(keychainStore(DEV, SERVICE))
+	expect(await dev.getToken()).toBeNull()
+	expect(await dev.currentUser()).toBeNull()
+
+	// Production is untouched: still in custody, and still serving its token.
+	expect(held()).toBe('rt-1')
+	expect(await production.getToken()).toBeTruthy()
 })
 
 test('custody is the Keychain: sign-in writes the item, sign-out deletes it', async () => {

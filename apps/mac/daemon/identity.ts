@@ -429,10 +429,23 @@ const INSTANCE = SHIPPED
 	? { fapi: 'https://clerk.mykodama.app', clientId: 'XRdrHVsy0Fa1P8qq' }
 	: { fapi: 'https://capable-spider-79.clerk.accounts.dev', clientId: 'DQfbAd3ksCt3Rjs1' }
 
+// Custody is per INSTANCE, because a source daemon and a shipped app run under the same macOS
+// account and would otherwise share one Keychain item. Sharing it is not merely untidy: a dev
+// daemon reading a PRODUCTION refresh token sends it to the dev instance, is told
+// `invalid_grant` — correctly, it is not that instance's token — and deletes the item, signing
+// the shipped app out. Opening Settings in dev would be enough to do it.
+//
+// Keyed by Frontend API host because that is legible in Keychain Access, which is where a human
+// looks. Pointing two DIFFERENT OAuth apps on one instance at the same host is left to heal
+// itself: the token is refused, the item is cleared, and the user signs in once.
+export const custodyAccount = (fapi: string): string => `kodama-oauth.${new URL(fapi).host}`
+
+const FAPI = process.env.KODAMA_CLERK_FAPI ?? INSTANCE.fapi
+
 // The daemon's one identity (the Mac gets a single account — see #290's E1 scope).
 export const identity: Identity = createIdentity({
-	fapi: process.env.KODAMA_CLERK_FAPI ?? INSTANCE.fapi,
+	fapi: FAPI,
 	clientId: process.env.KODAMA_CLERK_CLIENT_ID ?? INSTANCE.clientId,
 	flow: loopbackAuthFlow(),
-	store: keychainStore('kodama-oauth')
+	store: keychainStore(custodyAccount(FAPI))
 })

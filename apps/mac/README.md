@@ -104,7 +104,11 @@ no client secret — see `daemon/identity.ts` and #304). The refresh token lives
 Keychain; every request to our API carries a short-lived access token minted from it.
 
 ```sh
-security find-generic-password -s app.justfiles.kodama -a kodama-oauth   # the stored grant
+# the stored grant — one item per Clerk instance, so a source daemon and a shipped app
+# never share (or destroy) each other's:
+security find-generic-password -s app.justfiles.kodama -a kodama-oauth.clerk.mykodama.app
+security find-generic-password -s app.justfiles.kodama \
+  -a kodama-oauth.capable-spider-79.clerk.accounts.dev   # …the dev instance's
 ```
 
 `/sign-out` revokes the grant and deletes that item. Local data is never touched by either.
