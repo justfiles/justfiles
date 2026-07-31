@@ -548,6 +548,44 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 			.trim()
 			.split('\n')
 			.map((l) => JSON.parse(l) as SessionEntry)
+		const node = written.find((e) => e.type === 'compaction')
+		expect(node?.parentId).toBe(myTail)
+		expect(node?.parentId).not.toBe('bbbb0001')
+	})
+
+	// The reviewer's sequence on #335, and the reason a read must not move the writer's cursor:
+	// compaction reads the branch it is about to summarise, and that read sits BETWEEN the
+	// turn's messages and the compaction node (assistant.ts). A peer arriving in that window
+	// must not capture the compaction.
+	test('a read between a turn and its compaction does not hand the compaction to a peer', async () => {
+		const vol = volume(memStorage())
+		const manager = await makeManager(vol, 'aaaa1111')
+		await manager.append([user('my question'), assistant('my reply')])
+		const myTail = manager.activeLeafId as string
+
+		// Lands while the model was streaming — newer than the turn, so it WOULD win a refresh.
+		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.bbbb2222.jsonl', [
+			entry({
+				id: 'bbbb0001',
+				content: 'a peer, while I was mid-turn',
+				parentId: null,
+				ts: new Date(Date.now() + 60_000).toISOString()
+			})
+		])
+
+		// What the compaction flow does: read the branch, then append the summary node.
+		const branch = await manager.walkActiveBranch()
+		expect(branch.map((e) => ('content' in e ? e.content : e.type))).toEqual([
+			'my question',
+			'my reply'
+		])
+		await manager.append([compactionPayload('summary of my turn', myTail)])
+
+		const written = new TextDecoder()
+			.decode(await vol.readFile(`${SESSIONS}/2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl`))
+			.trim()
+			.split('\n')
+			.map((l) => JSON.parse(l) as SessionEntry)
 		const compaction = written.find((e) => e.type === 'compaction')
 		expect(compaction?.parentId).toBe(myTail)
 		expect(compaction?.parentId).not.toBe('bbbb0001')

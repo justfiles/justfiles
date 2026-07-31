@@ -162,26 +162,29 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 	let activeLeafId: EntryId | null = null
 	let loaded = false
 
-	// Every READ recomputes the leaf from the union it just loaded. Resolving it once was a
-	// bug: sync can deliver a peer's shard at any moment, so a long-lived manager kept walking
-	// from a leaf that was true only at construction — the peer's newer lineage invisible, and
-	// the next local turn parented onto the stale tip, forking for no reason. Recomputing is
-	// free; the entries are already in hand, and the old code read them twice anyway.
-	async function load(): Promise<SessionEntry[]> {
+	// The leaf advances at exactly ONE place: `buildSessionContext`, which IS the turn boundary
+	// (assistant.ts rehydrates from it before every prompt). That single point is what lets a
+	// long-lived host pick up a peer's turn — sync can deliver a shard at any moment, and a
+	// manager that resolved its leaf once would walk from a leaf that was true only at
+	// construction, forking the next local turn off a stale tip.
+	async function refresh(): Promise<SessionEntry[]> {
 		const all = await readSession(volume, dir, ref.sessionId)
 		activeLeafId = activeLeaf(all)
 		loaded = true
 		return all
 	}
 
-	// `append`, by contrast, must NOT refresh. Within a turn the LOCAL lineage has to win: a
-	// peer entry landing between a turn's messages and the compaction node that follows them
-	// would otherwise splice itself into the middle of that turn. The refresh point is the TURN
-	// boundary, and it belongs to the caller — assistant.ts rehydrates from the merged session
-	// before each prompt. All this needs is a leaf on the first call, before anything is known.
-	async function leafForAppend(): Promise<EntryId | null> {
-		if (!loaded) await load()
-		return activeLeafId
+	// Every OTHER read gets fresh entries but walks from wherever the writer currently is.
+	//
+	// Refreshing here instead looks harmless and is not: a turn is several appends — its
+	// messages, then a compaction node — and `walkActiveBranch` sits BETWEEN them, because
+	// compaction reads the branch it is about to summarise. A peer entry arriving in that window
+	// would move the leaf, so the compaction node would attach to the peer's branch and drop the
+	// turn that just finished; `prepareCompaction` would also take `firstKeptEntryId` from a
+	// lineage the summary is not about. A read must never move the writer's cursor.
+	async function entries(): Promise<SessionEntry[]> {
+		if (!loaded) return refresh()
+		return readSession(volume, dir, ref.sessionId)
 	}
 
 	async function appendEntries(entries: SessionEntry[]): Promise<void> {
@@ -196,9 +199,13 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 		},
 
 		async append(payloads) {
+			// Same reason as `entries()`: continue the lineage this device is writing. Only the
+			// very first call needs to find out where that is.
+			if (!loaded) await refresh()
+
 			const now = new Date().toISOString()
 			const newEntries: SessionEntry[] = []
-			let parentId = await leafForAppend()
+			let parentId = activeLeafId
 
 			for (const p of payloads) {
 				const entry = { ...p, id: entryId(), parentId, ts: now } as SessionEntry
@@ -213,7 +220,7 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 		},
 
 		async buildSessionContext() {
-			const all = await load()
+			const all = await refresh()
 			const branch = walkBranch(all, activeLeafId)
 			const messages: ContextMessage[] = []
 
@@ -241,8 +248,7 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 		},
 
 		async walkActiveBranch() {
-			const all = await load()
-			return walkBranch(all, activeLeafId)
+			return walkBranch(await entries(), activeLeafId)
 		},
 		branch() {
 			throw new Error('not implemented')
