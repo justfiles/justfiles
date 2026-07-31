@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.10.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.9.0...frieren-v0.10.0) (2026-07-31)
+
+
+### Features
+
+* **accounts:** AccountInfo.origin — Settings shows which host owns an account ([#317](https://github.com/xiaoxinghu/justfiles/issues/317)) ([f126c16](https://github.com/xiaoxinghu/justfiles/commit/f126c1684235179e2678719142ab0c7e6be47306))
+* **accounts:** seal the creds lane at rest with a key the volume never holds ([#309](https://github.com/xiaoxinghu/justfiles/issues/309)) ([99470a7](https://github.com/xiaoxinghu/justfiles/commit/99470a76e7b2000ec1cdeda2fc8dc52565191b1b))
+* **agent:** expression channel — per-sentence tags drive the avatar face ([b56ffb9](https://github.com/xiaoxinghu/justfiles/commit/b56ffb9eecc7e1b498d31e707556c524e9c27293))
+* **agent:** lazily derive per-expression faces from the user's avatar ([65b4ff8](https://github.com/xiaoxinghu/justfiles/commit/65b4ff807b2c5710ab0e6c3089f448697f9b36df))
+* **agent:** pace a reply's expression tags instead of showing only the last ([c402e59](https://github.com/xiaoxinghu/justfiles/commit/c402e59e3c982508971b3faab4df59c8676f11d9))
+* **agent:** teach the agent its filesystem, and deny it the secrets ([160cbb1](https://github.com/xiaoxinghu/justfiles/commit/160cbb10a6eed3241bd3c757f240038bcb6c5dd8))
+* **frieren:** a built-in face set per archetype, and an expression channel that holds ([#316](https://github.com/xiaoxinghu/justfiles/issues/316)) ([fd1d888](https://github.com/xiaoxinghu/justfiles/commit/fd1d888f73921fa26e2117d227b7dad422103e0b))
+* **frieren:** dev-only readout of the current expression ([b1971b4](https://github.com/xiaoxinghu/justfiles/commit/b1971b44aa6c42c1b1351bb121b263fb175f29e4))
+* **frieren:** the omnibar's face travels from pill chip to shoulder ([3f620b3](https://github.com/xiaoxinghu/justfiles/commit/3f620b30b6fd03feeaee63c4b197fc94e8627e7a))
+* **frieren:** the resting pill is one line; nothing opens the chat window ([f29f847](https://github.com/xiaoxinghu/justfiles/commit/f29f8479efdde17360e80c4f15e3969a744d1dd2))
+* **fs,app:** a /private root — credentials never replicate ([#307](https://github.com/xiaoxinghu/justfiles/issues/307)) ([65a42f5](https://github.com/xiaoxinghu/justfiles/commit/65a42f50db54e128fe1c781a76429d380c7056ac)), closes [#291](https://github.com/xiaoxinghu/justfiles/issues/291)
+
+
+### Bug Fixes
+
+* **accounts:** the built-in AI is the floor — it can be taken over, never switched off ([#315](https://github.com/xiaoxinghu/justfiles/issues/315)) ([c393a7e](https://github.com/xiaoxinghu/justfiles/commit/c393a7e7cadec0e4e8bf202d8845fccfd6ff6442))
+* **agent:** a face belongs to its turn, and only a host that asked gets stripped ([9832e0e](https://github.com/xiaoxinghu/justfiles/commit/9832e0e76261c49108069d2067a65686ec90c4ee))
+* **agent:** a tag only counts where a sentence opens, and a face can be retried ([630b3ad](https://github.com/xiaoxinghu/justfiles/commit/630b3ad5c449b7c25997c3fbed3573500d014842))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.5.0
+
 ## [0.9.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.8.0...frieren-v0.9.0) (2026-07-26)
 
 
