@@ -1,7 +1,14 @@
 import type { Usage } from '@earendil-works/pi-ai'
 import type { DbAdapter } from '@justfiles/core'
 import type { KvStorage } from './integrations/storage.ts'
-import { type AdmitHandle, admit, MICROS_PER_USD, record, type UsageReport } from './usage.ts'
+import {
+	type AdmitHandle,
+	admit,
+	MICROS_PER_USD,
+	readAiUsage,
+	record,
+	type UsageReport
+} from './usage.ts'
 
 // Free-vs-paid caps. A cap is a ceiling on the billable metrics the meter produces: AI cost
 // per window and deduped logical storage bytes. AI is capped in TWO windows, Claude-Code
@@ -107,7 +114,37 @@ export interface AiMeter {
 // an operational failure (KV/SQLite unavailable): the tier read or the SQLite admit statement
 // can reject for reasons that have nothing to do with the user's quota, and reporting THOSE as
 // "you're over quota, upgrade or wait" is a wrong diagnosis a client would act on incorrectly.
-export class QuotaExceededError extends Error {}
+// `resetsAt` (ms epoch) is the first instant a retry can succeed, so a client can say "back at
+// 14:00" instead of polling a bare "over quota"; absent only when no capped window is the
+// blocker (an idle burst window that has never been spent has no reset instant to report).
+export class QuotaExceededError extends Error {
+	constructor(
+		message: string,
+		readonly resetsAt?: number
+	) {
+		super(message)
+	}
+}
+
+// Which capped window blocked the call, and when it clears. Read on the REJECTION path only —
+// an admitted call pays nothing for this. Both windows can be spent at once; the EARLIEST
+// reset is the honest answer (the other cap still applies after it, and admit re-checks).
+async function quotaExceeded(db: DbAdapter, tier: TierId): Promise<QuotaExceededError> {
+	const usage = await readAiUsage(db)
+	const limits = limitsFor(tier)
+	const blocked = [
+		limits.aiBurstUsd !== null && usage.burst.costUsd >= limits.aiBurstUsd
+			? usage.burst.resetsAt
+			: null,
+		limits.aiWeeklyUsd !== null && usage.weekly.costUsd >= limits.aiWeeklyUsd
+			? usage.weekly.resetsAt
+			: null
+	].filter((at): at is number => at !== null)
+	return new QuotaExceededError(
+		'AI limit reached — it resets soon, or upgrade your plan.',
+		blocked.length > 0 ? Math.min(...blocked) : undefined
+	)
+}
 
 export function createAiMeter(
 	db: DbAdapter,
@@ -116,15 +153,15 @@ export function createAiMeter(
 ): AiMeter {
 	return {
 		async admitOrThrow() {
-			const limits = aiLimitsMicros(await readTier(storage, devTierOverride))
+			const tier = await readTier(storage, devTierOverride)
+			const limits = aiLimitsMicros(tier)
 			const handle = await admit(
 				db,
 				Date.now(),
 				limits.burst ?? Number.MAX_SAFE_INTEGER,
 				limits.weekly ?? Number.MAX_SAFE_INTEGER
 			)
-			if (handle === null)
-				throw new QuotaExceededError('AI limit reached — it resets soon, or upgrade your plan.')
+			if (handle === null) throw await quotaExceeded(db, tier)
 			return handle
 		},
 		record: (handle, usage) => record(db, handle, usage)

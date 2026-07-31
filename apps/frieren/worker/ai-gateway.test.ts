@@ -174,38 +174,52 @@ describe('meterSseStream', () => {
 // ── createAiGateway — the two HTTP routes ───────────────────────────────────
 
 describe('createAiGateway', () => {
-	test('GET /models returns the platform catalogue', async () => {
+	test('GET /model describes THE platform model: real id, branded name, zeroed cost', async () => {
 		const app = createAiGateway({
 			meter: fakeMeter(),
-			models: [testModel('a/one'), testModel('b/two')],
+			model: { ...testModel('openai/gpt-5.4-mini'), compat: { supportsDeveloperRole: false } },
 			upstream: vi.fn(),
 			waitUntil: () => {}
 		})
-		const res = await app.request('/models')
+		const res = await app.request('/model')
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([
-			{ id: 'a/one', name: 'Test Model' },
-			{ id: 'b/two', name: 'Test Model' }
-		])
+		expect(await res.json()).toEqual({
+			// The id is the real upstream model — visible on the wire, just not selectable.
+			id: 'openai/gpt-5.4-mini',
+			name: 'Kodama AI',
+			reasoning: false,
+			input: ['text'],
+			contextWindow: 128000,
+			maxTokens: 8192,
+			// A client displays this; the platform bills a quota, not tokens.
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			// pi auto-detects compat from the baseUrl, which for this gateway detects nothing —
+			// so the server states the upstream's quirks.
+			compat: { supportsDeveloperRole: false }
+		})
 	})
 
-	test('an unknown model is rejected before admitting anything', async () => {
+	test('a client-named model is overwritten, not rejected: there is nothing to choose', async () => {
 		const meter = fakeMeter()
-		const upstream = vi.fn()
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		let captured: Record<string, unknown> | undefined
+		const upstream = vi.fn(async (body: Record<string, unknown>) => {
+			captured = body
+			return Response.json({ choices: [], usage: { cost: 0.0001 } })
+		})
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
-			body: JSON.stringify({ model: 'nope', messages: [] })
+			body: JSON.stringify({ model: 'anthropic/claude-opus-4-7', messages: [] })
 		})
-		expect(res.status).toBe(400)
-		expect(meter.handles).toHaveLength(0)
-		expect(upstream).not.toHaveBeenCalled()
+		expect(res.status).toBe(200)
+		expect(captured?.model).toBe('test/model')
+		expect(meter.handles).toHaveLength(1)
 	})
 
 	test('a non-object JSON body (null) is rejected as invalid_request, not a 500', async () => {
 		const meter = fakeMeter()
 		const upstream = vi.fn()
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
 			body: 'null'
@@ -215,7 +229,7 @@ describe('createAiGateway', () => {
 		expect(upstream).not.toHaveBeenCalled()
 	})
 
-	test("strips OpenRouter's models/fallbacks alternate-routing fields before forwarding", async () => {
+	test("strips OpenRouter's alternate-routing and paid add-on fields before forwarding", async () => {
 		let captured: Record<string, unknown> | undefined
 		const upstream = vi.fn(async (body: Record<string, unknown>) => {
 			captured = body
@@ -223,7 +237,7 @@ describe('createAiGateway', () => {
 		})
 		const app = createAiGateway({
 			meter: fakeMeter(),
-			models: [testModel()],
+			model: testModel(),
 			upstream,
 			waitUntil: () => {}
 		})
@@ -233,11 +247,22 @@ describe('createAiGateway', () => {
 				model: 'test/model',
 				messages: [],
 				models: ['some/expensive-model'],
-				fallbacks: [{ model: 'some/expensive-model' }]
+				fallbacks: [{ model: 'some/expensive-model' }],
+				provider: { order: ['some-pricier-variant'] },
+				plugins: [{ id: 'web' }],
+				transforms: ['middle-out'],
+				route: 'fallback',
+				// A param pi itself sends must survive — the strip list is a denylist for a reason.
+				reasoning_effort: 'high'
 			})
 		})
 		expect(captured?.models).toBeUndefined()
 		expect(captured?.fallbacks).toBeUndefined()
+		expect(captured?.provider).toBeUndefined()
+		expect(captured?.plugins).toBeUndefined()
+		expect(captured?.transforms).toBeUndefined()
+		expect(captured?.route).toBeUndefined()
+		expect(captured?.reasoning_effort).toBe('high')
 		expect(captured?.model).toBe('test/model')
 	})
 
@@ -248,7 +273,7 @@ describe('createAiGateway', () => {
 			record: vi.fn()
 		}
 		const upstream = vi.fn()
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
 			body: JSON.stringify({ model: 'test/model', messages: [] })
@@ -264,7 +289,7 @@ describe('createAiGateway', () => {
 			record: vi.fn()
 		}
 		const upstream = vi.fn()
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
 			body: JSON.stringify({ model: 'test/model', messages: [] })
@@ -277,24 +302,141 @@ describe('createAiGateway', () => {
 		expect(upstream).not.toHaveBeenCalled()
 	})
 
-	test('forces include_usage regardless of what the caller sent', async () => {
-		let captured: Record<string, unknown> | undefined
+	test('a spent quota reports WHEN it resets, so a client need not poll to find out', async () => {
+		const resetsAt = Date.now() + 3_600_000
+		const meter: AiMeter = {
+			admitOrThrow: () => Promise.reject(new QuotaExceededError('AI limit reached.', resetsAt)),
+			record: vi.fn()
+		}
+		const app = createAiGateway({
+			meter,
+			model: testModel(),
+			upstream: vi.fn(),
+			waitUntil: () => {}
+		})
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(429)
+		expect(((await res.json()) as { error: { resetsAt: number } }).error.resetsAt).toBe(resetsAt)
+	})
+
+	test('the REAL meter reports the spent window’s reset instant on a 429', async () => {
+		const { meter, db } = await realMeter()
+		// Spend past the free tier's caps (burst $0.35, weekly $1) through the meter itself, so
+		// the next admit is refused by the same SQL the gateway relies on.
+		await meter.record(await meter.admitOrThrow(), {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 2 }
+		})
+		const upstream = vi.fn()
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(429)
+		const usage = await readAiUsage(db)
+		const { resetsAt } = ((await res.json()) as { error: { resetsAt: number } }).error
+		// Both windows are spent, so the EARLIEST reset is the first moment a retry can work.
+		expect(resetsAt).toBe(Math.min(usage.burst.resetsAt ?? 0, usage.weekly.resetsAt ?? 0))
+		expect(resetsAt).toBeGreaterThan(Date.now())
+		expect(upstream).not.toHaveBeenCalled()
+	})
+
+	test('forces include_usage when streaming, and omits stream_options when not', async () => {
+		const captured: Record<string, unknown>[] = []
 		const upstream = vi.fn(async (body: Record<string, unknown>) => {
-			captured = body
+			captured.push(body)
 			return Response.json({ choices: [], usage: { cost: 0.0005 } })
 		})
 		const app = createAiGateway({
 			meter: fakeMeter(),
-			models: [testModel()],
+			model: testModel(),
 			upstream,
 			waitUntil: () => {}
 		})
+		// Non-streaming: a strict OpenAI-compatible upstream 400s on `stream_options` here, and
+		// that 400 would look like the CALLER's bad request — so it must not be added. The
+		// non-streaming body carries usage on its own.
 		await app.request('/v1/chat/completions', {
 			method: 'POST',
-			body: JSON.stringify({ model: 'test/model', messages: [] }) // no stream_options at all
+			body: JSON.stringify({ model: 'test/model', messages: [], stream_options: { foo: 1 } })
 		})
-		expect(captured?.stream_options).toEqual({ include_usage: true })
-		expect(captured?.usage).toEqual({ include: true })
+		expect(captured[0].stream_options).toBeUndefined()
+		expect(captured[0].usage).toEqual({ include: true })
+		// Streaming: forced on, whatever the caller sent alongside it.
+		await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({
+				model: 'test/model',
+				messages: [],
+				stream: true,
+				stream_options: { include_usage: false }
+			})
+		})
+		expect(captured[1].stream_options).toEqual({ include_usage: true })
+	})
+
+	test('a token-only usage frame (no cost) is priced from the model, never billed as zero', async () => {
+		const meter = fakeMeter()
+		// `usage.include` dropped upstream, or a server that only reports tokens. 1M output
+		// tokens at the test model's $4/M rate = $4 exactly — pricing the tokens we KNOW we ran
+		// beats recording nothing for a call that really happened.
+		const deps = {
+			meter,
+			model: testModel(),
+			upstream: vi.fn(async () =>
+				Response.json({
+					choices: [],
+					usage: { prompt_tokens: 0, completion_tokens: 1_000_000, total_tokens: 1_000_000 }
+				})
+			),
+			waitUntil: () => {}
+		}
+		const waits = pending(deps)
+		const app = createAiGateway(deps)
+		await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		await Promise.all(waits)
+		expect(meter.records).toHaveLength(1)
+		expect((meter.records[0].usage as { cost: { total: number } }).cost.total).toBeCloseTo(4)
+	})
+
+	test('a streamed token-only usage frame is priced the same way', async () => {
+		const meter = fakeMeter()
+		const deps = {
+			meter,
+			model: testModel(),
+			upstream: vi.fn(
+				async () =>
+					new Response(
+						streamOf([
+							'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+							'data: {"choices":[],"usage":{"completion_tokens":1000000,"total_tokens":1000000}}\n\n',
+							'data: [DONE]\n\n'
+						])
+					)
+			),
+			waitUntil: () => {}
+		}
+		const waits = pending(deps)
+		const app = createAiGateway(deps)
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', stream: true, messages: [] })
+		})
+		await new Response(res.body).text()
+		await Promise.all(waits)
+		expect(meter.records).toHaveLength(1)
+		expect((meter.records[0].usage as { cost: { total: number } }).cost.total).toBeCloseTo(4)
 	})
 
 	test('non-streaming happy path: response proxied verbatim, usage recorded once', async () => {
@@ -305,7 +447,7 @@ describe('createAiGateway', () => {
 				usage: { cost: 0.002, prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
 			})
 		)
-		const deps = { meter, models: [testModel()], upstream, waitUntil: () => {} }
+		const deps = { meter, model: testModel(), upstream, waitUntil: () => {} }
 		const waits = pending(deps)
 		const app = createAiGateway(deps)
 		const res = await app.request('/v1/chat/completions', {
@@ -325,7 +467,7 @@ describe('createAiGateway', () => {
 	test('non-streaming happy path bills the REAL store: weekly_micros += 2000', async () => {
 		const { meter, db } = await realMeter()
 		const upstream = vi.fn(async () => Response.json({ choices: [], usage: { cost: 0.002 } }))
-		const deps = { meter, models: [testModel()], upstream, waitUntil: () => {} }
+		const deps = { meter, model: testModel(), upstream, waitUntil: () => {} }
 		const waits = pending(deps)
 		const app = createAiGateway(deps)
 		await app.request('/v1/chat/completions', {
@@ -354,7 +496,7 @@ describe('createAiGateway', () => {
 		const meter = fakeMeter()
 		const deps = {
 			meter,
-			models: [testModel()],
+			model: testModel(),
 			upstream: vi.fn(async () => new Response(source)),
 			waitUntil: () => {}
 		}
@@ -391,7 +533,7 @@ describe('createAiGateway', () => {
 		const meter = fakeMeter()
 		const deps = {
 			meter,
-			models: [testModel()],
+			model: testModel(),
 			upstream: vi.fn(async () => new Response(source)),
 			waitUntil: () => {}
 		}
@@ -414,7 +556,7 @@ describe('createAiGateway', () => {
 	test('upstream 5xx surfaces as 502, records nothing, and leaves the real store unchanged', async () => {
 		const { meter, db } = await realMeter()
 		const upstream = vi.fn(async () => new Response('boom', { status: 500 }))
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
 			body: JSON.stringify({ model: 'test/model', messages: [] })
@@ -434,7 +576,7 @@ describe('createAiGateway', () => {
 					headers: { 'content-type': 'application/json' }
 				})
 		)
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
 			body: JSON.stringify({ model: 'test/model', messages: [] })
@@ -456,7 +598,7 @@ describe('createAiGateway', () => {
 					}
 				)
 		)
-		const app = createAiGateway({ meter, models: [testModel()], upstream, waitUntil: () => {} })
+		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
 		const res = await app.request('/v1/chat/completions', {
 			method: 'POST',
 			body: JSON.stringify({ model: 'test/model', messages: [] })

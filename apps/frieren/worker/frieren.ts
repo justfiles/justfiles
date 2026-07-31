@@ -211,11 +211,10 @@ export class Frieren extends DurableObject<Env> {
 				// cosmetic, so "you are out of AI budget" is not worth saying for it.
 				return face ? c.json(face) : c.json({ skipped: true })
 			})
-			.get('/api/usage', async (c) => {
-				const usage = await readUsage(this.db, ctx.storage.sql.databaseSize)
-				const tier = await readTier(ctx.storage, DEV_TIER_OVERRIDE)
-				return c.json({ ...usage, quota: evaluate(usage, tier) })
-			})
+			// The metered usage + plan caps are NOT an HTTP route: they are served as `host.usage`
+			// on the settings capability (see `settingsHost` below), which is the contract the
+			// Settings app renders on every host. A second, differently-shaped surface for the same
+			// counters is how the two drift.
 			// C1 (#297): the metered inference gateway a signed-in daemon (C2) hits directly,
 			// same model + same meter the in-process agent backend uses below — one source of
 			// truth for what "the platform's AI" means, on the web or on the Mac.
@@ -223,7 +222,7 @@ export class Frieren extends DurableObject<Env> {
 				'/api/ai',
 				createAiGateway({
 					meter: this.meter,
-					models: [gatewayModel],
+					model: gatewayModel,
 					upstream: (body, signal) =>
 						fetch(`${gatewayModel.baseUrl}/chat/completions`, {
 							method: 'POST',
