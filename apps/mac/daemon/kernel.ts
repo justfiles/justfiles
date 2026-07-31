@@ -18,6 +18,7 @@ import { builtinStore } from './builtins'
 import { chatgptProvider, resolveAgentBackend } from './chatgpt'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
+import { identity } from './identity'
 import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
@@ -105,9 +106,9 @@ export async function buildKernel(
 				})
 			},
 			// The host admin surface, reachable only by the first-party Settings app. No
-			// usage meter here (its pane hides itself) and no native sign-in yet, so
-			// `host.user` answers null ("Local user") until that lands.
-			settings: settingsHost({ accounts }),
+			// usage meter here (its pane hides itself); `host.user` answers the daemon's own
+			// Kodama identity (E1) — null, i.e. "Local user", until someone runs `/sign-in`.
+			settings: settingsHost({ accounts, user: () => identity.currentUser() }),
 			email,
 			calendar,
 			ai,

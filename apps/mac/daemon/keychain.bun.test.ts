@@ -12,7 +12,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getOrCreateKey, lazySecretCodec, type Spawn } from './keychain.ts'
+import { getOrCreateKey, keychainStore, lazySecretCodec, type Spawn } from './keychain.ts'
 
 const SERVICE = `app.justfiles.kodama.test.${Date.now()}`
 const ACCOUNT = 'accounts-key'
@@ -132,6 +132,36 @@ test('an add that exits 0 while storing something else never returns the bytes w
 	await expect(getOrCreateKey('kodama.test.emptied', ACCOUNT, spawn)).rejects.toThrow(
 		'not a valid 32-byte key'
 	)
+})
+
+// The string-item store (E1's custody of the Kodama OAuth refresh token). The end-to-end
+// custody path runs in identity.bun.test.ts against the real CLI; these two pin the contract
+// that identity.ts leans on, and both are `security` behaviours a fake has to be told about.
+describe('keychainStore', () => {
+	test('a missing item and an unreadable Keychain are DIFFERENT answers', async () => {
+		// 44 = errSecItemNotFound, i.e. "no grant" — an answer. A locked keychain or a denied prompt
+		// is not: reported as absent, it would publish "signed out" over a perfectly good grant and
+		// cache that for the rest of the daemon's run.
+		const missing: Spawn = () => ({ exited: Promise.resolve(44), text: async () => '' })
+		const locked: Spawn = () => ({ exited: Promise.resolve(51), text: async () => '' })
+		expect(await keychainStore(ACCOUNT, 'kodama.test.absent', missing).read()).toBeUndefined()
+		await expect(keychainStore(ACCOUNT, 'kodama.test.locked', locked).read()).rejects.toThrow(
+			'security exit 51'
+		)
+	})
+
+	test('a write that did not land throws instead of reporting success', async () => {
+		// Same sharp edge as the key path: `security`'s prompt form can exit 0 having stored nothing.
+		// A silent no-op here would tell identity.ts a rotation was recorded when it was not, which
+		// is exactly how a grant dies on the next refresh.
+		const pretends: Spawn = (cmd) =>
+			cmd[1] === 'add-generic-password'
+				? { exited: Promise.resolve(0), text: async () => '' }
+				: { exited: Promise.resolve(44), text: async () => '' }
+		await expect(
+			keychainStore(ACCOUNT, 'kodama.test.nowrite', pretends).write('rt-1')
+		).rejects.toThrow('could not store')
+	})
 })
 
 // The codec the kernel is actually wired with. Its whole point is WHEN the key is read:

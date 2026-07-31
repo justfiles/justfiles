@@ -10,9 +10,12 @@ export interface CommandMeta {
 }
 
 // The daemon's built-in commands. `new` clears the session, `debug` dumps agent
-// diagnostics — both are host actions the agent has no idea exist.
+// diagnostics, `sign-in`/`sign-out` own the Mac's Kodama identity — all host actions the
+// agent has no idea exist.
 export const SYSTEM_COMMANDS: readonly CommandMeta[] = [
 	{ name: 'new', description: 'Start a fresh chat session', kind: 'builtin' },
+	{ name: 'sign-in', description: 'Sign in to your Kodama account', kind: 'builtin' },
+	{ name: 'sign-out', description: 'Sign out (local data stays on this Mac)', kind: 'builtin' },
 	{
 		name: 'debug',
 		description: 'Show agent diagnostics (system prompt + session state)',
