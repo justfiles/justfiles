@@ -86,24 +86,25 @@ test('a seeded soul reads as unbound, a written one as bound', async () => {
 
 test('generate → keep: the proposal is held, then the write clears it', async () => {
 	const start = { ...initialState, soul: seededSoul }
-	// Dispatching the draft marks it in flight — the only way the GUI sees a command settle.
+	// The request marks the draft in flight BY TOKEN — the only way the GUI sees a model
+	// call progress, and the only way an answer can be matched to the question.
 	const asked = await app.dispatch(
-		{ type: 'generateSoul', params: { name: 'Fern', gender: 'female', archetype: 'companion' } },
+		{ type: 'draftStarted', params: { token: 'draft-1' } },
 		{ state: start }
 	)
-	expect(asked.state).toMatchObject({ generating: true, proposal: null })
+	expect(asked.state).toMatchObject({ draft: 'draft-1', proposal: null })
 	const drafted = await app.dispatch(
 		{
-			type: '__cmd/soulGenerated',
-			params: { ok: true, value: { body: 'You are Fern.', firstWords: 'I am here.' } }
+			type: 'draftSettled',
+			params: { token: 'draft-1', soul: { body: 'You are Fern.', firstWords: 'I am here.' } }
 		},
 		{ state: asked.state ?? start }
 	)
 	expect(drafted.state).toMatchObject({
-		generating: false,
+		draft: null,
 		proposal: { body: 'You are Fern.', firstWords: 'I am here.' }
 	})
-	// Nothing was written by generating: the volume-backed soul is still the seeded one.
+	// Nothing was written by drafting: the volume-backed soul is still the seeded one.
 	expect(drafted.state?.soul).toEqual(seededSoul)
 	// Keeping it is a write, and the write is what drops the proposal.
 	const kept = await app.dispatch(
@@ -114,12 +115,12 @@ test('generate → keep: the proposal is held, then the write clears it', async 
 })
 
 test('a failed generate leaves an error and an editable pane, not a half-written soul', async () => {
-	const start = { ...initialState, soul: seededSoul, generating: true }
+	const start = { ...initialState, soul: seededSoul, draft: 'draft-1' }
 	const { state } = await app.dispatch(
-		{ type: '__cmd/soulGenerated', params: { ok: false, error: { message: 'upstream 500' } } },
+		{ type: 'draftSettled', params: { token: 'draft-1', error: 'upstream 500' } },
 		{ state: start }
 	)
-	expect(state).toMatchObject({ generating: false, proposal: null, error: 'upstream 500' })
+	expect(state).toMatchObject({ draft: null, proposal: null, error: 'upstream 500' })
 	expect(state?.soul).toEqual(seededSoul)
 	// Still offered: a transient failure is worth retrying.
 	expect(state?.canGenerate).toBe(true)
@@ -127,52 +128,60 @@ test('a failed generate leaves an error and an editable pane, not a half-written
 
 test('a host with no generator stops offering one instead of showing a dead button', async () => {
 	const { state } = await app.dispatch(
-		{
-			type: '__cmd/soulGenerated',
-			params: { ok: false, error: { message: 'CAPABILITY_UNAVAILABLE' } }
-		},
-		{ state: { ...initialState, generating: true } }
+		{ type: 'draftSettled', params: { token: 'draft-1', error: 'CAPABILITY_UNAVAILABLE' } },
+		{ state: { ...initialState, draft: 'draft-1' } }
 	)
 	expect(state?.canGenerate).toBe(false)
 	expect(state?.error).toContain('write the soul yourself')
 })
 
 test('a GUI starting drops the markers a stopped host left behind', async () => {
-	// `generating` belongs to a command that died with its process — nothing would ever
-	// settle it, and it disables the pane. `canGenerate: false` may be another device's
-	// answer entirely: this state replicates. And a proposal has outlived the draft that
-	// asked for it. Only a GUI START means all three: switching panes must not.
+	// The token names a request this GUI never made — left standing it shows "Writing…"
+	// forever. `canGenerate: false` may be another device's answer entirely: this state
+	// replicates. And a proposal has outlived the draft that asked for it. Only a GUI
+	// START means all three: switching panes must not.
 	const stranded = {
 		...initialState,
-		generating: true,
+		draft: 'draft-1',
 		canGenerate: false,
 		proposal: { body: 'You are Fern.', firstWords: 'I am here.' }
 	}
 	const { state } = await app.dispatch({ type: 'guiStarted', params: {} }, { state: stranded })
-	expect(state).toMatchObject({ generating: false, canGenerate: true, proposal: null })
+	expect(state).toMatchObject({ draft: null, canGenerate: true, proposal: null })
 })
 
-test('a draft nobody is waiting for is dropped, not shown as a rewrite', async () => {
-	// The GUI that asked for it is gone (`guiStarted` cleared the marker), so this prose —
-	// written for a name and nature that went with it — must not surface on the character
-	// sheet of a still-bound agent, one click away from being saved.
-	const { state } = await app.dispatch(
-		{
-			type: '__cmd/soulGenerated',
-			params: { ok: true, value: { body: 'You are someone else.' } }
-		},
-		{ state: { ...initialState, soul: boundSoul, generating: false } }
+test('a draft is folded only by the request that asked for it', async () => {
+	// The GUI that asked is gone (`guiStarted` cleared the token), so this prose — written
+	// for a name and nature that went with it — must not surface on the character sheet of
+	// a still-bound agent, one click away from being saved.
+	const orphaned = await app.dispatch(
+		{ type: 'draftSettled', params: { token: 'draft-1', soul: { body: 'You are someone else.' } } },
+		{ state: { ...initialState, soul: boundSoul, draft: null } }
 	)
-	expect(state?.proposal).toBeNull()
+	expect(orphaned.state?.proposal).toBeNull()
+
+	// And the sharper case: the GUI that replaced it has a request of its OWN in flight, so
+	// a boolean "something is generating" would have accepted the old answer as the new
+	// one's. The token is what tells them apart — the live request still lands.
+	const superseded = await app.dispatch(
+		{ type: 'draftSettled', params: { token: 'draft-1', soul: { body: 'You are someone else.' } } },
+		{ state: { ...initialState, soul: boundSoul, draft: 'draft-2' } }
+	)
+	expect(superseded.state).toMatchObject({ proposal: null, draft: 'draft-2' })
+	const landed = await app.dispatch(
+		{ type: 'draftSettled', params: { token: 'draft-2', soul: { body: 'You are Fern, still.' } } },
+		{ state: superseded.state ?? initialState }
+	)
+	expect(landed.state).toMatchObject({
+		draft: null,
+		proposal: { body: 'You are Fern, still.' }
+	})
 })
 
 test('offline says so and keeps the generator, unlike a host that has none', async () => {
 	const { state } = await app.dispatch(
-		{
-			type: '__cmd/soulGenerated',
-			params: { ok: false, error: { message: 'CAPABILITY_OFFLINE' } }
-		},
-		{ state: { ...initialState, generating: true } }
+		{ type: 'draftSettled', params: { token: 'draft-1', error: 'CAPABILITY_OFFLINE' } },
+		{ state: { ...initialState, draft: 'draft-1' } }
 	)
 	// Transient: the buttons stay. The soul is a file, so writing it works offline.
 	expect(state?.canGenerate).toBe(true)

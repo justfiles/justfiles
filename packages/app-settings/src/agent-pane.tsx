@@ -340,6 +340,8 @@ function CharacterSheet({
 	const gender: Gender = soul.gender ?? 'female'
 	const written = nameInSoul(soul)
 	const renamed = written !== null && written !== soul.name
+	// A draft is being waited for — its token is what will decide whose answer it is.
+	const writing = state.draft !== null
 
 	// The volume is the truth: a sync (or a rewrite) replaces what is on screen unless the
 	// user is mid-edit, in which case their draft stands until they press Done.
@@ -365,13 +367,17 @@ function CharacterSheet({
 		}
 	}
 
+	// Not awaited, and its rejection is not the pane's to handle: the procedure folds the
+	// outcome into state under a token (see `draftSettled`).
 	const rewrite = () =>
-		void client.generateSoul({
-			name,
-			gender,
-			// A rewrite reuses the recorded seed — the pane offers no way to change it.
-			archetype: soul.archetype ?? 'companion'
-		})
+		client
+			.generateSoul({
+				name,
+				gender,
+				// A rewrite reuses the recorded seed — the pane offers no way to change it.
+				archetype: soul.archetype ?? 'companion'
+			})
+			.catch(() => {})
 
 	const proposal = state.proposal
 	return (
@@ -467,7 +473,7 @@ function CharacterSheet({
 						<button
 							type="button"
 							className="settings-small-button"
-							disabled={busy || state.generating}
+							disabled={busy || writing}
 							onClick={() => {
 								if (!editing) return setEditing(true)
 								setEditing(false)
@@ -480,10 +486,10 @@ function CharacterSheet({
 							<button
 								type="button"
 								className="settings-small-button"
-								disabled={busy || state.generating || editing}
+								disabled={busy || writing || editing}
 								onClick={rewrite}
 							>
-								{state.generating ? 'Writing…' : 'Rewrite'}
+								{writing ? 'Writing…' : 'Rewrite'}
 							</button>
 						) : null}
 					</div>
@@ -506,7 +512,7 @@ function CharacterSheet({
 						) : (
 							<div className="agent-doc-prose">{proposal?.body ?? soul.body}</div>
 						)}
-						{state.generating ? (
+						{writing ? (
 							<div className="agent-doc-prose" style={{ opacity: 0.55, marginTop: 10 }}>
 								Rewriting…
 							</div>
@@ -601,6 +607,8 @@ function Summoning({
 	// So the ritual only ever takes a draft it asked for.
 	const [asked, setAsked] = useState(false)
 	const nature = archetypeOf(archetype)
+	// A draft is being waited for. Whose it is, is decided by its token when it lands.
+	const writing = state.draft !== null
 
 	// The draft arrives through reducer state (it cost a model call, so it survives a
 	// reload): showing it IS the review step.
@@ -621,13 +629,16 @@ function Summoning({
 	// flight, after we asked, is our attempt's.)
 	useEffect(() => {
 		if (!archetype) return
-		if (!state.canGenerate || (asked && state.error && !state.generating)) setStep('review')
-	}, [archetype, asked, state.canGenerate, state.error, state.generating])
+		if (!state.canGenerate || (asked && state.error && !writing)) setStep('review')
+	}, [archetype, asked, state.canGenerate, state.error, writing])
 
-	// Asking is what makes the next draft ours to show.
+	// Asking is what makes the next draft ours to show. Nothing is awaited and nothing is
+	// caught: the procedure folds its own outcome — the soul, or why it never came — into
+	// state under a token, which is also what keeps a slow answer from landing on a later
+	// question.
 	const draft = (seed: string) => {
 		setAsked(true)
-		void client.generateSoul({ name: name.trim(), gender, archetype: seed })
+		client.generateSoul({ name: name.trim(), gender, archetype: seed }).catch(() => {})
 	}
 
 	const pickNature = (id: string) => {
@@ -664,7 +675,6 @@ function Summoning({
 	)
 
 	const art = photo?.url ?? nature?.art ?? SPIRIT_ART
-	const writing = state.generating
 
 	return (
 		<div className="settings-pane">

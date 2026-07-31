@@ -25,8 +25,9 @@ import * as v from 'valibot'
 // connected accounts, the agent's identity as read from the volume, a generated soul
 // awaiting a verdict, a loading flag, and an inline error. Transient form/busy markers
 // stay in GUI-local React state — handlers are atomic, so a `busy` flag in reducer
-// state would only be observable as null between dispatches. `generating` is the
-// exception: a command's completion is not otherwise visible to the GUI.
+// state would only be observable as null between dispatches. The draft token is the
+// exception: a model call's progress is not otherwise visible to the GUI, and it has to
+// outlive the GUI that started it.
 //
 // NOTHING BINARY LIVES HERE. Reducer state is JSON-encoded to `/state/<appId>.json`
 // and replicates; the avatar's bytes travel GUI↔host as a procedure's argument and
@@ -86,17 +87,20 @@ export type SettingsState = {
 	// is open — but not a GUI start (`guiStarted`), because the draft that asked for it,
 	// the name and nature being tried, is gone by then.
 	proposal: GeneratedSoul | null
-	// A command is in flight. The GUI cannot otherwise see a command settle, and the
-	// summoning needs to show that something is happening.
-	generating: boolean
+	// The draft being waited for, by token — null when none is. It is the marker the pane
+	// shows "Writing…" from AND the identity that decides whose answer is whose: only a
+	// result carrying this token is folded (see `draftSettled`). A boolean could not tell
+	// two overlapping requests apart, and they do overlap — a GUI that restarted has no
+	// idea the one before it left a model call running.
+	draft: string | null
 	// False once the host reports no generator (a signed-out Mac): the pane drops
 	// Rewrite and lets you write the soul yourself instead of showing a dead button.
 	canGenerate: boolean
 	// BOTH OF THE ABOVE ARE FACTS ABOUT THIS HOST, RIGHT NOW — and this state replicates,
-	// so neither may be believed once it is stale. `generating` describes a command, which
-	// dies with the process that issued it; `canGenerate` describes a host, and the Mac's
-	// "no AI here" is not the browser's. `guiStarted` drops both, and a fresh account list
-	// re-probes `canGenerate` so turning on a provider brings the buttons back.
+	// so neither may be believed once it is stale. `draft` names a request whose GUI may be
+	// gone; `canGenerate` describes a host, and the Mac's "no AI here" is not the browser's.
+	// `guiStarted` drops both, and a fresh account list re-probes `canGenerate` so turning
+	// on a provider brings the buttons back.
 	loading: boolean
 	error: string | null
 }
@@ -113,7 +117,7 @@ export const initialState: SettingsState = {
 	facts: null,
 	avatarRevision: 0,
 	proposal: null,
-	generating: false,
+	draft: null,
 	canGenerate: true,
 	loading: true,
 	error: null
@@ -121,6 +125,19 @@ export const initialState: SettingsState = {
 
 const capabilitySchema = v.picklist(['email', 'calendar', 'ai'] satisfies CapabilityId[])
 const genderSchema = v.picklist(['female', 'male'])
+
+// How a draft comes back: the token it was asked under, then either the soul or why it
+// never arrived (the capability error's code, which the fold turns into a sentence).
+const draftSettledSchema = v.object({
+	token: v.string(),
+	soul: v.optional(v.object({ body: v.string(), firstWords: v.optional(v.string()) })),
+	error: v.optional(v.string())
+})
+
+// Distinguishes one draft request from the next. Only ever compared inside this app
+// instance: a request whose host is gone cannot answer at all, and a request whose GUI is
+// gone answers into a state where `guiStarted` has already cleared the token.
+let drafts = 0
 
 export const app = defineApp({
 	init: initialState,
@@ -193,29 +210,30 @@ export const app = defineApp({
 		factsLoaded: t.fromResult('settings', 'agent.readProfile', (state, r) =>
 			r.ok ? { ...state, facts: r.value } : { ...state, error: r.error.message }
 		),
-		// Drafting a soul is a READ of the model: it writes nothing, and the result waits
-		// in `proposal` until the user keeps it (`saveSoul`) or drops it.
-		generateSoul: t.on(
-			v.object({ name: v.string(), gender: genderSchema, archetype: v.string() }),
-			(state, params) => [
-				{ ...state, generating: true, proposal: null, error: null },
-				t.cmd('settings', 'agent.generateSoul', params).to('soulGenerated')
-			],
-			{ description: 'Draft a soul from a name, a gender and a seed archetype.' }
-		),
-		soulGenerated: t.fromResult('settings', 'agent.generateSoul', (state, r) => {
-			// Nobody here is waiting for this. `generating` is raised by the request and
-			// cleared by `guiStarted`, so a result landing with it down was asked for by a GUI
-			// that is gone — and its context went with it: a resummoning's draft would appear
-			// on the character sheet of a still-bound agent as though it were a rewrite, ready
-			// for "Use this" to save prose written for a different name and nature.
-			if (!state.generating) return state
-			if (r.ok) return { ...state, proposal: r.value, generating: false }
+		// Drafting a soul is a READ of the model: it writes nothing, and the result waits in
+		// `proposal` until the user keeps it (`saveSoul`) or drops it. The two halves are
+		// `commit` edges rather than a public edge + `fromResult`, because a capability
+		// result carries no idea of which request it answers — and here that matters, so the
+		// `generateSoul` PROCEDURE mints a token and hands it to both (see below).
+		draftStarted: t.commit(v.object({ token: v.string() }), (state, { token }) => ({
+			...state,
+			draft: token,
+			proposal: null,
+			error: null
+		})),
+		draftSettled: t.commit(draftSettledSchema, (state, { token, soul, error }) => {
+			// NOT OURS. `draft` is set by the request that is current and cleared by
+			// `guiStarted`, so a token that does not match belongs to a request something has
+			// superseded: a GUI that closed mid-call, or a later request from the GUI that
+			// replaced it. Both must be dropped — a resummoning's prose landing as the answer
+			// to a Rewrite would sit on a bound agent's sheet, one click from being saved.
+			if (token !== state.draft) return state
+			if (soul) return { ...state, proposal: soul, draft: null }
 			// No generator here (a signed-out Mac): stop offering one, and say so once.
-			if (r.error.message === 'CAPABILITY_UNAVAILABLE')
+			if (error === 'CAPABILITY_UNAVAILABLE')
 				return {
 					...state,
-					generating: false,
+					draft: null,
 					canGenerate: false,
 					error:
 						'No AI is turned on here — write the soul yourself, or turn on a provider in Accounts.'
@@ -223,27 +241,27 @@ export const app = defineApp({
 			// Offline is the other reason a browser cannot draft one. Unlike no-generator it
 			// is TRANSIENT, so it must not hide the buttons — but it is still a sentence,
 			// not a code, and writing the soul yourself works offline: it is a file.
-			if (r.error.message === 'CAPABILITY_OFFLINE')
+			if (error === 'CAPABILITY_OFFLINE')
 				return {
 					...state,
-					generating: false,
+					draft: null,
 					error: 'No connection — write the soul yourself, or try again once you are back.'
 				}
-			return { ...state, generating: false, error: r.error.message }
+			return { ...state, draft: null, error: error ?? 'The draft did not arrive.' }
 		}),
 		discardProposal: t.on(v.object({}), (state) => ({ ...state, proposal: null }), {
 			description: 'Drop a generated soul and keep what is on the volume.'
 		}),
 		// Dispatched once by a GUI as it mounts, before the loads — the only moment that
 		// means "this state was written by a run that is over". All three fields it resets
-		// describe THIS host at THIS moment (see the state type): `generating` belongs to a
-		// command that no longer exists — nothing would ever settle it, and it disables the
-		// whole pane — a `canGenerate: false` may have been written by another device
-		// entirely, and a `proposal` has lost the draft that asked for it. Reopening a
-		// window during a real generation costs only the spinner; the result still lands.
+		// describe THIS host at THIS moment (see the state type): `draft` names a request
+		// this GUI never made — left standing it shows "Writing…" forever and disables the
+		// pane — a `canGenerate: false` may have been written by another device entirely,
+		// and a `proposal` has lost the draft that asked for it. Clearing the token is also
+		// what disowns a call still running from the last GUI: its answer no longer matches.
 		guiStarted: t.on(
 			v.object({}),
-			(state) => ({ ...state, generating: false, canGenerate: true, proposal: null }),
+			(state) => ({ ...state, draft: null, canGenerate: true, proposal: null }),
 			{ description: 'Drop the in-flight, no-generator and draft markers a past run left.' }
 		),
 		avatarChanged: t.on(
@@ -264,6 +282,30 @@ export const app = defineApp({
 	// completion, so they live in procedures. Each drives the host capability then
 	// re-runs the matching load.
 	procedures: (p) => ({
+		// A procedure only so the request and its answer can be tied together: the token it
+		// mints goes into the state before the call and comes back with the result, which is
+		// the one thing a `fromResult` edge cannot do (a capability result says nothing about
+		// which call it answers). Nothing is written to the volume here — this is a read of
+		// the model, and it settles into `proposal` for the user to keep or drop.
+		generateSoul: p.procedure({
+			description: 'Draft a soul from a name, a gender and a seed archetype.',
+			schema: v.object({ name: v.string(), gender: genderSchema, archetype: v.string() }),
+			async run(input, app) {
+				const token = `draft-${++drafts}`
+				await app.dispatch({ type: 'draftStarted', params: { token } })
+				try {
+					const soul = (await app.invoke('settings', 'agent.generateSoul', input)) as GeneratedSoul
+					await app.dispatch({ type: 'draftSettled', params: { token, soul } })
+				} catch (error) {
+					// A CapabilityError's message IS its code (CAPABILITY_UNAVAILABLE /
+					// CAPABILITY_OFFLINE); the fold is what turns it into something to read.
+					await app.dispatch({
+						type: 'draftSettled',
+						params: { token, error: error instanceof Error ? error.message : String(error) }
+					})
+				}
+			}
+		}),
 		connectAccount: p.procedure({
 			description: 'Connect a provider account (form providers pass credentials).',
 			schema: v.object({

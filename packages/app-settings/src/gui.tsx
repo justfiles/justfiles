@@ -157,7 +157,7 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
-		// First: a persisted `generating`/`canGenerate` describes a host that is gone.
+		// First: a persisted draft token / `canGenerate` describes a host that is gone.
 		void client.guiStarted({})
 		void client.loadUser({})
 		void client.loadProviders({})
