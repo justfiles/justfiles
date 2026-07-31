@@ -26,7 +26,12 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import {
+	ensureAgentDefaults,
+	IDENTITY_PATHS,
+	PROFILE_PATH,
+	readAgentName
+} from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -407,14 +412,30 @@ export class Frieren extends DurableObject<Env> {
 			// `host.usage` (the meter lives with the DO) to this one.
 			settings: settingsHost({
 				accounts: caps.accounts,
-				usage: () => this.usageSnapshot()
+				usage: () => this.usageSnapshot(),
+				// The soul generator lives here because the model does. The browser half
+				// serves the Volume methods itself and delegates only this one.
+				agent: {
+					volume: this.vol,
+					paths: IDENTITY_PATHS,
+					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
+						const { text, firstWords } = await this.generateSoul({
+							agentName: name,
+							agentGender: gender,
+							archetype: archetype as SoulGenerationInput['archetype'],
+							userAge,
+							userGender
+						})
+						return { body: text, firstWords }
+					}
+				}
 			})
 		})
 		// The agent's LLM backend resolves from the enabled `ai` account (single-active):
 		// the built-in AI → the platform env backend; nothing enabled → no backend, so a turn
 		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
 		// turn, so toggling AI in Settings takes effect on the next prompt.
-		const agentName = (await readFrontmatter(this.vol, SOUL_PATH)).agent_name || 'Kodama'
+		const agentName = await readAgentName(this.vol)
 		// Capability-provided agent tools (Step 3.5): expose `image` to the agent when
 		// the platform has an image engine (local LM Studio dev has none). Availability
 		// still resolves per call through the active-AI account.
@@ -684,14 +705,14 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async loadParticipants(): Promise<DisplayParticipants> {
-		const [profile, soul] = await Promise.all([
+		const [profile, agentName] = await Promise.all([
 			readFrontmatter(this.vol, PROFILE_PATH),
-			readFrontmatter(this.vol, SOUL_PATH)
+			readAgentName(this.vol)
 		])
 
 		return {
 			userName: profile.name || 'You',
-			agentName: soul.agent_name || 'Kodama'
+			agentName
 		}
 	}
 }

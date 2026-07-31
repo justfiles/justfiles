@@ -9,7 +9,7 @@ import {
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
-import { getVolume } from './fs'
+import { agentName, getVolume } from './fs'
 import { identity } from './identity'
 import { getKernel } from './kernel'
 import { accountsSecretCodec } from './keychain'
@@ -86,7 +86,9 @@ async function buildSession(): Promise<AgentSession> {
 		// `app launch`/`app run` update live windows the moment they run.
 		apps: createAppController(await getKernel(), { windows: nativeWindows }),
 		notify: notificationChannel,
-		title: 'Kodama',
+		// The name the soul records — personalizing on this Mac is a Settings pane now
+		// (`agent.writeSoul`), so a session built after it greets by the new name.
+		title: await agentName(),
 		// The `read_doc` tool + docs system-prompt block: repo-root docs/*.md, resolved via
 		// DOCS_DIR; Bun reads the file at tool-call time.
 		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text()

@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { ensureAgentDefaults, readAgentName } from '@justfiles/agent/defaults'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 
@@ -25,9 +26,20 @@ export function getVolume(): Promise<Volume> {
 	volumeOnce ??= (async () => {
 		const root = join(supportDir(), 'volume')
 		await mkdir(root, { recursive: true }) // nativeStorage lstats the root — it must exist
-		return volume(await nativeStorage(root))
+		const vol = volume(await nativeStorage(root))
+		// Seed the default soul + empty profile the moment the Volume exists, the way the
+		// frieren DO does on reset: the agent works with no onboarding, and Settings' Agent
+		// pane has a file to report as "unbound" instead of nothing at all. Idempotent — a
+		// personalized soul is never overwritten.
+		await ensureAgentDefaults(vol)
+		return vol
 	})()
 	return volumeOnce
+}
+
+/** What the agent is called on this Mac: the soul's name, or the seeded default. */
+export async function agentName(): Promise<string> {
+	return readAgentName(await getVolume())
 }
 
 export async function writeRuntime(runtime: Runtime): Promise<void> {

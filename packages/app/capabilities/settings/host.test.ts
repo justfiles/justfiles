@@ -23,6 +23,17 @@ const METHODS = [
 	'host.user'
 ]
 
+// Every method that needs the Volume (or the generator): served only where its dep is.
+const AGENT_METHODS = [
+	'agent.readSoul',
+	'agent.writeSoul',
+	'agent.readAvatar',
+	'agent.writeAvatar',
+	'agent.readProfile',
+	'agent.writeProfile',
+	'agent.generateSoul'
+]
+
 // The app declares NO scopes (the gate is identity), so every frame carries `[]`.
 function call(method: string, args: unknown = {}, appId = SETTINGS): CapabilityCall {
 	return { appId, capability: 'settings', method, args: [args], scopes: [] }
@@ -283,4 +294,171 @@ test('an unknown method (or a subscribe) is UNAVAILABLE, never a crash', async (
 	await expect(caps.subscribe(call('host.usage'), () => {})).rejects.toMatchObject({
 		code: 'CAPABILITY_UNAVAILABLE'
 	})
+})
+
+// ── agent.* ───────────────────────────────────────────────────────────────
+// The identity files are the Volume's, so these run against a real one. The paths are
+// injected (they belong to `@justfiles/agent`, which depends on this package), so what
+// is asserted here is that the host honours the paths it was handed — every wiring
+// passes the one `IDENTITY_PATHS` symbol.
+
+const PATHS = {
+	soul: '/system/agents/main/soul.md',
+	avatar: '/system/agents/main/avatar.png',
+	profile: '/system/user.md'
+}
+
+function agentHost(over: Partial<SettingsHostDeps['agent']> = {}) {
+	const vol = volume(memStorage())
+	const { accounts } = accountsCapabilities([icloudProvider()], vol)
+	return { vol, caps: settingsHost({ accounts, agent: { volume: vol, paths: PATHS, ...over } }) }
+}
+
+const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
+const encode = (text: string) => new TextEncoder().encode(text)
+
+test('agent.writeSoul then readSoul round-trips, through the paths the host was handed', async () => {
+	const { vol, caps } = agentHost()
+	await caps.invoke(
+		call('agent.writeSoul', { name: 'Fern', gender: 'female', body: 'You are Fern.' })
+	)
+	expect(await caps.invoke(call('agent.readSoul'))).toEqual({
+		name: 'Fern',
+		gender: 'female',
+		archetype: null,
+		avatarVariant: null,
+		body: 'You are Fern.',
+		seeded: false
+	})
+	// The file, not just the projection: the pane holds no path and no format.
+	const text = decode(await vol.readFile(PATHS.soul))
+	expect(text).toContain('schema: frieren/agent-soul/v1')
+	expect(text).toContain('agent_name: Fern')
+	expect(text).toContain('agent_gender: female')
+	// Writing clears the seeded flag: this soul is the user's now.
+	expect(text).not.toContain('seeded')
+	expect(text.trimEnd().endsWith('You are Fern.')).toBe(true)
+})
+
+test('the seeded default reads as unbound, so the pane can send you to the summoning', async () => {
+	const { vol, caps } = agentHost()
+	// What `ensureAgentDefaults` seeds at boot (kept as a literal: this asserts the
+	// reading of a seeded file, not the seeder).
+	await vol.mkdir('/system/agents/main', { recursive: true })
+	await vol.writeFile(
+		PATHS.soul,
+		encode(
+			'---\nschema: frieren/agent-soul/v1\nagent_name: Kodama\nseeded: true\n---\n\nYou are Kodama.\n'
+		)
+	)
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
+		name: 'Kodama',
+		seeded: true
+	})
+	// A volume where nothing was ever seeded is the same user-visible state.
+	const virgin = agentHost()
+	expect(await virgin.caps.invoke(call('agent.readSoul'))).toMatchObject({
+		name: '',
+		seeded: true
+	})
+})
+
+test('the archetype is the summoning to set and everyone else to preserve', async () => {
+	const { caps } = agentHost()
+	await caps.invoke(
+		call('agent.writeSoul', {
+			name: 'Fern',
+			gender: 'female',
+			body: 'You teach by asking.',
+			archetype: 'teacher'
+		})
+	)
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
+		archetype: 'teacher',
+		avatarVariant: 'teacher'
+	})
+	// A plain write (the returning-user pane) keeps the seed AND the art it points at:
+	// nothing in that pane can change a nature, by contract rather than by discipline.
+	await caps.invoke(call('agent.writeSoul', { name: 'Frieren', gender: 'female', body: 'Same.' }))
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
+		name: 'Frieren',
+		archetype: 'teacher',
+		avatarVariant: 'teacher'
+	})
+})
+
+test('agent.writeAvatar stores bytes; null drops back to the built-in art', async () => {
+	const { vol, caps } = agentHost()
+	const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
+	await caps.invoke(call('agent.writeAvatar', { bytes }))
+	expect(await caps.invoke(call('agent.readAvatar'))).toEqual(bytes)
+	// Null must DELETE: stale bytes keep winning over the variant otherwise.
+	await caps.invoke(call('agent.writeAvatar', { bytes: null }))
+	expect(await caps.invoke(call('agent.readAvatar'))).toBeNull()
+	expect(await vol.exists(PATHS.avatar)).toBe(false)
+})
+
+test('agent.readProfile / writeProfile carry only what the user chose to say', async () => {
+	const { caps } = agentHost()
+	expect(await caps.invoke(call('agent.readProfile'))).toMatchObject({ name: '', seeded: true })
+	await caps.invoke(
+		call('agent.writeProfile', { name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
+	)
+	expect(await caps.invoke(call('agent.readProfile'))).toEqual({
+		name: 'Xiaoxing',
+		birthDate: '1985-04-12',
+		gender: 'male',
+		seeded: false
+	})
+})
+
+test('agent.generateSoul is a preview: it reads the user from the volume and writes nothing', async () => {
+	const seen: unknown[] = []
+	const { caps } = agentHost({
+		generateSoul: async (input) => {
+			seen.push(input)
+			return { body: 'A drafted soul.', firstWords: 'I am here.' }
+		}
+	})
+	await caps.invoke(
+		call('agent.writeProfile', { name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
+	)
+	expect(
+		await caps.invoke(
+			call('agent.generateSoul', { name: 'Fern', gender: 'female', archetype: 'companion' })
+		)
+	).toEqual({ body: 'A drafted soul.', firstWords: 'I am here.' })
+	// The host supplies who the user is, so no consumer derives an age from a date.
+	expect(seen).toMatchObject([
+		{ name: 'Fern', gender: 'female', archetype: 'companion', userGender: 'male' }
+	])
+	expect((seen[0] as { userAge: number }).userAge).toBeGreaterThan(30)
+	// A preview never lands on the volume.
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({ seeded: true })
+})
+
+test('no generator is UNAVAILABLE (a mac-shaped host), and the Volume methods still work', async () => {
+	const { caps } = agentHost()
+	await expect(
+		caps.invoke(call('agent.generateSoul', { name: 'F', gender: 'female', archetype: 'companion' }))
+	).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+	await expect(caps.invoke(call('agent.readSoul'))).resolves.toBeTruthy()
+})
+
+test('no volume: every agent.* method is UNAVAILABLE rather than half-served', async () => {
+	const caps = host()
+	for (const method of AGENT_METHODS) {
+		await expect(caps.invoke(call(method, {}))).rejects.toMatchObject({
+			code: 'CAPABILITY_UNAVAILABLE'
+		})
+	}
+})
+
+test('a non-allowlisted app is refused every agent.* method', async () => {
+	const { caps } = agentHost({ generateSoul: async () => ({ body: 'x' }) })
+	for (const method of AGENT_METHODS) {
+		await expect(caps.invoke(call(method, {}, 'app.someone.else'))).rejects.toMatchObject({
+			code: 'CAPABILITY_UNAVAILABLE'
+		})
+	}
 })

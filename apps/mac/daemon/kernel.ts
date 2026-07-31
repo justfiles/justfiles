@@ -1,5 +1,6 @@
 import { hostname } from 'node:os'
-import { aiCapability, text } from '@justfiles/agent'
+import { aiCapability, SOUL_GENERATION_PROMPT, text } from '@justfiles/agent'
+import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -108,7 +109,30 @@ export async function buildKernel(
 			// The host admin surface, reachable only by the first-party Settings app. No
 			// usage meter here (its pane hides itself); `host.user` answers the daemon's own
 			// Kodama identity (E1) — null, i.e. "Local user", until someone runs `/sign-in`.
-			settings: settingsHost({ accounts, user: () => identity.currentUser() }),
+			// `agent.*` is where this Mac finally gets personalization: the identity files are
+			// on the native Volume, and the soul generator is the active AI account's model —
+			// absent (signed out, or nothing turned on) makes only Rewrite UNAVAILABLE, so the
+			// pane still works and you write the soul yourself.
+			settings: settingsHost({
+				accounts,
+				user: () => identity.currentUser(),
+				agent: {
+					volume: fs,
+					paths: IDENTITY_PATHS,
+					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
+						const backend = await resolveAgentBackend(fs, { secretCodec })
+						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')
+						const facts = [
+							`agent name: ${name}`,
+							`archetype: ${archetype}`,
+							`agent gender: ${gender}`
+						]
+						if (userAge !== undefined) facts.push(`user age: ${userAge}`)
+						if (userGender) facts.push(`user gender: ${userGender}`)
+						return { body: await text(backend).gen(SOUL_GENERATION_PROMPT, facts.join('\n')) }
+					}
+				}
+			}),
 			email,
 			calendar,
 			ai,
