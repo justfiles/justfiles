@@ -59,6 +59,8 @@ function scriptedBackend(
 		// `shouldCompact` reads it off the model; without one the comparison is NaN and
 		// compaction never fires.
 		contextWindow?: number
+		// Fires per `completeFn` call — the LLM work behind takeNotes/compaction summaries.
+		onComplete?: () => void
 	} = {}
 ) {
 	const queue = [...messages]
@@ -72,8 +74,10 @@ function scriptedBackend(
 		stream.end(message)
 		return stream
 	}
-	const completeFn: AgentBackend['completeFn'] = async () =>
-		assistant(complete ? [{ type: 'text', text: complete }] : [])
+	const completeFn: AgentBackend['completeFn'] = async () => {
+		hooks.onComplete?.()
+		return assistant(complete ? [{ type: 'text', text: complete }] : [])
+	}
 	return {
 		model: { id: 'test', contextWindow: hooks.contextWindow } as Model<Api>,
 		streamFn,
@@ -621,5 +625,89 @@ describe('createAgentSession', () => {
 			new TextDecoder().decode(await vol.readFile(`${dir}/${mine}`)).split('\n')[0] as string
 		)
 		expect(first.parentId).toBe('aaaa0002')
+	})
+})
+
+// Rolling over summarises the retired conversation into the daily journal. That is an LLM call
+// and an append-only write, and until the fresh session has its first entry the retired one is
+// STILL the newest — so anything that re-initialises the host in that window used to archive it
+// all over again (#335 review). A DO eviction, a backend rebuild, or a UI that only asked for
+// history are all in that window.
+describe('retiring a session on rollover', () => {
+	const DAILY = `/system/memory/daily/${new Date().toISOString().slice(0, 10)}.md`
+
+	// A conversation that went quiet seven hours ago: past the six-hour idle window, so the next
+	// turn retires it.
+	async function seedIdleSession(vol: Volume) {
+		const dir = '/system/agents/main/sessions'
+		const idle = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString()
+		await vol.mkdir(dir, { recursive: true })
+		await vol.writeFile(
+			`${dir}/2026-07-26T09-00-00Z-01d5e551.aaaa1111.jsonl`,
+			encoder.encode(
+				`${JSON.stringify({ type: 'message', role: 'user', content: 'an old question', id: 'aaaa0001', parentId: null, ts: idle })}\n${JSON.stringify(
+					{
+						type: 'message',
+						role: 'assistant',
+						content: 'an old answer',
+						id: 'aaaa0002',
+						parentId: 'aaaa0001',
+						ts: idle
+					}
+				)}\n`
+			)
+		)
+	}
+
+	test('the retired conversation is summarised once, however often the host re-initialises', async () => {
+		const vol = volume(memStorage())
+		await seedIdleSession(vol)
+		let completions = 0
+		const open = () =>
+			createAgentSession({
+				volume: vol,
+				backend: scriptedBackend([], 'a note about the old conversation', {
+					onComplete: () => completions++
+				}),
+				compaction: NO_COMPACTION
+			})
+
+		// First host: retires the idle session and journals it.
+		await open().history()
+		const afterFirst = new TextDecoder().decode(await vol.readFile(DAILY))
+		expect(afterFirst).toContain('a note about the old conversation')
+		expect(completions).toBe(1)
+
+		// A second host over the same Volume — an eviction, a rebuild, or just a reconnect that
+		// only wanted history. The retired session is still the newest thing on disk.
+		await open().history()
+
+		const afterSecond = new TextDecoder().decode(await vol.readFile(DAILY))
+		expect(afterSecond).toBe(afterFirst)
+		// And the summary was not paid for twice: the claim is taken BEFORE the LLM call.
+		expect(completions).toBe(1)
+	})
+
+	// The claim is an atomic no-replace create, so it settles the concurrent case too rather than
+	// merely narrowing it — two hosts waking together cannot both archive.
+	test('two hosts waking together retire it once between them', async () => {
+		const vol = volume(memStorage())
+		await seedIdleSession(vol)
+		let completions = 0
+		const open = () =>
+			createAgentSession({
+				volume: vol,
+				backend: scriptedBackend([], 'a note about the old conversation', {
+					onComplete: () => completions++
+				}),
+				compaction: NO_COMPACTION
+			})
+
+		await Promise.all([open().history(), open().history()])
+
+		expect(completions).toBe(1)
+		expect(new TextDecoder().decode(await vol.readFile(DAILY)).match(/a note about/g)).toHaveLength(
+			1
+		)
 	})
 })

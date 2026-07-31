@@ -55,6 +55,12 @@ export type SessionShard = {
 	deviceId: string | null
 }
 
+// A one-time marker that a retired session's summary has been written to the journal. In its
+// own directory so `ls` of the sessions dir stays the chronological transcript index, and
+// deliberately not `.jsonl` so the shard reader ignores it either way.
+export const sessionArchive = (agentId: string, sessionId: string) =>
+	`${sessionsDir(agentId)}/archived/${sessionId}`
+
 export function parseSessionShard(name: string): SessionShard | null {
 	const m = SHARD.exec(name)
 	if (m) {

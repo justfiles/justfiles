@@ -506,7 +506,12 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 
 	if (current && now.getTime() - Date.parse(current.newestTs) < SIX_HOURS) return open(current)
 
-	if (current) {
+	// Archiving a retired conversation is a ONE-TIME, cross-device side effect: an LLM call plus
+	// a journal append. It has to be CLAIMED, not merely guarded, because until the fresh session
+	// has its first entry the retired one is still the newest — so a DO eviction, a backend
+	// rebuild, or a host that only asked for history re-derives it and archives it again,
+	// duplicating the notes and paying for the summary every time (#335 review).
+	if (current && (await claimArchive(volume, ctx.agentId, current.sessionId))) {
 		const previous = await open(current)
 		const context = await previous.buildSessionContext()
 		if (context.length > 0) {
@@ -521,6 +526,28 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 	return createSession(ctx, volume, now)
 }
 
+// The claim is `writeFile({ exclusive: true })` — atomic create, no replace, on every backend
+// (#325/#327), which also settles two devices rolling over at the same moment: one wins the
+// name and the other skips.
+//
+// Claimed BEFORE the work, deliberately. A crash in between loses a best-effort summary;
+// claiming afterwards would duplicate it on every re-init, which is the bug this fixes. The
+// transcript itself is never at risk either way — it stays on disk and is searchable, which is
+// where the agent is told to look for old conversations.
+async function claimArchive(volume: Volume, agentId: string, sessionId: string): Promise<boolean> {
+	const path = paths.sessionArchive(agentId, sessionId)
+	await volume.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true })
+	try {
+		await volume.writeFile(path, new TextEncoder().encode(new Date().toISOString()), {
+			exclusive: true
+		})
+		return true
+	} catch (e) {
+		if (!(e as Error).message.startsWith('EEXIST')) throw e
+		return false
+	}
+}
+
 // Mint a fresh session id and open this device's shard for it. The retired session stays on
 // disk and simply stops being the newest — nothing has to be de-registered, because nothing
 // was registered. Shared by route() (after an idle rollover) and Runtime.newSession.
@@ -530,6 +557,10 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 // to the previous session. No content is lost (there was none); the INTENT is. Recording it
 // would mean host-private state under /.state, which #300 leaves optional and nothing has
 // asked for.
+//
+// The second-order effect of that same gap was a real bug, now fixed: the retired session
+// stays the newest until the fresh one has an entry, so every re-init used to re-archive it.
+// `claimArchive` makes the archival idempotent rather than trying to close the window.
 //
 // And note what `route()` being called ONCE per host costs (#337, pre-existing): a warm host
 // never re-evaluates, so it never rolls over on idle and never joins a session a PEER started.
