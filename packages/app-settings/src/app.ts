@@ -204,6 +204,12 @@ export const app = defineApp({
 			{ description: 'Draft a soul from a name, a gender and a seed archetype.' }
 		),
 		soulGenerated: t.fromResult('settings', 'agent.generateSoul', (state, r) => {
+			// Nobody here is waiting for this. `generating` is raised by the request and
+			// cleared by `guiStarted`, so a result landing with it down was asked for by a GUI
+			// that is gone — and its context went with it: a resummoning's draft would appear
+			// on the character sheet of a still-bound agent as though it were a rewrite, ready
+			// for "Use this" to save prose written for a different name and nature.
+			if (!state.generating) return state
 			if (r.ok) return { ...state, proposal: r.value, generating: false }
 			// No generator here (a signed-out Mac): stop offering one, and say so once.
 			if (r.error.message === 'CAPABILITY_UNAVAILABLE')

@@ -152,6 +152,20 @@ test('a GUI starting drops the markers a stopped host left behind', async () => 
 	expect(state).toMatchObject({ generating: false, canGenerate: true, proposal: null })
 })
 
+test('a draft nobody is waiting for is dropped, not shown as a rewrite', async () => {
+	// The GUI that asked for it is gone (`guiStarted` cleared the marker), so this prose —
+	// written for a name and nature that went with it — must not surface on the character
+	// sheet of a still-bound agent, one click away from being saved.
+	const { state } = await app.dispatch(
+		{
+			type: '__cmd/soulGenerated',
+			params: { ok: true, value: { body: 'You are someone else.' } }
+		},
+		{ state: { ...initialState, soul: boundSoul, generating: false } }
+	)
+	expect(state?.proposal).toBeNull()
+})
+
 test('offline says so and keeps the generator, unlike a host that has none', async () => {
 	const { state } = await app.dispatch(
 		{

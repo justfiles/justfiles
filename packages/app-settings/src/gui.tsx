@@ -116,9 +116,9 @@ const stateOrInitial = (value: unknown): SettingsState => {
 	// until loadUsage replaces it.
 	if (merged.usage && !('aiBurst' in merged.usage && 'aiWeekly' in merged.usage))
 		merged.usage = null
-	// Same for a category this build no longer renders — an older state selected 'usage',
-	// whose content now lives in the account pane. Left as-is it selects no row and shows
-	// a blank detail side until the user clicks something.
+	// Same for a category this build cannot render — state replicates, so it can arrive
+	// from a build that knows a category this one does not. Left as-is it selects no row
+	// and shows a blank detail side until the user clicks something.
 	if (!RENDERED.includes(merged.category)) merged.category = 'account'
 	return merged
 }

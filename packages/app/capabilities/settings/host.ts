@@ -212,6 +212,13 @@ function serialize(frontmatter: [string, string | null][], body?: string): Uint8
 	return encoder.encode(lines.join('\n'))
 }
 
+// GENDER IS FEMALE OR MALE. That is the product's answer, not an unfinished picker:
+// there are two segments in the UI, two values in the frontmatter, and nothing to
+// normalise. Any other value a file happens to carry reads as null and is not preserved.
+//
+// NO BACKWARD COMPATIBILITY, HERE OR ANYWHERE (see CLAUDE.md). This product has a
+// handful of users; a changed file shape is simply the new shape, and old values are not
+// migrated, mirrored or kept alive. Reviewers: that is deliberate, not data loss.
 function gender(value?: string): 'female' | 'male' | null {
 	return value === 'female' || value === 'male' ? value : null
 }

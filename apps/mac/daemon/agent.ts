@@ -6,7 +6,9 @@ import {
 	type SessionEntry,
 	type SessionEvent
 } from '@justfiles/agent'
+import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
+import type { Volume } from '@justfiles/fs'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { agentName, getVolume } from './fs'
@@ -67,8 +69,26 @@ function getSession(): Promise<AgentSession> {
 	return sessionPromise
 }
 
+// A session reads the soul (and the user's profile) into its system prompt when it is
+// BUILT, and captures the agent's name for its notifications at the same moment. Naming
+// this Mac's agent is a Settings pane now, so those files change under a live session:
+// watch them and drop the memo, and the next prompt builds a session that thinks and
+// greets as the agent the user just wrote, instead of the one the daemon started with.
+// The transcript lives on the Volume, so a rebuild loses nothing. A soul synced from
+// another device lands here the same way.
+let watching = false
+async function watchIdentity(fs: Volume): Promise<void> {
+	if (watching) return
+	watching = true
+	for (const path of [IDENTITY_PATHS.soul, IDENTITY_PATHS.profile])
+		await fs.watch(path, () => {
+			sessionPromise = null
+		})
+}
+
 async function buildSession(): Promise<AgentSession> {
 	const fs = await getVolume()
+	await watchIdentity(fs)
 	const session = createAgentSession({
 		volume: fs,
 		// Re-resolve every turn so a model switch / reconnect / OAuth refresh takes effect on
