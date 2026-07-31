@@ -83,7 +83,7 @@ export const volumeCapability = (fs: Volume, opts: VolumeCapabilityOptions = {})
 		mkdir: async (ctx, path, opts) => (await bind(ctx)).mkdir(path, opts),
 		readdir: async (ctx, path) => (await bind(ctx)).readdir(path),
 		rm: async (ctx, path, opts) => (await bind(ctx)).rm(path, opts),
-		rename: async (ctx, oldPath, newPath, opts) => (await bind(ctx)).rename(oldPath, newPath, opts),
+		rename: async (ctx, oldPath, newPath) => (await bind(ctx)).rename(oldPath, newPath),
 		cp: async (ctx, src, dest, opts) => (await bind(ctx)).cp(src, dest, opts),
 		symlink: async (ctx, target, path) => (await bind(ctx)).symlink(target, path),
 		readlink: async (ctx, path) => (await bind(ctx)).readlink(path),

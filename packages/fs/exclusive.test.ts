@@ -8,12 +8,13 @@
  * `exists()` + `writeFile` would be a TOCTOU, and the loser has its note overwritten
  * — these tests pin the race.
  *
- * `rename` cannot be that: no POSIX rename is both atomic and no-replace, and
- * nothing in Node reaches `renameat2`. So it is a check and THEN a move, and what it
- * promises is what these tests pin — sequential writers never overwrite each other,
- * whatever type holds the name. Racing writers are the caller's problem to order
- * (see `persistDrop` in app-notes' tree), because the alternative is emulating an
- * atomicity the platform does not have, which costs more than it buys.
+ * `rename` has NO exclusive form and this file no longer asks for one. POSIX rename
+ * replaces, and no no-replace form is reachable from Node, so a flag would have promised
+ * something different on every backend — settled by one store's transaction, guessed at by a
+ * filesystem — which a call site cannot reason about. Claiming a name is the caller's
+ * policy now (app-notes' `claimPath`: order the claims, probe, number up), exactly as it is
+ * for git's `index.lock` or Maildir's unique names. What the backends still owe, and are
+ * held to below, is not corrupting the tree while replacing.
  */
 
 import {
@@ -212,13 +213,11 @@ test('claimants racing for the same name settle on distinct numbered paths', asy
 	}
 })
 
-// --- rename(..., { exclusive: true }) ---
+// --- rename replaces, and does not corrupt the tree doing it ---
 //
-// Run against EVERY shipped local backend, on purpose: `mem` decides a claim in one
-// synchronous block, IDB in one transaction, and the node backend has no `renameat2`
-// and has to claim the destination with a `link`/`mkdir` of the right type — the case
-// that used to fail with ENOTDIR. A contract enforced on one backend at a time goes
-// unenforced on the others until whichever one happens to be under test that day.
+// Run against EVERY shipped local backend, on purpose: a contract enforced on one backend at
+// a time goes unenforced on the others until whichever one happens to be under test that
+// day.
 const dirs: string[] = []
 afterAll(() => {
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
@@ -235,76 +234,33 @@ const backends: Array<[string, () => Promise<ReturnType<typeof volume>>]> = [
 	['node', async () => volume(await nativeStorage(nativeDir()))]
 ]
 
-describe.each(backends)('exclusive rename on %s', (_name, make) => {
-	test('an occupied destination is refused, and both notes survive', async () => {
+describe.each(backends)('rename on %s', (_name, make) => {
+	test('replaces an occupied destination — POSIX semantics, no flag to soften them', async () => {
 		const vol = await make()
 		await vol.writeFile('/Kyoto.md', enc.encode('theirs'))
 		await vol.mkdir('/Trips')
 		await vol.writeFile('/Trips/Kyoto.md', enc.encode('mine'))
-		await expect(vol.rename('/Trips/Kyoto.md', '/Kyoto.md', { exclusive: true })).rejects.toThrow(
-			/^EEXIST/
-		)
-		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('theirs')
-		expect(dec.decode(await vol.readFile('/Trips/Kyoto.md'))).toBe('mine')
-		// Without the flag it still replaces — POSIX semantics are the default.
 		await vol.rename('/Trips/Kyoto.md', '/Kyoto.md')
 		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('mine')
-	})
-
-	test('a folder moves onto a free name and is refused an occupied one', async () => {
-		// The type-mismatch case: on the node backend a *file* placeholder made every
-		// folder move fail with ENOTDIR, so the claim has to be a directory.
-		const vol = await make()
-		await vol.mkdir('/Trips')
-		await vol.writeFile('/Trips/Kyoto.md', enc.encode('note'))
-		await vol.rename('/Trips', '/Journeys', { exclusive: true })
-		expect(dec.decode(await vol.readFile('/Journeys/Kyoto.md'))).toBe('note')
-		await vol.mkdir('/Other')
-		await expect(vol.rename('/Other', '/Journeys', { exclusive: true })).rejects.toThrow(/^EEXIST/)
-		// A file in the way is EEXIST too — not the type error POSIX would give.
-		await vol.writeFile('/Taken', enc.encode('x'))
-		await expect(vol.rename('/Other', '/Taken', { exclusive: true })).rejects.toThrow(/^EEXIST/)
-		expect(dec.decode(await vol.readFile('/Taken'))).toBe('x')
-		expect(await vol.exists('/Other')).toBe(true)
+		expect(await vol.exists('/Trips/Kyoto.md')).toBe(false)
 	})
 
 	test('a completed move leaves exactly one name for the moved file', async () => {
-		// The property `noReplaceMove` promises in place of atomicity: the claim it takes
-		// on the destination must not survive as a second name for the same inode.
 		const vol = await make()
 		await vol.mkdir('/Trips')
 		await vol.writeFile('/Trips/Kyoto.md', enc.encode('note'))
-		await vol.rename('/Trips/Kyoto.md', '/Kyoto.md', { exclusive: true })
+		await vol.rename('/Trips/Kyoto.md', '/Kyoto.md')
 		expect((await vol.readdir('/Trips')).map((e) => e.name)).toEqual([])
-		expect(await vol.exists('/Trips/Kyoto.md')).toBe(false)
 		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('note')
 	})
 
-	test('a claim numbers up over a sequence of moves into one folder', async () => {
-		// What the app does with an occupied destination: try, and on EEXIST try the next
-		// name. Sequential, because that is the shape of every writer in this system —
-		// one drag, one agent tool call, one import loop.
+	test('a folder moves, with its contents', async () => {
 		const vol = await make()
-		await vol.mkdir('/Inbox')
-		for (let i = 0; i < 5; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
-		const claim = async (from: string) => {
-			for (let n = 1; ; n++) {
-				const path = n === 1 ? '/Kyoto.md' : `/Kyoto ${n}.md`
-				try {
-					await vol.rename(from, path, { exclusive: true })
-					return path
-				} catch (e) {
-					if (!/^EEXIST/.test((e as Error).message)) throw e
-				}
-			}
-		}
-		const paths: string[] = []
-		for (let i = 0; i < 5; i++) paths.push(await claim(`/Inbox/n${i}.md`))
-		expect(paths).toEqual(['/Kyoto.md', '/Kyoto 2.md', '/Kyoto 3.md', '/Kyoto 4.md', '/Kyoto 5.md'])
-		for (const [i, path] of paths.entries()) {
-			expect(dec.decode(await vol.readFile(path))).toBe(`note ${i}`)
-		}
-		expect((await vol.readdir('/Inbox')).map((e) => e.name)).toEqual([])
+		await vol.mkdir('/Trips')
+		await vol.writeFile('/Trips/Kyoto.md', enc.encode('note'))
+		await vol.rename('/Trips', '/Journeys')
+		expect(dec.decode(await vol.readFile('/Journeys/Kyoto.md'))).toBe('note')
+		expect(await vol.exists('/Trips')).toBe(false)
 	})
 })
 

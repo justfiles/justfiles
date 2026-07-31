@@ -652,8 +652,16 @@ export function idbStorage(
 
 			if (destination && destination.ino !== source.ino) {
 				displaced = destination.ino
-				await freeIno(tx, destination.ino)
+				// Unbind the name FIRST, then free the inode only if nothing else still names it
+				// — `Storage.deleteInode`'s rule, which this path used to skip. The order is the
+				// whole trick: asked before the delete, the check would find the very entry being
+				// replaced and never free anything (an inode leaked per replace); asked after, it
+				// sees only OTHER names. Sync replay legitimately leaves a transient second one
+				// during a move, and freeing a still-named inode leaves that survivor pointing at
+				// nothing. Same shape as memStorage's `hasDirentReference` guard.
 				await tx.objectStore('dirs').delete([newDir, newName])
+				const alsoNamed = await tx.objectStore('dirs').index('by-ino').get(destination.ino)
+				if (alsoNamed === undefined) await freeIno(tx, destination.ino)
 			}
 
 			await tx.objectStore('dirs').delete([oldDir, oldName])
