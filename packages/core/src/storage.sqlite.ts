@@ -348,9 +348,18 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	// already inserted — it leaks an unreachable inode and reports a raw UNIQUE-constraint
 	// error instead of EEXIST, which `writeFile`'s plain-create retry then never matches.
 	//
-	// Staging bytes commits no REFERENCE to them, so a claim lost afterwards leaves an
-	// unreferenced R2 object and never an inode pointing at nothing: the harmless
-	// direction of #323. It is idempotent too — the key IS the content hash.
+	// Staging bytes commits no REFERENCE to them, which is the direction that must never
+	// be reversed: a row pointing at missing bytes is data loss (#321/#323/#324), while
+	// bytes with no row are only paid-for garbage.
+	//
+	// KNOWN COST (#333): that garbage is currently PERMANENT. `gcUnreferenced` sweeps
+	// `fs_contents` ROWS, so an R2 object with no row is invisible to it — and because a
+	// lost claim is ordinary contention rather than a fault, this leaks on a schedule
+	// rather than on a failure. Not fixed here because the fix is a destructive R2 prefix
+	// sweep, guarded by an in-process staging registry rather than a time-based quarantine
+	// (the issue records why delete-on-failure and quarantines are both unsafe), and that
+	// wants its own review. R2 is external and can never join this transaction, so the
+	// instant itself is unavoidable — only its discoverability can be fixed.
 	type StagedContent =
 		| { storageKind: number; mimeType: string; text: string | null; key: null }
 		| { storageKind: number; mimeType: string; text: null; key: string }
