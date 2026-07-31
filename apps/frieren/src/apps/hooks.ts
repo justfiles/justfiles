@@ -61,8 +61,15 @@ export function useCommunityCatalog(): CommunityCatalogApp[] {
 	return apps
 }
 
+// The first-party Settings app, which the shell opens by id: it is the only place the
+// agent can be personalized now (the `settings` capability's `agent.*` methods), and two
+// shell affordances point at it — the desktop menu and the omnibar's whisper.
+const SETTINGS_APP = { id: 'app.justfiles.frieren.settings', name: 'Settings' }
+
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
+	/** Open Settings (its Agent pane is the front door — see `initialState.category`). */
+	openSettings: () => void
 	installApp: () => Promise<void>
 	installCommunity: (app: CommunityCatalogApp) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
@@ -135,6 +142,10 @@ export function useAppCommands(): AppCommands {
 			})()
 		}
 
-		return { launchApp, installApp, installCommunity, uninstallApp }
+		const openSettings = () => {
+			dispatch({ type: 'app.open', appId: SETTINGS_APP.id, title: SETTINGS_APP.name })
+		}
+
+		return { launchApp, openSettings, installApp, installCommunity, uninstallApp }
 	}, [client, dispatch, localKernel, volume])
 }

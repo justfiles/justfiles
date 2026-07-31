@@ -1,17 +1,12 @@
-import {
-	AVATAR_PATH,
-	avatarFaceHash,
-	avatarFacePath,
-	PROFILE_PATH,
-	SOUL_PATH
-} from '@justfiles/agent/defaults'
+import { AVATAR_PATH, avatarFaceHash, avatarFacePath, SOUL_PATH } from '@justfiles/agent/defaults'
 import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
 import type { Volume } from '../fs'
 
-// The identity files the personalize flow edits. Seeded with defaults at boot
-// (see @justfiles/agent/defaults); this UI only overwrites them on demand.
+// How the SHELL reads the agent's identity off the volume: the name to greet by, the face
+// to wear, and the per-expression faces derived from it. Read-only on purpose — writing
+// these files is Settings' Agent pane (the `settings` capability's `agent.*` methods), so
+// there is one writer and this side only ever reacts to the files changing.
 export const PATHS = {
-	profile: PROFILE_PATH,
 	soul: SOUL_PATH,
 	avatar: AVATAR_PATH
 } as const
@@ -40,10 +35,6 @@ export function parseIdentityFile(text: string): IdentityFile {
 async function readIdentityFile(volume: Volume, path: string): Promise<IdentityFile | null> {
 	if (!(await volume.exists(path))) return null
 	return parseIdentityFile(decoder.decode(await volume.readFile(path)))
-}
-
-export async function readUserProfile(volume: Volume): Promise<Record<string, string> | null> {
-	return (await readIdentityFile(volume, PATHS.profile))?.frontmatter ?? null
 }
 
 export async function readAgentSoul(volume: Volume): Promise<IdentityFile | null> {
@@ -86,13 +77,17 @@ function pngDataUrl(bytes: Uint8Array): Promise<string> {
 	})
 }
 
-export function deriveAge(birthDate?: string): number | undefined {
-	if (!birthDate) return undefined
-	const birth = new Date(birthDate)
-	if (Number.isNaN(birth.getTime())) return undefined
-	const now = new Date()
-	let age = now.getFullYear() - birth.getFullYear()
-	const monthDiff = now.getMonth() - birth.getMonth()
-	if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) age -= 1
-	return age
+/**
+ * Call `onChange` whenever the agent's identity changes on the volume: the soul (a rename,
+ * a rewritten prose) or the face. The shell has no other way to hear about it — the writes
+ * happen in Settings' app frame, and a soul edited on ANOTHER DEVICE arrives as sync, which
+ * nothing could have told us about before this existed.
+ */
+export async function watchIdentity(volume: Volume, onChange: () => void): Promise<() => void> {
+	const stops = await Promise.all(
+		[PATHS.soul, PATHS.avatar].map((path) => volume.watch(path, () => onChange()))
+	)
+	return () => {
+		for (const stop of stops) stop()
+	}
 }

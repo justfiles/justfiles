@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
-import { readAgentSoul, readAvatar, readAvatarFaces } from '../personalize/state'
+import { readAgentSoul, readAvatar, readAvatarFaces, watchIdentity } from './identity'
 import { builtinFaces } from './builtin'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
@@ -55,8 +55,22 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		})
 	}, [])
 
+	// The shell does not write these files any more — Settings' Agent pane does, in an app
+	// frame, and so does another device through sync. So watch them: an identity change
+	// arrives the same way for a rename on this machine and a rename made on the phone.
 	useEffect(() => {
-		void refreshIdentity().catch(() => {})
+		let cancelled = false
+		let unwatch: (() => void) | undefined
+		void (async () => {
+			const volume = await openProfile()
+			if (cancelled) return
+			unwatch = await watchIdentity(volume, () => void refreshIdentity().catch(() => {}))
+			void refreshIdentity().catch(() => {})
+		})().catch(() => {})
+		return () => {
+			cancelled = true
+			unwatch?.()
+		}
 	}, [refreshIdentity])
 
 	// Lazily fill in the face for an expression the agent just used — only reachable for an

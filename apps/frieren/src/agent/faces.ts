@@ -1,7 +1,7 @@
 import { avatarFacePath } from '@justfiles/agent/defaults'
 import type { Expression } from '@justfiles/agent/expression'
 import type { Volume } from '../fs'
-import { squarePng } from '../personalize/squarePng'
+import { squarePng } from './squarePng'
 
 // Lazy per-expression faces. The agent tags a sentence, the avatar finds no face for that
 // tag, and this asks the worker to derive one from `avatar.png` with the image model. It
