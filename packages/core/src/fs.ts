@@ -123,7 +123,14 @@ const Handshake = z.object({
 	// because `PUT /blob/:hash` has nowhere to put a blob no inode references yet on a
 	// backend without one. Optional: absent (an older server) reads as false, which
 	// selects the claim-then-fill path that works everywhere.
-	contentStore: z.boolean().optional()
+	contentStore: z.boolean().optional(),
+	// Does this server's `POST /rename` honour `noReplace` (#330)? It has to be asked,
+	// not assumed: an older server's schema STRIPS the unknown field and does the ordinary
+	// replacing rename, then answers 200 — so a client that assumed support would report a
+	// successful exclusive move over a file it had just destroyed. Optional: absent (an
+	// older server) reads as false, which selects the client-side check that this call did
+	// before the flag existed — a round trip wide, and best effort, but never a false yes.
+	noReplaceRename: z.boolean().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
@@ -288,7 +295,11 @@ export function createFsApi(
 						generation: lineage?.generation,
 						resetId: lineage?.resetId,
 						lineageId: lineage?.lineageId,
-						contentStore: backend.caps?.content !== undefined
+						contentStore: backend.caps?.content !== undefined,
+						// A property of this BUILD's route, not of the backend: the route below passes
+						// `noReplace` down, and every shipped backend honours it (best effort on a plain
+						// filesystem, which is stated there and is the same promise a local caller gets).
+						noReplaceRename: true
 					})
 				)
 			})

@@ -166,10 +166,11 @@ export interface Volume {
 	 * flag's. mem settles them in one synchronous pass and IDB in one `readwrite`
 	 * transaction, so there N claimants really do produce exactly one winner and no lost
 	 * file. SQLite decides it in whatever transaction its adapter provides, and a client
-	 * over `apiStorage` inherits the server's — no better and no worse than that isolation.
-	 * What the flag itself guarantees everywhere is narrower and still worth having: a taken
-	 * destination is refused before anything is written, so a loser leaves the tree as it
-	 * was and can number up (`claimPath`).
+	 * over `apiStorage` inherits the server's — no better and no worse than that isolation,
+	 * and it NEGOTIATES first, because a server predating the flag would strip it, replace
+	 * the destination and answer 200. What the flag itself guarantees everywhere is narrower
+	 * and still worth having: a taken destination is refused before anything is written, so
+	 * a loser leaves the tree as it was and can number up (`claimPath`).
 	 *
 	 * A real filesystem has no transaction at all, and Node reaches neither `renameat2` nor
 	 * `renamex_np`, so on `nativeStorage` this is BEST EFFORT: an `lstat` and then a rename,

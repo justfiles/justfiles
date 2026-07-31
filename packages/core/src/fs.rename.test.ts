@@ -32,6 +32,36 @@ const wireVolume = async (backing: Storage) => {
 
 const server = () => memStorage({ mintIno: () => crypto.randomUUID() })
 
+// A server from BEFORE this flag, simulated the way one really behaves: its handshake has
+// no `noReplaceRename`, and its Zod schema strips the unknown `noReplace` from the body, so
+// `POST /rename` does the ordinary replacing rename and answers 200. Both halves matter —
+// stripping alone is what turns a client's assumption into a destroyed file.
+const oldWireVolume = async (backing: Storage) => {
+	const app = createFsApi(backing)
+	const client = createFsClient({
+		baseUrl: 'http://rename.test',
+		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			let request = init
+			if (new URL(url).pathname === '/rename' && init?.body !== undefined) {
+				const { noReplace: _stripped, ...rest } = JSON.parse(String(init.body))
+				request = { ...init, body: JSON.stringify(rest) }
+			}
+			const res = await app.request(url, request)
+			if (new URL(url).pathname !== '/') return res
+			const { noReplaceRename: _absent, ...handshake } = (await res.json()) as Record<
+				string,
+				unknown
+			>
+			return new Response(JSON.stringify(handshake), {
+				status: res.status,
+				headers: { 'Content-Type': 'application/json' }
+			})
+		}) as unknown as typeof fetch
+	})
+	return volume(await apiStorage(client, { rootIno: backing.rootIno }))
+}
+
 test('an exclusive move over the wire refuses a taken name and keeps both notes', async () => {
 	const vol = await wireVolume(server())
 	await vol.mkdir('/Inbox')
@@ -45,6 +75,26 @@ test('an exclusive move over the wire refuses a taken name and keeps both notes'
 	// Without the flag the wire keeps POSIX semantics: the destination is replaced.
 	await vol.rename('/Inbox/Kyoto.md', '/Kyoto.md')
 	expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('mine')
+})
+
+test('an exclusive move against a server that predates the flag still refuses a taken name', async () => {
+	// The failure this negotiation exists to prevent: the old server strips `noReplace`,
+	// replaces the destination, and answers 200 — so a client that trusted the wire would
+	// report a successful exclusive move over a note it had just destroyed. Asking first
+	// costs one memoised handshake and keeps the refusal truthful.
+	const vol = await oldWireVolume(server())
+	await vol.mkdir('/Inbox')
+	await vol.writeFile('/Inbox/Kyoto.md', enc.encode('mine'))
+	await vol.writeFile('/Kyoto.md', enc.encode('theirs'))
+	await expect(vol.rename('/Inbox/Kyoto.md', '/Kyoto.md', { exclusive: true })).rejects.toThrow(
+		/^EEXIST/
+	)
+	expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('theirs')
+	expect(dec.decode(await vol.readFile('/Inbox/Kyoto.md'))).toBe('mine')
+	// A free destination still moves, so an older server stays fully usable — what it loses
+	// is the race, not the feature.
+	await vol.rename('/Inbox/Kyoto.md', '/Osaka.md', { exclusive: true })
+	expect(dec.decode(await vol.readFile('/Osaka.md'))).toBe('mine')
 })
 
 test('N clients racing for one name over the wire produce one winner, and lose nothing', async () => {
