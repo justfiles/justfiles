@@ -631,25 +631,29 @@ export function createFsApi(
 						oldDirIno: z.string(),
 						oldName: z.string(),
 						newDirIno: z.string(),
-						newName: z.string()
+						newName: z.string(),
+						// The caller's `{ exclusive: true }`, carried down so the SERVER's backend
+						// decides it in its own transaction. Deciding it on the client (read the
+						// destination over the wire, then move) would be a TOCTOU a round trip wide,
+						// which is the one place where several real clients can actually collide.
+						noReplace: z.boolean().optional()
 					})
 				),
 				async (c) => {
-					const { oldDirIno, oldName, newDirIno, newName } = c.req.valid('json')
+					const { oldDirIno, oldName, newDirIno, newName, noReplace } = c.req.valid('json')
 					let displaced: string | null = null
 					try {
 						if (backend.caps?.atomicMove) {
-							displaced = await backend.caps.atomicMove(
-								oldDirIno,
-								oldName,
-								newDirIno,
-								newName,
-								mutationOptions(c.req.raw)
-							)
+							displaced = await backend.caps.atomicMove(oldDirIno, oldName, newDirIno, newName, {
+								...mutationOptions(c.req.raw),
+								noReplace
+							})
 						} else {
 							const source = await backend.getDirent(oldDirIno, oldName)
 							if (!source) return c.json({ error: `ENOENT: ${oldName}` }, 404)
 							const dest = await backend.getDirent(newDirIno, newName)
+							if (noReplace && dest && dest.ino !== source.ino)
+								return c.json({ error: `EEXIST: ${newName}` }, 409)
 							await backend.putDirent(
 								newDirIno,
 								newName,
@@ -667,7 +671,8 @@ export function createFsApi(
 						if (message.startsWith('ENOENT:') || message.startsWith('ENOTDIR:')) {
 							return c.json({ error: message }, 404)
 						}
-						if (message.startsWith('ENOTEMPTY:')) return c.json({ error: message }, 409)
+						if (message.startsWith('EEXIST:') || message.startsWith('ENOTEMPTY:'))
+							return c.json({ error: message }, 409)
 						throw error
 					}
 					return c.json({ displaced })

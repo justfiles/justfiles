@@ -284,10 +284,20 @@ export async function apiStorage(
 
 			async atomicMove(oldDirIno, oldName, newDirIno, newName, options) {
 				const res = await client.rename.$post(
-					withHeaders({ json: { oldDirIno, oldName, newDirIno, newName } }, options)
+					withHeaders(
+						{ json: { oldDirIno, oldName, newDirIno, newName, noReplace: options?.noReplace } },
+						options
+					)
 				)
 				await throwIfStale(res)
 				if (res.status === 404) return null
+				// `noReplace` is decided by the SERVER's backend, in its transaction, and its
+				// EEXIST comes back as 409. Rethrown verbatim, because it is the answer to the
+				// call and not a transport failure — `claimPath` retries on that message.
+				if (res.status === 409) {
+					const body = (await res.json().catch(() => null)) as { error?: string } | null
+					throw new Error(body?.error ?? `EEXIST: ${newName}`)
+				}
 				if (!res.ok) throw new Error(`atomicMove failed: ${res.status}`)
 				const data = await res.json()
 				return data.displaced

@@ -220,10 +220,11 @@ test('concurrent renames to one name are ordered, not raced', async () => {
 })
 
 test('an import racing a move cannot have its note replaced', async () => {
-	// The two ways of taking a name are not equally atomic: the exclusive write is, the
-	// move is a check and then a move. Mixing them is the dangerous case — the move sees
-	// a free destination, the import claims it, and the move's second step lands on top
-	// while both callers report success. Both go through the same chain, so neither can.
+	// Mixing the two ways of taking a name used to be the dangerous case: the move saw a
+	// free destination, the import claimed it, and the move's second step landed on top
+	// while both callers reported success. The real volume now refuses that in the store
+	// (packages/fs — #330); this double is deliberately the naïve check-then-move, so it
+	// still pins the app's own half: both claims go through one chain, so neither can.
 	const vol = fakeVolume({ '/A/Kyoto.md': 'the moved one' }, ['/A'])
 	const h = handle(initialState, vol.invoke)
 	const [moved, imported] = (await Promise.all([

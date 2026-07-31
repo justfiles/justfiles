@@ -134,6 +134,45 @@ describe('sqlite caps.subscribe (change feed)', () => {
 	})
 })
 
+// `atomicMove({ noReplace })` — the server's side of `rename(..., { exclusive: true })`.
+// This backend has a transaction, so the refusal belongs INSIDE it: several clients
+// reaching for one name over the /fs wire are then decided by the store rather than by
+// whose round trip lands last (#330).
+describe('sqlite caps.atomicMove({ noReplace })', () => {
+	it('refuses a taken destination and leaves both entries intact', async () => {
+		const s = makeSqlite()
+		const vol = volume(s)
+		await vol.mkdir('/Inbox')
+		await vol.writeFile('/Inbox/Kyoto.md', bytes('mine'))
+		await vol.writeFile('/Kyoto.md', bytes('theirs'))
+		await expect(vol.rename('/Inbox/Kyoto.md', '/Kyoto.md', { exclusive: true })).rejects.toThrow(
+			/^EEXIST/
+		)
+		expect(text(await vol.readFile('/Kyoto.md'))).toBe('theirs')
+		expect(text(await vol.readFile('/Inbox/Kyoto.md'))).toBe('mine')
+		// A free destination still moves, and moving a name onto itself is not "taken".
+		await vol.rename('/Inbox/Kyoto.md', '/Osaka.md', { exclusive: true })
+		await vol.rename('/Osaka.md', '/Osaka.md', { exclusive: true })
+		expect(text(await vol.readFile('/Osaka.md'))).toBe('mine')
+	})
+
+	it('decides N concurrent claimants in the transaction — one winner, nothing lost', async () => {
+		const s = makeSqlite()
+		const vol = volume(s)
+		await vol.mkdir('/Inbox')
+		for (let i = 0; i < 10; i++) await vol.writeFile(`/Inbox/n${i}.md`, bytes(`note ${i}`))
+		const results = await Promise.allSettled(
+			Array.from({ length: 10 }, (_, i) =>
+				vol.rename(`/Inbox/n${i}.md`, '/Kyoto.md', { exclusive: true })
+			)
+		)
+		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+		const winner = results.findIndex((r) => r.status === 'fulfilled')
+		expect(text(await vol.readFile('/Kyoto.md'))).toBe(`note ${winner}`)
+		expect((await vol.readdir('/Inbox')).length).toBe(9)
+	})
+})
+
 // Slice 3: local mutations through the public primitives append path-stamped
 // journal rows (via the shared pure builders) inside their own transaction. The
 // engine reads these on push. Mirrors the memStorage reference impl.

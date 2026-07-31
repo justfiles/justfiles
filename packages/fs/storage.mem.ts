@@ -320,6 +320,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			const subtree = enumerateSubtree(src.ino)
 			const newKey = dirKey(newDir, newName)
 			const displaced = dirs.get(newKey) ?? null
+			// `noReplace`: refuse a taken destination instead of superseding it. The check and
+			// the rebind below are one synchronous run to completion, so for this backend the
+			// check IS the move — nothing can take the name in between.
+			if (options?.noReplace && displaced && displaced.ino !== src.ino)
+				throw new Error(`EEXIST: ${newBase}`)
 			dirs.delete(oldKey)
 			parentOf.delete(src.ino)
 			dirs.set(newKey, src)

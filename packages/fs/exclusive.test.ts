@@ -8,12 +8,17 @@
  * `exists()` + `writeFile` would be a TOCTOU, and the loser has its note overwritten
  * — these tests pin the race.
  *
- * `rename` cannot be that: no POSIX rename is both atomic and no-replace, and
- * nothing in Node reaches `renameat2`. So it is a check and THEN a move, and what it
- * promises is what these tests pin — sequential writers never overwrite each other,
- * whatever type holds the name. Racing writers are the caller's problem to order
- * (see `persistDrop` in app-notes' tree), because the alternative is emulating an
- * atomicity the platform does not have, which costs more than it buys.
+ * `rename` cannot be a create, but it CAN be no-replace, and the difference is not the
+ * one this header used to claim. It is not "files yes, directories no": it is whether
+ * the store the name lives in has a COMMIT to decide the claim in. mem decides it in one
+ * synchronous pass, IDB in one transaction, SQLite in one transaction — for those, N
+ * racing claimants are decided by the store, exactly as `writeFile` is, for both types.
+ * The native filesystem is the one that has no commit (POSIX `rename` always replaces,
+ * and Node reaches neither `renameat2` nor `renamex_np`), so there it is an `lstat` and
+ * then a rename, serialised within the process — which is what gnulib's `renameatu`
+ * falls back to for the same missing syscall. The window left is another OS PROCESS
+ * reaching for the same new name in the same instant; see `storage.fs.ts` for why
+ * emulating the primitive with `link` + `unlink` is worse than stating that.
  */
 
 import {
@@ -215,9 +220,8 @@ test('claimants racing for the same name settle on distinct numbered paths', asy
 // --- rename(..., { exclusive: true }) ---
 //
 // Run against EVERY shipped local backend, on purpose: `mem` decides a claim in one
-// synchronous block, IDB in one transaction, and the node backend has no `renameat2`
-// and has to claim the destination with a `link`/`mkdir` of the right type — the case
-// that used to fail with ENOTDIR. A contract enforced on one backend at a time goes
+// synchronous block, IDB in one transaction, and the node backend has neither and has
+// to look before it renames. A contract enforced on one backend at a time goes
 // unenforced on the others until whichever one happens to be under test that day.
 const dirs: string[] = []
 afterAll(() => {
@@ -269,8 +273,8 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 	})
 
 	test('a completed move leaves exactly one name for the moved file', async () => {
-		// The property `noReplaceMove` promises in place of atomicity: the claim it takes
-		// on the destination must not survive as a second name for the same inode.
+		// A no-replace move must not leave the source behind as a second name for the same
+		// inode — which is exactly what `link` + `unlink` risks, and why it is not used.
 		const vol = await make()
 		await vol.mkdir('/Trips')
 		await vol.writeFile('/Trips/Kyoto.md', enc.encode('note'))
@@ -282,8 +286,8 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 
 	test('a claim numbers up over a sequence of moves into one folder', async () => {
 		// What the app does with an occupied destination: try, and on EEXIST try the next
-		// name. Sequential, because that is the shape of every writer in this system —
-		// one drag, one agent tool call, one import loop.
+		// name (`claimPath` in app-notes). The loop only needs the refusal to be truthful;
+		// the test below is the one that pins what happens when the tries overlap.
 		const vol = await make()
 		await vol.mkdir('/Inbox')
 		for (let i = 0; i < 5; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
@@ -305,6 +309,41 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 			expect(dec.decode(await vol.readFile(path))).toBe(`note ${i}`)
 		}
 		expect((await vol.readdir('/Inbox')).map((e) => e.name)).toEqual([])
+	})
+
+	test('exactly one of N concurrent moves takes the name, and no file is lost', async () => {
+		// The race the old check-then-move lost (#330): all 20 look at '/Kyoto.md', all 20
+		// find it free, and the last one to rename replaces a note that was already there.
+		// Now the destination is refused by the STORE — in its transaction where it has one,
+		// under one process-wide chain of moves where it does not.
+		//
+		// Both halves are asserted, because "one winner" alone would also be satisfied by
+		// nineteen notes quietly disappearing: every loser must still be where it was.
+		const vol = await make()
+		await vol.mkdir('/Inbox')
+		for (let i = 0; i < 20; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
+		const results = await Promise.allSettled(
+			Array.from({ length: 20 }, (_, i) =>
+				vol.rename(`/Inbox/n${i}.md`, '/Kyoto.md', { exclusive: true })
+			)
+		)
+		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+		for (const r of results) {
+			if (r.status === 'rejected') expect(r.reason.message).toMatch(/^EEXIST/)
+		}
+		const winner = results.findIndex((r) => r.status === 'fulfilled')
+		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe(`note ${winner}`)
+		// …and the nineteen losers are untouched, still under their original names.
+		const left = (await vol.readdir('/Inbox')).map((e) => e.name).sort()
+		expect(left).toEqual(
+			Array.from({ length: 20 }, (_, i) => `n${i}.md`)
+				.filter((_, i) => i !== winner)
+				.sort()
+		)
+		for (const name of left) {
+			const i = Number(name.slice(1, -3))
+			expect(dec.decode(await vol.readFile(`/Inbox/${name}`))).toBe(`note ${i}`)
+		}
 	})
 })
 

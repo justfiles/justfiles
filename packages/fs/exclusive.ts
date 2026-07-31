@@ -1,3 +1,9 @@
+/**
+ * One task at a time, in call order — a promise chain, not a lock with owners, so
+ * there is nothing to release and a rejected task does not wedge the queue. Used by
+ * `nativeStorage.atomicMove` to keep its look at the destination and the rename that
+ * takes it in one turn (see there for what that does and does not promise).
+ */
 export function createExclusiveRunner() {
 	let tail = Promise.resolve()
 
@@ -8,28 +14,5 @@ export function createExclusiveRunner() {
 			() => undefined
 		)
 		return run
-	}
-}
-
-export function createKeyedExclusiveRunner<K>() {
-	const tails = new Map<K, Promise<void>>()
-
-	return async function runExclusive<T>(key: K, task: () => Promise<T>): Promise<T> {
-		const previous = tails.get(key) ?? Promise.resolve()
-		const run = previous.then(task, task)
-		const completion = run.then(
-			() => undefined,
-			() => undefined
-		)
-
-		tails.set(key, completion)
-
-		try {
-			return await run
-		} finally {
-			if (tails.get(key) === completion) {
-				tails.delete(key)
-			}
-		}
 	}
 }

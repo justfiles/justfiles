@@ -14,6 +14,7 @@ import {
 	unlink
 } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
+import { createExclusiveRunner } from './exclusive'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { Ino } from './types'
 import { FileType } from './types'
@@ -110,6 +111,14 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	 */
 	const inflight = new Set<string>()
 
+	/**
+	 * One move at a time, so a move's look at the destination and the rename that takes
+	 * it are one turn of THIS process. See `atomicMove` for what that does and does not
+	 * buy: it is a lock, not an emulated primitive — the kernel holds the parent
+	 * directories' locks across its own `renameat2` for the same reason.
+	 */
+	const moves = createExclusiveRunner()
+
 	const rootStat = await lstat(root)
 	const rootIno = String(rootStat.ino)
 	pathMap.set(rootIno, root)
@@ -182,13 +191,35 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const newPath = join(getPath(newDir), newName)
 
 			const srcIno = String((await lstat(oldPath)).ino)
-			let displaced: Ino | null = null
-			try {
-				const d = String((await lstat(newPath)).ino)
-				if (d !== srcIno) displaced = d
-			} catch {}
 
-			await _rename(oldPath, newPath)
+			// `noReplace` — the one backend that cannot decide this in the same commit as the
+			// move, because a filesystem is not a transaction: POSIX `rename` always replaces,
+			// and Node reaches neither `renameat2(RENAME_NOREPLACE)` nor `renamex_np`. So the
+			// `lstat` below IS the check, and it is a check before the act. gnulib's `renameatu`
+			// — what GNU `mv -n` runs on a kernel without the syscall — falls back to exactly
+			// this, with exactly this admission: "this has a race between the call to lstat and
+			// the call to rename". What `moves` buys is that this PROCESS cannot lose that race
+			// with itself, however many volumes are open over this root; another process
+			// reaching for the same new name in the same instant still can.
+			//
+			// The primitive is not emulated, and this is the third time that is written down
+			// (app-notes' DESIGN.md §1b). `link` + `unlink` takes the name with no window — and
+			// stops being a MOVE: a crash between the two leaves the file under both names.
+			// `link` also cannot serve the general case, because it is not type-transparent: it
+			// refuses a directory outright, and on macOS it FOLLOWS a symlink (coreutils carries
+			// a `LINK_FOLLOWS_SYMLINKS` tri-state for precisely this), so a moved symlink would
+			// become a hard link to its target and the symlink would then be unlinked. `publish`
+			// above may use `link` because a CREATE has no source name to keep; a move has.
+			const displaced = await moves(async () => {
+				let taken: Ino | null = null
+				try {
+					const d = String((await lstat(newPath)).ino)
+					if (d !== srcIno) taken = d
+				} catch {}
+				if (options?.noReplace && taken !== null) throw new Error(`EEXIST: ${newName}`)
+				await _rename(oldPath, newPath)
+				return taken
+			})
 
 			// Update pathMap for the moved entry and all cached descendants
 			const oldPrefix = `${oldPath}/`

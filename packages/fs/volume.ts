@@ -157,15 +157,21 @@ export interface Volume {
 	 * directory already holds that name, so a caller can retry under another name
 	 * instead of destroying a stranger's data.
 	 *
-	 * Unlike `writeFile`'s `exclusive`, this is a CHECK AND THEN a move, not one
-	 * operation — no POSIX rename is both atomic and no-replace (`renameat2` and
-	 * `renamex_np` are not reachable from Node), and emulating one costs more than it
-	 * buys: claiming the destination first is not a reservation in a shared store,
-	 * and `link`+`unlink` is no longer a move. So the guarantee here is scoped
-	 * honestly: sequential writers never overwrite each other, and two writers
-	 * racing for the SAME new name in the same instant can still have one replaced.
-	 * Order your own writes if that matters; this refuses the destination that is
-	 * taken when it looks.
+	 * That refusal is the STORE's, decided in the same commit as the move — the
+	 * backend's `atomicMove({ noReplace })`, not a check up here. It has to be: a
+	 * `getDirent` followed by a move is a TOCTOU, and the state it asks about is shared
+	 * by everyone on that store, not just by this Volume (a frieren tab holds two of
+	 * them over one IndexedDB). Backends with a transaction — mem, IDB, SQLite, and the
+	 * server behind `apiStorage` — therefore decide N racing claimants outright: exactly
+	 * one wins, and no file is lost.
+	 *
+	 * The native filesystem has no transaction and Node reaches neither `renameat2` nor
+	 * `renamex_np`, so there it is a check and THEN a rename, which is exactly what
+	 * gnulib's `renameatu` falls back to when the syscall is missing. Two separate OS
+	 * processes reaching for the same new name in the same instant can still have one
+	 * replaced; a process on its own cannot. We do NOT emulate the missing primitive —
+	 * `link` + `unlink` stops being a move (a crash leaves both names) and `link` is not
+	 * type-transparent (on macOS it follows a symlink). See `storage.fs.ts`.
 	 */
 	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
 
@@ -757,14 +763,14 @@ export function volume(storage: Storage): Volume {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
 
-			if (opts?.exclusive) {
-				const taken = await storage.getDirent(newDirIno, newName)
-				const source = await storage.getDirent(oldDirIno, oldName)
-				if (taken && taken.ino !== source?.ino) throw new Error(`EEXIST: ${newPath}`)
-			}
-
 			if (storage.caps?.atomicMove) {
-				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
+				const displaced = await storage.caps.atomicMove(
+					oldDirIno,
+					oldName,
+					newDirIno,
+					newName,
+					opts?.exclusive ? { noReplace: true } : undefined
+				)
 				invalidateDirCache(oldDirIno)
 				invalidateDirCache(newDirIno)
 				if (displaced !== null) invalidateIno(displaced)
@@ -775,6 +781,11 @@ export function volume(storage: Storage): Volume {
 			if (source === null) throw new Error(`ENOENT: ${oldName}`)
 
 			const displaced = await storage.getDirent(newDirIno, newName)
+			// A hint, not a guarantee — the only place one is unavoidable. Without
+			// `atomicMove` a move is already two writes (put, then delete), so there is no
+			// commit to put the check in. Every shipped backend has the cap.
+			if (opts?.exclusive && displaced && displaced.ino !== source.ino)
+				throw new Error(`EEXIST: ${newPath}`)
 			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })
 			await storage.deleteDirent(oldDirIno, oldName)
 

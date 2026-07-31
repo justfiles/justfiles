@@ -32,17 +32,14 @@ const dec = new TextDecoder()
 // silently overwritten (DESIGN.md §3).
 // Procedures run OFF the kernel's per-app queue (packages/app/kernel.ts), so two of
 // them overlap: a drag in the GUI and an agent tool call can both be taking a name.
-// One of the two ways to take a name is atomic (`writeFile`'s exclusive create) and
-// the other cannot be — no POSIX rename is both atomic and no-replace
-// (packages/fs/volume.ts) — and mixing them is what makes ordering necessary even for
-// the atomic one: a move can see a free destination, an import can then claim it
-// exclusively, and the move's second step replaces the note that just landed while
-// both callers report success.
+// Both ways of taking one are decided by the STORE now — `writeFile`'s exclusive create
+// and `rename`'s exclusive move (#330, packages/fs/volume.ts) — so overlapping claimants
+// cannot overwrite each other whether or not they pass through here.
 //
-// So the chain sits INSIDE `claimPath`, not at one call site. Taking a name is a
-// single serialized act however it is done, which is the only version of this that
-// stays true when a fourth caller appears. Writers in other processes are outside it,
-// and that window is documented where the check is.
+// The chain stays anyway, and sits INSIDE `claimPath` rather than at one call site: it
+// costs three lines, it makes which claimant gets the plain name and which numbers up
+// follow call order instead of scheduling, and it is what keeps that true when a fourth
+// caller appears. Taking a name is a single serialized act however it is done.
 //
 // One level, and only one: a caller that wraps a `claimPath` in `serially` deadlocks
 // itself — it holds the chain while waiting for the chain. That is the price of a
@@ -309,14 +306,13 @@ export const app = defineApp({
 		// that is taken, and `claimPath` numbers up — the same loop `create` and
 		// `importNotes` use, so the policy is one function, not three.
 		//
-		// That refusal is a check and then a move, not one operation, because no POSIX
-		// rename is both atomic and no-replace. It holds for sequential writers, which
-		// is every writer in this system: the import loop, an agent tool call, and a
-		// multi-item drop that the tree applies one at a time (`persistDrop`). We do NOT
-		// emulate the missing primitive — the placeholder version of this code was
-		// wrong twice over (a claim is not a reservation in a shared store, and a file
-		// placeholder is the wrong type to rename a folder over), and a `link`+`unlink`
-		// version in the backend stopped being a move at all.
+		// That refusal is the STORE's, decided in the commit that rebinds the entry, so
+		// overlapping claimants get exactly one winner and no note is replaced (#330). What
+		// we do NOT do is emulate the primitive POSIX lacks: the placeholder version of this
+		// code was wrong twice over (a claim is not a reservation in a shared store, and a
+		// file placeholder is the wrong type to rename a folder over), and a `link`+`unlink`
+		// version in the backend stopped being a move at all. The one store with no commit to
+		// decide in is the native filesystem, where the window left is another OS process.
 		rename: p.procedure({
 			description:
 				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',

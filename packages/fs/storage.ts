@@ -107,13 +107,30 @@ export interface StorageCapabilities {
 	 * window where both names exist. The backend handles freeing any displaced
 	 * inode atomically. Returns the ino of the displaced entry (for cache
 	 * invalidation), or null if nothing was displaced.
+	 *
+	 * `noReplace` refuses a destination that is taken — EEXIST, whatever type holds
+	 * it — instead of replacing it (a name moved onto ITSELF is not "taken"). Every
+	 * backend declaring `atomicMove` MUST honour it, and MUST decide it in the SAME
+	 * commit as the move wherever it has one: a backend that read the destination and
+	 * moved afterwards would only relocate the caller's TOCTOU into itself. Every
+	 * transactional backend already reads that destination to compute `displaced`, so
+	 * this is a guard on a value it is holding, not new work.
+	 *
+	 * The one backend that cannot is the native filesystem: POSIX `rename` always
+	 * replaces, and Node reaches neither `renameat2(RENAME_NOREPLACE)` nor
+	 * `renamex_np(RENAME_EXCL)`. There it is an `lstat` and THEN a rename, so another
+	 * OS PROCESS reaching for the same new name in the same instant can still have one
+	 * of the two replaced. That is the fallback gnulib's `renameatu` ships for the same
+	 * missing syscall, carrying the same admission ("this has a race between the call to
+	 * lstat and the call to rename") — and `storage.fs.ts` says why emulating the
+	 * primitive with `link` + `unlink` is worse than stating the gap.
 	 */
 	atomicMove?(
 		oldDir: Ino,
 		oldName: string,
 		newDir: Ino,
 		newName: string,
-		options?: MutationOptions
+		options?: MutationOptions & { noReplace?: boolean }
 	): Promise<Ino | null>
 
 	/** Partial read — if absent the VFS does a full getBlob. */
