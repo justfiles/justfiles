@@ -127,13 +127,16 @@ function memoryStore(initial?: string): SecretStore & {
 }
 
 // The loopback listener, minus the port and the browser: whatever URL the module builds, the
-// "browser" comes back to its `redirect_uri` with a code and the state it was given.
-function fakeBrowser(): AuthFlow & { authorizeUrl?: URL } {
+// "browser" comes back to its `redirect_uri` with a code and the state it was given. Set
+// `cancel` to stand in for a user who closes the tab.
+function fakeBrowser(): AuthFlow & { authorizeUrl?: URL; cancel?: boolean } {
 	const flow = {
 		authorizeUrl: undefined as URL | undefined,
+		cancel: false,
 		authorize: async (buildUrl: (redirectUri: string) => string) => {
 			const url = new URL(buildUrl('http://127.0.0.1:49152'))
 			flow.authorizeUrl = url
+			if (flow.cancel) throw new Error('sign-in cancelled')
 			const back = new URL(url.searchParams.get('redirect_uri') ?? '')
 			back.searchParams.set('code', 'auth-code-1')
 			back.searchParams.set('state', url.searchParams.get('state') ?? '')
@@ -457,6 +460,54 @@ test('sign-out during a pending write cannot be undone when the write lands', as
 	// The grant that WAS live when sign-out ran is the one revoked — the rotation, not the token
 	// it replaced.
 	expect(server.calls.find((c) => c.path === '/oauth/token/revoke')?.body.get('token')).toBe('rt-1')
+})
+
+test('a pending profile fetch answers with the CURRENT identity, not the one it started with', async () => {
+	// Settings' `host.user` is in flight when the user signs out. Answering with the profile the
+	// call started with latches a signed-in pane until something reloads it — and the fetch is
+	// long enough (a network round trip) for the sign-out to be entirely real by then.
+	const store = memoryStore()
+	const identity = identityOver(store)
+	await identity.signIn()
+
+	const release = server.hold('/oauth/userinfo')
+	const pending = identity.currentUser()
+	await Bun.sleep(20)
+	await identity.signOut()
+	release()
+
+	expect(await pending).toBeNull()
+})
+
+test('a cancelled sign-in does not re-arm a grant an earlier sign-out failed to delete', async () => {
+	// After a sign-out whose delete failed, `forgotten` is the ONLY thing keeping the leftover
+	// credential unusable. Clearing it when sign-in STARTS means a cancelled browser flow hands
+	// the old account back — silently, and as a different user than the one being signed in.
+	const store = memoryStore()
+	const flow = fakeBrowser()
+	const identity = identityOver(store, flow)
+	await identity.signIn()
+	store.remove = async () => {
+		throw new Error('keychain: could not delete (security exit 51)')
+	}
+	await expect(identity.signOut()).rejects.toThrow('the Keychain item remains')
+	expect(store.value).toBeTruthy() // the old grant is still on disk
+
+	// The user starts a sign-in and abandons it in the browser.
+	flow.cancel = true
+	await expect(identity.signIn()).rejects.toThrow('cancelled')
+
+	// Still signed out: a sign-in that never reached a grant has earned nothing.
+	expect(await identity.getToken()).toBeNull()
+	expect(await identity.currentUser()).toBeNull()
+
+	// And a sign-in that DOES complete re-arms it, because `adopt` commits `forgotten: false`.
+	flow.cancel = false
+	store.remove = async () => {
+		store.value = undefined
+	}
+	expect((await identity.signIn()).id).toBe(USER)
+	expect(await identity.getToken()).toBeTruthy()
 })
 
 test('a Keychain that will not delete still signs the daemon out locally', async () => {

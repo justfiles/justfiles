@@ -34,7 +34,9 @@
 //      publishes before it awaits anything, because every await after that can fail, and none
 //      of those failures may leave `getToken()` still answering for a user who signed out. It
 //      is also STICKY: once asked to forget, this process never re-authenticates from custody
-//      it failed to delete — only an explicit sign-in re-arms it.
+//      it failed to delete — only a sign-in that actually reaches a new grant re-arms it.
+//      Corollary: ANSWER FROM `state`, never from a local captured before an await. A userinfo
+//      round trip is long enough for a sign-out to happen inside it.
 //   3. `generation` fences, and the QUEUE makes the fence mean something. Sign-in and sign-out
 //      bump it; refresh, sign-in and the profile fetch capture it on entry. But a check before
 //      an `await` says nothing about the state after it — so every mutation of custody runs
@@ -253,8 +255,10 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		// be allowed to finish into this one — it would overwrite the new Keychain item with the old
 		// grant's rotation, or (on `invalid_grant`) delete the grant we are about to store.
 		const at = ++generation
-		// Re-arm: a sign-out earlier in this run must not stop the grant we are about to acquire.
-		commit(null, { user: state.user, token: state.token, forgotten: false })
+		// NOT re-armed here: after a sign-out whose Keychain delete failed, `forgotten` is the only
+		// thing keeping the leftover grant unusable, and a sign-in the user cancels (or that fails to
+		// exchange) must not hand it back. `adopt` commits `forgotten: false` when a NEW grant is
+		// actually in custody — the only moment re-arming is earned.
 		const verifier = randomB64url(32)
 		const challenge = await challengeFor(verifier)
 		// The OAuth `state` parameter — named apart from this module's own `state` on purpose.
@@ -332,35 +336,36 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		}
 	}
 
-	// Display name/avatar for Settings, best effort: the id alone is a real identity, so a
+	// Fill in display name/avatar for Settings, best effort: the id alone is a real identity, so a
 	// userinfo call that fails costs a nicer label and nothing else. Only when something asks who
-	// is signed in, and only until it answers with something — so a failure is retried on the
-	// next ask rather than sticking for the life of the daemon.
-	async function describe(profile: UserProfile): Promise<UserProfile> {
+	// is signed in, and only until it answers with something — so a failure is retried on the next
+	// ask rather than sticking for the life of the daemon.
+	//
+	// Returns nothing on purpose. Callers answer from `state` AFTER this resolves, never from the
+	// profile they started with: a sign-out during the fetch has to make the pending `host.user`
+	// resolve signed-out, or Settings latches a user who is no longer there until it reloads.
+	async function describe(profile: UserProfile): Promise<void> {
 		const at = generation
 		const value = await getToken()
-		if (!value) return profile
+		if (!value) return
 		try {
 			const res = await fetch(new URL('/oauth/userinfo', fapi), {
 				headers: { authorization: `Bearer ${value}` }
 			})
-			if (!res.ok) return profile
+			if (!res.ok) return
 			const info = (await res.json()) as { name?: string; email?: string; picture?: string }
 			const named: UserProfile = {
 				id: profile.id,
 				name: info.name || info.email || undefined,
 				avatarUrl: info.picture
 			}
-			// Signed out while we were asking: a label must never resurrect the user, which is what the
-			// fence in `commit` decides — a refused commit means the answer is stale, so drop it.
+			// A refused commit means we were superseded (a sign-out, or a sign-in as someone else) —
+			// `commit` is where that is decided, and dropping the answer is the whole handling.
 			if (named.name || named.avatarUrl) {
-				if (!commit(at, { user: named, token: state.token, forgotten: state.forgotten })) {
-					return profile
-				}
+				commit(at, { user: named, token: state.token, forgotten: state.forgotten })
 			}
-			return state.user ?? named
 		} catch {
-			return profile
+			// A nicer label is not worth an error to the caller.
 		}
 	}
 
@@ -392,7 +397,10 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				}
 			}
 			const known = state.user
-			return known && !known.name ? await describe(known) : (known ?? null)
+			if (known && !known.name) await describe(known)
+			// Answer from state, never from `known`: it may be minutes old by now (a userinfo round
+			// trip), and a sign-out in that window must win.
+			return state.user ?? null
 		},
 		onChange: (listener) => {
 			listeners.add(listener)
