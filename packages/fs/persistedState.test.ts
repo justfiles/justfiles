@@ -65,6 +65,19 @@ describe('persistedState', () => {
 		expect(await readRaw(volume(backing), '/.state/id')).toBe(x)
 	})
 
+	test('two cells over a BARE memStorage() converge too', async () => {
+		// `mintIno` customises inode IDENTITY, never whether creates are atomic. While
+		// `memStorage()` gated `atomicCreate` on it, this claim silently degraded to
+		// volume.ts's non-atomic pre-check on the default in-memory backend — the one
+		// `dev-server.ts` runs on — and both cells could believe they won.
+		const backing = memStorage()
+		let minted = 0
+		const a = persistedState<string>(volume(backing), '/.state/id', () => `id-${++minted}`)
+		const b = persistedState<string>(volume(backing), '/.state/id', () => `id-${++minted}`)
+		const [x, y] = await Promise.all([a.get(), b.get()])
+		expect(x).toBe(y)
+	})
+
 	test('the loser reads a complete value on its FIRST read, never a poll', async () => {
 		// The dependency on write-then-publish (#324), pinned rather than trusted: the
 		// winner's bytes are durable before its name is, so one read is provably enough.

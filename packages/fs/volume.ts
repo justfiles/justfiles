@@ -598,10 +598,43 @@ export function volume(storage: Storage): Volume {
 				}
 				// Write-then-publish: `createNode` commits these bytes and this name as ONE
 				// fact, so no reader ever resolves the path and finds a prefix of `data`
-				// (#324). It throws EEXIST when a concurrent writer took the name between
-				// the resolve above and here — which is what makes `exclusive` a claim and
-				// not just a probe.
-				ino = await createNode(dirIno, name, meta, data)
+				// (#324). It throws EEXIST when the name was taken between the resolve above
+				// and here — which is what makes `exclusive` a claim and not just a probe.
+				//
+				// For `exclusive: true` that EEXIST IS the claim working, so it propagates. A
+				// PLAIN write promises create-OR-overwrite and never a claim, so it must not
+				// surface that internal detail: retry as an update against whoever holds the
+				// name, exactly as if `resolvePath` above had found them first.
+				//
+				// Safe to retry: `atomicCreate` throws before mutating anything, and the
+				// content published ahead of a failed claim is a harmless orphan either way —
+				// an unreferenced hash `gcUnreferenced` reclaims, or a temp file the native
+				// backend has already unlinked.
+				try {
+					ino = await createNode(dirIno, name, meta, data)
+				} catch (e) {
+					if (!(e instanceof Error) || !e.message.startsWith('EEXIST') || opts?.exclusive) throw e
+					// Re-resolve the FULL PATH the way the top of this function does, NOT the raw
+					// dirent: that would land on a SYMLINK's own inode instead of its target.
+					// `resolveParent`'s dirIno+name split never follows the final component, so a
+					// symlink already occupying `name` makes `createNode` throw this exact EEXIST
+					// with no writer racing at all — and writing into that raw ino would strand
+					// the bytes in a slot nothing ever reads through the path again.
+					let winner: Ino
+					try {
+						winner = await resolvePath(path, true)
+					} catch (e2) {
+						if (!(e2 as Error).message.startsWith('ENOENT')) throw e2
+						// The name IS taken — that is what the EEXIST just proved — but the path
+						// resolves to nothing writable (a dangling symlink). The original EEXIST
+						// says that more honestly than ENOENT would.
+						throw e
+					}
+					const winnerMeta = await getMetaOrThrow(winner)
+					if (winnerMeta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
+					await storage.putBlob(winner, data)
+					ino = winner
+				}
 			}
 
 			invalidateIno(ino)

@@ -34,6 +34,7 @@ import { afterAll, describe, expect, test } from 'vitest'
 import { nativeStorage } from './storage.fs.ts'
 import { idbStorage } from './storage.idb.ts'
 import { memStorage } from './storage.mem.ts'
+import { FileType } from './types.ts'
 import { volume } from './volume.ts'
 
 const enc = new TextEncoder()
@@ -575,4 +576,84 @@ test('a listing survives an entry vanishing mid-scan', async () => {
 		observed = listed.size < 400
 	}
 	expect(observed).toBe(true) // the interleaving really was exercised
+})
+
+// --- writeFile WITHOUT `exclusive` is never a claim ---
+//
+// The mirror image of the races pinned above. A PLAIN write promises create-OR-overwrite,
+// unconditionally: `createNode`'s EEXIST is an internal detail of how a CLAIM is decided,
+// not a contract a caller who never asked for one should ever see. Run against every
+// shipped local backend through the SAME array as the blocks above, deliberately — the
+// fix lives once in volume.ts, and this exact contract went unenforced one backend at a
+// time until whichever one happened to be under test that day.
+describe.each(backends)('a plain writeFile race on %s', (_name, make) => {
+	test('two concurrent creates of a brand-new path both survive, neither throws', async () => {
+		const vol = await make()
+		const results = await Promise.allSettled([
+			vol.writeFile('/app.json', enc.encode('a')),
+			vol.writeFile('/app.json', enc.encode('b'))
+		])
+		for (const r of results) expect(r.status).toBe('fulfilled')
+		// One write wins the underlying create race and the other becomes an update
+		// against it — either order is fine, silently losing the bytes is not.
+		expect(['a', 'b']).toContain(dec.decode(await vol.readFile('/app.json')))
+	})
+
+	test('a write through a dangling symlink refuses, never stranding the bytes in the link', async () => {
+		// No concurrency at all: `resolveParent`'s dirIno+name split never follows the
+		// final component, so the symlink already occupying the name makes `createNode`
+		// throw this exact EEXIST deterministically. The retry must not treat "the raw
+		// dirent is a symlink" like "a regular file won the race" — writing into the
+		// link's own inode succeeds silently while the bytes become unreachable through
+		// the path forever.
+		const vol = await make()
+		await vol.symlink('/missing-target', '/link')
+		await expect(vol.writeFile('/link', enc.encode('hello'))).rejects.toThrow()
+		// And the link is still a LINK, not quietly replaced by a regular file.
+		expect((await vol.lstat('/link')).type).toBe(FileType.Symlink)
+	})
+
+	test('an exclusive write still refuses a name a plain write would overwrite', async () => {
+		// The guard on the fix above: making a plain create tolerant must not make a
+		// CLAIM tolerant too, or `persistedState`/app-notes lose their only way to
+		// decide a first touch.
+		const vol = await make()
+		await vol.writeFile('/id', enc.encode('mine'))
+		await expect(vol.writeFile('/id', enc.encode('theirs'), { exclusive: true })).rejects.toThrow(
+			/^EEXIST/
+		)
+		expect(dec.decode(await vol.readFile('/id'))).toBe('mine')
+	})
+})
+
+// mem/idb only: `nativeStorage` never populates `meta.symlinkTarget` from `lstat` (that
+// needs a separate `readlink()`), so symlink-FOLLOWING is independently broken there even
+// for a plain `readFile` with no `writeFile` involved. Pre-existing and out of scope here.
+describe.each(
+	backends.slice(0, 2)
+)('a plain writeFile through a live symlink on %s', (_name, make) => {
+	test('lands on the target, not the link', async () => {
+		const vol = await make()
+		await vol.writeFile('/target.txt', enc.encode('original'))
+		await vol.symlink('/target.txt', '/link')
+		await vol.writeFile('/link', enc.encode('via the link'))
+		expect(dec.decode(await vol.readFile('/target.txt'))).toBe('via the link')
+		expect(dec.decode(await vol.readFile('/link'))).toBe('via the link')
+	})
+})
+
+test('a bare memStorage() decides an exclusive claim atomically, like every other backend', async () => {
+	// `mintIno` customises inode IDENTITY; it was never about atomicity. Gating
+	// `atomicCreate`'s installation on it meant a bare `memStorage()` fell back to
+	// volume.ts's best-effort pre-check, where N racers can all believe they won —
+	// silently, with no error raised. `dev-server.ts` runs on exactly this backend.
+	const vol = volume(memStorage())
+	const results = await Promise.allSettled(
+		Array.from({ length: 20 }, (_, i) =>
+			vol.writeFile('/id', enc.encode(`writer ${i}`), { exclusive: true })
+		)
+	)
+	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+	const winner = results.findIndex((r) => r.status === 'fulfilled')
+	expect(dec.decode(await vol.readFile('/id'))).toBe(`writer ${winner}`)
 })

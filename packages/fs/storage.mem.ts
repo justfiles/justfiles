@@ -18,9 +18,11 @@ import { FileType } from './types'
 /**
  * `mintIno` lets a caller control inode identity — e.g. a numeric-ino backend
  * (like real OS inodes) vs a UUID one — so heterogeneous ino spaces can be
- * exercised. When provided, an `atomicCreate` cap mints via it; otherwise the
- * VFS mints its own UUIDs. Root is always `'1'`. `localActorId` is the backend's
- * client-id, stamped as the ORIGIN (`PathChange.source`) on local mutations.
+ * exercised. `atomicCreate` always mints via it (defaulting to `crypto.randomUUID`
+ * when not supplied), matching every other shipped backend (idb, node, sqlite): a
+ * bare `memStorage()` is NOT a degraded, non-atomic mode. Root is always `'1'`.
+ * `localActorId` is the backend's client-id, stamped as the ORIGIN
+ * (`PathChange.source`) on local mutations.
  */
 export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }): Storage {
 	const metas = new Map<Ino, InodeMeta>()
@@ -265,30 +267,28 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			}
 		},
 
-		// Atomic alloc + dirAdd using the caller-supplied minter. Only present when
-		// `mintIno` is set; otherwise the VFS mints UUIDs via setMeta + putDirent.
+		// Atomic alloc + dirAdd, ALWAYS available: it mints via `mint()`, which already
+		// defaults to `crypto.randomUUID()`, so gating the cap's installation on a
+		// caller-supplied `mintIno` only ever meant "a bare memStorage() is quietly not
+		// atomic". `mintIno` customises inode IDENTITY; it was never about atomicity.
 		// `content` (see storage.ts) is never passed: this backend has a hash-addressed
 		// content store, so the claim carries a `meta.contentHash` reference instead.
-		...(mintIno
-			? {
-					async atomicCreate(dirIno, name, meta, _content, options) {
-						const key = dirKey(dirIno, name)
-						if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
-						const ino = mintIno()
-						metas.set(ino, { ...meta })
-						dirs.set(key, { ino, type: meta.type })
-						parentOf.set(ino, { parent: dirIno, name })
-						const dirPath = pathOf(dirIno)
-						const path = dirPath === null ? undefined : joinPath(dirPath, name)
-						emit({ ino, kind: 'meta', source: options?.source })
-						emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
-						// Regular files are journaled by the following putBlob (once hashed).
-						if (dirPath)
-							await journalPutOver(pathPort, joinPath(dirPath, name), ino, localActorId, options)
-						return ino
-					}
-				}
-			: {}),
+		async atomicCreate(dirIno, name, meta, _content, options) {
+			const key = dirKey(dirIno, name)
+			if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
+			const ino = mint()
+			metas.set(ino, { ...meta })
+			dirs.set(key, { ino, type: meta.type })
+			parentOf.set(ino, { parent: dirIno, name })
+			const dirPath = pathOf(dirIno)
+			const path = dirPath === null ? undefined : joinPath(dirPath, name)
+			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
+			// Regular files are journaled by the following putBlob (once hashed).
+			if (dirPath)
+				await journalPutOver(pathPort, joinPath(dirPath, name), ino, localActorId, options)
+			return ino
+		},
 
 		// Atomic rename — moves a name (and its whole subtree) in one step. Journals
 		// the move as an ordered subtree delete+put: deletes child-before-parent (never
