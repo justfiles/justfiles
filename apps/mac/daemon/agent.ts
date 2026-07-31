@@ -11,6 +11,7 @@ import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
 import { getKernel } from './kernel'
+import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
 import type { AgentEvent } from './protocol'
 import { DOCS_DIR } from './resources'
@@ -73,7 +74,7 @@ async function buildSession(): Promise<AgentSession> {
 		// the next prompt without restarting the daemon (resolveAgentBackend rotates near-expiry
 		// tokens; the session keys its build on model + revision and rebuilds losslessly).
 		backend: async () => {
-			const llm = await resolveAgentBackend(fs)
+			const llm = await resolveAgentBackend(fs, { secretCodec: accountsSecretCodec })
 			if (!llm) throw new Error('failed to get llm config')
 			return llm
 		},

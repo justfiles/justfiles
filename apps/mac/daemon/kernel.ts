@@ -2,7 +2,11 @@ import { hostname } from 'node:os'
 import { aiCapability, text } from '@justfiles/agent'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
-import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
+import {
+	accountsCapabilities,
+	type SecretCodec,
+	sealAccounts
+} from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
@@ -14,6 +18,7 @@ import { builtinStore } from './builtins'
 import { chatgptProvider, resolveAgentBackend } from './chatgpt'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
+import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
@@ -32,7 +37,10 @@ const accountsProviders = () => [
 ]
 
 export function getKernel(): Promise<Kernel> {
-	kernelOnce ??= getVolume().then(buildKernel)
+	// The Keychain key lives behind `accountsSecretCodec`, which resolves it on first USE — so
+	// boot never touches the Keychain, and a Keychain this daemon cannot read costs the
+	// credential lane (A2 lists the record as "re-connect") rather than the whole daemon.
+	kernelOnce ??= getVolume().then((fs) => buildKernel(fs, { secretCodec: accountsSecretCodec }))
 	return kernelOnce
 }
 
@@ -40,7 +48,21 @@ export function getKernel(): Promise<Kernel> {
 // email/calendar/ai/notify), the reducer sandbox pool, and the seeded builtin catalog.
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
-export async function buildKernel(fs: Volume): Promise<Kernel> {
+// `secretCodec` seals the accounts store at rest. `getKernel` — the only production caller —
+// supplies the real Keychain-backed one; the default stays the pre-A4 clear codec so a test
+// that never opts in is hermetic (it mints no Keychain item on the machine running it).
+export async function buildKernel(
+	fs: Volume,
+	opts: { secretCodec?: SecretCodec } = {}
+): Promise<Kernel> {
+	const { secretCodec } = opts
+	// Anything already on disk in the clear (an account connected before the Keychain key
+	// existed, or while it was unreadable) gets sealed now: `decode` deliberately passes a
+	// non-envelope through unchanged (that's what makes turning encryption on a no-flag-day
+	// change), so nothing else would ever rewrite a credential that doesn't rotate — iCloud's
+	// app-specific password is written once, at connect, and never again. Best-effort: a boot
+	// must succeed even if this fails.
+	await sealAccounts(fs, { secretCodec })
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
@@ -48,7 +70,7 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 	const ai = aiCapability({
 		volume: fs,
 		generate: async ({ system, prompt }) => {
-			const backend = await resolveAgentBackend(fs)
+			const backend = await resolveAgentBackend(fs, { secretCodec })
 			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return text(backend).gen(system, prompt)
 		}
@@ -57,7 +79,8 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
 		// hostname so Settings can tell two Macs apart once E1/E2 land.
-		origin: { kind: 'device', label: hostname() }
+		origin: { kind: 'device', label: hostname() },
+		secretCodec
 	})
 
 	const k = kernel({
