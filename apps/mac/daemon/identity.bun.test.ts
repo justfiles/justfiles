@@ -43,6 +43,7 @@ function stubAuthServer() {
 			token_type: 'bearer'
 		})
 	let reply: Reply = () => mint(86_400)
+	let gate: { path: string; held: Promise<void> } | undefined
 	const server = Bun.serve({
 		hostname: '127.0.0.1',
 		port: 0,
@@ -50,6 +51,7 @@ function stubAuthServer() {
 			const url = new URL(req.url)
 			const body = new URLSearchParams(await req.text())
 			calls.push({ path: url.pathname, body })
+			if (gate?.path === url.pathname) await gate.held
 			if (url.pathname === '/oauth/token/revoke') return new Response(null, { status: 200 })
 			if (url.pathname === '/oauth/userinfo') return Response.json({ name: 'Test User' })
 			return reply(body)
@@ -65,6 +67,20 @@ function stubAuthServer() {
 		},
 		serve: (next: Reply) => {
 			reply = next
+		},
+		// Hold responses for one endpoint until the returned function is called — how the sign-out
+		// races below pin an operation mid-flight. Scoped to a path so sign-out's own revoke still
+		// gets through (gating everything would just deadlock the test).
+		hold: (path: string) => {
+			let release = () => {}
+			const held = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			gate = { path, held }
+			return () => {
+				gate = undefined
+				release()
+			}
 		},
 		stop: () => server.stop(true)
 	}
@@ -229,6 +245,68 @@ test('persist-then-use: a rotation we cannot record is never handed out', async 
 
 	expect(await identity.getToken()).toBeNull()
 	expect(store.value).toBe('rt-0')
+})
+
+test('sign-out during an in-flight refresh does not resurrect the grant', async () => {
+	// The refresh has already spent the stored token server-side by the time sign-out runs, so
+	// the danger is the reply landing afterwards: writing the rotated token back into the
+	// Keychain and republishing the user signs the daemon back in behind the user's back.
+	const store = memoryStore('rt-0')
+	const identity = identityOver(store)
+	const seen: (string | null)[] = []
+	identity.onChange((user) => seen.push(user?.id ?? null))
+
+	const release = server.hold('/oauth/token')
+	const pending = identity.getToken()
+	await Bun.sleep(20) // the refresh is out on the wire
+	await identity.signOut()
+	release()
+
+	expect(await pending).toBeNull()
+	expect(store.value).toBeUndefined()
+	expect(await identity.getToken()).toBeNull()
+	expect(await identity.currentUser()).toBeNull()
+	expect(seen).toEqual([null]) // never a user
+})
+
+test('sign-out during a profile fetch does not republish the user', async () => {
+	const store = memoryStore()
+	const identity = identityOver(store)
+	await identity.signIn()
+
+	const release = server.hold('/oauth/userinfo')
+	const pending = identity.currentUser() // in `describe`, waiting on /oauth/userinfo
+	await Bun.sleep(20)
+	await identity.signOut()
+	release()
+
+	await pending
+	expect(await identity.currentUser()).toBeNull()
+	expect(store.value).toBeUndefined()
+})
+
+test('an offline first look does not cache "signed out" over a good grant', async () => {
+	// The boot-with-no-network case: Settings asks who is signed in, the refresh fails
+	// transiently, and caching that as "nobody" would keep saying "Local user" for the rest of
+	// the run even though the Keychain still holds a working grant.
+	const store = memoryStore('rt-0')
+	server.serve(() => new Response('bad gateway', { status: 502 }))
+	const identity = identityOver(store)
+
+	expect(await identity.currentUser()).toBeNull()
+	server.rotating(86_400)
+	expect(await identity.currentUser()).toEqual({
+		id: USER,
+		name: 'Test User',
+		avatarUrl: undefined
+	})
+})
+
+test('signed out for real is cached: no grant means no repeat network calls', async () => {
+	const identity = identityOver(memoryStore())
+	expect(await identity.currentUser()).toBeNull()
+	expect(await identity.currentUser()).toBeNull()
+	expect(server.tokenCalls()).toHaveLength(0)
 })
 
 test('sign-out revokes the grant, drops the item, and leaves local data alone', async () => {

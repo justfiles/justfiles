@@ -91,6 +91,10 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	// `undefined` = not resolved yet; `null` = signed out. The distinction is what lets
 	// `currentUser()` answer from cache without a network hop once it is known.
 	let user: UserProfile | null | undefined
+	// Bumped by every explicit sign-in/sign-out. Anything already in flight when it moves must
+	// not write custody or publish a user — otherwise a refresh (or a profile fetch) that started
+	// before a sign-out lands after it and silently signs the daemon back in.
+	let generation = 0
 	const listeners = new Set<(user: UserProfile | null) => void>()
 
 	const publish = (next: UserProfile | null) => {
@@ -107,9 +111,16 @@ export function createIdentity(deps: IdentityDeps): Identity {
 
 	// Persist the rotation, then adopt the token. Order matters (see the header). A token whose
 	// subject we cannot read is not a sign-in, so that check comes before anything is stored.
-	async function adopt(res: TokenResponse): Promise<UserProfile> {
+	// `at` is the generation the caller started in: a sign-out since then wins, and a rotation
+	// that already reached the Keychain is taken back out rather than left as a live grant.
+	async function adopt(res: TokenResponse, at: number): Promise<UserProfile | null> {
 		const id = subjectOf(res.access_token)
+		if (at !== generation) return null
 		await store.write(res.refresh_token)
+		if (at !== generation) {
+			await store.remove().catch(() => {})
+			return null
+		}
 		token = { value: res.access_token, expires: Date.now() + res.expires_in * 1000 }
 		// Only on a change: a plain refresh must not wake E2's router every 24h.
 		if (user?.id !== id) publish({ id })
@@ -117,6 +128,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function refresh(): Promise<string | null> {
+		const at = generation
 		const stored = await store.read()
 		if (!stored) return null
 		let res: Response
@@ -136,7 +148,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				.json()
 				.then((body) => (body as { error?: string }).error)
 				.catch(() => undefined)
-			if (error === 'invalid_grant') {
+			if (error === 'invalid_grant' && at === generation) {
 				await store.remove().catch(() => {})
 				token = undefined
 				publish(null)
@@ -144,8 +156,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 			return null
 		}
 		try {
-			await adopt((await res.json()) as TokenResponse)
-			return token?.value ?? null
+			return (await adopt((await res.json()) as TokenResponse, at)) ? (token?.value ?? null) : null
 		} catch {
 			// The rotation could not be recorded (or the token could not be read), so the token we
 			// were just handed is the last one this grant will ever mint. Refusing to use it keeps
@@ -164,6 +175,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function signIn(opts?: { signal?: AbortSignal }): Promise<UserProfile> {
+		const at = generation
 		const verifier = randomB64url(32)
 		const challenge = await challengeFor(verifier)
 		const state = randomB64url(16)
@@ -197,10 +209,16 @@ export function createIdentity(deps: IdentityDeps): Identity {
 			'/oauth/token'
 		)
 		if (!res.ok) throw new Error(`Kodama sign-in failed (${res.status})`)
-		return adopt((await res.json()) as TokenResponse)
+		const profile = await adopt((await res.json()) as TokenResponse, at)
+		// A sign-out landed while the browser was open. The last explicit instruction wins.
+		if (!profile) throw new Error('Kodama sign-in was superseded by a sign-out')
+		return profile
 	}
 
 	async function signOut(): Promise<void> {
+		// Fence FIRST: a refresh or profile fetch already in flight must not write custody or
+		// publish a user after this point (see `generation`).
+		generation++
 		const stored = await store.read()
 		// Best effort: a revoke we cannot deliver must not strand the daemon signed in.
 		if (stored) {
@@ -216,6 +234,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	// is signed in, and only until it answers with something — so a failure is retried on the
 	// next ask rather than sticking for the life of the daemon.
 	async function describe(profile: UserProfile): Promise<UserProfile> {
+		const at = generation
 		const value = await getToken()
 		if (!value) return profile
 		try {
@@ -229,6 +248,8 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				name: info.name || info.email || undefined,
 				avatarUrl: info.picture
 			}
+			// Signed out while we were asking: a label must never resurrect the user.
+			if (at !== generation) return profile
 			if (named.name || named.avatarUrl) publish(named)
 			return user ?? named
 		} catch {
@@ -243,8 +264,14 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		currentUser: async () => {
 			// A stored refresh token is the source of truth for "signed in", so resolving the user
 			// means minting a token — which is also what tells us the grant is still alive.
-			if (user === undefined) await getToken()
-			if (user === undefined) publish(null)
+			if (user === undefined) {
+				await getToken()
+				// Still unresolved: either there is no grant, or we could not reach Clerk. Only the
+				// first is a fact. Caching the second would leave Settings saying "Local user" for the
+				// rest of the run with a perfectly good grant in the Keychain, so it stays unresolved
+				// and the next ask retries.
+				if (user === undefined && !(await store.read())) publish(null)
+			}
 			return user && !user.name ? await describe(user) : (user ?? null)
 		},
 		onChange: (listener) => {
