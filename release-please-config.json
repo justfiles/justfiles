@@ -10,7 +10,8 @@
 		},
 		"packages/fs": {
 			"release-type": "node",
-			"package-name": "@justfiles/fs"
+			"package-name": "@justfiles/fs",
+			"bump-minor-pre-major": true
 		},
 		"packages/app-code": {
 			"release-type": "node",
