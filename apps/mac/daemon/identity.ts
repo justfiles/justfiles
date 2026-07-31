@@ -35,10 +35,12 @@
 //      of those failures may leave `getToken()` still answering for a user who signed out. It
 //      is also STICKY: once asked to forget, this process never re-authenticates from custody
 //      it failed to delete — only an explicit sign-in re-arms it.
-//   3. `generation` fences the rest. Sign-in and sign-out bump it; refresh, sign-in and the
-//      profile fetch capture it on entry. Nothing may write custody or publish a user across a
-//      bump — that is how an operation belonging to an old grant would otherwise resurrect it
-//      (or, on `invalid_grant`, delete the grant that replaced it).
+//   3. `generation` fences, and the QUEUE makes the fence mean something. Sign-in and sign-out
+//      bump it; refresh, sign-in and the profile fetch capture it on entry. But a check before
+//      an `await` says nothing about the state after it — so every mutation of custody runs
+//      inside `serial()`, one at a time, re-checking its generation where nothing else can
+//      interleave. Nothing that waits on the network or the browser may hold that queue: it
+//      covers Keychain calls only, never a `fetch`.
 
 import type { AuthFlow } from '@justfiles/app/capabilities/accounts/providers'
 import type { UserProfile } from '@justfiles/app/capabilities/settings'
@@ -137,22 +139,32 @@ export function createIdentity(deps: IdentityDeps): Identity {
 			signal
 		})
 
-	// Persist the rotation, then adopt the token. Order matters (see the header). A token whose
-	// subject we cannot read is not a sign-in, so that check comes before anything is stored.
-	// `at` is the generation the caller started in: a sign-out since then wins, and a rotation
-	// that already reached the Keychain is taken back out rather than left as a live grant.
-	async function adopt(res: TokenResponse, at: number): Promise<UserProfile | null> {
+	// Every read/write/delete of custody goes through here, one at a time — see rule 3. A
+	// rejection is contained so it cannot poison the queue for the next caller.
+	let queue: Promise<unknown> = Promise.resolve()
+	function serial<T>(fn: () => Promise<T>): Promise<T> {
+		const run = queue.then(fn, fn)
+		queue = run.then(
+			() => undefined,
+			() => undefined
+		)
+		return run
+	}
+
+	// Persist the rotation, then adopt the token. Order matters (see the header): a token whose
+	// subject we cannot read is not a sign-in, and a rotation we cannot record is not one either.
+	// `at` is the generation the caller started in, re-checked inside the queue — so a sign-out or
+	// a newer sign-in either loses to this whole operation or wins over all of it.
+	function adopt(res: TokenResponse, at: number): Promise<UserProfile | null> {
 		const id = subjectOf(res.access_token)
-		if (at !== generation) return null
-		await store.write(res.refresh_token)
-		if (at !== generation) {
-			await store.remove().catch(() => {})
-			return null
-		}
-		token = { value: res.access_token, expires: Date.now() + res.expires_in * 1000 }
-		// Only on a change: a plain refresh must not wake E2's router every 24h.
-		if (user?.id !== id) publish({ id })
-		return { id }
+		return serial(async () => {
+			if (at !== generation) return null
+			await store.write(res.refresh_token)
+			token = { value: res.access_token, expires: Date.now() + res.expires_in * 1000 }
+			// Only on a change: a plain refresh must not wake E2's router every 24h.
+			if (user?.id !== id) publish({ id })
+			return { id }
+		})
 	}
 
 	async function refresh(): Promise<string | null> {
@@ -160,7 +172,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		const at = generation
 		// A read that FAILS (locked or denied Keychain) is not an absent grant, but for a refresh
 		// both mean the same thing: answer null and change nothing.
-		const stored = await store.read().catch(() => undefined)
+		const stored = await serial(() => store.read().catch(() => undefined))
 		if (!stored) return null
 		let res: Response
 		try {
@@ -179,10 +191,15 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				.json()
 				.then((body) => (body as { error?: string }).error)
 				.catch(() => undefined)
-			if (error === 'invalid_grant' && at === generation) {
-				await store.remove().catch(() => {})
-				token = undefined
-				publish(null)
+			if (error === 'invalid_grant') {
+				// Inside the queue, and re-checked there: an older grant's "revoked" must not delete the
+				// grant that replaced it, nor publish signed-out over its user.
+				await serial(async () => {
+					if (at !== generation) return
+					await store.remove().catch(() => {})
+					token = undefined
+					publish(null)
+				})
 			}
 			return null
 		}
@@ -253,21 +270,28 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	async function signOut(): Promise<void> {
 		// Rule 2 (see the header): the local half is synchronous and happens before any await, so no
 		// failure below — a locked Keychain, a stalled Clerk — can leave `getToken()` answering for
-		// a user who just signed out. Rule 3: the bump makes anything already in flight harmless.
-		generation++
+		// a user who just signed out.
+		const at = ++generation
 		forgotten = true
 		token = undefined
 		publish(null)
-		const stored = await store.read().catch(() => undefined)
-		// Deleting the item can fail (a locked keychain). Hold the failure rather than throwing on
-		// the spot: revoking the grant matters MORE, because a revoked grant makes a leftover item
-		// worthless, while an un-revoked one stays usable by whoever can read it.
-		const undeleted = await store.remove().then(
-			() => undefined,
-			(error: unknown) => (error instanceof Error ? error : new Error(String(error)))
-		)
+		// Custody in the queue, and fenced inside it: a sign-in that started after this sign-out must
+		// not have its brand-new grant read, deleted, and then handed to Clerk to revoke. Deleting
+		// can fail (a locked keychain) — hold the failure rather than throwing on the spot, because
+		// revoking matters MORE: a revoked grant makes a leftover item worthless, while an un-revoked
+		// one stays usable by whoever can read it.
+		const { stored, undeleted } = await serial<{ stored?: string; undeleted?: Error }>(async () => {
+			if (at !== generation) return {}
+			const held = await store.read().catch(() => undefined)
+			const failure = await store.remove().then(
+				() => undefined,
+				(error: unknown) => (error instanceof Error ? error : new Error(String(error)))
+			)
+			return { stored: held, undeleted: failure }
+		})
 		// Best effort, and bounded: a revoke we cannot deliver must not strand the caller. The grant
 		// outlives us for up to a day if this fails — the JWT-access-token trade recorded in #304.
+		// Outside the queue deliberately: a stalled Clerk must not block the next sign-in's custody.
 		if (stored) {
 			await form(
 				{ token: stored, client_id: clientId },
@@ -326,9 +350,11 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				// next ask retries.
 				if (
 					user === undefined &&
-					(await store.read().then(
-						(held) => !held,
-						() => false
+					(await serial(() =>
+						store.read().then(
+							(held) => !held,
+							() => false
+						)
 					))
 				) {
 					publish(null)

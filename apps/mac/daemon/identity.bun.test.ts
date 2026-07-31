@@ -88,23 +88,38 @@ function stubAuthServer() {
 
 // An in-memory SecretStore: the same contract as the Keychain one, so every test but the
 // custody test runs without touching the machine's Keychain. `failReads` is the locked/denied
-// Keychain — a read that THROWS, which is not the same as an empty one.
-function memoryStore(
-	initial?: string
-): SecretStore & { value?: string; failWrites?: boolean; failReads?: boolean } {
+// Keychain — a read that THROWS, which is not the same as an empty one. `delay` makes a
+// Keychain call slow (a list is consumed per call), which is how the interleaving tests get an
+// operation to LAND late rather than merely start late — the difference between a race that
+// fails and one that never fires.
+type Delay = number | number[]
+function memoryStore(initial?: string): SecretStore & {
+	value?: string
+	failWrites?: boolean
+	failReads?: boolean
+	delay: { read: Delay; write: Delay; remove: Delay }
+} {
+	const wait = async (delay: Delay) => {
+		const ms = Array.isArray(delay) ? (delay.shift() ?? 0) : delay
+		if (ms) await Bun.sleep(ms)
+	}
 	const store = {
 		value: initial,
 		failWrites: false,
 		failReads: false,
+		delay: { read: 0 as Delay, write: 0 as Delay, remove: 0 as Delay },
 		read: async () => {
+			await wait(store.delay.read)
 			if (store.failReads) throw new Error('keychain: could not read (security exit 51)')
 			return store.value
 		},
 		write: async (value: string) => {
+			await wait(store.delay.write)
 			if (store.failWrites) throw new Error('keychain: locked')
 			store.value = value
 		},
 		remove: async () => {
+			await wait(store.delay.remove)
 			store.value = undefined
 		}
 	}
@@ -348,6 +363,75 @@ test('a late invalid_grant from the OLD grant does not delete the new one', asyn
 
 	expect(store.value).toBe('rt-new')
 	expect(await identity.currentUser()).not.toBeNull()
+})
+
+// The three interleavings below are all the same shape: an operation belonging to the OLD
+// grant is *already past* its generation check, with a Keychain call in flight, when a newer
+// explicit action lands. Checking the fence before an `await` cannot catch these — only
+// serialising custody can — so each one is delayed into the window that used to be unguarded.
+
+test('a stale rotation cannot overwrite the grant a newer sign-in just stored', async () => {
+	const store = memoryStore('rt-old')
+	// The stale write is slow and the sign-in's is not, so the stale one LANDS LAST — the only
+	// ordering in which it can clobber, and the one a fence around an await cannot prevent.
+	store.delay.write = [120, 0]
+	const identity = identityOver(store)
+	server.serve((body) =>
+		Response.json(
+			body.get('grant_type') === 'refresh_token'
+				? { access_token: accessToken(1), refresh_token: 'rt-stale', expires_in: 86_400 }
+				: { access_token: accessToken(2), refresh_token: 'rt-new', expires_in: 86_400 }
+		)
+	)
+
+	const stale = identity.getToken() // its write is in flight…
+	await Bun.sleep(20)
+	await identity.signIn() // …while this one stores the new grant
+	await stale
+
+	expect(store.value).toBe('rt-new')
+	expect(await identity.getToken()).toBe(accessToken(2))
+	expect((await identity.currentUser())?.id).toBe(USER)
+})
+
+test('a stale invalid_grant cannot delete the grant a newer sign-in just stored', async () => {
+	const store = memoryStore('rt-old')
+	store.delay.remove = 80
+	const identity = identityOver(store)
+	server.serve((body) =>
+		body.get('grant_type') === 'refresh_token'
+			? Response.json({ error: 'invalid_grant' }, { status: 400 })
+			: Response.json({ access_token: accessToken(9), refresh_token: 'rt-new', expires_in: 86_400 })
+	)
+
+	const stale = identity.getToken() // its delete is in flight…
+	await Bun.sleep(20)
+	await identity.signIn() // …while this one stores the new grant
+	await stale
+
+	expect(store.value).toBe('rt-new')
+	expect(await identity.getToken()).toBe(accessToken(9))
+	expect((await identity.currentUser())?.id).toBe(USER)
+})
+
+test('an older sign-out cannot delete or revoke a newer sign-in', async () => {
+	const store = memoryStore('rt-old')
+	store.delay.read = 80
+	const identity = identityOver(store)
+
+	const out = identity.signOut() // its custody work is in flight…
+	await Bun.sleep(20)
+	await identity.signIn() // …while the user signs in again
+	await out
+
+	// The new grant survives, and — the sharp end — was never handed to Clerk to revoke.
+	expect(store.value).toBe('rt-1')
+	expect(await identity.getToken()).toBe(accessToken(1))
+	expect((await identity.currentUser())?.id).toBe(USER)
+	expect(server.calls.filter((c) => c.path === '/oauth/token/revoke')).toHaveLength(1)
+	expect(server.calls.find((c) => c.path === '/oauth/token/revoke')?.body.get('token')).toBe(
+		'rt-old'
+	)
 })
 
 test('a Keychain that will not delete still signs the daemon out locally', async () => {
