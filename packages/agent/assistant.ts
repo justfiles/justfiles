@@ -1,9 +1,9 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
-import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
 import { ensureAgentDefaults } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
+import { deviceId } from './device'
 import { createReadDocTool, docsPrompt } from './docs'
 import { EXPRESSION_PROMPT } from './expression'
 import { file } from './file'
@@ -13,6 +13,7 @@ import { filesystemPrompt, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './p
 import {
 	type AppendPayload,
 	type ContextMessage,
+	currentSession,
 	type ImageRef,
 	type SessionEntry,
 	type SessionManager,
@@ -456,35 +457,34 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 	}
 }
 
-const SessionMetaSchema = z.object({
-	sessionId: z.string(),
-	lastActive: z.iso.datetime().transform((s) => new Date(s)),
-	sessionFile: z.string()
-})
-
-const SessionsMap = z.record(z.string(), SessionMetaSchema)
+const SIX_HOURS = 6 * 60 * 60 * 1000
 
 type MessageContext = {
 	agentId: string
 }
 
+// Which session this host is in is DERIVED from the transcripts, never recorded: the one
+// whose newest entry is newest. Open the iPad and it resumes the Mac's conversation, with no
+// pointer file for two hosts to clobber (#300).
+//
+// The idle clock is conversation time (the newest ENTRY) rather than a `lastActive` field
+// each device rewrote on every turn — which is also the RIGHT clock: a peer's turn arriving
+// by sync keeps the session alive, exactly as if it had happened here.
 async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promise<SessionManager> {
-	const sessionKey = resolveSessionKey(ctx)
-	const sessionsMap = file(volume, paths.sessionsMap(ctx.agentId))
-	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
-	const existing = sessions[sessionKey]
-
-	const SIX_HOURS = 6 * 60 * 60 * 1000
 	const now = new Date()
+	const current = await currentSession(volume, ctx.agentId)
+	const open = async (at: { sessionId: string; startTs: Date }) =>
+		session(volume, {
+			agentId: ctx.agentId,
+			sessionId: at.sessionId,
+			startTs: at.startTs,
+			deviceId: await deviceId(volume)
+		})
 
-	if (existing && now.getTime() - existing.lastActive.getTime() < SIX_HOURS) {
-		existing.lastActive = now
-		await sessionsMap.write(JSON.stringify(sessions))
-		return session(existing.sessionFile, volume)
-	}
+	if (current && now.getTime() - Date.parse(current.newestTs) < SIX_HOURS) return open(current)
 
-	if (existing) {
-		const previous = session(existing.sessionFile, volume)
+	if (current) {
+		const previous = await open(current)
 		const context = await previous.buildSessionContext()
 		if (context.length > 0) {
 			const tail = context.map((m) => `${m.role}: ${m.content}`).join('\n')
@@ -498,23 +498,24 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 	return createSession(ctx, volume, now)
 }
 
-// Mint + register a fresh session file (the old one stays on disk, unreferenced) and
-// return its manager. Shared by route() (after an idle rollover) and Runtime.newSession.
+// Mint a fresh session id and open this device's shard for it. The retired session stays on
+// disk and simply stops being the newest — nothing has to be de-registered, because nothing
+// was registered. Shared by route() (after an idle rollover) and Runtime.newSession.
+//
+// Note the one thing deriving costs: a brand-new session has no entries, so it is not yet
+// discoverable. Ask for a new conversation, say nothing, restart — and route() resolves back
+// to the previous session. No content is lost (there was none); the INTENT is. Recording it
+// would mean host-private state under /.state, which #300 leaves optional and nothing has
+// asked for.
 async function createSession(
 	ctx: MessageContext,
 	volume: Volume,
 	now: Date = new Date()
 ): Promise<SessionManager> {
-	const sessionsMap = file(volume, paths.sessionsMap(ctx.agentId))
-	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
-	const sessionId = crypto.randomUUID().slice(0, 8)
-	// `route()` resolves the STORED path, so old `<id>.jsonl` transcripts keep loading.
-	const sessionFile = paths.sessionFile(ctx.agentId, sessionId, now)
-	sessions[resolveSessionKey(ctx)] = { sessionId, lastActive: now, sessionFile }
-	await sessionsMap.write(JSON.stringify(sessions))
-	return session(sessionFile, volume)
-}
-
-function resolveSessionKey(ctx: MessageContext): string {
-	return `agent:${ctx.agentId}`
+	return session(volume, {
+		agentId: ctx.agentId,
+		sessionId: crypto.randomUUID().slice(0, 8),
+		startTs: now,
+		deviceId: await deviceId(volume)
+	})
 }

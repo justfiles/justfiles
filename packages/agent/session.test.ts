@@ -233,8 +233,9 @@ describe('createAgentSession', () => {
 	})
 
 	// The transcript file names itself for when the conversation started, so `ls` IS the
-	// chronological index the agent searches (#284 §8).
-	test('a fresh transcript is named for its start time', async () => {
+	// chronological index the agent searches (#284 §8) — and for the device that owns it, so it
+	// has exactly one writer and sync's whole-file LWW cannot destroy a peer's turns (#300).
+	test('a fresh transcript is named for its start time and this device', async () => {
 		const vol = volume(memStorage())
 		const session = createAgentSession({
 			volume: vol,
@@ -247,17 +248,19 @@ describe('createAgentSession', () => {
 			.map((entry) => entry.name)
 			.filter((name) => name.endsWith('.jsonl'))
 		expect(names).toHaveLength(1)
-		expect(names[0]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[0-9a-f]{8}\.jsonl$/)
+		expect(names[0]).toMatch(
+			/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[0-9a-f]{8}\.[0-9a-f]{8}\.jsonl$/
+		)
 	})
 
-	// No migration: `route()` resolves the path RECORDED in the sessions map, so a transcript
-	// written under the old `<id>.jsonl` scheme keeps loading (and simply sorts first).
-	test('an old-style transcript path still loads', async () => {
+	// No migration (#284 §8's precedent): a pre-timestamp `<id>.jsonl` is read as a shard with
+	// no device suffix, so it keeps loading with `sessions.json` GONE — which matters, because
+	// deriving the current session is the only thing that finds it now.
+	test('an old-style transcript still loads without a sessions map', async () => {
 		const vol = volume(memStorage())
-		const old = '/system/agents/main/sessions/abcd1234.jsonl'
 		await vol.mkdir('/system/agents/main/sessions', { recursive: true })
 		await vol.writeFile(
-			old,
+			'/system/agents/main/sessions/abcd1234.jsonl',
 			encoder.encode(
 				`${JSON.stringify({
 					type: 'message',
@@ -269,18 +272,6 @@ describe('createAgentSession', () => {
 				})}\n`
 			)
 		)
-		await vol.writeFile(
-			'/system/agents/main/sessions/sessions.json',
-			encoder.encode(
-				JSON.stringify({
-					'agent:main': {
-						sessionId: 'abcd1234',
-						lastActive: new Date().toISOString(),
-						sessionFile: old
-					}
-				})
-			)
-		)
 
 		const session = createAgentSession({
 			volume: vol,
@@ -290,5 +281,124 @@ describe('createAgentSession', () => {
 		expect((await session.history()).map((entry) => 'content' in entry && entry.content)).toContain(
 			'earlier question'
 		)
+	})
+
+	// A leftover map from before #300 is data, not instruction. It must not be consulted (its
+	// pointer may name a session that is no longer newest) and must not be rewritten — writing
+	// it is what two hosts used to clobber.
+	test('a leftover sessions.json is ignored and never rewritten', async () => {
+		const vol = volume(memStorage())
+		const dir = '/system/agents/main/sessions'
+		await vol.mkdir(dir, { recursive: true })
+		const stale = encoder.encode(
+			JSON.stringify({
+				'agent:main': {
+					sessionId: 'ffffffff',
+					lastActive: new Date().toISOString(),
+					sessionFile: `${dir}/nonexistent.jsonl`
+				}
+			})
+		)
+		await vol.writeFile(`${dir}/sessions.json`, stale)
+
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
+			compaction: NO_COMPACTION
+		})
+		await session.prompt('hello')
+
+		expect(await vol.readFile(`${dir}/sessions.json`)).toEqual(stale)
+		// The turn went to a real shard, not to the path the stale map named.
+		const names = (await vol.readdir(dir)).map((e) => e.name).filter((n) => n.endsWith('.jsonl'))
+		expect(names).toHaveLength(1)
+		expect(names[0]).not.toContain('ffffffff')
+	})
+
+	// Which session is current is DERIVED from the transcripts: the one whose newest ENTRY is
+	// newest. Not the filename (it records the START, and a long conversation outlives a
+	// short later one) and not mtime (that is last-WRITE — sync rewrites a file long after the
+	// conversation in it ended). Here both wrong clocks point elsewhere.
+	test('the current session is the one with the newest entry, not the newest name or mtime', async () => {
+		const vol = volume(memStorage())
+		const dir = '/system/agents/main/sessions'
+		await vol.mkdir(dir, { recursive: true })
+		const line = (id: string, ts: string) =>
+			encoder.encode(
+				`${JSON.stringify({ type: 'message', role: 'user', content: id, id, parentId: null, ts })}\n`
+			)
+		const recent = new Date(Date.now() - 60_000).toISOString()
+		const ancient = '2020-01-01T00:00:00.000Z'
+
+		// Sorts FIRST by name, holds the newest entry.
+		await vol.writeFile(`${dir}/2026-01-01T00-00-00Z-aaaaaaaa.dddd0001.jsonl`, line('aaaa', recent))
+		// Sorts LAST by name and written LAST, so it wins both wrong clocks — and is ancient.
+		await vol.writeFile(
+			`${dir}/2026-12-31T00-00-00Z-zzzzzzzz.dddd0001.jsonl`,
+			line('zzzz', ancient)
+		)
+
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
+			compaction: NO_COMPACTION
+		})
+
+		expect((await session.history()).map((e) => 'content' in e && e.content)).toEqual(['aaaa'])
+	})
+
+	// The payload of #300: pick up on another device. A peer's shard is on disk (it arrived by
+	// sync); this host must continue that SESSION — a new shard of its own, parented into the
+	// foreign one — rather than starting a fresh conversation.
+	test('a turn continues a session another device started', async () => {
+		const vol = volume(memStorage())
+		const dir = '/system/agents/main/sessions'
+		const peer = `${dir}/2026-07-26T09-00-00Z-5e551011.bbbb2222.jsonl`
+		await vol.mkdir(dir, { recursive: true })
+		const ts = new Date(Date.now() - 60_000).toISOString()
+		await vol.writeFile(
+			peer,
+			encoder.encode(
+				`${JSON.stringify({ type: 'message', role: 'user', content: 'asked on the mac', id: 'aaaa0001', parentId: null, ts })}\n${JSON.stringify(
+					{
+						type: 'message',
+						role: 'assistant',
+						content: 'answered on the mac',
+						id: 'aaaa0002',
+						parentId: 'aaaa0001',
+						ts
+					}
+				)}\n`
+			)
+		)
+
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'continued here' }])]),
+			compaction: NO_COMPACTION
+		})
+		await session.prompt('following up on the ipad')
+
+		// One lineage, spanning both shards.
+		expect((await session.history()).map((e) => 'content' in e && e.content)).toEqual([
+			'asked on the mac',
+			'answered on the mac',
+			'following up on the ipad',
+			'continued here'
+		])
+
+		// A NEW shard, sharing the session id and start stamp, and the peer's file is untouched.
+		const names = (await vol.readdir(dir)).map((e) => e.name).sort()
+		expect(names).toHaveLength(2)
+		expect(names.every((n) => n.startsWith('2026-07-26T09-00-00Z-5e551011.'))).toBe(true)
+		expect(new TextDecoder().decode(await vol.readFile(peer))).not.toContain('ipad')
+
+		// The new shard's first entry parents into the foreign shard — the join is a real edge,
+		// not two conversations that happen to sit in one directory.
+		const mine = names.find((n) => !n.includes('bbbb2222')) as string
+		const first = JSON.parse(
+			new TextDecoder().decode(await vol.readFile(`${dir}/${mine}`)).split('\n')[0] as string
+		)
+		expect(first.parentId).toBe('aaaa0002')
 	})
 })

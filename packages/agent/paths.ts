@@ -23,13 +23,52 @@ export const agentDir = (agentId = 'main') => `/system/agents/${agentId}`
 export const soul = (agentId = 'main') => `${agentDir(agentId)}/soul.md`
 export const avatar = (agentId = 'main') => `${agentDir(agentId)}/avatar.png`
 export const sessionsDir = (agentId = 'main') => `${agentDir(agentId)}/sessions`
-export const sessionsMap = (agentId = 'main') => `${sessionsDir(agentId)}/sessions.json`
 
-// Named for when the conversation STARTED, so `ls` is the chronological index: the
-// sessions map only ever points at the CURRENT session, so a retired transcript carries
-// no metadata but its name.
-export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
-	`${sessionsDir(agentId)}/${at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}Z-${sessionId}.jsonl`
+// One shard per device, so a transcript file only ever has ONE writer and whole-file LWW
+// during sync can never destroy a peer's appends. Readers union every shard sharing a
+// session id (session.manager.impl.ts) — sharding is not the alternative to merging, it
+// is the mechanism for it.
+//
+// Still named for when the conversation STARTED, and that stamp is shared across devices,
+// so `ls` remains the chronological index AND every shard of one conversation sorts
+// together. There is no sessions.json: the current session is DERIVED (see
+// `currentSession`), because a single-key pointer file has one writer per device and
+// therefore cannot survive sync.
+export const sessionShard = (agentId: string, sessionId: string, at: Date, deviceId: string) =>
+	`${sessionsDir(agentId)}/${stamp(at)}-${sessionId}.${deviceId}.jsonl`
+
+const stamp = (at: Date) => `${at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}Z`
+
+// `<stamp>-<sessionId>.<deviceId>.jsonl`, and the two older shapes that predate it. A
+// legacy file is simply a shard with no device suffix; nothing is migrated (#284 §8's
+// precedent) and nothing on disk is invisible to the resolver.
+//
+// `startTs` is null for a pre-timestamp `<id>.jsonl` — unknown, not epoch. The reader
+// derives one from the earliest entry rather than inventing 1970, so continuing such a
+// session names its new shard for when the conversation actually started.
+const SHARD = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})Z-([^.]+)(?:\.([^.]+))?\.jsonl$/
+const PRE_TIMESTAMP = /^([^.]+)\.jsonl$/
+
+export type SessionShard = {
+	startTs: Date | null
+	sessionId: string
+	deviceId: string | null
+}
+
+export function parseSessionShard(name: string): SessionShard | null {
+	const m = SHARD.exec(name)
+	if (m) {
+		const [, date, h, min, s, sessionId, deviceId] = m
+		return {
+			startTs: new Date(`${date}T${h}:${min}:${s}Z`),
+			sessionId: sessionId as string,
+			deviceId: deviceId ?? null
+		}
+	}
+	const legacy = PRE_TIMESTAMP.exec(name)
+	if (legacy) return { startTs: null, sessionId: legacy[1] as string, deviceId: null }
+	return null
+}
 
 // Prefixes the agent's shell must never read. ENFORCED in volumeFs, not asked for in the
 // prompt — a prompt is not an access-control mechanism. The list is owned by

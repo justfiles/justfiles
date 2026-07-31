@@ -27,9 +27,12 @@ you would only be re-reading your own context.
 
 ## Your own history
 
-`/system/agents/main/sessions/<timestamp>-<id>.jsonl` — one file per conversation,
-named for when it started, so `ls` is the chronological index. One JSON object per
-line, `role` one of `user`, `assistant`, `tool_call`, `tool_result`:
+`/system/agents/main/sessions/<timestamp>-<id>.<device>.jsonl` — one file per
+conversation PER DEVICE, named for when the conversation started, so `ls` is the
+chronological index. A conversation you had on another device is a separate file sharing
+the same `<id>`: glob the id to read the whole conversation, and never edit a file whose
+`<device>` is not this one. One JSON object per line, `role` one of `user`, `assistant`,
+`tool_call`, `tool_result`:
 
     {"type":"message","role":"user","content":"…","id":"a1b2c3d4","parentId":null,"ts":"2026-07-26T09:12:00.000Z"}
 

@@ -21,7 +21,7 @@
 
 import { z } from 'zod'
 
-export { session } from './session.manager.impl'
+export { currentSession, session } from './session.manager.impl'
 
 // ── Entry Identity ────────────────────────────────────────────────────────
 
