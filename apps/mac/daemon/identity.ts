@@ -45,6 +45,11 @@
 //      that waits on the network or the browser may hold the queue: it covers Keychain calls
 //      only, never a `fetch`.
 //
+//   4. Every request is bounded. `getToken()` is on the hot path for capabilities and sync, and
+//      it memoises one refresh — so an unbounded fetch that never settles does not fail, it
+//      WEDGES every later caller. The timeout lives in the two request helpers rather than at
+//      call sites, so it cannot be forgotten by the next one added.
+//
 // WHAT THIS CANNOT DO: all of the above is per-process. Two daemons can currently run at once
 // (`Daemon.ensure()` in Launcher.swift has no single-writer lock — see #342), and two processes
 // refreshing the same stored token trip Clerk's reuse detection and destroy the grant. No
@@ -67,10 +72,11 @@ const SCOPES = 'profile email offline_access'
 // Refresh this far before `exp`. Tokens live 24h, so this is deliberately generous: the cost
 // of an early refresh is one request, the cost of a late one is a failed capability call.
 const REFRESH_SKEW_MS = 5 * 60_000
-// Sign-out clears local custody first and only then tells Clerk, so this bounds the wait on a
-// server that stalls rather than refusing — not how long the user stays signed in (they are
-// already signed out by the time it runs).
-const REVOKE_TIMEOUT_MS = 5_000
+// Every request this module makes is bounded by this, because twice in review an unbounded one
+// turned a stalled Clerk into a stuck daemon: a revoke that never replied left `/sign-out`
+// hanging, and a refresh that never replied pinned `inFlight` — so every later `getToken()` and
+// `currentUser()` joined the same dead fetch. Overridable only so tests can use a short one.
+const NETWORK_TIMEOUT_MS = 10_000
 
 export interface Identity {
 	// A bearer token for our own API, or null when signed out / unreachable. Never throws:
@@ -91,6 +97,8 @@ export interface IdentityDeps {
 	clientId: string
 	flow: AuthFlow
 	store: SecretStore
+	// Per-request bound; only tests pass one (see NETWORK_TIMEOUT_MS).
+	timeoutMs?: number
 }
 
 interface TokenResponse {
@@ -119,7 +127,7 @@ function subjectOf(accessToken: string): string {
 }
 
 export function createIdentity(deps: IdentityDeps): Identity {
-	const { fapi, clientId, flow, store } = deps
+	const { fapi, clientId, flow, store, timeoutMs = NETWORK_TIMEOUT_MS } = deps
 
 	// EVERYTHING this module believes, in one value. Not four variables: the bugs this module was
 	// reviewed for were all half-applied states — a token adopted after a sign-out had cleared it,
@@ -159,12 +167,19 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		return true
 	}
 
-	const form = (body: Record<string, string>, path: string, signal?: AbortSignal) =>
+	// The two ways this module talks to Clerk. Both carry a timeout by construction, so no call
+	// site can forget one (rule 4).
+	const form = (body: Record<string, string>, path: string) =>
 		fetch(new URL(path, fapi), {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams(body),
-			signal
+			signal: AbortSignal.timeout(timeoutMs)
+		})
+	const get = (path: string, bearer: string) =>
+		fetch(new URL(path, fapi), {
+			headers: { authorization: `Bearer ${bearer}` },
+			signal: AbortSignal.timeout(timeoutMs)
 		})
 
 	// Every read/write/delete of custody goes through here, one at a time — see rule 3. A
@@ -208,7 +223,11 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				'/oauth/token'
 			)
 		} catch {
-			// Offline. Keep the credential: a network we cannot reach is not a revoked grant.
+			// Offline, or the request timed out. Keep the credential: a network we cannot reach is not a
+			// revoked grant. A timeout is the uncomfortable case — Clerk may have served the rotation we
+			// abandoned, in which case the stored token is spent and the NEXT attempt gets
+			// `invalid_grant` and asks the user to sign in again. That is the trade: bounded requests
+			// can cost a grant, an unbounded one costs the whole daemon (rule 4).
 			return null
 		}
 		if (!res.ok) {
@@ -323,11 +342,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		// outlives us for up to a day if this fails — the JWT-access-token trade recorded in #304.
 		// Outside the queue deliberately: a stalled Clerk must not block the next sign-in's custody.
 		if (stored) {
-			await form(
-				{ token: stored, client_id: clientId },
-				'/oauth/token/revoke',
-				AbortSignal.timeout(REVOKE_TIMEOUT_MS)
-			).catch(() => {})
+			await form({ token: stored, client_id: clientId }, '/oauth/token/revoke').catch(() => {})
 		}
 		// Signed out everywhere that matters, but the credential is still on disk: the caller has to
 		// be able to say so, because the next daemon that CAN read the Keychain would find it.
@@ -349,9 +364,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		const value = await getToken()
 		if (!value) return
 		try {
-			const res = await fetch(new URL('/oauth/userinfo', fapi), {
-				headers: { authorization: `Bearer ${value}` }
-			})
+			const res = await get('/oauth/userinfo', value)
 			if (!res.ok) return
 			const info = (await res.json()) as { name?: string; email?: string; picture?: string }
 			const named: UserProfile = {

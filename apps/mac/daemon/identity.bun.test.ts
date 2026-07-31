@@ -155,8 +155,14 @@ afterEach(() => {
 	server.stop()
 })
 
-const identityOver = (store: SecretStore, flow: AuthFlow = fakeBrowser()) =>
-	createIdentity({ fapi: server.fapi, clientId: CLIENT_ID, flow, store } satisfies IdentityDeps)
+const identityOver = (store: SecretStore, flow: AuthFlow = fakeBrowser(), timeoutMs?: number) =>
+	createIdentity({
+		fapi: server.fapi,
+		clientId: CLIENT_ID,
+		flow,
+		store,
+		timeoutMs
+	} satisfies IdentityDeps)
 
 test('signed out: getToken() resolves null and never throws', async () => {
 	const identity = identityOver(memoryStore())
@@ -508,6 +514,25 @@ test('a cancelled sign-in does not re-arm a grant an earlier sign-out failed to 
 	}
 	expect((await identity.signIn()).id).toBe(USER)
 	expect(await identity.getToken()).toBeTruthy()
+})
+
+test('a Clerk that accepts and never answers does not wedge every later caller', async () => {
+	// `getToken()` memoises one refresh, so an unbounded request that never settles is worse than
+	// a failing one: every capability call, sync tick and Settings pane joins the same dead fetch
+	// for the life of the daemon. A timeout turns it back into an ordinary transient failure.
+	const store = memoryStore('rt-0')
+	const identity = identityOver(store, fakeBrowser(), 60)
+	const release = server.hold('/oauth/token')
+
+	expect(await identity.getToken()).toBeNull() // gives up instead of hanging
+	expect(store.value).toBe('rt-0') // …and a timeout is transient, so custody stays
+
+	// The memoised promise is gone with it, so the next call is a fresh attempt — which succeeds
+	// once the server answers again (with a NEW grant: the abandoned request had already been
+	// served, which is the trade this timeout accepts — see the note in identity.ts).
+	release()
+	expect(await identity.getToken()).toBeTruthy()
+	expect(store.value).not.toBe('rt-0')
 })
 
 test('a Keychain that will not delete still signs the daemon out locally', async () => {
