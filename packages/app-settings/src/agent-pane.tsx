@@ -113,11 +113,13 @@ const CAMERA = (
 type Gender = 'female' | 'male'
 
 // The face on the volume, as a blob URL. Kept out of reducer state (that is JSON, and it
-// replicates): the bytes ride back from a procedure and become a URL here.
-function useAvatar(client: Client<SettingsApp>, revision: unknown) {
+// replicates): the bytes ride back from a procedure and become a URL here. Shared with the
+// sidebar row, which wears the same face.
+export function useAvatar(client: Client<SettingsApp>, revision: number) {
 	const [photo, setPhoto] = useState<string | null>(null)
 	useEffect(() => {
 		// `revision` is why this runs again: a write here, or a sync from another device.
+		// Nothing else in state moves when only the avatar file does.
 		void revision
 		let url: string | null = null
 		void client
@@ -324,9 +326,10 @@ function CharacterSheet({
 	// The art actually on screen is the recorded VARIANT, which a soul written before
 	// variants existed simply lacks — then the default face is what renders.
 	const worn = archetypeOf(soul.avatarVariant)
-	// Re-read the face whenever the soul changes: `saveAvatar` reloads the soul, which is
-	// also what a sync from another device does.
-	const photo = useAvatar(client, soul)
+	// Re-read the face whenever the avatar file changes — a write here, or a sync from
+	// another device. The soul is not the signal: it does not move when a photo is added
+	// or dropped.
+	const photo = useAvatar(client, state.avatarRevision)
 	const [editing, setEditing] = useState(false)
 	const [body, setBody] = useState(soul.body)
 	const [name, setName] = useState(soul.name)
@@ -602,20 +605,26 @@ function Summoning({
 		}
 	}, [state.proposal])
 
+	// No generator here (a signed-out Mac) ⇒ a soul you write yourself. That can be known
+	// up front, or only once the draft comes back CAPABILITY_UNAVAILABLE and flips
+	// `canGenerate` — either way the nature is already picked, so advance rather than
+	// leave the picker up waiting for a second click on the same card.
+	useEffect(() => {
+		if (archetype && !state.canGenerate) setStep('review')
+	}, [archetype, state.canGenerate])
+
 	const pickNature = (id: string) => {
 		setArchetype(id)
-		if (state.canGenerate) {
-			void client.generateSoul({ name: name.trim(), gender, archetype: id })
-			return
-		}
-		// No generator here (a signed-out Mac): straight to a soul you write yourself.
-		setStep('review')
+		if (state.canGenerate) void client.generateSoul({ name: name.trim(), gender, archetype: id })
 	}
 
 	const bind = async () => {
 		setBusy(true)
 		try {
-			if (photo) await client.saveAvatar({ bytes: photo.bytes })
+			// Always written, because binding is also how "summon again" lands: with no photo
+			// this CLEARS a previous one, or the newly bound agent would keep wearing the old
+			// face instead of the art the review promised (`avatar.png` beats `avatar_variant`).
+			await client.saveAvatar({ bytes: photo?.bytes ?? null })
 			await client.saveSoul({
 				name: name.trim(),
 				gender,
@@ -783,7 +792,13 @@ function Summoning({
 									type="button"
 									className="settings-small-button"
 									disabled={busy || writing}
-									onClick={() => setStep('nature')}
+									onClick={() => {
+										// Cleared, not just stepped back: an archetype still set is what the
+										// effect above reads as "already picked" and would bounce straight
+										// back here with.
+										setArchetype(null)
+										setStep('nature')
+									}}
 								>
 									Change their nature
 								</button>

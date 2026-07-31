@@ -75,6 +75,12 @@ export type SettingsState = {
 	// the first read lands.
 	soul: AgentSoul | null
 	facts: UserFacts | null
+	// Bumped by every avatar write. The bytes are NOT state (see the header) and writing
+	// them moves nothing else — the soul is untouched — so without this marker the state
+	// after a write is identical, the kernel emits no update, and a pane keeps showing
+	// the face it read before. It replicates, so a photo set on another device lands here
+	// the same way.
+	avatarRevision: number
 	// A generated soul awaiting a verdict. It cost a model call, so it outlives a reload;
 	// nothing is written until the user keeps it.
 	proposal: GeneratedSoul | null
@@ -98,6 +104,7 @@ export const initialState: SettingsState = {
 	usageError: null,
 	soul: null,
 	facts: null,
+	avatarRevision: 0,
 	proposal: null,
 	generating: false,
 	canGenerate: true,
@@ -200,6 +207,11 @@ export const app = defineApp({
 		discardProposal: t.on(v.object({}), (state) => ({ ...state, proposal: null }), {
 			description: 'Drop a generated soul and keep what is on the volume.'
 		}),
+		avatarChanged: t.on(
+			v.object({}),
+			(state) => ({ ...state, avatarRevision: state.avatarRevision + 1 }),
+			{ description: 'Note that the face on the volume changed, so readers re-read it.' }
+		),
 		selectCategory: t.on(
 			v.object({ category: v.picklist(['agent', 'account', 'accounts']) }),
 			(state, { category }) => ({ ...state, category, error: null }),
@@ -301,11 +313,10 @@ export const app = defineApp({
 			schema: v.object({ bytes: v.nullable(v.instance(Uint8Array)) }),
 			async run(input, app) {
 				await app.invoke('settings', 'agent.writeAvatar', input)
-				// The soul is unchanged, but the shell watches BOTH files — re-read so a
-				// pane showing "your photo" vs "the art" cannot lag the volume.
-				await app.settled((await app.dispatch({ type: 'loadSoul', params: {} })).seq, {
-					timeout: 10_000
-				})
+				// The soul is untouched by this — reloading it would fold back the same value
+				// and change nothing — so the revision bump is what tells every reader (this
+				// pane, the sidebar row, another device) that the face is a different one now.
+				await app.dispatch({ type: 'avatarChanged', params: {} })
 			}
 		})
 	})

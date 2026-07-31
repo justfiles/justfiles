@@ -137,6 +137,15 @@ test('a host with no generator stops offering one instead of showing a dead butt
 	expect(state?.error).toContain('write the soul yourself')
 })
 
+test('an avatar write moves state, so a face that changed alone still reaches the pane', async () => {
+	// The soul is untouched by writing a photo: without the revision the state after the
+	// write is identical, the kernel emits no update, and the pane keeps its old face.
+	const start = { ...initialState, soul: boundSoul }
+	const { state } = await app.dispatch({ type: 'avatarChanged', params: {} }, { state: start })
+	expect(state?.avatarRevision).toBe(1)
+	expect(state?.soul).toEqual(boundSoul)
+})
+
 test('usage being unavailable hides the meters but never the pane that holds the profile', async () => {
 	const { state } = await app.dispatch(
 		{

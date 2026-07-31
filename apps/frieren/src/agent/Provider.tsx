@@ -9,10 +9,10 @@ import {
 } from 'react'
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
-import { readAgentSoul, readAvatar, readAvatarFaces, watchIdentity } from './identity'
 import { builtinFaces } from './builtin'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
+import { readAgentSoul, readAvatar, readAvatarFaces, watchIdentity } from './identity'
 
 // How long a tab waits before asking for the same face again. A skip is often transient —
 // right after personalization the worker's copy of `avatar.png` can still be behind the

@@ -8,7 +8,7 @@ import type {
 } from '@justfiles/app/capabilities/settings'
 import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AgentPane } from './agent-pane.tsx'
+import { AgentPane, useAvatar } from './agent-pane.tsx'
 import {
 	type Category,
 	hasBothOrigins,
@@ -18,7 +18,6 @@ import {
 	type SettingsState
 } from './app.ts'
 import { faceOf } from './archetypes.ts'
-import { pngUrl } from './squarePng.ts'
 
 // How a provider projects an `ai`-capability account's config for the picker
 // (see the host `describe`): the selected model + the list to choose from.
@@ -100,6 +99,9 @@ button.settings-account[data-active="true"],
 	'app-settings'
 )
 
+// Every category the detail side actually renders (see `Settings` below).
+const RENDERED: Category[] = ['agent', 'account', 'accounts']
+
 // Merge onto initialState so a persisted state missing newer keys (e.g. an
 // older build's shape carried across a rewrite) still has every field — a bare
 // `'category' in value` check would hand back a stale object whose `ai` is
@@ -114,6 +116,10 @@ const stateOrInitial = (value: unknown): SettingsState => {
 	// until loadUsage replaces it.
 	if (merged.usage && !('aiBurst' in merged.usage && 'aiWeekly' in merged.usage))
 		merged.usage = null
+	// Same for a category this build no longer renders — an older state selected 'usage',
+	// whose content now lives in the account pane. Left as-is it selects no row and shows
+	// a blank detail side until the user clicks something.
+	if (!RENDERED.includes(merged.category)) merged.category = 'account'
 	return merged
 }
 
@@ -187,26 +193,10 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 // saying "Agent" and starts saying "Fern". It is also how you notice a soul edited on
 // another device: the row follows the volume.
 function AgentNavGlyph({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
-	const [photo, setPhoto] = useState<string | null>(null)
-	const soul = state.soul
-	useEffect(() => {
-		// Re-read when the soul changes: a write here, or a sync from another device.
-		void soul
-		let url: string | null = null
-		void client
-			.readAvatar({})
-			.then((bytes) => {
-				url = bytes ? pngUrl(bytes) : null
-				setPhoto(url)
-			})
-			.catch(() => setPhoto(null))
-		return () => {
-			if (url) URL.revokeObjectURL(url)
-		}
-	}, [client, soul])
+	const photo = useAvatar(client, state.avatarRevision)
 	return (
 		<span className="settings-nav-glyph settings-nav-face" aria-hidden>
-			<img src={faceOf(photo, soul?.avatarVariant ?? null)} alt="" />
+			<img src={faceOf(photo, state.soul?.avatarVariant ?? null)} alt="" />
 		</span>
 	)
 }
