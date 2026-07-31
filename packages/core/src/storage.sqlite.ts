@@ -337,6 +337,83 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return `${namespace}/fs/blobs/sha256/${contentHash}`
 	}
 
+	// Storing content is TWO halves, and which transaction each belongs in is the whole
+	// point of separating them.
+	//
+	// `stageContent` does the EXTERNAL work — an R2 round trip for anything not inlined.
+	// It must never run inside a claim: an await on the network between "this name is
+	// free" and "this name is mine" is a TOCTOU wide enough to lose, and on the Durable
+	// Object `DbAdapter.transaction` is `await fn(adapter)` with no isolation and no
+	// rollback (apps/frieren/worker/db.do.ts), so the loser cannot undo the rows it has
+	// already inserted — it leaks an unreachable inode and reports a raw UNIQUE-constraint
+	// error instead of EEXIST, which `writeFile`'s plain-create retry then never matches.
+	//
+	// Staging bytes commits no REFERENCE to them, so a claim lost afterwards leaves an
+	// unreferenced R2 object and never an inode pointing at nothing: the harmless
+	// direction of #323. It is idempotent too — the key IS the content hash.
+	type StagedContent =
+		| { storageKind: number; mimeType: string; text: string | null; key: null }
+		| { storageKind: number; mimeType: string; text: null; key: string }
+
+	async function stageContent(contentHash: string, data: Uint8Array): Promise<StagedContent> {
+		const textInfo = inferText(data, inlineTextLimit)
+		if (!blobStore || textInfo) {
+			return {
+				storageKind: STORAGE_INLINE,
+				mimeType: textInfo?.mimeType ?? 'application/octet-stream',
+				text: textInfo?.text ?? null,
+				key: null
+			}
+		}
+		const key = blobKey(contentHash)
+		await blobStore.put(key, data, {
+			httpMetadata: { contentType: 'application/octet-stream' },
+			customMetadata: { namespace, contentHash }
+		})
+		return { storageKind: STORAGE_R2, mimeType: 'application/octet-stream', text: null, key }
+	}
+
+	// …and the ROW half: local statements only, so it is safe inside a claim.
+	async function recordStagedContent(
+		tx: DbAdapter,
+		contentHash: string,
+		data: Uint8Array,
+		staged: StagedContent
+	): Promise<void> {
+		// Checked in the SAME transaction that inserts, so two writers of identical content
+		// cannot both decide the row is missing and collide on the primary key.
+		if (await loadContentRow(tx, contentHash)) return
+		if (staged.key === null) {
+			await tx.run(
+				`INSERT INTO fs_contents(
+					content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
+				) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+				[
+					contentHash,
+					STORAGE_INLINE,
+					data.length,
+					data,
+					staged.text,
+					staged.mimeType,
+					staged.text !== null ? 'utf-8' : null,
+					nowNs()
+				]
+			)
+			await insertFtsRow(tx, contentHash, staged.text)
+			return
+		}
+		await tx.run(
+			`INSERT INTO fs_contents(
+				content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
+			) VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, ?)`,
+			[contentHash, STORAGE_R2, data.length, staged.key, staged.mimeType, nowNs()]
+		)
+	}
+
+	// The composed form, for callers that are NOT claiming a name (`putBlob` edits an
+	// inode it already resolved, so it has nothing to lose a race for). Same SQL as
+	// above, one implementation — only the ordering differs, and that is the caller's
+	// decision to make.
 	async function storeContentIfMissing(
 		tx: DbAdapter,
 		contentHash: string,
@@ -349,42 +426,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				mimeType: toStringOrNull(existing.mime_type)
 			}
 		}
-
-		const textInfo = inferText(data, inlineTextLimit)
-		if (!blobStore || textInfo) {
-			const mimeType = textInfo?.mimeType ?? 'application/octet-stream'
-			const textEncoding = textInfo ? 'utf-8' : null
-			await tx.run(
-				`INSERT INTO fs_contents(
-					content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
-				) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
-				[
-					contentHash,
-					STORAGE_INLINE,
-					data.length,
-					data,
-					textInfo?.text ?? null,
-					mimeType,
-					textEncoding,
-					nowNs()
-				]
-			)
-			await insertFtsRow(tx, contentHash, textInfo?.text ?? null)
-			return { storageKind: STORAGE_INLINE, mimeType }
-		}
-
-		const key = blobKey(contentHash)
-		await blobStore.put(key, data, {
-			httpMetadata: { contentType: 'application/octet-stream' },
-			customMetadata: { namespace, contentHash }
-		})
-		await tx.run(
-			`INSERT INTO fs_contents(
-				content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
-			) VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, ?)`,
-			[contentHash, STORAGE_R2, data.length, key, 'application/octet-stream', nowNs()]
-		)
-		return { storageKind: STORAGE_R2, mimeType: 'application/octet-stream' }
+		const staged = await stageContent(contentHash, data)
+		await recordStagedContent(tx, contentHash, data, staged)
+		return { storageKind: staged.storageKind, mimeType: staged.mimeType }
 	}
 
 	async function readFullContent(tx: DbAdapter, ino: Ino): Promise<Uint8Array> {
@@ -768,8 +812,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			const stamp = nowNs()
 			// The new entry's path, resolved inside the txn and reported on the emit.
 			let path: string | undefined
-			// Hashed outside the txn — pure computation, commits nothing.
+			// Hashed AND staged before the transaction opens — both are external work that
+			// commits no reference, and an R2 round trip between the name check and the insert
+			// is a window a competing claim wins (see `stageContent`). What is left inside the
+			// claim is local statements only.
 			const hash = content === undefined ? undefined : await sha256Hex(content)
+			const staged =
+				content !== undefined && hash !== undefined ? await stageContent(hash, content) : undefined
 
 			await db.transaction(async (tx) => {
 				await ensureDirectory(tx, dirIno)
@@ -780,10 +829,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				// references them become visible together or not at all.
 				let size = Number(meta.size)
 				let contentHash = meta.contentHash ?? null
-				if (content !== undefined && hash !== undefined) {
-					await storeContentIfMissing(tx, hash, content)
+				let storageKind = STORAGE_NONE
+				if (content !== undefined && hash !== undefined && staged !== undefined) {
+					await recordStagedContent(tx, hash, content, staged)
 					size = content.length
 					contentHash = hash
+					storageKind = staged.storageKind
 				}
 
 				// Trust `meta` verbatim otherwise (mem.ts/idb.ts already do) — a sync-applied
@@ -802,7 +853,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						meta.ctimeNs ?? stamp,
 						contentHash,
 						meta.symlinkTarget ?? null,
-						STORAGE_NONE
+						storageKind
 					]
 				)
 				await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
