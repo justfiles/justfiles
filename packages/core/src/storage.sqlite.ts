@@ -337,6 +337,92 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return `${namespace}/fs/blobs/sha256/${contentHash}`
 	}
 
+	// Storing content is TWO halves, and which transaction each belongs in is the whole
+	// point of separating them.
+	//
+	// `stageContent` does the EXTERNAL work — an R2 round trip for anything not inlined.
+	// It must never run inside a claim: an await on the network between "this name is
+	// free" and "this name is mine" is a TOCTOU wide enough to lose, and on the Durable
+	// Object `DbAdapter.transaction` is `await fn(adapter)` with no isolation and no
+	// rollback (apps/frieren/worker/db.do.ts), so the loser cannot undo the rows it has
+	// already inserted — it leaks an unreachable inode and reports a raw UNIQUE-constraint
+	// error instead of EEXIST, which `writeFile`'s plain-create retry then never matches.
+	//
+	// Staging bytes commits no REFERENCE to them, which is the direction that must never
+	// be reversed: a row pointing at missing bytes is data loss (#321/#323/#324), while
+	// bytes with no row are only paid-for garbage.
+	//
+	// KNOWN COST (#333): that garbage is currently PERMANENT. `gcUnreferenced` sweeps
+	// `fs_contents` ROWS, so an R2 object with no row is invisible to it — and because a
+	// lost claim is ordinary contention rather than a fault, this leaks on a schedule
+	// rather than on a failure. Not fixed here because the fix is a destructive R2 prefix
+	// sweep, guarded by an in-process staging registry rather than a time-based quarantine
+	// (the issue records why delete-on-failure and quarantines are both unsafe), and that
+	// wants its own review. R2 is external and can never join this transaction, so the
+	// instant itself is unavoidable — only its discoverability can be fixed.
+	type StagedContent =
+		| { storageKind: number; mimeType: string; text: string | null; key: null }
+		| { storageKind: number; mimeType: string; text: null; key: string }
+
+	async function stageContent(contentHash: string, data: Uint8Array): Promise<StagedContent> {
+		const textInfo = inferText(data, inlineTextLimit)
+		if (!blobStore || textInfo) {
+			return {
+				storageKind: STORAGE_INLINE,
+				mimeType: textInfo?.mimeType ?? 'application/octet-stream',
+				text: textInfo?.text ?? null,
+				key: null
+			}
+		}
+		const key = blobKey(contentHash)
+		await blobStore.put(key, data, {
+			httpMetadata: { contentType: 'application/octet-stream' },
+			customMetadata: { namespace, contentHash }
+		})
+		return { storageKind: STORAGE_R2, mimeType: 'application/octet-stream', text: null, key }
+	}
+
+	// …and the ROW half: local statements only, so it is safe inside a claim.
+	async function recordStagedContent(
+		tx: DbAdapter,
+		contentHash: string,
+		data: Uint8Array,
+		staged: StagedContent
+	): Promise<void> {
+		// Checked in the SAME transaction that inserts, so two writers of identical content
+		// cannot both decide the row is missing and collide on the primary key.
+		if (await loadContentRow(tx, contentHash)) return
+		if (staged.key === null) {
+			await tx.run(
+				`INSERT INTO fs_contents(
+					content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
+				) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+				[
+					contentHash,
+					STORAGE_INLINE,
+					data.length,
+					data,
+					staged.text,
+					staged.mimeType,
+					staged.text !== null ? 'utf-8' : null,
+					nowNs()
+				]
+			)
+			await insertFtsRow(tx, contentHash, staged.text)
+			return
+		}
+		await tx.run(
+			`INSERT INTO fs_contents(
+				content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
+			) VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, ?)`,
+			[contentHash, STORAGE_R2, data.length, staged.key, staged.mimeType, nowNs()]
+		)
+	}
+
+	// The composed form, for callers that are NOT claiming a name (`putBlob` edits an
+	// inode it already resolved, so it has nothing to lose a race for). Same SQL as
+	// above, one implementation — only the ordering differs, and that is the caller's
+	// decision to make.
 	async function storeContentIfMissing(
 		tx: DbAdapter,
 		contentHash: string,
@@ -349,42 +435,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				mimeType: toStringOrNull(existing.mime_type)
 			}
 		}
-
-		const textInfo = inferText(data, inlineTextLimit)
-		if (!blobStore || textInfo) {
-			const mimeType = textInfo?.mimeType ?? 'application/octet-stream'
-			const textEncoding = textInfo ? 'utf-8' : null
-			await tx.run(
-				`INSERT INTO fs_contents(
-					content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
-				) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
-				[
-					contentHash,
-					STORAGE_INLINE,
-					data.length,
-					data,
-					textInfo?.text ?? null,
-					mimeType,
-					textEncoding,
-					nowNs()
-				]
-			)
-			await insertFtsRow(tx, contentHash, textInfo?.text ?? null)
-			return { storageKind: STORAGE_INLINE, mimeType }
-		}
-
-		const key = blobKey(contentHash)
-		await blobStore.put(key, data, {
-			httpMetadata: { contentType: 'application/octet-stream' },
-			customMetadata: { namespace, contentHash }
-		})
-		await tx.run(
-			`INSERT INTO fs_contents(
-				content_hash, storage_kind, size, inline_bytes, inline_text, r2_key, mime_type, text_encoding, created_at_ns
-			) VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, ?)`,
-			[contentHash, STORAGE_R2, data.length, key, 'application/octet-stream', nowNs()]
-		)
-		return { storageKind: STORAGE_R2, mimeType: 'application/octet-stream' }
+		const staged = await stageContent(contentHash, data)
+		await recordStagedContent(tx, contentHash, data, staged)
+		return { storageKind: staged.storageKind, mimeType: staged.mimeType }
 	}
 
 	async function readFullContent(tx: DbAdapter, ino: Ino): Promise<Uint8Array> {
@@ -752,14 +805,15 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			})
 		},
 
-		// `content` (see @justfiles/fs's storage.ts) is never passed to this backend: it
-		// has a hash-addressed content store (`fs_contents`), so the VFS publishes the
-		// bytes under their hash first and this claim carries `meta.contentHash`.
+		// `content` is staged HERE, inside the claim's own transaction (#323), not by the
+		// VFS beforehand. Staging it first left the blob committed in `fs_contents` with
+		// zero inode references, and `gcUnreferenced()` reclaiming it there was the sweep
+		// doing its job — the claim would then publish a `content_hash` pointing at nothing.
 		async atomicCreate(
 			dirIno: Ino,
 			name: string,
 			meta: InodeMeta,
-			_content?: Uint8Array,
+			content?: Uint8Array,
 			options?: MutationOptions
 		): Promise<Ino> {
 			await ensureBootstrapped()
@@ -767,17 +821,34 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			const stamp = nowNs()
 			// The new entry's path, resolved inside the txn and reported on the emit.
 			let path: string | undefined
+			// Hashed AND staged before the transaction opens — both are external work that
+			// commits no reference, and an R2 round trip between the name check and the insert
+			// is a window a competing claim wins (see `stageContent`). What is left inside the
+			// claim is local statements only.
+			const hash = content === undefined ? undefined : await sha256Hex(content)
+			const staged =
+				content !== undefined && hash !== undefined ? await stageContent(hash, content) : undefined
 
 			await db.transaction(async (tx) => {
 				await ensureDirectory(tx, dirIno)
 				const existing = await getDirent(tx, dirIno, name)
 				if (existing) throw new Error(`EEXIST: ${name}`)
 
-				// Trust `meta` verbatim (mem.ts/idb.ts already do) — a caller with content
-				// already durable under `content.putByHash` (write-then-publish, see
-				// docs/write-then-publish.html) passes its real size/contentHash here, so the
-				// claim and "the content is there" commit as one fact. A caller with nothing
-				// yet still passes size:0n/no contentHash, same as today.
+				// Same transaction as the dirent below, so the bytes and the name that
+				// references them become visible together or not at all.
+				let size = Number(meta.size)
+				let contentHash = meta.contentHash ?? null
+				let storageKind = STORAGE_NONE
+				if (content !== undefined && hash !== undefined && staged !== undefined) {
+					await recordStagedContent(tx, hash, content, staged)
+					size = content.length
+					contentHash = hash
+					storageKind = staged.storageKind
+				}
+
+				// Trust `meta` verbatim otherwise (mem.ts/idb.ts already do) — a sync-applied
+				// create passes a real size/contentHash for content materialised out of band,
+				// and a caller with nothing yet passes size:0n/no contentHash.
 				await tx.run(
 					`INSERT INTO fs_inodes(
 						ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
@@ -786,12 +857,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						ino,
 						meta.type,
 						meta.mode,
-						Number(meta.size),
+						size,
 						meta.mtimeNs ?? stamp,
 						meta.ctimeNs ?? stamp,
-						meta.contentHash ?? null,
+						contentHash,
 						meta.symlinkTarget ?? null,
-						STORAGE_NONE
+						storageKind
 					]
 				)
 				await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [

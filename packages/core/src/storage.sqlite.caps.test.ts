@@ -218,8 +218,12 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 // (docs/write-then-publish.html in the repo root's docs/). mem.ts and idb.ts
 // already spread `meta` verbatim; this pins the SQLite backend to the same
 // contract now that it does too.
-describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash', () => {
-	it('a fresh write commits content via putByHash and never calls the old putBlob-after-create path', async () => {
+describe('sqlite write-then-publish: atomicCreate stages its content inside the claim', () => {
+	it('a fresh write commits its content inside the claim, never through the VFS or a later putBlob', async () => {
+		// Both counters being zero IS the assertion (#323): a `putByHash` from the VFS would
+		// mean a blob committed to `fs_contents` with no inode referencing it — the window a
+		// `gcUnreferenced()` sweep correctly reclaims — and a `putBlob` would mean the old
+		// create-then-fill order, where the name exists before its content does.
 		const s = makeSqlite()
 		let putByHashCalls = 0
 		let putBlobCalls = 0
@@ -242,8 +246,9 @@ describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash'
 		}
 		const vol = volume(tracked)
 		await vol.writeFile('/id', bytes('hello'))
-		expect(putByHashCalls).toBe(1)
+		expect(putByHashCalls).toBe(0)
 		expect(putBlobCalls).toBe(0)
+		// …and the content is there anyway, with real size/hash on the claim's own row.
 		expect(text(await vol.readFile('/id'))).toBe('hello')
 		const st = await vol.stat('/id')
 		expect(st.contentHash).toMatch(/^[0-9a-f]{64}$/)
@@ -262,7 +267,10 @@ describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash'
 		expect(loserRead).toMatch(/^[ab]$/) // never empty, never garbage
 	})
 
-	it('a lost race leaves an orphan blob that gcUnreferenced reclaims without touching the winner', async () => {
+	it('a lost claim stages nothing at all — there is no orphan blob to reclaim', async () => {
+		// The loser's candidate content used to be committed before the claim was even
+		// attempted, leaving an orphan for `gcUnreferenced()` to mop up. Staging inside the
+		// claim means the loser writes nothing — a stronger property than reclaiming it after.
 		const s = makeSqlite()
 		const vol = volume(s)
 		const results = await Promise.allSettled([
@@ -272,8 +280,140 @@ describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash'
 		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
 		const winner = text(await vol.readFile('/id'))
 		expect(['AAAA', 'BBBB']).toContain(winner)
-		const reclaimed = await s.caps!.content!.gcUnreferenced!()
-		expect(reclaimed).toBeGreaterThanOrEqual(1)
+		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0) // nothing was orphaned
 		expect(text(await vol.readFile('/id'))).toBe(winner)
+	})
+
+	it('a sweep immediately before the claim cannot reclaim the create content', async () => {
+		// #323 on the backend that actually runs a scheduled sweep: frieren's DO alarm calls
+		// gcUnreferenced() daily against this storage, the same one every live write uses.
+		const s = makeSqlite()
+		const content = s.caps?.content
+		const atomicCreate = s.caps?.atomicCreate
+		if (!content || !atomicCreate) throw new Error('sqlite must offer content + atomicCreate')
+		let sweeps = 0
+		const tracked = {
+			...s,
+			caps: {
+				...s.caps,
+				atomicCreate: async (...args: Parameters<typeof atomicCreate>) => {
+					sweeps++
+					await content.gcUnreferenced()
+					return atomicCreate(...args)
+				}
+			}
+		}
+		const vol = volume(tracked)
+		await vol.writeFile('/note.md', bytes('hello'))
+		expect(sweeps).toBeGreaterThan(0)
+		expect(text(await vol.readFile('/note.md'))).toBe('hello')
+	})
+})
+
+// The R2 path, which nothing exercised before: `storeContentIfMissing` only reaches
+// `blobStore.put` for content that is neither text nor absent, and `makeSqlite()` passes
+// no blobStore at all, so every earlier test went inline.
+//
+// It matters because that `put` is a NETWORK round trip, and on the Durable Object
+// `DbAdapter.transaction` is `await fn(adapter)` with no rollback whatsoever
+// (apps/frieren/worker/db.do.ts says so). An external await between "the name is free"
+// and "the name is mine" is therefore a TOCTOU that a competing claim can win, and the
+// loser cannot undo the rows it already inserted.
+function makeSqliteWithR2() {
+	const db = new DatabaseSync(':memory:')
+	db.exec(schema)
+	const db64 = {
+		prepare(sql: string) {
+			const stmt = db.prepare(sql)
+			stmt.setReadBigInts(true)
+			return stmt
+		},
+		exec: (sql: string) => db.exec(sql)
+	}
+	const objects = new Map<string, Uint8Array>()
+	let gate: (() => void) | undefined
+	const blobStore = {
+		put: async (key: string, data: Uint8Array) => {
+			// A round trip long enough for another request to be scheduled — the whole
+			// point. `gate` lets a test decide what happens inside the window.
+			gate?.()
+			await new Promise((resolve) => setTimeout(resolve, 0))
+			objects.set(key, data.slice())
+			return null
+		},
+		get: async (key: string) => {
+			const data = objects.get(key)
+			return data ? { arrayBuffer: async () => data.buffer } : null
+		},
+		delete: async (key: string) => {
+			objects.delete(key)
+		}
+	}
+	// The DO's adapter, faithfully: `transaction` is `await fn(adapter)` with NO
+	// BEGIN/COMMIT, so no isolation and no rollback (apps/frieren/worker/db.do.ts). That
+	// is the whole reason an external await inside a claim is dangerous, and the plain
+	// node:sqlite adapter cannot model it — its real transactions reject a nested one
+	// outright ("cannot start a transaction within a transaction"), hiding exactly the
+	// interleaving production allows.
+	const real = createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0])
+	const doLike = {
+		...real,
+		transaction: async (fn: (tx: typeof real) => Promise<void>) => {
+			await fn(real)
+		}
+	}
+	const s = sqliteStorage(doLike as typeof real, {
+		blobStore: blobStore as unknown as NonNullable<Parameters<typeof sqliteStorage>[1]>['blobStore']
+	})
+	return { storage: s, objects, setGate: (fn: () => void) => (gate = fn) }
+}
+
+// Binary: a NUL byte makes inferText bail, so this routes to R2 rather than inline.
+const binary = (marker: number) => new Uint8Array([marker, 0, 1, 2, 3, marker])
+
+describe('sqlite atomicCreate with R2-routed content', () => {
+	it('round-trips content that routes to R2 rather than inline', async () => {
+		const { storage: s, objects } = makeSqliteWithR2()
+		const vol = volume(s)
+		await vol.writeFile('/blob.bin', binary(7))
+		expect(objects.size).toBe(1) // it really took the R2 path
+		expect([...(await vol.readFile('/blob.bin'))]).toEqual([...binary(7)])
+	})
+
+	it('a claim taken during the R2 upload loses with EEXIST, not a constraint error', async () => {
+		// The window: check the name, await R2, insert. The sniping writer uses TEXT content so
+		// it routes inline and can finish — dirent row and all — entirely inside that await;
+		// binary content would just queue behind the same gate and prove nothing.
+		//
+		// With no rollback available (the DO's `transaction` is `await fn(adapter)`), the loser
+		// must not have inserted anything yet, and must fail as EEXIST — `writeFile`'s
+		// plain-create retry matches on exactly that, so a raw UNIQUE-constraint error would
+		// surface to the caller as a failed write instead of the documented overwrite.
+		const { storage: s, setGate } = makeSqliteWithR2()
+		const vol = volume(s)
+		let sniped: Promise<void> | undefined
+		setGate(() => {
+			if (sniped) return
+			sniped = vol.writeFile('/contested.bin', bytes('sniped inline'))
+		})
+		await expect(vol.writeFile('/contested.bin', binary(1))).resolves.toBeUndefined()
+		await sniped
+		// Whoever landed last, the path holds ONE payload intact — not an empty file, not a
+		// half-written row, and exactly one dirent.
+		const got = await vol.readFile('/contested.bin')
+		expect([[...binary(1)], [...bytes('sniped inline')]]).toContainEqual([...got])
+		expect((await vol.readdir('/')).map((e) => e.name)).toEqual(['contested.bin'])
+	})
+
+	it('an exclusive claim lost during the R2 upload reports EEXIST and stages no row', async () => {
+		const { storage: s } = makeSqliteWithR2()
+		const vol = volume(s)
+		await vol.writeFile('/taken.bin', binary(9), { exclusive: true })
+		await expect(vol.writeFile('/taken.bin', binary(8), { exclusive: true })).rejects.toThrow(
+			/^EEXIST/
+		)
+		expect([...(await vol.readFile('/taken.bin'))]).toEqual([...binary(9)])
+		// The loser's content was never recorded: nothing unreferenced to reclaim.
+		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0)
 	})
 })

@@ -553,10 +553,27 @@ export function idbStorage(
 		// `content` (see storage.ts) is never passed to this backend: it has a
 		// hash-addressed content store, so the VFS publishes the bytes under their hash
 		// first and this claim carries the reference in `meta.contentHash`.
-		async atomicCreate(dirIno, name, meta, _content, options) {
+		async atomicCreate(dirIno, name, meta, content, options) {
 			const db = await getDb()
+			// Hashed and space-made BEFORE the transaction opens: neither can happen inside
+			// one (an IDB txn auto-closes over a non-IDB await), and neither COMMITS
+			// anything, so a claim lost below leaves nothing staged.
+			let stored = meta
+			let blob: [string, Uint8Array] | undefined
+			if (content !== undefined) {
+				const bytes = content.slice()
+				const hash = await sha256Hex(bytes)
+				await evictContent(db, bytes.length, hash)
+				stored = { ...meta, size: BigInt(bytes.length), contentHash: hash }
+				blob = [hash, bytes]
+			}
+			// 'content' and 'meta' join the claim's OWN transaction (#323) — the same set
+			// `putBlob` uses, since `storeContentByHashTx` maintains the total-bytes counter
+			// in 'meta'. Staging the blob in a separate, earlier transaction left it committed
+			// with ZERO inode references, where a `gcUnreferenced()` sweep reclaims it —
+			// correctly — and the claim then publishes a `contentHash` pointing at nothing.
 			const tx = db.transaction(
-				['inodes', 'dirs', 'xattrs', 'pathver', 'journal', 'dirty'],
+				['inodes', 'dirs', 'xattrs', 'pathver', 'journal', 'dirty', 'content', 'meta'],
 				'readwrite'
 			) as FullTx
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
@@ -566,8 +583,9 @@ export function idbStorage(
 			}
 			const ino = crypto.randomUUID()
 			const now = Date.now()
-			await tx.objectStore('inodes').put({ ino, ...meta, lastAccessedAt: now })
-			await tx.objectStore('dirs').put({ dirIno, name, ino, type: meta.type })
+			if (blob) await storeContentByHashTx(tx, blob[0], blob[1])
+			await tx.objectStore('inodes').put({ ino, ...stored, lastAccessedAt: now })
+			await tx.objectStore('dirs').put({ dirIno, name, ino, type: stored.type })
 			// A create that already carries a contentHash (write-then-publish — see
 			// volume.ts's writeFile) is a content-bearing LOCAL write, exactly like an
 			// in-place edit through putBlob — mark it dirty here, in the SAME
@@ -577,7 +595,7 @@ export function idbStorage(
 			// creates never reach this function (they go through
 			// upsertInodeFromSyncTx, which correctly never marks dirty — pulled
 			// content is safely re-fetchable), so this can't misfire on remote writes.
-			if (meta.contentHash) {
+			if (stored.contentHash) {
 				await tx.objectStore('dirty').put({ ino, markedAt: now })
 			}
 			// A file with no content yet is journaled by the following putBlob (once
