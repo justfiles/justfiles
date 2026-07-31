@@ -1,5 +1,14 @@
+import type { Usage } from '@earendil-works/pi-ai'
+import type { DbAdapter } from '@justfiles/core'
 import type { KvStorage } from './integrations/storage.ts'
-import { MICROS_PER_USD, type UsageReport } from './usage.ts'
+import {
+	type AdmitHandle,
+	admit,
+	MICROS_PER_USD,
+	readAiUsage,
+	record,
+	type UsageReport
+} from './usage.ts'
 
 // Free-vs-paid caps. A cap is a ceiling on the billable metrics the meter produces: AI cost
 // per window and deduped logical storage bytes. AI is capped in TWO windows, Claude-Code
@@ -89,6 +98,76 @@ export interface QuotaReport {
 	aiBurst: AiWindowQuota
 	aiWeekly: AiWindowQuota
 	storage: Quota
+}
+
+// The one admit -> run -> record seam, shared by the agent's own metered backend
+// (`Frieren.meteredBackend`) and the `/api/ai` gateway — so a platform-key call is billed
+// exactly the same way regardless of which caller made it. `admitOrThrow` re-reads the tier
+// on every call (a plan change takes effect on the next request, not the next deploy).
+export interface AiMeter {
+	admitOrThrow(): Promise<AdmitHandle>
+	record(handle: AdmitHandle, usage: Usage): Promise<void>
+}
+
+// Thrown ONLY for the intentional case — `admit` found the cap already spent. Callers (the
+// gateway) key off this type, not "admitOrThrow threw", to tell an over-quota user apart from
+// an operational failure (KV/SQLite unavailable): the tier read or the SQLite admit statement
+// can reject for reasons that have nothing to do with the user's quota, and reporting THOSE as
+// "you're over quota, upgrade or wait" is a wrong diagnosis a client would act on incorrectly.
+// `resetsAt` (ms epoch) is the first instant a retry can succeed, so a client can say "back at
+// 14:00" instead of polling a bare "over quota"; absent only when no capped window is the
+// blocker (an idle burst window that has never been spent has no reset instant to report).
+export class QuotaExceededError extends Error {
+	constructor(
+		message: string,
+		readonly resetsAt?: number
+	) {
+		super(message)
+	}
+}
+
+// Which capped window blocked the call, and when it clears. Read on the REJECTION path only —
+// an admitted call pays nothing for this. Both windows can be spent at once, and admit needs
+// BOTH under cap, so the LATEST reset among the blocked windows is the first instant a retry
+// can succeed: reporting the earlier one (a 5h burst reset while the weekly gate holds until
+// Monday) sends a client back to be refused again.
+async function quotaExceeded(db: DbAdapter, tier: TierId): Promise<QuotaExceededError> {
+	const usage = await readAiUsage(db)
+	const limits = limitsFor(tier)
+	const blocked = [
+		limits.aiBurstUsd !== null && usage.burst.costUsd >= limits.aiBurstUsd
+			? usage.burst.resetsAt
+			: null,
+		limits.aiWeeklyUsd !== null && usage.weekly.costUsd >= limits.aiWeeklyUsd
+			? usage.weekly.resetsAt
+			: null
+	].filter((at): at is number => at !== null)
+	return new QuotaExceededError(
+		'AI limit reached — it resets soon, or upgrade your plan.',
+		blocked.length > 0 ? Math.max(...blocked) : undefined
+	)
+}
+
+export function createAiMeter(
+	db: DbAdapter,
+	storage: KvStorage,
+	devTierOverride?: string
+): AiMeter {
+	return {
+		async admitOrThrow() {
+			const tier = await readTier(storage, devTierOverride)
+			const limits = aiLimitsMicros(tier)
+			const handle = await admit(
+				db,
+				Date.now(),
+				limits.burst ?? Number.MAX_SAFE_INTEGER,
+				limits.weekly ?? Number.MAX_SAFE_INTEGER
+			)
+			if (handle === null) throw await quotaExceeded(db, tier)
+			return handle
+		},
+		record: (handle, usage) => record(db, handle, usage)
+	}
 }
 
 export function evaluate(usage: UsageReport, tier: TierId): QuotaReport {

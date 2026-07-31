@@ -54,6 +54,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
+import { createAiGateway } from './ai-gateway.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
 import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
@@ -62,8 +63,8 @@ import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
-import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
-import { type AdmitHandle, admit, ensureUsageSchema, readUsage, record } from './usage.ts'
+import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
+import { ensureUsageSchema, readUsage } from './usage.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -146,6 +147,9 @@ export class Frieren extends DurableObject<Env> {
 	// the Volume it protects (a DO SQLite dump / R2 object / backup carries only envelopes).
 	// Absent locally ⇒ clear, so dev without the secret still runs.
 	private readonly secretCodec?: SecretCodec
+	// The one admit->run->record seam `meteredBackend` and the `/api/ai` gateway both bill
+	// through (quota.ts) — so a platform-key call can never be metered two different ways.
+	private readonly meter: AiMeter
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -157,6 +161,7 @@ export class Frieren extends DurableObject<Env> {
 		this.db = adapter
 		this.fs = fs
 		this.vol = volume(fs)
+		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
 
 		// Proactive server->client sync: any committed write to the server volume
 		// (agent turn, cron alarm, or an applied client push) nudges every connected
@@ -173,6 +178,10 @@ export class Frieren extends DurableObject<Env> {
 			})
 		)
 
+		// The gateway's model + upstream are fixed for this DO's lifetime (env-derived, no
+		// network call), so one `aiRuntime()` call here is enough to wire the route; `reset()`
+		// below calls it again for the agent's own backend — cheap and unchanged.
+		const { model: gatewayModel, apiKey: gatewayApiKey } = this.aiRuntime()
 		this.app = new Hono()
 			.post('/api/agent/soul', async (c) => {
 				const body = await c.req.json<SoulGenerationInput>()
@@ -202,11 +211,31 @@ export class Frieren extends DurableObject<Env> {
 				// cosmetic, so "you are out of AI budget" is not worth saying for it.
 				return face ? c.json(face) : c.json({ skipped: true })
 			})
-			.get('/api/usage', async (c) => {
-				const usage = await readUsage(this.db, ctx.storage.sql.databaseSize)
-				const tier = await readTier(ctx.storage, DEV_TIER_OVERRIDE)
-				return c.json({ ...usage, quota: evaluate(usage, tier) })
-			})
+			// The metered usage + plan caps are NOT an HTTP route: they are served as `host.usage`
+			// on the settings capability (see `settingsHost` below), which is the contract the
+			// Settings app renders on every host. A second, differently-shaped surface for the same
+			// counters is how the two drift.
+			// C1 (#297): the metered inference gateway a signed-in daemon (C2) hits directly,
+			// same model + same meter the in-process agent backend uses below — one source of
+			// truth for what "the platform's AI" means, on the web or on the Mac.
+			.route(
+				'/api/ai',
+				createAiGateway({
+					meter: this.meter,
+					model: gatewayModel,
+					upstream: (body, signal) =>
+						fetch(`${gatewayModel.baseUrl}/chat/completions`, {
+							method: 'POST',
+							headers: {
+								'content-type': 'application/json',
+								authorization: `Bearer ${gatewayApiKey}`
+							},
+							body: JSON.stringify(body),
+							signal
+						}),
+					waitUntil: (p) => this.ctx.waitUntil(p)
+				})
+			)
 			.route(
 				'/fs',
 				createFsApi(fs, {
@@ -260,44 +289,29 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
-	// Admit one platform-key call, returning its HANDLE (needed to record cost even across a
-	// window roll). Gates on BOTH the burst and weekly caps. Unlimited tiers pass a sentinel huge
-	// limit so the same path always admits. Throws when either cap is already spent.
-	private async admitOrThrow(): Promise<AdmitHandle> {
-		const limits = aiLimitsMicros(await readTier(this.ctx.storage, DEV_TIER_OVERRIDE))
-		const handle = await admit(
-			this.db,
-			Date.now(),
-			limits.burst ?? Number.MAX_SAFE_INTEGER,
-			limits.weekly ?? Number.MAX_SAFE_INTEGER
-		)
-		if (handle === null) throw new Error('AI limit reached — it resets soon, or upgrade your plan.')
-		return handle
-	}
-
-	// The platform backend, cap-gated + metered. `admit` checks the caps up front; `record` adds
-	// the ACTUAL cost when the call finishes (a failed call records nothing). Every text call
-	// (agent turns, soul gen, the app `ai` capability) goes through here. Only the platform
-	// backend is wrapped — BYO backends are built plain, so they're never metered or capped.
+	// The platform backend, cap-gated + metered through `this.meter` (quota.ts) — the same seam
+	// the `/api/ai` gateway bills through, so the two can't diverge. Every text call (agent
+	// turns, soul gen, the app `ai` capability) goes through here. Only the platform backend is
+	// wrapped — BYO backends are built plain, so they're never metered or capped.
 	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
 		const backend = modelsBackend(models, model)
 		return {
 			...backend,
 			streamFn: async (m, context, options) => {
-				const handle = await this.admitOrThrow()
+				const handle = await this.meter.admitOrThrow()
 				const stream = await Promise.resolve(backend.streamFn(m, context, options))
 				// The terminal AssistantMessage (done OR error) carries usage — record on it. A stream
 				// that errors without one carries no usage, so there's nothing to record.
 				stream
 					.result()
-					.then((msg) => this.ctx.waitUntil(record(this.db, handle, msg.usage)))
+					.then((msg) => this.ctx.waitUntil(this.meter.record(handle, msg.usage)))
 					.catch(() => undefined)
 				return stream
 			},
 			completeFn: async (m, context, options) => {
-				const handle = await this.admitOrThrow()
+				const handle = await this.meter.admitOrThrow()
 				const message = await backend.completeFn(m, context, options)
-				this.ctx.waitUntil(record(this.db, handle, message.usage))
+				this.ctx.waitUntil(this.meter.record(handle, message.usage))
 				return message
 			}
 		}
@@ -451,6 +465,10 @@ export class Frieren extends DurableObject<Env> {
 	private aiRuntime(): {
 		models: Models
 		model: Model<Api>
+		// The gateway's own upstream key — kept alongside `model` so both routes forward to
+		// whichever backend this call picked (LM Studio locally, OpenRouter in prod), never a
+		// second hard-coded choice that could drift from the agent's own backend.
+		apiKey: string
 		generateImage?: (prompt: string, source?: GeneratedImage) => Promise<GeneratedImage[]>
 	} {
 		if (this.env.FRIEREN_BACKEND === 'local') {
@@ -479,7 +497,7 @@ export class Frieren extends DurableObject<Env> {
 					api: openAICompletionsApi()
 				})
 			)
-			return { models, model: model as Model<Api> }
+			return { models, model: model as Model<Api>, apiKey: 'lm-studio' }
 		}
 
 		const apiKey = this.env.OPENROUTER_API_KEY
@@ -496,12 +514,13 @@ export class Frieren extends DurableObject<Env> {
 		return {
 			models,
 			model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api>,
+			apiKey,
 			generateImage: imageModel
 				? async (prompt, source) => {
 						// Image generation runs on the parallel ImagesModels stack (not the text backend),
 						// so admit/record explicitly. Record the reported usage even on a non-'stop' result
 						// (a failed image can still be billable); a usage-less result records nothing.
-						const handle = await this.admitOrThrow()
+						const handle = await this.meter.admitOrThrow()
 						const res = await images.generateImages(imageModel, {
 							// A `source` makes this an EDIT (the model is image-in/image-out): the avatar
 							// plus "change only the expression" is how a face set is derived.
@@ -512,7 +531,7 @@ export class Frieren extends DurableObject<Env> {
 									]
 								: [{ type: 'text', text: prompt }]
 						})
-						if (res.usage) this.ctx.waitUntil(record(this.db, handle, res.usage))
+						if (res.usage) this.ctx.waitUntil(this.meter.record(handle, res.usage))
 						if (res.stopReason !== 'stop')
 							throw new Error(res.errorMessage ?? 'image generation failed')
 						return res.output.flatMap((b) =>
