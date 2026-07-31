@@ -21,6 +21,24 @@
 // (measured). So exactly one refresh may be in flight, and the rotated token is persisted
 // BEFORE the new access token is handed out — a hand-out we can't record is a hand-out that
 // dies on the next refresh.
+//
+// ONE SEAM, THREE RULES. Every bug found in review lived in the same place: between what the
+// network (or the Keychain) just told us and what this module believes about the user. If you
+// are changing anything below, these are the invariants that keep it honest.
+//
+//   1. Only a POSITIVE answer settles state. "Signed out" is a fact only when Clerk says
+//      `invalid_grant` or the store says the item is not there. A request that failed, a
+//      keychain that would not open — those are "we cannot tell", and must leave the previous
+//      belief (including "unresolved") intact so the next attempt retries.
+//   2. Local state changes go FIRST and synchronously. `signOut` drops the cached token and
+//      publishes before it awaits anything, because every await after that can fail, and none
+//      of those failures may leave `getToken()` still answering for a user who signed out. It
+//      is also STICKY: once asked to forget, this process never re-authenticates from custody
+//      it failed to delete — only an explicit sign-in re-arms it.
+//   3. `generation` fences the rest. Sign-in and sign-out bump it; refresh, sign-in and the
+//      profile fetch capture it on entry. Nothing may write custody or publish a user across a
+//      bump — that is how an operation belonging to an old grant would otherwise resurrect it
+//      (or, on `invalid_grant`, delete the grant that replaced it).
 
 import type { AuthFlow } from '@justfiles/app/capabilities/accounts/providers'
 import type { UserProfile } from '@justfiles/app/capabilities/settings'
@@ -99,6 +117,11 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	// not write custody or publish a user — otherwise a refresh (or a profile fetch) that started
 	// before a sign-out lands after it and silently signs the daemon back in.
 	let generation = 0
+	// Set by sign-out, cleared by sign-in. Custody is the source of truth for "signed in" — until
+	// the user says otherwise: deleting the Keychain item can fail (a locked keychain), and
+	// re-minting tokens from a credential we were asked to forget is the one thing sign-out must
+	// never do. Worst case that leaves a dead item on disk, which the next sign-out clears.
+	let forgotten = false
 	const listeners = new Set<(user: UserProfile | null) => void>()
 
 	const publish = (next: UserProfile | null) => {
@@ -133,6 +156,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function refresh(): Promise<string | null> {
+		if (forgotten) return null
 		const at = generation
 		// A read that FAILS (locked or denied Keychain) is not an absent grant, but for a refresh
 		// both mean the same thing: answer null and change nothing.
@@ -186,6 +210,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		// be allowed to finish into this one — it would overwrite the new Keychain item with the old
 		// grant's rotation, or (on `invalid_grant`) delete the grant we are about to store.
 		const at = ++generation
+		forgotten = false
 		const verifier = randomB64url(32)
 		const challenge = await challengeFor(verifier)
 		const state = randomB64url(16)
@@ -226,15 +251,21 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function signOut(): Promise<void> {
-		// Local first, remote second. Everything below the read is what "signed out" means to this
-		// daemon, and none of it may wait on a network call that can stall: a hung revoke used to
-		// leave the item in the Keychain, `getToken()` still answering, and `/sign-out` never
-		// replying. The fence (`generation`) comes first so nothing in flight can undo any of it.
+		// Rule 2 (see the header): the local half is synchronous and happens before any await, so no
+		// failure below — a locked Keychain, a stalled Clerk — can leave `getToken()` answering for
+		// a user who just signed out. Rule 3: the bump makes anything already in flight harmless.
 		generation++
-		const stored = await store.read().catch(() => undefined)
-		await store.remove()
+		forgotten = true
 		token = undefined
 		publish(null)
+		const stored = await store.read().catch(() => undefined)
+		// Deleting the item can fail (a locked keychain). Hold the failure rather than throwing on
+		// the spot: revoking the grant matters MORE, because a revoked grant makes a leftover item
+		// worthless, while an un-revoked one stays usable by whoever can read it.
+		const undeleted = await store.remove().then(
+			() => undefined,
+			(error: unknown) => (error instanceof Error ? error : new Error(String(error)))
+		)
 		// Best effort, and bounded: a revoke we cannot deliver must not strand the caller. The grant
 		// outlives us for up to a day if this fails — the JWT-access-token trade recorded in #304.
 		if (stored) {
@@ -243,6 +274,11 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				'/oauth/token/revoke',
 				AbortSignal.timeout(REVOKE_TIMEOUT_MS)
 			).catch(() => {})
+		}
+		// Signed out everywhere that matters, but the credential is still on disk: the caller has to
+		// be able to say so, because the next daemon that CAN read the Keychain would find it.
+		if (undeleted) {
+			throw new Error(`Signed out, but the Keychain item remains: ${undeleted.message}`)
 		}
 	}
 

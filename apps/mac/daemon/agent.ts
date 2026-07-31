@@ -151,10 +151,7 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 	// (a Mac with no AI account still needs a way in), so it answers before `getSession()` is
 	// ever touched.
 	if (name === 'sign-in') return { show: 'text', body: await signInReport() }
-	if (name === 'sign-out') {
-		await identity.signOut()
-		return { show: 'text', body: 'Signed out. Everything on this Mac stays where it is.' }
-	}
+	if (name === 'sign-out') return { show: 'text', body: await signOutReport() }
 	try {
 		const session = await getSession()
 		if (name === 'new')
@@ -176,6 +173,19 @@ async function signInReport(): Promise<string> {
 	} catch (err) {
 		console.error('[identity] sign-in failed:', err)
 		return `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`
+	}
+}
+
+// Sign-out clears this daemon's identity before it can fail, then revokes and deletes custody;
+// it throws only when the credential could not be removed from the Keychain, which the user
+// needs to be told rather than have swallowed — and either way the command must still reply.
+async function signOutReport(): Promise<string> {
+	try {
+		await identity.signOut()
+		return 'Signed out. Everything on this Mac stays where it is.'
+	} catch (err) {
+		console.error('[identity] sign-out incomplete:', err)
+		return `${err instanceof Error ? err.message : String(err)}. Unlock your login keychain and run /sign-out again.`
 	}
 }
 

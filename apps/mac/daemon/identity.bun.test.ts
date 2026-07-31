@@ -350,6 +350,36 @@ test('a late invalid_grant from the OLD grant does not delete the new one', asyn
 	expect(await identity.currentUser()).not.toBeNull()
 })
 
+test('a Keychain that will not delete still signs the daemon out locally', async () => {
+	// The delete is the one step that can fail AFTER the user asked to sign out. If it took the
+	// in-memory clear with it, `getToken()` would keep answering for up to a day — signed out in
+	// the UI, authenticated in fact — and `/sign-out` would never reply at all.
+	const store = memoryStore()
+	const identity = identityOver(store)
+	await identity.signIn()
+	expect(await identity.getToken()).toBeTruthy()
+
+	store.remove = async () => {
+		throw new Error('keychain: could not delete (security exit 51)')
+	}
+	// It reports the failure — the credential IS still on disk, and the user has to know — …
+	await expect(identity.signOut()).rejects.toThrow('the Keychain item remains')
+	// …but this daemon is signed out and STAYS signed out: re-minting tokens from a credential
+	// the user asked us to forget is the one thing sign-out must never do, and the revoke means
+	// what is left on disk is worthless anyway.
+	expect(store.value).toBeTruthy() // the item really is still there
+	expect(await identity.getToken()).toBeNull()
+	expect(await identity.currentUser()).toBeNull()
+	expect(server.calls.some((c) => c.path === '/oauth/token/revoke')).toBe(true)
+
+	// A later sign-in re-arms it — "forget this" is not permanent, it is until asked otherwise.
+	store.remove = async () => {
+		store.value = undefined
+	}
+	expect((await identity.signIn()).id).toBe(USER)
+	expect(await identity.getToken()).toBeTruthy()
+})
+
 test('sign-out clears custody BEFORE it waits on Clerk', async () => {
 	// A revoke that stalls (rather than refusing) used to leave the item in the Keychain and
 	// `getToken()` still answering, with `/sign-out` never replying — signed out in the UI,
