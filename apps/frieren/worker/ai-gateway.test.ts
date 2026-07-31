@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import type { Api, Model } from '@earendil-works/pi-ai'
+import type { Api, Model, Usage } from '@earendil-works/pi-ai'
 import type { DbAdapter, SqlValue } from '@justfiles/core'
 import { describe, expect, test, vi } from 'vitest'
 import { createAiGateway, meterSseStream } from './ai-gateway.ts'
@@ -556,6 +556,47 @@ describe('createAiGateway', () => {
 		expect((meter.records[0].usage as { cost: { total: number } }).cost.total).toBeGreaterThan(0)
 	})
 
+	test('an aborted turn bills the PROMPT it already paid for, not just the bytes served', async () => {
+		// The leak this closes: submit a huge context, read one chunk, disconnect. The upstream has
+		// processed (and billed us for) the whole prompt either way, so an output-only estimate
+		// charges pennies for dollars. Two identical aborts, one with a big prompt.
+		const abortAfterFirstChunk = async (messages: unknown) => {
+			const source = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(enc('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'))
+				}
+			})
+			const meter = fakeMeter()
+			const deps = {
+				meter,
+				model: testModel(),
+				upstream: vi.fn(async () => new Response(source)),
+				waitUntil: () => {}
+			}
+			const waits = pending(deps)
+			const app = createAiGateway(deps)
+			const res = await app.request('/v1/chat/completions', {
+				method: 'POST',
+				body: JSON.stringify({ model: 'test/model', stream: true, messages })
+			})
+			const reader = res.body?.getReader()
+			if (!reader) throw new Error('expected a streamed body')
+			await reader.read()
+			await reader.cancel()
+			await Promise.all(waits)
+			expect(meter.records).toHaveLength(1)
+			return meter.records[0].usage as Usage
+		}
+		// ~400k chars ≈ 100k tokens at the test model's $1/M input rate ≈ $0.10.
+		const big = await abortAfterFirstChunk([{ role: 'user', content: 'x'.repeat(400_000) }])
+		const small = await abortAfterFirstChunk([{ role: 'user', content: 'hi' }])
+		expect(big.input).toBeGreaterThan(90_000)
+		expect(big.cost.total).toBeGreaterThan(0.09)
+		// Identical bytes served, so an output-only estimate would have billed these the same.
+		expect(big.cost.total).toBeGreaterThan(small.cost.total * 100)
+		expect(small.cost.total).toBeGreaterThan(0)
+	})
+
 	test('upstream 5xx surfaces as 502, records nothing, and leaves the real store unchanged', async () => {
 		const { meter, db } = await realMeter()
 		const upstream = vi.fn(async () => new Response('boom', { status: 500 }))
@@ -576,7 +617,12 @@ describe('createAiGateway', () => {
 			async () =>
 				new Response(JSON.stringify({ error: { message: 'messages is required' } }), {
 					status: 400,
-					headers: { 'content-type': 'application/json' }
+					headers: {
+						'content-type': 'application/json',
+						// The upstream's own headers carry provider/account and rate-limit detail.
+						'x-ratelimit-remaining': '3',
+						'x-provider-account': 'acct_secret'
+					}
 				})
 		)
 		const app = createAiGateway({ meter, model: testModel(), upstream, waitUntil: () => {} })
@@ -586,10 +632,70 @@ describe('createAiGateway', () => {
 		})
 		expect(res.status).toBe(400)
 		expect(await res.json()).toEqual({ error: { message: 'messages is required' } })
+		expect(res.headers.get('content-type')).toContain('application/json')
+		// Verbatim body, but not verbatim headers — scrubbing one while copying the other is
+		// scrubbing nothing.
+		expect(res.headers.get('x-provider-account')).toBeNull()
+		expect(res.headers.get('x-ratelimit-remaining')).toBeNull()
 		expect(meter.records).toHaveLength(0)
 	})
 
-	test("upstream 401/403 (OUR key, not the caller's) is a 502, never relayed to the caller", async () => {
+	test('a moderation 403 is the CALLER’s to fix — relayed with its reasons, not hidden as a 502', async () => {
+		// OpenRouter's documented 403: the prompt was flagged. Flattening it to 502 tells a client
+		// to retry a request that will stay blocked, and hides why.
+		const moderation = {
+			error: {
+				message: 'Input flagged by moderation',
+				code: 403,
+				metadata: { reasons: ['violence'], flagged_input: 'the caller’s own text' }
+			}
+		}
+		const meter = fakeMeter()
+		const app = createAiGateway({
+			meter,
+			model: testModel(),
+			upstream: vi.fn(
+				async () =>
+					new Response(JSON.stringify(moderation), {
+						status: 403,
+						headers: { 'content-type': 'application/json' }
+					})
+			),
+			waitUntil: () => {}
+		})
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(403)
+		expect(await res.json()).toEqual(moderation)
+		expect(meter.records).toHaveLength(0)
+	})
+
+	test('a 403 that is NOT moderation-shaped stays opaque — it is about OUR account', async () => {
+		const meter = fakeMeter()
+		const app = createAiGateway({
+			meter,
+			model: testModel(),
+			upstream: vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: { message: 'account acct_secret suspended' } }), {
+						status: 403,
+						headers: { 'content-type': 'application/json' }
+					})
+			),
+			waitUntil: () => {}
+		})
+		const res = await app.request('/v1/chat/completions', {
+			method: 'POST',
+			body: JSON.stringify({ model: 'test/model', messages: [] })
+		})
+		expect(res.status).toBe(502)
+		expect(await res.text()).not.toContain('acct_secret')
+		expect(meter.records).toHaveLength(0)
+	})
+
+	test("upstream 401 (OUR key, not the caller's) is a 502, never relayed to the caller", async () => {
 		const meter = fakeMeter()
 		const upstream = vi.fn(
 			async () =>

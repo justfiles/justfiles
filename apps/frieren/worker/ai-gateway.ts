@@ -29,13 +29,31 @@ import { type Api, calculateCost, type Model, type Usage } from '@earendil-works
 import { Hono } from 'hono'
 import { type AiMeter, QuotaExceededError } from './quota.ts'
 
-// The upstream statuses that mean "the caller's request itself is wrong" — bad params, an
-// unsupported option, a moderation refusal. Everything else non-2xx (401/402/403 — OUR key is
-// invalid or the platform's OpenRouter account is out of credit, not something the caller ever
-// supplied — 404, 429, 5xx) is a PLATFORM problem: relaying it would tell an authenticated
-// caller their auth/request failed when the outage is ours, and could leak provider-account
-// details from the response body. Only these two get passed through verbatim.
+// The upstream statuses that mean "the caller's request itself is wrong" — a bad param or an
+// unsupported option. Everything else non-2xx (401/402 — OUR key is invalid or the platform's
+// OpenRouter account is out of credit, not something the caller ever supplied — 404, 429, 5xx)
+// is a PLATFORM problem: relaying it would tell an authenticated caller their auth/request
+// failed when the outage is ours, and could leak provider-account details from the body.
 const CALLER_ACTIONABLE_STATUS = new Set([400, 422])
+
+// 403 is the one status that is BOTH: OpenRouter documents it as "your chosen model requires
+// moderation and your input was flagged" — the caller's own prompt, and their fix (rephrase),
+// so the refusal and its `reasons` are worth relaying verbatim rather than flattened into a 502
+// that reads as "retry later" for a request that will stay blocked. But 403 is equally what a
+// policy/edge layer in front of the upstream would answer about OUR account, which the caller
+// must never see. So a 403 is relayed only when the body actually carries the moderation shape.
+function isCallerActionable(status: number, body: string): boolean {
+	if (CALLER_ACTIONABLE_STATUS.has(status)) return true
+	if (status !== 403) return false
+	try {
+		const parsed = JSON.parse(body) as unknown
+		const error = isRecord(parsed) ? parsed.error : undefined
+		const metadata = isRecord(error) ? error.metadata : undefined
+		return isRecord(metadata) && Array.isArray(metadata.reasons)
+	} catch {
+		return false
+	}
+}
 
 // OpenRouter's own alternate-routing and paid add-on fields, dropped from every forwarded
 // body. `models`/`fallbacks` pick a DIFFERENT model when the primary errors or moderates —
@@ -136,18 +154,22 @@ function usageFromUpstream(model: Model<Api>, raw: unknown): Usage | null {
 	return usage
 }
 
-// A rough abort-time estimate — 4 bytes/token, priced through the model's own per-token
-// output rate (`calculateCost` mutates and returns `usage.cost`). Deliberately crude: the
-// alternative is recording nothing for a partially-served turn, which is the actual revenue
-// leak this issue exists to close.
-function estimateUsage(model: Model<Api>, outputBytes: number): Usage {
-	const outputTokens = Math.ceil(outputBytes / 4)
+// A rough abort-time estimate, priced through the model's own rates (`calculateCost` mutates
+// and returns `usage.cost`). 4 chars/token on BOTH sides: the prompt we sent is the dominant
+// cost of an aborted turn — a caller that submits a huge context, reads one chunk and
+// disconnects has already had its input processed and billed to the platform, so estimating
+// output alone would bill pennies for dollars. Deliberately crude either way; the alternative
+// is recording nothing for a partially-served turn, which is the leak this issue exists to
+// close. Priced from the forwarded body's own size, so it can't be understated by the caller.
+function estimateUsage(model: Model<Api>, promptChars: number, outputBytes: number): Usage {
+	const input = Math.ceil(promptChars / 4)
+	const output = Math.ceil(outputBytes / 4)
 	const usage: Usage = {
-		input: 0,
-		output: outputTokens,
+		input,
+		output,
 		cacheRead: 0,
 		cacheWrite: 0,
-		totalTokens: outputTokens,
+		totalTokens: input + output,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
 	}
 	calculateCost(model, usage)
@@ -297,6 +319,11 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 			}
 
 			let upstreamRes: Response
+			// The size of what we actually SENT, for the abort estimate below: the prompt is billed
+			// to the platform the moment the upstream processes it, whether or not the caller stays
+			// to read the answer. Measured here, off the forwarded body, so it reflects the request
+			// as sent (tools and system prompt included) rather than anything the caller claims.
+			const promptChars = JSON.stringify(forwardBody).length
 			try {
 				upstreamRes = await deps.upstream(forwardBody, c.req.raw.signal)
 			} catch {
@@ -308,14 +335,17 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 			if (!upstreamRes.ok) {
 				// Admit checks caps up front but adds no cost of its own (only `record` does), so a
 				// failed call leaves the counters exactly where admit found them — nothing to refund.
-				if (CALLER_ACTIONABLE_STATUS.has(upstreamRes.status)) {
-					// A bad param or an unsupported option is the CALLER's to fix — pass it through
-					// verbatim rather than flattening it into our own generic 502, which reads as "try
-					// again later" for a request that will never succeed unmodified.
-					return new Response(upstreamRes.body, {
+				// Error bodies are small, so buffering one to classify it costs nothing.
+				const text = await upstreamRes.text().catch(() => '')
+				if (isCallerActionable(upstreamRes.status, text)) {
+					// Relayed verbatim, but under OUR headers: the upstream's carry provider/account and
+					// rate-limit detail the caller never asked about, and scrubbing the body while copying
+					// every header would be scrubbing nothing.
+					return new Response(text, {
 						status: upstreamRes.status,
-						statusText: upstreamRes.statusText,
-						headers: upstreamRes.headers
+						headers: {
+							'content-type': upstreamRes.headers.get('content-type') ?? 'application/json'
+						}
 					})
 				}
 				return c.json(
@@ -358,10 +388,11 @@ export function createAiGateway(deps: AiGatewayDeps): Hono {
 				},
 				(bytesSeen) => {
 					// No usage frame arrived — an abort, or an upstream that ignored the forced flag.
-					// Bill the rough estimate rather than nothing; a zero-byte stream (aborted before
-					// any content) has nothing to estimate from either.
+					// Bill the rough estimate rather than nothing. A zero-byte stream (nothing was ever
+					// served) is left alone: charging a full prompt for a turn that produced no output
+					// invites the opposite complaint, and there is no incentive to abort for nothing.
 					if (bytesSeen === 0) return
-					deps.waitUntil(deps.meter.record(handle, estimateUsage(model, bytesSeen)))
+					deps.waitUntil(deps.meter.record(handle, estimateUsage(model, promptChars, bytesSeen)))
 				}
 			)
 			return new Response(stream, {
