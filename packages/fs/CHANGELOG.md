@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.4.0...fs-v0.5.0) (2026-07-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **fs:** `Volume.rename` no longer takes `{ exclusive }`, and `caps.atomicMove` has no `noReplace`. Callers that must not overwrite a destination check it themselves and order their own claims — see `claimPath` in packages/app-notes.
+
+### Features
+
+* **agent:** stable per-host deviceId (shard naming prerequisite) ([#326](https://github.com/xiaoxinghu/justfiles/issues/326)) ([2589c14](https://github.com/xiaoxinghu/justfiles/commit/2589c14b5cabfbf4102b4af1be0be12cb13d7490))
+* **fs,app:** a /private root — credentials never replicate ([#307](https://github.com/xiaoxinghu/justfiles/issues/307)) ([65a42f5](https://github.com/xiaoxinghu/justfiles/commit/65a42f50db54e128fe1c781a76429d380c7056ac)), closes [#291](https://github.com/xiaoxinghu/justfiles/issues/291)
+* **fs:** atomicCreate carries its content — a create publishes bytes and name as one fact ([#325](https://github.com/xiaoxinghu/justfiles/issues/325)) ([44d77be](https://github.com/xiaoxinghu/justfiles/commit/44d77be9e3189d2adc60307c1ac4d518491837a4))
+
+
+### Bug Fixes
+
+* **fs:** a plain writeFile is create-or-overwrite on every backend, and every backend's claim is atomic ([#327](https://github.com/xiaoxinghu/justfiles/issues/327)) ([0314818](https://github.com/xiaoxinghu/justfiles/commit/031481859f1ed8cc80d963efbcb9aca00fd7608d))
+* **fs:** a pulled edit is an edit, not a change of shape ([a47a956](https://github.com/xiaoxinghu/justfiles/commit/a47a956f9c6b0da4f3083dbb3be048078afcb3c5))
+* **fs:** a recursive watch wakes for its own subtree, not the whole volume ([e68c433](https://github.com/xiaoxinghu/justfiles/commit/e68c433cf5fe6a8a4bec889d4982f01222965446))
+* **fs:** a subtree moved out from under a watch is a change to that subtree ([9826266](https://github.com/xiaoxinghu/justfiles/commit/98262668dfa053a2ca257651521e7a9ed4bdcfc1))
+* **fs:** compare a watch root by where it lands, and land trailing .. correctly ([80c71ac](https://github.com/xiaoxinghu/justfiles/commit/80c71acdb648e7887008470bf394789e790005a1))
+* **fs:** compare watch paths the way every other operation resolves them ([e8854e8](https://github.com/xiaoxinghu/justfiles/commit/e8854e88a517862dcac8cec565a6fedba98a8bce))
+* **fs:** mtime is when the bytes changed, not when the file appeared ([5ce1477](https://github.com/xiaoxinghu/justfiles/commit/5ce1477766dd4ad881699745631405e0d6c9cbf9))
+* **fs:** read a symlink's target back on nativeStorage ([#329](https://github.com/xiaoxinghu/justfiles/issues/329)) ([#344](https://github.com/xiaoxinghu/justfiles/issues/344)) ([3e1e7c4](https://github.com/xiaoxinghu/justfiles/commit/3e1e7c471b6dbb3e9a5b8248072c3bfbb8492735))
+* **fs:** the backend stages a create's content inside its own claim, not the VFS beforehand ([#332](https://github.com/xiaoxinghu/justfiles/issues/332)) ([f3a8eab](https://github.com/xiaoxinghu/justfiles/commit/f3a8eabc8c17ad2f26215eadd041271558d93029))
+* **fs:** write-then-publish — close the create-then-fill visibility gap ([#321](https://github.com/xiaoxinghu/justfiles/issues/321)) ([#322](https://github.com/xiaoxinghu/justfiles/issues/322)) ([c268df5](https://github.com/xiaoxinghu/justfiles/commit/c268df58149a23a2c13dd8ca6d4b00c8faf327ae))
+
+
+### Code Refactoring
+
+* **fs:** rename has no exclusive form — POSIX shape, and backends that don't corrupt behind it ([#336](https://github.com/xiaoxinghu/justfiles/issues/336)) ([8bf59c9](https://github.com/xiaoxinghu/justfiles/commit/8bf59c963ecb2ebe4d8ea0403fc8ae8694b6b889))
+
 ## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.3.0...fs-v0.4.0) (2026-07-24)
 
 
