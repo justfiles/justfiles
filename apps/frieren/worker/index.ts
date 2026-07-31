@@ -1,8 +1,9 @@
-import { verifyToken } from '@clerk/backend'
+import { createClerkClient } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
 import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
 import { runIndexer, serveCommunityCatalog } from './appstore/feed.ts'
+import { ACCEPTED_TOKENS, actingUserId } from './auth.ts'
 
 export { Frieren } from './frieren.ts'
 
@@ -21,7 +22,7 @@ const app = new Hono<WorkerEnv>()
 
 // Browsers can't set Authorization on a WS handshake, and Clerk cookie auth
 // needs a handshake redirect a WS upgrade can't follow — so WS auth rides the
-// handshake. The capability socket (`_caps`) sends the Clerk token as a
+// handshake. The capability socket (`_caps`) sends the token as a
 // `bearer.<token>` WebSocket subprotocol, keeping it out of the URL where query
 // strings leak into proxy/access logs and browser history; the agent socket
 // (`/ws`) still uses `?token=`. Read whichever is present, before
@@ -30,13 +31,24 @@ const app = new Hono<WorkerEnv>()
 const wsToken = (req: Request): string | null =>
 	bearerFromProtocolHeader(req.headers.get('Sec-WebSocket-Protocol')) ??
 	new URL(req.url).searchParams.get('token')
+// Authenticated through `authenticateRequest` over a synthesised Authorization header rather
+// than `verifyToken`, which accepts session tokens ONLY (it rejects the daemon's OAuth access
+// token outright: `Invalid JWT type "at+jwt"`). One path, both credential kinds.
 const tokenWs = async (c: Ctx) => {
 	const token = wsToken(c.req.raw)
 	if (!token) return new Response('Unauthorized', { status: 401 })
 	try {
-		const { sub } = await verifyToken(token, { secretKey: requireClerkSecret(c.env) })
-		if (!sub) return new Response('Unauthorized', { status: 401 })
-		return forwardToFrieren(c, sub)
+		const clerk = createClerkClient({
+			secretKey: requireClerkSecret(c.env),
+			publishableKey: c.env.CLERK_PUBLISHABLE_KEY
+		})
+		const state = await clerk.authenticateRequest(
+			new Request(c.req.url, { headers: { authorization: `Bearer ${token}` } }),
+			{ acceptsToken: ACCEPTED_TOKENS }
+		)
+		const userId = actingUserId(state.toAuth())
+		if (!userId) return new Response('Unauthorized', { status: 401 })
+		return forwardToFrieren(c, userId)
 	} catch {
 		return new Response('Unauthorized', { status: 401 })
 	}
@@ -52,16 +64,16 @@ app.get('/store/catalog.json', (c) => serveCommunityCatalog(c.env))
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())
-app.all('/fs/*', (c) => {
-	const userId = getAuth(c)?.userId
+// `clerkMiddleware` already authenticates with `acceptsToken: 'any'`; naming the two kinds we
+// accept here is what lets the daemon's OAuth token through (a session token stays the
+// browser's path) while everything else — an API key, an M2M token — is still refused.
+const routeToOwner = (c: Ctx) => {
+	const userId = actingUserId(getAuth(c, { acceptsToken: ACCEPTED_TOKENS }))
 	if (!userId) return new Response('Unauthorized', { status: 401 })
 	return forwardToFrieren(c, userId)
-})
-app.all('/api/*', (c) => {
-	const userId = getAuth(c)?.userId
-	if (!userId) return new Response('Unauthorized', { status: 401 })
-	return forwardToFrieren(c, userId)
-})
+}
+app.all('/fs/*', routeToOwner)
+app.all('/api/*', routeToOwner)
 
 // The worker is both a request handler and the app-store indexer: `scheduled`
 // runs on the cron trigger (wrangler.jsonc), rebuilding the community catalog in

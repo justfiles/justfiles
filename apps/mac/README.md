@@ -95,3 +95,34 @@ open -n /tmp/Kodama.app    # boots; serves /vendor + /design from Contents/Resou
 After running a prod build, `pnpm dev` returns you to the dev launcher; the projected
 `~/Applications/Kodama Apps/*.app` booters self-heal on the next daemon boot — they re-stamp
 to whichever runtime is now serving.
+
+## Signing in to Kodama
+
+`/sign-in` in the launcher opens the browser on **Clerk's** own sign-in page and catches the
+redirect on 127.0.0.1: the daemon is an OAuth 2.0 public client of our Clerk instance (PKCE,
+no client secret — see `daemon/identity.ts` and #304). The refresh token lives in the
+Keychain; every request to our API carries a short-lived access token minted from it.
+
+```sh
+security find-generic-password -s app.justfiles.kodama -a kodama-oauth   # the stored grant
+```
+
+`/sign-out` revokes the grant and deletes that item. Local data is never touched by either.
+
+The dev daemon talks to the **development** Clerk instance and a shipped one to production
+(`daemon/identity.ts`; `KODAMA_CLERK_FAPI` / `KODAMA_CLERK_CLIENT_ID` override both). The two
+OAuth applications already exist; this is how they were created, and how to recreate one:
+
+```sh
+clerk api -X POST /oauth_applications --instance dev \
+  -d '{"name":"Kodama for Mac","public":true,"scopes":"profile email",
+       "redirect_uris":["http://127.0.0.1:1455/auth/callback"]}'
+clerk api -X PATCH /oauth_applications/<id> --instance dev \
+  -d '{"pkce_required":true,"consent_screen_enabled":false}'
+```
+
+`offline_access` is added by Clerk. The registered **port is ignored** for `127.0.0.1` (RFC
+8252 §7.3), which is why the daemon can keep binding an OS-assigned port — but the **host and
+path must match exactly**, so `/auth/callback` is fixed and `localhost` would be refused. The
+client id is public (that is what PKCE is for) and is pinned worker-side in
+`apps/frieren/worker/auth.ts`, so a token from any other OAuth app on the instance is refused.

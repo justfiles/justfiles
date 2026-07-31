@@ -10,6 +10,7 @@ import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
+import { identity } from './identity'
 import { getKernel } from './kernel'
 import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
@@ -143,6 +144,14 @@ export function abortAgent(): void {
 // session as normal conversation, surfacing live via the broadcast.
 export async function dispatchCommand(name: string): Promise<CommandResult> {
 	if (name === 'debug') return { show: 'text', body: await debugReport() }
+	// Identity is a HOST action, not an agent one — and it has to work when the agent cannot
+	// (a Mac with no AI account still needs a way in), so it answers before `getSession()` is
+	// ever touched.
+	if (name === 'sign-in') return { show: 'text', body: await signInReport() }
+	if (name === 'sign-out') {
+		await identity.signOut()
+		return { show: 'text', body: 'Signed out. Everything on this Mac stays where it is.' }
+	}
 	try {
 		const session = await getSession()
 		if (name === 'new')
@@ -153,6 +162,18 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 		if (name === 'new') broadcast({ type: 'history', entries: [] })
 	}
 	return { show: 'chat' }
+}
+
+// The browser opens on Clerk's own sign-in page; this resolves once the loopback redirect
+// lands (or the flow times out), so the panel it fills in reports the outcome.
+async function signInReport(): Promise<string> {
+	try {
+		const user = await identity.signIn()
+		return `Signed in as ${user.name ?? user.id}.`
+	} catch (err) {
+		console.error('[identity] sign-in failed:', err)
+		return `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`
+	}
 }
 
 // A snapshot of what the agent runs with: session length + the resolved system prompt

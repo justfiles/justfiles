@@ -1,7 +1,8 @@
-// Custody for the daemon's creds-at-rest key (A2's `secretCodec`): a macOS Keychain
-// generic password, created on first run and read through the `security` CLI — no
-// native binding, so it survives a `bun build --compile` binary, and the item stays
-// scoped to the user's login keychain. Never written to the Volume: deleting the
+// Custody for the daemon's secrets: macOS Keychain generic passwords, read and written
+// through the `security` CLI — no native binding, so this survives a `bun build --compile`
+// binary, and the items stay scoped to the user's login keychain. Two items today: A2's
+// creds-at-rest key (`getOrCreateKey`, minted on first use) and E1's Kodama OAuth refresh
+// token (`keychainStore`, written by the sign-in flow). Never written to the Volume: deleting the
 // volume must not delete this, and deleting this must not resurrect plaintext (A2's
 // `clearSecretCodec` refuses a sealed record with no key rather than reading it as-is).
 //
@@ -48,11 +49,11 @@ async function run(
 	return { code, out }
 }
 
-async function readItem(
+async function readSecret(
 	spawn: Spawn,
 	service: string,
 	account: string
-): Promise<Uint8Array | undefined> {
+): Promise<string | undefined> {
 	const found = await run(spawn, [
 		'security',
 		'find-generic-password',
@@ -62,8 +63,17 @@ async function readItem(
 		account,
 		'-w'
 	])
-	if (found.code !== 0) return undefined
-	const bytes = Buffer.from(found.out.trim(), 'base64')
+	return found.code === 0 ? found.out.trim() : undefined
+}
+
+async function readItem(
+	spawn: Spawn,
+	service: string,
+	account: string
+): Promise<Uint8Array | undefined> {
+	const raw = await readSecret(spawn, service, account)
+	if (raw === undefined) return undefined
+	const bytes = Buffer.from(raw, 'base64')
 	// Fail closed on a malformed item (empty/truncated/garbage) rather than silently deriving
 	// from it: `Buffer.from(_, 'base64')` is permissive, and a wrong-length "key" would seal
 	// new records under a weak root while making every existing envelope unreadable — both
@@ -117,6 +127,54 @@ export async function getOrCreateKey(
 	throw new Error(
 		`keychain: could not create item ${service}/${account} (security exit ${created.code})`
 	)
+}
+
+// One named Keychain item, read/written as a string — E1's custody of the Kodama OAuth
+// refresh token. `write` READS THE ITEM BACK and fails if it doesn't match: the caller
+// rotates a refresh token and must not proceed on a write that silently stored nothing
+// (`security`'s prompt form exits 0 having stored an empty password if its stdin is partial
+// — see `getOrCreateKey`), because by then the rotated-away token is already dead.
+export interface SecretStore {
+	read(): Promise<string | undefined>
+	write(value: string): Promise<void>
+	remove(): Promise<void>
+}
+
+export function keychainStore(
+	account: string,
+	service = SERVICE,
+	spawn: Spawn = realSpawn
+): SecretStore {
+	return {
+		read: () => readSecret(spawn, service, account),
+		write: async (value) => {
+			// `-U` (update in place) — unlike the key, which must never overwrite a concurrent
+			// winner, a rotated token is always the newest truth. `-w` last with no value is the
+			// argv-safe prompt form (stdin twice: password, then confirmation).
+			const { code } = await run(
+				spawn,
+				['security', 'add-generic-password', '-U', '-s', service, '-a', account, '-w'],
+				`${value}\n${value}\n`
+			)
+			if ((await readSecret(spawn, service, account)) !== value) {
+				throw new Error(`keychain: could not store ${service}/${account} (security exit ${code})`)
+			}
+		},
+		remove: async () => {
+			const { code } = await run(spawn, [
+				'security',
+				'delete-generic-password',
+				'-s',
+				service,
+				'-a',
+				account
+			])
+			// 44 = no such item: already gone is the outcome the caller asked for.
+			if (code !== 0 && code !== 44) {
+				throw new Error(`keychain: could not delete ${service}/${account} (security exit ${code})`)
+			}
+		}
+	}
 }
 
 // A2's codec over a key fetched on FIRST USE and cached for the process: building this reads
