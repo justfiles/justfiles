@@ -527,13 +527,23 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 }
 
 // The claim is `writeFile({ exclusive: true })` — atomic create, no replace, on every backend
-// (#325/#327), which also settles two devices rolling over at the same moment: one wins the
-// name and the other skips.
+// (#325/#327). Scope it honestly: that is a real lock among callers sharing ONE backend, which
+// is exactly the case this fixes — the same host re-initialising (an evicted DO, a rebuilt
+// backend, a reconnect that only wanted history) re-derives the same retired session and would
+// otherwise archive it again on every single init.
+//
+// It does NOT reach across REPLICAS. Two agent-running hosts each hold their own Volume, so
+// both creates succeed and sync later collapses the marker by LWW — after both did the work.
+// That is deliberate: the duplicate costs an LLM call and a journal block, and buying protection
+// with a distributed protocol would cost permanent complexity. It is arbitrated by
+// CONFIGURATION instead — one host per account owns background work — which needs the journal
+// and memory to be per-device shards first (#302/#303), or a double-run is whole-file LWW and a
+// summary is lost rather than duplicated. See `session.test.ts` for the pinned boundary.
 //
 // Claimed BEFORE the work, deliberately. A crash in between loses a best-effort summary;
-// claiming afterwards would duplicate it on every re-init, which is the bug this fixes. The
-// transcript itself is never at risk either way — it stays on disk and is searchable, which is
-// where the agent is told to look for old conversations.
+// claiming afterwards would duplicate it on every re-init, which is the bug. The transcript
+// itself is never at risk either way — it stays on disk and is searchable, which is where the
+// agent is told to look for old conversations.
 async function claimArchive(volume: Volume, agentId: string, sessionId: string): Promise<boolean> {
 	const path = paths.sessionArchive(agentId, sessionId)
 	await volume.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true })

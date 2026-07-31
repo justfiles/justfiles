@@ -688,9 +688,9 @@ describe('retiring a session on rollover', () => {
 		expect(completions).toBe(1)
 	})
 
-	// The claim is an atomic no-replace create, so it settles the concurrent case too rather than
-	// merely narrowing it — two hosts waking together cannot both archive.
-	test('two hosts waking together retire it once between them', async () => {
+	// Two builds against ONE backend — an evicted DO rebuilding while a request is already in
+	// flight. The claim is a real atomic create here, so exactly one archives.
+	test('two builds racing over one backend retire it once between them', async () => {
 		const vol = volume(memStorage())
 		await seedIdleSession(vol)
 		let completions = 0
@@ -709,5 +709,47 @@ describe('retiring a session on rollover', () => {
 		expect(new TextDecoder().decode(await vol.readFile(DAILY)).match(/a note about/g)).toHaveLength(
 			1
 		)
+	})
+
+	// And the boundary, pinned deliberately rather than left implied: the claim does NOT
+	// arbitrate across REPLICAS. Two agent-running hosts each hold their own Volume, so both
+	// exclusive creates succeed and both archive; sync later collapses the marker by LWW, long
+	// after the work was done twice.
+	//
+	// This is a decision, not an oversight. Making it a real distributed claim needs a shared
+	// authority or a leader election, and the cost of the duplicate is an extra LLM call plus a
+	// duplicated journal block — so it is arbitrated by CONFIGURATION (one host per account owns
+	// background work) instead of by a protocol. Two conditions make that safe, and both are
+	// tracked: the daily journal and durable memory must be per-device shards first (#302/#303),
+	// or a double-run is whole-file LWW and one summary is LOST rather than duplicated; and the
+	// background-work owner has to exist before two agents share a Volume (E3, #306).
+	//
+	// If someone later adds real cross-replica coordination, this test fails and should be
+	// rewritten — that is the point of asserting the current boundary.
+	test('the claim does not reach across replicas: each host archives its own copy', async () => {
+		let completions = 0
+		const hosts = await Promise.all(
+			[0, 1].map(async () => {
+				const vol = volume(memStorage())
+				await seedIdleSession(vol)
+				const session = createAgentSession({
+					volume: vol,
+					backend: scriptedBackend([], 'a note about the old conversation', {
+						onComplete: () => completions++
+					}),
+					compaction: NO_COMPACTION
+				})
+				return { vol, session }
+			})
+		)
+		await Promise.all(hosts.map((h) => h.session.history()))
+
+		// Both did the work: two LLM calls, and each replica holds one summary.
+		expect(completions).toBe(2)
+		for (const { vol } of hosts) {
+			expect(
+				new TextDecoder().decode(await vol.readFile(DAILY)).match(/a note about/g)
+			).toHaveLength(1)
+		}
 	})
 })
