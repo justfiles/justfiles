@@ -48,6 +48,20 @@ Keep the module surface to the absolutely minimal. think: do we absolutely have 
 ## Create a worktree
 Once we are ready to make changes to the code, create a branch and a worktree and make changes in there. Unless it's a change to an existing branch, then switch to that worktree. Check whether the branch/worktree exists before creating. Do not change directly on main.
 
+After creating a worktree, seed the git-ignored local dev files — `git worktree`
+only checks out tracked files, so these are missing and local runs break without
+them. Copy each from the main checkout into the same path in the new worktree:
+
+- apps/frieren/.env
+- apps/frieren/.dev.vars
+- apps/frieren/.agent
+- apps/worker/.env
+- apps/worker/.dev.vars
+- apps/worker/.agent
+
+## About Pull Requests
+After addressed a PR feedback left by @codex, tag codex for re-review at the end of the comment, like so: "@codex review".
+
 # Building an app
 
 The app should follow this path convention: packages/app-<name>. see existing apps as example.
