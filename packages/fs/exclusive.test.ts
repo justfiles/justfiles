@@ -29,6 +29,7 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync
 } from 'node:fs'
@@ -347,16 +348,31 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 	})
 })
 
-test('two native storages over one directory still take a name once', async () => {
-	// The chain that orders those moves is keyed by the DIRECTORY, not by the storage
-	// instance, because one process can open the same root twice — two configured CLI
-	// volumes, a task manager beside a volume — and the second spelling need not match the
-	// first. A per-instance chain orders each instance against itself and nothing against
-	// the other, which is the gap rather than the guarantee.
+// Spellings of ONE directory that a process can legitimately open it under. The chain
+// that orders native moves is keyed by the directory itself — `stat`'s device+inode — and
+// not by the storage instance or the path string, because one process really does open a
+// root twice (two configured CLI volumes, a task manager beside a volume) and the second
+// spelling need not match the first. A per-instance chain orders each instance against
+// itself and nothing against the other, which is the gap rather than the guarantee.
+const spellings: Array<[string, (dir: string) => string]> = [
+	['the same path, punctuated differently', (dir) => `${dir}/./`],
+	[
+		'a symlink to it',
+		(dir) => {
+			// Outside the volume, so it is not an entry in the tree under test.
+			const link = join(nativeDir(), 'root-link')
+			symlinkSync(dir, link)
+			return link
+		}
+	]
+]
+
+test.each(
+	spellings
+)('two native storages over one directory take a name once (%s)', async (_name, spell) => {
 	const dir = nativeDir()
 	const a = volume(await nativeStorage(dir))
-	// Spelled differently on purpose: same directory, so the same chain.
-	const b = volume(await nativeStorage(`${dir}/./`))
+	const b = volume(await nativeStorage(spell(dir)))
 	await a.mkdir('/Inbox')
 	await a.writeFile('/Inbox/one.md', enc.encode('from a'))
 	await a.writeFile('/Inbox/two.md', enc.encode('from b'))

@@ -2,6 +2,7 @@ import type { Stats } from 'node:fs'
 import {
 	lstat as _lstat,
 	rename as _rename,
+	stat as _stat,
 	symlink as _symlink,
 	chmod,
 	link,
@@ -83,13 +84,17 @@ async function publish(
  * and does not buy: it is a lock, not an emulated primitive — the kernel holds the parent
  * directories' locks across its own `renameat2` for the same reason.
  *
- * Keyed by the root's device+inode, NOT by the storage instance and not by the path
- * string. The state being guarded is the directory, and one process can open the same
+ * Keyed by the root DIRECTORY's device+inode, NOT by the storage instance and not by the
+ * path string. The state being guarded is the directory, and one process can open the same
  * directory more than once — two configured CLI volumes, a task manager beside a volume,
- * a daemon and a test — spelling it differently each time ('~/notes/' vs the resolved
- * path, or through a symlink). A per-instance runner would then serialise each instance
- * against itself and nothing against the other, which is the gap and not the guarantee.
- * Never pruned: a process opens a handful of roots, and an entry is one promise reference.
+ * a daemon and a test — spelling it differently each time. A per-instance runner would
+ * serialise each instance against itself and nothing against the other, which is the gap
+ * and not the guarantee.
+ *
+ * The key comes from `stat`, not the `lstat` the root's own inode identity comes from:
+ * `/notes` and a symlink pointing at it are one directory to `rename(2)`, so they must be
+ * one chain, and `lstat` would hand back the symlink's own inode instead. Never pruned: a
+ * process opens a handful of roots, and an entry is one promise reference.
  */
 const movesByRoot = new Map<string, ReturnType<typeof createExclusiveRunner>>()
 
@@ -132,7 +137,8 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	pathMap.set(rootIno, root)
 
 	// The move chain for this directory, shared with every other instance over it.
-	const rootKey = `${rootStat.dev}:${rootStat.ino}`
+	const target = await _stat(root)
+	const rootKey = `${target.dev}:${target.ino}`
 	const moves = movesByRoot.get(rootKey) ?? createExclusiveRunner()
 	movesByRoot.set(rootKey, moves)
 
