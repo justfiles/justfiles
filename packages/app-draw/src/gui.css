@@ -62,6 +62,39 @@
 	position: relative;
 }
 
+/* Presentation mode. The app chrome and Excalidraw's own UI (desktop
+   `.layer-ui__wrapper`, mobile `.App-top-bar` / `.App-bottom-bar`) are hidden so
+   only the canvases and our slide bar remain. */
+.draw[data-presenting="true"] .draw-bar,
+.draw[data-presenting="true"] .layer-ui__wrapper,
+.draw[data-presenting="true"] .App-top-bar,
+.draw[data-presenting="true"] .App-bottom-bar {
+	display: none;
+}
+.draw-present-bar {
+	position: absolute;
+	z-index: 5;
+	bottom: 12px;
+	left: 50%;
+	transform: translateX(-50%);
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border: 1px solid var(--rule);
+	border-radius: 999px;
+	background: var(--surface);
+	opacity: 0.35;
+	transition: opacity 150ms ease;
+}
+.draw-present-bar:hover {
+	opacity: 1;
+}
+.draw-present-count {
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+
 /* Gallery view — replaces the canvas; a simple responsive tile grid. */
 .draw-gallery {
 	flex: 1;

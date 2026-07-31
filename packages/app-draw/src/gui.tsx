@@ -10,6 +10,7 @@ import type { GUIProps } from '@justfiles/app/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DRAFT_PATH, type DrawApp } from './app.ts'
 import './gui.css'
+import { orderFrames, type PresentAPI, Presenter } from './present.tsx'
 
 const EXT = '.excalidraw'
 const AUTOSAVE_MS = 800
@@ -39,14 +40,11 @@ function sceneSig(
 	return `${hashElementsVersion(elements as never)}:${bg}:${Object.keys(files ?? {}).length}`
 }
 
-// The minimal slice of Excalidraw's imperative API we touch.
-interface ExcalidrawAPI {
-	getSceneElements: () => readonly unknown[]
-	getAppState: () => Record<string, unknown>
+// The minimal slice of Excalidraw's imperative API we touch. `refresh()` re-reads
+// the container's DOM rect (offsetLeft/offsetTop) — Excalidraw derives
+// pointer→scene coords from those, so they must be refreshed after any resize.
+interface ExcalidrawAPI extends PresentAPI {
 	getFiles: () => Record<string, unknown>
-	// Re-reads the container's DOM rect (offsetLeft/offsetTop). Excalidraw derives
-	// pointer→scene coords from those, so they must be refreshed after any resize.
-	refresh: () => void
 }
 
 type SceneData = {
@@ -108,6 +106,7 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 
 	// Gallery view (null = editing on the canvas) + the "Save as…" name prompt.
 	const [gallery, setGallery] = useState<GalleryItem[] | null>(null)
+	const [presenting, setPresenting] = useState(false)
 	const [naming, setNaming] = useState(false)
 	const [nameValue, setNameValue] = useState('')
 
@@ -210,6 +209,18 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 		if (openPath !== null) await actions.newDraft({})
 		else setReloadSeq((n) => n + 1)
 	}, [flush, openPath, hasContent, actions])
+
+	// Frames are the slides, so a scene without frames has nothing to present.
+	const onPresent = useCallback(async () => {
+		await flush()
+		const api = apiRef.current
+		if (!api) return
+		if (orderFrames(api.getSceneElements()).length === 0) {
+			window.alert('Frame each slide first (the Frame tool, F).')
+			return
+		}
+		setPresenting(true)
+	}, [flush])
 
 	const onSave = useCallback(async () => {
 		await flush()
@@ -317,7 +328,7 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 	}, [openPath])
 
 	return (
-		<div className="draw">
+		<div className="draw" data-presenting={presenting}>
 			<div className="draw-bar">
 				{naming ? (
 					<>
@@ -353,9 +364,14 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 							{gallery ? 'Close' : 'Gallery'}
 						</button>
 						{gallery ? null : (
-							<button type="button" onClick={() => void onSave()}>
-								Save
-							</button>
+							<>
+								<button type="button" onClick={() => void onPresent()}>
+									Present
+								</button>
+								<button type="button" onClick={() => void onSave()}>
+									Save
+								</button>
+							</>
 						)}
 					</>
 				)}
@@ -396,6 +412,13 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 										files as Record<string, unknown>
 									)
 								}
+							/>
+						) : null}
+						{presenting && apiRef.current ? (
+							<Presenter
+								api={apiRef.current}
+								host={canvasHostRef.current}
+								onExit={() => setPresenting(false)}
 							/>
 						) : null}
 					</div>
