@@ -2,7 +2,6 @@ import type { Stats } from 'node:fs'
 import {
 	lstat as _lstat,
 	rename as _rename,
-	stat as _stat,
 	symlink as _symlink,
 	chmod,
 	link,
@@ -79,24 +78,21 @@ async function publish(
 }
 
 /**
- * One move at a time per BACKING DIRECTORY — so a move's look at the destination and the
- * rename that takes it are one turn of this process. See `atomicMove` for what that does
- * and does not buy: it is a lock, not an emulated primitive — the kernel holds the parent
- * directories' locks across its own `renameat2` for the same reason.
+ * One move at a time, PROCESS-WIDE — so a move's look at the destination and the rename
+ * that takes it are one turn. See `atomicMove` for what that buys and what it does not: it
+ * is a lock, not an emulated primitive — the kernel holds the parent directories' locks
+ * across its own `renameat2` for the same reason.
  *
- * Keyed by the root DIRECTORY's device+inode, NOT by the storage instance and not by the
- * path string. The state being guarded is the directory, and one process can open the same
- * directory more than once — two configured CLI volumes, a task manager beside a volume,
- * a daemon and a test — spelling it differently each time. A per-instance runner would
- * serialise each instance against itself and nothing against the other, which is the gap
- * and not the guarantee.
- *
- * The key comes from `stat`, not the `lstat` the root's own inode identity comes from:
- * `/notes` and a symlink pointing at it are one directory to `rename(2)`, so they must be
- * one chain, and `lstat` would hand back the symlink's own inode instead. Never pruned: a
- * process opens a handful of roots, and an entry is one promise reference.
+ * Deliberately UNKEYED, after three tries at a key. Every key is an argument about when
+ * two moves share a directory, and each version of the argument lost a case: one runner
+ * per storage instance missed two storages over one root; per root path missed one root
+ * spelled two ways; per root inode missed a symlinked root; and per root inode again
+ * missed nested roots, where `/repo` and `/repo/tasks` rename into the same directory. A
+ * destination-inode key would answer all four — and would still be a key to get wrong, for
+ * a saving of nothing: a move here is two syscalls, and nothing in this system moves in
+ * bulk. Coarse and provably right beats fine and arguable.
  */
-const movesByRoot = new Map<string, ReturnType<typeof createExclusiveRunner>>()
+const moves = createExclusiveRunner()
 
 /**
  * A Storage backed directly by the local filesystem.
@@ -135,12 +131,6 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	const rootStat = await lstat(root)
 	const rootIno = String(rootStat.ino)
 	pathMap.set(rootIno, root)
-
-	// The move chain for this directory, shared with every other instance over it.
-	const target = await _stat(root)
-	const rootKey = `${target.dev}:${target.ino}`
-	const moves = movesByRoot.get(rootKey) ?? createExclusiveRunner()
-	movesByRoot.set(rootKey, moves)
 
 	const listeners = new Set<(change: StorageChange) => void>()
 	function emit(change: StorageChange): void {
@@ -218,8 +208,8 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			// — what GNU `mv -n` runs on a kernel without the syscall — falls back to exactly
 			// this, with exactly this admission: "this has a race between the call to lstat and
 			// the call to rename". What `moves` buys is that this PROCESS cannot lose that race
-			// with itself, however many storages or volumes are open over this directory; another
-			// process reaching for the same new name in the same instant still can.
+			// with itself — whatever roots its storages are opened at, however they are spelled;
+			// another process reaching for the same new name in the same instant still can.
 			//
 			// The primitive is not emulated, and this is the third time that is written down
 			// (app-notes' DESIGN.md §1b). `link` + `unlink` takes the name with no window — and

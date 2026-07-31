@@ -348,12 +348,11 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 	})
 })
 
-// Spellings of ONE directory that a process can legitimately open it under. The chain
-// that orders native moves is keyed by the directory itself — `stat`'s device+inode — and
-// not by the storage instance or the path string, because one process really does open a
-// root twice (two configured CLI volumes, a task manager beside a volume) and the second
-// spelling need not match the first. A per-instance chain orders each instance against
-// itself and nothing against the other, which is the gap rather than the guarantee.
+// Spellings of ONE directory that a process can legitimately open it under. Native moves
+// run on a single process-wide chain precisely so none of this has to be detected: one
+// process opens a root twice (two configured CLI volumes), under two spellings, and nests
+// one root inside another (`createNodeTaskManager` under a volume — see the test below).
+// Every attempt to key the chain by "the directory" missed one of those.
 const spellings: Array<[string, (dir: string) => string]> = [
 	['the same path, punctuated differently', (dir) => `${dir}/./`],
 	[
@@ -385,6 +384,28 @@ test.each(
 	expect(dec.decode(await a.readFile('/Kyoto.md'))).toBe(winner)
 	// The loser is still in the Inbox, unread by anyone else's move.
 	expect((await a.readdir('/Inbox')).map((e) => e.name)).toHaveLength(1)
+})
+
+test('two native storages whose roots merely OVERLAP take a name once', async () => {
+	// Different roots, one destination directory: a volume at the vault and a task manager
+	// at a folder inside it both rename into that folder. Neither root identifies it, which
+	// is why the chain gave up on identifying anything.
+	const dir = nativeDir()
+	mkdirSync(join(dir, 'Inbox'))
+	const outer = volume(await nativeStorage(dir))
+	const inner = volume(await nativeStorage(join(dir, 'Inbox')))
+	await outer.writeFile('/one.md', enc.encode('from outer'))
+	await inner.writeFile('/two.md', enc.encode('from inner'))
+	const results = await Promise.allSettled([
+		outer.rename('/one.md', '/Inbox/Kyoto.md', { exclusive: true }),
+		inner.rename('/two.md', '/Kyoto.md', { exclusive: true })
+	])
+	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+	const outerWon = results[0].status === 'fulfilled'
+	expect(dec.decode(await inner.readFile('/Kyoto.md'))).toBe(outerWon ? 'from outer' : 'from inner')
+	// And the loser is where it started — not overwritten, not vanished.
+	const left = outerWon ? '/Inbox/two.md' : '/one.md'
+	expect(dec.decode(await outer.readFile(left))).toBe(outerWon ? 'from inner' : 'from outer')
 })
 
 test('a write refuses a pathname that now holds a different file', async () => {
