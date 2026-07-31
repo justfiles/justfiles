@@ -81,8 +81,10 @@ export type SettingsState = {
 	// the face it read before. It replicates, so a photo set on another device lands here
 	// the same way.
 	avatarRevision: number
-	// A generated soul awaiting a verdict. It cost a model call, so it outlives a reload;
-	// nothing is written until the user keeps it.
+	// A generated soul awaiting a verdict; nothing is written until the user keeps it. It
+	// cost a model call, so it outlives switching panes and lands even while another pane
+	// is open — but not a GUI start (`guiStarted`), because the draft that asked for it,
+	// the name and nature being tried, is gone by then.
 	proposal: GeneratedSoul | null
 	// A command is in flight. The GUI cannot otherwise see a command settle, and the
 	// summoning needs to show that something is happening.
@@ -212,21 +214,31 @@ export const app = defineApp({
 					error:
 						'No AI is turned on here — write the soul yourself, or turn on a provider in Accounts.'
 				}
+			// Offline is the other reason a browser cannot draft one. Unlike no-generator it
+			// is TRANSIENT, so it must not hide the buttons — but it is still a sentence,
+			// not a code, and writing the soul yourself works offline: it is a file.
+			if (r.error.message === 'CAPABILITY_OFFLINE')
+				return {
+					...state,
+					generating: false,
+					error: 'No connection — write the soul yourself, or try again once you are back.'
+				}
 			return { ...state, generating: false, error: r.error.message }
 		}),
 		discardProposal: t.on(v.object({}), (state) => ({ ...state, proposal: null }), {
 			description: 'Drop a generated soul and keep what is on the volume.'
 		}),
-		// Dispatched by a GUI as it mounts, before the loads. Both markers it clears
-		// describe THIS host at THIS moment (see the state type): persisted `generating`
-		// belongs to a command that no longer exists — nothing would ever settle it, and it
-		// disables the whole pane — and a persisted `canGenerate: false` may have been
-		// written by another device entirely. Reopening a window during a real generation
-		// costs only the spinner; the result still lands.
+		// Dispatched once by a GUI as it mounts, before the loads — the only moment that
+		// means "this state was written by a run that is over". All three fields it resets
+		// describe THIS host at THIS moment (see the state type): `generating` belongs to a
+		// command that no longer exists — nothing would ever settle it, and it disables the
+		// whole pane — a `canGenerate: false` may have been written by another device
+		// entirely, and a `proposal` has lost the draft that asked for it. Reopening a
+		// window during a real generation costs only the spinner; the result still lands.
 		guiStarted: t.on(
 			v.object({}),
-			(state) => ({ ...state, generating: false, canGenerate: true }),
-			{ description: 'Drop the in-flight and no-generator markers a past host left behind.' }
+			(state) => ({ ...state, generating: false, canGenerate: true, proposal: null }),
+			{ description: 'Drop the in-flight, no-generator and draft markers a past run left.' }
 		),
 		avatarChanged: t.on(
 			v.object({}),

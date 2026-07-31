@@ -275,16 +275,11 @@ export function AgentPane({
 	client: Client<SettingsApp>
 }) {
 	const [resummon, setResummon] = useState(false)
-	// A proposal is worth keeping while this window lives (it survives switching panes, and
-	// the ritual reads it to know it has reached the review step) but NOT across a reload:
-	// the draft that produced it — the name, the nature being tried — is gone, so a soul
-	// with no context would be sitting in a pane that never asked for it.
-	const mounted = useRef(false)
-	useEffect(() => {
-		if (mounted.current) return
-		mounted.current = true
-		if (state.proposal) void client.discardProposal({})
-	}, [client, state.proposal])
+	// A proposal outliving its context is `guiStarted`'s to clear, NOT this component's:
+	// switching to Accounts unmounts this pane, so discarding on mount here threw away a
+	// draft the user had merely stepped away from — including one that finished while
+	// they were looking at another pane.
+
 	// `soul` is null only before the first read lands.
 	if (!state.soul) return <p className="settings-muted">Loading…</p>
 	// "Summon again" is GUI-local on purpose: re-entering the ritual destroys nothing, and
@@ -616,13 +611,18 @@ function Summoning({
 		}
 	}, [asked, state.proposal])
 
-	// No generator here (a signed-out Mac) ⇒ a soul you write yourself. That can be known
-	// up front, or only once the draft comes back CAPABILITY_UNAVAILABLE and flips
-	// `canGenerate` — either way the nature is already picked, so advance rather than
-	// leave the picker up waiting for a second click on the same card.
+	// A draft that is not coming must never strand the ritual on the picker, where the only
+	// affordance is to ask again. Two ways that happens: no generator at all (a signed-out
+	// Mac — known up front, or only once a call comes back CAPABILITY_UNAVAILABLE), and a
+	// call that simply failed (offline, an upstream 500). Either way the nature is picked
+	// and the soul is a file you can write yourself, so go where the editor is — the review
+	// step also carries "Write it again", so nothing is lost by arriving early.
+	// (`generateSoul` clears `error` as it starts, so an error standing with nothing in
+	// flight, after we asked, is our attempt's.)
 	useEffect(() => {
-		if (archetype && !state.canGenerate) setStep('review')
-	}, [archetype, state.canGenerate])
+		if (!archetype) return
+		if (!state.canGenerate || (asked && state.error && !state.generating)) setStep('review')
+	}, [archetype, asked, state.canGenerate, state.error, state.generating])
 
 	// Asking is what makes the next draft ours to show.
 	const draft = (seed: string) => {

@@ -140,10 +140,29 @@ test('a host with no generator stops offering one instead of showing a dead butt
 test('a GUI starting drops the markers a stopped host left behind', async () => {
 	// `generating` belongs to a command that died with its process — nothing would ever
 	// settle it, and it disables the pane. `canGenerate: false` may be another device's
-	// answer entirely: this state replicates.
-	const stranded = { ...initialState, generating: true, canGenerate: false }
+	// answer entirely: this state replicates. And a proposal has outlived the draft that
+	// asked for it. Only a GUI START means all three: switching panes must not.
+	const stranded = {
+		...initialState,
+		generating: true,
+		canGenerate: false,
+		proposal: { body: 'You are Fern.', firstWords: 'I am here.' }
+	}
 	const { state } = await app.dispatch({ type: 'guiStarted', params: {} }, { state: stranded })
-	expect(state).toMatchObject({ generating: false, canGenerate: true })
+	expect(state).toMatchObject({ generating: false, canGenerate: true, proposal: null })
+})
+
+test('offline says so and keeps the generator, unlike a host that has none', async () => {
+	const { state } = await app.dispatch(
+		{
+			type: '__cmd/soulGenerated',
+			params: { ok: false, error: { message: 'CAPABILITY_OFFLINE' } }
+		},
+		{ state: { ...initialState, generating: true } }
+	)
+	// Transient: the buttons stay. The soul is a file, so writing it works offline.
+	expect(state?.canGenerate).toBe(true)
+	expect(state?.error).toContain('No connection')
 })
 
 test('a fresh account list re-probes generation, so turning on a provider brings it back', async () => {
