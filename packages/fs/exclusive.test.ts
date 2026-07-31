@@ -34,6 +34,7 @@ import { afterAll, describe, expect, test } from 'vitest'
 import { nativeStorage } from './storage.fs.ts'
 import { idbStorage } from './storage.idb.ts'
 import { memStorage } from './storage.mem.ts'
+import type { Storage } from './storage.ts'
 import { FileType } from './types.ts'
 import { volume } from './volume.ts'
 
@@ -123,7 +124,12 @@ test('exactly one of N concurrent claimants wins each name', async () => {
 // stores its bytes under a content-addressed key BEFORE claiming the name, so the
 // claim and "the content is there" commit as one fact — see #321.
 describe('write-then-publish: the claim carries its content, not a promise of it', () => {
-	test('a fresh write commits content via putByHash and never calls the old putBlob-after-create path', async () => {
+	test('a fresh write commits its content inside the claim, never through the VFS or a later putBlob', async () => {
+		// The VFS hands the bytes to `atomicCreate` and does not stage them itself (#323).
+		// Both counters being zero IS the assertion: `putByHash` from the VFS would mean a
+		// separately-committed blob with no inode referencing it — the window a
+		// `gcUnreferenced()` sweep correctly reclaims — and `putBlob` would mean the old
+		// create-then-fill order, where the name exists before its content.
 		let putByHashCalls = 0
 		let putBlobCalls = 0
 		const base = memStorage({ mintIno: () => `ino-${++next}` })
@@ -146,9 +152,28 @@ describe('write-then-publish: the claim carries its content, not a promise of it
 		}
 		const vol = volume(tracked)
 		await vol.writeFile('/id', enc.encode('hello'))
-		expect(putByHashCalls).toBe(1)
+		expect(putByHashCalls).toBe(0)
 		expect(putBlobCalls).toBe(0)
+		// …and the content is there anyway, resolved through the claim's own contentHash.
 		expect(dec.decode(await vol.readFile('/id'))).toBe('hello')
+	})
+
+	test('a lost claim stages nothing at all — there is no orphan blob to reclaim', async () => {
+		// The loser's candidate content used to be committed by the VFS before the claim was
+		// even attempted, so a lost race left an orphan for `gcUnreferenced()` to mop up.
+		// Staging inside the claim means the loser writes nothing: the sweep has nothing to
+		// do, which is a stronger property than reclaiming it afterwards (#323).
+		const storage = memStorage({ mintIno: () => `ino-${++next}` })
+		const vol = volume(storage)
+		const results = await Promise.allSettled([
+			vol.writeFile('/id', enc.encode('AAAA'), { exclusive: true }),
+			vol.writeFile('/id', enc.encode('BBBB'), { exclusive: true })
+		])
+		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+		const winner = dec.decode(await vol.readFile('/id'))
+		expect(['AAAA', 'BBBB']).toContain(winner)
+		expect(await storage.caps!.content!.gcUnreferenced!()).toBe(0) // nothing was orphaned
+		expect(dec.decode(await vol.readFile('/id'))).toBe(winner) // winner untouched
 	})
 
 	test('a loser of an exclusive-write race never observes a transiently empty file', async () => {
@@ -162,21 +187,6 @@ describe('write-then-publish: the claim carries its content, not a promise of it
 			})
 		await Promise.all([attempt('a'), attempt('b')])
 		expect(loserRead).toMatch(/^[ab]$/)
-	})
-
-	test('a lost race leaves an orphan blob that gcUnreferenced reclaims without touching the winner', async () => {
-		const storage = memStorage({ mintIno: () => `ino-${++next}` })
-		const vol = volume(storage)
-		const results = await Promise.allSettled([
-			vol.writeFile('/id', enc.encode('AAAA'), { exclusive: true }),
-			vol.writeFile('/id', enc.encode('BBBB'), { exclusive: true })
-		])
-		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-		const winner = dec.decode(await vol.readFile('/id'))
-		expect(['AAAA', 'BBBB']).toContain(winner)
-		const reclaimed = await storage.caps!.content!.gcUnreferenced!()
-		expect(reclaimed).toBeGreaterThanOrEqual(1) // the loser's candidate, orphaned
-		expect(dec.decode(await vol.readFile('/id'))).toBe(winner) // winner untouched
 	})
 })
 
@@ -656,4 +666,59 @@ test('a bare memStorage() decides an exclusive claim atomically, like every othe
 	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
 	const winner = results.findIndex((r) => r.status === 'fulfilled')
 	expect(dec.decode(await vol.readFile('/id'))).toBe(`writer ${winner}`)
+})
+
+// --- a create must not expose its content to a GC sweep before the claim (#323) ---
+//
+// Write-then-publish stages the bytes under their hash BEFORE the name is claimed, which
+// leaves a window where the blob has ZERO inode references. `gcUnreferenced()` exists to
+// reclaim exactly that, so a sweep landing in the window is doing its job correctly — and
+// the claim that follows publishes an inode whose `contentHash` points at bytes that are
+// gone. `getBlob` then returns empty: the same failure write-then-publish closed, reached
+// by a different trigger (writer-vs-GC instead of writer-vs-writer).
+//
+// Not hypothetical: `apps/frieren/worker/daily-maintenance.ts` runs that sweep from the
+// DO's daily alarm, against the same storage every live write goes through.
+//
+// Driven deterministically rather than raced: sweep from inside `atomicCreate`, which is
+// as late as anything can happen before the claim commits. Nothing staged for this create
+// may be reclaimable at that instant.
+const gcBackends: Array<[string, () => Promise<Storage>]> = [
+	['mem', async () => memStorage()],
+	['idb', async () => idbStorage(`gc-${++db}`)]
+]
+
+describe.each(gcBackends)('a create survives a concurrent GC sweep on %s', (_name, make) => {
+	test('a sweep immediately before the claim cannot reclaim the create content', async () => {
+		const base = await make()
+		const content = base.caps?.content
+		const atomicCreate = base.caps?.atomicCreate
+		if (!content || !atomicCreate) throw new Error('backend must offer content + atomicCreate')
+		let sweeps = 0
+		const storage: Storage = {
+			...base,
+			caps: {
+				...base.caps,
+				atomicCreate: async (...args: Parameters<typeof atomicCreate>) => {
+					sweeps++
+					await content.gcUnreferenced()
+					return atomicCreate(...args)
+				}
+			}
+		}
+		const vol = volume(storage)
+		await vol.writeFile('/note.md', enc.encode('hello'))
+		expect(sweeps).toBeGreaterThan(0) // the sweep really did run inside the create
+		expect(dec.decode(await vol.readFile('/note.md'))).toBe('hello')
+	})
+
+	test('a sweep after the create still leaves referenced content alone', async () => {
+		// The guard on the fix above: closing the window must not be done by making
+		// `gcUnreferenced` timid about content it should be reclaiming.
+		const base = await make()
+		const vol = volume(base)
+		await vol.writeFile('/note.md', enc.encode('hello'))
+		await base.caps?.content?.gcUnreferenced()
+		expect(dec.decode(await vol.readFile('/note.md'))).toBe('hello')
+	})
 })

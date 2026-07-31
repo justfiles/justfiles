@@ -271,20 +271,33 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		// defaults to `crypto.randomUUID()`, so gating the cap's installation on a
 		// caller-supplied `mintIno` only ever meant "a bare memStorage() is quietly not
 		// atomic". `mintIno` customises inode IDENTITY; it was never about atomicity.
-		// `content` (see storage.ts) is never passed: this backend has a hash-addressed
-		// content store, so the claim carries a `meta.contentHash` reference instead.
-		async atomicCreate(dirIno, name, meta, _content, options) {
+		//
+		// `content` is staged HERE, inside the claim, not by the VFS beforehand (#323):
+		// hashing is the only await, and everything after it is synchronous, so the blob
+		// and the inode referencing it become visible in the same turn. A `gcUnreferenced()`
+		// sweep can never observe the blob without its reference.
+		async atomicCreate(dirIno, name, meta, content, options) {
 			const key = dirKey(dirIno, name)
 			if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
+			let stored = meta
+			let blob: [string, Uint8Array] | undefined
+			if (content !== undefined) {
+				const hash = await sha256Hex(content)
+				// Re-checked after that await — the one window here. A claim lost in it must
+				// leave nothing staged, so nothing is written until the name is definitely ours.
+				if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
+				stored = { ...meta, size: BigInt(content.length), contentHash: hash }
+				blob = [hash, content.slice()]
+			}
 			const ino = mint()
-			metas.set(ino, { ...meta })
-			dirs.set(key, { ino, type: meta.type })
+			if (blob) hashBlobs.set(blob[0], blob[1])
+			metas.set(ino, { ...stored })
+			dirs.set(key, { ino, type: stored.type })
 			parentOf.set(ino, { parent: dirIno, name })
 			const dirPath = pathOf(dirIno)
 			const path = dirPath === null ? undefined : joinPath(dirPath, name)
 			emit({ ino, kind: 'meta', source: options?.source })
 			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
-			// Regular files are journaled by the following putBlob (once hashed).
 			if (dirPath)
 				await journalPutOver(pathPort, joinPath(dirPath, name), ino, localActorId, options)
 			return ino

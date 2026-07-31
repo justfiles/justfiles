@@ -265,16 +265,6 @@ export interface WatchEvent {
 	source?: string
 }
 
-// Used ONLY to pre-compute a content hash before a create-with-content-already-
-// known claim (see write-then-publish in `writeFile`) — every backend already
-// implements the same algorithm privately for its own `putBlob`; this one has no
-// closure state, so it stays module-level rather than being re-created per `volume()`.
-async function sha256Hex(data: Uint8Array): Promise<string> {
-	const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
-	const digest = await crypto.subtle.digest('SHA-256', buf)
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 export function volume(storage: Storage): Volume {
 	const MAX_SYMLINK_DEPTH = 40
 
@@ -480,20 +470,13 @@ export function volume(storage: Storage): Volume {
 		content?: Uint8Array
 	): Promise<Ino> {
 		if (storage.caps?.atomicCreate) {
-			// Write-then-publish (#321/#322/#324): a name must never become reachable
-			// holding anything but `content`. TWO backend shapes, ONE guarantee, and this
-			// is the only place that has to know which is which — a hash-addressed store
-			// publishes the bytes under their hash and the claim carries the reference in
-			// its own meta; a backend without one is handed the bytes and publishes them
-			// together with the name (`storage.fs.ts`'s temp file + `link`).
-			let carried = content
-			if (content !== undefined && storage.caps.content) {
-				const hash = await sha256Hex(content)
-				await storage.caps.content.putByHash(hash, content)
-				meta = { ...meta, size: BigInt(content.length), contentHash: hash }
-				carried = undefined // already durable; nothing left for the backend to write
-			}
-			const ino = await storage.caps.atomicCreate(dirIno, name, meta, carried)
+			// Write-then-publish (#321/#322/#324/#323): the name and the content it names
+			// commit as ONE fact. The VFS hands the bytes over and stays out of HOW — staging
+			// them here first (hash them, `putByHash`, then claim) is what left a window in
+			// which the blob had zero inode references, and `gcUnreferenced()` reclaiming it
+			// there was the sweep doing its job correctly. Only the backend can put the
+			// staging and the claim in one transaction, so only the backend does it.
+			const ino = await storage.caps.atomicCreate(dirIno, name, meta, content)
 			invalidateDirCache(dirIno)
 			return ino
 		}

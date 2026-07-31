@@ -218,8 +218,12 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 // (docs/write-then-publish.html in the repo root's docs/). mem.ts and idb.ts
 // already spread `meta` verbatim; this pins the SQLite backend to the same
 // contract now that it does too.
-describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash', () => {
-	it('a fresh write commits content via putByHash and never calls the old putBlob-after-create path', async () => {
+describe('sqlite write-then-publish: atomicCreate stages its content inside the claim', () => {
+	it('a fresh write commits its content inside the claim, never through the VFS or a later putBlob', async () => {
+		// Both counters being zero IS the assertion (#323): a `putByHash` from the VFS would
+		// mean a blob committed to `fs_contents` with no inode referencing it — the window a
+		// `gcUnreferenced()` sweep correctly reclaims — and a `putBlob` would mean the old
+		// create-then-fill order, where the name exists before its content does.
 		const s = makeSqlite()
 		let putByHashCalls = 0
 		let putBlobCalls = 0
@@ -242,8 +246,9 @@ describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash'
 		}
 		const vol = volume(tracked)
 		await vol.writeFile('/id', bytes('hello'))
-		expect(putByHashCalls).toBe(1)
+		expect(putByHashCalls).toBe(0)
 		expect(putBlobCalls).toBe(0)
+		// …and the content is there anyway, with real size/hash on the claim's own row.
 		expect(text(await vol.readFile('/id'))).toBe('hello')
 		const st = await vol.stat('/id')
 		expect(st.contentHash).toMatch(/^[0-9a-f]{64}$/)
@@ -262,7 +267,10 @@ describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash'
 		expect(loserRead).toMatch(/^[ab]$/) // never empty, never garbage
 	})
 
-	it('a lost race leaves an orphan blob that gcUnreferenced reclaims without touching the winner', async () => {
+	it('a lost claim stages nothing at all — there is no orphan blob to reclaim', async () => {
+		// The loser's candidate content used to be committed before the claim was even
+		// attempted, leaving an orphan for `gcUnreferenced()` to mop up. Staging inside the
+		// claim means the loser writes nothing — a stronger property than reclaiming it after.
 		const s = makeSqlite()
 		const vol = volume(s)
 		const results = await Promise.allSettled([
@@ -272,8 +280,32 @@ describe('sqlite write-then-publish: atomicCreate honours a pre-set contentHash'
 		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
 		const winner = text(await vol.readFile('/id'))
 		expect(['AAAA', 'BBBB']).toContain(winner)
-		const reclaimed = await s.caps!.content!.gcUnreferenced!()
-		expect(reclaimed).toBeGreaterThanOrEqual(1)
+		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0) // nothing was orphaned
 		expect(text(await vol.readFile('/id'))).toBe(winner)
+	})
+
+	it('a sweep immediately before the claim cannot reclaim the create content', async () => {
+		// #323 on the backend that actually runs a scheduled sweep: frieren's DO alarm calls
+		// gcUnreferenced() daily against this storage, the same one every live write uses.
+		const s = makeSqlite()
+		const content = s.caps?.content
+		const atomicCreate = s.caps?.atomicCreate
+		if (!content || !atomicCreate) throw new Error('sqlite must offer content + atomicCreate')
+		let sweeps = 0
+		const tracked = {
+			...s,
+			caps: {
+				...s.caps,
+				atomicCreate: async (...args: Parameters<typeof atomicCreate>) => {
+					sweeps++
+					await content.gcUnreferenced()
+					return atomicCreate(...args)
+				}
+			}
+		}
+		const vol = volume(tracked)
+		await vol.writeFile('/note.md', bytes('hello'))
+		expect(sweeps).toBeGreaterThan(0)
+		expect(text(await vol.readFile('/note.md'))).toBe('hello')
 	})
 })

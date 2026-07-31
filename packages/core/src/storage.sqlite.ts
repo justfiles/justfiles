@@ -752,14 +752,15 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			})
 		},
 
-		// `content` (see @justfiles/fs's storage.ts) is never passed to this backend: it
-		// has a hash-addressed content store (`fs_contents`), so the VFS publishes the
-		// bytes under their hash first and this claim carries `meta.contentHash`.
+		// `content` is staged HERE, inside the claim's own transaction (#323), not by the
+		// VFS beforehand. Staging it first left the blob committed in `fs_contents` with
+		// zero inode references, and `gcUnreferenced()` reclaiming it there was the sweep
+		// doing its job — the claim would then publish a `content_hash` pointing at nothing.
 		async atomicCreate(
 			dirIno: Ino,
 			name: string,
 			meta: InodeMeta,
-			_content?: Uint8Array,
+			content?: Uint8Array,
 			options?: MutationOptions
 		): Promise<Ino> {
 			await ensureBootstrapped()
@@ -767,17 +768,27 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			const stamp = nowNs()
 			// The new entry's path, resolved inside the txn and reported on the emit.
 			let path: string | undefined
+			// Hashed outside the txn — pure computation, commits nothing.
+			const hash = content === undefined ? undefined : await sha256Hex(content)
 
 			await db.transaction(async (tx) => {
 				await ensureDirectory(tx, dirIno)
 				const existing = await getDirent(tx, dirIno, name)
 				if (existing) throw new Error(`EEXIST: ${name}`)
 
-				// Trust `meta` verbatim (mem.ts/idb.ts already do) — a caller with content
-				// already durable under `content.putByHash` (write-then-publish, see
-				// docs/write-then-publish.html) passes its real size/contentHash here, so the
-				// claim and "the content is there" commit as one fact. A caller with nothing
-				// yet still passes size:0n/no contentHash, same as today.
+				// Same transaction as the dirent below, so the bytes and the name that
+				// references them become visible together or not at all.
+				let size = Number(meta.size)
+				let contentHash = meta.contentHash ?? null
+				if (content !== undefined && hash !== undefined) {
+					await storeContentIfMissing(tx, hash, content)
+					size = content.length
+					contentHash = hash
+				}
+
+				// Trust `meta` verbatim otherwise (mem.ts/idb.ts already do) — a sync-applied
+				// create passes a real size/contentHash for content materialised out of band,
+				// and a caller with nothing yet passes size:0n/no contentHash.
 				await tx.run(
 					`INSERT INTO fs_inodes(
 						ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
@@ -786,10 +797,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						ino,
 						meta.type,
 						meta.mode,
-						Number(meta.size),
+						size,
 						meta.mtimeNs ?? stamp,
 						meta.ctimeNs ?? stamp,
-						meta.contentHash ?? null,
+						contentHash,
 						meta.symlinkTarget ?? null,
 						STORAGE_NONE
 					]
