@@ -16,6 +16,8 @@ import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/capabilities
 const SERVICE = 'app.justfiles.kodama'
 const ACCOUNT = 'accounts-key'
 const KEY_BYTES = 32
+// `security`'s exit code for errSecItemNotFound — the one failure that is an ANSWER.
+const NO_SUCH_ITEM = 44
 
 // The seam a test stubs: a `security` that never succeeds must make key resolution THROW,
 // never fall back to an unkeyed — plaintext — codec. Real callers never pass this.
@@ -49,6 +51,11 @@ async function run(
 	return { code, out }
 }
 
+// `undefined` means the Keychain positively does not have this item (exit 44,
+// errSecItemNotFound). Any OTHER failure — a locked keychain, a denied prompt, an
+// interaction-not-allowed session — THROWS, because "I could not read it" and "it is not
+// there" lead callers to opposite conclusions: E1 would publish "signed out" over a perfectly
+// good grant, and A2 would mint a second creds key on top of an unreadable first one.
 async function readSecret(
 	spawn: Spawn,
 	service: string,
@@ -63,7 +70,9 @@ async function readSecret(
 		account,
 		'-w'
 	])
-	return found.code === 0 ? found.out.trim() : undefined
+	if (found.code === 0) return found.out.trim()
+	if (found.code === NO_SUCH_ITEM) return undefined
+	throw new Error(`keychain: could not read ${service}/${account} (security exit ${found.code})`)
 }
 
 async function readItem(
@@ -169,8 +178,8 @@ export function keychainStore(
 				'-a',
 				account
 			])
-			// 44 = no such item: already gone is the outcome the caller asked for.
-			if (code !== 0 && code !== 44) {
+			// Already gone is the outcome the caller asked for.
+			if (code !== 0 && code !== NO_SUCH_ITEM) {
 				throw new Error(`keychain: could not delete ${service}/${account} (security exit ${code})`)
 			}
 		}

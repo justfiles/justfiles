@@ -37,6 +37,10 @@ const SCOPES = 'profile email offline_access'
 // Refresh this far before `exp`. Tokens live 24h, so this is deliberately generous: the cost
 // of an early refresh is one request, the cost of a late one is a failed capability call.
 const REFRESH_SKEW_MS = 5 * 60_000
+// Sign-out clears local custody first and only then tells Clerk, so this bounds the wait on a
+// server that stalls rather than refusing — not how long the user stays signed in (they are
+// already signed out by the time it runs).
+const REVOKE_TIMEOUT_MS = 5_000
 
 export interface Identity {
 	// A bearer token for our own API, or null when signed out / unreachable. Never throws:
@@ -102,11 +106,12 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		for (const listener of listeners) listener(next)
 	}
 
-	const form = (body: Record<string, string>, path: string) =>
+	const form = (body: Record<string, string>, path: string, signal?: AbortSignal) =>
 		fetch(new URL(path, fapi), {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams(body)
+			body: new URLSearchParams(body),
+			signal
 		})
 
 	// Persist the rotation, then adopt the token. Order matters (see the header). A token whose
@@ -129,7 +134,9 @@ export function createIdentity(deps: IdentityDeps): Identity {
 
 	async function refresh(): Promise<string | null> {
 		const at = generation
-		const stored = await store.read()
+		// A read that FAILS (locked or denied Keychain) is not an absent grant, but for a refresh
+		// both mean the same thing: answer null and change nothing.
+		const stored = await store.read().catch(() => undefined)
 		if (!stored) return null
 		let res: Response
 		try {
@@ -175,7 +182,10 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function signIn(opts?: { signal?: AbortSignal }): Promise<UserProfile> {
-		const at = generation
+		// Advance, don't just capture: a refresh or profile fetch belonging to the OLD grant must not
+		// be allowed to finish into this one — it would overwrite the new Keychain item with the old
+		// grant's rotation, or (on `invalid_grant`) delete the grant we are about to store.
+		const at = ++generation
 		const verifier = randomB64url(32)
 		const challenge = await challengeFor(verifier)
 		const state = randomB64url(16)
@@ -216,17 +226,24 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function signOut(): Promise<void> {
-		// Fence FIRST: a refresh or profile fetch already in flight must not write custody or
-		// publish a user after this point (see `generation`).
+		// Local first, remote second. Everything below the read is what "signed out" means to this
+		// daemon, and none of it may wait on a network call that can stall: a hung revoke used to
+		// leave the item in the Keychain, `getToken()` still answering, and `/sign-out` never
+		// replying. The fence (`generation`) comes first so nothing in flight can undo any of it.
 		generation++
-		const stored = await store.read()
-		// Best effort: a revoke we cannot deliver must not strand the daemon signed in.
-		if (stored) {
-			await form({ token: stored, client_id: clientId }, '/oauth/token/revoke').catch(() => {})
-		}
+		const stored = await store.read().catch(() => undefined)
 		await store.remove()
 		token = undefined
 		publish(null)
+		// Best effort, and bounded: a revoke we cannot deliver must not strand the caller. The grant
+		// outlives us for up to a day if this fails — the JWT-access-token trade recorded in #304.
+		if (stored) {
+			await form(
+				{ token: stored, client_id: clientId },
+				'/oauth/token/revoke',
+				AbortSignal.timeout(REVOKE_TIMEOUT_MS)
+			).catch(() => {})
+		}
 	}
 
 	// Display name/avatar for Settings, best effort: the id alone is a real identity, so a
@@ -266,11 +283,20 @@ export function createIdentity(deps: IdentityDeps): Identity {
 			// means minting a token — which is also what tells us the grant is still alive.
 			if (user === undefined) {
 				await getToken()
-				// Still unresolved: either there is no grant, or we could not reach Clerk. Only the
-				// first is a fact. Caching the second would leave Settings saying "Local user" for the
-				// rest of the run with a perfectly good grant in the Keychain, so it stays unresolved
-				// and the next ask retries.
-				if (user === undefined && !(await store.read())) publish(null)
+				// Still unresolved: either there is no grant, or we could not tell (offline, or a
+				// Keychain that is locked or denied). Only an item the store positively does not have is
+				// a fact. Caching anything else would leave Settings saying "Local user" for the rest of
+				// the run with a perfectly good grant in the Keychain, so it stays unresolved and the
+				// next ask retries.
+				if (
+					user === undefined &&
+					(await store.read().then(
+						(held) => !held,
+						() => false
+					))
+				) {
+					publish(null)
+				}
 			}
 			return user && !user.name ? await describe(user) : (user ?? null)
 		},

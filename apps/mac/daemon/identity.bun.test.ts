@@ -29,7 +29,7 @@ interface Call {
 	body: URLSearchParams
 }
 
-type Reply = (body: URLSearchParams) => Response
+type Reply = (body: URLSearchParams) => Response | Promise<Response>
 
 function stubAuthServer() {
 	const calls: Call[] = []
@@ -87,12 +87,19 @@ function stubAuthServer() {
 }
 
 // An in-memory SecretStore: the same contract as the Keychain one, so every test but the
-// custody test runs without touching the machine's Keychain.
-function memoryStore(initial?: string): SecretStore & { value?: string; failWrites?: boolean } {
+// custody test runs without touching the machine's Keychain. `failReads` is the locked/denied
+// Keychain — a read that THROWS, which is not the same as an empty one.
+function memoryStore(
+	initial?: string
+): SecretStore & { value?: string; failWrites?: boolean; failReads?: boolean } {
 	const store = {
 		value: initial,
 		failWrites: false,
-		read: async () => store.value,
+		failReads: false,
+		read: async () => {
+			if (store.failReads) throw new Error('keychain: could not read (security exit 51)')
+			return store.value
+		},
 		write: async (value: string) => {
 			if (store.failWrites) throw new Error('keychain: locked')
 			store.value = value
@@ -283,6 +290,103 @@ test('sign-out during a profile fetch does not republish the user', async () => 
 	await pending
 	expect(await identity.currentUser()).toBeNull()
 	expect(store.value).toBeUndefined()
+})
+
+test('a sign-in fences the old grant: a late refresh cannot overwrite or delete the new one', async () => {
+	const store = memoryStore('rt-old')
+	const identity = identityOver(store)
+	// The old grant's refresh is SLOW, so it lands after the sign-in has already stored its own
+	// grant — the ordering that makes this a bug rather than a curiosity.
+	server.serve(async (body) => {
+		if (body.get('grant_type') === 'refresh_token') {
+			await Bun.sleep(150)
+			return Response.json({
+				access_token: accessToken(1),
+				refresh_token: 'rt-stale',
+				expires_in: 86_400
+			})
+		}
+		return Response.json({
+			access_token: accessToken(2),
+			refresh_token: 'rt-new',
+			expires_in: 86_400
+		})
+	})
+
+	const stale = identity.getToken()
+	await Bun.sleep(20)
+	await identity.signIn() // possibly as somebody else
+	await stale
+
+	// The sign-in's grant is the one in custody, and its token is the one on offer.
+	expect(store.value).toBe('rt-new')
+	expect(await identity.getToken()).toBe(accessToken(2))
+})
+
+test('a late invalid_grant from the OLD grant does not delete the new one', async () => {
+	// The dangerous version of the same race: the stale refresh comes back "revoked" and, without
+	// the fence, cleared the Keychain item the sign-in had just stored — signing the user out of
+	// an account they had just signed in to.
+	const store = memoryStore('rt-old')
+	const identity = identityOver(store)
+	server.serve(async (body) => {
+		if (body.get('grant_type') === 'refresh_token') {
+			await Bun.sleep(150)
+			return Response.json({ error: 'invalid_grant' }, { status: 400 })
+		}
+		return Response.json({
+			access_token: accessToken(9),
+			refresh_token: 'rt-new',
+			expires_in: 86_400
+		})
+	})
+
+	const stale = identity.getToken()
+	await Bun.sleep(20)
+	await identity.signIn()
+	await stale
+
+	expect(store.value).toBe('rt-new')
+	expect(await identity.currentUser()).not.toBeNull()
+})
+
+test('sign-out clears custody BEFORE it waits on Clerk', async () => {
+	// A revoke that stalls (rather than refusing) used to leave the item in the Keychain and
+	// `getToken()` still answering, with `/sign-out` never replying — signed out in the UI,
+	// authenticated in fact.
+	const store = memoryStore()
+	const identity = identityOver(store)
+	await identity.signIn()
+	expect(await identity.getToken()).toBeTruthy()
+
+	const release = server.hold('/oauth/token/revoke')
+	const pending = identity.signOut()
+	await Bun.sleep(20) // still inside the stalled revoke
+
+	expect(store.value).toBeUndefined()
+	expect(await identity.getToken()).toBeNull()
+	expect(await identity.currentUser()).toBeNull()
+
+	release()
+	await pending
+})
+
+test('a Keychain that cannot be read is transient, not "signed out"', async () => {
+	// `security` failing for a locked keychain or a denied prompt is not an absent grant. Reading
+	// it as one would publish "Local user" and cache it for the rest of the run.
+	const store = memoryStore('rt-0')
+	store.failReads = true
+	const identity = identityOver(store)
+
+	expect(await identity.getToken()).toBeNull() // and never throws
+	expect(await identity.currentUser()).toBeNull()
+
+	store.failReads = false
+	expect(await identity.currentUser()).toEqual({
+		id: USER,
+		name: 'Test User',
+		avatarUrl: undefined
+	})
 })
 
 test('an offline first look does not cache "signed out" over a good grant', async () => {
