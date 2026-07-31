@@ -18,14 +18,12 @@
  */
 
 import {
-	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
-	unlinkSync,
 	writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -510,39 +508,9 @@ test('a publish that fails mid-write leaves no temp file behind', async () => {
 	expect(readdirSync(dir)).toEqual([]) // no residue, hidden or otherwise
 })
 
-test('a listing survives an entry vanishing mid-scan', async () => {
-	// `readdir` reports NAMES; each one then needs its own `lstat`, and an entry removed
-	// in between must not fail the whole listing. Pre-existing on the node backend — any
-	// concurrent `rm` could do it — and only ever surfaced because publish temps are
-	// created and unlinked constantly, which made the window easy to hit under 12-way
-	// parallel load.
-	//
-	// Every `lstat` is issued in one batch, so the interleaving is driven by making the
-	// directory big enough that the batch outlives a macrotask. RETRIED until the window
-	// is actually observed, rather than assumed after one attempt: under load the timer
-	// below can fire after the whole listing has already settled, and a run that never
-	// caught a vanishing entry proves nothing. A listing that REJECTS on any attempt is
-	// the bug, so the retry cannot mask it.
-	const dir = nativeDir()
-	const name = (i: number) => `n${String(i).padStart(4, '0')}.md`
-	let observed = false
-	for (let attempt = 0; attempt < 25 && !observed; attempt++) {
-		const sub = join(dir, `try${attempt}`)
-		mkdirSync(sub)
-		for (let i = 0; i < 400; i++) writeFileSync(join(sub, name(i)), 'x')
-		const storage = await nativeStorage(sub)
-		const pending = storage.listDirents(storage.rootIno, '')
-		await new Promise((resolve) => setTimeout(resolve, 0)) // readdir done, lstats queued
-		for (let i = 300; i < 400; i++) unlinkSync(join(sub, name(i)))
-		const { entries } = await pending // rejecting here is the bug, on ANY attempt
-		const listed = new Set(entries.map((e) => e.name))
-		// Tolerating a vanished entry must not mean quietly dropping entries that are
-		// there: everything outside the removed range is still reported, every attempt.
-		for (let i = 0; i < 300; i++) expect(listed.has(name(i))).toBe(true)
-		observed = listed.size < 400
-	}
-	expect(observed).toBe(true) // the interleaving really was exercised
-})
+// A listing that survives an entry vanishing between its `readdir` and its `lstat`s lives
+// in `listdir-vanish.test.ts`: opening that window deterministically needs `readdir` wrapped,
+// and `vi.mock` is file-scoped.
 
 // --- writeFile WITHOUT `exclusive` is never a claim ---
 //
