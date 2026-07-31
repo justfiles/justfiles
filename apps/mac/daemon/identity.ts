@@ -38,9 +38,17 @@
 //   3. `generation` fences, and the QUEUE makes the fence mean something. Sign-in and sign-out
 //      bump it; refresh, sign-in and the profile fetch capture it on entry. But a check before
 //      an `await` says nothing about the state after it — so every mutation of custody runs
-//      inside `serial()`, one at a time, re-checking its generation where nothing else can
-//      interleave. Nothing that waits on the network or the browser may hold that queue: it
-//      covers Keychain calls only, never a `fetch`.
+//      inside `serial()`, one at a time, and every change of belief goes through `commit()`,
+//      which is synchronous and re-checks the fence in the same tick as the assignment. Nothing
+//      that waits on the network or the browser may hold the queue: it covers Keychain calls
+//      only, never a `fetch`.
+//
+// WHAT THIS CANNOT DO: all of the above is per-process. Two daemons can currently run at once
+// (`Daemon.ensure()` in Launcher.swift has no single-writer lock — see #342), and two processes
+// refreshing the same stored token trip Clerk's reuse detection and destroy the grant. No
+// amount of in-process care fixes that; the fix is one daemon per user. Until then the failure
+// is at least loud and recoverable: `invalid_grant` clears custody and the UI says sign in
+// again.
 
 import type { AuthFlow } from '@justfiles/app/capabilities/accounts/providers'
 import type { UserProfile } from '@justfiles/app/capabilities/settings'
@@ -110,25 +118,43 @@ function subjectOf(accessToken: string): string {
 
 export function createIdentity(deps: IdentityDeps): Identity {
 	const { fapi, clientId, flow, store } = deps
-	let token: { value: string; expires: number } | undefined
+
+	// EVERYTHING this module believes, in one value. Not four variables: the bugs this module was
+	// reviewed for were all half-applied states — a token adopted after a sign-out had cleared it,
+	// a user published over a sign-out's `null`. A snapshot cannot be half-applied.
+	type State = {
+		// `undefined` = not resolved yet; `null` = signed out. The distinction is what lets
+		// `currentUser()` answer from cache without a network hop once it is known, while an offline
+		// boot stays unresolved and retries.
+		readonly user: UserProfile | null | undefined
+		readonly token: { value: string; expires: number } | undefined
+		// Set by sign-out, cleared by sign-in. Custody is the source of truth for "signed in" — until
+		// the user says otherwise: deleting the Keychain item can fail (a locked keychain), and
+		// re-minting tokens from a credential we were asked to forget is the one thing sign-out must
+		// never do. Worst case that leaves a dead item on disk, which the next sign-out clears.
+		readonly forgotten: boolean
+	}
+	let state: State = { user: undefined, token: undefined, forgotten: false }
 	let inFlight: Promise<string | null> | undefined
-	// `undefined` = not resolved yet; `null` = signed out. The distinction is what lets
-	// `currentUser()` answer from cache without a network hop once it is known.
-	let user: UserProfile | null | undefined
-	// Bumped by every explicit sign-in/sign-out. Anything already in flight when it moves must
-	// not write custody or publish a user — otherwise a refresh (or a profile fetch) that started
-	// before a sign-out lands after it and silently signs the daemon back in.
+	// Bumped by every explicit sign-in/sign-out. Anything already in flight when it moves must not
+	// land — otherwise a refresh (or a profile fetch) that started before a sign-out arrives after
+	// it and silently signs the daemon back in.
 	let generation = 0
-	// Set by sign-out, cleared by sign-in. Custody is the source of truth for "signed in" — until
-	// the user says otherwise: deleting the Keychain item can fail (a locked keychain), and
-	// re-minting tokens from a credential we were asked to forget is the one thing sign-out must
-	// never do. Worst case that leaves a dead item on disk, which the next sign-out clears.
-	let forgotten = false
 	const listeners = new Set<(user: UserProfile | null) => void>()
 
-	const publish = (next: UserProfile | null) => {
-		user = next
-		for (const listener of listeners) listener(next)
+	// THE ONLY WAY STATE CHANGES. Synchronous, so nothing can interleave inside it, and fenced, so
+	// an operation whose grant has been superseded cannot land — which is what makes "check the
+	// fence, then act" safe: there is no `await` between the two. `at` is the generation the caller
+	// began in; `null` means "this IS the newest action" (sign-in and sign-out, which bump it).
+	// Returns false when the commit was refused, which callers report rather than paper over.
+	function commit(at: number | null, next: State): boolean {
+		if (at !== null && at !== generation) return false
+		const before = state.user
+		state = next
+		// Identity changes only — a plain 24h refresh must not wake E2's router. Callers pass the
+		// SAME user object when nothing about the person changed, so this stays a reference compare.
+		if (before !== next.user) for (const listener of listeners) listener(next.user ?? null)
+		return true
 	}
 
 	const form = (body: Record<string, string>, path: string, signal?: AbortSignal) =>
@@ -153,22 +179,21 @@ export function createIdentity(deps: IdentityDeps): Identity {
 
 	// Persist the rotation, then adopt the token. Order matters (see the header): a token whose
 	// subject we cannot read is not a sign-in, and a rotation we cannot record is not one either.
-	// `at` is the generation the caller started in, re-checked inside the queue — so a sign-out or
-	// a newer sign-in either loses to this whole operation or wins over all of it.
+	// If the commit is refused, the rotation stays in the Keychain on purpose — whoever superseded
+	// us is queued behind this section and owns custody now (a sign-out will delete and revoke it).
 	function adopt(res: TokenResponse, at: number): Promise<UserProfile | null> {
 		const id = subjectOf(res.access_token)
 		return serial(async () => {
 			if (at !== generation) return null
 			await store.write(res.refresh_token)
-			token = { value: res.access_token, expires: Date.now() + res.expires_in * 1000 }
-			// Only on a change: a plain refresh must not wake E2's router every 24h.
-			if (user?.id !== id) publish({ id })
-			return { id }
+			const user = state.user?.id === id ? state.user : { id }
+			const token = { value: res.access_token, expires: Date.now() + res.expires_in * 1000 }
+			return commit(at, { user, token, forgotten: false }) ? { id } : null
 		})
 	}
 
 	async function refresh(): Promise<string | null> {
-		if (forgotten) return null
+		if (state.forgotten) return null
 		const at = generation
 		// A read that FAILS (locked or denied Keychain) is not an absent grant, but for a refresh
 		// both mean the same thing: answer null and change nothing.
@@ -192,30 +217,31 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				.then((body) => (body as { error?: string }).error)
 				.catch(() => undefined)
 			if (error === 'invalid_grant') {
-				// Inside the queue, and re-checked there: an older grant's "revoked" must not delete the
-				// grant that replaced it, nor publish signed-out over its user.
+				// In the queue and fenced: an older grant's "revoked" must not delete the grant that
+				// replaced it, nor publish signed-out over its user.
 				await serial(async () => {
-					if (at !== generation) return
+					if (!commit(at, { user: null, token: undefined, forgotten: state.forgotten })) return
 					await store.remove().catch(() => {})
-					token = undefined
-					publish(null)
 				})
 			}
 			return null
 		}
 		try {
-			return (await adopt((await res.json()) as TokenResponse, at)) ? (token?.value ?? null) : null
+			return (await adopt((await res.json()) as TokenResponse, at))
+				? (state.token?.value ?? null)
+				: null
 		} catch {
 			// The rotation could not be recorded (or the token could not be read), so the token we
 			// were just handed is the last one this grant will ever mint. Refusing to use it keeps
 			// "signed in" honest.
-			token = undefined
+			commit(at, { user: state.user, token: undefined, forgotten: state.forgotten })
 			return null
 		}
 	}
 
 	async function getToken(): Promise<string | null> {
-		if (token && token.expires - Date.now() > REFRESH_SKEW_MS) return token.value
+		const held = state.token
+		if (held && held.expires - Date.now() > REFRESH_SKEW_MS) return held.value
 		inFlight ??= refresh().finally(() => {
 			inFlight = undefined
 		})
@@ -227,10 +253,12 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		// be allowed to finish into this one — it would overwrite the new Keychain item with the old
 		// grant's rotation, or (on `invalid_grant`) delete the grant we are about to store.
 		const at = ++generation
-		forgotten = false
+		// Re-arm: a sign-out earlier in this run must not stop the grant we are about to acquire.
+		commit(null, { user: state.user, token: state.token, forgotten: false })
 		const verifier = randomB64url(32)
 		const challenge = await challengeFor(verifier)
-		const state = randomB64url(16)
+		// The OAuth `state` parameter — named apart from this module's own `state` on purpose.
+		const oauthState = randomB64url(16)
 		let redirectUri = ''
 		const callback = await flow.authorize((origin) => {
 			redirectUri = `${origin}${CALLBACK_PATH}`
@@ -240,14 +268,14 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				client_id: clientId,
 				redirect_uri: redirectUri,
 				scope: SCOPES,
-				state,
+				state: oauthState,
 				code_challenge: challenge,
 				code_challenge_method: 'S256'
 			}).toString()
 			return url.toString()
 		}, opts)
 		const code = callback.searchParams.get('code')
-		if (!code || callback.searchParams.get('state') !== state) {
+		if (!code || callback.searchParams.get('state') !== oauthState) {
 			throw new Error('Kodama sign-in failed or was cancelled')
 		}
 		const res = await form(
@@ -268,13 +296,11 @@ export function createIdentity(deps: IdentityDeps): Identity {
 	}
 
 	async function signOut(): Promise<void> {
-		// Rule 2 (see the header): the local half is synchronous and happens before any await, so no
-		// failure below — a locked Keychain, a stalled Clerk — can leave `getToken()` answering for
-		// a user who just signed out.
+		// Rule 2 (see the header): the local half is ONE synchronous commit before any await, so no
+		// failure below — a locked Keychain, a stalled Clerk — can leave `getToken()` answering for a
+		// user who just signed out, and nothing already in flight can put it back (rule 3).
 		const at = ++generation
-		forgotten = true
-		token = undefined
-		publish(null)
+		commit(null, { user: null, token: undefined, forgotten: true })
 		// Custody in the queue, and fenced inside it: a sign-in that started after this sign-out must
 		// not have its brand-new grant read, deleted, and then handed to Clerk to revoke. Deleting
 		// can fail (a locked keychain) — hold the failure rather than throwing on the spot, because
@@ -325,10 +351,14 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				name: info.name || info.email || undefined,
 				avatarUrl: info.picture
 			}
-			// Signed out while we were asking: a label must never resurrect the user.
-			if (at !== generation) return profile
-			if (named.name || named.avatarUrl) publish(named)
-			return user ?? named
+			// Signed out while we were asking: a label must never resurrect the user, which is what the
+			// fence in `commit` decides — a refused commit means the answer is stale, so drop it.
+			if (named.name || named.avatarUrl) {
+				if (!commit(at, { user: named, token: state.token, forgotten: state.forgotten })) {
+					return profile
+				}
+			}
+			return state.user ?? named
 		} catch {
 			return profile
 		}
@@ -339,9 +369,10 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		signIn,
 		signOut,
 		currentUser: async () => {
+			const at = generation
 			// A stored refresh token is the source of truth for "signed in", so resolving the user
 			// means minting a token — which is also what tells us the grant is still alive.
-			if (user === undefined) {
+			if (state.user === undefined) {
 				await getToken()
 				// Still unresolved: either there is no grant, or we could not tell (offline, or a
 				// Keychain that is locked or denied). Only an item the store positively does not have is
@@ -349,7 +380,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 				// the run with a perfectly good grant in the Keychain, so it stays unresolved and the
 				// next ask retries.
 				if (
-					user === undefined &&
+					state.user === undefined &&
 					(await serial(() =>
 						store.read().then(
 							(held) => !held,
@@ -357,10 +388,11 @@ export function createIdentity(deps: IdentityDeps): Identity {
 						)
 					))
 				) {
-					publish(null)
+					commit(at, { user: null, token: state.token, forgotten: state.forgotten })
 				}
 			}
-			return user && !user.name ? await describe(user) : (user ?? null)
+			const known = state.user
+			return known && !known.name ? await describe(known) : (known ?? null)
 		},
 		onChange: (listener) => {
 			listeners.add(listener)

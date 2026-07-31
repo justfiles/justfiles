@@ -434,6 +434,31 @@ test('an older sign-out cannot delete or revoke a newer sign-in', async () => {
 	)
 })
 
+test('sign-out during a pending write cannot be undone when the write lands', async () => {
+	// The adoption is what sign-out has to beat: the fence is checked before `store.write`, so a
+	// sign-out landing DURING that write used to find its cleared token and published `null`
+	// overwritten the moment the write resolved — signed out in the UI, cached token in memory,
+	// custody deleted underneath it.
+	const store = memoryStore('rt-0')
+	store.delay.write = 80
+	const identity = identityOver(store)
+	const seen: (string | null)[] = []
+	identity.onChange((user) => seen.push(user?.id ?? null))
+
+	const pending = identity.getToken() // its write is in flight…
+	await Bun.sleep(20)
+	await identity.signOut() // …when the user signs out
+	await pending
+
+	expect(await identity.getToken()).toBeNull()
+	expect(await identity.currentUser()).toBeNull()
+	expect(store.value).toBeUndefined()
+	expect(seen).toEqual([null]) // never a user
+	// The grant that WAS live when sign-out ran is the one revoked — the rotation, not the token
+	// it replaced.
+	expect(server.calls.find((c) => c.path === '/oauth/token/revoke')?.body.get('token')).toBe('rt-1')
+})
+
 test('a Keychain that will not delete still signs the daemon out locally', async () => {
 	// The delete is the one step that can fail AFTER the user asked to sign out. If it took the
 	// in-memory clear with it, `getToken()` would keep answering for up to a day — signed out in
