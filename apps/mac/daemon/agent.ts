@@ -76,7 +76,10 @@ async function buildSession(): Promise<AgentSession> {
 		// tokens; the session keys its build on model + revision and rebuilds losslessly).
 		backend: async () => {
 			const llm = await resolveAgentBackend(fs, { secretCodec: accountsSecretCodec })
-			if (!llm) throw new Error('failed to get llm config')
+			// Worded to match `classifyFailure`'s no-AI branch, so the chat shows "enable an AI
+			// provider" with a route into Settings → Accounts instead of a raw stack trace. This is
+			// the state a freshly signed-in Mac is in until C2 (#298) gives it the platform backend.
+			if (!llm) throw new Error('No AI provider is turned on for this Mac')
 			return llm
 		},
 		// The agent drives apps through the SAME kernel the windows subscribe to, so
