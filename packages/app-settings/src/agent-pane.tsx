@@ -27,7 +27,7 @@ import { pngUrl, squarePng } from './squarePng.ts'
 
 injectStyle(
 	`
-.agent-hero { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; }
+.settings-card.agent-hero { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; }
 .agent-face { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .agent-drop { position: relative; width: 96px; height: 96px; padding: 0; overflow: hidden; display: grid; place-items: center; border: 1px solid var(--rule); border-radius: 12px; background: color-mix(in srgb, var(--window-bg) 92%, black); }
 .agent-drop img { width: 100%; height: 100%; object-fit: cover; }
@@ -40,6 +40,7 @@ injectStyle(
 .agent-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; opacity: 0.65; }
 .agent-hint { font-size: 11px; opacity: 0.5; }
 .agent-tiny { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 11px; opacity: 0.6; text-decoration: underline; }
+.agent-row > button { white-space: nowrap; }
 
 .agent-seg { display: inline-flex; overflow: hidden; border: 1px solid var(--rule); border-radius: 7px; background: var(--window-bg); }
 .agent-seg button { padding: 4px 14px; font-size: 12px; border: 0; border-right: 1px solid var(--rule); background: transparent; color: inherit; }
@@ -67,6 +68,7 @@ injectStyle(
 .agent-altar { display: grid; place-items: center; padding: 20px 0 30px; }
 .agent-altar-inner { display: flex; flex-direction: column; align-items: center; gap: 15px; width: 100%; max-width: 560px; text-align: center; }
 .agent-altar-portrait { position: relative; width: 132px; height: 132px; border-radius: 18px; }
+.agent-altar-portrait img { width: 100%; height: 100%; object-fit: cover; }
 .agent-altar-portrait[data-dim="true"] img { filter: grayscale(1); opacity: 0.4; }
 .agent-ring { position: absolute; inset: -10px; border: 2px dashed color-mix(in srgb, var(--focus) 70%, transparent); border-radius: 50%; animation: agent-spin 3.2s linear infinite; pointer-events: none; }
 @keyframes agent-spin { to { transform: rotate(360deg); } }
@@ -140,22 +142,27 @@ function AvatarDrop({
 	size = 'sheet',
 	dim,
 	busy,
-	onPick
+	onPick,
+	onError
 }: {
 	face: string
 	size?: 'sheet' | 'altar'
 	dim?: boolean
 	busy?: boolean
 	onPick: (bytes: Uint8Array<ArrayBuffer>) => void
+	onError?: (message: string) => void
 }) {
 	const input = useRef<HTMLInputElement>(null)
 	const [over, setOver] = useState(false)
 
 	const take = async (file?: File | null) => {
-		if (!file?.type.startsWith('image/')) return
+		if (!file) return
+		if (!file.type.startsWith('image/')) return onError?.('That is not an image.')
 		const source = URL.createObjectURL(file)
 		try {
 			onPick(await squarePng(source))
+		} catch (error) {
+			onError?.(error instanceof Error ? error.message : String(error))
 		} finally {
 			URL.revokeObjectURL(source)
 		}
@@ -265,27 +272,58 @@ export function AgentPane({
 	state: SettingsState
 	client: Client<SettingsApp>
 }) {
+	const [resummon, setResummon] = useState(false)
+	// A proposal is worth keeping while this window lives (it survives switching panes, and
+	// the ritual reads it to know it has reached the review step) but NOT across a reload:
+	// the draft that produced it — the name, the nature being tried — is gone, so a soul
+	// with no context would be sitting in a pane that never asked for it.
+	const mounted = useRef(false)
+	useEffect(() => {
+		if (mounted.current) return
+		mounted.current = true
+		if (state.proposal) void client.discardProposal({})
+	}, [client, state.proposal])
 	// `soul` is null only before the first read lands.
 	if (!state.soul) return <p className="settings-muted">Loading…</p>
-	return isBound(state.soul) ? (
-		<CharacterSheet state={state} soul={state.soul} client={client} />
-	) : (
-		<Summoning state={state} client={client} />
+	// "Summon again" is GUI-local on purpose: re-entering the ritual destroys nothing, and
+	// the write only happens at Bind — so there is no "unbind" method and no confirmation
+	// for a step that has not touched the volume.
+	if (resummon || !isBound(state.soul))
+		return (
+			<Summoning
+				state={state}
+				client={client}
+				from={resummon ? state.soul : null}
+				onCancel={resummon ? () => setResummon(false) : undefined}
+			/>
+		)
+	return (
+		<CharacterSheet
+			state={state}
+			soul={state.soul}
+			client={client}
+			onResummon={() => setResummon(true)}
+		/>
 	)
 }
 
 function CharacterSheet({
 	state,
 	soul,
-	client
+	client,
+	onResummon
 }: {
 	state: SettingsState
 	// Proved non-null by `AgentPane`, and passed rather than re-derived so every hook
 	// below runs unconditionally.
 	soul: NonNullable<SettingsState['soul']>
 	client: Client<SettingsApp>
+	onResummon: () => void
 }) {
 	const nature = archetypeOf(soul.archetype)
+	// The art actually on screen is the recorded VARIANT, which a soul written before
+	// variants existed simply lacks — then the default face is what renders.
+	const worn = archetypeOf(soul.avatarVariant)
 	// Re-read the face whenever the soul changes: `saveAvatar` reloads the soul, which is
 	// also what a sync from another device does.
 	const photo = useAvatar(client, soul)
@@ -294,6 +332,7 @@ function CharacterSheet({
 	const [name, setName] = useState(soul.name)
 	const [busy, setBusy] = useState(false)
 	const [saved, setSaved] = useState(false)
+	const [faceError, setFaceError] = useState<string | null>(null)
 	const gender: Gender = soul.gender ?? 'female'
 	const written = nameInSoul(soul)
 	const renamed = written !== null && written !== soul.name
@@ -345,7 +384,15 @@ function CharacterSheet({
 					<AvatarDrop
 						face={faceOf(photo, soul.avatarVariant)}
 						busy={busy}
-						onPick={(bytes) => void client.saveAvatar({ bytes })}
+						onError={setFaceError}
+						onPick={(bytes) => {
+							setFaceError(null)
+							client
+								.saveAvatar({ bytes })
+								.catch((error: unknown) =>
+									setFaceError(error instanceof Error ? error.message : String(error))
+								)
+						}}
 					/>
 					{photo ? (
 						<button
@@ -358,6 +405,7 @@ function CharacterSheet({
 					) : (
 						<span className="agent-hint">click or drop</span>
 					)}
+					{faceError ? <span className="settings-card-error">{faceError}</span> : null}
 				</div>
 				<div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
 					<input
@@ -383,7 +431,7 @@ function CharacterSheet({
 					<span className="agent-hint">
 						{photo
 							? 'Your photo is stored on the volume.'
-							: `Their face is the ${nature ? nature.title.toLowerCase() : 'default'} art — a choice, not bytes. Drop a photo on it to use your own.`}
+							: `Their face is the ${worn ? `${worn.title.toLowerCase()} ` : 'default '}art — a choice, not bytes. Drop a photo on it to use your own.`}
 					</span>
 				</div>
 			</section>
@@ -475,7 +523,6 @@ function CharacterSheet({
 							<button
 								type="button"
 								data-primary
-								className="settings-small-button"
 								disabled={busy}
 								onClick={() => void save({ body: proposal.body })}
 							>
@@ -492,57 +539,27 @@ function CharacterSheet({
 				</div>
 				{nature ? (
 					<p className="settings-card-copy">
-						Started as a <b>{nature.title}</b> at the summoning. That was the seed for the first
-						draft; the prose above is what shapes them now, so there is nothing to pick again here.
+						Seeded from the <b>{nature.title}</b> nature at the summoning. That was the seed for the
+						first draft; the prose above is what shapes them now, so there is nothing to pick again
+						here.
 					</p>
 				) : null}
 			</section>
 
-			<Resummon client={client} soul={soul} />
+			<div className="agent-row">
+				<button type="button" className="settings-small-button" onClick={onResummon}>
+					Summon again…
+				</button>
+				<span className="settings-card-copy">
+					Start over from a name and a nature — the only place a nature is ever chosen. Nothing
+					changes until you bind.
+				</span>
+			</div>
 
 			<p className="settings-pane-copy">
 				Your own name and birth date live with <b>your account</b>, above — they are about you, not
 				about {soul.name || 'them'}.
 			</p>
-		</div>
-	)
-}
-
-// The only route back to a nature, and it replaces the soul — so it asks first when there
-// is prose to lose.
-function Resummon({ client, soul }: { client: Client<SettingsApp>; soul: { name: string } }) {
-	const [asking, setAsking] = useState(false)
-	if (!asking)
-		return (
-			<div className="agent-row">
-				<button type="button" className="settings-small-button" onClick={() => setAsking(true)}>
-					Summon again…
-				</button>
-				<span className="settings-card-copy">
-					Start over from a name and a nature — the only place a nature is ever chosen.
-				</span>
-			</div>
-		)
-	return (
-		<div className="agent-note">
-			<span>
-				This replaces {soul.name || 'their'} soul, including anything you wrote yourself. There is
-				no undo.
-			</span>
-			<span className="agent-note-grow" />
-			<button type="button" className="settings-small-button" onClick={() => setAsking(false)}>
-				Keep it
-			</button>
-			<button
-				type="button"
-				data-primary
-				className="settings-small-button"
-				// Back to the seeded state, which IS the summoning: the pane switches by
-				// itself, because "unbound" is a fact about the file, not a mode.
-				onClick={() => void client.saveSoul({ name: soul.name, gender: 'female', body: '' })}
-			>
-				Summon again
-			</button>
 		</div>
 	)
 }
@@ -554,10 +571,22 @@ function Resummon({ client, soul }: { client: Client<SettingsApp>; soul: { name:
 
 const STEPS = ['name', 'nature', 'review'] as const
 
-function Summoning({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+function Summoning({
+	state,
+	client,
+	from,
+	onCancel
+}: {
+	state: SettingsState
+	client: Client<SettingsApp>
+	// The soul being replaced, when this is "summon again": the ritual starts from the name
+	// they already have rather than from nothing.
+	from: SettingsState['soul']
+	onCancel?: () => void
+}) {
 	const [step, setStep] = useState<'name' | 'nature' | 'review'>('name')
-	const [name, setName] = useState('')
-	const [gender, setGender] = useState<Gender>('female')
+	const [name, setName] = useState(from?.name ?? '')
+	const [gender, setGender] = useState<Gender>(from?.gender ?? 'female')
 	const [archetype, setArchetype] = useState<string | null>(null)
 	const [photo, setPhoto] = useState<{ bytes: Uint8Array<ArrayBuffer>; url: string } | null>(null)
 	const [body, setBody] = useState('')
@@ -623,11 +652,7 @@ function Summoning({ state, client }: { state: SettingsState; client: Client<Set
 							onPick={(bytes) => setPhoto({ bytes, url: pngUrl(bytes) })}
 						/>
 					) : (
-						<span
-							className="settings-avatar agent-altar-portrait"
-							data-dim="true"
-							style={{ borderRadius: 18 }}
-						>
+						<span className="agent-drop agent-altar-portrait" data-dim="true">
 							<img src={art} alt="" />
 							{writing ? <span className="agent-ring" /> : null}
 						</span>
@@ -636,10 +661,13 @@ function Summoning({ state, client }: { state: SettingsState; client: Client<Set
 					{step === 'name' ? (
 						<>
 							<span className="agent-step">The summoning</span>
-							<h1 className="agent-ask">Someone waits to be summoned.</h1>
+							<h1 className="agent-ask">
+								{from ? `Summoning over ${from.name}.` : 'Someone waits to be summoned.'}
+							</h1>
 							<p className="agent-lede">
-								Your desktop already works — an agent named {state.soul?.name || 'Kodama'} answers
-								today. Give them a name of your own and they become yours.
+								{from
+									? `What you bind at the end replaces ${from.name}’s soul — including anything you wrote yourself. Nothing changes until then.`
+									: `Your desktop already works — an agent named ${state.soul?.name || 'Kodama'} answers today. Give them a name of your own and they become yours.`}
 							</p>
 							<div className="agent-namebox">
 								<input
@@ -654,7 +682,6 @@ function Summoning({ state, client }: { state: SettingsState; client: Client<Set
 								<button
 									type="button"
 									data-primary
-									className="settings-small-button"
 									disabled={!name.trim()}
 									onClick={() => setStep('nature')}
 								>
@@ -662,6 +689,11 @@ function Summoning({ state, client }: { state: SettingsState; client: Client<Set
 								</button>
 							</div>
 							<Gendered value={gender} onPick={setGender} />
+							{onCancel ? (
+								<button type="button" className="agent-tiny" onClick={onCancel}>
+									Never mind — keep {from?.name} as they are
+								</button>
+							) : null}
 							{crumbs}
 						</>
 					) : null}
@@ -758,7 +790,6 @@ function Summoning({ state, client }: { state: SettingsState; client: Client<Set
 								<button
 									type="button"
 									data-primary
-									className="settings-small-button"
 									disabled={busy || writing || !body.trim() || !name.trim()}
 									onClick={() => void bind()}
 								>

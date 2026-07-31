@@ -33,6 +33,9 @@ injectStyle(
 .settings-account { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px; margin-bottom: 4px; border: 1px solid transparent; border-radius: 8px; background: transparent; font: inherit; text-align: left; color: inherit; }
 button.settings-account { cursor: default; }
 button.settings-account:hover { background: var(--surface); }
+/* Beats the hover rule deliberately: button.x:hover outranks .x[data-active], which left
+   the selected row grey with white-on-white text while the pointer sat on it. */
+button.settings-account[data-active="true"],
 .settings-account[data-active="true"] { background: var(--focus); color: var(--on-focus); }
 .settings-account[data-active="true"] .settings-account-sub { opacity: 0.8; }
 .settings-avatar { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--rule); opacity: 0.85; }
