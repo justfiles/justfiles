@@ -14,7 +14,6 @@ import {
 	unlink
 } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
-import { createExclusiveRunner } from './exclusive'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { Ino } from './types'
 import { FileType } from './types'
@@ -46,19 +45,13 @@ const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
  * This is a hard link, so the inode carries two names between `link` and `unlink`.
  * `Storage` already permits exactly that shape transiently (see the interface note on
  * rename/move), and `inflight` hides the second one from this instance's read paths.
- *
- * `claim` is the process-wide chain every name-taking step runs on (see `claims`). Only
- * the `link` goes on it — the bytes are written to the temp file OUTSIDE it, which is the
- * other half of why they go to a temp file first: an import's payloads never queue behind
- * one another, only the instants at which they take their names do.
  */
 async function publish(
 	inflight: Set<string>,
 	dir: string,
 	name: string,
 	data: Uint8Array,
-	mode: number,
-	claim: <T>(task: () => Promise<T>) => Promise<T>
+	mode: number
 ): Promise<void> {
 	const tmp = join(dir, `.jfs-publish-${crypto.randomUUID()}`)
 	inflight.add(tmp)
@@ -72,7 +65,7 @@ async function publish(
 		} finally {
 			await fh.close()
 		}
-		await claim(() => link(tmp, join(dir, name)))
+		await link(tmp, join(dir, name))
 	} finally {
 		// Covers the WHOLE lifecycle, not just the link: a write or close that fails
 		// (ENOSPC, EIO) would otherwise strand the temp file, and repeated failures would
@@ -82,30 +75,6 @@ async function publish(
 		inflight.delete(tmp)
 	}
 }
-
-/**
- * One name-taking step at a time, PROCESS-WIDE — every create's publish, and every
- * exclusive move's look-then-rename. It is a lock, not an emulated primitive; the kernel
- * holds the parent directories' locks across its own `renameat2` for the same reason.
- *
- * Creates and moves share ONE chain because they are not equally atomic, and the weaker
- * one destroys the stronger. A create takes its name with `link`/`mkdir`/`O_EXCL` and
- * cannot lose it; an exclusive move has to look and then `rename(2)`, which REPLACES — so
- * a create landing between those two steps is published, reported as a success, and then
- * overwritten by the move. Ordering only moves against moves protects the operation that
- * did not need protecting (app-notes' DESIGN.md §1b records the same asymmetry one layer
- * up, which is why `claimPath` takes its names on one chain too).
- *
- * Deliberately UNKEYED, after three tries at a key. Every key is an argument about when
- * two claims share a directory, and each version of the argument lost a case: one runner
- * per storage instance missed two storages over one root; per root path missed one root
- * spelled two ways; per root inode missed a symlinked root; and per root inode again
- * missed nested roots, where `/repo` and `/repo/tasks` write into the same directory. A
- * destination-inode key would answer all four — and would still be a key to get wrong, for
- * a saving of nothing: what is inside the chain is one or two syscalls, never any bytes
- * (see `publish`). Coarse and provably right beats fine and arguable.
- */
-const claims = createExclusiveRunner()
 
 /**
  * A Storage backed directly by the local filesystem.
@@ -187,20 +156,18 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		async atomicCreate(dirIno, name, meta, content, options) {
 			const dirPath = getPath(dirIno)
 			const childPath = join(dirPath, name)
-			// Each branch's name-taking syscall is already EEXIST-or-nothing on its own; it goes
-			// on `claims` to be ordered against an exclusive MOVE, whose claim is not (see there).
 			if (meta.type === FileType.Directory) {
-				await claims(() => mkdir(childPath, { mode: meta.mode }))
+				await mkdir(childPath, { mode: meta.mode })
 			} else if (meta.type === FileType.Symlink) {
-				await claims(() => _symlink(meta.symlinkTarget ?? '', childPath))
+				await _symlink(meta.symlinkTarget ?? '', childPath)
 			} else if (content === undefined) {
 				// No content to publish, so the name is the whole claim (`O_EXCL`).
-				const fh = await claims(() => open(childPath, 'wx', meta.mode))
+				const fh = await open(childPath, 'wx', meta.mode)
 				await fh.close()
 			} else {
 				// This backend has no hash-addressed content store, so the bytes are handed
 				// to it directly and the name must not appear until they are all there.
-				await publish(inflight, dirPath, name, content, meta.mode, claims)
+				await publish(inflight, dirPath, name, content, meta.mode)
 			}
 			const s = await lstat(childPath)
 			const ino = String(s.ino)
@@ -215,35 +182,36 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const newPath = join(getPath(newDir), newName)
 
 			const srcIno = String((await lstat(oldPath)).ino)
+			let displaced: Ino | null = null
+			try {
+				const d = String((await lstat(newPath)).ino)
+				if (d !== srcIno) displaced = d
+			} catch {}
 
-			// `noReplace` — the one backend that cannot decide this in the same commit as the
-			// move, because a filesystem is not a transaction: POSIX `rename` always replaces,
-			// and Node reaches neither `renameat2(RENAME_NOREPLACE)` nor `renamex_np`. So the
-			// `lstat` below IS the check, and it is a check before the act. gnulib's `renameatu`
-			// — what GNU `mv -n` runs on a kernel without the syscall — falls back to exactly
-			// this, with exactly this admission: "this has a race between the call to lstat and
-			// the call to rename". What `claims` buys is that this PROCESS cannot lose that race
-			// with itself — not against another move, and not against a create publishing the same
-			// name; another process reaching for that name in the same instant still can.
+			// `noReplace` is BEST EFFORT here, and this is the one backend where it is. A store
+			// with a transaction decides the claim inside the commit that rebinds the entry; a
+			// filesystem has no transaction, POSIX `rename` always replaces, and Node reaches
+			// neither `renameat2(RENAME_NOREPLACE)` nor `renamex_np(RENAME_EXCL)`. So the `lstat`
+			// above is a check before the act, and it is exactly what gnulib's `renameatu` — what
+			// GNU `mv -n` runs on a kernel without the syscall — falls back to, carrying the same
+			// admission: "this has a race between the call to lstat and the call to rename".
 			//
-			// The primitive is not emulated, and this is the third time that is written down
-			// (app-notes' DESIGN.md §1b). `link` + `unlink` takes the name with no window — and
-			// stops being a MOVE: a crash between the two leaves the file under both names.
-			// `link` also cannot serve the general case, because it is not type-transparent: it
-			// refuses a directory outright, and on macOS it FOLLOWS a symlink (coreutils carries
-			// a `LINK_FOLLOWS_SYMLINKS` tri-state for precisely this), so a moved symlink would
-			// become a hard link to its target and the symlink would then be unlinked. `publish`
-			// above may use `link` because a CREATE has no source name to keep; a move has.
-			const displaced = await claims(async () => {
-				let taken: Ino | null = null
-				try {
-					const d = String((await lstat(newPath)).ino)
-					if (d !== srcIno) taken = d
-				} catch {}
-				if (options?.noReplace && taken !== null) throw new Error(`EEXIST: ${newName}`)
-				await _rename(oldPath, newPath)
-				return taken
-			})
+			// The gap is NOT closed with a lock in here, and that is a decision rather than an
+			// omission. The writers this store shares its namespace with are other PROCESSES —
+			// Finder, `mv`, a sync client, a second app instance — so an in-process mutex cannot
+			// reach the case that matters while it silently serialises the cases that do not, and
+			// a caller still could not lean on it. Every system that genuinely needs mutual
+			// exclusion over a real filesystem takes a lock it OWNS and can see: git's
+			// `index.lock` (`O_CREAT|O_EXCL`), SQLite's advisory locks, Maildir's unique names.
+			// That belongs to whoever wants it, above this layer — app-notes takes its names one
+			// at a time in `claimPath` for precisely this reason. `link` + `unlink` is refused for
+			// the same family of reasons: it stops being a move (a crash leaves both names), it
+			// cannot move a directory, and on macOS `link` FOLLOWS a symlink (coreutils keeps a
+			// `LINK_FOLLOWS_SYMLINKS` tri-state for this), so a moved symlink would become a hard
+			// link to its target.
+			if (options?.noReplace && displaced !== null) throw new Error(`EEXIST: ${newName}`)
+
+			await _rename(oldPath, newPath)
 
 			// Update pathMap for the moved entry and all cached descendants
 			const oldPrefix = `${oldPath}/`

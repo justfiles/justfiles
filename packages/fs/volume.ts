@@ -157,21 +157,23 @@ export interface Volume {
 	 * directory already holds that name, so a caller can retry under another name
 	 * instead of destroying a stranger's data.
 	 *
-	 * That refusal is the STORE's, decided in the same commit as the move — the
-	 * backend's `atomicMove({ noReplace })`, not a check up here. It has to be: a
-	 * `getDirent` followed by a move is a TOCTOU, and the state it asks about is shared
-	 * by everyone on that store, not just by this Volume (a frieren tab holds two of
-	 * them over one IndexedDB). Backends with a transaction — mem, IDB, SQLite, and the
-	 * server behind `apiStorage` — therefore decide N racing claimants outright: exactly
-	 * one wins, and no file is lost.
+	 * That refusal is the STORE's, decided in the same commit as the move — the backend's
+	 * `atomicMove({ noReplace })`, not a check up here. It has to be: a `getDirent` followed
+	 * by a move is a TOCTOU, and the state it asks about is shared by everyone on that
+	 * store, not just by this Volume (a frieren tab holds two of them over one IndexedDB).
+	 * mem, IDB, SQLite and the server behind `apiStorage` all have a transaction, so all of
+	 * them decide N racing claimants outright: exactly one wins, and no file is lost.
 	 *
-	 * The native filesystem has no transaction and Node reaches neither `renameat2` nor
-	 * `renamex_np`, so there it is a check and THEN a rename, which is exactly what
-	 * gnulib's `renameatu` falls back to when the syscall is missing. Two separate OS
-	 * processes reaching for the same new name in the same instant can still have one
-	 * replaced; a process on its own cannot. We do NOT emulate the missing primitive —
-	 * `link` + `unlink` stops being a move (a crash leaves both names) and `link` is not
-	 * type-transparent (on macOS it follows a symlink). See `storage.fs.ts`.
+	 * A real filesystem has no transaction, and Node reaches neither `renameat2` nor
+	 * `renamex_np`, so on `nativeStorage` this is BEST EFFORT: an `lstat` and then a rename,
+	 * which is what gnulib's `renameatu` falls back to for the same missing syscall. It is
+	 * truthful when it refuses; a writer arriving between the two steps can still be
+	 * replaced. That gap is not closed with a lock in the backend — the writers a real
+	 * filesystem is shared with are other PROCESSES, which no in-process lock reaches. A
+	 * caller that needs mutual exclusion there does what every system in that position does:
+	 * takes a lock it owns (git's `index.lock`), or avoids the collision (Maildir's unique
+	 * names), or orders its own writers — which is app-notes' `claimPath`, one name at a
+	 * time. `packages/fs` does not emulate a primitive the platform does not have.
 	 */
 	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
 

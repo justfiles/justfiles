@@ -172,7 +172,7 @@ each time was moving the question to a single surface — never patching the sit
 | --- | --- | --- |
 | How is a path spelled, and what may a name contain? | `src/notes.ts` | pure, total (`isCanonicalPath`, `sanitizeName`, `illegalMove`) |
 | What may a dropped archive contain, and how much of it? | `src/import.ts` | pure + one ledger per drop (`screenEntry`, `Screen`, `admit`) |
-| **Who owns a name; is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }`: decided by the store, for `writeFile` and for `rename` (§1b) |
+| **Who owns a name; is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }`: decided by the store where the store has a commit; best effort on a plain fs (§1b) |
 | Is this location still real, and is the buffer settled? | `src/gui.tsx` | `liveDir()` gate, `flush`/`discard` before a path change |
 
 The third row is the one that cost the most, and it is the lesson worth carrying to the next app. **An app
@@ -186,10 +186,10 @@ replace. So the app emulated the missing one, twice, and each emulation was a fr
   move then destroys the data it was meant to protect. And a file placeholder is the wrong *type* to rename
   a folder over, so on the Node backend every folder move failed with ENOTDIR.
 
-Both disappeared into two flags in `packages/fs`, and both are now backed by something that cannot be raced:
-`atomicCreate` (`O_EXCL`, one IndexedDB transaction, one synchronous map mutation) for the create, and
-`atomicMove({ noReplace })` for the move — the destination is refused inside the same commit that rebinds the
-entry, wherever the store has a commit (§1b). What is left
+Both disappeared into two flags in `packages/fs`, and where the store can keep the promise it is backed by
+something that cannot be raced: `atomicCreate` (`O_EXCL`, one IndexedDB transaction, one synchronous map
+mutation) for the create, and `atomicMove({ noReplace })` for the move — the destination refused inside the
+same commit that rebinds the entry, wherever the store has a commit (§1b). What is left
 in this app is its own *policy* — "on EEXIST, number up" (`claimPath`, six lines) and "never inside itself"
 (`illegalMove`, pure) — which is all an app should ever hold. Rule of thumb for the next one: if a guarantee
 needs two calls to express, it belongs one layer down; if it needs a cleanup path, it is already wrong.
@@ -404,26 +404,39 @@ time (`persistDrop`). So `rename(…, { exclusive: true })` became a check and *
 exactly that, and the guarantee it gave — sequential writers never overwrite each other, whatever type holds
 the name — is the guarantee the app needs.
 
-**Round three found the primitive — one layer lower than POSIX** (#330). Both failed attempts were looking for
-it in the *filesystem*, which is the wrong place to look: what a name lives in here is a **store**, and every
-store in this system except one has a transaction. mem decides a claim in one synchronous pass, IndexedDB and
-SQLite in one transaction, and the server behind the `/fs` wire in its own — so `atomicMove({ noReplace })`
-refuses a taken destination *in the commit that rebinds the entry*, for files and folders alike, and N racing
-claimants get exactly one winner with nothing lost. It cost two lines per backend, because each one was
-already reading that destination to decide what it was displacing. The native filesystem is the one store with
-no commit, so there it stays an `lstat` and then a rename — serialised process-wide, which makes the honest
-remaining window *another OS process*, not another caller. That is also what gnulib's `renameatu` does when the
-kernel has no `renameat2`, carrying the same admission in the same shape. The lesson is not "push it down", it
-is **look for the primitive where the state actually lives**: a check is not a guarantee unless it is the
-operation, and "the operation" means the commit, not the syscall.
+**Round three found the primitive — one layer lower than POSIX, and only where it really is** (#330).
+Both failed attempts were looking for it in the *filesystem*, which is the wrong place to look: what a name
+lives in here is a **store**, and most stores in this system have a transaction. mem decides a claim in one
+synchronous pass, IndexedDB and SQLite in one transaction, and the server behind the `/fs` wire in its own —
+so `atomicMove({ noReplace })` refuses a taken destination *in the commit that rebinds the entry*, for files
+and folders alike, and N racing claimants get exactly one winner with nothing lost. Two lines per backend,
+because each was already reading that destination to decide what it displaced.
+
+A plain filesystem is the one store with no commit, and round three's own review is the record of what
+happens if you refuse to accept that. Four times, the same defect: an in-process lock was added to the native
+backend, and each round the reviewer found a scope it did not cover — per storage instance, per root path, per
+canonical root, and then "it must swallow every create too". The next scopes are `rm`, and then the writers
+that actually share a user's directory: Finder, `mv`, a sync client, a second copy of the app. An in-process
+mutex cannot reach those, so it charges everyone for a guarantee no caller can lean on. **The lock came out.**
+`nativeStorage` now does what gnulib's `renameatu` does when the kernel has no `renameat2` — `lstat`, then
+rename — and *says* it is best effort.
+
+That is also what every system in this position does. Nobody hides mutual exclusion inside the filesystem
+layer: git takes a lock it owns and can see (`index.lock`, `O_CREAT|O_EXCL`), SQLite takes advisory locks,
+Maildir avoids the collision entirely with names that cannot collide, and content-addressed stores make
+`EEXIST` *mean* "identical bytes". A filesystem exposes what the platform guarantees; whoever needs more than
+that holds it themselves. So the rule from rounds one and two survives with one word changed: **push a
+guarantee down to where the state is, if something down there can really keep it.** A transaction can. A
+directory cannot.
 
 "Sequential" is a claim about the app, though, and the app has to *make* it true rather than observe it: the
 kernel runs procedures **off** its per-app queue, so a GUI drag and an agent tool call genuinely overlap. So
-taking a name runs on one chain (`serially`), and every claim sees the previous one's result. That was three
+taking a name runs on one chain (`serially`), and every claim sees the previous one's result. That is three
 lines against a backend primitive POSIX does not have, and it is the honest place for it: the two steps are
-ours, so the ordering is ours. Since round three the store decides the claim on its own, so the chain is now a
-belt over braces — kept because it costs three lines and orders the *mix* below, and because `claimPath`'s
-numbering reads the same either way.
+ours, so the ordering is ours. On a store that decides the claim itself the chain is belt over braces; on a
+plain filesystem it is the only thing holding, which is exactly why it stayed after #330. Writers in *other
+processes* reaching for the same new name in the same instant can still lose one — a knowingly accepted
+window, stated where the check is, and the same window every app-level lock has.
 
 The chain belongs **inside `claimPath`**, not around one call site, and the reason is the mix rather than
 either half: an exclusive create is atomic and needs no help, a move is not, and when the two race the atomic
@@ -746,10 +759,11 @@ writers this app actually has** — the answer decides which findings are defect
   unnecessary — we do not pay: the exposure is bounded by the autosave debounce, and the mechanism would be
   permanent.
 - **Emulating primitives the platform lacks.** POSIX has no atomic no-replace rename and Node reaches neither
-  `renameat2` nor `renamex_np`, so the native backend looks before it renames and says so, rather than faking
-  the primitive with `link` + `unlink` (which stops being a move, and on macOS follows a symlink). Pushing a
-  guarantee down is worth it when something down there can really keep it — `atomicCreate` could, and every
-  transactional store can (#330); a hand-rolled two-step cannot.
+  `renameat2` nor `renamex_np`, so the native backend looks before it renames and says so — no `link` +
+  `unlink` (which stops being a move, and on macOS follows a symlink), and no in-process lock either, because
+  the writers a real directory is shared with are other processes. Pushing a guarantee down is worth it when
+  something down there can really keep it — `atomicCreate` could, and a transaction can (#330); a lock over
+  somebody else's filesystem cannot.
 
 If Notes ever gains real multi-client editing, the boundary moves and the deferred interleavings come back —
 tracked as an issue rather than as unreachable code.

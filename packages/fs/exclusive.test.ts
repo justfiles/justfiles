@@ -8,19 +8,23 @@
  * `exists()` + `writeFile` would be a TOCTOU, and the loser has its note overwritten
  * — these tests pin the race.
  *
- * `rename` cannot be a create, but it CAN be no-replace, and the difference is not the
- * one this header used to claim. It is not "files yes, directories no": it is whether
- * the store the name lives in has a COMMIT to decide the claim in. mem decides it in one
- * synchronous pass, IDB in one transaction, SQLite in one transaction — for those, N
- * racing claimants are decided by the store, exactly as `writeFile` is, for both types.
- * The native filesystem is the one that has no commit (POSIX `rename` always replaces,
- * and Node reaches neither `renameat2` nor `renamex_np`), so there it is an `lstat` and
- * then a rename, serialised within the process — which is what gnulib's `renameatu`
- * falls back to for the same missing syscall. The window left is another OS PROCESS
- * reaching for the same new name in the same instant; see `storage.fs.ts` for why
- * emulating the primitive with `link` + `unlink` is worse than stating that. The one thing
- * that has to be TESTED with a widened window rather than raced lives next door, in
- * `storage.fs.claims.test.ts`: a create and an exclusive move take a name on one chain.
+ * `rename` cannot be a create, but it CAN be no-replace — and the split is not the one
+ * this header first claimed ("files yes, directories no"). It is whether the store the
+ * name lives in has a COMMIT to decide the claim in. mem decides it in one synchronous
+ * pass, IDB in one transaction, SQLite in one transaction: for those, N racing claimants
+ * are decided by the store, exactly as `writeFile` is, for files and folders alike.
+ *
+ * A real filesystem has no commit — POSIX `rename` always replaces, and Node reaches
+ * neither `renameat2(RENAME_NOREPLACE)` nor `renamex_np(RENAME_EXCL)` — so on the node
+ * backend `exclusive` is an `lstat` and THEN a rename: truthful when it refuses, and
+ * beatable by a writer that arrives in between. gnulib's `renameatu` (GNU `mv -n` without
+ * the syscall) ships exactly that, with exactly that admission. So the concurrency test
+ * below runs on the stores that can honour it and NOT on node, which is the honest shape
+ * of the contract rather than a gap in the tests: mutual exclusion over a shared
+ * filesystem belongs to a caller that can take a lock it owns (git's `index.lock`,
+ * SQLite's advisory locks) or avoid the collision (Maildir's unique names) — here it is
+ * app-notes' `claimPath`, taking one name at a time. `packages/fs` does not emulate what
+ * the platform lacks; see `storage.fs.ts`.
  */
 
 import {
@@ -31,7 +35,6 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
-	symlinkSync,
 	unlinkSync,
 	writeFileSync
 } from 'node:fs'
@@ -222,10 +225,12 @@ test('claimants racing for the same name settle on distinct numbered paths', asy
 
 // --- rename(..., { exclusive: true }) ---
 //
-// Run against EVERY shipped local backend, on purpose: `mem` decides a claim in one
-// synchronous block, IDB in one transaction, and the node backend has neither and has
-// to look before it renames. A contract enforced on one backend at a time goes
-// unenforced on the others until whichever one happens to be under test that day.
+// Run against EVERY shipped local backend, on purpose: a contract enforced on one backend
+// at a time goes unenforced on the others until whichever one happens to be under test
+// that day. The flag says whether that backend can decide a claim IN a commit — mem in one
+// synchronous block, IDB in one transaction, the node backend in nothing, because a
+// filesystem is not a transaction. Everything sequential is required of all three; only
+// the race is asked of the two that can answer it.
 const dirs: string[] = []
 afterAll(() => {
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
@@ -236,13 +241,13 @@ const nativeDir = (): string => {
 	return dir
 }
 let db = 0
-const backends: Array<[string, () => Promise<ReturnType<typeof volume>>]> = [
-	['mem', async () => makeVol()],
-	['idb', async () => volume(await idbStorage(`excl-${++db}`))],
-	['node', async () => volume(await nativeStorage(nativeDir()))]
+const backends: Array<[string, () => Promise<ReturnType<typeof volume>>, boolean]> = [
+	['mem', async () => makeVol(), true],
+	['idb', async () => volume(await idbStorage(`excl-${++db}`)), true],
+	['node', async () => volume(await nativeStorage(nativeDir())), false]
 ]
 
-describe.each(backends)('exclusive rename on %s', (_name, make) => {
+describe.each(backends)('exclusive rename on %s', (_name, make, decidesInCommit) => {
 	test('an occupied destination is refused, and both notes survive', async () => {
 		const vol = await make()
 		await vol.writeFile('/Kyoto.md', enc.encode('theirs'))
@@ -314,100 +319,44 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 		expect((await vol.readdir('/Inbox')).map((e) => e.name)).toEqual([])
 	})
 
-	test('exactly one of N concurrent moves takes the name, and no file is lost', async () => {
-		// The race the old check-then-move lost (#330): all 20 look at '/Kyoto.md', all 20
-		// find it free, and the last one to rename replaces a note that was already there.
-		// Now the destination is refused by the STORE — in its transaction where it has one,
-		// under one process-wide chain of moves where it does not.
-		//
-		// Both halves are asserted, because "one winner" alone would also be satisfied by
-		// nineteen notes quietly disappearing: every loser must still be where it was.
-		const vol = await make()
-		await vol.mkdir('/Inbox')
-		for (let i = 0; i < 20; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
-		const results = await Promise.allSettled(
-			Array.from({ length: 20 }, (_, i) =>
-				vol.rename(`/Inbox/n${i}.md`, '/Kyoto.md', { exclusive: true })
+	test.runIf(decidesInCommit)(
+		'exactly one of N concurrent moves takes the name, and no file is lost',
+		async () => {
+			// The race the old check-then-move lost (#330): all 20 look at '/Kyoto.md', all 20
+			// find it free, and the last one to rename replaces a note that was already there.
+			// Now the destination is refused by the STORE, inside the commit that rebinds the
+			// entry — which is why this is asked of the stores that HAVE a commit. On node the
+			// same twenty racers are the caller's to order (see the header).
+			//
+			// Both halves are asserted, because "one winner" alone would also be satisfied by
+			// nineteen notes quietly disappearing: every loser must still be where it was.
+			const vol = await make()
+			await vol.mkdir('/Inbox')
+			for (let i = 0; i < 20; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
+			const results = await Promise.allSettled(
+				Array.from({ length: 20 }, (_, i) =>
+					vol.rename(`/Inbox/n${i}.md`, '/Kyoto.md', { exclusive: true })
+				)
 			)
-		)
-		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-		for (const r of results) {
-			if (r.status === 'rejected') expect(r.reason.message).toMatch(/^EEXIST/)
+			expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+			for (const r of results) {
+				if (r.status === 'rejected') expect(r.reason.message).toMatch(/^EEXIST/)
+			}
+			const winner = results.findIndex((r) => r.status === 'fulfilled')
+			expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe(`note ${winner}`)
+			// …and the nineteen losers are untouched, still under their original names.
+			const left = (await vol.readdir('/Inbox')).map((e) => e.name).sort()
+			expect(left).toEqual(
+				Array.from({ length: 20 }, (_, i) => `n${i}.md`)
+					.filter((_, i) => i !== winner)
+					.sort()
+			)
+			for (const name of left) {
+				const i = Number(name.slice(1, -3))
+				expect(dec.decode(await vol.readFile(`/Inbox/${name}`))).toBe(`note ${i}`)
+			}
 		}
-		const winner = results.findIndex((r) => r.status === 'fulfilled')
-		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe(`note ${winner}`)
-		// …and the nineteen losers are untouched, still under their original names.
-		const left = (await vol.readdir('/Inbox')).map((e) => e.name).sort()
-		expect(left).toEqual(
-			Array.from({ length: 20 }, (_, i) => `n${i}.md`)
-				.filter((_, i) => i !== winner)
-				.sort()
-		)
-		for (const name of left) {
-			const i = Number(name.slice(1, -3))
-			expect(dec.decode(await vol.readFile(`/Inbox/${name}`))).toBe(`note ${i}`)
-		}
-	})
-})
-
-// Spellings of ONE directory that a process can legitimately open it under. Native moves
-// run on a single process-wide chain precisely so none of this has to be detected: one
-// process opens a root twice (two configured CLI volumes), under two spellings, and nests
-// one root inside another (`createNodeTaskManager` under a volume — see the test below).
-// Every attempt to key the chain by "the directory" missed one of those.
-const spellings: Array<[string, (dir: string) => string]> = [
-	['the same path, punctuated differently', (dir) => `${dir}/./`],
-	[
-		'a symlink to it',
-		(dir) => {
-			// Outside the volume, so it is not an entry in the tree under test.
-			const link = join(nativeDir(), 'root-link')
-			symlinkSync(dir, link)
-			return link
-		}
-	]
-]
-
-test.each(
-	spellings
-)('two native storages over one directory take a name once (%s)', async (_name, spell) => {
-	const dir = nativeDir()
-	const a = volume(await nativeStorage(dir))
-	const b = volume(await nativeStorage(spell(dir)))
-	await a.mkdir('/Inbox')
-	await a.writeFile('/Inbox/one.md', enc.encode('from a'))
-	await a.writeFile('/Inbox/two.md', enc.encode('from b'))
-	const results = await Promise.allSettled([
-		a.rename('/Inbox/one.md', '/Kyoto.md', { exclusive: true }),
-		b.rename('/Inbox/two.md', '/Kyoto.md', { exclusive: true })
-	])
-	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-	const winner = results[0].status === 'fulfilled' ? 'from a' : 'from b'
-	expect(dec.decode(await a.readFile('/Kyoto.md'))).toBe(winner)
-	// The loser is still in the Inbox, unread by anyone else's move.
-	expect((await a.readdir('/Inbox')).map((e) => e.name)).toHaveLength(1)
-})
-
-test('two native storages whose roots merely OVERLAP take a name once', async () => {
-	// Different roots, one destination directory: a volume at the vault and a task manager
-	// at a folder inside it both rename into that folder. Neither root identifies it, which
-	// is why the chain gave up on identifying anything.
-	const dir = nativeDir()
-	mkdirSync(join(dir, 'Inbox'))
-	const outer = volume(await nativeStorage(dir))
-	const inner = volume(await nativeStorage(join(dir, 'Inbox')))
-	await outer.writeFile('/one.md', enc.encode('from outer'))
-	await inner.writeFile('/two.md', enc.encode('from inner'))
-	const results = await Promise.allSettled([
-		outer.rename('/one.md', '/Inbox/Kyoto.md', { exclusive: true }),
-		inner.rename('/two.md', '/Kyoto.md', { exclusive: true })
-	])
-	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-	const outerWon = results[0].status === 'fulfilled'
-	expect(dec.decode(await inner.readFile('/Kyoto.md'))).toBe(outerWon ? 'from outer' : 'from inner')
-	// And the loser is where it started — not overwritten, not vanished.
-	const left = outerWon ? '/Inbox/two.md' : '/one.md'
-	expect(dec.decode(await outer.readFile(left))).toBe(outerWon ? 'from inner' : 'from outer')
+	)
 })
 
 test('a write refuses a pathname that now holds a different file', async () => {
