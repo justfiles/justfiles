@@ -291,6 +291,10 @@ export function AgentPane({
 				state={state}
 				client={client}
 				from={resummon ? state.soul : null}
+				// Bind wrote them to the volume, so the ritual is over: leave it, or this pane
+				// would keep showing the review step of an agent who now has a character sheet.
+				// (A first summoning needs no help — `isBound` flips when the soul reloads.)
+				onBound={() => setResummon(false)}
 				onCancel={resummon ? () => setResummon(false) : undefined}
 			/>
 		)
@@ -299,13 +303,7 @@ export function AgentPane({
 			state={state}
 			soul={state.soul}
 			client={client}
-			onResummon={() => {
-				// A Rewrite proposal on the sheet is prose for the name and nature they have
-				// NOW — it is not this ritual's draft, and the ritual adopts what it finds.
-				// Left standing it would open on the review step over someone else's words.
-				if (state.proposal) void client.discardProposal({})
-				setResummon(true)
-			}}
+			onResummon={() => setResummon(true)}
 		/>
 	)
 }
@@ -375,11 +373,21 @@ function CharacterSheet({
 				name,
 				gender,
 				// A rewrite reuses the recorded seed — the pane offers no way to change it.
-				archetype: soul.archetype ?? 'companion'
+				archetype: soul.archetype ?? 'companion',
+				for: 'rewrite'
 			})
 			.catch(() => {})
 
-	const proposal = state.proposal
+	// ONLY a rewrite is this pane's to show: a summoning's draft is prose for an agent who
+	// does not exist yet, and "Use this" would save it under the current name and nature.
+	const proposal = state.proposal?.for === 'rewrite' ? state.proposal.soul : null
+	// And if a ritual's draft is what is sitting there, the ritual is gone — the pane switch
+	// that unmounted it took the name, the nature and the photo with it, so there is nothing
+	// to resume it with and nothing this pane may do with the prose.
+	useEffect(() => {
+		if (state.proposal?.for === 'summoning') void client.discardProposal({})
+	}, [state.proposal, client])
+
 	return (
 		<div className="settings-pane">
 			<header className="settings-pane-header">
@@ -585,6 +593,7 @@ function Summoning({
 	state,
 	client,
 	from,
+	onBound,
 	onCancel
 }: {
 	state: SettingsState
@@ -592,6 +601,8 @@ function Summoning({
 	// The soul being replaced, when this is "summon again": the ritual starts from the name
 	// they already have rather than from nothing.
 	from: SettingsState['soul']
+	// Bind has written them: the ritual is over and the pane must move on.
+	onBound: () => void
 	onCancel?: () => void
 }) {
 	const [step, setStep] = useState<'name' | 'nature' | 'review'>('name')
@@ -601,20 +612,23 @@ function Summoning({
 	const [photo, setPhoto] = useState<{ bytes: Uint8Array<ArrayBuffer>; url: string } | null>(null)
 	const [body, setBody] = useState('')
 	const [busy, setBusy] = useState(false)
-	// Whether a draft is this ritual's to adopt. `state.proposal` is one slot shared with
-	// the character sheet's Rewrite, and adopting one written for the agent being REPLACED
-	// would skip the name and the nature and then bind that prose under the old archetype.
-	// So the ritual only ever takes a draft it asked for.
+	// Whether THIS run of the ritual asked for the draft in state. `for` keeps the sheet's
+	// Rewrite out; this keeps out a summoning draft of its own that outlived the ritual
+	// that ordered it (a pane switch unmounts this component and takes the name, the
+	// nature and the photo with it) — adopting that would open the review step with prose
+	// and no name, which Bind refuses and no step goes back to.
 	const [asked, setAsked] = useState(false)
 	const nature = archetypeOf(archetype)
 	// A draft is being waited for. Whose it is, is decided by its token when it lands.
 	const writing = state.draft !== null
 
-	// The draft arrives through reducer state (it cost a model call, so it survives a
-	// reload): showing it IS the review step.
+	// The draft arrives through reducer state (it cost a model call, so it survives a pane
+	// switch): showing it IS the review step. Only a summoning's, though — the slot is
+	// shared with the character sheet's Rewrite, and prose for the agent being REPLACED
+	// would skip the name and the nature and then bind under the old archetype.
 	useEffect(() => {
-		if (asked && state.proposal) {
-			setBody(state.proposal.body)
+		if (asked && state.proposal?.for === 'summoning') {
+			setBody(state.proposal.soul.body)
 			setStep('review')
 		}
 	}, [asked, state.proposal])
@@ -632,13 +646,15 @@ function Summoning({
 		if (!state.canGenerate || (asked && state.error && !writing)) setStep('review')
 	}, [archetype, asked, state.canGenerate, state.error, writing])
 
-	// Asking is what makes the next draft ours to show. Nothing is awaited and nothing is
-	// caught: the procedure folds its own outcome — the soul, or why it never came — into
-	// state under a token, which is also what keeps a slow answer from landing on a later
-	// question.
+	// `for: 'summoning'` is what makes the answer ours to show. Nothing is awaited and
+	// nothing is caught: the procedure folds its own outcome — the soul, or why it never
+	// came — into state under a token, which is also what keeps a slow answer from landing
+	// on a later question.
 	const draft = (seed: string) => {
 		setAsked(true)
-		client.generateSoul({ name: name.trim(), gender, archetype: seed }).catch(() => {})
+		client
+			.generateSoul({ name: name.trim(), gender, archetype: seed, for: 'summoning' })
+			.catch(() => {})
 	}
 
 	const pickNature = (id: string) => {
@@ -663,6 +679,9 @@ function Summoning({
 		} finally {
 			setBusy(false)
 		}
+		// Only once the volume has them, so a failed write leaves the ritual — and the draft
+		// the user is looking at — exactly where it was.
+		onBound()
 	}
 
 	const crumbs = (
@@ -792,10 +811,10 @@ function Summoning({
 									/>
 								</div>
 							</div>
-							{state.proposal?.firstWords ? (
+							{state.proposal?.for === 'summoning' && state.proposal.soul.firstWords ? (
 								<div className="agent-bubble">
 									<small>{name.trim()} · first words</small>
-									{state.proposal.firstWords}
+									{state.proposal.soul.firstWords}
 								</div>
 							) : null}
 							<div className="agent-actions">

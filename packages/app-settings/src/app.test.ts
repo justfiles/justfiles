@@ -96,13 +96,19 @@ test('generate → keep: the proposal is held, then the write clears it', async 
 	const drafted = await app.dispatch(
 		{
 			type: 'draftSettled',
-			params: { token: 'draft-1', soul: { body: 'You are Fern.', firstWords: 'I am here.' } }
+			params: {
+				token: 'draft-1',
+				for: 'summoning',
+				soul: { body: 'You are Fern.', firstWords: 'I am here.' }
+			}
 		},
 		{ state: asked.state ?? start }
 	)
 	expect(drafted.state).toMatchObject({
 		draft: null,
-		proposal: { body: 'You are Fern.', firstWords: 'I am here.' }
+		// Tagged with the flow that asked: the character sheet must not read a summoning's
+		// prose as a rewrite of the agent it is showing.
+		proposal: { for: 'summoning', soul: { body: 'You are Fern.', firstWords: 'I am here.' } }
 	})
 	// Nothing was written by drafting: the volume-backed soul is still the seeded one.
 	expect(drafted.state?.soul).toEqual(seededSoul)
@@ -117,7 +123,7 @@ test('generate → keep: the proposal is held, then the write clears it', async 
 test('a failed generate leaves an error and an editable pane, not a half-written soul', async () => {
 	const start = { ...initialState, soul: seededSoul, draft: 'draft-1' }
 	const { state } = await app.dispatch(
-		{ type: 'draftSettled', params: { token: 'draft-1', error: 'upstream 500' } },
+		{ type: 'draftSettled', params: { token: 'draft-1', for: 'rewrite', error: 'upstream 500' } },
 		{ state: start }
 	)
 	expect(state).toMatchObject({ draft: null, proposal: null, error: 'upstream 500' })
@@ -128,7 +134,10 @@ test('a failed generate leaves an error and an editable pane, not a half-written
 
 test('a host with no generator stops offering one instead of showing a dead button', async () => {
 	const { state } = await app.dispatch(
-		{ type: 'draftSettled', params: { token: 'draft-1', error: 'CAPABILITY_UNAVAILABLE' } },
+		{
+			type: 'draftSettled',
+			params: { token: 'draft-1', for: 'summoning', error: 'CAPABILITY_UNAVAILABLE' }
+		},
 		{ state: { ...initialState, draft: 'draft-1' } }
 	)
 	expect(state?.canGenerate).toBe(false)
@@ -144,7 +153,7 @@ test('a GUI starting drops the markers a stopped host left behind', async () => 
 		...initialState,
 		draft: 'draft-1',
 		canGenerate: false,
-		proposal: { body: 'You are Fern.', firstWords: 'I am here.' }
+		proposal: { soul: { body: 'You are Fern.', firstWords: 'I am here.' }, for: 'rewrite' as const }
 	}
 	const { state } = await app.dispatch({ type: 'guiStarted', params: {} }, { state: stranded })
 	expect(state).toMatchObject({ draft: null, canGenerate: true, proposal: null })
@@ -155,7 +164,10 @@ test('a draft is folded only by the request that asked for it', async () => {
 	// for a name and nature that went with it — must not surface on the character sheet of
 	// a still-bound agent, one click away from being saved.
 	const orphaned = await app.dispatch(
-		{ type: 'draftSettled', params: { token: 'draft-1', soul: { body: 'You are someone else.' } } },
+		{
+			type: 'draftSettled',
+			params: { token: 'draft-1', for: 'summoning', soul: { body: 'You are someone else.' } }
+		},
 		{ state: { ...initialState, soul: boundSoul, draft: null } }
 	)
 	expect(orphaned.state?.proposal).toBeNull()
@@ -164,23 +176,32 @@ test('a draft is folded only by the request that asked for it', async () => {
 	// a boolean "something is generating" would have accepted the old answer as the new
 	// one's. The token is what tells them apart — the live request still lands.
 	const superseded = await app.dispatch(
-		{ type: 'draftSettled', params: { token: 'draft-1', soul: { body: 'You are someone else.' } } },
+		{
+			type: 'draftSettled',
+			params: { token: 'draft-1', for: 'summoning', soul: { body: 'You are someone else.' } }
+		},
 		{ state: { ...initialState, soul: boundSoul, draft: 'draft-2' } }
 	)
 	expect(superseded.state).toMatchObject({ proposal: null, draft: 'draft-2' })
 	const landed = await app.dispatch(
-		{ type: 'draftSettled', params: { token: 'draft-2', soul: { body: 'You are Fern, still.' } } },
+		{
+			type: 'draftSettled',
+			params: { token: 'draft-2', for: 'rewrite', soul: { body: 'You are Fern, still.' } }
+		},
 		{ state: superseded.state ?? initialState }
 	)
 	expect(landed.state).toMatchObject({
 		draft: null,
-		proposal: { body: 'You are Fern, still.' }
+		proposal: { for: 'rewrite', soul: { body: 'You are Fern, still.' } }
 	})
 })
 
 test('offline says so and keeps the generator, unlike a host that has none', async () => {
 	const { state } = await app.dispatch(
-		{ type: 'draftSettled', params: { token: 'draft-1', error: 'CAPABILITY_OFFLINE' } },
+		{
+			type: 'draftSettled',
+			params: { token: 'draft-1', for: 'summoning', error: 'CAPABILITY_OFFLINE' }
+		},
 		{ state: { ...initialState, draft: 'draft-1' } }
 	)
 	// Transient: the buttons stay. The soul is a file, so writing it works offline.

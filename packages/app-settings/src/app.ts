@@ -82,11 +82,18 @@ export type SettingsState = {
 	// the face it read before. It replicates, so a photo set on another device lands here
 	// the same way.
 	avatarRevision: number
-	// A generated soul awaiting a verdict; nothing is written until the user keeps it. It
-	// cost a model call, so it outlives switching panes and lands even while another pane
-	// is open — but not a GUI start (`guiStarted`), because the draft that asked for it,
-	// the name and nature being tried, is gone by then.
-	proposal: GeneratedSoul | null
+	// A generated soul awaiting a verdict, and WHICH FLOW asked for it; nothing is written
+	// until the user keeps it. It cost a model call, so it outlives switching panes and
+	// lands even while another pane is open — but not a GUI start (`guiStarted`), because
+	// the draft that asked for it, the name and nature being tried, is gone by then.
+	//
+	// The two flows share this one slot and mean different things by it. A `rewrite` is
+	// prose for the agent on the volume, so the character sheet may offer it as theirs. A
+	// `summoning` is prose for an agent who does not exist yet, under a name and nature
+	// that live in the ritual's own React state — the sheet cannot show that as a rewrite
+	// (saving it would put a stranger's words under the current name), and if the ritual is
+	// gone there is nothing left to resume it with.
+	proposal: { soul: GeneratedSoul; for: DraftFor } | null
 	// The draft being waited for, by token — null when none is. It is the marker the pane
 	// shows "Writing…" from AND the identity that decides whose answer is whose: only a
 	// result carrying this token is folded (see `draftSettled`). A boolean could not tell
@@ -126,10 +133,18 @@ export const initialState: SettingsState = {
 const capabilitySchema = v.picklist(['email', 'calendar', 'ai'] satisfies CapabilityId[])
 const genderSchema = v.picklist(['female', 'male'])
 
-// How a draft comes back: the token it was asked under, then either the soul or why it
-// never arrived (the capability error's code, which the fold turns into a sentence).
+// Which flow asked for a draft. It rides with the request and comes back with the answer,
+// because the two flows keep their proposals in the same slot and must never read each
+// other's (see `SettingsState['proposal']`).
+export type DraftFor = 'rewrite' | 'summoning'
+const draftForSchema = v.picklist(['rewrite', 'summoning'] satisfies DraftFor[])
+
+// How a draft comes back: the token it was asked under and who asked, then either the
+// soul or why it never arrived (the capability error's code, which the fold turns into a
+// sentence).
 const draftSettledSchema = v.object({
 	token: v.string(),
+	for: draftForSchema,
 	soul: v.optional(v.object({ body: v.string(), firstWords: v.optional(v.string()) })),
 	error: v.optional(v.string())
 })
@@ -221,14 +236,14 @@ export const app = defineApp({
 			proposal: null,
 			error: null
 		})),
-		draftSettled: t.commit(draftSettledSchema, (state, { token, soul, error }) => {
+		draftSettled: t.commit(draftSettledSchema, (state, { token, for: asked, soul, error }) => {
 			// NOT OURS. `draft` is set by the request that is current and cleared by
 			// `guiStarted`, so a token that does not match belongs to a request something has
 			// superseded: a GUI that closed mid-call, or a later request from the GUI that
 			// replaced it. Both must be dropped — a resummoning's prose landing as the answer
 			// to a Rewrite would sit on a bound agent's sheet, one click from being saved.
 			if (token !== state.draft) return state
-			if (soul) return { ...state, proposal: soul, draft: null }
+			if (soul) return { ...state, proposal: { soul, for: asked }, draft: null }
 			// No generator here (a signed-out Mac): stop offering one, and say so once.
 			if (error === 'CAPABILITY_UNAVAILABLE')
 				return {
@@ -289,19 +304,30 @@ export const app = defineApp({
 		// the model, and it settles into `proposal` for the user to keep or drop.
 		generateSoul: p.procedure({
 			description: 'Draft a soul from a name, a gender and a seed archetype.',
-			schema: v.object({ name: v.string(), gender: genderSchema, archetype: v.string() }),
-			async run(input, app) {
+			// `for` says which flow is asking — it never reaches the capability, it rides back
+			// with the answer so the panes cannot read each other's drafts.
+			schema: v.object({
+				name: v.string(),
+				gender: genderSchema,
+				archetype: v.string(),
+				for: draftForSchema
+			}),
+			async run({ for: asked, ...input }, app) {
 				const token = `draft-${++drafts}`
 				await app.dispatch({ type: 'draftStarted', params: { token } })
 				try {
 					const soul = (await app.invoke('settings', 'agent.generateSoul', input)) as GeneratedSoul
-					await app.dispatch({ type: 'draftSettled', params: { token, soul } })
+					await app.dispatch({ type: 'draftSettled', params: { token, for: asked, soul } })
 				} catch (error) {
 					// A CapabilityError's message IS its code (CAPABILITY_UNAVAILABLE /
 					// CAPABILITY_OFFLINE); the fold is what turns it into something to read.
 					await app.dispatch({
 						type: 'draftSettled',
-						params: { token, error: error instanceof Error ? error.message : String(error) }
+						params: {
+							token,
+							for: asked,
+							error: error instanceof Error ? error.message : String(error)
+						}
 					})
 				}
 			}
