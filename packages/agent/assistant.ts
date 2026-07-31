@@ -1,9 +1,9 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
-import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
 import { ensureAgentDefaults } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
+import { deviceId } from './device'
 import { createReadDocTool, docsPrompt } from './docs'
 import { EXPRESSION_PROMPT } from './expression'
 import { file } from './file'
@@ -13,6 +13,7 @@ import { filesystemPrompt, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './p
 import {
 	type AppendPayload,
 	type ContextMessage,
+	currentSession,
 	type ImageRef,
 	type SessionEntry,
 	type SessionManager,
@@ -108,7 +109,7 @@ export async function createAssistant({
 
 	const agentId = 'main'
 	let session = await route({ agentId }, volume, text)
-	await initSession(session)
+	await initSession()
 
 	return {
 		prompt,
@@ -128,7 +129,7 @@ export async function createAssistant({
 
 	async function newSession() {
 		session = await createSession({ agentId }, volume)
-		await initSession(session)
+		await initSession()
 	}
 
 	function addTools(tools: readonly AgentTool[]) {
@@ -141,6 +142,12 @@ export async function createAssistant({
 	}
 
 	async function prompt(message: string, source: PromptSource = 'user') {
+		// The turn boundary, and the point where a peer's turns join this device's conversation:
+		// `agent.state.messages` is a CACHE of the transcript, not the source of truth, and sync
+		// may have delivered a shard since the last turn. Rehydrating here also refreshes the
+		// session's active leaf, so this turn parents onto the merged lineage instead of forking
+		// off whatever was newest when this host booted (#300).
+		await rehydrate()
 		const offset = agent.state.messages.length
 		let promptError: unknown
 		try {
@@ -177,14 +184,21 @@ export async function createAssistant({
 		}
 
 		if (shouldCompact(agent, compaction)) {
-			const branch = await session.walkActiveBranch()
+			// Pinned to the append cursor: this reads the branch the turn just extended and is
+			// about to append a summary node to. Left unpinned, a peer entry arriving in this
+			// window would move the walk to its branch — the compaction node would attach there and
+			// `firstKeptEntryId` would point into a lineage the summary is not about.
+			const branch = await session.walkActiveBranch(session.activeLeafId)
 			const prepared = prepareCompaction(branch, compaction)
 			const notes = await text.takeNotes(prepared.content)
 			if (notes) {
 				await file(volume, paths.daily()).append(`\n\n${notes}`)
 			}
 			const result = await compact(text, prepared)
-			session.append([
+			// Awaited, unlike before: `initSession` below now recomputes the active leaf from
+			// disk, so an in-flight append would race it — the leaf could come back as the
+			// pre-compaction tip and then be overwritten when the append lands.
+			await session.append([
 				{
 					type: 'compaction',
 					summary: result.summary,
@@ -192,7 +206,7 @@ export async function createAssistant({
 					tokensBefore: result.tokensBefore
 				}
 			])
-			await initSession(session)
+			await initSession()
 		}
 		return answer
 	}
@@ -206,8 +220,18 @@ export async function createAssistant({
 		await agent.continue()
 	}
 
-	async function initSession(session: SessionManager) {
+	// Both halves read the CURRENT `session`, so neither takes it as an argument: passing one
+	// would imply a choice the body does not honour.
+	async function initSession() {
 		agent.state.systemPrompt = await resolveSystemPrompt()
+		await rehydrate()
+	}
+
+	// Replace the in-memory messages with the merged session's context. Note this drops tool
+	// calls/results from earlier turns, which is what the transcript already says should happen
+	// ("old tool output should not live in active context") — so a long-lived host now sees the
+	// same context a freshly-started one does, instead of quietly diverging from it.
+	async function rehydrate() {
 		const msg = await session.buildSessionContext()
 		agent.state.messages = msg.map(contextMessageToAgentMessage)
 	}
@@ -456,35 +480,39 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 	}
 }
 
-const SessionMetaSchema = z.object({
-	sessionId: z.string(),
-	lastActive: z.iso.datetime().transform((s) => new Date(s)),
-	sessionFile: z.string()
-})
-
-const SessionsMap = z.record(z.string(), SessionMetaSchema)
+const SIX_HOURS = 6 * 60 * 60 * 1000
 
 type MessageContext = {
 	agentId: string
 }
 
+// Which session this host is in is DERIVED from the transcripts, never recorded: the one
+// whose newest entry is newest. Open the iPad and it resumes the Mac's conversation, with no
+// pointer file for two hosts to clobber (#300).
+//
+// The idle clock is conversation time (the newest ENTRY) rather than a `lastActive` field
+// each device rewrote on every turn — which is also the RIGHT clock: a peer's turn arriving
+// by sync keeps the session alive, exactly as if it had happened here.
 async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promise<SessionManager> {
-	const sessionKey = resolveSessionKey(ctx)
-	const sessionsMap = file(volume, paths.sessionsMap(ctx.agentId))
-	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
-	const existing = sessions[sessionKey]
-
-	const SIX_HOURS = 6 * 60 * 60 * 1000
 	const now = new Date()
+	const current = await currentSession(volume, ctx.agentId)
+	const open = async (at: { sessionId: string; startTs: Date }) =>
+		session(volume, {
+			agentId: ctx.agentId,
+			sessionId: at.sessionId,
+			startTs: at.startTs,
+			deviceId: await deviceId(volume)
+		})
 
-	if (existing && now.getTime() - existing.lastActive.getTime() < SIX_HOURS) {
-		existing.lastActive = now
-		await sessionsMap.write(JSON.stringify(sessions))
-		return session(existing.sessionFile, volume)
-	}
+	if (current && now.getTime() - Date.parse(current.newestTs) < SIX_HOURS) return open(current)
 
-	if (existing) {
-		const previous = session(existing.sessionFile, volume)
+	// Archiving a retired conversation is a ONE-TIME, cross-device side effect: an LLM call plus
+	// a journal append. It has to be CLAIMED, not merely guarded, because until the fresh session
+	// has its first entry the retired one is still the newest — so a DO eviction, a backend
+	// rebuild, or a host that only asked for history re-derives it and archives it again,
+	// duplicating the notes and paying for the summary every time (#335 review).
+	if (current && (await claimArchive(volume, ctx.agentId, current.sessionId))) {
+		const previous = await open(current)
 		const context = await previous.buildSessionContext()
 		if (context.length > 0) {
 			const tail = context.map((m) => `${m.role}: ${m.content}`).join('\n')
@@ -498,23 +526,67 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 	return createSession(ctx, volume, now)
 }
 
-// Mint + register a fresh session file (the old one stays on disk, unreferenced) and
-// return its manager. Shared by route() (after an idle rollover) and Runtime.newSession.
+// The claim is `writeFile({ exclusive: true })` — atomic create, no replace, on every backend
+// (#325/#327). Scope it honestly: that is a real lock among callers sharing ONE backend, which
+// is exactly the case this fixes — the same host re-initialising (an evicted DO, a rebuilt
+// backend, a reconnect that only wanted history) re-derives the same retired session and would
+// otherwise archive it again on every single init.
+//
+// It does NOT reach across REPLICAS. Two agent-running hosts each hold their own Volume, so
+// both creates succeed and sync later collapses the marker by LWW — after both did the work.
+// That is deliberate: the duplicate costs an LLM call and a journal block, and buying protection
+// with a distributed protocol would cost permanent complexity. It is arbitrated by
+// CONFIGURATION instead — one host per account owns background work — which needs the journal
+// and memory to be per-device shards first (#302/#303), or a double-run is whole-file LWW and a
+// summary is lost rather than duplicated. See `session.test.ts` for the pinned boundary.
+//
+// Claimed BEFORE the work, deliberately. A crash in between loses a best-effort summary;
+// claiming afterwards would duplicate it on every re-init, which is the bug. The transcript
+// itself is never at risk either way — it stays on disk and is searchable, which is where the
+// agent is told to look for old conversations.
+async function claimArchive(volume: Volume, agentId: string, sessionId: string): Promise<boolean> {
+	const path = paths.sessionArchive(agentId, sessionId)
+	await volume.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true })
+	try {
+		await volume.writeFile(path, new TextEncoder().encode(new Date().toISOString()), {
+			exclusive: true
+		})
+		return true
+	} catch (e) {
+		if (!(e as Error).message.startsWith('EEXIST')) throw e
+		return false
+	}
+}
+
+// Mint a fresh session id and open this device's shard for it. The retired session stays on
+// disk and simply stops being the newest — nothing has to be de-registered, because nothing
+// was registered. Shared by route() (after an idle rollover) and Runtime.newSession.
+//
+// Note the one thing deriving costs: a brand-new session has no entries, so it is not yet
+// discoverable. Ask for a new conversation, say nothing, restart — and route() resolves back
+// to the previous session. No content is lost (there was none); the INTENT is. Recording it
+// would mean host-private state under /.state, which #300 leaves optional and nothing has
+// asked for.
+//
+// The second-order effect of that same gap was a real bug, now fixed: the retired session
+// stays the newest until the fresh one has an entry, so every re-init used to re-archive it.
+// `claimArchive` makes the archival idempotent rather than trying to close the window.
+//
+// And note what `route()` being called ONCE per host costs (#337, pre-existing): a warm host
+// never re-evaluates, so it never rolls over on idle and never joins a session a PEER started.
+// Two devices already in the same session converge fine — that is what the turn-boundary
+// rehydrate and the derived-leaf read handle — but a peer starting a NEW one splits them until
+// a restart. Fixing it needs a guard so `newSession()` does not become a no-op, and #334 first
+// so the scan is not paid per turn.
 async function createSession(
 	ctx: MessageContext,
 	volume: Volume,
 	now: Date = new Date()
 ): Promise<SessionManager> {
-	const sessionsMap = file(volume, paths.sessionsMap(ctx.agentId))
-	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
-	const sessionId = crypto.randomUUID().slice(0, 8)
-	// `route()` resolves the STORED path, so old `<id>.jsonl` transcripts keep loading.
-	const sessionFile = paths.sessionFile(ctx.agentId, sessionId, now)
-	sessions[resolveSessionKey(ctx)] = { sessionId, lastActive: now, sessionFile }
-	await sessionsMap.write(JSON.stringify(sessions))
-	return session(sessionFile, volume)
-}
-
-function resolveSessionKey(ctx: MessageContext): string {
-	return `agent:${ctx.agentId}`
+	return session(volume, {
+		agentId: ctx.agentId,
+		sessionId: crypto.randomUUID().slice(0, 8),
+		startTs: now,
+		deviceId: await deviceId(volume)
+	})
 }
