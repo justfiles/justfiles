@@ -135,9 +135,19 @@ describe('sqlite caps.subscribe (change feed)', () => {
 })
 
 // `atomicMove({ noReplace })` — the server's side of `rename(..., { exclusive: true })`.
-// This backend has a transaction, so the refusal belongs INSIDE it: several clients
-// reaching for one name over the /fs wire are then decided by the store rather than by
-// whose round trip lands last (#330).
+// The refusal belongs INSIDE the transaction that rebinds the entry, so it is decided on
+// the same read the move already does and cannot be overtaken by a write of this backend's
+// own (#330).
+//
+// How much that buys against CONCURRENT clients is the adapter's business, not this
+// guard's, and the two shipped adapters answer differently: the DO runs one event at a time
+// with no manual BEGIN (see `createDOSqliteAdapter`), while `createSqliteAdapter` issues
+// BEGIN per transaction without serialising entry — so two overlapping transactions there
+// fail with "cannot start a transaction within a transaction" whatever they were doing (two
+// plain renames included: it long predates this flag, and is filed on its own). So what is
+// asserted here is what the guard itself promises — a taken name is refused, before any
+// write happens — and the N-racer property is pinned where the store really decides it:
+// `exclusive.test.ts` for mem/IDB, `fs.rename.test.ts` for clients over the wire.
 describe('sqlite caps.atomicMove({ noReplace })', () => {
 	it('refuses a taken destination and leaves both entries intact', async () => {
 		const s = makeSqlite()
@@ -156,20 +166,21 @@ describe('sqlite caps.atomicMove({ noReplace })', () => {
 		expect(text(await vol.readFile('/Osaka.md'))).toBe('mine')
 	})
 
-	it('decides N concurrent claimants in the transaction — one winner, nothing lost', async () => {
+	it('throws before it writes — no dirent moved, no journal row, no blob orphaned', async () => {
+		// The guard sits ahead of every mutation in the transaction, which is what makes the
+		// refusal free: a loser leaves the tree byte-for-byte as it was, so `claimPath` can
+		// number up and try again without anything to clean up.
 		const s = makeSqlite()
 		const vol = volume(s)
-		await vol.mkdir('/Inbox')
-		for (let i = 0; i < 10; i++) await vol.writeFile(`/Inbox/n${i}.md`, bytes(`note ${i}`))
-		const results = await Promise.allSettled(
-			Array.from({ length: 10 }, (_, i) =>
-				vol.rename(`/Inbox/n${i}.md`, '/Kyoto.md', { exclusive: true })
-			)
-		)
-		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-		const winner = results.findIndex((r) => r.status === 'fulfilled')
-		expect(text(await vol.readFile('/Kyoto.md'))).toBe(`note ${winner}`)
-		expect((await vol.readdir('/Inbox')).length).toBe(9)
+		await vol.writeFile('/one.md', bytes('one'))
+		await vol.writeFile('/taken.md', bytes('taken'))
+		const before = (await vol.readdir('/')).map((e) => e.name).sort()
+		await expect(vol.rename('/one.md', '/taken.md', { exclusive: true })).rejects.toThrow(/^EEXIST/)
+		expect((await vol.readdir('/')).map((e) => e.name).sort()).toEqual(before)
+		expect(text(await vol.readFile('/one.md'))).toBe('one')
+		expect(text(await vol.readFile('/taken.md'))).toBe('taken')
+		// Nothing was staged and abandoned on the way in, either.
+		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0)
 	})
 })
 

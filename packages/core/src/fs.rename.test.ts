@@ -4,8 +4,12 @@
 // new name at once, so it is also the one place where deciding the claim client-side
 // would be indefensible: a `getDirent` over the wire followed by a `POST /rename` is a
 // TOCTOU a round trip wide. So the flag travels with the move and the SERVER's backend
-// decides it in its own transaction — EEXIST comes back as 409 and is rethrown verbatim,
-// because `claimPath` retries on that message (#330).
+// decides it — EEXIST comes back as 409 and is rethrown verbatim, because `claimPath`
+// retries on that message (#330).
+//
+// The backing store here is `memStorage`, which settles a claim in one synchronous pass:
+// what a client inherits is exactly the server store's isolation, so this is where that
+// property is pinned rather than in the wire.
 
 import { memStorage, volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'

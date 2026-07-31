@@ -161,10 +161,17 @@ export interface Volume {
 	 * `atomicMove({ noReplace })`, not a check up here. It has to be: a `getDirent` followed
 	 * by a move is a TOCTOU, and the state it asks about is shared by everyone on that
 	 * store, not just by this Volume (a frieren tab holds two of them over one IndexedDB).
-	 * mem, IDB, SQLite and the server behind `apiStorage` all have a transaction, so all of
-	 * them decide N racing claimants outright: exactly one wins, and no file is lost.
 	 *
-	 * A real filesystem has no transaction, and Node reaches neither `renameat2` nor
+	 * How much that buys against RACING claimants is then the store's own answer, not this
+	 * flag's. mem settles them in one synchronous pass and IDB in one `readwrite`
+	 * transaction, so there N claimants really do produce exactly one winner and no lost
+	 * file. SQLite decides it in whatever transaction its adapter provides, and a client
+	 * over `apiStorage` inherits the server's — no better and no worse than that isolation.
+	 * What the flag itself guarantees everywhere is narrower and still worth having: a taken
+	 * destination is refused before anything is written, so a loser leaves the tree as it
+	 * was and can number up (`claimPath`).
+	 *
+	 * A real filesystem has no transaction at all, and Node reaches neither `renameat2` nor
 	 * `renamex_np`, so on `nativeStorage` this is BEST EFFORT: an `lstat` and then a rename,
 	 * which is what gnulib's `renameatu` falls back to for the same missing syscall. It is
 	 * truthful when it refuses; a writer arriving between the two steps can still be
