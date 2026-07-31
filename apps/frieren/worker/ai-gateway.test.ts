@@ -343,8 +343,11 @@ describe('createAiGateway', () => {
 		expect(res.status).toBe(429)
 		const usage = await readAiUsage(db)
 		const { resetsAt } = ((await res.json()) as { error: { resetsAt: number } }).error
-		// Both windows are spent, so the EARLIEST reset is the first moment a retry can work.
-		expect(resetsAt).toBe(Math.min(usage.burst.resetsAt ?? 0, usage.weekly.resetsAt ?? 0))
+		// Both windows are spent and admit needs BOTH under cap, so the reset a client is given
+		// must not be earlier than EITHER of them — the earlier one sends it back to another 429.
+		expect(resetsAt).toBeGreaterThanOrEqual(usage.burst.resetsAt ?? 0)
+		expect(resetsAt).toBeGreaterThanOrEqual(usage.weekly.resetsAt ?? 0)
+		expect(resetsAt).toBe(Math.max(usage.burst.resetsAt ?? 0, usage.weekly.resetsAt ?? 0))
 		expect(resetsAt).toBeGreaterThan(Date.now())
 		expect(upstream).not.toHaveBeenCalled()
 	})

@@ -11,6 +11,13 @@
 // (or an OpenAI-compatible server with `stream_options.include_usage`) reports, and bills from
 // THAT, never from what the client claims it received.
 //
+// The meter is CHECK-THEN-ADD, not a reservation (see usage.ts): calls admitted concurrently
+// all see the same committed spend, so a window can end up over its cap by whatever was in
+// flight, and the next call is then refused. Accepted, not overlooked — the caller is one
+// agent turn loop, not a fan-out, so "in flight" is a couple of calls rather than an arbitrary
+// number, and a pre-flight reservation would have to guess a cost it cannot know and refund the
+// difference on every completion.
+//
 // There is no model CHOICE here, by design: the platform AI is one model, picked server-side.
 // `/model` exists because pi needs the model's limits BEFORE it can build a request —
 // `contextWindow` drives compaction, `maxTokens`/`input`/`compat` shape the body — and none of

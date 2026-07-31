@@ -127,8 +127,10 @@ export class QuotaExceededError extends Error {
 }
 
 // Which capped window blocked the call, and when it clears. Read on the REJECTION path only —
-// an admitted call pays nothing for this. Both windows can be spent at once; the EARLIEST
-// reset is the honest answer (the other cap still applies after it, and admit re-checks).
+// an admitted call pays nothing for this. Both windows can be spent at once, and admit needs
+// BOTH under cap, so the LATEST reset among the blocked windows is the first instant a retry
+// can succeed: reporting the earlier one (a 5h burst reset while the weekly gate holds until
+// Monday) sends a client back to be refused again.
 async function quotaExceeded(db: DbAdapter, tier: TierId): Promise<QuotaExceededError> {
 	const usage = await readAiUsage(db)
 	const limits = limitsFor(tier)
@@ -142,7 +144,7 @@ async function quotaExceeded(db: DbAdapter, tier: TierId): Promise<QuotaExceeded
 	].filter((at): at is number => at !== null)
 	return new QuotaExceededError(
 		'AI limit reached — it resets soon, or upgrade your plan.',
-		blocked.length > 0 ? Math.min(...blocked) : undefined
+		blocked.length > 0 ? Math.max(...blocked) : undefined
 	)
 }
 
