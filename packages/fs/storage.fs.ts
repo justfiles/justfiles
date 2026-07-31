@@ -78,6 +78,22 @@ async function publish(
 }
 
 /**
+ * One move at a time per BACKING DIRECTORY — so a move's look at the destination and the
+ * rename that takes it are one turn of this process. See `atomicMove` for what that does
+ * and does not buy: it is a lock, not an emulated primitive — the kernel holds the parent
+ * directories' locks across its own `renameat2` for the same reason.
+ *
+ * Keyed by the root's device+inode, NOT by the storage instance and not by the path
+ * string. The state being guarded is the directory, and one process can open the same
+ * directory more than once — two configured CLI volumes, a task manager beside a volume,
+ * a daemon and a test — spelling it differently each time ('~/notes/' vs the resolved
+ * path, or through a symlink). A per-instance runner would then serialise each instance
+ * against itself and nothing against the other, which is the gap and not the guarantee.
+ * Never pruned: a process opens a handful of roots, and an entry is one promise reference.
+ */
+const movesByRoot = new Map<string, ReturnType<typeof createExclusiveRunner>>()
+
+/**
  * A Storage backed directly by the local filesystem.
  *
  * Ino = OS inode number (stat.ino, stringified). The pathMap bridges the
@@ -111,17 +127,14 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	 */
 	const inflight = new Set<string>()
 
-	/**
-	 * One move at a time, so a move's look at the destination and the rename that takes
-	 * it are one turn of THIS process. See `atomicMove` for what that does and does not
-	 * buy: it is a lock, not an emulated primitive — the kernel holds the parent
-	 * directories' locks across its own `renameat2` for the same reason.
-	 */
-	const moves = createExclusiveRunner()
-
 	const rootStat = await lstat(root)
 	const rootIno = String(rootStat.ino)
 	pathMap.set(rootIno, root)
+
+	// The move chain for this directory, shared with every other instance over it.
+	const rootKey = `${rootStat.dev}:${rootStat.ino}`
+	const moves = movesByRoot.get(rootKey) ?? createExclusiveRunner()
+	movesByRoot.set(rootKey, moves)
 
 	const listeners = new Set<(change: StorageChange) => void>()
 	function emit(change: StorageChange): void {
@@ -199,8 +212,8 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			// — what GNU `mv -n` runs on a kernel without the syscall — falls back to exactly
 			// this, with exactly this admission: "this has a race between the call to lstat and
 			// the call to rename". What `moves` buys is that this PROCESS cannot lose that race
-			// with itself, however many volumes are open over this root; another process
-			// reaching for the same new name in the same instant still can.
+			// with itself, however many storages or volumes are open over this directory; another
+			// process reaching for the same new name in the same instant still can.
 			//
 			// The primitive is not emulated, and this is the third time that is written down
 			// (app-notes' DESIGN.md §1b). `link` + `unlink` takes the name with no window — and

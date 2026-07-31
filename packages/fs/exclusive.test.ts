@@ -347,6 +347,30 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 	})
 })
 
+test('two native storages over one directory still take a name once', async () => {
+	// The chain that orders those moves is keyed by the DIRECTORY, not by the storage
+	// instance, because one process can open the same root twice — two configured CLI
+	// volumes, a task manager beside a volume — and the second spelling need not match the
+	// first. A per-instance chain orders each instance against itself and nothing against
+	// the other, which is the gap rather than the guarantee.
+	const dir = nativeDir()
+	const a = volume(await nativeStorage(dir))
+	// Spelled differently on purpose: same directory, so the same chain.
+	const b = volume(await nativeStorage(`${dir}/./`))
+	await a.mkdir('/Inbox')
+	await a.writeFile('/Inbox/one.md', enc.encode('from a'))
+	await a.writeFile('/Inbox/two.md', enc.encode('from b'))
+	const results = await Promise.allSettled([
+		a.rename('/Inbox/one.md', '/Kyoto.md', { exclusive: true }),
+		b.rename('/Inbox/two.md', '/Kyoto.md', { exclusive: true })
+	])
+	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+	const winner = results[0].status === 'fulfilled' ? 'from a' : 'from b'
+	expect(dec.decode(await a.readFile('/Kyoto.md'))).toBe(winner)
+	// The loser is still in the Inbox, unread by anyone else's move.
+	expect((await a.readdir('/Inbox')).map((e) => e.name)).toHaveLength(1)
+})
+
 test('a write refuses a pathname that now holds a different file', async () => {
 	// The native backend addresses content by inode but reaches it through a pathname,
 	// and a replace-under-the-same-name (a sync client, another editor's atomic save)
