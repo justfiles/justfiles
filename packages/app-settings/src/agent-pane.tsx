@@ -304,7 +304,13 @@ export function AgentPane({
 			state={state}
 			soul={state.soul}
 			client={client}
-			onResummon={() => setResummon(true)}
+			onResummon={() => {
+				// A Rewrite proposal on the sheet is prose for the name and nature they have
+				// NOW — it is not this ritual's draft, and the ritual adopts what it finds.
+				// Left standing it would open on the review step over someone else's words.
+				if (state.proposal) void client.discardProposal({})
+				setResummon(true)
+			}}
 		/>
 	)
 }
@@ -594,16 +600,21 @@ function Summoning({
 	const [photo, setPhoto] = useState<{ bytes: Uint8Array<ArrayBuffer>; url: string } | null>(null)
 	const [body, setBody] = useState('')
 	const [busy, setBusy] = useState(false)
+	// Whether a draft is this ritual's to adopt. `state.proposal` is one slot shared with
+	// the character sheet's Rewrite, and adopting one written for the agent being REPLACED
+	// would skip the name and the nature and then bind that prose under the old archetype.
+	// So the ritual only ever takes a draft it asked for.
+	const [asked, setAsked] = useState(false)
 	const nature = archetypeOf(archetype)
 
 	// The draft arrives through reducer state (it cost a model call, so it survives a
 	// reload): showing it IS the review step.
 	useEffect(() => {
-		if (state.proposal) {
+		if (asked && state.proposal) {
 			setBody(state.proposal.body)
 			setStep('review')
 		}
-	}, [state.proposal])
+	}, [asked, state.proposal])
 
 	// No generator here (a signed-out Mac) ⇒ a soul you write yourself. That can be known
 	// up front, or only once the draft comes back CAPABILITY_UNAVAILABLE and flips
@@ -613,9 +624,15 @@ function Summoning({
 		if (archetype && !state.canGenerate) setStep('review')
 	}, [archetype, state.canGenerate])
 
+	// Asking is what makes the next draft ours to show.
+	const draft = (seed: string) => {
+		setAsked(true)
+		void client.generateSoul({ name: name.trim(), gender, archetype: seed })
+	}
+
 	const pickNature = (id: string) => {
 		setArchetype(id)
-		if (state.canGenerate) void client.generateSoul({ name: name.trim(), gender, archetype: id })
+		if (state.canGenerate) draft(id)
 	}
 
 	const bind = async () => {
@@ -777,13 +794,7 @@ function Summoning({
 										type="button"
 										className="settings-small-button"
 										disabled={busy || writing}
-										onClick={() =>
-											void client.generateSoul({
-												name: name.trim(),
-												gender,
-												archetype: archetype ?? 'companion'
-											})
-										}
+										onClick={() => draft(archetype ?? 'companion')}
 									>
 										{writing ? 'Writing…' : 'Write it again'}
 									</button>

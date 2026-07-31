@@ -90,6 +90,11 @@ export type SettingsState = {
 	// False once the host reports no generator (a signed-out Mac): the pane drops
 	// Rewrite and lets you write the soul yourself instead of showing a dead button.
 	canGenerate: boolean
+	// BOTH OF THE ABOVE ARE FACTS ABOUT THIS HOST, RIGHT NOW — and this state replicates,
+	// so neither may be believed once it is stale. `generating` describes a command, which
+	// dies with the process that issued it; `canGenerate` describes a host, and the Mac's
+	// "no AI here" is not the browser's. `guiStarted` drops both, and a fresh account list
+	// re-probes `canGenerate` so turning on a provider brings the buttons back.
 	loading: boolean
 	error: string | null
 }
@@ -141,7 +146,12 @@ export const app = defineApp({
 			{ description: 'Load connected accounts and their enabled capabilities.' }
 		),
 		accountsLoaded: t.fromResult('settings', 'accounts.listAccounts', (state, r) =>
-			r.ok ? { ...state, accounts: r.value } : { ...state, error: r.error.message }
+			r.ok
+				? // A fresh account list is also the moment to stop believing an old "no AI
+					// here": enabling a provider has to bring Rewrite back without a restart.
+					// If it is still unavailable the next attempt says so again.
+					{ ...state, accounts: r.value, canGenerate: true }
+				: { ...state, error: r.error.message }
 		),
 		loadUser: t.on(
 			v.object({}),
@@ -207,6 +217,17 @@ export const app = defineApp({
 		discardProposal: t.on(v.object({}), (state) => ({ ...state, proposal: null }), {
 			description: 'Drop a generated soul and keep what is on the volume.'
 		}),
+		// Dispatched by a GUI as it mounts, before the loads. Both markers it clears
+		// describe THIS host at THIS moment (see the state type): persisted `generating`
+		// belongs to a command that no longer exists — nothing would ever settle it, and it
+		// disables the whole pane — and a persisted `canGenerate: false` may have been
+		// written by another device entirely. Reopening a window during a real generation
+		// costs only the spinner; the result still lands.
+		guiStarted: t.on(
+			v.object({}),
+			(state) => ({ ...state, generating: false, canGenerate: true }),
+			{ description: 'Drop the in-flight and no-generator markers a past host left behind.' }
+		),
 		avatarChanged: t.on(
 			v.object({}),
 			(state) => ({ ...state, avatarRevision: state.avatarRevision + 1 }),

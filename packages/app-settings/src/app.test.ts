@@ -137,6 +137,23 @@ test('a host with no generator stops offering one instead of showing a dead butt
 	expect(state?.error).toContain('write the soul yourself')
 })
 
+test('a GUI starting drops the markers a stopped host left behind', async () => {
+	// `generating` belongs to a command that died with its process — nothing would ever
+	// settle it, and it disables the pane. `canGenerate: false` may be another device's
+	// answer entirely: this state replicates.
+	const stranded = { ...initialState, generating: true, canGenerate: false }
+	const { state } = await app.dispatch({ type: 'guiStarted', params: {} }, { state: stranded })
+	expect(state).toMatchObject({ generating: false, canGenerate: true })
+})
+
+test('a fresh account list re-probes generation, so turning on a provider brings it back', async () => {
+	const { state } = await app.dispatch(
+		{ type: '__cmd/accountsLoaded', params: { ok: true, value: [deviceAccount] } },
+		{ state: { ...initialState, canGenerate: false } }
+	)
+	expect(state).toMatchObject({ canGenerate: true, accounts: [deviceAccount] })
+})
+
 test('an avatar write moves state, so a face that changed alone still reaches the pane', async () => {
 	// The soul is untouched by writing a photo: without the revision the state after the
 	// write is identical, the kernel emits no update, and the pane keeps its old face.
