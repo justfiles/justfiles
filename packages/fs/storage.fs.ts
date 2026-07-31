@@ -188,29 +188,6 @@ export async function nativeStorage(root: string): Promise<Storage> {
 				if (d !== srcIno) displaced = d
 			} catch {}
 
-			// `noReplace` is BEST EFFORT here, and this is the one backend where it is. A store
-			// with a transaction decides the claim inside the commit that rebinds the entry; a
-			// filesystem has no transaction, POSIX `rename` always replaces, and Node reaches
-			// neither `renameat2(RENAME_NOREPLACE)` nor `renamex_np(RENAME_EXCL)`. So the `lstat`
-			// above is a check before the act, and it is exactly what gnulib's `renameatu` — what
-			// GNU `mv -n` runs on a kernel without the syscall — falls back to, carrying the same
-			// admission: "this has a race between the call to lstat and the call to rename".
-			//
-			// The gap is NOT closed with a lock in here, and that is a decision rather than an
-			// omission. The writers this store shares its namespace with are other PROCESSES —
-			// Finder, `mv`, a sync client, a second app instance — so an in-process mutex cannot
-			// reach the case that matters while it silently serialises the cases that do not, and
-			// a caller still could not lean on it. Every system that genuinely needs mutual
-			// exclusion over a real filesystem takes a lock it OWNS and can see: git's
-			// `index.lock` (`O_CREAT|O_EXCL`), SQLite's advisory locks, Maildir's unique names.
-			// That belongs to whoever wants it, above this layer — app-notes takes its names one
-			// at a time in `claimPath` for precisely this reason. `link` + `unlink` is refused for
-			// the same family of reasons: it stops being a move (a crash leaves both names), it
-			// cannot move a directory, and on macOS `link` FOLLOWS a symlink (coreutils keeps a
-			// `LINK_FOLLOWS_SYMLINKS` tri-state for this), so a moved symlink would become a hard
-			// link to its target.
-			if (options?.noReplace && displaced !== null) throw new Error(`EEXIST: ${newName}`)
-
 			await _rename(oldPath, newPath)
 
 			// Update pathMap for the moved entry and all cached descendants

@@ -888,7 +888,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			oldName: string,
 			newDirIno: Ino,
 			newName: string,
-			options?: MutationOptions & { noReplace?: boolean }
+			options?: MutationOptions
 		): Promise<Ino | null> {
 			await ensureBootstrapped()
 			let displaced: Ino | null = null
@@ -908,12 +908,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 				const destination = await getDirent(tx, newDirIno, newName)
 				if (destination && String(destination.ino) === String(source.ino)) return
-
-				// `noReplace`: refuse a taken destination instead of superseding it. Decided inside
-				// the transaction that rebinds the entry, so N clients reaching for one name are
-				// decided by the store — exactly one commits, the rest see EEXIST and nothing is
-				// replaced. Throwing here rolls the transaction back untouched.
-				if (options?.noReplace && destination) throw new Error(`EEXIST: ${newName}`)
 
 				// Enumerate the moving subtree + resolve both parents' paths BEFORE the
 				// rebind, so we can journal an ordered delete(old) + put(new) below.

@@ -66,13 +66,13 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], fai
 				return undefined
 			case 'rename': {
 				const to = args[1] as string
-				// Models the contract: `exclusive` is a NO-REPLACE move, refused for a taken
-				// name of ANY type; without it, POSIX replace (packages/fs/volume.ts).
-				const exclusive = (args[2] as { exclusive?: boolean } | undefined)?.exclusive
-				if (exclusive && (store.has(to) || folders.has(to))) throw new Error(`EEXIST: ${to}`)
-				// …and models the WEAKNESS the contract admits to: the check and the move are
-				// two steps, so a yield belongs between them. Without it this double is
-				// accidentally atomic and a test about ordering asserts nothing.
+				// Models the contract: POSIX replace, with no flag to soften it (packages/fs/volume.ts).
+				// Refusing a taken name is the APP's job now, so the double must not do it here —
+				// a double that refused would hide the very check `claimPath` is responsible for.
+				//
+				// The yield is load-bearing: the app probes and then moves, so a claim can only be
+				// overtaken between those two steps. Without it this double is accidentally atomic
+				// and a test about ordering asserts nothing.
 				await Promise.resolve()
 				store.delete(to)
 				for (const [key, value] of [...store]) {
@@ -220,12 +220,11 @@ test('concurrent renames to one name are ordered, not raced', async () => {
 })
 
 test('an import racing a move cannot have its note replaced', async () => {
-	// Mixing the two ways of taking a name is the dangerous case: the move sees a free
-	// destination, the import claims it, and the move's second step lands on top while both
-	// callers report success. A store with a transaction refuses that itself (packages/fs —
-	// #330); a plain filesystem has no transaction to refuse it in, and this double is
-	// deliberately that naïve check-then-move — so it pins the app's own half: both claims go
-	// through one chain, so neither can.
+	// Mixing the two ways of taking a name is the dangerous case: the move probes a free
+	// destination, the import claims it with an exclusive create, and the move's rename then
+	// lands on top while both callers report success. `packages/fs` cannot prevent it — POSIX
+	// rename replaces — so `claimPath` puts both on one chain, and this is the test that fails
+	// if that chain goes away.
 	const vol = fakeVolume({ '/A/Kyoto.md': 'the moved one' }, ['/A'])
 	const h = handle(initialState, vol.invoke)
 	const [moved, imported] = (await Promise.all([

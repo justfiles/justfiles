@@ -23,27 +23,34 @@ import {
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-// Claim a free path by CREATING it — `Kyoto.md`, `Kyoto 2.md`, … keeping the
-// extension. The claim is the write itself, never an `exists()` probe followed by a
-// write: that is a TOCTOU, and another writer (the agent, Files, a second window)
-// taking the name in between would have its note overwritten. `create` is atomic in
-// the backend, so the filesystem decides the winner and the loser just numbers up.
-// Used by create, move and import — the single reason nothing in `/notes` is ever
-// silently overwritten (DESIGN.md §3).
-// Procedures run OFF the kernel's per-app queue (packages/app/kernel.ts), so two of
-// them overlap: a drag in the GUI and an agent tool call can both be taking a name.
-// Where the volume sits on a store with a transaction — IndexedDB in the browser, SQLite
-// on the server — both ways of taking a name are decided by the store and neither can
-// overwrite the other (#330). On a plain filesystem there is no transaction to decide it
-// in: `rename` there is a look and then a rename, and nothing below us can make it one
-// step (POSIX has no such call, and faking it with `link`+`unlink` stops being a move).
+// Claim a free path — `Kyoto.md`, `Kyoto 2.md`, … keeping the extension. Try the name, and
+// on EEXIST number up. Used by create, move and import: the single reason nothing in
+// `/notes` is ever silently overwritten (DESIGN.md §3).
 //
-// So the ordering stays OURS, which is the only layer that can hold it: the chain sits
-// INSIDE `claimPath`, not at one call site, because taking a name is a single serialized
-// act however it is done — an exclusive create and an exclusive move mixed together are
-// the dangerous case, and that stays true when a fourth caller appears. Writers in other
-// processes are outside it, as they are for git's `index.lock` or any other app-level
-// lock; that window is documented where the check is.
+// For a CREATE the claim IS the check: `writeFile(..., { exclusive: true })` is `O_EXCL` in
+// every backend, so a create cannot lose the name it took. For a MOVE there is no such
+// primitive — POSIX `rename` replaces, and no no-replace form is reachable from Node — so
+// the check is ours, made here, and `packages/fs` deliberately offers no flag for it (see
+// volume.ts): a promise whose strength differed per backend is not one a call site can
+// reason about. Hence the probe in the move's claim below, in ONE place rather than at each
+// call site.
+//
+// That is what every system in this position does: git takes a lock it owns (`index.lock`,
+// `O_CREAT|O_EXCL`), Maildir gives files names that cannot collide, dpkg moves a
+// `.dpkg-tmp` into place. Ours is this chain plus that probe — and the chain is what makes
+// the probe truthful.
+//
+// Procedures run OFF the kernel's per-app queue (packages/app/kernel.ts), so two of them
+// overlap: a drag in the GUI and an agent tool call can both be taking a name. Mixing the
+// two ways of taking one is the dangerous case — a move sees a free destination, an import
+// claims it exclusively, and the move's rename then replaces the note that just landed
+// while both callers report success. So the chain sits INSIDE `claimPath`, not at one call
+// site: taking a name is a single serialized act however it is done, which is the only
+// version of this that stays true when a fourth caller appears.
+//
+// Writers in OTHER processes sit outside it, exactly as they sit outside git's lock: a
+// second app instance or a sync client reaching for the same new name in the same instant
+// can still replace it. A knowingly accepted window, stated where the check is.
 //
 // One level, and only one: a caller that wraps a `claimPath` in `serially` deadlocks
 // itself — it holds the chain while waiting for the chain. That is the price of a
@@ -306,18 +313,17 @@ export const app = defineApp({
 		}),
 
 		// Rename IS move — retitle, drag into a folder, move a whole folder. It never
-		// overwrites: `volume.rename(..., { exclusive: true })` refuses a destination
-		// that is taken, and `claimPath` numbers up — the same loop `create` and
-		// `importNotes` use, so the policy is one function, not three.
+		// overwrites, and here that is OUR check rather than the volume's: POSIX `rename`
+		// replaces, so `claimPath` probes the destination and numbers up on EEXIST — the same
+		// loop `create` and `importNotes` use, ordered on the same chain, so the policy is one
+		// function and not three.
 		//
-		// That refusal is the STORE's wherever the store has a transaction to decide it in
-		// (#330): overlapping claimants get exactly one winner and no note is replaced. On a
-		// plain filesystem there is no such transaction, so it is a look and then a rename, and
-		// the ordering is `claimPath`'s chain rather than something the backend fakes. What we
-		// do NOT do is emulate the primitive POSIX lacks: the placeholder version of this code
-		// was wrong twice over (a claim is not a reservation in a shared store, and a file
-		// placeholder is the wrong type to rename a folder over), and a `link`+`unlink` version
-		// in the backend stopped being a move at all.
+		// The probe and the move are two steps, which is why the chain matters and why the
+		// window that remains is another PROCESS (see `claimPath`). We do not push this down
+		// into the filesystem: the placeholder version was wrong twice over (a claim is not a
+		// reservation in a shared store, and a file placeholder is the wrong type to rename a
+		// folder over), a `link`+`unlink` version stopped being a move, and an in-process lock
+		// under the backend cannot see the processes that actually share the directory.
 		rename: p.procedure({
 			description:
 				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',
@@ -335,9 +341,12 @@ export const app = defineApp({
 				// strand a folder inside itself.
 				const illegal = illegalMove(from, target)
 				if (illegal) throw new Error(illegal)
-				const path = await claimPath(target, (probe) =>
-					app.invoke('volume', 'rename', from, probe, { exclusive: true })
-				)
+				const path = await claimPath(target, async (probe) => {
+					// The check POSIX `rename` will not make for us. Inside `claimPath`'s chain, so
+					// no other claim of this app's can land between it and the move.
+					if (await app.invoke('volume', 'exists', probe)) throw new Error(`EEXIST: ${probe}`)
+					await app.invoke('volume', 'rename', from, probe)
+				})
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
 				await app.settled(seq)
 				return { path }

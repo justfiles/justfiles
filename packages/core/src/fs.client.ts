@@ -126,31 +126,19 @@ export async function apiStorage(
 		return Object.keys(header).length > 0 ? ({ ...req, header } as T) : req
 	}
 
-	// What the SERVER can promise, asked once and memoised, lazily — an `apiStorage` that
-	// never needs an answer pays nothing for one. Both facts come off the same handshake.
-	//
-	// `contentStore`: does the server's backend have a hash-addressed store? `PUT /blob/:hash`
-	// stores a blob no inode references yet, which a backend without `caps.content` has
-	// nowhere to put — it rejects, and a create that assumed otherwise would fail before ever
-	// reaching `/inodes`.
-	//
-	// `noReplaceRename`: does the server's `POST /rename` honour `noReplace`? Asked for a
-	// harder reason than a failed request — an older server STRIPS the unknown field, does the
-	// ordinary replacing rename and answers 200, so assuming support would report a successful
-	// exclusive move over a destroyed file. Absent reads as false on both counts, because
-	// that is what an older server sends.
-	let handshake: Promise<{ contentStore: boolean; noReplaceRename: boolean }> | undefined
-	const serverCan = (): Promise<{ contentStore: boolean; noReplaceRename: boolean }> => {
-		handshake ??= (async () => {
+	// Does the SERVER's backend have a hash-addressed content store? NEGOTIATED, not
+	// assumed: `PUT /blob/:hash` stores a blob no inode references yet, which a backend
+	// without `caps.content` has nowhere to put — it rejects, and a create that assumed
+	// otherwise would fail before ever reaching `/inodes`. Fetched once and memoised,
+	// lazily, so an apiStorage that never creates a file pays nothing for the answer.
+	let contentStore: Promise<boolean> | undefined
+	const serverHasContentStore = (): Promise<boolean> => {
+		contentStore ??= (async () => {
 			const res = await client.index.$get()
-			if (!res.ok) return { contentStore: false, noReplaceRename: false }
-			const body = await res.json()
-			return {
-				contentStore: body.contentStore === true,
-				noReplaceRename: body.noReplaceRename === true
-			}
+			if (!res.ok) return false
+			return (await res.json()).contentStore === true
 		})()
-		return handshake
+		return contentStore
 	}
 
 	const backend: Storage = {
@@ -267,7 +255,7 @@ export async function apiStorage(
 				let claimed = meta
 				let fill: Uint8Array | undefined
 				if (content !== undefined) {
-					if ((await serverCan()).contentStore) {
+					if (await serverHasContentStore()) {
 						const hash = await sha256Hex(content)
 						const blob = await client.blob[':hash'].$put(
 							withHeaders(
@@ -295,32 +283,11 @@ export async function apiStorage(
 			},
 
 			async atomicMove(oldDirIno, oldName, newDirIno, newName, options) {
-				// Where the server cannot promise `noReplace` (see `serverCan`), the destination is
-				// checked HERE and the guarantee is best effort — a TOCTOU one round trip wide,
-				// which is exactly what this call was before the flag existed, and exactly the
-				// shape a plain filesystem gives a local caller. A refusal is still truthful; only
-				// the race is lost. It is not an error, because a CLI is shipped separately from
-				// the server it talks to and must keep moving files against an older one.
-				if (options?.noReplace && !(await serverCan()).noReplaceRename) {
-					const taken = await backend.getDirent(newDirIno, newName)
-					const source = await backend.getDirent(oldDirIno, oldName)
-					if (taken && taken.ino !== source?.ino) throw new Error(`EEXIST: ${newName}`)
-				}
 				const res = await client.rename.$post(
-					withHeaders(
-						{ json: { oldDirIno, oldName, newDirIno, newName, noReplace: options?.noReplace } },
-						options
-					)
+					withHeaders({ json: { oldDirIno, oldName, newDirIno, newName } }, options)
 				)
 				await throwIfStale(res)
 				if (res.status === 404) return null
-				// `noReplace` is decided by the SERVER's backend, in its transaction, and its
-				// EEXIST comes back as 409. Rethrown verbatim, because it is the answer to the
-				// call and not a transport failure — `claimPath` retries on that message.
-				if (res.status === 409) {
-					const body = (await res.json().catch(() => null)) as { error?: string } | null
-					throw new Error(body?.error ?? `EEXIST: ${newName}`)
-				}
 				if (!res.ok) throw new Error(`atomicMove failed: ${res.status}`)
 				const data = await res.json()
 				return data.displaced

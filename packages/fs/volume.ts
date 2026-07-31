@@ -153,37 +153,27 @@ export interface Volume {
 	 * If newPath already exists it is replaced atomically (POSIX rename
 	 * semantics). Throws ENOENT if oldPath does not exist.
 	 *
-	 * With `exclusive: true` the destination must be FREE: EEXIST if a file or a
-	 * directory already holds that name, so a caller can retry under another name
-	 * instead of destroying a stranger's data.
+	 * There is NO exclusive form, and that is a decision about where a guarantee can live
+	 * rather than an omission. POSIX `rename` replaces, and no atomic no-replace rename is
+	 * reachable from Node (`renameat2(RENAME_NOREPLACE)` and `renamex_np(RENAME_EXCL)` are
+	 * not bound), so on a real filesystem "refuse a taken destination" could only ever be a
+	 * check before the act. `writeFile`'s `exclusive` is different in KIND: `O_EXCL` is a
+	 * primitive every backend already has, so there the check IS the operation.
 	 *
-	 * That refusal is the STORE's, decided in the same commit as the move — the backend's
-	 * `atomicMove({ noReplace })`, not a check up here. It has to be: a `getDirent` followed
-	 * by a move is a TOCTOU, and the state it asks about is shared by everyone on that
-	 * store, not just by this Volume (a frieren tab holds two of them over one IndexedDB).
+	 * Offering the flag anyway would mean a promise whose strength varied by backend —
+	 * settled by one store's transaction, guessed at by a filesystem — and a call site
+	 * cannot reason about that. So claiming a name is the CALLER's policy, held in one
+	 * place, which is what every system in this position does: git takes a lock it owns
+	 * (`index.lock`, `O_CREAT|O_EXCL`), Maildir gives files names that cannot collide, dpkg
+	 * writes `.dpkg-tmp` and moves it. Here it is app-notes' `claimPath` — order the claims,
+	 * check the destination, number up on EEXIST (its DESIGN.md §1b records why).
 	 *
-	 * How much that buys against RACING claimants is then the store's own answer, not this
-	 * flag's. mem settles them in one synchronous pass and IDB in one `readwrite`
-	 * transaction, so there N claimants really do produce exactly one winner and no lost
-	 * file. SQLite decides it in whatever transaction its adapter provides, and a client
-	 * over `apiStorage` inherits the server's — no better and no worse than that isolation,
-	 * and it NEGOTIATES first, because a server predating the flag would strip it, replace
-	 * the destination and answer 200. What the flag itself guarantees everywhere is narrower
-	 * and still worth having: a taken destination is refused before anything is written, so
-	 * a loser leaves the tree as it was and can number up (`claimPath`).
-	 *
-	 * A real filesystem has no transaction at all, and Node reaches neither `renameat2` nor
-	 * `renamex_np`, so on `nativeStorage` this is BEST EFFORT: an `lstat` and then a rename,
-	 * which is what gnulib's `renameatu` falls back to for the same missing syscall. It is
-	 * truthful when it refuses; a writer arriving between the two steps can still be
-	 * replaced. That gap is not closed with a lock in the backend — the writers a real
-	 * filesystem is shared with are other PROCESSES, which no in-process lock reaches. A
-	 * caller that needs mutual exclusion there does what every system in that position does:
-	 * takes a lock it owns (git's `index.lock`), or avoids the collision (Maildir's unique
-	 * names), or orders its own writers — which is app-notes' `claimPath`, one name at a
-	 * time. `packages/fs` does not emulate a primitive the platform does not have.
+	 * What the backends owe REGARDLESS, and honour without being asked, is not corrupting
+	 * the tree while replacing: a displaced inode is freed only when no other directory
+	 * entry still names it (`Storage.deleteInode`'s rule), so a name that survives the move
+	 * still resolves.
 	 */
-	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
+	rename(oldPath: string, newPath: string): Promise<void>
 
 	/**
 	 * Copy a file or directory.
@@ -769,18 +759,12 @@ export function volume(storage: Storage): Volume {
 			await unlinkIno(dirIno, name)
 		},
 
-		async rename(oldPath, newPath, opts) {
+		async rename(oldPath, newPath) {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
 
 			if (storage.caps?.atomicMove) {
-				const displaced = await storage.caps.atomicMove(
-					oldDirIno,
-					oldName,
-					newDirIno,
-					newName,
-					opts?.exclusive ? { noReplace: true } : undefined
-				)
+				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
 				invalidateDirCache(oldDirIno)
 				invalidateDirCache(newDirIno)
 				if (displaced !== null) invalidateIno(displaced)
@@ -791,11 +775,6 @@ export function volume(storage: Storage): Volume {
 			if (source === null) throw new Error(`ENOENT: ${oldName}`)
 
 			const displaced = await storage.getDirent(newDirIno, newName)
-			// A hint, not a guarantee — the only place one is unavoidable. Without
-			// `atomicMove` a move is already two writes (put, then delete), so there is no
-			// commit to put the check in. Every shipped backend has the cap.
-			if (opts?.exclusive && displaced && displaced.ino !== source.ino)
-				throw new Error(`EEXIST: ${newPath}`)
 			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })
 			await storage.deleteDirent(oldDirIno, oldName)
 
@@ -1106,7 +1085,7 @@ export function chroot(fs: Volume, root: string): Volume {
 		mkdir: (path, opts) => fs.mkdir(at(path), opts),
 		readdir: (path) => fs.readdir(at(path)),
 		rm: (path, opts) => fs.rm(at(path), opts),
-		rename: (oldPath, newPath, opts) => fs.rename(at(oldPath), at(newPath), opts),
+		rename: (oldPath, newPath) => fs.rename(at(oldPath), at(newPath)),
 		cp: (src, dest, opts) => fs.cp(at(src), at(dest), opts),
 		symlink: async () => {
 			throw new Error('symlink not supported in chroot')

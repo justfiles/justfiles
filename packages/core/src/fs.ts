@@ -123,14 +123,7 @@ const Handshake = z.object({
 	// because `PUT /blob/:hash` has nowhere to put a blob no inode references yet on a
 	// backend without one. Optional: absent (an older server) reads as false, which
 	// selects the claim-then-fill path that works everywhere.
-	contentStore: z.boolean().optional(),
-	// Does this server's `POST /rename` honour `noReplace` (#330)? It has to be asked,
-	// not assumed: an older server's schema STRIPS the unknown field and does the ordinary
-	// replacing rename, then answers 200 — so a client that assumed support would report a
-	// successful exclusive move over a file it had just destroyed. Optional: absent (an
-	// older server) reads as false, which selects the client-side check that this call did
-	// before the flag existed — a round trip wide, and best effort, but never a false yes.
-	noReplaceRename: z.boolean().optional()
+	contentStore: z.boolean().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
@@ -295,11 +288,7 @@ export function createFsApi(
 						generation: lineage?.generation,
 						resetId: lineage?.resetId,
 						lineageId: lineage?.lineageId,
-						contentStore: backend.caps?.content !== undefined,
-						// A property of this BUILD's route, not of the backend: the route below passes
-						// `noReplace` down, and every shipped backend honours it (best effort on a plain
-						// filesystem, which is stated there and is the same promise a local caller gets).
-						noReplaceRename: true
+						contentStore: backend.caps?.content !== undefined
 					})
 				)
 			})
@@ -642,29 +631,25 @@ export function createFsApi(
 						oldDirIno: z.string(),
 						oldName: z.string(),
 						newDirIno: z.string(),
-						newName: z.string(),
-						// The caller's `{ exclusive: true }`, carried down so the SERVER's backend
-						// decides it in its own transaction. Deciding it on the client (read the
-						// destination over the wire, then move) would be a TOCTOU a round trip wide,
-						// which is the one place where several real clients can actually collide.
-						noReplace: z.boolean().optional()
+						newName: z.string()
 					})
 				),
 				async (c) => {
-					const { oldDirIno, oldName, newDirIno, newName, noReplace } = c.req.valid('json')
+					const { oldDirIno, oldName, newDirIno, newName } = c.req.valid('json')
 					let displaced: string | null = null
 					try {
 						if (backend.caps?.atomicMove) {
-							displaced = await backend.caps.atomicMove(oldDirIno, oldName, newDirIno, newName, {
-								...mutationOptions(c.req.raw),
-								noReplace
-							})
+							displaced = await backend.caps.atomicMove(
+								oldDirIno,
+								oldName,
+								newDirIno,
+								newName,
+								mutationOptions(c.req.raw)
+							)
 						} else {
 							const source = await backend.getDirent(oldDirIno, oldName)
 							if (!source) return c.json({ error: `ENOENT: ${oldName}` }, 404)
 							const dest = await backend.getDirent(newDirIno, newName)
-							if (noReplace && dest && dest.ino !== source.ino)
-								return c.json({ error: `EEXIST: ${newName}` }, 409)
 							await backend.putDirent(
 								newDirIno,
 								newName,
@@ -682,8 +667,7 @@ export function createFsApi(
 						if (message.startsWith('ENOENT:') || message.startsWith('ENOTDIR:')) {
 							return c.json({ error: message }, 404)
 						}
-						if (message.startsWith('EEXIST:') || message.startsWith('ENOTEMPTY:'))
-							return c.json({ error: message }, 409)
+						if (message.startsWith('ENOTEMPTY:')) return c.json({ error: message }, 409)
 						throw error
 					}
 					return c.json({ displaced })

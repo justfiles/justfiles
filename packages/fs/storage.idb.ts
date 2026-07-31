@@ -650,20 +650,18 @@ export function idbStorage(
 			const destination = await tx.objectStore('dirs').get([newDir, newName])
 			let displaced: Ino | null = null
 
-			// `noReplace`: refuse a taken destination instead of superseding it. Decided HERE,
-			// inside the one readwrite transaction that also rebinds the entry, so a second
-			// claimant (another tab on this same database) is serialised by IndexedDB rather
-			// than by luck. Nothing has been written yet, so letting the transaction commit
-			// empty leaves the tree exactly as it was.
-			if (options?.noReplace && destination && destination.ino !== source.ino) {
-				await tx.done
-				throw new Error(`EEXIST: ${newBase}`)
-			}
-
 			if (destination && destination.ino !== source.ino) {
 				displaced = destination.ino
-				await freeIno(tx, destination.ino)
+				// Unbind the name FIRST, then free the inode only if nothing else still names it
+				// — `Storage.deleteInode`'s rule, which this path used to skip. The order is the
+				// whole trick: asked before the delete, the check would find the very entry being
+				// replaced and never free anything (an inode leaked per replace); asked after, it
+				// sees only OTHER names. Sync replay legitimately leaves a transient second one
+				// during a move, and freeing a still-named inode leaves that survivor pointing at
+				// nothing. Same shape as memStorage's `hasDirentReference` guard.
 				await tx.objectStore('dirs').delete([newDir, newName])
+				const alsoNamed = await tx.objectStore('dirs').index('by-ino').get(destination.ino)
+				if (alsoNamed === undefined) await freeIno(tx, destination.ino)
 			}
 
 			await tx.objectStore('dirs').delete([oldDir, oldName])

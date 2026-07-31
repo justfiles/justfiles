@@ -107,28 +107,13 @@ export interface StorageCapabilities {
 	 * window where both names exist. The backend handles freeing any displaced
 	 * inode atomically. Returns the ino of the displaced entry (for cache
 	 * invalidation), or null if nothing was displaced.
-	 *
-	 * `noReplace` refuses a destination that is taken — EEXIST, whatever type holds it —
-	 * instead of replacing it (a name moved onto ITSELF is not "taken"). A backend that has a
-	 * COMMIT must decide it inside the one that rebinds the entry: reading the destination and
-	 * moving afterwards would only relocate the caller's TOCTOU into the backend. Every
-	 * transactional backend already reads that destination to compute `displaced`, so this is
-	 * a guard on a value it is holding, not new work.
-	 *
-	 * A backend with no commit does the best the platform allows and promises no more. The
-	 * shipped one is the native filesystem: POSIX `rename` always replaces, and Node reaches
-	 * neither `renameat2(RENAME_NOREPLACE)` nor `renamex_np(RENAME_EXCL)`, so it is an `lstat`
-	 * and then a rename — the same fallback gnulib's `renameatu` ships for the same missing
-	 * syscall, carrying the same admission ("this has a race between the call to lstat and the
-	 * call to rename"). Callers that need mutual exclusion over a shared filesystem hold a
-	 * lock of their own; the backend does not fake one (see `storage.fs.ts`).
 	 */
 	atomicMove?(
 		oldDir: Ino,
 		oldName: string,
 		newDir: Ino,
 		newName: string,
-		options?: MutationOptions & { noReplace?: boolean }
+		options?: MutationOptions
 	): Promise<Ino | null>
 
 	/** Partial read — if absent the VFS does a full getBlob. */

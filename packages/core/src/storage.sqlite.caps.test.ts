@@ -134,56 +134,6 @@ describe('sqlite caps.subscribe (change feed)', () => {
 	})
 })
 
-// `atomicMove({ noReplace })` — the server's side of `rename(..., { exclusive: true })`.
-// The refusal belongs INSIDE the transaction that rebinds the entry, so it is decided on
-// the same read the move already does and cannot be overtaken by a write of this backend's
-// own (#330).
-//
-// How much that buys against CONCURRENT clients is the adapter's business, not this
-// guard's, and the two shipped adapters answer differently: the DO runs one event at a time
-// with no manual BEGIN (see `createDOSqliteAdapter`), while `createSqliteAdapter` issues
-// BEGIN per transaction without serialising entry — so two overlapping transactions there
-// fail with "cannot start a transaction within a transaction" whatever they were doing (two
-// plain renames included: it long predates this flag, and is filed on its own). So what is
-// asserted here is what the guard itself promises — a taken name is refused, before any
-// write happens — and the N-racer property is pinned where the store really decides it:
-// `exclusive.test.ts` for mem/IDB, `fs.rename.test.ts` for clients over the wire.
-describe('sqlite caps.atomicMove({ noReplace })', () => {
-	it('refuses a taken destination and leaves both entries intact', async () => {
-		const s = makeSqlite()
-		const vol = volume(s)
-		await vol.mkdir('/Inbox')
-		await vol.writeFile('/Inbox/Kyoto.md', bytes('mine'))
-		await vol.writeFile('/Kyoto.md', bytes('theirs'))
-		await expect(vol.rename('/Inbox/Kyoto.md', '/Kyoto.md', { exclusive: true })).rejects.toThrow(
-			/^EEXIST/
-		)
-		expect(text(await vol.readFile('/Kyoto.md'))).toBe('theirs')
-		expect(text(await vol.readFile('/Inbox/Kyoto.md'))).toBe('mine')
-		// A free destination still moves, and moving a name onto itself is not "taken".
-		await vol.rename('/Inbox/Kyoto.md', '/Osaka.md', { exclusive: true })
-		await vol.rename('/Osaka.md', '/Osaka.md', { exclusive: true })
-		expect(text(await vol.readFile('/Osaka.md'))).toBe('mine')
-	})
-
-	it('throws before it writes — no dirent moved, no journal row, no blob orphaned', async () => {
-		// The guard sits ahead of every mutation in the transaction, which is what makes the
-		// refusal free: a loser leaves the tree byte-for-byte as it was, so `claimPath` can
-		// number up and try again without anything to clean up.
-		const s = makeSqlite()
-		const vol = volume(s)
-		await vol.writeFile('/one.md', bytes('one'))
-		await vol.writeFile('/taken.md', bytes('taken'))
-		const before = (await vol.readdir('/')).map((e) => e.name).sort()
-		await expect(vol.rename('/one.md', '/taken.md', { exclusive: true })).rejects.toThrow(/^EEXIST/)
-		expect((await vol.readdir('/')).map((e) => e.name).sort()).toEqual(before)
-		expect(text(await vol.readFile('/one.md'))).toBe('one')
-		expect(text(await vol.readFile('/taken.md'))).toBe('taken')
-		// Nothing was staged and abandoned on the way in, either.
-		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0)
-	})
-})
-
 // Slice 3: local mutations through the public primitives append path-stamped
 // journal rows (via the shared pure builders) inside their own transaction. The
 // engine reads these on push. Mirrors the memStorage reference impl.
