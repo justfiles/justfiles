@@ -10,6 +10,7 @@ import {
 	open,
 	readdir,
 	readFile,
+	readlink,
 	rmdir,
 	unlink
 } from 'node:fs/promises'
@@ -142,13 +143,14 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		return FileType.Regular
 	}
 
-	function metaFromStats(s: Stats): InodeMeta {
+	async function metaFromStats(s: Stats, path: string): Promise<InodeMeta> {
 		return {
 			type: toFileType(s),
 			size: BigInt(s.size),
 			mode: s.mode & 0o7777,
 			mtimeNs: BigInt(Math.trunc(s.mtimeMs)) * 1_000_000n,
-			ctimeNs: BigInt(Math.trunc(s.ctimeMs)) * 1_000_000n
+			ctimeNs: BigInt(Math.trunc(s.ctimeMs)) * 1_000_000n,
+			...(s.isSymbolicLink() ? { symlinkTarget: await readlink(path) } : {})
 		}
 	}
 
@@ -233,7 +235,8 @@ export async function nativeStorage(root: string): Promise<Storage> {
 
 		async getMeta(ino) {
 			try {
-				return metaFromStats(await lstat(getPath(ino)))
+				const path = getPath(ino)
+				return await metaFromStats(await lstat(path), path)
 			} catch {
 				return null
 			}

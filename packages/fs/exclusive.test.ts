@@ -592,19 +592,35 @@ describe.each(backends)('a plain writeFile race on %s', (_name, make) => {
 	})
 })
 
-// mem/idb only: `nativeStorage` never populates `meta.symlinkTarget` from `lstat` (that
-// needs a separate `readlink()`), so symlink-FOLLOWING is independently broken there even
-// for a plain `readFile` with no `writeFile` involved. Pre-existing and out of scope here.
-describe.each(
-	backends.slice(0, 2)
-)('a plain writeFile through a live symlink on %s', (_name, make) => {
-	test('lands on the target, not the link', async () => {
+describe.each(backends)('a live symlink on %s', (_name, make) => {
+	// #329: a symlink is only useful if the backend can read its target BACK. `nativeStorage`
+	// wrote real symlinks but never populated `meta.symlinkTarget` from `lstat` (that needs a
+	// separate `readlink()`), so every following operation — and `readlink` itself — failed
+	// with `EINVAL: symlink has no target`. Nothing raced, nothing wrote: the target was
+	// simply never read back.
+	test('reports its target', async () => {
+		const vol = await make()
+		await vol.writeFile('/target.txt', enc.encode('original'))
+		await vol.symlink('/target.txt', '/link')
+		expect(await vol.readlink('/link')).toBe('/target.txt')
+	})
+
+	test('is followed by a plain read', async () => {
+		const vol = await make()
+		await vol.writeFile('/target.txt', enc.encode('original'))
+		await vol.symlink('/target.txt', '/link')
+		expect(dec.decode(await vol.readFile('/link'))).toBe('original')
+	})
+
+	test('lands a plain writeFile on the target, not the link', async () => {
 		const vol = await make()
 		await vol.writeFile('/target.txt', enc.encode('original'))
 		await vol.symlink('/target.txt', '/link')
 		await vol.writeFile('/link', enc.encode('via the link'))
 		expect(dec.decode(await vol.readFile('/target.txt'))).toBe('via the link')
 		expect(dec.decode(await vol.readFile('/link'))).toBe('via the link')
+		// The link is still a link: the write went THROUGH it, it did not replace it.
+		expect((await vol.lstat('/link')).type).toBe(FileType.Symlink)
 	})
 })
 
