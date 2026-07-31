@@ -18,7 +18,9 @@
  * then a rename, serialised within the process — which is what gnulib's `renameatu`
  * falls back to for the same missing syscall. The window left is another OS PROCESS
  * reaching for the same new name in the same instant; see `storage.fs.ts` for why
- * emulating the primitive with `link` + `unlink` is worse than stating that.
+ * emulating the primitive with `link` + `unlink` is worse than stating that. The one thing
+ * that has to be TESTED with a widened window rather than raced lives next door, in
+ * `storage.fs.claims.test.ts`: a create and an exclusive move take a name on one chain.
  */
 
 import {

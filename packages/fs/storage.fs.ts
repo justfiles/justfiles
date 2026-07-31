@@ -46,13 +46,19 @@ const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
  * This is a hard link, so the inode carries two names between `link` and `unlink`.
  * `Storage` already permits exactly that shape transiently (see the interface note on
  * rename/move), and `inflight` hides the second one from this instance's read paths.
+ *
+ * `claim` is the process-wide chain every name-taking step runs on (see `claims`). Only
+ * the `link` goes on it — the bytes are written to the temp file OUTSIDE it, which is the
+ * other half of why they go to a temp file first: an import's payloads never queue behind
+ * one another, only the instants at which they take their names do.
  */
 async function publish(
 	inflight: Set<string>,
 	dir: string,
 	name: string,
 	data: Uint8Array,
-	mode: number
+	mode: number,
+	claim: <T>(task: () => Promise<T>) => Promise<T>
 ): Promise<void> {
 	const tmp = join(dir, `.jfs-publish-${crypto.randomUUID()}`)
 	inflight.add(tmp)
@@ -66,7 +72,7 @@ async function publish(
 		} finally {
 			await fh.close()
 		}
-		await link(tmp, join(dir, name))
+		await claim(() => link(tmp, join(dir, name)))
 	} finally {
 		// Covers the WHOLE lifecycle, not just the link: a write or close that fails
 		// (ENOSPC, EIO) would otherwise strand the temp file, and repeated failures would
@@ -78,21 +84,28 @@ async function publish(
 }
 
 /**
- * One move at a time, PROCESS-WIDE — so a move's look at the destination and the rename
- * that takes it are one turn. See `atomicMove` for what that buys and what it does not: it
- * is a lock, not an emulated primitive — the kernel holds the parent directories' locks
- * across its own `renameat2` for the same reason.
+ * One name-taking step at a time, PROCESS-WIDE — every create's publish, and every
+ * exclusive move's look-then-rename. It is a lock, not an emulated primitive; the kernel
+ * holds the parent directories' locks across its own `renameat2` for the same reason.
+ *
+ * Creates and moves share ONE chain because they are not equally atomic, and the weaker
+ * one destroys the stronger. A create takes its name with `link`/`mkdir`/`O_EXCL` and
+ * cannot lose it; an exclusive move has to look and then `rename(2)`, which REPLACES — so
+ * a create landing between those two steps is published, reported as a success, and then
+ * overwritten by the move. Ordering only moves against moves protects the operation that
+ * did not need protecting (app-notes' DESIGN.md §1b records the same asymmetry one layer
+ * up, which is why `claimPath` takes its names on one chain too).
  *
  * Deliberately UNKEYED, after three tries at a key. Every key is an argument about when
- * two moves share a directory, and each version of the argument lost a case: one runner
+ * two claims share a directory, and each version of the argument lost a case: one runner
  * per storage instance missed two storages over one root; per root path missed one root
  * spelled two ways; per root inode missed a symlinked root; and per root inode again
- * missed nested roots, where `/repo` and `/repo/tasks` rename into the same directory. A
+ * missed nested roots, where `/repo` and `/repo/tasks` write into the same directory. A
  * destination-inode key would answer all four — and would still be a key to get wrong, for
- * a saving of nothing: a move here is two syscalls, and nothing in this system moves in
- * bulk. Coarse and provably right beats fine and arguable.
+ * a saving of nothing: what is inside the chain is one or two syscalls, never any bytes
+ * (see `publish`). Coarse and provably right beats fine and arguable.
  */
-const moves = createExclusiveRunner()
+const claims = createExclusiveRunner()
 
 /**
  * A Storage backed directly by the local filesystem.
@@ -174,18 +187,20 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		async atomicCreate(dirIno, name, meta, content, options) {
 			const dirPath = getPath(dirIno)
 			const childPath = join(dirPath, name)
+			// Each branch's name-taking syscall is already EEXIST-or-nothing on its own; it goes
+			// on `claims` to be ordered against an exclusive MOVE, whose claim is not (see there).
 			if (meta.type === FileType.Directory) {
-				await mkdir(childPath, { mode: meta.mode })
+				await claims(() => mkdir(childPath, { mode: meta.mode }))
 			} else if (meta.type === FileType.Symlink) {
-				await _symlink(meta.symlinkTarget ?? '', childPath)
+				await claims(() => _symlink(meta.symlinkTarget ?? '', childPath))
 			} else if (content === undefined) {
 				// No content to publish, so the name is the whole claim (`O_EXCL`).
-				const fh = await open(childPath, 'wx', meta.mode)
+				const fh = await claims(() => open(childPath, 'wx', meta.mode))
 				await fh.close()
 			} else {
 				// This backend has no hash-addressed content store, so the bytes are handed
 				// to it directly and the name must not appear until they are all there.
-				await publish(inflight, dirPath, name, content, meta.mode)
+				await publish(inflight, dirPath, name, content, meta.mode, claims)
 			}
 			const s = await lstat(childPath)
 			const ino = String(s.ino)
@@ -207,9 +222,9 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			// `lstat` below IS the check, and it is a check before the act. gnulib's `renameatu`
 			// — what GNU `mv -n` runs on a kernel without the syscall — falls back to exactly
 			// this, with exactly this admission: "this has a race between the call to lstat and
-			// the call to rename". What `moves` buys is that this PROCESS cannot lose that race
-			// with itself — whatever roots its storages are opened at, however they are spelled;
-			// another process reaching for the same new name in the same instant still can.
+			// the call to rename". What `claims` buys is that this PROCESS cannot lose that race
+			// with itself — not against another move, and not against a create publishing the same
+			// name; another process reaching for that name in the same instant still can.
 			//
 			// The primitive is not emulated, and this is the third time that is written down
 			// (app-notes' DESIGN.md §1b). `link` + `unlink` takes the name with no window — and
@@ -219,7 +234,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			// a `LINK_FOLLOWS_SYMLINKS` tri-state for precisely this), so a moved symlink would
 			// become a hard link to its target and the symlink would then be unlinked. `publish`
 			// above may use `link` because a CREATE has no source name to keep; a move has.
-			const displaced = await moves(async () => {
+			const displaced = await claims(async () => {
 				let taken: Ino | null = null
 				try {
 					const d = String((await lstat(newPath)).ino)
