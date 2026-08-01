@@ -302,6 +302,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// The draft, as a ref as well as state: Esc and Enter both blur the field, and a blur
 	// handler reading React state would still see the draft they just abandoned and commit it.
 	const draftRef = useRef<string | null>(null)
+	// Which note the live draft was typed for — the buffer's address when the first keystroke
+	// landed in the field. `null` is a real value here: a detached buffer still holds the words
+	// the draft is about (see the effect below).
+	const draftForRef = useRef<string | null>(null)
 	const setDraft = useCallback((next: string | null) => {
 		draftRef.current = next
 		setTitleDraft(next)
@@ -444,15 +448,32 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// The name to re-create under, kept level with the buffer's address: while it holds a
 	// note, that note's name is the one its words belong to.
 	//
-	// A change of address is also the one thing the name field's draft cannot survive. The GUI
-	// clears it on its own transitions, but the buffer can be moved by someone else — an agent
-	// `open`, or a note deleted under it — and a draft left over from the previous note would
-	// then commit against THIS one, renaming a note the user never looked at. So the invariant
-	// lives here, next to the address it depends on, rather than at each call site.
+	// And the invariant the name field's draft cannot be trusted without: **a draft follows the
+	// WORDS, not the address** — the same rule the buffer machine keeps for bytes. The two cases
+	// it separates are opposite mistakes:
+	//
+	//   • The buffer came to hold something ELSE (an agent `open`). The draft is then about a
+	//     note nobody is looking at, and committing it would rename THIS one. Dropped.
+	//   • The buffer's ADDRESS changed while the words stayed — a save that failed ENOENT
+	//     because the note was deleted underneath (detach), or the recovery create that later
+	//     gives those same words an address again (adoption). The draft is still about these
+	//     words, and it is the only record of the name the user asked for. Kept, and re-pointed.
+	//
+	// Here rather than at each call site: the GUI clears the draft on its own transitions, but
+	// only the buffer knows when something else moved it.
 	useEffect(() => {
 		if (buffer.path !== null) nameRef.current = noteTitle(buffer.path)
-		setDraft(null)
-		setTitleError(null)
+		if (draftRef.current === null) return
+		const wasFor = draftForRef.current
+		// Detach or adoption: the same words at a new address. Follow it.
+		if (buffer.path === null || wasFor === null) {
+			draftForRef.current = buffer.path
+			return
+		}
+		if (buffer.path !== wasFor) {
+			setDraft(null)
+			setTitleError(null)
+		}
 	}, [buffer.path, setDraft])
 
 	// Reflect the open note's filename as the document title — hosts with a native
@@ -665,6 +686,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// still the user's, and `nameRef` still knows what they were called.
 	const blank = buffer.path === null && buffer.text === ''
 	const noteName = buffer.path !== null ? noteTitle(buffer.path) : blank ? '' : nameRef.current
+	// A draft outranks the truth while it is being typed — except when there is nothing to name
+	// at all. An inert field showing a leftover draft would be a name for a note that does not
+	// exist and cannot be committed.
+	const shownName = blank ? '' : (titleDraft ?? noteName)
 
 	// Where the name field lands, and whether it landed. Three answers, not two, because a
 	// name can fail in two unrelated ways:
@@ -1180,11 +1205,14 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 						className="notes-title"
 						aria-label="Note name"
 						placeholder={blank ? 'No note open' : 'Untitled'}
-						value={titleDraft ?? noteName}
+						value={shownName}
 						readOnly={blank}
 						aria-invalid={titleError !== null || undefined}
 						aria-describedby={titleError ? 'notes-title-error' : undefined}
 						onChange={(e) => {
+							// The first keystroke fixes what this draft is ABOUT — the words the buffer is
+							// holding, named by wherever they live right now (see the `buffer.path` effect).
+							if (draftRef.current === null) draftForRef.current = buffer.path
 							setDraft(e.target.value)
 							setTitleError(null)
 						}}
