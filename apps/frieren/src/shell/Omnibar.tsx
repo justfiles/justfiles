@@ -1,4 +1,4 @@
-import { escalatesCapabilities } from '@justfiles/app/appstore'
+import { escalatesCapabilities, semverGte } from '@justfiles/app/appstore'
 import { Transcript } from '@justfiles/ui/Transcript'
 import {
 	ArrowClockwiseIcon,
@@ -224,17 +224,22 @@ export function Omnibar({
 		[catalog, installedById, installingById]
 	)
 	// Every held update, regardless of the query: an installed app whose catalog
-	// version declares MORE access than what's installed, so reconcile skipped it
-	// pending re-consent. Auto-updates need no surface; these do, so they lead the
-	// store list and badge its tile — otherwise the only way to find one is to
-	// happen to type the app's name.
+	// version is NEWER than what's installed and declares MORE access, so reconcile
+	// skipped it pending re-consent. Auto-updates need no surface; these do, so they
+	// lead the store list and badge its tile — otherwise the only way to find one is
+	// to happen to type the app's name. The version direction matters: accepting a
+	// row installs the catalog entry outright (no monotonic guard on that path), so an
+	// older catalog than the installed app — a rollback, or this tab on a stale
+	// deployment — must never be offered as an "update".
 	const held = useMemo(
 		() =>
 			catalog.filter((a) => {
 				const installed = installedById.get(a.id)
+				if (!installed) return false
+				const version = installed.version ?? '0.0.0'
 				return (
-					!!installed &&
-					a.version !== installed.version &&
+					a.version !== version &&
+					semverGte(a.version, version) &&
 					escalatesCapabilities(installed.capabilities, a.capabilities)
 				)
 			}),
