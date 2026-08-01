@@ -249,10 +249,42 @@ function classify(path: string): SkipReason | null {
 const normalize = (path: string) =>
 	path
 		.split('/')
-		.map((segment) => segment.normalize('NFC'))
+		.map((segment) => reread(segment).normalize('NFC'))
 		.join('/')
 
 const decoder = new TextDecoder()
+// …and a strict one, used only to ASK whether some bytes are UTF-8 (see `reread`).
+const strict = new TextDecoder('utf-8', { fatal: true })
+
+// A zip only says its names are UTF-8 by setting a flag bit, and plenty of zippers
+// write UTF-8 bytes without setting it — so the unzipper reads those names one byte
+// per character (Latin-1) and `早起记录.md` arrives as `æ—©èµ·è®°å½•.md`. The bytes were
+// right all along, which is why the note's CONTENT is fine and only its name is not.
+//
+// So when every character is a single byte AND those bytes spell valid multi-byte
+// UTF-8, that is what happened, and we read them again properly. Real Latin-1 text
+// (or CP437, the other thing a zip may mean) essentially never satisfies both, and
+// when it doesn't we leave the name exactly as it came. UTF-8 never encodes `/` in a
+// multi-byte sequence, so doing this per path segment is safe.
+function reread(segment: string): string {
+	const bytes = new Uint8Array(segment.length)
+	let high = false
+	for (let at = 0; at < segment.length; at++) {
+		const code = segment.charCodeAt(at)
+		// Anything above Latin-1 cannot have come from a byte-per-character read, so this
+		// name was decoded correctly (or is genuinely exotic) — hands off either way.
+		if (code > 0xff) return segment
+		if (code > 0x7f) high = true
+		bytes[at] = code
+	}
+	// Pure ASCII reads the same under every encoding a zip can mean.
+	if (!high) return segment
+	try {
+		return strict.decode(bytes)
+	} catch {
+		return segment
+	}
+}
 
 /**
  * Turn ADMITTED entries into a plan — structure only: strip the vault's own root
