@@ -3,6 +3,7 @@ import {
 	displayPath,
 	failedWith,
 	illegalMove,
+	illegalName,
 	isCanonicalPath,
 	isUnder,
 	matchNotes,
@@ -129,4 +130,28 @@ test('a move into its own subtree is refused, everything else allowed', () => {
 	expect(illegalMove('/Trips', '/Trips 2/Trips')).toBe(null)
 	expect(illegalMove('/Trips/Kyoto.md', '/Kyoto.md')).toBe(null)
 	expect(illegalMove('/Kyoto.md', '/Trips/Kyoto.md')).toBe(null)
+})
+
+test('a typed name is judged, not repaired — but only where it matters', () => {
+	// The two are the same rules read two ways: `illegalName` judges what a person typed
+	// into the name field (they can see it, so a silent repair is a surprise about where
+	// their note now lives), `sanitizeName` repairs what arrives as data.
+	expect(illegalName('Kyoto trip')).toBe(null)
+	// Tidying is not worth refusing over — sanitize does it silently, and faithfully.
+	expect(illegalName('  Kyoto   trip  ')).toBe(null)
+	expect(sanitizeName('  Kyoto   trip  ')).toBe('Kyoto trip')
+	// What would move the note, hide it, or break a link to it is refused.
+	expect(illegalName('Trips/Kyoto')).toMatch(/cannot contain/)
+	expect(illegalName('AC\\DC')).toMatch(/cannot contain/)
+	expect(illegalName('Kyoto #1')).toMatch(/cannot contain/)
+	expect(illegalName('.plan')).toMatch(/dot/)
+	expect(illegalName('Kyoto\ttrip')).toMatch(/control/)
+	expect(illegalName('x'.repeat(101))).toMatch(/100/)
+	// An empty name is not an error: clearing the field means "no change", and only the
+	// caller knows what the field was showing.
+	expect(illegalName('   ')).toBe(null)
+	// The shared pattern is `/g` and therefore stateful — asking twice must not pass the
+	// second time because `lastIndex` survived the first `.test`.
+	expect(illegalName('a/b')).not.toBe(null)
+	expect(illegalName('a/b')).not.toBe(null)
 })

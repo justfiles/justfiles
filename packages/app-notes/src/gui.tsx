@@ -16,7 +16,19 @@ import {
 	screenEntry,
 	zipEntryName
 } from './import.ts'
-import { displayPath, failedWith, isUnder, matchNotes, parentDir } from './notes.ts'
+import {
+	displayPath,
+	failedWith,
+	illegalName,
+	isUnder,
+	joinPath,
+	matchNotes,
+	NOTE_EXT,
+	noteTitle,
+	parentDir,
+	renameTarget,
+	sanitizeName
+} from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
 
@@ -263,6 +275,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// docked list pane is the same list, pinned — a GUI-local preference.
 	const [query, setQuery] = useState('')
 	const [searchFocused, setSearchFocused] = useState(false)
+	// The name field, while the user is editing it. `null` = not editing, so the field shows
+	// the truth (the buffer's own path) and an agent rename appears in it with no bookkeeping.
+	const [titleDraft, setTitleDraft] = useState<string | null>(null)
+	const [titleError, setTitleError] = useState<string | null>(null)
 	const [dropOpen, setDropOpen] = useState(false)
 	const [listOpen, setListOpen] = useState(readListPref)
 	const [listWidth, setListWidth] = useState(readWidthPref)
@@ -283,33 +299,53 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const dirRef = useRef('/')
 	const editorRef = useRef<HTMLTextAreaElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
+	// The draft, as a ref as well as state: Esc and Enter both blur the field, and a blur
+	// handler reading React state would still see the draft they just abandoned and commit it.
+	const draftRef = useRef<string | null>(null)
+	const setDraft = useCallback((next: string | null) => {
+		draftRef.current = next
+		setTitleDraft(next)
+	}, [])
 
-	// The volume, as the four functions the buffer needs. Everything app-specific stays
-	// here: the fallback when the folder a scratch note was aimed at has been deleted
-	// (`create` refuses to rebuild it, so the note lands at the top level and the user is
-	// told), and the fact that `save`/`readNote` are procedures that throw.
+	// The search field is the way in — ⌘O, ⌘N, Esc from the body, and every dead end (a
+	// deleted note, a fresh launch) all land here, because naming is how a note begins.
+	const focusSearch = useCallback(() => {
+		searchRef.current?.focus()
+		searchRef.current?.select()
+	}, [])
+
 	// Read through a ref, so the machine — built once — always calls the current actions.
 	const actionsRef = useRef(actions)
 	actionsRef.current = actions
+
+	// Every create in the app goes through here. Aimed at `dir`, but only "that folder is not
+	// there" is grounds for putting the note somewhere else: an EACCES or an EIO on the folder
+	// is a passing problem with the RIGHT place, and relocating on it would file the note in
+	// the wrong folder while blaming a deletion that never happened — so those are rethrown.
+	const createIn = useCallback(async (title: string, text: string, dir: string) => {
+		try {
+			return (await actionsRef.current.create({ title, text, dir })).path
+		} catch (failure) {
+			if (dir === '/' || !missingFolder(failure)) throw failure
+			setStatus('That folder is gone — saved at the top level instead')
+			return (await actionsRef.current.create({ title, text, dir: '/' })).path
+		}
+	}, [])
+
+	// The name the buffer's own create must use. It has exactly one caller — the note the
+	// buffer was holding got deleted or moved out from under it, and the words typed since
+	// have to land somewhere — so the right name is the one that note had. Nothing derives a
+	// name from a body any more (DESIGN.md §4), which is why the name has to be remembered.
+	const nameRef = useRef('Untitled')
+
+	// The volume, as the three functions the buffer needs. Everything app-specific stays
+	// out here: where a note lands, what it is called, and the fact that `save`/`readNote`
+	// are procedures that throw.
 	const io = useRef<BufferIO>({
 		save: async (path, text) => {
 			await actionsRef.current.save({ path, text })
 		},
-		create: async (text) => {
-			const dir = dirRef.current
-			try {
-				return (await actionsRef.current.create({ text, dir })).path
-			} catch (failure) {
-				// Only "that folder is not there" is grounds for putting the note somewhere
-				// else. An EACCES or an EIO on the folder is a passing problem with the RIGHT
-				// place, and relocating on it would file the note in the wrong folder while
-				// blaming a deletion that never happened — so those are rethrown, and the
-				// buffer stays unsaved for the retry.
-				if (dir === '/' || !missingFolder(failure)) throw failure
-				setStatus('That folder is gone — saved at the top level instead')
-				return (await actionsRef.current.create({ text, dir: '/' })).path
-			}
-		},
+		create: (text) => createIn(nameRef.current, text, dirRef.current),
 		read: async (path) => (await actionsRef.current.readNote({ path })).text
 	})
 
@@ -395,14 +431,21 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		})()
 	}, [openPath, buffer.path, buffer.dirty, buf])
 
-	// Launch = blank editor (DESIGN.md §5). Reopen is always blank — capture-first.
+	// Launch = an empty editor with the search field focused (DESIGN.md §5). Reopen is always
+	// blank — capture-first — and blank now means "nothing open", so the way in is the field.
 	const mounted = useRef(false)
 	useEffect(() => {
 		if (mounted.current) return
 		mounted.current = true
 		if (openPath !== null) void actions.newNote({})
-		editorRef.current?.focus()
-	}, [openPath, actions])
+		focusSearch()
+	}, [openPath, actions, focusSearch])
+
+	// The name to re-create under, kept level with the buffer's address: while it holds a
+	// note, that note's name is the one its words belong to.
+	useEffect(() => {
+		if (buffer.path !== null) nameRef.current = noteTitle(buffer.path)
+	}, [buffer.path])
 
 	// Reflect the open note's filename as the document title — hosts with a native
 	// title bar (e.g. desktop) show it there; in quay the centered header below is
@@ -484,65 +527,61 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			if (!(await settle())) return
 			setDropOpen(false)
 			setQuery('')
+			setDraft(null)
+			setTitleError(null)
 			// Opening a note supersedes a folder click as the "where am I" hint.
 			selectedDirRef.current = null
 			await actions.open({ path })
 			editorRef.current?.focus()
 			if (listing) void refresh() // the flushed note's mtime may reorder the list
 		},
-		[settle, actions, listing, refresh]
+		[settle, setDraft, actions, listing, refresh]
 	)
 
-	const startNewNote = useCallback(async () => {
-		// `clear` is settle-then-empty, so an unsaved buffer is written (or reported) before
-		// the editor is blanked — and it clears the buffer itself, which `newNote` alone
-		// cannot do when `openPath` is already null.
-		const outcome = await buf.clear()
-		if (!outcome.settled) {
-			await settle() // reports it, and leaves the words where they are
-			return
-		}
-		setDropOpen(false)
-		setQuery('')
-		await actions.newNote({})
-		editorRef.current?.focus()
-		if (listOpen) void refresh()
-	}, [buf, settle, actions, listOpen, refresh])
+	// Enter in the name field goes to the top of the body — Obsidian's move, and the thing
+	// that makes two fields read as one document.
+	const focusBody = useCallback(() => {
+		const el = editorRef.current
+		el?.focus()
+		el?.setSelectionRange(0, 0)
+	}, [])
 
-	// Create a note whose first line — and therefore filename — is `title`. Two
-	// callers: Enter on an empty result set (the nvAlt move: search and create are
-	// one gesture) and the tree's "New note", which names it inline. Both land it
-	// in a folder, like Obsidian's "same folder as the current file".
+	// Create a note called `title` in `dir`, and open it. Three callers: the search field's
+	// Create row, the tree's "New note", and the name field. The note is created EMPTY — its
+	// name is not repeated in its body (DESIGN.md §4), which is what makes our notes the same
+	// shape as an imported vault's.
 	const createNote = useCallback(
 		async (title: string, dir: string) => {
-			// Empty the buffer first (settling whatever was in it), then type the title into
-			// it and let the machine write it: one path for "a note is created from text",
-			// instead of a second copy of the create rules here.
+			// Land whatever was in the buffer first: a write still aimed at the last note must
+			// not arrive after this one is open.
 			if (!(await buf.clear()).settled) {
 				await settle()
 				return
 			}
 			setDropOpen(false)
 			setQuery('')
+			setDraft(null)
+			setTitleError(null)
 			// Aim at the folder through the HINT, not by writing `dirRef` directly: every
 			// render recomputes that from the hint (`createDir`), so a render between here and
 			// the write — and typing causes one — would otherwise put the note back at the root.
 			selectedDirRef.current = dir
-			dirRef.current = liveDir(dir) ?? '/'
-			buf.type(`${title}\n`)
-			if (!(await settle())) {
-				setQuery(title) // nothing was written, so the title stays where they typed it
+			try {
+				const path = await createIn(title, '', liveDir(dir) ?? '/')
+				nameRef.current = noteTitle(path)
+				await actions.open({ path })
+			} catch (failure) {
+				setStatus(
+					`Could not create “${title}” — ${failure instanceof Error ? failure.message : String(failure)}`
+				)
+				setQuery(title) // nothing was written, so the name stays where they typed it
 				return
 			}
-			// Focus once the buffer has rendered, cursor on the line under the title.
-			requestAnimationFrame(() => {
-				const el = editorRef.current
-				el?.focus()
-				el?.setSelectionRange(el.value.length, el.value.length)
-			})
+			// Focus once the buffer has rendered, cursor at the top of the empty body.
+			requestAnimationFrame(focusBody)
 			if (listing) void refresh()
 		},
-		[buf, settle, liveDir, listing, refresh]
+		[buf, settle, setDraft, createIn, liveDir, actions, focusBody, listing, refresh]
 	)
 
 	// A move can land somewhere other than asked (the name was taken) or be refused
@@ -573,6 +612,72 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			return landed
 		},
 		[actions, buf, settle, refresh]
+	)
+
+	// What the name field shows, and whether there is anything to name. There is no such
+	// thing as an unnamed note any more, so "nothing open" is an INERT editor: a name comes
+	// first (from the search field), and only then is there a body to type into. The one case
+	// where the buffer holds text without a path is a note deleted under it — the words are
+	// still the user's, and `nameRef` still knows what they were called.
+	const blank = buffer.path === null && buffer.text === ''
+	const noteName = buffer.path !== null ? noteTitle(buffer.path) : blank ? '' : nameRef.current
+
+	// Where the name field lands. `keep` is Enter — stay in the field and show the problem,
+	// because that is where the user is and what they are about to fix — versus blur, which
+	// reverts to the real name and explains itself in the status line: fighting a click for
+	// focus is worse than losing a name that was never applied.
+	const commitTitle = useCallback(
+		async (raw: string, keep: boolean): Promise<boolean> => {
+			const held = buf.snapshot().path
+			const name = raw.trim()
+			const revert = () => {
+				setDraft(null)
+				setTitleError(null)
+			}
+			// Cleared, or unchanged: the field goes back to showing what is on disk. Neither is
+			// an error — emptying the field is not a request for a nameless note, there is no
+			// such thing.
+			if (name === '' || name === noteName) {
+				revert()
+				return true
+			}
+			const clean = sanitizeName(name)
+			// The destination the reducer would compute, so the question below is asked about the
+			// path the write will actually take — including the extension a `.txt` note keeps.
+			const target =
+				held !== null
+					? renameTarget(held, joinPath(parentDir(held), clean), true)
+					: joinPath(dirRef.current, `${clean}${NOTE_EXT}`)
+			// Advisory, and knowingly so: it reads a listing, which is a snapshot, so `claimPath`
+			// in the reducer stays the authority and still numbers rather than overwrites. What
+			// this buys is the common case — telling someone the name is taken while they are
+			// still in the field, instead of moving their note to “Kyoto 2” behind their back. A
+			// name taken in the instant between here and the write is reported by `moveNote`.
+			const problem =
+				illegalName(name) ??
+				(entries.some((entry) => entry.path === target) ? `“${clean}” already exists here` : null)
+			if (problem) {
+				if (keep) {
+					setTitleError(problem)
+					return false
+				}
+				revert()
+				setStatus(problem)
+				return false
+			}
+			revert()
+			// A note that exists is RENAMED — through the same `rename` the tree and the agent
+			// use, so the extension rule and the no-overwrite rule cannot disagree. One that does
+			// not exist is a buffer whose note was deleted under it: naming it only says where the
+			// words should land, and the settle is what lands them.
+			if (held !== null) await moveNote(held, target)
+			else {
+				nameRef.current = clean
+				await settle()
+			}
+			return true
+		},
+		[buf, noteName, entries, setDraft, moveNote, settle]
 	)
 
 	// The menu is already closed by the time this runs, so a failure has nowhere to appear
@@ -609,9 +714,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				return
 			}
 			setActive(0)
+			// The editor just went inert (the note it held is gone), so put the user where a note
+			// begins rather than in a field that cannot be typed into.
+			if (undiscard) focusSearch()
 			void refresh()
 		},
-		[actions, buf, refresh]
+		[actions, buf, focusSearch, refresh]
 	)
 
 	// Import a drop: unzip + plan in the GUI, write in chunks through the reducer
@@ -742,29 +850,30 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	}, [settle])
 
 	const filtered = useMemo(() => matchNotes(notes, query.trim()), [notes, query])
+	// A note is born named, so the search field is where naming happens: whatever is typed is
+	// offered as a note to create, on a row of its own after the matches. Offered even when
+	// something DOES match — `Kyoto trip` matching is exactly why `Kyoto` would otherwise be
+	// uncreatable — and reachable with ArrowDown, so it costs no second shortcut.
+	const creatable = query.trim()
+	const rowCount = filtered.length + (creatable ? 1 : 0)
 	// Which row the keyboard is on. Clamped rather than reset, because the listing is live:
 	// results disappearing under the user must not move their place any further than it has
 	// to, and must never leave it pointing past the end.
-	const selected = Math.min(active, filtered.length - 1)
-
-	const focusSearch = useCallback(() => {
-		searchRef.current?.focus()
-		searchRef.current?.select()
-	}, [])
+	const selected = Math.min(active, rowCount - 1)
+	const creating = creatable !== '' && selected === filtered.length
 
 	// Shortcuts are scoped to the app root, not `window` — app windows share the
 	// shell's document (no iframe), so a window listener would fire even when
 	// another window has focus, and ⌘K must stay the shell omnibar's (DESIGN.md
-	// §5). ⌘O/Ctrl+O finds a note; ⌘N is kept for hosts that deliver it (browsers
-	// reserve it for a new window).
+	// §5). ⌘O and ⌘N are the SAME shortcut now: both mean "go to the field where a
+	// note is found or named". ⌘O is the one that works everywhere — browsers reserve
+	// ⌘N for a new window and never deliver it — and ⌘N costs two characters to keep
+	// for the hosts that do (desktop webview).
 	const onRootKey = (e: React.KeyboardEvent) => {
 		if (e.defaultPrevented) return
-		if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
+		if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || e.key === 'n')) {
 			e.preventDefault()
 			focusSearch()
-		} else if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
-			e.preventDefault()
-			void startNewNote()
 		} else if (e.key === 'Escape' && e.target === editorRef.current) {
 			// The nvAlt loop: Esc hops editor → search; Esc in the field hops back.
 			e.preventDefault()
@@ -772,25 +881,44 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		}
 	}
 
+	// The name field commits on Enter or blur, never on a keystroke: one rename per name, not
+	// one per letter (DESIGN.md §4). Esc abandons the draft — and both keys leave the field,
+	// which is why the draft is held in a ref as well (see `setDraft`).
+	const onTitleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+		if (e.key === 'Enter') {
+			e.preventDefault()
+			void (async () => {
+				if (await commitTitle(draftRef.current ?? noteName, true)) focusBody()
+			})()
+		} else if (e.key === 'Escape') {
+			e.preventDefault()
+			setDraft(null)
+			setTitleError(null)
+			focusBody()
+		}
+	}
+
 	const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
 		if (e.key === 'ArrowDown') {
 			e.preventDefault()
-			setActive((i) => Math.min(i + 1, filtered.length - 1))
+			setActive((i) => Math.min(i + 1, rowCount - 1))
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault()
 			setActive((i) => Math.max(i - 1, 0))
 		} else if (e.key === 'Enter') {
 			e.preventDefault()
-			const note = filtered[selected]
-			if (note) void openNote(note.path)
-			// Creating belongs to an EMPTY result set — never to a missing index. The listing
-			// is live, so results can vanish under a selection that was pointing at one, and
-			// "there is nothing at this index" would then mean "make a new note" while matches
-			// are still on screen.
-			else if (filtered.length === 0 && query.trim()) void createNote(query.trim(), createDir())
+			// Creating belongs to the Create ROW — never to a missing index. The listing is live,
+			// so results can vanish under a selection that was pointing at one, and "there is
+			// nothing at this index" would then mean "make a new note" while matches are still on
+			// screen.
+			if (creating) void createNote(creatable, createDir())
+			else {
+				const note = filtered[selected]
+				if (note) void openNote(note.path)
+			}
 		} else if (e.key === 'Delete') {
 			e.preventDefault()
-			const note = filtered[selected]
+			const note = creating ? undefined : filtered[selected]
 			if (note) void removeNote(note.path)
 		} else if (e.key === 'Escape') {
 			e.preventDefault()
@@ -798,6 +926,23 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			editorRef.current?.focus()
 		}
 	}
+
+	// Naming a new note is ONE row, in whichever surface is showing: appended to the
+	// dropdown's results, and pinned under the pane's header — the tree shows the matches
+	// there but has no row of its own to offer. One element, so Enter and a click cannot come
+	// to mean different things.
+	const createRow = creatable ? (
+		<button
+			type="button"
+			className="ds-menu-item notes-item"
+			data-active={searchFocused && creating}
+			onMouseEnter={() => setActive(filtered.length)}
+			onClick={() => void createNote(creatable, createDir())}
+		>
+			<span className="notes-item-title">Create “{creatable}”</span>
+			{creating ? <span className="notes-item-mtime">Return</span> : null}
+		</button>
+	) : null
 
 	// The same rows serve both surfaces: the dropdown under the bar and the
 	// docked pane. `data-active` (the ds-menu highlight) tracks keyboard nav
@@ -818,11 +963,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					<span className="notes-item-mtime">{relativeTime(note.mtime)}</span>
 				</button>
 			))}
-			{filtered.length === 0 ? (
-				<div className="notes-empty">
-					{query.trim() ? `Press Return to create “${query.trim()}”` : 'No notes yet'}
-				</div>
-			) : null}
+			{createRow ??
+				(filtered.length === 0 ? (
+					<div className="notes-empty">No notes yet — type a name to make one</div>
+				) : null)}
 		</>
 	)
 
@@ -897,9 +1041,6 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				<div className="notes-bar">
 					{toggleButton}
 					{searchField}
-					<button type="button" title="New note" onClick={() => void startNewNote()}>
-						New
-					</button>
 				</div>
 			) : null}
 			{status ? <p className="notes-status">{status}</p> : null}
@@ -910,6 +1051,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							{toggleButton}
 							{searchField}
 						</div>
+						{createRow ? <div className="notes-side-create">{createRow}</div> : null}
 						<NotesTree
 							entries={entries}
 							openPath={openPath}
@@ -923,11 +1065,6 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							onRename={moveNote}
 							onRemove={(path) => void removeNote(path)}
 						/>
-						<div className="notes-side-foot">
-							<button type="button" onClick={() => void startNewNote()}>
-								＋ New Note
-							</button>
-						</div>
 					</div>
 				) : null}
 				{listOpen ? (
@@ -950,18 +1087,49 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 						}}
 					/>
 				) : null}
-				<textarea
-					ref={editorRef}
-					className="notes-editor"
-					placeholder="Start typing…"
-					value={buffer.text}
-					onChange={(e) => buf.type(e.target.value)}
-					onBlur={() => void settle()}
-					// Clicking into the editor dismisses an open dropdown (there's no backdrop).
-					onMouseDown={() => {
-						if (dropOpen) setDropOpen(false)
-					}}
-				/>
+				<div className="notes-doc">
+					{/* The name field. It is NOT the first line of the file — the body on disk holds
+					    no title at all, which is what makes a note we made and a note imported from
+					    an Obsidian vault the same shape (DESIGN.md §4). It only looks like a first
+					    line, which is exactly how Obsidian's inline title works. */}
+					<input
+						className="notes-title"
+						aria-label="Note name"
+						placeholder={blank ? 'No note open' : 'Untitled'}
+						value={titleDraft ?? noteName}
+						readOnly={blank}
+						aria-invalid={titleError !== null || undefined}
+						aria-describedby={titleError ? 'notes-title-error' : undefined}
+						onChange={(e) => {
+							setDraft(e.target.value)
+							setTitleError(null)
+						}}
+						onKeyDown={onTitleKey}
+						onBlur={() => {
+							if (draftRef.current !== null) void commitTitle(draftRef.current, false)
+						}}
+					/>
+					{titleError ? (
+						<p className="notes-title-error" id="notes-title-error">
+							{titleError}
+						</p>
+					) : null}
+					<textarea
+						ref={editorRef}
+						className="notes-editor"
+						// Inert until there is a note: read-only rather than hidden, so the layout does
+						// not jump and the ref stays put for the focus that follows an open.
+						readOnly={blank}
+						placeholder={blank ? 'Find or name a note above, then write here' : 'Start typing…'}
+						value={buffer.text}
+						onChange={(e) => buf.type(e.target.value)}
+						onBlur={() => void settle()}
+						// Clicking into the editor dismisses an open dropdown (there's no backdrop).
+						onMouseDown={() => {
+							if (dropOpen) setDropOpen(false)
+						}}
+					/>
+				</div>
 				{dropOpen && !listOpen ? <div className="ds-menu notes-results">{rows}</div> : null}
 			</div>
 		</div>

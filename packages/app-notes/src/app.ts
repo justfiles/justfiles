@@ -2,7 +2,6 @@ import { defineApp } from '@justfiles/app'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import {
-	firstLine,
 	illegalMove,
 	isCanonicalPath,
 	isNotePath,
@@ -204,7 +203,7 @@ export const app = defineApp({
 			}
 		),
 		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, movedFrom: undefined }), {
-			description: 'Start a fresh blank note (clears the editor).'
+			description: 'Close the open note, leaving the editor empty.'
 		}),
 
 		// Internal, like `moved`: the `remove` procedure reports WHAT WAS DELETED and the
@@ -282,15 +281,20 @@ export const app = defineApp({
 			}
 		}),
 
-		// Create a note from text; filename = the first line, kept human (case and
-		// spaces preserved), deduped. `dir` defaults to the vault root; the GUI
+		// Create a note. The NAME is given, never derived from the body (DESIGN.md §4): a note
+		// is named before it exists, by the person or agent that wanted it, and the body is
+		// whatever it starts with — usually nothing. `dir` defaults to the vault root; the GUI
 		// passes the open note's folder so new notes land beside their sibling.
 		create: p.procedure({
 			description:
-				'Create a note from text; its filename is the first line, e.g. "Remember the milk" → /Remember the milk.md. Pass `dir` to create it inside a folder.',
-			schema: v.object({ text: v.string(), dir: v.optional(dirSchema) }),
-			async run({ text, dir }, app) {
-				const wanted = joinPath(dir ?? '/', `${sanitizeName(firstLine(text))}${NOTE_EXT}`)
+				'Create a note called `title`, e.g. title "Remember the milk" → /Remember the milk.md. `text` is the body (empty by default — the title is NOT repeated in it). Pass `dir` to create it inside a folder.',
+			schema: v.object({
+				title: v.string(),
+				text: v.optional(v.string()),
+				dir: v.optional(dirSchema)
+			}),
+			async run({ title, text = '', dir }, app) {
+				const wanted = joinPath(dir ?? '/', `${sanitizeName(title)}${NOTE_EXT}`)
 				// `parents: false`: the folder has to be there ALREADY. The GUI decides where a
 				// new note goes from its listing, which is a snapshot — a folder the agent
 				// deleted a moment ago still looks live in it — and the host would otherwise

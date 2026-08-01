@@ -17,8 +17,8 @@ import { joinPath, matchNotes, parentDir } from './notes.ts'
 // Naming (new note, new folder, rename) is done by OUR menu, not the library's
 // inline rename: the inline input is torn down by the context menu's own close /
 // focus path, so it never survives long enough to type into. One text field in
-// the menu covers all three, and it keeps the app's rule that a new note's title
-// is its first line.
+// the menu covers all three, and a new note needs a name before it exists
+// (DESIGN.md §4) — which is exactly what the field collects.
 
 // The model speaks relative paths and marks folders with a trailing slash;
 // the volume speaks absolute paths.

@@ -128,10 +128,14 @@ export function illegalMove(from: string, to: string): string | null {
 }
 
 /**
- * A filename from a human title, kept as close to the title as the filesystem
- * allows: case and spaces survive (`Remember the milk` → `Remember the milk`),
- * only genuinely unsafe characters are dropped. Imported names are NOT run
- * through this — they are preserved verbatim (DESIGN.md §4).
+ * A filename from a title, kept as close to the title as the filesystem allows: case
+ * and spaces survive (`Remember the milk` → `Remember the milk`), only genuinely unsafe
+ * characters are dropped. Imported names are NOT run through this — they are preserved
+ * verbatim (DESIGN.md §4).
+ *
+ * This REPAIRS whatever it is given, which is right for a name that arrives as data (the
+ * agent's `create`, a note re-created after the one it held was deleted). A name a person
+ * typed into the name field goes through `illegalName` FIRST — see there.
  */
 export function sanitizeName(input: string): string {
 	const out = printable(input.normalize('NFC'))
@@ -145,12 +149,32 @@ export function sanitizeName(input: string): string {
 	return out || 'Untitled'
 }
 
-export function firstLine(text: string): string {
-	for (const line of text.split('\n')) {
-		const trimmed = line.trim()
-		if (trimmed) return trimmed
-	}
-	return ''
+/**
+ * Why this typed NAME cannot be used, or `null` if it can — the human half of the naming
+ * rules, mirroring `illegalMove` for destinations.
+ *
+ * This and `sanitizeName` are the same rules read two ways. Sanitize repairs a name that
+ * arrives as data; this JUDGES a name someone typed, where repairing silently is the wrong
+ * answer — they can see the field, and a name that quietly comes back different is a
+ * surprise about where their note now lives. So it reports only what is genuinely
+ * unusable and stays quiet about tidying: `Kyoto  trip` is not worth refusing over a
+ * double space, and `sanitizeName` still collapses it after this says yes.
+ *
+ * An EMPTY name is not judged here. Clearing the field is not an error, it is "no change",
+ * and only the caller knows what the field was showing before.
+ */
+export function illegalName(name: string): string | null {
+	const trimmed = name.trim()
+	if (trimmed === '') return null
+	// A fresh regex from the same source, because `UNSAFE` is `/g` and therefore stateful:
+	// `.test` leaves `lastIndex` behind it, so every second identical check would pass.
+	if (new RegExp(UNSAFE.source).test(trimmed)) return 'a name cannot contain \\ / # | ^ [ ]'
+	if (printable(trimmed) !== trimmed) return 'a name cannot contain control characters'
+	// A leading dot hides the file from every other tool; `sanitizeName` strips it, which
+	// would silently rename `.plan` to `plan`.
+	if (trimmed.startsWith('.')) return 'a name cannot start with a dot'
+	if (trimmed.length > NAME_MAX) return `a name can be at most ${NAME_MAX} characters`
+	return null
 }
 
 /**
