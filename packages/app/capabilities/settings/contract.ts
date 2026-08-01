@@ -117,8 +117,10 @@ export interface AvatarInfo {
 	// The state it rests in, as a data URL (the app frame's CSP allows `data:` and nothing
 	// else). A complete set of six is ~25 KB, so only the resting one travels.
 	preview: string
-	// The file names it holds, e.g. `['resting.png', 'pleased.png']`. Stem = state,
-	// extension = format; the pane shows a slot per state and names the file it replaces.
+	// The file names it holds, e.g. `['resting.webp', 'pleased.png']` — at most one per state,
+	// which `putAvatarFile` is what guarantees. Stem = state, extension = format (and the
+	// format a file's bytes actually are is read from the bytes, not from that extension); the
+	// pane shows a slot per state and names the file it replaces.
 	files: string[]
 }
 
@@ -172,12 +174,16 @@ export interface SettingsCapability {
 	// Every avatar this host can offer: the built-ins in the app bundle, then whatever is
 	// installed on the volume.
 	'agent.listAvatars'(input: Record<string, never>): Promise<AvatarInfo[]>
-	// Write (or, with null bytes, delete) ONE named file in an avatar's directory, creating
-	// the avatar if this is its first file. That is the whole write surface: an upload of a
-	// photo, an artist's `pleased.png` and a pack being installed are the same operation, so
-	// no method here enumerates states and a new one needs no deploy. `name` is rejected if
-	// it contains `/` or starts with a dot (`.gen` is the model's, not a caller's), and
-	// `avatar` if it is not a single id.
+	// Write (or, with null bytes, delete) ONE state of an avatar, creating the avatar if this
+	// is its first file. That is the whole write surface: an upload of a photo, an artist's
+	// `pleased.png` and a pack being installed are the same operation, so no method here
+	// enumerates states and a new one needs no deploy.
+	//
+	// A write CLAIMS A STATE, not a filename: any file already holding `name`'s stem is
+	// removed first, whatever format it was in, so `pleased.webp` and `pleased.png` can never
+	// both exist and no reader has to arbitrate. A delete drops the state the same way. `name`
+	// is rejected if it contains `/` or starts with a dot (`.gen` is the model's, not a
+	// caller's), and `avatar` if it is not a single id.
 	'agent.putAvatarFile'(input: {
 		avatar: string
 		name: string

@@ -7,9 +7,16 @@ import { derivedDir, readAvatar } from './identity'
 // The generated set is housekept HERE, by the write that replaces it — there is no daily
 // sweep and no filename grammar any more. Canvas is the browser's, so the downscale is
 // stubbed: what this covers is where the bytes land and what they displace.
-vi.mock('./squarePng', () => ({ squarePng: async () => new Uint8Array([9, 9]) }))
+// It answers WebP wherever the browser can encode one, so the state's file is named for what
+// came back — which is the whole point of the format never being read out of a name.
+vi.mock('./squareImage', () => ({
+	squareImage: async () => ({ bytes: png(9, 9), ext: 'webp' })
+}))
 
-const PNG = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
+// Real signatures: every reader here identifies a file by its bytes.
+const png = (...tail: number[]) =>
+	new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...tail])
+const PNG = png(1, 2, 3)
 const MINE = avatarDir('mine')
 const token = async () => 'token'
 
@@ -31,7 +38,7 @@ async function wearing() {
 	await vol.mkdir(MINE, { recursive: true })
 	await vol.writeFile(`${MINE}/resting.png`, PNG)
 	// Someone drew this one: it must survive every generation, forever.
-	await vol.writeFile(`${MINE}/apologetic.png`, new Uint8Array([1]))
+	await vol.writeFile(`${MINE}/apologetic.png`, png(1))
 	const { hash } = await readAvatar(vol, 'mine')
 	if (!hash) throw new Error('an avatar on the volume must have a hash')
 	return { vol, hash }
@@ -40,7 +47,8 @@ async function wearing() {
 test('a derived face lands under the resting art it was derived from', async () => {
 	const { vol, hash } = await wearing()
 	expect(await requestFace(vol, token, 'mine', 'pleased', hash)).toBe(true)
-	expect(await vol.exists(`${derivedDir('mine', hash)}/pleased.png`)).toBe(true)
+	// Named for the format the browser produced, and resolved by stem regardless.
+	expect(await vol.exists(`${derivedDir('mine', hash)}/pleased.webp`)).toBe(true)
 	// The avatar's own directory holds only authored art — this wrote nothing into it.
 	expect((await vol.readdir(MINE)).map((e) => e.name).sort()).toEqual([
 		'.gen',
@@ -75,4 +83,27 @@ test('a stale answer is dropped rather than stored under the wrong art', async (
 	)
 	expect(await requestFace(vol, token, 'mine', 'pleased', 'deadbeef')).toBe(false)
 	expect(await vol.exists(`${MINE}/.gen`)).toBe(false)
+})
+
+test('art replaced while a face was in flight keeps the set it now rests on', async () => {
+	const { vol, hash } = await wearing()
+	// The generation the user is waiting for, and — mid-flight — a new photo, which the shell
+	// on this or another device has already had a face derived for.
+	const answered = derivedDir('mine', hash)
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async () => {
+			await vol.writeFile(`${MINE}/resting.png`, png(7))
+			await vol.mkdir(derivedDir('mine', 'newhash'), { recursive: true })
+			await vol.writeFile(`${derivedDir('mine', 'newhash')}/curious.png`, png(5))
+			return { ok: true, json: async () => ({ data: 'aGk=', mimeType: 'image/png', hash }) }
+		})
+	)
+
+	expect(await requestFace(vol, token, 'mine', 'pleased', hash)).toBe(false)
+
+	// The sweep is the destructive step, so the answer is dropped BEFORE it runs: the current
+	// set survives, and art nobody could resolve is never written in its place.
+	expect(await vol.exists(`${derivedDir('mine', 'newhash')}/curious.png`)).toBe(true)
+	expect(await vol.exists(answered)).toBe(false)
 })

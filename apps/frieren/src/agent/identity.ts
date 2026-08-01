@@ -3,11 +3,11 @@ import {
 	AVATARS_DIR,
 	avatarDir,
 	avatarFaceHash,
-	avatarMime,
 	avatarState,
 	SOUL_PATH
 } from '@justfiles/agent/defaults'
 import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
+import { imageDataUrl } from '@justfiles/app/image-type'
 import type { Volume } from '../fs'
 
 // How the SHELL reads the agent's identity off the volume: the name to greet by, and the
@@ -111,39 +111,52 @@ export const DEFAULT_AVATAR: Avatar = {
 	faces: {}
 }
 
-// Resolution is `readdir` + match by STEM, so the reader never names an extension: what an
-// avatar covers is which files exist, and `resting.webm` would resolve here unchanged.
+// Resolution is `readdir` + match by STEM, so the reader never reads meaning into an
+// extension: what an avatar covers is which files exist, what they ARE is read from their
+// bytes, and `resting.webp` resolves here unchanged. Sorted first — see `avatarState` for why
+// a stable order matters even though a write claims a whole state.
 async function fromVolume(volume: Volume, ref: string): Promise<Avatar | null> {
 	const dir = avatarDir(ref)
 	if (!(await volume.exists(dir))) return null
-	const names = (await volume.readdir(dir)).map((entry) => entry.name)
-	const resting = names.find((name) => avatarState(name) === 'resting')
+	const names = (await volume.readdir(dir)).map((entry) => entry.name).sort()
+	const resting = await pick(volume, dir, names, 'resting')
+	// No resting state — or one this build cannot render (a video, a rig, a truncated file) — is
+	// not an avatar yet: fall back rather than leave the agent faceless.
 	if (!resting) return null
-	const bytes = await volume.readFile(`${dir}/${resting}`)
-	const hash = await avatarFaceHash(bytes)
+	const hash = await avatarFaceHash(resting.bytes)
 
 	const faces: Partial<Record<Expression, string>> = {}
-	const take = async (from: string, name: string) => {
-		const state = avatarState(name) as Expression
-		if (faces[state] || !EXPRESSIONS.includes(state)) return
-		faces[state] = dataUrl(await volume.readFile(`${from}/${name}`), name)
+	const take = async (from: string, listing: string[]) => {
+		for (const expression of EXPRESSIONS) {
+			if (faces[expression]) continue
+			const found = await pick(volume, from, listing, expression)
+			if (found) faces[expression] = found.url
+		}
 	}
 	// Authored first: the artist's file wins as a LOOKUP ORDER, not as a rule to remember.
-	for (const name of names) await take(dir, name)
+	await take(dir, names)
 	const derived = derivedDir(ref, hash)
 	if (await volume.exists(derived)) {
-		for (const entry of await volume.readdir(derived)) await take(derived, entry.name)
+		await take(derived, (await volume.readdir(derived)).map((entry) => entry.name).sort())
 	}
-	return { url: dataUrl(bytes, resting), hash, faces }
+	return { url: resting.url, hash, faces }
 }
 
-// A data URL rather than a blob URL: these sit in React state next to the built-in art, which
-// is data URLs too, and nothing has to own a revoke. The mime comes from the extension — the
-// one thing about a state's file this reader has to know.
-function dataUrl(bytes: Uint8Array, name: string): string {
-	let binary = ''
-	for (const byte of bytes) binary += String.fromCharCode(byte)
-	return `data:${avatarMime(name)};base64,${btoa(binary)}`
+// The file holding one state, as something renderable. A file whose bytes are not an image
+// this build knows is SKIPPED rather than turned into a broken <img> — so a directory that
+// also holds `resting.txt` still resolves, and one that holds only that does not pretend to.
+async function pick(
+	volume: Volume,
+	dir: string,
+	names: string[],
+	state: string
+): Promise<{ bytes: Uint8Array; url: string } | null> {
+	for (const name of names.filter((entry) => avatarState(entry) === state)) {
+		const bytes = await volume.readFile(`${dir}/${name}`)
+		const url = imageDataUrl(bytes)
+		if (url) return { bytes, url }
+	}
+	return null
 }
 
 /**

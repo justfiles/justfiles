@@ -12,7 +12,7 @@ import {
 	wornAvatar
 } from './app.ts'
 import { ARCHETYPES, archetypeOf } from './archetypes.ts'
-import { pngUrl, squarePng } from './squarePng.ts'
+import { imageUrl, squareImage } from './squareImage.ts'
 
 // The Agent pane: who your companion is, and nothing else (your own name and birth date
 // live with your account — they are facts about you). Two states, one pane:
@@ -243,10 +243,10 @@ export function useAvatars(client: Client<SettingsApp>, revision: number): Avata
 	return avatars
 }
 
-// The id an uploaded photo lands under, and the file that IS the avatar. `mine` is just the
+// The id an uploaded photo lands under, and the state that IS the avatar. `mine` is just the
 // id the uploader picks — nothing stops `mine-2` later, so there is no machinery for it now.
 const MINE = 'mine'
-const RESTING = 'resting.png'
+const RESTING = 'resting'
 
 // Click it or drop an image on it: the portrait IS the fast path to your own avatar — one
 // photo becomes `mine/resting.png` and the expression faces are derived from it. The wardrobe
@@ -264,7 +264,8 @@ function AvatarDrop({
 	size?: 'sheet' | 'altar'
 	dim?: boolean
 	busy?: boolean
-	onPick: (bytes: Uint8Array<ArrayBuffer>) => void
+	// The bytes AND the format they came back in: the caller names the state's file after it.
+	onPick: (image: { bytes: Uint8Array<ArrayBuffer>; ext: string }) => void
 	onError?: (message: string) => void
 }) {
 	const input = useRef<HTMLInputElement>(null)
@@ -275,7 +276,7 @@ function AvatarDrop({
 		if (!file.type.startsWith('image/')) return onError?.('That is not an image.')
 		const source = URL.createObjectURL(file)
 		try {
-			onPick(await squarePng(source))
+			onPick(await squareImage(source))
 		} catch (error) {
 			onError?.(error instanceof Error ? error.message : String(error))
 		} finally {
@@ -373,9 +374,11 @@ function States({
 		if (!file.type.startsWith('image/')) return setError('That is not an image.')
 		const source = URL.createObjectURL(file)
 		try {
-			// Normalised to the same 256² PNG as everything else here, so a 4 MB photo is not
-			// replicated to every device six times over.
-			await put(`${state}.png`, await squarePng(source))
+			// Normalised to the same 256² square as everything else here, so a 4 MB photo is not
+			// replicated to every device six times over. The write claims the STATE, so this
+			// replaces whatever format that state was stored in before.
+			const drawn = await squareImage(source)
+			await put(`${state}.${drawn.ext}`, drawn.bytes)
 		} catch (problem) {
 			setError(problem instanceof Error ? problem.message : String(problem))
 		} finally {
@@ -573,10 +576,16 @@ function CharacterSheet({
 	// A photo becomes an avatar OF THEIR OWN: it lands as `mine/resting.png` and is then worn.
 	// The file first, then the soul — the soul is the pointer, so a failed upload leaves them
 	// wearing exactly what they wore, and a failed wear leaves a file nobody is looking at.
-	const wearPhoto = async (bytes: Uint8Array<ArrayBuffer>) => {
+	const wearPhoto = async (photo: { bytes: Uint8Array<ArrayBuffer>; ext: string }) => {
 		setFaceError(null)
 		try {
-			await client.putAvatarFile({ avatar: MINE, name: RESTING, bytes })
+			// Named for the format that came back — WebP where the browser can encode it. Nothing
+			// downstream reads meaning into that name: a state's format is read from its bytes.
+			await client.putAvatarFile({
+				avatar: MINE,
+				name: `${RESTING}.${photo.ext}`,
+				bytes: photo.bytes
+			})
 			if (soul.avatar !== MINE) await save({ avatar: MINE }, false)
 		} catch (error) {
 			setFaceError(error instanceof Error ? error.message : String(error))
@@ -614,7 +623,7 @@ function CharacterSheet({
 						face={worn?.preview}
 						busy={busy}
 						onError={setFaceError}
-						onPick={(bytes) => void wearPhoto(bytes)}
+						onPick={(photo) => void wearPhoto(photo)}
 					/>
 					<span className="agent-hint">click or drop</span>
 					{faceError ? <span className="settings-card-error">{faceError}</span> : null}
@@ -820,7 +829,11 @@ function Summoning({
 	const [name, setName] = useState(from?.name ?? '')
 	const [gender, setGender] = useState<Gender>(from?.gender ?? 'female')
 	const [archetype, setArchetype] = useState<string | null>(null)
-	const [photo, setPhoto] = useState<{ bytes: Uint8Array<ArrayBuffer>; url: string } | null>(null)
+	const [photo, setPhoto] = useState<{
+		bytes: Uint8Array<ArrayBuffer>
+		ext: string
+		url: string
+	} | null>(null)
 	const [body, setBody] = useState('')
 	const [firstWords, setFirstWords] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
@@ -864,7 +877,13 @@ function Summoning({
 			// soul is the POINTER — so a failed upload leaves the agent exactly as they were, and
 			// a failed bind leaves a file under `mine/` that nobody is wearing and nobody sees.
 			// Nothing is deleted either way: the art they had is still theirs.
-			if (photo) await client.putAvatarFile({ avatar: MINE, name: RESTING, bytes: photo.bytes })
+			if (photo) {
+				await client.putAvatarFile({
+					avatar: MINE,
+					name: `${RESTING}.${photo.ext}`,
+					bytes: photo.bytes
+				})
+			}
 			await client.saveSoul({
 				name: name.trim(),
 				gender,
@@ -901,7 +920,7 @@ function Summoning({
 							face={art}
 							size="altar"
 							busy={busy}
-							onPick={(bytes) => setPhoto({ bytes, url: pngUrl(bytes) })}
+							onPick={(picked) => setPhoto({ ...picked, url: imageUrl(picked.bytes) })}
 						/>
 					) : (
 						<span className="agent-drop agent-altar-portrait" data-dim="true">

@@ -427,7 +427,10 @@ test('a soul write is a patch: a rename never carries an unfinished edit with it
 
 test('an avatar is a directory: listAvatars shows the bundle then the volume', async () => {
 	const { vol, caps } = agentHost()
-	const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
+	// Real signatures: a preview says what the BYTES are, never what the name claims.
+	const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
+	const webp = new Uint8Array([...encode('RIFF'), 0, 0, 0, 0, ...encode('WEBP')])
+
 	// Nothing installed yet: the built-in art alone, and it costs the volume nothing.
 	expect(await caps.invoke(call('agent.listAvatars'))).toEqual([
 		{
@@ -439,32 +442,66 @@ test('an avatar is a directory: listAvatars shows the bundle then the volume', a
 		}
 	])
 
-	// One named file per state, and the first one brings the avatar into being.
-	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes }))
-	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.webp', bytes }))
+	// One file per state, and the first one brings the avatar into being. A state may be
+	// stored in any format — this one wears a WebP resting face, as a browser that can encode
+	// WebP produces.
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: webp })
+	)
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.png', bytes: png })
+	)
 	const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
 	expect(mine).toMatchObject({ ref: 'mine', label: 'Mine', builtin: false })
-	expect(mine?.files.sort()).toEqual(['pleased.webp', 'resting.png'])
-	// The preview carries the mime the file's extension says it is.
-	expect(mine?.preview.startsWith('data:image/png;base64,')).toBe(true)
-	expect(await vol.exists(`${PATHS.avatars}/mine/resting.png`)).toBe(true)
+	expect(mine?.files).toEqual(['pleased.png', 'resting.webp'])
+	expect(mine?.preview.startsWith('data:image/webp;base64,')).toBe(true)
 
-	// Null bytes DELETE that one state — the artist's file goes, the avatar stays.
+	// Null bytes DELETE that state — the artist's file goes, the avatar stays.
 	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.webp', bytes: null })
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.png', bytes: null })
 	)
 	const [, after] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
-	expect(after?.files).toEqual(['resting.png'])
+	expect(after?.files).toEqual(['resting.webp'])
 
 	// Derived art is the model's lane, and a directory with no resting state is not an
 	// avatar yet: neither shows up as one to wear.
 	await vol.mkdir(`${PATHS.avatars}/mine/.gen/abc`, { recursive: true })
-	await vol.writeFile(`${PATHS.avatars}/mine/.gen/abc/curious.png`, bytes)
+	await vol.writeFile(`${PATHS.avatars}/mine/.gen/abc/curious.png`, png)
 	await vol.mkdir(`${PATHS.avatars}/half`, { recursive: true })
-	await vol.writeFile(`${PATHS.avatars}/half/pleased.png`, bytes)
+	await vol.writeFile(`${PATHS.avatars}/half/pleased.png`, png)
+	// And one whose resting bytes are not an image at all: also not offered, rather than
+	// offered as a broken portrait.
+	await vol.mkdir(`${PATHS.avatars}/broken`, { recursive: true })
+	await vol.writeFile(`${PATHS.avatars}/broken/resting.png`, encode('not an image'))
 	const list = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
 	expect(list.map((a) => a.ref)).toEqual(['builtin/vanilla', 'mine'])
-	expect(list[1]?.files).toEqual(['resting.png'])
+	expect(list[1]?.files).toEqual(['resting.webp'])
+})
+
+test('a write claims a STATE, so one state can never be stored twice', async () => {
+	// The uniqueness a state needs is not the one a filesystem gives: `pleased` is the key,
+	// but `pleased.png` is the name. So the write seam enforces it — replacing a pack's WebP
+	// face with a PNG one must not leave both, or which of them a reader picks would come down
+	// to directory order.
+	const { vol, caps } = agentHost()
+	const dir = `${PATHS.avatars}/mine`
+	const webp = new Uint8Array([...encode('RIFF'), 0, 0, 0, 0, ...encode('WEBP')])
+	const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
+
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: webp })
+	)
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes: png })
+	)
+	expect((await vol.readdir(dir)).map((e) => e.name)).toEqual(['resting.png'])
+
+	// And a DELETE drops the state in whatever format it is stored, so the pane can ask by
+	// the name it happens to be showing.
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.jpg', bytes: null })
+	)
+	expect(await vol.readdir(dir)).toEqual([])
 })
 
 test('putAvatarFile writes ONE file in ONE avatar, and nowhere else', async () => {

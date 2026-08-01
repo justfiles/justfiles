@@ -1,6 +1,7 @@
-import { avatarDir, avatarFaceHash, avatarMime, avatarState } from '@justfiles/agent/defaults'
+import { avatarDir, avatarFaceHash, avatarState } from '@justfiles/agent/defaults'
 import { type Expression, facePrompt } from '@justfiles/agent/expression'
 import type { GeneratedImage } from '@justfiles/app/capabilities/image'
+import { imageType } from '@justfiles/app/image-type'
 import type { Volume } from '@justfiles/fs'
 
 // One per-expression face, derived from an avatar's `resting.*` by the image engine. Lazy by
@@ -60,13 +61,22 @@ async function produce(
 	const now = deps.now ?? Date.now
 	if (!generate) return null
 	// An avatar is a DIRECTORY, and the state it rests in is the seed every expression is
-	// derived from. Matched by stem, so the format is the file's business, not this one's.
+	// derived from. Matched by stem and sorted, the same way the shell resolves it, so both
+	// sides agree on which file that is whatever the backend's `readdir` order.
 	const dir = avatarDir(avatar)
 	if (!(await volume.exists(dir))) return null
-	const resting = (await volume.readdir(dir)).find((e) => avatarState(e.name) === 'resting')
+	const resting = (await volume.readdir(dir))
+		.map((entry) => entry.name)
+		.sort()
+		.find((name) => avatarState(name) === 'resting')
 	if (!resting) return null
 
-	const source = await volume.readFile(`${dir}/${resting.name}`)
+	const source = await volume.readFile(`${dir}/${resting}`)
+	// What the bytes ARE, not what the name claims — the engine is handed a mime and would
+	// refuse a mislabelled one. Unrecognised (a video, a rig, a truncated file) is not
+	// something to ask an image model about.
+	const mimeType = imageType(source)
+	if (!mimeType) return null
 	// The caller names the file after ITS resting art's hash. A mismatch means the two sides
 	// disagree about the source (a sync in flight) — let it ask again later.
 	if ((await avatarFaceHash(source)) !== hash) return null
@@ -80,7 +90,7 @@ async function produce(
 	try {
 		const [image] = await generate(facePrompt(expression), {
 			data: encodeBase64(source),
-			mimeType: avatarMime(resting.name)
+			mimeType
 		})
 		if (!image) throw new Error('the image engine returned no image')
 		await storage.delete(failedKey)

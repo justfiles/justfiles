@@ -31,6 +31,7 @@
 //    account, always on this side. With only one lane configured, every check above
 //    is a no-op — unchanged from before any of this existed.
 
+import { imageDataUrl } from '../../image-type.ts'
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
 import type {
@@ -254,16 +255,16 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 
 // ── avatars ───────────────────────────────────────────────────────────────
 // An avatar is a DIRECTORY under `paths.avatars`, named by its id, holding one file per
-// state it can be in. Stem = state, extension = format, so nothing here names an extension
-// except to say what mime the bytes it just read are.
+// state it can be in. Stem = state, extension = format — and the format is never read out of
+// the name: `imageType` answers that from the bytes.
 //
-// `@justfiles/agent` spells those two rules too (`avatarState`, `avatarMime`) and this side
-// cannot import them — that package depends on this one, which is why the paths and the art
-// are injected. A one-line ext→mime map is not worth a fifth injected dep.
+// Listings are SORTED, so the file that holds a state is the same one on every host: raw
+// `readdir` is sorted on the native backend and insertion-ordered on the in-memory one, which
+// would otherwise resolve a stray same-stem pair differently per device.
 
 async function entries(vol: IdentityVolume, path: string): Promise<string[]> {
 	if (!(await vol.exists(path))) return []
-	return (await vol.readdir(path)).map((entry) => entry.name)
+	return (await vol.readdir(path)).map((entry) => entry.name).sort()
 }
 
 function state(name: string): string {
@@ -274,16 +275,6 @@ function state(name: string): string {
 // The id is the label until there is a store that needs a manifest to carry one.
 function label(id: string): string {
 	return id.charAt(0).toUpperCase() + id.slice(1)
-}
-
-// A data URL, because the app frame's CSP is `img-src data: blob:` — a path would be
-// unrenderable there, and bytes per file would put a megabyte through a list call.
-async function dataUrl(vol: IdentityVolume, path: string): Promise<string> {
-	const bytes = await vol.readFile(path)
-	const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-	let binary = ''
-	for (const byte of bytes) binary += String.fromCharCode(byte)
-	return `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${btoa(binary)}`
 }
 
 // A birth date is a CALENDAR DATE, not an instant — and so is "today", which is the part
@@ -360,23 +351,25 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 				label: label(id),
 				builtin: true,
 				preview: resting,
-				// The bundled art is PNG; the volume's files carry whatever extension they were
-				// written with, and the caller reads the state off the stem either way.
-				files: states.map((state) => `${state}.png`)
+				// The bundled art is PNG; the volume's files carry whatever format they were
+				// written in, and the caller reads the state off the stem either way.
+				files: states.map((name) => `${name}.png`)
 			}))
 			const installed: AvatarInfo[] = []
 			for (const id of await entries(vol, paths.avatars)) {
-				const files = await entries(vol, `${paths.avatars}/${id}`)
-				// `.gen` is the image model's, and an avatar with no resting state is not one yet.
+				if (id.startsWith('.')) continue
+				const files = (await entries(vol, `${paths.avatars}/${id}`)).filter(
+					// `.gen` is the image model's lane, not a state anyone authored.
+					(name) => !name.startsWith('.')
+				)
 				const resting = files.find((name) => state(name) === 'resting')
-				if (id.startsWith('.') || !resting) continue
-				installed.push({
-					ref: id,
-					label: label(id),
-					builtin: false,
-					preview: await dataUrl(vol, `${paths.avatars}/${id}/${resting}`),
-					files: files.filter((name) => !name.startsWith('.'))
-				})
+				// No resting state — or one whose bytes are not an image this build can render — is
+				// not an avatar yet, and offering it would put a broken portrait in the picker.
+				const preview = resting
+					? imageDataUrl(await vol.readFile(`${paths.avatars}/${id}/${resting}`))
+					: null
+				if (!preview) continue
+				installed.push({ ref: id, label: label(id), builtin: false, preview, files })
 			}
 			return [...art, ...installed]
 		},
@@ -389,13 +382,22 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 						throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'settings', 'agent.putAvatarFile')
 					}
 				}
-				const path = `${paths.avatars}/${avatar}/${name}`
-				// A DELETE, then a create — never an overwrite. A create publishes bytes and name as
-				// one fact (see `Volume.writeFile`), so a reader mid-replace sees the old file or the
-				// whole new one and never a torn image; and it is a structural change, which is what
-				// a watcher of the avatars directory can actually hear.
-				await vol.rm(path, { force: true })
-				if (bytes) await writeTo(vol, path, bytes)
+				const dir = `${paths.avatars}/${avatar}`
+				// A WRITE CLAIMS A STATE, NOT A FILENAME. Every file holding this stem goes first,
+				// whatever format it was in — otherwise replacing a pack's `pleased.webp` with a
+				// `pleased.png` would leave two files claiming one state, and which of them a reader
+				// picked would be a detail of directory order. The uniqueness a state needs is not
+				// the one a filesystem gives, so it is enforced where the writes are.
+				//
+				// It is also what makes a DELETE mean "drop this state", in whatever format it is
+				// stored, and it keeps the publish atomic: a create commits bytes and name as one
+				// fact (see `Volume.writeFile`), so a reader mid-replace sees the old state or the
+				// whole new one and never a torn image — and it is a structural change, which is
+				// what a watcher of the avatars directory can actually hear.
+				for (const existing of await entries(vol, dir)) {
+					if (state(existing) === state(name)) await vol.rm(`${dir}/${existing}`, { force: true })
+				}
+				if (bytes) await writeTo(vol, `${dir}/${name}`, bytes)
 			}),
 		'agent.readProfile': readProfile,
 		// A PATCH: only the fields passed change. The pane saves per field as you edit, so a

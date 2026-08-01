@@ -2,7 +2,9 @@ import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test, vi } from 'vitest'
 import { generateFace } from './faces'
 
-const PNG = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
+// A real PNG signature, because the engine's mime is now read from the BYTES and not from the
+// file's name — art that does not identify itself is art we do not send to an image model.
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 // The avatar the faces are derived from: a DIRECTORY, and the state it rests in is the seed.
 // `resting.webp` in the same place would resolve identically — the reader matches the stem.
 const MINE = '/system/agents/main/avatars/mine'

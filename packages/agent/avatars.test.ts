@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
-import { avatarDir, avatarFaceHash, avatarMime, avatarState } from './agent-defaults.ts'
+import { avatarDir, avatarFaceHash, avatarState } from './agent-defaults.ts'
 import { BUILTIN_AVATARS, builtinFaces } from './avatars.ts'
 import { EXPRESSIONS } from './expression.ts'
 
@@ -16,8 +16,10 @@ describe('the layout', () => {
 	test('stem is the state, extension is only the format', () => {
 		expect(avatarState('resting.png')).toBe('resting')
 		expect(avatarState('pleased.webp')).toBe('pleased')
-		expect(avatarMime('resting.png')).toBe('image/png')
-		expect(avatarMime('resting.jpg')).toBe('image/jpeg')
+		// A name with no extension is a state too — nothing here needs one to resolve, and what
+		// a file's bytes ARE is answered by `imageType`, never by this.
+		expect(avatarState('resting')).toBe('resting')
+		expect(avatarState('.gen')).toBe('.gen')
 	})
 
 	test('the hash is stable, short, and changes with the bytes', async () => {
@@ -71,8 +73,10 @@ describe('the built-in art', () => {
 				const state = avatarState(name)
 				const baked = state === 'resting' ? BUILTIN_AVATARS[id]?.resting : faces[state]
 				const bytes = readFileSync(path.join(ART, id, name))
+				// PNG by decision, not by inference: the bundled art is checked in for human
+				// review, and the bake only ever reads `*.png`.
 				expect(baked, `run \`pnpm run avatars\` in apps/frieren: ${id}/${name} is stale`).toBe(
-					`data:${avatarMime(name)};base64,${bytes.toString('base64')}`
+					`data:image/png;base64,${bytes.toString('base64')}`
 				)
 			}
 		}

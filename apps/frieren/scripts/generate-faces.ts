@@ -52,8 +52,9 @@ const OUT = path.resolve(root, '../../packages/agent/avatars')
 const BAKE = path.join(dir, 'bake-avatars.ts')
 const SHEET = path.join(root, 'art/faces-sheet.png')
 
-// The engine edits at ~1024²; the shell only ever shows 256² (and `squarePng` normalises an
-// uploaded photo to the same square), so that is what ships.
+// The engine edits at ~1024²; the shell only ever shows 256² (and `squareImage` normalises an
+// uploaded photo to the same square), so that is what ships. PNG here by decision — the
+// bundled art is checked in for human review, and 256² palette PNG is 4 KB.
 const EDIT_SIZE = 1024
 const SIZE = 256
 // The same model the runtime path uses, so both stages of this and the lazy fallback agree.

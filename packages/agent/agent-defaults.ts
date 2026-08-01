@@ -23,17 +23,19 @@ export const avatarDir = (id: string): string => `${AVATARS_DIR}/${id}`
 
 /**
  * Stem = state, extension = format: `resting.png` is the state, PNG is how it happens to be
- * stored today. A reader matches the stem and never names an extension.
+ * stored today. A reader matches the stem and never reads meaning into an extension — what a
+ * file's bytes are is answered by `imageType` in `@justfiles/app/image-type`, not by its name.
+ *
+ * The state is what a write CLAIMS, so at most one file may hold one: `agent.putAvatarFile`
+ * takes out every same-stem sibling before it writes, whatever format that sibling was in.
+ * Readers still sort before matching — not as a preference order, as a stable one — so a pair
+ * that arrived some other way (the Files app, a hand-made pack) resolves the same on every
+ * device, which raw `readdir` order does not: it is sorted on one backend and insertion-
+ * ordered on another.
  */
 export function avatarState(name: string): string {
 	const dot = name.lastIndexOf('.')
 	return dot > 0 ? name.slice(0, dot) : name
-}
-
-/** The mime an avatar file's bytes are, from that extension. */
-export function avatarMime(name: string): string {
-	const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
-	return `image/${ext === 'jpg' ? 'jpeg' : ext}`
 }
 
 // The three identity files as ONE symbol, for a host that has to be told where they
