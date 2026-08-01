@@ -141,7 +141,7 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 	// The drafting desk lives HERE, at the root that never unmounts, so a soul being written
 	// survives switching panes — and nowhere else, so it never survives this window (see
 	// `useDrafting`: reducer state replicates, a window's work in progress must not).
-	const drafting = useDrafting(client, state)
+	const drafting = useDrafting(client, state.facts)
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
