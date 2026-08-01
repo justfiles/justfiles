@@ -15,6 +15,16 @@ export const AVATAR_PATH = avatar()
 export const PROFILE_PATH = PROFILE
 export const AGENT_DIR = agentDir()
 
+// The three identity files as ONE symbol, for a host that has to be told where they
+// live: `settings`' `agent.*` methods edit them, and that capability is in
+// `@justfiles/app` — which this package depends on, so it cannot import back. Passing
+// this keeps one definition of where a soul lives (see `settingsHost`'s `AgentDeps`).
+export const IDENTITY_PATHS = {
+	soul: SOUL_PATH,
+	avatar: AVATAR_PATH,
+	profile: PROFILE_PATH
+} as const
+
 // Per-expression faces derived from `avatar.png` (see expression.ts). The source's content
 // hash is IN the name, so a new avatar can never resolve to an old face — the lookup simply
 // misses and the set regenerates. Stale files are swept by the host's daily maintenance.
@@ -41,10 +51,11 @@ export async function avatarFaceHash(bytes: Uint8Array): Promise<string> {
 // A neutral, terminal-agnostic persona so a brand-new user gets a capable agent with no
 // setup. `seeded: true` marks it as an untouched default (a terminal detects "personalized"
 // by the absence of that flag). Personalization overwrites this file.
+const DEFAULT_AGENT_NAME = 'Kodama'
+
 const DEFAULT_SOUL = `---
 schema: frieren/agent-soul/v1
 agent_name: Kodama
-archetype: assistant
 seeded: true
 ---
 
@@ -59,6 +70,19 @@ seeded: true
 `
 
 const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+
+// The one reader the RUNTIME needs: what the agent is called. The `settings` capability
+// owns WRITING these files (it cannot import this package — the dependency runs the other
+// way), but every host that starts a session needs the name for the session title, and
+// the seeded default's name is the answer until someone personalizes.
+export async function readAgentName(volume: Volume): Promise<string> {
+	if (!(await volume.exists(SOUL_PATH))) return DEFAULT_AGENT_NAME
+	const text = decoder.decode(await volume.readFile(SOUL_PATH))
+	// Frontmatter only: the prose says the name too, and would match first otherwise.
+	const match = /^\s*agent_name:\s*(.+?)\s*$/m.exec(text.split('\n---')[0] ?? '')
+	return match?.[1] || DEFAULT_AGENT_NAME
+}
 
 // Write the default soul + empty profile if they are missing. Idempotent: an existing
 // (personalized) file is never overwritten, so returning users keep their persona.

@@ -27,7 +27,6 @@ import { AppWindow } from '../os/AppWindow'
 import { useOsStore } from '../os/hooks'
 import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow } from '../os/state'
-import { PersonalizePanel } from '../personalize/PersonalizePanel'
 import { Omnibar } from './Omnibar'
 import { useWallpaper } from './wallpaper'
 
@@ -127,9 +126,9 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const { isSignedIn, getToken } = useAuth()
 	const installedApps = useInstalledApps()
-	const { launchApp, uninstallApp } = useAppCommands()
+	const { launchApp, openSettings, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
-	const { agentName, refreshIdentity } = useAgentSession()
+	const { agentName } = useAgentSession()
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 
@@ -138,7 +137,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		sameWindowIds
 	)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
-	const [personalizeOpen, setPersonalizeOpen] = useState(false)
 	const wallpaper = useWallpaper()
 
 	// Native file picker → wallpaper bytes into the volume; the desktop updates
@@ -158,7 +156,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	}
 
 	const desktopMenuItems: ContextMenuItem[] = [
-		{ label: 'Personalize…', onSelect: () => setPersonalizeOpen(true) },
+		{ label: 'Personalize…', onSelect: openSettings },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
 		{ separator: true },
 		{ label: 'Change Wallpaper…', onSelect: pickWallpaper },
@@ -288,7 +286,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							{window.appId ? (
 								<AppViewport id={window.id} />
 							) : (
-								<MessagesPanel onPersonalize={() => setPersonalizeOpen(true)} />
+								<MessagesPanel onPersonalize={openSettings} />
 							)}
 						</AppWindow>
 					))}
@@ -296,17 +294,11 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				{fullscreenId ? null : (
 					<Omnibar
 						onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
-						onPersonalize={() => setPersonalizeOpen(true)}
+						onPersonalize={openSettings}
 					/>
 				)}
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
-			{personalizeOpen ? (
-				<PersonalizePanel
-					onClose={() => setPersonalizeOpen(false)}
-					onIdentityChange={refreshIdentity}
-				/>
-			) : null}
 		</div>
 	)
 }

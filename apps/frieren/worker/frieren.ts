@@ -26,7 +26,12 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import {
+	ensureAgentDefaults,
+	IDENTITY_PATHS,
+	PROFILE_PATH,
+	readAgentName
+} from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -185,9 +190,7 @@ export class Frieren extends DurableObject<Env> {
 		this.app = new Hono()
 			.post('/api/agent/soul', async (c) => {
 				const body = await c.req.json<SoulGenerationInput>()
-				if (!body?.agentName || !body?.archetype) {
-					return c.json({ error: 'agentName and archetype are required' }, 400)
-				}
+				if (!body?.agentName) return c.json({ error: 'agentName is required' }, 400)
 				const generated = await this.generateSoul(body)
 				return c.json(generated)
 			})
@@ -339,7 +342,8 @@ export class Frieren extends DurableObject<Env> {
 			const { models, model } = this.aiRuntime()
 			this.text = text(this.meteredBackend(models, model))
 		}
-		const lines: string[] = [`agent name: ${input.agentName}`, `archetype: ${input.archetype}`]
+		const lines: string[] = [`agent name: ${input.agentName}`]
+		if (input.archetype) lines.push(`archetype: ${input.archetype}`)
 		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`)
 		if (input.userAge !== undefined) lines.push(`user age: ${input.userAge}`)
 		if (input.userGender) lines.push(`user gender: ${input.userGender}`)
@@ -407,14 +411,32 @@ export class Frieren extends DurableObject<Env> {
 			// `host.usage` (the meter lives with the DO) to this one.
 			settings: settingsHost({
 				accounts: caps.accounts,
-				usage: () => this.usageSnapshot()
+				usage: () => this.usageSnapshot(),
+				// The soul generator lives here because the model does. The browser half
+				// serves the Volume methods itself and delegates only this one.
+				agent: {
+					volume: this.vol,
+					paths: IDENTITY_PATHS,
+					// This host runs on UTC and the user does not: their age has to be counted
+					// in their own calendar, not the worker's.
+					timezone: this.getTimezone,
+					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
+						const { text, firstWords } = await this.generateSoul({
+							agentName: name,
+							agentGender: gender,
+							archetype: archetype as SoulGenerationInput['archetype'],
+							userAge,
+							userGender
+						})
+						return { body: text, firstWords }
+					}
+				}
 			})
 		})
 		// The agent's LLM backend resolves from the enabled `ai` account (single-active):
 		// the built-in AI → the platform env backend; nothing enabled → no backend, so a turn
 		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
 		// turn, so toggling AI in Settings takes effect on the next prompt.
-		const agentName = (await readFrontmatter(this.vol, SOUL_PATH)).agent_name || 'Kodama'
 		// Capability-provided agent tools (Step 3.5): expose `image` to the agent when
 		// the platform has an image engine (local LM Studio dev has none). Availability
 		// still resolves per call through the active-AI account.
@@ -446,8 +468,7 @@ export class Frieren extends DurableObject<Env> {
 			notify: (notification) => this.broadcast({ type: 'notification', notification }),
 			// The avatar's expression channel: the agent tags each sentence, the client strips the
 			// tags off the token stream and swaps the face (see @justfiles/agent/expression).
-			expressions: true,
-			title: agentName
+			expressions: true
 		})
 		// Surface classified turn errors to every open tab (the raw stream carries the tokens;
 		// this carries the failure body and resets the client's streaming flag).
@@ -684,14 +705,14 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async loadParticipants(): Promise<DisplayParticipants> {
-		const [profile, soul] = await Promise.all([
+		const [profile, agentName] = await Promise.all([
 			readFrontmatter(this.vol, PROFILE_PATH),
-			readFrontmatter(this.vol, SOUL_PATH)
+			readAgentName(this.vol)
 		])
 
 		return {
 			userName: profile.name || 'You',
-			agentName: soul.agent_name || 'Kodama'
+			agentName
 		}
 	}
 }

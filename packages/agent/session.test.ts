@@ -8,6 +8,7 @@ import {
 import { volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
+import { SOUL_PATH } from './agent-defaults.ts'
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
 import type { SessionEntry } from './session.manager.ts'
@@ -752,4 +753,28 @@ describe('retiring a session on rollover', () => {
 			).toHaveLength(1)
 		}
 	})
+})
+
+// A session reads the identity files when it BUILDS its runtime, and every host memoises
+// the session — so without this, renaming the agent in Settings changed the file and
+// nothing else until the host restarted. Watching belongs to the session for exactly that
+// reason: no host can forget it.
+test('a soul written under a live session reaches the next turn', async () => {
+	const vol = volume(memStorage())
+	await vol.mkdir('/system/agents/main', { recursive: true })
+	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Kodama\n---\n\nYou are Kodama.'))
+	const session = createAgentSession({
+		volume: vol,
+		backend: scriptedBackend([assistant([{ type: 'text', text: 'ok' }])]),
+		compaction: NO_COMPACTION
+	})
+	expect(await session.systemPrompt()).toContain('You are Kodama.')
+
+	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Fern\n---\n\nYou are Fern.'))
+	// The watch fires on the commit; the drop is what the next build reads through.
+	await new Promise((resolve) => setTimeout(resolve, 0))
+
+	const prompt = await session.systemPrompt()
+	expect(prompt).toContain('You are Fern.')
+	expect(prompt).not.toContain('You are Kodama.')
 })

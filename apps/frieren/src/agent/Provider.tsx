@@ -9,10 +9,10 @@ import {
 } from 'react'
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
-import { readAgentSoul, readAvatar, readAvatarFaces } from '../personalize/state'
 import { builtinFaces } from './builtin'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
+import { readAgentSoul, readAvatar, readAvatarFaces, watchIdentity } from './identity'
 
 // How long a tab waits before asking for the same face again. A skip is often transient —
 // right after personalization the worker's copy of `avatar.png` can still be behind the
@@ -39,24 +39,49 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		personalized: false
 	})
 
+	// Only the newest read may paint. Binding writes `soul.md` and then clears `avatar.png`,
+	// so the watch fires twice and two reads overlap — and the FIRST one is the slow one: it
+	// still sees the photo and goes on to load its expression faces, while the second finds
+	// the photo gone and has the built-in set in hand already. Landing in that order would
+	// put the deleted photo back on the shell until some later identity event.
+	const reading = useRef(0)
 	const refreshIdentity = useCallback(async () => {
+		const mine = ++reading.current
 		const volume = await openProfile()
 		const soul = await readAgentSoul(volume)
 		// `avatar.png` exists only when the user uploaded their own photo; a built-in variant is
 		// a word in the soul, so it costs no bytes and rides along with the identity file.
 		const avatar = await readAvatar(volume)
 		const builtin = builtinFaces(soul?.frontmatter.avatar_variant)
+		// Every await is done before the guard — including the expression faces, which are
+		// the slow one and the whole reason the reads can finish out of order.
+		const faces = avatar ? await readAvatarFaces(volume, avatar.hash) : builtin.faces
+		if (mine !== reading.current) return
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
 			avatarUrl: avatar?.url ?? builtin.url,
 			hash: avatar?.hash ?? null,
-			faces: avatar ? await readAvatarFaces(volume, avatar.hash) : builtin.faces,
+			faces,
 			personalized: soul?.frontmatter.seeded !== 'true' && soul !== null
 		})
 	}, [])
 
+	// The shell does not write these files any more — Settings' Agent pane does, in an app
+	// frame, and so does another device through sync. So watch them: an identity change
+	// arrives the same way for a rename on this machine and a rename made on the phone.
 	useEffect(() => {
-		void refreshIdentity().catch(() => {})
+		let cancelled = false
+		let unwatch: (() => void) | undefined
+		void (async () => {
+			const volume = await openProfile()
+			if (cancelled) return
+			unwatch = await watchIdentity(volume, () => void refreshIdentity().catch(() => {}))
+			void refreshIdentity().catch(() => {})
+		})().catch(() => {})
+		return () => {
+			cancelled = true
+			unwatch?.()
+		}
 	}, [refreshIdentity])
 
 	// Lazily fill in the face for an expression the agent just used — only reachable for an

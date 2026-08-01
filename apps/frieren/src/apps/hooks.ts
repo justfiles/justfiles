@@ -69,8 +69,15 @@ export function useCommunityCatalog(): CommunityCatalogApp[] {
 	return apps
 }
 
+// The first-party Settings app, which the shell opens by id: it is the only place the
+// agent can be personalized now (the `settings` capability's `agent.*` methods), and two
+// shell affordances point at it — the desktop menu and the omnibar's whisper.
+const SETTINGS_APP = { id: 'app.justfiles.frieren.settings', name: 'Settings' }
+
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
+	/** Open Settings ON the Agent pane — every caller is a personalize affordance. */
+	openSettings: () => void
 	installApp: () => Promise<void>
 	installCommunity: (app: CommunityCatalogApp) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
@@ -143,6 +150,22 @@ export function useAppCommands(): AppCommands {
 			})()
 		}
 
-		return { launchApp, installApp, installCommunity, uninstallApp }
+		const openSettings = () => {
+			dispatch({ type: 'app.open', appId: SETTINGS_APP.id, title: SETTINGS_APP.name })
+			// Selecting the pane is PART of opening it: the category persists, so someone who
+			// last looked at Accounts would otherwise land back there from a button that said
+			// "Personalize". The kernel is the same one the window subscribes to, so this
+			// arrives whether Settings is booting, already open, or not running at all.
+			void localKernel()
+				.then((kernel) =>
+					kernel.dispatch(SETTINGS_APP.id, {
+						type: 'selectCategory',
+						params: { category: 'agent' }
+					})
+				)
+				.catch((error: unknown) => console.error('[settings] open on Agent failed:', error))
+		}
+
+		return { launchApp, openSettings, installApp, installCommunity, uninstallApp }
 	}, [client, dispatch, localKernel, volume])
 }

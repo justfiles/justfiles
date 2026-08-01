@@ -35,9 +35,12 @@ import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
 import type {
 	AccountsAdmin,
+	AgentSoul,
+	GeneratedSoul,
 	ProviderInfo,
 	SettingsCapability,
 	UsageSnapshot,
+	UserFacts,
 	UserProfile
 } from './contract.ts'
 
@@ -51,10 +54,57 @@ export const SETTINGS_ALLOWLIST = new Set(['app.justfiles.frieren.settings'])
 export type GetUsage = () => UsageSnapshot | Promise<UsageSnapshot>
 export type GetUser = () => UserProfile | null | Promise<UserProfile | null>
 
+// What a soul generator is asked. The user facts come from the profile ON THE VOLUME,
+// added here, so no consumer derives an age from a birth date.
+export interface SoulDraftInput {
+	name: string
+	gender: 'female' | 'male'
+	// The summoning's seed, and only the summoning's — a rewrite sends none.
+	archetype?: string
+	userAge?: number
+	userGender?: string
+}
+
+// The minimum a host needs to serve `agent.*`: the Volume the identity files live on,
+// and where they live. The paths are INJECTED rather than imported because they belong
+// to `@justfiles/agent`, which depends on this package — one symbol
+// (`IDENTITY_PATHS`) is passed by every wiring, so there is still exactly one
+// definition of where a soul lives.
+export interface IdentityPaths {
+	soul: string
+	avatar: string
+	profile: string
+}
+
+// A minimal Volume: only what the identity files need. Typed structurally so this
+// package keeps its single `@justfiles/fs` import for the real thing.
+interface IdentityVolume {
+	exists(path: string): Promise<boolean>
+	readFile(path: string): Promise<Uint8Array>
+	writeFile(path: string, data: Uint8Array): Promise<void>
+	mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
+	rm(path: string, options?: { force?: boolean }): Promise<void>
+}
+
+export interface AgentDeps {
+	volume: IdentityVolume
+	paths: IdentityPaths
+	// The user's timezone (IANA), for the one thing here that depends on today's date:
+	// their age. A host whose clock IS the user's clock (the Mac) omits it; one running
+	// somewhere else entirely (the frieren DO, on UTC) must not — see `age`.
+	timezone?: () => string | Promise<string>
+	// Absent on a host with no text model to spare (and on the browser half, which
+	// delegates to the DO): `agent.generateSoul` is then UNAVAILABLE, which the pane
+	// reads as "write it yourself".
+	generateSoul?: (input: SoulDraftInput) => Promise<GeneratedSoul>
+}
+
 export interface SettingsHostDeps {
 	accounts?: AccountsAdmin
 	usage?: GetUsage
 	user?: GetUser
+	// The agent's identity files, where the Volume is (both hosts).
+	agent?: AgentDeps
 	// Where a method this host cannot serve goes (the browser half → the DO).
 	remote?: Capabilities
 }
@@ -64,7 +114,7 @@ export interface SettingsHostDeps {
 type Served = { [K in keyof SettingsCapability]?: SettingsCapability[K] }
 
 export function settingsHost(deps: SettingsHostDeps): Capability {
-	const { accounts, usage, user, remote } = deps
+	const { accounts, usage, user, agent, remote } = deps
 	const served: Served = {
 		...(accounts && {
 			'accounts.listProviders': (i) => accounts.listProviders(i),
@@ -74,6 +124,7 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 			'accounts.disconnect': (i) => accounts.disconnect(i)
 		}),
 		...(usage && { 'host.usage': async () => usage() }),
+		...(agent && agentMethods(agent)),
 		// Always local, even with no dep: "no one is signed in" is an answer, not an
 		// error, and identity lives where the session does.
 		'host.user': async () => (await user?.()) ?? null
@@ -128,5 +179,182 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 		subscribe: async (call) => {
 			throw unavailable(call.method)
 		}
+	}
+}
+
+// ── the agent's identity files ────────────────────────────────────────────
+// The one place these files are parsed and written. Before this, three copies of the
+// same frontmatter parse existed (the worker's, the shell's, the personalize flow's);
+// consumers now get a projection and never see markdown.
+
+const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+
+type Frontmatter = Record<string, string>
+
+function parse(text: string): { frontmatter: Frontmatter; body: string } {
+	const match = text.match(/^---\n([\s\S]*?)\n---(?:\n+([\s\S]*))?$/)
+	if (!match?.[1]) return { frontmatter: {}, body: text.trim() }
+	const frontmatter: Frontmatter = {}
+	for (const line of match[1].split('\n')) {
+		const idx = line.indexOf(':')
+		if (idx === -1) continue
+		const key = line.slice(0, idx).trim()
+		if (key) frontmatter[key] = line.slice(idx + 1).trim()
+	}
+	return { frontmatter, body: (match[2] ?? '').trim() }
+}
+
+// One line per key, in the order given, then the prose. A value never spans lines —
+// a pasted newline would silently become frontmatter.
+function serialize(frontmatter: [string, string | null][], body?: string): Uint8Array {
+	const lines = ['---']
+	for (const [key, value] of frontmatter) {
+		if (value !== null && value !== '') lines.push(`${key}: ${value.replace(/[\r\n]+/g, ' ')}`)
+	}
+	lines.push('---', '')
+	if (body !== undefined) lines.push(body.trim(), '')
+	return encoder.encode(lines.join('\n'))
+}
+
+// GENDER IS FEMALE OR MALE. That is the product's answer, not an unfinished picker:
+// there are two segments in the UI, two values in the frontmatter, and nothing to
+// normalise. Any other value a file happens to carry reads as null and is not preserved.
+//
+// NO BACKWARD COMPATIBILITY, HERE OR ANYWHERE (see CLAUDE.md). This product has a
+// handful of users; a changed file shape is simply the new shape, and old values are not
+// migrated, mirrored or kept alive. Reviewers: that is deliberate, not data loss.
+function gender(value?: string): 'female' | 'male' | null {
+	return value === 'female' || value === 'male' ? value : null
+}
+
+async function read(
+	vol: IdentityVolume,
+	path: string
+): Promise<{ frontmatter: Frontmatter; body: string }> {
+	// A missing file is the same user-visible state as an untouched seeded one: unbound.
+	if (!(await vol.exists(path))) return { frontmatter: { seeded: 'true' }, body: '' }
+	return parse(decoder.decode(await vol.readFile(path)))
+}
+
+// `writeFile` does not create parents, and after a wipe even `/system` is gone.
+async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Promise<void> {
+	const parent = path.slice(0, path.lastIndexOf('/')) || '/'
+	await vol.mkdir(parent, { recursive: true })
+	await vol.writeFile(path, bytes)
+}
+
+// A birth date is a CALENDAR DATE, not an instant — and so is "today", which is the part
+// that bites. `new Date('YYYY-MM-DD')` is UTC midnight, so local getters read the day
+// before anywhere west of UTC; and the host's own "now" is no better, because the frieren
+// host is a worker running on UTC while the user is wherever they are. Both sides are
+// therefore plain `YYYY-MM-DD` in the USER'S calendar, compared as text.
+function today(timezone?: string): string {
+	// 'en-CA' formats as YYYY-MM-DD, which is what makes the comparison below a string one.
+	return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
+}
+
+function age(birthDate: string, now: string): number | undefined {
+	if (birthDate.length < 10) return undefined
+	const years = Number(now.slice(0, 4)) - Number(birthDate.slice(0, 4))
+	if (Number.isNaN(years)) return undefined
+	// Their birthday this year has not come round yet: MM-DD against MM-DD, no zone in it.
+	return now.slice(5) < birthDate.slice(5) ? years - 1 : years
+}
+
+function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps): Served {
+	// Every identity write is READ-MODIFY-WRITE (a profile patch merges with the file, a
+	// soul write preserves the recorded face) and the panes fire them per field as the
+	// user edits — so they queue. Without this, two writes read the same file and the slower
+	// one puts back what the other had just changed.
+	let queue: Promise<unknown> = Promise.resolve()
+	const serial = <T>(run: () => Promise<T>): Promise<T> => {
+		const next = queue.then(run, run)
+		queue = next.catch(() => {})
+		return next
+	}
+	const readSoul = async (): Promise<AgentSoul> => {
+		const { frontmatter, body } = await read(vol, paths.soul)
+		return {
+			name: frontmatter.agent_name ?? '',
+			gender: gender(frontmatter.agent_gender),
+			avatarVariant: frontmatter.avatar_variant ?? null,
+			body,
+			seeded: frontmatter.seeded === 'true'
+		}
+	}
+	const readProfile = async (): Promise<UserFacts> => {
+		const { frontmatter } = await read(vol, paths.profile)
+		return {
+			name: frontmatter.name ?? '',
+			birthDate: frontmatter.birth_date ?? '',
+			gender: gender(frontmatter.gender)
+		}
+	}
+	return {
+		'agent.readSoul': readSoul,
+		'agent.writeSoul': (patch) =>
+			serial(async () => {
+				const current = await readSoul()
+				// The face the summoning picked: a plain write preserves it, because nothing
+				// outside that ritual chooses built-in art.
+				const variant = patch.avatarVariant ?? current.avatarVariant
+				await writeTo(
+					vol,
+					paths.soul,
+					serialize(
+						[
+							['schema', 'frieren/agent-soul/v1'],
+							['agent_name', patch.name ?? current.name],
+							['agent_gender', patch.gender ?? current.gender],
+							['avatar_variant', variant]
+						],
+						patch.body ?? current.body
+					)
+				)
+			}),
+		'agent.readAvatar': async () =>
+			(await vol.exists(paths.avatar)) ? vol.readFile(paths.avatar) : null,
+		'agent.writeAvatar': ({ bytes }) =>
+			serial(async () => {
+				// Null DELETES: `avatar.png` is what decides the face, so leaving stale bytes
+				// behind would keep beating the built-in art the soul now names.
+				if (!bytes) return vol.rm(paths.avatar, { force: true })
+				await writeTo(vol, paths.avatar, bytes)
+			}),
+		'agent.readProfile': readProfile,
+		// A PATCH: only the fields passed change. The pane saves per field as you edit, so a
+		// whole-profile write would let a slower save put back the name or the date you had
+		// already moved on from.
+		'agent.writeProfile': (patch) =>
+			serial(async () => {
+				const current = await readProfile()
+				await writeTo(
+					vol,
+					paths.profile,
+					serialize([
+						['schema', 'frieren/user-profile/v1'],
+						['name', patch.name ?? current.name],
+						['birth_date', patch.birthDate ?? current.birthDate],
+						['gender', patch.gender === undefined ? current.gender : patch.gender]
+					])
+				)
+			}),
+		...(generateSoul && {
+			// A PREVIEW. The user facts ride along from the volume, so the pane sends only
+			// what it actually collected.
+			'agent.generateSoul': async ({ name, gender: sex, archetype, user }) => {
+				// The caller's facts win when it sent them: it read them from the volume the
+				// user is actually typing into, which is not necessarily this one.
+				const facts = user ?? (await readProfile())
+				return generateSoul({
+					name,
+					gender: sex,
+					archetype,
+					userAge: age(facts.birthDate ?? '', today(await timezone?.())),
+					userGender: facts.gender ?? undefined
+				})
+			}
+		})
 	}
 }

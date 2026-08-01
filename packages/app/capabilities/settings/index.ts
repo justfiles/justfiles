@@ -4,14 +4,17 @@ import type { SettingsCapability } from './contract.ts'
 export type {
 	AccountInfo,
 	AccountOrigin,
+	AgentSoul,
 	CapabilityId,
 	CredentialField,
 	CredentialsSchema,
+	GeneratedSoul,
 	ProviderInfo,
 	SettingsCapability,
 	UsageResource,
 	UsageSnapshot,
 	UsageWindow,
+	UserFacts,
 	UserProfile
 } from './contract.ts'
 

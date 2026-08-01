@@ -1,6 +1,7 @@
-// Any image (an upload, or a face the image engine returned at ~1024px) into the one shape
-// the profile stores an avatar in: a centre-cropped 256² PNG. Shared by the personalize
-// flow and the lazy face pipeline (src/agent/faces.ts).
+// Any image (a face the image engine returned at ~1024px) into the one shape the profile
+// stores an avatar in: a centre-cropped 256² PNG. Used by the lazy face pipeline
+// (./faces.ts). Settings' Agent pane has its own copy — it runs in an app frame and
+// shares no module with the shell.
 export async function squarePng(source: string): Promise<Uint8Array> {
 	const image = new Image()
 	image.src = source

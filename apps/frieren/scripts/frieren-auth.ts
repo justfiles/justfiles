@@ -135,7 +135,6 @@ async function seedOnboarding(token: string) {
 				'---',
 				'schema: frieren/agent-soul/v1',
 				'agent_name: Frieren',
-				'archetype: assistant',
 				'---',
 				'',
 				'Frieren is a concise, reliable assistant for local UI verification.',

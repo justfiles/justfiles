@@ -4,11 +4,11 @@ import type {
 	AccountInfo,
 	CapabilityId,
 	ProviderInfo,
-	UsageResource,
-	UserProfile
+	UsageResource
 } from '@justfiles/app/capabilities/settings'
 import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { AgentPane, useAvatar, useDrafting } from './agent-pane.tsx'
 import {
 	type Category,
 	hasBothOrigins,
@@ -17,6 +17,7 @@ import {
 	type SettingsApp,
 	type SettingsState
 } from './app.ts'
+import { faceOf } from './archetypes.ts'
 
 // How a provider projects an `ai`-capability account's config for the picker
 // (see the host `describe`): the selected model + the list to choose from.
@@ -31,6 +32,9 @@ injectStyle(
 .settings-account { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px; margin-bottom: 4px; border: 1px solid transparent; border-radius: 8px; background: transparent; font: inherit; text-align: left; color: inherit; }
 button.settings-account { cursor: default; }
 button.settings-account:hover { background: var(--surface); }
+/* Beats the hover rule deliberately: button.x:hover outranks .x[data-active], which left
+   the selected row grey with white-on-white text while the pointer sat on it. */
+button.settings-account[data-active="true"],
 .settings-account[data-active="true"] { background: var(--focus); color: var(--on-focus); }
 .settings-account[data-active="true"] .settings-account-sub { opacity: 0.8; }
 .settings-avatar { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--rule); opacity: 0.85; }
@@ -44,6 +48,8 @@ button.settings-account:hover { background: var(--surface); }
 .settings-nav-item:hover { background: var(--surface); }
 .settings-nav-item[data-active="true"] { background: var(--focus); color: var(--on-focus); }
 .settings-nav-glyph { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 5px; font-size: 12px; }
+.settings-nav-face { overflow: hidden; background: var(--rule); }
+.settings-nav-face img { width: 100%; height: 100%; object-fit: cover; }
 
 .settings-detail { flex: 1 1 auto; overflow-y: auto; padding: 28px 32px; }
 .settings-pane { display: flex; flex-direction: column; gap: 18px; max-width: 560px; }
@@ -93,22 +99,14 @@ button.settings-account:hover { background: var(--surface); }
 	'app-settings'
 )
 
-// Merge onto initialState so a persisted state missing newer keys (e.g. an
-// older build's shape carried across a rewrite) still has every field — a bare
-// `'category' in value` check would hand back a stale object whose `ai` is
-// `undefined`, wedging the panel before the first refresh.
-const stateOrInitial = (value: unknown): SettingsState => {
-	if (!value || typeof value !== 'object') return initialState
-	const merged = { ...initialState, ...(value as Partial<SettingsState>) }
-	// The shallow merge above keeps a persisted `usage` as-is, but an older build's snapshot
-	// (e.g. the pre-dual-window `{ ai, window }`) lacks the current window fields — reading
-	// `usage.aiBurst` while rendering the meters would throw and wedge the panel before the
-	// mount effect can refresh it. Drop a stale-shaped snapshot so the panel shows loading
-	// until loadUsage replaces it.
-	if (merged.usage && !('aiBurst' in merged.usage && 'aiWeekly' in merged.usage))
-		merged.usage = null
-	return merged
-}
+// Merged onto `initialState` so the first frame has every field — the host pushes state
+// before the mount effect's loads land, and a null `soul`/`usage` renders as "loading",
+// not as a crash. NOT a migration: a state file written by another build is that build's
+// shape and we do not translate it (AGENTS.md — no backward compatibility).
+const stateOrInitial = (value: unknown): SettingsState =>
+	value && typeof value === 'object'
+		? { ...initialState, ...(value as Partial<SettingsState>) }
+		: initialState
 
 export const gui = defineGUI<SettingsApp>({
 	mount(el, state, ctx) {
@@ -140,6 +138,10 @@ const CAP_LABEL: Record<CapabilityId, string> = {
 }
 
 function Settings({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	// The drafting desk lives HERE, at the root that never unmounts, so a soul being written
+	// survives switching panes — and nowhere else, so it never survives this window (see
+	// `useDrafting`: reducer state replicates, a window's work in progress must not).
+	const drafting = useDrafting(client, state.facts)
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
@@ -148,88 +150,93 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 		void client.loadProviders({})
 		void client.loadAccounts({})
 		void client.loadUsage({})
+		void client.loadSoul({})
+		void client.loadFacts({})
 	}, [client])
 
 	return (
 		<div className="settings">
-			<Sidebar
-				category={state.category}
-				user={state.user}
-				client={client}
-				usageAvailable={state.usageAvailable}
-			/>
+			<Sidebar state={state} client={client} />
 			<section className="settings-detail">
-				{state.error ? (
+				{/* One banner for both: a load that failed (reducer state) and a draft that did
+				    not arrive (this window's desk, which is where a model call lives now). */}
+				{state.error || drafting.error ? (
 					<p className="settings-error">
-						<span>{state.error}</span>
+						<span>{state.error ?? drafting.error}</span>
 						<button
 							type="button"
-							onClick={() => void client.clearError({})}
+							onClick={() => {
+								void client.clearError({})
+								drafting.dismiss()
+							}}
 							className="settings-small-button"
 						>
 							Dismiss
 						</button>
 					</p>
 				) : null}
+				{state.category === 'agent' ? (
+					<AgentPane state={state} client={client} drafting={drafting} />
+				) : null}
 				{state.category === 'accounts' ? <AccountsPanel state={state} client={client} /> : null}
-				{state.category === 'usage' ? <UsagePanel state={state} client={client} /> : null}
+				{state.category === 'account' ? <AccountPane state={state} client={client} /> : null}
 			</section>
 		</div>
 	)
 }
 
-function Sidebar({
-	category,
-	user,
-	client,
-	usageAvailable
-}: {
-	category: Category
-	user: UserProfile | null
-	client: Client<SettingsApp>
-	usageAvailable: boolean
-}) {
-	// The account row doubles as the entry to Usage — the macOS Settings shape, where the
-	// name/avatar header is itself a selectable row. On hosts without the `usage` capability
-	// (e.g. the Mac app) it's a plain, non-interactive header so it never lands on a dead pane.
+// The nav row for the agent wears the agent's own face and name — the sidebar stops
+// saying "Agent" and starts saying "Fern". It is also how you notice a soul edited on
+// another device: the row follows the volume.
+function AgentNavGlyph({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	const photo = useAvatar(client, state.avatarRevision)
+	return (
+		<span className="settings-nav-glyph settings-nav-face" aria-hidden>
+			<img src={faceOf(photo, state.soul?.avatarVariant ?? null)} alt="" />
+		</span>
+	)
+}
+
+function Sidebar({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	// The account row is itself a selectable row — the macOS Settings shape — and its pane
+	// carries what is true about YOU: the facts your agent reads, your plan, your usage.
+	const { category, user } = state
 	const name = user?.name ?? (user ? 'User' : 'Local user')
 	const status = user ? 'Signed in' : 'Not signed in'
-	const account = (
-		<>
-			<div className="settings-avatar" aria-hidden>
-				{user?.avatarUrl ? (
-					<img src={user.avatarUrl} alt="" />
-				) : (
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-						<title>User</title>
-						<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z" />
-					</svg>
-				)}
-			</div>
-			<div className="settings-account-text">
-				<span className="settings-account-name">{name}</span>
-				<span className="settings-account-sub">{status}</span>
-			</div>
-		</>
-	)
 	return (
 		<aside className="settings-sidebar">
-			{usageAvailable ? (
+			<button
+				type="button"
+				className="settings-account"
+				data-active={category === 'account' || undefined}
+				aria-label={`Account — ${name}, ${status}`}
+				onClick={() => void client.selectCategory({ category: 'account' })}
+			>
+				<div className="settings-avatar" aria-hidden>
+					{user?.avatarUrl ? (
+						<img src={user.avatarUrl} alt="" />
+					) : (
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+							<title>User</title>
+							<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z" />
+						</svg>
+					)}
+				</div>
+				<div className="settings-account-text">
+					<span className="settings-account-name">{name}</span>
+					<span className="settings-account-sub">{status}</span>
+				</div>
+			</button>
+			<nav className="settings-nav">
 				<button
 					type="button"
-					className="settings-account"
-					data-active={category === 'usage' || undefined}
-					// The button's text is just the account name/status; without this the control
-					// gives no hint that it opens Usage (there's no separate Usage nav item).
-					aria-label={`Usage — ${name}, ${status}`}
-					onClick={() => void client.selectCategory({ category: 'usage' })}
+					className="settings-nav-item"
+					data-active={category === 'agent' || undefined}
+					onClick={() => void client.selectCategory({ category: 'agent' })}
 				>
-					{account}
+					<AgentNavGlyph state={state} client={client} />
+					<span>{state.soul && !state.soul.seeded ? state.soul.name : 'Agent'}</span>
 				</button>
-			) : (
-				<div className="settings-account">{account}</div>
-			)}
-			<nav className="settings-nav">
 				{CATEGORIES.map((c) => (
 					<button
 						key={c.id}
@@ -326,15 +333,24 @@ function aiHeadLabel(r: UsageResource): string {
 	return r.limit === null ? 'Unlimited' : `${Math.round(r.fraction * 100)}%`
 }
 
-function UsagePanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+// The Account pane: what is true about YOU. The facts your agent reads (name, birth date,
+// gender — `/system/user.md`) sit above your plan and its meters, because they are facts
+// about you and not about your companion, which is why they are not in the Agent pane.
+function AccountPane({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
 	const usage = state.usage
 	return (
 		<div className="settings-pane">
 			<header className="settings-pane-header">
-				<h1 className="settings-pane-title">Usage</h1>
-				<p className="settings-pane-copy">Your AI and storage usage against your plan.</p>
+				<h1 className="settings-pane-title">Account</h1>
+				<p className="settings-pane-copy">You, your plan, and what your agent knows about you.</p>
 			</header>
-			{!usage ? (
+			<AboutYou state={state} client={client} />
+			<h2 className="settings-card-title">Usage</h2>
+			{!state.usageAvailable ? (
+				<section className="settings-card">
+					<p className="settings-muted">This device keeps no usage meter.</p>
+				</section>
+			) : !usage ? (
 				<section className="settings-card">
 					<p className="settings-muted">{state.usageError ? 'Couldn’t load usage.' : 'Loading…'}</p>
 					<div className="settings-card-actions">
@@ -392,6 +408,91 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 				</>
 			)}
 		</div>
+	)
+}
+
+// Only what you choose to inscribe: nothing here is inferred, and the birth date is
+// stored as a date rather than an age so it stays true next year. The agent reads these
+// to pitch how it speaks to you (a nine-year-old and a forty-year-old get different words).
+function AboutYou({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	const facts = state.facts
+	const [name, setName] = useState('')
+	const [birthDate, setBirthDate] = useState('')
+	const [saved, setSaved] = useState(false)
+	// The volume is the truth; a sync replaces the fields under you unless you are typing.
+	const editing = useRef(false)
+	useEffect(() => {
+		if (editing.current || !facts) return
+		setName(facts.name)
+		setBirthDate(facts.birthDate)
+	}, [facts])
+
+	// ONLY the field that changed is sent. Sending the whole profile made every save carry
+	// a snapshot of the other two, so finishing a name edit and picking a gender in quick
+	// succession let whichever landed last put the other one back.
+	const save = async (patch: { name?: string; birthDate?: string; gender?: 'female' | 'male' }) => {
+		await client.saveFacts(patch)
+		setSaved(true)
+		setTimeout(() => setSaved(false), 1200)
+	}
+
+	return (
+		<section className="settings-card">
+			<div className="settings-connected-row">
+				<h2 className="settings-card-title">About you</h2>
+				<span className="agent-saved" data-on={saved || undefined}>
+					Saved
+				</span>
+			</div>
+			<label className="settings-field" htmlFor="about-name">
+				<span className="settings-field-title">Your name</span>
+				<input
+					id="about-name"
+					className="settings-select"
+					value={name}
+					onFocus={() => {
+						editing.current = true
+					}}
+					onChange={(e) => setName(e.target.value)}
+					onBlur={() => {
+						editing.current = false
+						if (name !== facts?.name) void save({ name })
+					}}
+				/>
+			</label>
+			<label className="settings-field" htmlFor="about-birth">
+				<span className="settings-field-title">Birth date — a date, never an age</span>
+				<input
+					id="about-birth"
+					className="settings-select"
+					type="date"
+					value={birthDate}
+					onChange={(e) => {
+						setBirthDate(e.target.value)
+						void save({ birthDate: e.target.value })
+					}}
+				/>
+			</label>
+			<div className="settings-field">
+				<span className="settings-field-title">Gender</span>
+				<div className="agent-seg">
+					{(['female', 'male'] as const).map((option) => (
+						<button
+							key={option}
+							type="button"
+							data-on={facts?.gender === option}
+							onClick={() => void save({ gender: option })}
+						>
+							{option === 'female' ? 'Female' : 'Male'}
+						</button>
+					))}
+				</div>
+			</div>
+			<p className="settings-card-copy">
+				Written to your volume as <span style={{ fontFamily: 'var(--font-mono)' }}>user.md</span>.
+				Only what you put here — nothing is inferred.
+			</p>
+		</section>
 	)
 }
 

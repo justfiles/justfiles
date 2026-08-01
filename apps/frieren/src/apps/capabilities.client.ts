@@ -1,3 +1,4 @@
+import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import {
 	type Capabilities,
 	type Capability,
@@ -37,8 +38,11 @@ const browserNotifyChannel: Channel = (notification) =>
 // so identity comes from where the session is (Clerk in the browser) with no
 // round-trip; its `accounts.*`/`host.usage` methods have no dep here, so they ride the
 // same fallback to the DO — credentials live under `/private/**`, which never
-// replicates. Only `devkit` needs the kernel — a per-entry factory the kernel resolves
-// with ITSELF, so it reads sysroots + installs into the exact kernel it lives in.
+// replicates. Its `agent.*` methods DO run here: the identity files are on the synced
+// Volume this thread already holds, so personalizing is a local write that syncs like
+// any other — only `agent.generateSoul` (a model call) rides the fallback. Only
+// `devkit` needs the kernel — a per-entry factory the kernel resolves with ITSELF, so
+// it reads sysroots + installs into the exact kernel it lives in.
 export function clientCapabilities(
 	fs: Volume,
 	getToken: GetToken,
@@ -48,7 +52,11 @@ export function clientCapabilities(
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
-			settings: settingsHost({ user: getUser, remote: fallback }),
+			settings: settingsHost({
+				user: getUser,
+				agent: { volume: fs, paths: IDENTITY_PATHS },
+				remote: fallback
+			}),
 			notify: notifyHost(browserNotifyChannel),
 			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},

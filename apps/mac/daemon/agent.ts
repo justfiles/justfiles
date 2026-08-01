@@ -86,7 +86,8 @@ async function buildSession(): Promise<AgentSession> {
 		// `app launch`/`app run` update live windows the moment they run.
 		apps: createAppController(await getKernel(), { windows: nativeWindows }),
 		notify: notificationChannel,
-		title: 'Kodama',
+		// No `title`: the session reads the agent's own name from the soul, and re-reads it
+		// when the soul changes — which is what a rename in Settings has to reach.
 		// The `read_doc` tool + docs system-prompt block: repo-root docs/*.md, resolved via
 		// DOCS_DIR; Bun reads the file at tool-call time.
 		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text()

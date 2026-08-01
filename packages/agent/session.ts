@@ -2,6 +2,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
+import { PROFILE_PATH, readAgentName, SOUL_PATH } from './agent-defaults.ts'
 import {
 	type Assistant,
 	consolidateMemory,
@@ -49,7 +50,9 @@ export interface AgentSessionOptions {
 	// A host channel for turn pings + classified errors (banner/toast/web-push). Omit to
 	// stay silent; the transcript still updates via `subscribe`.
 	notify?: Channel
-	// Notification banner title (host branding). Only used when `notify` is set.
+	// Notification banner title (host branding). Only used when `notify` is set. Omit it to
+	// get the agent's own name from the soul, kept current as the soul changes — which is
+	// what both hosts want; pass one only to override that.
 	title?: string
 	// Reads a doc body by id (disk on native, asset fetch on web) → the `read_doc` tool +
 	// the docs system-prompt block. Omit to disable docs.
@@ -117,7 +120,9 @@ interface Built {
 
 export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	const { volume, apps, notify, readDoc, timezone } = options
-	const title = options.title ?? 'Assistant'
+	// The banner name. Re-read from the soul on every build (see below) unless the host
+	// insists on branding of its own, so a rename reaches notifications too.
+	let title = options.title ?? 'Assistant'
 	const compaction = options.compaction ?? DEFAULT_COMPACTION
 	const backend = options.backend
 	const resolveBackend: () => Promise<AgentBackend> =
@@ -129,6 +134,24 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	// revision`, so a model switch or a token refresh takes effect on the next turn without a
 	// restart. The per-key promise dedupes concurrent builds; a failure clears the cache.
 	let active: { key: string; built: Promise<Built> } | null = null
+
+	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
+	// become the system prompt, the agent's name becomes the banner title — and they change
+	// under a live session: naming your agent is a Settings pane on every host now, and a
+	// soul edited on one device syncs to the others. So watch them and drop the build; the
+	// next turn reads them again, losslessly (the conversation lives on the Volume too).
+	//
+	// This belongs HERE, not in each host: every host memoises a session, so every host
+	// would otherwise have to remember to invalidate it, and the one that forgets keeps
+	// answering as the agent the user just renamed. Sessions live as long as their process,
+	// so the watches are never torn down.
+	void Promise.all(
+		[SOUL_PATH, PROFILE_PATH].map((path) =>
+			volume.watch(path, () => {
+				active = null
+			})
+		)
+	)
 
 	return {
 		prompt: (message, source, onEvent) =>
@@ -158,6 +181,8 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	}
 
 	async function build(llm: AgentBackend): Promise<Built> {
+		// Read where the rest of the identity is read, so the watch above refreshes it too.
+		if (options.title === undefined) title = await readAgentName(volume)
 		const text = createText(llm)
 		const assistant = await createAssistant({
 			volume,
