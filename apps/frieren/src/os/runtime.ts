@@ -1,6 +1,7 @@
 import { ensureAgentDefaults } from '@justfiles/agent/defaults'
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
+import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
@@ -123,8 +124,15 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 					else off = unwatch
 				})
 		})
+		// The periodic update checkpoint. The watch above only fires on local/synced
+		// volume churn, so a tab left open for days would never notice a newly published
+		// release; this is the one trigger that isn't reactive to the volume. Slow on
+		// purpose (see UPDATE_CHECK_INTERVAL_MS) and coalesced through `reconcileNow`,
+		// which also makes it the retry for an update that failed earlier.
+		const checkpoint = setInterval(reconcileNow, UPDATE_CHECK_INTERVAL_MS)
 		disposers.push(() => {
 			cancelled = true
+			clearInterval(checkpoint)
 			off?.()
 		})
 	}

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
 	COMMUNITY_CATALOG_PATH,
 	type CommunityCatalog,
-	type CommunityCatalogApp
+	type CommunityCatalogApp,
+	UPDATE_CHECK_INTERVAL_MS
 } from '../../shared/appstore'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
 import {
@@ -41,21 +42,28 @@ export function useInstallingApps(): InstallingApp[] {
 	return apps
 }
 
-// The community catalog (`/store/catalog.json`). Fetched once on mount; an empty
-// catalog (unpublished / not yet indexed) simply yields no candidates. Discovery
-// only — installing still routes through the consent sheet.
+// The community catalog (`/store/catalog.json`). Fetched on mount and re-fetched
+// on the same slow checkpoint as the update pass, so a long-lived tab's store
+// listing (and its held-update rows) don't go stale against a newer release. An
+// empty catalog (unpublished / not yet indexed) simply yields no candidates.
+// Discovery only — installing still routes through the consent sheet.
 export function useCommunityCatalog(): CommunityCatalogApp[] {
 	const [apps, setApps] = useState<CommunityCatalogApp[]>([])
 	useEffect(() => {
 		let live = true
-		fetch(COMMUNITY_CATALOG_PATH)
-			.then((res) => (res.ok ? (res.json() as Promise<CommunityCatalog>) : null))
-			.then((cat) => {
-				if (live && cat) setApps(cat.apps)
-			})
-			.catch(() => {})
+		const load = () => {
+			fetch(COMMUNITY_CATALOG_PATH)
+				.then((res) => (res.ok ? (res.json() as Promise<CommunityCatalog>) : null))
+				.then((cat) => {
+					if (live && cat) setApps(cat.apps)
+				})
+				.catch(() => {})
+		}
+		load()
+		const timer = setInterval(load, UPDATE_CHECK_INTERVAL_MS)
 		return () => {
 			live = false
+			clearInterval(timer)
 		}
 	}, [])
 	return apps
