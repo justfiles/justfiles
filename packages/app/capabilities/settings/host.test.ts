@@ -330,6 +330,9 @@ function agentHost(over: Partial<SettingsHostDeps['agent']> = {}) {
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
 const encode = (text: string) => new TextEncoder().encode(text)
+// Real signatures: what a state IS is read from its bytes, never from its name.
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
+const WEBP = new Uint8Array([...encode('RIFF'), 0, 0, 0, 0, ...encode('WEBP')])
 
 test('agent.writeSoul then readSoul round-trips, through the paths the host was handed', async () => {
 	const { vol, caps } = agentHost()
@@ -427,10 +430,6 @@ test('a soul write is a patch: a rename never carries an unfinished edit with it
 
 test('an avatar is a directory: listAvatars shows the bundle then the volume', async () => {
 	const { vol, caps } = agentHost()
-	// Real signatures: a preview says what the BYTES are, never what the name claims.
-	const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
-	const webp = new Uint8Array([...encode('RIFF'), 0, 0, 0, 0, ...encode('WEBP')])
-
 	// Nothing installed yet: the built-in art alone, and it costs the volume nothing.
 	expect(await caps.invoke(call('agent.listAvatars'))).toEqual([
 		{
@@ -446,10 +445,10 @@ test('an avatar is a directory: listAvatars shows the bundle then the volume', a
 	// stored in any format — this one wears a WebP resting face, as a browser that can encode
 	// WebP produces.
 	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: webp })
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: WEBP })
 	)
 	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.png', bytes: png })
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.png', bytes: PNG })
 	)
 	const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
 	expect(mine).toMatchObject({ ref: 'mine', label: 'Mine', builtin: false })
@@ -466,9 +465,9 @@ test('an avatar is a directory: listAvatars shows the bundle then the volume', a
 	// Derived art is the model's lane, and a directory with no resting state is not an
 	// avatar yet: neither shows up as one to wear.
 	await vol.mkdir(`${PATHS.avatars}/mine/.gen/abc`, { recursive: true })
-	await vol.writeFile(`${PATHS.avatars}/mine/.gen/abc/curious.png`, png)
+	await vol.writeFile(`${PATHS.avatars}/mine/.gen/abc/curious.png`, PNG)
 	await vol.mkdir(`${PATHS.avatars}/half`, { recursive: true })
-	await vol.writeFile(`${PATHS.avatars}/half/pleased.png`, png)
+	await vol.writeFile(`${PATHS.avatars}/half/pleased.png`, PNG)
 	// And one whose resting bytes are not an image at all: also not offered, rather than
 	// offered as a broken portrait.
 	await vol.mkdir(`${PATHS.avatars}/broken`, { recursive: true })
@@ -478,6 +477,49 @@ test('an avatar is a directory: listAvatars shows the bundle then the volume', a
 	expect(list[1]?.files).toEqual(['resting.webp'])
 })
 
+test('an avatar is offered when ANY file claiming resting can be rendered', async () => {
+	// The exact shape that made two readers disagree: `resting.aaa` sorts first and is not
+	// art, so a picker that stopped there would hide an avatar the shell happily wears. Both
+	// sides resolve through `readImageFile`, so there is one answer.
+	const { vol, caps } = agentHost()
+	await vol.mkdir(`${PATHS.avatars}/pack`, { recursive: true })
+	await vol.writeFile(`${PATHS.avatars}/pack/resting.aaa`, encode('not art'))
+	await vol.writeFile(`${PATHS.avatars}/pack/resting.webp`, WEBP)
+	const [, pack] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
+	expect(pack?.ref).toBe('pack')
+	expect(pack?.preview.startsWith('data:image/webp;base64,')).toBe(true)
+})
+
+test('a failed write leaves the state the user is wearing untouched', async () => {
+	// The bytes land under a name nothing resolves BEFORE the old file gives way, so a volume
+	// that is out of space costs the user nothing. Publishing the other way round would leave
+	// their avatar with no resting state at all.
+	const vol = volume(memStorage())
+	let fail = false
+	const caps = settingsHost({
+		agent: {
+			paths: PATHS,
+			builtins: BUILTINS,
+			volume: Object.assign(Object.create(vol), {
+				writeFile: (path: string, data: Uint8Array) =>
+					fail ? Promise.reject(new Error('ENOSPC')) : vol.writeFile(path, data)
+			})
+		}
+	})
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes: PNG })
+	)
+
+	fail = true
+	await expect(
+		caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: WEBP }))
+	).rejects.toThrow()
+	// Still exactly the portrait they had, and nothing staged is offered as a state.
+	const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
+	expect(mine?.files).toEqual(['resting.png'])
+	expect(mine?.preview.startsWith('data:image/png;base64,')).toBe(true)
+})
+
 test('a write claims a STATE, so one state can never be stored twice', async () => {
 	// The uniqueness a state needs is not the one a filesystem gives: `pleased` is the key,
 	// but `pleased.png` is the name. So the write seam enforces it — replacing a pack's WebP
@@ -485,14 +527,12 @@ test('a write claims a STATE, so one state can never be stored twice', async () 
 	// to directory order.
 	const { vol, caps } = agentHost()
 	const dir = `${PATHS.avatars}/mine`
-	const webp = new Uint8Array([...encode('RIFF'), 0, 0, 0, 0, ...encode('WEBP')])
-	const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
 
 	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: webp })
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: WEBP })
 	)
 	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes: png })
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes: PNG })
 	)
 	expect((await vol.readdir(dir)).map((e) => e.name)).toEqual(['resting.png'])
 

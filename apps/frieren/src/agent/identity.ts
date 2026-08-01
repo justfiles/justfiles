@@ -1,13 +1,7 @@
 import { BUILTIN_AVATARS, builtinFaces } from '@justfiles/agent/avatars'
-import {
-	AVATARS_DIR,
-	avatarDir,
-	avatarFaceHash,
-	avatarState,
-	SOUL_PATH
-} from '@justfiles/agent/defaults'
+import { AVATARS_DIR, avatarDir, avatarFaceHash, SOUL_PATH } from '@justfiles/agent/defaults'
 import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
-import { imageDataUrl } from '@justfiles/app/image-type'
+import { imageDataUrl, readImageFile } from '@justfiles/app/image-type'
 import type { Volume } from '../fs'
 
 // How the SHELL reads the agent's identity off the volume: the name to greet by, and the
@@ -111,52 +105,43 @@ export const DEFAULT_AVATAR: Avatar = {
 	faces: {}
 }
 
-// Resolution is `readdir` + match by STEM, so the reader never reads meaning into an
+// Resolution is `readdir` + `readImageFile`, so the reader never reads meaning into an
 // extension: what an avatar covers is which files exist, what they ARE is read from their
-// bytes, and `resting.webp` resolves here unchanged. Sorted first — see `avatarState` for why
-// a stable order matters even though a write claims a whole state.
+// bytes, and `resting.webp` resolves here unchanged. That function is shared with the settings
+// host and the face generator — the three of them resolving one directory differently is a bug
+// you could only see by comparing two screens.
 async function fromVolume(volume: Volume, ref: string): Promise<Avatar | null> {
 	const dir = avatarDir(ref)
 	if (!(await volume.exists(dir))) return null
-	const names = (await volume.readdir(dir)).map((entry) => entry.name).sort()
-	const resting = await pick(volume, dir, names, 'resting')
-	// No resting state — or one this build cannot render (a video, a rig, a truncated file) — is
+	const names = (await volume.readdir(dir)).map((entry) => entry.name)
+	const read = (from: string) => (name: string) => volume.readFile(`${from}/${name}`)
+	const resting = await readImageFile(names, 'resting', read(dir))
+	// No resting state — or none this build can render (a video, a rig, a truncated file) — is
 	// not an avatar yet: fall back rather than leave the agent faceless.
 	if (!resting) return null
+	const url = imageDataUrl(resting.bytes)
+	if (!url) return null
 	const hash = await avatarFaceHash(resting.bytes)
 
 	const faces: Partial<Record<Expression, string>> = {}
 	const take = async (from: string, listing: string[]) => {
 		for (const expression of EXPRESSIONS) {
 			if (faces[expression]) continue
-			const found = await pick(volume, from, listing, expression)
-			if (found) faces[expression] = found.url
+			const found = await readImageFile(listing, expression, read(from))
+			const face = found && imageDataUrl(found.bytes)
+			if (face) faces[expression] = face
 		}
 	}
 	// Authored first: the artist's file wins as a LOOKUP ORDER, not as a rule to remember.
 	await take(dir, names)
 	const derived = derivedDir(ref, hash)
 	if (await volume.exists(derived)) {
-		await take(derived, (await volume.readdir(derived)).map((entry) => entry.name).sort())
+		await take(
+			derived,
+			(await volume.readdir(derived)).map((entry) => entry.name)
+		)
 	}
-	return { url: resting.url, hash, faces }
-}
-
-// The file holding one state, as something renderable. A file whose bytes are not an image
-// this build knows is SKIPPED rather than turned into a broken <img> — so a directory that
-// also holds `resting.txt` still resolves, and one that holds only that does not pretend to.
-async function pick(
-	volume: Volume,
-	dir: string,
-	names: string[],
-	state: string
-): Promise<{ bytes: Uint8Array; url: string } | null> {
-	for (const name of names.filter((entry) => avatarState(entry) === state)) {
-		const bytes = await volume.readFile(`${dir}/${name}`)
-		const url = imageDataUrl(bytes)
-		if (url) return { bytes, url }
-	}
-	return null
+	return { url, hash, faces }
 }
 
 /**

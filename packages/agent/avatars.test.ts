@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { fileStem } from '@justfiles/app/image-type'
 import { describe, expect, test } from 'vitest'
-import { avatarDir, avatarFaceHash, avatarState } from './agent-defaults.ts'
+import { avatarDir, avatarFaceHash } from './agent-defaults.ts'
 import { BUILTIN_AVATARS, builtinFaces } from './avatars.ts'
 import { EXPRESSIONS } from './expression.ts'
 
@@ -11,15 +12,11 @@ const ART = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'avatars'
 describe('the layout', () => {
 	test('an avatar is a directory, and the id is its name', () => {
 		expect(avatarDir('mine')).toBe('/system/agents/main/avatars/mine')
-	})
-
-	test('stem is the state, extension is only the format', () => {
-		expect(avatarState('resting.png')).toBe('resting')
-		expect(avatarState('pleased.webp')).toBe('pleased')
-		// A name with no extension is a state too — nothing here needs one to resolve, and what
-		// a file's bytes ARE is answered by `imageType`, never by this.
-		expect(avatarState('resting')).toBe('resting')
-		expect(avatarState('.gen')).toBe('.gen')
+		// Inside it, stem = state and extension = format — both rules live in
+		// `@justfiles/app/image-type`, where every reader of one of these directories can reach
+		// them, and `avatarDir` is where the layout they describe is written down.
+		expect(fileStem('resting.png')).toBe('resting')
+		expect(fileStem('pleased.webp')).toBe('pleased')
 	})
 
 	test('the hash is stable, short, and changes with the bytes', async () => {
@@ -70,7 +67,7 @@ describe('the built-in art', () => {
 		for (const id of onDisk) {
 			const faces = await builtinFaces(id)
 			for (const name of readdirSync(path.join(ART, id)).filter((n) => n.endsWith('.png'))) {
-				const state = avatarState(name)
+				const state = fileStem(name)
 				const baked = state === 'resting' ? BUILTIN_AVATARS[id]?.resting : faces[state]
 				const bytes = readFileSync(path.join(ART, id, name))
 				// PNG by decision, not by inference: the bundled art is checked in for human

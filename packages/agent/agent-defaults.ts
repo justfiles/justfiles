@@ -18,25 +18,20 @@ export const AGENT_DIR = agentDir()
 /**
  * One avatar's directory — the id IS the avatar (see paths.ts for the layout). A ref in the
  * soul that is not `builtin/<id>` names one of these.
+ *
+ * Inside it: one file per STATE the avatar can be in, `resting` being the one it must have.
+ * Stem = state, extension = format — `resting.png` is the state, PNG is how it happens to be
+ * stored today — and nothing reads meaning into that extension. What a file's bytes ARE is
+ * answered by `imageType`, and WHICH file holds a state by `readImageFile`, both in
+ * `@justfiles/app/image-type` where every reader of one of these directories can reach them.
+ *
+ * A state is what a write CLAIMS, so at most one file may hold one: `agent.putAvatarFile`
+ * takes out every same-stem sibling as it publishes, whatever format that sibling was in.
+ * Readers sort anyway — not as a preference order, as a stable one — so a pair that arrived
+ * some other way (the Files app, a hand-made pack) resolves the same on every device, which
+ * raw `readdir` order does not: it is sorted on one backend and insertion-ordered on another.
  */
 export const avatarDir = (id: string): string => `${AVATARS_DIR}/${id}`
-
-/**
- * Stem = state, extension = format: `resting.png` is the state, PNG is how it happens to be
- * stored today. A reader matches the stem and never reads meaning into an extension — what a
- * file's bytes are is answered by `imageType` in `@justfiles/app/image-type`, not by its name.
- *
- * The state is what a write CLAIMS, so at most one file may hold one: `agent.putAvatarFile`
- * takes out every same-stem sibling before it writes, whatever format that sibling was in.
- * Readers still sort before matching — not as a preference order, as a stable one — so a pair
- * that arrived some other way (the Files app, a hand-made pack) resolves the same on every
- * device, which raw `readdir` order does not: it is sorted on one backend and insertion-
- * ordered on another.
- */
-export function avatarState(name: string): string {
-	const dot = name.lastIndexOf('.')
-	return dot > 0 ? name.slice(0, dot) : name
-}
 
 // The three identity files as ONE symbol, for a host that has to be told where they
 // live: `settings`' `agent.*` methods edit them, and that capability is in

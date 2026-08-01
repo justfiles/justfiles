@@ -31,7 +31,7 @@
 //    account, always on this side. With only one lane configured, every check above
 //    is a no-op — unchanged from before any of this existed.
 
-import { imageDataUrl } from '../../image-type.ts'
+import { imageDataUrl, imageFileNames, readImageFile } from '../../image-type.ts'
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
 import type {
@@ -88,6 +88,10 @@ interface IdentityVolume {
 	readdir(path: string): Promise<{ name: string }[]>
 	mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
 	rm(path: string, options?: { force?: boolean }): Promise<void>
+	// Only `putAvatarFile` needs it, and it cannot be done without: replacing a state has to
+	// publish new bytes without a moment where the state is missing, and `writeFile` is
+	// atomic on CREATE only — an overwrite is deliberately not (see `Volume.writeFile`).
+	rename(oldPath: string, newPath: string): Promise<void>
 }
 
 export interface AgentDeps {
@@ -256,20 +260,12 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 // ── avatars ───────────────────────────────────────────────────────────────
 // An avatar is a DIRECTORY under `paths.avatars`, named by its id, holding one file per
 // state it can be in. Stem = state, extension = format — and the format is never read out of
-// the name: `imageType` answers that from the bytes.
-//
-// Listings are SORTED, so the file that holds a state is the same one on every host: raw
-// `readdir` is sorted on the native backend and insertion-ordered on the in-memory one, which
-// would otherwise resolve a stray same-stem pair differently per device.
+// the name: `imageType` answers that from the bytes, and `readImageFile` answers which file
+// holds a state, identically here and in every other reader of the same directory.
 
 async function entries(vol: IdentityVolume, path: string): Promise<string[]> {
 	if (!(await vol.exists(path))) return []
 	return (await vol.readdir(path)).map((entry) => entry.name).sort()
-}
-
-function state(name: string): string {
-	const dot = name.lastIndexOf('.')
-	return dot > 0 ? name.slice(0, dot) : name
 }
 
 // The id is the label until there is a store that needs a manifest to carry one.
@@ -358,46 +354,66 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 			const installed: AvatarInfo[] = []
 			for (const id of await entries(vol, paths.avatars)) {
 				if (id.startsWith('.')) continue
-				const files = (await entries(vol, `${paths.avatars}/${id}`)).filter(
+				const dir = `${paths.avatars}/${id}`
+				const files = (await entries(vol, dir)).filter(
 					// `.gen` is the image model's lane, not a state anyone authored.
 					(name) => !name.startsWith('.')
 				)
-				const resting = files.find((name) => state(name) === 'resting')
-				// No resting state — or one whose bytes are not an image this build can render — is
-				// not an avatar yet, and offering it would put a broken portrait in the picker.
-				const preview = resting
-					? imageDataUrl(await vol.readFile(`${paths.avatars}/${id}/${resting}`))
-					: null
-				if (!preview) continue
-				installed.push({ ref: id, label: label(id), builtin: false, preview, files })
+				// No resting state — or none whose bytes are an image this build can render — is not
+				// an avatar yet, and offering it would put a broken portrait in the picker.
+				const resting = await readImageFile(files, 'resting', (name) =>
+					vol.readFile(`${dir}/${name}`)
+				)
+				if (!resting) continue
+				const preview = imageDataUrl(resting.bytes)
+				if (preview) installed.push({ ref: id, label: label(id), builtin: false, preview, files })
 			}
 			return [...art, ...installed]
 		},
 		'agent.putAvatarFile': ({ avatar, name, bytes }) =>
 			serial(async () => {
 				// An id is ONE directory name and a file is ONE name in it: no separator, and no
-				// leading dot (`.gen` holds derived art, which no caller owns).
+				// leading dot (`.gen` holds derived art, and `.put-*` below is ours).
 				for (const part of [avatar, name]) {
 					if (!part || part.startsWith('.') || /[/\\]/.test(part)) {
 						throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'settings', 'agent.putAvatarFile')
 					}
 				}
 				const dir = `${paths.avatars}/${avatar}`
-				// A WRITE CLAIMS A STATE, NOT A FILENAME. Every file holding this stem goes first,
-				// whatever format it was in — otherwise replacing a pack's `pleased.webp` with a
-				// `pleased.png` would leave two files claiming one state, and which of them a reader
-				// picked would be a detail of directory order. The uniqueness a state needs is not
-				// the one a filesystem gives, so it is enforced where the writes are.
+				// A WRITE CLAIMS A STATE, NOT A FILENAME: after this, exactly one file holds the
+				// state `name` names — or none, for a delete. Replacing a pack's `pleased.webp` with
+				// a `pleased.png` must not leave two files claiming `pleased`, because then which one
+				// a reader saw would come down to directory order. The uniqueness a state needs is
+				// not the one a filesystem gives (it keeps `pleased.png` unique, not `pleased`), so
+				// it is enforced here, where the writes are.
 				//
-				// It is also what makes a DELETE mean "drop this state", in whatever format it is
-				// stored, and it keeps the publish atomic: a create commits bytes and name as one
-				// fact (see `Volume.writeFile`), so a reader mid-replace sees the old state or the
-				// whole new one and never a torn image — and it is a structural change, which is
-				// what a watcher of the avatars directory can actually hear.
-				for (const existing of await entries(vol, dir)) {
-					if (state(existing) === state(name)) await vol.rm(`${dir}/${existing}`, { force: true })
+				// Order matters, and it is the one `Volume.writeFile` prescribes. New bytes land
+				// under a name nothing resolves, and only then does the old file give way to them:
+				//
+				//   .put-<name>  a CREATE, therefore atomic, and invisible (dotted names are not
+				//                states). Per state, so two hosts publishing different states at
+				//                once cannot stage over each other.
+				//   rm           every file claiming this state
+				//   mv           .put-<name> → name  (POSIX rename: replaces atomically)
+				//
+				// so a write that fails on a full volume leaves the portrait the user is wearing
+				// exactly as it was, and a reader is never caught between the two: it resolves the
+				// old state or the whole new one, never a torn image and never a missing face. The
+				// straight overwrite this replaces could do neither — it is not atomic by design,
+				// and a same-name write is not a structural change, which is all a watcher hears.
+				//
+				// Nothing here needs undoing on failure, because the only step that can leave bytes
+				// nothing resolves is the last one, and its bytes are still THERE under the staged
+				// name for the next attempt to republish.
+				const claimants = imageFileNames(await entries(vol, dir), name)
+				if (bytes) {
+					const staged = `${dir}/.put-${name}`
+					await writeTo(vol, staged, bytes)
+					for (const claimant of claimants) await vol.rm(`${dir}/${claimant}`, { force: true })
+					await vol.rename(staged, `${dir}/${name}`)
+				} else {
+					for (const claimant of claimants) await vol.rm(`${dir}/${claimant}`, { force: true })
 				}
-				if (bytes) await writeTo(vol, `${dir}/${name}`, bytes)
 			}),
 		'agent.readProfile': readProfile,
 		// A PATCH: only the fields passed change. The pane saves per field as you edit, so a

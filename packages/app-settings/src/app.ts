@@ -11,6 +11,7 @@ import {
 	type UserFacts,
 	type UserProfile
 } from '@justfiles/app/capabilities/settings'
+import { fileStem } from '@justfiles/app/image-type'
 import * as v from 'valibot'
 
 // Settings is a thin façade over the one `settings` capability — the host admin
@@ -73,7 +74,7 @@ export function wornAvatar(soul: AgentSoul | null, avatars: AvatarInfo[]): Avata
 export function avatarStates(avatars: AvatarInfo[]): string[] {
 	const states = new Set<string>()
 	for (const avatar of avatars) {
-		if (avatar.builtin) for (const file of avatar.files) states.add(file.replace(/\.[^.]+$/, ''))
+		if (avatar.builtin) for (const file of avatar.files) states.add(fileStem(file))
 	}
 	return [...states].sort((a, b) =>
 		a === 'resting' ? -1 : b === 'resting' ? 1 : a.localeCompare(b)

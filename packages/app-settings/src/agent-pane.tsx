@@ -1,6 +1,7 @@
 import type { Client } from '@justfiles/app'
 import { injectStyle } from '@justfiles/app/browser'
 import type { AvatarInfo, GeneratedSoul, UserFacts } from '@justfiles/app/capabilities/settings'
+import { fileStem } from '@justfiles/app/image-type'
 import { type ChangeEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 import {
 	avatarStates,
@@ -392,7 +393,7 @@ function States({
 				{states.map((state) => {
 					// Stem = state, extension = format: the file that IS this state, whatever it was
 					// written as — which is also the name a delete has to pass back.
-					const file = avatar.files.find((name) => name.replace(/\.[^.]+$/, '') === state)
+					const file = avatar.files.find((name) => fileStem(name) === state)
 					return (
 						<div className="agent-state" key={state}>
 							<b>{state}</b>
