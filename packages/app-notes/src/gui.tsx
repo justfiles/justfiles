@@ -443,9 +443,17 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	// The name to re-create under, kept level with the buffer's address: while it holds a
 	// note, that note's name is the one its words belong to.
+	//
+	// A change of address is also the one thing the name field's draft cannot survive. The GUI
+	// clears it on its own transitions, but the buffer can be moved by someone else — an agent
+	// `open`, or a note deleted under it — and a draft left over from the previous note would
+	// then commit against THIS one, renaming a note the user never looked at. So the invariant
+	// lives here, next to the address it depends on, rather than at each call site.
 	useEffect(() => {
 		if (buffer.path !== null) nameRef.current = noteTitle(buffer.path)
-	}, [buffer.path])
+		setDraft(null)
+		setTitleError(null)
+	}, [buffer.path, setDraft])
 
 	// Reflect the open note's filename as the document title — hosts with a native
 	// title bar (e.g. desktop) show it there; in quay the centered header below is
@@ -552,6 +560,15 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// shape as an imported vault's.
 	const createNote = useCallback(
 		async (title: string, dir: string) => {
+			// Judged, not repaired — the same rule the name field keeps (DESIGN.md §4). Both
+			// surfaces that reach here take a name from a person who can see it, and `create`'s
+			// silent repair would offer “Trips/Kyoto” and open `Trips Kyoto.md`. The search field
+			// says so on the row itself; the tree's menu has closed by now, so it says so here.
+			const illegal = illegalName(title)
+			if (illegal) {
+				setStatus(`Cannot create “${title}” — ${illegal}`)
+				return
+			}
 			// Land whatever was in the buffer first: a write still aimed at the last note must
 			// not arrive after this one is open.
 			if (!(await buf.clear()).settled) {
@@ -651,6 +668,18 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				setDraft(null)
 				setTitleError(null)
 			}
+			// A name that cannot be used. Enter keeps the draft in the field with the reason under
+			// it — that is where the user is, and it is what they are about to fix; a blur reverts
+			// and says so in the status line, because fighting a click for focus is worse than
+			// dropping a name that was never applied.
+			const refuse = (why: string) => {
+				if (keep) setTitleError(why)
+				else {
+					revert()
+					setStatus(why)
+				}
+				return false
+			}
 			// Cleared, or unchanged: the field goes back to showing what is on disk. Neither is
 			// an error — emptying the field is not a request for a nameless note, there is no
 			// such thing.
@@ -658,30 +687,32 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				revert()
 				return true
 			}
+			// Judged before anything is derived from it: a name with a `/` in it that happens to
+			// sanitize back to the note's current one must still be refused, not quietly accepted
+			// as a no-op.
+			const illegal = illegalName(name)
+			if (illegal) return refuse(illegal)
 			const clean = sanitizeName(name)
-			// The destination the reducer would compute, so the question below is asked about the
+			// The destination the reducer would compute, so the questions below are asked about the
 			// path the write will actually take — including the extension a `.txt` note keeps.
 			const target =
 				held !== null
 					? renameTarget(held, joinPath(parentDir(held), clean), true)
 					: joinPath(dirRef.current, `${clean}${NOTE_EXT}`)
+			// A tidy that lands where the note already is: `Kyoto  trip` collapses to `Kyoto trip`,
+			// which is neither a rename nor a clash with itself. Asked of the TARGET, because the
+			// collapse is exactly what makes it differ from the typed name checked above.
+			if (target === held) {
+				revert()
+				return true
+			}
 			// Advisory, and knowingly so: it reads a listing, which is a snapshot, so `claimPath`
 			// in the reducer stays the authority and still numbers rather than overwrites. What
 			// this buys is the common case — telling someone the name is taken while they are
 			// still in the field, instead of moving their note to “Kyoto 2” behind their back. A
 			// name taken in the instant between here and the write is reported by `moveNote`.
-			const problem =
-				illegalName(name) ??
-				(entries.some((entry) => entry.path === target) ? `“${clean}” already exists here` : null)
-			if (problem) {
-				if (keep) {
-					setTitleError(problem)
-					return false
-				}
-				revert()
-				setStatus(problem)
-				return false
-			}
+			if (entries.some((entry) => entry.path === target))
+				return refuse(`“${clean}” already exists here`)
 			// A note that exists is RENAMED — through the same `rename` the tree and the agent
 			// use, so the extension rule and the no-overwrite rule cannot disagree. One that does
 			// not exist is a buffer whose note was deleted under it: naming it only says where the
@@ -877,13 +908,18 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// offered as a note to create, on a row of its own after the matches. Offered even when
 	// something DOES match — `Kyoto trip` matching is exactly why `Kyoto` would otherwise be
 	// uncreatable — and reachable with ArrowDown, so it costs no second shortcut.
+	// Judged as it is typed, by the same rule the name field uses. The ROW is where the answer
+	// belongs: a name that cannot be used says so instead of offering itself, rather than being
+	// silently repaired into a note called something else.
 	const creatable = query.trim()
-	const rowCount = filtered.length + (creatable ? 1 : 0)
+	const createProblem = creatable ? illegalName(creatable) : null
+	const canCreate = creatable !== '' && createProblem === null
+	const rowCount = filtered.length + (canCreate ? 1 : 0)
 	// Which row the keyboard is on. Clamped rather than reset, because the listing is live:
 	// results disappearing under the user must not move their place any further than it has
 	// to, and must never leave it pointing past the end.
 	const selected = Math.min(active, rowCount - 1)
-	const creating = creatable !== '' && selected === filtered.length
+	const creating = canCreate && selected === filtered.length
 
 	// Shortcuts are scoped to the app root, not `window` — app windows share the
 	// shell's document (no iframe), so a window listener would fire even when
@@ -954,7 +990,11 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// dropdown's results, and pinned under the pane's header — the tree shows the matches
 	// there but has no row of its own to offer. One element, so Enter and a click cannot come
 	// to mean different things.
-	const createRow = creatable ? (
+	const createRow = createProblem ? (
+		<div className="notes-empty notes-create-problem">
+			Cannot create “{creatable}” — {createProblem}
+		</div>
+	) : canCreate ? (
 		<button
 			type="button"
 			className="ds-menu-item notes-item"

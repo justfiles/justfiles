@@ -248,6 +248,12 @@
 	overflow-y: auto;
 	border-radius: 0 0 var(--menu-radius) var(--menu-radius);
 }
+/* An unusable typed name says so where it was offered, instead of being repaired into
+   a note called something else. */
+.notes-create-problem {
+	color: var(--danger);
+	opacity: 1;
+}
 .notes-item {
 	justify-content: space-between;
 	gap: 12px;
