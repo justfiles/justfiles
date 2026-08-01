@@ -195,10 +195,14 @@ export class Frieren extends DurableObject<Env> {
 				return c.json(generated)
 			})
 			.post('/api/agent/face', async (c) => {
-				const body = await c.req.json<{ expression?: string; hash?: string }>()
+				const body = await c.req.json<{ avatar?: string; expression?: string; hash?: string }>()
 				const expression = EXPRESSIONS.find((name) => name === body?.expression)
-				if (!expression || !body?.hash) {
-					return c.json({ error: 'expression and hash are required' }, 400)
+				// The avatar is an ID, so it is one path segment and never a way out of the avatars
+				// directory. A `builtin/` ref cannot arrive here: its bytes are in the app bundle, so
+				// the shell resolves it with no hash and never asks.
+				const avatar = body?.avatar
+				if (!expression || !body?.hash || !avatar || /[/\\]|^\./.test(avatar)) {
+					return c.json({ error: 'avatar, expression and hash are required' }, 400)
 				}
 				const face = await generateFace(
 					{
@@ -207,6 +211,7 @@ export class Frieren extends DurableObject<Env> {
 						generate: this.generateImage,
 						inFlight: this.facesInFlight
 					},
+					avatar,
 					expression,
 					body.hash
 				)
@@ -414,6 +419,9 @@ export class Frieren extends DurableObject<Env> {
 				usage: () => this.usageSnapshot(),
 				// The soul generator lives here because the model does. The browser half
 				// serves the Volume methods itself and delegates only this one.
+				// No `builtins`: the browser half serves every Volume method itself, so nothing here
+				// ever answers `listAvatars` — and inlining 200 KB of art for a method with no caller
+				// is bundle the worker does not have to carry.
 				agent: {
 					volume: this.vol,
 					paths: IDENTITY_PATHS,

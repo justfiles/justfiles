@@ -5,6 +5,7 @@ export type {
 	AccountInfo,
 	AccountOrigin,
 	AgentSoul,
+	AvatarInfo,
 	CapabilityId,
 	CredentialField,
 	CredentialsSchema,

@@ -23,12 +23,15 @@ const EXEMPT_FILES = new Set([
 	'apps/frieren/worker/appstore/feed.ts', // still searches the retired npm keyword
 	'apps/frieren/worker/appstore/indexer.ts' // keeps retired id prefixes reserved (anti-squat)
 ])
+// The built-in avatar art, baked to base64 (`pnpm run avatars`): 200 KB of the base64
+// alphabet spells words, and none of them are a name anyone wrote.
+const BAKED_ART = /^packages\/agent\/avatars(\.ts$|\/)/
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.wrangler', 'out'])
 
 function isScannable(rel: string): boolean {
 	if (!SCAN_EXT.test(rel)) return false
 	if (/\.test\.(tsx?|jsx?)$/.test(rel) || /\.bun\.test\.ts$/.test(rel)) return false
-	return !EXEMPT_FILES.has(rel)
+	return !EXEMPT_FILES.has(rel) && !BAKED_ART.test(rel)
 }
 
 function collect(dir: string, out: string[]): void {

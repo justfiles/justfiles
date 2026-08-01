@@ -36,6 +36,7 @@ import type { Capabilities, Capability } from '../types.ts'
 import type {
 	AccountsAdmin,
 	AgentSoul,
+	AvatarInfo,
 	GeneratedSoul,
 	ProviderInfo,
 	SettingsCapability,
@@ -72,7 +73,8 @@ export interface SoulDraftInput {
 // definition of where a soul lives.
 export interface IdentityPaths {
 	soul: string
-	avatar: string
+	// The directory the agent's avatars live in — one subdirectory per avatar.
+	avatars: string
 	profile: string
 }
 
@@ -82,6 +84,7 @@ interface IdentityVolume {
 	exists(path: string): Promise<boolean>
 	readFile(path: string): Promise<Uint8Array>
 	writeFile(path: string, data: Uint8Array): Promise<void>
+	readdir(path: string): Promise<{ name: string }[]>
 	mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
 	rm(path: string, options?: { force?: boolean }): Promise<void>
 }
@@ -89,6 +92,11 @@ interface IdentityVolume {
 export interface AgentDeps {
 	volume: IdentityVolume
 	paths: IdentityPaths
+	// The art the app ships, as `{ <id>: { resting: dataUrl, states } }` — injected for the
+	// same reason the paths are (it lives in `@justfiles/agent/avatars`, which cannot be
+	// imported back). These are the `builtin/<id>` refs: they cost the user no storage,
+	// replicate nowhere, and update when the app does. Absent means this host offers none.
+	builtins?: Record<string, { resting: string; states: string[] }>
 	// The user's timezone (IANA), for the one thing here that depends on today's date:
 	// their age. A host whose clock IS the user's clock (the Mac) omits it; one running
 	// somewhere else entirely (the frieren DO, on UTC) must not — see `age`.
@@ -244,6 +252,40 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 	await vol.writeFile(path, bytes)
 }
 
+// ── avatars ───────────────────────────────────────────────────────────────
+// An avatar is a DIRECTORY under `paths.avatars`, named by its id, holding one file per
+// state it can be in. Stem = state, extension = format, so nothing here names an extension
+// except to say what mime the bytes it just read are.
+//
+// `@justfiles/agent` spells those two rules too (`avatarState`, `avatarMime`) and this side
+// cannot import them — that package depends on this one, which is why the paths and the art
+// are injected. A one-line ext→mime map is not worth a fifth injected dep.
+
+async function entries(vol: IdentityVolume, path: string): Promise<string[]> {
+	if (!(await vol.exists(path))) return []
+	return (await vol.readdir(path)).map((entry) => entry.name)
+}
+
+function state(name: string): string {
+	const dot = name.lastIndexOf('.')
+	return dot > 0 ? name.slice(0, dot) : name
+}
+
+// The id is the label until there is a store that needs a manifest to carry one.
+function label(id: string): string {
+	return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
+// A data URL, because the app frame's CSP is `img-src data: blob:` — a path would be
+// unrenderable there, and bytes per file would put a megabyte through a list call.
+async function dataUrl(vol: IdentityVolume, path: string): Promise<string> {
+	const bytes = await vol.readFile(path)
+	const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+	let binary = ''
+	for (const byte of bytes) binary += String.fromCharCode(byte)
+	return `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${btoa(binary)}`
+}
+
 // A birth date is a CALENDAR DATE, not an instant — and so is "today", which is the part
 // that bites. `new Date('YYYY-MM-DD')` is UTC midnight, so local getters read the day
 // before anywhere west of UTC; and the host's own "now" is no better, because the frieren
@@ -262,9 +304,9 @@ function age(birthDate: string, now: string): number | undefined {
 	return now.slice(5) < birthDate.slice(5) ? years - 1 : years
 }
 
-function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps): Served {
+function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: AgentDeps): Served {
 	// Every identity write is READ-MODIFY-WRITE (a profile patch merges with the file, a
-	// soul write preserves the recorded face) and the panes fire them per field as the
+	// soul write preserves the avatar being worn) and the panes fire them per field as the
 	// user edits — so they queue. Without this, two writes read the same file and the slower
 	// one puts back what the other had just changed.
 	let queue: Promise<unknown> = Promise.resolve()
@@ -278,7 +320,7 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		return {
 			name: frontmatter.agent_name ?? '',
 			gender: gender(frontmatter.agent_gender),
-			avatarVariant: frontmatter.avatar_variant ?? null,
+			avatar: frontmatter.avatar ?? null,
 			body,
 			seeded: frontmatter.seeded === 'true'
 		}
@@ -296,9 +338,6 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		'agent.writeSoul': (patch) =>
 			serial(async () => {
 				const current = await readSoul()
-				// The face the summoning picked: a plain write preserves it, because nothing
-				// outside that ritual chooses built-in art.
-				const variant = patch.avatarVariant ?? current.avatarVariant
 				await writeTo(
 					vol,
 					paths.soul,
@@ -307,20 +346,56 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 							['schema', 'frieren/agent-soul/v1'],
 							['agent_name', patch.name ?? current.name],
 							['agent_gender', patch.gender ?? current.gender],
-							['avatar_variant', variant]
+							// The avatar is an ordinary patch field, so a plain write preserves the one
+							// being worn — a rename must not undress them.
+							['avatar', patch.avatar ?? current.avatar]
 						],
 						patch.body ?? current.body
 					)
 				)
 			}),
-		'agent.readAvatar': async () =>
-			(await vol.exists(paths.avatar)) ? vol.readFile(paths.avatar) : null,
-		'agent.writeAvatar': ({ bytes }) =>
+		'agent.listAvatars': async () => {
+			const art = Object.entries(builtins ?? {}).map(([id, { resting, states }]) => ({
+				ref: `builtin/${id}`,
+				label: label(id),
+				builtin: true,
+				preview: resting,
+				// The bundled art is PNG; the volume's files carry whatever extension they were
+				// written with, and the caller reads the state off the stem either way.
+				files: states.map((state) => `${state}.png`)
+			}))
+			const installed: AvatarInfo[] = []
+			for (const id of await entries(vol, paths.avatars)) {
+				const files = await entries(vol, `${paths.avatars}/${id}`)
+				// `.gen` is the image model's, and an avatar with no resting state is not one yet.
+				const resting = files.find((name) => state(name) === 'resting')
+				if (id.startsWith('.') || !resting) continue
+				installed.push({
+					ref: id,
+					label: label(id),
+					builtin: false,
+					preview: await dataUrl(vol, `${paths.avatars}/${id}/${resting}`),
+					files: files.filter((name) => !name.startsWith('.'))
+				})
+			}
+			return [...art, ...installed]
+		},
+		'agent.putAvatarFile': ({ avatar, name, bytes }) =>
 			serial(async () => {
-				// Null DELETES: `avatar.png` is what decides the face, so leaving stale bytes
-				// behind would keep beating the built-in art the soul now names.
-				if (!bytes) return vol.rm(paths.avatar, { force: true })
-				await writeTo(vol, paths.avatar, bytes)
+				// An id is ONE directory name and a file is ONE name in it: no separator, and no
+				// leading dot (`.gen` holds derived art, which no caller owns).
+				for (const part of [avatar, name]) {
+					if (!part || part.startsWith('.') || /[/\\]/.test(part)) {
+						throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'settings', 'agent.putAvatarFile')
+					}
+				}
+				const path = `${paths.avatars}/${avatar}/${name}`
+				// A DELETE, then a create — never an overwrite. A create publishes bytes and name as
+				// one fact (see `Volume.writeFile`), so a reader mid-replace sees the old file or the
+				// whole new one and never a torn image; and it is a structural change, which is what
+				// a watcher of the avatars directory can actually hear.
+				await vol.rm(path, { force: true })
+				if (bytes) await writeTo(vol, path, bytes)
 			}),
 		'agent.readProfile': readProfile,
 		// A PATCH: only the fields passed change. The pane saves per field as you edit, so a

@@ -85,13 +85,17 @@ export interface AgentSoul {
 	name: string
 	// The whole vocabulary. null only on a hand-edited or seeded file that omits it.
 	gender: 'female' | 'male' | null
-	// Which built-in face set is worn. null means "the photo on the volume" (avatar.png).
+	// The avatar worn, as a REF: `builtin/<id>` is art in the app bundle (choosing it costs
+	// no bytes and cannot drift from the app), anything else is an id under the agent's
+	// `avatars/` directory — the user's own photo, or a pack they installed. null means the
+	// default built-in. Opaque everywhere but the two functions that resolve it: nobody
+	// parses a ref, so there is no ref type, no parser and no formatter in this contract.
 	//
 	// NOTE THE ABSENCE OF AN ARCHETYPE. The three natures are a seed for the FIRST draft
 	// and nothing after it: once the prose exists, the prose is the character, and a word
 	// in the frontmatter saying "teacher" only invites code to disagree with what the soul
 	// actually says. What the summoning leaves behind is a face, not a category.
-	avatarVariant: string | null
+	avatar: string | null
 	// The prose: the system prompt the agent wakes up with.
 	body: string
 	// True while this is the untouched default seeded at boot — i.e. "unbound", the state
@@ -99,6 +103,23 @@ export interface AgentSoul {
 	// saying which default: an unbound agent still has a name and prose to show, and this is
 	// what tells the pane they are the boot seed's rather than the user's.
 	seeded: boolean
+}
+
+// One avatar the agent could wear. AN AVATAR IS A DIRECTORY: what it covers is which files
+// exist in it, which is why `files` is a listing and not a fixed set of slots.
+export interface AvatarInfo {
+	// What goes in the soul's `avatar:`.
+	ref: string
+	label: string
+	// Art in the app bundle: it costs the user no storage, replicates nowhere, and is
+	// read-only — `putAvatarFile` will not write into one.
+	builtin: boolean
+	// The state it rests in, as a data URL (the app frame's CSP allows `data:` and nothing
+	// else). A complete set of six is ~25 KB, so only the resting one travels.
+	preview: string
+	// The file names it holds, e.g. `['resting.png', 'pleased.png']`. Stem = state,
+	// extension = format; the pane shows a slot per state and names the file it replaces.
+	files: string[]
 }
 
 // What the user chose to say about themselves. Read by the account pane, and by
@@ -136,24 +157,32 @@ export interface SettingsCapability {
 	// The agent's own identity, on the Volume. Served wherever the Volume is (both
 	// hosts), which is what finally gives the Mac app personalization.
 	'agent.readSoul'(input: Record<string, never>): Promise<AgentSoul>
-	// Writes name/gender/prose and clears the seeded flag. `avatarVariant` is the summoning's
-	// to set (first bind, or "summon again") and is otherwise preserved: the nature picked
-	// there decides the face, and nothing else about them is a category afterwards. An
-	// uploaded photo still wins over it (see `writeAvatar`).
 	// A PATCH, like `writeProfile`: only the fields present are written. The pane edits one
 	// thing at a time (a rename, a gender, the prose when you press Done), and an unfinished
-	// edit of one must never ride along with a save of another.
+	// edit of one must never ride along with a save of another. That includes `avatar`, which
+	// is why there is no `wearAvatar` method: wearing one is `writeSoul({ avatar })`, an
+	// ordinary field — under packs the character sheet changes the avatar too, so the old
+	// "only the summoning may pass it" rule is deleted rather than restated.
 	'agent.writeSoul'(input: {
 		name?: string
 		gender?: 'female' | 'male'
 		body?: string
-		avatarVariant?: string
+		avatar?: string
 	}): Promise<void>
-	// The chosen face, as bytes, or null while the built-in art is worn.
-	'agent.readAvatar'(input: Record<string, never>): Promise<Uint8Array | null>
-	// Store a photo, or pass null to drop back to the built-in art. Null DELETES the
-	// file: stale bytes would keep winning over the variant otherwise.
-	'agent.writeAvatar'(input: { bytes: Uint8Array | null }): Promise<void>
+	// Every avatar this host can offer: the built-ins in the app bundle, then whatever is
+	// installed on the volume.
+	'agent.listAvatars'(input: Record<string, never>): Promise<AvatarInfo[]>
+	// Write (or, with null bytes, delete) ONE named file in an avatar's directory, creating
+	// the avatar if this is its first file. That is the whole write surface: an upload of a
+	// photo, an artist's `pleased.png` and a pack being installed are the same operation, so
+	// no method here enumerates states and a new one needs no deploy. `name` is rejected if
+	// it contains `/` or starts with a dot (`.gen` is the model's, not a caller's), and
+	// `avatar` if it is not a single id.
+	'agent.putAvatarFile'(input: {
+		avatar: string
+		name: string
+		bytes: Uint8Array | null
+	}): Promise<void>
 	'agent.readProfile'(input: Record<string, never>): Promise<UserFacts>
 	// A PATCH: only the fields present are written, so the pane can save one field at a
 	// time without a slower save putting back what a faster one changed.

@@ -19,6 +19,7 @@
 		"cf-typegen": "wrangler types",
 		"icons": "tsx scripts/generate-icons.ts",
 		"faces": "tsx scripts/generate-faces.ts",
+		"avatars": "node scripts/bake-avatars.ts",
 		"typecheck": "tsc -b --noEmit"
 	},
 	"dependencies": {

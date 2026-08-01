@@ -8,16 +8,16 @@ import type {
 } from '@justfiles/app/capabilities/settings'
 import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AgentPane, useAvatar, useDrafting } from './agent-pane.tsx'
+import { AgentPane, useAvatars, useDrafting } from './agent-pane.tsx'
 import {
 	type Category,
 	hasBothOrigins,
 	initialState,
 	originKind,
 	type SettingsApp,
-	type SettingsState
+	type SettingsState,
+	wornAvatar
 } from './app.ts'
-import { faceOf } from './archetypes.ts'
 
 // How a provider projects an `ai`-capability account's config for the picker
 // (see the host `describe`): the selected model + the list to choose from.
@@ -189,10 +189,11 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 // saying "Agent" and starts saying "Fern". It is also how you notice a soul edited on
 // another device: the row follows the volume.
 function AgentNavGlyph({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
-	const photo = useAvatar(client, state.avatarRevision)
+	const worn = wornAvatar(state.soul, useAvatars(client, state.avatarRevision))
 	return (
 		<span className="settings-nav-glyph settings-nav-face" aria-hidden>
-			<img src={faceOf(photo, state.soul?.avatarVariant ?? null)} alt="" />
+			{/* Empty until the first list lands: a face, or the space one will take. */}
+			{worn ? <img src={worn.preview} alt="" /> : null}
 		</span>
 	)
 }

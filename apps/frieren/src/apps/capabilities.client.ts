@@ -1,3 +1,4 @@
+import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import {
 	type Capabilities,
@@ -54,7 +55,9 @@ export function clientCapabilities(
 			volume: volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
 			settings: settingsHost({
 				user: getUser,
-				agent: { volume: fs, paths: IDENTITY_PATHS },
+				// The built-in art rides along because `agent.listAvatars` is served HERE: the
+				// shell already has these bytes in its bundle, so offering them costs nothing.
+				agent: { volume: fs, paths: IDENTITY_PATHS, builtins: BUILTIN_AVATARS },
 				remote: fallback
 			}),
 			notify: notifyHost(browserNotifyChannel),

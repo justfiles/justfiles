@@ -4,6 +4,7 @@ import { accountsCapabilities } from '../accounts/host.ts'
 import { icloudProvider } from '../accounts/providers/icloud.ts'
 import { platformProvider } from '../accounts/providers/platform.ts'
 import type { Capabilities, CapabilityCall } from '../types.ts'
+import type { AvatarInfo } from './contract.ts'
 import { SETTINGS_ALLOWLIST, type SettingsHostDeps, settingsHost } from './host.ts'
 
 // `settings` is the host admin surface as ONE gated bucket. What matters here is the
@@ -27,8 +28,8 @@ const METHODS = [
 const AGENT_METHODS = [
 	'agent.readSoul',
 	'agent.writeSoul',
-	'agent.readAvatar',
-	'agent.writeAvatar',
+	'agent.listAvatars',
+	'agent.putAvatarFile',
 	'agent.readProfile',
 	'agent.writeProfile',
 	'agent.generateSoul'
@@ -304,14 +305,27 @@ test('an unknown method (or a subscribe) is UNAVAILABLE, never a crash', async (
 
 const PATHS = {
 	soul: '/system/agents/main/soul.md',
-	avatar: '/system/agents/main/avatar.png',
+	avatars: '/system/agents/main/avatars',
 	profile: '/system/user.md'
+}
+
+// The art the app ships, injected for the same reason the paths are (it lives in
+// `@justfiles/agent`, which depends on this package). Two states, so `files` has something
+// to report and the pane has a list of states to offer.
+const BUILTINS = {
+	vanilla: { resting: 'data:image/png;base64,AA', states: ['resting', 'pleased'] }
 }
 
 function agentHost(over: Partial<SettingsHostDeps['agent']> = {}) {
 	const vol = volume(memStorage())
 	const { accounts } = accountsCapabilities([icloudProvider()], vol)
-	return { vol, caps: settingsHost({ accounts, agent: { volume: vol, paths: PATHS, ...over } }) }
+	return {
+		vol,
+		caps: settingsHost({
+			accounts,
+			agent: { volume: vol, paths: PATHS, builtins: BUILTINS, ...over }
+		})
+	}
 }
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
@@ -325,7 +339,7 @@ test('agent.writeSoul then readSoul round-trips, through the paths the host was 
 	expect(await caps.invoke(call('agent.readSoul'))).toEqual({
 		name: 'Fern',
 		gender: 'female',
-		avatarVariant: null,
+		avatar: null,
 		body: 'You are Fern.',
 		seeded: false
 	})
@@ -362,26 +376,29 @@ test('the seeded default reads as unbound, so the pane can send you to the summo
 	})
 })
 
-test('a nature is never recorded — only the face it chose', async () => {
+test('a nature is never recorded — only the avatar it chose', async () => {
 	const { vol, caps } = agentHost()
 	await caps.invoke(
 		call('agent.writeSoul', {
 			name: 'Fern',
 			gender: 'female',
 			body: 'You teach by asking.',
-			avatarVariant: 'teacher'
+			avatar: 'builtin/teacher'
 		})
 	)
-	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({ avatarVariant: 'teacher' })
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({ avatar: 'builtin/teacher' })
 	// The nature itself leaves no trace: the prose is the character, so a word claiming
-	// otherwise could only ever disagree with it.
-	expect(decode(await vol.readFile(PATHS.soul))).not.toContain('archetype')
-	// A plain write (the returning-user pane) keeps the face: nothing outside the summoning
-	// chooses built-in art, by contract rather than by discipline.
+	// otherwise could only ever disagree with it. What is recorded is a SOURCE for the art,
+	// which for a built-in means no bytes on the volume at all.
+	const text = decode(await vol.readFile(PATHS.soul))
+	expect(text).not.toContain('archetype')
+	expect(text).toContain('avatar: builtin/teacher')
+	// A plain write keeps them dressed: the avatar is an ordinary patch field, so a rename
+	// preserves it without anyone restating a rule about who may choose one.
 	await caps.invoke(call('agent.writeSoul', { name: 'Frieren', gender: 'female', body: 'Same.' }))
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
 		name: 'Frieren',
-		avatarVariant: 'teacher'
+		avatar: 'builtin/teacher'
 	})
 })
 
@@ -395,28 +412,76 @@ test('a soul write is a patch: a rename never carries an unfinished edit with it
 			name: 'Fern',
 			gender: 'female',
 			body: 'You are Fern.',
-			avatarVariant: 'companion'
+			avatar: 'builtin/companion'
 		})
 	)
 	await caps.invoke(call('agent.writeSoul', { name: 'Frieren' }))
 	expect(await caps.invoke(call('agent.readSoul'))).toEqual({
 		name: 'Frieren',
 		gender: 'female',
-		avatarVariant: 'companion',
+		avatar: 'builtin/companion',
 		body: 'You are Fern.',
 		seeded: false
 	})
 })
 
-test('agent.writeAvatar stores bytes; null drops back to the built-in art', async () => {
+test('an avatar is a directory: listAvatars shows the bundle then the volume', async () => {
 	const { vol, caps } = agentHost()
 	const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
-	await caps.invoke(call('agent.writeAvatar', { bytes }))
-	expect(await caps.invoke(call('agent.readAvatar'))).toEqual(bytes)
-	// Null must DELETE: stale bytes keep winning over the variant otherwise.
-	await caps.invoke(call('agent.writeAvatar', { bytes: null }))
-	expect(await caps.invoke(call('agent.readAvatar'))).toBeNull()
-	expect(await vol.exists(PATHS.avatar)).toBe(false)
+	// Nothing installed yet: the built-in art alone, and it costs the volume nothing.
+	expect(await caps.invoke(call('agent.listAvatars'))).toEqual([
+		{
+			ref: 'builtin/vanilla',
+			label: 'Vanilla',
+			builtin: true,
+			preview: 'data:image/png;base64,AA',
+			files: ['resting.png', 'pleased.png']
+		}
+	])
+
+	// One named file per state, and the first one brings the avatar into being.
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes }))
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.webp', bytes }))
+	const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
+	expect(mine).toMatchObject({ ref: 'mine', label: 'Mine', builtin: false })
+	expect(mine?.files.sort()).toEqual(['pleased.webp', 'resting.png'])
+	// The preview carries the mime the file's extension says it is.
+	expect(mine?.preview.startsWith('data:image/png;base64,')).toBe(true)
+	expect(await vol.exists(`${PATHS.avatars}/mine/resting.png`)).toBe(true)
+
+	// Null bytes DELETE that one state — the artist's file goes, the avatar stays.
+	await caps.invoke(
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.webp', bytes: null })
+	)
+	const [, after] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
+	expect(after?.files).toEqual(['resting.png'])
+
+	// Derived art is the model's lane, and a directory with no resting state is not an
+	// avatar yet: neither shows up as one to wear.
+	await vol.mkdir(`${PATHS.avatars}/mine/.gen/abc`, { recursive: true })
+	await vol.writeFile(`${PATHS.avatars}/mine/.gen/abc/curious.png`, bytes)
+	await vol.mkdir(`${PATHS.avatars}/half`, { recursive: true })
+	await vol.writeFile(`${PATHS.avatars}/half/pleased.png`, bytes)
+	const list = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
+	expect(list.map((a) => a.ref)).toEqual(['builtin/vanilla', 'mine'])
+	expect(list[1]?.files).toEqual(['resting.png'])
+})
+
+test('putAvatarFile writes ONE file in ONE avatar, and nowhere else', async () => {
+	const { caps } = agentHost()
+	const bytes = new Uint8Array([1])
+	for (const bad of [
+		{ avatar: '../..', name: 'resting.png' },
+		{ avatar: 'mine', name: '../soul.md' },
+		{ avatar: 'mine', name: '.gen' },
+		{ avatar: '.gen', name: 'resting.png' },
+		{ avatar: '', name: 'resting.png' },
+		{ avatar: 'mine', name: '' }
+	]) {
+		await expect(caps.invoke(call('agent.putAvatarFile', { ...bad, bytes }))).rejects.toMatchObject(
+			{ code: 'CAPABILITY_INVALID_INPUT' }
+		)
+	}
 })
 
 test('agent.readProfile / writeProfile carry only what the user chose to say', async () => {
