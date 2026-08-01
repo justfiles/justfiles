@@ -149,6 +149,9 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 	const loadDoc = useCallback(
 		async (path: string | null) => {
 			const target = path ?? DRAFT_PATH
+			// A (re)load remounts Excalidraw, so a running presentation would be left
+			// holding a dead API handle and the old document's slides — leave it first.
+			setPresenting(false)
 			const token = ++loadTokenRef.current
 			const { json } = await actions.readScene({ path: target })
 			if (loadTokenRef.current !== token) return

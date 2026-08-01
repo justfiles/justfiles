@@ -127,14 +127,18 @@ export function Presenter({
 	}, [host, fit])
 
 	// Presentation dressing, undone on exit: laser pointer, no frame outlines or
-	// names, and the pre-presentation viewport restored.
+	// names, and the pre-presentation viewport and tool restored. `image` would
+	// re-open the file picker and `custom` needs its customType, so those two fall
+	// back to the selection tool.
 	useEffect(() => {
-		const { scrollX, scrollY, zoom } = api.getAppState()
+		const { scrollX, scrollY, zoom, activeTool } = api.getAppState()
+		const was = (activeTool as { type?: string } | undefined)?.type
+		const restored = !was || was === 'image' || was === 'custom' ? 'selection' : was
 		api.updateFrameRendering({ name: false, outline: false })
 		api.setActiveTool({ type: 'laser' })
 		return () => {
 			api.updateFrameRendering({ name: true, outline: true })
-			api.setActiveTool({ type: 'selection' })
+			api.setActiveTool({ type: restored })
 			api.updateScene({ appState: { scrollX, scrollY, zoom } })
 		}
 	}, [api])
