@@ -60,7 +60,6 @@ test('hasBothOrigins is true only once the list spans both lanes', () => {
 const seededSoul = {
 	name: 'Kodama',
 	gender: null,
-	archetype: 'assistant',
 	avatarVariant: null,
 	body: 'You are Kodama, a calm and capable companion.',
 	seeded: true
@@ -68,7 +67,6 @@ const seededSoul = {
 const boundSoul = {
 	name: 'Fern',
 	gender: 'female' as const,
-	archetype: 'companion',
 	avatarVariant: 'companion',
 	body: 'You are Fern, a companion who walks beside the user.',
 	seeded: false

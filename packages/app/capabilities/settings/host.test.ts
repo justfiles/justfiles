@@ -325,7 +325,6 @@ test('agent.writeSoul then readSoul round-trips, through the paths the host was 
 	expect(await caps.invoke(call('agent.readSoul'))).toEqual({
 		name: 'Fern',
 		gender: 'female',
-		archetype: null,
 		avatarVariant: null,
 		body: 'You are Fern.',
 		seeded: false
@@ -363,26 +362,25 @@ test('the seeded default reads as unbound, so the pane can send you to the summo
 	})
 })
 
-test('the archetype is the summoning to set and everyone else to preserve', async () => {
-	const { caps } = agentHost()
+test('a nature is never recorded — only the face it chose', async () => {
+	const { vol, caps } = agentHost()
 	await caps.invoke(
 		call('agent.writeSoul', {
 			name: 'Fern',
 			gender: 'female',
 			body: 'You teach by asking.',
-			archetype: 'teacher'
+			avatarVariant: 'teacher'
 		})
 	)
-	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
-		archetype: 'teacher',
-		avatarVariant: 'teacher'
-	})
-	// A plain write (the returning-user pane) keeps the seed AND the art it points at:
-	// nothing in that pane can change a nature, by contract rather than by discipline.
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({ avatarVariant: 'teacher' })
+	// The nature itself leaves no trace: the prose is the character, so a word claiming
+	// otherwise could only ever disagree with it.
+	expect(decode(await vol.readFile(PATHS.soul))).not.toContain('archetype')
+	// A plain write (the returning-user pane) keeps the face: nothing outside the summoning
+	// chooses built-in art, by contract rather than by discipline.
 	await caps.invoke(call('agent.writeSoul', { name: 'Frieren', gender: 'female', body: 'Same.' }))
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
 		name: 'Frieren',
-		archetype: 'teacher',
 		avatarVariant: 'teacher'
 	})
 })
@@ -397,14 +395,13 @@ test('a soul write is a patch: a rename never carries an unfinished edit with it
 			name: 'Fern',
 			gender: 'female',
 			body: 'You are Fern.',
-			archetype: 'companion'
+			avatarVariant: 'companion'
 		})
 	)
 	await caps.invoke(call('agent.writeSoul', { name: 'Frieren' }))
 	expect(await caps.invoke(call('agent.readSoul'))).toEqual({
 		name: 'Frieren',
 		gender: 'female',
-		archetype: 'companion',
 		avatarVariant: 'companion',
 		body: 'You are Fern.',
 		seeded: false
@@ -424,15 +421,14 @@ test('agent.writeAvatar stores bytes; null drops back to the built-in art', asyn
 
 test('agent.readProfile / writeProfile carry only what the user chose to say', async () => {
 	const { caps } = agentHost()
-	expect(await caps.invoke(call('agent.readProfile'))).toMatchObject({ name: '', seeded: true })
+	expect(await caps.invoke(call('agent.readProfile'))).toMatchObject({ name: '' })
 	await caps.invoke(
 		call('agent.writeProfile', { name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
 	)
 	expect(await caps.invoke(call('agent.readProfile'))).toEqual({
 		name: 'Xiaoxing',
 		birthDate: '1985-04-12',
-		gender: 'male',
-		seeded: false
+		gender: 'male'
 	})
 })
 
@@ -523,8 +519,7 @@ test('a profile write is a patch: it never puts back a field it was not given', 
 	expect(await caps.invoke(call('agent.readProfile'))).toEqual({
 		name: 'Xiaoxing',
 		birthDate: '1985-04-12',
-		gender: 'female',
-		seeded: false
+		gender: 'female'
 	})
 })
 

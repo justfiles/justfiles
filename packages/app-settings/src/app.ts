@@ -206,12 +206,14 @@ export const app = defineApp({
 		// cannot land prose in front of anyone, and a second device never sees this one's
 		// work at all.
 		generateSoul: p.procedure({
-			description: 'Draft a soul from a name, a gender and a seed archetype. Writes nothing.',
+			description: 'Draft a soul from a name and a gender. Writes nothing.',
 			audience: 'gui',
 			schema: v.object({
 				name: v.string(),
 				gender: genderSchema,
-				archetype: v.string(),
+				// The summoning's seed, and only its: nothing records a nature, so a rewrite
+				// from the character sheet has none to send.
+				archetype: v.optional(v.string()),
 				// Sent because the generator does not always run where the profile lives — see
 				// the contract. A date, never an age: the host derives that, in the user's zone.
 				user: v.optional(
@@ -264,9 +266,9 @@ export const app = defineApp({
 				})
 			}
 		}),
-		// `archetype` is passed by the summoning ONLY — the first bind and "summon again".
-		// Omitting it is what makes a returning user's save unable to contradict the nature
-		// the soul was written from (the host preserves it; see the capability's contract).
+		// `avatarVariant` is passed by the summoning ONLY — the first bind and "summon again",
+		// the one place built-in art is chosen. Every other save omits it, and the host keeps
+		// what is on the file.
 		saveSoul: p.procedure({
 			description: "Write the agent's name, gender and soul to the volume.",
 			// A PATCH: only what is passed is written (the host merges). The sheet edits one
@@ -275,7 +277,7 @@ export const app = defineApp({
 				name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
 				gender: v.optional(genderSchema),
 				body: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-				archetype: v.optional(v.string())
+				avatarVariant: v.optional(v.string())
 			}),
 			async run(input, app) {
 				await app.invoke('settings', 'agent.writeSoul', input)

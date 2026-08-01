@@ -92,15 +92,3 @@ the pnpm catalog (`pnpm-workspace.yaml`) — a skew means `typecheck` and a pack
 Note `include`/`exclude` and path-valued options (`outDir`, `rootDir`, `paths`) resolve
 relative to the file they are written in, so they must live in the package's own
 tsconfig — never in a shared base.
-
-# No backward compatibility
-
-We keep NONE, on purpose. The user base is a handful of people, so a changed file
-format, frontmatter key, persisted state shape or capability signature is simply the
-new one.
-
-Do not write migrations, fallbacks for values an older build wrote, or code that
-preserves fields the current UI does not expose — and do not ask for them in review.
-Delete the old shape and move on. The corollary: a value the product has decided about
-(agent and user gender are `female | male`, and nothing else) is closed, not a gap
-waiting to be widened.

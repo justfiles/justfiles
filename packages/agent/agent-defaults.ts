@@ -56,7 +56,6 @@ const DEFAULT_AGENT_NAME = 'Kodama'
 const DEFAULT_SOUL = `---
 schema: frieren/agent-soul/v1
 agent_name: Kodama
-archetype: assistant
 seeded: true
 ---
 

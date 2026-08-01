@@ -122,11 +122,9 @@ export async function buildKernel(
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
 						const backend = await resolveAgentBackend(fs, { secretCodec })
 						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')
-						const facts = [
-							`agent name: ${name}`,
-							`archetype: ${archetype}`,
-							`agent gender: ${gender}`
-						]
+						const facts = [`agent name: ${name}`, `agent gender: ${gender}`]
+						// Only the summoning has a nature to send — nothing records one.
+						if (archetype) facts.push(`archetype: ${archetype}`)
 						if (userAge !== undefined) facts.push(`user age: ${userAge}`)
 						if (userGender) facts.push(`user gender: ${userGender}`)
 						return { body: await text(backend).gen(SOUL_GENERATION_PROMPT, facts.join('\n')) }

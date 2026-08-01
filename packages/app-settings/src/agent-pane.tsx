@@ -16,12 +16,12 @@ import { pngUrl, squarePng } from './squarePng.ts'
 //   BOUND — the character sheet: the avatar (click or drop a photo on it), the name, the
 //   gender, and the soul as a document you can edit or have rewritten.
 //
-// A NATURE IS A SEED, NOT A SETTING. It is chosen once, in the summoning, and afterwards
-// shown read-only: the prose is the character, and re-picking an archetype would either
-// do nothing or quietly contradict the soul on screen. The route back is deliberate —
-// "Summon again", which replaces the soul. The capability enforces this (`writeSoul`
-// preserves the recorded archetype unless the summoning passes one), so this pane cannot
-// drift from the file it is showing.
+// A NATURE IS A SEED, AND IT IS NOT KEPT. It is offered once, in the summoning, where it
+// shapes the first draft — and then it is over. Nothing records "this one is a teacher",
+// because after the draft exists the prose IS the character, and a word in the frontmatter
+// claiming otherwise can only disagree with the soul on screen. What the ritual leaves
+// behind is the face they wear (`avatar_variant`), which is the part of the choice you can
+// still see. The route back is "Summon again", which replaces the soul.
 //
 // The one drift left is a RENAME: the prose opens "You are Fern…". The pane says so and
 // offers one Rewrite. It never rewrites prose because a field changed.
@@ -128,7 +128,9 @@ type Gender = 'female' | 'male'
 export interface DraftRequest {
 	name: string
 	gender: Gender
-	archetype: string
+	// The nature, when a nature was just picked. The summoning sends one; a rewrite from
+	// the character sheet does not, because none was kept.
+	archetype?: string
 }
 
 export interface Drafting {
@@ -328,12 +330,10 @@ function Pips({ values }: { values: [number, number, number] }) {
 function frontmatter({
 	name,
 	gender,
-	archetype,
 	variant
 }: {
 	name: string
 	gender: Gender
-	archetype: string | null
 	variant: string | null
 }): string {
 	const lines = [
@@ -342,7 +342,6 @@ function frontmatter({
 		`agent_name: ${name}`,
 		`agent_gender: ${gender}`
 	]
-	if (archetype) lines.push(`archetype: ${archetype}`)
 	if (variant) lines.push(`avatar_variant: ${variant}`)
 	lines.push('---')
 	return lines.join('\n')
@@ -405,9 +404,8 @@ function CharacterSheet({
 	drafting: Drafting
 	onResummon: () => void
 }) {
-	const nature = archetypeOf(soul.archetype)
-	// The art actually on screen is the recorded VARIANT, which a soul written before
-	// variants existed simply lacks — then the default face is what renders.
+	// The art on screen is the recorded variant — the one thing the summoning leaves behind.
+	// A soul with none simply wears the default face.
 	const worn = archetypeOf(soul.avatarVariant)
 	// Re-read the face whenever the avatar file changes — a write here, or a sync from
 	// another device. The soul is not the signal: it does not move when a photo is added
@@ -456,12 +454,10 @@ function CharacterSheet({
 	// written for; the frontmatter above it always shows the name it would be saved under.
 	const rewrite = () =>
 		drafting.ask(
-			{
-				name,
-				gender,
-				// A rewrite reuses the recorded seed — the pane offers no way to change it.
-				archetype: soul.archetype ?? 'companion'
-			},
+			// No nature: none was recorded, because none is a fact about them. What the
+			// generator gets is what the sheet actually knows — their name, their gender,
+			// and (host-side) who the user is.
+			{ name, gender },
 			(drafted) => {
 				setBody(drafted.body)
 				setEditing(true)
@@ -524,7 +520,6 @@ function CharacterSheet({
 						<span className="agent-pill" data-bound="true">
 							Bound
 						</span>
-						<span>{nature ? nature.title : 'no recorded nature'}</span>
 						<span className="agent-row-grow" />
 						<span className="agent-saved" data-on={saved || undefined}>
 							Saved
@@ -598,12 +593,7 @@ function CharacterSheet({
 					</div>
 					<div className="agent-doc-body">
 						<span className="agent-doc-fm">
-							{frontmatter({
-								name,
-								gender,
-								archetype: soul.archetype,
-								variant: photo ? null : soul.avatarVariant
-							})}
+							{frontmatter({ name, gender, variant: photo ? null : soul.avatarVariant })}
 						</span>
 						{editing ? (
 							<textarea
@@ -627,13 +617,6 @@ function CharacterSheet({
 						</span>
 					</div>
 				</div>
-				{nature ? (
-					<p className="settings-card-copy">
-						Seeded from the <b>{nature.title}</b> nature at the summoning. That was the seed for the
-						first draft; the prose above is what shapes them now, so there is nothing to pick again
-						here.
-					</p>
-				) : null}
 			</section>
 
 			<div className="agent-row">
@@ -641,7 +624,7 @@ function CharacterSheet({
 					Summon again…
 				</button>
 				<span className="settings-card-copy">
-					Start over from a name and a nature — the only place a nature is ever chosen. Nothing
+					Start over from a name and a nature — the only place a nature is ever offered. Nothing
 					changes until you bind.
 				</span>
 			</div>
@@ -726,8 +709,9 @@ function Summoning({
 				name: name.trim(),
 				gender,
 				body: body.trim(),
-				// The one place an archetype is ever passed.
-				archetype: archetype ?? undefined
+				// The nature picked here is not recorded AS a nature — it is recorded as the
+				// face they wear, which is the only part of it that outlives the ritual.
+				avatarVariant: archetype ?? undefined
 			})
 			// Always written, because binding is also how "summon again" lands: with no photo
 			// this CLEARS a previous one, or the newly bound agent would keep wearing the old
@@ -855,7 +839,6 @@ function Summoning({
 										{frontmatter({
 											name: name.trim(),
 											gender,
-											archetype,
 											variant: photo ? null : archetype
 										})}
 									</span>

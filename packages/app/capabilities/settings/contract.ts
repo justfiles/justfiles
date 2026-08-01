@@ -85,15 +85,19 @@ export interface AgentSoul {
 	name: string
 	// The whole vocabulary. null only on a hand-edited or seeded file that omits it.
 	gender: 'female' | 'male' | null
-	// The seed the first draft was written from, recorded at the summoning and NOT a
-	// setting afterwards (see `writeSoul`). null on a soul that predates it.
-	archetype: string | null
 	// Which built-in face set is worn. null means "the photo on the volume" (avatar.png).
+	//
+	// NOTE THE ABSENCE OF AN ARCHETYPE. The three natures are a seed for the FIRST draft
+	// and nothing after it: once the prose exists, the prose is the character, and a word
+	// in the frontmatter saying "teacher" only invites code to disagree with what the soul
+	// actually says. What the summoning leaves behind is a face, not a category.
 	avatarVariant: string | null
 	// The prose: the system prompt the agent wakes up with.
 	body: string
 	// True while this is the untouched default seeded at boot — i.e. "unbound", the state
-	// that sends the pane to the summoning instead of showing a form.
+	// that sends the pane to the summoning instead of showing a form. It earns its place by
+	// saying which default: an unbound agent still has a name and prose to show, and this is
+	// what tells the pane they are the boot seed's rather than the user's.
 	seeded: boolean
 }
 
@@ -105,7 +109,6 @@ export interface UserFacts {
 	// ISO `YYYY-MM-DD`, stored as a date and never as an age.
 	birthDate: string
 	gender: 'female' | 'male' | null
-	seeded: boolean
 }
 
 // A generated soul, as a PREVIEW: the pane shows it and the user keeps or discards it.
@@ -133,11 +136,10 @@ export interface SettingsCapability {
 	// The agent's own identity, on the Volume. Served wherever the Volume is (both
 	// hosts), which is what finally gives the Mac app personalization.
 	'agent.readSoul'(input: Record<string, never>): Promise<AgentSoul>
-	// Writes name/gender/prose and clears the seeded flag. `archetype` is accepted ONLY
-	// by the summoning (first bind, or "summon again") and is otherwise preserved as
-	// written: a returning user has prose, and prose — not a seed word — is the character.
-	// Passing an archetype also re-points the built-in face to that archetype's art;
-	// an uploaded photo still wins (see `writeAvatar`).
+	// Writes name/gender/prose and clears the seeded flag. `avatarVariant` is the summoning's
+	// to set (first bind, or "summon again") and is otherwise preserved: the nature picked
+	// there decides the face, and nothing else about them is a category afterwards. An
+	// uploaded photo still wins over it (see `writeAvatar`).
 	// A PATCH, like `writeProfile`: only the fields present are written. The pane edits one
 	// thing at a time (a rename, a gender, the prose when you press Done), and an unfinished
 	// edit of one must never ride along with a save of another.
@@ -145,7 +147,7 @@ export interface SettingsCapability {
 		name?: string
 		gender?: 'female' | 'male'
 		body?: string
-		archetype?: string
+		avatarVariant?: string
 	}): Promise<void>
 	// The chosen face, as bytes, or null while the built-in art is worn.
 	'agent.readAvatar'(input: Record<string, never>): Promise<Uint8Array | null>
@@ -160,9 +162,12 @@ export interface SettingsCapability {
 		birthDate?: string
 		gender?: 'female' | 'male' | null
 	}): Promise<void>
-	// Draft a soul from a name, a gender and a seed archetype — plus who the user is. A
-	// PREVIEW: nothing is written. CAPABILITY_UNAVAILABLE where no generator is wired,
-	// which the pane treats as "write it yourself" rather than as an error.
+	// Draft a soul from a name, a gender and who the user is. A PREVIEW: nothing is written.
+	// CAPABILITY_UNAVAILABLE where no generator is wired, which the pane treats as "write it
+	// yourself" rather than as an error.
+	//
+	// `archetype` is the summoning's seed and is optional because it is ONLY the summoning's:
+	// a rewrite from the character sheet has no nature to send, since none was kept.
 	//
 	// `user` is the facts as the CALLER has them, and it matters because the generator does
 	// not always run where the profile lives: in the browser this call is served by the
@@ -172,7 +177,7 @@ export interface SettingsCapability {
 	'agent.generateSoul'(input: {
 		name: string
 		gender: 'female' | 'male'
-		archetype: string
+		archetype?: string
 		user?: { birthDate?: string; gender?: 'female' | 'male' | null }
 	}): Promise<GeneratedSoul>
 }

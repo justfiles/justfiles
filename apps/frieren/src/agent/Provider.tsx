@@ -53,12 +53,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		// a word in the soul, so it costs no bytes and rides along with the identity file.
 		const avatar = await readAvatar(volume)
 		const builtin = builtinFaces(soul?.frontmatter.avatar_variant)
+		// Every await is done before the guard — including the expression faces, which are
+		// the slow one and the whole reason the reads can finish out of order.
+		const faces = avatar ? await readAvatarFaces(volume, avatar.hash) : builtin.faces
 		if (mine !== reading.current) return
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
 			avatarUrl: avatar?.url ?? builtin.url,
 			hash: avatar?.hash ?? null,
-			faces: avatar ? await readAvatarFaces(volume, avatar.hash) : builtin.faces,
+			faces,
 			personalized: soul?.frontmatter.seeded !== 'true' && soul !== null
 		})
 	}, [])

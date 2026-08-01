@@ -59,7 +59,8 @@ export type GetUser = () => UserProfile | null | Promise<UserProfile | null>
 export interface SoulDraftInput {
 	name: string
 	gender: 'female' | 'male'
-	archetype: string
+	// The summoning's seed, and only the summoning's — a rewrite sends none.
+	archetype?: string
 	userAge?: number
 	userGender?: string
 }
@@ -263,7 +264,7 @@ function age(birthDate: string, now: string): number | undefined {
 
 function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps): Served {
 	// Every identity write is READ-MODIFY-WRITE (a profile patch merges with the file, a
-	// soul write preserves the recorded archetype) and the panes fire them per field as the
+	// soul write preserves the recorded face) and the panes fire them per field as the
 	// user edits — so they queue. Without this, two writes read the same file and the slower
 	// one puts back what the other had just changed.
 	let queue: Promise<unknown> = Promise.resolve()
@@ -277,7 +278,6 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		return {
 			name: frontmatter.agent_name ?? '',
 			gender: gender(frontmatter.agent_gender),
-			archetype: frontmatter.archetype ?? null,
 			avatarVariant: frontmatter.avatar_variant ?? null,
 			body,
 			seeded: frontmatter.seeded === 'true'
@@ -288,8 +288,7 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		return {
 			name: frontmatter.name ?? '',
 			birthDate: frontmatter.birth_date ?? '',
-			gender: gender(frontmatter.gender),
-			seeded: frontmatter.seeded === 'true'
+			gender: gender(frontmatter.gender)
 		}
 	}
 	return {
@@ -297,10 +296,9 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		'agent.writeSoul': (patch) =>
 			serial(async () => {
 				const current = await readSoul()
-				// The archetype (and the art it points at) is the summoning's to set: a plain
-				// write preserves what was recorded, because the prose is the character now.
-				const seed = patch.archetype ?? current.archetype
-				const variant = patch.archetype ?? current.avatarVariant
+				// The face the summoning picked: a plain write preserves it, because nothing
+				// outside that ritual chooses built-in art.
+				const variant = patch.avatarVariant ?? current.avatarVariant
 				await writeTo(
 					vol,
 					paths.soul,
@@ -309,7 +307,6 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 							['schema', 'frieren/agent-soul/v1'],
 							['agent_name', patch.name ?? current.name],
 							['agent_gender', patch.gender ?? current.gender],
-							['archetype', seed],
 							['avatar_variant', variant]
 						],
 						patch.body ?? current.body

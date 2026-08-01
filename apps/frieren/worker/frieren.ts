@@ -190,9 +190,7 @@ export class Frieren extends DurableObject<Env> {
 		this.app = new Hono()
 			.post('/api/agent/soul', async (c) => {
 				const body = await c.req.json<SoulGenerationInput>()
-				if (!body?.agentName || !body?.archetype) {
-					return c.json({ error: 'agentName and archetype are required' }, 400)
-				}
+				if (!body?.agentName) return c.json({ error: 'agentName is required' }, 400)
 				const generated = await this.generateSoul(body)
 				return c.json(generated)
 			})
@@ -344,7 +342,8 @@ export class Frieren extends DurableObject<Env> {
 			const { models, model } = this.aiRuntime()
 			this.text = text(this.meteredBackend(models, model))
 		}
-		const lines: string[] = [`agent name: ${input.agentName}`, `archetype: ${input.archetype}`]
+		const lines: string[] = [`agent name: ${input.agentName}`]
+		if (input.archetype) lines.push(`archetype: ${input.archetype}`)
 		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`)
 		if (input.userAge !== undefined) lines.push(`user age: ${input.userAge}`)
 		if (input.userGender) lines.push(`user gender: ${input.userGender}`)

@@ -22,7 +22,9 @@ export function systemPrompt(...parts: string[]) {
 export type SoulGenerationInput = {
 	agentName: string
 	agentGender?: string
-	archetype: 'teacher' | 'companion' | 'assistant'
+	// The nature picked at the summoning, which seeds the FIRST draft only. Absent on a
+	// rewrite: nothing records a nature afterwards, because the prose is the character.
+	archetype?: 'teacher' | 'companion' | 'assistant'
 	userAge?: number
 	userGender?: string
 }
