@@ -1,6 +1,6 @@
 import type { Client } from '@justfiles/app'
 import { injectStyle } from '@justfiles/app/browser'
-import type { AccountInfo, GeneratedSoul } from '@justfiles/app/capabilities/settings'
+import type { AgentSoul, GeneratedSoul } from '@justfiles/app/capabilities/settings'
 import { type ChangeEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 import { isBound, nameInSoul, type SettingsApp, type SettingsState } from './app.ts'
 import { ARCHETYPES, archetypeOf, faceOf, SPIRIT_ART } from './archetypes.ts'
@@ -172,21 +172,56 @@ function why(error: unknown): { error: string; canGenerate: boolean } {
 	return { error: code, canGenerate: true }
 }
 
-export function useDrafting(client: Client<SettingsApp>, accounts: AccountInfo[]): Drafting {
+// Who a soul is for, as one comparable string — of the agent on the volume, or of the
+// agent a draft was asked for.
+const identity = (soul: AgentSoul | null): string => `${soul?.name ?? ''}|${soul?.gender ?? ''}`
+const asking = (request: DraftRequest): string => `${request.name}|${request.gender}`
+
+export function useDrafting(client: Client<SettingsApp>, state: SettingsState): Drafting {
 	const [desk, setDesk] = useState<Omit<Drafting, 'ask' | 'discard' | 'dismiss'>>(NOTHING)
 	// Only the newest question is answered. An older one finishing late has been superseded
 	// by the one on screen, and its prose was written for a name the user has moved on from.
 	const latest = useRef(0)
 
-	// Turning on an AI provider brings the buttons back, with no restart and nothing to
-	// re-probe: a fresh account list is the only thing that can change the answer.
+	// Keyed on the accounts that back `ai`, NOT on the array holding them: state pushes cross
+	// the sandbox transport and rebuild it, so a reference check would resurrect dead buttons
+	// on any unrelated update — selecting another pane and coming back would do it. Only a
+	// provider actually being turned on can change this host's answer.
+	const generators = state.accounts
+		.filter((account) => account.enabled.includes('ai'))
+		.map((account) => account.accountId)
+		.sort()
+		.join(' ')
 	useEffect(() => {
-		void accounts
+		// `generators` is why this runs again — the value, not the array it was read from.
+		void generators
 		setDesk((desk) => (desk.canGenerate ? desk : { ...desk, canGenerate: true }))
-	}, [accounts])
+	}, [generators])
+
+	// A REWRITE is prose for the agent as they were when it was asked, and renaming them (or
+	// flipping their gender) writes the moment it is done — so the identity can move while
+	// the model is still writing, and neither the newest-question counter nor a request
+	// token can notice, because no new question was asked. So the volume is the check: what
+	// it said when we asked, against what it says now.
+	//
+	// Two changes, one comparison. Landing on exactly what the draft ASKED for is the
+	// rename that prompted this rewrite finally being written — not a change at all.
+	// Landing on anything else means the agent it was written for is gone: drop it, whether
+	// it is still being written (the counter bump disowns the answer) or already sitting
+	// there. The rename banner then offers a Rewrite, which is the right one to ask for.
+	const asked = useRef('')
+	const now = identity(state.soul)
+	useEffect(() => {
+		const request = desk.request
+		if (request?.for !== 'rewrite') return
+		if (now === asked.current || now === asking(request)) return
+		latest.current++
+		setDesk((desk) => ({ ...NOTHING, canGenerate: desk.canGenerate }))
+	}, [desk.request, now])
 
 	const ask = (request: DraftRequest) => {
 		const mine = ++latest.current
+		asked.current = now
 		setDesk((desk) => ({ ...desk, request, soul: null, error: null, writing: true }))
 		const { name, gender, archetype } = request
 		client
