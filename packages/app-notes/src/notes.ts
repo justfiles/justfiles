@@ -150,6 +150,29 @@ export function sanitizeName(input: string): string {
 }
 
 /**
+ * Does a half-typed NAME still mean something, now that the buffer holding those words sits
+ * at `now` instead of `was`? (`null` on either side = no address at all.)
+ *
+ * A name draft is about the WORDS in the editor, not about a path — the same thing the buffer
+ * machine says about bytes — and every way that has been got wrong is a case here:
+ *
+ *   • `now === was`: nothing happened. Obviously survives — and this is also the answer for a
+ *     RENAME, because the caller that knows a move happened re-points the draft as the buffer
+ *     follows it (`followMove` in gui.tsx). By the time an address change reaches this rule it
+ *     is therefore unexplained, which is what makes the last line safe.
+ *   • `now === null`: the words lost their address — a save that failed because the note was
+ *     deleted underneath. The draft is then the ONLY record of the name the user asked for, so
+ *     dropping it here costs them the name while keeping the words.
+ *   • `was === null`: the words gained one — they were re-created after that deletion. Same
+ *     words, so the same draft still names them.
+ *   • otherwise: the buffer came to hold a DIFFERENT note (an agent `open`). Committing then
+ *     renames a note the user never looked at, so the draft cannot follow.
+ */
+export function draftSurvives(was: string | null, now: string | null): boolean {
+	return now === was || now === null || was === null
+}
+
+/**
  * Why this typed NAME cannot be used, or `null` if it can — the human half of the naming
  * rules, mirroring `illegalMove` for destinations.
  *

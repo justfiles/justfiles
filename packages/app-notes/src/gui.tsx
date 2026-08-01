@@ -18,6 +18,7 @@ import {
 } from './import.ts'
 import {
 	displayPath,
+	draftSurvives,
 	failedWith,
 	illegalName,
 	isUnder,
@@ -369,6 +370,19 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		return false
 	}, [buf])
 
+	// The buffer follows a note to a new address — its own rename, or a folder's — and so does
+	// the name field's draft: same words, same draft, new place. ONE function because they are
+	// one fact, and two call sites (the agent's rename, and ours) that must not drift: the
+	// effect below reads `draftForRef` to decide whether a path change means "a different
+	// note", and a stale target there would answer that question wrong.
+	const followMove = useCallback(
+		(from: string, to: string) => {
+			buf.moved(from, to)
+			draftForRef.current = buf.snapshot().path
+		},
+		[buf]
+	)
+
 	// Debounced autosave: `text` is the reset trigger — each keystroke restarts the
 	// timer, so the write fires once the user pauses, not after the first key. A failure
 	// leaves the buffer dirty, so this effect simply comes round again.
@@ -395,7 +409,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		// Wherever the buffer's address sits on the trail, the note is at `openPath` now.
 		const held = buf.snapshot().path
 		if (held !== null && held !== openPath && movedFrom?.includes(held)) {
-			buf.moved(held, openPath)
+			followMove(held, openPath)
 			return
 		}
 		// The selection can move on while a read is in flight. This effect re-runs when it
@@ -419,7 +433,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		return () => {
 			current = false
 		}
-	}, [openPath, revision, movedFrom, buf, actions])
+	}, [openPath, revision, movedFrom, buf, followMove, actions])
 
 	// The reducer says nothing is open (the user pressed New, or the agent dispatched it)
 	// while the buffer still holds a note. Letting go means SETTLING first, so unsaved
@@ -448,29 +462,19 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// The name to re-create under, kept level with the buffer's address: while it holds a
 	// note, that note's name is the one its words belong to.
 	//
-	// And the invariant the name field's draft cannot be trusted without: **a draft follows the
-	// WORDS, not the address** — the same rule the buffer machine keeps for bytes. The two cases
-	// it separates are opposite mistakes:
-	//
-	//   • The buffer came to hold something ELSE (an agent `open`). The draft is then about a
-	//     note nobody is looking at, and committing it would rename THIS one. Dropped.
-	//   • The buffer's ADDRESS changed while the words stayed — a save that failed ENOENT
-	//     because the note was deleted underneath (detach), or the recovery create that later
-	//     gives those same words an address again (adoption). The draft is still about these
-	//     words, and it is the only record of the name the user asked for. Kept, and re-pointed.
+	// And the name field's draft, which follows the WORDS and not the address — `draftSurvives`
+	// in notes.ts is that rule, with every case it has been got wrong. A move is already
+	// accounted for by then (`followMove` re-points as the buffer follows), so an address change
+	// that reaches this is unexplained: the buffer holds a different note, and a draft for the
+	// old one would rename this one.
 	//
 	// Here rather than at each call site: the GUI clears the draft on its own transitions, but
 	// only the buffer knows when something else moved it.
 	useEffect(() => {
 		if (buffer.path !== null) nameRef.current = noteTitle(buffer.path)
 		if (draftRef.current === null) return
-		const wasFor = draftForRef.current
-		// Detach or adoption: the same words at a new address. Follow it.
-		if (buffer.path === null || wasFor === null) {
-			draftForRef.current = buffer.path
-			return
-		}
-		if (buffer.path !== wasFor) {
+		if (draftSurvives(draftForRef.current, buffer.path)) draftForRef.current = buffer.path
+		else {
 			setDraft(null)
 			setTitleError(null)
 		}
@@ -667,7 +671,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				const { path } = await actions.rename({ from, to })
 				// The bytes did not change, only their address — so the buffer follows, and no
 				// re-read is needed when `openPath` catches up.
-				buf.moved(from, path)
+				followMove(from, path)
 				if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
 				landed = path
 			} catch (error) {
@@ -676,7 +680,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			void refresh()
 			return landed
 		},
-		[actions, buf, settle, refresh]
+		[actions, buf, followMove, settle, refresh]
 	)
 
 	// What the name field shows, and whether there is anything to name. There is no such
