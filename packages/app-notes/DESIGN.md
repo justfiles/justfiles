@@ -5,9 +5,9 @@ description: A built-in Notes app over a shared /notes knowledge base, with a de
 
 # Notes — a freeform knowledge base shared by the user and the agent
 
-`app-notes` is a built-in (nvAlt-style) app: a blank editor under a single always-visible bar — a
-list toggle, a search-or-create field over a recency-sorted list, and a New button — debounced
-autosave, and filenames derived from the first line. Its content lives
+`app-notes` is a built-in (nvAlt-style) app: a name field over a body under a single always-visible bar
+— a list toggle and a search-or-create field over a recency-sorted list — debounced
+autosave, and notes that are **named before they exist**. Its content lives
 in a **shared, top-level `/notes`** volume path that the agent reads, searches, and (on request) writes
 — so a single store serves both the human's notes and the agent's "remember / find" loop.
 
@@ -19,7 +19,7 @@ procedures, capabilities, the two-faces model) are assumed.
 1. [Architecture context — one KB, two tiers](#context)
 2. [Where notes live & scoping](#scope)
 3. [The state machine](#machine)
-4. [Filenames & autosave](#files)
+4. [Names & autosave](#files)
 5. [The GUI](#gui)
 6. [The agent (TUI) interface](#agent)
 7. [v1 scope & non-goals](#scope-v1)
@@ -112,11 +112,11 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | Action | Kind | Audience | Meaning |
 |----|----|----|----|
 | `open({ path })` | edge | both | **The** coordinating action — put a note in front of the user |
-| `newNote({})` | edge | both | Blank scratch |
+| `newNote({})` | edge | both | Close the open note (empty editor) |
 | `save({ path, text })` | edge → `t.cmd` | both | Overwrite a body (the GUI's debounced autosave) |
 | `rename({ from, to })` | procedure | both | Rename **is** move: retitle, drag into a folder, or move a whole folder. An occupied destination is deduped, never overwritten; returns where it landed |
 | `list({})` | procedure | both | Fresh recursive listing: every note + every folder, newest first |
-| `create({ text, dir? })` | procedure | both | New note; filename from the first line, `dir` defaults to `/` |
+| `create({ title, text?, dir? })` | procedure | both | New note **named** `title`; `text` is the body (empty by default — the title is not repeated in it), `dir` defaults to `/` |
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
 | `readNote({ path })` | procedure | both | Body as text |
 | `importNotes({ dir?, files })` | procedure | both | Bulk write, relative to `dir` (default `/`); merges folders, numbers a clashing note rather than overwriting — the vault-import half (§9) |
@@ -538,20 +538,50 @@ the pure modules. Rules belong in pure functions; the stateful layer should only
 
 <a id="files"></a>
 
-## 4 · Filenames & autosave
+## 4 · Names & autosave
 
-**Filename = the first non-empty line, kept human — no AI, no slug.** `"Remember the milk"` →
-`Remember the milk.md`. Case and spaces survive; only genuinely unsafe characters are dropped (path
-separators, control characters, and `# | ^ [ ]` — the ones Obsidian itself warns break links, so a title
-stays addressable if we ever resolve `[[wikilinks]]`); length is capped at 100; collisions get ` 2`,
-` 3`; an empty first line falls back to `Untitled`. Assigned **once** at first persist; later edits don't
-re-name (the user/agent renames deliberately).
+**A note is named before it exists, and its body never repeats the name.** The editor is two fields: a
+name field in a larger type over the body. What looks like the first line **is the filename** — exactly as
+Obsidian's inline title looks like a first line while living outside the document (it is a separate
+`div.inline-title`, and the `.md` on disk holds body only). `create({ title, text? })` takes the name;
+nothing derives one from prose, and there is **no such thing as an unnamed note**.
 
-This is a deliberate reversal of the original `remember_the_milk.txt` slug. The store is now expected to
-hold an **imported Obsidian vault**, where the filename *is* the title (`References/Kyoto.md`) and
-wikilinks address notes by that exact name. Slugging would have made our own notes second-class citizens
-in their own vault — and any rename of an imported file destroys links. So: **imported names are never
-sanitized** (verbatim, byte-for-byte); sanitizing applies only to names *we* mint.
+This replaced "filename = the first non-empty line, assigned once at first persist", which failed three
+ways. It **drifted** — fix a typo in the title and the filename keeps the typo forever, because the name
+was a snapshot of a line that kept changing. It **duplicated** — our notes carried their title in the
+body while an imported Obsidian note does not, so `/notes` held two shapes of note and every reader (the
+editor, the agent, a future wikilink resolver) had to know which it was looking at. And the name was
+**unreachable from the editor**: retitling meant the tree's context menu, so the commonest operation on a
+note had no home in the surface you were looking at. §4's original argument — that imported names are
+never sanitized, because the filename *is* the title and wikilinks address it byte-for-byte — is the same
+argument one step further: our notes now have the vault's shape, not a shape of their own.
+
+**The name is committed on Enter or blur, never on a keystroke.** Obsidian does the same, and here
+per-keystroke would be actively harmful: every letter would be a `rename` through `claimPath`, which
+numbers on collision (type `Kyoto` while `/Kyo.md` exists and you land on `Kyo 2.md` mid-word), every
+letter would bump `treeRevision` and rescan, a 20-character title would overflow the 8-entry `movedFrom`
+trail, and wikilink rewriting — when it lands — would rewrite *other notes* per letter. Enter also drops
+the caret at the top of the body, which is what makes two fields read as one document; Esc abandons the
+draft. (Both keys leave the field, so the draft is held in a ref as well as state — a blur handler reading
+React state still sees the draft it was told to abandon.)
+
+**A typed name is judged; a name that arrives as data is repaired.** `illegalName` (pure, mirroring
+`illegalMove`) reports only what is genuinely unusable — `\ / # | ^ [ ]`, control characters, a leading
+dot, over 100 characters — and stays quiet about tidying, because refusing `Kyoto  trip` over a double
+space is obnoxious. `sanitizeName` then collapses whitespace and normalizes to NFC, so after a `yes` its
+repair is faithful. The name field refuses (the field keeps focus on Enter, with the reason under it) and
+`create`/`importNotes` repair, because there is nobody in a field to tell.
+
+**A name already taken is refused too — but only as an affordance.** The GUI checks its listing before
+committing, so someone is told while they are still in the field instead of finding their note moved to
+`Kyoto 2`. That check reads a snapshot, so `claimPath` in the reducer stays the authority: it still
+numbers rather than overwrites, and a name taken in the instant between the check and the write is
+reported after the fact ("a note was already there — moved as …"). One policy in the reducer, one
+affordance in the GUI; nothing new stands between the vault and an overwrite.
+
+**Collisions on creation are numbered, not refused**, and imported names are written **verbatim** —
+unchanged from the original design (§9), because an import is a batch of 400 that must not stop, and a
+renamed import file destroys the links into it.
 
 **`.md` is the default extension; `.txt` still reads.** They are the same thing — plain text — so both are
 listed and opened, and notes written before the switch keep working with no migration. New notes are `.md`
@@ -562,14 +592,15 @@ frontmatter later.
 That folder is GUI-local (it must survive `newNote`, which clears `openPath`), and `create({ dir })`
 carries it to the reducer.
 
-**The threshold is the boundary where scratch becomes a file.** Two regimes:
+**Autosave is the body's business only.** The body is debounced (~800ms) and, because correctness cannot
+rest on a timer, **flushed if dirty on every transition** — opening another note, renaming this one,
+window close. Renames are their own commit (above) and do not wait for the debounce. There is no
+"scratch becomes a file" threshold any more: the file exists from the moment it is named, so a save only
+ever *edits* (`save` uses `update: true` and fails if the note is gone — §3).
 
-- **Below threshold** (~40 chars): ephemeral scratch — never written, **discarded** on switch/close.
-- **Above threshold**: a real file (name from the first line + first persist via `create`); from then on a
-  **dirty buffer always flushes** on switch/close (even if later shrunk — that's undo's job).
-
-So debounced autosave is purely a performance optimization: correctness comes from **flush-if-dirty on
-every transition** (switch note, `Cmd+N`, window close). No data loss either way.
+The buffer creates a note in exactly **one** case: the note it was holding was deleted or moved out from
+under it, and the words typed since have to land somewhere. That is what the remembered name is for — the
+name the note had — since nothing derives one from a body any more.
 
 **Webview flush gotcha (must design for):** saves are async RPC round-trips to `quayd`. On `Cmd+W`/close
 the window can tear down *before* the write lands. The close path must **await the final flush**
@@ -581,30 +612,36 @@ the window can tear down *before* the write lands. The close path must **await t
 
 Renders state, dispatches actions, owns transient state (docs/app.md §9). Deliberately minimal:
 
-- **Launch = blank editor.** On mount, dispatch `newNote` (guarantees `openPath: null` + an accurate agent
-  view). Reopen is always blank — on-brand for capture-first; above-threshold notes are safe (autosaved,
-  one search away).
-- **Type** → update local buffer. Debounced (~800ms): if `openPath` → `save({ openPath, text })`; if blank
-  scratch and `text.length ≥ threshold` → `create({ text })`, then adopt `openPath` from settled state.
-- **The bar** (always visible — nothing behind a shortcut): a list toggle, a search-or-create field, and a
-  New button. Focusing the field calls `list()` and drops the recency list down — empty query = everything,
+- **Launch = nothing open, focus in the search field.** On mount, dispatch `newNote` (guarantees
+  `openPath: null` + an accurate agent view). Reopen is always blank — on-brand for capture-first — and
+  blank now means *inert*: with no note open the name field has nothing to name and the body is read-only,
+  because there is no such thing as an unnamed note (§4). So the way in is the field, and every dead end
+  (a fresh launch, a deleted note) lands there.
+- **Type in the body** → update local buffer, debounced (~800ms) → `save({ openPath, text })`. **Type in
+  the name field** → nothing until Enter or blur, then `rename` (§4).
+- **The bar** (always visible — nothing behind a shortcut): a list toggle and a search-or-create field.
+  Focusing the field calls `list()` and drops the recency list down — empty query = everything,
   newest first; typing filters. **Search is path-aware**: every whitespace/slash-separated token must
   appear somewhere in `Trips/Kyoto`, so `kyo trip` and `trips/kyo` both hit, a title match outranks a
   folder-only match, and recency breaks ties (`matchNotes` in `src/notes.ts`). Rows show the folder path,
-  so two notes with the same title are told apart. Content search is still later. Enter opens the top
-  match, or — with no match — creates a note whose first line is the query (the nvAlt move: search and
-  create are one gesture). Esc hops editor → field and back. ☰ docks the tree as a left pane —
-  and the bar folds into it: ☰ + search become the pane's header, New its footer, so the editor side is
+  so two notes with the same title are told apart. Content search is still later. Enter opens the selected
+  match; a **Create “…” row** sits after the matches whenever anything is typed, so search and create stay
+  one gesture (the nvAlt move) — offered even when something matches, because `Kyoto trip` matching is
+  exactly why `Kyoto` would otherwise be uncreatable, and reachable with ArrowDown so it costs no second
+  shortcut. Esc hops editor → field and back. ☰ docks the tree as a left pane —
+  and the bar folds into it: ☰ + search become the pane's header, so the editor side is
   pure content. The preference is GUI-local (localStorage where the host allows it; frieren's sandboxed
   iframe has no `allow-same-origin`, so there it degrades to per-session). The listing is re-fetched on
   every focus/open **and on every `treeRevision` bump**, so it never shows a stale set.
-- **`Cmd+O` / `Ctrl+O`** → focus the search field (a faint `⌘O` hint sits in the field until first use).
+- **`Cmd+O` / `Cmd+N`** → focus the search field. They are the SAME shortcut: both mean "go to where a
+  note is found or named", which is the only way a note begins. `Cmd+O` is the one that works everywhere —
+  browsers **reserve** `Cmd+N` for a new window and never deliver the keydown, so `preventDefault` has
+  nothing to prevent (the only escape hatch is the Keyboard Lock API: Chromium-only, fullscreen-only, and
+  unavailable to our opaque-origin sandboxed iframe) — and `Cmd+N` costs two characters to keep for the
+  hosts that do deliver it (desktop webview). A faint `⌘O` hint sits in the field until first use.
   `Cmd+K` belongs to the shell omnibar: the app runs in a sandboxed iframe, so keys typed in Notes never
   reach the shell — binding `Cmd+K` would *shadow* the omnibar whenever Notes has focus. Shortcuts attach
   to the app root, not `window`, so they fire only when focus is inside the app.
-- **New button / `Cmd+N`** → flush-if-dirty, then blank. Browsers reserve `Cmd+N` (it never reaches the
-  page), so the button and Enter-to-create are the real paths; the key still works on hosts that deliver
-  it (desktop webview).
 - **Delete** (forward-delete in the field) → `remove` (GUI-only).
 - **`revision` bump** (open file changed on disk) → GUI re-reads via `readNote`, so an agent/Files edit to
   the open note shows live.
@@ -624,8 +661,8 @@ owns only the seam:
 - **CRUD is the row menu, and naming happens *in* the menu.** New note / New folder / Rename… / Delete…
   render as a `ds-menu` that swaps to a small text field or a confirm step. Two reasons it is not the
   library's inline rename: the inline input does not survive the context menu's own close/focus path, and
-  — more importantly — a new note's name must be its **first line**, which the same field gives us for free
-  (`onCreate(dir, title)` → `create({ text: title })`). Sandboxed iframes have no `allow-modals`, so
+  a new note needs a **name** before it exists (§4), which the same field gives us for free
+  (`onCreate(dir, title)` → `create({ title })`). Sandboxed iframes have no `allow-modals`, so
   `prompt()`/`confirm()` were never options.
 - **The menu is portaled to the body**, pinned to the trigger's `anchorRect` and flipped up near the
   bottom edge. Rendered in place (the library slots it into the tree's light DOM) it is both clipped by the
@@ -721,10 +758,10 @@ surface below. `description` + `examples` are its UI — written above.
 | Action | Audience | Why |
 |----|----|----|
 | `open` | both | **The** coordinating action — put a note in front of the user. |
-| `create`, `save`, `rename`, `mkdir` | both | Available, but the agent usually writes files directly. |
+| `create`, `save`, `rename`, `mkdir` | both | Available, but the agent usually writes files directly. `create` takes the **title** — nothing is derived from the body (§4). |
 | `importNotes` | both | Bulk write, merging into the KB and never overwriting (§9). The agent can use it to land a batch it fetched; the GUI uses it for dropped vaults. |
 | `list` | both | Fresh listing on demand — the agent's view of the KB is the filesystem, never cached state. |
-| `newNote` | both | Harmless; mostly GUI-driven. |
+| `newNote` | both | Closes the open note (empty editor). Harmless; mostly GUI-driven. |
 | `readNote` | both | Convenience; the agent can also read the file directly. |
 | `remove` | **gui** | Destructive. `/notes` is the user's — the agent never deletes user notes blindly (mirrors `app-code`'s gui-only `remove`). |
 
@@ -732,8 +769,8 @@ surface below. `description` + `examples` are its UI — written above.
 
 ## 7 · Scope & non-goals
 
-**In:** blank editor; the bar (search-or-create + docked-tree toggle + New) + derived listing +
-path-aware filter; **nested folders** (recursive listing, `.md` default with `.txt` still read); human
+**In:** a name field over a body (the name IS the filename); the bar (search-or-create + docked-tree
+toggle) + derived listing + path-aware filter; **nested folders** (recursive listing, `.md` default with `.txt` still read); human
 filenames; debounced autosave + flush-on-transition; a docked file tree with full CRUD (create note /
 create folder / rename / move by drag / delete) and open-on-select; **drop-a-zip vault import** (§9); live
 re-read of the open note on external edits; a structural watch so the tree tracks the disk; the agent TUI
@@ -745,6 +782,13 @@ above.
   **`[[wikilink]]` navigation and backlinks** (imported links are preserved verbatim, so this can land
   later with no migration — see the reasoning in §9); **resume-where-you-left-off** (always-blank reopen is
   intentional).
+- **A persistent scratch buffer** — Emacs's `*scratch*`, except that ours would persist: one fixed note
+  (`/scratch.md`) that cannot be renamed, deleted or collided with, shown apart from the tree because it is
+  not an entry in the knowledge base. This is the deliberate answer to what removing unnamed notes costs.
+  Naming-first is right for a note — when you want to write something down you already know what it is
+  about, and if you don't, you are dumping, not filing — so the dump gets ONE well-known place instead of
+  every note being capable of namelessness. Shelved, not rejected: it needs nothing about the naming model
+  to change, being a note with a name nobody had to choose.
 
 ### The concurrency model, stated as a boundary
 

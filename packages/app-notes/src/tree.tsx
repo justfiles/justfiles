@@ -17,8 +17,8 @@ import { joinPath, matchNotes, parentDir } from './notes.ts'
 // Naming (new note, new folder, rename) is done by OUR menu, not the library's
 // inline rename: the inline input is torn down by the context menu's own close /
 // focus path, so it never survives long enough to type into. One text field in
-// the menu covers all three, and it keeps the app's rule that a new note's title
-// is its first line.
+// the menu covers all three, and a new note needs a name before it exists
+// (DESIGN.md §4) — which is exactly what the field collects.
 
 // The model speaks relative paths and marks folders with a trailing slash;
 // the volume speaks absolute paths.
@@ -34,10 +34,11 @@ export type NotesTreeProps = {
 	onSelectDir: (dir: string) => void
 	onCreate: (dir: string, title: string) => void
 	onMkdir: (path: string) => void
-	// Awaited, and it answers: `false` means the note is NOT at `to` (the move was
-	// refused, or the name was taken and it landed deduped), which the drop path has
-	// to repair. A multi-item drop is applied ONE AT A TIME (see `persistDrop`).
-	onRename: (from: string, to: string) => Promise<boolean>
+	// Awaited, and it answers WHERE the note ended up (`null` = it did not move). The drop
+	// path needs it at `to`: anything else — refused, or deduped to a free name — leaves the
+	// model holding a row no listing will mention, which has to be repaired. A multi-item
+	// drop is applied ONE AT A TIME (see `persistDrop`).
+	onRename: (from: string, to: string) => Promise<string | null>
 	onRemove: (path: string) => void
 }
 
@@ -63,7 +64,7 @@ export function NotesTree(props: NotesTreeProps) {
 		for (const dragged of draggedPaths) {
 			const from = fromTree(dragged)
 			const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
-			if (to !== from && !(await latest.current.onRename(from, to))) landed = false
+			if (to !== from && (await latest.current.onRename(from, to)) !== to) landed = false
 		}
 		// The model moved the rows ITSELF, before a byte was written. Where the disk did
 		// not end up agreeing, it now holds a row no listing will ever mention — and a

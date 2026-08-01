@@ -189,9 +189,9 @@ test('a create will not rebuild the folder it was aimed at', async () => {
 	// quietly coming back around the new note (the GUI then saves it at the top level).
 	const vol = fakeVolume({}, ['/Trips'])
 	const h = handle(initialState, vol.invoke)
-	await app.runProcedure('create', { text: 'Kyoto', dir: '/Trips' }, h.app)
+	await app.runProcedure('create', { title: 'Kyoto', dir: '/Trips' }, h.app)
 	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
-	await expect(app.runProcedure('create', { text: 'Osaka', dir: '/Gone' }, h.app)).rejects.toThrow(
+	await expect(app.runProcedure('create', { title: 'Osaka', dir: '/Gone' }, h.app)).rejects.toThrow(
 		/ENOENT/
 	)
 	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
@@ -296,7 +296,9 @@ test('create answers with the note it wrote, not with whatever is open when the 
 	// else's note.
 	const vol = fakeVolume({}, [])
 	const h = handle(initialState, vol.invoke, { openPath: '/Someone elses note.md' })
-	const result = (await app.runProcedure('create', { text: 'Kyoto' }, h.app)) as { path: string }
+	const result = (await app.runProcedure('create', { title: 'Kyoto' }, h.app)) as {
+		path: string
+	}
 	expect(result.path).toBe('/Kyoto.md')
 	expect([...vol.store.keys()]).toEqual(['/Kyoto.md'])
 })
@@ -474,20 +476,30 @@ test('list walks nested folders, keeps .md and .txt, and returns folders too', a
 	expect(entries.find((e) => e.path === '/Trips/Kyoto.md')?.title).toBe('Kyoto')
 })
 
-test('create names the file after the first line, in the folder asked for', async () => {
+test('a note is named by its title, and its body does not repeat it', async () => {
 	// `/Trips` has to exist: a create will not rebuild a folder (see the test above).
 	const vol = fakeVolume({}, ['/Trips'])
 	const h = handle(initialState, vol.invoke)
-	await app.runProcedure('create', { text: 'Remember the milk\nand eggs' }, h.app)
+	// The name comes from `title` and NOTHING comes from the body — a note we make is the
+	// same shape as one imported from a vault, where the filename is the title (DESIGN.md §4).
+	await app.runProcedure('create', { title: 'Remember the milk' }, h.app)
 	expect([...vol.store.keys()]).toEqual(['/Remember the milk.md'])
+	expect(vol.store.get('/Remember the milk.md')).toBe('')
 
-	await app.runProcedure('create', { text: 'Kyoto', dir: '/Trips' }, h.app)
-	expect(vol.store.has('/Trips/Kyoto.md')).toBe(true)
+	await app.runProcedure('create', { title: 'Kyoto', text: 'ramen', dir: '/Trips' }, h.app)
+	expect(vol.store.get('/Trips/Kyoto.md')).toBe('ramen')
 
-	// A second note with the same first line gets a numbered sibling, not a clobber.
-	await app.runProcedure('create', { text: 'Kyoto', dir: '/Trips' }, h.app)
+	// A second note with the same title gets a numbered sibling, not a clobber.
+	await app.runProcedure('create', { title: 'Kyoto', dir: '/Trips' }, h.app)
 	expect(vol.store.has('/Trips/Kyoto 2.md')).toBe(true)
-	expect(h.dispatched).toEqual(['open', 'open', 'open'])
+	// An unusable title is repaired rather than refused: this one arrives as data (from the
+	// agent, or from a note re-created after the one holding it was deleted), and there is
+	// nobody in a field to tell. The GUI's name field refuses instead (`illegalName`).
+	await app.runProcedure('create', { title: 'a/b #c', dir: '/Trips' }, h.app)
+	expect(vol.store.has('/Trips/a b c.md')).toBe(true)
+	await app.runProcedure('create', { title: '   ' }, h.app)
+	expect(vol.store.has('/Untitled.md')).toBe(true)
+	expect(h.dispatched).toEqual(['open', 'open', 'open', 'open', 'open'])
 })
 
 test('removing the folder the open note lives in clears the editor', async () => {
@@ -599,8 +611,8 @@ test('only the canonical spelling of a path is accepted, so no lexical check can
 		app.runProcedure('rename', { from: '/Trips', to: '/Other/../Trips/Sub' }, h.app)
 	).rejects.toThrow()
 	// Every path parameter inherits the rule, whatever the procedure does with it.
-	await expect(app.runProcedure('create', { text: 'x', dir: '/..' }, h.app)).rejects.toThrow()
-	await expect(app.runProcedure('create', { text: 'x', dir: '/Trips/' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('create', { title: 'x', dir: '/..' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('create', { title: 'x', dir: '/Trips/' }, h.app)).rejects.toThrow()
 	await expect(app.runProcedure('readNote', { path: '/a/./b.md' }, h.app)).rejects.toThrow()
 	await expect(app.runProcedure('mkdir', { path: '//New' }, h.app)).rejects.toThrow()
 	await expect(app.runProcedure('remove', { path: '/Trips//Kyoto.md' }, h.app)).rejects.toThrow()
@@ -641,7 +653,7 @@ test('the root is refused wherever an entry is named', async () => {
 		app.runProcedure('importNotes', { files: [{ path: '', text: 'nowhere' }] }, h.app)
 	).rejects.toThrow()
 	// But the root is still a fine PLACE to put something.
-	await app.runProcedure('create', { text: 'Osaka', dir: '/' }, h.app)
+	await app.runProcedure('create', { title: 'Osaka', dir: '/' }, h.app)
 	expect([...vol.store.keys()].sort()).toEqual(['/Kyoto.md', '/Osaka.md'])
 })
 

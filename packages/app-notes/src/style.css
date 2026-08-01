@@ -13,7 +13,7 @@
 	outline: 2px dashed var(--focus);
 	background: color-mix(in srgb, var(--focus) 6%, var(--window-bg));
 }
-/* The bar: list toggle · search-or-create field · New. Bare controls — mac.css
+/* The bar: list toggle · search-or-create field. Bare controls — mac.css
    styles them; only layout lives here. */
 .notes-bar {
 	flex: none;
@@ -66,7 +66,7 @@
 	display: flex;
 }
 /* The docked pane: the same rows as the dropdown, pinned open. It owns the
-   toggle + search (header) and New (footer); the editor side stays bare. */
+   toggle + search (its header); the editor side stays bare. */
 .notes-side {
 	flex: none;
 	/* width is GUI state (the splitter); min-width keeps a squeezed pane usable */
@@ -85,13 +85,11 @@
 	padding: 6px 8px;
 	border-bottom: 1px solid var(--rule);
 }
-.notes-side-foot {
+/* Naming a note from the pane: the same row the dropdown appends, pinned under
+   the header (the tree below shows matches, but cannot offer a row of its own). */
+.notes-side-create {
 	flex: none;
-	padding: 6px 8px;
-	border-top: 1px solid var(--rule);
-}
-.notes-side-foot button {
-	width: 100%;
+	border-bottom: 1px solid var(--rule);
 }
 /* The splitter: a hairline hit-target that widens its grab area with padding,
    not with pixels, so the layout doesn't shift. */
@@ -181,6 +179,47 @@
 	width: calc(100% - 12px);
 	box-sizing: border-box;
 }
+/* The document: the name field over the body. Two fields, one note — the name is
+   the FILENAME, never a line of the file (see gui.tsx). */
+.notes-doc {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+.notes-title {
+	flex: none;
+	width: 100%;
+	box-sizing: border-box;
+	border: 0;
+	outline: none;
+	box-shadow: none;
+	border-radius: 0;
+	background: transparent;
+	color: inherit;
+	padding: 14px 18px 2px;
+	font-family: var(--font-ui);
+	font-size: 20px;
+	font-weight: 600;
+	line-height: 1.3;
+}
+/* Nothing open: the name field has nothing to name, like the body has nothing to hold. */
+.notes-title:read-only {
+	opacity: 0.4;
+}
+.notes-title[aria-invalid="true"] {
+	color: var(--danger);
+}
+/* A field-level problem, so it sits with the field — the status line is for what
+   already happened elsewhere. */
+.notes-title-error {
+	flex: none;
+	margin: 0;
+	padding: 0 18px 2px;
+	font-size: 12px;
+	color: var(--danger);
+}
 .notes-editor {
 	flex: 1;
 	min-height: 0;
@@ -208,6 +247,12 @@
 	max-height: min(60%, 360px);
 	overflow-y: auto;
 	border-radius: 0 0 var(--menu-radius) var(--menu-radius);
+}
+/* An unusable typed name says so where it was offered, instead of being repaired into
+   a note called something else. */
+.notes-create-problem {
+	color: var(--danger);
+	opacity: 1;
 }
 .notes-item {
 	justify-content: space-between;

@@ -54,7 +54,13 @@ export type OpenOutcome =
 export type BufferIO = {
 	/** Overwrite an existing note. Rejects if it is gone (ENOENT) or a folder (EISDIR). */
 	save(path: string, text: string): Promise<void>
-	/** Create a note from this text; resolves with the path it actually landed at. */
+	/**
+	 * Create a note holding this text, under whatever name the caller has for it — the
+	 * buffer has none, because a note is named before it exists (DESIGN.md §4). Resolves
+	 * with the path it actually landed at. Reached in ONE case: the note the buffer held
+	 * was deleted or moved out from under it, and the words typed since have nowhere else
+	 * to go.
+	 */
 	create(text: string): Promise<string>
 	/** Read a note's body. Rejects for anything that is not a readable note. */
 	read(path: string): Promise<string>
