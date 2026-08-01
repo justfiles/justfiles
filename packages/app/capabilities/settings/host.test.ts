@@ -437,30 +437,24 @@ test('an avatar is a directory: listAvatars shows the bundle then the volume', a
 			label: 'Vanilla',
 			builtin: true,
 			preview: 'data:image/png;base64,AA',
-			files: ['resting.png', 'pleased.png']
+			files: ['resting', 'pleased']
 		}
 	])
 
 	// One file per state, and the first one brings the avatar into being. A state may be
 	// stored in any format — this one wears a WebP resting face, as a browser that can encode
-	// WebP produces.
-	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: WEBP })
-	)
-	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.png', bytes: PNG })
-	)
+	// WebP produces — and the file is named for the STATE either way.
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting', bytes: WEBP }))
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased', bytes: PNG }))
 	const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
 	expect(mine).toMatchObject({ ref: 'mine', label: 'Mine', builtin: false })
-	expect(mine?.files).toEqual(['pleased.png', 'resting.webp'])
+	expect(mine?.files).toEqual(['pleased', 'resting'])
 	expect(mine?.preview.startsWith('data:image/webp;base64,')).toBe(true)
 
 	// Null bytes DELETE that state — the artist's file goes, the avatar stays.
-	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased.png', bytes: null })
-	)
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'pleased', bytes: null }))
 	const [, after] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
-	expect(after?.files).toEqual(['resting.webp'])
+	expect(after?.files).toEqual(['resting'])
 
 	// Derived art is the model's lane, and a directory with no resting state is not an
 	// avatar yet: neither shows up as one to wear.
@@ -474,7 +468,7 @@ test('an avatar is a directory: listAvatars shows the bundle then the volume', a
 	await vol.writeFile(`${PATHS.avatars}/broken/resting.png`, encode('not an image'))
 	const list = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
 	expect(list.map((a) => a.ref)).toEqual(['builtin/vanilla', 'mine'])
-	expect(list[1]?.files).toEqual(['resting.webp'])
+	expect(list[1]?.files).toEqual(['resting'])
 })
 
 test('an avatar is offered when ANY file claiming resting can be rendered', async () => {
@@ -490,51 +484,70 @@ test('an avatar is offered when ANY file claiming resting can be rendered', asyn
 	expect(pack?.preview.startsWith('data:image/webp;base64,')).toBe(true)
 })
 
-test('a failed write leaves the state the user is wearing untouched', async () => {
-	// The bytes land under a name nothing resolves BEFORE the old file gives way, so a volume
-	// that is out of space costs the user nothing. Publishing the other way round would leave
-	// their avatar with no resting state at all.
+test('no step of a publish can lose the state the user is wearing', async () => {
+	// EVERY fallible step runs while the old file is still on the volume: the bytes land under
+	// a name nothing resolves, the rename makes them the state, and only then is the file they
+	// replaced taken out. Sweeping first would cost the user their portrait for good on the one
+	// run where the rename failed — and it is the same file either way, so there is nothing to
+	// restore it from.
 	const vol = volume(memStorage())
-	let fail = false
+	let fail: 'write' | 'rename' | null = null
 	const caps = settingsHost({
 		agent: {
 			paths: PATHS,
 			builtins: BUILTINS,
 			volume: Object.assign(Object.create(vol), {
 				writeFile: (path: string, data: Uint8Array) =>
-					fail ? Promise.reject(new Error('ENOSPC')) : vol.writeFile(path, data)
+					fail === 'write' ? Promise.reject(new Error('ENOSPC')) : vol.writeFile(path, data),
+				rename: (from: string, to: string) =>
+					fail === 'rename' ? Promise.reject(new Error('EIO')) : vol.rename(from, to)
 			})
 		}
 	})
-	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes: PNG })
-	)
+	// A pack's PNG — a file the replacement does NOT write over, which is the case where an
+	// early sweep leaves nothing behind.
+	await vol.mkdir(`${PATHS.avatars}/mine`, { recursive: true })
+	await vol.writeFile(`${PATHS.avatars}/mine/resting.png`, PNG)
 
-	fail = true
-	await expect(
-		caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: WEBP }))
-	).rejects.toThrow()
-	// Still exactly the portrait they had, and nothing staged is offered as a state.
+	for (const step of ['write', 'rename'] as const) {
+		fail = step
+		await expect(
+			caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting', bytes: WEBP }))
+		).rejects.toThrow()
+		// Still exactly the portrait they had, and nothing staged is offered as a state.
+		const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
+		expect(mine?.files).toEqual(['resting.png'])
+		expect(mine?.preview.startsWith('data:image/png;base64,')).toBe(true)
+	}
+
+	// And when it goes through, the file it replaced goes with it.
+	fail = null
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting', bytes: WEBP }))
 	const [, mine] = (await caps.invoke(call('agent.listAvatars'))) as AvatarInfo[]
-	expect(mine?.files).toEqual(['resting.png'])
-	expect(mine?.preview.startsWith('data:image/png;base64,')).toBe(true)
+	expect(mine?.files).toEqual(['resting'])
+	expect(mine?.preview.startsWith('data:image/webp;base64,')).toBe(true)
 })
 
-test('a write claims a STATE, so one state can never be stored twice', async () => {
-	// The uniqueness a state needs is not the one a filesystem gives: `pleased` is the key,
-	// but `pleased.png` is the name. So the write seam enforces it — replacing a pack's WebP
-	// face with a PNG one must not leave both, or which of them a reader picks would come down
-	// to directory order.
+test('a write claims a STATE at ONE path, so one state can never be stored twice', async () => {
+	// The uniqueness a state needs is not the one a filesystem gives: `resting` is the key, but
+	// `resting.png` is the name. Two rules make that hold, and the second is what a filesystem
+	// alone cannot do — the published file IS the state, so its name cannot vary with the
+	// encoder the device happened to have (WebP here, PNG on a Safari that syncs with it), and
+	// every other file claiming that state is swept, whatever a pack called it.
 	const { vol, caps } = agentHost()
 	const dir = `${PATHS.avatars}/mine`
+	await vol.mkdir(dir, { recursive: true })
+	await vol.writeFile(`${dir}/resting.webp`, WEBP)
 
+	// The pane may ask by the name it is showing; what lands is the state.
 	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: WEBP })
+		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.webp', bytes: PNG })
 	)
-	await caps.invoke(
-		call('agent.putAvatarFile', { avatar: 'mine', name: 'resting.png', bytes: PNG })
-	)
-	expect((await vol.readdir(dir)).map((e) => e.name)).toEqual(['resting.png'])
+	expect((await vol.readdir(dir)).map((e) => e.name)).toEqual(['resting'])
+	// The same state published again in another format — the path a second device would write
+	// to as well, so sync has one file to converge on instead of two nothing reconciles.
+	await caps.invoke(call('agent.putAvatarFile', { avatar: 'mine', name: 'resting', bytes: WEBP }))
+	expect((await vol.readdir(dir)).map((e) => e.name)).toEqual(['resting'])
 
 	// And a DELETE drops the state in whatever format it is stored, so the pane can ask by
 	// the name it happens to be showing.

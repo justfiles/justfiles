@@ -117,10 +117,11 @@ export interface AvatarInfo {
 	// The state it rests in, as a data URL (the app frame's CSP allows `data:` and nothing
 	// else). A complete set of six is ~25 KB, so only the resting one travels.
 	preview: string
-	// The file names it holds, e.g. `['resting.webp', 'pleased.png']` — at most one per state,
-	// which `putAvatarFile` is what guarantees. Stem = state, extension = format (and the
-	// format a file's bytes actually are is read from the bytes, not from that extension); the
-	// pane shows a slot per state and names the file it replaces.
+	// The file names it holds, e.g. `['resting', 'pleased']` — at most one per state, which
+	// `putAvatarFile` is what guarantees. A file written through this capability IS its state;
+	// one installed by other means may carry an extension (`resting.webp` from an artist's
+	// pack), which says nothing — a file's format is read from its bytes. So the STEM is the
+	// state, and that is how the pane finds the file a slot shows and replaces.
 	files: string[]
 }
 
@@ -179,11 +180,15 @@ export interface SettingsCapability {
 	// `pleased.png` and a pack being installed are the same operation, so no method here
 	// enumerates states and a new one needs no deploy.
 	//
-	// A write CLAIMS A STATE, not a filename: any file already holding `name`'s stem is
-	// removed first, whatever format it was in, so `pleased.webp` and `pleased.png` can never
-	// both exist and no reader has to arbitrate. A delete drops the state the same way. `name`
-	// is rejected if it contains `/` or starts with a dot (`.gen` is the model's, not a
-	// caller's), and `avatar` if it is not a single id.
+	// A write CLAIMS A STATE, not a filename: `name` names the state through its stem, the
+	// bytes are published AS that state (`pleased`, whatever `name`'s extension said), and any
+	// other file holding the stem is removed, whatever format it was in — so `pleased.webp` and
+	// `pleased.png` can never both exist and no reader has to arbitrate. One state, one path, on
+	// every device: an extension would be the encoder this browser happened to have, and two
+	// devices publishing the same state offline would then sync into two files nothing
+	// reconciles. A delete drops the state the same way. `name` is rejected if it contains `/`
+	// or starts with a dot (`.gen` is the model's, not a caller's), and `avatar` if it is not a
+	// single id.
 	'agent.putAvatarFile'(input: {
 		avatar: string
 		name: string

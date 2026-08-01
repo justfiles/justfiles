@@ -250,7 +250,7 @@ const MINE = 'mine'
 const RESTING = 'resting'
 
 // Click it or drop an image on it: the portrait IS the fast path to your own avatar — one
-// photo becomes `mine/resting.png` and the expression faces are derived from it. The wardrobe
+// photo becomes `mine/resting` and the expression faces are derived from it. The wardrobe
 // below is the slow path: wear a whole set, or author a face per feeling.
 function AvatarDrop({
 	face,
@@ -265,8 +265,9 @@ function AvatarDrop({
 	size?: 'sheet' | 'altar'
 	dim?: boolean
 	busy?: boolean
-	// The bytes AND the format they came back in: the caller names the state's file after it.
-	onPick: (image: { bytes: Uint8Array<ArrayBuffer>; ext: string }) => void
+	// Just the bytes: the state a photo lands in is named for the state, not for the encoder
+	// this browser happened to have.
+	onPick: (bytes: Uint8Array<ArrayBuffer>) => void
 	onError?: (message: string) => void
 }) {
 	const input = useRef<HTMLInputElement>(null)
@@ -378,8 +379,7 @@ function States({
 			// Normalised to the same 256² square as everything else here, so a 4 MB photo is not
 			// replicated to every device six times over. The write claims the STATE, so this
 			// replaces whatever format that state was stored in before.
-			const drawn = await squareImage(source)
-			await put(`${state}.${drawn.ext}`, drawn.bytes)
+			await put(state, await squareImage(source))
 		} catch (problem) {
 			setError(problem instanceof Error ? problem.message : String(problem))
 		} finally {
@@ -391,8 +391,9 @@ function States({
 		<>
 			<div className="agent-states">
 				{states.map((state) => {
-					// Stem = state, extension = format: the file that IS this state, whatever it was
-					// written as — which is also the name a delete has to pass back.
+					// The file that IS this state, to show: `resting` for anything written here, or
+					// a pack's `resting.webp` — stem-matched, because an extension is only ever
+					// something a pack brought with it.
 					const file = avatar.files.find((name) => fileStem(name) === state)
 					return (
 						<div className="agent-state" key={state}>
@@ -411,7 +412,7 @@ function States({
 								{file ? 'Replace' : 'Draw it yourself'}
 							</button>
 							{file && state !== 'resting' ? (
-								<button type="button" className="agent-tiny" onClick={() => void put(file, null)}>
+								<button type="button" className="agent-tiny" onClick={() => void put(state, null)}>
 									Remove
 								</button>
 							) : null}
@@ -574,19 +575,16 @@ function CharacterSheet({
 		}
 	}
 
-	// A photo becomes an avatar OF THEIR OWN: it lands as `mine/resting.png` and is then worn.
+	// A photo becomes an avatar OF THEIR OWN: it lands as `mine/resting` and is then worn.
 	// The file first, then the soul — the soul is the pointer, so a failed upload leaves them
 	// wearing exactly what they wore, and a failed wear leaves a file nobody is looking at.
-	const wearPhoto = async (photo: { bytes: Uint8Array<ArrayBuffer>; ext: string }) => {
+	const wearPhoto = async (bytes: Uint8Array<ArrayBuffer>) => {
 		setFaceError(null)
 		try {
-			// Named for the format that came back — WebP where the browser can encode it. Nothing
-			// downstream reads meaning into that name: a state's format is read from its bytes.
-			await client.putAvatarFile({
-				avatar: MINE,
-				name: `${RESTING}.${photo.ext}`,
-				bytes: photo.bytes
-			})
+			// Named for the STATE, not for what this browser encoded — WebP here, PNG on Safari.
+			// The host publishes a state at one path per device for that reason, and reads what
+			// the bytes are from the bytes.
+			await client.putAvatarFile({ avatar: MINE, name: RESTING, bytes })
 			if (soul.avatar !== MINE) await save({ avatar: MINE }, false)
 		} catch (error) {
 			setFaceError(error instanceof Error ? error.message : String(error))
@@ -830,11 +828,7 @@ function Summoning({
 	const [name, setName] = useState(from?.name ?? '')
 	const [gender, setGender] = useState<Gender>(from?.gender ?? 'female')
 	const [archetype, setArchetype] = useState<string | null>(null)
-	const [photo, setPhoto] = useState<{
-		bytes: Uint8Array<ArrayBuffer>
-		ext: string
-		url: string
-	} | null>(null)
+	const [photo, setPhoto] = useState<{ bytes: Uint8Array<ArrayBuffer>; url: string } | null>(null)
 	const [body, setBody] = useState('')
 	const [firstWords, setFirstWords] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
@@ -878,13 +872,7 @@ function Summoning({
 			// soul is the POINTER — so a failed upload leaves the agent exactly as they were, and
 			// a failed bind leaves a file under `mine/` that nobody is wearing and nobody sees.
 			// Nothing is deleted either way: the art they had is still theirs.
-			if (photo) {
-				await client.putAvatarFile({
-					avatar: MINE,
-					name: `${RESTING}.${photo.ext}`,
-					bytes: photo.bytes
-				})
-			}
+			if (photo) await client.putAvatarFile({ avatar: MINE, name: RESTING, bytes: photo.bytes })
 			await client.saveSoul({
 				name: name.trim(),
 				gender,
@@ -921,7 +909,7 @@ function Summoning({
 							face={art}
 							size="altar"
 							busy={busy}
-							onPick={(picked) => setPhoto({ ...picked, url: imageUrl(picked.bytes) })}
+							onPick={(bytes) => setPhoto({ bytes, url: imageUrl(bytes) })}
 						/>
 					) : (
 						<span className="agent-drop agent-altar-portrait" data-dim="true">

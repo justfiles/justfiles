@@ -20,10 +20,13 @@ export const AGENT_DIR = agentDir()
  * soul that is not `builtin/<id>` names one of these.
  *
  * Inside it: one file per STATE the avatar can be in, `resting` being the one it must have.
- * Stem = state, extension = format — `resting.png` is the state, PNG is how it happens to be
- * stored today — and nothing reads meaning into that extension. What a file's bytes ARE is
- * answered by `imageType`, and WHICH file holds a state by `readImageFile`, both in
- * `@justfiles/app/image-type` where every reader of one of these directories can reach them.
+ * The file IS the state — `resting`, with no extension, because an extension could only say
+ * which encoder the device that wrote it happened to have, and two devices answering that
+ * differently for one state is two files sync will keep. A `resting.png` from an artist's
+ * pack reads fine: the stem is the state, and nothing reads meaning into the rest. What a
+ * file's bytes ARE is answered by `imageType`, and WHICH file holds a state by
+ * `readImageFile`, both in `@justfiles/app/image-type` where every reader of one of these
+ * directories can reach them.
  *
  * A state is what a write CLAIMS, so at most one file may hold one: `agent.putAvatarFile`
  * takes out every same-stem sibling as it publishes, whatever format that sibling was in.

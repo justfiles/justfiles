@@ -10,8 +10,8 @@ import { squareImage } from './squareImage'
 //
 // The worker returns a ~1024px image, so the bytes are downscaled to the same 256² square as
 // the resting file before they reach the Volume — six 1MB files would be replicated to every
-// device otherwise. The file is named for the format that came back, which is WebP wherever
-// the browser can encode it (see ./squareImage.ts).
+// device otherwise. WebP wherever the browser can encode it (see ./squareImage.ts), and the
+// file is named for the EXPRESSION, never for the format.
 
 export async function requestFace(
 	volume: Volume,
@@ -48,7 +48,11 @@ export async function requestFace(
 		if (stale.name !== hash) await volume.rm(`${root}/${stale.name}`, { recursive: true })
 	}
 	await volume.mkdir(dir, { recursive: true })
+	// The file IS the expression, with no extension, for the reason `putAvatarFile` publishes a
+	// state that way: the format is whatever THIS browser encodes (WebP here, PNG on Safari),
+	// sync is last-writer-wins per path, and two devices deriving the same face would otherwise
+	// leave two files claiming it. What the bytes are is read from the bytes.
 	const drawn = await squareImage(`data:${face.mimeType};base64,${face.data}`)
-	await volume.writeFile(`${dir}/${expression}.${drawn.ext}`, drawn.bytes)
+	await volume.writeFile(`${dir}/${expression}`, drawn)
 	return true
 }

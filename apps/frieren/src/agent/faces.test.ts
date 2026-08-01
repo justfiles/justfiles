@@ -7,11 +7,7 @@ import { derivedDir, readAvatar } from './identity'
 // The generated set is housekept HERE, by the write that replaces it — there is no daily
 // sweep and no filename grammar any more. Canvas is the browser's, so the downscale is
 // stubbed: what this covers is where the bytes land and what they displace.
-// It answers WebP wherever the browser can encode one, so the state's file is named for what
-// came back — which is the whole point of the format never being read out of a name.
-vi.mock('./squareImage', () => ({
-	squareImage: async () => ({ bytes: png(9, 9), ext: 'webp' })
-}))
+vi.mock('./squareImage', () => ({ squareImage: async () => png(9, 9) }))
 
 // Real signatures: every reader here identifies a file by its bytes.
 const png = (...tail: number[]) =>
@@ -47,8 +43,9 @@ async function wearing() {
 test('a derived face lands under the resting art it was derived from', async () => {
 	const { vol, hash } = await wearing()
 	expect(await requestFace(vol, token, 'mine', 'pleased', hash)).toBe(true)
-	// Named for the format the browser produced, and resolved by stem regardless.
-	expect(await vol.exists(`${derivedDir('mine', hash)}/pleased.webp`)).toBe(true)
+	// Named for the EXPRESSION, with no extension — one path per face on every device, so a
+	// second device deriving the same one cannot leave a rival file beside it.
+	expect((await vol.readdir(derivedDir('mine', hash))).map((e) => e.name)).toEqual(['pleased'])
 	// The avatar's own directory holds only authored art — this wrote nothing into it.
 	expect((await vol.readdir(MINE)).map((e) => e.name).sort()).toEqual([
 		'.gen',

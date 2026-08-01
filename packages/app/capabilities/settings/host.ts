@@ -31,7 +31,7 @@
 //    account, always on this side. With only one lane configured, every check above
 //    is a no-op — unchanged from before any of this existed.
 
-import { imageDataUrl, imageFileNames, readImageFile } from '../../image-type.ts'
+import { fileStem, imageDataUrl, imageFileNames, readImageFile } from '../../image-type.ts'
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
 import type {
@@ -347,9 +347,9 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 				label: label(id),
 				builtin: true,
 				preview: resting,
-				// The bundled art is PNG; the volume's files carry whatever format they were
-				// written in, and the caller reads the state off the stem either way.
-				files: states.map((name) => `${name}.png`)
+				// A state IS the file name here (see `putAvatarFile`); the volume's own avatars
+				// may still carry a pack's `resting.webp`, which the caller stems either way.
+				files: states
 			}))
 			const installed: AvatarInfo[] = []
 			for (const id of await entries(vol, paths.avatars)) {
@@ -387,30 +387,45 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 				// not the one a filesystem gives (it keeps `pleased.png` unique, not `pleased`), so
 				// it is enforced here, where the writes are.
 				//
-				// Order matters, and it is the one `Volume.writeFile` prescribes. New bytes land
-				// under a name nothing resolves, and only then does the old file give way to them:
+				// A STATE IS PUBLISHED AT ONE PATH — `pleased`, never `pleased.webp` — because the
+				// extension is the one part of the name that is a LOCAL choice: this browser encodes
+				// WebP, Safari falls back to PNG, and sync is last-writer-wins PER PATH. Two devices
+				// replacing the same state offline would otherwise land two files sync has no reason
+				// to reconcile, and every device would then resolve one of them and silently ignore
+				// the other user's replacement — forever. One state, one path, and LWW has something
+				// to converge on. Nothing is lost by dropping it: a file's format is read from its
+				// bytes (`imageType`), never from its name, and readers stem-match, so a pack's
+				// `pleased.webp` still resolves.
+				const state = fileStem(name)
+				// Order matters, and it is the one `Volume.writeFile` prescribes — with the sweep
+				// LAST, so the state the user is wearing outlives every step that can fail:
 				//
-				//   .put-<name>  a CREATE, therefore atomic, and invisible (dotted names are not
-				//                states). Per state, so two hosts publishing different states at
-				//                once cannot stage over each other.
-				//   rm           every file claiming this state
-				//   mv           .put-<name> → name  (POSIX rename: replaces atomically)
+				//   .put-<state>  a CREATE, therefore atomic, and invisible (dotted names are not
+				//                 states). Per state, so two hosts publishing different states at
+				//                 once cannot stage over each other.
+				//   mv            .put-<state> → <state>  (POSIX rename: replaces atomically)
+				//   rm            any OTHER file still claiming this state (a pack's `.webp`)
 				//
-				// so a write that fails on a full volume leaves the portrait the user is wearing
-				// exactly as it was, and a reader is never caught between the two: it resolves the
-				// old state or the whole new one, never a torn image and never a missing face. The
-				// straight overwrite this replaces could do neither — it is not atomic by design,
-				// and a same-name write is not a structural change, which is all a watcher hears.
+				// A full volume, a storage error, a vanished staged entry: whatever fails, the old
+				// portrait is still there to resolve, because nothing is removed until the new bytes
+				// already ARE the state. A reader is never caught between the two either — old state
+				// or the whole new one, never a torn image and never a missing face — and in the
+				// window between the move and the sweep the extensionless name sorts FIRST among the
+				// claimants, so what a reader sees there is the art that just landed. The straight
+				// overwrite this replaces could promise neither: it is not atomic by design, and a
+				// same-name write is not a structural change, which is all a watcher hears.
 				//
-				// Nothing here needs undoing on failure, because the only step that can leave bytes
-				// nothing resolves is the last one, and its bytes are still THERE under the staged
-				// name for the next attempt to republish.
-				const claimants = imageFileNames(await entries(vol, dir), name)
+				// Nothing needs undoing on failure. The staged bytes are the only thing left behind,
+				// under a name no reader resolves, and the next attempt to publish this state writes
+				// straight over them.
+				const claimants = imageFileNames(await entries(vol, dir), state)
 				if (bytes) {
-					const staged = `${dir}/.put-${name}`
+					const staged = `${dir}/.put-${state}`
 					await writeTo(vol, staged, bytes)
-					for (const claimant of claimants) await vol.rm(`${dir}/${claimant}`, { force: true })
-					await vol.rename(staged, `${dir}/${name}`)
+					await vol.rename(staged, `${dir}/${state}`)
+					for (const claimant of claimants) {
+						if (claimant !== state) await vol.rm(`${dir}/${claimant}`, { force: true })
+					}
 				} else {
 					for (const claimant of claimants) await vol.rm(`${dir}/${claimant}`, { force: true })
 				}
