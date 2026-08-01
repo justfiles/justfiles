@@ -249,23 +249,34 @@ function classify(path: string): SkipReason | null {
 const normalize = (path: string) =>
 	path
 		.split('/')
-		.map((segment) => reread(segment).normalize('NFC'))
+		.map((segment) => segment.normalize('NFC'))
 		.join('/')
 
 const decoder = new TextDecoder()
-// …and a strict one, used only to ASK whether some bytes are UTF-8 (see `reread`).
+// …and a strict one, used only to ASK whether some bytes are UTF-8 (see `zipEntryName`).
 const strict = new TextDecoder('utf-8', { fatal: true })
 
-// A zip only says its names are UTF-8 by setting a flag bit, and plenty of zippers
-// write UTF-8 bytes without setting it — so the unzipper reads those names one byte
-// per character (Latin-1) and `早起记录.md` arrives as `æ—©èµ·è®°å½•.md`. The bytes were
-// right all along, which is why the note's CONTENT is fine and only its name is not.
-//
-// So when every character is a single byte AND those bytes spell valid multi-byte
-// UTF-8, that is what happened, and we read them again properly. Real Latin-1 text
-// (or CP437, the other thing a zip may mean) essentially never satisfies both, and
-// when it doesn't we leave the name exactly as it came. UTF-8 never encodes `/` in a
-// multi-byte sequence, so doing this per path segment is safe.
+/**
+ * Read a ZIP ENTRY's name again when the archive misspelled it. A zip only says its
+ * names are UTF-8 by setting a flag bit, and plenty of zippers write UTF-8 bytes
+ * without setting it — so the unzipper reads those names one byte per character
+ * (Latin-1), and `早起记录.md` arrives as `æ—©èµ·è®°å½•.md`. The bytes were right all
+ * along, which is why the note's CONTENT is fine and only its name is not.
+ *
+ * ONLY for names that came out of an archive, which is why this is a seam of its own
+ * and not part of `normalize`. A loose file's name was decoded by the OS, so it is
+ * already the name the user has on disk — rereading that would rename `Ã©.md` to
+ * `é.md` and collide with the note that really is called that.
+ *
+ * Per segment, because UTF-8 never encodes `/` inside a multi-byte sequence: same
+ * answer as the whole path, and one unreadable segment cannot spoil its siblings.
+ */
+export const zipEntryName = (name: string) => name.split('/').map(reread).join('/')
+
+// When every character of a segment is a single byte AND those bytes spell valid
+// multi-byte UTF-8, the Latin-1 read above is what happened — so read them again
+// properly. Real Latin-1 text (or CP437, the other thing a zip may mean) essentially
+// never satisfies both, and when it doesn't the name is left exactly as it came.
 function reread(segment: string): string {
 	const bytes = new Uint8Array(segment.length)
 	let high = false

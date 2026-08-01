@@ -13,7 +13,8 @@ import {
 	MAX_BYTES,
 	planImport,
 	type Screen,
-	screenEntry
+	screenEntry,
+	zipEntryName
 } from './import.ts'
 import { displayPath, failedWith, isUnder, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
@@ -101,7 +102,7 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 						// Never completed, so the entry is never admitted; reported here
 						// because this is the only place that knows it outgrew its header.
 						this.dead = true
-						screen.skip(name, 'attachment')
+						screen.skip(zipEntryName(name), 'attachment')
 						return
 					}
 					this.ondata(error, chunk, final)
@@ -113,18 +114,21 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 		}
 
 	const unzipper = new Unzip((entry) => {
+		// The archive's own spelling of the name, which it may have got wrong — every use
+		// of it downstream goes through this, and fflate's raw `entry.name` through none.
+		const name = zipEntryName(entry.name)
 		// Not content, but still a member: it counts as work, or an archive of nothing
 		// but directories never reaches the ceiling meant to stop it.
-		if (entry.name.endsWith('/')) {
-			screen.ignore(entry.name)
+		if (name.endsWith('/')) {
+			screen.ignore(name)
 			return
 		}
 		// A cheap pre-check, from the local header: skip what we can already tell we
 		// don't want, so it is never inflated. The header's size is a CLAIM though —
 		// a streamed archive may declare 0 — so nothing is charged to the budget here.
-		const declared = screenEntry(entry.name, entry.originalSize ?? 0)
+		const declared = screenEntry(name, entry.originalSize ?? 0)
 		if (declared) {
-			screen.skip(entry.name, declared)
+			screen.skip(name, declared)
 			return
 		}
 		let parts: Uint8Array[] = []
@@ -139,7 +143,7 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 			// Charged with the bytes that actually exist, at the moment they exist. An
 			// entry the decoder gave up on never reaches `final`, so it never lands here.
 			if (final) {
-				const entered = admit({ path: entry.name, bytes: concat(parts, size) }, screen)
+				const entered = admit({ path: name, bytes: concat(parts, size) }, screen)
 				parts = []
 				if (entered) kept.push(entered)
 			}

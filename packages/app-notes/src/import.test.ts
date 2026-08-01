@@ -6,7 +6,8 @@ import {
 	MAX_TOTAL_BYTES,
 	planImport,
 	screenEntry,
-	vaultName
+	vaultName,
+	zipEntryName
 } from './import.ts'
 
 const enc = new TextEncoder()
@@ -135,21 +136,27 @@ test('macOS decomposed filenames are normalized, so they stop looking duplicated
 
 test('a zip that forgot to flag its UTF-8 names still imports them readably', () => {
 	// A zipper that writes UTF-8 bytes without setting the flag bit: the unzipper reads
-	// the name one byte per character, so it reaches us as mojibake. Same bytes, so the
-	// note's text is fine — only the name needs reading again.
+	// the name one byte per character, so it reaches the seam as mojibake. Same bytes, so
+	// the note's text is fine — only the name needs reading again.
 	const mojibake = (text: string) => String.fromCharCode(...bytes(text))
-	const plan = planDrop(
-		{ [`Vault/${mojibake('日记')}/${mojibake('早起记录370')}.md`]: bytes('# 早起') },
-		'Vault.zip'
-	)
+	const path = zipEntryName(`Vault/${mojibake('日记')}/${mojibake('早起记录370')}.md`)
+	const plan = planDrop({ [path]: bytes('# 早起') }, 'Vault.zip')
 	expect(plan.files).toEqual([{ path: '日记/早起记录370.md', text: '# 早起' }])
 })
 
 test('a name that is genuinely Latin-1 is left exactly as the archive spelled it', () => {
-	// `Café.md` in Latin-1 is not valid UTF-8, so there is nothing to re-read — and a
-	// name already decoded past Latin-1 (`日`) is evidence the unzipper got it right.
-	const plan = planDrop({ 'Caf\u00e9.md': bytes('x'), '日.md': bytes('y') }, 'Vault.zip')
-	expect(plan.files.map((file) => file.path)).toEqual(['Café.md'.normalize('NFC'), '日.md'])
+	// `Café.md` in Latin-1 is not valid UTF-8, so there is nothing to reread — and a name
+	// already decoded past Latin-1 (`日`) is evidence the unzipper got it right.
+	expect(zipEntryName('Café.md')).toBe('Café.md')
+	expect(zipEntryName('日.md')).toBe('日.md')
+})
+
+test('a LOOSE file keeps the name the OS gave it — only archives misspell', () => {
+	// Dropped files are not archive members: their names were decoded by the OS, so
+	// `Ã©.md` is a note really called that, and must not become `é.md` — which would
+	// collide with its neighbour here, and move whatever wikilinks point at it.
+	const plan = planDrop({ 'Ã©.md': bytes('x'), 'é.md': bytes('y') }, 'drop')
+	expect(plan.files.map((file) => file.path)).toEqual(['Ã©.md', 'é.md'])
 })
 
 test('an oversized file is reported rather than pulled into memory-sized batches', () => {
