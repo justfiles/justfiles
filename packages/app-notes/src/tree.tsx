@@ -81,9 +81,12 @@ export function NotesTree(props: NotesTreeProps) {
 	//
 	// `entries` is RE-LISTED on signals that say nothing about the tree's shape —
 	// opening a note re-lists so the recency order follows its mtime — and each scan
-	// is a fresh array. Key this on the SET's value (paths and kinds; an mtime is not
-	// the tree's business) so the reconcile effect below fires only when rows are
-	// truly added or removed, never on a plain selection.
+	// is a fresh array. Hence TWO gates, guarding two different things: the key is
+	// rebuilt only when a scan hands over a new array (identity), which keeps a walk
+	// of the whole vault off every editor keystroke — each one re-renders this
+	// component; the paths are rebuilt only when that key's VALUE differs (kinds and
+	// paths; an mtime is not the tree's business), which is what leaves the folds
+	// alone on a re-list that changed no rows.
 	//
 	// Every part is LENGTH-PREFIXED, so no two listings can spell the same key: a
 	// note's name may legally hold whatever a separator would be (`isCanonicalPath`
@@ -91,8 +94,11 @@ export function NotesTree(props: NotesTreeProps) {
 	// and an import preserves it), and a key that collides freezes the tree on a
 	// stale set. Cheaper than escaping, and the same one pass over the listing.
 	const query = props.query.trim()
-	let pathsKey = `${query.length}:${query}`
-	for (const entry of props.entries) pathsKey += `${entry.type}${entry.path.length}:${entry.path}`
+	const pathsKey = useMemo(() => {
+		let key = `${query.length}:${query}`
+		for (const entry of props.entries) key += `${entry.type}${entry.path.length}:${entry.path}`
+		return key
+	}, [props.entries, query])
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — recompute only when the path set changes by value (pathsKey), not on every re-list of the same rows (see above).
 	const paths = useMemo(() => {
 		const files = props.entries.filter((entry) => entry.type === 'file')
