@@ -178,6 +178,7 @@ const identity = (soul: AgentSoul | null): string => `${soul?.name ?? ''}|${soul
 const asking = (request: DraftRequest): string => `${request.name}|${request.gender}`
 
 export function useDrafting(client: Client<SettingsApp>, state: SettingsState): Drafting {
+	const facts = state.facts
 	const [desk, setDesk] = useState<Omit<Drafting, 'ask' | 'discard' | 'dismiss'>>(NOTHING)
 	// Only the newest question is answered. An older one finishing late has been superseded
 	// by the one on screen, and its prose was written for a name the user has moved on from.
@@ -225,7 +226,14 @@ export function useDrafting(client: Client<SettingsApp>, state: SettingsState): 
 		setDesk((desk) => ({ ...desk, request, soul: null, error: null, writing: true }))
 		const { name, gender, archetype } = request
 		client
-			.generateSoul({ name, gender, archetype })
+			// The facts THIS window read, so the generator is not answering from a copy of
+			// `user.md` that is a sync behind what the user typed a moment ago.
+			.generateSoul({
+				name,
+				gender,
+				archetype,
+				...(facts && { user: { birthDate: facts.birthDate, gender: facts.gender } })
+			})
 			.then((soul) => {
 				if (mine === latest.current) setDesk((desk) => ({ ...desk, soul, writing: false }))
 			})
@@ -816,10 +824,11 @@ function Summoning({
 	const bind = async () => {
 		setBusy(true)
 		try {
-			// Always written, because binding is also how "summon again" lands: with no photo
-			// this CLEARS a previous one, or the newly bound agent would keep wearing the old
-			// face instead of the art the review promised (`avatar.png` beats `avatar_variant`).
-			await client.saveAvatar({ bytes: photo?.bytes ?? null })
+			// THE SOUL FIRST. Two writes cannot be one transaction here, so the order decides
+			// what a failure leaves behind: soul-then-face means a failed bind changes nothing
+			// and a failed FACE leaves them bound with their old picture — where face-first
+			// meant a failed bind had already deleted the photo of an agent it then left
+			// exactly as they were.
 			await client.saveSoul({
 				name: name.trim(),
 				gender,
@@ -827,6 +836,10 @@ function Summoning({
 				// The one place an archetype is ever passed.
 				archetype: archetype ?? undefined
 			})
+			// Always written, because binding is also how "summon again" lands: with no photo
+			// this CLEARS a previous one, or the newly bound agent would keep wearing the old
+			// face instead of the art the review promised (`avatar.png` beats `avatar_variant`).
+			await client.saveAvatar({ bytes: photo?.bytes ?? null })
 		} finally {
 			setBusy(false)
 		}

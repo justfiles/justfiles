@@ -111,7 +111,12 @@ test('nameInSoul spots the one drift a rename can cause, and nothing else', () =
 	expect(nameInSoul(boundSoul)).toBe('Fern')
 	// Renamed in the frontmatter, not in the prose.
 	expect(nameInSoul({ ...boundSoul, name: 'Frieren' })).toBe('Fern')
+	// A name can have a space in it. Reading only the first word would report a rename
+	// that never happened, on every render, forever.
+	expect(nameInSoul({ ...boundSoul, body: 'You are Mary Jane, a companion.' })).toBe('Mary Jane')
 	// Hand-written prose that opens some other way is not "drifted" — it is just prose.
 	expect(nameInSoul({ ...boundSoul, body: 'Speak plainly, always.' })).toBeNull()
+	// Nor is prose that opens with a description rather than a name.
+	expect(nameInSoul({ ...boundSoul, body: 'You are a companion who listens.' })).toBeNull()
 	expect(nameInSoul(null)).toBeNull()
 })

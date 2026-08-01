@@ -346,13 +346,15 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		...(generateSoul && {
 			// A PREVIEW. The user facts ride along from the volume, so the pane sends only
 			// what it actually collected.
-			'agent.generateSoul': async ({ name, gender: sex, archetype }) => {
-				const facts = await readProfile()
+			'agent.generateSoul': async ({ name, gender: sex, archetype, user }) => {
+				// The caller's facts win when it sent them: it read them from the volume the
+				// user is actually typing into, which is not necessarily this one.
+				const facts = user ?? (await readProfile())
 				return generateSoul({
 					name,
 					gender: sex,
 					archetype,
-					userAge: age(facts.birthDate, today(await timezone?.())),
+					userAge: age(facts.birthDate ?? '', today(await timezone?.())),
 					userGender: facts.gender ?? undefined
 				})
 			}

@@ -160,13 +160,19 @@ export interface SettingsCapability {
 		birthDate?: string
 		gender?: 'female' | 'male' | null
 	}): Promise<void>
-	// Draft a soul from a name, a gender and a seed archetype — plus, read from the
-	// Volume by the host, who the user is. A PREVIEW: nothing is written.
-	// CAPABILITY_UNAVAILABLE where no generator is wired, which the pane treats as
-	// "write it yourself" rather than as an error.
+	// Draft a soul from a name, a gender and a seed archetype — plus who the user is. A
+	// PREVIEW: nothing is written. CAPABILITY_UNAVAILABLE where no generator is wired,
+	// which the pane treats as "write it yourself" rather than as an error.
+	//
+	// `user` is the facts as the CALLER has them, and it matters because the generator does
+	// not always run where the profile lives: in the browser this call is served by the
+	// Durable Object, whose copy of `user.md` is a sync behind the one the user just typed
+	// into. Still a date and never an age — deriving the age stays with the host, which is
+	// the side that knows the user's timezone. Omitted ⇒ the host reads its own volume.
 	'agent.generateSoul'(input: {
 		name: string
 		gender: 'female' | 'male'
 		archetype: string
+		user?: { birthDate?: string; gender?: 'female' | 'male' | null }
 	}): Promise<GeneratedSoul>
 }

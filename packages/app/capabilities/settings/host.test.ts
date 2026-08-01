@@ -488,6 +488,30 @@ test("an age is counted in the USER's calendar, not the host's", async () => {
 	}
 })
 
+test("generation prefers the caller's facts: the generator need not run where they live", async () => {
+	// In the browser this call is served by the Durable Object, whose copy of `user.md` is
+	// a sync behind the one the user just typed into — so the caller sends what it read.
+	const seen: { userAge?: number; userGender?: string }[] = []
+	const { caps } = agentHost({
+		generateSoul: async (input) => {
+			seen.push(input)
+			return { body: 'A drafted soul.' }
+		}
+	})
+	// What THIS volume knows is deliberately different from what the caller sends.
+	await caps.invoke(call('agent.writeProfile', { birthDate: '1985-04-12', gender: 'male' }))
+	await caps.invoke(
+		call('agent.generateSoul', {
+			name: 'Fern',
+			gender: 'female',
+			archetype: 'companion',
+			user: { birthDate: '2016-04-12', gender: 'female' }
+		})
+	)
+	expect(seen[0]?.userGender).toBe('female')
+	expect(seen[0]?.userAge).toBeLessThan(20)
+})
+
 test('a profile write is a patch: it never puts back a field it was not given', async () => {
 	// The pane saves per field as you edit, so a whole-profile write let a slower save
 	// restore the value a faster one had just changed.

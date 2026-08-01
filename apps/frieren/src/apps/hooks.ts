@@ -68,7 +68,7 @@ const SETTINGS_APP = { id: 'app.justfiles.frieren.settings', name: 'Settings' }
 
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
-	/** Open Settings (its Agent pane is the front door — see `initialState.category`). */
+	/** Open Settings ON the Agent pane — every caller is a personalize affordance. */
 	openSettings: () => void
 	installApp: () => Promise<void>
 	installCommunity: (app: CommunityCatalogApp) => Promise<void>
@@ -144,6 +144,18 @@ export function useAppCommands(): AppCommands {
 
 		const openSettings = () => {
 			dispatch({ type: 'app.open', appId: SETTINGS_APP.id, title: SETTINGS_APP.name })
+			// Selecting the pane is PART of opening it: the category persists, so someone who
+			// last looked at Accounts would otherwise land back there from a button that said
+			// "Personalize". The kernel is the same one the window subscribes to, so this
+			// arrives whether Settings is booting, already open, or not running at all.
+			void localKernel()
+				.then((kernel) =>
+					kernel.dispatch(SETTINGS_APP.id, {
+						type: 'selectCategory',
+						params: { category: 'agent' }
+					})
+				)
+				.catch((error: unknown) => console.error('[settings] open on Agent failed:', error))
 		}
 
 		return { launchApp, openSettings, installApp, installCommunity, uninstallApp }

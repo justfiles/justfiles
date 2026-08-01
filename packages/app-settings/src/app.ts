@@ -52,12 +52,18 @@ export function isBound(soul: AgentSoul | null): boolean {
 	return soul !== null && !soul.seeded
 }
 
-// The one drift left now that a nature is chosen only at the summoning: a rename
-// leaves the old name in the prose ("You are Fern…"). Report it so the pane can say so
-// and offer one Rewrite — never rewrite prose because a field changed.
+// The one drift left now that a nature is chosen only at the summoning: a rename leaves
+// the old name in the prose ("You are Fern…"). Report the name the prose opens with, so
+// the pane can say so and offer one Rewrite — it never rewrites prose because a field
+// changed.
+//
+// The capture runs to the first punctuation, NOT the first space: "You are Mary Jane, a
+// companion…" opens with a two-word name, and taking only "Mary" would report a rename
+// that never happened, forever. It must also start with a capital, or prose that opens
+// "You are a companion who…" would read as a name and do the same.
 export function nameInSoul(soul: AgentSoul | null): string | null {
-	const match = /^You are ([\p{L}][\p{L}\d'’-]*)/u.exec(soul?.body.trim() ?? '')
-	return match?.[1] ?? null
+	const match = /^You are (\p{Lu}[^,.;:!?\n—–(]{0,60})/u.exec(soul?.body.trim() ?? '')
+	return match?.[1]?.trim() || null
 }
 
 export type SettingsState = {
@@ -202,7 +208,19 @@ export const app = defineApp({
 		generateSoul: p.procedure({
 			description: 'Draft a soul from a name, a gender and a seed archetype. Writes nothing.',
 			audience: 'gui',
-			schema: v.object({ name: v.string(), gender: genderSchema, archetype: v.string() }),
+			schema: v.object({
+				name: v.string(),
+				gender: genderSchema,
+				archetype: v.string(),
+				// Sent because the generator does not always run where the profile lives — see
+				// the contract. A date, never an age: the host derives that, in the user's zone.
+				user: v.optional(
+					v.object({
+						birthDate: v.optional(v.string()),
+						gender: v.optional(v.nullable(genderSchema))
+					})
+				)
+			}),
 			run: (input, app) =>
 				app.invoke('settings', 'agent.generateSoul', input) as Promise<GeneratedSoul>
 		}),

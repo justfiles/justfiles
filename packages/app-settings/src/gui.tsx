@@ -99,29 +99,14 @@ button.settings-account[data-active="true"],
 	'app-settings'
 )
 
-// Every category the detail side actually renders (see `Settings` below).
-const RENDERED: Category[] = ['agent', 'account', 'accounts']
-
-// Merge onto initialState so a persisted state missing newer keys (e.g. an
-// older build's shape carried across a rewrite) still has every field — a bare
-// `'category' in value` check would hand back a stale object whose `ai` is
-// `undefined`, wedging the panel before the first refresh.
-const stateOrInitial = (value: unknown): SettingsState => {
-	if (!value || typeof value !== 'object') return initialState
-	const merged = { ...initialState, ...(value as Partial<SettingsState>) }
-	// The shallow merge above keeps a persisted `usage` as-is, but an older build's snapshot
-	// (e.g. the pre-dual-window `{ ai, window }`) lacks the current window fields — reading
-	// `usage.aiBurst` while rendering the meters would throw and wedge the panel before the
-	// mount effect can refresh it. Drop a stale-shaped snapshot so the panel shows loading
-	// until loadUsage replaces it.
-	if (merged.usage && !('aiBurst' in merged.usage && 'aiWeekly' in merged.usage))
-		merged.usage = null
-	// Same for a category this build cannot render — state replicates, so it can arrive
-	// from a build that knows a category this one does not. Left as-is it selects no row
-	// and shows a blank detail side until the user clicks something.
-	if (!RENDERED.includes(merged.category)) merged.category = 'account'
-	return merged
-}
+// Merged onto `initialState` so the first frame has every field — the host pushes state
+// before the mount effect's loads land, and a null `soul`/`usage` renders as "loading",
+// not as a crash. NOT a migration: a state file written by another build is that build's
+// shape and we do not translate it (AGENTS.md — no backward compatibility).
+const stateOrInitial = (value: unknown): SettingsState =>
+	value && typeof value === 'object'
+		? { ...initialState, ...(value as Partial<SettingsState>) }
+		: initialState
 
 export const gui = defineGUI<SettingsApp>({
 	mount(el, state, ctx) {
