@@ -67,8 +67,6 @@ export function orderFrames(elements: readonly unknown[]): Frame[] {
 
 const NEXT = new Set(['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter', 'n'])
 const PREV = new Set(['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace', 'p'])
-// Excalidraw's canvas zoom shortcuts — the only modified keys we eat.
-const ZOOM = new Set(['=', '+', '-', '_', '0'])
 
 export function Presenter({
 	api,
@@ -143,10 +141,11 @@ export function Presenter({
 		}
 	}, [api])
 
-	// The input clamp. Everything that could move the viewport is bound by
-	// Excalidraw on the container (wheel) or on document (gestures, touch), all
-	// in the bubble phase — so one capture-phase listener on window runs first
-	// and stopPropagation() keeps the editor from ever seeing it.
+	// The input clamp. Every input that could move the viewport or edit the scene is
+	// bound by Excalidraw on its container (wheel) or on document (keys, gestures,
+	// touch, clipboard, drop), all in the bubble phase — so one capture-phase
+	// listener on window runs first and stopPropagation() keeps the editor from ever
+	// seeing it.
 	useEffect(() => {
 		const swallow = (e: Event) => {
 			e.stopPropagation()
@@ -159,41 +158,35 @@ export function Presenter({
 			if (e.button !== 0) swallow(e) // wheel-button drag pans
 		}
 		const onKeyDown = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') {
-				swallow(e)
-				onExit()
-				return
-			}
-			if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-				if (NEXT.has(e.key)) {
-					swallow(e)
-					step(1)
-					return
-				}
-				if (PREV.has(e.key)) {
-					swallow(e)
-					step(-1)
-					return
-				}
-			}
-			// Unmodified keys are swallowed too — they would switch tools. Host and
-			// browser shortcuts (cmd+K, cmd+R, …) still pass through.
-			if ((e.ctrlKey || e.metaKey) && !ZOOM.has(e.key)) return
-			swallow(e)
+			// A presentation owns the keyboard. The editor sees nothing (plain keys switch
+			// tools; cmd+Z/V/D/… would edit the scene behind the deck's snapshot, which
+			// autosave would then persist) and the browser's own combos are held off too
+			// (zoom rescales the slide, select-all paints the overlay, print/save/reload
+			// are all mis-fires mid-deck). Esc leaves; then everything works again.
+			e.stopPropagation()
+			e.preventDefault()
+			const plain = !e.ctrlKey && !e.metaKey && !e.altKey
+			if (e.key === 'Escape') onExit()
+			else if (plain && NEXT.has(e.key)) step(1)
+			else if (plain && PREV.has(e.key)) step(-1)
 		}
 		const opts = { capture: true, passive: false } as const
-		window.addEventListener('wheel', swallow, opts)
-		window.addEventListener('gesturestart', swallow, opts)
-		window.addEventListener('gesturechange', swallow, opts)
-		window.addEventListener('contextmenu', swallow, opts)
+		// wheel & gestures pan/zoom; contextmenu, paste, cut & drop edit the scene.
+		const swallowed = [
+			'wheel',
+			'gesturestart',
+			'gesturechange',
+			'contextmenu',
+			'paste',
+			'cut',
+			'drop'
+		]
+		for (const type of swallowed) window.addEventListener(type, swallow, opts)
 		window.addEventListener('touchmove', onTouchMove, opts)
 		window.addEventListener('pointerdown', onPointerDown, opts)
 		window.addEventListener('keydown', onKeyDown, opts)
 		return () => {
-			window.removeEventListener('wheel', swallow, opts)
-			window.removeEventListener('gesturestart', swallow, opts)
-			window.removeEventListener('gesturechange', swallow, opts)
-			window.removeEventListener('contextmenu', swallow, opts)
+			for (const type of swallowed) window.removeEventListener(type, swallow, opts)
 			window.removeEventListener('touchmove', onTouchMove, opts)
 			window.removeEventListener('pointerdown', onPointerDown, opts)
 			window.removeEventListener('keydown', onKeyDown, opts)
