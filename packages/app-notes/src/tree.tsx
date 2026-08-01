@@ -216,12 +216,20 @@ function applyPathDiff(
 	const removed = prev.filter((path) => !nextSet.has(path))
 	const added = next.filter((path) => !prevSet.has(path))
 	const ops: FileTreeBatchOperation[] = []
+	// A removed folder is taken out recursively, so every removed row UNDER one is
+	// already gone with it. Asked of each row's own ancestors — a handful of slices,
+	// however long the listing — rather than by rescanning `removed` per row: a
+	// 20k-note folder is one import away, and that scan would be quadratic.
+	const gone = new Set(removed)
+	const underRemovedDir = (path: string) => {
+		for (let cut = path.indexOf('/'); cut !== -1; cut = path.indexOf('/', cut + 1)) {
+			const dir = path.slice(0, cut + 1)
+			if (dir !== path && gone.has(dir)) return true
+		}
+		return false
+	}
 	for (const path of removed) {
-		// A recursive folder removal takes everything under it, so skip those rows.
-		const inRemovedDir = removed.some(
-			(other) => other !== path && other.endsWith('/') && path.startsWith(other)
-		)
-		if (inRemovedDir || !model.getItem(path)) continue
+		if (underRemovedDir(path) || !model.getItem(path)) continue
 		ops.push({ type: 'remove', path, recursive: path.endsWith('/') })
 	}
 	for (const path of added) if (!model.getItem(path)) ops.push({ type: 'add', path })
