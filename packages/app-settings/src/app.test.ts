@@ -1,6 +1,15 @@
-import type { AccountInfo } from '@justfiles/app/capabilities/settings'
+import type { AccountInfo, AvatarInfo } from '@justfiles/app/capabilities/settings'
 import { expect, test } from 'vitest'
-import { app, hasBothOrigins, initialState, isBound, nameInSoul, originKind } from './app.ts'
+import {
+	app,
+	avatarStates,
+	hasBothOrigins,
+	initialState,
+	isBound,
+	nameInSoul,
+	originKind,
+	wornAvatar
+} from './app.ts'
 
 // Reducer-level, no DOM (AGENTS.md): the reducer's own fold + the pure origin
 // helpers the GUI keys off, driven directly through `app.dispatch` — the same
@@ -60,14 +69,14 @@ test('hasBothOrigins is true only once the list spans both lanes', () => {
 const seededSoul = {
 	name: 'Kodama',
 	gender: null,
-	avatarVariant: null,
+	avatar: null,
 	body: 'You are Kodama, a calm and capable companion.',
 	seeded: true
 }
 const boundSoul = {
 	name: 'Fern',
 	gender: 'female' as const,
-	avatarVariant: 'companion',
+	avatar: 'builtin/companion',
 	body: 'You are Fern, a companion who walks beside the user.',
 	seeded: false
 }
@@ -117,4 +126,40 @@ test('nameInSoul spots the one drift a rename can cause, and nothing else', () =
 	// Nor is prose that opens with a description rather than a name.
 	expect(nameInSoul({ ...boundSoul, body: 'You are a companion who listens.' })).toBeNull()
 	expect(nameInSoul(null)).toBeNull()
+})
+
+// ── the wardrobe ──────────────────────────────────────────────────────────
+// An avatar is a directory the host describes; this app only ever matches refs.
+
+const avatar = (over: Partial<AvatarInfo>): AvatarInfo => ({
+	ref: 'builtin/vanilla',
+	label: 'Vanilla',
+	builtin: true,
+	preview: 'data:image/png;base64,AA',
+	files: ['resting.png', 'pleased.png', 'curious.png'],
+	...over
+})
+
+test('the worn avatar is the ref in the soul, and an unknown one is the default', () => {
+	const vanilla = avatar({})
+	const mine = avatar({ ref: 'mine', label: 'Mine', builtin: false, files: ['resting.png'] })
+	const list = [vanilla, mine]
+	expect(wornAvatar({ ...boundSoul, avatar: 'mine' }, list)).toBe(mine)
+	// No ref at all, and a ref naming a pack this device does not have: the default built-in
+	// either way — which is what the shell paints too.
+	expect(wornAvatar({ ...boundSoul, avatar: null }, list)).toBe(vanilla)
+	expect(wornAvatar({ ...boundSoul, avatar: 'aurora' }, list)).toBe(vanilla)
+	// Before the first list lands there is nothing to wear yet.
+	expect(wornAvatar(boundSoul, [])).toBeUndefined()
+})
+
+test('the states worth a slot are the ones the built-in art covers', () => {
+	// The expression vocabulary lives in @justfiles/agent, which this app cannot import — a
+	// built-in covers every expression, so its files ARE the list, resting first. An avatar
+	// on the volume contributes nothing: a missing face there is a gap, not a state.
+	const states = avatarStates([
+		avatar({}),
+		avatar({ ref: 'mine', builtin: false, files: ['resting.png', 'sleepy.png'] })
+	])
+	expect(states).toEqual(['resting', 'curious', 'pleased'])
 })

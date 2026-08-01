@@ -21,7 +21,16 @@ export const daily = (date: Date = new Date()) =>
 	`${DAILY_DIR}/${date.toISOString().slice(0, 10)}.md`
 export const agentDir = (agentId = 'main') => `/system/agents/${agentId}`
 export const soul = (agentId = 'main') => `${agentDir(agentId)}/soul.md`
-export const avatar = (agentId = 'main') => `${agentDir(agentId)}/avatar.png`
+// AN AVATAR IS A DIRECTORY, and its name is its id: `avatars/mine/resting.png` is the state
+// it rests in, `pleased.png` beside it is art someone AUTHORED (the user, or a pack they
+// installed), and `.gen/<hash of resting>/pleased.png` is art the image model derived from
+// exactly that resting file. Stem = state, extension = format, so nothing in the layout says
+// "image" and nothing has to change for a video or a rig.
+//
+// Authored and derived split by DIRECTORY, not by filename: deleting `.gen` can never
+// destroy something a human made, and replacing `resting.png` orphans one directory instead
+// of needing a filename parser to tell orphans from current art.
+export const avatarsDir = (agentId = 'main') => `${agentDir(agentId)}/avatars`
 export const sessionsDir = (agentId = 'main') => `${agentDir(agentId)}/sessions`
 
 // One shard per device, so a transcript file only ever has ONE writer and whole-file LWW

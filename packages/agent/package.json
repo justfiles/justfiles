@@ -5,7 +5,8 @@
 	"exports": {
 		".": "./index.ts",
 		"./defaults": "./agent-defaults.ts",
-		"./expression": "./expression.ts"
+		"./expression": "./expression.ts",
+		"./avatars": "./avatars.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -22,6 +23,10 @@
 			"./expression": {
 				"types": "./dist/expression.d.ts",
 				"default": "./dist/expression.js"
+			},
+			"./avatars": {
+				"types": "./dist/avatars.d.ts",
+				"default": "./dist/avatars.js"
 			}
 		}
 	},

@@ -4,6 +4,6 @@
 		"outDir": "./dist",
 		"rootDir": "."
 	},
-	"include": ["*.ts", "bash/**/*.ts", "raw.d.ts"],
+	"include": ["*.ts", "avatars/**/*.ts", "bash/**/*.ts", "raw.d.ts"],
 	"exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

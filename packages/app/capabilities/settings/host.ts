@@ -31,11 +31,13 @@
 //    account, always on this side. With only one lane configured, every check above
 //    is a no-op — unchanged from before any of this existed.
 
+import { fileStem, imageDataUrl, imageFileNames, readImageFile } from '../../image-type.ts'
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
 import type {
 	AccountsAdmin,
 	AgentSoul,
+	AvatarInfo,
 	GeneratedSoul,
 	ProviderInfo,
 	SettingsCapability,
@@ -72,7 +74,8 @@ export interface SoulDraftInput {
 // definition of where a soul lives.
 export interface IdentityPaths {
 	soul: string
-	avatar: string
+	// The directory the agent's avatars live in — one subdirectory per avatar.
+	avatars: string
 	profile: string
 }
 
@@ -82,13 +85,23 @@ interface IdentityVolume {
 	exists(path: string): Promise<boolean>
 	readFile(path: string): Promise<Uint8Array>
 	writeFile(path: string, data: Uint8Array): Promise<void>
+	readdir(path: string): Promise<{ name: string }[]>
 	mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
 	rm(path: string, options?: { force?: boolean }): Promise<void>
+	// Only `putAvatarFile` needs it, and it cannot be done without: replacing a state has to
+	// publish new bytes without a moment where the state is missing, and `writeFile` is
+	// atomic on CREATE only — an overwrite is deliberately not (see `Volume.writeFile`).
+	rename(oldPath: string, newPath: string): Promise<void>
 }
 
 export interface AgentDeps {
 	volume: IdentityVolume
 	paths: IdentityPaths
+	// The art the app ships, as `{ <id>: { resting: dataUrl, states } }` — injected for the
+	// same reason the paths are (it lives in `@justfiles/agent/avatars`, which cannot be
+	// imported back). These are the `builtin/<id>` refs: they cost the user no storage,
+	// replicate nowhere, and update when the app does. Absent means this host offers none.
+	builtins?: Record<string, { resting: string; states: string[] }>
 	// The user's timezone (IANA), for the one thing here that depends on today's date:
 	// their age. A host whose clock IS the user's clock (the Mac) omits it; one running
 	// somewhere else entirely (the frieren DO, on UTC) must not — see `age`.
@@ -244,6 +257,22 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 	await vol.writeFile(path, bytes)
 }
 
+// ── avatars ───────────────────────────────────────────────────────────────
+// An avatar is a DIRECTORY under `paths.avatars`, named by its id, holding one file per
+// state it can be in. Stem = state, extension = format — and the format is never read out of
+// the name: `imageType` answers that from the bytes, and `readImageFile` answers which file
+// holds a state, identically here and in every other reader of the same directory.
+
+async function entries(vol: IdentityVolume, path: string): Promise<string[]> {
+	if (!(await vol.exists(path))) return []
+	return (await vol.readdir(path)).map((entry) => entry.name).sort()
+}
+
+// The id is the label until there is a store that needs a manifest to carry one.
+function label(id: string): string {
+	return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
 // A birth date is a CALENDAR DATE, not an instant — and so is "today", which is the part
 // that bites. `new Date('YYYY-MM-DD')` is UTC midnight, so local getters read the day
 // before anywhere west of UTC; and the host's own "now" is no better, because the frieren
@@ -262,9 +291,9 @@ function age(birthDate: string, now: string): number | undefined {
 	return now.slice(5) < birthDate.slice(5) ? years - 1 : years
 }
 
-function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps): Served {
+function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: AgentDeps): Served {
 	// Every identity write is READ-MODIFY-WRITE (a profile patch merges with the file, a
-	// soul write preserves the recorded face) and the panes fire them per field as the
+	// soul write preserves the avatar being worn) and the panes fire them per field as the
 	// user edits — so they queue. Without this, two writes read the same file and the slower
 	// one puts back what the other had just changed.
 	let queue: Promise<unknown> = Promise.resolve()
@@ -278,7 +307,7 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		return {
 			name: frontmatter.agent_name ?? '',
 			gender: gender(frontmatter.agent_gender),
-			avatarVariant: frontmatter.avatar_variant ?? null,
+			avatar: frontmatter.avatar ?? null,
 			body,
 			seeded: frontmatter.seeded === 'true'
 		}
@@ -296,9 +325,6 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 		'agent.writeSoul': (patch) =>
 			serial(async () => {
 				const current = await readSoul()
-				// The face the summoning picked: a plain write preserves it, because nothing
-				// outside that ritual chooses built-in art.
-				const variant = patch.avatarVariant ?? current.avatarVariant
 				await writeTo(
 					vol,
 					paths.soul,
@@ -307,20 +333,102 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 							['schema', 'frieren/agent-soul/v1'],
 							['agent_name', patch.name ?? current.name],
 							['agent_gender', patch.gender ?? current.gender],
-							['avatar_variant', variant]
+							// The avatar is an ordinary patch field, so a plain write preserves the one
+							// being worn — a rename must not undress them.
+							['avatar', patch.avatar ?? current.avatar]
 						],
 						patch.body ?? current.body
 					)
 				)
 			}),
-		'agent.readAvatar': async () =>
-			(await vol.exists(paths.avatar)) ? vol.readFile(paths.avatar) : null,
-		'agent.writeAvatar': ({ bytes }) =>
+		'agent.listAvatars': async () => {
+			const art = Object.entries(builtins ?? {}).map(([id, { resting, states }]) => ({
+				ref: `builtin/${id}`,
+				label: label(id),
+				builtin: true,
+				preview: resting,
+				// A state IS the file name here (see `putAvatarFile`); the volume's own avatars
+				// may still carry a pack's `resting.webp`, which the caller stems either way.
+				files: states
+			}))
+			const installed: AvatarInfo[] = []
+			for (const id of await entries(vol, paths.avatars)) {
+				if (id.startsWith('.')) continue
+				const dir = `${paths.avatars}/${id}`
+				const files = (await entries(vol, dir)).filter(
+					// `.gen` is the image model's lane, not a state anyone authored.
+					(name) => !name.startsWith('.')
+				)
+				// No resting state — or none whose bytes are an image this build can render — is not
+				// an avatar yet, and offering it would put a broken portrait in the picker.
+				const resting = await readImageFile(files, 'resting', (name) =>
+					vol.readFile(`${dir}/${name}`)
+				)
+				if (!resting) continue
+				const preview = imageDataUrl(resting.bytes)
+				if (preview) installed.push({ ref: id, label: label(id), builtin: false, preview, files })
+			}
+			return [...art, ...installed]
+		},
+		'agent.putAvatarFile': ({ avatar, name, bytes }) =>
 			serial(async () => {
-				// Null DELETES: `avatar.png` is what decides the face, so leaving stale bytes
-				// behind would keep beating the built-in art the soul now names.
-				if (!bytes) return vol.rm(paths.avatar, { force: true })
-				await writeTo(vol, paths.avatar, bytes)
+				// An id is ONE directory name and a file is ONE name in it: no separator, and no
+				// leading dot (`.gen` holds derived art, and `.put-*` below is ours).
+				for (const part of [avatar, name]) {
+					if (!part || part.startsWith('.') || /[/\\]/.test(part)) {
+						throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'settings', 'agent.putAvatarFile')
+					}
+				}
+				const dir = `${paths.avatars}/${avatar}`
+				// A WRITE CLAIMS A STATE, NOT A FILENAME: after this, exactly one file holds the
+				// state `name` names — or none, for a delete. Replacing a pack's `pleased.webp` with
+				// a `pleased.png` must not leave two files claiming `pleased`, because then which one
+				// a reader saw would come down to directory order. The uniqueness a state needs is
+				// not the one a filesystem gives (it keeps `pleased.png` unique, not `pleased`), so
+				// it is enforced here, where the writes are.
+				//
+				// A STATE IS PUBLISHED AT ONE PATH — `pleased`, never `pleased.webp` — because the
+				// extension is the one part of the name that is a LOCAL choice: this browser encodes
+				// WebP, Safari falls back to PNG, and sync is last-writer-wins PER PATH. Two devices
+				// replacing the same state offline would otherwise land two files sync has no reason
+				// to reconcile, and every device would then resolve one of them and silently ignore
+				// the other user's replacement — forever. One state, one path, and LWW has something
+				// to converge on. Nothing is lost by dropping it: a file's format is read from its
+				// bytes (`imageType`), never from its name, and readers stem-match, so a pack's
+				// `pleased.webp` still resolves.
+				const state = fileStem(name)
+				// Order matters, and it is the one `Volume.writeFile` prescribes — with the sweep
+				// LAST, so the state the user is wearing outlives every step that can fail:
+				//
+				//   .put-<state>  a CREATE, therefore atomic, and invisible (dotted names are not
+				//                 states). Per state, so two hosts publishing different states at
+				//                 once cannot stage over each other.
+				//   mv            .put-<state> → <state>  (POSIX rename: replaces atomically)
+				//   rm            any OTHER file still claiming this state (a pack's `.webp`)
+				//
+				// A full volume, a storage error, a vanished staged entry: whatever fails, the old
+				// portrait is still there to resolve, because nothing is removed until the new bytes
+				// already ARE the state. A reader is never caught between the two either — old state
+				// or the whole new one, never a torn image and never a missing face — and in the
+				// window between the move and the sweep the extensionless name sorts FIRST among the
+				// claimants, so what a reader sees there is the art that just landed. The straight
+				// overwrite this replaces could promise neither: it is not atomic by design, and a
+				// same-name write is not a structural change, which is all a watcher hears.
+				//
+				// Nothing needs undoing on failure. The staged bytes are the only thing left behind,
+				// under a name no reader resolves, and the next attempt to publish this state writes
+				// straight over them.
+				const claimants = imageFileNames(await entries(vol, dir), state)
+				if (bytes) {
+					const staged = `${dir}/.put-${state}`
+					await writeTo(vol, staged, bytes)
+					await vol.rename(staged, `${dir}/${state}`)
+					for (const claimant of claimants) {
+						if (claimant !== state) await vol.rm(`${dir}/${claimant}`, { force: true })
+					}
+				} else {
+					for (const claimant of claimants) await vol.rm(`${dir}/${claimant}`, { force: true })
+				}
 			}),
 		'agent.readProfile': readProfile,
 		// A PATCH: only the fields passed change. The pane saves per field as you edit, so a

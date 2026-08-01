@@ -1,31 +1,16 @@
-import {
-	AGENT_DIR,
-	AVATAR_PATH,
-	avatarFaceHash,
-	parseAvatarFaceName
-} from '@justfiles/agent/defaults'
 import { sweepTrash } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
 
 export async function runDailyMaintenance(storage: Storage, volume: Volume): Promise<void> {
 	await sweepTrash(volume).catch(() => {})
-	await sweepAvatarFaces(volume).catch(() => {})
 	await storage.caps?.content?.gcUnreferenced().catch(() => {})
 }
 
-// Per-expression faces carry their source avatar's hash in the name (see
-// @justfiles/agent/defaults), so replacing `avatar.png` orphans the old set instead of
-// overwriting it. Drop the orphans: they are regenerated on demand, and a missing one
-// just falls back to the base avatar.
-async function sweepAvatarFaces(volume: Volume): Promise<void> {
-	if (!(await volume.exists(AGENT_DIR))) return
-	const current = (await volume.exists(AVATAR_PATH))
-		? await avatarFaceHash(await volume.readFile(AVATAR_PATH))
-		: null
-	for (const entry of await volume.readdir(AGENT_DIR)) {
-		const face = parseAvatarFaceName(entry.name)
-		if (!face || face.hash === current) continue
-		await volume.rm(`${AGENT_DIR}/${entry.name}`, { force: true }).catch(() => {})
-	}
-}
+// NO AVATAR SWEEP. Derived faces live in `<avatar>/.gen/<hash of resting>/`, so replacing an
+// avatar's resting file orphans one DIRECTORY — and the generator takes the siblings out
+// before it writes the current one (src/agent/faces.ts). Stale art is collected by the next
+// generation instead of by a scheduled job, which is what the authored/derived split buys:
+// worst case one orphan directory sits until the next expression tag, against a daily task
+// and a filename grammar we no longer have to parse. Installed avatars are NEVER pruned —
+// a pack, or the user's own photo, is their property.

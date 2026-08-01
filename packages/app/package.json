@@ -21,6 +21,7 @@
 		"./toolchain/worker": "./capabilities/devkit/toolchain.worker.ts",
 		"./devkit-runtime": "./capabilities/devkit/devkit-runtime.ts",
 		"./appstore": "./appstore.ts",
+		"./image-type": "./image-type.ts",
 		"./capabilities": "./capabilities/index.ts",
 		"./capabilities/email": "./capabilities/email/index.ts",
 		"./capabilities/calendar": "./capabilities/calendar/index.ts",

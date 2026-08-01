@@ -1,5 +1,6 @@
 import { hostname } from 'node:os'
 import { aiCapability, SOUL_GENERATION_PROMPT, text } from '@justfiles/agent'
+import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
@@ -119,6 +120,9 @@ export async function buildKernel(
 				agent: {
 					volume: fs,
 					paths: IDENTITY_PATHS,
+					// This Mac serves its own avatar list, built-ins included — the art is in the
+					// daemon's own bundle, so a picker here needs nothing from the cloud.
+					builtins: BUILTIN_AVATARS,
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
 						const backend = await resolveAgentBackend(fs, { secretCodec })
 						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')

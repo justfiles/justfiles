@@ -1,5 +1,5 @@
 import type { Volume } from '@justfiles/fs'
-import { agentDir, avatar, PROFILE, soul } from './paths.ts'
+import { agentDir, avatarsDir, PROFILE, soul } from './paths.ts'
 
 // The platform's agent is ONE companion across terminals (web + desktop): these are the
 // identity files it reads from the Volume, plus the sensible defaults it seeds so it works
@@ -11,9 +11,30 @@ import { agentDir, avatar, PROFILE, soul } from './paths.ts'
 //
 // The path constants are the PUBLIC spelling of package-internal paths.ts.
 export const SOUL_PATH = soul()
-export const AVATAR_PATH = avatar()
+export const AVATARS_DIR = avatarsDir()
 export const PROFILE_PATH = PROFILE
 export const AGENT_DIR = agentDir()
+
+/**
+ * One avatar's directory — the id IS the avatar (see paths.ts for the layout). A ref in the
+ * soul that is not `builtin/<id>` names one of these.
+ *
+ * Inside it: one file per STATE the avatar can be in, `resting` being the one it must have.
+ * The file IS the state — `resting`, with no extension, because an extension could only say
+ * which encoder the device that wrote it happened to have, and two devices answering that
+ * differently for one state is two files sync will keep. A `resting.png` from an artist's
+ * pack reads fine: the stem is the state, and nothing reads meaning into the rest. What a
+ * file's bytes ARE is answered by `imageType`, and WHICH file holds a state by
+ * `readImageFile`, both in `@justfiles/app/image-type` where every reader of one of these
+ * directories can reach them.
+ *
+ * A state is what a write CLAIMS, so at most one file may hold one: `agent.putAvatarFile`
+ * takes out every same-stem sibling as it publishes, whatever format that sibling was in.
+ * Readers sort anyway — not as a preference order, as a stable one — so a pair that arrived
+ * some other way (the Files app, a hand-made pack) resolves the same on every device, which
+ * raw `readdir` order does not: it is sorted on one backend and insertion-ordered on another.
+ */
+export const avatarDir = (id: string): string => `${AVATARS_DIR}/${id}`
 
 // The three identity files as ONE symbol, for a host that has to be told where they
 // live: `settings`' `agent.*` methods edit them, and that capability is in
@@ -21,26 +42,15 @@ export const AGENT_DIR = agentDir()
 // this keeps one definition of where a soul lives (see `settingsHost`'s `AgentDeps`).
 export const IDENTITY_PATHS = {
 	soul: SOUL_PATH,
-	avatar: AVATAR_PATH,
+	avatars: AVATARS_DIR,
 	profile: PROFILE_PATH
 } as const
 
-// Per-expression faces derived from `avatar.png` (see expression.ts). The source's content
-// hash is IN the name, so a new avatar can never resolve to an old face — the lookup simply
-// misses and the set regenerates. Stale files are swept by the host's daily maintenance.
-// Nothing seeds these: an absent face falls back to `AVATAR_PATH`, so the expression channel
-// degrades to one static face.
-export function avatarFacePath(expression: string, hash: string): string {
-	return `${AGENT_DIR}/avatar-${expression}@${hash}.png`
-}
-
-export function parseAvatarFaceName(name: string): { expression: string; hash: string } | null {
-	const match = /^avatar-([a-z]+)@([0-9a-f]+)\.png$/.exec(name)
-	if (!match?.[1] || !match[2]) return null
-	return { expression: match[1], hash: match[2] }
-}
-
-/** A face name's hash of the source avatar: the first 8 hex chars of its SHA-256. */
+/**
+ * The content hash that names an avatar's derived art: the first 8 hex chars of the resting
+ * file's SHA-256. It is IN the `.gen/<hash>/` path, so art derived from a replaced resting
+ * file can never be resolved as current — the lookup simply misses and the set regenerates.
+ */
 export async function avatarFaceHash(bytes: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer)
 	return [...new Uint8Array(digest).slice(0, 4)]

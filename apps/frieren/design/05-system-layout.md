@@ -34,10 +34,11 @@ Three smells:
 2. **`profiles/user.md`** is a plural directory wrapping exactly one file
    whose name adds nothing. A volume is one account's store (multi-user lives
    above the volume, via Switch User), so the human is volume-level.
-3. The summoning ritual (doc 4) is about to add `avatar.png` — a second loose
+3. The summoning ritual (doc 4) is about to add a face — a second loose
    agent-owned root file — and the workspace/per-app agent ideas (doc 2) would
    force a `agents/<id>/soul.md` convention that contradicts the root
-   `soul.md`.
+   `soul.md`. (Shipped as `agents/<id>/avatars/<avatar-id>/`: an avatar is a
+   directory, so a pack and an authored expression need no new concept — #357.)
 
 ## The layout
 
@@ -57,7 +58,9 @@ Three smells:
   agents/
     main/                  the overarching agent — reserved id, seeded at boot
       soul.md              persona (frontmatter + prose system prompt)
-      avatar.png           optional; the chosen face (doc 4)
+      avatars/<id>/        one avatar per directory: resting.png + a file per
+                           expression, `.gen/<hash>/` for model-derived art
+                           (the soul's `avatar:` names one, or `builtin/<id>`)
       sessions/            session state (already lives here)
     <future-id>/           a workspace/per-app agent — same shape, nothing special
   accounts/                user-level credentials (accounts capability)

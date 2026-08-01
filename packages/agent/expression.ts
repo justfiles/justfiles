@@ -39,9 +39,10 @@ export const EXPRESSION_PROMPT = [
 	'(`[pleased]`) so it survives as text.'
 ].join('\n')
 
-// One face's art direction. The image model is an editor: it gets `avatar.png` plus this
-// instruction, and must return the SAME character with a different expression. Framing and
-// palette have to be pinned or the six faces drift into six characters (probed against
+// One face's art direction. The image model is an editor: it gets the avatar's resting art
+// (`avatars/<id>/resting.*`) plus this instruction, and must return the SAME character with a
+// different expression. Framing and palette have to be pinned or the six faces drift into six
+// characters (probed against
 // google/gemini-3.1-flash-image — see scripts/probe-faces.mjs).
 const FACE_DIRECTION: Record<Expression, string> = {
 	thinking: 'a thinking expression: eyes looking up and away, mouth a small flat line',

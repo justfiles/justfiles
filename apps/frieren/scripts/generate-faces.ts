@@ -1,6 +1,6 @@
 // The built-in face matrix: `pnpm run faces`.
 //
-// Every archetype the personalize flow offers, in every expression the agent can tag,
+// Every built-in avatar the summoning offers, in every expression the agent can tag,
 // baked at build time and checked in — so a user who never uploads a photo has a full
 // expression set and the runtime image engine is never asked to derive one (worker/faces.ts
 // then only serves genuinely unknown art: an uploaded photo).
@@ -13,7 +13,7 @@
 //         └─[edit] "add a pencil…"         ─▶ art/bases/assistant.png   ┘ before stage two
 //                                    │
 //                                    ▼
-//        each base × EXPRESSIONS ─[edit facePrompt(e)]─▶ src/agent/faces/<variant>/<e>.png
+//        each base × EXPRESSIONS ─[edit facePrompt(e)]─▶ packages/agent/avatars/<id>/<e>.png
 //
 // The expression edit uses `facePrompt` from @justfiles/agent/expression — the SAME prompt
 // the runtime path sends for an uploaded avatar. One definition of "pleased", so a built-in
@@ -29,6 +29,7 @@
 //
 // Never runs in CI (it needs a key and it costs money). The checked-in output is the
 // product; faces.builtin.test.ts is what notices when it goes stale.
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,11 +45,16 @@ const MASCOT = path.join(root, 'art/mascot.svg')
 const art = readFileSync(MASCOT, 'utf8')
 const BASES = path.join(root, 'art/bases')
 const RAW = path.join(root, 'art/.raw')
-const OUT = path.join(root, 'src/agent/faces')
+// The art belongs to @justfiles/agent: BOTH hosts serve `agent.listAvatars` and the shell
+// renders the faces, so the one place all of them can import from is the package. The bake
+// step below turns the files into the module they actually import.
+const OUT = path.resolve(root, '../../packages/agent/avatars')
+const BAKE = path.join(dir, 'bake-avatars.ts')
 const SHEET = path.join(root, 'art/faces-sheet.png')
 
-// The engine edits at ~1024²; the shell only ever shows 256² (and `squarePng` normalises an
-// uploaded photo to the same square), so that is what ships.
+// The engine edits at ~1024²; the shell only ever shows 256² (and `squareImage` normalises an
+// uploaded photo to the same square), so that is what ships. PNG here by decision — the
+// bundled art is checked in for human review, and 256² palette PNG is 4 KB.
 const EDIT_SIZE = 1024
 const SIZE = 256
 // The same model the runtime path uses, so both stages of this and the lazy fallback agree.
@@ -65,7 +71,7 @@ const FLATTEN = true
 const RESTING = 'resting'
 const COLUMNS: readonly (typeof RESTING | Expression)[] = [RESTING, ...EXPRESSIONS]
 
-// The three archetypes the summoning ritual offers (AgentStep.tsx), plus the one a user who
+// The three natures the summoning offers (packages/app-settings), plus the one a user who
 // never personalised is already wearing. No gender variants: the character has no gender
 // signifiers to vary, and the accessory carries the archetype on its own.
 //
@@ -399,7 +405,7 @@ for (const variant of VARIANTS) {
 					)
 		writeFileSync(target, png)
 		written.push({ variant: variant.id, face, png })
-		console.log(`src/agent/faces/${variant.id}/${face}.png`)
+		console.log(`packages/agent/avatars/${variant.id}/${face}.png`)
 	}
 }
 
@@ -433,8 +439,13 @@ await sharp({ create: { width: sheetW, height: sheetH, channels: 3, background: 
 	.png()
 	.toFile(SHEET)
 
+// The PNGs are the art; `avatars.ts` is what every runtime can actually import (no bundler
+// reads a PNG the same way, and the app frame's CSP only allows `data:`). Baked here so the
+// two can never be committed out of step.
+execFileSync('node', [BAKE], { stdio: 'inherit' })
+
 console.log(
-	`\n${written.length} faces in src/agent/faces (${VARIANTS.length} variants x ${COLUMNS.length} faces)`
+	`\n${written.length} faces in packages/agent/avatars (${VARIANTS.length} variants x ${COLUMNS.length} faces)`
 )
 console.log(`${calls} engine calls, $${spent.toFixed(3)}`)
 console.log(`contact sheet: ${path.relative(root, SHEET)}`)
