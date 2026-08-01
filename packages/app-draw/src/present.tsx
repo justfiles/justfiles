@@ -127,7 +127,9 @@ export function Presenter({
 	// Presentation dressing, undone on exit: laser pointer, no frame outlines or
 	// names, and the pre-presentation viewport and tool restored. `image` would
 	// re-open the file picker and `custom` needs its customType, so those two fall
-	// back to the selection tool.
+	// back to the selection tool. `activeTool.locked` needs no handling: Excalidraw
+	// merges `locked: data.locked ?? state.activeTool.locked`, so the flag rides
+	// through the laser and back untouched.
 	useEffect(() => {
 		const { scrollX, scrollY, zoom, activeTool } = api.getAppState()
 		const was = (activeTool as { type?: string } | undefined)?.type
