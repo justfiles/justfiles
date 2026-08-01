@@ -554,11 +554,19 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		el?.setSelectionRange(0, 0)
 	}, [])
 
+	// One submission, however many times it is submitted. Enter REPEATS while held, and the
+	// Create row stays clickable until the buffer has cleared and the surface is dismissed —
+	// several frames later, because that clear is a write. Each continuation would then mint
+	// its own name through `claimPath`, so one intended note becomes `Kyoto` AND `Kyoto 2`
+	// (reproduced: two Enters in one tick made both). Dropped rather than queued: the second
+	// press is the same submission, not another note.
+	const creatingRef = useRef(false)
+
 	// Create a note called `title` in `dir`, and open it. Three callers: the search field's
 	// Create row, the tree's "New note", and the name field. The note is created EMPTY — its
 	// name is not repeated in its body (DESIGN.md §4), which is what makes our notes the same
 	// shape as an imported vault's.
-	const createNote = useCallback(
+	const createOnce = useCallback(
 		async (title: string, dir: string) => {
 			// Judged, not repaired — the same rule the name field keeps (DESIGN.md §4). Both
 			// surfaces that reach here take a name from a person who can see it, and `create`'s
@@ -599,6 +607,19 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			if (listing) void refresh()
 		},
 		[buf, settle, setDraft, createIn, liveDir, actions, focusBody, listing, refresh]
+	)
+
+	const createNote = useCallback(
+		async (title: string, dir: string) => {
+			if (creatingRef.current) return
+			creatingRef.current = true
+			try {
+				await createOnce(title, dir)
+			} finally {
+				creatingRef.current = false
+			}
+		},
+		[createOnce]
 	)
 
 	// A move can land somewhere other than asked (the name was taken) or be refused
