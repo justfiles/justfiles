@@ -84,8 +84,15 @@ export function NotesTree(props: NotesTreeProps) {
 	// is a fresh array. Key this on the SET's value (paths and kinds; an mtime is not
 	// the tree's business) so the reconcile effect below fires only when rows are
 	// truly added or removed, never on a plain selection.
+	//
+	// Every part is LENGTH-PREFIXED, so no two listings can spell the same key: a
+	// note's name may legally hold whatever a separator would be (`isCanonicalPath`
+	// forbids only `/`, `.`, `..` and empty segments — a newline is a fine filename,
+	// and an import preserves it), and a key that collides freezes the tree on a
+	// stale set. Cheaper than escaping, and the same one pass over the listing.
 	const query = props.query.trim()
-	const pathsKey = `${query}\n${props.entries.map((entry) => `${entry.type}:${entry.path}`).join('\n')}`
+	let pathsKey = `${query.length}:${query}`
+	for (const entry of props.entries) pathsKey += `${entry.type}${entry.path.length}:${entry.path}`
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — recompute only when the path set changes by value (pathsKey), not on every re-list of the same rows (see above).
 	const paths = useMemo(() => {
 		const files = props.entries.filter((entry) => entry.type === 'file')
