@@ -263,6 +263,13 @@ const strict = new TextDecoder('utf-8', { fatal: true })
  * (Latin-1), and `早起记录.md` arrives as `æ—©èµ·è®°å½•.md`. The bytes were right all
  * along, which is why the note's CONTENT is fine and only its name is not.
  *
+ * The flag itself is not available to ask: fflate consumes bit 11 while decoding the
+ * name and never exposes it on `UnzipFile`, and the two places that DO hold the answer
+ * cost more than they buy — a second header parser running beside fflate's (duplicated
+ * zip state machine, silently rotting), or the central directory at the archive's end,
+ * which means holding the whole archive in memory and is the one thing `readZip` exists
+ * to avoid. So the name is judged on what the two readings SAY (see `reread`).
+ *
  * ONLY for names that came out of an archive, which is why this is a seam of its own
  * and not part of `normalize`. A loose file's name was decoded by the OS, so it is
  * already the name the user has on disk — rereading that would rename `Ã©.md` to
@@ -273,10 +280,17 @@ const strict = new TextDecoder('utf-8', { fatal: true })
  */
 export const zipEntryName = (name: string) => name.split('/').map(reread).join('/')
 
-// When every character of a segment is a single byte AND those bytes spell valid
-// multi-byte UTF-8, the Latin-1 read above is what happened — so read them again
-// properly. Real Latin-1 text (or CP437, the other thing a zip may mean) essentially
-// never satisfies both, and when it doesn't the name is left exactly as it came.
+// A segment is reread only on EVIDENCE that the Latin-1 reading is impossible: its
+// characters must all be single bytes, those bytes must spell valid UTF-8, and the
+// result must say something Latin-1 cannot say — a character above U+00FF.
+//
+// That last test is what keeps the recovery honest. `Ã©.md` and `Â©.md` reread as
+// `é.md` and `©.md`, and BOTH readings are names Latin-1 can spell, so the archive
+// may well have meant exactly what it said (a correctly-flagged zip holding a file
+// whose name is mojibake on disk) — with no evidence either way, what the archive
+// said wins. `æ—©èµ·è®°å½•.md` rereads as `早起记录.md`, and a zip that meant Latin-1 (or
+// CP437) could not have named a file 早: the byte-per-character reading is not a
+// name anyone chose, so it was a mis-read.
 function reread(segment: string): string {
 	const bytes = new Uint8Array(segment.length)
 	let high = false
@@ -290,11 +304,16 @@ function reread(segment: string): string {
 	}
 	// Pure ASCII reads the same under every encoding a zip can mean.
 	if (!high) return segment
+	let text: string
 	try {
-		return strict.decode(bytes)
+		text = strict.decode(bytes)
 	} catch {
-		return segment
+		return segment // not UTF-8 at all: genuinely Latin-1, or CP437
 	}
+	for (const character of text) {
+		if ((character.codePointAt(0) ?? 0) > 0xff) return text
+	}
+	return segment
 }
 
 /**

@@ -144,11 +144,15 @@ test('a zip that forgot to flag its UTF-8 names still imports them readably', ()
 	expect(plan.files).toEqual([{ path: '日记/早起记录370.md', text: '# 早起' }])
 })
 
-test('a name that is genuinely Latin-1 is left exactly as the archive spelled it', () => {
-	// `Café.md` in Latin-1 is not valid UTF-8, so there is nothing to reread — and a name
-	// already decoded past Latin-1 (`日`) is evidence the unzipper got it right.
+test('a name both readings could spell is left exactly as the archive spelled it', () => {
+	// `Café.md` in Latin-1 is not valid UTF-8, so there is nothing to reread; a name
+	// already decoded past Latin-1 (`日`) is evidence the unzipper got it right; and
+	// `Ã©.md` WOULD reread — as `é.md`, a name Latin-1 can spell just as well, so there
+	// is no evidence the archive misspelled anything and what it said wins.
 	expect(zipEntryName('Café.md')).toBe('Café.md')
 	expect(zipEntryName('日.md')).toBe('日.md')
+	expect(zipEntryName('Ã©.md')).toBe('Ã©.md')
+	expect(zipEntryName('Â©.md')).toBe('Â©.md')
 })
 
 test('a LOOSE file keeps the name the OS gave it — only archives misspell', () => {
