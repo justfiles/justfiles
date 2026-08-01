@@ -1,4 +1,4 @@
-import type { ContextMenuItem, ContextMenuOpenContext } from '@pierre/trees'
+import type { ContextMenuItem, ContextMenuOpenContext, FileTreeBatchOperation } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -68,12 +68,20 @@ export function NotesTree(props: NotesTreeProps) {
 	// the paths we feed — not the tree's own search session. One search rule for
 	// both surfaces, and no session state to keep in sync. Folders are implied by
 	// their children, so a filtered view feeds matching notes only.
+	//
+	// `entries` is RE-LISTED on signals that say nothing about the tree's shape —
+	// opening a note re-lists so the recency order follows its mtime — and each scan
+	// is a fresh array. Key this on the SET's value (paths and kinds; an mtime is not
+	// the tree's business) so the reconcile effect below fires only when rows are
+	// truly added or removed, never on a plain selection.
+	const query = props.query.trim()
+	const pathsKey = `${query}\n${props.entries.map((entry) => `${entry.type}:${entry.path}`).join('\n')}`
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — recompute only when the path set changes by value (pathsKey), not on every re-list of the same rows (see above).
 	const paths = useMemo(() => {
-		const query = props.query.trim()
 		const files = props.entries.filter((entry) => entry.type === 'file')
 		if (query) return matchNotes(files, query).map((entry) => toTree(entry.path, false))
 		return props.entries.map((entry) => toTree(entry.path, entry.type === 'dir'))
-	}, [props.entries, props.query])
+	}, [pathsKey])
 
 	const { model } = useFileTree({
 		paths,
@@ -100,9 +108,19 @@ export function NotesTree(props: NotesTreeProps) {
 		}
 	})
 
+	// The model was built with the initial `paths`; every later change is applied
+	// INCREMENTALLY. `resetPaths` is a whole-tree rebuild that re-applies
+	// `initialExpansion: 'open'`, so it snaps every folder the user closed back open.
+	// A filtered view is the exception both ways: its matches have to be visible
+	// without hunting for folds, so entering or leaving a search does reset.
+	const previous = useRef<{ paths: string[]; query: string } | null>(null)
 	useEffect(() => {
-		model.resetPaths(paths)
-	}, [model, paths])
+		const prev = previous.current
+		previous.current = { paths, query }
+		if (!prev) return
+		if (query || prev.query) model.resetPaths(paths)
+		else applyPathDiff(model, prev.paths, paths)
+	}, [model, paths, query])
 
 	// Follow the open note when it changed elsewhere (search field, agent).
 	useEffect(() => {
@@ -167,6 +185,34 @@ export function NotesTree(props: NotesTreeProps) {
 			/>
 		</div>
 	)
+}
+
+// Reconcile the model from the `prev` path set to `next`. Folders are EXPLICIT
+// rows here (the listing carries them, empty ones included), so this is just the
+// set difference — no emptied-ancestor pruning, unlike a tree derived from file
+// paths alone. `getItem` guards each op because a drag is applied optimistically
+// by the model: the row can already sit where the new listing puts it, and
+// `add`/`remove` throw on a path that does (not) exist.
+function applyPathDiff(
+	model: ReturnType<typeof useFileTree>['model'],
+	prev: string[],
+	next: string[]
+) {
+	const prevSet = new Set(prev)
+	const nextSet = new Set(next)
+	const removed = prev.filter((path) => !nextSet.has(path))
+	const added = next.filter((path) => !prevSet.has(path))
+	const ops: FileTreeBatchOperation[] = []
+	for (const path of removed) {
+		// A recursive folder removal takes everything under it, so skip those rows.
+		const inRemovedDir = removed.some(
+			(other) => other !== path && other.endsWith('/') && path.startsWith(other)
+		)
+		if (inRemovedDir || !model.getItem(path)) continue
+		ops.push({ type: 'remove', path, recursive: path.endsWith('/') })
+	}
+	for (const path of added) if (!model.getItem(path)) ops.push({ type: 'add', path })
+	if (ops.length > 0) model.batch(ops)
 }
 
 // The menu is PORTALED out of the tree and pinned to the viewport at the
