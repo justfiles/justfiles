@@ -213,7 +213,8 @@ export function Omnibar({
 	// Community discovery (flag-gated; `catalog` is empty when off). Store rows are
 	// catalog apps not already installed; held-update rows are installed apps whose
 	// catalog version declares MORE access than what's installed (Step 4 held it).
-	// Both only appear while searching, alongside the app matches.
+	// Store rows appear while searching or browsing; held updates also lead the
+	// browse list and badge the store tile, since nothing else surfaces them.
 	const installedById = useMemo(() => new Map(apps.map((a) => [a.id, a])), [apps])
 	const installingById = useMemo(() => new Map(installing.map((a) => [a.id, a])), [installing])
 	// Catalog apps not already installed/installing — the discovery candidates,
@@ -222,9 +223,27 @@ export function Omnibar({
 		() => catalog.filter((a) => !installedById.has(a.id) && !installingById.has(a.id)),
 		[catalog, installedById, installingById]
 	)
-	// Browse holds while the input is empty; the list shows the not-installed
-	// catalog apps (or an all-installed empty state). The tile stays discoverable in
-	// the grid regardless, so the store is reachable even after installing them all.
+	// Every held update, regardless of the query: an installed app whose catalog
+	// version declares MORE access than what's installed, so reconcile skipped it
+	// pending re-consent. Auto-updates need no surface; these do, so they lead the
+	// store list and badge its tile — otherwise the only way to find one is to
+	// happen to type the app's name.
+	const held = useMemo(
+		() =>
+			catalog.filter((a) => {
+				const installed = installedById.get(a.id)
+				return (
+					!!installed &&
+					a.version !== installed.version &&
+					escalatesCapabilities(installed.capabilities, a.capabilities)
+				)
+			}),
+		[catalog, installedById]
+	)
+	// Browse holds while the input is empty; the list shows the held updates then the
+	// not-installed catalog apps (or an all-installed empty state). The tile stays
+	// discoverable in the grid regardless, so the store is reachable even after
+	// installing them all.
 	const browsing = browseStore && text === ''
 	const storeMatches = useMemo(
 		() =>
@@ -234,19 +253,8 @@ export function Omnibar({
 		[storeCandidates, text, browsing]
 	)
 	const heldUpdates = useMemo(
-		() =>
-			text === ''
-				? []
-				: catalog.filter((a) => {
-						const installed = installedById.get(a.id)
-						return (
-							!!installed &&
-							a.version !== installed.version &&
-							escalatesCapabilities(installed.capabilities, a.capabilities) &&
-							matchesQuery(text, a.name, a.id, a.description)
-						)
-					}),
-		[catalog, text, installedById]
+		() => (text === '' ? [] : held.filter((a) => matchesQuery(text, a.name, a.id, a.description))),
+		[held, text]
 	)
 	const [consent, setConsent] = useState<ConsentTarget | null>(null)
 	const [migrateOpen, setMigrateOpen] = useState(false)
@@ -257,14 +265,17 @@ export function Omnibar({
 	const rows = useMemo<Row[]>(
 		() =>
 			browsing
-				? storeMatches.map((app): Row => ({ kind: 'store', app }))
+				? [
+						...held.map((app): Row => ({ kind: 'update', app })),
+						...storeMatches.map((app): Row => ({ kind: 'store', app }))
+					]
 				: [
 						...storeMatches.map((app): Row => ({ kind: 'store', app })),
 						...heldUpdates.map((app): Row => ({ kind: 'update', app })),
 						...matches.map((app): Row => ({ kind: 'app', app })).reverse(),
 						{ kind: 'ask' }
 					],
-		[matches, storeMatches, heldUpdates, browsing]
+		[matches, storeMatches, held, heldUpdates, browsing]
 	)
 	// Default target: in browse mode the bottom row (nearest the input); otherwise
 	// the best app match when something matched, else "Ask Frieren".
@@ -748,11 +759,20 @@ export function Omnibar({
 									type="button"
 									className="frn-omnibar-tile"
 									data-store="true"
-									title="Browse the App Store"
+									title={
+										held.length === 1
+											? '1 app update needs your review'
+											: held.length
+												? `${held.length} app updates need your review`
+												: 'Browse the App Store'
+									}
 									onClick={() => setBrowseStore(true)}
 								>
 									<span className="frn-omnibar-icon">
 										<StorefrontIcon />
+										{held.length ? (
+											<span className="frn-omnibar-tile-badge">{held.length}</span>
+										) : null}
 									</span>
 									<span className="frn-omnibar-tile-name">App Store</span>
 								</button>

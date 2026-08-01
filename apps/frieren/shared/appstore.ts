@@ -19,6 +19,13 @@ export const CATALOG_PATH = '/appstore/catalog.json'
 export const COMMUNITY_CATALOG_SCHEMA = 'frieren/community-catalog/v1'
 export const COMMUNITY_CATALOG_PATH = '/store/catalog.json'
 
+// How often a long-lived tab re-checks the store: the update checkpoint (the
+// runtime's reconcile pass) and the catalog refetch behind the store UI. App
+// releases are rare and the indexer only runs hourly, so this is deliberately
+// slow — boot already covers the common case, and a failed update just waits for
+// the next checkpoint instead of queueing a retry.
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+
 export interface CommunityCatalogApp extends CatalogApp {
 	npm: string // npm package name; bytes resolve via jsDelivr
 	publisher: string // `npm:<username>`, shown on the consent sheet

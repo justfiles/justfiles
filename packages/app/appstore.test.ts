@@ -232,6 +232,40 @@ describe('reconcile', () => {
 		await reconcile(kernel, fs, store)
 		expect(installs).toEqual(['app.z', 'app.z']) // seeded, then updated via latest()
 	})
+
+	test('one failing app does not block the others, and retries next pass', async () => {
+		const { kernel, fs, installs } = fakeWorld()
+		const files = (id: string, version: string) => ({
+			'manifest.json': JSON.stringify({ id, name: id, version, app: 'app.js' }),
+			'app.js': `// ${id} ${version}`
+		})
+		await kernel.install(bundle(files('app.a', '1.0.0')))
+		await kernel.install(bundle(files('app.b', '1.0.0')))
+		installs.length = 0 // only count what reconcile does
+		const next = new Map(
+			await Promise.all(
+				['app.a', 'app.b'].map(
+					async (id) => [id, await catalogApp(id, files(id, '2.0.0'))] as const
+				)
+			)
+		)
+		let failing = true
+		const store: AppStore = {
+			builtins: async () => [],
+			latest: async (id) => next.get(id) ?? null,
+			read: async (app, path) => {
+				// app.a is unavailable on the first pass (CDN down); app.b is fine.
+				if (app.id === 'app.a' && failing) throw new Error('502')
+				return enc.encode(files(app.id, '2.0.0')[path] ?? '')
+			}
+		}
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.b']) // app.a failed, app.b still updated
+
+		failing = false
+		await reconcile(kernel, fs, store) // the next checkpoint IS the retry
+		expect(installs).toEqual(['app.b', 'app.a'])
+	})
 })
 
 describe('semverGte', () => {

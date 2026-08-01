@@ -1370,6 +1370,7 @@
 	text-overflow: ellipsis;
 }
 .frn-omnibar-icon {
+	position: relative; /* containing block for the tile spinner + update badge */
 	display: grid;
 	place-items: center;
 	width: 52px;
@@ -1412,6 +1413,23 @@
 	border: 2px solid color-mix(in srgb, var(--text) 25%, transparent);
 	border-top-color: var(--text);
 	animation: frn-spin 0.8s linear infinite;
+}
+/* Held-update count on the store tile: the only passive signal that an update is
+   waiting on re-consent (auto-updates need none). */
+.frn-omnibar-tile-badge {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 4px;
+	border-radius: 8px;
+	background: var(--focus);
+	color: var(--text);
+	font-size: 10px;
+	font-weight: 650;
+	line-height: 16px;
+	text-align: center;
 }
 /* Store-browse tile: the discovery entry point in the idle grid. Tinted with the
    accent so it reads as a destination, not another installed app. */

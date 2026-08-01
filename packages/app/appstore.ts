@@ -75,22 +75,30 @@ export async function materialise(kernel: Kernel, store: AppStore): Promise<void
 // catalog entry, any other app to the store's `latest(id)` (queried one id at a
 // time — the store is never enumerated). `decide` chooses repair/upgrade/skip;
 // reinstall is atomic (`kernel.install`) and idempotent, so launch/sweep/watcher
-// triggers can all run freely.
+// triggers can all run freely. Each app is isolated: a store that can't serve one
+// app (CDN down, tampered bytes, unreachable catalog) must not stop the rest of
+// the set from updating. A failure is left for the caller's next checkpoint to
+// retry — no retry queue, because installs are atomic (the app keeps working on
+// its current version) and the periodic check IS the retry.
 export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Promise<void> {
 	const installed = (await kernel.list()).map((m) => m.id)
 	const builtins = await store.builtins()
 	const builtinById = new Map(builtins.map((app) => [app.id, app]))
 	for (const id of installed) {
-		const app = builtinById.get(id) ?? (await store.latest(id))
-		if (!app) continue
-		const action = await decide(fs, app)
-		if (action === 'skip') continue
-		// Escalation guard: a non-builtin (re)install that declares more capabilities
-		// than the installed version is held (skipped) so re-consent can land first
-		// (Step 5). `escalates` is true only on real capability growth, so a same-
-		// version self-heal (caps unchanged) still proceeds. Built-ins are trusted.
-		if (!builtinById.has(id) && (await escalates(fs, app))) continue
-		await installApp(kernel, store, app)
+		try {
+			const app = builtinById.get(id) ?? (await store.latest(id))
+			if (!app) continue
+			const action = await decide(fs, app)
+			if (action === 'skip') continue
+			// Escalation guard: a non-builtin (re)install that declares more capabilities
+			// than the installed version is held (skipped) so re-consent can land first
+			// (Step 5). `escalates` is true only on real capability growth, so a same-
+			// version self-heal (caps unchanged) still proceeds. Built-ins are trusted.
+			if (!builtinById.has(id) && (await escalates(fs, app))) continue
+			await installApp(kernel, store, app)
+		} catch (e) {
+			console.warn(`appstore: update failed for ${id}`, e)
+		}
 	}
 }
 
