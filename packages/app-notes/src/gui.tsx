@@ -547,26 +547,30 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	// A move can land somewhere other than asked (the name was taken) or be refused
 	// outright (a folder into itself) — either way the user has to be told, and the
-	// tree, which moved the row optimistically, has to be put back.
+	// tree, which moved the row optimistically, has to be put back. Hence the
+	// boolean: it says whether the note is where the caller asked for it.
 	const moveNote = useCallback(
-		async (from: string, to: string) => {
+		async (from: string, to: string): Promise<boolean> => {
 			// The buffer lands at the OLD path first: a pending write afterwards would
 			// recreate what we just moved. If it cannot land, the move waits — the words
 			// matter more than the rename.
 			const held = buf.snapshot().path
 			if (held !== null && isUnder(held, from)) {
-				if (!(await settle())) return
+				if (!(await settle())) return false
 			}
+			let landed = false
 			try {
 				const { path } = await actions.rename({ from, to })
 				// The bytes did not change, only their address — so the buffer follows, and no
 				// re-read is needed when `openPath` catches up.
 				buf.moved(from, path)
 				if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
+				landed = path === to
 			} catch (error) {
 				setStatus(error instanceof Error ? error.message : String(error))
 			}
 			void refresh()
+			return landed
 		},
 		[actions, buf, settle, refresh]
 	)

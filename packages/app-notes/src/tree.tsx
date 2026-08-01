@@ -1,4 +1,4 @@
-import type { ContextMenuItem, ContextMenuOpenContext } from '@pierre/trees'
+import type { ContextMenuItem, ContextMenuOpenContext, FileTreeBatchOperation } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -34,8 +34,10 @@ export type NotesTreeProps = {
 	onSelectDir: (dir: string) => void
 	onCreate: (dir: string, title: string) => void
 	onMkdir: (path: string) => void
-	// Awaited: a multi-item drop is applied ONE AT A TIME (see `persistDrop`).
-	onRename: (from: string, to: string) => Promise<void>
+	// Awaited, and it answers: `false` means the note is NOT at `to` (the move was
+	// refused, or the name was taken and it landed deduped), which the drop path has
+	// to repair. A multi-item drop is applied ONE AT A TIME (see `persistDrop`).
+	onRename: (from: string, to: string) => Promise<boolean>
 	onRemove: (path: string) => void
 }
 
@@ -57,23 +59,52 @@ export function NotesTree(props: NotesTreeProps) {
 		target: { kind: 'directory' | 'root'; directoryPath: string | null }
 	) => {
 		const dir = target.kind === 'root' ? '/' : fromTree(target.directoryPath ?? '')
+		let landed = true
 		for (const dragged of draggedPaths) {
 			const from = fromTree(dragged)
 			const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
-			if (to !== from) await latest.current.onRename(from, to)
+			if (to !== from && !(await latest.current.onRename(from, to))) landed = false
 		}
+		// The model moved the rows ITSELF, before a byte was written. Where the disk did
+		// not end up agreeing, it now holds a row no listing will ever mention — and a
+		// listing that did not change cannot correct it, since a refused move changes
+		// nothing on disk. So put the model back to the last listing we fed it; if a
+		// newer one is on its way (a deduped name), the reconcile effect takes it from
+		// there.
+		if (!landed) model.resetPaths(fed.current.paths)
 	}
 
 	// Filtering is OUR matcher (the same one the dropdown ranks with), applied to
 	// the paths we feed — not the tree's own search session. One search rule for
 	// both surfaces, and no session state to keep in sync. Folders are implied by
 	// their children, so a filtered view feeds matching notes only.
+	//
+	// `entries` is RE-LISTED on signals that say nothing about the tree's shape —
+	// opening a note re-lists so the recency order follows its mtime — and each scan
+	// is a fresh array. Hence TWO gates, guarding two different things: the key is
+	// rebuilt only when a scan hands over a new array (identity), which keeps a walk
+	// of the whole vault off every editor keystroke — each one re-renders this
+	// component; the paths are rebuilt only when that key's VALUE differs (kinds and
+	// paths; an mtime is not the tree's business), which is what leaves the folds
+	// alone on a re-list that changed no rows.
+	//
+	// Every part is LENGTH-PREFIXED, so no two listings can spell the same key: a
+	// note's name may legally hold whatever a separator would be (`isCanonicalPath`
+	// forbids only `/`, `.`, `..` and empty segments — a newline is a fine filename,
+	// and an import preserves it), and a key that collides freezes the tree on a
+	// stale set. Cheaper than escaping, and the same one pass over the listing.
+	const query = props.query.trim()
+	const pathsKey = useMemo(() => {
+		let key = `${query.length}:${query}`
+		for (const entry of props.entries) key += `${entry.type}${entry.path.length}:${entry.path}`
+		return key
+	}, [props.entries, query])
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — recompute only when the path set changes by value (pathsKey), not on every re-list of the same rows (see above).
 	const paths = useMemo(() => {
-		const query = props.query.trim()
 		const files = props.entries.filter((entry) => entry.type === 'file')
 		if (query) return matchNotes(files, query).map((entry) => toTree(entry.path, false))
 		return props.entries.map((entry) => toTree(entry.path, entry.type === 'dir'))
-	}, [props.entries, props.query])
+	}, [pathsKey])
 
 	const { model } = useFileTree({
 		paths,
@@ -100,9 +131,21 @@ export function NotesTree(props: NotesTreeProps) {
 		}
 	})
 
+	// The model was built with the initial `paths`; every later change is applied
+	// INCREMENTALLY. `resetPaths` is a whole-tree rebuild that re-applies
+	// `initialExpansion: 'open'`, so it snaps every folder the user closed back open.
+	// A filtered view is the exception both ways: its matches have to be visible
+	// without hunting for folds, so entering or leaving a search does reset.
+	//
+	// `fed` is what the model was last TOLD to hold — seeded with the paths
+	// `useFileTree` built it from, so the first run reconciles nothing.
+	const fed = useRef({ paths, query })
 	useEffect(() => {
-		model.resetPaths(paths)
-	}, [model, paths])
+		const prev = fed.current
+		fed.current = { paths, query }
+		if (query || prev.query) model.resetPaths(paths)
+		else applyPathDiff(model, prev.paths, paths)
+	}, [model, paths, query])
 
 	// Follow the open note when it changed elsewhere (search field, agent).
 	useEffect(() => {
@@ -167,6 +210,43 @@ export function NotesTree(props: NotesTreeProps) {
 			/>
 		</div>
 	)
+}
+
+// Reconcile the model from the `prev` path set to `next`. Folders are EXPLICIT
+// rows here (the listing carries them, empty ones included), so this is just the
+// set difference — no emptied-ancestor pruning, unlike a tree derived from file
+// paths alone. `getItem` guards each op because a drop that WORKED is already in
+// the model: the listing then reports a move the model made itself, and both
+// halves of it must be skipped rather than thrown on (`add`/`remove` throw on a
+// path that does (not) exist).
+function applyPathDiff(
+	model: ReturnType<typeof useFileTree>['model'],
+	prev: string[],
+	next: string[]
+) {
+	const prevSet = new Set(prev)
+	const nextSet = new Set(next)
+	const removed = prev.filter((path) => !nextSet.has(path))
+	const added = next.filter((path) => !prevSet.has(path))
+	const ops: FileTreeBatchOperation[] = []
+	// A removed folder is taken out recursively, so every removed row UNDER one is
+	// already gone with it. Asked of each row's own ancestors — a handful of slices,
+	// however long the listing — rather than by rescanning `removed` per row: a
+	// 20k-note folder is one import away, and that scan would be quadratic.
+	const gone = new Set(removed)
+	const underRemovedDir = (path: string) => {
+		for (let cut = path.indexOf('/'); cut !== -1; cut = path.indexOf('/', cut + 1)) {
+			const dir = path.slice(0, cut + 1)
+			if (dir !== path && gone.has(dir)) return true
+		}
+		return false
+	}
+	for (const path of removed) {
+		if (underRemovedDir(path) || !model.getItem(path)) continue
+		ops.push({ type: 'remove', path, recursive: path.endsWith('/') })
+	}
+	for (const path of added) if (!model.getItem(path)) ops.push({ type: 'add', path })
+	if (ops.length > 0) model.batch(ops)
 }
 
 // The menu is PORTALED out of the tree and pinned to the viewport at the
