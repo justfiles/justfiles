@@ -34,8 +34,10 @@ export type NotesTreeProps = {
 	onSelectDir: (dir: string) => void
 	onCreate: (dir: string, title: string) => void
 	onMkdir: (path: string) => void
-	// Awaited: a multi-item drop is applied ONE AT A TIME (see `persistDrop`).
-	onRename: (from: string, to: string) => Promise<void>
+	// Awaited, and it answers: `false` means the note is NOT at `to` (the move was
+	// refused, or the name was taken and it landed deduped), which the drop path has
+	// to repair. A multi-item drop is applied ONE AT A TIME (see `persistDrop`).
+	onRename: (from: string, to: string) => Promise<boolean>
 	onRemove: (path: string) => void
 }
 
@@ -57,11 +59,19 @@ export function NotesTree(props: NotesTreeProps) {
 		target: { kind: 'directory' | 'root'; directoryPath: string | null }
 	) => {
 		const dir = target.kind === 'root' ? '/' : fromTree(target.directoryPath ?? '')
+		let landed = true
 		for (const dragged of draggedPaths) {
 			const from = fromTree(dragged)
 			const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
-			if (to !== from) await latest.current.onRename(from, to)
+			if (to !== from && !(await latest.current.onRename(from, to))) landed = false
 		}
+		// The model moved the rows ITSELF, before a byte was written. Where the disk did
+		// not end up agreeing, it now holds a row no listing will ever mention — and a
+		// listing that did not change cannot correct it, since a refused move changes
+		// nothing on disk. So put the model back to the last listing we fed it; if a
+		// newer one is on its way (a deduped name), the reconcile effect takes it from
+		// there.
+		if (!landed) model.resetPaths(fed.current.paths)
 	}
 
 	// Filtering is OUR matcher (the same one the dropdown ranks with), applied to
@@ -113,11 +123,13 @@ export function NotesTree(props: NotesTreeProps) {
 	// `initialExpansion: 'open'`, so it snaps every folder the user closed back open.
 	// A filtered view is the exception both ways: its matches have to be visible
 	// without hunting for folds, so entering or leaving a search does reset.
-	const previous = useRef<{ paths: string[]; query: string } | null>(null)
+	//
+	// `fed` is what the model was last TOLD to hold — seeded with the paths
+	// `useFileTree` built it from, so the first run reconciles nothing.
+	const fed = useRef({ paths, query })
 	useEffect(() => {
-		const prev = previous.current
-		previous.current = { paths, query }
-		if (!prev) return
+		const prev = fed.current
+		fed.current = { paths, query }
 		if (query || prev.query) model.resetPaths(paths)
 		else applyPathDiff(model, prev.paths, paths)
 	}, [model, paths, query])
@@ -190,9 +202,10 @@ export function NotesTree(props: NotesTreeProps) {
 // Reconcile the model from the `prev` path set to `next`. Folders are EXPLICIT
 // rows here (the listing carries them, empty ones included), so this is just the
 // set difference — no emptied-ancestor pruning, unlike a tree derived from file
-// paths alone. `getItem` guards each op because a drag is applied optimistically
-// by the model: the row can already sit where the new listing puts it, and
-// `add`/`remove` throw on a path that does (not) exist.
+// paths alone. `getItem` guards each op because a drop that WORKED is already in
+// the model: the listing then reports a move the model made itself, and both
+// halves of it must be skipped rather than thrown on (`add`/`remove` throw on a
+// path that does (not) exist).
 function applyPathDiff(
 	model: ReturnType<typeof useFileTree>['model'],
 	prev: string[],
