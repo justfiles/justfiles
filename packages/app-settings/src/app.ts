@@ -251,10 +251,12 @@ export const app = defineApp({
 		// the soul was written from (the host preserves it; see the capability's contract).
 		saveSoul: p.procedure({
 			description: "Write the agent's name, gender and soul to the volume.",
+			// A PATCH: only what is passed is written (the host merges). The sheet edits one
+			// field at a time, so an unfinished soul edit must not ride along with a rename.
 			schema: v.object({
-				name: v.pipe(v.string(), v.trim(), v.minLength(1)),
-				gender: genderSchema,
-				body: v.pipe(v.string(), v.trim(), v.minLength(1)),
+				name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+				gender: v.optional(genderSchema),
+				body: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
 				archetype: v.optional(v.string())
 			}),
 			async run(input, app) {

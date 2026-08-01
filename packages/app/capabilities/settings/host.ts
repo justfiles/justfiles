@@ -294,25 +294,25 @@ function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps)
 	}
 	return {
 		'agent.readSoul': readSoul,
-		'agent.writeSoul': ({ name, gender: sex, body, archetype }) =>
+		'agent.writeSoul': (patch) =>
 			serial(async () => {
 				const current = await readSoul()
 				// The archetype (and the art it points at) is the summoning's to set: a plain
 				// write preserves what was recorded, because the prose is the character now.
-				const seed = archetype ?? current.archetype
-				const variant = archetype ?? current.avatarVariant
+				const seed = patch.archetype ?? current.archetype
+				const variant = patch.archetype ?? current.avatarVariant
 				await writeTo(
 					vol,
 					paths.soul,
 					serialize(
 						[
 							['schema', 'frieren/agent-soul/v1'],
-							['agent_name', name],
-							['agent_gender', sex],
+							['agent_name', patch.name ?? current.name],
+							['agent_gender', patch.gender ?? current.gender],
 							['archetype', seed],
 							['avatar_variant', variant]
 						],
-						body
+						patch.body ?? current.body
 					)
 				)
 			}),

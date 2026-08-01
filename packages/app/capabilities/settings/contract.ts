@@ -138,10 +138,13 @@ export interface SettingsCapability {
 	// written: a returning user has prose, and prose — not a seed word — is the character.
 	// Passing an archetype also re-points the built-in face to that archetype's art;
 	// an uploaded photo still wins (see `writeAvatar`).
+	// A PATCH, like `writeProfile`: only the fields present are written. The pane edits one
+	// thing at a time (a rename, a gender, the prose when you press Done), and an unfinished
+	// edit of one must never ride along with a save of another.
 	'agent.writeSoul'(input: {
-		name: string
-		gender: 'female' | 'male'
-		body: string
+		name?: string
+		gender?: 'female' | 'male'
+		body?: string
 		archetype?: string
 	}): Promise<void>
 	// The chosen face, as bytes, or null while the built-in art is worn.

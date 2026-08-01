@@ -498,20 +498,22 @@ function CharacterSheet({
 	const writing = drafting.writing
 
 	// The volume is the truth: a sync (or a rewrite) replaces what is on screen unless the
-	// user is mid-edit, in which case their draft stands until they press Done.
+	// user is mid-edit, in which case their draft stands until they are done. BOTH fields
+	// need that guard — `soul` is a fresh object on every state push, whatever changed, so
+	// an avatar write or a usage load lands here too and would type over them.
+	const typing = useRef(false)
 	useEffect(() => {
 		if (!editing) setBody(soul.body)
-		setName(soul.name)
+		if (!typing.current) setName(soul.name)
 	}, [soul, editing])
 
+	// Only what changed is sent; the host merges. Passing the whole sheet would write the
+	// soul editor's unfinished text — the one the footer still says "Press Done to write" —
+	// every time the name or the gender was saved.
 	const save = async (patch: { name?: string; gender?: Gender; body?: string }, flash = true) => {
 		setBusy(true)
 		try {
-			await client.saveSoul({
-				name: patch.name ?? name,
-				gender: patch.gender ?? gender,
-				body: patch.body ?? body
-			})
+			await client.saveSoul(patch)
 			if (flash) {
 				setSaved(true)
 				setTimeout(() => setSaved(false), 1200)
@@ -577,8 +579,12 @@ function CharacterSheet({
 						className="agent-name"
 						value={name}
 						aria-label="Name"
+						onFocus={() => {
+							typing.current = true
+						}}
 						onChange={(event) => setName(event.target.value)}
 						onBlur={() => {
+							typing.current = false
 							if (name.trim() && name !== soul.name) void save({ name: name.trim() })
 						}}
 					/>

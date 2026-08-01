@@ -387,6 +387,30 @@ test('the archetype is the summoning to set and everyone else to preserve', asyn
 	})
 })
 
+test('a soul write is a patch: a rename never carries an unfinished edit with it', async () => {
+	// The sheet edits one field at a time — a rename saves on blur, the prose only when you
+	// press Done — so a write that carried the whole sheet would commit the editor's
+	// unfinished text every time the name or the gender was saved.
+	const { caps } = agentHost()
+	await caps.invoke(
+		call('agent.writeSoul', {
+			name: 'Fern',
+			gender: 'female',
+			body: 'You are Fern.',
+			archetype: 'companion'
+		})
+	)
+	await caps.invoke(call('agent.writeSoul', { name: 'Frieren' }))
+	expect(await caps.invoke(call('agent.readSoul'))).toEqual({
+		name: 'Frieren',
+		gender: 'female',
+		archetype: 'companion',
+		avatarVariant: 'companion',
+		body: 'You are Fern.',
+		seeded: false
+	})
+})
+
 test('agent.writeAvatar stores bytes; null drops back to the built-in art', async () => {
 	const { vol, caps } = agentHost()
 	const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3])
