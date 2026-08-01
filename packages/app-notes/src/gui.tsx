@@ -586,25 +586,31 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	// A move can land somewhere other than asked (the name was taken) or be refused
 	// outright (a folder into itself) — either way the user has to be told, and the
-	// tree, which moved the row optimistically, has to be put back. Hence the
-	// boolean: it says whether the note is where the caller asked for it.
+	// tree, which moved the row optimistically, has to be put back.
+	//
+	// Answers WHERE the note ended up, or `null` if it did not move. Not a boolean: its two
+	// callers ask different questions of that one fact, and a DEDUPED move answers them
+	// oppositely. The tree needs "is it at `to`" — its optimistic row is wrong if it is not —
+	// while the name field needs "did it move at all", because a note that landed at
+	// `Kyoto 2` has still been renamed, and the field reads its name from the buffer, so it
+	// shows wherever it went. A single boolean could only have lied to one of them.
 	const moveNote = useCallback(
-		async (from: string, to: string): Promise<boolean> => {
+		async (from: string, to: string): Promise<string | null> => {
 			// The buffer lands at the OLD path first: a pending write afterwards would
 			// recreate what we just moved. If it cannot land, the move waits — the words
 			// matter more than the rename.
 			const held = buf.snapshot().path
 			if (held !== null && isUnder(held, from)) {
-				if (!(await settle())) return false
+				if (!(await settle())) return null
 			}
-			let landed = false
+			let landed: string | null = null
 			try {
 				const { path } = await actions.rename({ from, to })
 				// The bytes did not change, only their address — so the buffer follows, and no
 				// re-read is needed when `openPath` catches up.
 				buf.moved(from, path)
 				if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
-				landed = path === to
+				landed = path
 			} catch (error) {
 				setStatus(error instanceof Error ? error.message : String(error))
 			}
@@ -622,10 +628,21 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const blank = buffer.path === null && buffer.text === ''
 	const noteName = buffer.path !== null ? noteTitle(buffer.path) : blank ? '' : nameRef.current
 
-	// Where the name field lands. `keep` is Enter — stay in the field and show the problem,
-	// because that is where the user is and what they are about to fix — versus blur, which
-	// reverts to the real name and explains itself in the status line: fighting a click for
-	// focus is worse than losing a name that was never applied.
+	// Where the name field lands, and whether it landed. Three answers, not two, because a
+	// name can fail in two unrelated ways:
+	//
+	//   • REFUSED — the name itself is unusable (illegal, or taken). Nothing was attempted, so
+	//     the draft is a mistake to fix: Enter keeps it in the field with the reason under it,
+	//     while a blur reverts (fighting a click for focus is worse than dropping a name that
+	//     was never applied) and says so in the status line.
+	//   • DID NOT LAND — the name is fine and the volume would not cooperate (a pending body
+	//     save that will not settle, a rename that threw). The draft is then the only record of
+	//     what the user wanted, so it STAYS — the same rule the buffer machine keeps for bytes:
+	//     a write that did not land leaves what it was carrying exactly where it was. The
+	//     status line carries the volume's own words; the field is not marked invalid, because
+	//     nothing is wrong with the name.
+	//
+	// So the draft is cleared only once the rename (or the recreation) is really on disk.
 	const commitTitle = useCallback(
 		async (raw: string, keep: boolean): Promise<boolean> => {
 			const held = buf.snapshot().path
@@ -665,17 +682,23 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				setStatus(problem)
 				return false
 			}
-			revert()
 			// A note that exists is RENAMED — through the same `rename` the tree and the agent
 			// use, so the extension rule and the no-overwrite rule cannot disagree. One that does
 			// not exist is a buffer whose note was deleted under it: naming it only says where the
-			// words should land, and the settle is what lands them.
-			if (held !== null) await moveNote(held, target)
+			// words should land, and the settle is what lands them. `nameRef` is set BEFORE that
+			// settle (it is where the create reads the name) and stays set if it fails, so the
+			// retry uses the name the user chose.
+			let landed: boolean
+			// `moveNote` answers with the path, which is more than this needs: a note deduped to
+			// `Kyoto 2` HAS been renamed, and the field will show that name because it reads it
+			// from the buffer. Only "it did not move at all" keeps the draft.
+			if (held !== null) landed = (await moveNote(held, target)) !== null
 			else {
 				nameRef.current = clean
-				await settle()
+				landed = await settle()
 			}
-			return true
+			if (landed) revert()
+			return landed
 		},
 		[buf, noteName, entries, setDraft, moveNote, settle]
 	)

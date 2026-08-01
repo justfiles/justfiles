@@ -112,11 +112,11 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | Action | Kind | Audience | Meaning |
 |----|----|----|----|
 | `open({ path })` | edge | both | **The** coordinating action — put a note in front of the user |
-| `newNote({})` | edge | both | Blank scratch |
+| `newNote({})` | edge | both | Close the open note (empty editor) |
 | `save({ path, text })` | edge → `t.cmd` | both | Overwrite a body (the GUI's debounced autosave) |
 | `rename({ from, to })` | procedure | both | Rename **is** move: retitle, drag into a folder, or move a whole folder. An occupied destination is deduped, never overwritten; returns where it landed |
 | `list({})` | procedure | both | Fresh recursive listing: every note + every folder, newest first |
-| `create({ text, dir? })` | procedure | both | New note; filename from the first line, `dir` defaults to `/` |
+| `create({ title, text?, dir? })` | procedure | both | New note **named** `title`; `text` is the body (empty by default — the title is not repeated in it), `dir` defaults to `/` |
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
 | `readNote({ path })` | procedure | both | Body as text |
 | `importNotes({ dir?, files })` | procedure | both | Bulk write, relative to `dir` (default `/`); merges folders, numbers a clashing note rather than overwriting — the vault-import half (§9) |
