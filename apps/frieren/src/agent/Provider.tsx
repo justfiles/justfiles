@@ -39,13 +39,21 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		personalized: false
 	})
 
+	// Only the newest read may paint. Binding writes `soul.md` and then clears `avatar.png`,
+	// so the watch fires twice and two reads overlap — and the FIRST one is the slow one: it
+	// still sees the photo and goes on to load its expression faces, while the second finds
+	// the photo gone and has the built-in set in hand already. Landing in that order would
+	// put the deleted photo back on the shell until some later identity event.
+	const reading = useRef(0)
 	const refreshIdentity = useCallback(async () => {
+		const mine = ++reading.current
 		const volume = await openProfile()
 		const soul = await readAgentSoul(volume)
 		// `avatar.png` exists only when the user uploaded their own photo; a built-in variant is
 		// a word in the soul, so it costs no bytes and rides along with the identity file.
 		const avatar = await readAvatar(volume)
 		const builtin = builtinFaces(soul?.frontmatter.avatar_variant)
+		if (mine !== reading.current) return
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
 			avatarUrl: avatar?.url ?? builtin.url,

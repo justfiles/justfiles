@@ -892,6 +892,12 @@ function Summoning({
 										// effect above reads as "already picked" and would bounce straight
 										// back here with.
 										setArchetype(null)
+										// And the prose goes with it. It was written for the nature being
+										// left, and if the next draft fails the review step comes back with
+										// whatever is here — which must not be the old nature's soul sitting
+										// under the new nature's name, one Bind away from the volume.
+										setBody('')
+										setFirstWords(null)
 										setStep('nature')
 									}}
 								>
