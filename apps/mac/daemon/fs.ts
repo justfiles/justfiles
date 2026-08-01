@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { ensureAgentDefaults, readAgentName } from '@justfiles/agent/defaults'
+import { ensureAgentDefaults } from '@justfiles/agent/defaults'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 
@@ -35,11 +35,6 @@ export function getVolume(): Promise<Volume> {
 		return vol
 	})()
 	return volumeOnce
-}
-
-/** What the agent is called on this Mac: the soul's name, or the seeded default. */
-export async function agentName(): Promise<string> {
-	return readAgentName(await getVolume())
 }
 
 export async function writeRuntime(runtime: Runtime): Promise<void> {

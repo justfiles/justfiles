@@ -437,6 +437,37 @@ test('agent.generateSoul is a preview: it reads the user from the volume and wri
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({ seeded: true })
 })
 
+test('an age is counted in the calendar the user typed, not in UTC', async () => {
+	// `new Date('YYYY-MM-DD')` is UTC midnight, which reads as the day BEFORE west of UTC —
+	// so a birthday one day away used to count itself as already past. Run it in a zone
+	// where that is true, with a birth date built from local today so it holds any day.
+	const tz = process.env.TZ
+	process.env.TZ = 'America/Los_Angeles'
+	try {
+		const now = new Date()
+		const tomorrow = new Date(now)
+		tomorrow.setDate(now.getDate() + 1)
+		const pad = (n: number) => String(n).padStart(2, '0')
+		const birthDate = `${now.getFullYear() - 30}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}`
+
+		const seen: { userAge?: number }[] = []
+		const { caps } = agentHost({
+			generateSoul: async (input) => {
+				seen.push(input)
+				return { body: 'A drafted soul.' }
+			}
+		})
+		await caps.invoke(call('agent.writeProfile', { name: 'X', birthDate, gender: 'male' }))
+		await caps.invoke(
+			call('agent.generateSoul', { name: 'Fern', gender: 'female', archetype: 'companion' })
+		)
+		// Their birthday has not happened yet, whatever UTC thinks of that date.
+		expect(seen[0]?.userAge).toBe(29)
+	} finally {
+		process.env.TZ = tz
+	}
+})
+
 test('no generator is UNAVAILABLE (a mac-shaped host), and the Volume methods still work', async () => {
 	const { caps } = agentHost()
 	await expect(

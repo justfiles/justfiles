@@ -239,14 +239,16 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 	await vol.writeFile(path, bytes)
 }
 
+// The stored `YYYY-MM-DD` is a CALENDAR DATE, not an instant, so it never goes through
+// `new Date(...)`: that parses it as UTC midnight, and reading it back with local getters
+// lands on the day before anywhere west of UTC — a birthday would tick over a day early.
+// Compare the three numbers the user typed against today's three, in their calendar.
 function age(birthDate: string): number | undefined {
-	const birth = new Date(birthDate)
-	if (!birthDate || Number.isNaN(birth.getTime())) return undefined
+	const [year, month, day] = birthDate.split('-').map(Number)
+	if (!year || !month || !day) return undefined
 	const now = new Date()
-	const years = now.getFullYear() - birth.getFullYear()
-	const before =
-		now.getMonth() < birth.getMonth() ||
-		(now.getMonth() === birth.getMonth() && now.getDate() < birth.getDate())
+	const years = now.getFullYear() - year
+	const before = now.getMonth() + 1 < month || (now.getMonth() + 1 === month && now.getDate() < day)
 	return before ? years - 1 : years
 }
 

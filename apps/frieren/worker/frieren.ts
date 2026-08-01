@@ -435,7 +435,6 @@ export class Frieren extends DurableObject<Env> {
 		// the built-in AI → the platform env backend; nothing enabled → no backend, so a turn
 		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
 		// turn, so toggling AI in Settings takes effect on the next prompt.
-		const agentName = await readAgentName(this.vol)
 		// Capability-provided agent tools (Step 3.5): expose `image` to the agent when
 		// the platform has an image engine (local LM Studio dev has none). Availability
 		// still resolves per call through the active-AI account.
@@ -467,8 +466,7 @@ export class Frieren extends DurableObject<Env> {
 			notify: (notification) => this.broadcast({ type: 'notification', notification }),
 			// The avatar's expression channel: the agent tags each sentence, the client strips the
 			// tags off the token stream and swaps the face (see @justfiles/agent/expression).
-			expressions: true,
-			title: agentName
+			expressions: true
 		})
 		// Surface classified turn errors to every open tab (the raw stream carries the tokens;
 		// this carries the failure body and resets the client's streaming flag).

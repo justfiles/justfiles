@@ -1,7 +1,14 @@
 import type { Client } from '@justfiles/app'
 import { injectStyle } from '@justfiles/app/browser'
 import { type ChangeEvent, type DragEvent, useEffect, useRef, useState } from 'react'
-import { isBound, nameInSoul, type SettingsApp, type SettingsState } from './app.ts'
+import {
+	type DraftRequest,
+	isBound,
+	nameInSoul,
+	type SettingsApp,
+	type SettingsState,
+	summoning
+} from './app.ts'
 import { ARCHETYPES, archetypeOf, faceOf, SPIRIT_ART } from './archetypes.ts'
 import { pngUrl, squarePng } from './squarePng.ts'
 
@@ -274,28 +281,38 @@ export function AgentPane({
 	state: SettingsState
 	client: Client<SettingsApp>
 }) {
+	// Opening the ritual is GUI-local on purpose: re-entering it destroys nothing, and the
+	// write only happens at Bind — so there is no "unbind" method and no confirmation for a
+	// step that has not touched the volume. It is NOT the only way to be in the ritual
+	// though: a summoning's draft in state means one is under way and this pane was
+	// unmounted (Accounts, and back) while the model wrote, so `resume` carries it home.
 	const [resummon, setResummon] = useState(false)
-	// A proposal outliving its context is `guiStarted`'s to clear, NOT this component's:
-	// switching to Accounts unmounts this pane, so discarding on mount here threw away a
-	// draft the user had merely stepped away from — including one that finished while
-	// they were looking at another pane.
+	const resume = summoning(state)
 
 	// `soul` is null only before the first read lands.
 	if (!state.soul) return <p className="settings-muted">Loading…</p>
-	// "Summon again" is GUI-local on purpose: re-entering the ritual destroys nothing, and
-	// the write only happens at Bind — so there is no "unbind" method and no confirmation
-	// for a step that has not touched the volume.
-	if (resummon || !isBound(state.soul))
+	if (resummon || resume || !isBound(state.soul))
 		return (
 			<Summoning
 				state={state}
 				client={client}
-				from={resummon ? state.soul : null}
+				resume={resume}
+				// The soul being replaced — the ritual opens on their name and says whose soul
+				// this ends. Null while unbound: there is no one to replace yet.
+				from={isBound(state.soul) ? state.soul : null}
 				// Bind wrote them to the volume, so the ritual is over: leave it, or this pane
 				// would keep showing the review step of an agent who now has a character sheet.
-				// (A first summoning needs no help — `isBound` flips when the soul reloads.)
 				onBound={() => setResummon(false)}
-				onCancel={resummon ? () => setResummon(false) : undefined}
+				// Backing out is only offered when there is someone to back out TO, and it drops
+				// the draft — otherwise `resume` would walk straight back in.
+				onCancel={
+					isBound(state.soul)
+						? () => {
+								void client.discardDraft({})
+								setResummon(false)
+							}
+						: undefined
+				}
 			/>
 		)
 	return (
@@ -374,19 +391,14 @@ function CharacterSheet({
 				gender,
 				// A rewrite reuses the recorded seed — the pane offers no way to change it.
 				archetype: soul.archetype ?? 'companion',
-				for: 'rewrite'
+				for: 'rewrite' as const
 			})
 			.catch(() => {})
 
-	// ONLY a rewrite is this pane's to show: a summoning's draft is prose for an agent who
-	// does not exist yet, and "Use this" would save it under the current name and nature.
-	const proposal = state.proposal?.for === 'rewrite' ? state.proposal.soul : null
-	// And if a ritual's draft is what is sitting there, the ritual is gone — the pane switch
-	// that unmounted it took the name, the nature and the photo with it, so there is nothing
-	// to resume it with and nothing this pane may do with the prose.
-	useEffect(() => {
-		if (state.proposal?.for === 'summoning') void client.discardProposal({})
-	}, [state.proposal, client])
+	// ONLY a rewrite is this pane's to show. A summoning's draft never reaches here — the
+	// pane routes to the ritual on exactly that — and if it ever did, "Use this" would save
+	// prose written for someone else under the current name and nature.
+	const proposal = state.proposal?.request.for === 'rewrite' ? state.proposal.soul : null
 
 	return (
 		<div className="settings-pane">
@@ -534,7 +546,7 @@ function CharacterSheet({
 							<button
 								type="button"
 								className="settings-small-button"
-								onClick={() => void client.discardProposal({})}
+								onClick={() => void client.discardDraft({})}
 							>
 								Discard
 							</button>
@@ -593,6 +605,7 @@ function Summoning({
 	state,
 	client,
 	from,
+	resume,
 	onBound,
 	onCancel
 }: {
@@ -601,23 +614,24 @@ function Summoning({
 	// The soul being replaced, when this is "summon again": the ritual starts from the name
 	// they already have rather than from nothing.
 	from: SettingsState['soul']
+	// A summoning already under way, as the draft in state recorded it. This is how the
+	// ritual comes back after the pane was unmounted mid-question: the answer is on its way
+	// (or already here) and the question came with it, so nothing has to be asked twice.
+	// Only the photo cannot be restored — it is bytes, and bytes never enter state.
+	resume: DraftRequest | null
 	// Bind has written them: the ritual is over and the pane must move on.
 	onBound: () => void
 	onCancel?: () => void
 }) {
-	const [step, setStep] = useState<'name' | 'nature' | 'review'>('name')
-	const [name, setName] = useState(from?.name ?? '')
-	const [gender, setGender] = useState<Gender>(from?.gender ?? 'female')
-	const [archetype, setArchetype] = useState<string | null>(null)
+	// Resumed, the ritual reopens on the nature step — where it was when it asked — and the
+	// draft's arrival moves it to review, exactly as it would have.
+	const [step, setStep] = useState<'name' | 'nature' | 'review'>(resume ? 'nature' : 'name')
+	const [name, setName] = useState(resume?.name ?? from?.name ?? '')
+	const [gender, setGender] = useState<Gender>(resume?.gender ?? from?.gender ?? 'female')
+	const [archetype, setArchetype] = useState<string | null>(resume?.archetype ?? null)
 	const [photo, setPhoto] = useState<{ bytes: Uint8Array<ArrayBuffer>; url: string } | null>(null)
 	const [body, setBody] = useState('')
 	const [busy, setBusy] = useState(false)
-	// Whether THIS run of the ritual asked for the draft in state. `for` keeps the sheet's
-	// Rewrite out; this keeps out a summoning draft of its own that outlived the ritual
-	// that ordered it (a pane switch unmounts this component and takes the name, the
-	// nature and the photo with it) — adopting that would open the review step with prose
-	// and no name, which Bind refuses and no step goes back to.
-	const [asked, setAsked] = useState(false)
 	const nature = archetypeOf(archetype)
 	// A draft is being waited for. Whose it is, is decided by its token when it lands.
 	const writing = state.draft !== null
@@ -627,11 +641,11 @@ function Summoning({
 	// shared with the character sheet's Rewrite, and prose for the agent being REPLACED
 	// would skip the name and the nature and then bind under the old archetype.
 	useEffect(() => {
-		if (asked && state.proposal?.for === 'summoning') {
+		if (state.proposal?.request.for === 'summoning') {
 			setBody(state.proposal.soul.body)
 			setStep('review')
 		}
-	}, [asked, state.proposal])
+	}, [state.proposal])
 
 	// A draft that is not coming must never strand the ritual on the picker, where the only
 	// affordance is to ask again. Two ways that happens: no generator at all (a signed-out
@@ -639,19 +653,18 @@ function Summoning({
 	// call that simply failed (offline, an upstream 500). Either way the nature is picked
 	// and the soul is a file you can write yourself, so go where the editor is — the review
 	// step also carries "Write it again", so nothing is lost by arriving early.
-	// (`generateSoul` clears `error` as it starts, so an error standing with nothing in
-	// flight, after we asked, is our attempt's.)
+	// (A picked nature means a draft was asked for, and `generateSoul` clears `error` as it
+	// starts — so an error standing with nothing in flight is that attempt's.)
 	useEffect(() => {
 		if (!archetype) return
-		if (!state.canGenerate || (asked && state.error && !writing)) setStep('review')
-	}, [archetype, asked, state.canGenerate, state.error, writing])
+		if (!state.canGenerate || (state.error && !writing)) setStep('review')
+	}, [archetype, state.canGenerate, state.error, writing])
 
 	// `for: 'summoning'` is what makes the answer ours to show. Nothing is awaited and
 	// nothing is caught: the procedure folds its own outcome — the soul, or why it never
 	// came — into state under a token, which is also what keeps a slow answer from landing
 	// on a later question.
 	const draft = (seed: string) => {
-		setAsked(true)
 		client
 			.generateSoul({ name: name.trim(), gender, archetype: seed, for: 'summoning' })
 			.catch(() => {})
@@ -811,7 +824,7 @@ function Summoning({
 									/>
 								</div>
 							</div>
-							{state.proposal?.for === 'summoning' && state.proposal.soul.firstWords ? (
+							{state.proposal?.request.for === 'summoning' && state.proposal.soul.firstWords ? (
 								<div className="agent-bubble">
 									<small>{name.trim()} · first words</small>
 									{state.proposal.soul.firstWords}
