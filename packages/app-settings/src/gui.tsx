@@ -8,7 +8,7 @@ import type {
 } from '@justfiles/app/capabilities/settings'
 import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AgentPane, useAvatar } from './agent-pane.tsx'
+import { AgentPane, useAvatar, useDrafting } from './agent-pane.tsx'
 import {
 	type Category,
 	hasBothOrigins,
@@ -153,12 +153,14 @@ const CAP_LABEL: Record<CapabilityId, string> = {
 }
 
 function Settings({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	// The drafting desk lives HERE, at the root that never unmounts, so a soul being written
+	// survives switching panes — and nowhere else, so it never survives this window (see
+	// `useDrafting`: reducer state replicates, a window's work in progress must not).
+	const drafting = useDrafting(client, state.accounts)
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
-		// First: a persisted draft token / `canGenerate` describes a host that is gone.
-		void client.guiStarted({})
 		void client.loadUser({})
 		void client.loadProviders({})
 		void client.loadAccounts({})
@@ -171,19 +173,26 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 		<div className="settings">
 			<Sidebar state={state} client={client} />
 			<section className="settings-detail">
-				{state.error ? (
+				{/* One banner for both: a load that failed (reducer state) and a draft that did
+				    not arrive (this window's desk, which is where a model call lives now). */}
+				{state.error || drafting.error ? (
 					<p className="settings-error">
-						<span>{state.error}</span>
+						<span>{state.error ?? drafting.error}</span>
 						<button
 							type="button"
-							onClick={() => void client.clearError({})}
+							onClick={() => {
+								void client.clearError({})
+								drafting.dismiss()
+							}}
 							className="settings-small-button"
 						>
 							Dismiss
 						</button>
 					</p>
 				) : null}
-				{state.category === 'agent' ? <AgentPane state={state} client={client} /> : null}
+				{state.category === 'agent' ? (
+					<AgentPane state={state} client={client} drafting={drafting} />
+				) : null}
 				{state.category === 'accounts' ? <AccountsPanel state={state} client={client} /> : null}
 				{state.category === 'account' ? <AccountPane state={state} client={client} /> : null}
 			</section>
@@ -433,12 +442,11 @@ function AboutYou({ state, client }: { state: SettingsState; client: Client<Sett
 		setBirthDate(facts.birthDate)
 	}, [facts])
 
+	// ONLY the field that changed is sent. Sending the whole profile made every save carry
+	// a snapshot of the other two, so finishing a name edit and picking a gender in quick
+	// succession let whichever landed last put the other one back.
 	const save = async (patch: { name?: string; birthDate?: string; gender?: 'female' | 'male' }) => {
-		await client.saveFacts({
-			name: patch.name ?? name,
-			birthDate: patch.birthDate ?? birthDate,
-			gender: patch.gender ?? facts?.gender ?? null
-		})
+		await client.saveFacts(patch)
 		setSaved(true)
 		setTimeout(() => setSaved(false), 1200)
 	}

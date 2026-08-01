@@ -1,14 +1,8 @@
 import type { Client } from '@justfiles/app'
 import { injectStyle } from '@justfiles/app/browser'
+import type { AccountInfo, GeneratedSoul } from '@justfiles/app/capabilities/settings'
 import { type ChangeEvent, type DragEvent, useEffect, useRef, useState } from 'react'
-import {
-	type DraftRequest,
-	isBound,
-	nameInSoul,
-	type SettingsApp,
-	type SettingsState,
-	summoning
-} from './app.ts'
+import { isBound, nameInSoul, type SettingsApp, type SettingsState } from './app.ts'
 import { ARCHETYPES, archetypeOf, faceOf, SPIRIT_ART } from './archetypes.ts'
 import { pngUrl, squarePng } from './squarePng.ts'
 
@@ -110,14 +104,114 @@ injectStyle(
 	'app-settings-agent'
 )
 
+type Gender = 'female' | 'male'
+
+// ── the drafting desk ─────────────────────────────────────────────────────
+// A soul being written, the answer when it comes, and why it did not. Held by the WINDOW,
+// never by reducer state: that state replicates, so a draft kept there would follow the
+// user to a device that never asked for one, and any "a GUI started, clean up" reset there
+// would delete work in progress somewhere else. A promise has none of those problems — it
+// belongs to whoever awaited it and dies with them.
+//
+// It lives at the GUI root, so it survives switching panes: the only lifetime a draft was
+// ever meant to have.
+
+// What was asked. `for` says which flow asked — the character sheet's Rewrite and the
+// summoning must never show each other's prose — and the rest is the summoning's own
+// context, enough to put the ritual back together after a pane switch unmounted it.
+export interface DraftRequest {
+	for: 'rewrite' | 'summoning'
+	name: string
+	gender: Gender
+	archetype: string
+}
+
+export interface Drafting {
+	// The question, while it is being answered and after: null once nothing is pending.
+	request: DraftRequest | null
+	// The answer, awaiting a verdict. Nothing is written until the user keeps it.
+	soul: GeneratedSoul | null
+	writing: boolean
+	error: string | null
+	// False once this host answers "no generator" (a signed-out Mac): the panes drop the
+	// buttons rather than show dead ones. Per window — another device's answer is not this
+	// one's, which is exactly what it used to become.
+	canGenerate: boolean
+	ask: (request: DraftRequest) => void
+	discard: () => void
+	// Clear the message alone — the banner's Dismiss, which must not throw away a draft.
+	dismiss: () => void
+}
+
+const NOTHING = {
+	request: null,
+	soul: null,
+	writing: false,
+	error: null,
+	canGenerate: true
+} satisfies Omit<Drafting, 'ask' | 'discard' | 'dismiss'>
+
+// A capability error's message IS its code; this is where it becomes something to read.
+function why(error: unknown): { error: string; canGenerate: boolean } {
+	const code = error instanceof Error ? error.message : String(error)
+	// No generator here (a signed-out Mac): stop offering one, and say so once.
+	if (code === 'CAPABILITY_UNAVAILABLE')
+		return {
+			error:
+				'No AI is turned on here — write the soul yourself, or turn on a provider in Accounts.',
+			canGenerate: false
+		}
+	// Offline is the other reason a browser cannot draft one. Unlike no-generator it is
+	// TRANSIENT, so it must not hide the buttons — and writing the soul yourself works
+	// offline anyway: it is a file.
+	if (code === 'CAPABILITY_OFFLINE')
+		return {
+			error: 'No connection — write the soul yourself, or try again once you are back.',
+			canGenerate: true
+		}
+	return { error: code, canGenerate: true }
+}
+
+export function useDrafting(client: Client<SettingsApp>, accounts: AccountInfo[]): Drafting {
+	const [desk, setDesk] = useState<Omit<Drafting, 'ask' | 'discard' | 'dismiss'>>(NOTHING)
+	// Only the newest question is answered. An older one finishing late has been superseded
+	// by the one on screen, and its prose was written for a name the user has moved on from.
+	const latest = useRef(0)
+
+	// Turning on an AI provider brings the buttons back, with no restart and nothing to
+	// re-probe: a fresh account list is the only thing that can change the answer.
+	useEffect(() => {
+		void accounts
+		setDesk((desk) => (desk.canGenerate ? desk : { ...desk, canGenerate: true }))
+	}, [accounts])
+
+	const ask = (request: DraftRequest) => {
+		const mine = ++latest.current
+		setDesk((desk) => ({ ...desk, request, soul: null, error: null, writing: true }))
+		const { name, gender, archetype } = request
+		client
+			.generateSoul({ name, gender, archetype })
+			.then((soul) => {
+				if (mine === latest.current) setDesk((desk) => ({ ...desk, soul, writing: false }))
+			})
+			.catch((error: unknown) => {
+				if (mine === latest.current) setDesk((desk) => ({ ...desk, writing: false, ...why(error) }))
+			})
+	}
+	// Also disowns one still being written: "I don't want it" means the same either way.
+	const discard = () => {
+		latest.current++
+		setDesk((desk) => ({ ...NOTHING, canGenerate: desk.canGenerate }))
+	}
+	return { ...desk, ask, discard, dismiss: () => setDesk((desk) => ({ ...desk, error: null })) }
+}
+
 const CAMERA = (
 	<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
 		<title>Choose a photo</title>
 		<path d="M9 3h6l1 2h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h3l1-2Zm3 5a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z" />
 	</svg>
 )
-
-type Gender = 'female' | 'male'
 
 // The face on the volume, as a blob URL. Kept out of reducer state (that is JSON, and it
 // replicates): the bytes ride back from a procedure and become a URL here. Shared with the
@@ -276,10 +370,12 @@ function frontmatter({
 
 export function AgentPane({
 	state,
-	client
+	client,
+	drafting
 }: {
 	state: SettingsState
 	client: Client<SettingsApp>
+	drafting: Drafting
 }) {
 	// Opening the ritual is GUI-local on purpose: re-entering it destroys nothing, and the
 	// write only happens at Bind — so there is no "unbind" method and no confirmation for a
@@ -287,7 +383,7 @@ export function AgentPane({
 	// though: a summoning's draft in state means one is under way and this pane was
 	// unmounted (Accounts, and back) while the model wrote, so `resume` carries it home.
 	const [resummon, setResummon] = useState(false)
-	const resume = summoning(state)
+	const resume = drafting.request?.for === 'summoning' ? drafting.request : null
 
 	// `soul` is null only before the first read lands.
 	if (!state.soul) return <p className="settings-muted">Loading…</p>
@@ -296,19 +392,25 @@ export function AgentPane({
 			<Summoning
 				state={state}
 				client={client}
+				drafting={drafting}
 				resume={resume}
 				// The soul being replaced — the ritual opens on their name and says whose soul
 				// this ends. Null while unbound: there is no one to replace yet.
 				from={isBound(state.soul) ? state.soul : null}
 				// Bind wrote them to the volume, so the ritual is over: leave it, or this pane
 				// would keep showing the review step of an agent who now has a character sheet.
-				onBound={() => setResummon(false)}
+				onBound={() => {
+					// The draft has been spent: clear the desk, or `resume` would read it as a
+					// ritual still under way and walk straight back into the review step.
+					drafting.discard()
+					setResummon(false)
+				}}
 				// Backing out is only offered when there is someone to back out TO, and it drops
 				// the draft — otherwise `resume` would walk straight back in.
 				onCancel={
 					isBound(state.soul)
 						? () => {
-								void client.discardDraft({})
+								drafting.discard()
 								setResummon(false)
 							}
 						: undefined
@@ -320,6 +422,7 @@ export function AgentPane({
 			state={state}
 			soul={state.soul}
 			client={client}
+			drafting={drafting}
 			onResummon={() => setResummon(true)}
 		/>
 	)
@@ -329,6 +432,7 @@ function CharacterSheet({
 	state,
 	soul,
 	client,
+	drafting,
 	onResummon
 }: {
 	state: SettingsState
@@ -336,6 +440,7 @@ function CharacterSheet({
 	// below runs unconditionally.
 	soul: NonNullable<SettingsState['soul']>
 	client: Client<SettingsApp>
+	drafting: Drafting
 	onResummon: () => void
 }) {
 	const nature = archetypeOf(soul.archetype)
@@ -355,8 +460,7 @@ function CharacterSheet({
 	const gender: Gender = soul.gender ?? 'female'
 	const written = nameInSoul(soul)
 	const renamed = written !== null && written !== soul.name
-	// A draft is being waited for — its token is what will decide whose answer it is.
-	const writing = state.draft !== null
+	const writing = drafting.writing
 
 	// The volume is the truth: a sync (or a rewrite) replaces what is on screen unless the
 	// user is mid-edit, in which case their draft stands until they press Done.
@@ -382,23 +486,19 @@ function CharacterSheet({
 		}
 	}
 
-	// Not awaited, and its rejection is not the pane's to handle: the procedure folds the
-	// outcome into state under a token (see `draftSettled`).
 	const rewrite = () =>
-		client
-			.generateSoul({
-				name,
-				gender,
-				// A rewrite reuses the recorded seed — the pane offers no way to change it.
-				archetype: soul.archetype ?? 'companion',
-				for: 'rewrite' as const
-			})
-			.catch(() => {})
+		drafting.ask({
+			for: 'rewrite',
+			name,
+			gender,
+			// A rewrite reuses the recorded seed — the pane offers no way to change it.
+			archetype: soul.archetype ?? 'companion'
+		})
 
 	// ONLY a rewrite is this pane's to show. A summoning's draft never reaches here — the
 	// pane routes to the ritual on exactly that — and if it ever did, "Use this" would save
 	// prose written for someone else under the current name and nature.
-	const proposal = state.proposal?.request.for === 'rewrite' ? state.proposal.soul : null
+	const proposal = drafting.request?.for === 'rewrite' ? drafting.soul : null
 
 	return (
 		<div className="settings-pane">
@@ -478,7 +578,7 @@ function CharacterSheet({
 							You renamed them — the prose still says <b>{written}</b>.
 						</span>
 						<span className="agent-note-grow" />
-						{state.canGenerate ? (
+						{drafting.canGenerate ? (
 							<button type="button" className="settings-small-button" onClick={rewrite}>
 								Rewrite
 							</button>
@@ -502,7 +602,7 @@ function CharacterSheet({
 						>
 							{editing ? 'Done' : 'Edit'}
 						</button>
-						{state.canGenerate ? (
+						{drafting.canGenerate ? (
 							<button
 								type="button"
 								className="settings-small-button"
@@ -543,18 +643,17 @@ function CharacterSheet({
 							<span className="agent-doc-grow">
 								A new soul, from the same name and nature. Nothing is saved yet.
 							</span>
-							<button
-								type="button"
-								className="settings-small-button"
-								onClick={() => void client.discardDraft({})}
-							>
+							<button type="button" className="settings-small-button" onClick={drafting.discard}>
 								Discard
 							</button>
 							<button
 								type="button"
 								data-primary
 								disabled={busy}
-								onClick={() => void save({ body: proposal.body })}
+								onClick={() => {
+									// Kept: it is on the volume now, so the desk has nothing left to hold.
+									void save({ body: proposal.body }).then(drafting.discard)
+								}}
 							>
 								Use this
 							</button>
@@ -604,6 +703,7 @@ const STEPS = ['name', 'nature', 'review'] as const
 function Summoning({
 	state,
 	client,
+	drafting,
 	from,
 	resume,
 	onBound,
@@ -611,6 +711,7 @@ function Summoning({
 }: {
 	state: SettingsState
 	client: Client<SettingsApp>
+	drafting: Drafting
 	// The soul being replaced, when this is "summon again": the ritual starts from the name
 	// they already have rather than from nothing.
 	from: SettingsState['soul']
@@ -633,19 +734,19 @@ function Summoning({
 	const [body, setBody] = useState('')
 	const [busy, setBusy] = useState(false)
 	const nature = archetypeOf(archetype)
-	// A draft is being waited for. Whose it is, is decided by its token when it lands.
-	const writing = state.draft !== null
+	const writing = drafting.writing
 
-	// The draft arrives through reducer state (it cost a model call, so it survives a pane
-	// switch): showing it IS the review step. Only a summoning's, though — the slot is
+	// The draft arrives on the window's desk (it cost a model call, so it survives a pane
+	// switch): showing it IS the review step. Only a summoning's, though — the desk is
 	// shared with the character sheet's Rewrite, and prose for the agent being REPLACED
 	// would skip the name and the nature and then bind under the old archetype.
+	const arrived = drafting.request?.for === 'summoning' ? drafting.soul : null
 	useEffect(() => {
-		if (state.proposal?.request.for === 'summoning') {
-			setBody(state.proposal.soul.body)
+		if (arrived) {
+			setBody(arrived.body)
 			setStep('review')
 		}
-	}, [state.proposal])
+	}, [arrived])
 
 	// A draft that is not coming must never strand the ritual on the picker, where the only
 	// affordance is to ask again. Two ways that happens: no generator at all (a signed-out
@@ -653,26 +754,22 @@ function Summoning({
 	// call that simply failed (offline, an upstream 500). Either way the nature is picked
 	// and the soul is a file you can write yourself, so go where the editor is — the review
 	// step also carries "Write it again", so nothing is lost by arriving early.
-	// (A picked nature means a draft was asked for, and `generateSoul` clears `error` as it
-	// starts — so an error standing with nothing in flight is that attempt's.)
+	// (A picked nature means a draft was asked for, and asking clears the desk's error — so
+	// an error standing with nothing in flight is that attempt's.)
 	useEffect(() => {
 		if (!archetype) return
-		if (!state.canGenerate || (state.error && !writing)) setStep('review')
-	}, [archetype, state.canGenerate, state.error, writing])
+		if (!drafting.canGenerate || (drafting.error && !writing)) setStep('review')
+	}, [archetype, drafting.canGenerate, drafting.error, writing])
 
-	// `for: 'summoning'` is what makes the answer ours to show. Nothing is awaited and
-	// nothing is caught: the procedure folds its own outcome — the soul, or why it never
-	// came — into state under a token, which is also what keeps a slow answer from landing
-	// on a later question.
+	// `for: 'summoning'` is what makes the answer ours to show; the desk drops an older
+	// answer that arrives after it, and everything about the call dies with this window.
 	const draft = (seed: string) => {
-		client
-			.generateSoul({ name: name.trim(), gender, archetype: seed, for: 'summoning' })
-			.catch(() => {})
+		drafting.ask({ for: 'summoning', name: name.trim(), gender, archetype: seed })
 	}
 
 	const pickNature = (id: string) => {
 		setArchetype(id)
-		if (state.canGenerate) draft(id)
+		if (drafting.canGenerate) draft(id)
 	}
 
 	const bind = async () => {
@@ -824,14 +921,14 @@ function Summoning({
 									/>
 								</div>
 							</div>
-							{state.proposal?.request.for === 'summoning' && state.proposal.soul.firstWords ? (
+							{arrived?.firstWords ? (
 								<div className="agent-bubble">
 									<small>{name.trim()} · first words</small>
-									{state.proposal.soul.firstWords}
+									{arrived.firstWords}
 								</div>
 							) : null}
 							<div className="agent-actions">
-								{state.canGenerate ? (
+								{drafting.canGenerate ? (
 									<button
 										type="button"
 										className="settings-small-button"

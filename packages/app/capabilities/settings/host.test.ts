@@ -1,5 +1,5 @@
 import { memStorage, volume } from '@justfiles/fs'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { accountsCapabilities } from '../accounts/host.ts'
 import { icloudProvider } from '../accounts/providers/icloud.ts'
 import { platformProvider } from '../accounts/providers/platform.ts'
@@ -437,35 +437,47 @@ test('agent.generateSoul is a preview: it reads the user from the volume and wri
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({ seeded: true })
 })
 
-test('an age is counted in the calendar the user typed, not in UTC', async () => {
-	// `new Date('YYYY-MM-DD')` is UTC midnight, which reads as the day BEFORE west of UTC —
-	// so a birthday one day away used to count itself as already past. Run it in a zone
-	// where that is true, with a birth date built from local today so it holds any day.
-	const tz = process.env.TZ
-	process.env.TZ = 'America/Los_Angeles'
+test("an age is counted in the USER's calendar, not the host's", async () => {
+	// The frieren host is a worker on UTC while the user is somewhere else, so "today" has
+	// to come from their timezone: at 17:00 in Los Angeles it is already tomorrow in UTC,
+	// and a birthday tomorrow would otherwise count itself as already past.
+	const seen: { userAge?: number }[] = []
+	// Los Angeles is a day behind UTC late in its evening; pick the moment deliberately.
+	const now = new Date('2026-08-01T03:00:00Z') // = 2026-07-31 20:00 in Los Angeles
+	vi.setSystemTime(now)
 	try {
-		const now = new Date()
-		const tomorrow = new Date(now)
-		tomorrow.setDate(now.getDate() + 1)
-		const pad = (n: number) => String(n).padStart(2, '0')
-		const birthDate = `${now.getFullYear() - 30}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}`
-
-		const seen: { userAge?: number }[] = []
 		const { caps } = agentHost({
+			timezone: () => 'America/Los_Angeles',
 			generateSoul: async (input) => {
 				seen.push(input)
 				return { body: 'A drafted soul.' }
 			}
 		})
-		await caps.invoke(call('agent.writeProfile', { name: 'X', birthDate, gender: 'male' }))
+		// Their 30th birthday is 2026-08-01 — tomorrow where they are, today in UTC.
+		await caps.invoke(call('agent.writeProfile', { name: 'X', birthDate: '1996-08-01' }))
 		await caps.invoke(
 			call('agent.generateSoul', { name: 'Fern', gender: 'female', archetype: 'companion' })
 		)
-		// Their birthday has not happened yet, whatever UTC thinks of that date.
 		expect(seen[0]?.userAge).toBe(29)
 	} finally {
-		process.env.TZ = tz
+		vi.useRealTimers()
 	}
+})
+
+test('a profile write is a patch: it never puts back a field it was not given', async () => {
+	// The pane saves per field as you edit, so a whole-profile write let a slower save
+	// restore the value a faster one had just changed.
+	const { caps } = agentHost({})
+	await caps.invoke(
+		call('agent.writeProfile', { name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
+	)
+	await caps.invoke(call('agent.writeProfile', { gender: 'female' }))
+	expect(await caps.invoke(call('agent.readProfile'))).toEqual({
+		name: 'Xiaoxing',
+		birthDate: '1985-04-12',
+		gender: 'female',
+		seeded: false
+	})
 })
 
 test('no generator is UNAVAILABLE (a mac-shaped host), and the Volume methods still work', async () => {

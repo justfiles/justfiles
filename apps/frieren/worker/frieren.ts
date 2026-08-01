@@ -418,6 +418,9 @@ export class Frieren extends DurableObject<Env> {
 				agent: {
 					volume: this.vol,
 					paths: IDENTITY_PATHS,
+					// This host runs on UTC and the user does not: their age has to be counted
+					// in their own calendar, not the worker's.
+					timezone: this.getTimezone,
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
 						const { text, firstWords } = await this.generateSoul({
 							agentName: name,

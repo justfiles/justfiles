@@ -150,10 +150,12 @@ export interface SettingsCapability {
 	// file: stale bytes would keep winning over the variant otherwise.
 	'agent.writeAvatar'(input: { bytes: Uint8Array | null }): Promise<void>
 	'agent.readProfile'(input: Record<string, never>): Promise<UserFacts>
+	// A PATCH: only the fields present are written, so the pane can save one field at a
+	// time without a slower save putting back what a faster one changed.
 	'agent.writeProfile'(input: {
-		name: string
-		birthDate: string
-		gender: 'female' | 'male' | null
+		name?: string
+		birthDate?: string
+		gender?: 'female' | 'male' | null
 	}): Promise<void>
 	// Draft a soul from a name, a gender and a seed archetype — plus, read from the
 	// Volume by the host, who the user is. A PREVIEW: nothing is written.

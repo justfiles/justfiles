@@ -88,6 +88,10 @@ interface IdentityVolume {
 export interface AgentDeps {
 	volume: IdentityVolume
 	paths: IdentityPaths
+	// The user's timezone (IANA), for the one thing here that depends on today's date:
+	// their age. A host whose clock IS the user's clock (the Mac) omits it; one running
+	// somewhere else entirely (the frieren DO, on UTC) must not — see `age`.
+	timezone?: () => string | Promise<string>
 	// Absent on a host with no text model to spare (and on the browser half, which
 	// delegates to the DO): `agent.generateSoul` is then UNAVAILABLE, which the pane
 	// reads as "write it yourself".
@@ -239,20 +243,35 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 	await vol.writeFile(path, bytes)
 }
 
-// The stored `YYYY-MM-DD` is a CALENDAR DATE, not an instant, so it never goes through
-// `new Date(...)`: that parses it as UTC midnight, and reading it back with local getters
-// lands on the day before anywhere west of UTC — a birthday would tick over a day early.
-// Compare the three numbers the user typed against today's three, in their calendar.
-function age(birthDate: string): number | undefined {
-	const [year, month, day] = birthDate.split('-').map(Number)
-	if (!year || !month || !day) return undefined
-	const now = new Date()
-	const years = now.getFullYear() - year
-	const before = now.getMonth() + 1 < month || (now.getMonth() + 1 === month && now.getDate() < day)
-	return before ? years - 1 : years
+// A birth date is a CALENDAR DATE, not an instant — and so is "today", which is the part
+// that bites. `new Date('YYYY-MM-DD')` is UTC midnight, so local getters read the day
+// before anywhere west of UTC; and the host's own "now" is no better, because the frieren
+// host is a worker running on UTC while the user is wherever they are. Both sides are
+// therefore plain `YYYY-MM-DD` in the USER'S calendar, compared as text.
+function today(timezone?: string): string {
+	// 'en-CA' formats as YYYY-MM-DD, which is what makes the comparison below a string one.
+	return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
 }
 
-function agentMethods({ volume: vol, paths, generateSoul }: AgentDeps): Served {
+function age(birthDate: string, now: string): number | undefined {
+	if (birthDate.length < 10) return undefined
+	const years = Number(now.slice(0, 4)) - Number(birthDate.slice(0, 4))
+	if (Number.isNaN(years)) return undefined
+	// Their birthday this year has not come round yet: MM-DD against MM-DD, no zone in it.
+	return now.slice(5) < birthDate.slice(5) ? years - 1 : years
+}
+
+function agentMethods({ volume: vol, paths, timezone, generateSoul }: AgentDeps): Served {
+	// Every identity write is READ-MODIFY-WRITE (a profile patch merges with the file, a
+	// soul write preserves the recorded archetype) and the panes fire them per field as the
+	// user edits — so they queue. Without this, two writes read the same file and the slower
+	// one puts back what the other had just changed.
+	let queue: Promise<unknown> = Promise.resolve()
+	const serial = <T>(run: () => Promise<T>): Promise<T> => {
+		const next = queue.then(run, run)
+		queue = next.catch(() => {})
+		return next
+	}
 	const readSoul = async (): Promise<AgentSoul> => {
 		const { frontmatter, body } = await read(vol, paths.soul)
 		return {
@@ -275,48 +294,55 @@ function agentMethods({ volume: vol, paths, generateSoul }: AgentDeps): Served {
 	}
 	return {
 		'agent.readSoul': readSoul,
-		'agent.writeSoul': async ({ name, gender: sex, body, archetype }) => {
-			const current = await readSoul()
-			// The archetype (and the art it points at) is the summoning's to set: a plain
-			// write preserves what was recorded, because the prose is the character now.
-			const seed = archetype ?? current.archetype
-			const variant = archetype ?? current.avatarVariant
-			await writeTo(
-				vol,
-				paths.soul,
-				serialize(
-					[
-						['schema', 'frieren/agent-soul/v1'],
-						['agent_name', name],
-						['agent_gender', sex],
-						['archetype', seed],
-						['avatar_variant', variant]
-					],
-					body
+		'agent.writeSoul': ({ name, gender: sex, body, archetype }) =>
+			serial(async () => {
+				const current = await readSoul()
+				// The archetype (and the art it points at) is the summoning's to set: a plain
+				// write preserves what was recorded, because the prose is the character now.
+				const seed = archetype ?? current.archetype
+				const variant = archetype ?? current.avatarVariant
+				await writeTo(
+					vol,
+					paths.soul,
+					serialize(
+						[
+							['schema', 'frieren/agent-soul/v1'],
+							['agent_name', name],
+							['agent_gender', sex],
+							['archetype', seed],
+							['avatar_variant', variant]
+						],
+						body
+					)
 				)
-			)
-		},
+			}),
 		'agent.readAvatar': async () =>
 			(await vol.exists(paths.avatar)) ? vol.readFile(paths.avatar) : null,
-		'agent.writeAvatar': async ({ bytes }) => {
-			// Null DELETES: `avatar.png` is what decides the face, so leaving stale bytes
-			// behind would keep beating the built-in art the soul now names.
-			if (!bytes) return vol.rm(paths.avatar, { force: true })
-			await writeTo(vol, paths.avatar, bytes)
-		},
+		'agent.writeAvatar': ({ bytes }) =>
+			serial(async () => {
+				// Null DELETES: `avatar.png` is what decides the face, so leaving stale bytes
+				// behind would keep beating the built-in art the soul now names.
+				if (!bytes) return vol.rm(paths.avatar, { force: true })
+				await writeTo(vol, paths.avatar, bytes)
+			}),
 		'agent.readProfile': readProfile,
-		'agent.writeProfile': async ({ name, birthDate, gender: sex }) => {
-			await writeTo(
-				vol,
-				paths.profile,
-				serialize([
-					['schema', 'frieren/user-profile/v1'],
-					['name', name],
-					['birth_date', birthDate],
-					['gender', sex]
-				])
-			)
-		},
+		// A PATCH: only the fields passed change. The pane saves per field as you edit, so a
+		// whole-profile write would let a slower save put back the name or the date you had
+		// already moved on from.
+		'agent.writeProfile': (patch) =>
+			serial(async () => {
+				const current = await readProfile()
+				await writeTo(
+					vol,
+					paths.profile,
+					serialize([
+						['schema', 'frieren/user-profile/v1'],
+						['name', patch.name ?? current.name],
+						['birth_date', patch.birthDate ?? current.birthDate],
+						['gender', patch.gender === undefined ? current.gender : patch.gender]
+					])
+				)
+			}),
 		...(generateSoul && {
 			// A PREVIEW. The user facts ride along from the volume, so the pane sends only
 			// what it actually collected.
@@ -326,7 +352,7 @@ function agentMethods({ volume: vol, paths, generateSoul }: AgentDeps): Served {
 					name,
 					gender: sex,
 					archetype,
-					userAge: age(facts.birthDate),
+					userAge: age(facts.birthDate, today(await timezone?.())),
 					userGender: facts.gender ?? undefined
 				})
 			}
