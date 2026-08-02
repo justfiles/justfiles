@@ -31,7 +31,13 @@
 //    account, always on this side. With only one lane configured, every check above
 //    is a no-op — unchanged from before any of this existed.
 
-import { fileStem, imageDataUrl, imageFileNames, readImageFile } from '../../image-type.ts'
+import {
+	fileStem,
+	imageDataUrl,
+	imageFileNames,
+	imageType,
+	readImageFile
+} from '../../image-type.ts'
 import { CapabilityError } from '../error.ts'
 import type { Capabilities, Capability } from '../types.ts'
 import type {
@@ -79,9 +85,9 @@ export interface IdentityPaths {
 	profile: string
 }
 
-// A minimal Volume: only what the identity files need. Typed structurally so this
-// package keeps its single `@justfiles/fs` import for the real thing.
-interface IdentityVolume {
+// A minimal Volume: only what these files need. Typed structurally so this package
+// keeps its single `@justfiles/fs` import for the real thing.
+interface HostVolume {
 	exists(path: string): Promise<boolean>
 	readFile(path: string): Promise<Uint8Array>
 	writeFile(path: string, data: Uint8Array): Promise<void>
@@ -95,7 +101,7 @@ interface IdentityVolume {
 }
 
 export interface AgentDeps {
-	volume: IdentityVolume
+	volume: HostVolume
 	paths: IdentityPaths
 	// The art the app ships, as `{ <id>: { resting: dataUrl, states } }` — injected for the
 	// same reason the paths are (it lives in `@justfiles/agent/avatars`, which cannot be
@@ -112,12 +118,24 @@ export interface AgentDeps {
 	generateSoul?: (input: SoulDraftInput) => Promise<GeneratedSoul>
 }
 
+// What `appearance.*` needs: the Volume the desktop's look lives on, and the one path
+// the shell watches for the wallpaper. The path is INJECTED for the same reason the
+// identity paths are — it belongs to the shell that renders it, not to this package —
+// so a host whose desktop has no wallpaper simply wires nothing and the methods report
+// themselves UNAVAILABLE.
+export interface AppearanceDeps {
+	volume: HostVolume
+	wallpaper: string
+}
+
 export interface SettingsHostDeps {
 	accounts?: AccountsAdmin
 	usage?: GetUsage
 	user?: GetUser
 	// The agent's identity files, where the Volume is (both hosts).
 	agent?: AgentDeps
+	// The desktop's look, where a desktop has one.
+	appearance?: AppearanceDeps
 	// Where a method this host cannot serve goes (the browser half → the DO).
 	remote?: Capabilities
 }
@@ -127,7 +145,7 @@ export interface SettingsHostDeps {
 type Served = { [K in keyof SettingsCapability]?: SettingsCapability[K] }
 
 export function settingsHost(deps: SettingsHostDeps): Capability {
-	const { accounts, usage, user, agent, remote } = deps
+	const { accounts, usage, user, agent, appearance, remote } = deps
 	const served: Served = {
 		...(accounts && {
 			'accounts.listProviders': (i) => accounts.listProviders(i),
@@ -138,6 +156,7 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 		}),
 		...(usage && { 'host.usage': async () => usage() }),
 		...(agent && agentMethods(agent)),
+		...(appearance && appearanceMethods(appearance)),
 		// Always local, even with no dep: "no one is signed in" is an answer, not an
 		// error, and identity lives where the session does.
 		'host.user': async () => (await user?.()) ?? null
@@ -242,7 +261,7 @@ function gender(value?: string): 'female' | 'male' | null {
 }
 
 async function read(
-	vol: IdentityVolume,
+	vol: HostVolume,
 	path: string
 ): Promise<{ frontmatter: Frontmatter; body: string }> {
 	// A missing file is the same user-visible state as an untouched seeded one: unbound.
@@ -251,7 +270,7 @@ async function read(
 }
 
 // `writeFile` does not create parents, and after a wipe even `/system` is gone.
-async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Promise<void> {
+async function writeTo(vol: HostVolume, path: string, bytes: Uint8Array): Promise<void> {
 	const parent = path.slice(0, path.lastIndexOf('/')) || '/'
 	await vol.mkdir(parent, { recursive: true })
 	await vol.writeFile(path, bytes)
@@ -263,7 +282,7 @@ async function writeTo(vol: IdentityVolume, path: string, bytes: Uint8Array): Pr
 // the name: `imageType` answers that from the bytes, and `readImageFile` answers which file
 // holds a state, identically here and in every other reader of the same directory.
 
-async function entries(vol: IdentityVolume, path: string): Promise<string[]> {
+async function entries(vol: HostVolume, path: string): Promise<string[]> {
 	if (!(await vol.exists(path))) return []
 	return (await vol.readdir(path)).map((entry) => entry.name).sort()
 }
@@ -289,6 +308,32 @@ function age(birthDate: string, now: string): number | undefined {
 	if (Number.isNaN(years)) return undefined
 	// Their birthday this year has not come round yet: MM-DD against MM-DD, no zone in it.
 	return now.slice(5) < birthDate.slice(5) ? years - 1 : years
+}
+
+// ── the desktop's look ───────────────────────────────────────────────
+// One file, read and written whole. The only judgement here is that the bytes must BE an
+// image (`imageType`, from their own first bytes — a name proves nothing): the shell points
+// an image at them, so anything else would render as a broken desktop with no way to tell
+// why. A flat colour passes because SVG is an image; the app is what knows it wrote one.
+//
+// The write is a plain overwrite, not the staged rename `putAvatarFile` needs — a wallpaper
+// claims no state and has no siblings, so the worst a torn write can cost is one repaint,
+// which the shell's own watch fixes on the next event.
+function appearanceMethods({ volume: vol, wallpaper }: AppearanceDeps): Served {
+	return {
+		'appearance.readWallpaper': async () =>
+			(await vol.exists(wallpaper)) ? vol.readFile(wallpaper) : null,
+		'appearance.writeWallpaper': async ({ bytes }) => {
+			if (!bytes) return vol.rm(wallpaper, { force: true })
+			if (!imageType(bytes))
+				throw new CapabilityError(
+					'CAPABILITY_INVALID_INPUT',
+					'settings',
+					'appearance.writeWallpaper'
+				)
+			await writeTo(vol, wallpaper, bytes)
+		}
+	}
 }
 
 function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: AgentDeps): Served {

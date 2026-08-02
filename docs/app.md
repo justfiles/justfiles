@@ -628,6 +628,12 @@ Privileged capability signatures:
 	name?: string
 	avatarUrl?: string
 } | null>
+// The desktop wallpaper, as the bytes at the shell's one well-known path — a flat colour
+// is bytes too (the tiny SVG Settings writes for one). Reading null means unset; writing
+// null puts the shell back on its own default. UNAVAILABLE on a host whose shell has no
+// wallpaper (the Mac app today).
+'appearance.readWallpaper'(input: {}): Promise<Uint8Array | null>
+'appearance.writeWallpaper'(input: { bytes: Uint8Array | null }): Promise<void>
 
 type UsageResource = {
 	used: number

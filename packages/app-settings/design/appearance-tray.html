@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Appearance → Wallpaper · the tray, below the preview</title>
+		<style>
+			/* Tokens from packages/design/design.css; [data-theme="dark"] re-points them
+			   exactly as the real dark-mode media query does. */
+			:root {
+				--surface: #f5f5f4;
+				--window-bg: #ffffff;
+				--text: #1c1c1c;
+				--rule: #d0d0cd;
+				--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+				--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+				--text-ui: 13px;
+				--focus: #0a84ff;
+				--on-focus: #ffffff;
+				--accent: #3e7fd6;
+			}
+			html[data-theme="dark"] {
+				--surface: #2c2c2e;
+				--window-bg: #1e1e1e;
+				--text: #ebebf0;
+				--rule: #3a3a3c;
+			}
+			* { box-sizing: border-box; }
+			body {
+				margin: 0; padding: 32px 24px 96px;
+				background: radial-gradient(circle at 20% 0%, #a3a8ad, #6f7479) #8a8f94;
+				font-family: var(--font-ui); font-size: var(--text-ui); color: var(--text);
+			}
+			.page { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+			.page-head { color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+			.page-head h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.02em; }
+			.page-head p { margin: 0; opacity: .85; max-width: 70ch; line-height: 1.5; }
+			.themebar { margin-top: 14px; display: flex; gap: 8px; align-items: center; }
+			.themebar button {
+				font: inherit; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+				border: 1px solid rgba(255,255,255,.5); background: rgba(255,255,255,.18); color: #fff;
+			}
+			.themebar button[data-on="true"] { background: #fff; color: #333; }
+			.option { display: flex; flex-direction: column; gap: 10px; }
+			.option-label { color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+			.option-label h2 { margin: 0; font-size: 15px; letter-spacing: -0.01em; }
+			.option-label p { margin: 4px 0 0; opacity: .85; max-width: 78ch; line-height: 1.5; }
+
+			/* ── Settings window frame ── */
+			.win {
+				border-radius: 8px; overflow: hidden; background: var(--window-bg); color: var(--text);
+				border: 1px solid var(--rule); box-shadow: 0 20px 50px rgba(0,0,0,.35);
+			}
+			.win-title {
+				display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px;
+				background: var(--surface); border-bottom: 1px solid var(--rule); user-select: none;
+			}
+			.dot { flex: none; width: 12px; height: 12px; border-radius: 999px; border: 1px solid rgba(0,0,0,.18); }
+			.win-title > span:last-child { flex: 1; text-align: center; opacity: .75; }
+			.win-body { display: flex; min-height: 520px; }
+			.sidebar { flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px; padding: 14px 10px; border-right: 1px solid var(--rule); }
+			.side-acct { display: flex; align-items: center; gap: 9px; padding: 8px; border-radius: 8px; margin-bottom: 6px; }
+			.side-avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--rule); }
+			.side-name { font-size: 13px; font-weight: 600; }
+			.side-sub { font-size: 11px; opacity: .5; }
+			.nav { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px; font-size: 13px; cursor: default; }
+			.nav[data-active="true"] { background: var(--focus); color: var(--on-focus); }
+			.nav-glyph { width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 12px; background: color-mix(in srgb, currentColor 12%, transparent); }
+			.detail { flex: 1; overflow-y: auto; padding: 26px 30px; }
+			.pane { display: flex; flex-direction: column; gap: 18px; max-width: 560px; }
+			.pane-title { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+			.pane-copy, .muted { margin: 0; font-size: 12px; opacity: .55; }
+			.card { display: flex; flex-direction: column; gap: 14px; padding: 18px; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+			.card-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+			.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+			.btn { font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer; border: 1px solid var(--rule); background: var(--window-bg); color: inherit; }
+			.linky { font: inherit; font-size: 11px; padding: 0; border: 0; background: none; color: var(--focus); cursor: pointer; }
+
+			/* ── The mini shell: menubar strip + ghost windows + simplified omnibar ── */
+			.mini {
+				--mini-w: 460px;
+				position: relative; width: 100%; aspect-ratio: 16 / 10; overflow: hidden;
+				border-radius: 10px; user-select: none; font-size: calc(var(--mini-w) * 0.026);
+				border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+			}
+			.mini-bar {
+				position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+				height: calc(var(--mini-w) * 0.055); padding: 0 calc(var(--mini-w) * 0.02);
+				background: var(--surface); color: var(--text); border-bottom: 1px solid var(--rule);
+			}
+			.mini-bar-l, .mini-bar-r { display: flex; align-items: center; gap: calc(var(--mini-w) * 0.018); }
+			.mini-bar-title { font-weight: 500; }
+			.mini-bar-quiet { opacity: .6; }
+			.mini-bar-dot { width: .5em; height: .5em; border-radius: 999px; background: #22c55e; }
+			.mini-bar-face { width: 1.3em; height: 1.3em; border-radius: 999px; background: color-mix(in srgb, var(--text) 25%, transparent); }
+			.mini-field { position: absolute; inset: 0; background-size: cover; background-position: center; }
+			.mini-win { position: absolute; border-radius: .5em; overflow: hidden; border: 1px solid rgba(255,255,255,.28); background: var(--window-bg); box-shadow: 0 .5em 1.4em rgba(0,0,0,.3); }
+			.mini-win-bar { height: 1.6em; background: var(--surface); border-bottom: 1px solid var(--rule); display: flex; align-items: center; gap: .3em; padding: 0 .4em; }
+			.mini-win-bar i { width: .45em; height: .45em; border-radius: 999px; background: color-mix(in srgb, var(--text) 30%, transparent); }
+			.mini-win-body { padding: .6em; display: flex; flex-direction: column; gap: .4em; }
+			.mini-win-body b { display: block; height: .35em; border-radius: 999px; background: color-mix(in srgb, var(--text) 16%, transparent); }
+			.mini-win-body b:nth-child(2) { width: 70%; }
+			.mini-win-body b:nth-child(3) { width: 85%; }
+			.mini-win-body b:nth-child(4) { width: 45%; }
+			.mini-win-a { left: 8%; top: 22%; width: 40%; }
+			.mini-win-b { left: 34%; top: 38%; width: 44%; }
+			.mini-omni {
+				position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--mini-w) * 0.035);
+				width: 66%; height: calc(var(--mini-w) * 0.075); display: flex; align-items: center; gap: .6em;
+				padding: 0 .8em; border-radius: 1em; border: 1px solid var(--rule); color: var(--text);
+				background: color-mix(in srgb, var(--surface) 88%, transparent);
+				backdrop-filter: blur(12px) saturate(180%); box-shadow: 0 .4em 1.2em rgba(0,0,0,.3);
+			}
+			.mini-omni-face { flex: none; width: 1.5em; height: 1.5em; border-radius: 999px; background: linear-gradient(145deg, #c4b5fd, #7c9ec9); border: 1px solid rgba(255,255,255,.6); }
+			.mini-omni-ph { flex: 1; opacity: .45; }
+			.mini-omni-key { opacity: .35; font-family: var(--font-mono); }
+
+			/* ══════════════════════════════════════════════════════════════════════
+			   THE TRAY — one row: presets · a divider · custom colour · your image.
+			   Geometry is shared; only the seating (glass/native, detached/attached)
+			   changes per variant, via [data-tray] on the wrapper.
+			   ══════════════════════════════════════════════════════════════════════ */
+			.stack { display: flex; flex-direction: column; align-items: center; }
+			.tray {
+				display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+				border-radius: 14px; border: 1px solid; box-sizing: border-box;
+			}
+			.tray-swatches { display: flex; gap: 6px; }
+			.tile {
+				position: relative; flex: none; width: 30px; height: 30px; border-radius: 8px; padding: 0;
+				cursor: pointer; border: 1px solid; background-size: cover; background-position: center;
+				transition: transform 100ms ease;
+			}
+			.tile:hover { transform: translateY(-1px); }
+			.tile-check { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; opacity: 0; }
+			/* A tick on a pale swatch has to go dark — beats every seating rule below on
+			   specificity (three classes), so it holds in the glass trays too. */
+			.tile.is-light .tile-check { color: #2b2b2b; text-shadow: none; }
+			.tile[data-on="true"] .tile-check { opacity: 1; }
+			.tray-sep { flex: none; width: 1px; height: 26px; }
+			/* Custom colour: a conic ring says "any colour", the native well does the work. */
+			.well {
+				position: relative; flex: none; width: 30px; height: 30px; border-radius: 8px; overflow: hidden;
+				cursor: pointer; padding: 2px;
+				background: conic-gradient(#ff6b6b, #ffd93d, #6bcB77, #4d96ff, #b57bff, #ff6b6b);
+			}
+			.well input { width: 100%; height: 100%; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; }
+			.well input::-webkit-color-swatch-wrapper { padding: 0; }
+			.well input::-webkit-color-swatch { border: none; border-radius: 6px; }
+			.well[data-on="true"] { outline: 2px solid currentColor; outline-offset: 2px; }
+			/* Your image: a dashed tile that becomes the thumbnail once one is set. */
+			.pick { display: grid; place-items: center; border-style: dashed; font-size: 15px; }
+			.pick[data-has="true"] { border-style: solid; }
+			.pick input { display: none; }
+			.tray-caption { margin-top: 10px; font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; }
+
+			/* — seating 1: dark frosted glass, detached (verbatim C look) — */
+			[data-tray="glass"] .tray {
+				background: rgba(28,28,30,.55); border-color: rgba(255,255,255,.22); color: #fff;
+				box-shadow: 0 10px 26px rgba(0,0,0,.3); backdrop-filter: blur(18px) saturate(180%);
+				margin-top: 14px;
+			}
+			[data-tray="glass"] .tile { border-color: rgba(255,255,255,.32); }
+			[data-tray="glass"] .tile[data-on="true"] { box-shadow: 0 0 0 2px rgba(0,0,0,.4), 0 0 0 3.5px #fff; }
+			[data-tray="glass"] .tile-check { color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+			[data-tray="glass"] .tray-sep { background: rgba(255,255,255,.42); }
+			[data-tray="glass"] .pick { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.5); color: #fff; }
+
+			/* — seating 2: attached, one object with the preview — */
+			[data-tray="attached"] .mini { border-radius: 10px 10px 0 0; border-bottom: 0; }
+			[data-tray="attached"] .stack { width: 100%; }
+			[data-tray="attached"] .tray {
+				width: 100%; justify-content: center; border-radius: 0 0 10px 10px; padding: 10px;
+				background: color-mix(in srgb, var(--text) 8%, var(--surface));
+				border-color: color-mix(in srgb, var(--text) 18%, transparent); color: var(--text);
+			}
+			[data-tray="attached"] .tile { border-color: rgba(0,0,0,.22); }
+			[data-tray="attached"] .tile[data-on="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--focus); }
+			[data-tray="attached"] .tile-check { color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+			[data-tray="attached"] .tile.is-light .tile-check { color: #2b2b2b; text-shadow: none; }
+			[data-tray="attached"] .tray-sep { background: color-mix(in srgb, var(--text) 18%, transparent); }
+			[data-tray="attached"] .pick { background: transparent; border-color: color-mix(in srgb, var(--text) 30%, transparent); color: inherit; }
+
+			/* — seating 3: detached but themed — reads as Settings chrome, flips with the theme — */
+			[data-tray="native"] .tray {
+				margin-top: 14px; background: var(--window-bg); color: var(--text);
+				border-color: var(--rule); box-shadow: 0 2px 8px rgba(0,0,0,.10);
+			}
+			[data-tray="native"] .tile { border-color: rgba(0,0,0,.22); }
+			[data-tray="native"] .tile[data-on="true"] { box-shadow: 0 0 0 2px var(--window-bg), 0 0 0 3.5px var(--focus); }
+			[data-tray="native"] .tile-check { color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+			[data-tray="native"] .tile.is-light .tile-check { color: #2b2b2b; text-shadow: none; }
+			[data-tray="native"] .tray-sep { background: var(--rule); }
+			[data-tray="native"] .pick { background: transparent; border-color: color-mix(in srgb, var(--text) 30%, transparent); color: inherit; }
+
+			/* — seating 4: straddling the preview's bottom edge (the omnibar-shoulder trick) — */
+			[data-tray="straddle"] .stack { width: 100%; }
+			[data-tray="straddle"] .mini-omni { bottom: calc(var(--mini-w) * 0.11); }
+			[data-tray="straddle"] .tray {
+				margin-top: -23px; position: relative; z-index: 3;
+				background: rgba(28,28,30,.55); border-color: rgba(255,255,255,.22); color: #fff;
+				box-shadow: 0 10px 26px rgba(0,0,0,.34); backdrop-filter: blur(18px) saturate(180%);
+			}
+			[data-tray="straddle"] .tile { border-color: rgba(255,255,255,.32); }
+			[data-tray="straddle"] .tile[data-on="true"] { box-shadow: 0 0 0 2px rgba(0,0,0,.4), 0 0 0 3.5px #fff; }
+			[data-tray="straddle"] .tile-check { color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+			[data-tray="straddle"] .tray-sep { background: rgba(255,255,255,.42); }
+			[data-tray="straddle"] .pick { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.5); color: #fff; }
+			[data-tray="straddle"] .tray-caption { margin-top: 12px; }
+
+			.notes { color: #fff; font-size: 12px; line-height: 1.6; opacity: .9; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+			.notes ul { margin: 6px 0 0; padding-left: 18px; }
+			.notes code { font-family: var(--font-mono); background: rgba(0,0,0,.25); padding: 1px 4px; border-radius: 4px; }
+		</style>
+	</head>
+	<body>
+		<div class="page">
+			<header class="page-head">
+				<h1>The tray, moved off the wallpaper</h1>
+				<p>
+					One row, C's minimal vocabulary: eight quiet presets · a divider · the custom-colour well ·
+					your own image, as the last tile in the same row. Below it, the current wallpaper in words.
+					The four options differ only in how the tray is <em>seated</em> under the preview. All live —
+					click, drag the well, drop an image on the last tile.
+				</p>
+				<div class="themebar">
+					<strong style="font-weight: 500; opacity: 0.85">Theme</strong>
+					<button type="button" data-theme-set="light" data-on="true">Light</button>
+					<button type="button" data-theme-set="dark">Dark</button>
+				</div>
+			</header>
+
+			<section class="option" data-opt="glass">
+				<div class="option-label">
+					<h2>1 · Detached glass — the tray as a floating tool</h2>
+					<p>
+						C's frosted pill exactly, just landed below the preview instead of on it. It stays dark in
+						both themes, so it reads as an instrument rather than as part of the page — and the
+						preview above it is left completely clean.
+					</p>
+				</div>
+			</section>
+
+			<section class="option" data-opt="attached">
+				<div class="option-label">
+					<h2>2 · Attached footer — preview and tray are one object</h2>
+					<p>
+						The tray is the preview's footer: same width, square shoulders, no gap. Reads as a single
+						“wallpaper” control and takes the least vertical room. Themed rather than glass, so it
+						never fights the pane.
+					</p>
+				</div>
+			</section>
+
+			<section class="option" data-opt="native">
+				<div class="option-label">
+					<h2>3 · Detached, themed — same shape, Settings' own colours</h2>
+					<p>
+						Geometry of 1, palette of the app: white on light, dark on dark. Quietest of the four and
+						the most consistent with the rest of Settings; loses the “instrument” feel that made the
+						glass version fun.
+					</p>
+				</div>
+			</section>
+
+			<section class="option" data-opt="straddle">
+				<div class="option-label">
+					<h2>4 · Straddling the edge — half on, half off</h2>
+					<p>
+						The omnibar's shoulder trick: the pill sits on the preview's bottom border, half in each
+						world, and the mini omnibar lifts to clear it. Keeps the “painting the desktop” feeling of
+						C while leaving most of the wallpaper unobstructed.
+					</p>
+				</div>
+			</section>
+
+			<div class="notes">
+				<strong>Detail in all four</strong>
+				<ul>
+					<li>
+						The <em>custom colour</em> well wears a conic rainbow ring so it's readable as “any
+						colour” without a label, and it takes the selected ring when the current colour isn't a
+						preset.
+					</li>
+					<li>
+						<em>Your image</em> is the last tile in the same row: dashed and empty until set, then it
+						<em>is</em> the thumbnail (and takes the selected ring). Drop a file on it, or click.
+					</li>
+					<li>
+						The caption under the tray carries the words — <code>Moss · #46534A</code> or
+						<code>Your image</code> — so no tile needs a label, and <em>Reset</em> lives on the
+						caption line.
+					</li>
+					<li>
+						Eight presets fit one row at the pane's 560px max; a ninth would wrap, so the palette is
+						capped at eight by the layout on purpose.
+					</li>
+				</ul>
+			</div>
+		</div>
+
+		<script type="module">
+			const PRESETS = [
+				{ id: 'ink', name: 'Ink', hex: '#23262A' },
+				{ id: 'graphite', name: 'Graphite', hex: '#33383D' },
+				{ id: 'slate', name: 'Slate', hex: '#3B4650' },
+				{ id: 'moss', name: 'Moss', hex: '#46534A' },
+				{ id: 'clay', name: 'Clay', hex: '#4E453F' },
+				{ id: 'plum', name: 'Plum', hex: '#413A47' },
+				{ id: 'fog', name: 'Fog', hex: '#A8AEB0', light: true },
+				{ id: 'paper', name: 'Paper', hex: '#E7E2D9', light: true }
+			]
+
+			const mini = `
+				<div class="mini">
+					<div class="mini-field"></div>
+					<div class="mini-bar">
+						<span class="mini-bar-l"><span class="mini-bar-title">Notes</span><span class="mini-bar-quiet">1.2.0</span></span>
+						<span class="mini-bar-r">
+							<span class="mini-bar-quiet">Synced</span><span class="mini-bar-dot"></span>
+							<span class="mini-bar-quiet">Wed 9:41</span><span class="mini-bar-face"></span>
+						</span>
+					</div>
+					<div class="mini-win mini-win-a"><div class="mini-win-bar"><i></i><i></i></div><div class="mini-win-body"><b></b><b></b><b></b><b></b></div></div>
+					<div class="mini-win mini-win-b"><div class="mini-win-bar"><i></i><i></i></div><div class="mini-win-body"><b></b><b></b><b></b><b></b></div></div>
+					<div class="mini-omni">
+						<span class="mini-omni-face"></span>
+						<span class="mini-omni-ph">Ask, or open an app…</span>
+						<span class="mini-omni-key">⌘K</span>
+					</div>
+				</div>`
+
+			// One markup for the pane; the seating is a data attribute on the wrapper.
+			const paneMarkup = (variant) => `
+				<div class="win">
+					<div class="win-title">
+						<span class="dot" style="background:#ff5f57"></span>
+						<span class="dot" style="background:#28c940"></span>
+						<span>Settings</span>
+					</div>
+					<div class="win-body">
+						<aside class="sidebar">
+							<div class="side-acct">
+								<span class="side-avatar"></span>
+								<span><span class="side-name">You</span><br /><span class="side-sub">Signed in</span></span>
+							</div>
+							<div class="nav"><span class="nav-glyph">◍</span><span>Fern</span></div>
+							<div class="nav"><span class="nav-glyph">@</span><span>Accounts</span></div>
+							<div class="nav" data-active="true"><span class="nav-glyph">◐</span><span>Appearance</span></div>
+						</aside>
+						<div class="detail">
+							<div class="pane">
+								<header>
+									<h1 class="pane-title">Appearance</h1>
+									<p class="pane-copy">How your desktop looks. Changes apply everywhere, right away.</p>
+								</header>
+								<section class="card">
+									<h2 class="card-title">Wallpaper</h2>
+									<div class="stack" data-tray="${variant}">
+										${mini}
+										<div class="tray">
+											<div class="tray-swatches"></div>
+											<span class="tray-sep"></span>
+											<label class="well" title="Custom colour"><input type="color" value="#23262a" /></label>
+											<label class="tile pick" title="Use your own image">＋<input type="file" accept="image/*" /></label>
+										</div>
+										<div class="row" style="width: 100%; margin-top: 2px">
+											<span class="tray-caption"></span>
+											<button type="button" class="linky">Reset</button>
+										</div>
+									</div>
+								</section>
+							</div>
+						</div>
+					</div>
+				</div>`
+
+			for (const section of document.querySelectorAll('.option')) {
+				const variant = section.dataset.opt
+				section.insertAdjacentHTML('beforeend', paneMarkup(variant))
+				const stack = section.querySelector('.stack')
+				const field = stack.querySelector('.mini-field')
+				const swatches = stack.querySelector('.tray-swatches')
+				const well = stack.querySelector('.well')
+				const wellInput = well.querySelector('input')
+				const pick = stack.querySelector('.pick')
+				const pickInput = pick.querySelector('input')
+				const caption = stack.querySelector('.tray-caption')
+
+				let state = { hex: PRESETS[0].hex, preset: PRESETS[0], image: null }
+
+				const paint = () => {
+					const bg = state.image ? `center / cover no-repeat url(${state.image})` : state.hex
+					field.style.background = bg
+					caption.textContent = state.image
+						? 'Your image · replaces the colour'
+						: `${state.preset?.name ?? 'Custom'} · ${state.hex.toUpperCase()}`
+					for (const t of swatches.children) t.dataset.on = String(!state.image && t.dataset.id === state.preset?.id)
+					well.dataset.on = String(!state.image && !state.preset)
+					wellInput.value = state.hex.toLowerCase()
+					pick.dataset.on = String(Boolean(state.image))
+					pick.dataset.has = String(Boolean(state.image))
+					pick.style.background = state.image ? bg : ''
+					pick.firstChild.textContent = state.image ? '' : '＋'
+				}
+
+				for (const p of PRESETS) {
+					const b = document.createElement('button')
+					b.type = 'button'
+					b.className = `tile${p.light ? ' is-light' : ''}`
+					b.dataset.id = p.id
+					b.style.background = p.hex
+					b.title = `${p.name} · ${p.hex}`
+					b.innerHTML = '<span class="tile-check">✓</span>'
+					b.onclick = () => {
+						state = { hex: p.hex, preset: p, image: null }
+						paint()
+					}
+					swatches.append(b)
+				}
+
+				wellInput.addEventListener('input', () => {
+					state = { hex: wellInput.value, preset: null, image: null }
+					paint()
+				})
+
+				const load = (file) => {
+					if (!file) return
+					state = { ...state, image: URL.createObjectURL(file) }
+					paint()
+				}
+				pickInput.addEventListener('change', () => load(pickInput.files?.[0]))
+				pick.addEventListener('dragover', (e) => e.preventDefault())
+				pick.addEventListener('drop', (e) => {
+					e.preventDefault()
+					load(e.dataTransfer?.files?.[0])
+				})
+
+				stack.querySelector('.linky').onclick = () => {
+					state = { hex: PRESETS[0].hex, preset: PRESETS[0], image: null }
+					paint()
+				}
+
+				paint()
+			}
+
+			for (const b of document.querySelectorAll('[data-theme-set]'))
+				b.addEventListener('click', () => {
+					document.documentElement.dataset.theme = b.dataset.themeSet
+					for (const other of document.querySelectorAll('[data-theme-set]'))
+						other.dataset.on = String(other === b)
+				})
+		</script>
+	</body>
+</html>

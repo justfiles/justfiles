@@ -11,7 +11,7 @@ import {
 	type UserFacts,
 	type UserProfile
 } from '@justfiles/app/capabilities/settings'
-import { fileStem } from '@justfiles/app/image-type'
+import { fileStem, imageDataUrl } from '@justfiles/app/image-type'
 import * as v from 'valibot'
 
 // Settings is a thin façade over the one `settings` capability — the host admin
@@ -33,7 +33,63 @@ import * as v from 'valibot'
 // NOTHING BINARY LIVES HERE. Reducer state is JSON-encoded to `/state/<appId>.json`
 // and replicates; an avatar's bytes travel GUI↔host as a procedure's argument, and its
 // picture comes back as a data URL from `listAvatars` (see `putAvatarFile`).
-export type Category = 'agent' | 'account' | 'accounts'
+export type Category = 'agent' | 'account' | 'accounts' | 'appearance'
+
+// ── the wallpaper ─────────────────────────────────────────────────────────────
+// A WALLPAPER IS ONE FILE, AND A COLOUR IS A FILE TOO. The shell paints whatever image
+// sits at the wallpaper path, so a flat colour is that image: a two-line SVG. Nothing
+// else in the system — not the capability, not the shell, not sync — learns that colours
+// exist, and "which colour is set" is answered by reading the file back rather than by a
+// second record that could disagree with it.
+
+// Quiet, desaturated, mid-to-dark: a wallpaper's job is to sit behind the work, and white
+// window chrome plus the omnibar's frosted pill both have to stay legible on it. Two
+// daylight neutrals at the end for people who work in a bright room.
+//
+// Lower case because that is the ONE spelling a colour has on the Volume (see
+// `normalizeHex`): the pane rings the chip whose hex equals what it read back out of the
+// file, and a display-cased constant here would mean nothing ever matched. Display casing
+// belongs to the label.
+export const WALLPAPER_COLORS: { name: string; hex: string }[] = [
+	{ name: 'Ink', hex: '#23262a' },
+	{ name: 'Graphite', hex: '#33383d' },
+	{ name: 'Slate', hex: '#3b4650' },
+	{ name: 'Moss', hex: '#46534a' },
+	{ name: 'Clay', hex: '#4e453f' },
+	{ name: 'Plum', hex: '#413a47' },
+	{ name: 'Fog', hex: '#a8aeb0' },
+	{ name: 'Paper', hex: '#e7e2d9' }
+]
+
+// `#rrggbb`, lower-cased — the one spelling written to the file, so reading a colour back
+// and comparing it to a preset is a string comparison and never a colour-space one.
+const HEX = /^#[0-9a-f]{6}$/
+
+export function normalizeHex(value: string): string | null {
+	const hex = value.trim().toLowerCase()
+	return HEX.test(hex) ? hex : null
+}
+
+// The whole encoding of a flat colour. `viewBox` with no width/height lets the shell's
+// `background-size: cover` scale it to any desktop, at ~100 bytes on the Volume.
+export function colorWallpaper(hex: string): Uint8Array {
+	const color = normalizeHex(hex)
+	if (!color) throw new Error(`not a #rrggbb colour: ${hex}`)
+	return new TextEncoder().encode(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 10"><rect width="16" height="10" fill="${color}"/></svg>`
+	)
+}
+
+// The colour in those bytes, or null when the wallpaper is a picture. Deliberately narrow:
+// it recognises what `colorWallpaper` writes and nothing else, so a hand-made SVG someone
+// dropped in Files reads as a picture (which is what it is) instead of as a colour this
+// pane would then claim to own.
+export function wallpaperColor(bytes: Uint8Array): string | null {
+	if (bytes.length > 512) return null
+	const text = new TextDecoder().decode(bytes)
+	const match = /^<svg [^>]*><rect [^>]*fill="(#[0-9a-f]{6})"\/><\/svg>$/.exec(text.trim())
+	return match?.[1] ?? null
+}
 
 // Which lane an account's credential lives in. An older host that hasn't deployed
 // `AccountInfo.origin` yet omits it — degrade to 'cloud' rather than crash (#296).
@@ -217,7 +273,7 @@ export const app = defineApp({
 			{ description: 'Note that an avatar on the volume changed, so readers re-read it.' }
 		),
 		selectCategory: t.on(
-			v.object({ category: v.picklist(['agent', 'account', 'accounts']) }),
+			v.object({ category: v.picklist(['agent', 'account', 'accounts', 'appearance']) }),
 			(state, { category }) => ({ ...state, category, error: null }),
 			{ description: 'Switch the selected settings category.' }
 		),
@@ -355,6 +411,46 @@ export const app = defineApp({
 				// sidebar row, another device) that the art is different now.
 				await app.dispatch({ type: 'avatarChanged', params: {} })
 			}
+		}),
+		// ── the wallpaper ─────────────────────────────────────────────────────────
+		// NOTHING ABOUT THE WALLPAPER IS IN STATE. The bytes are bytes (state is JSON, and it
+		// replicates), and "which colour is set" is a fact about the file, so the pane reads
+		// it once on mount and thereafter knows what it just wrote. A wallpaper changed on
+		// another device reaches the DESKTOP through the shell's watch either way — this pane
+		// is a picker, not a mirror.
+		readWallpaper: p.procedure({
+			description: 'Read the desktop wallpaper: its colour, or the picture as a data URL.',
+			audience: 'gui',
+			schema: v.object({}),
+			async run(_input, app) {
+				const bytes = (await app.invoke(
+					'settings',
+					'appearance.readWallpaper',
+					{}
+				)) as Uint8Array | null
+				if (!bytes) return { color: null, image: null }
+				const color = wallpaperColor(bytes)
+				// A `data:` URL and not a `blob:` one: the app frame's CSP allows exactly that, and
+				// nobody has to own a revoke (same reason avatars travel this way).
+				return { color, image: color ? null : imageDataUrl(bytes) }
+			}
+		}),
+		setWallpaperColor: p.procedure({
+			description: 'Set the desktop wallpaper to a flat colour, as #rrggbb.',
+			schema: v.object({ color: v.pipe(v.string(), v.regex(/^#[0-9a-fA-F]{6}$/)) }),
+			run: ({ color }, app) =>
+				app.invoke('settings', 'appearance.writeWallpaper', { bytes: colorWallpaper(color) })
+		}),
+		setWallpaperImage: p.procedure({
+			description: 'Set the desktop wallpaper to an image the user chose from this device.',
+			audience: 'gui',
+			schema: v.object({ bytes: v.instance(Uint8Array) }),
+			run: ({ bytes }, app) => app.invoke('settings', 'appearance.writeWallpaper', { bytes })
+		}),
+		clearWallpaper: p.procedure({
+			description: "Remove the wallpaper, putting the desktop back on the shell's own default.",
+			schema: v.object({}),
+			run: (_input, app) => app.invoke('settings', 'appearance.writeWallpaper', { bytes: null })
 		})
 	})
 })

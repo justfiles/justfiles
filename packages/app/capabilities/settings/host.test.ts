@@ -703,3 +703,61 @@ test('a non-allowlisted app is refused every agent.* method', async () => {
 		})
 	}
 })
+
+// ── appearance.* ──────────────────────────────────────────────────────────
+// A wallpaper is ONE file on the Volume, read and written whole. What is asserted here is
+// the host's only judgement — the bytes must be an image — plus the two shapes of null:
+// unset reads as null, and writing null puts the desktop back on the shell's default.
+
+const WALLPAPER = '/system/wallpaper'
+
+function appearanceHost() {
+	const vol = volume(memStorage())
+	return { vol, caps: settingsHost({ appearance: { volume: vol, wallpaper: WALLPAPER } }) }
+}
+
+test('appearance.* round-trips the wallpaper bytes at the path the host was handed', async () => {
+	const { vol, caps } = appearanceHost()
+	// Nothing set yet is null, not an error: the shell is on its own default.
+	expect(await caps.invoke(call('appearance.readWallpaper'))).toBeNull()
+
+	await caps.invoke(call('appearance.writeWallpaper', { bytes: PNG }))
+	expect(await vol.readFile(WALLPAPER)).toEqual(PNG)
+	expect(await caps.invoke(call('appearance.readWallpaper'))).toEqual(PNG)
+
+	// A flat colour is bytes too — the SVG the Settings app writes for one. The host does
+	// not know a colour from a photograph, which is what keeps this two methods.
+	const svg = encode('<svg xmlns="http://www.w3.org/2000/svg"><rect fill="#23262a"/></svg>')
+	await caps.invoke(call('appearance.writeWallpaper', { bytes: svg }))
+	expect(await caps.invoke(call('appearance.readWallpaper'))).toEqual(svg)
+
+	// null removes the file, so the desktop falls back the same way it does on a device
+	// where nobody ever set one.
+	await caps.invoke(call('appearance.writeWallpaper', { bytes: null }))
+	expect(await vol.exists(WALLPAPER)).toBe(false)
+	expect(await caps.invoke(call('appearance.readWallpaper'))).toBeNull()
+})
+
+test('bytes that are not an image are refused, so a desktop cannot be broken by a write', async () => {
+	const { vol, caps } = appearanceHost()
+	await expect(
+		caps.invoke(call('appearance.writeWallpaper', { bytes: encode('%PDF-1.7') }))
+	).rejects.toMatchObject({ code: 'CAPABILITY_INVALID_INPUT' })
+	expect(await vol.exists(WALLPAPER)).toBe(false)
+})
+
+test('no wallpaper on this shell: appearance.* is UNAVAILABLE, not half-served', async () => {
+	const caps = host()
+	for (const method of ['appearance.readWallpaper', 'appearance.writeWallpaper']) {
+		await expect(caps.invoke(call(method, { bytes: null }))).rejects.toMatchObject({
+			code: 'CAPABILITY_UNAVAILABLE'
+		})
+	}
+})
+
+test('a non-allowlisted app is refused the wallpaper too', async () => {
+	const { caps } = appearanceHost()
+	await expect(
+		caps.invoke(call('appearance.readWallpaper', {}, 'app.someone.else'))
+	).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+})

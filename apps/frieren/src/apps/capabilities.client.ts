@@ -19,6 +19,7 @@ import type { Volume } from '@justfiles/fs'
 import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { notificationStore } from '../notifications/store.ts'
+import { WALLPAPER_PATH } from '../shell/wallpaper.ts'
 import { frierenCompile, frierenRunner } from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
@@ -58,6 +59,11 @@ export function clientCapabilities(
 				// The built-in art rides along because `agent.listAvatars` is served HERE: the
 				// shell already has these bytes in its bundle, so offering them costs nothing.
 				agent: { volume: fs, paths: IDENTITY_PATHS, builtins: BUILTIN_AVATARS },
+				// The wallpaper is served here too, and for the same reason: it is a file on this
+				// thread's Volume, at the path the desktop already watches — so Settings writing a
+				// colour or a photo repaints the desktop through the watch, offline, with no
+				// round-trip and no second way for a wallpaper to arrive.
+				appearance: { volume: fs, wallpaper: WALLPAPER_PATH },
 				remote: fallback
 			}),
 			notify: notifyHost(browserNotifyChannel),

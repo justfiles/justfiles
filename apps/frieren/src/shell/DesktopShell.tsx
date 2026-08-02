@@ -139,32 +139,13 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	const wallpaper = useWallpaper()
 
-	// Native file picker → wallpaper bytes into the volume; the desktop updates
-	// through the volume watch, same as a write from any other source.
-	const pickWallpaper = () => {
-		const input = document.createElement('input')
-		input.type = 'file'
-		input.accept = 'image/*'
-		input.onchange = () => {
-			const file = input.files?.[0]
-			if (file)
-				wallpaper.set(file).catch((e: unknown) => {
-					alert(e instanceof Error ? e.message : String(e))
-				})
-		}
-		input.click()
-	}
-
 	const desktopMenuItems: ContextMenuItem[] = [
-		{ label: 'Personalize…', onSelect: openSettings },
+		{ label: 'Personalize…', onSelect: () => openSettings() },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
 		{ separator: true },
-		{ label: 'Change Wallpaper…', onSelect: pickWallpaper },
-		{
-			label: 'Remove Wallpaper',
-			disabled: !wallpaper.url,
-			onSelect: () => void wallpaper.clear().catch(() => {})
-		},
+		// The wallpaper is Settings' to change now — one writer, one pane, and a preview
+		// of what you are choosing instead of a bare file picker.
+		{ label: 'Change Wallpaper…', onSelect: () => openSettings('appearance') },
 		{ separator: true },
 		{ label: 'Clean Up', disabled: true, onSelect: () => {} }
 	]
@@ -258,9 +239,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 			<div
 				className="frn-desktop"
 				style={
-					wallpaper.url
+					wallpaper
 						? {
-								backgroundImage: `url(${wallpaper.url})`,
+								backgroundImage: `url(${wallpaper})`,
 								backgroundSize: 'cover',
 								backgroundPosition: 'center'
 							}
@@ -286,7 +267,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							{window.appId ? (
 								<AppViewport id={window.id} />
 							) : (
-								<MessagesPanel onPersonalize={openSettings} />
+								<MessagesPanel onPersonalize={() => openSettings()} />
 							)}
 						</AppWindow>
 					))}
@@ -294,7 +275,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				{fullscreenId ? null : (
 					<Omnibar
 						onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
-						onPersonalize={openSettings}
+						onPersonalize={() => openSettings()}
 					/>
 				)}
 			</div>

@@ -3,11 +3,15 @@ import { expect, test } from 'vitest'
 import {
 	app,
 	avatarStates,
+	colorWallpaper,
 	hasBothOrigins,
 	initialState,
 	isBound,
 	nameInSoul,
+	normalizeHex,
 	originKind,
+	WALLPAPER_COLORS,
+	wallpaperColor,
 	wornAvatar
 } from './app.ts'
 
@@ -162,4 +166,41 @@ test('the states worth a slot are the ones the built-in art covers', () => {
 		avatar({ ref: 'mine', builtin: false, files: ['resting.png', 'sleepy.png'] })
 	])
 	expect(states).toEqual(['resting', 'curious', 'pleased'])
+})
+
+// ── the wallpaper ─────────────────────────────────────────────────────────
+// A colour IS a file: the pane writes the SVG below, and reads the colour back out of it.
+// Nothing else in the system learns that colours exist, so this pair is the whole feature.
+
+test('a colour round-trips through the file, and only through the file we write', () => {
+	const bytes = colorWallpaper('#46534A')
+	// One spelling on the volume — lower case — so comparing a preset to what is set is a
+	// string comparison and never a colour-space one.
+	expect(new TextDecoder().decode(bytes)).toContain('fill="#46534a"')
+	expect(wallpaperColor(bytes)).toBe('#46534a')
+	// Every preset survives the round trip, which is what rings the right chip on mount.
+	for (const { hex } of WALLPAPER_COLORS) expect(wallpaperColor(colorWallpaper(hex))).toBe(hex)
+
+	// A picture is not a colour, and neither is an SVG that came from somewhere else: it
+	// reads as the picture it is, so the pane never claims to own it.
+	expect(wallpaperColor(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBeNull()
+	expect(
+		wallpaperColor(new TextEncoder().encode('<svg><rect fill="#46534a"/><circle/></svg>'))
+	).toBeNull()
+})
+
+test('only #rrggbb is a colour', () => {
+	expect(normalizeHex('  #46534A \n')).toBe('#46534a')
+	for (const bad of ['#fff', 'moss', '#4653', 'rgb(0,0,0)', '#46534g']) {
+		expect(normalizeHex(bad)).toBeNull()
+	}
+	expect(() => colorWallpaper('moss')).toThrow()
+})
+
+test('appearance is a category the sidebar can select', async () => {
+	const { state } = await app.dispatch(
+		{ type: 'selectCategory', params: { category: 'appearance' } },
+		{ state: initialState }
+	)
+	expect(state?.category).toBe('appearance')
 })

@@ -18,6 +18,7 @@ import {
 	type SettingsState,
 	wornAvatar
 } from './app.ts'
+import { AppearancePane } from './appearance-pane.tsx'
 
 // How a provider projects an `ai`-capability account's config for the picker
 // (see the host `describe`): the selected model + the list to choose from.
@@ -128,7 +129,8 @@ export const gui = defineGUI<SettingsApp>({
 })
 
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
-	{ id: 'accounts', label: 'Accounts', glyph: '@' }
+	{ id: 'accounts', label: 'Accounts', glyph: '@' },
+	{ id: 'appearance', label: 'Appearance', glyph: '◐' }
 ]
 
 const CAP_LABEL: Record<CapabilityId, string> = {
@@ -180,6 +182,9 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 				) : null}
 				{state.category === 'accounts' ? <AccountsPanel state={state} client={client} /> : null}
 				{state.category === 'account' ? <AccountPane state={state} client={client} /> : null}
+				{/* The one pane that needs no reducer state: a wallpaper is bytes on the Volume
+				    (see `readWallpaper`), so the pane reads the file and holds the answer itself. */}
+				{state.category === 'appearance' ? <AppearancePane client={client} /> : null}
 			</section>
 		</div>
 	)
