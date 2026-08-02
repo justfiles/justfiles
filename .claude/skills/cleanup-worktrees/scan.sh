@@ -73,8 +73,8 @@ while IFS=$'\t' read -r dir ref; do
 
 	if [ "$PR_STATE" = ok ]; then
 		awk -F'\t' -v b="$branch" '$1==b{print $3; f=1} END{if(!f) print "pr=none"}' "$TMP/prs"
-		# Commits the branch grew beyond every PR head. Note GitHub's headRefOid tracks the
-		# live branch, so 0 does not prove the tip predates a close — compare the dates above.
+		# Commits the branch grew beyond every PR head. GitHub's headRefOid tracks the live
+		# branch, so 0 never proves a tip was abandoned: context, not evidence.
 		heads=""; missing=0
 		for sha in $(awk -F'\t' -v b="$branch" '$1==b{print $2}' "$TMP/prs"); do
 			git cat-file -e "$sha^{commit}" 2>/dev/null && heads="$heads $sha" || missing=1
