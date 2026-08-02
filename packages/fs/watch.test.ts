@@ -247,6 +247,31 @@ describe('volume.watch recursive', () => {
 		expect(fired).toBe(1)
 	})
 
+	it('watches a root that does not exist yet', async () => {
+		const vol = volume(memStorage())
+
+		let fired = 0
+		// What frieren's dock does: watch `/applications` before anything has seeded it.
+		// Nothing to resolve through yet, so the root is held as spelled and the creating
+		// writes still arrive — otherwise the first boot would watch nothing at all.
+		await vol.watch('/applications', () => fired++, { recursive: true })
+
+		await vol.mkdir('/applications')
+		await flush()
+		// The root's own creation counts: it IS the watched path.
+		expect(fired).toBe(1)
+
+		await vol.writeFile('/applications/app.js', enc.encode('x'))
+		await flush()
+		expect(fired).toBe(2)
+
+		// …and a sibling subtree's churn (an import writing a thousand notes) stays out.
+		await vol.mkdir('/notes', { recursive: true })
+		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
+		await flush()
+		expect(fired).toBe(2)
+	})
+
 	it('wakes when an ancestor moves, taking the subtree with it', async () => {
 		const vol = volume(memStorage())
 		await vol.mkdir('/notes/trips', { recursive: true })
