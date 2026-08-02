@@ -125,14 +125,27 @@ export function AppearancePane({ client }: { client: Client<SettingsApp> }) {
 	// Optimistic: the preview IS the answer, and the file will hold the same bytes this pane
 	// already has — a re-read would only tell it what it just said.
 	//
-	// The writes are SERIALISED, and in the order you clicked. Procedures do not share the
-	// kernel's per-app queue, so a big picture still uploading when you pick a colour next
-	// could otherwise land after it and leave the desktop on the picture while this pane
-	// showed the colour. One chain, so the last thing you chose is the last thing written.
+	// SELECTING IS WHAT ORDERS A WRITE, not finishing whatever the selection needs first.
+	// Procedures don't share the kernel's per-app queue, so the writes go through one chain
+	// — and a selection claims its place in that chain THE MOMENT YOU CLICK, before a
+	// picture's bytes are read. Otherwise a picture picked first but read slowly would be
+	// written last and take back the colour you chose while waiting for it.
+	//
+	// `next` may therefore be a promise (the picture's own preview, which needs those
+	// bytes). It applies only if nothing has been chosen since — `seq` is what a claim holds
+	// — so a slow picture can never repaint the pane after you moved on.
 	const queue = useRef<Promise<unknown>>(Promise.resolve())
-	const run = (next: Wallpaper, write: () => Promise<unknown>) => {
-		setWallpaper(next)
+	const seq = useRef(0)
+	const run = (next: Wallpaper | Promise<Wallpaper>, write: () => Promise<unknown>) => {
 		setError(null)
+		const claim = ++seq.current
+		void Promise.resolve(next).then(
+			(wallpaper) => {
+				if (claim === seq.current) setWallpaper(wallpaper)
+			},
+			// A failed preparation is reported by the write below, which shares it.
+			() => {}
+		)
 		const done = queue.current.then(write, write)
 		// The chain must survive a failed link, so what the NEXT write waits on can't reject.
 		queue.current = done.catch(() => {})
@@ -142,15 +155,25 @@ export function AppearancePane({ client }: { client: Client<SettingsApp> }) {
 	const setColor = (hex: string) =>
 		run({ color: hex, image: null }, () => client.setWallpaperColor({ color: hex }))
 
-	const setImage = async (event: ChangeEvent<HTMLInputElement>) => {
+	// Not `async`: this claims its place in the chain synchronously (see `run`) and hands
+	// both the preview and the write ONE read of the file.
+	const setImage = (event: ChangeEvent<HTMLInputElement>) => {
 		const file = event.target.files?.[0]
 		// Let the same file be picked twice in a row (the input keeps its value otherwise).
 		event.target.value = ''
 		if (!file) return
-		const bytes = new Uint8Array(await file.arrayBuffer())
-		const image = imageDataUrl(bytes)
-		if (!image) return setError(`${file.name} isn’t an image this device can read.`)
-		run({ color: null, image }, () => client.setWallpaperImage({ bytes }))
+		const read = file.arrayBuffer().then((buffer) => {
+			const bytes = new Uint8Array(buffer)
+			const image = imageDataUrl(bytes)
+			// Rejecting is how this reaches the user: the write shares this promise, so the
+			// message surfaces there and nothing is written.
+			if (!image) throw new Error(`${file.name} isn’t an image this device can read.`)
+			return { bytes, image }
+		})
+		run(
+			read.then(({ image }) => ({ color: null, image })),
+			async () => client.setWallpaperImage({ bytes: (await read).bytes })
+		)
 	}
 
 	if (unavailable) {
@@ -205,7 +228,7 @@ export function AppearancePane({ client }: { client: Client<SettingsApp> }) {
 							title="Use your own picture"
 						>
 							{wallpaper.image ? '' : '＋'}
-							<input type="file" accept="image/*" onChange={(e) => void setImage(e)} />
+							<input type="file" accept="image/*" onChange={setImage} />
 						</label>
 					</div>
 					<div className="wp-foot">
