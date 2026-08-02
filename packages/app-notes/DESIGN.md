@@ -646,7 +646,7 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   match; a **Create “…” row** sits after the matches whenever anything is typed, so search and create stay
   one gesture (the nvAlt move) — offered even when something matches, because `Kyoto trip` matching is
   exactly why `Kyoto` would otherwise be uncreatable, and reachable with ArrowDown so it costs no second
-  shortcut. Esc hops editor → field and back. ☰ docks the tree as a left pane —
+  shortcut. A **Scratch row** is pinned above the matches in both surfaces (§6). Esc hops editor → field and back. ☰ docks the tree as a left pane —
   and the bar folds into it: ☰ + search become the pane's header, so the editor side is
   pure content. The preference is GUI-local (localStorage where the host allows it; frieren's sandboxed
   iframe has no `allow-same-origin`, so there it degrades to per-session). The listing is re-fetched on
@@ -666,7 +666,8 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   shell binds only `Cmd+W`/`Cmd+Q` natively (`apps/mac/…/Booter.swift`), so nothing upstream swallows
   them. On a note `Cmd+S` lands the buffer now and says "Saved": never anything destructive, so the reflex
   is safe wherever it is pressed. On the scratch it files (§6). Digits were the obvious pick for "go to the
-  scratch" and are unusable — `Cmd+1`–`9` switches browser tabs and cannot be prevented.
+  scratch" and are unusable — `Cmd+1`–`9` switches browser tabs and cannot be prevented. `Cmd+J` is never
+  the ONLY way back: the Scratch row is (§6), and it displays this key.
 - **Delete** (forward-delete in the field) → `remove` (GUI-only).
 - **`revision` bump** (open file changed on disk) → GUI re-reads via `readNote`, so an agent/Files edit to
   the open note shows live.
@@ -868,6 +869,38 @@ and would file an evening entry under tomorrow. So `journal({ date, text })` tak
 the user's clock. The first entry of a day **creates** the note with `exclusive: true` and EEXIST is the
 ordinary case — append — so two windows keeping something in the same instant cannot overwrite each other's
 first line. Folders this app creates for itself are lowercase: `/journal`.
+
+### The way back has to be VISIBLE
+
+⌘J is the fast way back to the scratch; it cannot be the only way, because a shortcut you have to already
+know is not an affordance. So the scratch is **a row pinned into both surfaces that show the listing** — the
+dropdown under the bar, and the docked pane above the tree — as one element, exactly like the Create row
+(§5), so a click and the key can never come to mean different things.
+
+A row rather than another glyph in the bar, for three reasons that are really one — **only a row can carry
+state**:
+
+- It is the way back, **seen** rather than remembered.
+- It says **what is in there**: the first line, or *empty*. So a scratch with words waiting is visible while
+  a note is open, and "is there anything in my scratch?" is answered without going there. A button cannot
+  do that.
+- It carries **⌘J**, so the visible affordance is where the shortcut is learned — the convention every
+  command palette already uses. The row teaches the key it replaces.
+
+And it is bold (`data-open`) when the scratch is the current place, which is what makes it read as a *place*
+in the list rather than a command.
+
+**Deliberately outside the keyboard row set.** `rows`' indices are the filtered notes plus the Create row,
+and the scratch is not a search result: arrowing through matches must not stop on it, Enter on an empty query
+must still open the newest *note*, and ⌘J is already its key. Which also means the index arithmetic the
+palette got wrong before (§5: "creating belongs to an empty result set, never to a missing index") was not
+touched to add this. **Pinned, not filtered**, for the same reason: a place does not match a query. Typing
+`rate` leaves the row where it is, above the one note that matched.
+
+The pane's default is closed and localStorage is unavailable in frieren's sandboxed iframe, so the dropdown
+is the surface that can be relied on — and it is the one every *deliberate* way out of the scratch already
+passes through (⌘O, or clicking the field). The footer stays as it is: it says what the surface you are
+**on** is; the row is how you get back to it.
 
 ### The agent's half
 

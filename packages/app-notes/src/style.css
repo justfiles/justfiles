@@ -91,6 +91,12 @@
 	flex: none;
 	border-bottom: 1px solid var(--rule);
 }
+/* The scratch, pinned under the header for the same reason: it is a PLACE, not a
+   match, so the tree (and the result list) has no row to offer for it. */
+.notes-side-scratch {
+	flex: none;
+	border-bottom: 1px solid var(--rule);
+}
 /* The splitter: a hairline hit-target that widens its grab area with padding,
    not with pixels, so the layout doesn't shift. */
 .notes-splitter {
@@ -288,6 +294,23 @@
 }
 .notes-item[data-active="true"] .notes-item-mtime {
 	opacity: 0.8;
+}
+/* The scratch row's own two parts. After `.notes-item-title` on purpose: it is more
+   specific, so it has to come later or the cascade runs backwards. */
+.notes-scratch-row .notes-item-title {
+	display: flex;
+	min-width: 0;
+	align-items: baseline;
+}
+/* What is in the scratch right now, so a note-shaped surface can still show that words
+   are waiting. Takes the slack in the row and ellipsizes first. */
+.notes-scratch-row .notes-scratch-preview {
+	margin-left: 8px;
+	opacity: 0.5;
+	font-style: italic;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .notes-empty {
 	padding: 8px 18px;

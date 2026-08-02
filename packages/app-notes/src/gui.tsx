@@ -906,14 +906,19 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	}, [settle])
 
 	// Back to the scratch. `newNote` is what makes the reducer — and the agent — say the user
-	// is on it; the note buffer settles on the way out.
+	// is on it; the note buffer settles on the way out. A navigation, so it dismisses the
+	// palette and drops the half-typed name with it, exactly as opening a note does.
 	const showScratch = useCallback(async () => {
 		if (openPath !== null) {
 			if (!(await settle())) return
 			await actions.newNote({})
 		}
+		setDropOpen(false)
+		setQuery('')
+		setDraft(null)
+		setTitleError(null)
 		focusScratchEnd()
-	}, [openPath, settle, actions, focusScratchEnd])
+	}, [openPath, settle, actions, setDraft, focusScratchEnd])
 
 	// Where the name field lands, and whether it landed. Three answers, not two, because a
 	// name can fail in two unrelated ways:
@@ -1328,11 +1333,42 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		</button>
 	) : null
 
+	// The scratch as a PLACE in the list — one element, pinned into both surfaces that show
+	// the listing, exactly as the Create row is (see `createRow`). Three jobs, which is why it
+	// is a row and not another glyph in the bar:
+	//
+	//   • it is the way back that can be SEEN, so returning is not a shortcut you had to know;
+	//   • it says what is in there (the first line, or "empty"), so a scratch with words waiting
+	//     is visible from a note — a button could not;
+	//   • it carries ⌘J, so the visible affordance is where the shortcut is learned.
+	//
+	// Deliberately OUTSIDE the keyboard row set (`rows` indices are the filtered notes and the
+	// Create row): the scratch is not a search result, arrowing through results must not stop
+	// on it, and ⌘J is already its key. Pinned rather than filtered, because it is a place
+	// rather than a match — the same reason the pane's Create row sits outside the tree.
+	const scratchLine = scratch.text.trim().split('\n', 1)[0]?.trim() ?? ''
+	const scratchRow = (
+		<button
+			type="button"
+			className="ds-menu-item notes-item notes-scratch-row"
+			data-open={onScratch || undefined}
+			title="The scratch buffer — unfiled text that persists"
+			onClick={() => void showScratch()}
+		>
+			<span className="notes-item-title">
+				Scratch
+				<span className="notes-scratch-preview">{scratchLine === '' ? 'empty' : scratchLine}</span>
+			</span>
+			<span className="notes-item-mtime">{isMac ? '⌘J' : 'Ctrl+J'}</span>
+		</button>
+	)
+
 	// The same rows serve both surfaces: the dropdown under the bar and the
 	// docked pane. `data-active` (the ds-menu highlight) tracks keyboard nav
 	// while the field is focused; the open note's title is just set in bold.
 	const rows = (
 		<>
+			{scratchRow}
 			{filtered.map((note, i) => (
 				<button
 					type="button"
@@ -1435,6 +1471,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							{toggleButton}
 							{searchField}
 						</div>
+						<div className="notes-side-scratch">{scratchRow}</div>
 						{createRow ? <div className="notes-side-create">{createRow}</div> : null}
 						<NotesTree
 							entries={entries}
