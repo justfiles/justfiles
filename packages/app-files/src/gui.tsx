@@ -267,7 +267,8 @@ function parentDir(dir: string): string {
 
 // Reconcile the tree from the `prev` file-path set to `next` using the
 // incremental mutation API instead of a whole-tree `resetPaths`. This preserves
-// expansion + selection (a coarse reset re-applies `initialExpansion: 'open'`)
+// expansion + selection (a coarse reset re-applies `initialExpansion`, snapping
+// every folder back to the collapsed default)
 // and only rebuilds touched nodes, so it is also cheaper on large trees. The
 // tree derives directories from file paths: `add` recreates missing ancestors,
 // but `remove` leaves an emptied ancestor behind as an explicit row — so prune
@@ -340,7 +341,9 @@ function FilesTree(props: {
 	const { model } = useFileTree({
 		paths,
 		flattenEmptyDirectories: true,
-		initialExpansion: 'open',
+		// Finder-like: open on the top level only, every folder collapsed until the
+		// user opens it.
+		initialExpansion: 'closed',
 		initialSelectedPaths: selectedPath ? [selectedPath] : [],
 		itemHeight: 24,
 		density: 0.85,
