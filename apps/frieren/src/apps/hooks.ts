@@ -76,8 +76,11 @@ const SETTINGS_APP = { id: 'app.justfiles.frieren.settings', name: 'Settings' }
 
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
-	/** Open Settings ON the Agent pane — every caller is a personalize affordance. */
-	openSettings: () => void
+	/**
+	 * Open Settings ON a pane. Defaults to the Agent pane — most callers are a
+	 * personalize affordance; the desktop's "Change Wallpaper…" asks for 'appearance'.
+	 */
+	openSettings: (category?: 'agent' | 'appearance') => void
 	installApp: () => Promise<void>
 	installCommunity: (app: CommunityCatalogApp) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
@@ -150,7 +153,7 @@ export function useAppCommands(): AppCommands {
 			})()
 		}
 
-		const openSettings = () => {
+		const openSettings = (category: 'agent' | 'appearance' = 'agent') => {
 			dispatch({ type: 'app.open', appId: SETTINGS_APP.id, title: SETTINGS_APP.name })
 			// Selecting the pane is PART of opening it: the category persists, so someone who
 			// last looked at Accounts would otherwise land back there from a button that said
@@ -160,10 +163,10 @@ export function useAppCommands(): AppCommands {
 				.then((kernel) =>
 					kernel.dispatch(SETTINGS_APP.id, {
 						type: 'selectCategory',
-						params: { category: 'agent' }
+						params: { category }
 					})
 				)
-				.catch((error: unknown) => console.error('[settings] open on Agent failed:', error))
+				.catch((error: unknown) => console.error('[settings] open on', category, 'failed:', error))
 		}
 
 		return { launchApp, openSettings, installApp, installCommunity, uninstallApp }

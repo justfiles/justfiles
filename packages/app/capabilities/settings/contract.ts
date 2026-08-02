@@ -12,7 +12,7 @@
 // Methods are area-prefixed so the bucket stays legible: `accounts.*` administers
 // connected provider accounts, `host.*` reads what only the host knows, `agent.*`
 // edits the one companion's identity on the Volume (soul, face, and the facts the
-// user chose to share).
+// user chose to share), and `appearance.*` the desktop's own look.
 
 import type { AccountsAdmin } from '../accounts/contract.ts'
 
@@ -220,4 +220,14 @@ export interface SettingsCapability {
 		archetype?: string
 		user?: { birthDate?: string; gender?: 'female' | 'male' | null }
 	}): Promise<GeneratedSoul>
+	// The desktop wallpaper, as the BYTES at the one path the shell watches. Two methods
+	// and no taxonomy: a flat colour is bytes too (the tiny SVG the Settings app writes
+	// for one), so nothing here has to know which kind is in the file — a wallpaper stays
+	// what it already was, a file on the Volume that syncs like any other. Reading null
+	// means unset; writing null puts the shell back on its own default.
+	//
+	// UNAVAILABLE on a host whose shell has no wallpaper (the Mac app today) — the pane
+	// then says so, the way the Usage pane does with no meter.
+	'appearance.readWallpaper'(input: Record<string, never>): Promise<Uint8Array | null>
+	'appearance.writeWallpaper'(input: { bytes: Uint8Array | null }): Promise<void>
 }
