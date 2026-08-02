@@ -30,23 +30,32 @@ comparing against `origin/main`) and prints one block per non-primary worktree:
 | `contained=merge-is-noop` | merging the branch into main would change nothing — work is in main (covers squash merges) |
 | `contained=no (touched=T still-differ=D)` | `D` of the `T` files the branch touched still differ from main |
 | `remote=` | remote branch and how many local commits were never pushed |
-| `pr=` | every PR for that branch head with state and merge time |
+| `pr=` | every PR for that branch head, with state, merge time and the head SHA GitHub last saw |
+| `tip-beyond-prs=N` | commits on the branch that no PR head reaches — work GitHub never saw (local-only or pushed after the PR). `unknown` when the PR head is not in the local object store |
 | `pr=unknown` | `gh` failed — the header says so too, and no verdict can rest on PR state |
 | `tmux=` | a live agent session rooted in that worktree |
 
 ## Step 2 — Verdict per worktree
 
+Containment is the only authority on "the work is in main". A PR's state never
+overrides it: a branch can gain commits *after* its PR merged or closed, and those
+commits are unreviewed work that deleting the branch would destroy.
+
 **DONE** — needs `dirty=0`, `tmux=none`, and one of:
 
 1. `contained=ancestor` or `contained=merge-is-noop` — the work is in main, whatever the PR says.
-2. `pr=... MERGED` **and** nothing was added after the merge (verify, see below).
-3. Every PR for the branch is `CLOSED` and unmerged — the work was abandoned. Say so loudly in the report.
+2. Every PR for the branch is `CLOSED` and unmerged, **and** `tip-beyond-prs=0`, **and**
+   no unpushed commits (`local-ahead=0`, or `remote=none` with `tip-beyond-prs=0`) — the
+   tip is exactly what was abandoned. Say so loudly in the report: this deletes work that
+   was never merged.
 
 **KEEP** — everything else, especially: `dirty>0`, a live `tmux` session, `pr=OPEN`, `pr=unknown`,
-`pr=none` with commits not in main, unpushed commits (`local-ahead>0`) that are not contained.
+`pr=none` with commits not in main, `tip-beyond-prs>0` or `unknown`, unpushed commits
+(`local-ahead>0`) that are not contained.
 
-When a PR is `MERGED` but `contained=no`, the branch usually grew commits after the
-squash merge. Do not guess — check:
+A `MERGED` PR with `contained=no` is **not** a DONE verdict — the branch usually grew
+commits after the squash merge. It may only be upgraded to DONE after inspecting what
+the difference actually is:
 
 ```bash
 SQUASH=$(git log --oneline origin/main --grep "(#<pr>)" | head -1)   # the squash commit in main

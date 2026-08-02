@@ -19,8 +19,8 @@ MAIN_TREE="$(git rev-parse origin/main^{tree})"
 
 # Every PR in one shot: per-branch `gh pr list` calls get throttled into 30s stalls.
 PR_STATE=ok
-gh pr list --state all --limit 1000 --json headRefName,number,state,title,url,mergedAt \
-	--jq '.[]|[.headRefName,"pr=#\(.number) \(.state) merged=\(.mergedAt//"-") \(.url) — \(.title)"]|@tsv' \
+gh pr list --state all --limit 1000 --json headRefName,headRefOid,number,state,title,url,mergedAt \
+	--jq '.[]|[.headRefName,.headRefOid,"pr=#\(.number) \(.state) merged=\(.mergedAt//"-") head=\(.headRefOid[0:8]) \(.url) — \(.title)"]|@tsv' \
 	>"$TMP/prs" </dev/null || { PR_STATE=failed; echo "!! gh pr list failed — PR state unknown"; }
 echo "prs-known=$(wc -l <"$TMP/prs" | tr -d ' ')"
 
@@ -58,7 +58,17 @@ while IFS=$'\t' read -r dir ref; do
 		echo "remote=none"
 
 	if [ "$PR_STATE" = ok ]; then
-		awk -F'\t' -v b="$branch" '$1==b{print $2; f=1} END{if(!f) print "pr=none"}' "$TMP/prs"
+		awk -F'\t' -v b="$branch" '$1==b{print $3; f=1} END{if(!f) print "pr=none"}' "$TMP/prs"
+		# Commits the branch grew beyond every PR head: work GitHub never saw.
+		heads=""; missing=0
+		for sha in $(awk -F'\t' -v b="$branch" '$1==b{print $2}' "$TMP/prs"); do
+			git cat-file -e "$sha^{commit}" 2>/dev/null && heads="$heads $sha" || missing=1
+		done
+		if [ -n "$heads" ]; then
+			echo "tip-beyond-prs=$(git rev-list --count "$branch" --not $heads)$([ $missing = 1 ] && echo ' (a PR head is missing locally)')"
+		elif [ $missing = 1 ]; then
+			echo "tip-beyond-prs=unknown (PR heads missing locally)"
+		fi
 	else
 		echo "pr=unknown (gh failed)"
 	fi
