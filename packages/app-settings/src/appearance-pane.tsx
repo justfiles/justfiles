@@ -122,12 +122,21 @@ export function AppearancePane({ client }: { client: Client<SettingsApp> }) {
 			})
 	}, [client])
 
-	// Every write is optimistic: the preview is the answer, and the file is the same bytes
-	// this pane already holds — a re-read would only tell it what it just said.
+	// Optimistic: the preview IS the answer, and the file will hold the same bytes this pane
+	// already has — a re-read would only tell it what it just said.
+	//
+	// The writes are SERIALISED, and in the order you clicked. Procedures do not share the
+	// kernel's per-app queue, so a big picture still uploading when you pick a colour next
+	// could otherwise land after it and leave the desktop on the picture while this pane
+	// showed the colour. One chain, so the last thing you chose is the last thing written.
+	const queue = useRef<Promise<unknown>>(Promise.resolve())
 	const run = (next: Wallpaper, write: () => Promise<unknown>) => {
 		setWallpaper(next)
 		setError(null)
-		write().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+		const done = queue.current.then(write, write)
+		// The chain must survive a failed link, so what the NEXT write waits on can't reject.
+		queue.current = done.catch(() => {})
+		done.catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
 	}
 
 	const setColor = (hex: string) =>
@@ -183,7 +192,11 @@ export function AppearancePane({ client }: { client: Client<SettingsApp> }) {
 							))}
 						</div>
 						<span className="wp-sep" />
-						<CustomColor wallpaper={wallpaper} onPick={setColor} />
+						<CustomColor
+							wallpaper={wallpaper}
+							onPick={setColor}
+							onDrag={(hex) => setWallpaper({ color: hex, image: null })}
+						/>
 						<label
 							className="wp-tile wp-pick"
 							data-has={Boolean(wallpaper.image) || undefined}
@@ -225,30 +238,47 @@ function Header() {
 	)
 }
 
-// Any colour at all. The native well previews as you drag (`input`) but only WRITES when
-// you commit (`change`) — a drag fires input continuously, and each one would be a write
-// to the volume that syncs.
+// Any colour at all. The preview follows the drag; the FILE is written once, when you
+// commit — and that has to be a native `change` listener, because React's `onChange` is
+// really the `input` event: it fires on every step of a drag, so committing there would
+// write (and sync) a wallpaper per pixel the user dragged through.
+//
+// A picker dismissed rather than committed leaves the preview on the colour last dragged
+// through. It is a preview, and the next commit corrects it — worth far less than a
+// listener that fought the browser to find out.
 function CustomColor({
 	wallpaper,
-	onPick
+	onPick,
+	onDrag
 }: {
 	wallpaper: Wallpaper
 	onPick: (hex: string) => void
+	onDrag: (hex: string) => void
 }) {
 	const custom = wallpaper.color && !WALLPAPER_COLORS.some((c) => c.hex === wallpaper.color)
-	const [dragging, setDragging] = useState<string | null>(null)
+	const input = useRef<HTMLInputElement>(null)
+	// Subscribed once; the handler reads the current `onPick` rather than re-subscribing on
+	// every render (the parent hands a fresh closure each time).
+	const pick = useRef(onPick)
+	pick.current = onPick
+	useEffect(() => {
+		const el = input.current
+		if (!el) return
+		const commit = () => {
+			const hex = normalizeHex(el.value)
+			if (hex) pick.current(hex)
+		}
+		el.addEventListener('change', commit)
+		return () => el.removeEventListener('change', commit)
+	}, [])
 	return (
 		<span className="wp-well" data-on={custom || undefined} title="Any colour">
 			<input
+				ref={input}
 				type="color"
 				aria-label="Custom wallpaper colour"
-				value={dragging ?? wallpaper.color ?? '#46534a'}
-				onInput={(e) => setDragging(e.currentTarget.value)}
-				onChange={(e) => {
-					const hex = normalizeHex(e.currentTarget.value)
-					setDragging(null)
-					if (hex) onPick(hex)
-				}}
+				value={wallpaper.color ?? '#46534a'}
+				onChange={(e) => onDrag(e.currentTarget.value)}
 			/>
 		</span>
 	)
