@@ -14,7 +14,8 @@ import type {
 	ProcedureDefs,
 	RuntimeContext,
 	Subs,
-	Subscription
+	Subscription,
+	SubscriptionBuilder
 } from './app.ts'
 import { buildMachine } from './machine.ts'
 
@@ -143,9 +144,21 @@ export function defineApp<
 	// streams (Part D). The `sub` builder mirrors `cmd` — it just packages the
 	// stream descriptor as data; the kernel resolves trust and keeps it alive.
 	const subBuilder: Subs<Caps> = {
-		capability: (capability, method, ...args) => ({
-			to: (edge) => ({ capability, method, args, to: edge })
-		})
+		capability: (capability, method, ...args) => {
+			// Mirrors `t.cmd`'s builder: `.coalesce()` flips the opt-in flag, `.to(edge)`
+			// bakes it into the final Subscription.
+			const builder = (coalesce: boolean): SubscriptionBuilder => ({
+				to: (edge) => ({
+					capability,
+					method,
+					args,
+					to: edge,
+					...(coalesce ? { coalesce: true as const } : {})
+				}),
+				coalesce: () => builder(true)
+			})
+			return builder(false)
+		}
 	}
 	const computeSubs = (state: State): Subscription[] =>
 		spec.subscriptions?.(state, subBuilder) ?? []

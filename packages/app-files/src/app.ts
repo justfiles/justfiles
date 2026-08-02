@@ -106,8 +106,12 @@ export const app = defineApp({
 	// always live: it reports structural changes anywhere in the volume so the tree
 	// auto-refreshes (folds via `treeChanged`). The single-path one tracks the open
 	// file's bytes for the preview, kept alive only while `currentViewing` holds.
+	// The recursive watch is `.coalesce()`d: it is a wake ("the tree moved, re-scan"),
+	// so an unreduced event is fully superseded by a newer one — a bulk delete/import
+	// folds into one reduce plus a trailing one instead of queueing a dispatch per
+	// entry, which is what used to starve this app's queue (and its GUI boot).
 	subscriptions: (state, sub) => [
-		sub.capability('volume', 'watch', { path: '/', recursive: true }).to('treeChanged'),
+		sub.capability('volume', 'watch', { path: '/', recursive: true }).coalesce().to('treeChanged'),
 		...(state.currentViewing
 			? [sub.capability('volume', 'watch', { path: state.currentViewing }).to('fileChanged')]
 			: [])

@@ -123,11 +123,16 @@ function handle(
 }
 
 test('watches the tree always, and the open file when there is one', () => {
+	// The tree watch is a WAKE (`treeChanged` just bumps a counter; the GUI re-lists),
+	// so it declares `coalesce` — a bulk import/delete folds into one reduce plus a
+	// trailing one instead of one per file. The open-file watch does not: each of its
+	// events is about a specific edit to that file.
 	const tree = {
 		capability: 'volume',
 		method: 'watch',
 		args: [{ path: '/', recursive: true }],
-		to: 'treeChanged'
+		to: 'treeChanged',
+		coalesce: true
 	}
 	expect(app.subscriptions(initialState)).toEqual([tree])
 	expect(app.subscriptions({ ...initialState, openPath: '/Trips/Kyoto.md' })).toEqual([
