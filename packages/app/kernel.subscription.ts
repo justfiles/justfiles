@@ -44,7 +44,7 @@ export interface Subscriptions {
 // The subscription reconciler (Part D). `subscriptions(state)` (in the bundle)
 // declares the ongoing streams the current state wants. After every commit the
 // kernel diffs that declared set against the running one — keyed structurally by
-// {capability,method,args,to} — starting new streams and stopping gone ones.
+// the whole descriptor (see `subKey`) — starting new streams and stopping gone ones.
 // Each emitted event re-enters the reducer as a `__sub/<to>` message. Recoverable
 // by construction: the set is a pure function of persisted state, rebuilt on boot.
 export function subscriptionRuntime({
@@ -63,8 +63,16 @@ export function subscriptionRuntime({
 
 	return { reconcile, ensure, stop }
 
+	// The structural identity of a DECLARED stream. Every field of the descriptor is in
+	// it, `coalesce` included: `startStream` captures the descriptor it was started with,
+	// so a key that ignored the mode would read a mode flip as "unchanged" and keep
+	// running the old one — leaving an unbounded stream unbounded, or dropping events
+	// after coalescing was declared off. Same key must mean same declaration, or the
+	// reconciler cannot claim to converge. (kernel.command.ts's `coalesceKey` omits the
+	// flag for the opposite reason: it identifies work ALREADY known to be coalescing —
+	// a plain command never reaches that map.)
 	function subKey(sub: Subscription): string {
-		return JSON.stringify([sub.capability, sub.method, sub.args, sub.to])
+		return JSON.stringify([sub.capability, sub.method, sub.args, sub.to, sub.coalesce ?? false])
 	}
 
 	function reconcile(appId: AppId, desired: Subscription[]): void {

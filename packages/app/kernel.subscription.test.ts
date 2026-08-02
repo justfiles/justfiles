@@ -269,3 +269,35 @@ test('a coalescing stream stopped mid-burst drops its trailing event', async () 
 	await flush()
 	expect(params).toEqual([1])
 })
+
+test('flipping a stream’s coalescing mode restarts it, so the new mode takes effect', async () => {
+	const host = fakeStream()
+	const { runtime, params } = gated(host.subscribe)
+
+	// Declared coalescing: a burst folds into the in-flight event.
+	runtime.reconcile('app', [{ ...sub('/'), coalesce: true }])
+	await until(() => host.live().length === 1, 'coalescing stream started')
+	for (let i = 1; i <= 5; i++) host.opened[0]?.emit(i)
+	await flush()
+	expect(params).toEqual([1])
+
+	// The SAME capability/method/args/to, coalescing declared off. `startStream` captures
+	// the descriptor it was started with, so this only works if the mode is part of the
+	// diff key: otherwise the reconciler calls it unchanged and keeps folding events the
+	// app just asked it to stop folding.
+	runtime.reconcile('app', [sub('/')])
+	await until(() => host.opened.length === 2 && host.live().length === 1, 'restarted uncoalesced')
+	expect(host.opened[0]?.stopped).toBe(true)
+	for (let i = 6; i <= 10; i++) host.opened[1]?.emit(i)
+	await flush()
+	expect(params).toEqual([1, 6, 7, 8, 9, 10])
+
+	// And back: an unbounded stream must not stay unbounded once coalescing is declared.
+	runtime.reconcile('app', [{ ...sub('/'), coalesce: true }])
+	await until(() => host.opened.length === 3 && host.live().length === 1, 'restarted coalescing')
+	expect(host.opened[1]?.stopped).toBe(true)
+	const before = params.length
+	for (let i = 11; i <= 15; i++) host.opened[2]?.emit(i)
+	await flush()
+	expect(params.slice(before)).toEqual([11])
+})
