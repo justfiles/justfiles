@@ -185,8 +185,13 @@ export const app = defineApp({
 	// when the agent or Files edits it on disk, and a recursive watch is the
 	// structural signal — a create/remove/rename anywhere means the tree the user
 	// is looking at is stale. Neither carries data; `list`/`readNote` re-read.
+	// Because the structural signal carries nothing, it is `.coalesce()`d: an
+	// unreduced wake is fully superseded by a newer one. `treeChanged` COMMITS (it
+	// bumps `treeRevision`), so without that an import or a folder delete wrote
+	// /state/notes.json once per file and queued a dispatch per file ahead of
+	// everything else on this app's queue — including the host's GUI boot.
 	subscriptions: (state, sub) => [
-		sub.capability('volume', 'watch', { path: '/', recursive: true }).to('treeChanged'),
+		sub.capability('volume', 'watch', { path: '/', recursive: true }).coalesce().to('treeChanged'),
 		...(state.openPath
 			? [sub.capability('volume', 'watch', { path: state.openPath }).to('fileChanged')]
 			: [])

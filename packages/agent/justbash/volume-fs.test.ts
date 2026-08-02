@@ -6,8 +6,12 @@ import { volumeFs } from './volume-fs.ts'
 
 const enc = (s: string) => new TextEncoder().encode(s)
 const dec = (b: Uint8Array) => new TextDecoder().decode(b)
-/** Let the async path-snapshot (scan + recursive watch) settle. */
-const flush = () => new Promise((r) => setTimeout(r, 10))
+/**
+ * Let the async path-snapshot (scan + recursive watch) settle. The recursive watch
+ * delivers on a rate-bounded window (`@justfiles/fs`'s WATCH_BURST_MS), so this has
+ * to clear that window — the snapshot is best-effort by construction either way.
+ */
+const flush = () => new Promise((r) => setTimeout(r, 150))
 
 function fresh(): { vol: Volume; fs: ReturnType<typeof volumeFs> } {
 	const vol = volume(memStorage())

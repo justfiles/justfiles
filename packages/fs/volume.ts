@@ -4,6 +4,25 @@ import type { Dirent, DirentMin, Ino, Stat } from './types'
 import { FileType } from './types'
 
 /**
+ * The recursive watch's delivery window, in ms.
+ *
+ * A recursive watch answers "the subtree you are showing is stale", and every
+ * consumer answers it with a full re-listing — so its cost is per DELIVERY. It
+ * used to coalesce onto a microtask, which is the same as no coalescing at all
+ * for a bulk operation: `rm -r`/an import awaits a storage round trip per entry,
+ * the microtask queue drains in between, and N entries deliver N events (each
+ * one a full re-scan downstream). A timer window is what actually thins a burst.
+ *
+ * Chosen to sit under the ~100ms that reads as instant, so a single write still
+ * refreshes a view immediately, while capping a bulk operation's wakes at
+ * 1000/WATCH_BURST_MS per second instead of one per entry.
+ *
+ * Exported for tests only — a coalescing watch has no other honest way to say
+ * "settled". Deliberately NOT re-exported from the package index.
+ */
+export const WATCH_BURST_MS = 50
+
+/**
  * Path-based filesystem interface built on top of Storage.
  *
  * Design principles:
@@ -247,13 +266,17 @@ export interface Volume {
 	 *
 	 * With `{ recursive: true }` the watch instead reports STRUCTURAL changes
 	 * — entries created/removed/renamed — at or under `path`, plus a rebind of
-	 * `path` itself or of any ancestor (which takes the whole subtree with it),
-	 * coalesced per microtask; pair it with a `scan` of the same path to rebuild the
-	 * listing. Content/meta edits to existing files do NOT fire — watch the concrete
-	 * file for those. That holds for a pulled edit too: sync applying a put over a
-	 * path this replica already holds is an edit, not structure (see
-	 * `applyJournaledOver`). This is the substrate for a directory browser's
-	 * auto-refresh.
+	 * `path` itself or of any ancestor (which takes the whole subtree with it);
+	 * pair it with a `scan` of the same path to rebuild the listing. Content/meta
+	 * edits to existing files do NOT fire — watch the concrete file for those. That
+	 * holds for a pulled edit too: sync applying a put over a path this replica
+	 * already holds is an edit, not structure (see `applyJournaledOver`). This is the
+	 * substrate for a directory browser's auto-refresh.
+	 *
+	 * A recursive delivery is a WAKE, not a log: it says the listing is stale and
+	 * carries no per-change detail, so events are coalesced into at most one delivery
+	 * per `WATCH_BURST_MS` with a guaranteed trailing one. A bulk operation therefore
+	 * wakes a consumer a bounded number of times, not once per entry.
 	 *
 	 * Requires `Storage.caps.subscribe`; without it the watch is inert and the
 	 * returned unsubscribe is a no-op. Returns a promise of the unsubscribe.
@@ -921,7 +944,11 @@ export function volume(storage: Storage): Volume {
 			// Recursive: a STRUCTURAL change signal for the subtree at `path`. Only
 			// dirent mutations (create/remove/rename) reshape a tree's entry set; content
 			// edits to existing files keep the listing identical, so they don't fire.
-			// Coalesce the several ops of one logical write into a single event.
+			//
+			// Deliveries are rate-bounded, not merely deduplicated: this is a WAKE, and every
+			// consumer answers it by re-listing the subtree, so the cost is per DELIVERY — see
+			// the WATCH_BURST_MS note. The single-path watch below stays on a microtask: it
+			// tracks ONE file, so a burst there is already bounded by that file's writes.
 			if (opts?.recursive) {
 				// Compare against where the root RESOLVES, not how it was spelled: every
 				// other operation on this volume follows symlinks, so a watch on an alias
@@ -937,22 +964,42 @@ export function volume(storage: Storage): Volume {
 				} catch {
 					// Not created yet: nothing to resolve through, so compare as spelled.
 				}
-				let scheduled = false
+				let timer: ReturnType<typeof setTimeout> | undefined
+				let pending = false
 				let pendingSource: string | undefined
-				return subscribe((change) => {
+				// Deliver at most one event per window, always with a trailing one. Arming
+				// only while something is pending keeps an idle watch timer-free; re-arming
+				// after a delivery is what bounds the RATE (the next change waits out a
+				// fresh window instead of firing at once).
+				const arm = () => {
+					if (timer !== undefined) return
+					timer = setTimeout(() => {
+						timer = undefined
+						if (!pending) return
+						pending = false
+						const source = pendingSource
+						pendingSource = undefined
+						arm()
+						listener({ source })
+					}, WATCH_BURST_MS)
+				}
+				const unsubscribe = subscribe((change) => {
 					if (change.kind !== 'dirent') return
 					// Scope: only what can reshape this subtree's listing. A change with no
 					// path is unlocatable (its parent is already unlinked), so it fires —
 					// a spurious re-scan is recoverable, a missed change is not.
 					if (!touchesSubtree(root, change.path)) return
+					pending = true
 					pendingSource = change.source
-					if (scheduled) return
-					scheduled = true
-					queueMicrotask(() => {
-						scheduled = false
-						listener({ source: pendingSource })
-					})
+					arm()
 				})
+				return () => {
+					unsubscribe()
+					// Drop a scheduled delivery: an unwatched listener must not fire.
+					if (timer !== undefined) clearTimeout(timer)
+					timer = undefined
+					pending = false
+				}
 			}
 
 			// Track the resolved inode (content/meta edits) and the parent dentry

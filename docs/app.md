@@ -303,6 +303,21 @@ update: (t) => ({
 
 Store a small semantic signal such as `revision`; re-read large external data through a procedure.
 
+Use `.coalesce()` before `.to(...)` when an event is a WAKE — it says "something changed, re-read"
+and carries no detail of its own, so an event that has not been reduced yet is fully superseded by a
+newer one:
+
+```ts
+sub.capability('volume', 'watch', { path: '/', recursive: true }).coalesce().to('treeChanged')
+```
+
+While a dispatch for that stream is outstanding, the kernel folds further events into at most one
+trailing dispatch carrying the newest payload. Without it, a bulk operation (importing a vault,
+deleting a heavy folder) queues one dispatch per file on your app's queue — each one a full reduce,
+and a committing edge a full state write — which delays everything else chained on it, including the
+host mounting your window. Never coalesce a stream whose events each carry information; dropping one
+there loses data.
+
 ### Persistence and compatibility
 
 The entire reducer state is JSON-written to `/state/<app-id>.json` after every commit. On later boots,
@@ -502,11 +517,12 @@ watch(input: { path: string; recursive?: boolean }): Stream<{ source?: string }>
 ```
 
 Without `recursive`, it watches one concrete path for content, metadata, create, remove, or replace
-changes. With `recursive: true`, it is a coalesced structural-change signal for the subtree at
+changes. With `recursive: true`, it is a structural-change signal for the subtree at
 `path` — an entry created, removed or renamed inside it, or the subtree itself being moved. Pair it
-with a recursive scan of the same path. It is scoped to the volume your `scopes` bound, so writes
-outside your prefix never wake you. Recursive watch does not report content edits to existing
-children.
+with a recursive scan of the same path, and declare it `.coalesce()`d. It is scoped to the volume your
+`scopes` bound, so writes outside your prefix never wake you. Recursive watch does not report content
+edits to existing children, and it is rate-bounded: a bulk operation wakes you a bounded number of
+times ending in a trailing wake, never once per entry.
 
 ### Other capability method signatures
 

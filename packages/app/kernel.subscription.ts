@@ -135,6 +135,34 @@ export function subscriptionRuntime({
 		if (!declared) throw new Error(`undeclared capability: ${sub.capability}`)
 		if (!subscribe) throw new Error('capability streams unavailable')
 		const actor = `capability:${declared.id}`
+		const deliver = (params: unknown) =>
+			dispatch(appId, { type: `${SUB_EVENT_PREFIX}${sub.to}`, params, actor })
+		const fail = (error: unknown) => onError(appId, errMessage(error))
+
+		// A `coalesce` stream is a WAKE (see `Subscription`): while one event is being
+		// reduced, later ones fold into a single trailing dispatch carrying the newest
+		// payload. Without it a bursty host stream queues one dispatch PER event on the
+		// app's queue — and every dispatch re-reads the bundle, clones state through the
+		// isolate, and may commit — so a bulk fs operation grew that queue without bound
+		// and starved everything else chained on it, including the host's GUI boot. Same
+		// trailing single-flight shape as `runCoalesced` in kernel.command.ts.
+		let running = false
+		let trailing: { params: unknown } | undefined
+		async function pump(first: unknown): Promise<void> {
+			running = true
+			try {
+				let next: { params: unknown } | undefined = { params: first }
+				while (next) {
+					await deliver(next.params)
+					next = isLive() ? trailing : undefined
+					trailing = undefined
+				}
+			} finally {
+				running = false
+				trailing = undefined
+			}
+		}
+
 		return subscribe(
 			{
 				appId,
@@ -145,11 +173,15 @@ export function subscriptionRuntime({
 			},
 			(event) => {
 				if (!isLive()) return
-				void dispatch(appId, {
-					type: `${SUB_EVENT_PREFIX}${sub.to}`,
-					params: event,
-					actor
-				}).catch((error) => onError(appId, errMessage(error)))
+				if (!sub.coalesce) {
+					void deliver(event).catch(fail)
+					return
+				}
+				if (running) {
+					trailing = { params: event }
+					return
+				}
+				void pump(event).catch(fail)
 			}
 		)
 	}

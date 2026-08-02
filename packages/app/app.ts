@@ -109,12 +109,20 @@ export interface Subscription {
 	method: string
 	args: readonly unknown[]
 	to: string
+	// Opt in to runtime coalescing: while a dispatch for this stream is outstanding,
+	// further events fold into ONE trailing dispatch carrying the newest payload.
+	// Declare it when an event is a WAKE — it says "re-read", and an unreduced older
+	// one is fully superseded by a newer one (`volume.watch`). Leave it off when every
+	// event carries information of its own, where dropping one loses data.
+	coalesce?: true
 }
 
 // The streaming dual of `CommandBuilder`. `sub.capability(cap, method, ...args)`
-// returns this; `.to(edge)` names the `t.fromEvent` edge that folds each event.
+// returns this; `.to(edge)` names the `t.fromEvent` edge that folds each event,
+// and `.coalesce()` opts into runtime coalescing (see `Subscription`).
 export interface SubscriptionBuilder {
 	to(edge: string): Subscription
+	coalesce(): SubscriptionBuilder
 }
 
 // What a `fromResult` edge receives once a capability call settles.

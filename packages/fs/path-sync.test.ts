@@ -21,10 +21,11 @@ import {
 	wire
 } from './sync-test-harness'
 import { FileType } from './types'
-import { chroot, volume } from './volume'
+import { chroot, volume, WATCH_BURST_MS } from './volume'
 
-// Drain the microtask queue (watch coalesces deliveries onto a microtask).
-const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+// Let watch deliveries land. The single-path watch coalesces onto a microtask, the
+// recursive one is rate-bounded (see WATCH_BURST_MS); one wait covers both.
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, WATCH_BURST_MS * 2))
 
 describe('path-sync semantics', () => {
 	const cleanups: Array<() => void> = []
@@ -419,8 +420,8 @@ describe('path-sync semantics', () => {
 		expect(fired).toBe(1)
 
 		// So does an entry disappearing, or moving. (One logical change can arrive as
-		// several applies — a rename is a put plus a delete — and coalescing is
-		// per-microtask, so the count is "more than before", not an exact number.)
+		// several applies — a rename is a put plus a delete — and deliveries coalesce, so
+		// the count is "more than before", not an exact number.)
 		await server.rm('/notes/second.md')
 		await syncBoth()
 		await tick()
@@ -539,10 +540,20 @@ describe('path-sync semantics', () => {
 		// One genuine user action, then let sync run to a standstill.
 		await client.writeFile('/notes/hello.md', bytes('hi'))
 		await syncBoth()
-		await tick()
-		// The initial cascade (the note, then each side's first state-file create) is
-		// finite; what must NOT happen is another wake on every later round.
-		const settled = kernels.map((k) => k.revision)
+		// The initial cascade (the note, then each side's first state-file create, which is
+		// itself a structural change) is finite but spans several delivery windows — so run
+		// it out rather than assuming one wait covers it. Quiescence is what is asserted,
+		// so quiescence is what has to be waited for.
+		let settled = kernels.map((k) => k.revision)
+		for (let round = 0; round < 20; round++) {
+			await syncBoth()
+			await tick()
+			const now = kernels.map((k) => k.revision)
+			if (now.every((r, i) => r === settled[i])) break
+			settled = now
+		}
+
+		// What must NOT happen is another wake on every later round.
 		for (let round = 0; round < 5; round++) {
 			await syncBoth()
 			await tick()

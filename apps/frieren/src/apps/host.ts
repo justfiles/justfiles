@@ -226,10 +226,12 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		stage.pendingBoot = false
 		void (async () => {
 			try {
-				// A remote write can land while this window is closed; the kernel's state
-				// cache didn't author it, so reload from fs before snapshotting or the boot
-				// shows the pre-sync value (an agent edit made while closed wouldn't appear).
-				await kernel.reload(stage.id)
+				// Mount on the CACHED snapshot. `state()` is off the app's dispatch queue;
+				// `reload()` is on it, and that queue belongs to the app — a burst of
+				// capability events (an fs watch during a bulk delete/import) can be ahead of
+				// us on it. Awaiting the reload before mounting made the first frame's latency
+				// that queue's depth, which is how a busy volume rendered an EMPTY window.
+				// Nothing about showing the last known state needs to wait for it.
 				const snapshot = await kernel.state(stage.id)
 				if (stage.cancelled) return
 				stage.port?.close()
@@ -241,6 +243,17 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 					'*',
 					[port2]
 				)
+				// A remote write can land while this window is closed; the kernel's state cache
+				// didn't author it, so the snapshot above can be the pre-sync value. Reload and
+				// push — same follow-up the remote-write watch below does, just reached from the
+				// boot. `postState` is already wired, so the fresh value lands whenever it lands.
+				void kernel
+					.reload(stage.id)
+					.then(() => kernel.state(stage.id))
+					.then((state) => {
+						if (!stage.cancelled) stage.postState?.(state ?? null)
+					})
+					.catch(() => {})
 			} catch (e) {
 				if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
 			}

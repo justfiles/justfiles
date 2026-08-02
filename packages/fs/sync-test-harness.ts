@@ -28,7 +28,7 @@ import { REMOTE_SOURCE, synced } from './synced'
 import type { Ino, Stat } from './types'
 import { FileType } from './types'
 import type { Volume } from './volume'
-import { chroot, volume } from './volume'
+import { chroot, volume, WATCH_BURST_MS } from './volume'
 
 /**
  * Constructs a backend for the harness. `memStorage` is the default; the
@@ -556,8 +556,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Let the watch's per-microtask coalescing deliver. */
-function drainMicrotasks(): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, 0))
+// Wait out the recursive watch's delivery window. That watch is rate-bounded, not
+// microtask-coalesced (see WATCH_BURST_MS), so a microtask drain proves nothing.
+function settleWatch(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, WATCH_BURST_MS * 2))
 }
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
@@ -763,15 +765,15 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 			await chroot(vol, '/notes').watch('/', () => hits++, { recursive: true })
 
 			await vol.writeFile('/state/app.json', bytes('{}'))
-			await drainMicrotasks()
+			await settleWatch()
 			assertEq(hits, 0, 'woke on a local write outside the watched subtree')
 
 			await vol.writeFile('/notes/trips/kyoto.md', bytes('go'))
-			await drainMicrotasks()
+			await settleWatch()
 			assertEq(hits, 1, 'missed a local create inside the watched subtree')
 
 			await vol.rename('/notes/trips/kyoto.md', '/state/kyoto.md')
-			await drainMicrotasks()
+			await settleWatch()
 			assertEq(hits, 2, 'missed an entry leaving the watched subtree')
 		}
 	},

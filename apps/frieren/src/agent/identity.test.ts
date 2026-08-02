@@ -9,7 +9,10 @@ import { derivedDir, readAgentSoul, readAvatar, watchIdentity } from './identity
 // is what makes a rename on the phone show up here.
 
 const encode = (text: string) => new TextEncoder().encode(text)
-const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+// Let watch deliveries land: the soul watch coalesces onto a microtask, the avatars
+// one is a recursive watch delivering on a rate-bounded window (@justfiles/fs's
+// WATCH_BURST_MS), so this has to clear that window.
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 150))
 // Real signatures throughout: a state's format is read from its BYTES, so art that cannot
 // identify itself is a state the reader does not claim to have.
 const png = (...tail: number[]) =>

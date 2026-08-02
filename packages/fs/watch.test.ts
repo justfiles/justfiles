@@ -10,14 +10,17 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Storage, StorageChange } from './storage'
 import { nativeStorage } from './storage.fs'
 import { memStorage } from './storage.mem'
-import { chroot, volume } from './volume'
+import { chroot, volume, WATCH_BURST_MS } from './volume'
 
 const enc = new TextEncoder()
-// Drain the microtask queue (watch coalesces deliveries onto a microtask).
+// Drain the microtask queue (the single-path watch coalesces onto a microtask).
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+// Wait out the RECURSIVE watch's delivery window — that watch is rate-bounded, not
+// microtask-coalesced, so a microtask flush proves nothing about it either way.
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, WATCH_BURST_MS * 2))
 
 async function waitFor(assertion: () => void): Promise<void> {
-	const deadline = Date.now() + 100
+	const deadline = Date.now() + WATCH_BURST_MS * 8
 	let lastError: unknown
 	while (Date.now() < deadline) {
 		try {
@@ -239,11 +242,11 @@ describe('volume.watch recursive', () => {
 		await vol.watch('/alias', () => fired++, { recursive: true })
 
 		await vol.writeFile('/notes/trips/kyoto.md', enc.encode('go'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 
 		await vol.writeFile('/elsewhere.md', enc.encode('x'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 	})
 
@@ -259,19 +262,19 @@ describe('volume.watch recursive', () => {
 		// path inside it — descendants keep their parent-ino-keyed dirents, so the only
 		// event is on the moved entry itself.
 		await vol.rename('/notes', '/archive')
-		await flush()
+		await settle()
 		expect(await vol.exists('/notes/trips')).toBe(false)
 		expect(fired).toBe(1)
 
 		// A path that merely shares a prefix is not an ancestor.
 		await vol.mkdir('/notes-archive/trips', { recursive: true })
 		await vol.writeFile('/notes-archive/trips/x.md', enc.encode('x'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 
 		// Moving it back is the same story in reverse: the subtree reappears.
 		await vol.rename('/archive', '/notes')
-		await flush()
+		await settle()
 		expect(await vol.exists('/notes/trips')).toBe(true)
 		expect(fired).toBe(2)
 	})
@@ -286,11 +289,11 @@ describe('volume.watch recursive', () => {
 		await vol.watch('/notes/trips/../', () => fired++, { recursive: true })
 
 		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 
 		await vol.writeFile('/elsewhere.md', enc.encode('x'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 	})
 
@@ -306,23 +309,23 @@ describe('volume.watch recursive', () => {
 
 		// The kernel writing an app's state file is not this app's business.
 		await vol.writeFile('/state/app.json', enc.encode('{}'))
-		await flush()
+		await settle()
 		expect(fired).toBe(0)
 
 		// A create inside the subtree — however deep — is.
 		await notes.writeFile('/trips/kyoto.md', enc.encode('go'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 
 		// Renaming out of scope still fires (the entry left the listing).
 		await vol.rename('/notes/trips/kyoto.md', '/state/kyoto.md')
-		await flush()
+		await settle()
 		expect(fired).toBe(2)
 
 		// A sibling prefix must not be mistaken for the subtree.
 		await vol.mkdir('/notesy', { recursive: true })
 		await vol.writeFile('/notesy/x.md', enc.encode('x'))
-		await flush()
+		await settle()
 		expect(fired).toBe(2)
 	})
 
@@ -344,26 +347,53 @@ describe('volume.watch recursive', () => {
 
 		// A nested create fires — a single-path watch on '/' never would.
 		await vol.writeFile('/deep/nested/b.txt', enc.encode('1'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 		expect(lastSource).toBeUndefined()
 
 		// A content edit to an existing file keeps the entry set identical → no fire.
 		// (The exact no-op assertion is the heart of "structural changes only".)
 		await vol.writeFile('/a.txt', enc.encode('2'))
-		await flush()
+		await settle()
 		expect(fired).toBe(1)
 
 		// Remove and rename reshape the tree → fire (counts coalesce per write).
 		await vol.rm('/deep/nested/b.txt')
-		await flush()
+		await settle()
 		expect(fired).toBeGreaterThan(1)
 
 		const settled = fired
 		await vol.writeFile('/c.txt', enc.encode('1'))
 		await vol.rename('/c.txt', '/d.txt')
-		await flush()
+		await settle()
 		expect(fired).toBeGreaterThan(settled)
+	})
+
+	it('thins a bulk operation into a bounded number of wakes, ending on a trailing one', async () => {
+		const vol = volume(memStorage())
+		const N = 300
+		await vol.mkdir('/heavy', { recursive: true })
+		for (let i = 0; i < N; i++) await vol.writeFile(`/heavy/f${i}.md`, enc.encode('x'))
+
+		let fired = 0
+		const unwatch = await vol.watch('/', () => fired++, { recursive: true })
+
+		// The shape that made a heavy delete look like a frozen desktop: `rm -r` awaits a
+		// storage round trip per entry, so a microtask-coalesced watch delivered one wake
+		// per entry and every consumer answered each one with a full re-scan. The bound is
+		// what is asserted, not a count — a wake per entry is the bug, a handful is the fix.
+		const started = Date.now()
+		await vol.rm('/heavy', { recursive: true })
+		const elapsed = Date.now() - started
+		await settle()
+		unwatch()
+
+		expect(await vol.exists('/heavy')).toBe(false)
+		// A trailing delivery is guaranteed, so the consumer always re-scans the final tree.
+		expect(fired).toBeGreaterThanOrEqual(1)
+		// One window's worth of wakes for the operation, plus the trailing one — never O(N).
+		expect(fired).toBeLessThanOrEqual(Math.ceil(elapsed / WATCH_BURST_MS) + 2)
+		expect(fired).toBeLessThan(N)
 	})
 })
 
@@ -409,7 +439,7 @@ describe('volume.watch over the atomic-cap backend (nativeStorage)', () => {
 		await chroot(vol, '/notes').watch('/', () => fired++, { recursive: true })
 
 		await vol.writeFile('/state/app.json', enc.encode('{}'))
-		await flush()
+		await settle()
 		expect(fired).toBe(0)
 
 		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
