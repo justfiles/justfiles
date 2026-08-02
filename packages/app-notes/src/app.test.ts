@@ -674,3 +674,110 @@ test('an import of same-named notes keeps both, numbering the second', async () 
 	expect(vol.store.get('/Kyoto.md')).toBe('first')
 	expect(vol.store.get('/Kyoto 2.md')).toBe('second')
 })
+
+// A volume double that CARES which capability it was called through. The scratch's whole
+// design is that it is written somewhere the knowledge base cannot reach, so a double that
+// ignored the capability name would pass whichever volume the procedure asked for.
+function twoVolumes(notes: Record<string, string> = {}, own: Record<string, string> = {}) {
+	const kb = new Map(Object.entries(notes))
+	const priv = new Map(Object.entries(own))
+	const invoke = async (cap: string, method: string, ...args: unknown[]): Promise<unknown> => {
+		const store = cap === 'private' ? priv : kb
+		const path = args[0] as string
+		switch (method) {
+			case 'readFile': {
+				const body = store.get(path)
+				if (body === undefined) throw new Error(`ENOENT: ${path}`)
+				return new TextEncoder().encode(body)
+			}
+			case 'writeFile': {
+				const opts = args[2] as { exclusive?: boolean } | undefined
+				if (opts?.exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
+				store.set(path, dec.decode(args[1] as Uint8Array))
+				return undefined
+			}
+			case 'appendFile': {
+				const at = store.get(path)
+				if (at === undefined) throw new Error(`ENOENT: ${path}`)
+				store.set(path, at + dec.decode(args[1] as Uint8Array))
+				return undefined
+			}
+			default:
+				throw new Error(`unexpected ${cap}.${method}`)
+		}
+	}
+	return { kb, priv, invoke }
+}
+
+test('the scratch is read and written in the app’s OWN volume, never the knowledge base', async () => {
+	const vol = twoVolumes({ '/Kyoto.md': 'a note' })
+	const h = handle(initialState, vol.invoke)
+	// Never used = empty, not broken. (ENOENT is the ordinary first state of a file nobody
+	// has written; every other read failure is real and thrown — see below.)
+	expect(await app.runProcedure('readScratch', {}, h.app)).toEqual({ text: '' })
+	await app.runProcedure('saveScratch', { text: 'a thought' }, h.app)
+	expect([...vol.priv]).toEqual([['/scratch.md', 'a thought']])
+	// The KB is untouched: no note appeared, and nothing can name the scratch from inside it.
+	expect([...vol.kb.keys()]).toEqual(['/Kyoto.md'])
+	expect(await app.runProcedure('readScratch', {}, h.app)).toEqual({ text: 'a thought' })
+	// Re-writing it is ordinary: unlike a note (`save`, `update: true`), the scratch is a
+	// place, so bringing the file back into existence is correct rather than a resurrection.
+	await app.runProcedure('saveScratch', { text: '' }, h.app)
+	expect(vol.priv.get('/scratch.md')).toBe('')
+})
+
+test('a scratch that cannot be READ is not reported as empty', async () => {
+	// Answering a broken read with '' would hand the editor a blank buffer, and the next
+	// keystroke would save it over words that are still on disk.
+	const h = handle(initialState, async (_cap: string, method: string) => {
+		if (method === 'readFile') throw new Error('EIO: disk')
+		throw new Error(`unexpected ${method}`)
+	})
+	await expect(app.runProcedure('readScratch', {}, h.app)).rejects.toThrow(/EIO/)
+})
+
+test('the journal note is created once a day, then appended to', async () => {
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	const first = await app.runProcedure(
+		'journal',
+		{ date: '2026-06-19', text: '## 09:05\n\nfirst thing' },
+		h.app
+	)
+	expect(first).toEqual({ path: '/journal/2026-06-19.md' })
+	await app.runProcedure('journal', { date: '2026-06-19', text: '## 14:32\n\nlater' }, h.app)
+	// One note, both entries, a blank line between them — the second keep must not
+	// overwrite the first (which an ordinary write would).
+	expect([...vol.kb.keys()]).toEqual(['/journal/2026-06-19.md'])
+	expect(vol.kb.get('/journal/2026-06-19.md')).toBe('## 09:05\n\nfirst thing\n\n## 14:32\n\nlater')
+	// Tomorrow is its own note.
+	await app.runProcedure('journal', { date: '2026-06-20', text: 'next day' }, h.app)
+	expect([...vol.kb.keys()].sort()).toEqual(['/journal/2026-06-19.md', '/journal/2026-06-20.md'])
+})
+
+test('a journal date is the one spelling, so the path cannot be steered', async () => {
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	for (const date of ['../../etc/passwd', '2026-6-19', '', '2026-06-19/../..']) {
+		await expect(app.runProcedure('journal', { date, text: 'x' }, h.app)).rejects.toThrow()
+	}
+	expect([...vol.kb.keys()]).toEqual([])
+})
+
+test('the agent may READ the scratch, but not overwrite it', async () => {
+	// Reading answers "what's in my scratch?" — a fair question. Writing the whole buffer
+	// would let the agent erase words the user has not filed yet, and `journal`/`create` are
+	// the ways to move them somewhere permanent.
+	expect(app.actions.readScratch?.audience).toBe('both')
+	expect(app.actions.journal?.audience).toBe('both')
+	expect(app.actions.saveScratch?.audience).toBe('gui')
+})
+
+test('the app binds the knowledge base and its own volume, and nothing else', async () => {
+	// Two bindings of ONE capability under two local names — that is all a second scope
+	// takes (packages/app/kernel.capability.ts maps name → trusted { id, scopes }).
+	expect(app.capabilities).toEqual({
+		volume: { id: 'volume', scopes: ['/notes'] },
+		private: { id: 'volume', scopes: ['app'] }
+	})
+})

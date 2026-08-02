@@ -23,12 +23,16 @@ import {
 	illegalName,
 	isUnder,
 	joinPath,
+	localDateStamp,
+	localTimeStamp,
 	matchNotes,
 	NOTE_EXT,
 	noteTitle,
 	parentDir,
 	renameTarget,
-	sanitizeName
+	SCRATCH_FILE,
+	sanitizeName,
+	splitSelection
 } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
@@ -49,6 +53,12 @@ const explain = (outcome: Unsettled) =>
 	outcome.because === 'gone'
 		? 'The note you were editing was moved or deleted — your changes are kept here'
 		: `Could not save ${outcome.path ? displayPath(outcome.path) : 'this note'} — ${outcome.error.message}`
+
+// The scratch's own wording. Its failures are a shorter list than a note's — it cannot be
+// renamed or deleted, so "gone" is not a thing that happens to it (and if the volume ever
+// says so, the next write re-creates it: see `scratchIO.create`).
+const explainScratch = (outcome: Unsettled) =>
+	`Could not save the scratch — ${outcome.error.message}`
 
 const IMPORT_CHUNK = 50
 // How much of an archive is handed to the unzipper at once (see `readZip`).
@@ -270,6 +280,14 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// "gone and busy call for opposite recoveries", "writes do not overlap", "a stale read
 	// is discarded"), and this component only drives it and renders its state.
 	const [buffer, setBuffer] = useState<BufferState>({ text: '', dirty: false, path: null })
+	// The SCRATCH buffer (DESIGN.md §6): the same machine, a second instance. It holds the
+	// words the user has not decided anything about, and it is what the editor shows whenever
+	// no note is open — the app has no inert surface any more.
+	const [scratch, setScratch] = useState<BufferState>({ text: '', dirty: false, path: null })
+	// Its text comes from disk a round trip after mount, and the editor stays read-only until
+	// it arrives: keystrokes typed over an unfinished read would be saved on top of the words
+	// being read. `failed` is the same surface with a reason and a way back (window focus).
+	const [scratchState, setScratchState] = useState<'loading' | 'ready' | 'failed'>('loading')
 
 	// The bar's search field doubles as the palette (DESIGN.md §5): focusing it
 	// drops the recency list down; typing filters; Enter opens-or-creates. The
@@ -300,6 +318,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const dirRef = useRef('/')
 	const editorRef = useRef<HTMLTextAreaElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
+	// The name field, so ⌘S can put the user in it: naming is the one question "keep this"
+	// has to ask, and the field is where it is asked.
+	const titleRef = useRef<HTMLInputElement>(null)
 	// The draft, as a ref as well as state: Esc and Enter both blur the field, and a blur
 	// handler reading React state would still see the draft they just abandoned and commit it.
 	const draftRef = useRef<string | null>(null)
@@ -360,6 +381,33 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	if (bufferRef.current === null) bufferRef.current = createBuffer(io.current, setBuffer)
 	const buf = bufferRef.current
 
+	// The scratch as the SAME machine, a second instance (DESIGN.md §6). Every rule the
+	// buffer keeps — writes never overlap, a failed write stays dirty, a stale read is
+	// discarded, nothing replaces an unsettled buffer — is a rule the scratch needs too, and
+	// threading a third kind of home through `buffer.ts` would have been a new mode in the one
+	// place this app cannot afford one (DESIGN.md §1a‴). IO is injected, so a second instance
+	// is all it takes.
+	const scratchIO = useRef<BufferIO>({
+		// The path is IGNORED: the scratch lives at `SCRATCH_FILE` in the app's own volume, and
+		// the procedure knows where that is. So the machine's sentinel path can never leak into
+		// the knowledge base.
+		save: async (_path, text) => {
+			await actionsRef.current.saveScratch({ text })
+		},
+		// "These words have no address" means the scratch IS their address — so this both writes
+		// and re-attaches. Reached only if a write ever failed with a gone-class code; a note's
+		// version of this creates a new note instead (see `io` above).
+		create: async (text) => {
+			await actionsRef.current.saveScratch({ text })
+			return SCRATCH_FILE
+		},
+		read: async () => (await actionsRef.current.readScratch({})).text
+	})
+	const scratchBufRef = useRef<Buffer | null>(null)
+	if (scratchBufRef.current === null)
+		scratchBufRef.current = createBuffer(scratchIO.current, setScratch)
+	const scratchBuf = scratchBufRef.current
+
 	// `settle` returns whether the buffer is landed, and every caller that is about to
 	// change what the editor shows has to obey it (DESIGN.md §1a‴). Reporting is the
 	// GUI's half: the machine decides what happened, this decides how to say it.
@@ -369,6 +417,50 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		setStatus(explain(outcome))
 		return false
 	}, [buf])
+
+	// The scratch's half of the same rule. Called before anything that takes the editor away
+	// from it, and by its own debounce.
+	const settleScratch = useCallback(async (): Promise<boolean> => {
+		const outcome = await scratchBuf.settle()
+		if (outcome.settled) return true
+		setStatus(explainScratch(outcome))
+		return false
+	}, [scratchBuf])
+
+	// Attach the scratch to its file. Two callers: mount, and the way back from a read that
+	// failed (see the focus effect) — a scratch that could not be read must not be replaced
+	// by a blank one, so the editor stays inert until this succeeds.
+	const openScratch = useCallback(async () => {
+		const outcome = await scratchBuf.open(SCRATCH_FILE)
+		if (outcome.opened) {
+			setScratchState('ready')
+			return
+		}
+		setScratchState('failed')
+		setStatus(
+			outcome.because === 'unsettled'
+				? explainScratch(outcome.outcome)
+				: `Could not read the scratch — ${outcome.error.message}`
+		)
+	}, [scratchBuf])
+
+	useEffect(() => {
+		void openScratch()
+	}, [openScratch])
+
+	// A second window — or the desktop app beside the browser — writes the same file, and
+	// there is no watch on it: the scratch is app-private, so a capability stream just so one
+	// client can hear another is more machinery than the case is worth. Re-read when the
+	// window comes back instead. `reload` only ever replaces a CLEAN buffer, so it cannot land
+	// on top of words that have not been saved yet.
+	useEffect(() => {
+		const onFocus = () => {
+			if (scratchState === 'failed') void openScratch()
+			else void scratchBuf.reload(SCRATCH_FILE)
+		}
+		window.addEventListener('focus', onFocus)
+		return () => window.removeEventListener('focus', onFocus)
+	}, [scratchState, openScratch, scratchBuf])
 
 	// The buffer follows a note to a new address — its own rename, or a folder's — and so does
 	// the name field's draft: same words, same draft, new place. ONE function because they are
@@ -392,6 +484,16 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		const id = setTimeout(() => void settle(), AUTOSAVE_MS)
 		return () => clearTimeout(id)
 	}, [buffer.text, buffer.dirty, settle])
+
+	// The scratch autosaves on the same terms as a note. It keeps typing itself to disk even
+	// while a note is on screen (its machine is not the editor's), so nothing is lost by
+	// switching away mid-word.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `scratch.text` is the debounce RESET, exactly as above.
+	useEffect(() => {
+		if (!scratch.dirty) return
+		const id = setTimeout(() => void settleScratch(), AUTOSAVE_MS)
+		return () => clearTimeout(id)
+	}, [scratch.text, scratch.dirty, settleScratch])
 
 	// The buffer follows `openPath`, which is the reducer's (and the agent's) idea of what
 	// the user is looking at. Two triggers, one call: a different note (`openPath`), and
@@ -449,15 +551,32 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		})()
 	}, [openPath, buffer.path, buffer.dirty, buf])
 
-	// Launch = an empty editor with the search field focused (DESIGN.md §5). Reopen is always
-	// blank — capture-first — and blank now means "nothing open", so the way in is the field.
+	// Launch = the SCRATCH, and the caret in it (DESIGN.md §6). Reopen is still always
+	// unfiled — capture-first — but "unfiled" is now a live surface rather than a placeholder,
+	// so the way in is simply typing; the search field is one key away (⌘O).
 	const mounted = useRef(false)
 	useEffect(() => {
 		if (mounted.current) return
 		mounted.current = true
 		if (openPath !== null) void actions.newNote({})
-		focusSearch()
-	}, [openPath, actions, focusSearch])
+	}, [openPath, actions])
+
+	// Focus follows READINESS, not mount: the scratch's text is a round trip away and the
+	// editor is inert until it lands. If it cannot be read at all, the field is the fallback —
+	// the same dead end every other failure lands on.
+	const focusedOnce = useRef(false)
+	useEffect(() => {
+		if (focusedOnce.current || openPath !== null || scratchState === 'loading') return
+		focusedOnce.current = true
+		if (scratchState === 'failed') {
+			focusSearch()
+			return
+		}
+		// At the END of what is already there: a scratch is appended to, not overwritten.
+		const el = editorRef.current
+		el?.focus()
+		el?.setSelectionRange(el.value.length, el.value.length)
+	}, [openPath, scratchState, focusSearch])
 
 	// The name to re-create under, kept level with the buffer's address: while it holds a
 	// note, that note's name is the one its words belong to.
@@ -558,6 +677,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		async (path: string) => {
 			// Nothing may replace the buffer until it is settled; `settle` says whether it is.
 			if (!(await settle())) return
+			// The scratch is about to leave the screen, so its words go to disk now rather than
+			// waiting out a debounce the user cannot see.
+			if (!(await settleScratch())) return
 			setDropOpen(false)
 			setQuery('')
 			setDraft(null)
@@ -568,7 +690,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			editorRef.current?.focus()
 			if (listing) void refresh() // the flushed note's mtime may reorder the list
 		},
-		[settle, setDraft, actions, listing, refresh]
+		[settle, settleScratch, setDraft, actions, listing, refresh]
 	)
 
 	// Enter in the name field goes to the top of the body — Obsidian's move, and the thing
@@ -608,6 +730,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				await settle()
 				return
 			}
+			if (!(await settleScratch())) return
 			setDropOpen(false)
 			setQuery('')
 			setDraft(null)
@@ -631,7 +754,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			requestAnimationFrame(focusBody)
 			if (listing) void refresh()
 		},
-		[buf, settle, setDraft, createIn, liveDir, actions, focusBody, listing, refresh]
+		[buf, settle, settleScratch, setDraft, createIn, liveDir, actions, focusBody, listing, refresh]
 	)
 
 	const createNote = useCallback(
@@ -684,16 +807,113 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	)
 
 	// What the name field shows, and whether there is anything to name. There is no such
-	// thing as an unnamed note any more, so "nothing open" is an INERT editor: a name comes
-	// first (from the search field), and only then is there a body to type into. The one case
-	// where the buffer holds text without a path is a note deleted under it — the words are
-	// still the user's, and `nameRef` still knows what they were called.
-	const blank = buffer.path === null && buffer.text === ''
-	const noteName = buffer.path !== null ? noteTitle(buffer.path) : blank ? '' : nameRef.current
-	// A draft outranks the truth while it is being typed — except when there is nothing to name
-	// at all. An inert field showing a leftover draft would be a name for a note that does not
-	// exist and cannot be committed.
-	const shownName = blank ? '' : (titleDraft ?? noteName)
+	// thing as an unnamed note, so a note is never nameless — but the SCRATCH is, and that is
+	// what the editor shows when the note buffer holds nothing at all. The one other case it
+	// can hold nothing but words is a note deleted under it: those words keep the screen (they
+	// are the user's, and `nameRef` still knows what they were called) until they land as a
+	// note of their own, so they are not shouldered aside by the scratch.
+	const onScratch = buffer.path === null && buffer.text === ''
+	// Read-only only while the scratch's text is still coming (or never came). Everything else
+	// — a note, or words orphaned by a delete — is always editable.
+	const editable = !onScratch || scratchState === 'ready'
+	const noteName = buffer.path !== null ? noteTitle(buffer.path) : onScratch ? '' : nameRef.current
+	// A draft outranks the truth while it is being typed. On the scratch there is no truth to
+	// outrank: the field holds the name the words are ABOUT to have, and nothing else.
+	const shownName = titleDraft ?? noteName
+
+	// Keep the scratch: the words go somewhere permanent and LEAVE the scratch — a move, not
+	// a copy, exactly as Emacs's `C-x C-s` in `*scratch*`, JetBrains' "move to project" and
+	// Heynote's move-block-to-buffer all have it. `keep` is the destination (a named note, or
+	// the day's journal) and answers where the words landed.
+	//
+	// THE ORDER IS THE WHOLE RULE: the create lands first, and only then is anything cut, so a
+	// failure costs the gesture and nothing else. The cut itself goes through the buffer
+	// machine, so a write that does not land leaves the remainder dirty and on screen rather
+	// than lost (buffer.ts rule 2).
+	// One keeping, however many times it is asked for. Enter REPEATS while held and the
+	// journal button stays clickable across the round trip, so two calls can read the same
+	// text before either has cut it — which files it twice (two numbered notes, or the same
+	// entry appended twice). The same rule `createOnce` learned, at the other gesture that
+	// creates: the second press is the same submission, not another note.
+	const keepingRef = useRef(false)
+	const promoteScratch = useCallback(
+		async (keep: (text: string) => Promise<string>): Promise<string | null> => {
+			if (keepingRef.current) return null
+			keepingRef.current = true
+			try {
+				const el = editorRef.current
+				const { text } = scratchBuf.snapshot()
+				// A selection is the unit when there is one: a scratch accumulates several unrelated
+				// things, and filing one of them must not file the other three.
+				const { promoted, remainder } = splitSelection(
+					text,
+					el?.selectionStart ?? 0,
+					el?.selectionEnd ?? 0
+				)
+				if (promoted.trim() === '') {
+					setStatus('Nothing to keep — the scratch is empty')
+					return null
+				}
+				let path: string
+				try {
+					path = await keep(promoted)
+				} catch (failure) {
+					setStatus(
+						`Could not keep this — ${failure instanceof Error ? failure.message : String(failure)}`
+					)
+					return null
+				}
+				scratchBuf.type(remainder)
+				void settleScratch()
+				return path
+			} finally {
+				keepingRef.current = false
+			}
+		},
+		[scratchBuf, settleScratch]
+	)
+
+	// The other half of keeping something: no name, but not lost either. One note per day,
+	// appended to — the answer for words that are worth keeping and not worth naming, which is
+	// most of what a scratch collects (DESIGN.md §6).
+	const keepInJournal = useCallback(async () => {
+		const now = new Date()
+		const path = await promoteScratch(async (text) => {
+			// The clock is the GUI's: a procedure runs in the worker, where the date is UTC.
+			const entry = `## ${localTimeStamp(now)}\n\n${text.trim()}`
+			return (await actions.journal({ date: localDateStamp(now), text: entry })).path
+		})
+		if (path === null) return
+		setStatus(`Kept in ${displayPath(path)}`)
+		void refresh()
+	}, [promoteScratch, actions, refresh])
+
+	// The caret at the END of the scratch: it is appended to, not overwritten. Deferred a
+	// frame, because the textarea is still showing the note it held when this is called.
+	const focusScratchEnd = useCallback(() => {
+		requestAnimationFrame(() => {
+			const el = editorRef.current
+			el?.focus()
+			el?.setSelectionRange(el.value.length, el.value.length)
+		})
+	}, [])
+
+	// ⌘S on a note means what it means everywhere else — land it now — and never anything
+	// destructive, so the reflex is safe wherever it is pressed. (Autosave has usually done it
+	// already; being told so is the point.)
+	const saveNow = useCallback(async () => {
+		if (await settle()) setStatus('Saved')
+	}, [settle])
+
+	// Back to the scratch. `newNote` is what makes the reducer — and the agent — say the user
+	// is on it; the note buffer settles on the way out.
+	const showScratch = useCallback(async () => {
+		if (openPath !== null) {
+			if (!(await settle())) return
+			await actions.newNote({})
+		}
+		focusScratchEnd()
+	}, [openPath, settle, actions, focusScratchEnd])
 
 	// Where the name field lands, and whether it landed. Three answers, not two, because a
 	// name can fail in two unrelated ways:
@@ -764,24 +984,46 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			if (entries.some((entry) => entry.path === target))
 				return refuse(`“${clean}” already exists here`)
 			// A note that exists is RENAMED — through the same `rename` the tree and the agent
-			// use, so the extension rule and the no-overwrite rule cannot disagree. One that does
-			// not exist is a buffer whose note was deleted under it: naming it only says where the
-			// words should land, and the settle is what lands them. `nameRef` is set BEFORE that
-			// settle (it is where the create reads the name) and stays set if it fails, so the
-			// retry uses the name the user chose.
+			// use, so the extension rule and the no-overwrite rule cannot disagree. With no note,
+			// there are two ways to be nameless and they are opposites: the SCRATCH is words nobody
+			// has filed, so naming it FILES them (a create, and the words leave the scratch); a
+			// buffer whose note was deleted under it is words that were already filed, so naming
+			// them only says where they should land again and the settle is what lands them.
+			// `nameRef` is set BEFORE that settle (it is where the create reads the name) and stays
+			// set if it fails, so the retry uses the name the user chose.
 			let landed: boolean
 			// `moveNote` answers with the path, which is more than this needs: a note deduped to
 			// `Kyoto 2` HAS been renamed, and the field will show that name because it reads it
 			// from the buffer. Only "it did not move at all" keeps the draft.
 			if (held !== null) landed = (await moveNote(held, target)) !== null
-			else {
+			else if (onScratch) {
+				const path = await promoteScratch((text) => createIn(clean, text, dirRef.current))
+				if (path !== null) {
+					await actions.open({ path })
+					if (listing) void refresh()
+				}
+				landed = path !== null
+			} else {
 				nameRef.current = clean
 				landed = await settle()
 			}
 			if (landed) revert()
 			return landed
 		},
-		[buf, noteName, entries, setDraft, moveNote, settle]
+		[
+			buf,
+			noteName,
+			entries,
+			setDraft,
+			moveNote,
+			settle,
+			onScratch,
+			promoteScratch,
+			createIn,
+			actions,
+			listing,
+			refresh
+		]
 	)
 
 	// The menu is already closed by the time this runs, so a failure has nowhere to appear
@@ -827,7 +1069,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	)
 
 	// Import a drop: unzip + plan in the GUI, write in chunks through the reducer
-	// (DESIGN.md §9). The vault's contents MERGE into the knowledge base root — no
+	// (DESIGN.md §10). The vault's contents MERGE into the knowledge base root — no
 	// wrapper folder — and a name that is already taken lands beside it as `… 2`.
 	const importDrop = useCallback(
 		async (files: File[]) => {
@@ -940,7 +1182,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// inside the shared shell document and a later page hide would settle a buffer from a
 	// dead instance over what the live one had written.
 	useEffect(() => {
-		const onHide = () => void settle()
+		const onHide = () => {
+			void settle()
+			void settleScratch()
+		}
 		// A tab switch is not a teardown, so that one flushes only when actually hidden.
 		const onVisibility = () => {
 			if (document.visibilityState === 'hidden') onHide()
@@ -951,7 +1196,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			window.removeEventListener('pagehide', onHide)
 			document.removeEventListener('visibilitychange', onVisibility)
 		}
-	}, [settle])
+	}, [settle, settleScratch])
 
 	const filtered = useMemo(() => matchNotes(notes, query.trim()), [notes, query])
 	// A note is born named, so the search field is where naming happens: whatever is typed is
@@ -978,11 +1223,37 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// note is found or named". ⌘O is the one that works everywhere — browsers reserve
 	// ⌘N for a new window and never deliver it — and ⌘N costs two characters to keep
 	// for the hosts that do (desktop webview).
+	//
+	// ⌘S is "keep this", and ⌘J is "jot" — back to the scratch. Both are DELIVERED to the
+	// page and cancellable, unlike ⌘N: ⌘S's browser default (save the page) is suppressed by
+	// `preventDefault`, and the desktop shell binds only ⌘W/⌘Q natively, so nothing upstream
+	// swallows either. Digits were the obvious choice for "go to the scratch" and are
+	// unusable: ⌘1–9 switches browser tabs and cannot be prevented.
 	const onRootKey = (e: React.KeyboardEvent) => {
 		if (e.defaultPrevented) return
 		if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || e.key === 'n')) {
 			e.preventDefault()
 			focusSearch()
+		} else if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+			e.preventDefault()
+			if (!onScratch) {
+				void saveNow()
+				return
+			}
+			// Keeping the scratch has exactly one question — what is it called — so ⌘S either
+			// answers it with the name already typed, or puts the user where it is asked. It never
+			// invents a name.
+			const typed = draftRef.current?.trim() ?? ''
+			if (typed === '') {
+				titleRef.current?.focus()
+				return
+			}
+			void (async () => {
+				if (await commitTitle(typed, true)) focusBody()
+			})()
+		} else if ((e.metaKey || e.ctrlKey) && e.key === 'j') {
+			e.preventDefault()
+			void showScratch()
 		} else if (e.key === 'Escape' && e.target === editorRef.current) {
 			// The nvAlt loop: Esc hops editor → search; Esc in the field hops back.
 			e.preventDefault()
@@ -1125,7 +1396,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	)
 
 	return (
-		// biome-ignore lint/a11y/noStaticElementInteractions: the root relays app shortcuts (⌘O/⌘N/Esc) from its focusable children and accepts dropped files; tabIndex -1 keeps it out of the tab order.
+		// biome-ignore lint/a11y/noStaticElementInteractions: the root relays app shortcuts (⌘O/⌘N/⌘S/⌘J/Esc) from its focusable children and accepts dropped files; tabIndex -1 keeps it out of the tab order.
 		<div
 			className="notes"
 			onKeyDown={onRootKey}
@@ -1133,7 +1404,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			data-file-drop={fileDrop || undefined}
 			// A dropped file is an import, accepted wherever it lands — pane, editor or
 			// bar. Internal row drags carry `text/plain`, not `Files`, so the tree's own
-			// move-drop never reaches here (DESIGN.md §9).
+			// move-drop never reaches here (DESIGN.md §10).
 			onDragOver={(e) => {
 				if (!Array.from(e.dataTransfer.types).includes('Files')) return
 				e.preventDefault()
@@ -1206,11 +1477,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					    an Obsidian vault the same shape (DESIGN.md §4). It only looks like a first
 					    line, which is exactly how Obsidian's inline title works. */}
 					<input
+						ref={titleRef}
 						className="notes-title"
-						aria-label="Note name"
-						placeholder={blank ? 'No note open' : 'Untitled'}
+						aria-label={onScratch ? 'Name this to keep it as a note' : 'Note name'}
+						placeholder={onScratch ? 'Name this to keep it' : 'Untitled'}
 						value={shownName}
-						readOnly={blank}
+						readOnly={!editable}
 						aria-invalid={titleError !== null || undefined}
 						aria-describedby={titleError ? 'notes-title-error' : undefined}
 						onChange={(e) => {
@@ -1221,8 +1493,11 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							setTitleError(null)
 						}}
 						onKeyDown={onTitleKey}
+						// A blur does not commit on the scratch: clicking into the body is not a request
+						// to file anything, and the draft is the name those words are ABOUT to have — so
+						// it stays in the field until Enter or ⌘S asks for it.
 						onBlur={() => {
-							if (draftRef.current !== null) void commitTitle(draftRef.current, false)
+							if (!onScratch && draftRef.current !== null) void commitTitle(draftRef.current, false)
 						}}
 					/>
 					{titleError ? (
@@ -1233,18 +1508,38 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					<textarea
 						ref={editorRef}
 						className="notes-editor"
-						// Inert until there is a note: read-only rather than hidden, so the layout does
-						// not jump and the ref stays put for the focus that follows an open.
-						readOnly={blank}
-						placeholder={blank ? 'Find or name a note above, then write here' : 'Start typing…'}
-						value={buffer.text}
-						onChange={(e) => buf.type(e.target.value)}
-						onBlur={() => void settle()}
+						// Inert only while the scratch's text is still on its way from disk (or never
+						// arrived): keystrokes typed over an unfinished read would be saved on top of the
+						// words being read. A note, and words orphaned by a delete, are always editable.
+						readOnly={!editable}
+						placeholder={
+							onScratch
+								? `Scratch — type anything. ${isMac ? '⌘S' : 'Ctrl+S'} to keep it as a note.`
+								: 'Start typing…'
+						}
+						// One textarea, whichever buffer is live: they are never both on screen, and the
+						// focus/selection the promote gesture reads is the same element's either way.
+						value={onScratch ? scratch.text : buffer.text}
+						onChange={(e) => (onScratch ? scratchBuf : buf).type(e.target.value)}
+						onBlur={() => void (onScratch ? settleScratch() : settle())}
 						// Clicking into the editor dismisses an open dropdown (there's no backdrop).
 						onMouseDown={() => {
 							if (dropOpen) setDropOpen(false)
 						}}
 					/>
+					{onScratch ? (
+						<div className="notes-scratch-foot">
+							<span>Scratch — not filed anywhere</span>
+							<button
+								type="button"
+								disabled={!editable || scratch.text.trim() === ''}
+								title="Append this to the day’s note instead of naming it"
+								onClick={() => void keepInJournal()}
+							>
+								Keep in today’s note
+							</button>
+						</div>
+					) : null}
 				</div>
 				{dropOpen && !listOpen ? <div className="ds-menu notes-results">{rows}</div> : null}
 			</div>

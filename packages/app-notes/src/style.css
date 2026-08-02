@@ -236,6 +236,21 @@
 	font-size: 14px;
 	line-height: 1.5;
 }
+/* The scratch's own footer: what this text is (nothing, yet) and the way to keep it
+   without naming it. Only on the scratch, so a note's editor stays bare. */
+.notes-scratch-foot {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 18px 10px;
+	font-size: 12px;
+	opacity: 0.7;
+}
+.notes-scratch-foot button {
+	font-size: 12px;
+}
 /* The dropdown is the ONLY thing that overlays the editor — anchored under the
    bar (top of the editor body). */
 .notes-results {

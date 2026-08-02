@@ -4,14 +4,17 @@ import * as v from 'valibot'
 import {
 	illegalMove,
 	isCanonicalPath,
+	isDateStamp,
 	isNotePath,
 	isUnder,
 	joinPath,
+	journalPath,
 	NOTE_EXT,
 	namesEntry,
 	noteTitle,
 	numberedPath,
 	renameTarget,
+	SCRATCH_FILE,
 	sanitizeName
 } from './notes.ts'
 
@@ -102,6 +105,9 @@ const MOVE_TRAIL = 8
 // to land — so `save` is a procedure that throws, not an edge that files a complaint
 // in state for someone to notice later.
 export type NotesState = {
+	// `null` = the SCRATCH buffer is showing (DESIGN.md §6) — the app's one unfiled
+	// surface, not “nothing”. So this still answers “what is the user looking at”: a note,
+	// or the scratch.
 	openPath: string | null
 	// Where the open note HAS BEEN, oldest first, so a client holding any of those
 	// addresses can follow it forward. `openPath` alone cannot say WHY it changed — "the
@@ -179,7 +185,17 @@ const memberSchema = v.pipe(
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { volume: volume({ scopes: ['/notes'] }) },
+	// TWO bindings of the same capability, because the app writes in two places with
+	// different owners. Capabilities are declared under a LOCAL NAME which the kernel maps
+	// to a trusted `{ id, scopes }` (packages/app/kernel.capability.ts), so a second name is
+	// all a second scope takes — no change to the volume capability itself.
+	//
+	//   volume  → the shared knowledge base, chrooted at `/notes` (DESIGN.md §2)
+	//   private → this app's own `/data/<id>`, where the scratch lives (`SCRATCH_FILE`)
+	capabilities: {
+		volume: volume({ scopes: ['/notes'] }),
+		private: volume({ scopes: ['app'] })
+	},
 
 	// Two watches, two signals (DESIGN.md §3): the open file keeps its body live
 	// when the agent or Files edits it on disk, and a recursive watch is the
@@ -203,7 +219,8 @@ export const app = defineApp({
 			}
 		),
 		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, movedFrom: undefined }), {
-			description: 'Close the open note, leaving the editor empty.'
+			description:
+				'Close the open note and show the scratch buffer — the unfiled surface the app opens on.'
 		}),
 
 		// Internal, like `moved`: the `remove` procedure reports WHAT WAS DELETED and the
@@ -370,7 +387,7 @@ export const app = defineApp({
 			}
 		}),
 
-		// Write a batch of imported notes (DESIGN.md §9). The GUI unzips, plans and
+		// Write a batch of imported notes (DESIGN.md §10). The GUI unzips, plans and
 		// chunks; this is the write half. Paths are relative to `dir` (the knowledge
 		// base root by default), so an imported vault MERGES into the existing tree
 		// rather than hiding inside a wrapper folder. Nothing is ever overwritten: a
@@ -406,6 +423,73 @@ export const app = defineApp({
 					}
 				}
 				return { written, renamed, failed }
+			}
+		}),
+
+		// The scratch buffer's two halves. It is a file like any other — the GUI drives it with
+		// the SAME buffer machine it drives a note with (`src/buffer.ts`, one machine, two
+		// instances) — it just lives in this app's own volume rather than in the knowledge base.
+		//
+		// Readable by the agent (“what's in my scratch?” is a fair question), writable only by
+		// the GUI: an agent that could overwrite the whole buffer could erase words the user has
+		// not filed yet, and `journal`/`create` are the ways to move them somewhere permanent.
+		readScratch: p.procedure({
+			description:
+				'Read the scratch buffer — the unfiled text the user dumps into the editor when no note is open. Empty when it has never been used.',
+			schema: v.object({}),
+			async run(_params, app) {
+				try {
+					return { text: dec.decode(await app.invoke('private', 'readFile', SCRATCH_FILE)) }
+				} catch (thrown) {
+					// Never written = empty, not broken. Every other failure is real and thrown, so a
+					// buffer that could not be READ is never silently replaced by a blank one that the
+					// next keystroke would save over it.
+					if (/^ENOENT/.test((thrown as Error).message)) return { text: '' }
+					throw thrown
+				}
+			}
+		}),
+
+		// Overwrite the scratch. No `update: true` and no `exclusive` — unlike a note (see
+		// `save`), re-creating this file is CORRECT: the scratch is a place, not a thing
+		// someone named, so “it is not there yet” is its ordinary first state and “someone
+		// deleted it” is not a fact worth preserving.
+		saveScratch: p.procedure({
+			description: 'Overwrite the scratch buffer.',
+			audience: 'gui',
+			schema: v.object({ text: v.string() }),
+			async run({ text }, app) {
+				await app.invoke('private', 'writeFile', SCRATCH_FILE, enc.encode(text))
+			}
+		}),
+
+		// Keep something without naming it: append to the day's journal note. The other half
+		// of what the scratch needs — `create` files words under a name the user chose, this
+		// files them under the one name nobody has to choose (DESIGN.md §6).
+		//
+		// `date` is the CALLER's, because only the caller has the user's clock: a procedure
+		// runs in the worker, where `new Date()` is UTC and would file an evening entry under
+		// tomorrow.
+		journal: p.procedure({
+			description:
+				'Append text to the day’s journal note (/journal/<date>.md), creating it if needed. `date` is that day as YYYY-MM-DD, in the user’s own timezone. The text is appended as given, so include a heading if you want one.',
+			schema: v.object({
+				date: v.pipe(v.string(), v.check(isDateStamp, 'date must be YYYY-MM-DD')),
+				text: v.string()
+			}),
+			async run({ date, text }, app) {
+				const path = journalPath(date)
+				try {
+					// The first entry of the day CREATES the note, exclusively: two windows keeping
+					// something in the same instant would otherwise both create it and one would
+					// overwrite the other. EEXIST is then the ordinary case — append. (EISDIR is not:
+					// a folder holding that name is a real problem, so it is thrown.)
+					await app.invoke('volume', 'writeFile', path, enc.encode(text), { exclusive: true })
+				} catch (thrown) {
+					if (!/^EEXIST/.test((thrown as Error).message)) throw thrown
+					await app.invoke('volume', 'appendFile', path, enc.encode(`\n\n${text}`))
+				}
+				return { path }
 			}
 		}),
 
@@ -450,7 +534,7 @@ export const app = defineApp({
 		}),
 
 		// Destructive — gui-only. `/notes` is the user's; the agent never deletes
-		// user notes blindly (mirrors app-code's gui-only `remove`). DESIGN.md §6.
+		// user notes blindly (mirrors app-code's gui-only `remove`). DESIGN.md §7.
 		remove: p.procedure({
 			description: 'Delete a note, or a folder and everything in it.',
 			audience: 'gui',

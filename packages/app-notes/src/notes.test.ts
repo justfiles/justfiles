@@ -6,12 +6,18 @@ import {
 	illegalMove,
 	illegalName,
 	isCanonicalPath,
+	isDateStamp,
 	isUnder,
+	journalPath,
+	localDateStamp,
+	localTimeStamp,
 	matchNotes,
 	namesEntry,
 	noteTitle,
 	renameTarget,
-	sanitizeName
+	SCRATCH_FILE,
+	sanitizeName,
+	splitSelection
 } from './notes.ts'
 
 test('titles and display paths drop the extension, keep the folder', () => {
@@ -170,4 +176,38 @@ test('a half-typed name follows the words, not the address', () => {
 	expect(draftSurvives('/Kyoto.md', '/Osaka.md')).toBe(false)
 	// Nothing at either end is still "the same nothing".
 	expect(draftSurvives(null, null)).toBe(true)
+})
+
+test('keeping part of the scratch takes the selection and leaves the rest', () => {
+	const text = 'a thought\n\nsomething else'
+	// A selection is the unit: filing one thing out of a scratch must not file the others.
+	expect(splitSelection(text, 11, 25)).toEqual({
+		promoted: 'something else',
+		remainder: 'a thought\n\n'
+	})
+	// No selection — a bare caret — means the whole buffer, and nothing is left behind.
+	expect(splitSelection(text, 4, 4)).toEqual({ promoted: text, remainder: '' })
+	expect(splitSelection(text, 0, 0)).toEqual({ promoted: text, remainder: '' })
+})
+
+test('the day is spelled one way, and the journal note is named by it', () => {
+	expect(isDateStamp('2026-06-19')).toBe(true)
+	expect(isDateStamp('2026-6-19')).toBe(false)
+	expect(isDateStamp('')).toBe(false)
+	// A path canonical by construction, so the procedure needs no second check.
+	expect(journalPath('2026-06-19')).toBe('/journal/2026-06-19.md')
+	expect(isCanonicalPath(journalPath('2026-06-19'))).toBe(true)
+	// The user's clock, not the worker's: 23:30 local is still today.
+	expect(localDateStamp(new Date(2026, 5, 19, 23, 30))).toBe('2026-06-19')
+	expect(isDateStamp(localDateStamp(new Date(2026, 0, 1)))).toBe(true)
+	expect(localTimeStamp(new Date(2026, 5, 19, 9, 5))).toBe('09:05')
+})
+
+test('the scratch is not a path in the knowledge base', () => {
+	// It lives in the app's own volume, so nothing in `/notes` can name it — that is the
+	// whole reason it cannot be renamed, deleted or collided with. What the KB's own naming
+	// rules would do with such a name is the belt to that braces: they refuse it.
+	expect(SCRATCH_FILE).toBe('/scratch.md')
+	expect(illegalName('.scratch')).not.toBe(null)
+	expect(sanitizeName('.scratch')).toBe('scratch')
 })
