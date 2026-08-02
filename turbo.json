@@ -16,6 +16,11 @@
 			"outputs": ["dist/**", "out/**", "native/build/**", "native/Kodama.app/**"],
 			"outputLogs": "new-only"
 		},
+		// `^build` is the whole dependency story for the Mac app: every built-in the
+		// daemon seeds (daemon/builtins.ts) is a `workspace:*` dep, so turbo derives the
+		// list from package.json and there is nothing to keep in step by hand. The
+		// scripts are leaves — run `turbo run build` / `turbo run dev` from apps/mac
+		// (auto-scoped) and turbo, not a prebuild step, orders the dep builds.
 		"@justfiles/frieren-mac#build": {
 			"dependsOn": ["^build"],
 			"inputs": [
@@ -31,6 +36,14 @@
 		},
 		"dev": {
 			"dependsOn": ["transit"],
+			"cache": false,
+			"persistent": true
+		},
+		// The daemon reads each built-in's `dist/manifest.json` at boot and throws
+		// ("build the app first") if it is missing, so dev needs the same `^build` as the
+		// ship build — otherwise a fresh checkout cannot start the dev daemon at all.
+		"@justfiles/frieren-mac#dev": {
+			"dependsOn": ["^build", "transit"],
 			"cache": false,
 			"persistent": true
 		},
