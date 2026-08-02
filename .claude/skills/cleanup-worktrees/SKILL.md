@@ -32,7 +32,7 @@ comparing against `origin/main`) and prints one block per non-primary worktree:
 | `remote=` | remote branch, unpushed commits (`local-ahead`), commits only on the remote (`remote-ahead`), and its full tip SHA for the delete lease |
 | `remote-contained=` | printed when `remote-ahead>0`: the same containment verdict for `origin/<branch>`, because the remote tip is what `--delete` destroys |
 | `pr=` | every PR for that branch head, with state, merge time and the head SHA GitHub last saw |
-| `tip-beyond-prs=N` | commits on the branch that no PR head reaches — work GitHub never saw (local-only or pushed after the PR). `unknown` when the PR head is not in the local object store |
+| `tip-beyond-prs=N` | commits on the branch that no PR head reaches. `unknown` when the PR head is not in the local object store. `0` is weak evidence on its own: GitHub's `headRefOid` tracks the live branch, so a push after a PR closed advances it too — that is what the date check in rule 2 is for |
 | `pr=unknown` | `gh` failed — the header says so too, and no verdict can rest on PR state |
 | `tmux=` | a live agent session rooted in that worktree |
 
@@ -47,9 +47,11 @@ commits are unreviewed work that deleting the branch would destroy.
 
 1. `contained=ancestor` or `contained=merge-is-noop` — the work is in main, whatever the PR says.
 2. Every PR for the branch is `CLOSED` and unmerged, **and** `tip-beyond-prs=0`, **and**
-   no unpushed commits (`local-ahead=0`, or `remote=none` with `tip-beyond-prs=0`) — the
-   tip is exactly what was abandoned. Say so loudly in the report: this deletes work that
-   was never merged.
+   `local-ahead=0`, **and** the tip's `committed` date is not after the newest `closed=`
+   timestamp — a later date is work pushed after the PR was abandoned, so KEEP. Say so
+   loudly in the report: this rule deletes work that was never merged, and it is the only
+   one that does. If the report's reason for a deletion is this rule, spell out what is
+   being thrown away so the confirmation in step 3 is a real decision.
 
 **KEEP** — everything else, especially: `dirty>0`, a live `tmux` session, `pr=OPEN`, `pr=unknown`,
 `pr=none` with commits not in main, `tip-beyond-prs>0` or `unknown`, unpushed commits
@@ -76,16 +78,17 @@ List the DONE set with a one-line reason each and ask the user for a single
 go-ahead. Then, per approved worktree:
 
 ```bash
-git worktree remove "<dir>"                  # never --force: a refusal means unexpected state — re-check
-git branch -D "<branch>"
-# Only when the scan reported a remote branch. The lease is the tip the scan saw, so a
-# push that landed since then aborts the delete instead of destroying it.
+# The remote first: it is the only step that can fail on new information, and a stale
+# lease must find the worktree and branch still intact so the branch can be re-judged.
+# Only when the scan reported a remote branch.
 git push origin --force-with-lease="refs/heads/<branch>:<remote-tip-from-scan>" ":refs/heads/<branch>"
+git worktree remove "<dir>"                   # never --force: a refusal means unexpected state — re-check
+git branch -D "<branch>"                      # only works once the worktree is gone
 git worktree prune
 ```
 
-A `stale info` rejection means the remote moved: re-run the scan for that branch and
-re-judge. Never fall back to a plain `--delete`.
+A `stale info` rejection means the remote moved: stop, keep the worktree, re-run the scan
+for that branch and re-judge. Never fall back to a plain `--delete`.
 
 If a step fails, stop on that worktree, keep it, and note the failure in the report.
 

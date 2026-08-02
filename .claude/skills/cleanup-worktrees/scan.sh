@@ -30,8 +30,8 @@ contained_kind() {
 
 # Every PR in one shot: per-branch `gh pr list` calls get throttled into 30s stalls.
 PR_STATE=ok
-gh pr list --state all --limit 1000 --json headRefName,headRefOid,number,state,title,url,mergedAt \
-	--jq '.[]|[.headRefName,.headRefOid,"pr=#\(.number) \(.state) merged=\(.mergedAt//"-") head=\(.headRefOid[0:8]) \(.url) — \(.title)"]|@tsv' \
+gh pr list --state all --limit 1000 --json headRefName,headRefOid,number,state,title,url,mergedAt,closedAt \
+	--jq '.[]|[.headRefName,.headRefOid,"pr=#\(.number) \(.state) merged=\(.mergedAt//"-") closed=\(.closedAt//"-") head=\(.headRefOid[0:8]) \(.url) — \(.title)"]|@tsv' \
 	>"$TMP/prs" </dev/null || { PR_STATE=failed; echo "!! gh pr list failed — PR state unknown"; }
 echo "prs-known=$(wc -l <"$TMP/prs" | tr -d ' ')"
 
@@ -46,7 +46,7 @@ while IFS=$'\t' read -r dir ref; do
 	[ "$ref" = DETACHED ] && { echo "detached HEAD — inspect by hand"; continue; }
 	branch="${ref#refs/heads/}"
 	echo "dir=$dir"
-	echo "head=$(git -C "$dir" rev-parse --short HEAD) $(git -C "$dir" log -1 --format='%s (%cr)')"
+	echo "head=$(git -C "$dir" rev-parse --short HEAD) $(git -C "$dir" log -1 --format='%s (committed %cs)')"
 	echo "dirty=$(git -C "$dir" status --porcelain | wc -l | tr -d ' ')"
 
 	read -r behind ahead < <(git rev-list --left-right --count "origin/main...$branch" | tr '\t' ' ')
@@ -73,7 +73,8 @@ while IFS=$'\t' read -r dir ref; do
 
 	if [ "$PR_STATE" = ok ]; then
 		awk -F'\t' -v b="$branch" '$1==b{print $3; f=1} END{if(!f) print "pr=none"}' "$TMP/prs"
-		# Commits the branch grew beyond every PR head: work GitHub never saw.
+		# Commits the branch grew beyond every PR head. Note GitHub's headRefOid tracks the
+		# live branch, so 0 does not prove the tip predates a close — compare the dates above.
 		heads=""; missing=0
 		for sha in $(awk -F'\t' -v b="$branch" '$1==b{print $2}' "$TMP/prs"); do
 			git cat-file -e "$sha^{commit}" 2>/dev/null && heads="$heads $sha" || missing=1
