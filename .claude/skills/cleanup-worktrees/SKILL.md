@@ -10,6 +10,10 @@ Sweep all worktrees, keep anything unfinished, delete what is provably done.
 **Bias to keeping.** Deleting a worktree with unmerged work loses it — when the
 evidence is not conclusive, leave it and say why in the report.
 
+`scan.sh` only reports facts; every judgement below is yours. Resist the urge to push
+those judgements into the script — the interesting cases are one-offs, and a rule that
+needs guards is a decision that belongs to you or the user.
+
 ## Step 1 — Gather evidence
 
 ```bash
@@ -25,43 +29,46 @@ comparing against `origin/main`) and prints one block per non-primary worktree:
 | --- | --- |
 | `dirty=N` | uncommitted files in the worktree — anything but `0` blocks cleanup |
 | `ahead/behind` | commits vs `origin/main` |
-| `unmerged-patches` | `git cherry` count: commits whose patch-id is not in main |
 | `contained=ancestor` | branch is an ancestor of `origin/main` — fully merged |
 | `contained=merge-is-noop` | merging the branch into main would change nothing — work is in main (covers squash merges) |
 | `contained=no (touched=T still-differ=D)` | `D` of the `T` files the branch touched still differ from main |
 | `remote=` | remote branch, unpushed commits (`local-ahead`), commits only on the remote (`remote-ahead`), and its full tip SHA for the delete lease |
 | `remote-contained=` | printed when `remote-ahead>0`: the same containment verdict for `origin/<branch>`, because the remote tip is what `--delete` destroys |
-| `pr=` | every PR for that branch head, with state, merge time and the head SHA GitHub last saw |
-| `tip-beyond-prs=N` | commits on the branch that no PR head reaches. `unknown` when the PR head is not in the local object store. Context only, never proof: GitHub's `headRefOid` tracks the live branch, so a push after a PR closed advances it too |
+| `pr=` | every PR for that branch head, with state and merge/close timestamps |
 | `pr=unknown` | `gh` failed — the header says so too, and no verdict can rest on PR state |
 | `tmux=` | a live agent session rooted in that worktree |
 
 ## Step 2 — Verdict per worktree
 
-Three buckets. Only containment can say "the work is in main" — a PR's state never
-overrides it, because a branch can gain commits after its PR merged or closed, and
-those commits are work that deleting the branch would destroy.
+### Blockers — KEEP, whatever else is true
 
-**DONE** — safe to delete without further thought. Needs `dirty=0`, `tmux=none`, no
-remote-only work (`remote-ahead=0`, or `remote-contained=ancestor`/`merge-is-noop`), and
-`contained=ancestor` or `contained=merge-is-noop`. That is the whole rule: the work is in
-main, so nothing can be lost.
+Check these first, for **every** worktree. They are the whole safety story, so they are
+written once rather than repeated per rule:
 
-**ABANDONED?** — every PR for the branch is `CLOSED` and unmerged, and the branch is
-clean. The work is *not* in main, so this is a judgement call, not a verdict. Nothing here
-is deleted on the batch go-ahead: report each one with the commits that would die
-(`git log --oneline origin/main..<branch>`) and get a per-worktree yes.
+- `dirty>0` — uncommitted work.
+- `tmux=` anything but `none` — a live agent owns that directory, and it may commit
+  between your scan and your deletion.
+- `remote-ahead>0` unless `remote-contained=ancestor`/`merge-is-noop` — another clone
+  pushed commits this worktree never saw, and the remote tip is what the delete destroys.
+- `pr=unknown` — `gh` failed, so PR state is not evidence.
 
-Do not try to prove the tip "is only what was abandoned". `tip-beyond-prs=0` cannot show
-it (GitHub advances `headRefOid` on any push, including after closure), and neither can
-commit dates (a committer date is not a push time, and can predate a close on work pushed
-after it). Establishing the head at closure needs the PR timeline, which is not worth a
-round trip for a decision a human is making anyway — so show the losses and ask.
+### Then, one reason to delete
 
-**KEEP** — everything else, silently safe: `dirty>0`, a live `tmux` session, `pr=OPEN`,
-`pr=unknown`, `pr=none` with commits not in main, `local-ahead>0` on a branch that is not
-contained, `remote-ahead>0` with `remote-contained=no` (another clone pushed work this
-worktree has never seen).
+**DONE** — `contained=ancestor` or `contained=merge-is-noop`. The work is in main, so
+nothing can be lost. These go into the batch go-ahead.
+
+**ABANDONED?** — every PR for the branch is `CLOSED` and unmerged. The work is *not* in
+main, so this is a question, not a verdict: report each one with the commits that would
+die (`git log --oneline origin/main..<branch>`, plus anything the remote holds) and get a
+per-worktree yes.
+
+Do not try to prove the tip "is only what was abandoned". Comparing the branch against
+GitHub's PR head cannot show it (`headRefOid` advances on any push, including after
+closure), and neither can commit dates (a committer date is not a push time). That is why
+the scan no longer reports either — show the losses and ask.
+
+**KEEP** — everything else: `pr=OPEN`, `pr=none` with commits not in main, a branch that
+is neither contained nor abandoned.
 
 A `MERGED` PR with `contained=no` is **not** DONE — the branch usually grew commits after
 the squash merge. It may only be moved to DONE after inspecting what the difference is:
