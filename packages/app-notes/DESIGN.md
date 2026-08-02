@@ -562,6 +562,11 @@ Obsidian's inline title looks like a first line while living outside the documen
 `div.inline-title`, and the `.md` on disk holds body only). `create({ title, text? })` takes the name;
 nothing derives one from prose, and there is **no such thing as an unnamed note**.
 
+> The **scratch is the one surface with no name field at all** — one field, not two (§6). It is not a file
+> anyone named, so an empty name line above it would be a field for a thing that does not exist, permanently
+> inviting the decision the surface exists to postpone. Its name is asked for once, at the moment it stops
+> being a scratch.
+
 This replaced "filename = the first non-empty line, assigned once at first persist", which failed three
 ways. It **drifted** — fix a typo in the title and the filename keeps the typo forever, because the name
 was a snapshot of a line that kept changing. It **duplicated** — our notes carried their title in the
@@ -636,7 +641,7 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   be read).
 - **Type in the body** → update local buffer, debounced (~800ms) → `save({ openPath, text })`, or
   `saveScratch({ text })` when the scratch is showing. **Type in the name field** → nothing until Enter or
-  blur, then `rename` (§4) — or, on the scratch, until Enter, which **files** it (§6).
+  blur, then `rename` (§4). The scratch has no name field — it is named at the moment of keeping (§6).
 - **The bar** (always visible — nothing behind a shortcut): a list toggle and a search-or-create field.
   Focusing the field calls `list()` and drops the recency list down — empty query = everything,
   newest first; typing filters. **Search is path-aware**: every whitespace/slash-separated token must
@@ -840,15 +845,37 @@ Two consequences worth stating, because both are rules a reviewer will look for:
 
 | | Gesture | Result |
 |----|----|----|
-| **Name it** | type a name in the field, Enter (or `Cmd+S`) | `create` + `open`; the words **leave** the scratch |
+| **Name it** | `Cmd+S` (or **Save as note…**) → name prompt → Return | `create` + `open`; the words **leave** the scratch |
 | **Keep it, don't name it** | "Keep in today's note" | `journal` appends to `/journal/<date>.md`; the words leave the scratch |
 | **Neither** | nothing | it stays, forever |
 
-The gesture reuses the two surfaces that were dead: the name field and the body. Nothing new had to be
-invented — the field was already `readOnly` and useless with no note open, and naming *is* the one question
-filing has to ask. `Cmd+S` therefore either answers it with the name already typed, or puts the caret in the
-field; it never invents a name. A blur does **not** file (clicking into the body is not a request to keep
-anything), so a typed name waits in the field until Enter or `Cmd+S` asks for it.
+**The name is asked for at the moment of keeping, and nowhere else.** The scratch shows *only its content* —
+the editor's other field is gone, not disabled — and the question *"what is this called"* appears in the
+footer when, and only when, someone asks to keep it: `Cmd+S`, or the **Save as note…** button. The footer
+swaps to a small text field in place, which is the idiom the tree's CRUD menu already uses (§5) and the only
+kind of prompt available anyway — a sandboxed iframe has no `allow-modals`.
+
+That is a change from the first cut, which reused the note's name field with the scratch showing. It was
+wrong for the reason the whole feature exists: an empty name line sitting above the buffer is a field for a
+file that does not exist, permanently asking the question the scratch is there to *defer*. Emacs's `*scratch*`
+has no name line either — `C-x C-s` is where the name is asked for.
+
+So `Cmd+S` has three answers on the scratch, and none of them invents a name: **no prompt yet** → open one;
+**a name typed** → take it; **open but empty** → put the caret back in it. Return on an empty prompt is a
+*cancel*, not a request for a nameless note (there is no such thing), and Esc cancels with the caret back at
+the end of the words. Blur does **not** commit: clicking into the body is not a request to keep anything.
+
+**One naming path, two inputs.** The prompt and the note's name field both go through `commitTitle`, so the
+illegal-name rule, the "already exists" advisory and the three-answer failure handling (refused / did not
+land / landed) cannot drift apart. The prompt is *derived from the draft* (`titleDraft !== null`) rather than
+kept in a flag beside it — so every path that already drops a half-typed name (opening a note, creating one,
+going back to the scratch) closes the prompt for free.
+
+**And the advisory is not the authority.** It reads the listing, which can be empty (nothing has asked for
+one yet) or stale, while `claimPath` in the reducer numbers rather than overwrites — so a name chosen at the
+moment of filing can still be taken. Where the words actually went is then reported (*"a note called “Kyoto”
+already existed — kept as “Kyoto 2”"*), the same thing `moveNote` says about a deduped rename. Found by
+using it: asking for a name that existed silently produced `… 2`.
 
 **A selection is the unit when there is one** (Heynote's move-a-block): a scratch accumulates several
 unrelated things, and filing one of them must not file the other three. `splitSelection` is that rule, pure

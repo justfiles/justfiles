@@ -296,6 +296,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const [searchFocused, setSearchFocused] = useState(false)
 	// The name field, while the user is editing it. `null` = not editing, so the field shows
 	// the truth (the buffer's own path) and an agent rename appears in it with no bookkeeping.
+	//
+	// On the SCRATCH it is also what OPENS the save prompt: the scratch has no name line to
+	// edit (§6), so a draft is the whole state of "the user is naming this" — `''` on the way
+	// in, `null` again on cancel. No second flag to keep level with it, and every path that
+	// already drops the draft (opening a note, creating one, going back to the scratch) closes
+	// the prompt for free.
 	const [titleDraft, setTitleDraft] = useState<string | null>(null)
 	const [titleError, setTitleError] = useState<string | null>(null)
 	const [dropOpen, setDropOpen] = useState(false)
@@ -318,8 +324,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const dirRef = useRef('/')
 	const editorRef = useRef<HTMLTextAreaElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
-	// The name field, so ⌘S can put the user in it: naming is the one question "keep this"
-	// has to ask, and the field is where it is asked.
+	// The input that NAMES things — the note's name field, or the scratch's save prompt. Only
+	// ever one of them is mounted, which is what lets ⌘S say "put the user where the name is
+	// asked for" without knowing which surface is up.
 	const titleRef = useRef<HTMLInputElement>(null)
 	// The draft, as a ref as well as state: Esc and Enter both blur the field, and a blur
 	// handler reading React state would still see the draft they just abandoned and commit it.
@@ -816,10 +823,14 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// Read-only only while the scratch's text is still coming (or never came). Everything else
 	// — a note, or words orphaned by a delete — is always editable.
 	const editable = !onScratch || scratchState === 'ready'
+	// The name field belongs to a NOTE and is not rendered on the scratch at all (§6): a
+	// scratch has no filename to show, so showing an empty one invites the user to name a thing
+	// that does not exist yet, and "nameless" is the whole point of the surface. Naming happens
+	// once, at the moment of keeping (`namePrompt` below).
 	const noteName = buffer.path !== null ? noteTitle(buffer.path) : onScratch ? '' : nameRef.current
-	// A draft outranks the truth while it is being typed. On the scratch there is no truth to
-	// outrank: the field holds the name the words are ABOUT to have, and nothing else.
 	const shownName = titleDraft ?? noteName
+	// The scratch's save prompt is open. Derived from the draft, not a flag beside it.
+	const naming = onScratch && titleDraft !== null
 
 	// Keep the scratch: the words go somewhere permanent and LEAVE the scratch — a move, not
 	// a copy, exactly as Emacs's `C-x C-s` in `*scratch*`, JetBrains' "move to project" and
@@ -904,6 +915,23 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const saveNow = useCallback(async () => {
 		if (await settle()) setStatus('Saved')
 	}, [settle])
+
+	// Ask for a name — the scratch's save prompt (§6). It opens in the footer, on the gesture
+	// that needs it, rather than sitting above the buffer as a permanent empty field: a scratch
+	// has no filename until it stops being a scratch, and the question is only worth asking
+	// once, at the moment of keeping.
+	//
+	// `draftForRef` is set the way the first keystroke in a name field sets it, because a
+	// prompt opened with no keystroke still has to say what its draft is ABOUT (see the
+	// `buffer.path` effect — a stale target there would drop the name mid-type).
+	const openNamePrompt = useCallback(() => {
+		if (!editable) return
+		draftForRef.current = buf.snapshot().path
+		setDraft('')
+		setTitleError(null)
+		// The input mounts on the next render, so the focus waits for it.
+		requestAnimationFrame(() => titleRef.current?.focus())
+	}, [editable, buf, setDraft])
 
 	// Back to the scratch. `newNote` is what makes the reducer — and the agent — say the user
 	// is on it; the note buffer settles on the way out. A navigation, so it dismisses the
@@ -1004,6 +1032,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			else if (onScratch) {
 				const path = await promoteScratch((text) => createIn(clean, text, dirRef.current))
 				if (path !== null) {
+					// The advisory above reads a listing, which may be empty (nothing has asked for one
+					// yet) or stale, and `claimPath` in the reducer numbers rather than overwrites — so
+					// the name the user chose at the moment of filing can still be taken. Say where the
+					// words actually went; the same thing `moveNote` says about a deduped rename.
+					if (noteTitle(path) !== clean)
+						setStatus(`A note called “${clean}” already existed — kept as “${displayPath(path)}”`)
 					await actions.open({ path })
 					if (listing) void refresh()
 				}
@@ -1030,6 +1064,36 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			refresh
 		]
 	)
+
+	// Commit whatever the scratch's save prompt holds — the same `commitTitle` the name field
+	// uses, so the illegal-name rule, the "already exists" advisory and the three-answer failure
+	// handling are one path on both surfaces. Only the input differs.
+	const commitName = useCallback(async () => {
+		// An empty name is not a request for a nameless note (there is no such thing) — it is a
+		// cancel, and the caret goes back to the end of the words it was going to name.
+		if ((draftRef.current ?? '').trim() === '') {
+			setDraft(null)
+			setTitleError(null)
+			focusScratchEnd()
+			return
+		}
+		// A successful keep leaves the NEW NOTE on screen, so the caret belongs at the top of it.
+		if (await commitTitle(draftRef.current ?? '', true)) focusBody()
+	}, [commitTitle, setDraft, focusBody, focusScratchEnd])
+
+	// Enter names it; Esc abandons the prompt and goes back to the words. Blur does NOT commit
+	// (§6): clicking into the body is not a request to keep anything, so the name waits.
+	const onNameKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+		if (e.key === 'Enter') {
+			e.preventDefault()
+			void commitName()
+		} else if (e.key === 'Escape') {
+			e.preventDefault()
+			setDraft(null)
+			setTitleError(null)
+			focusScratchEnd()
+		}
+	}
 
 	// The menu is already closed by the time this runs, so a failure has nowhere to appear
 	// but the status line — and "the name is taken by a note" is a thing users do.
@@ -1245,17 +1309,16 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				void saveNow()
 				return
 			}
-			// Keeping the scratch has exactly one question — what is it called — so ⌘S either
-			// answers it with the name already typed, or puts the user where it is asked. It never
-			// invents a name.
-			const typed = draftRef.current?.trim() ?? ''
-			if (typed === '') {
+			// Keeping the scratch has exactly one question — what is it called — and ⌘S is how it
+			// gets asked: no prompt yet, open one; a name already typed, take it; open but empty,
+			// put the caret back in it. It never invents a name.
+			if (draftRef.current === null) {
+				openNamePrompt()
+			} else if (draftRef.current.trim() === '') {
 				titleRef.current?.focus()
-				return
+			} else {
+				void commitName()
 			}
-			void (async () => {
-				if (await commitTitle(typed, true)) focusBody()
-			})()
 		} else if ((e.metaKey || e.ctrlKey) && e.key === 'j') {
 			e.preventDefault()
 			void showScratch()
@@ -1509,35 +1572,38 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					/>
 				) : null}
 				<div className="notes-doc">
-					{/* The name field. It is NOT the first line of the file — the body on disk holds
-					    no title at all, which is what makes a note we made and a note imported from
-					    an Obsidian vault the same shape (DESIGN.md §4). It only looks like a first
-					    line, which is exactly how Obsidian's inline title works. */}
-					<input
-						ref={titleRef}
-						className="notes-title"
-						aria-label={onScratch ? 'Name this to keep it as a note' : 'Note name'}
-						placeholder={onScratch ? 'Name this to keep it' : 'Untitled'}
-						value={shownName}
-						readOnly={!editable}
-						aria-invalid={titleError !== null || undefined}
-						aria-describedby={titleError ? 'notes-title-error' : undefined}
-						onChange={(e) => {
-							// The first keystroke fixes what this draft is ABOUT — the words the buffer is
-							// holding, named by wherever they live right now (see the `buffer.path` effect).
-							if (draftRef.current === null) draftForRef.current = buffer.path
-							setDraft(e.target.value)
-							setTitleError(null)
-						}}
-						onKeyDown={onTitleKey}
-						// A blur does not commit on the scratch: clicking into the body is not a request
-						// to file anything, and the draft is the name those words are ABOUT to have — so
-						// it stays in the field until Enter or ⌘S asks for it.
-						onBlur={() => {
-							if (!onScratch && draftRef.current !== null) void commitTitle(draftRef.current, false)
-						}}
-					/>
-					{titleError ? (
+					{/* The name field — a NOTE's, and only a note's. It is not the first line of the
+					    file: the body on disk holds no title at all, which is what makes a note we made
+					    and a note imported from an Obsidian vault the same shape (DESIGN.md §4). It only
+					    looks like a first line, exactly as Obsidian's inline title does.
+
+					    The scratch has none: it is not a file the user named, so an empty name line
+					    above it would be a field for a thing that does not exist yet, permanently
+					    inviting a decision the surface exists to postpone. Its name is asked for once,
+					    in the footer, at the moment of keeping (DESIGN.md §6). */}
+					{onScratch ? null : (
+						<input
+							ref={titleRef}
+							className="notes-title"
+							aria-label="Note name"
+							placeholder="Untitled"
+							value={shownName}
+							aria-invalid={titleError !== null || undefined}
+							aria-describedby={titleError ? 'notes-title-error' : undefined}
+							onChange={(e) => {
+								// The first keystroke fixes what this draft is ABOUT — the words the buffer is
+								// holding, named by wherever they live right now (see the `buffer.path` effect).
+								if (draftRef.current === null) draftForRef.current = buffer.path
+								setDraft(e.target.value)
+								setTitleError(null)
+							}}
+							onKeyDown={onTitleKey}
+							onBlur={() => {
+								if (draftRef.current !== null) void commitTitle(draftRef.current, false)
+							}}
+						/>
+					)}
+					{titleError && !onScratch ? (
 						<p className="notes-title-error" id="notes-title-error">
 							{titleError}
 						</p>
@@ -1566,15 +1632,57 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					/>
 					{onScratch ? (
 						<div className="notes-scratch-foot">
-							<span>Scratch — not filed anywhere</span>
-							<button
-								type="button"
-								disabled={!editable || scratch.text.trim() === ''}
-								title="Append this to the day’s note instead of naming it"
-								onClick={() => void keepInJournal()}
-							>
-								Keep in today’s note
-							</button>
+							{/* The footer is where the scratch's ONE decision lives: keep this, and if so,
+							    under what name. It swaps to the name prompt in place — the tree's CRUD menu
+							    does the same thing (DESIGN.md §5), and sandboxed iframes have no
+							    `allow-modals`, so an inline field is the only prompt there is. */}
+							{naming ? (
+								<div className="notes-scratch-name">
+									<input
+										ref={titleRef}
+										aria-label="Name for the new note"
+										placeholder="Name it, then Return — Esc to cancel"
+										value={titleDraft ?? ''}
+										aria-invalid={titleError !== null || undefined}
+										aria-describedby={titleError ? 'notes-title-error' : undefined}
+										onChange={(e) => {
+											setDraft(e.target.value)
+											setTitleError(null)
+										}}
+										onKeyDown={onNameKey}
+									/>
+									<button type="button" onClick={() => void commitName()}>
+										Save
+									</button>
+								</div>
+							) : (
+								<>
+									<span>Scratch — not filed anywhere</span>
+									<span className="notes-scratch-acts">
+										<button
+											type="button"
+											disabled={!editable || scratch.text.trim() === ''}
+											title={`Keep this as a note under a name you choose (${isMac ? '⌘S' : 'Ctrl+S'})`}
+											onClick={openNamePrompt}
+										>
+											Save as note…
+										</button>
+										<button
+											type="button"
+											disabled={!editable || scratch.text.trim() === ''}
+											title="Append this to the day’s note instead of naming it"
+											onClick={() => void keepInJournal()}
+										>
+											Keep in today’s note
+										</button>
+									</span>
+								</>
+							)}
+							{titleError ? (
+								<p className="notes-title-error" id="notes-title-error">
+									{titleError}
+								</p>
+							) : null}
 						</div>
 					) : null}
 				</div>
