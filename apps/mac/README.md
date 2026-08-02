@@ -14,16 +14,24 @@ the Node→Bun runtime migration in [BUN-MIGRATION-PLAN.md](./BUN-MIGRATION-PLAN
 
 ## Scripts
 
-Run from `apps/mac`. Each `dev`/`build` first builds the workspace app dependencies
-(`turbo run build --filter=@justfiles/frieren-mac^...`, cached) and the browser surfaces, so a single
-command leaves you with a runnable app — there is no separate `assets`/`reseed` step.
+Run from `apps/mac`. `turbo run …` here is **auto-scoped** to this package, and
+`turbo.json` declares `^build` for both `build` and `dev` — so turbo builds the workspace
+app dependencies (every built-in the daemon seeds, derived from this package's
+`workspace:*` deps) and the browser surfaces first, cached. A single command leaves you
+with a runnable app; there is no separate `assets`/`reseed` step, and no prebuild script —
+the dependency lives in the task graph.
 
-| Command            | What it does                                                                                                                     |
-|--------------------|----------------------------------------------------------------------------------------------------------------------------------|
-| `pnpm dev`         | Vite watch (`ui/dist/client`) + `bun --watch daemon/main.ts` — the daemon headless on `:3000`, no native window. The inner loop; open a browser, or run the launcher (below). |
-| `pnpm build`       | Build the **production** self-contained `native/Kodama.app` (bun exe + Vite client).                                            |
-| `pnpm start`       | `open` the built `native/Kodama.app` (no rebuild, no kill).                                                                        |
-| `pnpm install:app` | `build`, then replace `/Applications/Kodama.app` and open it. Kills the running copy first.                                        |
+| Command                | What it does                                                                                                                     |
+|------------------------|----------------------------------------------------------------------------------------------------------------------------------|
+| `turbo run dev`        | Vite watch (`ui/dist/client`) + `bun --watch daemon/main.ts` — the daemon headless on `:3000`, no native window. The inner loop; open a browser, or run the launcher (below). |
+| `turbo run build`      | Build the **production** self-contained `native/Kodama.app` (bun exe + Vite client).                                            |
+| `pnpm start`           | `open` the built `native/Kodama.app` (no rebuild, no kill).                                                                        |
+| `pnpm install:app`     | `build`, then replace `/Applications/Kodama.app` and open it. Kills the running copy first.                                        |
+
+> `pnpm dev` / `pnpm build` still work but are **leaf** scripts — they do this package's own
+> work only and assume the built-in apps' `dist` trees already exist. Go through `turbo` (or
+> the root `pnpm build`) unless you know they are current; the daemon and `native/build.sh`
+> both fail loudly with "build the app first" if they are not.
 
 > `install:app`, not `install`: a script named `install` is an npm/pnpm lifecycle hook and
 > would fire on every `pnpm install`.
@@ -31,7 +39,7 @@ command leaves you with a runnable app — there is no separate `assets`/`reseed
 ### Dev loop
 
 ```sh
-pnpm dev
+turbo run dev
 ```
 
 This runs the **daemon** from source (`bun --watch daemon/main.ts`) alongside a Vite watch
@@ -53,14 +61,14 @@ a relaunch always shows current code; editing only `daemon/*` needs just the rel
 ### Production build & install
 
 ```sh
-pnpm build          # → native/Kodama.app (self-contained, arm64)
-pnpm install:app    # build + install to /Applications
+turbo run build   # → native/Kodama.app (self-contained, arm64)
+pnpm install:app  # build + install to /Applications
 
 # For an actual release, optimise the native shell too:
 native/build.sh --release --ship-daemon
 ```
 
-`pnpm build` produces a **self-contained, relocatable** `Kodama.app` that needs no system
+`turbo run build` produces a **self-contained, relocatable** `Kodama.app` that needs no system
 node/bun and no repo. It assembles:
 
 - **`Contents/MacOS/daemon`** — the daemon compiled into one Mach-O exe that embeds Bun +

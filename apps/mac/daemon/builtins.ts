@@ -4,6 +4,7 @@ import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [
 	{ id: 'app.justfiles.frieren.code', packageDir: 'app-code' },
+	{ id: 'app.justfiles.frieren.draw', packageDir: 'app-draw' },
 	{ id: 'app.justfiles.frieren.files', packageDir: 'app-files' },
 	{ id: 'app.justfiles.frieren.notes', packageDir: 'app-notes' },
 	{ id: 'app.justfiles.frieren.paint', packageDir: 'app-paint' },

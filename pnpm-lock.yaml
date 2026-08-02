@@ -246,6 +246,9 @@ importers:
       '@justfiles/app-code':
         specifier: workspace:*
         version: link:../../packages/app-code
+      '@justfiles/app-draw':
+        specifier: workspace:*
+        version: link:../../packages/app-draw
       '@justfiles/app-files':
         specifier: workspace:*
         version: link:../../packages/app-files

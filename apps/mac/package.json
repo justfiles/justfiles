@@ -9,14 +9,15 @@
 		"ui:build": "vite build -c ui/vite.config.ts",
 		"ui:watch": "vite build -c ui/vite.config.ts --watch",
 		"vendor": "bun ui/vendor.ts",
-		"build": "turbo run build --filter=@justfiles/frieren-mac^... && native/build.sh --ship-daemon",
+		"build": "native/build.sh --ship-daemon",
 		"start": "open -n native/Kodama.app",
-		"install:app": "pnpm build && native/install.sh"
+		"install:app": "turbo run build && native/install.sh"
 	},
 	"dependencies": {
 		"@justfiles/agent": "workspace:*",
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-code": "workspace:*",
+		"@justfiles/app-draw": "workspace:*",
 		"@justfiles/app-files": "workspace:*",
 		"@justfiles/app-notes": "workspace:*",
 		"@justfiles/app-paint": "workspace:*",
