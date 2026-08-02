@@ -1,6 +1,6 @@
 // Planning an Obsidian-vault import. Pure: zip entry names + bytes in, a list of
 // notes to write and a list of skips out. No IO, no state — so the rules are
-// testable and the GUI stays a thin unzip-and-chunk loop (DESIGN.md §9).
+// testable and the GUI stays a thin unzip-and-chunk loop (DESIGN.md §10).
 
 import { isCanonicalPath, isNotePath } from './notes.ts'
 

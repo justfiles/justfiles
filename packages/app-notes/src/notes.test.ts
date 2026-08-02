@@ -1,17 +1,24 @@
 import { expect, test } from 'vitest'
 import {
+	cutKept,
 	displayPath,
 	draftSurvives,
 	failedWith,
 	illegalMove,
 	illegalName,
 	isCanonicalPath,
+	isDateStamp,
 	isUnder,
+	journalPath,
+	localDateStamp,
+	localTimeStamp,
 	matchNotes,
 	namesEntry,
 	noteTitle,
 	renameTarget,
-	sanitizeName
+	SCRATCH_FILE,
+	sanitizeName,
+	splitSelection
 } from './notes.ts'
 
 test('titles and display paths drop the extension, keep the folder', () => {
@@ -170,4 +177,68 @@ test('a half-typed name follows the words, not the address', () => {
 	expect(draftSurvives('/Kyoto.md', '/Osaka.md')).toBe(false)
 	// Nothing at either end is still "the same nothing".
 	expect(draftSurvives(null, null)).toBe(true)
+})
+
+test('keeping part of the scratch takes the selection and leaves the rest', () => {
+	const text = 'a thought\n\nsomething else'
+	// A selection is the unit: filing one thing out of a scratch must not file the others.
+	expect(splitSelection(text, 11, 25)).toEqual({
+		promoted: 'something else',
+		remainder: 'a thought\n\n'
+	})
+	// No selection — a bare caret — means the whole buffer, and nothing is left behind.
+	expect(splitSelection(text, 4, 4)).toEqual({ promoted: text, remainder: '' })
+	expect(splitSelection(text, 0, 0)).toEqual({ promoted: text, remainder: '' })
+})
+
+test('the day is spelled one way, and the journal note is named by it', () => {
+	expect(isDateStamp('2026-06-19')).toBe(true)
+	expect(isDateStamp('2026-6-19')).toBe(false)
+	expect(isDateStamp('')).toBe(false)
+	// A path canonical by construction, so the procedure needs no second check.
+	expect(journalPath('2026-06-19')).toBe('/journal/2026-06-19.md')
+	expect(isCanonicalPath(journalPath('2026-06-19'))).toBe(true)
+	// The user's clock, not the worker's: 23:30 local is still today.
+	expect(localDateStamp(new Date(2026, 5, 19, 23, 30))).toBe('2026-06-19')
+	expect(isDateStamp(localDateStamp(new Date(2026, 0, 1)))).toBe(true)
+	expect(localTimeStamp(new Date(2026, 5, 19, 9, 5))).toBe('09:05')
+})
+
+test('the scratch is not a path in the knowledge base', () => {
+	// It lives in the app's own volume, so nothing in `/notes` can name it — that is the
+	// whole reason it cannot be renamed, deleted or collided with. What the KB's own naming
+	// rules would do with such a name is the belt to that braces: they refuse it.
+	expect(SCRATCH_FILE).toBe('/scratch.md')
+	expect(illegalName('.scratch')).not.toBe(null)
+	expect(sanitizeName('.scratch')).toBe('scratch')
+})
+
+test('the kept words are taken out by MAPPED offsets, so the right copy goes', () => {
+	// Filing is a round trip and the user can type through it, so neither offsets nor content
+	// are safe alone: offsets describe a text that no longer exists, and content picks the
+	// FIRST match — which is the wrong one when the kept words appear twice.
+
+	// Nothing typed: exactly the selection.
+	expect(cutKept('one\ntwo', 'one\ntwo', 4, 7)).toBe('one\n')
+	// Typed AFTER the kept words (the common case): the offsets still hold, and the new
+	// keystrokes survive — before this rule they were deleted by the stale remainder.
+	expect(cutKept('a thought', 'a thought and a newer one', 0, 0)).toBe(' and a newer one')
+	// Typed BEFORE the kept words: they moved, so the offsets are shifted by the difference.
+	expect(cutKept('keep me', 'new stuff keep me', 0, 4)).toBe('new stuff  me')
+	// THE DUPLICATE CASE: the SECOND `todo` was selected and a character typed at the end.
+	// Content alone would cut the first one, mangling an entry the gesture never touched.
+	expect(cutKept('todo\ntodo', 'todo\ntodox', 5, 9)).toBe('todo\nx')
+	// …and the first one selected instead, same edit.
+	expect(cutKept('todo\ntodo', 'todo\ntodox', 0, 5)).toBe('todox')
+	// The kept words themselves were edited while in flight: nothing can honestly be removed,
+	// so nothing is. Two copies are recoverable; the wrong cut is not.
+	expect(cutKept('a thought', 'rewritten entirely', 0, 0)).toBe(null)
+	// A SECOND copy typed after the kept words does not confuse it either: the offsets say
+	// which one was meant, so the one that was there goes and the new one stays.
+	expect(cutKept('todo', 'todo\ntodo', 0, 4)).toBe('\ntodo')
+	// When the edit DOES overlap the kept words, content is the only evidence left — and it is
+	// used only while it is unambiguous. Here the words moved and survived intact.
+	expect(cutKept('hello world', 'say hello world', 0, 5)).toBe('say  world')
+	// An empty selection of an empty buffer keeps nothing.
+	expect(cutKept('', '', 0, 0)).toBe(null)
 })

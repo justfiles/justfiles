@@ -366,6 +366,21 @@ test('reload takes an external edit, but never over what the user is typing', as
 	expect(buf.snapshot().path).toBe('/Kyoto.md')
 })
 
+test('a reload that cannot read REPORTS it, and changes nothing', async () => {
+	// The caller has to be able to tell, because "we did not get a read" is not evidence that
+	// nothing changed — app-notes' scratch stops being editable on this, so a stale buffer
+	// cannot be autosaved over newer text another window wrote (DESIGN.md §6).
+	const { buf, disk, failNext } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	disk['/Kyoto.md'] = 'newer, from somewhere else'
+	failNext(new Error('EIO: disk'))
+	const outcome = await buf.reload('/Kyoto.md')
+	expect(outcome).toMatchObject({ opened: false, because: 'unreadable', gone: false })
+	// Unchanged: still attached, still clean, still the text it had. A transient failure must
+	// not detach (that would fork a duplicate) and must not empty the buffer either.
+	expect(buf.snapshot()).toEqual({ text: 'first', dirty: false, path: '/Kyoto.md' })
+})
+
 test('a move carries the buffer with it, so the next save lands at the new path', async () => {
 	const { buf, disk } = buffer({ '/Trips/Kyoto.md': 'body' })
 	await buf.open('/Trips/Kyoto.md')

@@ -91,6 +91,12 @@
 	flex: none;
 	border-bottom: 1px solid var(--rule);
 }
+/* The scratch, pinned under the header for the same reason: it is a PLACE, not a
+   match, so the tree (and the result list) has no row to offer for it. */
+.notes-side-scratch {
+	flex: none;
+	border-bottom: 1px solid var(--rule);
+}
 /* The splitter: a hairline hit-target that widens its grab area with padding,
    not with pixels, so the layout doesn't shift. */
 .notes-splitter {
@@ -236,6 +242,44 @@
 	font-size: 14px;
 	line-height: 1.5;
 }
+/* The scratch's own footer: what this text is (nothing, yet) and the two ways to keep it.
+   Swaps to the name prompt in place, so the row does not move when it is asked for. */
+.notes-scratch-foot {
+	flex: none;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: 8px 12px;
+	padding: 6px 18px 10px;
+	font-size: 12px;
+	opacity: 0.7;
+}
+.notes-scratch-foot button {
+	font-size: 12px;
+}
+.notes-scratch-acts {
+	display: flex;
+	gap: 6px;
+}
+/* The name prompt: the field takes the width, the button stays put. */
+.notes-scratch-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+}
+.notes-scratch-name input {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+}
+/* The refusal belongs under the whole row, not beside the button. */
+.notes-scratch-foot .notes-title-error {
+	flex-basis: 100%;
+	padding: 0;
+}
 /* The dropdown is the ONLY thing that overlays the editor — anchored under the
    bar (top of the editor body). */
 .notes-results {
@@ -273,6 +317,23 @@
 }
 .notes-item[data-active="true"] .notes-item-mtime {
 	opacity: 0.8;
+}
+/* The scratch row's own two parts. After `.notes-item-title` on purpose: it is more
+   specific, so it has to come later or the cascade runs backwards. */
+.notes-scratch-row .notes-item-title {
+	display: flex;
+	min-width: 0;
+	align-items: baseline;
+}
+/* What is in the scratch right now, so a note-shaped surface can still show that words
+   are waiting. Takes the slack in the row and ellipsizes first. */
+.notes-scratch-row .notes-scratch-preview {
+	margin-left: 8px;
+	opacity: 0.5;
+	font-style: italic;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .notes-empty {
 	padding: 8px 18px;

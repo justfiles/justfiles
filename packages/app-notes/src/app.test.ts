@@ -679,3 +679,180 @@ test('an import of same-named notes keeps both, numbering the second', async () 
 	expect(vol.store.get('/Kyoto.md')).toBe('first')
 	expect(vol.store.get('/Kyoto 2.md')).toBe('second')
 })
+
+// One storage round trip, long enough that another operation can act inside it. A macrotask,
+// not a microtask: microtask order is an accident of who suspended first, and a test about
+// ordering has to be able to FAIL.
+const settles = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+// A volume double that CARES which capability it was called through. The scratch's whole
+// design is that it is written somewhere the knowledge base cannot reach, so a double that
+// ignored the capability name would pass whichever volume the procedure asked for.
+function twoVolumes(notes: Record<string, string> = {}, own: Record<string, string> = {}) {
+	const kb = new Map(Object.entries(notes))
+	const priv = new Map(Object.entries(own))
+	const invoke = async (cap: string, method: string, ...args: unknown[]): Promise<unknown> => {
+		const store = cap === 'private' ? priv : kb
+		const path = args[0] as string
+		switch (method) {
+			case 'readFile': {
+				const body = store.get(path)
+				if (body === undefined) throw new Error(`ENOENT: ${path}`)
+				return new TextEncoder().encode(body)
+			}
+			case 'writeFile': {
+				const opts = args[2] as { exclusive?: boolean; update?: boolean } | undefined
+				if (opts?.exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
+				if (opts?.update && !store.has(path)) throw new Error(`ENOENT: ${path}`)
+				// The bytes land after real latency, not after a microtask: a write is a round trip
+				// to storage, so another operation's read can happen in between. A microtask here
+				// would be ordered by luck and the ordering tests below would assert nothing.
+				await settles()
+				store.set(path, dec.decode(args[1] as Uint8Array))
+				return undefined
+			}
+			case 'appendFile': {
+				const at = store.get(path)
+				if (at === undefined) throw new Error(`ENOENT: ${path}`)
+				// Models the contract, INCLUDING its gap: `appendFile` is read-merge-write
+				// (`getBlob`, concat, `putBlob` — packages/fs/volume.ts), so the body is read here
+				// and written after the same latency a write has. Without that gap this double
+				// would be accidentally atomic (the same reason `rename` yields above).
+				await settles()
+				store.set(path, at + dec.decode(args[1] as Uint8Array))
+				return undefined
+			}
+			default:
+				throw new Error(`unexpected ${cap}.${method}`)
+		}
+	}
+	return { kb, priv, invoke }
+}
+
+test('the scratch is read and written in the app’s OWN volume, never the knowledge base', async () => {
+	const vol = twoVolumes({ '/Kyoto.md': 'a note' })
+	const h = handle(initialState, vol.invoke)
+	// Never used = empty, not broken. (ENOENT is the ordinary first state of a file nobody
+	// has written; every other read failure is real and thrown — see below.)
+	expect(await app.runProcedure('readScratch', {}, h.app)).toEqual({ text: '' })
+	await app.runProcedure('saveScratch', { text: 'a thought' }, h.app)
+	expect([...vol.priv]).toEqual([['/scratch.md', 'a thought']])
+	// The KB is untouched: no note appeared, and nothing can name the scratch from inside it.
+	expect([...vol.kb.keys()]).toEqual(['/Kyoto.md'])
+	expect(await app.runProcedure('readScratch', {}, h.app)).toEqual({ text: 'a thought' })
+	// Re-writing it is ordinary: unlike a note (`save`, `update: true`), the scratch is a
+	// place, so bringing the file back into existence is correct rather than a resurrection.
+	await app.runProcedure('saveScratch', { text: '' }, h.app)
+	expect(vol.priv.get('/scratch.md')).toBe('')
+})
+
+test('a scratch that cannot be READ is not reported as empty', async () => {
+	// Answering a broken read with '' would hand the editor a blank buffer, and the next
+	// keystroke would save it over words that are still on disk.
+	const h = handle(initialState, async (_cap: string, method: string) => {
+		if (method === 'readFile') throw new Error('EIO: disk')
+		throw new Error(`unexpected ${method}`)
+	})
+	await expect(app.runProcedure('readScratch', {}, h.app)).rejects.toThrow(/EIO/)
+})
+
+test('the journal note is created once a day, then appended to', async () => {
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	const first = await app.runProcedure(
+		'journal',
+		{ date: '2026-06-19', text: '## 09:05\n\nfirst thing' },
+		h.app
+	)
+	expect(first).toEqual({ path: '/journal/2026-06-19.md' })
+	await app.runProcedure('journal', { date: '2026-06-19', text: '## 14:32\n\nlater' }, h.app)
+	// One note, both entries, a blank line between them — the second keep must not
+	// overwrite the first (which an ordinary write would).
+	expect([...vol.kb.keys()]).toEqual(['/journal/2026-06-19.md'])
+	expect(vol.kb.get('/journal/2026-06-19.md')).toBe('## 09:05\n\nfirst thing\n\n## 14:32\n\nlater')
+	// Tomorrow is its own note.
+	await app.runProcedure('journal', { date: '2026-06-20', text: 'next day' }, h.app)
+	expect([...vol.kb.keys()].sort()).toEqual(['/journal/2026-06-19.md', '/journal/2026-06-20.md'])
+})
+
+test('a journal date is the one spelling, so the path cannot be steered', async () => {
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	for (const date of ['../../etc/passwd', '2026-6-19', '', '2026-06-19/../..']) {
+		await expect(app.runProcedure('journal', { date, text: 'x' }, h.app)).rejects.toThrow()
+	}
+	expect([...vol.kb.keys()]).toEqual([])
+})
+
+test('concurrent keeps into one journal note are ordered, not raced', async () => {
+	// The failure this is here for: `appendFile` is read-merge-write, so two appends that
+	// overlap both read the same body and the later write drops the earlier entry — words
+	// someone asked to KEEP, gone. `exclusive: true` only protects the first entry of the day.
+	//
+	// Overlapping is in the model: procedures run OFF the kernel's queue, and `journal` is
+	// `both`, so the agent filing something while the user keeps a scratch entry is exactly
+	// this. Remove `serially` from the procedure and the last line loses an entry.
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	await app.runProcedure('journal', { date: '2026-06-19', text: 'first' }, h.app)
+	await Promise.all([
+		app.runProcedure('journal', { date: '2026-06-19', text: 'second' }, h.app),
+		app.runProcedure('journal', { date: '2026-06-19', text: 'third' }, h.app)
+	])
+	const body = vol.kb.get('/journal/2026-06-19.md')
+	expect(body).toContain('first')
+	expect(body).toContain('second')
+	expect(body).toContain('third')
+})
+
+test('a keep that races the day’s first keep does not lose one of them', async () => {
+	// Both find no note and both try the exclusive create: one wins, the loser sees EEXIST and
+	// appends instead. Neither may vanish.
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	await Promise.all([
+		app.runProcedure('journal', { date: '2026-06-19', text: 'one' }, h.app),
+		app.runProcedure('journal', { date: '2026-06-19', text: 'two' }, h.app)
+	])
+	expect([...vol.kb.keys()]).toEqual(['/journal/2026-06-19.md'])
+	const body = vol.kb.get('/journal/2026-06-19.md')
+	expect(body).toContain('one')
+	expect(body).toContain('two')
+})
+
+test('the agent may READ the scratch, but not overwrite it', async () => {
+	// Reading answers "what's in my scratch?" — a fair question. Writing the whole buffer
+	// would let the agent erase words the user has not filed yet, and `journal`/`create` are
+	// the ways to move them somewhere permanent.
+	expect(app.actions.readScratch?.audience).toBe('both')
+	expect(app.actions.journal?.audience).toBe('both')
+	expect(app.actions.saveScratch?.audience).toBe('gui')
+})
+
+test('the app binds the knowledge base and its own volume, and nothing else', async () => {
+	// Two bindings of ONE capability under two local names — that is all a second scope
+	// takes (packages/app/kernel.capability.ts maps name → trusted { id, scopes }).
+	expect(app.capabilities).toEqual({
+		volume: { id: 'volume', scopes: ['/notes'] },
+		private: { id: 'volume', scopes: ['app'] }
+	})
+})
+
+test('a body save and a journal append cannot land inside one another', async () => {
+	// The interleaving this is here for: the append reads the old body, the save writes the
+	// edited one, and the append's write lands last — so the user's typing is gone from disk
+	// while their buffer is CLEAN (its save succeeded) and nothing ever retries it. Silent and
+	// unrecoverable, which is why `save` rides the same chain as the append.
+	//
+	// Ordered, the save goes first and the append reads what it wrote, so both survive. Take
+	// `serially` off `save` and "edited by hand" disappears.
+	const vol = twoVolumes({ '/journal/2026-06-19.md': 'first entry' })
+	const h = handle(initialState, vol.invoke)
+	await Promise.all([
+		app.runProcedure('save', { path: '/journal/2026-06-19.md', text: 'edited by hand' }, h.app),
+		app.runProcedure('journal', { date: '2026-06-19', text: 'kept from the scratch' }, h.app)
+	])
+	const body = vol.kb.get('/journal/2026-06-19.md')
+	expect(body).toContain('edited by hand')
+	expect(body).toContain('kept from the scratch')
+})

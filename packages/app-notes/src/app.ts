@@ -4,14 +4,17 @@ import * as v from 'valibot'
 import {
 	illegalMove,
 	isCanonicalPath,
+	isDateStamp,
 	isNotePath,
 	isUnder,
 	joinPath,
+	journalPath,
 	NOTE_EXT,
 	namesEntry,
 	noteTitle,
 	numberedPath,
 	renameTarget,
+	SCRATCH_FILE,
 	sanitizeName
 } from './notes.ts'
 
@@ -53,7 +56,26 @@ const dec = new TextDecoder()
 //
 // One level, and only one: a caller that wraps a `claimPath` in `serially` deadlocks
 // itself — it holds the chain while waiting for the chain. That is the price of a
-// mutex, and the reason this one is taken in exactly one place.
+// mutex, and the reason there is exactly one chain.
+//
+// EVERY write this app makes into the knowledge base rides it — the claims below, `save`,
+// and `journal`'s append — because one of them is a read-modify-write and therefore cannot
+// be interleaved with the others. `appendFile` is `getBlob` + concat + `putBlob`
+// (packages/fs/volume.ts), so with a `save` running inside it: the append reads the old
+// body, the save writes the edited one, and the append's write lands last — the user's
+// typing is gone from disk while their buffer is CLEAN (its save succeeded), so nothing ever
+// retries it. Silent and unrecoverable, which is the worst shape a loss can have.
+//
+// Ordered, that interleaving cannot exist: save-then-append keeps both, append-then-save
+// keeps the typing and loses only the entry. What ordering does NOT do is make an append
+// survive a full-body `save` that was composed before it — the buffer's text never contained
+// the entry, so writing it erases it. That is the ordinary two-writers-one-note case
+// (DESIGN.md §8), whose real answer is a precondition on `save` rather than a lock.
+//
+// A path-conditional version of this ("serialize saves to journal paths") was the obvious
+// smaller fix and is the wrong shape: the journal note is not special as a FILE, it is
+// special because we do a read-modify-write on it — so the rule belongs to the operation,
+// not to a spelling, or it is one more thing to remember at the next call site.
 let tail: Promise<unknown> = Promise.resolve()
 function serially<T>(task: () => Promise<T>): Promise<T> {
 	const run = tail.then(task, task)
@@ -102,6 +124,9 @@ const MOVE_TRAIL = 8
 // to land — so `save` is a procedure that throws, not an edge that files a complaint
 // in state for someone to notice later.
 export type NotesState = {
+	// `null` = the SCRATCH buffer is showing (DESIGN.md §6) — the app's one unfiled
+	// surface, not “nothing”. So this still answers “what is the user looking at”: a note,
+	// or the scratch.
 	openPath: string | null
 	// Where the open note HAS BEEN, oldest first, so a client holding any of those
 	// addresses can follow it forward. `openPath` alone cannot say WHY it changed — "the
@@ -179,7 +204,17 @@ const memberSchema = v.pipe(
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { volume: volume({ scopes: ['/notes'] }) },
+	// TWO bindings of the same capability, because the app writes in two places with
+	// different owners. Capabilities are declared under a LOCAL NAME which the kernel maps
+	// to a trusted `{ id, scopes }` (packages/app/kernel.capability.ts), so a second name is
+	// all a second scope takes — no change to the volume capability itself.
+	//
+	//   volume  → the shared knowledge base, chrooted at `/notes` (DESIGN.md §2)
+	//   private → this app's own `/data/<id>`, where the scratch lives (`SCRATCH_FILE`)
+	capabilities: {
+		volume: volume({ scopes: ['/notes'] }),
+		private: volume({ scopes: ['app'] })
+	},
 
 	// Two watches, two signals (DESIGN.md §3): the open file keeps its body live
 	// when the agent or Files edits it on disk, and a recursive watch is the
@@ -208,7 +243,8 @@ export const app = defineApp({
 			}
 		),
 		newNote: t.on(v.object({}), (state) => ({ ...state, openPath: null, movedFrom: undefined }), {
-			description: 'Close the open note, leaving the editor empty.'
+			description:
+				'Close the open note and show the scratch buffer — the unfiled surface the app opens on.'
 		}),
 
 		// Internal, like `moved`: the `remove` procedure reports WHAT WAS DELETED and the
@@ -375,7 +411,7 @@ export const app = defineApp({
 			}
 		}),
 
-		// Write a batch of imported notes (DESIGN.md §9). The GUI unzips, plans and
+		// Write a batch of imported notes (DESIGN.md §10). The GUI unzips, plans and
 		// chunks; this is the write half. Paths are relative to `dir` (the knowledge
 		// base root by default), so an imported vault MERGES into the existing tree
 		// rather than hiding inside a wrapper folder. Nothing is ever overwritten: a
@@ -414,6 +450,90 @@ export const app = defineApp({
 			}
 		}),
 
+		// The scratch buffer's two halves. It is a file like any other — the GUI drives it with
+		// the SAME buffer machine it drives a note with (`src/buffer.ts`, one machine, two
+		// instances) — it just lives in this app's own volume rather than in the knowledge base.
+		//
+		// Readable by the agent (“what's in my scratch?” is a fair question), writable only by
+		// the GUI: an agent that could overwrite the whole buffer could erase words the user has
+		// not filed yet, and `journal`/`create` are the ways to move them somewhere permanent.
+		readScratch: p.procedure({
+			description:
+				'Read the scratch buffer — the unfiled text the user dumps into the editor when no note is open. Empty when it has never been used.',
+			schema: v.object({}),
+			async run(_params, app) {
+				try {
+					return { text: dec.decode(await app.invoke('private', 'readFile', SCRATCH_FILE)) }
+				} catch (thrown) {
+					// Never written = empty, not broken. Every other failure is real and thrown, so a
+					// buffer that could not be READ is never silently replaced by a blank one that the
+					// next keystroke would save over it.
+					if (/^ENOENT/.test((thrown as Error).message)) return { text: '' }
+					throw thrown
+				}
+			}
+		}),
+
+		// Overwrite the scratch. No `update: true` and no `exclusive` — unlike a note (see
+		// `save`), re-creating this file is CORRECT: the scratch is a place, not a thing
+		// someone named, so “it is not there yet” is its ordinary first state and “someone
+		// deleted it” is not a fact worth preserving.
+		saveScratch: p.procedure({
+			description: 'Overwrite the scratch buffer.',
+			audience: 'gui',
+			schema: v.object({ text: v.string() }),
+			async run({ text }, app) {
+				await app.invoke('private', 'writeFile', SCRATCH_FILE, enc.encode(text))
+			}
+		}),
+
+		// Keep something without naming it: append to the day's journal note. The other half
+		// of what the scratch needs — `create` files words under a name the user chose, this
+		// files them under the one name nobody has to choose (DESIGN.md §6).
+		//
+		// `date` is the CALLER's, because only the caller has the user's clock: a procedure
+		// runs in the worker, where `new Date()` is UTC and would file an evening entry under
+		// tomorrow.
+		journal: p.procedure({
+			description:
+				'Append text to the day’s journal note (/journal/<date>.md), creating it if needed. `date` is that day as YYYY-MM-DD, in the user’s own timezone. The text is appended as given, so include a heading if you want one.',
+			schema: v.object({
+				date: v.pipe(v.string(), v.check(isDateStamp, 'date must be YYYY-MM-DD')),
+				text: v.string()
+			}),
+			async run({ date, text }, app) {
+				const path = journalPath(date)
+				// ON THE CHAIN, because an append is not atomic and this one accumulates. `appendFile`
+				// is read-merge-write in the volume (`getBlob`, concat, `putBlob` — packages/fs/volume.ts),
+				// so two that overlap both read the same body and the later write drops the earlier
+				// entry — and a `save` landing inside one does the same to the user's typing.
+				// `exclusive: true` below only protects the FIRST entry of the day.
+				//
+				// And overlapping is IN this app's model, not a hypothetical: procedures run off the
+				// kernel's queue, `journal` is `both`, so the agent filing something while the user
+				// keeps a scratch entry is the interleaving DESIGN.md §8 defends. Losing an append is
+				// also a worse failure than losing a keystroke — it is words someone asked to KEEP.
+				//
+				// Not pushed down into `packages/fs`: an atomic append means something different on
+				// every backend (O_APPEND here, a transaction there), and §1b is the record of what a
+				// per-backend promise costs a call site. Ordering our own writes is cheap; the window
+				// that remains is another PROCESS, exactly as it is for `claimPath`.
+				return serially(async () => {
+					try {
+						// The first entry of the day CREATES the note, exclusively: two windows keeping
+						// something in the same instant would otherwise both create it and one would
+						// overwrite the other. EEXIST is then the ordinary case — append. (EISDIR is not:
+						// a folder holding that name is a real problem, so it is thrown.)
+						await app.invoke('volume', 'writeFile', path, enc.encode(text), { exclusive: true })
+					} catch (thrown) {
+						if (!/^EEXIST/.test((thrown as Error).message)) throw thrown
+						await app.invoke('volume', 'appendFile', path, enc.encode(`\n\n${text}`))
+					}
+					return { path }
+				})
+			}
+		}),
+
 		// Persist a note's body. A PROCEDURE, not an edge, because the caller has to know
 		// whether the bytes landed while it still holds them: the GUI flushes before it
 		// opens another note, starts a new one, or moves this one, and a fire-and-forget
@@ -433,7 +553,12 @@ export const app = defineApp({
 				'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one).',
 			schema: v.object({ path: noteSchema, text: v.string() }),
 			async run({ path, text }, app) {
-				await app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+				// On the chain with every other write into the KB (see `serially`): a body write that
+				// lands INSIDE `journal`'s read-modify-write is the one interleaving that loses the
+				// user's typing with no copy left anywhere.
+				await serially(() =>
+					app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+				)
 				return { path }
 			}
 		}),
@@ -455,7 +580,7 @@ export const app = defineApp({
 		}),
 
 		// Destructive — gui-only. `/notes` is the user's; the agent never deletes
-		// user notes blindly (mirrors app-code's gui-only `remove`). DESIGN.md §6.
+		// user notes blindly (mirrors app-code's gui-only `remove`). DESIGN.md §7.
 		remove: p.procedure({
 			description: 'Delete a note, or a folder and everything in it.',
 			audience: 'gui',

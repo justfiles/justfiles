@@ -1,12 +1,126 @@
 // Pure path/name/search helpers for the `/notes` knowledge base. No IO, no
 // state — so the reducer, the GUI and the tests share one set of rules
-// (DESIGN.md §4). Every path here is root-relative inside the `/notes` chroot.
+// (DESIGN.md §4). Every path here is root-relative inside the `/notes` chroot —
+// except `SCRATCH_FILE`, which is deliberately not in it (see there).
 
 // Both extensions are the same thing — plain text. `.md` is the default for new
 // notes; `.txt` stays readable so notes written before the switch (and by other
 // tools) keep showing up.
 export const NOTE_EXT = '.md'
 const NOTE_EXTS = ['.md', '.txt']
+
+// Where a note kept without a name goes: one note per day, named by the day
+// (DESIGN.md §6). Lowercase, like every folder this app creates for itself.
+const JOURNAL_DIR = '/journal'
+
+/**
+ * The scratch buffer's file — in the app's OWN volume (`private` in app.ts), NOT in the
+ * knowledge base. The scratch is where words go before anything has been decided about
+ * them, so it is app-private data like the state file: not a note, named by nobody, and
+ * nothing in `/notes` should be able to reach it.
+ *
+ * Keeping it out of the KB is what makes "it cannot be renamed, deleted or collided with"
+ * true BY CONSTRUCTION instead of by four guards. Inside `/notes` it would have needed a
+ * refusal in `pathSchema` (so `rename`/`remove` could not touch it), a filter in `list`, an
+ * exception to `save`'s `update: true`, and a name the naming rules could never produce —
+ * and it would still have been permanently the newest note in a recency-sorted list, with
+ * every autosave bumping `treeRevision` and rescanning the whole tree.
+ */
+export const SCRATCH_FILE = '/scratch.md'
+
+/** A day, as the only spelling this app writes: `2026-06-19`. */
+export function isDateStamp(date: string): boolean {
+	return /^\d{4}-\d{2}-\d{2}$/.test(date)
+}
+
+/** `2026-06-19` → `/journal/2026-06-19.md`. Canonical by construction (see `isDateStamp`). */
+export function journalPath(date: string): string {
+	return `${JOURNAL_DIR}/${date}${NOTE_EXT}`
+}
+
+/**
+ * The day as the user's own clock has it — not the worker's. A procedure runs in UTC, so
+ * an evening entry would be filed under tomorrow if the reducer picked the date.
+ */
+export function localDateStamp(now: Date): string {
+	const pad = (n: number) => String(n).padStart(2, '0')
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+/** `14:32` — the heading a journal entry gets, on the same clock as the date. */
+export function localTimeStamp(now: Date): string {
+	const pad = (n: number) => String(n).padStart(2, '0')
+	return `${pad(now.getHours())}:${pad(now.getMinutes())}`
+}
+
+/**
+ * What a “keep this” gesture takes out of the scratch, and what it leaves behind.
+ *
+ * A scratch accumulates several unrelated things, so filing one of them must not file the
+ * other three: a SELECTION is the unit when there is one, and the whole buffer when there
+ * is not. Pure, because the rule is the interesting part — the caller only supplies the
+ * textarea's two offsets.
+ */
+export function splitSelection(
+	text: string,
+	from: number,
+	to: number
+): { promoted: string; remainder: string } {
+	if (from >= to) return { promoted: text, remainder: '' }
+	return { promoted: text.slice(from, to), remainder: `${text.slice(0, from)}${text.slice(to)}` }
+}
+
+/**
+ * Take the kept words out of the scratch — the ones at `[from, to)` in `before` — from `now`,
+ * which is whatever the buffer holds by the time the write has landed. `null` when that cannot
+ * be done honestly.
+ *
+ * Filing is a round trip and the user can type through it, so neither half of this is safe on
+ * its own. The OFFSETS alone describe a text that may no longer exist, and applying them
+ * deletes whatever was typed meanwhile — words that end up in neither the note nor the scratch.
+ * Searching by CONTENT alone picks the first match, which is the wrong one when the kept words
+ * appear twice: select the second `todo`, type a character, and the first `todo` is cut instead,
+ * mangling an entry that had nothing to do with the gesture.
+ *
+ * So the offsets are MAPPED forward and then verified. The edit the user made is confined to
+ * the span between the common prefix and the common suffix of `before` and `now`, so when that
+ * span does not touch the kept range, the range's new position is known exactly — shifted by
+ * the length change if the edit was before it, unchanged if it was after. The slice there is
+ * checked to still be the kept words before anything is removed.
+ *
+ * Only when the edit overlaps the kept words themselves does content matter, and then it has to
+ * be unambiguous: one occurrence, or nothing is removed. A copy in two places is recoverable;
+ * cutting the wrong one is not.
+ */
+export function cutKept(before: string, now: string, from: number, to: number): string | null {
+	// No selection means the whole buffer was kept (see `splitSelection`).
+	const [start, end] = from >= to ? [0, before.length] : [from, to]
+	const promoted = before.slice(start, end)
+	if (promoted === '') return null
+	const remove = (at: number) => `${now.slice(0, at)}${now.slice(at + promoted.length)}`
+
+	// Where the edit is, in `before`'s coordinates: [editFrom, editTo).
+	let editFrom = 0
+	while (editFrom < before.length && before[editFrom] === now[editFrom]) editFrom++
+	let tailSame = 0
+	while (
+		tailSame < before.length - editFrom &&
+		tailSame < now.length - editFrom &&
+		before[before.length - 1 - tailSame] === now[now.length - 1 - tailSame]
+	)
+		tailSame++
+	const editTo = before.length - tailSame
+
+	// The edit is entirely AFTER the kept words (the common case — typing at the end), so their
+	// offsets still hold; or entirely BEFORE them, so they moved by the length change.
+	const at = end <= editFrom ? start : editTo <= start ? start + (now.length - before.length) : null
+	if (at !== null && now.slice(at, at + promoted.length) === promoted) return remove(at)
+
+	// The edit touched the kept words themselves. Content is all that is left, and it has to be
+	// unambiguous.
+	const first = now.indexOf(promoted)
+	return first !== -1 && first === now.lastIndexOf(promoted) ? remove(first) : null
+}
 
 const NAME_MAX = 100
 // Path separators plus the characters Obsidian itself warns break links

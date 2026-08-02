@@ -21,9 +21,10 @@ procedures, capabilities, the two-faces model) are assumed.
 3. [The state machine](#machine)
 4. [Names & autosave](#files)
 5. [The GUI](#gui)
-6. [The agent (TUI) interface](#agent)
-7. [v1 scope & non-goals](#scope-v1)
-8. [Agent-runtime touch-points (out of this package)](#runtime)
+6. [The scratch buffer](#scratch)
+7. [The agent (TUI) interface](#agent)
+8. [v1 scope & non-goals](#scope-v1)
+9. [Agent-runtime touch-points (out of this package)](#runtime)
 
 <a id="context"></a>
 
@@ -62,10 +63,13 @@ Claude memory) lacks.
 `/data/app-notes`. A scoped `/data/<id>` would frame it as one app's private data; top-level frames it as
 a first-class user substrate that survives the app and that other tools (Files, the agent) share.
 
-The app declares a **prefix scope**, not `system`:
+The app declares a **prefix scope**, not `system` — and a second binding for its own data:
 
 ```ts
-capabilities: { volume: volume({ scopes: ['/notes'] }) }
+capabilities: {
+	volume: volume({ scopes: ['/notes'] }),  // the shared knowledge base
+	private: volume({ scopes: ['app'] })     // this app's /data/<id> — the scratch (§6)
+}
 ```
 
 Per `capabilities/volume/host.ts`, a `/prefix` scope chroots the app at that prefix and **still hard-blocks
@@ -74,6 +78,14 @@ transcripts, soul, or other apps' data — least privilege, unlike `app-files` w
 `system` scope. Inside the chroot the app's `/` **is** `/notes`, so it uses plain root-relative paths
 (`/remember_the_milk.txt` lands at `/notes/remember_the_milk.txt`); no `/notes` prefix in app code, no
 `mkdir` (writeFile auto-creates parents).
+
+**Two bindings of one capability, because the app writes in two places with different owners.** A
+capability is declared under a **local name** which the kernel maps to a trusted `{ id, scopes }`
+(`packages/app/kernel.capability.ts`, and `caps.invoke` is then given `declared.id`), so a second scope
+costs a second name and nothing else — no multi-root volume, no change to the capability. `resolveVolume`
+resolves `'app'` to a chroot at `/data/<id>`, which is where the scratch file lives. The two roots stay
+visibly separate at the call site (`app.invoke('volume', …)` vs `app.invoke('private', …)`), and the
+manifest lists both, so the consent sheet tells the truth about what the app can reach.
 
 > Notes is a built-in. Prefix scopes aren't allowlist-gated today; if the host later wants to restrict who
 > may bind `/notes`, that's a host-allowlist concern, not an app change.
@@ -88,14 +100,15 @@ demand (the `app-files` pattern).
 
 | Lives in **reducer state** (app-session facts) | Lives **outside** reducer state |
 |----|----|
-| `openPath` — which note is shown ("what is the user viewing"); a *pointer*, not a copy of disk | the editor's in-progress text buffer (GUI-local) |
+| `openPath` — which note is shown, or `null` for the scratch (§6) — "what is the user viewing"; a *pointer*, not a copy of disk | the editor's in-progress text buffer (GUI-local) — **both of them**: the note's and the scratch's |
 | `revision` — bumped when the open file changes on disk | `dirty` flag; search query; docked-pane preference; which folders are expanded; the folder new notes land in; cursor / scroll (all GUI-local) |
 | `treeRevision` — bumped when anything in `/notes` is created / removed / renamed | **the note list** — derived from `/notes` on demand via `list()`, never cached (see below) |
+| | **the scratch's text** — a file in the app's own volume, re-read on demand like any other body (§6) |
 | | **the last error** — a failed write is answered by whoever asked for it, while it still holds the buffer that failed to land (§1a‴), not filed in state for someone to notice later |
 
 ```ts
 type NotesState = {
-	openPath: string | null  // null = blank scratch — the agent's "what is the user viewing"
+	openPath: string | null  // null = the SCRATCH is showing (§6) — the agent's "what is the user viewing"
 	revision: number         // the OPEN file changed on disk (external/agent edit)
 	treeRevision: number     // the SHAPE of /notes changed (create/remove/rename anywhere)
 }
@@ -112,14 +125,17 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | Action | Kind | Audience | Meaning |
 |----|----|----|----|
 | `open({ path })` | edge | both | **The** coordinating action — put a note in front of the user |
-| `newNote({})` | edge | both | Close the open note (empty editor) |
+| `newNote({})` | edge | both | Close the open note and show the **scratch** (§6) |
 | `save({ path, text })` | edge → `t.cmd` | both | Overwrite a body (the GUI's debounced autosave) |
+| `readScratch({})` | procedure | both | The scratch's text — in the app's own volume, so this is the only way to it (§6) |
+| `saveScratch({ text })` | procedure | **gui** | Overwrite the scratch. Not the agent's: it could erase words the user has not filed yet |
+| `journal({ date, text })` | procedure | both | Append to the day's note (`/journal/<date>.md`), creating it once. `date` is the CALLER's local day — a procedure runs in UTC (§6) |
 | `rename({ from, to })` | procedure | both | Rename **is** move: retitle, drag into a folder, or move a whole folder. An occupied destination is deduped, never overwritten; returns where it landed |
 | `list({})` | procedure | both | Fresh recursive listing: every note + every folder, newest first |
 | `create({ title, text?, dir? })` | procedure | both | New note **named** `title`; `text` is the body (empty by default — the title is not repeated in it), `dir` defaults to `/` |
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
 | `readNote({ path })` | procedure | both | Body as text |
-| `importNotes({ dir?, files })` | procedure | both | Bulk write, relative to `dir` (default `/`); merges folders, numbers a clashing note rather than overwriting — the vault-import half (§9) |
+| `importNotes({ dir?, files })` | procedure | both | Bulk write, relative to `dir` (default `/`); merges folders, numbers a clashing note rather than overwriting — the vault-import half (§10) |
 | `remove({ path })` | procedure | **gui** | Destructive: a note, or a folder and everything in it. Reports the deletion through an internal `deleted` edge, which clears the editor if the open note went with it |
 | `fileChanged` / `treeChanged` | `t.fromEvent` | internal | The two watch signals below |
 
@@ -457,7 +473,14 @@ one loses — the move sees a free destination, the import claims it exclusively
 top, and *both* callers report success. Serializing only moves protects moves from moves and leaves the import
 to be silently overwritten. Taking a name is one serialized act however it is done. One level, too: wrapping a
 `claimPath` in another `serially` deadlocks — it holds the chain while waiting for it — which is the ordinary
-price of a mutex and the reason there is exactly one.
+price of a mutex and the reason there is exactly one chain.
+
+That chain has since taken two more riders, for the same reason rather than a new one: **`journal`'s append
+and `save`** (§6). `appendFile` is read-merge-write in the volume, so anything that writes inside one loses —
+two appends lose an entry, and a `save` inside one loses the user's typing while their buffer believes it
+landed. They share the *same* chain as the name claims because all of them write into one namespace, so a
+create taking a name, a body write and an append to that name must be ordered against each other. Still one
+level: neither calls `claimPath`.
 
 A test that asserts ordering has to be able to fail: the volume double had no `await` between its check and
 its move, so it was accidentally atomic and the tests passed with the ordering removed. With the yield in
@@ -546,6 +569,11 @@ Obsidian's inline title looks like a first line while living outside the documen
 `div.inline-title`, and the `.md` on disk holds body only). `create({ title, text? })` takes the name;
 nothing derives one from prose, and there is **no such thing as an unnamed note**.
 
+> The **scratch is the one surface with no name field at all** — one field, not two (§6). It is not a file
+> anyone named, so an empty name line above it would be a field for a thing that does not exist, permanently
+> inviting the decision the surface exists to postpone. Its name is asked for once, at the moment it stops
+> being a scratch.
+
 This replaced "filename = the first non-empty line, assigned once at first persist", which failed three
 ways. It **drifted** — fix a typo in the title and the filename keeps the typo forever, because the name
 was a snapshot of a line that kept changing. It **duplicated** — our notes carried their title in the
@@ -580,7 +608,7 @@ reported after the fact ("a note was already there — moved as …"). One polic
 affordance in the GUI; nothing new stands between the vault and an overwrite.
 
 **Collisions on creation are numbered, not refused**, and imported names are written **verbatim** —
-unchanged from the original design (§9), because an import is a batch of 400 that must not stop, and a
+unchanged from the original design (§10), because an import is a batch of 400 that must not stop, and a
 renamed import file destroys the links into it.
 
 **`.md` is the default extension; `.txt` still reads.** They are the same thing — plain text — so both are
@@ -612,13 +640,15 @@ the window can tear down *before* the write lands. The close path must **await t
 
 Renders state, dispatches actions, owns transient state (docs/app.md §9). Deliberately minimal:
 
-- **Launch = nothing open, focus in the search field.** On mount, dispatch `newNote` (guarantees
-  `openPath: null` + an accurate agent view). Reopen is always blank — on-brand for capture-first — and
-  blank now means *inert*: with no note open the name field has nothing to name and the body is read-only,
-  because there is no such thing as an unnamed note (§4). So the way in is the field, and every dead end
-  (a fresh launch, a deleted note) lands there.
-- **Type in the body** → update local buffer, debounced (~800ms) → `save({ openPath, text })`. **Type in
-  the name field** → nothing until Enter or blur, then `rename` (§4).
+- **Launch = the scratch, with the caret in it.** On mount, dispatch `newNote` (guarantees
+  `openPath: null` + an accurate agent view). Reopen is still always unfiled — on-brand for
+  capture-first — but unfiled is now a **live surface** rather than a placeholder: the largest region on
+  screen is a persistent scratch buffer you can type into immediately (§6). The search field is one key
+  away (⌘O), and it is still where every *other* dead end lands (a deleted note, a scratch that could not
+  be read).
+- **Type in the body** → update local buffer, debounced (~800ms) → `save({ openPath, text })`, or
+  `saveScratch({ text })` when the scratch is showing. **Type in the name field** → nothing until Enter or
+  blur, then `rename` (§4). The scratch has no name field — it is named at the moment of keeping (§6).
 - **The bar** (always visible — nothing behind a shortcut): a list toggle and a search-or-create field.
   Focusing the field calls `list()` and drops the recency list down — empty query = everything,
   newest first; typing filters. **Search is path-aware**: every whitespace/slash-separated token must
@@ -628,7 +658,7 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   match; a **Create “…” row** sits after the matches whenever anything is typed, so search and create stay
   one gesture (the nvAlt move) — offered even when something matches, because `Kyoto trip` matching is
   exactly why `Kyoto` would otherwise be uncreatable, and reachable with ArrowDown so it costs no second
-  shortcut. Esc hops editor → field and back. ☰ docks the tree as a left pane —
+  shortcut. A **Scratch row** is pinned above the matches in both surfaces (§6). Esc hops editor → field and back. ☰ docks the tree as a left pane —
   and the bar folds into it: ☰ + search become the pane's header, so the editor side is
   pure content. The preference is GUI-local (localStorage where the host allows it; frieren's sandboxed
   iframe has no `allow-same-origin`, so there it degrades to per-session). The listing is re-fetched on
@@ -642,6 +672,14 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   `Cmd+K` belongs to the shell omnibar: the app runs in a sandboxed iframe, so keys typed in Notes never
   reach the shell — binding `Cmd+K` would *shadow* the omnibar whenever Notes has focus. Shortcuts attach
   to the app root, not `window`, so they fire only when focus is inside the app.
+- **`Cmd+S`** = *keep this*, and **`Cmd+J`** = *jot* (back to the scratch). Both are **delivered and
+  cancellable**, unlike `Cmd+N`: `Cmd+S`'s browser default (save the page) is suppressed by
+  `preventDefault` — verified inside frieren's opaque-origin sandboxed iframe, not assumed — and the mac
+  shell binds only `Cmd+W`/`Cmd+Q` natively (`apps/mac/…/Booter.swift`), so nothing upstream swallows
+  them. On a note `Cmd+S` lands the buffer now and says "Saved": never anything destructive, so the reflex
+  is safe wherever it is pressed. On the scratch it files (§6). Digits were the obvious pick for "go to the
+  scratch" and are unusable — `Cmd+1`–`9` switches browser tabs and cannot be prevented. `Cmd+J` is never
+  the ONLY way back: the Scratch row is (§6), and it displays this key.
 - **Delete** (forward-delete in the field) → `remove` (GUI-only).
 - **`revision` bump** (open file changed on disk) → GUI re-reads via `readNote`, so an agent/Files edit to
   the open note shows live.
@@ -733,9 +771,244 @@ There is no Notes "look".
   `--trees-*` variables pointed at the design tokens — not a local tree. Rule of thumb: **system-level look
   → `packages/design`; only Notes-specific layout (the editor/tree split) stays local.**
 
+<a id="scratch"></a>
+
+## 6 · The scratch buffer
+
+**The app opens on a persistent scratch buffer, not on a placeholder.** With no note open, the largest
+region on screen used to be a read-only textarea with the words *"Find or name a note above, then write
+here"* in it — the first thing every launch showed, and the one thing you could not do anything with. It is
+now Emacs's `*scratch*`, except that ours persists: type immediately, and it is still there next launch.
+
+This is the deliberate answer to what §4's naming-first rule costs. Naming-first is right for a *note* —
+when you want to write something down you usually know what it is about, and if you don't, you are dumping
+rather than filing — so the dump gets **one** well-known place instead of every note being capable of
+namelessness. It is also the answer to the idea §4 keeps having to refuse (*"let the first line become the
+name"*): the pressure that produces that idea is exactly this, and it now has somewhere to go.
+
+### What other apps do, and what we took
+
+| | |
+|----|----|
+| **Emacs `*scratch*`** | The reference. Not visiting a file; `C-x C-s` **prompts for a name and the buffer becomes that file** — saving is a *move*, not a copy. Vanilla Emacs does not persist it, which is why `persistent-scratch` exists. |
+| **Heynote** | "A large persistent text buffer", one file in an app-owned dir. `Cmd+S` = *"move the current block to another (or new) buffer"* — filing part of the scratch out of it. |
+| **JetBrains scratches** | Real files in a **reserved dir outside the project**, shown in their own tree node, never mixed into the project; `F6` moves one into the project. |
+| **Tot** | Exactly 7 fixed dots, no names, no files. The constraint *is* the feature: zero decisions. |
+| **Logseq / Roam / Obsidian daily notes** | No empty state because there is always *today's page*, appended to. |
+| **Drafts, Raycast Notes, Stickies, VS Code hot exit** | Capture-first surfaces where text survives without ever being named. |
+
+So: **one** scratch (Tot's and Heynote's discipline — "which scratch?" is a naming decision in disguise, and
+the moment you want a second one you want a *note*, which this app makes trivial); **saving is a move**
+(Emacs, Heynote, JetBrains all agree); and **the scratch lives outside the content tree** (JetBrains).
+What we did *not* take: a first line that becomes a name (§4), and an inbox of `Untitled 3.md` (same).
+
+### Where it lives, and why not in `/notes`
+
+`/data/<app id>/scratch.md`, through the app's second volume binding (§2) — **not** in the knowledge base.
+The scratch is words before anything has been decided about them, which is app-private data in the same
+sense the state file is: not a note, named by nobody.
+
+That is not tidiness, it is what makes *"the scratch cannot be renamed, deleted or collided with"* true **by
+construction**. Inside `/notes` the same guarantee needed four separate guards — a refusal in `pathSchema`
+(so `rename`/`remove` could not touch it), a filter in `list`, an exception to `save`'s `update: true`, and a
+name the naming rules could never produce — and it would *still* have been permanently the newest note in a
+recency-sorted list, with every autosave bumping `treeRevision` and rescanning the whole tree. Two of those
+four were behavioural bugs, not chores. **A thing that is not a note should not be a path in the note
+namespace.**
+
+It is not reducer state either: the body bytes never enter state (§3), and that goes double for a buffer
+people paste 40KB of JSON into — every commit would re-serialize it, broadcast it to every client, and push
+it through sync.
+
+### One machine, two instances
+
+The scratch is driven by **the same buffer machine as a note** (`src/buffer.ts`), instantiated twice. Its IO
+is injected, so the second instance is ~15 lines: `save` → `saveScratch`, `read` → `readScratch`.
+
+The alternative was a third kind of *home* inside `BufferState` (`note` / `scratch` / `orphan`), and §1a‴ is
+the reason not to: that machine is 290 lines of learned rules precisely because every new mode was a new
+branch to remember at eight call sites. Two instances need none of them — every rule the machine keeps
+(writes never overlap, a failed write stays dirty, a stale read is discarded, nothing replaces an unsettled
+buffer) is a rule the scratch needs too, and the branches that do not apply to it are *unreachable* rather
+than special-cased: it cannot be moved or deleted, so `moved`/`discard` are never called, and `create` means
+"write and re-attach" rather than "make a new note".
+
+Two consequences worth stating, because both are rules a reviewer will look for:
+
+- **`openPath === null` means "the scratch is showing"**, and the GUI's own test for it is *"the note buffer
+  holds nothing at all"* (`buffer.path === null && buffer.text === ''`) — which is exactly the old `blank`.
+  That keeps the one case where the note buffer holds words with no path: a note deleted out from under it
+  (§1a‴). Those words keep the screen until they land as a note of their own, rather than being shouldered
+  aside by the scratch.
+- **The editor is read-only until the scratch's text arrives** (a round trip after mount), and the initial
+  focus waits for the same signal. Keystrokes typed over an unfinished read would be saved on top of the
+  words being read — the one way a persistent scratch can lose data. A read that fails is *not* answered
+  with an empty buffer for the same reason; the way back is the window-focus retry below.
+- **And the same rule holds for every LATER read, which is where it was first got wrong.** Writing it for
+  the mount read only left the more dangerous case open: a scratch that loaded once and then failed a
+  re-read — after another window had written newer text — kept a stale buffer editable, and the next
+  autosave put the stale text back over the newer one. **A read you did not get is not evidence that
+  nothing changed**, so both reads go through one function and either failure makes the buffer read-only
+  until a read succeeds. (`open` vs `reload` is then only about what the buffer holds: after a failed mount
+  nothing is attached, and `reload` only ever replaces a clean *attached* buffer, so it would no-op
+  forever.)
+- **No watch.** A second window writing the same file is heard by re-reading on window focus (`reload` only
+  ever replaces a CLEAN buffer, so it cannot land on top of unsaved words — and a dirty buffer is newer than
+  the disk anyway). A capability stream just so one client can hear another is more machinery than
+  app-private data is worth.
+
+### Keeping something: three tiers, and the order is the rule
+
+| | Gesture | Result |
+|----|----|----|
+| **Name it** | `Cmd+S` (or **Save as note…**) → name prompt → Return | `create` + `open`; the words **leave** the scratch |
+| **Keep it, don't name it** | "Keep in today's note" | `journal` appends to `/journal/<date>.md`; the words leave the scratch |
+| **Neither** | nothing | it stays, forever |
+
+**The name is asked for at the moment of keeping, and nowhere else.** The scratch shows *only its content* —
+the editor's other field is gone, not disabled — and the question *"what is this called"* appears in the
+footer when, and only when, someone asks to keep it: `Cmd+S`, or the **Save as note…** button. The footer
+swaps to a small text field in place, which is the idiom the tree's CRUD menu already uses (§5) and the only
+kind of prompt available anyway — a sandboxed iframe has no `allow-modals`.
+
+That is a change from the first cut, which reused the note's name field with the scratch showing. It was
+wrong for the reason the whole feature exists: an empty name line sitting above the buffer is a field for a
+file that does not exist, permanently asking the question the scratch is there to *defer*. Emacs's `*scratch*`
+has no name line either — `C-x C-s` is where the name is asked for.
+
+So `Cmd+S` has three answers on the scratch, and none of them invents a name: **no prompt yet** → open one;
+**a name typed** → take it; **open but empty** → put the caret back in it. Return on an empty prompt is a
+*cancel*, not a request for a nameless note (there is no such thing), and Esc cancels with the caret back at
+the end of the words. Blur does **not** commit: clicking into the body is not a request to keep anything.
+
+**One naming path, two inputs.** The prompt and the note's name field both go through `commitTitle`, so the
+illegal-name rule, the "already exists" advisory and the three-answer failure handling (refused / did not
+land / landed) cannot drift apart. The prompt is *derived from the draft* (`titleDraft !== null`) rather than
+kept in a flag beside it — so every path that already drops a half-typed name (opening a note, creating one,
+going back to the scratch) closes the prompt for free.
+
+**And the advisory is not the authority.** It reads the listing, which can be empty (nothing has asked for
+one yet) or stale, while `claimPath` in the reducer numbers rather than overwrites — so a name chosen at the
+moment of filing can still be taken. Where the words actually went is then reported (*"a note called “Kyoto”
+already existed — kept as “Kyoto 2”"*), the same thing `moveNote` says about a deduped rename. Found by
+using it: asking for a name that existed silently produced `… 2`.
+
+**A selection is the unit when there is one** (Heynote's move-a-block): a scratch accumulates several
+unrelated things, and filing one of them must not file the other three. `splitSelection` is that rule, pure
+and tested — no selection means the whole buffer.
+
+**But the cut is applied to the LATEST text, not to the snapshot the offsets came from.** Filing is a round
+trip — `create` even awaits a queue drain — and the user can type all the way through it: ⌘S pressed from the
+body leaves focus there, which is exactly what the name-waits-in-the-field rule invites. Applying the
+precomputed remainder then deletes those keystrokes, and they are in **neither** the note nor the scratch,
+with the next autosave persisting the deletion.
+
+Neither offsets nor content is safe on its own, which is what `cutKept` is for. Offsets alone describe a text
+that may no longer exist. **Content alone cuts the first match, which is the wrong one when the kept words
+appear twice** — select the second `todo`, type a character while the write is in flight, and searching would
+remove the first, mangling an entry the gesture never touched. So the offsets are **mapped** through the edit
+and then **verified**: the user's edit is confined to the span between the common prefix and the common suffix
+of the two texts, so when that span does not touch the kept range, the range's new position is known exactly
+(shifted if the edit was before it, unchanged if after), and the slice there is checked to still be the kept
+words before anything is removed. Only an edit that overlaps the kept words falls back to content, and only
+while that is unambiguous — one occurrence, or nothing is removed.
+
+The read-modify-write also has no `await` inside it, so nothing can be typed into the middle of it.
+
+And when the kept words cannot be identified at all, nothing is removed and the status says a copy stayed.
+**Two copies are recoverable; a wrong cut is not**, so the ambiguous case resolves towards keeping too much.
+
+**One keeping, however many times it is asked for.** Enter repeats while held and the journal button stays
+clickable across the round trip, so two calls can read the same text before either has cut it — filing it
+twice, as two numbered notes or the same entry appended twice. Same guard, same reason, as the Create row's
+(§5): the second press is the same submission.
+
+**The create lands before anything is cut.** A failure costs the gesture and nothing else, and the cut goes
+through the buffer machine, so a remainder that fails to write stays dirty and on screen instead of
+vanishing. This is §1a‴'s rule 2 applied to a new operation rather than re-learned.
+
+**The date is the caller's**, not the reducer's: a procedure runs in the worker, where `new Date()` is UTC
+and would file an evening entry under tomorrow. So `journal({ date, text })` takes the day as `YYYY-MM-DD`
+(one spelling, checked — so the path is canonical by construction and cannot be steered) and the GUI reads
+the user's clock. Folders this app creates for itself are lowercase: `/journal`.
+
+**An append accumulates, so it rides the claim chain** (`serially`, §3) — and so does **every other
+write this app makes into the KB**, `save` included. The first entry of a day creates the note with
+`exclusive: true`, which settles who owns the name — but every entry after that is an `appendFile`, and
+that is **read-merge-write** in the volume (`getBlob`, concat, `putBlob`), so anything that writes *inside*
+one of those loses. Two appends lose an entry; **a `save` losing inside one is worse**: the append reads the
+old body, the save writes the edited one, the append's write lands last, and the user's typing is gone from
+disk while their buffer is **clean** — its save succeeded — so nothing ever retries it. Silent and
+unrecoverable is the worst shape a loss can have.
+
+Not hypothetical, and not out-of-model: procedures run *off* the kernel's queue and `journal` is `both`, so
+the agent filing something while the user keeps a scratch entry — or edits today's journal note — is
+precisely the interleaving §8 defends.
+
+One chain, and the **same** one as `claimPath`'s, deliberately: these are all writes into one namespace, so a
+create taking a name, a body write and an append to that name have to be ordered against each other and not
+just against their own kind (§1b's atomic-loses-to-non-atomic case). One level still — neither `save` nor
+`journal` calls `claimPath`. And the narrower version of this fix — *serialize saves whose path looks like a
+journal note* — is the wrong shape: the journal note is not special as a **file**, it is special because we
+do a read-modify-write on it, so the rule belongs to the operation and not to a spelling. A rule attached to
+a spelling is one more thing to remember at the next call site.
+
+**What ordering does not do**, stated plainly: it cannot make an appended entry survive a full-body `save`
+that was composed before the append landed. The buffer's text never contained the entry, so writing it erases
+it — ordered or not. That is the ordinary two-writers-one-note case (§8, last-write-wins bounded by the
+autosave debounce), mitigated by the watch, which re-reads the open note on every external change *unless the
+buffer is dirty* — i.e. everywhere except while the user is mid-word in that exact note. The real answer is a
+precondition on `save` (refuse to overwrite a body that changed since it was read) rather than a lock, which
+is a change to `save`'s contract and the buffer machine's recovery rules, so it is tracked separately rather
+than smuggled in here (issue #367).
+
+Not pushed down into `packages/fs` either: an atomic append means something different on every backend
+(`O_APPEND` here, a transaction there), which is exactly the per-backend promise §1b decided a call site
+cannot reason about. Ordering our own writes is cheap; the window that remains is another *process*, as it is
+for every claim.
+
+### The way back has to be VISIBLE
+
+⌘J is the fast way back to the scratch; it cannot be the only way, because a shortcut you have to already
+know is not an affordance. So the scratch is **a row pinned into both surfaces that show the listing** — the
+dropdown under the bar, and the docked pane above the tree — as one element, exactly like the Create row
+(§5), so a click and the key can never come to mean different things.
+
+A row rather than another glyph in the bar, for three reasons that are really one — **only a row can carry
+state**:
+
+- It is the way back, **seen** rather than remembered.
+- It says **what is in there**: the first line, or *empty*. So a scratch with words waiting is visible while
+  a note is open, and "is there anything in my scratch?" is answered without going there. A button cannot
+  do that.
+- It carries **⌘J**, so the visible affordance is where the shortcut is learned — the convention every
+  command palette already uses. The row teaches the key it replaces.
+
+And it is bold (`data-open`) when the scratch is the current place, which is what makes it read as a *place*
+in the list rather than a command.
+
+**Deliberately outside the keyboard row set.** `rows`' indices are the filtered notes plus the Create row,
+and the scratch is not a search result: arrowing through matches must not stop on it, Enter on an empty query
+must still open the newest *note*, and ⌘J is already its key. Which also means the index arithmetic the
+palette got wrong before (§5: "creating belongs to an empty result set, never to a missing index") was not
+touched to add this. **Pinned, not filtered**, for the same reason: a place does not match a query. Typing
+`rate` leaves the row where it is, above the one note that matched.
+
+The pane's default is closed and localStorage is unavailable in frieren's sandboxed iframe, so the dropdown
+is the surface that can be relied on — and it is the one every *deliberate* way out of the scratch already
+passes through (⌘O, or clicking the field). The footer stays as it is: it says what the surface you are
+**on** is; the row is how you get back to it.
+
+### The agent's half
+
+`readScratch` is `both` — *"what's in my scratch?"* is a fair question, and `openPath: null` already tells
+the agent that is what the user is looking at. `saveScratch` is **gui-only**: overwriting the whole buffer
+could erase words the user has not filed yet, and `journal`/`create` are the ways to move them somewhere
+permanent. `journal` is `both`, because *"note this down"* is exactly what it is for (§1's on-request rule).
+
 <a id="agent"></a>
 
-## 6 · The agent (TUI) interface
+## 7 · The agent (TUI) interface
 
 The agent has **two channels**, by design — keep them distinct:
 
@@ -759,36 +1032,33 @@ surface below. `description` + `examples` are its UI — written above.
 |----|----|----|
 | `open` | both | **The** coordinating action — put a note in front of the user. |
 | `create`, `save`, `rename`, `mkdir` | both | Available, but the agent usually writes files directly. `create` takes the **title** — nothing is derived from the body (§4). |
-| `importNotes` | both | Bulk write, merging into the KB and never overwriting (§9). The agent can use it to land a batch it fetched; the GUI uses it for dropped vaults. |
+| `importNotes` | both | Bulk write, merging into the KB and never overwriting (§10). The agent can use it to land a batch it fetched; the GUI uses it for dropped vaults. |
 | `list` | both | Fresh listing on demand — the agent's view of the KB is the filesystem, never cached state. |
-| `newNote` | both | Closes the open note (empty editor). Harmless; mostly GUI-driven. |
+| `newNote` | both | Closes the open note and shows the scratch (§6). Harmless; mostly GUI-driven. |
 | `readNote` | both | Convenience; the agent can also read the file directly. |
 | `remove` | **gui** | Destructive. `/notes` is the user's — the agent never deletes user notes blindly (mirrors `app-code`'s gui-only `remove`). |
 
 <a id="scope-v1"></a>
 
-## 7 · Scope & non-goals
+## 8 · Scope & non-goals
 
 **In:** a name field over a body (the name IS the filename); the bar (search-or-create + docked-tree
 toggle) + derived listing + path-aware filter; **nested folders** (recursive listing, `.md` default with `.txt` still read); human
 filenames; debounced autosave + flush-on-transition; a docked file tree with full CRUD (create note /
-create folder / rename / move by drag / delete) and open-on-select; **drop-a-zip vault import** (§9); live
-re-read of the open note on external edits; a structural watch so the tree tracks the disk; the agent TUI
-above.
+create folder / rename / move by drag / delete) and open-on-select; **drop-a-zip vault import** (§10); live
+re-read of the open note on external edits; a structural watch so the tree tracks the disk; **the persistent
+scratch buffer, and the two ways to keep something out of it** (§6); the agent TUI above.
 
 **Out (deferred, not one-way doors):**
 
 - **AI filenames**; **content search** in the search field (path/title only); **rich text**; **tags UI**;
   **`[[wikilink]]` navigation and backlinks** (imported links are preserved verbatim, so this can land
-  later with no migration — see the reasoning in §9); **resume-where-you-left-off** (always-blank reopen is
-  intentional).
-- **A persistent scratch buffer** — Emacs's `*scratch*`, except that ours would persist: one fixed note
-  (`/scratch.md`) that cannot be renamed, deleted or collided with, shown apart from the tree because it is
-  not an entry in the knowledge base. This is the deliberate answer to what removing unnamed notes costs.
-  Naming-first is right for a note — when you want to write something down you already know what it is
-  about, and if you don't, you are dumping, not filing — so the dump gets ONE well-known place instead of
-  every note being capable of namelessness. Shelved, not rejected: it needs nothing about the naming model
-  to change, being a note with a name nobody had to choose.
+  later with no migration — see the reasoning in §10); **resume-where-you-left-off** (reopening on the
+  scratch is intentional — §6).
+- **More than one scratch** (Tot's seven, JetBrains' five). "Which scratch?" is a naming decision in
+  disguise, and the moment you want a second one you want a note, which §6's first tier makes one gesture.
+- **Blocks inside the scratch** (Heynote's unit). A selection is ours, and it needs no structure in the
+  file — so the scratch stays plain text that any other tool can read.
 
 ### The concurrency model, stated as a boundary
 
@@ -830,7 +1100,7 @@ is not re-merged into already-persisted state. `treeRevision` was added this way
 
 <a id="runtime"></a>
 
-## 8 · Agent-runtime touch-points (out of this package)
+## 9 · Agent-runtime touch-points (out of this package)
 
 These live in `packages/agent`, not `app-notes`, but the design depends on them:
 
@@ -849,7 +1119,7 @@ These live in `packages/agent`, not `app-notes`, but the design depends on them:
 
 <a id="obsidian"></a>
 
-## 9 · Obsidian interop — what we take, and what we deliberately don't
+## 10 · Obsidian interop — what we take, and what we deliberately don't
 
 `/notes` is meant to be able to *hold* someone's Obsidian vault, so the shape of that data is a design
 input, not an afterthought.
