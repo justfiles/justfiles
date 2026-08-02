@@ -895,6 +895,19 @@ using it: asking for a name that existed silently produced `… 2`.
 unrelated things, and filing one of them must not file the other three. `splitSelection` is that rule, pure
 and tested — no selection means the whole buffer.
 
+**But the cut is applied to the LATEST text, not to the snapshot the offsets came from.** Filing is a round
+trip — `create` even awaits a queue drain — and the user can type all the way through it: ⌘S pressed from the
+body leaves focus there, which is exactly what the name-waits-in-the-field rule invites. Applying the
+precomputed remainder then deletes those keystrokes, and they are in **neither** the note nor the scratch,
+with the next autosave persisting the deletion. So the kept words are found again by **content** in whatever
+the buffer holds when the write lands (`cutOnce`), and the read-modify-write has no `await` inside it, so
+nothing can be typed into the middle of it. The offsets are still used when the text has not changed, where
+they are exact even if the kept words appear twice.
+
+And when the kept words are no longer there at all — the user edited *them* while they were in flight —
+nothing is removed and the status says a copy stayed. **Two copies are recoverable; deleted keystrokes are
+not**, so the ambiguous case resolves towards keeping too much.
+
 **One keeping, however many times it is asked for.** Enter repeats while held and the journal button stays
 clickable across the round trip, so two calls can read the same text before either has cut it — filing it
 twice, as two numbered notes or the same entry appended twice. Same guard, same reason, as the Create row's

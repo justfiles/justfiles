@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
 import {
+	cutOnce,
 	displayPath,
 	draftSurvives,
 	failedWith,
@@ -210,4 +211,18 @@ test('the scratch is not a path in the knowledge base', () => {
 	expect(SCRATCH_FILE).toBe('/scratch.md')
 	expect(illegalName('.scratch')).not.toBe(null)
 	expect(sanitizeName('.scratch')).toBe('scratch')
+})
+
+test('the kept words are taken out by CONTENT, so typing during a save survives', () => {
+	// Filing is a round trip and the user can type through it, so the cut cannot use the
+	// offsets the selection gave us — they describe a text that no longer exists, and applying
+	// them deletes the keystrokes typed meanwhile (in neither the note nor the scratch).
+	expect(cutOnce('a thought\n\nand a newer one', 'a thought\n\n')).toBe('and a newer one')
+	// Not there any more: the kept words were edited while they were in flight, so nothing can
+	// honestly be removed. `null` is the answer, and the caller leaves the buffer alone.
+	expect(cutOnce('rewritten entirely', 'a thought')).toBe(null)
+	// The FIRST occurrence only — one copy of a duplicate must survive.
+	expect(cutOnce('todo\ntodo\n', 'todo\n')).toBe('todo\n')
+	// The whole buffer (no selection) is the ordinary case, and it leaves what came after.
+	expect(cutOnce('all of it plus new', 'all of it')).toBe(' plus new')
 })

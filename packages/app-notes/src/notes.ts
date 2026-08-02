@@ -70,6 +70,24 @@ export function splitSelection(
 	return { promoted: text.slice(from, to), remainder: `${text.slice(0, from)}${text.slice(to)}` }
 }
 
+/**
+ * Take `cut` out of `text` — the first occurrence — or `null` when it is not there any more.
+ *
+ * Why this is not just `splitSelection`'s remainder: filing something is a round trip, and the
+ * user can type during it. The offsets a selection gave us are then about a text that no longer
+ * exists, so applying the remainder computed from it deletes whatever was typed meanwhile —
+ * words that are in neither the note nor the scratch. The kept words are found again by CONTENT
+ * instead, in whatever the buffer holds when the write lands.
+ *
+ * `null` is a real answer, not a failure: if the user edited the kept words themselves while
+ * they were in flight, nothing here can honestly be removed, so the caller leaves the buffer
+ * alone and says so. A copy in two places is recoverable; deleted keystrokes are not.
+ */
+export function cutOnce(text: string, cut: string): string | null {
+	const at = text.indexOf(cut)
+	return at === -1 ? null : `${text.slice(0, at)}${text.slice(at + cut.length)}`
+}
+
 const NAME_MAX = 100
 // Path separators plus the characters Obsidian itself warns break links
 // (`# | ^ [ ]`), so a title stays addressable if we ever resolve `[[wikilinks]]`.

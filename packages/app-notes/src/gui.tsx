@@ -17,6 +17,7 @@ import {
 	zipEntryName
 } from './import.ts'
 import {
+	cutOnce,
 	displayPath,
 	draftSurvives,
 	failedWith,
@@ -59,6 +60,11 @@ const explain = (outcome: Unsettled) =>
 // says so, the next write re-creates it: see `scratchIO.create`).
 const explainScratch = (outcome: Unsettled) =>
 	`Could not save the scratch — ${outcome.error.message}`
+
+// Said when the kept words could not be taken out of the scratch, because they were edited
+// while the write was in flight (see `promoteScratch`). The user has them twice, which is
+// recoverable — and being told is what makes it so.
+const COPY_STAYED = '— the scratch changed while it saved, so a copy is still in it'
 
 const IMPORT_CHUNK = 50
 // How much of an archive is handed to the unzipper at once (see `readZip`).
@@ -859,16 +865,18 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// creates: the second press is the same submission, not another note.
 	const keepingRef = useRef(false)
 	const promoteScratch = useCallback(
-		async (keep: (text: string) => Promise<string>): Promise<string | null> => {
+		async (
+			keep: (text: string) => Promise<string>
+		): Promise<{ path: string; removed: boolean } | null> => {
 			if (keepingRef.current) return null
 			keepingRef.current = true
 			try {
 				const el = editorRef.current
-				const { text } = scratchBuf.snapshot()
+				const before = scratchBuf.snapshot().text
 				// A selection is the unit when there is one: a scratch accumulates several unrelated
 				// things, and filing one of them must not file the other three.
 				const { promoted, remainder } = splitSelection(
-					text,
+					before,
 					el?.selectionStart ?? 0,
 					el?.selectionEnd ?? 0
 				)
@@ -885,9 +893,26 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					)
 					return null
 				}
-				scratchBuf.type(remainder)
-				void settleScratch()
-				return path
+				// THE CUT IS AGAINST THE LATEST TEXT, not the snapshot the offsets came from. Filing is
+				// a round trip — `create` even awaits a queue drain — and the user can type all the way
+				// through it: focus stays in the body when ⌘S is pressed from there, which is the case
+				// the name-waits-in-the-field rule invites. Applying the stale remainder then deletes
+				// those keystrokes, and they are in NEITHER the note nor the scratch.
+				//
+				// Read and write with no `await` between them, so nothing can be typed inside the
+				// read-modify-write itself.
+				const now = scratchBuf.snapshot().text
+				// Unchanged: the offsets still describe this text, so use them — exact even when the
+				// kept words appear more than once.
+				const next = now === before ? remainder : cutOnce(now, promoted)
+				if (next !== null) {
+					scratchBuf.type(next)
+					void settleScratch()
+				}
+				// `null` = the kept words were edited while they were in flight, so there is nothing
+				// here we can honestly remove. The buffer is left exactly as the user last typed it and
+				// the caller says a copy stayed: two copies are recoverable, lost keystrokes are not.
+				return { path, removed: next !== null }
 			} finally {
 				keepingRef.current = false
 			}
@@ -900,13 +925,13 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// most of what a scratch collects (DESIGN.md §6).
 	const keepInJournal = useCallback(async () => {
 		const now = new Date()
-		const path = await promoteScratch(async (text) => {
+		const kept = await promoteScratch(async (text) => {
 			// The clock is the GUI's: a procedure runs in the worker, where the date is UTC.
 			const entry = `## ${localTimeStamp(now)}\n\n${text.trim()}`
 			return (await actions.journal({ date: localDateStamp(now), text: entry })).path
 		})
-		if (path === null) return
-		setStatus(`Kept in ${displayPath(path)}`)
+		if (kept === null) return
+		setStatus(`Kept in ${displayPath(kept.path)}${kept.removed ? '' : ` ${COPY_STAYED}`}`)
 		void refresh()
 	}, [promoteScratch, actions, refresh])
 
@@ -1041,18 +1066,22 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			// from the buffer. Only "it did not move at all" keeps the draft.
 			if (held !== null) landed = (await moveNote(held, target)) !== null
 			else if (onScratch) {
-				const path = await promoteScratch((text) => createIn(clean, text, dirRef.current))
-				if (path !== null) {
-					// The advisory above reads a listing, which may be empty (nothing has asked for one
-					// yet) or stale, and `claimPath` in the reducer numbers rather than overwrites — so
-					// the name the user chose at the moment of filing can still be taken. Say where the
-					// words actually went; the same thing `moveNote` says about a deduped rename.
-					if (noteTitle(path) !== clean)
-						setStatus(`A note called “${clean}” already existed — kept as “${displayPath(path)}”`)
-					await actions.open({ path })
+				const kept = await promoteScratch((text) => createIn(clean, text, dirRef.current))
+				if (kept !== null) {
+					// Two things can be worth saying, and the copy is the actionable one. The advisory
+					// above reads a listing that may be empty (nothing has asked for one yet) or stale,
+					// and `claimPath` numbers rather than overwrites — so the name chosen at the moment of
+					// filing can still be taken. Say where the words actually went; the same thing
+					// `moveNote` says about a deduped rename.
+					if (!kept.removed) setStatus(`Kept as “${displayPath(kept.path)}” ${COPY_STAYED}`)
+					else if (noteTitle(kept.path) !== clean)
+						setStatus(
+							`A note called “${clean}” already existed — kept as “${displayPath(kept.path)}”`
+						)
+					await actions.open({ path: kept.path })
 					if (listing) void refresh()
 				}
-				landed = path !== null
+				landed = kept !== null
 			} else {
 				nameRef.current = clean
 				landed = await settle()
