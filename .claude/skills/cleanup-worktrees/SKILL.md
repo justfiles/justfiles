@@ -16,8 +16,10 @@ evidence is not conclusive, leave it and say why in the report.
 bash .agents/skills/cleanup-worktrees/scan.sh
 ```
 
-It fetches, fast-forwards `main` (falls back to comparing against `origin/main`),
-and prints one block per non-primary worktree:
+One `git fetch` plus one `gh pr list` for the whole repo, then pure local git —
+about ten seconds for thirty worktrees. (Per-branch `gh` calls get throttled into
+30s stalls; don't reintroduce them.) It fast-forwards `main` (falling back to
+comparing against `origin/main`) and prints one block per non-primary worktree:
 
 | field | meaning |
 | --- | --- |
@@ -29,6 +31,7 @@ and prints one block per non-primary worktree:
 | `contained=no (touched=T still-differ=D)` | `D` of the `T` files the branch touched still differ from main |
 | `remote=` | remote branch and how many local commits were never pushed |
 | `pr=` | every PR for that branch head with state and merge time |
+| `pr=unknown` | `gh` failed — the header says so too, and no verdict can rest on PR state |
 | `tmux=` | a live agent session rooted in that worktree |
 
 ## Step 2 — Verdict per worktree
@@ -39,7 +42,7 @@ and prints one block per non-primary worktree:
 2. `pr=... MERGED` **and** nothing was added after the merge (verify, see below).
 3. Every PR for the branch is `CLOSED` and unmerged — the work was abandoned. Say so loudly in the report.
 
-**KEEP** — everything else, especially: `dirty>0`, a live `tmux` session, `pr=OPEN`,
+**KEEP** — everything else, especially: `dirty>0`, a live `tmux` session, `pr=OPEN`, `pr=unknown`,
 `pr=none` with commits not in main, unpushed commits (`local-ahead>0`) that are not contained.
 
 When a PR is `MERGED` but `contained=no`, the branch usually grew commits after the
