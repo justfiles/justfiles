@@ -699,6 +699,12 @@ function twoVolumes(notes: Record<string, string> = {}, own: Record<string, stri
 			case 'appendFile': {
 				const at = store.get(path)
 				if (at === undefined) throw new Error(`ENOENT: ${path}`)
+				// Models the contract, INCLUDING its gap: `appendFile` is read-merge-write
+				// (`getBlob`, concat, `putBlob` — packages/fs/volume.ts), so the body is read here
+				// and written after a yield. Without that yield this double would be accidentally
+				// atomic and a test about ordering would assert nothing (the same reason `rename`
+				// yields above).
+				await Promise.resolve()
 				store.set(path, at + dec.decode(args[1] as Uint8Array))
 				return undefined
 			}
@@ -762,6 +768,42 @@ test('a journal date is the one spelling, so the path cannot be steered', async 
 		await expect(app.runProcedure('journal', { date, text: 'x' }, h.app)).rejects.toThrow()
 	}
 	expect([...vol.kb.keys()]).toEqual([])
+})
+
+test('concurrent keeps into one journal note are ordered, not raced', async () => {
+	// The failure this is here for: `appendFile` is read-merge-write, so two appends that
+	// overlap both read the same body and the later write drops the earlier entry — words
+	// someone asked to KEEP, gone. `exclusive: true` only protects the first entry of the day.
+	//
+	// Overlapping is in the model: procedures run OFF the kernel's queue, and `journal` is
+	// `both`, so the agent filing something while the user keeps a scratch entry is exactly
+	// this. Remove `serially` from the procedure and the last line loses an entry.
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	await app.runProcedure('journal', { date: '2026-06-19', text: 'first' }, h.app)
+	await Promise.all([
+		app.runProcedure('journal', { date: '2026-06-19', text: 'second' }, h.app),
+		app.runProcedure('journal', { date: '2026-06-19', text: 'third' }, h.app)
+	])
+	const body = vol.kb.get('/journal/2026-06-19.md')
+	expect(body).toContain('first')
+	expect(body).toContain('second')
+	expect(body).toContain('third')
+})
+
+test('a keep that races the day’s first keep does not lose one of them', async () => {
+	// Both find no note and both try the exclusive create: one wins, the loser sees EEXIST and
+	// appends instead. Neither may vanish.
+	const vol = twoVolumes()
+	const h = handle(initialState, vol.invoke)
+	await Promise.all([
+		app.runProcedure('journal', { date: '2026-06-19', text: 'one' }, h.app),
+		app.runProcedure('journal', { date: '2026-06-19', text: 'two' }, h.app)
+	])
+	expect([...vol.kb.keys()]).toEqual(['/journal/2026-06-19.md'])
+	const body = vol.kb.get('/journal/2026-06-19.md')
+	expect(body).toContain('one')
+	expect(body).toContain('two')
 })
 
 test('the agent may READ the scratch, but not overwrite it', async () => {

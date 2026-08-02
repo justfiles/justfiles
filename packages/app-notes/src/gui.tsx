@@ -434,40 +434,51 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		return false
 	}, [scratchBuf])
 
-	// Attach the scratch to its file. Two callers: mount, and the way back from a read that
-	// failed (see the focus effect) — a scratch that could not be read must not be replaced
-	// by a blank one, so the editor stays inert until this succeeds.
-	const openScratch = useCallback(async () => {
-		const outcome = await scratchBuf.open(SCRATCH_FILE)
-		if (outcome.opened) {
-			setScratchState('ready')
-			return
-		}
-		setScratchState('failed')
-		setStatus(
-			outcome.because === 'unsettled'
-				? explainScratch(outcome.outcome)
-				: `Could not read the scratch — ${outcome.error.message}`
-		)
-	}, [scratchBuf])
+	// Read the scratch from disk — at mount, and again whenever the window comes back. ONE
+	// function, because a read that fails means the same thing either way: we cannot prove the
+	// buffer matches what is on disk, so the editor must not let it be typed over.
+	//
+	// That rule was first written for the mount read only, which left the more dangerous case
+	// open: a scratch that loaded once, then failed a re-read after ANOTHER window wrote newer
+	// text, kept a stale buffer editable — and the next autosave would put the stale text back
+	// over the newer one. A read we did not get is not evidence that nothing changed.
+	//
+	// `open` versus `reload` is about what the buffer is holding, not about the failure: after a
+	// mount that failed there is nothing attached, so `reload` (which only ever replaces a
+	// CLEAN, attached buffer) would no-op forever.
+	const loadScratch = useCallback(
+		async (how: 'open' | 'reload') => {
+			const outcome =
+				how === 'open' ? await scratchBuf.open(SCRATCH_FILE) : await scratchBuf.reload(SCRATCH_FILE)
+			if (outcome.opened) {
+				setScratchState('ready')
+				return
+			}
+			setScratchState('failed')
+			setStatus(
+				outcome.because === 'unsettled'
+					? explainScratch(outcome.outcome)
+					: `Could not read the scratch — ${outcome.error.message}. It stays read-only until that succeeds.`
+			)
+		},
+		[scratchBuf]
+	)
 
 	useEffect(() => {
-		void openScratch()
-	}, [openScratch])
+		void loadScratch('open')
+	}, [loadScratch])
 
 	// A second window — or the desktop app beside the browser — writes the same file, and
 	// there is no watch on it: the scratch is app-private, so a capability stream just so one
 	// client can hear another is more machinery than the case is worth. Re-read when the
 	// window comes back instead. `reload` only ever replaces a CLEAN buffer, so it cannot land
-	// on top of words that have not been saved yet.
+	// on top of words that have not been saved yet — and a dirty buffer is newer than the disk
+	// anyway, so it stays `ready` and keeps being editable.
 	useEffect(() => {
-		const onFocus = () => {
-			if (scratchState === 'failed') void openScratch()
-			else void scratchBuf.reload(SCRATCH_FILE)
-		}
+		const onFocus = () => void loadScratch(scratchState === 'failed' ? 'open' : 'reload')
 		window.addEventListener('focus', onFocus)
 		return () => window.removeEventListener('focus', onFocus)
-	}, [scratchState, openScratch, scratchBuf])
+	}, [scratchState, loadScratch])
 
 	// The buffer follows a note to a new address — its own rename, or a folder's — and so does
 	// the name field's draft: same words, same draft, new place. ONE function because they are

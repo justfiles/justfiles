@@ -473,7 +473,12 @@ one loses — the move sees a free destination, the import claims it exclusively
 top, and *both* callers report success. Serializing only moves protects moves from moves and leaves the import
 to be silently overwritten. Taking a name is one serialized act however it is done. One level, too: wrapping a
 `claimPath` in another `serially` deadlocks — it holds the chain while waiting for it — which is the ordinary
-price of a mutex and the reason there is exactly one.
+price of a mutex and the reason there is exactly one chain.
+
+That chain has since taken a second rider, for the same reason rather than a new one: **the journal's append**
+(§6). `appendFile` is read-merge-write in the volume, so two appends that overlap lose one — and it shares the
+*same* chain as the name claims because both write into one namespace, so a create taking a name and an append
+to that name must be ordered against each other. Still one level: `journal` does not call `claimPath`.
 
 A test that asserts ordering has to be able to fail: the volume double had no `await` between its check and
 its move, so it was accidentally atomic and the tests passed with the ordering removed. With the yield in
@@ -837,9 +842,18 @@ Two consequences worth stating, because both are rules a reviewer will look for:
   focus waits for the same signal. Keystrokes typed over an unfinished read would be saved on top of the
   words being read — the one way a persistent scratch can lose data. A read that fails is *not* answered
   with an empty buffer for the same reason; the way back is the window-focus retry below.
+- **And the same rule holds for every LATER read, which is where it was first got wrong.** Writing it for
+  the mount read only left the more dangerous case open: a scratch that loaded once and then failed a
+  re-read — after another window had written newer text — kept a stale buffer editable, and the next
+  autosave put the stale text back over the newer one. **A read you did not get is not evidence that
+  nothing changed**, so both reads go through one function and either failure makes the buffer read-only
+  until a read succeeds. (`open` vs `reload` is then only about what the buffer holds: after a failed mount
+  nothing is attached, and `reload` only ever replaces a clean *attached* buffer, so it would no-op
+  forever.)
 - **No watch.** A second window writing the same file is heard by re-reading on window focus (`reload` only
-  ever replaces a CLEAN buffer, so it cannot land on top of unsaved words). A capability stream just so one
-  client can hear another is more machinery than app-private data is worth.
+  ever replaces a CLEAN buffer, so it cannot land on top of unsaved words — and a dirty buffer is newer than
+  the disk anyway). A capability stream just so one client can hear another is more machinery than
+  app-private data is worth.
 
 ### Keeping something: three tiers, and the order is the rule
 
@@ -893,9 +907,23 @@ vanishing. This is §1a‴'s rule 2 applied to a new operation rather than re-le
 **The date is the caller's**, not the reducer's: a procedure runs in the worker, where `new Date()` is UTC
 and would file an evening entry under tomorrow. So `journal({ date, text })` takes the day as `YYYY-MM-DD`
 (one spelling, checked — so the path is canonical by construction and cannot be steered) and the GUI reads
-the user's clock. The first entry of a day **creates** the note with `exclusive: true` and EEXIST is the
-ordinary case — append — so two windows keeping something in the same instant cannot overwrite each other's
-first line. Folders this app creates for itself are lowercase: `/journal`.
+the user's clock. Folders this app creates for itself are lowercase: `/journal`.
+
+**An append accumulates, so it rides the claim chain** (`serially`, §3). The first entry of a day creates the
+note with `exclusive: true`, which settles who owns the name — but every entry after that is an
+`appendFile`, and that is **read-merge-write** in the volume (`getBlob`, concat, `putBlob`), so two appends
+that overlap both read the same body and the later write drops the earlier entry. Not hypothetical, and not
+out-of-model: procedures run *off* the kernel's queue and `journal` is `both`, so the agent filing something
+while the user keeps a scratch entry is precisely the interleaving §8 defends — and losing an append is a
+worse failure than losing a keystroke, because it is words someone asked to **keep**.
+
+It is the **same** chain as `claimPath`'s, deliberately: both are writes into one namespace, so a create
+claiming a name and an append to that name have to be ordered against each other and not just against their
+own kind (§1b's atomic-loses-to-non-atomic case). One level still — `journal` does not call `claimPath`, so
+nothing wraps the chain in itself. And not pushed down into `packages/fs`: an atomic append means something
+different on every backend (`O_APPEND` here, a transaction there), which is exactly the per-backend promise
+§1b decided a call site cannot reason about. Ordering our own writes is cheap; the window that remains is
+another *process*, as it is for every claim.
 
 ### The way back has to be VISIBLE
 

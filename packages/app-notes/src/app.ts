@@ -56,7 +56,12 @@ const dec = new TextDecoder()
 //
 // One level, and only one: a caller that wraps a `claimPath` in `serially` deadlocks
 // itself — it holds the chain while waiting for the chain. That is the price of a
-// mutex, and the reason this one is taken in exactly one place.
+// mutex, and the reason this one is taken in exactly two places, neither inside the other.
+//
+// The second is `journal`'s append, and it is the same chain deliberately: both are writes
+// into ONE namespace, so a create claiming a name and an append to that name have to be
+// ordered against each other, not just against their own kind (the mixed race is what
+// §1b's note about atomic-loses-to-non-atomic is about).
 let tail: Promise<unknown> = Promise.resolve()
 function serially<T>(task: () => Promise<T>): Promise<T> {
 	const run = tail.then(task, task)
@@ -479,17 +484,33 @@ export const app = defineApp({
 			}),
 			async run({ date, text }, app) {
 				const path = journalPath(date)
-				try {
-					// The first entry of the day CREATES the note, exclusively: two windows keeping
-					// something in the same instant would otherwise both create it and one would
-					// overwrite the other. EEXIST is then the ordinary case — append. (EISDIR is not:
-					// a folder holding that name is a real problem, so it is thrown.)
-					await app.invoke('volume', 'writeFile', path, enc.encode(text), { exclusive: true })
-				} catch (thrown) {
-					if (!/^EEXIST/.test((thrown as Error).message)) throw thrown
-					await app.invoke('volume', 'appendFile', path, enc.encode(`\n\n${text}`))
-				}
-				return { path }
+				// ON THE CHAIN, because an append is not atomic and this one accumulates. `appendFile`
+				// is read-merge-write in the volume (`getBlob`, concat, `putBlob` — packages/fs/volume.ts),
+				// so two that overlap both read the same body and the later write drops the earlier
+				// entry. `exclusive: true` below only protects the FIRST entry of the day.
+				//
+				// And overlapping is IN this app's model, not a hypothetical: procedures run off the
+				// kernel's queue, `journal` is `both`, so the agent filing something while the user
+				// keeps a scratch entry is the interleaving DESIGN.md §8 defends. Losing an append is
+				// also a worse failure than losing a keystroke — it is words someone asked to KEEP.
+				//
+				// Not pushed down into `packages/fs`: an atomic append means something different on
+				// every backend (O_APPEND here, a transaction there), and §1b is the record of what a
+				// per-backend promise costs a call site. Ordering our own writes is cheap; the window
+				// that remains is another PROCESS, exactly as it is for `claimPath`.
+				return serially(async () => {
+					try {
+						// The first entry of the day CREATES the note, exclusively: two windows keeping
+						// something in the same instant would otherwise both create it and one would
+						// overwrite the other. EEXIST is then the ordinary case — append. (EISDIR is not:
+						// a folder holding that name is a real problem, so it is thrown.)
+						await app.invoke('volume', 'writeFile', path, enc.encode(text), { exclusive: true })
+					} catch (thrown) {
+						if (!/^EEXIST/.test((thrown as Error).message)) throw thrown
+						await app.invoke('volume', 'appendFile', path, enc.encode(`\n\n${text}`))
+					}
+					return { path }
+				})
 			}
 		}),
 
