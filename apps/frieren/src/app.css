@@ -372,10 +372,11 @@
 }
 .frn-menubar-version {
 	font-weight: 400;
-	color: rgba(255, 255, 255, 0.4);
+	color: color-mix(in srgb, var(--text) 45%, transparent);
 }
+/* Quiet, but derived from --text so it stays legible in light and dark mode. */
 .frn-menubar-status {
-	color: rgba(255, 255, 255, 0.55);
+	color: color-mix(in srgb, var(--text) 65%, transparent);
 }
 /* Clickable status: same quiet look as the strip buttons, opens the sync-reset menu. */
 .frn-menubar-status-btn {
@@ -387,7 +388,8 @@
 	cursor: default;
 }
 .frn-menubar-status-btn:hover {
-	background: rgba(255, 255, 255, 0.12);
+	background: color-mix(in srgb, var(--text) 12%, transparent);
+	color: var(--text);
 }
 .frn-status-dot {
 	display: inline-block;
@@ -408,7 +410,7 @@
 	cursor: default;
 }
 .frn-menubar-btn:hover {
-	background: rgba(255, 255, 255, 0.12);
+	background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 /* Menubar clock: quiet, macOS-style; tabular figures keep its width steady. */
 .frn-menubar-clock {
