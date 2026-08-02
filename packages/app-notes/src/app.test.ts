@@ -675,6 +675,11 @@ test('an import of same-named notes keeps both, numbering the second', async () 
 	expect(vol.store.get('/Kyoto 2.md')).toBe('second')
 })
 
+// One storage round trip, long enough that another operation can act inside it. A macrotask,
+// not a microtask: microtask order is an accident of who suspended first, and a test about
+// ordering has to be able to FAIL.
+const settles = () => new Promise((resolve) => setTimeout(resolve, 0))
+
 // A volume double that CARES which capability it was called through. The scratch's whole
 // design is that it is written somewhere the knowledge base cannot reach, so a double that
 // ignored the capability name would pass whichever volume the procedure asked for.
@@ -691,8 +696,13 @@ function twoVolumes(notes: Record<string, string> = {}, own: Record<string, stri
 				return new TextEncoder().encode(body)
 			}
 			case 'writeFile': {
-				const opts = args[2] as { exclusive?: boolean } | undefined
+				const opts = args[2] as { exclusive?: boolean; update?: boolean } | undefined
 				if (opts?.exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
+				if (opts?.update && !store.has(path)) throw new Error(`ENOENT: ${path}`)
+				// The bytes land after real latency, not after a microtask: a write is a round trip
+				// to storage, so another operation's read can happen in between. A microtask here
+				// would be ordered by luck and the ordering tests below would assert nothing.
+				await settles()
 				store.set(path, dec.decode(args[1] as Uint8Array))
 				return undefined
 			}
@@ -701,10 +711,9 @@ function twoVolumes(notes: Record<string, string> = {}, own: Record<string, stri
 				if (at === undefined) throw new Error(`ENOENT: ${path}`)
 				// Models the contract, INCLUDING its gap: `appendFile` is read-merge-write
 				// (`getBlob`, concat, `putBlob` — packages/fs/volume.ts), so the body is read here
-				// and written after a yield. Without that yield this double would be accidentally
-				// atomic and a test about ordering would assert nothing (the same reason `rename`
-				// yields above).
-				await Promise.resolve()
+				// and written after the same latency a write has. Without that gap this double
+				// would be accidentally atomic (the same reason `rename` yields above).
+				await settles()
 				store.set(path, at + dec.decode(args[1] as Uint8Array))
 				return undefined
 			}
@@ -822,4 +831,23 @@ test('the app binds the knowledge base and its own volume, and nothing else', as
 		volume: { id: 'volume', scopes: ['/notes'] },
 		private: { id: 'volume', scopes: ['app'] }
 	})
+})
+
+test('a body save and a journal append cannot land inside one another', async () => {
+	// The interleaving this is here for: the append reads the old body, the save writes the
+	// edited one, and the append's write lands last — so the user's typing is gone from disk
+	// while their buffer is CLEAN (its save succeeded) and nothing ever retries it. Silent and
+	// unrecoverable, which is why `save` rides the same chain as the append.
+	//
+	// Ordered, the save goes first and the append reads what it wrote, so both survive. Take
+	// `serially` off `save` and "edited by hand" disappears.
+	const vol = twoVolumes({ '/journal/2026-06-19.md': 'first entry' })
+	const h = handle(initialState, vol.invoke)
+	await Promise.all([
+		app.runProcedure('save', { path: '/journal/2026-06-19.md', text: 'edited by hand' }, h.app),
+		app.runProcedure('journal', { date: '2026-06-19', text: 'kept from the scratch' }, h.app)
+	])
+	const body = vol.kb.get('/journal/2026-06-19.md')
+	expect(body).toContain('edited by hand')
+	expect(body).toContain('kept from the scratch')
 })

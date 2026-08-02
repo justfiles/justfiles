@@ -17,7 +17,7 @@ import {
 	zipEntryName
 } from './import.ts'
 import {
-	cutOnce,
+	cutKept,
 	displayPath,
 	draftSurvives,
 	failedWith,
@@ -873,13 +873,11 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			try {
 				const el = editorRef.current
 				const before = scratchBuf.snapshot().text
+				const from = el?.selectionStart ?? 0
+				const to = el?.selectionEnd ?? 0
 				// A selection is the unit when there is one: a scratch accumulates several unrelated
 				// things, and filing one of them must not file the other three.
-				const { promoted, remainder } = splitSelection(
-					before,
-					el?.selectionStart ?? 0,
-					el?.selectionEnd ?? 0
-				)
+				const { promoted } = splitSelection(before, from, to)
 				if (promoted.trim() === '') {
 					setStatus('Nothing to keep — the scratch is empty')
 					return null
@@ -897,21 +895,21 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				// a round trip — `create` even awaits a queue drain — and the user can type all the way
 				// through it: focus stays in the body when ⌘S is pressed from there, which is the case
 				// the name-waits-in-the-field rule invites. Applying the stale remainder then deletes
-				// those keystrokes, and they are in NEITHER the note nor the scratch.
+				// those keystrokes, and they are in NEITHER the note nor the scratch. `cutKept` maps the
+				// offsets through whatever was typed and verifies them, so the words that go are the
+				// ones the user selected — not the first copy of them.
 				//
 				// Read and write with no `await` between them, so nothing can be typed inside the
 				// read-modify-write itself.
-				const now = scratchBuf.snapshot().text
-				// Unchanged: the offsets still describe this text, so use them — exact even when the
-				// kept words appear more than once.
-				const next = now === before ? remainder : cutOnce(now, promoted)
+				const next = cutKept(before, scratchBuf.snapshot().text, from, to)
 				if (next !== null) {
 					scratchBuf.type(next)
 					void settleScratch()
 				}
-				// `null` = the kept words were edited while they were in flight, so there is nothing
-				// here we can honestly remove. The buffer is left exactly as the user last typed it and
-				// the caller says a copy stayed: two copies are recoverable, lost keystrokes are not.
+				// `null` = the kept words cannot be identified in what the buffer holds now, because the
+				// user edited them while they were in flight (or left two copies of them). The buffer is
+				// left exactly as they last typed it and the caller says a copy stayed: two copies are
+				// recoverable, the wrong cut is not.
 				return { path, removed: next !== null }
 			} finally {
 				keepingRef.current = false

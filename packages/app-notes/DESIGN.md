@@ -475,10 +475,12 @@ to be silently overwritten. Taking a name is one serialized act however it is do
 `claimPath` in another `serially` deadlocks — it holds the chain while waiting for it — which is the ordinary
 price of a mutex and the reason there is exactly one chain.
 
-That chain has since taken a second rider, for the same reason rather than a new one: **the journal's append**
-(§6). `appendFile` is read-merge-write in the volume, so two appends that overlap lose one — and it shares the
-*same* chain as the name claims because both write into one namespace, so a create taking a name and an append
-to that name must be ordered against each other. Still one level: `journal` does not call `claimPath`.
+That chain has since taken two more riders, for the same reason rather than a new one: **`journal`'s append
+and `save`** (§6). `appendFile` is read-merge-write in the volume, so anything that writes inside one loses —
+two appends lose an entry, and a `save` inside one loses the user's typing while their buffer believes it
+landed. They share the *same* chain as the name claims because all of them write into one namespace, so a
+create taking a name, a body write and an append to that name must be ordered against each other. Still one
+level: neither calls `claimPath`.
 
 A test that asserts ordering has to be able to fail: the volume double had no `await` between its check and
 its move, so it was accidentally atomic and the tests passed with the ordering removed. With the yield in
@@ -899,14 +901,22 @@ and tested — no selection means the whole buffer.
 trip — `create` even awaits a queue drain — and the user can type all the way through it: ⌘S pressed from the
 body leaves focus there, which is exactly what the name-waits-in-the-field rule invites. Applying the
 precomputed remainder then deletes those keystrokes, and they are in **neither** the note nor the scratch,
-with the next autosave persisting the deletion. So the kept words are found again by **content** in whatever
-the buffer holds when the write lands (`cutOnce`), and the read-modify-write has no `await` inside it, so
-nothing can be typed into the middle of it. The offsets are still used when the text has not changed, where
-they are exact even if the kept words appear twice.
+with the next autosave persisting the deletion.
 
-And when the kept words are no longer there at all — the user edited *them* while they were in flight —
-nothing is removed and the status says a copy stayed. **Two copies are recoverable; deleted keystrokes are
-not**, so the ambiguous case resolves towards keeping too much.
+Neither offsets nor content is safe on its own, which is what `cutKept` is for. Offsets alone describe a text
+that may no longer exist. **Content alone cuts the first match, which is the wrong one when the kept words
+appear twice** — select the second `todo`, type a character while the write is in flight, and searching would
+remove the first, mangling an entry the gesture never touched. So the offsets are **mapped** through the edit
+and then **verified**: the user's edit is confined to the span between the common prefix and the common suffix
+of the two texts, so when that span does not touch the kept range, the range's new position is known exactly
+(shifted if the edit was before it, unchanged if after), and the slice there is checked to still be the kept
+words before anything is removed. Only an edit that overlaps the kept words falls back to content, and only
+while that is unambiguous — one occurrence, or nothing is removed.
+
+The read-modify-write also has no `await` inside it, so nothing can be typed into the middle of it.
+
+And when the kept words cannot be identified at all, nothing is removed and the status says a copy stayed.
+**Two copies are recoverable; a wrong cut is not**, so the ambiguous case resolves towards keeping too much.
 
 **One keeping, however many times it is asked for.** Enter repeats while held and the journal button stays
 clickable across the round trip, so two calls can read the same text before either has cut it — filing it
@@ -922,21 +932,40 @@ and would file an evening entry under tomorrow. So `journal({ date, text })` tak
 (one spelling, checked — so the path is canonical by construction and cannot be steered) and the GUI reads
 the user's clock. Folders this app creates for itself are lowercase: `/journal`.
 
-**An append accumulates, so it rides the claim chain** (`serially`, §3). The first entry of a day creates the
-note with `exclusive: true`, which settles who owns the name — but every entry after that is an
-`appendFile`, and that is **read-merge-write** in the volume (`getBlob`, concat, `putBlob`), so two appends
-that overlap both read the same body and the later write drops the earlier entry. Not hypothetical, and not
-out-of-model: procedures run *off* the kernel's queue and `journal` is `both`, so the agent filing something
-while the user keeps a scratch entry is precisely the interleaving §8 defends — and losing an append is a
-worse failure than losing a keystroke, because it is words someone asked to **keep**.
+**An append accumulates, so it rides the claim chain** (`serially`, §3) — and so does **every other
+write this app makes into the KB**, `save` included. The first entry of a day creates the note with
+`exclusive: true`, which settles who owns the name — but every entry after that is an `appendFile`, and
+that is **read-merge-write** in the volume (`getBlob`, concat, `putBlob`), so anything that writes *inside*
+one of those loses. Two appends lose an entry; **a `save` losing inside one is worse**: the append reads the
+old body, the save writes the edited one, the append's write lands last, and the user's typing is gone from
+disk while their buffer is **clean** — its save succeeded — so nothing ever retries it. Silent and
+unrecoverable is the worst shape a loss can have.
 
-It is the **same** chain as `claimPath`'s, deliberately: both are writes into one namespace, so a create
-claiming a name and an append to that name have to be ordered against each other and not just against their
-own kind (§1b's atomic-loses-to-non-atomic case). One level still — `journal` does not call `claimPath`, so
-nothing wraps the chain in itself. And not pushed down into `packages/fs`: an atomic append means something
-different on every backend (`O_APPEND` here, a transaction there), which is exactly the per-backend promise
-§1b decided a call site cannot reason about. Ordering our own writes is cheap; the window that remains is
-another *process*, as it is for every claim.
+Not hypothetical, and not out-of-model: procedures run *off* the kernel's queue and `journal` is `both`, so
+the agent filing something while the user keeps a scratch entry — or edits today's journal note — is
+precisely the interleaving §8 defends.
+
+One chain, and the **same** one as `claimPath`'s, deliberately: these are all writes into one namespace, so a
+create taking a name, a body write and an append to that name have to be ordered against each other and not
+just against their own kind (§1b's atomic-loses-to-non-atomic case). One level still — neither `save` nor
+`journal` calls `claimPath`. And the narrower version of this fix — *serialize saves whose path looks like a
+journal note* — is the wrong shape: the journal note is not special as a **file**, it is special because we
+do a read-modify-write on it, so the rule belongs to the operation and not to a spelling. A rule attached to
+a spelling is one more thing to remember at the next call site.
+
+**What ordering does not do**, stated plainly: it cannot make an appended entry survive a full-body `save`
+that was composed before the append landed. The buffer's text never contained the entry, so writing it erases
+it — ordered or not. That is the ordinary two-writers-one-note case (§8, last-write-wins bounded by the
+autosave debounce), mitigated by the watch, which re-reads the open note on every external change *unless the
+buffer is dirty* — i.e. everywhere except while the user is mid-word in that exact note. The real answer is a
+precondition on `save` (refuse to overwrite a body that changed since it was read) rather than a lock, which
+is a change to `save`'s contract and the buffer machine's recovery rules, so it is tracked separately rather
+than smuggled in here (issue #367).
+
+Not pushed down into `packages/fs` either: an atomic append means something different on every backend
+(`O_APPEND` here, a transaction there), which is exactly the per-backend promise §1b decided a call site
+cannot reason about. Ordering our own writes is cheap; the window that remains is another *process*, as it is
+for every claim.
 
 ### The way back has to be VISIBLE
 

@@ -56,12 +56,26 @@ const dec = new TextDecoder()
 //
 // One level, and only one: a caller that wraps a `claimPath` in `serially` deadlocks
 // itself — it holds the chain while waiting for the chain. That is the price of a
-// mutex, and the reason this one is taken in exactly two places, neither inside the other.
+// mutex, and the reason there is exactly one chain.
 //
-// The second is `journal`'s append, and it is the same chain deliberately: both are writes
-// into ONE namespace, so a create claiming a name and an append to that name have to be
-// ordered against each other, not just against their own kind (the mixed race is what
-// §1b's note about atomic-loses-to-non-atomic is about).
+// EVERY write this app makes into the knowledge base rides it — the claims below, `save`,
+// and `journal`'s append — because one of them is a read-modify-write and therefore cannot
+// be interleaved with the others. `appendFile` is `getBlob` + concat + `putBlob`
+// (packages/fs/volume.ts), so with a `save` running inside it: the append reads the old
+// body, the save writes the edited one, and the append's write lands last — the user's
+// typing is gone from disk while their buffer is CLEAN (its save succeeded), so nothing ever
+// retries it. Silent and unrecoverable, which is the worst shape a loss can have.
+//
+// Ordered, that interleaving cannot exist: save-then-append keeps both, append-then-save
+// keeps the typing and loses only the entry. What ordering does NOT do is make an append
+// survive a full-body `save` that was composed before it — the buffer's text never contained
+// the entry, so writing it erases it. That is the ordinary two-writers-one-note case
+// (DESIGN.md §8), whose real answer is a precondition on `save` rather than a lock.
+//
+// A path-conditional version of this ("serialize saves to journal paths") was the obvious
+// smaller fix and is the wrong shape: the journal note is not special as a FILE, it is
+// special because we do a read-modify-write on it — so the rule belongs to the operation,
+// not to a spelling, or it is one more thing to remember at the next call site.
 let tail: Promise<unknown> = Promise.resolve()
 function serially<T>(task: () => Promise<T>): Promise<T> {
 	const run = tail.then(task, task)
@@ -487,7 +501,8 @@ export const app = defineApp({
 				// ON THE CHAIN, because an append is not atomic and this one accumulates. `appendFile`
 				// is read-merge-write in the volume (`getBlob`, concat, `putBlob` — packages/fs/volume.ts),
 				// so two that overlap both read the same body and the later write drops the earlier
-				// entry. `exclusive: true` below only protects the FIRST entry of the day.
+				// entry — and a `save` landing inside one does the same to the user's typing.
+				// `exclusive: true` below only protects the FIRST entry of the day.
 				//
 				// And overlapping is IN this app's model, not a hypothetical: procedures run off the
 				// kernel's queue, `journal` is `both`, so the agent filing something while the user
@@ -533,7 +548,12 @@ export const app = defineApp({
 				'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one).',
 			schema: v.object({ path: noteSchema, text: v.string() }),
 			async run({ path, text }, app) {
-				await app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+				// On the chain with every other write into the KB (see `serially`): a body write that
+				// lands INSIDE `journal`'s read-modify-write is the one interleaving that loses the
+				// user's typing with no copy left anywhere.
+				await serially(() =>
+					app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+				)
 				return { path }
 			}
 		}),

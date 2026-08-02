@@ -71,21 +71,55 @@ export function splitSelection(
 }
 
 /**
- * Take `cut` out of `text` — the first occurrence — or `null` when it is not there any more.
+ * Take the kept words out of the scratch — the ones at `[from, to)` in `before` — from `now`,
+ * which is whatever the buffer holds by the time the write has landed. `null` when that cannot
+ * be done honestly.
  *
- * Why this is not just `splitSelection`'s remainder: filing something is a round trip, and the
- * user can type during it. The offsets a selection gave us are then about a text that no longer
- * exists, so applying the remainder computed from it deletes whatever was typed meanwhile —
- * words that are in neither the note nor the scratch. The kept words are found again by CONTENT
- * instead, in whatever the buffer holds when the write lands.
+ * Filing is a round trip and the user can type through it, so neither half of this is safe on
+ * its own. The OFFSETS alone describe a text that may no longer exist, and applying them
+ * deletes whatever was typed meanwhile — words that end up in neither the note nor the scratch.
+ * Searching by CONTENT alone picks the first match, which is the wrong one when the kept words
+ * appear twice: select the second `todo`, type a character, and the first `todo` is cut instead,
+ * mangling an entry that had nothing to do with the gesture.
  *
- * `null` is a real answer, not a failure: if the user edited the kept words themselves while
- * they were in flight, nothing here can honestly be removed, so the caller leaves the buffer
- * alone and says so. A copy in two places is recoverable; deleted keystrokes are not.
+ * So the offsets are MAPPED forward and then verified. The edit the user made is confined to
+ * the span between the common prefix and the common suffix of `before` and `now`, so when that
+ * span does not touch the kept range, the range's new position is known exactly — shifted by
+ * the length change if the edit was before it, unchanged if it was after. The slice there is
+ * checked to still be the kept words before anything is removed.
+ *
+ * Only when the edit overlaps the kept words themselves does content matter, and then it has to
+ * be unambiguous: one occurrence, or nothing is removed. A copy in two places is recoverable;
+ * cutting the wrong one is not.
  */
-export function cutOnce(text: string, cut: string): string | null {
-	const at = text.indexOf(cut)
-	return at === -1 ? null : `${text.slice(0, at)}${text.slice(at + cut.length)}`
+export function cutKept(before: string, now: string, from: number, to: number): string | null {
+	// No selection means the whole buffer was kept (see `splitSelection`).
+	const [start, end] = from >= to ? [0, before.length] : [from, to]
+	const promoted = before.slice(start, end)
+	if (promoted === '') return null
+	const remove = (at: number) => `${now.slice(0, at)}${now.slice(at + promoted.length)}`
+
+	// Where the edit is, in `before`'s coordinates: [editFrom, editTo).
+	let editFrom = 0
+	while (editFrom < before.length && before[editFrom] === now[editFrom]) editFrom++
+	let tailSame = 0
+	while (
+		tailSame < before.length - editFrom &&
+		tailSame < now.length - editFrom &&
+		before[before.length - 1 - tailSame] === now[now.length - 1 - tailSame]
+	)
+		tailSame++
+	const editTo = before.length - tailSame
+
+	// The edit is entirely AFTER the kept words (the common case — typing at the end), so their
+	// offsets still hold; or entirely BEFORE them, so they moved by the length change.
+	const at = end <= editFrom ? start : editTo <= start ? start + (now.length - before.length) : null
+	if (at !== null && now.slice(at, at + promoted.length) === promoted) return remove(at)
+
+	// The edit touched the kept words themselves. Content is all that is left, and it has to be
+	// unambiguous.
+	const first = now.indexOf(promoted)
+	return first !== -1 && first === now.lastIndexOf(promoted) ? remove(first) : null
 }
 
 const NAME_MAX = 100
