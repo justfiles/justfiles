@@ -83,6 +83,12 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	// refresh covers, so re-list on the volume's structural change feed. The
 	// recursive watch is structural-only (dirent create/remove/rename), so content
 	// edits don't churn it; the client's setApps drops no-op re-lists.
+	//
+	// Scoped to `/applications` — the ONLY subtree either callback reads. A watch on `/`
+	// made every unrelated write anywhere on the volume re-list the catalog AND re-run
+	// the update pass: a bulk import (an Obsidian vault into Notes) fired both per
+	// batch, each one two catalog fetches plus a stat of every file of every installed
+	// app, over a tree that had not changed.
 	{
 		let off: (() => void) | undefined
 		let cancelled = false
@@ -112,7 +118,10 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		void volume.then((fs) => {
 			void fs
 				.watch(
-					'/',
+					// Not created yet on a first boot — seeding makes it. A recursive watch with
+					// no root to resolve through matches on the path as spelled, so the seed's
+					// own writes still arrive.
+					'/applications',
 					() => {
 						client.refresh()
 						reconcileNow()
