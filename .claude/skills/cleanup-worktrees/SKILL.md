@@ -29,7 +29,8 @@ comparing against `origin/main`) and prints one block per non-primary worktree:
 | `contained=ancestor` | branch is an ancestor of `origin/main` — fully merged |
 | `contained=merge-is-noop` | merging the branch into main would change nothing — work is in main (covers squash merges) |
 | `contained=no (touched=T still-differ=D)` | `D` of the `T` files the branch touched still differ from main |
-| `remote=` | remote branch and how many local commits were never pushed |
+| `remote=` | remote branch, unpushed commits (`local-ahead`), commits only on the remote (`remote-ahead`), and its full tip SHA for the delete lease |
+| `remote-contained=` | printed when `remote-ahead>0`: the same containment verdict for `origin/<branch>`, because the remote tip is what `--delete` destroys |
 | `pr=` | every PR for that branch head, with state, merge time and the head SHA GitHub last saw |
 | `tip-beyond-prs=N` | commits on the branch that no PR head reaches — work GitHub never saw (local-only or pushed after the PR). `unknown` when the PR head is not in the local object store |
 | `pr=unknown` | `gh` failed — the header says so too, and no verdict can rest on PR state |
@@ -41,7 +42,8 @@ Containment is the only authority on "the work is in main". A PR's state never
 overrides it: a branch can gain commits *after* its PR merged or closed, and those
 commits are unreviewed work that deleting the branch would destroy.
 
-**DONE** — needs `dirty=0`, `tmux=none`, and one of:
+**DONE** — needs `dirty=0`, `tmux=none`, no remote-only work (`remote-ahead=0`, or
+`remote-contained=ancestor`/`merge-is-noop`), and one of:
 
 1. `contained=ancestor` or `contained=merge-is-noop` — the work is in main, whatever the PR says.
 2. Every PR for the branch is `CLOSED` and unmerged, **and** `tip-beyond-prs=0`, **and**
@@ -51,7 +53,8 @@ commits are unreviewed work that deleting the branch would destroy.
 
 **KEEP** — everything else, especially: `dirty>0`, a live `tmux` session, `pr=OPEN`, `pr=unknown`,
 `pr=none` with commits not in main, `tip-beyond-prs>0` or `unknown`, unpushed commits
-(`local-ahead>0`) that are not contained.
+(`local-ahead>0`) that are not contained, `remote-ahead>0` with `remote-contained=no`
+(another clone pushed work this worktree has never seen).
 
 A `MERGED` PR with `contained=no` is **not** a DONE verdict — the branch usually grew
 commits after the squash merge. It may only be upgraded to DONE after inspecting what
@@ -75,9 +78,14 @@ go-ahead. Then, per approved worktree:
 ```bash
 git worktree remove "<dir>"                  # never --force: a refusal means unexpected state — re-check
 git branch -D "<branch>"
-git push origin --delete "<branch>"           # only when scan reported a remote branch
+# Only when the scan reported a remote branch. The lease is the tip the scan saw, so a
+# push that landed since then aborts the delete instead of destroying it.
+git push origin --force-with-lease="refs/heads/<branch>:<remote-tip-from-scan>" ":refs/heads/<branch>"
 git worktree prune
 ```
+
+A `stale info` rejection means the remote moved: re-run the scan for that branch and
+re-judge. Never fall back to a plain `--delete`.
 
 If a step fails, stop on that worktree, keep it, and note the failure in the report.
 

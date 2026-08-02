@@ -17,6 +17,17 @@ fi
 echo "origin/main = $(git rev-parse --short origin/main) $(git log -1 --format=%s origin/main)"
 MAIN_TREE="$(git rev-parse origin/main^{tree})"
 
+# ancestor | merge-is-noop (covers squash merges) | no
+contained_kind() {
+	if git merge-base --is-ancestor "$1" origin/main; then
+		echo ancestor
+	elif [ "$(git merge-tree --write-tree origin/main "$1" 2>/dev/null | head -1)" = "$MAIN_TREE" ]; then
+		echo merge-is-noop
+	else
+		echo no
+	fi
+}
+
 # Every PR in one shot: per-branch `gh pr list` calls get throttled into 30s stalls.
 PR_STATE=ok
 gh pr list --state all --limit 1000 --json headRefName,headRefOid,number,state,title,url,mergedAt \
@@ -41,21 +52,24 @@ while IFS=$'\t' read -r dir ref; do
 	read -r behind ahead < <(git rev-list --left-right --count "origin/main...$branch" | tr '\t' ' ')
 	echo "ahead=$ahead behind=$behind unmerged-patches=$(git cherry origin/main "$branch" | grep -c '^+')"
 
-	if git merge-base --is-ancestor "$branch" origin/main; then
-		echo "contained=ancestor"
-	elif tree="$(git merge-tree --write-tree origin/main "$branch" 2>/dev/null | head -1)" && [ "$tree" = "$MAIN_TREE" ]; then
-		echo "contained=merge-is-noop"
-	else
+	if [ "$(contained_kind "$branch")" = no ]; then
 		# Do the files this branch touched still differ from main?
 		git diff -z --name-only "$(git merge-base origin/main "$branch")" "$branch" >"$TMP/touched"
 		differ="$(xargs -0 git diff --name-only origin/main "$branch" -- <"$TMP/touched")"
 		echo "contained=no (touched=$(tr -cd '\0' <"$TMP/touched" | wc -c | tr -d ' ') still-differ=$(printf '%s' "$differ" | grep -c .))"
 		[ -n "$differ" ] && echo "  differs: $(echo "$differ" | head -10 | tr '\n' ' ')"
+	else
+		echo "contained=$(contained_kind "$branch")"
 	fi
 
-	git rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null &&
-		echo "remote=origin/$branch (local-ahead=$(git rev-list --count "origin/$branch..$branch"))" ||
+	if git rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null; then
+		# Another clone may have pushed commits this worktree has never seen.
+		remote_ahead="$(git rev-list --count "$branch..origin/$branch")"
+		echo "remote=origin/$branch (local-ahead=$(git rev-list --count "origin/$branch..$branch") remote-ahead=$remote_ahead tip=$(git rev-parse origin/"$branch"))"
+		[ "$remote_ahead" -gt 0 ] && echo "remote-contained=$(contained_kind "origin/$branch")"
+	else
 		echo "remote=none"
+	fi
 
 	if [ "$PR_STATE" = ok ]; then
 		awk -F'\t' -v b="$branch" '$1==b{print $3; f=1} END{if(!f) print "pr=none"}' "$TMP/prs"
