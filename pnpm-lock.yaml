@@ -290,6 +290,22 @@ importers:
         specifier: ^8.0.16
         version: 8.1.0(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
 
+  apps/runner:
+    dependencies:
+      hono:
+        specifier: 4.11.1
+        version: 4.11.1
+    devDependencies:
+      '@justfiles/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      wrangler:
+        specifier: ^4.71.0
+        version: 4.90.1
+
   apps/worker:
     dependencies:
       '@clerk/clerk-react':
