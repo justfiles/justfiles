@@ -109,8 +109,8 @@ Vercel from `vercel.app`, CodeSandbox from `csb.app`.
 So:
 
 ```text
-justapps.com              the platform: publish, browse, docs, author accounts
-<app>.<user>.justapp.run  one origin per app version channel — the app itself
+justapps.com          the platform: publish, browse, docs, author accounts
+<opaque>.justapp.run  one origin per app — the app itself
 ```
 
 Two registrable domains, wildcard DNS + wildcard TLS on the second. Subdomains of
@@ -120,6 +120,36 @@ the Spectre escalation the isolation plan left open.
 
 The pretty link (`justapps.com/user1/app1`) still exists — as a redirect to the
 real app origin, and as the app's page in the store.
+
+### Why not per-*user* origins (`user1.justapps.com/app1`)
+
+Sharing storage between one author's own apps is defensible on its own terms.
+Three things decide against it anyway, and none are about app-to-app trust:
+
+**Cookies are domain-scoped, not origin-scoped.** A page at
+`user1.justapps.com` can set a cookie for `.justapps.com`, which is then sent to
+every *other* user's subdomain and to `justapps.com` itself. Same-origin policy
+does not stop this. It is why `github.io` is both a separate domain **and** on
+the **Public Suffix List** — the PSL entry is what makes `user1.github.io` and
+`user2.github.io` distinct *sites* for cookies, `document.domain`, and storage
+partitioning.
+
+> **Submit the app-content domain to the PSL.** Applies to any scheme here, is
+> free, is the highest-leverage item in this document, and takes weeks to land —
+> so start it early.
+
+**A wildcard certificate matches exactly one label.** `*.justapp.run` covers
+`app1.justapp.run` but **not** `app1.user1.justapp.run`. Multi-level wildcards
+need Cloudflare's paid Advanced Certificate Manager, or per-user
+`*.user1.justapp.run` issuance — and Let's Encrypt's 50-certs-per-registered-
+domain-per-week ceiling would cap new authors at ~50/week. **Use flat,
+single-label hostnames.**
+
+**A human-readable hostname bakes identity into storage.** If the origin encodes
+`user1`, a rename or an app transfer changes the origin and orphans that app's
+local storage. Same lesson `APP_STORE_PLAN.md` already learned about manifest ids
+vs npm names: the origin should be a **stable opaque id**, with
+`justapps.com/user1/app1` as the pretty pointer that resolves to it.
 
 ## The options
 
@@ -141,11 +171,13 @@ immutable bundle to R2 and appends a catalog entry. `shared/appstore.ts` grows a
 
 ### B — Registry + standalone shell *(recommended)*
 
-A, plus a **static shell page** served at each app's own origin. The shell is
-byte-identical for every app; it reads the app id from its own hostname, fetches
-the immutable bundle, and stands up a browser kernel — reusing
-`src/apps/host.ts`, `gui-channel.ts`, and `sandbox.worker.ts` **verbatim**. One
+A, plus a **static shell** served at each app's own origin: it reads the app id
+from its own hostname, fetches the immutable bundle, and stands up a browser
+kernel over the same `guiHost`/`guiClient` protocol frieren already speaks. One
 window, no desktop chrome, no dock, no agent.
+
+The topology is **inverted** from frieren's — see
+[Where the boundary goes](#where-the-boundary-goes).
 
 The runtime split by sign-in state is exactly the table in
 [The reframe](#the-reframe):
@@ -158,13 +190,6 @@ The runtime split by sign-in state is exactly the table in
   `mykodama.app/fs`, and the `_caps` socket for `ai`/`email`/`calendar`. Same
   volume, same DO, same everything.
 
-The shell must keep the guest in its sandboxed iframe even though it is already
-on a distinct origin — because *the shell* holds the Clerk token and the volume,
-and the guest must not. Shell = the trusted half (kernel, token, sync); guest =
-the same opaque-origin iframe as today. Nothing about the guest's contract
-changes, which is what "integrates with frieren perfectly" concretely means:
-**one runtime, two shells.**
-
 Cost: a real second origin (DNS/TLS/wildcard), CORS + satellite auth on the
 Kodama worker, a capability-consent surface that isn't the install sheet, and
 the liability posture flip. No new server runtime, no new database, no per-app
@@ -173,6 +198,13 @@ compute.
 ### C — Full hosted runtime (the brief as written)
 
 Reducer in a Cloudflare Worker per app, volume provided by justapps.
+
+**The distinguishing feature is the second durable store, not the reducer's
+location.** The reducer position follows from it: if justapps holds authoritative
+data, the reducer must sit next to it. "Reducer on the server, data still in the
+user's Kodama DO" is not this option — that is the DO, and it already exists. So
+the consolidation problem in the brief's question 2 is *created by* C and
+evaporates without it.
 
 Concretely worse for the app model this repo has:
 
@@ -209,6 +241,86 @@ someone. No repo, no npm account, no build step, no CLI, no local toolchain.
 
 Nobody else has that. It is a few hundred lines on top of B — `devkit.publish`
 that POSTs the packed bundle to the registry — and it is the demo.
+
+## Where the boundary goes
+
+Standalone, the whole page is one app. Nothing else is on it. So the obvious
+question is whether the sandboxed iframe is still earning its keep, or is just
+infra reuse — and "reuse" alone would not be a good enough reason.
+
+**It earns its keep for exactly one reason: the shell holds the Kodama
+credential and a replica of the user's entire volume, and the app must not.**
+Nothing about protecting *other page content* is involved. Share a realm with
+the shell and app code can:
+
+- read the Clerk token and call `mykodama.app/fs` directly, **bypassing the
+  `/data/<app-id>` chroot** — `/notes`, `/private`, all of it;
+- open IndexedDB and read the synced replica of the whole volume, offline, same
+  result;
+- call capability implementations directly, which makes every gate advisory —
+  the kernel attaching *declared* scopes (`resolver.resolve`) only means
+  something if the app cannot reach past it;
+- plain-`fetch` anything, which makes the proxied `net` capability pointless.
+  Document-level CSP cannot fix that: the shell's own `/fs` and `_caps` calls
+  need exactly the origins the app must be denied.
+
+Same-origin also means same cookie jar, so hiding the token is insufficient —
+app code could mint a fresh one against the session. **The boundary has to be
+cross-origin.**
+
+The rule, then: **a boundary is required wherever the shell holds a credential
+the app does not own.** Anonymous + per-app origin + no `net` capability needs
+none — the origin *is* the boundary. But sign-in and `net` are both in scope, and
+two topologies that swap on sign-in is a seam nobody wants to maintain.
+
+### Invert it
+
+Frieren puts the shell on top and the app in the box, because there the shell
+**is** the desktop. Standalone that is backwards: the app is the entire product,
+and the thing worth protecting is small and headless. Putting the whole UI in a
+box to protect a token and a volume is the expensive way around.
+
+```text
+<opaque>.justapp.run    top document — author code: owns URL, routing, PWA manifest,
+                        normal <script src> loading and HTTP caching
+kernel.<...>  (hidden)  cross-origin iframe — token, volume replica, kernel, capabilities
+```
+
+Same `postMessage` protocol, with the two ends swapped: `gui-channel.ts`'s
+`guiHost`/`guiClient` pair is already exactly this shape.
+
+What inverting buys back — and these are real costs of frieren's arrangement that
+matter far more standalone than they do on the desktop:
+
+- **The app owns its URL.** Deep links, the back button, shareable view state,
+  the History API. An iframed guest cannot touch the top document's location, so
+  frieren's shape would need a routing capability just to restore what a normal
+  web app has for free. For a product whose pitch is "your app, at a link," this
+  is the decisive one.
+- **Its own PWA manifest, icon, and name** — each app independently installable.
+- **Normal asset loading.** No inlining `gui.js` + vendor React + host styles
+  through `postMessage`; ordinary HTTP caching applies.
+- No `postMessage` hop on every action and state push.
+
+### The trap if you do this
+
+Browsers partition third-party storage by top-level site (Chrome, Firefox dFPI,
+Safari ITP). A **cross-site** kernel frame therefore gets its own partitioned
+storage per embedding app — so it does *not* give one shared volume replica
+across a user's apps, and the Clerk session inside it is partitioned too.
+
+Consequences, both manageable but neither free:
+
+- Sign-in needs a **one-time-code handoff** into the frame rather than a shared
+  session cookie.
+- Each app carries **its own replica**, so those replicas want `lazyContent` —
+  otherwise opening an app hydrates the user's whole volume to read one folder.
+
+Note this is in direct tension with the PSL entry recommended above: PSL makes
+subdomains distinct sites, which is what fixes cookie bleed and is also what
+triggers partitioning. **Confirm the partitioning behaviour empirically before
+committing to the topology** — it is the one claim here that browser policy is
+still actively moving under.
 
 ## Recommendation
 
@@ -292,23 +404,58 @@ cannot authenticate the publisher. A registry can just check.
 
 ### 4. What isn't on the list
 
-**No network capability exists.** Apps run under `connect-src 'none'`. The
+**No network capability exists yet.** Apps run under `connect-src 'none'`; the
 capability set is `volume`/`ai`/`image`/`email`/`calendar`/`notify`/`settings`/`devkit`
 — there is no `fetch`. The instant the pitch is "publish your app as a web app,"
-authors will want to call their own API, and today the honest answer is "you
-can't." This is the largest missing piece and it is a real fork: either add a
-declared `net` capability with an author-declared host allowlist surfaced on the
-consent sheet (and accept that it reopens the exfiltration hole the frame CSP
-closed), or state loudly that apps are local-first-only and that is the point.
-Decide this **before** publishing a hosting product, not after.
+authors will want to call their own API. A `net` capability is planned, and the
+shape is right: the host performs the request and returns the response, so the
+app realm never fetches directly. Hosted apps should work identically.
 
-**Liability, hosting, and abuse.** `APP_STORE_PLAN.md`'s entire posture — "we are
-a search engine, not a distributor" — was chosen to avoid this, and hosting
-reverses it. You acquire: DMCA process, malware and phishing takedowns, CSAM
-reporting obligations, egress cost, and domain reputation risk. Mitigated by the
-second registrable domain, an existing denylist design, and immutability, but not
-eliminated. Worth an explicit "yes, we're becoming a distributor" rather than
-sliding into it.
+The open decision is **where the host implementation runs**, and it is
+consequential:
+
+| implemented in | reach | cost |
+| --- | --- | --- |
+| the browser shell | **CORS-bound** — only APIs that send `Access-Control-Allow-Origin` are reachable, i.e. not most third-party APIs and not an author's own backend until they configure it | none; capability looks broken to authors |
+| a justapps worker | anything | you are running an **open HTTP proxy** |
+
+For hosted apps, server-side is the only version that delivers the promise, so
+the guards come with it: an author-declared host allowlist in the manifest
+(surfaced on the consent sheet; it slots into `escalatesCapabilities`' token
+model as `net::<host>`), private/link-local ranges denied **including after
+redirects** (SSRF, cloud metadata endpoints), no cookie forwarding, no arbitrary
+`Host`/auth header injection, and a per-app rate limit and egress budget.
+
+Either way, note what is being traded: today an app **cannot phone home at all**.
+`net` makes telemetry and slow exfiltration possible within the allowlist. The
+allowlist bounds that; it does not remove it.
+
+**Liability, hosting, and abuse.** `APP_STORE_PLAN.md`'s posture — "we are a
+search engine, not a distributor" — was chosen to avoid this, and hosting
+reverses it. The platform-vendor read (Vercel and AWS are not liable for what
+customers deploy, and do not meaningfully screen) is substantially correct, with
+three qualifications:
+
+- **The safe harbours are conditional, not automatic.** DMCA §512(c) requires a
+  designated agent *registered with the US Copyright Office* (a form, ~$6,
+  renewed every 3 years), published takedown contact, and a repeat-infringer
+  termination policy. Without those there is no safe harbour. Cheap — do it
+  before launch.
+- **§230 has carve-outs and is US-only.** It does not cover federal criminal law,
+  IP claims, or FOSTA-SESTA; CSAM reporting (18 U.S.C. §2258A) is a real
+  obligation for a hosting provider. The EU DSA adds notice-and-action duties for
+  EU users, with small-enterprise exemptions covering much of it early on.
+- **The real cost is reputational, and the model here is Vercel's, not AWS's.**
+  AWS customers mostly bring their own domains, so abuse does not pollute
+  `amazonaws.com`. Here everyone lands on one wildcard, exactly like
+  `*.vercel.app` — which does get corporate-filter blocklisted and periodically
+  Safe-Browsing flagged, and which Vercel staffs an abuse team to manage. One
+  phishing campaign can flag the whole wildcard and break every legitimate app on
+  it. That is the argument for the separate registrable domain: not legal
+  liability, blast radius.
+
+Minimum viable posture: DMCA agent + `abuse@` + a takedown path + the denylist
+already designed + content on its own registrable domain. No screening.
 
 **Immutability is load-bearing for the existing installer.** `installApp()`
 verifies every file against a pinned `sha256-`. Bundles must be
@@ -361,10 +508,16 @@ If this is worth testing before committing to the domain and the shell:
    `shared/appstore.ts` (a near-copy of `communityAppStore`, minus the jsDelivr
    hop). Install it into the desktop from a link. Proves the registry half of A
    with no new origin and no new auth.
-2. **Stand up one app origin with the static shell**, anonymous-only, IDB volume,
-   reusing `host.ts` unchanged. Proves the shell is genuinely the same runtime —
-   if `host.ts` needs to fork, the whole "one runtime, two shells" claim is
-   wrong and everything above needs revisiting.
-3. Only then: satellite Clerk, CORS on `/fs`, the grant sheet, and sign-in.
+2. **Stand up one app origin, anonymous-only, IDB volume, no boundary at all** —
+   app code on the top document, kernel beside it. Legitimate at this stage (no
+   credential, no `net`, per-app origin) and it proves the bundle format, the
+   routing worker, and the offline SW without touching auth.
+3. **Add the hidden cross-origin kernel frame and move the volume behind it**,
+   still anonymous. This is the real risk gate: it settles whether the inverted
+   topology works, and it is where the **storage-partitioning behaviour must be
+   measured on Chrome, Firefox, and Safari** rather than assumed.
+4. Only then: satellite Clerk with the one-time-code handoff, CORS on `/fs`, the
+   grant sheet, and sign-in.
 
-Step 2 is the real risk gate. Everything else is plumbing.
+Step 3 is the gate. Steps 1–2 are plumbing; step 4 depends entirely on what
+step 3 measures.
