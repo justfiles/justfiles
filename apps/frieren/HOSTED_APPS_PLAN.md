@@ -107,9 +107,9 @@ does not stop this. It is why `github.io` is a separate domain **and** on the
 `user2.github.io` distinct *sites* for cookies, `document.domain`, and storage
 partitioning.
 
-> **Submit the app-content domain to the PSL.** Free, applies to every scheme
-> here, reduces blast radius when an app does get flagged, and takes weeks to
-> land — so start it early.
+> **Submit the app-content domain to the PSL** — early, because it is slow. It
+> is free and an afternoon of work, but it is **not a launch blocker**; see
+> [Getting on the PSL](#getting-on-the-psl).
 
 **A wildcard certificate matches exactly one label.** `*.justapp.run` covers
 `app1.justapp.run` but not `app1.user1.justapp.run`. Multi-level wildcards need
@@ -182,6 +182,45 @@ disambiguator. That ordering is a coin flip and is reversible before launch.
 > keyed to origins, changing the scheme orphans all of it. Opaque is the
 > conservative choice against the deceptive-hostname surface, and now is the only
 > moment it is cheap.
+
+### Getting on the PSL
+
+Free, technically trivial, and slow — and the slowness is the only part that
+affects sequencing.
+
+The work: own the domain with **registration expiring more than 2 years out**
+(under a year can trigger automatic deletion), open a PR against
+[`publicsuffix/list`](https://github.com/publicsuffix/list) adding the entry to
+the PRIVATE section, then add a DNS TXT record at `_psl.<domain>` containing that
+PR's URL (RFC 8553 validation — deliberately chicken-and-egg: PR first, then the
+record pointing at it). The rationale has to show broad user benefit, not just
+our convenience; ours is the textbook case the PRIVATE section exists for —
+mutually-untrusting parties issued subdomains under one domain. Submit the
+preview domain in the same PR. No fees.
+
+Maintenance is light but permanent: **keep the `_psl` record forever** (planned
+automation flags missing records as removal candidates), keep the domain
+registered, keep the contact reachable. Changes are another PR.
+
+The cost is calendar time. The guidelines say plainly that there are *"NO SERVICE
+LEVEL AGREEMENTS ON TIME nor any expectation of processing speed or urgency"* —
+it is volunteer-maintained and visibly backlogged. And merge is not the finish
+line: browsers **bundle a PSL snapshot per release**, so broad effect is months
+past merge, on top of an unbounded review wait.
+
+**It is not a launch blocker, and it is worth being precise about why:** the PSL
+does not affect first-party storage isolation. `localStorage` and IndexedDB are
+keyed by **origin**, always — so the per-app data separation this design rests on
+works from day one, listed or not. What listing buys is cookie scoping,
+same-site determination (`SameSite`, third-party storage partitioning keys), and
+reduced blast radius when something is flagged. The first two are **entirely
+about cookies**, and nothing here puts cookies on the content domain: the sync
+credential is a scoped bearer token, app data lives in IndexedDB via the volume,
+and the Clerk session is on the platform domain. Pre-PSL exposure is therefore
+apps deliberately abusing cookie scoping against each other — real, bounded, and
+untouched by the sync and token model.
+
+Start it now because it is slow; treat it as hardening that lands when it lands.
 
 ### The link the user lands on
 
@@ -515,7 +554,8 @@ Beyond that, roughly in order of value:
 - **PSL entry** — distinct registrable units reduce (not eliminate) the chance of
   a blanket parent-domain block. Every peer host is listed: `github.io`,
   `vercel.app`, `netlify.app`, `web.app`. They host plenty of abuse and are not
-  blanket-blocked.
+  blanket-blocked. Start the submission early — it lands on nobody's schedule
+  ([details](#getting-on-the-psl)).
 - **Per-app hostnames** — a flagged app burns its own hostname, not a shared path
   space. Labels are readable, so they are **screened at allocation** against a
   brand and confusables list; see [the hostname scheme](#the-hostname-scheme).
@@ -658,7 +698,9 @@ it is the upgrade path, not a seam.
    cheap moment to take it.
 6. **Unverified authors publish to a sacrificial preview domain**; verification
    precedes a permanent origin, so no app ever changes hostname.
-7. Submit the app-content domain to the **Public Suffix List**.
+7. Submit the app-content and preview domains to the **Public Suffix List** —
+   early, since it is slow, but **not a launch blocker**: first-party storage is
+   origin-keyed regardless, and nothing puts cookies on the content domain.
 8. The security boundary is the **token's scope**, enforced server-side; the
    in-page kernel is a programming model, not a security mechanism.
 9. **No build service.** Author's machine or browser compiles.
