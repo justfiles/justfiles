@@ -49,6 +49,71 @@ its own origin's data, so "you took the risk" is true. It stops being true the
 moment apps share an origin with the desktop's credentials — which is why apps
 never live on `mykodama.app`.
 
+### What the capability model does and does not cover
+
+It governs what an app can **reach**. It says nothing about what an app **is**.
+
+That line decides which liabilities consent actually closes:
+
+- **Harm to the user's own data** — closed. Declared capabilities, an explicit
+  install, no review, risk carried by the user. The npm / VS Code / Obsidian / pi
+  position.
+- **Harm to third parties, and hosting liability** — *not* closed, and consent is
+  irrelevant to it, because the claim comes from a rights-holder or law
+  enforcement rather than from our user. An "app" can be a static page serving
+  pirated media and declare no capability at all.
+- **Reputation** — not closed. Safe Browsing does not care that the user
+  consented.
+
+Phishing is the clearest case: a notes app declaring only storage can render a
+pixel-perfect bank login, and the consent sheet will honestly say *this app wants
+storage*. No capability system, sandbox, or CSP prevents an app from **drawing**
+something.
+
+So `abuse@`, a registered DMCA agent, and a kill switch are load-bearing, not
+vestigial — they are the response mechanism that makes *not* gatekeeping viable.
+Fast takedown substitutes for review.
+
+Concretely, the whole apparatus:
+
+- **Content on its own registrable domain**, never beside the auth origin, and
+  **per-app hostnames** so a flag burns one app rather than a path space.
+- **`noindex` by default** — phishing needs distribution; let authors opt in
+  after verifying.
+- **Unpublish is one flip.** Bundles are immutable behind the routing worker, so
+  removal is instant and global. Serve a **410** on a killed hostname rather than
+  anything app-shaped, so a re-crawl sees remediation. Response time is what Safe
+  Browsing measures.
+- **The service-worker trap**: a registered SW keeps serving from cache to
+  returning visitors after unpublish. The kill path must serve
+  `Clear-Site-Data: "storage"` and a self-unregistering SW, or the takedown is
+  not one.
+- **DMCA §512(c) safe harbour is conditional** — a designated agent registered
+  with the US Copyright Office, a published takedown contact, and a
+  repeat-infringer policy. Without them there is no safe harbour. Cheap; do it
+  before launch.
+
+None of that is review, and none of it scales with app count.
+
+### CSP bounds exfiltration; it does not prevent it
+
+`connect-src` alone is not the network boundary. The minimum is `connect-src`,
+**`form-action`**, `img-src` and `style-src` — a bare `<form action="https://…">`
+POSTs anywhere under `connect-src` alone, and a CSS or `img` URL carries data out
+just as well.
+
+And **navigation cannot be blocked**: `location = 'https://…?d=…'`,
+`window.open`, or a link click all exfiltrate, and the proposed `navigate-to`
+directive was dropped and does not exist in browsers. A top-level page can always
+leave with data in the URL.
+
+State the guarantee accordingly: **an app's own data cannot be prevented from
+leaving; what is bounded is which data it has.** That was always the actual
+claim, and it is the one origin isolation delivers.
+
+Note also that v1's tight CSP is affordable only because there is no `net`
+capability. That advantage is spent the day `net` ships.
+
 ## The manifest field that does the work
 
 One new optional field, `AppManifest.baseUrl`. Entry fields keep their existing
