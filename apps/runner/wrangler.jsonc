@@ -11,5 +11,32 @@
 	"observability": {
 		"enabled": true
 	},
-	"upload_source_maps": true
+	"upload_source_maps": true,
+	// Zone apex the Worker is bound to; the first host label under it is the app id.
+	"vars": {
+		"ROOT_DOMAIN": "justapps.run"
+	},
+	// Custom Domains cannot be wildcards, so subdomains need a route + a proxied
+	// wildcard DNS record (`*` AAAA `100::`, proxied) on the zone.
+	"routes": [
+		{
+			"pattern": "justapps.run",
+			"custom_domain": true
+		},
+		{
+			"pattern": "*.justapps.run/*",
+			"zone_name": "justapps.run"
+		}
+	],
+	// `wrangler dev -e dev`: with no routes the local server keeps the request's
+	// Host header, so `http://app1.localhost:8787` reaches the Worker as app1.
+	// (With routes configured, wrangler rewrites every request to the zone apex.)
+	"env": {
+		"dev": {
+			"routes": [],
+			"vars": {
+				"ROOT_DOMAIN": "justapps.run"
+			}
+		}
+	}
 }

@@ -11,6 +11,7 @@ export default defineConfig({
 			'apps/frieren/src/notifications/**/*.test.ts',
 			'apps/worker/**/*.test.ts',
 			'apps/mac/**/*.test.ts',
+			'apps/runner/**/*.test.ts',
 			'packages/*/**/*.test.ts',
 			'packages/*/**/*.test.tsx'
 		],
