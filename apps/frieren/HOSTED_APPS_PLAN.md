@@ -14,7 +14,7 @@
 
 ```text
 justapps.com            the platform: accounts, publish, browse, docs, consent
-<opaque>.justapp.run    one origin per app — a normal web page, no iframe
+app--user.justapp.run   one origin per app — a normal web page, no iframe
 ```
 
 - **An app is a normal website.** Its own origin, its own document. Routing,
@@ -93,7 +93,7 @@ page, one Safe Browsing flag takes down the platform. This is why GitHub serves
 user content from `githubusercontent.com`, Vercel from `vercel.app`, CodeSandbox
 from `csb.app`.
 
-### Per-app, not per-user, and opaque
+### Per-app, not per-user
 
 Per-*user* origins (`user1.justapps.com/app1`) would let one author's apps share
 storage, which is defensible on its own terms. Three things decide against it,
@@ -117,11 +117,54 @@ Cloudflare's paid Advanced Certificate Manager or per-user issuance — and Let'
 Encrypt's 50-certs-per-registered-domain-per-week ceiling would cap new authors
 at ~50/week. **Flat, single-label hostnames.**
 
-**A human-readable hostname bakes identity into storage.** If the origin encodes
-`user1`, a rename or an app transfer changes the origin and orphans that app's
-IndexedDB. Same lesson `APP_STORE_PLAN.md` learned about manifest ids vs npm
-names: the origin is a **stable opaque id**; `justapps.com/user1/app1` is the
-pretty pointer that resolves to it.
+**The label must be immutable, whatever it says.** Origin *is* storage identity:
+change the hostname and every anonymous user's IndexedDB for that app is
+orphaned. (Signed-in users survive — their data is keyed by manifest id under
+`/data/<app-id>` and re-syncs — so the harm lands entirely on anonymous
+local-only users.) Same lesson `APP_STORE_PLAN.md` learned about manifest ids vs
+npm names: the storage-bearing name must outlive the distribution name.
+
+### The hostname scheme
+
+```text
+<app>--<user>.justapp.run     immutable origin, allocated at first publish
+justapps.com/<user>/<app>     mutable pointer, follows renames and transfers
+```
+
+**One level, readable, `--` separated, immutable, screened at allocation.** The
+two constraints above (single-label for TLS; immutable for storage) are settled.
+Readable-vs-opaque is the part that was genuinely open, and it trades UX against
+abuse surface:
+
+| | readable (`notes--user1`) | opaque (`k3f9q2mx`) |
+| --- | --- | --- |
+| the shared link | is the product | undercuts it |
+| clash | needs a separator rule | impossible by construction |
+| after a rename | stale, cosmetic | n/a |
+| deceptive branding | `secure-paypal--x.justapp.run` is possible | impossible |
+
+The abuse column is the real cost, and it feeds straight into
+[the domain-ban problem](#not-getting-the-domain-banned). It is mitigated rather
+than eliminated: **screen the label at allocation** against a brand and
+confusables list. We allocate every label and the label is immutable, so this is
+a chokepoint we fully control and only pay once. Screen the display name too.
+
+Rules, either way:
+
+- charset `[a-z0-9-]`, no leading or trailing `-`, and **`--` forbidden inside
+  either part** — without that, `a-b` + `c` collides with `a` + `b-c`;
+- DNS labels cap at 63 characters, so bound each part (≈24 each leaves headroom);
+- reserve `www`, `api`, `_rt`, and anything operational;
+- **no bare single labels** (`notes.justapp.run`) in v1 — that is a global
+  namespace and a land grab. It can become a verified or paid feature later.
+
+App-first because the app is the memorable part and the user is the
+disambiguator. That ordering is a coin flip and is reversible before launch.
+
+> **This is a one-way door.** Once apps are deployed and users hold local data
+> keyed to origins, changing the scheme orphans all of it. Opaque is the
+> conservative choice against the phishing surface, and now is the only moment it
+> is cheap.
 
 ## Where the boundary goes
 
@@ -406,8 +449,9 @@ tractable at a scale where it would not be for Vercel.
 
 Beyond that, roughly in order of value:
 
-- **Opaque per-app hostnames** — a flagged app burns its own hostname, not a
-  shared path space.
+- **Per-app hostnames** — a flagged app burns its own hostname, not a shared path
+  space. Labels are readable, so they are **screened at allocation** against a
+  brand and confusables list; see [the hostname scheme](#the-hostname-scheme).
 - **PSL entry** — distinct registrable units reduce (not eliminate) the chance of
   a blanket parent-domain block.
 - **`noindex` by default.** Phishing needs distribution. Let authors opt into
@@ -514,13 +558,50 @@ So, for an app to behave identically in both hosts, pick a surface:
 3. **Two declared classes** — a manifest flag and a store badge. The escape hatch
    for apps that cannot be portable, not the default.
 
-**Read:** (2) is the target. (1) is a respectable v1 that ships without touching
-the desktop's frame model and forecloses nothing.
+> **PARKED — decide later.** (2) looks like the target and (1) is a respectable
+> v1 that ships without touching the desktop's frame model, but nothing before
+> the standalone host exists depends on this. It is deliberately not settled;
+> revisit once one app is actually running on its own origin and we can see what
+> authors reach for. Steps 1–5 of the build order are unaffected either way.
 
 ### The one difference worth keeping
 
 Standalone has no agent; installed does. That is user-visible, and it should be —
 it is the upgrade path, not a seam.
+
+## Decision log
+
+**Settled:**
+
+1. Two registrable domains — platform and app content separate.
+2. Per-**app** origins, not per-user. Cookies are domain-scoped, so per-user
+   subdomains bleed across the whole registrable domain.
+3. **One** label, not two. A wildcard cert matches exactly one label, so
+   `app.user.justapp.run` needs paid multi-level certs or per-user issuance
+   (~50 new authors/week under Let's Encrypt).
+4. The label is **immutable** — origin is storage identity, and changing it
+   orphans anonymous users' IndexedDB. Renames move the platform pointer only.
+5. The label is **readable and `--` separated**, screened at allocation. The
+   phishing surface is the cost; screening a namespace we allocate is the
+   mitigation. **One-way door** — opaque is the conservative alternative and this
+   is the only cheap moment to take it.
+6. Submit the app-content domain to the **Public Suffix List**.
+7. The security boundary is the **token's scope**, enforced server-side; the
+   in-page kernel is a programming model, not a security mechanism.
+8. **No build service.** Author's machine or browser compiles.
+9. **Install in both hosts** — a URL is a source, not a runtime mode.
+10. The reducer stays in a **Worker** even standalone, for discipline.
+
+**Open:**
+
+1. **The app surface** — portable-only vs host-adaptive routing. **PARKED**; see
+   [the web-platform surface](#the-web-platform-surface-and-a-correction).
+   Nothing before the standalone host depends on it.
+2. **The first-sync merge rule** when both the anonymous volume and the account
+   subtree hold data. Needed before step 5.
+3. Where `net`'s host implementation runs — settled in principle (server-side),
+   unsettled in detail (proxy shape, quota, allowlist grammar).
+4. Hostname ordering: `app--user` vs `user--app`. Reversible before launch.
 
 ## Non-goals (first pass)
 
@@ -558,9 +639,9 @@ it is the upgrade path, not a seam.
    adversarial tests (a client asking for a hash outside its prefix, a push with
    paths that escape it, a token replayed against another app's subtree).
 5. **The first-sync merge decision UI**, then `net`.
-6. **The surface decision** — ship on the portable surface, then move the desktop
-   off `srcdoc` onto `iframe src` at a real origin and add the routing
-   capability. This is also the desktop's isolation upgrade, so it is worth
-   scheduling as one piece of work rather than two.
+6. **The surface decision** — parked (see the decision log). If it lands on
+   host-adaptive, moving the desktop off `srcdoc` onto `iframe src` at a real
+   origin is also the desktop's isolation upgrade, so schedule it as one piece of
+   work rather than two.
 
 Step 4 is the one that can be wrong in a way that matters.
