@@ -39,10 +39,15 @@ token minting, the consent screen, and the first-sync merge — most of the
 remaining work and all of the security-critical work. The pitch survives intact,
 and it is honest: *this app stores data in your browser*.
 
-**No gatekeeping**, per `APP_STORE_PLAN.md`'s existing posture and pi's: apps run
-with the access they declare, users install at their own risk, we do not review.
-Keep `abuse@`, a DMCA agent, and a kill switch. Drop screening, confusables
-checks, publish-time detection, and preview domains until something forces them.
+**No gate on publishing**, per `APP_STORE_PLAN.md`'s existing posture and pi's:
+apps run with the access they declare, users install at their own risk, we do not
+review. Keep `abuse@`, a DMCA agent, and a kill switch. Drop screening,
+confusables checks, publish-time detection, and preview domains until something
+forces them.
+
+That is a statement about **publishing**, not about every surface — a store
+listing can be gated later without reopening it. See
+[Prior art: Puter](#prior-art-puter).
 
 What makes that posture *fair* is origin isolation: a hostile app can only reach
 its own origin's data, so "you took the risk" is true. It stops being true the
@@ -326,6 +331,66 @@ any `net` allowlist must all be checked server-side.
 
 `email`, `calendar`, `settings` and `devkit` are never grantable to hosted apps.
 
+## Prior art: Puter
+
+[Puter](https://github.com/heyputer/puter) (AGPL, ~43k stars) is the closest
+analogue in production — a web desktop with a filesystem, a windowing shell, and
+an App Center carrying real third-party apps. Findings below are from reading the
+source, not the marketing.
+
+### Their strategy: publishing is open, *listing* is gated
+
+`src/dev-center/js/apps.js` carries three independent approval flags:
+
+```js
+app.approved_for_listing            // appears in the App Center
+app.approved_for_opening_items      // may be a file-type handler
+app.approved_for_incentive_program  // may monetize
+```
+
+Anyone can create an app, get a subdomain and share the URL, unreviewed. Review
+applies only to **listing**, to **privileged integration** (receiving other apps'
+files), and to **money** — and it is product-quality review (completeness,
+category, description), not security review.
+
+That is the same line this document draws between what consent closes and what it
+does not, applied to surfaces: a direct link is the user's choice, but a listing
+is *our recommendation*, monetization is *our handling of money*, and file
+handling is *reaching past your own data*. **Gate what the platform asserts, not
+what it hosts.**
+
+Directly applicable: an app declaring a path scope (`['/notes']`) rather than its
+private chroot is the analogue of `approved_for_opening_items` — a listing-time
+question, not a publish-time one.
+
+### Independent convergence on the boundary model
+
+- **Per-app subdomain on a separate hosting domain** — `launch_app.js:427`,
+  `https://${name}.${app_domain}/index.html`, with `private_app_hosting_domain`
+  and `static_hosting_domain` (`puter.site`) configured apart from the GUI domain.
+- **A per-app scoped token, not the session token** —
+  `fetchUserAppTokenForLaunch({ appUid })`, which **fails closed**: *"App launch
+  blocked because app token could not be acquired."*
+- **A per-app data directory** — `/<username>/AppData/<app-uid>/`.
+- **A first-party escape hatch** — `godmode` apps receive `window.auth_token`,
+  the super token; our `systemAllowlist`.
+- **Real-origin iframe keeping `allow-same-origin`**, with `UIWindow.js:443`
+  giving the same reason recorded here for why that is safe cross-origin but not
+  under `srcdoc`.
+
+Reached separately, by a project with third-party apps actually in production.
+
+### Where we are deliberately stricter
+
+- **They pass the token in the URL query string.** `frieren` rejected that
+  explicitly — `worker/index.ts` moved the caps socket to a `bearer.<token>`
+  subprotocol because query-string credentials leak into proxy and access logs
+  and browser history. Scoping limits the blast radius; it does not stop the leak.
+- **Permissive sandbox flags** — `allow-popups-to-escape-sandbox` and
+  `allow-top-navigation-by-user-activation`.
+- **Not on the PSL.** Checked against the list directly: no entry contains
+  "puter". Corroborates treating the submission as start-early, block-nothing.
+
 ## Build order
 
 1. **Registry** — immutable bundles in R2, `hostedAppStore()` in
@@ -358,7 +423,8 @@ any `net` allowlist must all be checked server-side.
 5. Hosted apps keep only `manifest.json` + `app.js` in the volume.
 6. The runtime is a third `GetSandbox`, pinned into each artifact, with the
    reducer in a Worker.
-7. v1 is anonymous-only; no gatekeeping, per the pi posture.
+7. v1 is anonymous-only; **no gate on publishing**, per the pi posture — a store
+   listing is a separate surface that may be gated later.
 8. No build service.
 9. Foreign-hosted GUIs require an integrity hash.
 10. Online later: the boundary is a server-enforced token scope.
