@@ -51,33 +51,57 @@ never live on `mykodama.app`.
 
 ## The manifest field that does the work
 
-`AppManifest.gui` becomes polymorphic:
+One new optional field, `AppManifest.baseUrl`. Entry fields keep their existing
+meaning — always relative bundle paths, never anything else:
 
-| value | meaning |
-| --- | --- |
-| `"gui.js"` | a file in the bundle — synced in the volume, loaded from it. Today's behaviour, unchanged. |
-| `"https://notes.justapps.run/v/1.2.0/"` | a **base URL**. The GUI is not in the volume at all. |
+```jsonc
+{
+	"app": "app.js",     // always a relative bundle path
+	"gui": "gui.js",     // always a relative bundle path
+	"icon": "icon.png",  // always a relative bundle path
+	"baseUrl": "https://notes.justapps.run/v/1.2.0/"   // optional
+}
+```
 
-One field, one branch, no second app class. App-code drafts and zip installs keep
-emitting a bundle file and are untouched — which they need to be anyway.
+`baseUrl` says where the **browser half** resolves from:
 
-Call sites that must learn the difference:
+- **absent** → everything resolves from `/applications/<id>/` in the volume.
+  Today's behaviour, unchanged. App-code drafts and zip installs are untouched,
+  which they need to be anyway.
+- **present** → `gui`, `icon` and `include` resolve against the base; only
+  `manifest.json` + `app.js` live in the volume.
 
-- `kernel.app.ts:64` — `safeBundlePath(manifest.gui)` **silently mangles** a URL
-  (`https://a/b` → `https:/a/b`); skip for URLs.
-- `kernel.app.ts:80` — the `missing gui entry` existence check; skip for URLs.
-- `appstore.fs.ts:99` — enumerates manifest paths as bundle files; guard.
-- `hydrate.ts:11` — prefetches via `app.read()`; guard.
+This is `<base href>` / `publicPath` / `homepage`: **entries are relative,
+resolution is separate.** The one rule that needs writing down is that the base
+does not apply uniformly — **`app` is always volume-resident**, because the DO
+needs it to run the app headlessly for the agent.
+
+Not `host` (that word already means the runtime — `kernelHost`, "host
+capabilities" — throughout `docs/app.md`), and not `origin` (this document uses
+it in the security sense, and the value carries a version path, so it is not one).
+
+Call sites that must learn about it:
+
+- `kernel.app.ts:80` — the `missing gui entry` existence check; skip when
+  `baseUrl` is set.
+- `appstore.fs.ts:99` — enumerates manifest paths as bundle files; same.
+- `hydrate.ts:11` — prefetches via `app.read()`; same.
 - `host.ts:209` — the stage boot; the real change.
 
-A **base** URL, not a file URL, because it is forward-compatible across two
+Note `kernel.app.ts:64` is deliberately **not** on that list. An earlier draft
+made `gui` itself polymorphic, which meant `safeBundlePath(manifest.gui)` would
+silently mangle a URL (`https://a/b` → `https:/a/b`) — a quiet corruption rather
+than a thrown error. Keeping `gui` a relative path removes that failure mode
+instead of guarding against it.
+
+A **base**, not a file URL, because it is forward-compatible across two
 implementations:
 
-1. **URL as bytes** *(v1)* — frieren fetches `<base>gui.js`, hash-verifies, and
-   injects it into the existing srcdoc frame. One runtime in the desktop, no
+1. **URL as bytes** *(v1)* — frieren fetches `<baseUrl>gui.js`, hash-verifies,
+   and injects it into the existing srcdoc frame. One runtime in the desktop, no
    injection model. Standalone gets a real origin; embedded does not, so
    routing/SW work standalone only.
-2. **URL as page** *(later)* — frieren frames `<base>` cross-origin; that page
+2. **URL as page** *(later)* — frieren frames `<baseUrl>` cross-origin; that page
    runs its own kernel and frieren injects `fs` + `capabilities`. Real origin in
    both contexts.
 
@@ -143,11 +167,13 @@ first-class for the agent, and `gui.js` — the big one, against metered DO stor
 
 Two consequences:
 
-- The installed manifest must not declare a bundle-relative `gui`, or install
-  throws.
+- Install's `missing gui entry` check must honour `baseUrl`, or a hosted bundle
+  carrying no `gui.js` throws.
 - `reconcile`'s `filesPresentAndMatch` walks the catalog's `files[]`, so a
   catalog listing `gui.js` would decide the app is broken and reinstall it every
-  checkpoint. Hosted catalog entries list only volume-resident files.
+  checkpoint. Hosted catalog entries list only volume-resident files; the rest
+  resolve against `baseUrl`, which is also where their integrity hashes come
+  from for a self-hosted GUI — no new field.
 
 This does **not** generalize to built-ins. The browser genuinely needs their
 bytes, so a client-side `ignore` will not do, and `synced.ts` states the server
@@ -189,7 +215,7 @@ entirely about cookies, and nothing here puts cookies on the content domain.
 
 ## Self-hosted GUIs
 
-A `gui` URL need not be ours. Two things get conflated and should not be:
+A `baseUrl` need not be ours. Two things get conflated and should not be:
 
 **Author's domain, our infrastructure** — `myawesomeapp.com` CNAMEs to us. We
 still serve the bytes and control immutability. Safe, ordinary, worth having.
@@ -242,8 +268,8 @@ any `net` allowlist must all be checked server-side.
    Also a straight upgrade over `APP_STORE_PLAN.md` Step 3: a registry that
    authenticates the publisher *assigns* the id↔slug binding instead of inferring
    it from a crawl.
-2. **Polymorphic `gui`** — the five call sites above; frieren fetches and
-   hash-verifies a URL GUI into the existing srcdoc frame.
+2. **`manifest.baseUrl`** — the four call sites above; frieren fetches and
+   hash-verifies `<baseUrl>gui.js` into the existing srcdoc frame.
 3. **One app origin, anonymous** — routing worker, static shell, own IDB volume,
    offline SW, and the third host adapter with its `Worker`-backed `GetSandbox`.
 4. **Publish from the Code app** — `devkit.publish` POSTs the packed bundle.
@@ -262,8 +288,8 @@ any `net` allowlist must all be checked server-side.
    a store page that never launches an app.
 2. Per-app origins, one label, immutable, FCFS slug with an id fallback.
 3. PSL submitted early, gating nothing.
-4. `manifest.gui` is a bundle path **or** a base URL; URL-as-bytes first,
-   URL-as-page later, same manifest.
+4. `manifest.baseUrl` resolves the browser half; entry fields stay relative
+   paths. URL-as-bytes first, URL-as-page later, same manifest.
 5. Hosted apps keep only `manifest.json` + `app.js` in the volume.
 6. The runtime is a third `GetSandbox`, pinned into each artifact, with the
    reducer in a Worker.
