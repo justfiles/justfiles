@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.5.0...fs-v0.5.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* bound the recursive-watch fan-out that blanked windows during bulk fs work ([#362](https://github.com/xiaoxinghu/justfiles/issues/362)) ([7d96177](https://github.com/xiaoxinghu/justfiles/commit/7d961774fb8bda908dc835c398b3837755d38f7e))
+* **fs:** wait for recursive watch delivery ([#369](https://github.com/xiaoxinghu/justfiles/issues/369)) ([ce109d3](https://github.com/xiaoxinghu/justfiles/commit/ce109d3a423539b4d84418582058eced78763eaf))
+
 ## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.4.0...fs-v0.5.0) (2026-07-31)
 
 

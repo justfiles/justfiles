@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.11.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.10.0...frieren-v0.11.0) (2026-08-03)
+
+
+### Features
+
+* **settings:** an Appearance pane that sets the desktop wallpaper ([#363](https://github.com/xiaoxinghu/justfiles/issues/363)) ([6a8dd3a](https://github.com/xiaoxinghu/justfiles/commit/6a8dd3a3157252dc4d62a2b3cd100596544bd4a3))
+
+
+### Bug Fixes
+
+* bound the recursive-watch fan-out that blanked windows during bulk fs work ([#362](https://github.com/xiaoxinghu/justfiles/issues/362)) ([7d96177](https://github.com/xiaoxinghu/justfiles/commit/7d961774fb8bda908dc835c398b3837755d38f7e))
+* **frieren:** keep app-store auto-update honest on a long-lived tab ([#356](https://github.com/xiaoxinghu/justfiles/issues/356)) ([870a136](https://github.com/xiaoxinghu/justfiles/commit/870a13660890f42741ca8fcfccfa89a4fc9d2e36))
+* **frieren:** the menubar strip takes its colors from the theme ([#359](https://github.com/xiaoxinghu/justfiles/issues/359)) ([7249a34](https://github.com/xiaoxinghu/justfiles/commit/7249a347d48a905d0160220f99bee336d7f4f61f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.5.1
+
 ## [0.10.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.9.0...frieren-v0.10.0) (2026-07-31)
 
 

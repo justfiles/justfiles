@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.2.0...draw-v0.3.0) (2026-08-03)
+
+
+### Features
+
+* **app-draw:** present frames as slides ([#351](https://github.com/xiaoxinghu/justfiles/issues/351)) ([b3f6c3a](https://github.com/xiaoxinghu/justfiles/commit/b3f6c3a3a90fd9ce827c4dd170aaa3832b383d26))
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.1.2...draw-v0.2.0) (2026-07-26)
 
 
