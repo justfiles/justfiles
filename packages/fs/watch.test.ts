@@ -260,18 +260,18 @@ describe('volume.watch recursive', () => {
 		await vol.watch('/applications', () => fired++, { recursive: true })
 
 		await vol.mkdir('/applications')
-		await flush()
+		await settle()
 		// The root's own creation counts: it IS the watched path.
 		expect(fired).toBe(1)
 
 		await vol.writeFile('/applications/app.js', enc.encode('x'))
-		await flush()
+		await settle()
 		expect(fired).toBe(2)
 
 		// …and a sibling subtree's churn (an import writing a thousand notes) stays out.
 		await vol.mkdir('/notes', { recursive: true })
 		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
-		await flush()
+		await settle()
 		expect(fired).toBe(2)
 	})
 
