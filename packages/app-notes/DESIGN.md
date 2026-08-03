@@ -658,7 +658,10 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   match; a **Create “…” row** sits after the matches whenever anything is typed, so search and create stay
   one gesture (the nvAlt move) — offered even when something matches, because `Kyoto trip` matching is
   exactly why `Kyoto` would otherwise be uncreatable, and reachable with ArrowDown so it costs no second
-  shortcut. A **Scratch row** is pinned above the matches in both surfaces (§6). Esc hops editor → field and back. ☰ docks the tree as a left pane —
+  shortcut. A **Scratch row** is pinned above the matches in both surfaces (§6). The dropdown scrolls, so
+  arrowing keeps the highlight in view (`scrollIntoView({ block: 'nearest' })` on whichever row is
+  selected) — the highlight is the only thing that says where Return will go, so it is never off screen.
+  Esc hops editor → field and back. ☰ docks the tree as a left pane —
   and the bar folds into it: ☰ + search become the pane's header, so the editor side is
   pure content. The preference is GUI-local (localStorage where the host allows it; frieren's sandboxed
   iframe has no `allow-same-origin`, so there it degrades to per-session). The listing is re-fetched on

@@ -330,6 +330,14 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const dirRef = useRef('/')
 	const editorRef = useRef<HTMLTextAreaElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
+	// Hung on whichever row the keyboard is on, and on no other: the highlight is the only thing
+	// that says where Return will go, so arrowing past the bottom of the dropdown has to bring
+	// the list with it. React hands the element to this the moment the selection lands on a row
+	// (and hands the row it left a `null`), which is exactly when the scroll is owed — `nearest`
+	// then scrolls only if the row is actually out of sight, so a visible selection never jumps.
+	const activeRowRef = useCallback((el: HTMLElement | null) => {
+		el?.scrollIntoView({ block: 'nearest' })
+	}, [])
 	// The input that NAMES things — the note's name field, or the scratch's save prompt. Only
 	// ever one of them is mounted, which is what lets ⌘S say "put the user where the name is
 	// asked for" without knowing which surface is up.
@@ -1425,6 +1433,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		<button
 			type="button"
 			className="ds-menu-item notes-item"
+			ref={searchFocused && creating ? activeRowRef : undefined}
 			data-active={searchFocused && creating}
 			onMouseEnter={() => setActive(filtered.length)}
 			onClick={() => void createNote(creatable, createDir())}
@@ -1475,6 +1484,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					type="button"
 					key={note.path}
 					className="ds-menu-item notes-item"
+					ref={searchFocused && i === selected ? activeRowRef : undefined}
 					data-active={searchFocused && i === selected}
 					data-open={note.path === openPath || undefined}
 					onMouseEnter={() => setActive(i)}
