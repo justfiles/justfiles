@@ -25,6 +25,16 @@ import { joinPath, matchNotes, parentDir } from './notes.ts'
 const toTree = (path: string, isDir: boolean) => `${path.slice(1)}${isDir ? '/' : ''}`
 const fromTree = (path: string) => `/${path.replace(/\/+$/, '')}`
 
+// Every directory above a tree path, shallowest first: `a/b/c.md` ->
+// [`a/`, `a/b/`]. Search resets use these to keep nested matches visible.
+function ancestorDirs(paths: string[]): string[] {
+	const dirs = new Set<string>()
+	for (const path of paths)
+		for (let cut = path.indexOf('/'); cut !== -1; cut = path.indexOf('/', cut + 1))
+			dirs.add(path.slice(0, cut + 1))
+	return [...dirs]
+}
+
 export type NotesTreeProps = {
 	entries: Entry[]
 	openPath: string | null
@@ -72,7 +82,10 @@ export function NotesTree(props: NotesTreeProps) {
 		// nothing on disk. So put the model back to the last listing we fed it; if a
 		// newer one is on its way (a deduped name), the reconcile effect takes it from
 		// there.
-		if (!landed) model.resetPaths(fed.current.paths)
+		if (!landed)
+			model.resetPaths(fed.current.paths, {
+				initialExpandedPaths: fed.current.query ? ancestorDirs(fed.current.paths) : undefined
+			})
 	}
 
 	// Filtering is OUR matcher (the same one the dropdown ranks with), applied to
@@ -109,7 +122,9 @@ export function NotesTree(props: NotesTreeProps) {
 
 	const { model } = useFileTree({
 		paths,
-		initialExpansion: 'open',
+		// Match Files: start with every folder collapsed, then preserve whatever the
+		// user opens through the incremental reconciliation below.
+		initialExpansion: 'closed',
 		itemHeight: 24,
 		density: 0.9,
 		composition: { contextMenu: { enabled: true, triggerMode: 'both' } },
@@ -134,7 +149,7 @@ export function NotesTree(props: NotesTreeProps) {
 
 	// The model was built with the initial `paths`; every later change is applied
 	// INCREMENTALLY. `resetPaths` is a whole-tree rebuild that re-applies
-	// `initialExpansion: 'open'`, so it snaps every folder the user closed back open.
+	// `initialExpansion: 'closed'`, so it snaps every folder back closed.
 	// A filtered view is the exception both ways: its matches have to be visible
 	// without hunting for folds, so entering or leaving a search does reset.
 	//
@@ -144,7 +159,8 @@ export function NotesTree(props: NotesTreeProps) {
 	useEffect(() => {
 		const prev = fed.current
 		fed.current = { paths, query }
-		if (query || prev.query) model.resetPaths(paths)
+		if (query || prev.query)
+			model.resetPaths(paths, { initialExpandedPaths: query ? ancestorDirs(paths) : undefined })
 		else applyPathDiff(model, prev.paths, paths)
 	}, [model, paths, query])
 
