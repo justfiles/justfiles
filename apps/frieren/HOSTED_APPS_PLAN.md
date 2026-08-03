@@ -23,8 +23,12 @@ justapps.com            the platform: accounts, publish, browse, docs, consent
 - **Its data is its own.** A `@justfiles/fs` volume over IndexedDB on that
   origin. Not the user's desktop volume. Anonymous visitors get this and need no
   account.
-- **The reducer runs in the browser**, as a plain Worker. It is the app's own
-  code over the app's own data; there is nothing to isolate it from.
+- **The kernel still runs — in the page.** Dropping the iframe removes a *trust*
+  boundary, not the runtime: the dispatch queue, state store, command runtime,
+  subscription reconciler and procedure runner are all still needed. They are
+  `packages/app` unchanged, behind a third host adapter. See
+  [The runtime is a host adapter](#the-runtime-is-a-host-adapter).
+- **The reducer still runs in a Worker** — for discipline, not security.
 - **Sign-in is opt-in and syncs one subtree.** The user may connect the app to
   their Kodama account, at which point that app's volume syncs into
   `/data/<app-id>` of their real volume — and nothing else.
@@ -190,6 +194,134 @@ Consent lives on `justapps.com`, shows exact scopes, sets `frame-ancestors
 'none'`, and never offers a broad scope. Otherwise an app renders its own
 convincing "Sync to your Kodama account" button and drives a real flow requesting
 more than the user thinks.
+
+## The runtime is a host adapter
+
+Removing the iframe removes a trust boundary, not the runtime. The reducer still
+has to run, state still has to persist and carry its `seq`, commands and
+subscriptions still have to be dispatched and reconciled. All of that is the
+kernel, and it is still needed.
+
+But it is not *new*. The kernel is already parameterized by `sandbox:
+GetSandbox`, and the standalone case is a `GetSandbox` that does not isolate:
+
+```ts
+const inlineSandbox: GetSandbox = async ({ code }) => {
+	const mod = await import(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })))
+	return {
+		run: (msg, ctx) => mod.app.dispatch(msg, ctx),
+		initialState: () => mod.app.initialState,
+		actions: () => mod.app.actions ?? {},
+		capabilities: () => mod.app.capabilities ?? {},
+		subscriptions: (s) => mod.app.subscriptions?.(s) ?? [],
+		runProcedure: (n, p, h) => mod.app.runProcedure(n, p, h)
+	}
+}
+```
+
+Everything else — the per-app dispatch queue, the state store, capability
+resolution, the command runtime, the subscription reconciler, the procedure
+runner — is `packages/app` unchanged. The standalone host is
+
+```ts
+kernel({ fs: volume(idbStorage(dbName)), sandbox, capabilities: standaloneCaps })
+```
+
+plus a boot that mounts `gui.js` against a client: on the order of 150–200 lines
+of genuinely new code. (`src/apps/host.ts` is 316 lines, but most of it is stage
+lifecycle, iframe management and minimize/restore that one-app-one-window does
+not have.)
+
+**Frame it as a third host adapter, not as a runtime.** A "runtime.js for hosted
+apps" drifts from the desktop kernel and becomes a second implementation of the
+same semantics. A third `GetSandbox` cannot.
+
+### Pin the runtime into the artifact; do not serve it
+
+Tempting shape: a `<script src="https://justapps.com/runtime.js">` every app
+loads. Don't:
+
+- it makes every deployed app **permanently dependent on live platform infra** —
+  break it and every app breaks; take it down and every app is down. That is the
+  opposite of immutable and edge-cacheable.
+- **version skew**: an app built against v1 gets served v2.
+- it is a supply-chain position — the ability to silently change the behaviour of
+  every deployed app. Authors should not have to trust that, and we should not
+  want it.
+
+Emit it from the same build that emits `app.js`/`gui.js`, either inlined into the
+boot module or as `/_rt/<hash>.js` on **the app's own origin**. Immutable with
+the rest, offline for free, no skew.
+
+There is no shared-cache argument against this: browsers partition the HTTP cache
+by top-level site, so a runtime served from one common origin is re-fetched per
+app anyway. The sharing that would justify the coupling does not exist.
+
+### Keep the reducer in a Worker — for discipline, not security
+
+Even with nothing to isolate, run the reducer in a plain `Worker`.
+`sandboxWorkerSource(appUrl, 'web')` is already exactly this case (static import,
+`self.postMessage`) and pairs with the existing `sandboxClient` — it is
+`browserSandbox()` minus the iframe, so it costs almost nothing.
+
+It buys three things:
+
+1. **It keeps `app.ts` honest.** In-page, the reducer would have `document` and
+   `window`. Authors will reach for them; the app will work standalone and then
+   break in the desktop and on Mac, where the reducer is genuinely headless. That
+   fails silently at authoring time and loudly much later.
+2. **State crosses as structured clone**, so the GUI cannot reach in and mutate
+   reducer state — the invariant the model rests on, preserved structurally
+   rather than by convention.
+3. Reduces stay off the main thread.
+
+### Advisory vs real
+
+Running the kernel in the page forces one rule to be explicit:
+
+> **Anything the client kernel enforces is advisory. Anything the server enforces
+> is real.** The kernel is a programming model, not a security mechanism.
+
+Mostly harmless — an app bypassing its own chroot to reach its own IndexedDB is
+not an attack. It bites on **capabilities with real-world cost**: with `ai`
+granted, the app can skip the kernel and call the proxy with the token directly.
+So metering, rate limits, and the `net` allowlist must all be enforced
+server-side. The manifest declaration drives consent and what goes into the
+token; the token drives enforcement. Any of that logic living in the in-page
+kernel is decorative.
+
+### Multi-tab is the hazard this introduces
+
+Two tabs of the same app share one origin and one IndexedDB but get two kernels,
+each with its own in-memory state cache, both committing `/state/<id>.json`.
+That is a lost update — the exact hazard the per-app dispatch queue prevents
+*within* one kernel. The desktop does not have it in this form.
+
+The fix already exists, built for another reason: `kernel.reload(appId)` is there
+precisely for "a host whose volume is ALSO written outside the kernel" (how the
+desktop picks up the agent's server-side writes). Pair it with
+`volume.watch('/state/<id>.json')`, which `host.ts` already does, and a second
+tab converges on a foreign write with no new machinery.
+
+For strict correctness, a Web Lock around the commit, or a `SharedWorker` hosting
+one kernel for all tabs — the clean version, where the GUI reaches it over a
+`MessagePort`, which is the transport that already exists. Ship dedicated Worker
++ watch/reload first; treat SharedWorker as the upgrade if multi-tab proves to
+matter.
+
+### Two build-path details that surface late
+
+- **React is externalized today** (`reactExternals`) because the desktop supplies
+  it by importmap. Standalone there is no host React, so the boot HTML must ship
+  an importmap over same-origin vendor files — the `/vendor/*.js` frieren already
+  serves. Small, but a real divergence between the two build targets.
+- **Is the bundle installed into the volume, or just served?** Installing reuses
+  `packages/app/appstore.ts` wholesale (including `reconcile` for updates);
+  serving directly is cleaner and lets the SW own updates, but then
+  `kernel.app(id)` needs a bundle backed by `fetch` rather than
+  `/applications/<id>/`. Serving is the better fit, since the SW is already the
+  update mechanism — but this decides whether `appstore.ts` participates at all,
+  so settle it before writing the boot.
 
 ## No build service
 
@@ -363,9 +495,11 @@ path in the desktop.
    that authenticates the publisher at publish time *assigns* the id↔namespace
    binding instead of inferring it from a crawl.
 2. **One app origin, anonymous only.** Routing worker, static shell, own IDB
-   volume, plain-Worker reducer, offline SW. Proves the bundle format and the
-   delivery path with no auth and no boundary — legitimately, since there is no
-   credential yet.
+   volume, offline SW — and the third host adapter: `kernel()` over the IDB
+   volume with a `Worker`-backed non-isolating `GetSandbox`, plus the boot that
+   mounts `gui.js`. Proves the bundle format, the delivery path, and that the
+   runtime really is an adapter rather than a second kernel. No auth and no
+   boundary yet, legitimately — there is no credential to protect.
 3. **Publish from the Code app.** `devkit.publish` POSTs the packed bundle. This
    is the demo, and it needs nothing from step 4.
 4. **The scoped sync endpoint.** The real risk gate: prefix-filtered path
