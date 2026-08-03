@@ -128,7 +128,8 @@ npm names: the storage-bearing name must outlive the distribution name.
 
 ```text
 <app>--<user>.justapp.run     immutable origin, allocated at first publish
-justapps.com/<user>/<app>     mutable pointer, follows renames and transfers
+justapp.run/<user>/<app>      convenience redirect (302) — content domain, NOT the platform one
+justapps.com/<user>/<app>     store page: describes the app, links to it, never launches it
 ```
 
 **One level, readable, `--` separated, immutable, screened at allocation.** The
@@ -138,16 +139,32 @@ abuse surface:
 
 | | readable (`notes--user1`) | opaque (`k3f9q2mx`) |
 | --- | --- | --- |
-| the shared link | is the product | undercuts it |
+| the shared link | is the product | undercuts it; the redirect becomes canonical |
 | clash | needs a separator rule | impossible by construction |
 | after a rename | stale, cosmetic | n/a |
-| deceptive branding | `secure-paypal--x.justapp.run` is possible | impossible |
+| deceptive hostname | `secure-paypal--x.justapp.run` is possible | impossible |
+| redirector in the critical path | optional | **permanent** |
 
-The abuse column is the real cost, and it feeds straight into
-[the domain-ban problem](#not-getting-the-domain-banned). It is mitigated rather
-than eliminated: **screen the label at allocation** against a brand and
-confusables list. We allocate every label and the label is immutable, so this is
-a chokepoint we fully control and only pay once. Screen the display name too.
+Two things the table makes easy to over-read:
+
+**Opaque prevents brand impersonation in the hostname; it does not prevent
+phishing.** A convincing login page at `k3f9q2mx.justapp.run` still works on
+anyone who arrived from an email — the lure moves into the link text and the page
+body. What readable labels add is specifically the deceptive hostname, which is
+a real distinct harm (abuse reports quote hostnames, and brand holders complain
+about them).
+
+**Opaque adds a risk of its own.** An opaque hostname cannot be shared by hand,
+so the pretty pointer becomes the link everyone actually passes around — which
+puts a redirector permanently in the critical path. Readable labels let the app
+origin *be* the shared link with no redirector at all. The comparison is
+therefore less lopsided than it looks: opaque removes deceptive-hostname risk and
+adds redirector risk; readable does the reverse.
+
+The readable cost is mitigated rather than eliminated: **screen the label at
+allocation** against a brand and confusables list. We allocate every label and
+the label is immutable, so this is a chokepoint we fully control and pay once.
+Screen the display name too.
 
 Rules, either way:
 
@@ -163,8 +180,39 @@ disambiguator. That ordering is a coin flip and is reversible before launch.
 
 > **This is a one-way door.** Once apps are deployed and users hold local data
 > keyed to origins, changing the scheme orphans all of it. Opaque is the
-> conservative choice against the phishing surface, and now is the only moment it
-> is cheap.
+> conservative choice against the deceptive-hostname surface, and now is the only
+> moment it is cheap.
+
+### The link the user lands on
+
+The pretty pointer is a **302, and the browser must end up showing the app
+origin.** That address bar is load-bearing, not cosmetic: per-app permission
+prompts and scoping, per-app PWA install, per-app storage the user can inspect
+and clear, and — the important one — a flagged app burning *its own hostname*
+rather than a shared path space.
+
+The two alternatives both destroy the design:
+
+- **Reverse-proxy / rewrite** (serve app content under `justapp.run/<user>/<app>`
+  and keep the path URL in the bar) puts the app back on one shared origin,
+  sharing storage and cookies with every other app. That is exactly the
+  path-based hosting rejected above. Never proxy; always redirect.
+- **Full-page iframe wrapper** (pretty URL in the bar, app in a frame) keeps the
+  origin split but forfeits the app owning its URL, deep links, and PWA install —
+  and makes phishing *worse*, since the bar shows our clean brand while hostile
+  content renders inside it.
+
+**The redirect must live on the content domain, never the platform one.**
+Redirectors inherit the reputation of what they redirect to — it is why URL
+shorteners get blocklisted, and Safe Browsing treats the chain as part of the
+URL. A pretty pointer at `justapps.com/<user>/<app>` would make every shared app
+link a platform-domain link, so a phishing app puts the auth domain into the
+abuse report despite never serving a byte of that content. That is the precise
+coupling [two domains](#two-domains-not-one) exists to prevent.
+
+`justapps.com/<user>/<app>` therefore stays a **store page** — a listing that
+describes the app and links to it. It is not a launcher, and it is not what
+"Copy link" produces.
 
 ## Where the boundary goes
 
@@ -449,19 +497,39 @@ tractable at a scale where it would not be for Vercel.
 
 Beyond that, roughly in order of value:
 
+- **Keep the platform domain out of the path entirely.** No redirect from
+  `justapps.com` to app content — redirectors inherit the reputation of their
+  targets. See [the link the user lands on](#the-link-the-user-lands-on).
+- **A sacrificial preview domain.** Most abuse is drive-by from throwaway
+  accounts, so gate the permanent namespace on verification:
+
+  ```text
+  *.justapp-preview.run   unverified authors; noindex, rate-limited, URL advertised as temporary
+  *.justapp.run           verified authors only; permanent origins
+  ```
+
+  Abuse concentrates on the domain we can afford to lose. The trick is that
+  **verification happens before first publish**, so no app ever migrates between
+  domains — migration would change the origin and orphan storage, the one thing
+  that must not happen. It also gives us deploy previews for free.
+- **PSL entry** — distinct registrable units reduce (not eliminate) the chance of
+  a blanket parent-domain block. Every peer host is listed: `github.io`,
+  `vercel.app`, `netlify.app`, `web.app`. They host plenty of abuse and are not
+  blanket-blocked.
 - **Per-app hostnames** — a flagged app burns its own hostname, not a shared path
   space. Labels are readable, so they are **screened at allocation** against a
   brand and confusables list; see [the hostname scheme](#the-hostname-scheme).
-- **PSL entry** — distinct registrable units reduce (not eliminate) the chance of
-  a blanket parent-domain block.
 - **`noindex` by default.** Phishing needs distribution. Let authors opt into
   indexing after account verification.
 - **Cheap publish-time detections with real yield**: `<input type="password">` in
   an app declaring no `net` capability is nearly always phishing; brand
   names/logos near a login form; allowlisted hosts registered within 30 days.
-- **Search Console + `abuse@` + fast takedown.** Response time is what Safe
-  Browsing measures. Bundles are immutable behind a routing worker, so unpublish
-  is instant and global.
+- **Search Console + Microsoft Webmaster Tools on the content domain**, so a flag
+  arrives as a notification rather than as user reports.
+- **`abuse@` + fast takedown.** Response time is what Safe Browsing measures.
+  Bundles are immutable behind a routing worker, so unpublish is one flip,
+  global. Serve a distinct **410** on killed hostnames rather than anything
+  app-shaped, so a re-crawl sees remediation.
 
 **The trap: service workers outlive takedown.** A phishing app that registered a
 SW keeps serving from cache to returning visitors after it is unpublished. The
@@ -573,7 +641,9 @@ it is the upgrade path, not a seam.
 
 **Settled:**
 
-1. Two registrable domains — platform and app content separate.
+1. Two registrable domains — platform and app content separate. **The pretty
+   redirect lives on the content domain**, and the browser ends up showing the
+   app origin; the platform domain hosts a store page that never launches an app.
 2. Per-**app** origins, not per-user. Cookies are domain-scoped, so per-user
    subdomains bleed across the whole registrable domain.
 3. **One** label, not two. A wildcard cert matches exactly one label, so
@@ -582,15 +652,18 @@ it is the upgrade path, not a seam.
 4. The label is **immutable** — origin is storage identity, and changing it
    orphans anonymous users' IndexedDB. Renames move the platform pointer only.
 5. The label is **readable and `--` separated**, screened at allocation. The
-   phishing surface is the cost; screening a namespace we allocate is the
-   mitigation. **One-way door** — opaque is the conservative alternative and this
-   is the only cheap moment to take it.
-6. Submit the app-content domain to the **Public Suffix List**.
-7. The security boundary is the **token's scope**, enforced server-side; the
+   deceptive-hostname surface is the cost; screening a namespace we allocate is
+   the mitigation, and readable keeps a redirector out of the critical path.
+   **One-way door** — opaque is the conservative alternative and this is the only
+   cheap moment to take it.
+6. **Unverified authors publish to a sacrificial preview domain**; verification
+   precedes a permanent origin, so no app ever changes hostname.
+7. Submit the app-content domain to the **Public Suffix List**.
+8. The security boundary is the **token's scope**, enforced server-side; the
    in-page kernel is a programming model, not a security mechanism.
-8. **No build service.** Author's machine or browser compiles.
-9. **Install in both hosts** — a URL is a source, not a runtime mode.
-10. The reducer stays in a **Worker** even standalone, for discipline.
+9. **No build service.** Author's machine or browser compiles.
+10. **Install in both hosts** — a URL is a source, not a runtime mode.
+11. The reducer stays in a **Worker** even standalone, for discipline.
 
 **Open:**
 
