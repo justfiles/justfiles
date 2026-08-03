@@ -74,7 +74,7 @@
 		"vite": "^8.0.0-beta.13",
 		"vite-plugin-pwa": "^1.3.0",
 		"workbox-window": "^7.4.0",
-		"wrangler": "^4.81.1"
+		"wrangler": "^4.118.0"
 	},
 	"overrides": {
 		"vite": "^8.0.0-beta.13"

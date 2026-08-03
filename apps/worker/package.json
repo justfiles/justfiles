@@ -72,7 +72,7 @@
 		"vite": "^6.0.0",
 		"vite-plugin-pwa": "^1.2.0",
 		"workbox-window": "^7.4.0",
-		"wrangler": "^4.71.0"
+		"wrangler": "^4.118.0"
 	},
 	"scripts": {
 		"typecheck": "tsc -b --noEmit",

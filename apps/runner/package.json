@@ -15,6 +15,6 @@
 	"devDependencies": {
 		"@justfiles/tsconfig": "workspace:*",
 		"typescript": "catalog:",
-		"wrangler": "^4.71.0"
+		"wrangler": "^4.118.0"
 	}
 }
