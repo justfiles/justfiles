@@ -36,6 +36,10 @@ justapps.com            the platform: accounts, publish, browse, docs, consent
   [Where the boundary goes](#where-the-boundary-goes).
 - **No build service.** The author's machine (or their browser) compiles; the
   platform stores and serves immutable bytes.
+- **Both delivery paths coexist, indistinguishably.** A URL is a *source*, not a
+  runtime mode: in the desktop a hosted app installs from `hostedAppStore()` and
+  is thereafter an ordinary installed app. See
+  [Both delivery paths, one runtime](#both-delivery-paths-one-runtime).
 
 The whole hosting product is therefore R2 + a routing worker + a static shell,
 all immutable and edge-cacheable. No per-app compute, no build farm, no second
@@ -315,13 +319,10 @@ matter.
   it by importmap. Standalone there is no host React, so the boot HTML must ship
   an importmap over same-origin vendor files — the `/vendor/*.js` frieren already
   serves. Small, but a real divergence between the two build targets.
-- **Is the bundle installed into the volume, or just served?** Installing reuses
-  `packages/app/appstore.ts` wholesale (including `reconcile` for updates);
-  serving directly is cleaner and lets the SW own updates, but then
-  `kernel.app(id)` needs a bundle backed by `fetch` rather than
-  `/applications/<id>/`. Serving is the better fit, since the SW is already the
-  update mechanism — but this decides whether `appstore.ts` participates at all,
-  so settle it before writing the boot.
+- **The bundle installs into the standalone volume too** — see
+  [Both delivery paths, one runtime](#both-delivery-paths-one-runtime). The
+  standalone `AppStore` reads from the app's own origin; everything downstream of
+  `installApp()` is shared with the desktop.
 
 ## No build service
 
@@ -446,31 +447,80 @@ qualifications:
 Minimum viable posture: DMCA agent, `abuse@`, a takedown path, the denylist
 already designed, and content on its own registrable domain. No screening.
 
-## The open fork: two classes of app
+## Both delivery paths, one runtime
 
-Making hosted apps normal websites means authors will use routing, History,
-service workers, `fetch`, and the browser permission surface. **An app that does
-those things cannot run inside frieren's `srcdoc` iframe.** That is in direct
-tension with "integrates with the desktop perfectly," and it is what the
-simplification costs.
+Volume-installed apps and remote apps should be indistinguishable to a user. They
+can be, because **a URL is a source, not a runtime mode.**
 
-Three ways out. Pick deliberately rather than discovering it later:
+`appstore.ts` was written for this — *"the store is host-supplied (HTTP assets,
+packaged FS bundles, future remote stores)"*. So a hosted app in the desktop is
+`hostedAppStore()`: `AppStore.read()` pointed at our R2 instead of jsDelivr.
+After install it is bit-for-bit an installed app — same volume, same offline,
+same reducer sandbox, same `reconcile` updates, same escalation guard, same agent
+tools. No second delivery path, and nothing for a user to notice.
 
-1. **Two declared classes.** A manifest flag; the store shows which surfaces an
-   app runs on. Cheap and honest, but splits the ecosystem.
-2. **The desktop embeds hosted apps by URL** — a cross-origin `<iframe src>`
-   instead of `srcdoc`, with a `MessagePort` handed in for capabilities. The same
-   bundle then works both places (routing and SW work inside an iframe) and the
-   app branches on whether it received a port. This is precisely the
-   `DevkitPreview {kind:'url'}` convergence `IFRAME_ISOLATION_PLAN.md` predicted.
-   Cost: an app loaded by URL is not offline the way a volume-installed app is,
-   so the desktop ends up with two delivery modes.
-3. Keep the app surface strictly identical and withhold the extra web platform
-   from hosted apps — which forfeits the reason for hosting them this way.
+### Therefore: install in both hosts
 
-**Read:** (2) is where this ends up; (1) is the right thing to ship first,
-because it is a manifest field and a store badge rather than a second delivery
-path in the desktop.
+This settles the install-vs-serve question, in favour of installing:
+
+- **Desktop** — install from `hostedAppStore()` into the user's volume.
+- **Standalone** — install from a one-app `AppStore` over its own origin into its
+  own IDB volume.
+
+The standalone kernel needs `/applications/<id>/` anyway (`loadSandbox` →
+`store.get(appId)` reads the volume) and it has a volume, so serving the bundle
+outside the volume buys nothing. Installing gives one code path, the same
+`installApp()` hash verification, the same `reconcile` for updates, and identical
+offline behaviour. The SW drops from load-bearing to a convenience for the shell.
+The difference between hosts collapses to *which `AppStore` was read*.
+
+### What actually differs: the host capability surface
+
+Not delivery — **what the app may assume about its host.** And the framework
+already models exactly this: `docs/app.md` carries a per-capability availability
+table across Frieren / Mac / App Code, `CAPABILITY_UNAVAILABLE` is a documented
+failure mode, and apps are already expected to degrade when a host lacks
+something (image generation exists on Frieren, not on Mac).
+
+Hosted is a fourth column: `email`/`calendar`/`settings`/`devkit` unavailable,
+`ai` grant-dependent, `volume` scoped to its own subtree. An app that declares
+`email` and is opened standalone degrades the way it already degrades on Mac. No
+new mechanism.
+
+### The web-platform surface, and a correction
+
+An earlier draft of this document claimed an iframed app cannot route. That is
+too strong, and the distinction matters: `history.pushState` works fine inside an
+ordinary cross-origin iframe, which has its own session history. It fails
+**specifically on an opaque-origin `srcdoc` document**, where every target URL
+fails the same-origin check. The problem is `srcdoc`, not iframes. What no iframe
+can do is set the *top* document's URL, so deep-linking into a sub-view from
+outside is the genuine casualty.
+
+So, for an app to behave identically in both hosts, pick a surface:
+
+1. **Portable-only.** Hosted apps get the desktop's surface — no raw History, no
+   direct `fetch`, `net` capability only. One bundle, runs everywhere, genuinely
+   no difference. Fine for most small apps (a crossword does not want routing),
+   but gives up deep links standalone.
+2. **Host-adaptive.** The app uses a routing *capability* rather than raw
+   History; standalone maps it to real URLs, the desktop maps it to in-frame
+   history. Identical app code, graceful degradation, and standalone is still a
+   real website. Price: moving the desktop off `srcdoc` onto `iframe src` at a
+   real origin — which is the `DevkitPreview {kind:'url'}` convergence
+   `IFRAME_ISOLATION_PLAN.md` already nominates as the desktop's isolation
+   upgrade, and which needs the app origin this project builds anyway. **The two
+   projects fund each other.**
+3. **Two declared classes** — a manifest flag and a store badge. The escape hatch
+   for apps that cannot be portable, not the default.
+
+**Read:** (2) is the target. (1) is a respectable v1 that ships without touching
+the desktop's frame model and forecloses nothing.
+
+### The one difference worth keeping
+
+Standalone has no agent; installed does. That is user-visible, and it should be —
+it is the upgrade path, not a seam.
 
 ## Non-goals (first pass)
 
@@ -507,7 +557,10 @@ path in the desktop.
    screen. Everything the security model rests on is in this step, so it wants
    adversarial tests (a client asking for a hash outside its prefix, a push with
    paths that escape it, a token replayed against another app's subtree).
-5. **The first-sync merge decision UI**, then `net`, then the class-1 manifest
-   flag.
+5. **The first-sync merge decision UI**, then `net`.
+6. **The surface decision** — ship on the portable surface, then move the desktop
+   off `srcdoc` onto `iframe src` at a real origin and add the routing
+   capability. This is also the desktop's isolation upgrade, so it is worth
+   scheduling as one piece of work rather than two.
 
 Step 4 is the one that can be wrong in a way that matters.
