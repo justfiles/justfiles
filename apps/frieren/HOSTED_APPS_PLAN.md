@@ -102,6 +102,10 @@ None of that is review, and none of it scales with app count.
 
 ### CSP bounds exfiltration; it does not prevent it
 
+The enforcement point is the **routing worker**, as response headers on the app
+origin — there is no iframe to carry a `<meta>` CSP, and the app's own document
+must not be able to relax its own policy.
+
 `connect-src` alone is not the network boundary. The minimum is `connect-src`,
 **`form-action`**, `img-src` and `style-src` — a bare `<form action="https://…">`
 POSTs anywhere under `connect-src` alone, and a CSS or `img` URL carries data out
@@ -152,11 +156,15 @@ it in the security sense, and the value carries a version path, so it is not one
 
 Call sites that must learn about it:
 
+- `app.ts:338` — the `AppManifest` interface itself.
 - `kernel.app.ts:80` — the `missing gui entry` existence check; skip when
   `baseUrl` is set.
 - `appstore.fs.ts:99` — enumerates manifest paths as bundle files; same.
 - `hydrate.ts:11` — prefetches via `app.read()`; same.
 - `host.ts:209` — the stage boot; the real change.
+
+`baseUrl` rides the manifest spread in `kernel.app.ts:60` untouched, so it needs
+no normalisation of its own.
 
 Note `kernel.app.ts:64` is deliberately **not** on that list. An earlier draft
 made `gui` itself polymorphic, which meant `safeBundlePath(manifest.gui)` would
@@ -171,6 +179,14 @@ implementations:
    and injects it into the existing srcdoc frame. One runtime in the desktop, no
    injection model. Standalone gets a real origin; embedded does not, so
    routing/SW work standalone only.
+
+   **Cache the verified bytes under `/.state/`.** Otherwise the desktop loses
+   offline for hosted apps — a network fetch at every stage boot, where a
+   volume-installed app needs none. `/.state` is the right home:
+   `PRIVATE_PREFIXES = ['/.state', '/private']` (`sync-replica.ts:525`) is a hard
+   floor that `syncIgnore` can only widen, so the cache is device-local by
+   construction — it never crosses the wire and never reaches metered DO storage.
+   Keyed by version, since `baseUrl` is immutable.
 2. **URL as page** *(later)* — frieren frames `<baseUrl>` cross-origin; that page
    runs its own kernel and frieren injects `fs` + `capabilities`. Real origin in
    both contexts.
@@ -195,6 +211,24 @@ kernel({ fs: volume(idbStorage(dbName)), sandbox, capabilities })
 plus a boot that mounts `gui.js` against a client — on the order of 150–200 lines.
 (`host.ts` is 316, but most of it is stage lifecycle and minimize/restore that
 one-app-one-window does not have.)
+
+Three things that boot has to do, none of them obvious from the line above:
+
+- **Self-install on first run.** `loadSandbox` resolves through
+  `store.get(appId)`, which reads `/applications/<id>/app.js` from the volume —
+  so the shell fetches its own bundle from its origin and `kernel.install()`s it
+  into the local IDB volume. Idempotent and atomic, so it is safe every boot.
+- **Supply React.** `gui.js` externalises all five `reactExternals` specifiers
+  (`vite.ts:235`) and the desktop resolves them through an importmap to
+  `/vendor/*.js`, emitted by frieren's build. Standalone has no host React: the
+  app origin must serve those five files and install the same importmap. This is
+  the first thing that breaks without it.
+- **Declare the capability set.** v1 offers `volume` (the app's own chroot) and
+  `notify`. `ai` needs an account and is therefore unavailable;
+  `email`/`calendar`/`settings`/`devkit` are never grantable. An app declaring
+  any of them gets `CAPABILITY_UNAVAILABLE`, which is the same degradation
+  `docs/app.md` already documents per host — hosted is one more column in that
+  table, not a new mechanism.
 
 **Frame it as a third host adapter, never as "a runtime for hosted apps."** The
 latter drifts into a second implementation of the same semantics.
@@ -262,10 +296,19 @@ new authors/week under Let's Encrypt); Cloudflare Universal SSL covers one level
 free. And the label is storage identity — changing it orphans every anonymous
 user's IndexedDB — so renames move the platform pointer, never the origin.
 
+**The version goes in the path, never in the label** — origin
+`notes.justapps.run`, `baseUrl` `…/v/1.2.0/`. This is what lets a user's data
+survive an upgrade, and it follows directly from the label being storage
+identity. Putting the version in the hostname would orphan every anonymous user's
+IndexedDB on every release.
+
 **A first-come-first-served slug registry**, with an allocated id as the fallback.
 Global FCFS means a land grab; that is an accepted cost of a memorable URL, and
 allocation is the chokepoint where a brand/confusables screen goes if abuse ever
-forces one.
+forces one. The registry authenticates the publisher, so it can simply *enforce*
+the slug ↔ app-id binding in both directions and hold it stable across versions —
+`APP_STORE_PLAN.md` needed elaborate first-claim-wins inference only because a
+crawl cannot authenticate anyone.
 
 The pretty pointer is a **302 on the content domain** — `justapps.run/<user>/<app>`
 — never on the platform domain, because redirectors inherit the reputation of
