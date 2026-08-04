@@ -11,6 +11,11 @@
 // access, app-code's live preview, is now a separate window (see devkit.client).
 
 import type { Message } from '@justfiles/app'
+// The platform sheet, inlined at build time (`?inline` resolves its `@import` of
+// design.css into one string). It is baked into the frame document below rather
+// than bundled into any app: a platform restyle then reaches every app on next
+// load, with nothing to recompile or republish.
+import macCss from '@justfiles/design/mac.css?inline'
 
 // guest→host: one request. host→guest: its reply, plus authoritative state pushes.
 type GuestMessage = { type: 'invoke'; id: string; action: Message }
@@ -31,7 +36,6 @@ const VENDOR: Record<string, string> = {
 }
 
 let vendorCache: Promise<Record<string, string>> | undefined
-let stylesCache: string | undefined
 
 // Read the vendor React bytes once (same-origin to `/vendor`). Shipped into the
 // frame so the opaque origin needs no network and no CORS; the frame builds its
@@ -46,30 +50,6 @@ export function readVendor(): Promise<Record<string, string>> {
 		return Object.fromEntries(entries)
 	})()
 	return vendorCache
-}
-
-// Serialize the host's stylesheets once. Apps render with their own injected
-// layout CSS but read the host's design tokens (design.css / mac.css), which the
-// opaque frame doesn't inherit — so we clone the host cascade in. Dark mode rides
-// along via design.css's `@media (prefers-color-scheme)`, which works in the
-// frame with no extra plumbing. Cross-origin sheets (Clerk) throw on `cssRules`
-// and are skipped; `@font-face` rules are dropped since a null origin can't fetch
-// host fonts (they only ever 404 CORS — the frame falls back to system fonts).
-export function readHostStyles(): string {
-	if (stylesCache !== undefined) return stylesCache
-	let css = ''
-	for (const sheet of Array.from(document.styleSheets)) {
-		try {
-			for (const rule of Array.from(sheet.cssRules)) {
-				if (rule instanceof CSSFontFaceRule) continue
-				css += `${rule.cssText}\n`
-			}
-		} catch {
-			// cross-origin stylesheet — not readable, skip.
-		}
-	}
-	stylesCache = css
-	return css
 }
 
 // Host side: service the guest's invokes against `invoke` (a kernel dispatch)
@@ -96,13 +76,20 @@ export function guiHost(
 }
 
 // The frame document (a classic inline script, so a runtime-added importmap is
-// legal — no module load has been triggered yet). On `boot` it receives the
-// port, vendor bytes, host styles + theme, gui bytes, and initial state; it
-// applies the theme, injects the styles, stands up a blob-URL importmap, imports
-// gui.js, and mounts it against a port-backed transport (the guest twin of
-// `guiHost`). Boot failures are reported to the host for the error overlay.
+// legal — no module load has been triggered yet). It carries the platform sheet
+// up front, so an app that writes plain `<button>`/`<input>` looks native without
+// asking for anything; every rule in it is `:where()`-wrapped, so the app's own
+// CSS outranks it. Dark mode rides along via design.css's
+// `@media (prefers-color-scheme)` plus its `color-scheme: light dark` (which also
+// themes UA controls and scrollbars) — nothing to plumb through the port.
+//
+// On `boot` the frame receives the port, vendor bytes, gui bytes, and initial
+// state; it stands up a blob-URL importmap, imports gui.js, and mounts it against
+// a port-backed transport (the guest twin of `guiHost`). Boot failures are
+// reported to the host for the error overlay.
 export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'">
+<style>${macCss}</style>
 <style>html,body{margin:0;height:100%}#root{height:100%;overflow:hidden}</style>
 <div id="root"></div>
 <script>
@@ -142,10 +129,6 @@ export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 		booted = true
 		var port = e.ports[0]
 		try {
-			if (e.data.styles) {
-				var st = document.createElement('style'); st.textContent = e.data.styles
-				document.head.appendChild(st)
-			}
 			installImportmap(e.data.vendor)
 			// The gui bundle is imported once; free its blob URL as soon as the module
 			// graph resolves (the importmap-mapped vendor blobs stay live for lazy specifier
