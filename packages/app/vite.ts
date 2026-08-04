@@ -3,7 +3,6 @@ import { dirname, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
 import { reactExternals } from '@justfiles/app/runtime-specs'
-import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
 import { createRunnableDevEnvironment } from 'vite'
@@ -190,7 +189,6 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const reactGuiEntryPath = resolve(root, 'node_modules/.cache/justfiles-app/react-gui-entry.js')
 	let emitted = false
 	return [
-		...tailwindcss(),
 		{
 			name: 'kernel-host',
 			config(_, env) {

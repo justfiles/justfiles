@@ -8,7 +8,7 @@ description: 'Agent guide for building apps with @justfiles/app.'
 Use this guide when creating or changing an app. The framework is in `packages/app`; apps run in
 Frieren and Kodama for Mac. The best examples are:
 
-- `packages/create-app/template` — minimum React app
+- `packages/create-app/template` — minimum app, framework-free GUI
 - `packages/app-pixel` — rich public action surface
 - `packages/app-notes` — scoped files, commands, subscriptions, and procedures
 - `packages/app-crossword` — AI procedure committing one atomic result
@@ -58,12 +58,14 @@ node packages/create-app/index.js packages/app-<name>
 Read the generated files, then use existing `packages/app-*` apps for the nearest advanced pattern.
 A normal package has no dependency allowlist: add npm or workspace dependencies with `pnpm`. Reducer
 dependencies must work in a headless worker and GUI dependencies in a browser. Vite bundles them into
-the app artifact; React is shared with the host by default.
+the app artifact. The generated GUI is framework-free (plain DOM through `defineGUI`); bring a
+framework by adding it and its Vite plugin. React is the exception — it is still externalized and
+shared with the host, so a React GUI only runs on a host that vendors React.
 
 ```text
 packages/app-foo/
 	src/app.ts
-	src/gui.tsx
+	src/gui.ts
 	vite.config.ts
 	package.json
 	tsconfig.json
@@ -74,13 +76,10 @@ The standard build is configured with `kernelHost`:
 
 ```ts
 import { kernelHost } from '@justfiles/app/vite'
-import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig(({ mode }) => ({
-	define: { 'process.env.NODE_ENV': JSON.stringify('production') },
 	plugins: [
-		react(),
 		...(mode === 'test'
 			? []
 			: [
@@ -90,12 +89,15 @@ export default defineConfig(({ mode }) => ({
 						description: 'Does one useful thing.',
 						icon: 'icon.png',
 						app: 'src/app.ts',
-						gui: 'src/gui.tsx'
+						gui: 'src/gui.ts'
 					})
 				])
 	]
 }))
 ```
+
+A React GUI adds `react()` from `@vitejs/plugin-react`, `define: { 'process.env.NODE_ENV':
+JSON.stringify('production') }`, and a `.tsx` `gui` entry — see `packages/app-notes`.
 
 `kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
 host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to

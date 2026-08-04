@@ -3,6 +3,7 @@ import { defineGUI } from '@justfiles/app/browser'
 import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type CrosswordApp, type CrosswordState, type Entry, initialState } from './app'
+import './gui.css'
 import { type Cell, cellKey, type Direction, type Slot } from './puzzle.ts'
 
 const parseCell = (key: Cell): [number, number] => {
@@ -63,22 +64,19 @@ function Crossword({ state, client }: { state: CrosswordState; client: Client<Cr
 	if (state.phase === 'idle')
 		return (
 			<Shell>
-				<section className="m-auto grid w-full max-w-md gap-3 p-6">
-					<h1 className="text-xl font-semibold tracking-wide uppercase">Crossword</h1>
-					<p className="text-sm opacity-70">
-						Pick a theme. The agent fills the grid; you solve it.
-					</p>
+				<section className="cw-panel">
+					<h1 className="cw-title">Crossword</h1>
+					<p className="cw-subtitle">Pick a theme. The agent fills the grid; you solve it.</p>
 					<input
 						value={theme}
 						onChange={(e) => setTheme(e.target.value)}
 						placeholder="e.g. space, harry potter, jazz"
-						className="rounded border border-[var(--border)] bg-[var(--background)] px-3 py-2 outline-none focus:border-[var(--ring)]"
 					/>
 					<button
 						type="button"
+						data-primary
 						onClick={() => call(client.start({ theme }))}
 						disabled={!theme.trim()}
-						className="rounded border border-[var(--border)] bg-[var(--primary)] px-3 py-2 text-[var(--primary-foreground)] hover:opacity-90 disabled:opacity-40"
 					>
 						Start
 					</button>
@@ -90,7 +88,7 @@ function Crossword({ state, client }: { state: CrosswordState; client: Client<Cr
 	if (state.phase === 'awaiting-seeds' || !state.puzzle)
 		return (
 			<Shell>
-				<section className="m-auto grid w-full max-w-2xl gap-3 p-6">
+				<section className="cw-panel cw-panel-wide">
 					<StandbyRow>
 						Theme "{state.theme}". Waiting for the agent to submit seed words…
 					</StandbyRow>
@@ -103,7 +101,7 @@ function Crossword({ state, client }: { state: CrosswordState; client: Client<Cr
 	if (state.phase === 'awaiting-fill')
 		return (
 			<Shell>
-				<section className="m-auto grid w-full max-w-2xl gap-3 p-6">
+				<section className="cw-panel cw-panel-wide">
 					<StandbyRow>
 						Theme "{state.puzzle.theme}". Waiting for the agent to write clues for{' '}
 						{state.puzzle.slots.length} slot(s)…
@@ -127,7 +125,7 @@ function Crossword({ state, client }: { state: CrosswordState; client: Client<Cr
 				onCheck={(cells) => call(client.check({ cells }))}
 			/>
 			{error && (
-				<div className="p-4">
+				<div className="cw-error-inset">
 					<ErrorRow>{error}</ErrorRow>
 				</div>
 			)}
@@ -136,35 +134,19 @@ function Crossword({ state, client }: { state: CrosswordState; client: Client<Cr
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-	return (
-		<div className="flex h-full w-full flex-col overflow-auto bg-[var(--background)] font-mono text-[var(--foreground)]">
-			{children}
-		</div>
-	)
+	return <div className="cw">{children}</div>
 }
 
 function StandbyRow({ children }: { children: React.ReactNode }) {
-	return (
-		<p className="rounded border-2 border-dashed border-[var(--border)] px-6 py-4 text-sm tracking-wide opacity-70">
-			{children}
-		</p>
-	)
+	return <p className="cw-standby">{children}</p>
 }
 
 function ErrorRow({ children }: { children: React.ReactNode }) {
-	return (
-		<p className="rounded border-2 border-dashed border-[var(--destructive)] px-6 py-4 text-sm tracking-wide text-[var(--destructive)]">
-			{children}
-		</p>
-	)
+	return <p className="cw-error">{children}</p>
 }
 
 function Briefing({ children }: { children: React.ReactNode }) {
-	return (
-		<pre className="overflow-auto rounded border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs whitespace-pre-wrap">
-			{children}
-		</pre>
-	)
+	return <pre className="cw-briefing">{children}</pre>
 }
 
 type GameProps = {
@@ -371,15 +353,10 @@ function Game({
 	const width = grid[0]?.length ?? 0
 
 	return (
-		<main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 p-6 md:grid-cols-[minmax(280px,600px)_minmax(240px,1fr)]">
-			<section className="grid gap-3">
-				<header className="flex flex-wrap items-baseline justify-between gap-4">
-					<h1 className="text-base font-semibold tracking-wide uppercase">{puzzle.theme}</h1>
-				</header>
-				<div
-					className="grid aspect-square w-full gap-[2px] border-2 border-[var(--border)] bg-[var(--border)] p-[2px]"
-					style={{ gridTemplateColumns: `repeat(${width}, 1fr)` }}
-				>
+		<main className="cw-game">
+			<section className="cw-board">
+				<h1 className="cw-board-title">{puzzle.theme}</h1>
+				<div className="cw-grid" style={{ gridTemplateColumns: `repeat(${width}, 1fr)` }}>
 					{grid.flatMap((row, r) =>
 						row.split('').map((ch, c) => {
 							const key = cellKey(r, c)
@@ -389,36 +366,27 @@ function Game({
 							const isWrong = wrong.has(key)
 							const isRevealed = revealed.has(key)
 							const cls = [
-								'relative box-border appearance-none border-0 p-0',
-								isBlock
-									? 'cursor-default bg-[var(--foreground)]'
-									: 'cursor-pointer bg-[var(--card)]',
-								inSlot && 'bg-[color-mix(in_oklch,var(--accent)_70%,var(--card))]',
-								isSelected &&
-									'bg-[var(--accent)] outline outline-2 -outline-offset-2 outline-[var(--ring)] z-10'
+								'cw-cell',
+								isBlock && 'cw-cell-block',
+								inSlot && 'cw-cell-in-slot',
+								isSelected && 'cw-cell-selected'
 							]
 								.filter(Boolean)
 								.join(' ')
 							const letter = userGrid[key]
-							const letterColor = isWrong
-								? 'text-[var(--destructive)] line-through'
-								: isRevealed
-									? 'text-[var(--ring)]'
-									: 'text-[var(--card-foreground)]'
+							const letterCls = [
+								'cw-cell-letter',
+								isWrong && 'cw-cell-wrong',
+								!isWrong && isRevealed && 'cw-cell-revealed'
+							]
+								.filter(Boolean)
+								.join(' ')
 							const inner = (
 								<>
 									{!isBlock && cellNum[key] !== undefined && (
-										<span className="absolute top-px left-0.5 text-[9px] leading-none opacity-70">
-											{cellNum[key]}
-										</span>
+										<span className="cw-cell-number">{cellNum[key]}</span>
 									)}
-									{!isBlock && letter && (
-										<span
-											className={`absolute inset-0 grid place-items-center text-[clamp(14px,3.2vmin,28px)] font-bold ${letterColor}`}
-										>
-											{letter}
-										</span>
-									)}
+									{!isBlock && letter && <span className={letterCls}>{letter}</span>}
 								</>
 							)
 							return isBlock ? (
@@ -434,11 +402,11 @@ function Game({
 					)}
 				</div>
 				{solved ? (
-					<div className="rounded border-2 border-[var(--ring)] bg-[var(--accent)] px-5 py-4">
-						<h2 className="m-0 text-base font-semibold">Solved.</h2>
+					<div className="cw-solved">
+						<h2>Solved.</h2>
 					</div>
 				) : (
-					<div className="flex flex-wrap gap-2">
+					<div className="cw-tools">
 						<ToolButton disabled={!selected} onClick={() => selected && onReveal([selected])}>
 							Reveal letter
 						</ToolButton>
@@ -455,7 +423,7 @@ function Game({
 					</div>
 				)}
 			</section>
-			<aside className="grid min-w-0 gap-5 overflow-auto md:max-h-[calc(100vh-3rem)]">
+			<aside className="cw-clues">
 				{(['across', 'down'] as const).map((dir) => (
 					<ClueList
 						key={dir}
@@ -475,14 +443,10 @@ function Game({
 	)
 }
 
+// A bare `<button>` — the platform sheet styles it natively, so it needs nothing.
 function ToolButton(props: { disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
 	return (
-		<button
-			type="button"
-			disabled={props.disabled}
-			onClick={props.onClick}
-			className="rounded border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs text-[var(--card-foreground)] hover:bg-[var(--accent)] disabled:opacity-40"
-		>
+		<button type="button" disabled={props.disabled} onClick={props.onClick}>
 			{props.children}
 		</button>
 	)
@@ -505,8 +469,8 @@ function ClueList({
 }) {
 	return (
 		<div>
-			<h2 className="mb-2 text-xs font-bold tracking-wide uppercase opacity-80">{title}</h2>
-			<ol className="m-0 grid list-none gap-2 p-0">
+			<h2>{title}</h2>
+			<ol className="cw-clue-list">
 				{slots.map((s) => {
 					const num = cellNum[cellKey(s.row, s.col)]
 					const clue = entries[s.id]?.clue ?? ''
@@ -515,12 +479,10 @@ function ClueList({
 						<li key={s.id}>
 							<button
 								type="button"
-								className={`grid w-full cursor-pointer grid-cols-[2rem_1fr] items-start gap-2 rounded border-0 bg-transparent px-1.5 py-1 text-left text-sm leading-snug ${
-									active ? 'bg-[var(--accent)]' : 'hover:bg-[var(--muted)]'
-								}`}
+								className={active ? 'cw-clue cw-clue-active' : 'cw-clue'}
 								onClick={() => onSelect(s)}
 							>
-								<span className="text-right font-bold opacity-80">{num ?? s.id}</span>
+								<span className="cw-clue-number">{num ?? s.id}</span>
 								<span>{clue}</span>
 							</button>
 						</li>

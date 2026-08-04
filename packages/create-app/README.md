@@ -2,7 +2,9 @@
 
 Minimal create package for `@justfiles/app`.
 
-It generates a headless `src/app.ts`, React `src/gui.tsx`, and `vite.config.ts`. The GUI can just default-export a React component; `kernelHost()` wraps it into the host GUI protocol. Builds emit `dist/manifest.json`, `dist/app.js`, `dist/gui.js`, and copied public assets.
+It generates a headless `src/app.ts`, a framework-free `src/gui.ts` (plain DOM through `defineGUI`), and `vite.config.ts`. Builds emit `dist/manifest.json`, `dist/app.js`, `dist/gui.js`, and copied public assets.
+
+The platform serves no framework bytes, so a framework is yours to bring: add it plus its Vite plugin to the generated project and it bundles into `gui.js`. React is a special case today — `kernelHost()` still externalizes it and wraps a default-exported component from a `.tsx` GUI entry, so a React GUI only runs on a host that vendors React.
 
 ```sh
 npm create @justfiles/app my-app

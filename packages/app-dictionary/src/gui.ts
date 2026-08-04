@@ -11,7 +11,7 @@ import { type DictionaryApp, type DictionaryState, initialState } from './app.ts
 import { type Entry, normalizeTerm, READER_LANGUAGE } from './lookup.ts'
 
 // Layout and the dictionary's own typographic hierarchy — nothing else. Controls
-// are bare `<input>`/`<button>`: the host's platform sheet (mac.css, serialized
+// are bare `<input>`/`<button>`: the host's platform sheet (mac.css, injected
 // into this frame) already styles them, and every colour here is a design token,
 // so dark mode follows for free. Type sizes are em-relative so they track
 // `--text-ui` rather than pinning their own scale.

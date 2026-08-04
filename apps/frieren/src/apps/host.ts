@@ -10,7 +10,7 @@
 import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
-import { FRAME_SRCDOC, guiHost, readHostStyles, readVendor } from './gui-channel'
+import { FRAME_SRCDOC, guiHost, readVendor } from './gui-channel'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
@@ -215,7 +215,6 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	if (stage.cancelled) return
 	const vendor = await readVendor()
 	if (stage.cancelled) return
-	const styles = readHostStyles()
 
 	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel
 	// per boot: the host keeps `port1` and dispatches; the frame receives `port2`
@@ -239,7 +238,7 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				stage.port = port1
 				stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
 				stage.frame.contentWindow?.postMessage(
-					{ type: 'boot', guiCode, vendor, styles, state: snapshot },
+					{ type: 'boot', guiCode, vendor, state: snapshot },
 					'*',
 					[port2]
 				)
