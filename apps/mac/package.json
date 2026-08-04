@@ -8,7 +8,6 @@
 		"daemon": "bun --watch daemon/main.ts",
 		"ui:build": "vite build -c ui/vite.config.ts",
 		"ui:watch": "vite build -c ui/vite.config.ts --watch",
-		"vendor": "bun ui/vendor.ts",
 		"build": "native/build.sh --ship-daemon",
 		"start": "open -n native/Kodama.app",
 		"install:app": "turbo run build && native/install.sh"
@@ -37,7 +36,6 @@
 		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.2.3",
 		"@vitejs/plugin-react": "^6.0.2",
-		"cjs-module-lexer": "^2.2.0",
 		"concurrently": "^9.2.0",
 		"vite": "^8.0.16"
 	}

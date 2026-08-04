@@ -7,7 +7,6 @@
 // same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
-import { isSdkSpec, reactExternals } from '../../runtime-specs.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
 import {
 	compileVfs,
@@ -37,7 +36,6 @@ export function esbuildCompile(
 				bundle: true,
 				write: false,
 				format: 'esm',
-				external: reactExternals,
 				jsx: 'automatic',
 				logLevel: 'silent',
 				plugins: [vfs(sources, rt)]
@@ -62,16 +60,12 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
-				// A pre-bundled system library; side-effect-free so unused exports
-				// (e.g. the kernel half of `@justfiles/app`) tree-shake away.
+				// A pre-bundled system library (SDK or React); side-effect-free so unused
+				// exports (e.g. the kernel half of `@justfiles/app`) tree-shake away.
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }
-				if (isSdkSpec(args.path))
-					return { errors: [{ text: `devkit runtime is missing SDK module "${args.path}"` }] }
-				// React passes through to the top-level `external`; any other bare
-				// specifier is an unsupported npm package — a clear error, not esbuild's
-				// opaque "Could not resolve".
-				const message = unsupportedImport(args.path)
-				return message ? { errors: [{ text: message }] } : undefined
+				// Nothing else is resolvable — say why, rather than esbuild's opaque
+				// "Could not resolve".
+				return { errors: [{ text: unsupportedImport(args.path) }] }
 			})
 			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => {
 				// `.css` becomes a runtime-injecting JS module (the css loader's sidecar

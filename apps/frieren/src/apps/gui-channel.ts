@@ -24,34 +24,6 @@ type HostMessage =
 	| { type: 'invokeError'; id: string; error: { message: string } }
 	| { type: 'state'; state: unknown }
 
-// The five React specifiers the GUI bundle externalises (see runtime-specs.ts),
-// mapped to the host-served vendor bytes. The frame's importmap and this list
-// must agree, so the frame bootstrap below repeats the same specifiers.
-const VENDOR: Record<string, string> = {
-	react: '/vendor/react.js',
-	'react-dom': '/vendor/react-dom.js',
-	'react-dom/client': '/vendor/react-dom-client.js',
-	'react/jsx-runtime': '/vendor/jsx-runtime.js',
-	'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js'
-}
-
-let vendorCache: Promise<Record<string, string>> | undefined
-
-// Read the vendor React bytes once (same-origin to `/vendor`). Shipped into the
-// frame so the opaque origin needs no network and no CORS; the frame builds its
-// own blob-URL importmap over these five specifiers → one React per frame.
-export function readVendor(): Promise<Record<string, string>> {
-	vendorCache ??= (async () => {
-		const entries = await Promise.all(
-			Object.entries(VENDOR).map(
-				async ([spec, url]) => [spec, await (await fetch(url)).text()] as const
-			)
-		)
-		return Object.fromEntries(entries)
-	})()
-	return vendorCache
-}
-
 // Host side: service the guest's invokes against `invoke` (a kernel dispatch)
 // and return a `postState` the host's state sources call to push authoritative
 // state to the guest.
@@ -83,10 +55,11 @@ export function guiHost(
 // `@media (prefers-color-scheme)` plus its `color-scheme: light dark` (which also
 // themes UA controls and scrollbars) — nothing to plumb through the port.
 //
-// On `boot` the frame receives the port, vendor bytes, gui bytes, and initial
-// state; it stands up a blob-URL importmap, imports gui.js, and mounts it against
-// a port-backed transport (the guest twin of `guiHost`). Boot failures are
-// reported to the host for the error overlay.
+// On `boot` the frame receives the port, gui bytes, and initial state; it imports
+// gui.js off a blob URL and mounts it against a port-backed transport (the guest
+// twin of `guiHost`). The bundle is self-contained — it carries whatever framework
+// it uses — so there is nothing to resolve and no importmap to install. Boot
+// failures are reported to the host for the error overlay.
 export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'">
 <style>${macCss}</style>
@@ -114,25 +87,13 @@ export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 			subscribe: function (onState) { subs.add(onState); return function () { subs.delete(onState) } }
 		}
 	}
-	function installImportmap(vendor) {
-		var specs = ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime']
-		var map = { imports: {} }
-		specs.forEach(function (s) {
-			map.imports[s] = URL.createObjectURL(new Blob([vendor[s]], { type: 'text/javascript' }))
-		})
-		var el = document.createElement('script')
-		el.type = 'importmap'; el.textContent = JSON.stringify(map)
-		document.head.appendChild(el)
-	}
 	window.addEventListener('message', async function (e) {
 		if (!e.data || e.data.type !== 'boot' || booted) return
 		booted = true
 		var port = e.ports[0]
 		try {
-			installImportmap(e.data.vendor)
 			// The gui bundle is imported once; free its blob URL as soon as the module
-			// graph resolves (the importmap-mapped vendor blobs stay live for lazy specifier
-			// resolution and are released with this frame's browsing context).
+			// graph resolves.
 			var url = URL.createObjectURL(new Blob([e.data.guiCode], { type: 'text/javascript' }))
 			var mod
 			try { mod = await import(url) } finally { URL.revokeObjectURL(url) }

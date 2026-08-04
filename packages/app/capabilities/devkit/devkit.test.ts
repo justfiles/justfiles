@@ -87,7 +87,7 @@ describe('devkit compile', () => {
 		expect(out.state).toEqual({ count: 1 })
 	})
 
-	test('wraps a default React component gui.tsx as the app GUI, React external', async () => {
+	test('wraps a default React component gui.tsx as the app GUI, React inlined', async () => {
 		const guiTsx = `import type { GUIProps } from '@justfiles/app/react'
 import type { app } from './app'
 export default function Counter({ state, actions }: GUIProps<typeof app>) {
@@ -98,12 +98,11 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 			{ app: 'app.ts', gui: 'gui.tsx' }
 		)
 		expect(diagnostics).toEqual([])
-		// The `.tsx` default export is wrapped via the React GUI entry, which is bundled
-		// from the SDK runtime; React itself stays external for the host singleton.
+		// The `.tsx` default export is wrapped via the React GUI entry; that shim AND
+		// React itself come out of the runtime map, so nothing is left to resolve.
 		expect(gui).not.toMatch(/from\s*["']@justfiles\/app\/react["']/)
-		expect(gui).toMatch(/from\s*["']react["']/)
-		expect(gui).toMatch(/from\s*["']react-dom\/client["']/)
-		expect(gui).toMatch(/from\s*["']react\/jsx-runtime["']/)
+		expect(gui).not.toMatch(/from\s*["']react(-dom)?(\/[^"']+)?["']/)
+		expect(gui).toContain('react.transitional.element')
 		expect(gui).not.toContain('initialState')
 	})
 

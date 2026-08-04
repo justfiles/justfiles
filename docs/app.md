@@ -59,8 +59,8 @@ Read the generated files, then use existing `packages/app-*` apps for the neares
 A normal package has no dependency allowlist: add npm or workspace dependencies with `pnpm`. Reducer
 dependencies must work in a headless worker and GUI dependencies in a browser. Vite bundles them into
 the app artifact. The generated GUI is framework-free (plain DOM through `defineGUI`); bring a
-framework by adding it and its Vite plugin. React is the exception — it is still externalized and
-shared with the host, so a React GUI only runs on a host that vendors React.
+framework by adding it and its Vite plugin. Whatever you bring is bundled into `gui.js` — the host
+serves no framework bytes, so an app runs on any host and pays only for what it uses.
 
 ```text
 packages/app-foo/
@@ -364,10 +364,12 @@ export default function Foo({ state, actions }: GUIProps<typeof app>) {
 State returns through host pushes and causes a rerender. Usually fire an action with `void` and render
 the pushed state rather than depending on its immediate return.
 
-React, React DOM, and JSX runtimes are externalized so a GUI shares the host's React instance. A normal
-package may use third-party React libraries, but keep the final GUI graph compatible with the shared
-React. If a CommonJS dependency forces bundled React or emits chunks, follow `packages/app-draw` and
-keep the resulting `gui.js` single-file.
+React, React DOM, and the JSX runtimes are bundled into `gui.js`. A normal package may use
+third-party React libraries, but the whole GUI graph must collapse to ONE React — two copies in one
+bundle means the renderer sets the hook dispatcher on an instance your components never read, and the
+GUI dies on its first `useState`. `kernelHost` dedupes the React specifiers for you; a dependency
+pinning its own React major is the case to watch. If a dependency emits chunks, follow
+`packages/app-draw` and keep the resulting `gui.js` single-file.
 
 ### Imperative GUI
 

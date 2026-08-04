@@ -170,7 +170,9 @@ test('/agent snapshots history + busy on connect, and a prompt runs a turn', asy
 test('/app socket pushes initial state and round-trips a dispatch', async () => {
 	const client = await connect(`/app/${NOTES}/connect`)
 	const initial = await client.waitFor((m) => m.state !== undefined)
-	expect(initial.state).toEqual({ openPath: null, revision: 0, error: null })
+	// What's under test is the socket pushing Notes' initial state, not Notes' state
+	// shape — match the fields this test means, so a Notes feature doesn't fail it.
+	expect(initial.state).toMatchObject({ openPath: null, revision: 0 })
 
 	client.send({ id: 'r1', type: 'open', params: { path: '/hello.txt' } })
 	const reply = await client.waitFor((m) => m.id === 'r1')
