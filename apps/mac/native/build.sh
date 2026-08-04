@@ -144,7 +144,7 @@ copy_builtins() { # resources_dir
 # A self-contained, shippable Kodama.app backed by the daemon (apps/mac/daemon): the
 # launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
 # daemon reads, under Resources/. The daemon does zero frontend bundling: Vite builds the
-# browser surfaces (launcher / chat / app shell + assets + `/vendor/*` React) into
+# browser surfaces (launcher / chat / app shell + assets) into
 # ui/dist/client, which rides on disk beside the exe as Resources/client; the builtin app
 # roots ride alongside it. All are resolved via FRIEREN_SHIPPED.
 build_ship_daemon() {

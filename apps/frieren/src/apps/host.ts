@@ -10,7 +10,7 @@
 import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
-import { FRAME_SRCDOC, guiHost, readVendor } from './gui-channel'
+import { FRAME_SRCDOC, guiHost } from './gui-channel'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
@@ -213,8 +213,6 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	}
 	const guiCode = new TextDecoder().decode(await installed.read(guiPath))
 	if (stage.cancelled) return
-	const vendor = await readVendor()
-	if (stage.cancelled) return
 
 	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel
 	// per boot: the host keeps `port1` and dispatches; the frame receives `port2`
@@ -237,11 +235,9 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				const { port1, port2 } = new MessageChannel()
 				stage.port = port1
 				stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
-				stage.frame.contentWindow?.postMessage(
-					{ type: 'boot', guiCode, vendor, state: snapshot },
-					'*',
-					[port2]
-				)
+				stage.frame.contentWindow?.postMessage({ type: 'boot', guiCode, state: snapshot }, '*', [
+					port2
+				])
 				// A remote write can land while this window is closed; the kernel's state cache
 				// didn't author it, so the snapshot above can be the pre-sync value. Reload and
 				// push — same follow-up the remote-write watch below does, just reached from the

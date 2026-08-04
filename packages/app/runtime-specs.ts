@@ -1,13 +1,16 @@
 // Shared runtime specifier lists for app bundling.
 //
-// App artifacts bundle the platform SDK into `app.js`/`gui.js`. React is the one
-// runtime external so every GUI shares the host document's React singleton.
+// An app artifact bundles everything it uses — the platform SDK AND its UI framework —
+// into `app.js`/`gui.js`. No host serves framework bytes; the only thing a host injects
+// is the platform stylesheet (see frieren's `gui-channel.ts`).
 
-// React family. Externalized in GUI builds and devkit GUI output — the host importmap
-// resolves bare React specifiers to the shared React instance. A reducer worker has no
-// importmap, so React MUST NOT appear in a reducer-reachable SDK module; `buildRuntime`
-// guards that via `sdkRuntimeSpecs.reducer`.
-export const reactExternals = [
+// The React family. Devkit ships these as bundle-able source in the app-code sysroot
+// (`buildRuntime`), so a draft's `gui.js` inlines exactly one copy. The sysroot's SDK
+// modules are built with React external so they reach that same copy instead of
+// inlining a second one — two Reacts is the classic "Invalid hook call". React MUST
+// still stay out of a reducer-reachable SDK module: the reducer runs headless, with no
+// document to render into. `buildRuntime` guards that via `sdkRuntimeSpecs.reducer`.
+export const reactSpecs = [
 	'react',
 	'react-dom',
 	'react-dom/client',
@@ -19,7 +22,8 @@ export const reactExternals = [
 // Hosts load those bytes and feed them to devkit compilers as bundle-able source, so SDK
 // imports are inlined into draft `app.js`/`gui.js` with no node_modules or package links.
 //
-// `reducer: true` = reducer-reachable, so it must stay react-free. `@justfiles/app/react`
+// `reducer: true` = reducer-reachable, so it must stay react-free (see above).
+// `@justfiles/app/react`
 // (the React GUI entry) and `@justfiles/app/browser` (the `defineGUI` host bindings) are
 // GUI-only and may pull React, so they're `reducer: false` and excluded from the guard.
 //
@@ -41,11 +45,11 @@ export const sdkRuntimeSpecs: readonly { spec: string; reducer: boolean }[] = [
 	{ spec: 'valibot', reducer: true }
 ]
 
-const SDK_SPECS = new Set(sdkRuntimeSpecs.map((s) => s.spec))
+const RUNTIME_SPECS = new Set<string>([...sdkRuntimeSpecs.map((s) => s.spec), ...reactSpecs])
 
-// Is `spec` a platform SDK specifier? Devkit bundles these from the app-code sysroot.
-// React is handled separately via the bundler's top-level `external`, so it's
-// deliberately not in this set.
-export function isSdkSpec(spec: string): boolean {
-	return SDK_SPECS.has(spec)
+// Every bare specifier devkit can resolve — the SDK subpaths plus the React family.
+// All of them come out of the app-code sysroot's runtime map, so this is exactly the
+// set a draft may import.
+export function isRuntimeSpec(spec: string): boolean {
+	return RUNTIME_SPECS.has(spec)
 }

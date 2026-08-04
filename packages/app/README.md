@@ -80,7 +80,7 @@ export default defineConfig({
 })
 ```
 
-Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. SDK imports are bundled into `app.js`/`gui.js`; React stays external for the host singleton. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
+Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Nothing is external — the SDK and whatever UI framework the GUI uses are both bundled into `app.js`/`gui.js`. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
 
 ## Capabilities
 
@@ -101,27 +101,26 @@ import { ai } from '@justfiles/app/capabilities/ai'
 
 ## App-authoring discipline
 
-### Shared runtime
+### Self-contained artifacts
 
-In production, `kernelHost` externalises `react`, `react-dom`,
-`react-dom/client`, `react/jsx-runtime`, and `react/jsx-dev-runtime`.
-Apps emit bare imports like `from "react"`; the host resolves them
-through its importmap to a single set of `/vendor/*.js` URLs, so every
-app and the host share one React module instance.
+`kernelHost` externalises nothing. A GUI carries its own framework — one
+copy of React, or Svelte, or no framework at all — and a host serves no
+framework bytes at all, only the platform stylesheet it injects into the
+frame. So an app pays for exactly what it uses, and the platform is not
+betting on one framework.
+
+Whatever the GUI uses must resolve to a SINGLE copy inside `gui.js`;
+two Reacts in one bundle is the classic "Invalid hook call". Vite's
+`resolve.dedupe` handles the usual pnpm-nesting cause, and a React-based
+dependency that pulls its own major version is the case to watch.
 
 In standalone dev (`pnpm dev`), the GUI is served as ordinary Vite
 browser modules — Vite owns the TSX transform, React Refresh, source
-maps, and CSS — and React is deduped through Vite's `resolve.dedupe`
-(resolved from the app package's own dev dependencies), so dev keeps a
-single React instance without a hand-built importmap. The headless
-`app.ts` runs through Vite's `kernel` server environment, so app edits
-hot-reload without restarting the dev server.
+maps, and CSS. The headless `app.ts` runs through Vite's `kernel` server
+environment, so app edits hot-reload without restarting the dev server.
 
-Keep React/ReactDOM as app peer + dev dependencies for app-local
-typechecking and dev resolution, but don't bundle them into `gui.js`.
-Don't override the externals or add another React-based library to the
-shared stdlib without coordinating with the host — duplicating React
-breaks hooks and context.
+Keep the framework out of `app.ts`. The reducer runs headless in a Worker
+with no document, and `kernelHost` fails the build if React reaches it.
 
 ### State discipline
 

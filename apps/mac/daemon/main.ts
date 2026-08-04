@@ -18,7 +18,7 @@ import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './p
 import { SHIPPED } from './resources'
 import { sandboxes } from './sandbox'
 
-// The browser surfaces (launcher, chat, app shell, assets, vendor bundles) are Vite-built
+// The browser surfaces (launcher, chat, app shell, assets) are Vite-built
 // into ui/dist/client and served verbatim. Shipped: beside the exe under Resources/client
 // (import.meta.dirname is the bunfs root under --compile, so resolve off the exe path).
 const CLIENT_DIR = SHIPPED
@@ -122,7 +122,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				if (server.upgrade(req, { data: { type: 'agent' } })) return undefined
 				return new Response('Expected WebSocket upgrade', { status: 426 })
 			},
-			// Catch-all for the hashed Vite assets (/assets/*, /vendor/*); specific routes win.
+			// Catch-all for the hashed Vite assets (/assets/*); specific routes win.
 			'/*': (req) => serveClient(new URL(req.url).pathname.slice(1))
 		},
 		websocket: {

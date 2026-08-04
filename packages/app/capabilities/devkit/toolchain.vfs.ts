@@ -7,13 +7,14 @@
 // per-bundler glue stays tens of lines each.
 
 import { isReactGuiEntry, reactGuiEntry } from '../../react-entry.ts'
-import { isSdkSpec, reactExternals } from '../../runtime-specs.ts'
+import { isRuntimeSpec } from '../../runtime-specs.ts'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
-// Devkit bundles the SDK into every emitted entry from the pre-built `runtime` source
-// (the `RUNTIME` namespace), matching the Vite app artifact shape. React stays external
-// via each bundler's top-level `external` (it also catches the auto-injected JSX runtime
-// import), so GUI code still shares the host's React singleton.
+// Devkit bundles every bare specifier it supports into the emitted entry from the
+// pre-built `runtime` source (the `RUNTIME` namespace), matching the Vite app artifact
+// shape. That includes React — a draft's `gui.js` inlines its own copy (one, since the
+// sysroot's React modules reach each other through this same map), so no host has to
+// serve framework bytes. There is no top-level `external` in either adapter.
 
 // The two virtual namespaces a bundler plugin tags resolved paths with: draft
 // sources from the `files` map, and pre-bundled system libraries from `runtime`.
@@ -64,24 +65,15 @@ export function resolveRelative(
 	return candidates.find((candidate) => candidate in files)
 }
 
-// True for the React family — the bundlers' one top-level `external` (esbuild/Bun
-// `external: reactExternals`). esbuild/Bun externalize a listed package AND all its
-// subpaths (verified), so this matches subpaths too — otherwise `unsupportedImport`
-// would error on a `react/*` import the bundler legitimately externalizes.
-function isReactExternal(spec: string): boolean {
-	return reactExternals.some((r) => spec === r || spec.startsWith(`${r}/`))
-}
-
-// Classify a BARE specifier the resolver couldn't satisfy as a draft file or a system
-// runtime module (both compile paths call this in their `onResolve` terminal branch).
-// React passes through to the bundler's top-level external. SDK specs pass through only
-// after the adapter has had a chance to resolve them from `runtime` or report a missing
-// runtime module. Anything else is an external npm package: app-code is a built-in
-// authoring tool, not an npm dev environment, so we reject it with a clear message in
-// BOTH compile paths (and the browser esbuild-wasm fallback) instead of the bundler's
-// opaque "Could not resolve". Authors who need arbitrary packages use create-app.
-export function unsupportedImport(spec: string): string | undefined {
-	if (isReactExternal(spec) || isSdkSpec(spec)) return undefined
+// Why devkit can't resolve this BARE specifier — both compile paths call this in their
+// `onResolve` terminal branch, after the `runtime` map has had its chance. A spec devkit
+// knows about but that the map lacks means an incomplete sysroot; anything else is an npm
+// package app-code deliberately doesn't support (it's a built-in authoring tool, not an
+// npm dev environment — authors who need arbitrary packages use create-app). Either way a
+// clear message in BOTH compile paths (and the browser esbuild-wasm fallback) beats the
+// bundler's opaque "Could not resolve".
+export function unsupportedImport(spec: string): string {
+	if (isRuntimeSpec(spec)) return `devkit runtime is missing module "${spec}"`
 	return `External npm package "${spec}" is not supported in app-code. Use packages/create-app for a full package project.`
 }
 
@@ -128,8 +120,8 @@ export async function compileVfs(
 		const sources = wrap
 			? { ...input.files, [REACT_GUI_ENTRY]: reactGuiEntry(`./${entry}`) }
 			: input.files
-		// Every entry bundles the SDK from the host-supplied runtime map; React remains
-		// external at the bundler layer for GUI entries.
+		// Every entry bundles the SDK — and, for a GUI entry, React — from the
+		// host-supplied runtime map. Nothing is left external.
 		const result = await buildOne({ entry: wrap ? REACT_GUI_ENTRY : entry, sources }, runtime)
 		diagnostics.push(...result.diagnostics)
 		if (result.js !== undefined) outputs.push({ path: `${name}.js`, text: result.js })

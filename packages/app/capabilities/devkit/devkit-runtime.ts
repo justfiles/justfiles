@@ -6,39 +6,89 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { build } from 'esbuild'
 import { build as bundleDts } from 'tsdown'
-import { reactExternals, sdkRuntimeSpecs } from '../../runtime-specs.ts'
+import { reactSpecs, sdkRuntimeSpecs } from '../../runtime-specs.ts'
 import { DEVKIT_SCHEMA, type DevkitIndex } from './devkit-sysroot.ts'
 import type { TypePaths, TypesBundle } from './toolchain.ts'
 
 // The system libraries app-code bakes into self-contained runtime modules — the "stdlib
-// shipped with the OS." Each spec in `sdkRuntimeSpecs` is built once (here, with Node
-// esbuild), with React left external (`reactExternals`) so the one host React is shared.
-// Devkit feeds these modules to the bundler as source and inlines SDK imports into both
-// `app.js` and `gui.js`. React itself is vendored separately by each host.
+// shipped with the OS." Every spec devkit can resolve is built once here (with Node
+// esbuild): the platform SDK from `sdkRuntimeSpecs`, and React from `reactSpecs`. Devkit
+// feeds these to the bundler as source, so a draft's `app.js`/`gui.js` inlines everything
+// it uses and no host serves framework bytes.
 //
 // This is the one Node-only piece of the devkit pipeline (it imports the native
 // esbuild engine), kept in its own subpath so the browser-safe `@justfiles/app/
 // devkit` (engine-injected) never pulls native esbuild into a browser host.
 
-// A reducer-reachable SDK module must contain no bare React import: the reducer worker
-// has no importmap to resolve one, so it would fail with an opaque worker error. React
-// is the only external in the build below, so any react-family import here is a real bug.
+// A reducer-reachable SDK module must contain no bare React import: the reducer runs
+// headless in a Worker with no document, and now that React is bundle-able source the
+// failure would be silent — React would simply ship into the Worker. React is the only
+// external in the SDK build below, so any react-family import here is a real bug.
 const REACT_FAMILY = /^react(-dom)?(\/|$)/
 function assertReducerReactFree(spec: string, source: string): void {
 	for (const m of source.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)) {
 		const dep = m[1] as string
 		if (REACT_FAMILY.test(dep))
 			throw new Error(
-				`devkit-runtime: reducer-reachable SDK module "${spec}" imports "${dep}" — a reducer ` +
-					`worker has no importmap to resolve a bare React specifier. Keep React out of ` +
-					`@justfiles/app core, the capability subpaths, and valibot.`
+				`devkit-runtime: reducer-reachable SDK module "${spec}" imports "${dep}" — the reducer ` +
+					`runs headless in a Worker with no document. Keep React out of @justfiles/app core, ` +
+					`the capability subpaths, and valibot.`
 			)
 	}
 }
 
-export async function buildRuntime(): Promise<Record<string, string>> {
+// The React family as bundle input. Each spec becomes a self-contained module with its
+// four siblings left external BY EXACT MATCH — a bundler's top-level `external` matches a
+// package AND its subpaths, which would hollow out `react-dom/client` (it reaches its
+// implementation through `react-dom`). The siblings resolve back through this same
+// runtime map, so a draft links ONE React.
+//
+// CJS output, not ESM, is deliberate: React ships CJS, and no bundler carries a CJS
+// module's named exports through an ESM `export *` (they emit a dynamic re-export), so an
+// ESM wrapper leaves `import { useState } from 'react'` unresolvable downstream. Handed
+// over as CJS, esbuild and Bun apply their ordinary CJS interop and named imports work.
+// Minified: these are vendor bytes nobody reads, and a copy lands in every draft.
+async function buildReactRuntime(): Promise<Record<string, string>> {
 	const require = createRequire(import.meta.url)
 	const runtime: Record<string, string> = {}
+	for (const spec of reactSpecs) {
+		const siblings = new Set(reactSpecs.filter((other) => other !== spec))
+		const result = await build({
+			stdin: {
+				contents: `module.exports = require(${JSON.stringify(spec)})`,
+				resolveDir: dirname(require.resolve(spec)),
+				loader: 'js'
+			},
+			bundle: true,
+			write: false,
+			format: 'cjs',
+			platform: 'browser',
+			minify: true,
+			// React's package entry picks its dev/prod CJS build off `process.env.NODE_ENV`
+			// at require time. Pin production: that's what a published app ships, and the
+			// dev build exports names (act, captureOwnerStack) production omits.
+			define: { 'process.env.NODE_ENV': '"production"' },
+			plugins: [
+				{
+					name: 'react-siblings',
+					setup(pass) {
+						pass.onResolve({ filter: /.*/ }, (args) =>
+							siblings.has(args.path) ? { path: args.path, external: true } : undefined
+						)
+					}
+				}
+			]
+		})
+		const output = result.outputFiles[0]
+		if (!output) throw new Error(`devkit-runtime: no output for ${spec}`)
+		runtime[spec] = output.text
+	}
+	return runtime
+}
+
+export async function buildRuntime(): Promise<Record<string, string>> {
+	const require = createRequire(import.meta.url)
+	const runtime: Record<string, string> = await buildReactRuntime()
 	for (const { spec, reducer } of sdkRuntimeSpecs) {
 		// Re-export the package from a synthetic entry rather than bundling its
 		// resolved file directly. A CommonJS package (e.g. valibot) used as the
@@ -57,7 +107,9 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 			write: false,
 			format: 'esm',
 			platform: 'browser',
-			external: reactExternals
+			// React stays external so a GUI-only SDK module (`@justfiles/app/react`) reaches
+			// the ONE copy above through the runtime map instead of inlining a second one.
+			external: reactSpecs
 		})
 		const output = result.outputFiles[0]
 		if (!output) throw new Error(`devkit-runtime: no output for ${spec}`)
@@ -178,7 +230,7 @@ async function buildTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
 			outExtensions: () => ({ js: '.js', dts: '.d.ts' }),
 			// `@justfiles/fs` is force-INLINED (tsdown auto-externalizes deps; this overrides).
 			// react / valibot / @standard-schema stay external (vendored, node resolution).
-			external: [...reactExternals, 'valibot', '@standard-schema/spec'],
+			external: [...reactSpecs, 'valibot', '@standard-schema/spec'],
 			noExternal: ['@justfiles/fs'],
 			clean: true,
 			logLevel: 'silent',

@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
-import { reactExternals } from '@justfiles/app/runtime-specs'
+import { reactSpecs } from '@justfiles/app/runtime-specs'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
 import { createRunnableDevEnvironment } from 'vite'
@@ -29,20 +29,31 @@ const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 // externalizes this plugin and resolves it with native Node, which can't
 // load relative TypeScript siblings (./dev-server goes via ssrLoadModule;
 // React shim codegen/runtime specs use bare @justfiles/app/* specifiers).
-// Compile the reducer (`app.js`). The SDK is BUNDLED in — a reducer Worker has no importmap,
-// so every module the reducer references is inlined into `app.js` (resolved natively from
-// node_modules at this in-repo build). Only React stays external: it never appears in a
-// reducer-reachable module (the `buildRuntime` guard), so this is belt-and-suspenders.
+// Compile the reducer (`app.js`). Everything it references is inlined — nothing is
+// external — because a reducer Worker resolves no bare specifiers at runtime.
+//
+// A reducer must not reach React: it runs headless, with no document. That used to fail
+// loudly (a bare `react` import had nothing to resolve it); now that nothing is external
+// it would ship React into the Worker silently and break only later, so read the input
+// graph back off the metafile and refuse the build instead.
+const REACT_INPUT = /(^|\/)node_modules\/(\.pnpm\/[^/]+\/node_modules\/)?react(-dom)?\//
 const compile = (entry: string) => {
-	const output = buildSync({
+	const result = buildSync({
 		entryPoints: [entry],
 		absWorkingDir: dirname(entry),
 		bundle: true,
 		write: false,
 		format: 'esm',
 		minify: true,
-		external: reactExternals
-	}).outputFiles[0]
+		metafile: true
+	})
+	const react = Object.keys(result.metafile.inputs).find((input) => REACT_INPUT.test(input))
+	if (react)
+		throw new Error(
+			`${entry} pulls React in through the module graph (${react}). The reducer runs ` +
+				`headless in a Worker with no document — keep React in the GUI entry.`
+		)
+	const output = result.outputFiles[0]
 	if (!output) throw new Error(`failed to compile ${entry}`)
 	return output.text
 }
@@ -199,7 +210,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
-						resolve: { dedupe: reactExternals },
+						resolve: { dedupe: reactSpecs },
 						environments: {
 							kernel: {
 								consumer: 'server',
@@ -217,20 +228,32 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				}
 				return {
 					base: './',
+					// The framework now ships INSIDE the artifact, so the artifact decides
+					// which build of it ships. React (and much of npm) picks its dev/prod
+					// branch off `process.env.NODE_ENV` at require time, and a dev React is
+					// ~3× the bytes for warnings no end user reads. Apps used to get the
+					// production build for free from the host's vendored copy.
+					define: { 'process.env.NODE_ENV': JSON.stringify('production') },
+					// ONE React per artifact. The SDK's React GUI shim and the app's own
+					// components both import `react`, and pnpm can resolve those to two
+					// different copies (a workspace on 19.2.5, another on 19.2.7 — a real
+					// state of this repo). Two Reacts in one bundle means the renderer sets
+					// the hook dispatcher on an instance the components never read, and every
+					// GUI dies on its first `useState`. Externalisation used to hide this by
+					// collapsing both to one host module; now the build must collapse them.
+					resolve: { dedupe: reactSpecs },
 					build: {
 						outDir: 'dist',
 						emptyOutDir: true,
 						// Library mode: preserve the entry's `export { gui }` (an app
 						// build tree-shakes it away — the sdk is sideEffects:false).
+						// Nothing is external: the SDK and whatever framework the GUI uses are
+						// both inlined into gui.js, matching app.js. Hosts serve no framework
+						// bytes, so an app that ships Svelte or plain DOM pays only for itself.
 						lib: {
 							entry: wrapReactGui ? reactGuiEntryPath : guiEntry,
 							formats: ['es'],
 							fileName: () => 'gui.js'
-						},
-						rollupOptions: {
-							// Only React stays external so every GUI shares the host document's React
-							// singleton. SDK imports are bundled into gui.js, matching app.js.
-							external: reactExternals
 						}
 					}
 				}

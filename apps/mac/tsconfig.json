@@ -11,7 +11,7 @@
 		// internals aren't clean under noUncheckedIndexedAccess — matching frieren.
 		"noImplicitOverride": true
 	},
-	// ui/vendor.ts + ui/vite.config.ts are node-side (esbuild/vite build tooling); the
-	// browser entries under ui/ are typechecked by tsconfig.browser.json instead.
-	"include": ["daemon/**/*.ts", "ui/vendor.ts", "ui/vite.config.ts"]
+	// ui/vite.config.ts is node-side (vite build tooling); the browser entries under
+	// ui/ are typechecked by tsconfig.browser.json instead.
+	"include": ["daemon/**/*.ts", "ui/vite.config.ts"]
 }

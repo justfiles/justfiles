@@ -8,8 +8,8 @@
 		"types": [],
 		"jsx": "react-jsx"
 	},
-	// The browser entries (DOM, no node/bun). vendor.ts + vite.config.ts are node-side
+	// The browser entries (DOM, no node/bun). vite.config.ts is node-side
 	// (typechecked by the server tsconfig.json) so they're excluded here.
 	"include": ["ui/**/*.ts", "ui/**/*.tsx"],
-	"exclude": ["ui/vendor.ts", "ui/vite.config.ts"]
+	"exclude": ["ui/vite.config.ts"]
 }

@@ -16,7 +16,8 @@ export const DEVKIT_SCHEMA = 'justfiles.devkit.v1'
 
 // `devkit/index.json`: the sysroot manifest. `hash` is the content version + cache key
 // (sha256 over the manifest); `files` maps each header's logical path (UNDER
-// `node_modules/`) to its blob id, `runtime` maps each SDK module path to its blob id,
+// `node_modules/`) to its blob id, `runtime` maps each bundle-able module path
+// (`@justfiles/app.js`, `react-dom/client.js`, …) to its blob id,
 // and `paths` is the tsc import-map (SDK specifier → entry `.d.ts`) the typecheck overlay
 // injects. Every blob lives content-addressed at `devkit/store/<id>` (id = `sha256-…`),
 // so identical content is stored once and reads are integrity-checkable. Loaders
@@ -53,9 +54,10 @@ export async function loadTypes(
 	return { files, paths: index.paths ?? {} }
 }
 
-// Load the SDK runtime sysroot into the bundler's virtual runtime map (specifier → JS
-// source). This is the JS twin of `loadTypes`: same installed bundle, no node_modules,
-// no host `/vendor` dependency.
+// Load the runtime sysroot into the bundler's virtual runtime map (specifier → JS
+// source). This is the JS twin of `loadTypes`: same installed bundle, no node_modules.
+// It carries React as well as the SDK, so a draft bundle is self-contained and the host
+// serves no framework bytes.
 export async function loadRuntime(
 	read: (path: string) => Promise<Uint8Array>
 ): Promise<Record<string, string>> {
