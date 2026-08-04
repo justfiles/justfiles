@@ -352,7 +352,8 @@ export function flushActiveVolume(): void {
 // a denylist is more robust than an allowlist and needs no per-app knowledge.
 const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'private', 'state', 'system'])
 // Copied subtree: user data + personalized identity only — never the sync journal, the
-// `/private` tree (credentials + the active-AI selection), app bytes, or per-app UI state.
+// `/private` tree (credentials, the active-AI selection, and the app cache, which
+// refills from its origin), app bundles, or per-app UI state.
 const MIGRATE_SKIP = ['/.state', '/private', '/applications', '/state']
 // The two identity files the DO seeds as `seeded: true` defaults — the only paths
 // a migration is allowed to overwrite (with the user's personalized version).

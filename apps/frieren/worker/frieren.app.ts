@@ -106,10 +106,15 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return kernelInstance
 	}
 
-	// Built-in apps are materialised client-side only: the browser seeds an empty
-	// volume once and syncs the bundle up. This DO never materialises
-	// `/applications/*` — it holds whatever the client synced up and serves it to
-	// the agent, so the kernel is used as-is with no server-side seed/reconcile.
+	// Built-in apps are materialised client-side only: the browser seeds an empty volume
+	// once and syncs the record up. This DO never materialises `/applications/*` — it
+	// holds whatever the client synced up and serves it to the agent, so the kernel is
+	// used as-is with no server-side seed/reconcile.
+	//
+	// It needs no asset fetcher either. A hosted app's GUI is mounted from the origin
+	// (#376), but the DO only ever reads `manifest.app`, and the reducer stays in the
+	// volume precisely so a headless kernel never depends on an origin that serves only
+	// the current release.
 
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {

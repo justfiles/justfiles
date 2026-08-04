@@ -190,8 +190,10 @@ function setError(stage: Stage, message: string | null): void {
 	}
 }
 
-// Browser-kernel path: dispatch locally, load gui.js from the synced volume
-// (no token, works offline once hydrated), push state via kernel events.
+// Browser-kernel path: dispatch locally, load gui.js through the kernel (from the
+// volume for a copied app, mounted from the release origin and cached for a hosted
+// one — no token either way, and offline once the service worker has the release),
+// push state via kernel events.
 async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 	try {
 		await bootLocal(stage, opts)

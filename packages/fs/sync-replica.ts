@@ -505,24 +505,51 @@ export type SyncState = {
 /**
  * Prefixes that never cross the wire, in EITHER direction:
  *   /.state  — this replica's own sync bookkeeping (engine-private, frozen)
- *   /private — this host's private tree: `/private/accounts`, `/private/connections`, …
+ *   /private — everything this host keeps to ITSELF
  *
  * Named for ACCESSIBILITY, like an access modifier: nobody outside this replica may
  * have it. Ownership follows (the host that acquired a credential is the only one that
  * can read it), but reachability is the rule being enforced.
  *
- * Credentials do not sync because no peer needs them: a capability routes to the host
- * that owns the credential, so the bytes are only ever read by the host that wrote
- * them. A top-level ROOT, not a subtree of `/system`: a never-sync lane nested under a
+ * `/private` is the GENERIC local-only lane, not the credential lane — credentials
+ * were merely its first occupant. Two reasons a path belongs here, and the layout
+ * separates them by subtree rather than by root:
+ *
+ *   /private/accounts, /private/connections — nobody else MAY have these. Secrets.
+ *   /private/cache/**                       — nobody else NEEDS to: reconstructible
+ *                                             from an upstream that can re-serve them
+ *                                             (see `cachePath`). Freely evictable.
+ *   /private/tmp/**                         — in flight, and about to be renamed away.
+ *
+ * The split matters for sweeps, not for sync: losing a cache is a refill, losing a
+ * credential is a re-auth. It is the same split Apple draws INSIDE an app container
+ * with `Library/Caches`, and for the same reason — one never-replicated boundary,
+ * subdivided by what may be thrown away.
+ *
+ * A top-level ROOT, not a subtree of `/system`: a never-sync lane nested under a
  * synced tree dies with any `rm -r` of its ancestor (`clientReset` / `reconcileLocal`),
  * and `/system` is exactly the tree we merge across hosts.
  *
  * Kept as an enumerable LIST, not just a predicate, because three consumers outside
  * sync need to name these paths: the agent shell's deny-list (`paths.SECRET_PREFIXES`),
- * the server reset (which resolves them to inodes in SQL), and frieren's profile-migration
- * skip list.
+ * the server reset (which resolves them to inodes in SQL — and only ever walks the
+ * SERVER's copy, which holds credentials alone, never a client's cache), and frieren's
+ * profile-migration skip list.
  */
 export const PRIVATE_PREFIXES = ['/.state', '/private'] as const
+
+/**
+ * Where a volume path's cached bytes live: `/private/cache` MIRRORS the volume's own
+ * namespace, so `/private/cache/applications/x/gui.js` holds what would otherwise sit
+ * at `/applications/x/gui.js`.
+ *
+ * The volume path stays the file's identity and the mapping is a string concat — no
+ * index, no lookup table, and a missing file is just a missing file that the reader
+ * refetches. Never applied to a path already under `/private`.
+ */
+export function cachePath(path: string): string {
+	return `/private/cache${path}`
+}
 
 /**
  * A segment-aware prefix matcher — the primitive the built-in class and a host's own

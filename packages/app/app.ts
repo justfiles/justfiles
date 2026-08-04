@@ -335,6 +335,21 @@ export interface RuntimeContext<State = unknown> {
 // WITHOUT running the app.
 export type CapabilityDecl = Record<string, { id: string; scopes: string[] }>
 
+/**
+ * The installed-app record — and, when the app is hosted, the whole of it.
+ *
+ * `baseUrl` is what splits the two shapes. With one, the manifest is a SPEC: an
+ * immutable, version-pinned origin the bytes are mounted from, plus the hashes that
+ * identify them. `/applications/<id>/` then holds this file and nothing else, and the
+ * bytes live in `/private/cache` — refetched on a miss, never replicated, because the
+ * origin can always re-serve them. Without one, the bundle IS the bytes: they are
+ * copied into `/applications/<id>/` and replicate, which is the only correct answer
+ * for an app authored locally (a devkit draft has no upstream to refetch from).
+ *
+ * That makes residency a CONSEQUENCE of the spec rather than a separate flag, and it
+ * makes the record self-describing: a device can validate and repair an app it has
+ * only ever received over sync, with no catalog of its own to consult.
+ */
 export interface AppManifest {
 	id: string
 	name: string
@@ -346,6 +361,38 @@ export interface AppManifest {
 	cli?: string
 	include?: string[]
 	capabilities?: CapabilityDecl
+	// The origin this app's bytes are mounted from — version-pinned and immutable, so
+	// it addresses exactly the release this record describes. Written by the installer
+	// from the catalog entry, never declared by the app itself. Absent ⇒ the bundle's
+	// bytes were copied into the volume and replicate.
+	baseUrl?: string
+	// Whole-app fingerprint, folding every file's hash. What the update path compares
+	// to decide whether the installed app is still the published one.
+	hash?: string
+	// Bundle path → `sha256-<hex>`, for the files `baseUrl` serves. The integrity pin
+	// travels WITH the record instead of living in a catalog, so a fetched byte can be
+	// verified by a device whose own release never carried this version.
+	files?: Record<string, string>
+}
+
+// Is this app's payload mounted from an origin rather than stored in the volume?
+export function isHosted(manifest: Pick<AppManifest, 'baseUrl'>): boolean {
+	return typeof manifest.baseUrl === 'string' && manifest.baseUrl.length > 0
+}
+
+// Is this bundle file mounted from the origin, or does it live in the volume?
+//
+// The REDUCER never mounts, even for a hosted app. A headless kernel runs it with no
+// service worker and an assets binding that only ever holds the CURRENT release, so a
+// record that outlives its release would leave the agent unable to run an app the user
+// has installed — the one case the volume is the only durable answer for. It is also
+// the cheap half to keep: #373 leaves reducers framework-free by construction, while
+// the GUI is where the bytes actually are.
+export function isMountedFile(
+	manifest: Pick<AppManifest, 'app' | 'baseUrl'>,
+	path: string
+): boolean {
+	return isHosted(manifest) && path !== manifest.app
 }
 
 export interface AppBundle {

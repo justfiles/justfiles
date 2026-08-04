@@ -14,6 +14,14 @@ export function createClientKernel(options: {
 		fs: options.fs,
 		sandbox: browserSandbox(),
 		clock: {},
+		// A hosted app's payload is mounted from the deploy that served this page, so a
+		// plain same-origin fetch is the whole seam. The service worker precaches those
+		// files, which is what keeps a built-in launchable offline.
+		fetchAsset: async (url) => {
+			const res = await fetch(url)
+			if (!res.ok) throw new Error(`appstore: ${url} ${res.status}`)
+			return new Uint8Array(await res.arrayBuffer())
+		},
 		capabilities: clientCapabilities(options.fs, options.getToken, options.getUser)
 	})
 	// A devkit install/uninstall mutates this kernel's catalog; the OS launcher

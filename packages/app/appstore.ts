@@ -11,6 +11,7 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
+import type { AppManifest } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -28,6 +29,12 @@ export interface CatalogApp {
 	// and the update-time escalation guard.
 	capabilities?: CapabilityDecl
 	files: CatalogFile[]
+	// Where this version's files are served from, version-pinned and immutable. Set by
+	// a store that can re-serve its apps on demand (frieren's `/appstore` assets); a
+	// store whose bytes have no stable address (a packaged FS bundle) leaves it unset
+	// and its apps are copied into the volume instead. This single field is what
+	// decides an installed app's shape — see `AppManifest`.
+	baseUrl?: string
 }
 
 export interface Catalog {
@@ -51,12 +58,6 @@ export interface AppStore {
 	// Read one file's bytes for a specific app version.
 	read(app: CatalogApp, path: string): Promise<Uint8Array>
 }
-
-// The marker file `install` writes into each installed bundle recording the
-// whole-app hash of the release it came from. Reconcile compares it against the
-// hash the catalog currently yields to decide whether to reinstall. A dotfile so
-// it stays off every bundle-listing surface (see `hidden` in kernel.ts).
-const INSTALL_HASH_PATH = '.apphash'
 
 // Ensure the built-in set is present: install every built-in that isn't already
 // installed. The ONLY path that installs a missing built-in — `reconcile` never
@@ -110,25 +111,69 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 type SyncAction = 'skip' | 'repair' | 'upgrade'
 
 async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
-	const gte = semverGte(app.version, await installedVersion(fs, app.id))
-	if (!(await filesPresentAndMatch(fs, app))) return gte ? 'repair' : 'skip'
-	if ((await installedHash(fs, app.id)) === (await appHash(app))) return 'skip'
+	const installed = await installedManifest(fs, app.id)
+	const gte = semverGte(app.version, installed?.version ?? '0.0.0')
+	// The record has to name the source the store CURRENTLY serves from. The whole-app
+	// hash covers file paths and digests only, so a release that just MOVES — copied to
+	// hosted, hosted to copied, or one origin to another — leaves it unchanged, and
+	// every other signal below would say 'skip' forever: the record would stay pointed
+	// at a source that no longer serves it, with nothing to notice. Checked first so
+	// the migration off the copied layout does not depend on a version bump either.
+	if (installed && installed.baseUrl !== app.baseUrl) return gte ? 'repair' : 'skip'
+	if (!(await filesPresentAndMatch(fs, app, installed))) return gte ? 'repair' : 'skip'
+	if (installed?.hash === (await appHash(app))) return 'skip'
 	return gte ? 'upgrade' : 'skip'
 }
 
-// Install `app` from the store: verify each file's pinned hash before it reaches
-// the volume, then record the release's whole-app hash so a later reconcile can
-// skip an unchanged app (and reinstall a changed one) with a single comparison.
-// The on-demand install entry point (first-time install of a store app) and the
-// path `materialise`/`reconcile` use internally. Files download through a bounded
-// worker pool (not one-at-a-time), so a many-file app installs in a fraction of
-// the wall-clock time — first byte to installed shrinks, cutting the window where a
-// closed tab / dropped connection abandons the install.
+// Install `app` from the store. What lands in the volume depends on whether the store
+// can re-serve the app's files:
+//
+//   hosted — the SPEC plus the reducer. The manifest records `baseUrl`, the whole-app
+//            hash and each MOUNTED file's pinned hash, which is everything a device
+//            needs to fetch and verify the rest later. Two requests instead of N, and
+//            the GUI and assets never enter the volume, so they never replicate.
+//   local  — download every file, verifying each pinned hash before it lands, and copy
+//            the lot in. The only correct shape when there is no origin to refetch
+//            from.
+//
+// Files download through a bounded worker pool (not one-at-a-time), so a many-file app
+// installs in a fraction of the wall-clock time — first byte to installed shrinks,
+// cutting the window where a closed tab / dropped connection abandons the install.
+//
+// The on-demand install entry point (first-time install of a store app) and the path
+// `materialise`/`reconcile` use internally.
 const INSTALL_CONCURRENCY = 12
 
 export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
+	const declared = await appManifest(store, app)
+	const reducer = safeBundlePath(declared.app)
+	const spec: AppManifest = {
+		...declared,
+		id: app.id,
+		version: app.version,
+		hash: await appHash(app),
+		// Where an app's bytes come from is the STORE's fact, never the bundle's claim —
+		// a published manifest that named its own origin would otherwise decide its own
+		// residency, and point the mount wherever it liked.
+		baseUrl: app.baseUrl,
+		// Only what actually mounts. The reducer is downloaded now and stored in the
+		// volume, so pinning it here would describe a fetch that never happens.
+		files: app.baseUrl
+			? Object.fromEntries(
+					app.files
+						.filter((file) => file.path !== 'manifest.json')
+						.map((file) => [safeBundlePath(file.path), file.hash] as const)
+						.filter(([path]) => path !== reducer)
+				)
+			: undefined
+	}
+
+	// A hosted install copies in the reducer alone; a local one copies everything.
 	const files = new Map<string, Uint8Array>()
-	const queue = [...app.files]
+	const queue = app.files.filter(
+		(file) =>
+			file.path !== 'manifest.json' && (!app.baseUrl || safeBundlePath(file.path) === reducer)
+	)
 	const fetchOne = async (): Promise<void> => {
 		for (let file = queue.pop(); file; file = queue.pop()) {
 			const bytes = await store.read(app, file.path)
@@ -136,22 +181,43 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 			files.set(safeBundlePath(file.path), bytes) // single-threaded: no Map race between awaits
 		}
 	}
-	await Promise.all(
-		Array.from({ length: Math.min(INSTALL_CONCURRENCY, app.files.length) }, fetchOne)
-	)
-	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(await appHash(app)))
-	await kernel.install(bundleFromFiles(files))
+	await Promise.all(Array.from({ length: Math.min(INSTALL_CONCURRENCY, queue.length) }, fetchOne))
+	if (app.baseUrl && !files.has(reducer)) {
+		throw new Error(`catalog app missing its reducer: ${app.id}/${reducer}`)
+	}
+	await kernel.install(bundleFromFiles(spec, files))
 }
 
-// Every catalog file is present locally with its pinned content (self-heal
-// signal). Excludes manifest.json — the kernel re-serialises it on install
-// (normalised entry paths), so its installed bytes never match the catalog's
-// verbatim copy; the whole-app hash / version read cover manifest changes
-// instead. A missing file (partial install / un-hydrated stub) or a content
-// mismatch (corruption) returns false so `decide` repairs it.
-async function filesPresentAndMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
+// The app's own declared metadata — entry paths, capabilities, description — read from
+// the one catalog file that is always fetched even for a hosted install, because the
+// record has to carry it.
+async function appManifest(store: AppStore, app: CatalogApp): Promise<AppManifest> {
+	const file = app.files.find((f) => f.path === 'manifest.json')
+	if (!file) throw new Error(`catalog app missing manifest.json: ${app.id}`)
+	const bytes = await store.read(app, 'manifest.json')
+	await verifyHash(app, file, bytes)
+	return JSON.parse(new TextDecoder().decode(bytes))
+}
+
+// Every catalog file that belongs in the VOLUME is present with its pinned content
+// (self-heal signal). For a hosted app that is the reducer alone — the mounted half is
+// a cache, where a miss or a mismatch is repaired by the next read against the record's
+// own hashes rather than by a reinstall.
+//
+// Excludes manifest.json — the kernel re-serialises it on install (normalised entry
+// paths, plus the spec fields), so its installed bytes never match the catalog's
+// verbatim copy; the whole-app hash / version read cover manifest changes instead. A
+// missing file (partial install / un-hydrated stub) or a content mismatch (corruption)
+// returns false so `decide` repairs it.
+async function filesPresentAndMatch(
+	fs: Volume,
+	app: CatalogApp,
+	installed: AppManifest | null
+): Promise<boolean> {
+	const reducer = safeBundlePath(installed?.app ?? 'app.js')
 	for (const file of app.files) {
 		if (file.path === 'manifest.json') continue
+		if (app.baseUrl && safeBundlePath(file.path) !== reducer) continue
 		let contentHash: string | undefined
 		try {
 			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
@@ -164,16 +230,14 @@ async function filesPresentAndMatch(fs: Volume, app: CatalogApp): Promise<boolea
 	return true
 }
 
-// The installed app's declared version, normalised to `0.0.0` when the manifest
-// is missing/corrupt — so a never-versioned install always sorts below a real
-// store version (the monotonic guard then allows the upgrade).
-async function installedVersion(fs: Volume, id: string): Promise<string> {
+// The installed app's manifest, or null when it is missing/corrupt. One read for every
+// question `decide` asks of it — declared version, shape, whole-app hash, capabilities.
+async function installedManifest(fs: Volume, id: string): Promise<AppManifest | null> {
 	try {
 		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
-		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { version?: string }
-		return manifest.version ?? '0.0.0'
+		return JSON.parse(new TextDecoder().decode(bytes))
 	} catch {
-		return '0.0.0'
+		return null
 	}
 }
 
@@ -217,19 +281,8 @@ export function escalatesCapabilities(
 }
 
 async function escalates(fs: Volume, app: CatalogApp): Promise<boolean> {
-	return escalatesCapabilities(await installedCapabilities(fs, app.id), app.capabilities)
-}
-
-async function installedCapabilities(fs: Volume, id: string): Promise<CapabilityDecl | undefined> {
-	try {
-		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
-		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as {
-			capabilities?: CapabilityDecl
-		}
-		return manifest.capabilities
-	} catch {
-		return undefined
-	}
+	const installed = await installedManifest(fs, app.id)
+	return escalatesCapabilities(installed?.capabilities, app.capabilities)
 }
 
 // The whole-app hash: one sha256 folding every file's pinned hash together
@@ -248,18 +301,6 @@ async function appHash(app: CatalogApp): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-// The whole-app hash recorded when this app was last installed (the marker
-// `install` writes). Null when absent — an app installed before this marker
-// existed, or a partial/corrupt bundle — which forces a (re)install.
-async function installedHash(fs: Volume, id: string): Promise<string | null> {
-	try {
-		const bytes = await fs.readFile(`/applications/${id}/${INSTALL_HASH_PATH}`)
-		return new TextDecoder().decode(bytes)
-	} catch {
-		return null
-	}
-}
-
 // Integrity check: the catalog pins each file's `sha256-<hex>` digest (emitted
 // by the build over the exact served bytes). Verify before installing so
 // corrupt or tampered bytes never reach the volume.
@@ -276,12 +317,10 @@ async function verifyHash(app: CatalogApp, file: CatalogFile, bytes: Uint8Array)
 	}
 }
 
-function bundleFromFiles(files: Map<string, Uint8Array>): AppBundle {
+function bundleFromFiles(manifest: AppManifest, files: Map<string, Uint8Array>): AppBundle {
 	return {
 		async manifest() {
-			const bytes = files.get('manifest.json')
-			if (!bytes) throw new Error('catalog app missing manifest.json')
-			return JSON.parse(new TextDecoder().decode(bytes))
+			return manifest
 		},
 		async *list() {
 			yield* files.keys()

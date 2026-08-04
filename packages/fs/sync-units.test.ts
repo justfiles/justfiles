@@ -15,6 +15,7 @@ import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
 import {
+	cachePath,
 	ignorePrefixes,
 	journaledChangeSource,
 	localSyncReplica,
@@ -231,6 +232,32 @@ describe('the built-in private class', () => {
 	})
 })
 
+// The cache is a SUBTREE of the private lane, not a root of its own: `/private` is
+// where this host keeps everything it does not replicate, and the cache mirrors the
+// volume namespace inside it.
+describe('the cache lane', () => {
+	it('mirrors the volume namespace under /private/cache', () => {
+		expect(cachePath('/applications/notes/gui.js')).toBe('/private/cache/applications/notes/gui.js')
+	})
+
+	it('is never replicated, because /private never is', () => {
+		const p = syncIgnore()
+		expect(p(cachePath('/applications/notes/gui.js'))).toBe(true)
+		expect(p('/private/tmp/app-installs/x')).toBe(true)
+	})
+
+	// The reason it is a separate root rather than `/applications/<id>/.cache/`: an
+	// ignored DESCENDANT makes `shieldsIgnored` skip a peer's delete of its parent, so an
+	// uninstall on another device would leave a zombie directory that `list()` ignores
+	// (no manifest) but `has()` calls installed. Nothing under `/applications` is ignored.
+	it('leaves the tree it caches entirely un-ignored', () => {
+		const p = syncIgnore()
+		expect(p('/applications')).toBe(false)
+		expect(p('/applications/notes')).toBe(false)
+		expect(p('/applications/notes/gui.js')).toBe(false)
+	})
+})
+
 // A host composes its OWN never-sync paths on top of the built-in class. The composition
 // is by OR, which is the whole safety property: an `ignore` can widen the boundary, never
 // narrow it — so no host (or future caller) can make credentials sync.
@@ -242,6 +269,7 @@ describe('syncIgnore', () => {
 		for (const path of [
 			'/private',
 			'/private/accounts/a.json',
+			'/private/cache/applications/notes/gui.js',
 			'/.state/sync',
 			'/notes/a',
 			'/privateer'
@@ -463,6 +491,44 @@ describe('localSyncReplica', () => {
 		await replica.applyPathChanges([put('/.state/x', '1', 's')], async () => bytes('s'))
 		expect(await vol.exists('/notes/a')).toBe(true)
 		expect(await vol.exists('/.state/x')).toBe(false)
+	})
+
+	it('never sends or accepts a cache-lane path, with no host ignore configured', async () => {
+		const rows = [
+			{ seq: 1, change: put('/applications/notes/app.js', '1', 'reducer') },
+			{ seq: 2, change: put(cachePath('/applications/notes/gui.js'), '1', 'gui') }
+		]
+		const { changes } = await makeReplica(fakeJournalStore(rows)).pathDeltas('', {})
+		expect(changes.map((c) => c.path)).toEqual(['/applications/notes/app.js'])
+
+		const store = memStorage()
+		const vol = volume(store)
+		await makeReplica(store).applyPathChanges(
+			[put(cachePath('/applications/notes/gui.js'), '1', 'gui')],
+			async () => bytes('gui')
+		)
+		expect(await vol.exists(cachePath('/applications/notes/gui.js'))).toBe(false)
+	})
+
+	// The cache mirrors the volume's namespace from a SEPARATE root, so a peer's
+	// uninstall lands: nothing under `/applications` is ignored, and there is no ignored
+	// descendant for `shieldsIgnored` to protect. (Checked with a host ignore configured,
+	// since that is what arms the shield in the first place.)
+	it('applies a peer’s delete of an app bundle that has a cache mirror', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		const replica = makeReplica(store, false, (p) => p.endsWith('.DS_Store'))
+		await vol.mkdir('/applications/notes', { recursive: true })
+		await vol.writeFile('/applications/notes/app.js', bytes('reducer'))
+		await vol.mkdir(cachePath('/applications/notes'), { recursive: true })
+		await vol.writeFile(cachePath('/applications/notes/gui.js'), bytes('gui'))
+
+		await replica.applyPathChanges(
+			[del('/applications/notes/app.js', '99'), del('/applications/notes', '99')],
+			async () => bytes('')
+		)
+		expect(await vol.exists('/applications/notes')).toBe(false)
+		expect(await vol.exists(cachePath('/applications/notes/gui.js'))).toBe(true)
 	})
 
 	it('never emits an ignored path from pathDeltas or pathScan', async () => {
