@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.5.1...fs-v0.6.0) (2026-08-04)
+
+
+### Features
+
+* **app:** make the manifest an app spec and mount hosted GUIs from the origin ([#379](https://github.com/xiaoxinghu/justfiles/issues/379)) ([6dfaf0c](https://github.com/xiaoxinghu/justfiles/commit/6dfaf0c1ee519d9e2a6b33671024f0506e2f0dc9))
+
 ## [0.5.1](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.5.0...fs-v0.5.1) (2026-08-03)
 
 
