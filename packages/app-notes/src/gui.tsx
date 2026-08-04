@@ -16,6 +16,7 @@ import {
 	screenEntry,
 	zipEntryName
 } from './import.ts'
+import { MoveNoteControl } from './move-picker.tsx'
 import {
 	cutKept,
 	displayPath,
@@ -1144,16 +1145,29 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// The menu is already closed by the time this runs, so a failure has nowhere to appear
 	// but the status line — and "the name is taken by a note" is a thing users do.
 	const createFolder = useCallback(
-		async (path: string) => {
+		async (path: string): Promise<boolean> => {
 			try {
 				await actions.mkdir({ path })
+				return true
 			} catch (failure) {
 				setStatus(
 					`Could not create ${displayPath(path)} — ${failure instanceof Error ? failure.message : String(failure)}`
 				)
+				return false
 			}
 		},
 		[actions]
+	)
+
+	const moveOpenNote = useCallback(
+		async (dir: string, create: boolean): Promise<boolean> => {
+			const from = buf.snapshot().path
+			if (from === null) return false
+			if (create && !(await createFolder(dir))) return false
+			const filename = from.slice(from.lastIndexOf('/') + 1)
+			return (await moveNote(from, joinPath(dir, filename))) !== null
+		},
+		[buf, createFolder, moveNote]
 	)
 
 	const removeNote = useCallback(
@@ -1630,26 +1644,36 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					    inviting a decision the surface exists to postpone. Its name is asked for once,
 					    in the footer, at the moment of keeping (DESIGN.md §6). */}
 					{onScratch ? null : (
-						<input
-							ref={titleRef}
-							className="notes-title"
-							aria-label="Note name"
-							placeholder="Untitled"
-							value={shownName}
-							aria-invalid={titleError !== null || undefined}
-							aria-describedby={titleError ? 'notes-title-error' : undefined}
-							onChange={(e) => {
-								// The first keystroke fixes what this draft is ABOUT — the words the buffer is
-								// holding, named by wherever they live right now (see the `buffer.path` effect).
-								if (draftRef.current === null) draftForRef.current = buffer.path
-								setDraft(e.target.value)
-								setTitleError(null)
-							}}
-							onKeyDown={onTitleKey}
-							onBlur={() => {
-								if (draftRef.current !== null) void commitTitle(draftRef.current, false)
-							}}
-						/>
+						<div className="notes-title-row">
+							<input
+								ref={titleRef}
+								className="notes-title"
+								aria-label="Note name"
+								placeholder="Untitled"
+								value={shownName}
+								aria-invalid={titleError !== null || undefined}
+								aria-describedby={titleError ? 'notes-title-error' : undefined}
+								onChange={(e) => {
+									// The first keystroke fixes what this draft is ABOUT — the words the buffer is
+									// holding, named by wherever they live right now (see the `buffer.path` effect).
+									if (draftRef.current === null) draftForRef.current = buffer.path
+									setDraft(e.target.value)
+									setTitleError(null)
+								}}
+								onKeyDown={onTitleKey}
+								onBlur={() => {
+									if (draftRef.current !== null) void commitTitle(draftRef.current, false)
+								}}
+							/>
+							{buffer.path ? (
+								<MoveNoteControl
+									path={buffer.path}
+									entries={entries}
+									onOpen={() => void refresh()}
+									onMove={moveOpenNote}
+								/>
+							) : null}
+						</div>
 					)}
 					{titleError && !onScratch ? (
 						<p className="notes-title-error" id="notes-title-error">
