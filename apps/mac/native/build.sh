@@ -155,8 +155,8 @@ build_ship_daemon() {
 
 	# 1. The self-contained daemon exe (arm64) → Contents/MacOS/daemon.
 	(cd .. && bun daemon/build-exe.ts --outfile "$exe" --target bun-darwin-arm64)
-	# 2. Browser surfaces (launcher / chat / app shell + hashed /assets/* + the shared React
-	#    /vendor/* bundles) built by Vite into ui/dist/client → Resources/client, where the
+	# 2. Browser surfaces (launcher / chat / app shell + hashed /assets/*) built by Vite into
+	#    ui/dist/client → Resources/client, where the
 	#    daemon's CLIENT_DIR resolves them when shipped. Rebuild first (a clean Vite build
 	#    empties dist/client) so a stale or absent tree can never ship.
 	(cd .. && pnpm run ui:build >/dev/null)

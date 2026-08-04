@@ -47,9 +47,8 @@ export function guiHost(
 	return (state) => port.postMessage({ type: 'state', state } satisfies HostMessage)
 }
 
-// The frame document (a classic inline script, so a runtime-added importmap is
-// legal — no module load has been triggered yet). It carries the platform sheet
-// up front, so an app that writes plain `<button>`/`<input>` looks native without
+// The frame document carries the platform sheet up front, so an app that writes
+// plain `<button>`/`<input>` looks native without
 // asking for anything; every rule in it is `:where()`-wrapped, so the app's own
 // CSS outranks it. Dark mode rides along via design.css's
 // `@media (prefers-color-scheme)` plus its `color-scheme: light dark` (which also
