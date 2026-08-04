@@ -23,6 +23,9 @@ export type {
 	AppHandle,
 	AppManifest,
 	CapabilityDecl,
+	// Already the return type of `app()` below — named here so a host can write it
+	// down instead of reaching for `Awaited<ReturnType<…>>`.
+	InstalledApp,
 	Message,
 	RawAppHandle
 } from './app.ts'

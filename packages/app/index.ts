@@ -13,6 +13,7 @@ export {
 	type AppManifest,
 	appBundleFromMemory,
 	type GetSandbox,
+	type InstalledApp,
 	type Kernel,
 	kernel,
 	type Message,

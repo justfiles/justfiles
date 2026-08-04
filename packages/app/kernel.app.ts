@@ -1,7 +1,7 @@
 import type { Volume } from '@justfiles/fs'
 import { cachePath } from '@justfiles/fs/sync-replica'
 import type { AppBundle, AppManifest, InstalledApp } from './app.ts'
-import { isCachedBundleFile, safeBundlePath } from './app.ts'
+import { INSTALL_HASH_PATH, isCachedBundleFile, safeBundlePath } from './app.ts'
 import { trashBundle } from './trash.ts'
 
 type AppId = string
@@ -24,10 +24,19 @@ function appRoot(appId: AppId): string {
 	return `/applications/${appId}`
 }
 
-// Where install staged bundles before committing them with a rename. The cache
-// lane stages under the MIRROR of this path, so a cached install's bytes are never
-// visible to sync — not even in the window between the write and the rename.
-const INSTALL_TMP = '/system/tmp/app-installs'
+// Where install stages a bundle before committing it with a rename, and parks the
+// previous one until the swap succeeds. In the cache lane for BOTH residencies:
+// staged bytes are the definitive local-only file — they exist solely to be renamed
+// away, and no peer has any use for them at this path. Keeping them out of
+// `/system/tmp` means an install never churns the wire with a put-then-delete at a
+// synced path, which is what a synced staging dir did for every devkit install.
+//
+// NOT `/private`: that lane means "nobody else may have these" and carries three
+// dependencies that bundle-sized subtrees would violate — the agent's shell
+// deny-list, `reset.ts`'s BFS (written for "a handful of small JSON files"), and
+// `sync-replica.ts`'s documented per-account-credential contract. Staging is
+// reconstructible, not secret.
+const INSTALL_TMP = cachePath('/system/tmp/app-installs')
 
 const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/')
 
@@ -83,19 +92,16 @@ export function apps(fs: Volume): Apps {
 		}
 		const root = appRoot(appId)
 		const installId = crypto.randomUUID()
-		// One staging area per lane, each a mirror of the other. A 'synced' app uses
-		// only the first; a 'cached' one splits its files across both by the same rule
-		// every reader resolves paths with (`bundleFilePath`).
-		const synced = {
-			root,
-			tmp: `${INSTALL_TMP}/${appId}-${installId}`,
-			backup: `${INSTALL_TMP}/${appId}-previous-${installId}`
-		}
-		const cache = {
-			root: cachePath(synced.root),
-			tmp: cachePath(synced.tmp),
-			backup: cachePath(synced.backup)
-		}
+		// One staging area per lane — both under `INSTALL_TMP`, differing only in which
+		// root they commit into. A 'synced' app uses the first alone; a 'cached' one
+		// splits its files across the two by the rule every reader resolves paths with
+		// (`bundleFilePath`).
+		const stage = (name: string) => ({
+			tmp: `${INSTALL_TMP}/${appId}-${name}${installId}`,
+			backup: `${INSTALL_TMP}/${appId}-${name}previous-${installId}`
+		})
+		const synced = { root, ...stage('') }
+		const cache = { root: cachePath(root), ...stage('cache-') }
 		const cached = manifest.assets === 'cached'
 		// Cache lane FIRST: the manifest is the installed-app record, so committing the
 		// synced root last means an interrupted install never leaves a live manifest
@@ -124,6 +130,16 @@ export function apps(fs: Volume): Apps {
 				throw new Error(`missing icon: ${manifest.icon}`)
 			}
 			await fs.writeFile(`${synced.tmp}/manifest.json`, bytes(JSON.stringify(manifest)))
+			// Stamp the cache lane with the same install marker the synced lane carries.
+			// The two lanes commit separately and only one of them replicates, so this is
+			// what lets a reader ask "was this cache written by the bundle I have?" without
+			// a catalog — see `cacheIsCurrent`.
+			if (cached) {
+				const marker = `${synced.tmp}/${INSTALL_HASH_PATH}`
+				if (await fs.exists(marker)) {
+					await fs.writeFile(`${cache.tmp}/${INSTALL_HASH_PATH}`, await fs.readFile(marker))
+				}
+			}
 
 			for (const lane of lanes) {
 				await fs.mkdir(parentOf(lane.root), { recursive: true })
@@ -185,16 +201,46 @@ export function apps(fs: Volume): Apps {
 		return manifests
 	}
 
+	// Was this app's cache written by the bundle currently installed?
+	//
+	// The two lanes commit separately and only the synced one replicates, so they can
+	// drift: a peer running a newer release installs v2, syncs down `manifest.json` +
+	// `app.js` + `.apphash`, and this device is left holding a v1 GUI — or none at all,
+	// for a built-in it never had. Its own catalog is older, so `decide` correctly
+	// declines to downgrade and the cache is never repaired.
+	//
+	// `.apphash` folds every file's hash, gui.js included, so comparing the lanes'
+	// copies answers the question with no catalog and no network: equal means the cache
+	// belongs to this bundle, anything else (absent, stale) means it does not. Reads
+	// then fail as MISSING rather than quietly serving a GUI from a different version,
+	// which is what turns cross-release skew into the host's ordinary refill path.
+	async function cacheIsCurrent(root: string): Promise<boolean> {
+		const read = (at: string) => fs.readFile(`${at}/${INSTALL_HASH_PATH}`).catch(() => null)
+		const [installed, cached] = await Promise.all([read(root), read(cachePath(root))])
+		// No marker on either side is a bundle installed without one (a devkit draft, a
+		// pre-marker install) — nothing to contradict, so the cache stands.
+		if (!installed && !cached) return true
+		return installed !== null && cached !== null && text(installed) === text(cached)
+	}
+
 	async function get(appId: AppId): Promise<InstalledApp | null> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return null
 		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
+		const stale = manifest.assets === 'cached' && !(await cacheIsCurrent(root))
 		return {
 			manifest,
 			// The manifest the caller just read IS the lane record, so a read resolves
 			// without a second lookup: `app.js` from the synced root, `gui.js` from the
 			// mirror when this app's assets are cached.
-			read: (path) => fs.readFile(bundleFilePath(appId, manifest, safeBundlePath(path)))
+			read: async (path) => {
+				const safe = safeBundlePath(path)
+				const at = bundleFilePath(appId, manifest, safe)
+				if (stale && at !== `${root}/${safe}`) {
+					throw new Error(`app cache is stale: ${appId}/${safe}`)
+				}
+				return fs.readFile(at)
+			}
 		}
 	}
 }
