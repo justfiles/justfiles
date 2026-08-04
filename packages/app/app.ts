@@ -335,21 +335,21 @@ export interface RuntimeContext<State = unknown> {
 // WITHOUT running the app.
 export type CapabilityDecl = Record<string, { id: string; scopes: string[] }>
 
-// Where an app's bytes RESIDE — residency, not provenance.
-//
-//   'synced' — the volume is the only copy, so every byte replicates. The default,
-//              and permanently correct for a locally-authored app (devkit installs
-//              a draft with no upstream at all: drop its `gui.js` from the wire and
-//              a second device gets a bundle it can never repair).
-//   'cached' — someone else can re-serve the bytes (this release's app store, a
-//              hosted origin), so only the installed-app record and the reducer a
-//              headless kernel runs replicate; the rest lives in the local-only
-//              `/.cache` mirror, and a miss is repaired from the store.
-//
-// Because it describes residency, "built-ins now, community apps later" is not a
-// special case anywhere in the code — it is which value the installer is handed.
-export type AppAssets = 'synced' | 'cached'
-
+/**
+ * The installed-app record — and, when the app is hosted, the whole of it.
+ *
+ * `baseUrl` is what splits the two shapes. With one, the manifest is a SPEC: an
+ * immutable, version-pinned origin the bytes are mounted from, plus the hashes that
+ * identify them. `/applications/<id>/` then holds this file and nothing else, and the
+ * bytes live in `/private/cache` — refetched on a miss, never replicated, because the
+ * origin can always re-serve them. Without one, the bundle IS the bytes: they are
+ * copied into `/applications/<id>/` and replicate, which is the only correct answer
+ * for an app authored locally (a devkit draft has no upstream to refetch from).
+ *
+ * That makes residency a CONSEQUENCE of the spec rather than a separate flag, and it
+ * makes the record self-describing: a device can validate and repair an app it has
+ * only ever received over sync, with no catalog of its own to consult.
+ */
 export interface AppManifest {
 	id: string
 	name: string
@@ -361,31 +361,23 @@ export interface AppManifest {
 	cli?: string
 	include?: string[]
 	capabilities?: CapabilityDecl
-	// Written by the installer, never declared by the app: residency is the host's
-	// policy about bytes, not something a bundle gets an opinion on. Absent on a
-	// bundle handed to `install` (and on any pre-#376 install) means 'synced'.
-	assets?: AppAssets
+	// The origin this app's bytes are mounted from — version-pinned and immutable, so
+	// it addresses exactly the release this record describes. Written by the installer
+	// from the catalog entry, never declared by the app itself. Absent ⇒ the bundle's
+	// bytes were copied into the volume and replicate.
+	baseUrl?: string
+	// Whole-app fingerprint, folding every file's hash. What the update path compares
+	// to decide whether the installed app is still the published one.
+	hash?: string
+	// Bundle path → `sha256-<hex>`, for the files `baseUrl` serves. The integrity pin
+	// travels WITH the record instead of living in a catalog, so a fetched byte can be
+	// verified by a device whose own release never carried this version.
+	files?: Record<string, string>
 }
 
-// The marker file the app store writes into each installed bundle, recording the
-// whole-app hash of the release it came from. A dotfile so it stays off every
-// bundle-listing surface (see `hidden` in kernel.ts). Lives here rather than in
-// appstore.ts because the residency split below has to name it.
-export const INSTALL_HASH_PATH = '.apphash'
-
-// Does this bundle file live in the local-only cache lane?
-//
-// The synced side is exactly what a peer READS: `manifest.json` is the installed-app
-// record, `app` is the reducer the DO runs headlessly for the agent, and `.apphash`
-// is what the update path compares. `gui.js`, the icon and every other asset are
-// reconstructible from whoever served them, and the DO never opens them — syncing
-// those is paying metered storage for bytes nobody on the other end will read.
-export function isCachedBundleFile(
-	manifest: { app: string; assets?: AppAssets },
-	path: string
-): boolean {
-	if (manifest.assets !== 'cached') return false
-	return path !== 'manifest.json' && path !== INSTALL_HASH_PATH && path !== manifest.app
+// Is this app's payload mounted from an origin rather than stored in the volume?
+export function isHosted(manifest: Pick<AppManifest, 'baseUrl'>): boolean {
+	return typeof manifest.baseUrl === 'string' && manifest.baseUrl.length > 0
 }
 
 export interface AppBundle {

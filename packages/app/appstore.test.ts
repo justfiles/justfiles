@@ -1,7 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import { type AppStore, type CatalogApp, materialise, reconcile, semverGte } from './appstore.ts'
-import { bundleFilePath } from './kernel.app.ts'
 import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()
@@ -20,7 +19,14 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-async function catalogApp(id: string, files: Record<string, string>): Promise<CatalogApp> {
+// Built-ins are HOSTED: the deploy serves their files at an immutable version-pathed
+// URL, so they install as a spec. `baseUrl: null` models a store whose bytes have no
+// stable address (a packaged FS bundle), whose apps are copied into the volume.
+async function catalogApp(
+	id: string,
+	files: Record<string, string>,
+	baseUrl: string | null = '/appstore/apps'
+): Promise<CatalogApp> {
 	const fileList = await Promise.all(
 		Object.entries(files).map(async ([path, content]) => ({
 			path,
@@ -30,13 +36,23 @@ async function catalogApp(id: string, files: Record<string, string>): Promise<Ca
 	)
 	// Mirror the store: the catalog version is the app's declared manifest version.
 	const version = (JSON.parse(files['manifest.json'] ?? '{}') as { version?: string }).version
-	return { id, name: id, version: version ?? '1.0.0', icon: 'icon.svg', files: fileList }
+	return {
+		id,
+		name: id,
+		version: version ?? '1.0.0',
+		icon: 'icon.svg',
+		files: fileList,
+		...(baseUrl ? { baseUrl: `${baseUrl}/${id}/${version ?? '1.0.0'}` } : {})
+	}
 }
 
 // A store carrying one built-in whose pinned hashes match the bytes `read`
 // returns — so the integrity check passes and reconcile compares real digests.
-async function builtinStore(files: Record<string, string>): Promise<AppStore> {
-	const app = await catalogApp('app.x', files)
+async function builtinStore(
+	files: Record<string, string>,
+	baseUrl: string | null = '/appstore/apps'
+): Promise<AppStore> {
+	const app = await catalogApp('app.x', files, baseUrl)
 	return {
 		async builtins() {
 			return [app]
@@ -90,22 +106,24 @@ function fakeWorld() {
 		install: async (b: AppBundle): Promise<string> => {
 			const manifest = await b.manifest()
 			installs.push(manifest.id)
-			// Like the real kernel: the whole app root is REPLACED (so a file the new
-			// bundle doesn't stage is gone), and each file lands in its residency lane.
+			// Like the real kernel: the whole app root is REPLACED, so a file the new
+			// bundle does not stage is gone — which is what makes the migration off the
+			// copied layout free. A hosted bundle stages nothing but its record.
 			for (const path of [...blobs.keys()]) {
-				if (path.match(/^(\/\.cache)?\/applications\/([^/]+)\//)?.[2] === manifest.id) {
+				if (path.match(/^(\/private\/cache)?\/applications\/([^/]+)\//)?.[2] === manifest.id) {
 					blobs.delete(path)
 				}
 			}
 			for await (const path of b.list()) {
-				blobs.set(bundleFilePath(manifest.id, manifest, path), await b.read(path))
+				blobs.set(`/applications/${manifest.id}/${path}`, await b.read(path))
 			}
 			blobs.set(`/applications/${manifest.id}/manifest.json`, enc.encode(JSON.stringify(manifest)))
 			return manifest.id
 		},
 		uninstall: async (id: string): Promise<void> => {
 			for (const path of [...blobs.keys()]) {
-				if (path.match(/^(\/\.cache)?\/applications\/([^/]+)\//)?.[2] === id) blobs.delete(path)
+				if (path.match(/^(\/private\/cache)?\/applications\/([^/]+)\//)?.[2] === id)
+					blobs.delete(path)
 			}
 		}
 	} as unknown as Kernel
@@ -141,7 +159,9 @@ describe('materialise', () => {
 	})
 
 	test('rejects bytes that do not match the pinned hash, before installing', async () => {
-		const store = await builtinStore(FILES)
+		// The copy path verifies as it downloads. (A hosted app has nothing to verify at
+		// install — its bytes are checked against the record's hashes when they mount.)
+		const store = await builtinStore(FILES, null)
 		const { kernel, installs } = fakeWorld()
 		store.read = async (_app, path) =>
 			enc.encode(path === 'app.js' ? '// tampered' : (FILES[path] ?? ''))
@@ -176,10 +196,12 @@ describe('reconcile', () => {
 		expect(installs).toEqual(['app.x', 'app.x']) // version bump → reinstalled
 	})
 
-	test('reinstalls when a file is missing even if .apphash matches', async () => {
-		const store = await builtinStore(FILES)
+	test('reinstalls a copied app when a file is missing even if the hash matches', async () => {
+		// Self-heal for bytes that live IN the volume. A hosted app needs no equivalent:
+		// its payload is a cache, and a miss is refilled by the read that wants it.
+		const store = await builtinStore(FILES, null)
 		const { kernel, fs, installs, blobs } = fakeWorld()
-		await materialise(kernel, store) // installs, writes .apphash
+		await materialise(kernel, store)
 		blobs.delete('/applications/app.x/app.js') // a lost / un-hydrated file
 		await reconcile(kernel, fs, store)
 		expect(installs).toEqual(['app.x', 'app.x']) // self-healed
@@ -277,9 +299,11 @@ describe('reconcile', () => {
 	})
 })
 
-// #376: a built-in's GUI is a CACHE of bytes the release already serves, so it stops
-// syncing. The reducer keeps syncing — the DO runs it headlessly for the agent.
-describe('residency', () => {
+// #376: a built-in's payload is served by the deploy, so it installs as a SPEC —
+// `/applications/<id>` holds the record alone and the bytes are mounted from the
+// origin. The mount itself lives in the kernel; what reconcile owns is deciding when
+// an installed record has to be replaced.
+describe('hosted apps', () => {
 	const GUI_FILES: Record<string, string> = {
 		'manifest.json': JSON.stringify({
 			id: 'app.x',
@@ -292,106 +316,101 @@ describe('residency', () => {
 		'gui.js': '// gui'
 	}
 
-	test('a built-in installs its reducer synced and its gui cached', async () => {
+	test('a hosted install writes the record and no payload', async () => {
 		const { kernel, fs, blobs } = fakeWorld()
 		await materialise(kernel, await builtinStore(GUI_FILES))
 
-		expect([...blobs.keys()].sort()).toEqual([
-			'/.cache/applications/app.x/gui.js',
-			'/applications/app.x/.apphash',
-			'/applications/app.x/app.js',
-			'/applications/app.x/manifest.json'
-		])
+		expect([...blobs.keys()]).toEqual(['/applications/app.x/manifest.json'])
 		const manifest = JSON.parse(
 			new TextDecoder().decode(await fs.readFile('/applications/app.x/manifest.json'))
 		)
-		expect(manifest.assets).toBe('cached')
+		expect(manifest.baseUrl).toBe('/appstore/apps/app.x/1.0.0')
+		// The record carries what a device needs to fetch and verify on its own: the
+		// version, the whole-app hash, and every file's pinned digest.
+		expect(manifest.version).toBe('1.0.0')
+		expect(typeof manifest.hash).toBe('string')
+		expect(Object.keys(manifest.files).sort()).toEqual(['app.js', 'gui.js'])
+		expect(manifest.files['gui.js']).toMatch(/^sha256-/)
 	})
 
-	// An existing install exactly as this release finds it: every byte synced, a
-	// manifest with no residency field, and a `.apphash` that MATCHES the catalog — the
-	// state in which every other signal `decide` reads says "skip".
-	async function preMigrationWorld() {
-		const world = fakeWorld()
+	test('one request, not one per file', async () => {
+		// Only manifest.json is read at install; the payload is the origin's to serve
+		// later. The old path downloaded every file up front.
 		const store = await builtinStore(GUI_FILES)
-		await materialise(world.kernel, store)
-		const { blobs } = world
-		const gui = blobs.get('/.cache/applications/app.x/gui.js')
-		if (!gui) throw new Error('expected a cached gui')
-		blobs.set('/applications/app.x/gui.js', gui)
-		blobs.delete('/.cache/applications/app.x/gui.js')
-		const manifest = JSON.parse(
-			new TextDecoder().decode(blobs.get('/applications/app.x/manifest.json'))
-		)
-		manifest.assets = undefined
-		blobs.set('/applications/app.x/manifest.json', enc.encode(JSON.stringify(manifest)))
-		world.installs.length = 0
-		return { ...world, store }
-	}
+		const read: string[] = []
+		const spy = { ...store, read: (a: CatalogApp, p: string) => (read.push(p), store.read(a, p)) }
+		const { kernel } = fakeWorld()
+		await materialise(kernel, spy)
+		expect(read).toEqual(['manifest.json'])
+	})
 
-	// The migration, and the reason `filesPresentAndMatch` stats the lane CURRENT POLICY
-	// dictates rather than the one the installed manifest claims. Trust the manifest here
-	// and every file is present and matching under an unchanged app hash: `decide`
-	// returns 'skip' and the bytes never move.
-	test('a pre-#376 install repairs itself into the cache lane', async () => {
-		const { kernel, fs, installs, blobs, store } = await preMigrationWorld()
+	// The migration, and why it cannot ride on the version. A release that only changes
+	// PACKAGING leaves version and whole-app hash untouched, so every other signal
+	// `decide` reads says 'skip' — the app would stay copied forever.
+	test('an app installed as copied bytes is reinstalled as a record', async () => {
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		await materialise(kernel, await builtinStore(GUI_FILES, null)) // the old shape
+		expect(blobs.has('/applications/app.x/gui.js')).toBe(true)
+		installs.length = 0
 
-		await reconcile(kernel, fs, store)
+		// Same version, same files — only the store now serves them from an origin.
+		await reconcile(kernel, fs, await builtinStore(GUI_FILES))
 
-		expect(installs).toEqual(['app.x']) // repaired, with no version bump
-		// The synced copy is GONE — `kernel.install` replaces the whole app root, so the
-		// delete propagates and the DO's storage shrinks with no migration code.
-		expect(blobs.has('/applications/app.x/gui.js')).toBe(false)
-		expect(blobs.has('/.cache/applications/app.x/gui.js')).toBe(true)
-		// And the reducer the DO runs stayed exactly where it was.
-		expect(blobs.has('/applications/app.x/app.js')).toBe(true)
+		expect(installs).toEqual(['app.x'])
+		// `kernel.install` replaces the whole app root, so the copies are gone and that
+		// delete propagates: the DO's storage shrinks with no migration code.
+		expect([...blobs.keys()]).toEqual(['/applications/app.x/manifest.json'])
 	})
 
 	test('the migration happens once — the next pass skips', async () => {
-		const { kernel, fs, installs, store } = await preMigrationWorld()
+		const { kernel, fs, installs } = fakeWorld()
+		const hosted = await builtinStore(GUI_FILES)
+		await materialise(kernel, await builtinStore(GUI_FILES, null))
+		installs.length = 0
+		await reconcile(kernel, fs, hosted)
+		await reconcile(kernel, fs, hosted)
+		expect(installs).toEqual(['app.x'])
+	})
+
+	test('a hosted app is not reinstalled for bytes that are not in the volume', async () => {
+		// The payload's absence is normal, not damage — `filesPresentAndMatch` would
+		// otherwise see every file missing and reinstall on every single pass.
+		const { kernel, fs, installs } = fakeWorld()
+		const store = await builtinStore(GUI_FILES)
+		await materialise(kernel, store)
 		await reconcile(kernel, fs, store)
 		await reconcile(kernel, fs, store)
 		expect(installs).toEqual(['app.x'])
 	})
 
-	test('an evicted cache file is repaired, not left broken', async () => {
-		const { kernel, fs, installs, blobs } = fakeWorld()
-		const store = await builtinStore(GUI_FILES)
-		await materialise(kernel, store)
-		blobs.delete('/.cache/applications/app.x/gui.js')
-		await reconcile(kernel, fs, store)
-		expect(installs).toEqual(['app.x', 'app.x'])
-		expect(blobs.has('/.cache/applications/app.x/gui.js')).toBe(true)
+	test('a newer record is never replaced by an older release’s catalog', async () => {
+		// The monotonic guard still holds across the structural trigger: a device whose
+		// own release is behind must not rewrite a record a peer installed.
+		const newer = { ...GUI_FILES }
+		newer['manifest.json'] = JSON.stringify({
+			id: 'app.x',
+			name: 'X',
+			version: '2.0.0',
+			app: 'app.js',
+			gui: 'gui.js'
+		})
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, await builtinStore(newer, null)) // copied, at v2
+		installs.length = 0
+		await reconcile(kernel, fs, await builtinStore(GUI_FILES)) // hosted, but only v1
+		expect(installs).toEqual([])
 	})
 
-	// Community apps are refilled from a third-party CDN, and a locally-authored app has
-	// no upstream at all. Neither moves lane yet; both keep syncing in full.
-	test('a non-built-in keeps every byte in the synced lane', async () => {
+	test('a store that cannot re-serve its apps still copies them in', async () => {
+		// A packaged FS bundle (the Mac daemon's built-ins) has no stable address, and a
+		// locally-authored app has no upstream at all. Both keep every byte in the volume.
 		const { kernel, fs, installs, blobs } = fakeWorld()
-		const files = (version: string): Record<string, string> => ({
-			'manifest.json': JSON.stringify({
-				id: 'app.z',
-				name: 'Z',
-				version,
-				app: 'app.js',
-				gui: 'gui.js'
-			}),
-			'app.js': `// reducer ${version}`,
-			'gui.js': `// gui ${version}`
-		})
-		const next = await catalogApp('app.z', files('2.0.0'))
-		const store: AppStore = {
-			builtins: async () => [],
-			latest: async (id) => (id === 'app.z' ? next : null),
-			read: async (_app, path) => enc.encode(files('2.0.0')[path] ?? '')
-		}
-		await kernel.install(bundle(files('1.0.0')))
-		installs.length = 0
-		await reconcile(kernel, fs, store)
+		await materialise(kernel, await builtinStore(GUI_FILES, null))
+		await reconcile(kernel, fs, await builtinStore(GUI_FILES, null))
 
-		expect(installs).toEqual(['app.z']) // updated via latest()
-		expect(blobs.has('/applications/app.z/gui.js')).toBe(true)
-		expect([...blobs.keys()].some((p) => p.startsWith('/.cache/'))).toBe(false)
+		expect(installs).toEqual(['app.x'])
+		expect(blobs.has('/applications/app.x/gui.js')).toBe(true)
+		expect([...blobs.keys()].some((p) => p.startsWith('/private/'))).toBe(false)
 	})
 })
 

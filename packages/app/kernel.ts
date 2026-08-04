@@ -11,7 +11,7 @@ import type {
 	Subscription
 } from './app.ts'
 import type { Capabilities } from './capabilities/types.ts'
-import { apps } from './kernel.app.ts'
+import { apps, type FetchAsset } from './kernel.app.ts'
 import { capabilityResolver } from './kernel.capability.ts'
 import { commandRuntime } from './kernel.command.ts'
 import { stateStore } from './kernel.state.ts'
@@ -40,6 +40,11 @@ interface System {
 	fs: Volume
 	sandbox: GetSandbox
 	clock: Clock
+	// How this host reaches a hosted app's origin to mount its payload (see
+	// `AppManifest.baseUrl`). The browser's `fetch` in a client; the `ASSETS` binding
+	// in the worker, where a built-in's bytes are a local asset read. Absent → only
+	// apps whose bytes live in the volume can run.
+	fetchAsset?: FetchAsset
 	// The host's capability seam. Either a built registry, or a FACTORY the kernel
 	// calls with ITSELF — so a kernel-reflective capability (devkit, which reads
 	// installed bundles and installs drafts) gets the exact kernel it lives in, never
@@ -153,12 +158,12 @@ function hidden(id: string): boolean {
 	return id.startsWith('.')
 }
 
-export function kernel({ fs, sandbox, capabilities }: System): Kernel {
+export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kernel {
 	// The app store owns the `/applications/<id>` bundle layout; the state store
 	// owns each app's authoritative state + commit version; the capability resolver
 	// owns the local-name → trusted { id, scopes } boundary. The kernel orchestrates
 	// the rest (commands, streams) on top of them.
-	const store = apps(fs)
+	const store = apps(fs, fetchAsset)
 	const states = stateStore(fs)
 	const resolver = capabilityResolver(
 		async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {}

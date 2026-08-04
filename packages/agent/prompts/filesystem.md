@@ -48,9 +48,8 @@ To recall an earlier conversation, SEARCH the transcripts — never guess:
   never leaves it. Not readable, by design; do not try. To see what they are signed
   into, use the `app` command against the settings app.
 - `/system/os-state.json`, `/system/notifications.json`, `/system/context/`,
-  `/system/tmp/`, `/.cache/` — host bookkeeping in machine formats that change
-  without notice. Never parse them. (`/.cache/` mirrors the paths it caches, so
-  `/.cache/applications/…` is just app bytes this device can re-download.)
+  `/system/tmp/` — host bookkeeping in machine formats that change without notice.
+  Never parse them.
 - `/data/<app-id>/` — an app's private storage. `/applications/` — installed app
   bundles. Reach an app through the `app` command, never through its files.
 - `/trash/` — deleted bundles awaiting cleanup. Ignore it.

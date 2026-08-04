@@ -11,8 +11,8 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
-import { type AppAssets, INSTALL_HASH_PATH } from './app.ts'
-import { bundleFilePath } from './kernel.app.ts'
+import type { AppManifest } from './app.ts'
+import { isHosted } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -30,6 +30,12 @@ export interface CatalogApp {
 	// and the update-time escalation guard.
 	capabilities?: CapabilityDecl
 	files: CatalogFile[]
+	// Where this version's files are served from, version-pinned and immutable. Set by
+	// a store that can re-serve its apps on demand (frieren's `/appstore` assets); a
+	// store whose bytes have no stable address (a packaged FS bundle) leaves it unset
+	// and its apps are copied into the volume instead. This single field is what
+	// decides an installed app's shape — see `AppManifest`.
+	baseUrl?: string
 }
 
 export interface Catalog {
@@ -54,13 +60,6 @@ export interface AppStore {
 	read(app: CatalogApp, path: string): Promise<Uint8Array>
 }
 
-// Where a built-in's non-reducer bytes reside. Built-ins co-ship with the release
-// and are served from the same origin (precached by the service worker), so a cache
-// miss always refills — offline included. That refill reliability, not any
-// difference in trust or runtime, is what makes them the set that caches today;
-// everything else stays 'synced' until its upstream is as dependable.
-const BUILTIN_ASSETS: AppAssets = 'cached'
-
 // Ensure the built-in set is present: install every built-in that isn't already
 // installed. The ONLY path that installs a missing built-in — `reconcile` never
 // does (it only updates what's installed). Idempotent, so callers run it to keep
@@ -69,7 +68,7 @@ const BUILTIN_ASSETS: AppAssets = 'cached'
 export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of await store.builtins()) {
-		if (!installed.has(app.id)) await installApp(kernel, store, app, BUILTIN_ASSETS)
+		if (!installed.has(app.id)) await installApp(kernel, store, app)
 	}
 }
 
@@ -91,15 +90,14 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 		try {
 			const app = builtinById.get(id) ?? (await store.latest(id))
 			if (!app) continue
-			const assets = builtinById.has(id) ? BUILTIN_ASSETS : 'synced'
-			const action = await decide(fs, app, assets)
+			const action = await decide(fs, app)
 			if (action === 'skip') continue
 			// Escalation guard: a non-builtin (re)install that declares more capabilities
 			// than the installed version is held (skipped) so re-consent can land first
 			// (Step 5). `escalates` is true only on real capability growth, so a same-
 			// version self-heal (caps unchanged) still proceeds. Built-ins are trusted.
 			if (!builtinById.has(id) && (await escalates(fs, app))) continue
-			await installApp(kernel, store, app, assets)
+			await installApp(kernel, store, app)
 		} catch (e) {
 			console.warn(`appstore: update failed for ${id}`, e)
 		}
@@ -113,34 +111,68 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 // client build can never downgrade a newer app (repair included).
 type SyncAction = 'skip' | 'repair' | 'upgrade'
 
-async function decide(fs: Volume, app: CatalogApp, assets: AppAssets): Promise<SyncAction> {
+async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 	const installed = await installedManifest(fs, app.id)
 	const gte = semverGte(app.version, installed?.version ?? '0.0.0')
-	if (!(await filesPresentAndMatch(fs, app, assets, installed?.app))) return gte ? 'repair' : 'skip'
-	if ((await installedHash(fs, app.id)) === (await appHash(app))) return 'skip'
+	// Structural migration: an app installed as copied bytes that the store now serves
+	// from an origin has to be reinstalled to become a spec, and the trigger cannot be
+	// the version — a release that only changes PACKAGING leaves version and hash
+	// untouched, and every other signal here would say 'skip' forever. Checked before
+	// them so it does not depend on anyone remembering to bump.
+	if (installed && !isHosted(installed) && app.baseUrl) return gte ? 'repair' : 'skip'
+	if (!(await filesPresentAndMatch(fs, app, installed))) return gte ? 'repair' : 'skip'
+	if (installed?.hash === (await appHash(app))) return 'skip'
 	return gte ? 'upgrade' : 'skip'
 }
 
-// Install `app` from the store: verify each file's pinned hash before it reaches
-// the volume, then record the release's whole-app hash so a later reconcile can
-// skip an unchanged app (and reinstall a changed one) with a single comparison.
-// The on-demand install entry point (first-time install of a store app) and the
-// path `materialise`/`reconcile` use internally. Files download through a bounded
-// worker pool (not one-at-a-time), so a many-file app installs in a fraction of
-// the wall-clock time — first byte to installed shrinks, cutting the window where a
-// closed tab / dropped connection abandons the install.
+// Install `app` from the store. Two shapes, decided by whether the store can re-serve
+// the app's files:
+//
+//   hosted — write the SPEC and stop. The manifest records `baseUrl`, the whole-app
+//            hash and every file's pinned hash, which is everything a device needs to
+//            fetch, verify and run the app later. One request instead of N, and the
+//            payload never enters the volume, so nothing about it replicates.
+//   local  — download every file, verifying each pinned hash before it lands, and copy
+//            the lot in. The only correct shape when there is no origin to refetch
+//            from. Files download through a bounded worker pool (not one-at-a-time),
+//            so a many-file app installs in a fraction of the wall-clock time — first
+//            byte to installed shrinks, cutting the window where a closed tab /
+//            dropped connection abandons the install.
+//
+// The on-demand install entry point (first-time install of a store app) and the path
+// `materialise`/`reconcile` use internally.
 const INSTALL_CONCURRENCY = 12
 
-export async function installApp(
-	kernel: Kernel,
-	store: AppStore,
-	app: CatalogApp,
-	// The residency lane for THIS app's bytes. Defaults to the conservative one: an
-	// app whose caller has no opinion is one whose bytes might exist nowhere else.
-	assets: AppAssets = 'synced'
-): Promise<void> {
+export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
+	const declared = await appManifest(store, app)
+	const spec: AppManifest = {
+		...declared,
+		id: app.id,
+		version: app.version,
+		hash: await appHash(app),
+		// Where an app's bytes come from is the STORE's fact, never the bundle's claim —
+		// a published manifest that named its own origin would otherwise decide its own
+		// residency, and point the mount wherever it liked.
+		baseUrl: undefined,
+		files: undefined
+	}
+	if (app.baseUrl) {
+		await kernel.install(
+			specBundle({
+				...spec,
+				baseUrl: app.baseUrl,
+				files: Object.fromEntries(
+					app.files
+						.filter((file) => file.path !== 'manifest.json')
+						.map((file) => [safeBundlePath(file.path), file.hash])
+				)
+			})
+		)
+		return
+	}
+
 	const files = new Map<string, Uint8Array>()
-	const queue = [...app.files]
+	const queue = app.files.filter((file) => file.path !== 'manifest.json')
 	const fetchOne = async (): Promise<void> => {
 		for (let file = queue.pop(); file; file = queue.pop()) {
 			const bytes = await store.read(app, file.path)
@@ -148,41 +180,42 @@ export async function installApp(
 			files.set(safeBundlePath(file.path), bytes) // single-threaded: no Map race between awaits
 		}
 	}
-	await Promise.all(
-		Array.from({ length: Math.min(INSTALL_CONCURRENCY, app.files.length) }, fetchOne)
-	)
-	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(await appHash(app)))
-	await kernel.install(bundleFromFiles(files, assets))
+	await Promise.all(Array.from({ length: Math.min(INSTALL_CONCURRENCY, queue.length) }, fetchOne))
+	await kernel.install(bundleFromFiles(spec, files))
 }
 
-// Every catalog file is present locally with its pinned content (self-heal
-// signal). Excludes manifest.json — the kernel re-serialises it on install
-// (normalised entry paths), so its installed bytes never match the catalog's
-// verbatim copy; the whole-app hash / version read cover manifest changes
-// instead. A missing file (partial install / un-hydrated stub) or a content
-// mismatch (corruption) returns false so `decide` repairs it.
+// The app's own declared metadata — entry paths, capabilities, description — read from
+// the one catalog file that is always fetched even for a hosted install, because the
+// record has to carry it.
+async function appManifest(store: AppStore, app: CatalogApp): Promise<AppManifest> {
+	const file = app.files.find((f) => f.path === 'manifest.json')
+	if (!file) throw new Error(`catalog app missing manifest.json: ${app.id}`)
+	const bytes = await store.read(app, 'manifest.json')
+	await verifyHash(app, file, bytes)
+	return JSON.parse(new TextDecoder().decode(bytes))
+}
+
+// Every catalog file is present locally with its pinned content (self-heal signal).
+// Only meaningful for an app whose bytes are IN the volume: a hosted app keeps its
+// payload in the cache, where a miss or a mismatch is repaired by the next read
+// against the manifest's own hashes rather than by a reinstall.
 //
-// Each file is stat'd in the lane CURRENT POLICY dictates, never the one the
-// installed manifest claims — which is also what makes the residency change
-// self-migrating. Trust the installed manifest and a pre-#376 built-in stats its
-// old synced `gui.js`, finds it present with an unchanged app hash, and skips
-// forever; stat the policy lane and it misses, repairs into the cache, and writes
-// the field on the way through. No version bumps, no migration code.
+// Excludes manifest.json — the kernel re-serialises it on install (normalised entry
+// paths, plus the spec fields), so its installed bytes never match the catalog's
+// verbatim copy; the whole-app hash / version read cover manifest changes instead. A
+// missing file (partial install / un-hydrated stub) or a content mismatch (corruption)
+// returns false so `decide` repairs it.
 async function filesPresentAndMatch(
 	fs: Volume,
 	app: CatalogApp,
-	assets: AppAssets,
-	// The installed reducer entry — the one file besides the manifest and `.apphash`
-	// that a cached app still syncs. Absent (never installed / corrupt manifest) means
-	// every file is about to miss anyway.
-	appEntry = 'app.js'
+	installed: AppManifest | null
 ): Promise<boolean> {
+	if (app.baseUrl || (installed && isHosted(installed))) return true
 	for (const file of app.files) {
 		if (file.path === 'manifest.json') continue
-		const path = bundleFilePath(app.id, { app: appEntry, assets }, safeBundlePath(file.path))
 		let contentHash: string | undefined
 		try {
-			const stat = await fs.stat(path)
+			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
 			contentHash = stat.contentHash
 		} catch {
 			return false // missing locally → (re)install
@@ -192,12 +225,9 @@ async function filesPresentAndMatch(
 	return true
 }
 
-// The installed app's manifest, or null when it is missing/corrupt. One read for
-// every question `decide` asks of it (declared version, reducer entry, capabilities).
-async function installedManifest(
-	fs: Volume,
-	id: string
-): Promise<{ version?: string; app?: string; capabilities?: CapabilityDecl } | null> {
+// The installed app's manifest, or null when it is missing/corrupt. One read for every
+// question `decide` asks of it — declared version, shape, whole-app hash, capabilities.
+async function installedManifest(fs: Volume, id: string): Promise<AppManifest | null> {
 	try {
 		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
 		return JSON.parse(new TextDecoder().decode(bytes))
@@ -266,18 +296,6 @@ async function appHash(app: CatalogApp): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-// The whole-app hash recorded when this app was last installed (the marker
-// `install` writes). Null when absent — an app installed before this marker
-// existed, or a partial/corrupt bundle — which forces a (re)install.
-async function installedHash(fs: Volume, id: string): Promise<string | null> {
-	try {
-		const bytes = await fs.readFile(`/applications/${id}/${INSTALL_HASH_PATH}`)
-		return new TextDecoder().decode(bytes)
-	} catch {
-		return null
-	}
-}
-
 // Integrity check: the catalog pins each file's `sha256-<hex>` digest (emitted
 // by the build over the exact served bytes). Verify before installing so
 // corrupt or tampered bytes never reach the volume.
@@ -294,15 +312,24 @@ async function verifyHash(app: CatalogApp, file: CatalogFile, bytes: Uint8Array)
 	}
 }
 
-function bundleFromFiles(files: Map<string, Uint8Array>, assets: AppAssets): AppBundle {
+// A hosted install: the record IS the bundle. `kernel.install` writes `manifest.json`
+// and nothing else, and the payload is mounted from `baseUrl` on first read.
+function specBundle(manifest: AppManifest): AppBundle {
 	return {
 		async manifest() {
-			const bytes = files.get('manifest.json')
-			if (!bytes) throw new Error('catalog app missing manifest.json')
-			// Residency is the installer's to state, not the published manifest's — the
-			// catalog's copy never carries it, and the store's bytes stay identical
-			// whichever lane a host puts them in.
-			return { ...JSON.parse(new TextDecoder().decode(bytes)), assets }
+			return manifest
+		},
+		async *list() {},
+		async read(path) {
+			throw new Error(`hosted app has no local file: ${path}`)
+		}
+	}
+}
+
+function bundleFromFiles(manifest: AppManifest, files: Map<string, Uint8Array>): AppBundle {
+	return {
+		async manifest() {
+			return manifest
 		},
 		async *list() {
 			yield* files.keys()

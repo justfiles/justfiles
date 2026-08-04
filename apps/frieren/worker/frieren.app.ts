@@ -14,6 +14,19 @@ import { CAPS_WS_SUBPROTOCOL, offersCapsSubprotocol } from '../shared/caps-ws.ts
 import { workerSandbox } from './kernel.sandbox.ts'
 import { currentAppId, readWindows } from './os-windows.ts'
 
+// A hosted app's payload, read off the deploy's own static assets. `baseUrl` is a
+// site-absolute path (`/appstore/apps/<id>/<version>/…`), and the ASSETS binding wants
+// an absolute URL, so it is resolved against a placeholder origin the binding ignores.
+// Absent binding → hosted apps cannot run here, and the mount says so.
+function assetFetcher(assets: Fetcher | undefined) {
+	if (!assets) return undefined
+	return async (url: string): Promise<Uint8Array> => {
+		const res = await assets.fetch(new Request(new URL(url, 'https://assets.invalid')))
+		if (!res.ok) throw new Error(`appstore: ${url} ${res.status}`)
+		return new Uint8Array(await res.arrayBuffer())
+	}
+}
+
 interface DisplayApp {
 	readonly id: string
 	readonly name: string
@@ -26,6 +39,10 @@ type AppBroadcast = { type: 'app_open'; id: string } | { type: 'app_close'; id: 
 interface FrierenAppsDeps {
 	fs: Volume
 	loader: Parameters<typeof workerSandbox>[0] | undefined
+	// The deploy's static assets. A built-in's payload is served from here, so mounting
+	// a hosted app on this side is a LOCAL asset read — same bytes the browser fetches,
+	// no network hop, no dependency on anything outside the deploy.
+	assets: Fetcher | undefined
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
 	broadcast: (msg: AppBroadcast) => void
@@ -101,15 +118,20 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			fs: deps.fs,
 			sandbox: workerSandbox(deps.loader),
 			clock: {},
+			fetchAsset: assetFetcher(deps.assets),
 			capabilities
 		})
 		return kernelInstance
 	}
 
-	// Built-in apps are materialised client-side only: the browser seeds an empty
-	// volume once and syncs the bundle up. This DO never materialises
-	// `/applications/*` — it holds whatever the client synced up and serves it to
-	// the agent, so the kernel is used as-is with no server-side seed/reconcile.
+	// Built-in apps are still materialised client-side only: the browser seeds an empty
+	// volume once and syncs the RECORD up. This DO never materialises `/applications/*`
+	// — it holds whatever the client synced and serves it to the agent.
+	//
+	// What it does do now is MOUNT: a hosted app's `app.js` is no longer in the volume,
+	// so the reducer the agent runs is fetched from the deploy's assets and cached
+	// under `/private/cache` on this side (#376). The manifest pins the hash, so the DO
+	// verifies the same bytes the browser would, and needs no catalog of its own.
 
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {

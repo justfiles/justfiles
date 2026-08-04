@@ -38,9 +38,16 @@ export interface CommunityCatalog {
 	apps: CommunityCatalogApp[]
 }
 
-// Version-pathed so a release is immutable and permanently cacheable.
+// Version-pathed so a release is immutable and permanently cacheable — which is also
+// what lets it be a manifest's `baseUrl`: the address names one exact version, so a
+// device can mount the version its record describes rather than whatever its own
+// catalog happens to carry.
+export function appBaseUrl(app: { id: string; version: string }): string {
+	return `/appstore/apps/${app.id}/${app.version}`
+}
+
 export function appFileUrl(app: { id: string; version: string }, path: string): string {
-	return `/appstore/apps/${app.id}/${app.version}/${path}`
+	return `${appBaseUrl(app)}/${path}`
 }
 
 // An AppStore over frieren's `/appstore` assets. `fetcher` is the caller's fetch
@@ -56,10 +63,14 @@ export async function httpAppStore(
 	const res = await fetcher(CATALOG_PATH)
 	if (!res.ok) return null
 	const catalog = (await res.json()) as Catalog
-	const byId = new Map(catalog.apps.map((app) => [app.id, app]))
+	// Built-ins are HOSTED: the deploy that serves this client serves their files too,
+	// at an immutable version-pathed URL. So they install as a spec — `/applications/<id>`
+	// holds the manifest alone and the payload is mounted from here, never replicated.
+	const apps = catalog.apps.map((app) => ({ ...app, baseUrl: appBaseUrl(app) }))
+	const byId = new Map(apps.map((app) => [app.id, app]))
 	return {
 		async builtins() {
-			return catalog.apps
+			return apps
 		},
 		async latest(id) {
 			return byId.get(id) ?? null

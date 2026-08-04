@@ -7,9 +7,8 @@
 // detaching the iframe (window minimize) discards its realm, so the guest
 // re-boots from the persisted snapshot on every load. True teardown is close().
 
-import type { InstalledApp, Kernel } from '@justfiles/app'
+import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
-import { appFileUrl } from '../../shared/appstore'
 import type { Volume } from '../fs'
 import { FRAME_SRCDOC, guiHost } from './gui-channel'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
@@ -191,41 +190,15 @@ function setError(stage: Stage, message: string | null): void {
 	}
 }
 
-// Browser-kernel path: dispatch locally, load gui.js from the synced volume
-// (no token, works offline once hydrated), push state via kernel events.
+// Browser-kernel path: dispatch locally, load gui.js through the kernel (from the
+// volume for a copied app, mounted from the release origin and cached for a hosted
+// one — no token either way, and offline once the service worker has the release),
+// push state via kernel events.
 async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 	try {
 		await bootLocal(stage, opts)
 	} catch (e) {
 		if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
-	}
-}
-
-// The GUI bytes, from the volume when the cache holds them and from the release
-// origin when it does not.
-//
-// A 'cached' app's GUI is not replicated (#376), so a device can hold an installed
-// bundle whose cache it cannot fill from its own catalog: a peer on a newer release
-// syncs down the manifest + reducer, and `reconcile` — correctly monotonic —
-// declines to serve this device's older bytes over them. `kernel.app().read` reports
-// that as a miss rather than handing back a mismatched GUI, and this is the refill.
-//
-// `appFileUrl` is version-pathed and immutable, so it addresses the version the
-// INSTALLED manifest names, not whatever this build's catalog happens to carry — the
-// origin has it as long as it is deployed. Same-origin release assets, trusted the
-// way the app shell itself is; the hash pinning in `installApp` guards the store
-// path, which this is not. Offline with a cold cache still fails, and should: there
-// is nothing to run. The next reconcile that finds a catalog it can serve repairs
-// the cache for good.
-async function readGui(installed: InstalledApp, path: string): Promise<Uint8Array> {
-	try {
-		return await installed.read(path)
-	} catch (miss) {
-		const { id, version } = installed.manifest
-		if (!version) throw miss // unversioned: nothing to address on the origin
-		const res = await fetch(appFileUrl({ id, version }, path))
-		if (!res.ok) throw miss
-		return new Uint8Array(await res.arrayBuffer())
 	}
 }
 
@@ -240,7 +213,7 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		setError(stage, 'app has no gui')
 		return
 	}
-	const guiCode = new TextDecoder().decode(await readGui(installed, guiPath))
+	const guiCode = new TextDecoder().decode(await installed.read(guiPath))
 	if (stage.cancelled) return
 
 	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel

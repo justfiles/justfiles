@@ -1,10 +1,16 @@
 import type { Volume } from '@justfiles/fs'
 import { cachePath } from '@justfiles/fs/sync-replica'
 import type { AppBundle, AppManifest, InstalledApp } from './app.ts'
-import { INSTALL_HASH_PATH, isCachedBundleFile, safeBundlePath } from './app.ts'
+import { isHosted, safeBundlePath } from './app.ts'
 import { trashBundle } from './trash.ts'
 
 type AppId = string
+
+// Fetches one of a hosted app's files by absolute URL. Injected because the two
+// hosts reach the origin differently — the browser's `fetch` in frieren, the worker's
+// `ASSETS` binding in the DO, where a built-in's bytes are a local asset read rather
+// than a network hop. Absent means this host cannot mount a hosted app at all.
+export type FetchAsset = (url: string) => Promise<Uint8Array>
 
 function bytes(text: string): Uint8Array {
 	return new TextEncoder().encode(text)
@@ -25,48 +31,39 @@ function appRoot(appId: AppId): string {
 }
 
 // Where install stages a bundle before committing it with a rename, and parks the
-// previous one until the swap succeeds. In the cache lane for BOTH residencies:
-// staged bytes are the definitive local-only file — they exist solely to be renamed
-// away, and no peer has any use for them at this path. Keeping them out of
-// `/system/tmp` means an install never churns the wire with a put-then-delete at a
-// synced path, which is what a synced staging dir did for every devkit install.
-//
-// NOT `/private`: that lane means "nobody else may have these" and carries three
-// dependencies that bundle-sized subtrees would violate — the agent's shell
-// deny-list, `reset.ts`'s BFS (written for "a handful of small JSON files"), and
-// `sync-replica.ts`'s documented per-account-credential contract. Staging is
-// reconstructible, not secret.
-const INSTALL_TMP = cachePath('/system/tmp/app-installs')
+// previous one until the swap succeeds. Under `/private` — the host's local-only lane
+// — because staged bytes exist solely to be renamed away and no peer has any use for
+// them at this path. It also keeps an install from churning the wire with a
+// put-then-delete, which a synced staging dir did for every locally-authored install.
+// Not under `/private/cache`: staging is in flight, not a copy of anything.
+const INSTALL_TMP = '/private/tmp/app-installs'
 
 const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/')
 
-// The volume path of one file of an installed bundle. `/.cache` mirrors the
-// volume's own namespace, so this is the app root (or its mirror) plus the bundle
-// path — a string concat, no lookup, and a missing file is just a missing file that
-// `filesPresentAndMatch` turns into a repair.
-export function bundleFilePath(
-	appId: AppId,
-	manifest: { app: string; assets?: AppManifest['assets'] },
-	path: string
-): string {
-	const root = appRoot(appId)
-	return isCachedBundleFile(manifest, path) ? `${cachePath(root)}/${path}` : `${root}/${path}`
-}
-
-// The app store: the host fs is the source of truth for installed bundles, laid
-// out under `/applications/<id>` — plus, for a 'cached' app, the `/.cache` mirror
-// of that same path holding the files a peer would never read (see `AppAssets`).
-// Install is atomic per lane — staged in a tmp dir, the manifest rewritten with
-// safe paths, then swapped in over a backup that is restored on any failure.
-// Everything else is a read of an installed bundle. This module knows nothing
-// about runtime state, capabilities, or streams; the kernel layers those on and
-// owns the install/uninstall lifecycle that crosses into them (cache
-// invalidation, stream re-warming, state teardown).
+/**
+ * The app store: the host fs is the source of truth for what is INSTALLED, laid out
+ * under `/applications/<id>`. What lives there depends on the manifest (see
+ * `AppManifest`):
+ *
+ *   hosted (`baseUrl`) — `manifest.json` alone. The payload is MOUNTED from the
+ *                        origin and cached at `/private/cache/applications/<id>/…`,
+ *                        so it never replicates and a peer that only ever received
+ *                        the manifest can still fetch, verify and run the app.
+ *   local              — the bundle's files, copied in and replicated. The only
+ *                        correct shape when there is no origin to refetch from.
+ *
+ * Install is atomic either way: staged in a tmp dir, the manifest rewritten with safe
+ * paths, then swapped in over a backup that is restored on any failure — so a
+ * concurrent observer never sees a half-installed bundle. Everything else is a read.
+ * This module knows nothing about runtime state, capabilities, or streams; the kernel
+ * layers those on and owns the install/uninstall lifecycle that crosses into them
+ * (cache invalidation, stream re-warming, state teardown).
+ */
 interface Apps {
 	// Returns the stable appId; the kernel keys every other subsystem by it.
 	install(bundle: AppBundle): Promise<AppId>
-	// Remove the installed bundle from both lanes. State/data/caches the bundle
-	// accreted at runtime are the kernel's to tear down — this drops only the bundle.
+	// Remove the installed app, cached payload included. State/data the bundle
+	// accreted at runtime are the kernel's to tear down — this drops only the app.
 	uninstall(appId: AppId): Promise<void>
 	get(appId: AppId): Promise<InstalledApp | null>
 	// Cheap "is this app installed?" check — the kernel guards dispatch/state on it
@@ -76,7 +73,7 @@ interface Apps {
 	list(): Promise<AppManifest[]>
 }
 
-export function apps(fs: Volume): Apps {
+export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	return { install, uninstall, get, has, list }
 
 	async function install(app: AppBundle): Promise<AppId> {
@@ -84,91 +81,69 @@ export function apps(fs: Volume): Apps {
 		const appId = rawManifest.id
 		const manifest: AppManifest = {
 			...rawManifest,
-			assets: rawManifest.assets ?? 'synced',
 			app: safeBundlePath(rawManifest.app),
 			gui: rawManifest.gui ? safeBundlePath(rawManifest.gui) : undefined,
 			cli: rawManifest.cli ? safeBundlePath(rawManifest.cli) : undefined,
 			icon: rawManifest.icon ? safeBundlePath(rawManifest.icon) : undefined
 		}
+		const hosted = isHosted(manifest)
 		const root = appRoot(appId)
 		const installId = crypto.randomUUID()
-		// One staging area per lane — both under `INSTALL_TMP`, differing only in which
-		// root they commit into. A 'synced' app uses the first alone; a 'cached' one
-		// splits its files across the two by the rule every reader resolves paths with
-		// (`bundleFilePath`).
-		const stage = (name: string) => ({
-			tmp: `${INSTALL_TMP}/${appId}-${name}${installId}`,
-			backup: `${INSTALL_TMP}/${appId}-${name}previous-${installId}`
-		})
-		const synced = { root, ...stage('') }
-		const cache = { root: cachePath(root), ...stage('cache-') }
-		const cached = manifest.assets === 'cached'
-		// Cache lane FIRST: the manifest is the installed-app record, so committing the
-		// synced root last means an interrupted install never leaves a live manifest
-		// pointing at a half-written cache. The reverse — a fresh cache under the old
-		// manifest — is just a hash miss the next reconcile repairs.
-		const lanes = cached ? [cache, synced] : [synced]
-		const laneOf = (path: string) => (isCachedBundleFile(manifest, path) ? cache : synced)
-		const backedUp: typeof lanes = []
-		const committed: typeof lanes = []
+		const tmp = `${INSTALL_TMP}/${appId}-${installId}`
+		const backup = `${INSTALL_TMP}/${appId}-previous-${installId}`
+		let backedUp = false
 
 		try {
-			for (const lane of lanes) await fs.mkdir(lane.tmp, { recursive: true })
-			for await (const rawPath of app.list()) {
-				const path = safeBundlePath(rawPath)
-				const lane = laneOf(path)
-				const parent = path.split('/').slice(0, -1).join('/')
-				if (parent) await fs.mkdir(`${lane.tmp}/${parent}`, { recursive: true })
-				await fs.writeFile(`${lane.tmp}/${path}`, await app.read(rawPath))
-			}
-			const staged = (path: string) => fs.exists(`${laneOf(path).tmp}/${path}`)
-			if (!(await staged(manifest.app))) throw new Error(`missing app entry: ${manifest.app}`)
-			if (manifest.gui && !(await staged(manifest.gui))) {
-				throw new Error(`missing gui entry: ${manifest.gui}`)
-			}
-			if (manifest.icon && !(await staged(manifest.icon))) {
-				throw new Error(`missing icon: ${manifest.icon}`)
-			}
-			await fs.writeFile(`${synced.tmp}/manifest.json`, bytes(JSON.stringify(manifest)))
-			// Stamp the cache lane with the same install marker the synced lane carries.
-			// The two lanes commit separately and only one of them replicates, so this is
-			// what lets a reader ask "was this cache written by the bundle I have?" without
-			// a catalog — see `cacheIsCurrent`.
-			if (cached) {
-				const marker = `${synced.tmp}/${INSTALL_HASH_PATH}`
-				if (await fs.exists(marker)) {
-					await fs.writeFile(`${cache.tmp}/${INSTALL_HASH_PATH}`, await fs.readFile(marker))
+			await fs.mkdir(tmp, { recursive: true })
+			// A hosted app stages its record and nothing else — the payload is the
+			// origin's to serve, and the first read mounts it.
+			if (!hosted) {
+				for await (const rawPath of app.list()) {
+					const path = safeBundlePath(rawPath)
+					const parent = parentOf(path)
+					if (parent) await fs.mkdir(`${tmp}/${parent}`, { recursive: true })
+					await fs.writeFile(`${tmp}/${path}`, await app.read(rawPath))
 				}
 			}
+			await requireEntries(manifest, hosted, (path) => fs.exists(`${tmp}/${path}`))
+			await fs.writeFile(`${tmp}/manifest.json`, bytes(JSON.stringify(manifest)))
 
-			for (const lane of lanes) {
-				await fs.mkdir(parentOf(lane.root), { recursive: true })
-				if (await fs.exists(lane.root)) {
-					await fs.rename(lane.root, lane.backup)
-					backedUp.push(lane)
-				}
-				await fs.rename(lane.tmp, lane.root)
-				committed.push(lane)
+			await fs.mkdir(parentOf(root), { recursive: true })
+			if (await fs.exists(root)) {
+				await fs.rename(root, backup)
+				backedUp = true
 			}
+			await fs.rename(tmp, root)
 		} catch (e) {
-			// An install is all-or-nothing ACROSS the lanes: undo any lane that swapped in
-			// before a later one failed, then put each backup back. Every lane ends up
-			// wholly the previous bundle, or wholly absent if there was none.
-			for (const lane of lanes) {
-				await fs.rm(lane.tmp, { recursive: true, force: true }).catch(() => {})
-				if (committed.includes(lane))
-					await fs.rm(lane.root, { recursive: true, force: true }).catch(() => {})
-				if (backedUp.includes(lane)) await fs.rename(lane.backup, lane.root).catch(() => {})
-			}
+			await fs.rm(tmp, { recursive: true, force: true }).catch(() => {})
+			if (backedUp && !(await fs.exists(root))) await fs.rename(backup, root).catch(() => {})
 			throw e
 		}
-		for (const lane of backedUp)
-			await fs.rm(lane.backup, { recursive: true, force: true }).catch(() => {})
-		// A 'synced' (re)install owns the whole app: sweep a mirror left by a previous
-		// 'cached' one so no orphan survives the flip.
-		if (!cached) await fs.rm(cache.root, { recursive: true, force: true }).catch(() => {})
+		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
+		// Whatever the previous version cached is now dead weight: the hashes this
+		// manifest pins would reject it anyway, so drop it and reclaim the space rather
+		// than wait for a read to notice.
+		await fs.rm(cachePath(root), { recursive: true, force: true }).catch(() => {})
 
 		return appId
+	}
+
+	// The declared entries have to actually exist. For a local app that is a staged-file
+	// check; for a hosted one the bytes are not here yet, so the pinned file list stands
+	// in — catching a manifest that names a `gui.js` the origin will never serve, at
+	// install time instead of at launch.
+	async function requireEntries(
+		manifest: AppManifest,
+		hosted: boolean,
+		staged: (path: string) => Promise<boolean>
+	): Promise<void> {
+		const present = async (path: string) =>
+			hosted ? (manifest.files ? path in manifest.files : true) : await staged(path)
+		if (!(await present(manifest.app))) throw new Error(`missing app entry: ${manifest.app}`)
+		if (manifest.gui && !(await present(manifest.gui)))
+			throw new Error(`missing gui entry: ${manifest.gui}`)
+		if (manifest.icon && !(await present(manifest.icon)))
+			throw new Error(`missing icon: ${manifest.icon}`)
 	}
 
 	async function uninstall(appId: AppId): Promise<void> {
@@ -177,7 +152,7 @@ export function apps(fs: Volume): Apps {
 		// and a cache directory with no manifest beside it is trivially sweepable.
 		await fs.rm(cachePath(root), { recursive: true, force: true }).catch(() => {})
 		if (!(await fs.exists(root))) return
-		// Move the bundle into a dated /trash folder with one atomic rename rather than a
+		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
 		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
 		// reconcile, fired by the volume's structural watch — never sees a half-deleted
@@ -201,46 +176,72 @@ export function apps(fs: Volume): Apps {
 		return manifests
 	}
 
-	// Was this app's cache written by the bundle currently installed?
-	//
-	// The two lanes commit separately and only the synced one replicates, so they can
-	// drift: a peer running a newer release installs v2, syncs down `manifest.json` +
-	// `app.js` + `.apphash`, and this device is left holding a v1 GUI — or none at all,
-	// for a built-in it never had. Its own catalog is older, so `decide` correctly
-	// declines to downgrade and the cache is never repaired.
-	//
-	// `.apphash` folds every file's hash, gui.js included, so comparing the lanes'
-	// copies answers the question with no catalog and no network: equal means the cache
-	// belongs to this bundle, anything else (absent, stale) means it does not. Reads
-	// then fail as MISSING rather than quietly serving a GUI from a different version,
-	// which is what turns cross-release skew into the host's ordinary refill path.
-	async function cacheIsCurrent(root: string): Promise<boolean> {
-		const read = (at: string) => fs.readFile(`${at}/${INSTALL_HASH_PATH}`).catch(() => null)
-		const [installed, cached] = await Promise.all([read(root), read(cachePath(root))])
-		// No marker on either side is a bundle installed without one (a devkit draft, a
-		// pre-marker install) — nothing to contradict, so the cache stands.
-		if (!installed && !cached) return true
-		return installed !== null && cached !== null && text(installed) === text(cached)
+	/**
+	 * One file of a hosted app, from the cache when it holds the right bytes and from
+	 * the origin when it does not.
+	 *
+	 * The pinned hash IS the cache key. The volume is content-addressed, so checking a
+	 * cached file costs a `stat` rather than a re-hash — and because the check is against
+	 * the hash the MANIFEST pins, a cache left behind by an older version can never be
+	 * served as the current one. That is what makes eviction and refresh fall out for
+	 * free: nothing needs to invalidate the cache, because bytes that no longer match
+	 * the record simply stop being reachable.
+	 *
+	 * It is also why a device can run an app it only ever received over sync. The record
+	 * travels with the app, so "what should be here" needs no catalog of this host's own
+	 * — the case that used to leave a device serving one version's GUI against another
+	 * version's reducer.
+	 */
+	async function mount(manifest: AppManifest, root: string, path: string): Promise<Uint8Array> {
+		const pinned = manifest.files?.[path]
+		const at = `${cachePath(root)}/${path}`
+		if (pinned) {
+			const stat = await fs.stat(at).catch(() => null)
+			if (stat && `sha256-${stat.contentHash ?? ''}` === pinned) return fs.readFile(at)
+		} else {
+			const cached = await fs.readFile(at).catch(() => null)
+			if (cached) return cached // unpinned: presence is all we can ask of it
+		}
+		if (!fetchAsset) throw new Error(`no asset fetcher: cannot mount ${manifest.id}/${path}`)
+		const data = await fetchAsset(`${manifest.baseUrl?.replace(/\/$/, '')}/${path}`)
+		if (pinned) await verify(manifest.id, path, data, pinned)
+		// Best-effort: a failed cache write costs a refetch, never the read itself.
+		await fs
+			.mkdir(parentOf(at), { recursive: true })
+			.then(() => fs.writeFile(at, data))
+			.catch(() => {})
+		return data
 	}
 
 	async function get(appId: AppId): Promise<InstalledApp | null> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return null
 		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
-		const stale = manifest.assets === 'cached' && !(await cacheIsCurrent(root))
 		return {
 			manifest,
-			// The manifest the caller just read IS the lane record, so a read resolves
-			// without a second lookup: `app.js` from the synced root, `gui.js` from the
-			// mirror when this app's assets are cached.
 			read: async (path) => {
 				const safe = safeBundlePath(path)
-				const at = bundleFilePath(appId, manifest, safe)
-				if (stale && at !== `${root}/${safe}`) {
-					throw new Error(`app cache is stale: ${appId}/${safe}`)
-				}
-				return fs.readFile(at)
+				return isHosted(manifest) ? mount(manifest, root, safe) : fs.readFile(`${root}/${safe}`)
 			}
 		}
 	}
+}
+
+// Integrity check on a mounted file: the manifest pins each file's `sha256-<hex>`
+// over the exact bytes the origin should serve. Verified before the bytes are cached
+// or executed, so a compromised or confused origin cannot substitute a payload —
+// the same guarantee the catalog gave at install time, now carried by the record.
+async function verify(
+	appId: string,
+	path: string,
+	data: Uint8Array,
+	pinned: string
+): Promise<void> {
+	const buffer = data.buffer.slice(
+		data.byteOffset,
+		data.byteOffset + data.byteLength
+	) as ArrayBuffer
+	const digest = await crypto.subtle.digest('SHA-256', buffer)
+	const actual = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+	if (`sha256-${actual}` !== pinned) throw new Error(`hash mismatch: ${appId}/${path}`)
 }

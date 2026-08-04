@@ -18,7 +18,6 @@ import {
 	cachePath,
 	ignorePrefixes,
 	journaledChangeSource,
-	LOCAL_PREFIXES,
 	localSyncReplica,
 	PRIVATE_PREFIXES,
 	syncIgnore
@@ -233,30 +232,25 @@ describe('the built-in private class', () => {
 	})
 })
 
-// The other half of the built-in class: paths that don't replicate because someone
-// else can re-serve them. `cachePath` is the whole mapping, and it lands INSIDE the
-// prefix it is defined by — the property that makes "cached" and "ignored" the same
-// statement.
-describe('the built-in local class', () => {
-	const isLocalPath = ignorePrefixes(LOCAL_PREFIXES)
-
-	it('maps a volume path into the lane, mirroring the namespace', () => {
-		expect(cachePath('/applications/notes/gui.js')).toBe('/.cache/applications/notes/gui.js')
-		expect(cachePath('/system/tmp/app-installs/x')).toBe('/.cache/system/tmp/app-installs/x')
+// The cache is a SUBTREE of the private lane, not a root of its own: `/private` is
+// where this host keeps everything it does not replicate, and the cache mirrors the
+// volume namespace inside it.
+describe('the cache lane', () => {
+	it('mirrors the volume namespace under /private/cache', () => {
+		expect(cachePath('/applications/notes/gui.js')).toBe('/private/cache/applications/notes/gui.js')
 	})
 
-	it('matches the lane and its children, per SEGMENT', () => {
-		expect(isLocalPath(cachePath('/applications/notes/gui.js'))).toBe(true)
-		expect(isLocalPath('/.cache')).toBe(true)
-		expect(isLocalPath('/.cached')).toBe(false)
-		expect(isLocalPath('/applications/notes/.cache/gui.js')).toBe(false)
+	it('is never replicated, because /private never is', () => {
+		const p = syncIgnore()
+		expect(p(cachePath('/applications/notes/gui.js'))).toBe(true)
+		expect(p('/private/tmp/app-installs/x')).toBe(true)
 	})
 
-	// The reason the lane is a top-level root and not `/applications/<id>/.cache/`: an
+	// The reason it is a separate root rather than `/applications/<id>/.cache/`: an
 	// ignored DESCENDANT makes `shieldsIgnored` skip a peer's delete of its parent, so an
 	// uninstall on another device would leave a zombie directory that `list()` ignores
 	// (no manifest) but `has()` calls installed. Nothing under `/applications` is ignored.
-	it('leaves the synced tree it caches entirely un-ignored', () => {
+	it('leaves the tree it caches entirely un-ignored', () => {
 		const p = syncIgnore()
 		expect(p('/applications')).toBe(false)
 		expect(p('/applications/notes')).toBe(false)
@@ -268,20 +262,19 @@ describe('the built-in local class', () => {
 // is by OR, which is the whole safety property: an `ignore` can widen the boundary, never
 // narrow it — so no host (or future caller) can make credentials sync.
 describe('syncIgnore', () => {
-	const isBuiltinIgnored = ignorePrefixes([...PRIVATE_PREFIXES, ...LOCAL_PREFIXES])
+	const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
 
 	it('with no ignore is exactly the built-in class', () => {
 		const p = syncIgnore()
 		for (const path of [
 			'/private',
 			'/private/accounts/a.json',
+			'/private/cache/applications/notes/gui.js',
 			'/.state/sync',
-			'/.cache/applications/notes/gui.js',
 			'/notes/a',
-			'/privateer',
-			'/.cached/x'
+			'/privateer'
 		])
-			expect(p(path)).toBe(isBuiltinIgnored(path))
+			expect(p(path)).toBe(isPrivatePath(path))
 	})
 
 	it('adds the host’s own paths, keeping the built-in class', () => {
