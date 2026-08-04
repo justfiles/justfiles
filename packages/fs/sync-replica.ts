@@ -525,6 +525,38 @@ export type SyncState = {
 export const PRIVATE_PREFIXES = ['/.state', '/private'] as const
 
 /**
+ * Prefixes that never cross the wire because SOMEONE ELSE ALREADY HAS THEM:
+ *   /.cache — copies that are reconstructible from an upstream, so replicating them
+ *             pays metered storage for bytes a peer can re-serve on demand.
+ *
+ * The DUAL of `PRIVATE_PREFIXES`, and the difference is load-bearing. Private means
+ * *nobody else may have these*: credentials, hence shielded on apply, preserved
+ * across an adopt-mine reset, denied to the agent's shell. Local means *someone else
+ * can re-serve these*: nothing to shield, nothing to preserve, and a lost copy is a
+ * refill rather than data loss. So the three consumers that name `PRIVATE_PREFIXES`
+ * opt in to this list deliberately or not at all — inheriting the decision is what
+ * would conflate a security boundary with a byte cache.
+ *
+ * `/.cache` is a residency LANE OVER THE VOLUME'S OWN NAMESPACE, not a second
+ * namespace: `/.cache/applications/x/gui.js` caches `/applications/x/gui.js`, so the
+ * volume path stays the file's identity and the mapping needs no lookup table (see
+ * `cachePath`). A top-level root rather than a `.cache/` nested inside each cached
+ * directory, for the same reason `/private` is: an ignored descendant makes
+ * `shieldsIgnored` skip a peer's delete of the parent, which would leave a zombie
+ * directory behind every uninstall. Nothing under `/applications` is ignored, so
+ * those deletes apply normally.
+ */
+export const LOCAL_PREFIXES = ['/.cache'] as const
+
+/**
+ * The cache-lane path for a volume path — the whole mapping, in one function. Never
+ * applied to a path that is already under `/.cache`.
+ */
+export function cachePath(path: string): string {
+	return `${LOCAL_PREFIXES[0]}${path}`
+}
+
+/**
  * A segment-aware prefix matcher — the primitive the built-in class and a host's own
  * `ignore` both use, so `/privateer` is a sibling of `/private`, not a child. Hand-rolling
  * `startsWith` is the classic way to get this wrong.
@@ -533,12 +565,13 @@ export function ignorePrefixes(prefixes: readonly string[]): (path: string) => b
 	return (p) => prefixes.some((d) => p === d || p.startsWith(`${d}/`))
 }
 
-const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
+// The built-in ignore class: the two reasons a path never replicates, unioned.
+const isBuiltinIgnored = ignorePrefixes([...PRIVATE_PREFIXES, ...LOCAL_PREFIXES])
 
 /**
  * What a replica ignores: never sent, never accepted, and never swept by a reset —
- * the built-in private class, OR whatever else THIS host declines to replicate
- * (a native daemon's `.DS_Store`, a build cache, …).
+ * the built-in class (private + local-only), OR whatever else THIS host declines to
+ * replicate (a native daemon's `.DS_Store`, a build cache, …).
  *
  * The built-in class is a FLOOR, not a default: composing by OR means a host's `ignore`
  * can only widen the boundary, so no caller — present or future — can make credentials
@@ -547,7 +580,7 @@ const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
  * peer's push cannot edit it (see #290 D2).
  */
 export function syncIgnore(ignore?: (path: string) => boolean): (path: string) => boolean {
-	return ignore === undefined ? isPrivatePath : (p) => isPrivatePath(p) || ignore(p)
+	return ignore === undefined ? isBuiltinIgnored : (p) => isBuiltinIgnored(p) || ignore(p)
 }
 
 /**

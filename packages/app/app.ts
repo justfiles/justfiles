@@ -335,6 +335,21 @@ export interface RuntimeContext<State = unknown> {
 // WITHOUT running the app.
 export type CapabilityDecl = Record<string, { id: string; scopes: string[] }>
 
+// Where an app's bytes RESIDE — residency, not provenance.
+//
+//   'synced' — the volume is the only copy, so every byte replicates. The default,
+//              and permanently correct for a locally-authored app (devkit installs
+//              a draft with no upstream at all: drop its `gui.js` from the wire and
+//              a second device gets a bundle it can never repair).
+//   'cached' — someone else can re-serve the bytes (this release's app store, a
+//              hosted origin), so only the installed-app record and the reducer a
+//              headless kernel runs replicate; the rest lives in the local-only
+//              `/.cache` mirror, and a miss is repaired from the store.
+//
+// Because it describes residency, "built-ins now, community apps later" is not a
+// special case anywhere in the code — it is which value the installer is handed.
+export type AppAssets = 'synced' | 'cached'
+
 export interface AppManifest {
 	id: string
 	name: string
@@ -346,6 +361,31 @@ export interface AppManifest {
 	cli?: string
 	include?: string[]
 	capabilities?: CapabilityDecl
+	// Written by the installer, never declared by the app: residency is the host's
+	// policy about bytes, not something a bundle gets an opinion on. Absent on a
+	// bundle handed to `install` (and on any pre-#376 install) means 'synced'.
+	assets?: AppAssets
+}
+
+// The marker file the app store writes into each installed bundle, recording the
+// whole-app hash of the release it came from. A dotfile so it stays off every
+// bundle-listing surface (see `hidden` in kernel.ts). Lives here rather than in
+// appstore.ts because the residency split below has to name it.
+export const INSTALL_HASH_PATH = '.apphash'
+
+// Does this bundle file live in the local-only cache lane?
+//
+// The synced side is exactly what a peer READS: `manifest.json` is the installed-app
+// record, `app` is the reducer the DO runs headlessly for the agent, and `.apphash`
+// is what the update path compares. `gui.js`, the icon and every other asset are
+// reconstructible from whoever served them, and the DO never opens them — syncing
+// those is paying metered storage for bytes nobody on the other end will read.
+export function isCachedBundleFile(
+	manifest: { app: string; assets?: AppAssets },
+	path: string
+): boolean {
+	if (manifest.assets !== 'cached') return false
+	return path !== 'manifest.json' && path !== INSTALL_HASH_PATH && path !== manifest.app
 }
 
 export interface AppBundle {

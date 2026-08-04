@@ -1,6 +1,7 @@
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import { type AppStore, type CatalogApp, materialise, reconcile, semverGte } from './appstore.ts'
+import { bundleFilePath } from './kernel.app.ts'
 import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()
@@ -75,7 +76,7 @@ function bundle(files: Record<string, string>): AppBundle {
 // sees exactly what was installed. `blobs` is exposed so a test can simulate a
 // lost/un-hydrated file.
 function fakeWorld() {
-	const blobs = new Map<string, Uint8Array>() // /applications/<id>/<path> -> bytes
+	const blobs = new Map<string, Uint8Array>() // volume path -> bytes
 	const installs: string[] = []
 	const kernel = {
 		list: async (): Promise<AppManifest[]> => {
@@ -89,14 +90,22 @@ function fakeWorld() {
 		install: async (b: AppBundle): Promise<string> => {
 			const manifest = await b.manifest()
 			installs.push(manifest.id)
-			for await (const path of b.list()) {
-				blobs.set(`/applications/${manifest.id}/${path}`, await b.read(path))
+			// Like the real kernel: the whole app root is REPLACED (so a file the new
+			// bundle doesn't stage is gone), and each file lands in its residency lane.
+			for (const path of [...blobs.keys()]) {
+				if (path.match(/^(\/\.cache)?\/applications\/([^/]+)\//)?.[2] === manifest.id) {
+					blobs.delete(path)
+				}
 			}
+			for await (const path of b.list()) {
+				blobs.set(bundleFilePath(manifest.id, manifest, path), await b.read(path))
+			}
+			blobs.set(`/applications/${manifest.id}/manifest.json`, enc.encode(JSON.stringify(manifest)))
 			return manifest.id
 		},
 		uninstall: async (id: string): Promise<void> => {
 			for (const path of [...blobs.keys()]) {
-				if (path.startsWith(`/applications/${id}/`)) blobs.delete(path)
+				if (path.match(/^(\/\.cache)?\/applications\/([^/]+)\//)?.[2] === id) blobs.delete(path)
 			}
 		}
 	} as unknown as Kernel
@@ -265,6 +274,124 @@ describe('reconcile', () => {
 		failing = false
 		await reconcile(kernel, fs, store) // the next checkpoint IS the retry
 		expect(installs).toEqual(['app.b', 'app.a'])
+	})
+})
+
+// #376: a built-in's GUI is a CACHE of bytes the release already serves, so it stops
+// syncing. The reducer keeps syncing — the DO runs it headlessly for the agent.
+describe('residency', () => {
+	const GUI_FILES: Record<string, string> = {
+		'manifest.json': JSON.stringify({
+			id: 'app.x',
+			name: 'X',
+			version: '1.0.0',
+			app: 'app.js',
+			gui: 'gui.js'
+		}),
+		'app.js': '// reducer',
+		'gui.js': '// gui'
+	}
+
+	test('a built-in installs its reducer synced and its gui cached', async () => {
+		const { kernel, fs, blobs } = fakeWorld()
+		await materialise(kernel, await builtinStore(GUI_FILES))
+
+		expect([...blobs.keys()].sort()).toEqual([
+			'/.cache/applications/app.x/gui.js',
+			'/applications/app.x/.apphash',
+			'/applications/app.x/app.js',
+			'/applications/app.x/manifest.json'
+		])
+		const manifest = JSON.parse(
+			new TextDecoder().decode(await fs.readFile('/applications/app.x/manifest.json'))
+		)
+		expect(manifest.assets).toBe('cached')
+	})
+
+	// An existing install exactly as this release finds it: every byte synced, a
+	// manifest with no residency field, and a `.apphash` that MATCHES the catalog — the
+	// state in which every other signal `decide` reads says "skip".
+	async function preMigrationWorld() {
+		const world = fakeWorld()
+		const store = await builtinStore(GUI_FILES)
+		await materialise(world.kernel, store)
+		const { blobs } = world
+		const gui = blobs.get('/.cache/applications/app.x/gui.js')
+		if (!gui) throw new Error('expected a cached gui')
+		blobs.set('/applications/app.x/gui.js', gui)
+		blobs.delete('/.cache/applications/app.x/gui.js')
+		const manifest = JSON.parse(
+			new TextDecoder().decode(blobs.get('/applications/app.x/manifest.json'))
+		)
+		manifest.assets = undefined
+		blobs.set('/applications/app.x/manifest.json', enc.encode(JSON.stringify(manifest)))
+		world.installs.length = 0
+		return { ...world, store }
+	}
+
+	// The migration, and the reason `filesPresentAndMatch` stats the lane CURRENT POLICY
+	// dictates rather than the one the installed manifest claims. Trust the manifest here
+	// and every file is present and matching under an unchanged app hash: `decide`
+	// returns 'skip' and the bytes never move.
+	test('a pre-#376 install repairs itself into the cache lane', async () => {
+		const { kernel, fs, installs, blobs, store } = await preMigrationWorld()
+
+		await reconcile(kernel, fs, store)
+
+		expect(installs).toEqual(['app.x']) // repaired, with no version bump
+		// The synced copy is GONE — `kernel.install` replaces the whole app root, so the
+		// delete propagates and the DO's storage shrinks with no migration code.
+		expect(blobs.has('/applications/app.x/gui.js')).toBe(false)
+		expect(blobs.has('/.cache/applications/app.x/gui.js')).toBe(true)
+		// And the reducer the DO runs stayed exactly where it was.
+		expect(blobs.has('/applications/app.x/app.js')).toBe(true)
+	})
+
+	test('the migration happens once — the next pass skips', async () => {
+		const { kernel, fs, installs, store } = await preMigrationWorld()
+		await reconcile(kernel, fs, store)
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x'])
+	})
+
+	test('an evicted cache file is repaired, not left broken', async () => {
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		const store = await builtinStore(GUI_FILES)
+		await materialise(kernel, store)
+		blobs.delete('/.cache/applications/app.x/gui.js')
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x', 'app.x'])
+		expect(blobs.has('/.cache/applications/app.x/gui.js')).toBe(true)
+	})
+
+	// Community apps are refilled from a third-party CDN, and a locally-authored app has
+	// no upstream at all. Neither moves lane yet; both keep syncing in full.
+	test('a non-built-in keeps every byte in the synced lane', async () => {
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		const files = (version: string): Record<string, string> => ({
+			'manifest.json': JSON.stringify({
+				id: 'app.z',
+				name: 'Z',
+				version,
+				app: 'app.js',
+				gui: 'gui.js'
+			}),
+			'app.js': `// reducer ${version}`,
+			'gui.js': `// gui ${version}`
+		})
+		const next = await catalogApp('app.z', files('2.0.0'))
+		const store: AppStore = {
+			builtins: async () => [],
+			latest: async (id) => (id === 'app.z' ? next : null),
+			read: async (_app, path) => enc.encode(files('2.0.0')[path] ?? '')
+		}
+		await kernel.install(bundle(files('1.0.0')))
+		installs.length = 0
+		await reconcile(kernel, fs, store)
+
+		expect(installs).toEqual(['app.z']) // updated via latest()
+		expect(blobs.has('/applications/app.z/gui.js')).toBe(true)
+		expect([...blobs.keys()].some((p) => p.startsWith('/.cache/'))).toBe(false)
 	})
 })
 

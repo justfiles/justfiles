@@ -11,6 +11,8 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
+import { type AppAssets, INSTALL_HASH_PATH } from './app.ts'
+import { bundleFilePath } from './kernel.app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -52,11 +54,12 @@ export interface AppStore {
 	read(app: CatalogApp, path: string): Promise<Uint8Array>
 }
 
-// The marker file `install` writes into each installed bundle recording the
-// whole-app hash of the release it came from. Reconcile compares it against the
-// hash the catalog currently yields to decide whether to reinstall. A dotfile so
-// it stays off every bundle-listing surface (see `hidden` in kernel.ts).
-const INSTALL_HASH_PATH = '.apphash'
+// Where a built-in's non-reducer bytes reside. Built-ins co-ship with the release
+// and are served from the same origin (precached by the service worker), so a cache
+// miss always refills — offline included. That refill reliability, not any
+// difference in trust or runtime, is what makes them the set that caches today;
+// everything else stays 'synced' until its upstream is as dependable.
+const BUILTIN_ASSETS: AppAssets = 'cached'
 
 // Ensure the built-in set is present: install every built-in that isn't already
 // installed. The ONLY path that installs a missing built-in — `reconcile` never
@@ -66,7 +69,7 @@ const INSTALL_HASH_PATH = '.apphash'
 export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of await store.builtins()) {
-		if (!installed.has(app.id)) await installApp(kernel, store, app)
+		if (!installed.has(app.id)) await installApp(kernel, store, app, BUILTIN_ASSETS)
 	}
 }
 
@@ -88,14 +91,15 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 		try {
 			const app = builtinById.get(id) ?? (await store.latest(id))
 			if (!app) continue
-			const action = await decide(fs, app)
+			const assets = builtinById.has(id) ? BUILTIN_ASSETS : 'synced'
+			const action = await decide(fs, app, assets)
 			if (action === 'skip') continue
 			// Escalation guard: a non-builtin (re)install that declares more capabilities
 			// than the installed version is held (skipped) so re-consent can land first
 			// (Step 5). `escalates` is true only on real capability growth, so a same-
 			// version self-heal (caps unchanged) still proceeds. Built-ins are trusted.
 			if (!builtinById.has(id) && (await escalates(fs, app))) continue
-			await installApp(kernel, store, app)
+			await installApp(kernel, store, app, assets)
 		} catch (e) {
 			console.warn(`appstore: update failed for ${id}`, e)
 		}
@@ -109,9 +113,10 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 // client build can never downgrade a newer app (repair included).
 type SyncAction = 'skip' | 'repair' | 'upgrade'
 
-async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
-	const gte = semverGte(app.version, await installedVersion(fs, app.id))
-	if (!(await filesPresentAndMatch(fs, app))) return gte ? 'repair' : 'skip'
+async function decide(fs: Volume, app: CatalogApp, assets: AppAssets): Promise<SyncAction> {
+	const installed = await installedManifest(fs, app.id)
+	const gte = semverGte(app.version, installed?.version ?? '0.0.0')
+	if (!(await filesPresentAndMatch(fs, app, assets, installed?.app))) return gte ? 'repair' : 'skip'
 	if ((await installedHash(fs, app.id)) === (await appHash(app))) return 'skip'
 	return gte ? 'upgrade' : 'skip'
 }
@@ -126,7 +131,14 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 // closed tab / dropped connection abandons the install.
 const INSTALL_CONCURRENCY = 12
 
-export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
+export async function installApp(
+	kernel: Kernel,
+	store: AppStore,
+	app: CatalogApp,
+	// The residency lane for THIS app's bytes. Defaults to the conservative one: an
+	// app whose caller has no opinion is one whose bytes might exist nowhere else.
+	assets: AppAssets = 'synced'
+): Promise<void> {
 	const files = new Map<string, Uint8Array>()
 	const queue = [...app.files]
 	const fetchOne = async (): Promise<void> => {
@@ -140,7 +152,7 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 		Array.from({ length: Math.min(INSTALL_CONCURRENCY, app.files.length) }, fetchOne)
 	)
 	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(await appHash(app)))
-	await kernel.install(bundleFromFiles(files))
+	await kernel.install(bundleFromFiles(files, assets))
 }
 
 // Every catalog file is present locally with its pinned content (self-heal
@@ -149,12 +161,28 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 // verbatim copy; the whole-app hash / version read cover manifest changes
 // instead. A missing file (partial install / un-hydrated stub) or a content
 // mismatch (corruption) returns false so `decide` repairs it.
-async function filesPresentAndMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
+//
+// Each file is stat'd in the lane CURRENT POLICY dictates, never the one the
+// installed manifest claims — which is also what makes the residency change
+// self-migrating. Trust the installed manifest and a pre-#376 built-in stats its
+// old synced `gui.js`, finds it present with an unchanged app hash, and skips
+// forever; stat the policy lane and it misses, repairs into the cache, and writes
+// the field on the way through. No version bumps, no migration code.
+async function filesPresentAndMatch(
+	fs: Volume,
+	app: CatalogApp,
+	assets: AppAssets,
+	// The installed reducer entry — the one file besides the manifest and `.apphash`
+	// that a cached app still syncs. Absent (never installed / corrupt manifest) means
+	// every file is about to miss anyway.
+	appEntry = 'app.js'
+): Promise<boolean> {
 	for (const file of app.files) {
 		if (file.path === 'manifest.json') continue
+		const path = bundleFilePath(app.id, { app: appEntry, assets }, safeBundlePath(file.path))
 		let contentHash: string | undefined
 		try {
-			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
+			const stat = await fs.stat(path)
 			contentHash = stat.contentHash
 		} catch {
 			return false // missing locally → (re)install
@@ -164,16 +192,17 @@ async function filesPresentAndMatch(fs: Volume, app: CatalogApp): Promise<boolea
 	return true
 }
 
-// The installed app's declared version, normalised to `0.0.0` when the manifest
-// is missing/corrupt — so a never-versioned install always sorts below a real
-// store version (the monotonic guard then allows the upgrade).
-async function installedVersion(fs: Volume, id: string): Promise<string> {
+// The installed app's manifest, or null when it is missing/corrupt. One read for
+// every question `decide` asks of it (declared version, reducer entry, capabilities).
+async function installedManifest(
+	fs: Volume,
+	id: string
+): Promise<{ version?: string; app?: string; capabilities?: CapabilityDecl } | null> {
 	try {
 		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
-		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { version?: string }
-		return manifest.version ?? '0.0.0'
+		return JSON.parse(new TextDecoder().decode(bytes))
 	} catch {
-		return '0.0.0'
+		return null
 	}
 }
 
@@ -217,19 +246,8 @@ export function escalatesCapabilities(
 }
 
 async function escalates(fs: Volume, app: CatalogApp): Promise<boolean> {
-	return escalatesCapabilities(await installedCapabilities(fs, app.id), app.capabilities)
-}
-
-async function installedCapabilities(fs: Volume, id: string): Promise<CapabilityDecl | undefined> {
-	try {
-		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
-		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as {
-			capabilities?: CapabilityDecl
-		}
-		return manifest.capabilities
-	} catch {
-		return undefined
-	}
+	const installed = await installedManifest(fs, app.id)
+	return escalatesCapabilities(installed?.capabilities, app.capabilities)
 }
 
 // The whole-app hash: one sha256 folding every file's pinned hash together
@@ -276,12 +294,15 @@ async function verifyHash(app: CatalogApp, file: CatalogFile, bytes: Uint8Array)
 	}
 }
 
-function bundleFromFiles(files: Map<string, Uint8Array>): AppBundle {
+function bundleFromFiles(files: Map<string, Uint8Array>, assets: AppAssets): AppBundle {
 	return {
 		async manifest() {
 			const bytes = files.get('manifest.json')
 			if (!bytes) throw new Error('catalog app missing manifest.json')
-			return JSON.parse(new TextDecoder().decode(bytes))
+			// Residency is the installer's to state, not the published manifest's — the
+			// catalog's copy never carries it, and the store's bytes stay identical
+			// whichever lane a host puts them in.
+			return { ...JSON.parse(new TextDecoder().decode(bytes)), assets }
 		},
 		async *list() {
 			yield* files.keys()
