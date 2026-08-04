@@ -405,7 +405,6 @@ export class Frieren extends DurableObject<Env> {
 		this.apps = frierenApps({
 			fs: this.vol,
 			loader: this.env.LOADER,
-			assets: this.env.ASSETS,
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
 			broadcast: (msg) => this.broadcast(msg),

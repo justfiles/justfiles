@@ -12,7 +12,6 @@
 
 import type { Volume } from '@justfiles/fs'
 import type { AppManifest } from './app.ts'
-import { isHosted } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -126,19 +125,20 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 	return gte ? 'upgrade' : 'skip'
 }
 
-// Install `app` from the store. Two shapes, decided by whether the store can re-serve
-// the app's files:
+// Install `app` from the store. What lands in the volume depends on whether the store
+// can re-serve the app's files:
 //
-//   hosted — write the SPEC and stop. The manifest records `baseUrl`, the whole-app
-//            hash and every file's pinned hash, which is everything a device needs to
-//            fetch, verify and run the app later. One request instead of N, and the
-//            payload never enters the volume, so nothing about it replicates.
+//   hosted — the SPEC plus the reducer. The manifest records `baseUrl`, the whole-app
+//            hash and each MOUNTED file's pinned hash, which is everything a device
+//            needs to fetch and verify the rest later. Two requests instead of N, and
+//            the GUI and assets never enter the volume, so they never replicate.
 //   local  — download every file, verifying each pinned hash before it lands, and copy
 //            the lot in. The only correct shape when there is no origin to refetch
-//            from. Files download through a bounded worker pool (not one-at-a-time),
-//            so a many-file app installs in a fraction of the wall-clock time — first
-//            byte to installed shrinks, cutting the window where a closed tab /
-//            dropped connection abandons the install.
+//            from.
+//
+// Files download through a bounded worker pool (not one-at-a-time), so a many-file app
+// installs in a fraction of the wall-clock time — first byte to installed shrinks,
+// cutting the window where a closed tab / dropped connection abandons the install.
 //
 // The on-demand install entry point (first-time install of a store app) and the path
 // `materialise`/`reconcile` use internally.
@@ -146,6 +146,7 @@ const INSTALL_CONCURRENCY = 12
 
 export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
 	const declared = await appManifest(store, app)
+	const reducer = safeBundlePath(declared.app)
 	const spec: AppManifest = {
 		...declared,
 		id: app.id,
@@ -154,26 +155,25 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 		// Where an app's bytes come from is the STORE's fact, never the bundle's claim —
 		// a published manifest that named its own origin would otherwise decide its own
 		// residency, and point the mount wherever it liked.
-		baseUrl: undefined,
-		files: undefined
-	}
-	if (app.baseUrl) {
-		await kernel.install(
-			specBundle({
-				...spec,
-				baseUrl: app.baseUrl,
-				files: Object.fromEntries(
+		baseUrl: app.baseUrl,
+		// Only what actually mounts. The reducer is downloaded now and stored in the
+		// volume, so pinning it here would describe a fetch that never happens.
+		files: app.baseUrl
+			? Object.fromEntries(
 					app.files
 						.filter((file) => file.path !== 'manifest.json')
-						.map((file) => [safeBundlePath(file.path), file.hash])
+						.map((file) => [safeBundlePath(file.path), file.hash] as const)
+						.filter(([path]) => path !== reducer)
 				)
-			})
-		)
-		return
+			: undefined
 	}
 
+	// A hosted install copies in the reducer alone; a local one copies everything.
 	const files = new Map<string, Uint8Array>()
-	const queue = app.files.filter((file) => file.path !== 'manifest.json')
+	const queue = app.files.filter(
+		(file) =>
+			file.path !== 'manifest.json' && (!app.baseUrl || safeBundlePath(file.path) === reducer)
+	)
 	const fetchOne = async (): Promise<void> => {
 		for (let file = queue.pop(); file; file = queue.pop()) {
 			const bytes = await store.read(app, file.path)
@@ -182,6 +182,9 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 		}
 	}
 	await Promise.all(Array.from({ length: Math.min(INSTALL_CONCURRENCY, queue.length) }, fetchOne))
+	if (app.baseUrl && !files.has(reducer)) {
+		throw new Error(`catalog app missing its reducer: ${app.id}/${reducer}`)
+	}
 	await kernel.install(bundleFromFiles(spec, files))
 }
 
@@ -196,10 +199,10 @@ async function appManifest(store: AppStore, app: CatalogApp): Promise<AppManifes
 	return JSON.parse(new TextDecoder().decode(bytes))
 }
 
-// Every catalog file is present locally with its pinned content (self-heal signal).
-// Only meaningful for an app whose bytes are IN the volume: a hosted app keeps its
-// payload in the cache, where a miss or a mismatch is repaired by the next read
-// against the manifest's own hashes rather than by a reinstall.
+// Every catalog file that belongs in the VOLUME is present with its pinned content
+// (self-heal signal). For a hosted app that is the reducer alone — the mounted half is
+// a cache, where a miss or a mismatch is repaired by the next read against the record's
+// own hashes rather than by a reinstall.
 //
 // Excludes manifest.json — the kernel re-serialises it on install (normalised entry
 // paths, plus the spec fields), so its installed bytes never match the catalog's
@@ -211,9 +214,10 @@ async function filesPresentAndMatch(
 	app: CatalogApp,
 	installed: AppManifest | null
 ): Promise<boolean> {
-	if (app.baseUrl || (installed && isHosted(installed))) return true
+	const reducer = safeBundlePath(installed?.app ?? 'app.js')
 	for (const file of app.files) {
 		if (file.path === 'manifest.json') continue
+		if (app.baseUrl && safeBundlePath(file.path) !== reducer) continue
 		let contentHash: string | undefined
 		try {
 			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
@@ -310,20 +314,6 @@ async function verifyHash(app: CatalogApp, file: CatalogFile, bytes: Uint8Array)
 	const actual = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 	if (actual !== expected) {
 		throw new Error(`builtins: ${app.id}/${file.path} hash mismatch`)
-	}
-}
-
-// A hosted install: the record IS the bundle. `kernel.install` writes `manifest.json`
-// and nothing else, and the payload is mounted from `baseUrl` on first read.
-function specBundle(manifest: AppManifest): AppBundle {
-	return {
-		async manifest() {
-			return manifest
-		},
-		async *list() {},
-		async read(path) {
-			throw new Error(`hosted app has no local file: ${path}`)
-		}
 	}
 }
 

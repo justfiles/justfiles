@@ -1,15 +1,15 @@
 import type { Volume } from '@justfiles/fs'
 import { cachePath } from '@justfiles/fs/sync-replica'
 import type { AppBundle, AppManifest, InstalledApp } from './app.ts'
-import { isHosted, safeBundlePath } from './app.ts'
+import { isMountedFile, safeBundlePath } from './app.ts'
 import { trashBundle } from './trash.ts'
 
 type AppId = string
 
-// Fetches one of a hosted app's files by absolute URL. Injected because the two
-// hosts reach the origin differently — the browser's `fetch` in frieren, the worker's
-// `ASSETS` binding in the DO, where a built-in's bytes are a local asset read rather
-// than a network hop. Absent means this host cannot mount a hosted app at all.
+// Fetches one of a hosted app's MOUNTED files by absolute URL — the GUI, the icon,
+// assets. Injected because it is a host concern (the browser's `fetch` in frieren),
+// and optional because a host that only ever runs reducers never mounts anything: the
+// DO reads `manifest.app`, which is in the volume by construction.
 export type FetchAsset = (url: string) => Promise<Uint8Array>
 
 function bytes(text: string): Uint8Array {
@@ -45,10 +45,10 @@ const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/'
  * under `/applications/<id>`. What lives there depends on the manifest (see
  * `AppManifest`):
  *
- *   hosted (`baseUrl`) — `manifest.json` alone. The payload is MOUNTED from the
- *                        origin and cached at `/private/cache/applications/<id>/…`,
- *                        so it never replicates and a peer that only ever received
- *                        the manifest can still fetch, verify and run the app.
+ *   hosted (`baseUrl`) — the record and the REDUCER. Everything else is MOUNTED from
+ *                        the origin and cached at `/private/cache/applications/<id>/…`,
+ *                        so the GUI and assets never replicate while the bytes a
+ *                        headless kernel needs stay durable (see `isMountedFile`).
  *   local              — the bundle's files, copied in and replicated. The only
  *                        correct shape when there is no origin to refetch from.
  *
@@ -86,7 +86,6 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			cli: rawManifest.cli ? safeBundlePath(rawManifest.cli) : undefined,
 			icon: rawManifest.icon ? safeBundlePath(rawManifest.icon) : undefined
 		}
-		const hosted = isHosted(manifest)
 		const root = appRoot(appId)
 		const installId = crypto.randomUUID()
 		const tmp = `${INSTALL_TMP}/${appId}-${installId}`
@@ -95,17 +94,15 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 
 		try {
 			await fs.mkdir(tmp, { recursive: true })
-			// A hosted app stages its record and nothing else — the payload is the
-			// origin's to serve, and the first read mounts it.
-			if (!hosted) {
-				for await (const rawPath of app.list()) {
-					const path = safeBundlePath(rawPath)
-					const parent = parentOf(path)
-					if (parent) await fs.mkdir(`${tmp}/${parent}`, { recursive: true })
-					await fs.writeFile(`${tmp}/${path}`, await app.read(rawPath))
-				}
+			// Stage whatever the bundle carries — which for a hosted app is just its
+			// reducer, the rest being the origin's to serve on first read.
+			for await (const rawPath of app.list()) {
+				const path = safeBundlePath(rawPath)
+				const parent = parentOf(path)
+				if (parent) await fs.mkdir(`${tmp}/${parent}`, { recursive: true })
+				await fs.writeFile(`${tmp}/${path}`, await app.read(rawPath))
 			}
-			await requireEntries(manifest, hosted, (path) => fs.exists(`${tmp}/${path}`))
+			await requireEntries(manifest, (path) => fs.exists(`${tmp}/${path}`))
 			await fs.writeFile(`${tmp}/manifest.json`, bytes(JSON.stringify(manifest)))
 
 			await fs.mkdir(parentOf(root), { recursive: true })
@@ -128,18 +125,18 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 		return appId
 	}
 
-	// The declared entries have to actually exist. For a local app that is a staged-file
-	// check; for a hosted one the bytes are not here yet, so the pinned file list stands
-	// in — catching a manifest that names a `gui.js` the origin will never serve, at
-	// install time instead of at launch.
+	// The declared entries have to actually exist. The reducer must be STAGED whatever
+	// the shape — that is the promise the volume makes to a headless kernel — while a
+	// mounted entry is not here yet, so the record's pinned file list stands in,
+	// catching a manifest that names a `gui.js` the origin will never serve at install
+	// time instead of at launch.
 	async function requireEntries(
 		manifest: AppManifest,
-		hosted: boolean,
 		staged: (path: string) => Promise<boolean>
 	): Promise<void> {
 		const present = async (path: string) =>
-			hosted ? (manifest.files ? path in manifest.files : true) : await staged(path)
-		if (!(await present(manifest.app))) throw new Error(`missing app entry: ${manifest.app}`)
+			(await staged(path)) || manifest.files?.[path] !== undefined
+		if (!(await staged(manifest.app))) throw new Error(`missing app entry: ${manifest.app}`)
 		if (manifest.gui && !(await present(manifest.gui)))
 			throw new Error(`missing gui entry: ${manifest.gui}`)
 		if (manifest.icon && !(await present(manifest.icon)))
@@ -221,7 +218,9 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			manifest,
 			read: async (path) => {
 				const safe = safeBundlePath(path)
-				return isHosted(manifest) ? mount(manifest, root, safe) : fs.readFile(`${root}/${safe}`)
+				return isMountedFile(manifest, safe)
+					? mount(manifest, root, safe)
+					: fs.readFile(`${root}/${safe}`)
 			}
 		}
 	}

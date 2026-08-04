@@ -316,32 +316,50 @@ describe('hosted apps', () => {
 		'gui.js': '// gui'
 	}
 
-	test('a hosted install writes the record and no payload', async () => {
+	test('a hosted install writes the record and the reducer', async () => {
 		const { kernel, fs, blobs } = fakeWorld()
 		await materialise(kernel, await builtinStore(GUI_FILES))
 
-		expect([...blobs.keys()]).toEqual(['/applications/app.x/manifest.json'])
+		// The reducer stays in the volume — a headless kernel runs it with no origin to
+		// reach — and the GUI does not.
+		expect([...blobs.keys()].sort()).toEqual([
+			'/applications/app.x/app.js',
+			'/applications/app.x/manifest.json'
+		])
 		const manifest = JSON.parse(
 			new TextDecoder().decode(await fs.readFile('/applications/app.x/manifest.json'))
 		)
 		expect(manifest.baseUrl).toBe('/appstore/apps/app.x/1.0.0')
-		// The record carries what a device needs to fetch and verify on its own: the
-		// version, the whole-app hash, and every file's pinned digest.
+		// The record carries what a device needs to fetch and verify the rest on its own.
 		expect(manifest.version).toBe('1.0.0')
 		expect(typeof manifest.hash).toBe('string')
-		expect(Object.keys(manifest.files).sort()).toEqual(['app.js', 'gui.js'])
+		// Only what actually mounts: pinning the reducer would describe a fetch that
+		// never happens.
+		expect(Object.keys(manifest.files)).toEqual(['gui.js'])
 		expect(manifest.files['gui.js']).toMatch(/^sha256-/)
 	})
 
-	test('one request, not one per file', async () => {
-		// Only manifest.json is read at install; the payload is the origin's to serve
-		// later. The old path downloaded every file up front.
+	test('two requests, not one per file', async () => {
+		// The record and the reducer; the rest is the origin's to serve later. The old
+		// path downloaded every file up front.
 		const store = await builtinStore(GUI_FILES)
 		const read: string[] = []
 		const spy = { ...store, read: (a: CatalogApp, p: string) => (read.push(p), store.read(a, p)) }
 		const { kernel } = fakeWorld()
 		await materialise(kernel, spy)
-		expect(read).toEqual(['manifest.json'])
+		expect(read.sort()).toEqual(['app.js', 'manifest.json'])
+	})
+
+	test('a hosted app is repaired when its reducer goes missing', async () => {
+		// The half that lives in the volume still self-heals: it is the half that cannot
+		// be refetched by a read.
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		const store = await builtinStore(GUI_FILES)
+		await materialise(kernel, store)
+		blobs.delete('/applications/app.x/app.js')
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x', 'app.x'])
+		expect(blobs.has('/applications/app.x/app.js')).toBe(true)
 	})
 
 	// The migration, and why it cannot ride on the version. A release that only changes
@@ -357,9 +375,12 @@ describe('hosted apps', () => {
 		await reconcile(kernel, fs, await builtinStore(GUI_FILES))
 
 		expect(installs).toEqual(['app.x'])
-		// `kernel.install` replaces the whole app root, so the copies are gone and that
+		// `kernel.install` replaces the whole app root, so the GUI's copy is gone and that
 		// delete propagates: the DO's storage shrinks with no migration code.
-		expect([...blobs.keys()]).toEqual(['/applications/app.x/manifest.json'])
+		expect([...blobs.keys()].sort()).toEqual([
+			'/applications/app.x/app.js',
+			'/applications/app.x/manifest.json'
+		])
 	})
 
 	test('the migration happens once — the next pass skips', async () => {

@@ -380,6 +380,21 @@ export function isHosted(manifest: Pick<AppManifest, 'baseUrl'>): boolean {
 	return typeof manifest.baseUrl === 'string' && manifest.baseUrl.length > 0
 }
 
+// Is this bundle file mounted from the origin, or does it live in the volume?
+//
+// The REDUCER never mounts, even for a hosted app. A headless kernel runs it with no
+// service worker and an assets binding that only ever holds the CURRENT release, so a
+// record that outlives its release would leave the agent unable to run an app the user
+// has installed — the one case the volume is the only durable answer for. It is also
+// the cheap half to keep: #373 leaves reducers framework-free by construction, while
+// the GUI is where the bytes actually are.
+export function isMountedFile(
+	manifest: Pick<AppManifest, 'app' | 'baseUrl'>,
+	path: string
+): boolean {
+	return isHosted(manifest) && path !== manifest.app
+}
+
 export interface AppBundle {
 	manifest(): Promise<AppManifest>
 	list(): AsyncIterable<string>
