@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.11.0...frieren-v0.12.0) (2026-08-04)
+
+
+### Features
+
+* **app:** make the manifest an app spec and mount hosted GUIs from the origin ([#379](https://github.com/xiaoxinghu/justfiles/issues/379)) ([6dfaf0c](https://github.com/xiaoxinghu/justfiles/commit/6dfaf0c1ee519d9e2a6b33671024f0506e2f0dc9))
+* **apps:** apps bundle their own React, platform ships no framework bytes ([#377](https://github.com/xiaoxinghu/justfiles/issues/377)) ([d51e721](https://github.com/xiaoxinghu/justfiles/commit/d51e721745d87e04ed4eab2b44102176ad46c6e3))
+* **apps:** drop React from the app template, ship only the platform sheet ([#373](https://github.com/xiaoxinghu/justfiles/issues/373) phase 0) ([#374](https://github.com/xiaoxinghu/justfiles/issues/374)) ([25e3116](https://github.com/xiaoxinghu/justfiles/commit/25e3116e4986aaaf528a56f1bb6ad7c4a20f8ef8))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.6.0
+
 ## [0.11.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.10.0...frieren-v0.11.0) (2026-08-03)
 
 

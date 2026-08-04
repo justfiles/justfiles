@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.3.0...draw-v0.4.0) (2026-08-04)
+
+
+### Features
+
+* **apps:** apps bundle their own React, platform ships no framework bytes ([#377](https://github.com/xiaoxinghu/justfiles/issues/377)) ([d51e721](https://github.com/xiaoxinghu/justfiles/commit/d51e721745d87e04ed4eab2b44102176ad46c6e3))
+
 ## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.2.0...draw-v0.3.0) (2026-08-03)
 
 
