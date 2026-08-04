@@ -114,12 +114,13 @@ type SyncAction = 'skip' | 'repair' | 'upgrade'
 async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 	const installed = await installedManifest(fs, app.id)
 	const gte = semverGte(app.version, installed?.version ?? '0.0.0')
-	// Structural migration: an app installed as copied bytes that the store now serves
-	// from an origin has to be reinstalled to become a spec, and the trigger cannot be
-	// the version — a release that only changes PACKAGING leaves version and hash
-	// untouched, and every other signal here would say 'skip' forever. Checked before
-	// them so it does not depend on anyone remembering to bump.
-	if (installed && !isHosted(installed) && app.baseUrl) return gte ? 'repair' : 'skip'
+	// The record has to name the source the store CURRENTLY serves from. The whole-app
+	// hash covers file paths and digests only, so a release that just MOVES — copied to
+	// hosted, hosted to copied, or one origin to another — leaves it unchanged, and
+	// every other signal below would say 'skip' forever: the record would stay pointed
+	// at a source that no longer serves it, with nothing to notice. Checked first so
+	// the migration off the copied layout does not depend on a version bump either.
+	if (installed && installed.baseUrl !== app.baseUrl) return gte ? 'repair' : 'skip'
 	if (!(await filesPresentAndMatch(fs, app, installed))) return gte ? 'repair' : 'skip'
 	if (installed?.hash === (await appHash(app))) return 'skip'
 	return gte ? 'upgrade' : 'skip'

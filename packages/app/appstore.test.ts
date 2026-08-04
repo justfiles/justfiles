@@ -401,6 +401,34 @@ describe('hosted apps', () => {
 		expect(installs).toEqual([])
 	})
 
+	test('a release that only MOVES is still reinstalled', async () => {
+		// The whole-app hash covers file paths and digests, so relocating an otherwise
+		// identical release leaves it equal — and the record would stay pointed at an
+		// origin the store no longer serves from, with nothing to notice.
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		await materialise(kernel, await builtinStore(GUI_FILES))
+		installs.length = 0
+
+		await reconcile(kernel, fs, await builtinStore(GUI_FILES, 'https://apps.example.com'))
+
+		expect(installs).toEqual(['app.x'])
+		const manifest = JSON.parse(
+			new TextDecoder().decode(blobs.get('/applications/app.x/manifest.json'))
+		)
+		expect(manifest.baseUrl).toBe('https://apps.example.com/app.x/1.0.0')
+	})
+
+	test('a hosted release the store no longer hosts goes back to copied bytes', async () => {
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		await materialise(kernel, await builtinStore(GUI_FILES))
+		installs.length = 0
+
+		await reconcile(kernel, fs, await builtinStore(GUI_FILES, null))
+
+		expect(installs).toEqual(['app.x'])
+		expect(blobs.has('/applications/app.x/gui.js')).toBe(true)
+	})
+
 	test('a store that cannot re-serve its apps still copies them in', async () => {
 		// A packaged FS bundle (the Mac daemon's built-ins) has no stable address, and a
 		// locally-authored app has no upstream at all. Both keep every byte in the volume.
