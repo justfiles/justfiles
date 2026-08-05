@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.2](https://github.com/xiaoxinghu/justfiles/compare/code-v0.2.1...code-v0.2.2) (2026-08-05)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.2.0
+
 ## [0.2.1](https://github.com/xiaoxinghu/justfiles/compare/code-v0.2.0...code-v0.2.1) (2026-07-25)
 
 
