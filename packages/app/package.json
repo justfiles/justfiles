@@ -1,8 +1,14 @@
 {
 	"name": "@justfiles/app",
-	"version": "0.0.0",
+	"version": "0.1.0",
+	"description": "Kernel app SDK for JustFiles apps.",
 	"type": "module",
 	"sideEffects": false,
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
+		"directory": "packages/app"
+	},
 	"exports": {
 		".": "./index.ts",
 		"./runtime": "./kernel.ts",
@@ -89,13 +95,13 @@
 				"types": "./dist/capabilities/devkit/toolchain.worker.d.ts",
 				"default": "./dist/capabilities/devkit/toolchain.worker.js"
 			},
-			"./devkit-runtime": {
-				"types": "./dist/capabilities/devkit/devkit-runtime.d.ts",
-				"default": "./dist/capabilities/devkit/devkit-runtime.js"
-			},
 			"./appstore": {
 				"types": "./dist/appstore.d.ts",
 				"default": "./dist/appstore.js"
+			},
+			"./image-type": {
+				"types": "./dist/image-type.d.ts",
+				"default": "./dist/image-type.js"
 			},
 			"./capabilities": {
 				"types": "./dist/capabilities/index.d.ts",
@@ -145,6 +151,18 @@
 				"types": "./dist/capabilities/accounts/host.d.ts",
 				"default": "./dist/capabilities/accounts/host.js"
 			},
+			"./capabilities/accounts/providers": {
+				"types": "./dist/capabilities/accounts/providers/index.d.ts",
+				"default": "./dist/capabilities/accounts/providers/index.js"
+			},
+			"./capabilities/accounts/providers/google": {
+				"types": "./dist/capabilities/accounts/providers/google.d.ts",
+				"default": "./dist/capabilities/accounts/providers/google.js"
+			},
+			"./capabilities/accounts/providers/icloud": {
+				"types": "./dist/capabilities/accounts/providers/icloud.d.ts",
+				"default": "./dist/capabilities/accounts/providers/icloud.js"
+			},
 			"./capabilities/settings": {
 				"types": "./dist/capabilities/settings/index.d.ts",
 				"default": "./dist/capabilities/settings/index.js"
@@ -159,7 +177,7 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "rm -rf dist && tsc",
+		"build": "rm -rf dist && tsc && cp dev-server.html dev-server.css dist/",
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
@@ -174,7 +192,6 @@
 		"@justfiles/tsconfig": "workspace:*",
 		"@types/bun": "^1.3.0",
 		"@types/node": "^25.7.0",
-		"esbuild": "^0.27.0",
 		"tsdown": "^0.21.10",
 		"typescript": "catalog:",
 		"valibot": "^1.1.0",
@@ -184,6 +201,7 @@
 		"@justfiles/fs": "workspace:*",
 		"@standard-schema/spec": "^1.1.0",
 		"capnweb": "^0.8.0",
+		"esbuild": "^0.27.0",
 		"fflate": "^0.8.3",
 		"type-fest": "^5.6.0"
 	}
