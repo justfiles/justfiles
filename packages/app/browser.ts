@@ -65,12 +65,16 @@ function share(prev: unknown, next: unknown): unknown {
 	const keys = Object.keys(next)
 	// A key set of the same size whose every value shared back to `prev`'s IS
 	// `prev` — a differing key can't hide in it, because its value would have had
-	// to share against a `prev` that has nothing there.
+	// to share against a `prev` that has nothing there. Presence is checked as well
+	// as the value, because an explicitly-undefined value is indistinguishable from
+	// an absent key through `prev[key]` alone — and structured clone, unlike JSON,
+	// carries such a key across. Without it `{ a: undefined }` → `{ b: undefined }`
+	// reads as no change and the push is dropped.
 	let unchanged = keys.length === Object.keys(prev).length
 	const merged: Branch = Array.isArray(next) ? ([] as unknown as Branch) : {}
 	for (const key of keys) {
 		const value = share(prev[key], next[key])
-		if (value !== prev[key]) unchanged = false
+		if (value !== prev[key] || !Object.hasOwn(prev, key)) unchanged = false
 		merged[key] = value
 	}
 	return unchanged ? prev : merged

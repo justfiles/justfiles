@@ -59,6 +59,13 @@ describe('defineGUI state pushes', () => {
 		push({ a: 1, b: undefined })
 		expect(rendered).toEqual([{ a: 1 }, { a: 1, b: 2 }, { a: 1 }, { a: 1, b: undefined }])
 
+		// Same key count, and every value reads as `undefined` through `prev[key]` —
+		// only presence tells the two apart.
+		const swap = mountGUI({ a: undefined })
+		swap.push({ b: undefined })
+		expect(swap.rendered).toHaveLength(2)
+		expect(Object.keys(swap.rendered[1] as object)).toEqual(['b'])
+
 		const list = mountGUI({ items: ['a', 'b'] })
 		list.push({ items: ['b', 'a'] })
 		list.push({ items: ['b'] })
