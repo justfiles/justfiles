@@ -207,6 +207,25 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	if (stage.cancelled) return
 	stage.local = true
 
+	const vol = await opts.volume
+	if (stage.cancelled) return
+
+	// Baseline for the bundle-swap watch at the tail of this function, taken BEFORE
+	// the bundle is read. The watch can only be registered once the stage is wired,
+	// so an install landing in between is missed either way — but a baseline that is
+	// never NEWER than the code we booted keeps that recoverable: the next remote
+	// manifest write still reads as a swap and reboots, even if it republishes the
+	// same bytes. Taking it after would pin the baseline to a bundle the open GUI
+	// isn't running, leaving it stale until some other install or a close/reopen.
+	const manifestPath = `/applications/${stage.id}/manifest.json`
+	const readManifest = (): Promise<string | null> =>
+		vol.readFile(manifestPath).then(
+			(bytes) => new TextDecoder().decode(bytes),
+			() => null
+		)
+	let bundle = await readManifest()
+	if (stage.cancelled) return
+
 	const installed = await kernel.app(stage.id)
 	const guiPath = installed.manifest.gui
 	if (!guiPath) {
@@ -272,8 +291,6 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// the SERVER kernel, so its writes never fire those events — they arrive as a
 	// remote-sourced sync pull of /state/<id>.json. Watch that file and re-read
 	// fresh state on a remote change so the open window reflects the agent's work.
-	const vol = await opts.volume
-	if (stage.cancelled) return
 	stage.unwatch = await vol.watch(`/state/${stage.id}.json`, (event) => {
 		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
 		// The kernel's state cache didn't author this write, so it's stale — reload it
@@ -292,10 +309,25 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// /applications/<id>/*) must reboot the GUI. Watch the manifest — the atomic
 	// tmp→rename install rebinds it. Filtering on REMOTE_SOURCE avoids a double
 	// reboot with the `app.installed` path above (local installs carry no source).
-	if (stage.cancelled) return
-	stage.unwatchBundle = await vol.watch(`/applications/${stage.id}/manifest.json`, (event) => {
+	//
+	// A wake is not a change. The watch fires on any remote write to the path, and a
+	// write that lands the bytes the file already held is still a write: another
+	// device reinstalling the same version republishes an identical manifest, and
+	// sync applies it here. Rebooting on that discards the guest's realm — the
+	// window goes blank and remounts from the snapshot — for a bundle that did not
+	// move. So compare the bytes and reboot only on a real swap. The manifest is a
+	// sound proxy for the whole bundle (it pins each mounted file's hash, and the
+	// whole-app `hash` for a copied one), which is why it is the watched path. The
+	// `bundle` baseline is read at the top, before the bundle itself — see there.
+	stage.unwatchBundle = await vol.watch(manifestPath, (event) => {
 		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
-		reboot(stage.id, opts)
+		void readManifest().then((next) => {
+			// An unreadable manifest is not a new bundle — there is nothing to boot into,
+			// and the next write settles it either way.
+			if (stage.cancelled || next === null || next === bundle) return
+			bundle = next
+			reboot(stage.id, opts)
+		})
 	})
 
 	// A guest boot failure (gui import/mount inside the frame) reports back here.

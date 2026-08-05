@@ -327,15 +327,13 @@ function FilesTree(props: {
 }) {
 	const latest = useRef(props)
 	latest.current = props
-	// State reaches this GUI across a structured-clone boundary (the host pushes it
-	// via postMessage — see apps/frieren gui-channel.ts), so `props.files` is a
-	// FRESH array on every push, even a plain selection that changes nothing about
-	// the file set. Key `paths` on the SET's value, not the array identity, so the
-	// reconcile effect below fires only when files are truly added/removed — never
-	// on a selection — and expansion state is left untouched in the common case.
-	const pathsKey = props.files.join('\n')
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — recompute only when the path set changes by value (pathsKey), not on every structured-clone push (see above).
-	const paths = useMemo(() => props.files.map(stripSlash), [pathsKey])
+	// `props.files` is derived from `state.files`, which `defineGUI` reconciles
+	// against the last push (see `share` in @justfiles/app/browser) — so it keeps its
+	// identity across a push that changed something else, and only changes when the
+	// file set actually did. Memoizing on it is therefore enough: the reconcile
+	// effect below fires on a real add/remove, never on a selection, and expansion
+	// state is left untouched in the common case.
+	const paths = useMemo(() => props.files.map(stripSlash), [props.files])
 	const selectedPath = props.selectedPath ? stripSlash(props.selectedPath) : null
 
 	const { model } = useFileTree({
