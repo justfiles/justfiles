@@ -1,7 +1,8 @@
-import { injectStyle } from '@justfiles/app/browser'
-import type { GUIProps } from '@justfiles/app/react'
-import { useEffect, useReducer, useRef, useState } from 'react'
-import type { app, Tool } from './app.ts'
+import type { Client } from '@justfiles/app'
+import { defineGUI, injectStyle } from '@justfiles/app/browser'
+import { StrictMode, useEffect, useReducer, useRef, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { initialState, type PixelApp, type PixelState, type Tool } from './app.ts'
 import { drawLine, drawRect, gridDiff, setPixels } from './bitmap.ts'
 import { charToIndex, getPixel, MAX_COLORS, type PixelDoc, SIZES, TRANSPARENT } from './doc.ts'
 
@@ -108,7 +109,12 @@ type Drag =
 	| { kind: 'stroke'; i: number; base: string[]; grid: string[]; x: number; y: number }
 	| { kind: 'line' | 'rect'; x0: number; y0: number; x1: number; y1: number }
 
-export default function Pixel({ state, actions }: GUIProps<typeof app>) {
+interface PixelProps {
+	state: PixelState
+	actions: Client<PixelApp>
+}
+
+function Pixel({ state, actions }: PixelProps) {
 	const { doc } = state
 	// Phase-1 state persisted `{ doc }` only, so default the phase-2 selection here.
 	const tool = state.tool ?? 'pencil'
@@ -412,3 +418,22 @@ function rectArgs(d: {
 		Math.abs(d.y1 - d.y0) + 1
 	]
 }
+
+export const gui = defineGUI<PixelApp>({
+	mount(el, state, ctx) {
+		const root = createRoot(el)
+		const render = (next: PixelState | null) =>
+			root.render(
+				<StrictMode>
+					<Pixel state={next ?? initialState} actions={ctx.client} />
+				</StrictMode>
+			)
+		render(state)
+		return {
+			update: render,
+			unmount() {
+				root.unmount()
+			}
+		}
+	}
+})

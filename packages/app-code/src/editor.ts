@@ -107,7 +107,9 @@ export function createEditor(onChange: (content: string) => void): Editor {
 		extensions: [
 			basicSetup,
 			lintGutter(),
-			javascript({ typescript: true, jsx: true }),
+			// TypeScript, no JSX: a draft has no UI framework in its sysroot, so its
+			// GUI is plain DOM through `defineGUI` and every source file is `.ts`.
+			javascript({ typescript: true }),
 			theme,
 			syntaxHighlighting(xcodeSyntax),
 			EditorView.updateListener.of((update: ViewUpdate) => {

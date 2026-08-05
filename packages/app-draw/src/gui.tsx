@@ -6,9 +6,11 @@ import {
 	serializeAsJSON
 } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
-import type { GUIProps } from '@justfiles/app/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { DRAFT_PATH, type DrawApp } from './app.ts'
+import type { Client } from '@justfiles/app'
+import { defineGUI } from '@justfiles/app/browser'
+import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { DRAFT_PATH, type DrawApp, type DrawState } from './app.ts'
 import './gui.css'
 import { orderFrames, type PresentAPI, Presenter } from './present.tsx'
 
@@ -96,7 +98,12 @@ function Thumbnail({ json }: { json: string }) {
 	return <div className="draw-thumb" ref={hostRef} />
 }
 
-export default function Draw({ state, actions }: GUIProps<DrawApp>) {
+interface DrawProps {
+	state: DrawState
+	actions: Client<DrawApp>
+}
+
+function Draw({ state, actions }: DrawProps) {
 	const { openPath, error } = state
 
 	// Excalidraw reads `initialData` once per mount, so switching documents bumps
@@ -430,3 +437,24 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 		</div>
 	)
 }
+
+const INITIAL: DrawState = { openPath: null, error: null }
+
+export const gui = defineGUI<DrawApp>({
+	mount(el, state, ctx) {
+		const root = createRoot(el)
+		const render = (next: DrawState | null) =>
+			root.render(
+				<StrictMode>
+					<Draw state={next ?? INITIAL} actions={ctx.client} />
+				</StrictMode>
+			)
+		render(state)
+		return {
+			update: render,
+			unmount() {
+				root.unmount()
+			}
+		}
+	}
+})

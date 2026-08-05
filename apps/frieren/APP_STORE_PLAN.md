@@ -42,11 +42,11 @@ installs only get enabled once the sandbox track lands.
   built and shipped end-to-end behind a flag, exercised with first-party
   `computer.spud.*` apps published to npm (see the namespace section below) —
   those are already trusted, so the sandbox gate doesn't block them.
-- **Track B — the sandbox** (`IFRAME_ISOLATION_PLAN.md`): Step 4 (reducer
-  worker into the iframe, Topology B — or the SES fallback recorded in its risk
-  gate), plus a CSP on `FRAME_SRCDOC` (its Step 5a) so the frame's network is
-  deny-by-default. Steps 1–3 (GUI in an opaque-origin iframe) are already
-  shipped.
+- **Track B — the sandbox** (`IFRAME_ISOLATION_PLAN.md`): **shipped.** Both
+  halves of an app now run in opaque-origin frames (Steps 1–4), and both frame
+  documents carry a deny-by-default CSP, so neither can `fetch` with the user's
+  cookies. What remains there is Step 5 (trust gating + lifecycle), which is
+  optional and does not gate this plan.
 
 Flag flip for the public store = Track B's gate met **+** the consent sheet
 **+** re-consent on capability escalation (both Track A items). Until then the
@@ -217,19 +217,17 @@ benefit.
 
 ## Trust: what the sandbox does and doesn't cover yet
 
-Current state (see `IFRAME_ISOLATION_PLAN.md`, Steps 1–3 **shipped**):
+Current state (see `IFRAME_ISOLATION_PLAN.md`, Steps 1–4 **shipped**):
 
 - ✅ **GUI** runs in an opaque-origin `sandbox="allow-scripts"` iframe
   (`gui-channel.ts`): no host DOM, no cookies, no Clerk token, no
   localStorage/IDB volume. Its only authority is the kernel MessagePort.
-- ❌ **Reducer** worker is still created in the host realm
-  (`sandbox.worker.ts`) → same-origin, can `fetch` with the user's cookies.
-  Closing this is `IFRAME_ISOLATION_PLAN.md` Step 4 (Topology B), or SES
-  hardening if nested workers are blocked.
-- ❌ **No CSP on the frame document** — even an opaque-origin iframe can `fetch`
-  / beacon / `<img>` to arbitrary external hosts, so data an app *legitimately*
-  holds (its chroot files, AI/email capability results) is exfiltratable. Fix:
-  `<meta http-equiv="Content-Security-Policy">` in `FRAME_SRCDOC` allowing only
+- ✅ **Reducer** runs in its own hidden opaque-origin frame (Topology B,
+  `sandbox.worker.ts`), so it cannot `fetch` with the user's cookies either.
+- ✅ **Both frame documents carry a CSP** (`default-src 'none'` …
+  `connect-src 'none'`), so an app cannot beacon data it *legitimately* holds
+  (its chroot files, AI/email capability results) to an arbitrary host. The
+  policy allows only
   `blob:` script/imports and nothing else; blob workers inherit the creator
   document's CSP, so this covers the Topology-B reducer too. Network access then
   becomes deny-by-default — a future *capability* (kernel-mediated fetch with
@@ -242,19 +240,18 @@ Current state (see `IFRAME_ISOLATION_PLAN.md`, Steps 1–3 **shipped**):
   No indexed store fixes that; the mitigations are the capability consent sheet,
   re-consent on escalation, and the denylist.
 
-**Gate for enabling public third-party installs:** Track B (Topology B or SES,
-plus the frame CSP) + consent sheet + re-consent on capability escalation — see
-"Sequencing: two parallel tracks". Until then, installs stay limited to
-pre-installed built-ins, first-party `computer.spud.*` apps from the store, and
-self-installed local zips.
+**Gate for enabling public third-party installs:** Track B (**done**) + consent
+sheet + re-consent on capability escalation — see "Sequencing: two parallel
+tracks". So the sandbox no longer gates this; the consent surface does. Until
+that lands, installs stay limited to pre-installed built-ins, first-party
+`computer.spud.*` apps from the store, and self-installed local zips.
 
 ## Implementation steps (Track A)
 
 Five steps, each self-contained and landable on its own (sized so one step ≈ one
 focused session; the earlier steps are prerequisites of the later ones, but every
 step leaves the tree green and shippable). Track B is **not** re-broken-down
-here — it is `IFRAME_ISOLATION_PLAN.md` Step 4 (Topology B) + Step 5a (frame
-CSP), and can run in parallel with any of these.
+here — it is `IFRAME_ISOLATION_PLAN.md` Steps 1–4, all shipped.
 
 ### Step 1 — Rename bundle ids to `computer.spud.*` (S–M)
 

@@ -1,3 +1,8 @@
+---
+title: 'Rebrand runbook (rename + new domain)'
+description: How to rebrand the public product — a new name and a new domain — with minimal downtime.
+---
+
 # Rebrand runbook (rename + new domain)
 
 How to rebrand the public product again — a new name and a new domain — with minimal

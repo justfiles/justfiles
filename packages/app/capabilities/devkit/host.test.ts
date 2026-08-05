@@ -1,9 +1,10 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import type { Kernel } from '../../kernel.ts'
-import type { CompileResult } from '../../toolchain.ts'
+import { sdkRuntimeSpecs } from '../../runtime-specs.ts'
 import { DEVKIT_SCHEMA } from './devkit-sysroot.ts'
 import { devkitCapability, noopRunner } from './host.ts'
+import type { CompileResult } from './toolchain.ts'
 
 // Step 5: the devkit factory is caller-aware. The shared `devkitCapability`
 // pipeline threads the calling app's id (`ctx.appId`) into every method, so it
@@ -27,17 +28,26 @@ async function seed(fs: ReturnType<typeof volume>, appId: string, slug: string):
 }
 
 // A devkit capability whose fake kernel records every app id the factory resolves a
-// sysroot for. `read` serves a minimal (empty) devkit sysroot so loadRuntime/
-// loadTypes succeed; the compile/typecheck backends return empty results — we only
-// care which appId reaches `kernel().app()`.
+// sysroot for. `read` serves a stub devkit sysroot so loadRuntime/loadTypes succeed;
+// the compile/typecheck backends return empty results — we only care which appId
+// reaches `kernel().app()`. The runtime map lists every SDK spec (pointing at one
+// empty blob), because `loadRuntime` rejects an incomplete sysroot.
+const STUB = 'stub'
 function harness() {
 	const fs = volume(memStorage())
 	const seen: string[] = []
 	const index = enc.encode(
-		JSON.stringify({ schema: DEVKIT_SCHEMA, hash: 'x', files: {}, runtime: {}, paths: {} })
+		JSON.stringify({
+			schema: DEVKIT_SCHEMA,
+			hash: 'x',
+			files: {},
+			runtime: Object.fromEntries(sdkRuntimeSpecs.map((spec) => [`${spec}.js`, STUB])),
+			paths: {}
+		})
 	)
 	const read = async (path: string) => {
 		if (path === 'devkit/index.json') return index
+		if (path === `devkit/store/${STUB}`) return enc.encode('export {}')
 		throw new Error(`not found: ${path}`)
 	}
 	const kernel = {

@@ -1,8 +1,10 @@
-import type { GUIProps } from '@justfiles/app/react'
+import type { Client } from '@justfiles/app'
+import { defineGUI } from '@justfiles/app/browser'
 import type { AsyncFlateStreamHandler, UnzipDecoder, UnzipDecoderConstructor } from 'fflate'
 import { Unzip, UnzipInflate, UnzipPassThrough } from 'fflate'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Entry, NotesApp } from './app.ts'
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { type Entry, initialState, type NotesApp, type NotesState } from './app.ts'
 import type { Buffer, BufferIO, BufferState, Unsettled } from './buffer.ts'
 import { createBuffer } from './buffer.ts'
 import {
@@ -276,7 +278,12 @@ function relativeTime(mtimeNs: number): string {
 	return `${Math.round(hours / 24)}d`
 }
 
-export default function Notes({ state, actions }: GUIProps<NotesApp>) {
+interface NotesProps {
+	state: NotesState
+	actions: Client<NotesApp>
+}
+
+function Notes({ state, actions }: NotesProps) {
 	// Both counters are optional in persisted state (added after the first release,
 	// and `init` is never re-merged) — default them at the door.
 	const { openPath, revision = 0, treeRevision = 0, movedFrom } = state
@@ -1763,3 +1770,22 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		</div>
 	)
 }
+
+export const gui = defineGUI<NotesApp>({
+	mount(el, state, ctx) {
+		const root = createRoot(el)
+		const render = (next: NotesState | null) =>
+			root.render(
+				<StrictMode>
+					<Notes state={next ?? initialState} actions={ctx.client} />
+				</StrictMode>
+			)
+		render(state)
+		return {
+			update: render,
+			unmount() {
+				root.unmount()
+			}
+		}
+	}
+})

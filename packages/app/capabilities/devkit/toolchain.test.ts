@@ -93,9 +93,9 @@ export const app = defineApp({ init: { count: 0 }, update: () => ({}) })`
 import { app } from './app'
 export const gui = defineGUI({ mount: (el, state) => (void app, { update() {}, unmount() {} }) })`
 		const { diagnostics } = await toolchain.typecheck({
-			files: { 'src/app.ts': app, 'src/gui.tsx': gui },
-			entries: { app: 'src/app.ts', gui: 'src/gui.tsx' },
-			tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts', gui: 'src/gui.tsx' })
+			files: { 'src/app.ts': app, 'src/gui.ts': gui },
+			entries: { app: 'src/app.ts', gui: 'src/gui.ts' },
+			tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts', gui: 'src/gui.ts' })
 		})
 		expect(diagnostics.filter((d) => d.code === 'TS2307')).toEqual([])
 		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])

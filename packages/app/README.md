@@ -30,36 +30,57 @@ Action schemas use Standard Schema-compatible validators. Transition return valu
 
 ## GUI
 
-For a React `gui.tsx`/`gui.jsx` entry, default-export a component. `kernelHost()` wraps it with the host lifecycle and injects typed props:
+A GUI entry exports `gui` from `defineGUI`. The SDK builds the typed client from the
+host's transport and bridges state pushes into your `update` — you own the rendering:
 
-```tsx
-import type { GUIProps } from '@justfiles/app/react'
+```ts
+import { defineGUI } from '@justfiles/app/browser'
 import type { app } from './app'
 
-export default function Counter({ state, actions }: GUIProps<typeof app>) {
-	return (
-		<button type="button" onClick={() => void actions.increment({ amount: 1 })}>
-			count: {state.count}
-		</button>
-	)
-}
-```
+export const gui = defineGUI<typeof app>({
+	mount(root, state, { client }) {
+		const button = document.createElement('button')
+		button.type = 'button'
+		button.onclick = () => void client.increment({ amount: 1 })
+		root.append(button)
 
-Optional menus are a named export:
-
-```tsx
-import type { GUIMenu } from '@justfiles/app/react'
-import type { app } from './app'
-
-export const menu: GUIMenu<typeof app> = (state, actions) => [
-	{
-		title: 'Count',
-		items: [{ title: 'Increment', onSelect: () => void actions.increment({ amount: 1 }) }]
+		const render = (next: { count: number } | null) => {
+			button.textContent = `count: ${next?.count ?? 0}`
+		}
+		render(state)
+		return { update: render, unmount: () => button.remove() }
 	}
-]
+})
 ```
 
-The `.tsx`/`.jsx` extension is the whole signal — any such entry is wrapped as a component. For a non-React or custom-lifecycle GUI, use a plain `gui.ts` that exports `gui` via `defineGUI` from `@justfiles/app/browser`; it's used verbatim.
+The platform ships no UI framework and the plugin does no framework-specific
+codegen. To use React (or Svelte, or anything else), add it and its Vite plugin to
+your own app and mount it inside `defineGUI`:
+
+```tsx
+import { defineGUI } from '@justfiles/app/browser'
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { type CounterApp, type CounterState, initialState } from './app'
+import Counter from './Counter'
+
+export const gui = defineGUI<CounterApp>({
+	mount(el, state, ctx) {
+		const root = createRoot(el)
+		const render = (next: CounterState | null) =>
+			root.render(
+				<StrictMode>
+					<Counter state={next ?? initialState} actions={ctx.client} />
+				</StrictMode>
+			)
+		render(state)
+		return { update: render, unmount: () => root.unmount() }
+	}
+})
+```
+
+`state` is nullable: the host may mount before the kernel has persisted state for
+this app, so fall back to the reducer's `init`.
 
 ## Build
 
@@ -80,7 +101,7 @@ export default defineConfig({
 })
 ```
 
-Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Nothing is external — the SDK and whatever UI framework the GUI uses are both bundled into `app.js`/`gui.js`. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
+Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Nothing is external — the SDK, and whatever UI framework the GUI uses, are bundled into `app.js`/`gui.js`. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
 
 ## Capabilities
 
@@ -93,8 +114,7 @@ import { ai } from '@justfiles/app/capabilities/ai'
 ## Exports
 
 - `@justfiles/app` — platform-agnostic author SDK plus runtime types.
-- `@justfiles/app/browser` — low-level browser GUI SDK.
-- `@justfiles/app/react` — React GUI adapter and prop types.
+- `@justfiles/app/browser` — browser GUI SDK (`defineGUI`, `injectStyle`).
 - `@justfiles/app/runtime` — kernel runtime host API.
 - `@justfiles/app/vite` — Vite build/dev plugin.
 - `@justfiles/app/capabilities/*` — capability contracts and broker helpers.
@@ -110,24 +130,26 @@ frame. So an app pays for exactly what it uses, and the platform is not
 betting on one framework.
 
 Whatever the GUI uses must resolve to a SINGLE copy inside `gui.js`;
-two Reacts in one bundle is the classic "Invalid hook call". Vite's
-`resolve.dedupe` handles the usual pnpm-nesting cause, and a React-based
-dependency that pulls its own major version is the case to watch.
+two Reacts in one bundle is the classic "Invalid hook call". That is your
+app's business, not the platform's: set `resolve.dedupe` in your own Vite
+config (the in-repo React apps do), and watch for a dependency that pulls
+its own major version.
 
 In standalone dev (`pnpm dev`), the GUI is served as ordinary Vite
-browser modules — Vite owns the TSX transform, React Refresh, source
-maps, and CSS. The headless `app.ts` runs through Vite's `kernel` server
-environment, so app edits hot-reload without restarting the dev server.
+browser modules — Vite owns the transform, HMR, source maps, and CSS, and
+a framework plugin you add works normally. The headless `app.ts` runs
+through Vite's `kernel` server environment, so app edits hot-reload
+without restarting the dev server.
 
-Keep the framework out of `app.ts`. The reducer runs headless in a Worker
-with no document, and `kernelHost` fails the build if React reaches it.
+Keep the framework out of `app.ts`: the reducer runs headless in a Worker
+with no document, so anything that touches the DOM belongs in the GUI.
 
 ### State discipline
 
 Reducer state is semantic, persistable, agent-inspectable. Put values
 the agent needs to read or that the user expects to survive a reload in
 the reducer. Keep transient interaction state — drag positions, scroll
-offsets, in-progress text input, undo history — in GUI-local React
+offsets, in-progress text input, undo history — in GUI-local
 state. Don't dispatch on every keystroke or pointer-move; one dispatch
 per semantic event (pointer-up, form submit, save) is the right
 granularity. Each dispatch round-trips to the kernel.

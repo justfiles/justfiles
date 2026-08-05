@@ -66,10 +66,10 @@ export interface CheckResult {
 // JS runtime map (`devkit-runtime`), so the two can't drift: one stdlib, two
 // projections (JS for esbuild, types for tsc/tsgo). `lib.*.d.ts` ships inside
 // `typescript` / the `tsgo` image; the `TypesBundle` adds only our surface
-// (`@justfiles/app/*`, `valibot`, `react`, … + a base tsconfig with `paths`).
+// (`@justfiles/app/*`, `valibot`, … + a base tsconfig with `paths`).
 export type TypesBundle = Record<string, string>
 //   '@justfiles/app/index.d.ts', '@justfiles/app/browser.d.ts',
-//   'valibot/index.d.ts', 'react/index.d.ts', ...
+//   'valibot/index.d.ts', 'type-fest/index.d.ts', ...
 
 // The tsc import-map (`compilerOptions.paths`): an SDK specifier → its entry `.d.ts`
 // in the type overlay. The type analog of the runtime `spec → js` map, built from the

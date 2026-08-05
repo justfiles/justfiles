@@ -107,29 +107,36 @@ export const app = defineApp({
 		increment: t.on(v.object({ amount: v.number() }), (s, { amount }) => ({ count: s.count + amount }))
 	})
 })`
-	const GUI = `import type { GUIProps } from '@justfiles/app/react'
+	const GUI = `import { defineGUI } from '@justfiles/app/browser'
 import type { app } from './app'
-export default function Counter({ state, actions }: GUIProps<typeof app>) {
-	return <button onClick={() => void actions.increment({ amount: 1 })}>{state.count}</button>
-}`
+export const gui = defineGUI<typeof app>({
+	mount(root, state, { client }) {
+		const button = document.createElement('button')
+		button.onclick = () => void client.increment({ amount: 1 })
+		root.append(button)
+		const render = (next: { count: number } | null) => {
+			button.textContent = String(next?.count ?? 0)
+		}
+		render(state)
+		return { update: render, unmount: () => button.remove() }
+	}
+})`
 	const input: ProjectInput = {
-		files: { 'src/app.ts': APP, 'src/gui.tsx': GUI },
-		entries: { app: 'src/app.ts', gui: 'src/gui.tsx' },
+		files: { 'src/app.ts': APP, 'src/gui.ts': GUI },
+		entries: { app: 'src/app.ts', gui: 'src/gui.ts' },
 		tsconfig: {
 			compilerOptions: {
 				target: 'es2022',
 				lib: ['es2022', 'dom', 'dom.iterable'],
 				module: 'esnext',
 				moduleResolution: 'bundler',
-				jsx: 'react-jsx',
-				jsxImportSource: 'react',
 				strict: true,
 				esModuleInterop: true,
 				skipLibCheck: true,
 				noEmit: true,
 				types: []
 			},
-			include: ['src/app.ts', 'src/gui.tsx']
+			include: ['src/app.ts', 'src/gui.ts']
 		}
 	}
 	const tc = typescriptToolchain({
@@ -146,4 +153,15 @@ test('a missing devkit/index.json is a clear error, not a silent node_modules re
 	const missing = async () => Promise.reject(new Error('absent'))
 	await expect(loadTypes(missing)).rejects.toThrow(/devkit\/index\.json/)
 	await expect(loadRuntime(missing)).rejects.toThrow(/devkit\/index\.json/)
+})
+
+// The runtime map IS the set of specifiers a draft may import, so an app-code bundle
+// older than the host's SDK must fail at load, naming what is missing — not on whichever
+// draft first imports the absent module, where it would read as "unsupported package".
+test('an incomplete runtime sysroot fails at load, naming the missing modules', async () => {
+	const built = await buildRuntime()
+	const { valibot: _dropped, ...partial } = built
+	await expect(loadRuntime(sysroot({}, partial))).rejects.toThrow(
+		/sysroot is missing runtime module\(s\): valibot/
+	)
 })

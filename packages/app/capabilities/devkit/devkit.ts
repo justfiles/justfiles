@@ -31,7 +31,7 @@ export interface DraftBuild {
 }
 
 // The standard tsconfig generated from a manifest — the one home for our
-// conventions (strict, react-jsx, bundler resolution, noEmit). `tsc`/`tsgo`
+// conventions (strict, bundler resolution, noEmit). `tsc`/`tsgo`
 // consume it whole; esbuild's resolution is plugin-driven, so it ignores this.
 // type-fest's `TsConfigJson` is the zero-runtime schema — don't hand-roll it.
 export function tsconfigFor(manifest: AppManifest): TsConfigJson {
@@ -41,8 +41,6 @@ export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 			lib: ['es2022', 'dom', 'dom.iterable'],
 			module: 'esnext',
 			moduleResolution: 'bundler',
-			jsx: 'react-jsx',
-			jsxImportSource: 'react',
 			strict: true,
 			esModuleInterop: true,
 			skipLibCheck: true,
