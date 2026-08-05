@@ -55,6 +55,138 @@ the new repo before the first release from it — see Phase 4.
 `packages/fs` becomes a git submodule that is still a pnpm workspace member.
 Consumers change nothing.
 
+## Submodule operating guide
+
+A submodule is two pieces of parent-repo metadata: `.gitmodules` records its path
+and clone URL, and the parent tree records mode `160000` plus one exact child
+commit SHA. The parent does not contain the child files or remember its branch.
+Most submodule surprises follow from that model.
+
+### Use an absolute HTTPS URL
+
+HTTPS, SSH and `git://` are all Git transports; HTTPS is not a replacement for
+Git. Track this in `.gitmodules`:
+
+```ini
+[submodule "packages/fs"]
+	path = packages/fs
+	url = https://github.com/xiaoxinghu/justfiles-fs.git
+```
+
+For a public child, HTTPS is the most portable default: anonymous clones need no
+SSH key, port 443 works on restrictive networks and GitHub Actions needs no extra
+SSH setup. An absolute URL also keeps a fork of the parent from looking for a
+nonexistent `justfiles-fs` under the fork owner's account, as a relative URL can.
+Do not use the unauthenticated, unencrypted `git://` transport, which GitHub no
+longer supports.
+
+Developers can still use SSH without changing the tracked URL:
+
+```sh
+git config --global url."git@github.com:".insteadOf "https://github.com/"
+```
+
+### Clone and update explicitly
+
+An ordinary clone does not populate submodules. Initial checkout must recurse:
+
+```sh
+git clone --recurse-submodules git@github.com:xiaoxinghu/justfiles.git
+```
+
+Initialising or updating an existing checkout uses the same rerunnable command,
+which refuses to overwrite conflicting local changes:
+
+```sh
+git submodule update --init --recursive
+```
+
+Run that command after pulling or switching parent branches. A leading `-` from
+`git submodule status --recursive` means uninitialised; `+` means the child is at
+a different commit from the parent gitlink; `U` means a gitlink conflict.
+
+The bootstrap command should also set these per-clone conveniences:
+
+```sh
+git config submodule.recurse true
+git config fetch.recurseSubmodules on-demand
+git config status.submoduleSummary true
+git config diff.submodule log
+```
+
+Recursion config reduces surprises but does not replace the explicit init/update
+in bootstrap and CI.
+
+### Develop and pin in two steps
+
+`git submodule update` deliberately checks out the recorded child SHA with a
+detached HEAD. Create a child branch before editing:
+
+```sh
+git -C packages/fs switch -c feature/my-change
+```
+
+Commit, push and merge the public change first. Then fetch and check out its exact
+merge SHA, run the integrated tests, and commit the pointer in the parent:
+
+```sh
+git -C packages/fs fetch origin main
+git -C packages/fs switch --detach <public-merge-sha>
+pnpm install
+git add packages/fs pnpm-lock.yaml
+git commit -m "chore: update fs"
+```
+
+`git add packages/fs` stages only the child SHA, never its files. Push the child
+commit before the parent commit so fresh clones and CI can fetch it. Durable
+parent commits should pin child commits reachable from protected `main`; a commit
+left only on a force-pushed or deleted branch can disappear and break future
+clones.
+
+Use `git submodule update` for reproducible checkout. Do not use
+`git submodule update --remote` in bootstrap or CI: `--remote` follows a child
+branch and silently moves the checkout beyond the SHA reviewed by the parent.
+
+### Treat the child as a separate working tree
+
+Parent `git stash`, `git reset` and `git clean` do not reliably preserve or manage
+child work. Inspect and operate on both repositories explicitly:
+
+```sh
+git status
+git -C packages/fs status
+git submodule foreach --recursive 'git status --short --branch'
+```
+
+The summary and diff config above makes parent diffs show the child commits
+between old and new pointers. For the full source diff, run it in the child:
+
+```sh
+git -C packages/fs diff <old-sha>..<new-sha>
+```
+
+If two parent branches pin different child commits, Git cannot line-merge the
+gitlink. Choose a child commit or merge the child histories in the public repo,
+check out the resulting SHA, then resolve the parent conflict:
+
+```sh
+git -C packages/fs checkout <resolved-child-sha>
+git add packages/fs
+```
+
+### Prefer independent clones over worktrees
+
+Git documents submodule support across multiple superproject worktrees as
+incomplete. Parallel tasks should use ordinary independent clones instead:
+
+```sh
+git clone --recurse-submodules git@github.com:xiaoxinghu/justfiles.git task-name
+```
+
+Each clone then has independent parent and child Git state. pnpm's global store
+still deduplicates dependencies; the extra Git checkout cost buys simpler
+isolation, and cleanup is just removal of the task clone.
+
 ---
 
 ## Phase 1 — Carve out the repo with history
@@ -100,8 +232,8 @@ root config (see Open decisions).
 ## Phase 3 — Monorepo side
 
 1. `git rm -r --cached packages/fs` and commit, then
-   `git submodule add git@github.com:xiaoxinghu/justfiles-fs.git packages/fs`.
-2. Add `submodules: true` to `actions/checkout` in **every** workflow that runs
+   `git submodule add https://github.com/xiaoxinghu/justfiles-fs.git packages/fs`.
+2. Add `submodules: recursive` to `actions/checkout` in **every** workflow that runs
    `pnpm install`: `ci.yml`, `deploy-frieren-{staging,production}.yml`,
    `deploy-worker-{staging,production}.yml`, `publish-package.yml`. Without it
    `packages/fs` is an empty directory and install fails.
@@ -111,10 +243,9 @@ root config (see Open decisions).
    (see Open decisions).
 5. Same for `biome.json` — if fs owns its style, add `!packages/fs/**` to
    `files.includes`.
-6. `CLAUDE.md`: the worktree rule needs a submodule step. `git worktree add` does
-   **not** populate submodules, so every new worktree needs
-   `git submodule update --init` alongside the existing `.env` / `.dev.vars` /
-   `.agent` seeding. Worth mentioning `git config submodule.recurse true` too.
+6. `CLAUDE.md`: replace the worktree rule with isolated full clones initialised via
+   `git clone --recurse-submodules`. Git explicitly documents submodule support
+   across multiple superproject worktrees as incomplete.
 7. `docs/fs.md`: update `Source: packages/fs` and the `pnpm --filter` instructions.
 8. Regenerate `pnpm-lock.yaml`. The importer path is unchanged so the diff should
    be near-zero — but any later submodule pointer bump that changes fs's
@@ -149,7 +280,11 @@ root config (see Open decisions).
   while npm only has 0.6.0, a published `@justfiles/app` points at a version that
   does not exist. Order: release fs → bump the pointer → release dependents.
 - **Local iteration is unaffected.** The submodule is still a linked workspace
-  package, so edits to fs are live in frieren/cli/etc. with no rebuild.
+  package, so edits to fs are live in frieren/cli/etc. with no rebuild. Create a
+  child branch before editing because the pinned checkout normally has detached
+  HEAD.
+- **Parallel isolation uses full clones.** Each task clone recursively checks out
+  its own submodule state instead of sharing Git administration through worktrees.
 
 ## Open decisions
 
