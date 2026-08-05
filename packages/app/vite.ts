@@ -1,8 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
-import { reactSpecs } from '@justfiles/app/runtime-specs'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
 import { createRunnableDevEnvironment } from 'vite'
@@ -27,16 +25,10 @@ const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 //
 // Only bare specifiers + type-only imports here: the config loader
 // externalizes this plugin and resolves it with native Node, which can't
-// load relative TypeScript siblings (./dev-server goes via ssrLoadModule;
-// React shim codegen/runtime specs use bare @justfiles/app/* specifiers).
+// load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
+
 // Compile the reducer (`app.js`). Everything it references is inlined — nothing is
 // external — because a reducer Worker resolves no bare specifiers at runtime.
-//
-// A reducer must not reach React: it runs headless, with no document. That used to fail
-// loudly (a bare `react` import had nothing to resolve it); now that nothing is external
-// it would ship React into the Worker silently and break only later, so read the input
-// graph back off the metafile and refuse the build instead.
-const REACT_INPUT = /(^|\/)node_modules\/(\.pnpm\/[^/]+\/node_modules\/)?react(-dom)?\//
 const compile = (entry: string) => {
 	const result = buildSync({
 		entryPoints: [entry],
@@ -44,15 +36,8 @@ const compile = (entry: string) => {
 		bundle: true,
 		write: false,
 		format: 'esm',
-		minify: true,
-		metafile: true
+		minify: true
 	})
-	const react = Object.keys(result.metafile.inputs).find((input) => REACT_INPUT.test(input))
-	if (react)
-		throw new Error(
-			`${entry} pulls React in through the module graph (${react}). The reducer runs ` +
-				`headless in a Worker with no document — keep React in the GUI entry.`
-		)
 	const output = result.outputFiles[0]
 	if (!output) throw new Error(`failed to compile ${entry}`)
 	return output.text
@@ -92,66 +77,6 @@ async function readManifestCapabilities(
 	}
 }
 
-function reactDevGuiEntry(specifier: string): string {
-	return `import * as mod from ${JSON.stringify(specifier)}
-import { createElement } from 'react'
-import { createRoot } from 'react-dom/client'
-import { defineGUI } from '@justfiles/app/browser'
-
-const componentMode = !mod.gui
-const hotState = import.meta.hot?.data.reactGui ?? { current: mod, instances: new Set() }
-hotState.current = mod
-if (import.meta.hot) import.meta.hot.data.reactGui = hotState
-
-function HotComponent(props) {
-	const Component = hotState.current.default
-	return Component(props)
-}
-
-const componentSpec = {
-	mount(el, state, ctx) {
-		const root = createRoot(el)
-		const instance = {
-			state,
-			update(next) {
-				instance.state = next
-				root.render(createElement(HotComponent, { state: next, actions: ctx.client }))
-			},
-			unmount() {
-				hotState.instances.delete(instance)
-				root.unmount()
-			}
-		}
-		hotState.instances.add(instance)
-		instance.update(state)
-		return instance
-	}
-}
-if (mod.menu) componentSpec.menu = (state, client) => hotState.current.menu?.(state, client) ?? []
-const componentGui = defineGUI(componentSpec)
-
-export const gui = mod.gui ?? componentGui
-export const __hmr = { preserve: componentMode && !!mod.default }
-
-function replace(next) {
-	hotState.current = next
-	for (const instance of hotState.instances) instance.update(instance.state)
-}
-
-if (__hmr.preserve) replace(mod)
-
-if (import.meta.hot && __hmr.preserve) {
-	import.meta.hot.accept(${JSON.stringify(specifier)}, (next) => {
-		if (!next || next.gui || !next.default) {
-			import.meta.hot.invalidate('GUI module shape changed')
-			return
-		}
-		replace(next)
-	})
-}
-`
-}
-
 function devBootstrapEntry(): string {
 	return `import { gui as initialGui } from ${JSON.stringify(VIRTUAL_GUI_ID)}
 
@@ -181,7 +106,7 @@ let instance = initialGui.mount(root, latestState, { transport })
 
 if (import.meta.hot) {
 	import.meta.hot.accept(${JSON.stringify(VIRTUAL_GUI_ID)}, async (next) => {
-		if (!next?.gui || next.__hmr?.preserve) return
+		if (!next?.gui) return
 		await instance.unmount()
 		instance = next.gui.mount(root, latestState, { transport })
 	})
@@ -196,8 +121,6 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
 	const appEntry = resolve(root, opts.app)
 	const guiEntry = resolve(root, opts.gui)
-	const wrapReactGui = isReactGuiEntry(guiEntry)
-	const reactGuiEntryPath = resolve(root, 'node_modules/.cache/justfiles-app/react-gui-entry.js')
 	let emitted = false
 	return [
 		{
@@ -210,7 +133,6 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
-						resolve: { dedupe: reactSpecs },
 						environments: {
 							kernel: {
 								consumer: 'server',
@@ -222,26 +144,13 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 						}
 					}
 				}
-				if (wrapReactGui) {
-					mkdirSync(dirname(reactGuiEntryPath), { recursive: true })
-					writeFileSync(reactGuiEntryPath, reactGuiEntry(guiEntry))
-				}
 				return {
 					base: './',
-					// The framework now ships INSIDE the artifact, so the artifact decides
-					// which build of it ships. React (and much of npm) picks its dev/prod
-					// branch off `process.env.NODE_ENV` at require time, and a dev React is
-					// ~3× the bytes for warnings no end user reads. Apps used to get the
-					// production build for free from the host's vendored copy.
+					// The framework, if the GUI uses one, ships INSIDE the artifact, so the
+					// artifact decides which build of it ships. Much of npm picks its dev/prod
+					// branch off `process.env.NODE_ENV` at require time, and a dev build is
+					// bytes for warnings no end user reads.
 					define: { 'process.env.NODE_ENV': JSON.stringify('production') },
-					// ONE React per artifact. The SDK's React GUI shim and the app's own
-					// components both import `react`, and pnpm can resolve those to two
-					// different copies (a workspace on 19.2.5, another on 19.2.7 — a real
-					// state of this repo). Two Reacts in one bundle means the renderer sets
-					// the hook dispatcher on an instance the components never read, and every
-					// GUI dies on its first `useState`. Externalisation used to hide this by
-					// collapsing both to one host module; now the build must collapse them.
-					resolve: { dedupe: reactSpecs },
 					build: {
 						outDir: 'dist',
 						emptyOutDir: true,
@@ -249,9 +158,9 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 						// build tree-shakes it away — the sdk is sideEffects:false).
 						// Nothing is external: the SDK and whatever framework the GUI uses are
 						// both inlined into gui.js, matching app.js. Hosts serve no framework
-						// bytes, so an app that ships Svelte or plain DOM pays only for itself.
+						// bytes, so an app that ships React or plain DOM pays only for itself.
 						lib: {
-							entry: wrapReactGui ? reactGuiEntryPath : guiEntry,
+							entry: guiEntry,
 							formats: ['es'],
 							fileName: () => 'gui.js'
 						}
@@ -269,9 +178,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				if (id === DEV_BOOTSTRAP_ID) return devBootstrapEntry()
 				if (id === RESOLVED_VIRTUAL_GUI_ID) {
 					const guiSpecifier = `/${relative(root, guiEntry).split('\\').join('/')}`
-					return wrapReactGui
-						? reactDevGuiEntry(guiSpecifier)
-						: `export { gui } from ${JSON.stringify(guiSpecifier)}\n`
+					return `export { gui } from ${JSON.stringify(guiSpecifier)}\n`
 				}
 				return null
 			},

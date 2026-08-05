@@ -3,10 +3,10 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig(({ mode }) => ({
-	define: { 'process.env.NODE_ENV': JSON.stringify('production') },
-	// The GUI wrapper's react-dom (the renderer) and our component must resolve
-	// the SAME react instance, or the renderer sets the hook dispatcher on a react
-	// our hooks never read → "invalid hook call". Dedupe collapses them to one.
+	// ONE React per artifact. `gui.js` inlines the framework, and pnpm can resolve
+	// this app's React and a React-based dependency's to two different copies. Two
+	// Reacts in one bundle means the renderer sets the hook dispatcher on an instance
+	// the components never read, and the GUI dies on its first `useState`.
 	resolve: { dedupe: ['react', 'react-dom'] },
 	// The host mounts an app by reading ONLY `gui.js` and importing it as a Blob
 	// URL, so relative chunk fetches have no origin to resolve against. Excalidraw

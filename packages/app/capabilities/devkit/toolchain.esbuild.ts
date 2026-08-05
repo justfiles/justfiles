@@ -22,8 +22,8 @@ export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
 // caller injects the esbuild toolchain + the runtime map. The shared `compileVfs`
-// orchestrates the entries + the React-GUI wrap; this only supplies the esbuild
-// pass (one bad entry's error stays its own diagnostics, never sinks the others).
+// orchestrates the entries; this only supplies the esbuild pass (one bad entry's
+// error stays its own diagnostics, never sinks the others).
 export function esbuildCompile(
 	input: ProjectInput,
 	build: BuildFn,
@@ -36,7 +36,6 @@ export function esbuildCompile(
 				bundle: true,
 				write: false,
 				format: 'esm',
-				jsx: 'automatic',
 				logLevel: 'silent',
 				plugins: [vfs(sources, rt)]
 			})
@@ -60,7 +59,7 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
-				// A pre-bundled system library (SDK or React); side-effect-free so unused
+				// A pre-bundled system library (the SDK); side-effect-free so unused
 				// exports (e.g. the kernel half of `@justfiles/app`) tree-shake away.
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }
 				// Nothing else is resolvable — say why, rather than esbuild's opaque

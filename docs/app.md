@@ -96,8 +96,8 @@ export default defineConfig(({ mode }) => ({
 }))
 ```
 
-A React GUI adds `react()` from `@vitejs/plugin-react`, `define: { 'process.env.NODE_ENV':
-JSON.stringify('production') }`, and a `.tsx` `gui` entry — see `packages/app-notes`.
+A React GUI adds `react()` from `@vitejs/plugin-react`, `resolve: { dedupe: ['react',
+'react-dom'] }`, and a `.tsx` `gui` entry — see `packages/app-notes`.
 
 `kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
 host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to
@@ -116,7 +116,7 @@ An App Code project lives in Code's private volume:
 /projects/<slug>/
 	project.json
 	src/app.ts
-	src/gui.tsx
+	src/gui.ts
 	icon
 ```
 
@@ -129,7 +129,7 @@ An App Code project lives in Code's private volume:
 	"description": "Optional",
 	"version": "0.1.0",
 	"app": "src/app.ts",
-	"gui": "src/gui.tsx",
+	"gui": "src/gui.ts",
 	"icon": "icon"
 }
 ```
@@ -140,7 +140,6 @@ other bare imports. The only supplied bare imports are:
 ```text
 @justfiles/app
 @justfiles/app/browser
-@justfiles/app/react
 @justfiles/app/capabilities/volume
 @justfiles/app/capabilities/notify
 @justfiles/app/capabilities/email
@@ -149,12 +148,11 @@ other bare imports. The only supplied bare imports are:
 @justfiles/app/capabilities/devkit
 @justfiles/app/capabilities/settings
 valibot
-react
-react-dom
-react-dom/client
-react/jsx-runtime
-react/jsx-dev-runtime
 ```
+
+App Code ships no UI framework: a draft's GUI is plain DOM through `defineGUI`, and `src/gui.ts` is a
+`.ts` file. An author who needs React or another framework uses `packages/create-app`, where the app's
+own bundler inlines it.
 
 Relative imports within the project work, including explicit CSS imports. The compiler folds CSS into
 `gui.js`. `image` is a platform capability but is not currently in the App Code draft sysroot.
@@ -174,8 +172,8 @@ When driving Code as an agent:
 ## State machine API
 
 Schemas use the [Standard Schema](https://standardschema.dev/) interface. Apps normally use Valibot.
-`app.ts` is a headless worker module: do not import React, access the DOM or `window`, perform top-level
-I/O, or depend on Node APIs.
+`app.ts` is a headless worker module: do not access the DOM or `window`, perform top-level I/O, or
+depend on Node APIs.
 
 ```ts
 import { defineApp } from '@justfiles/app'
@@ -338,42 +336,10 @@ existing app preserves state.
 
 ## GUI API
 
-### React GUI
+### The GUI entry
 
-A `.tsx` or `.jsx` GUI normally default-exports a component:
-
-```tsx
-import type { GUIProps } from '@justfiles/app/react'
-import type { app } from './app'
-import './gui.css'
-
-export default function Foo({ state, actions }: GUIProps<typeof app>) {
-	return (
-		<button type="button" onClick={() => void actions.increment({ amount: 1 })}>
-			{state.count}
-		</button>
-	)
-}
-```
-
-`GUIProps<A>` contains:
-
-- `state` — the current non-null reducer state
-- `actions` — `Client<A>`, with one async method per public `t.on` and procedure
-
-State returns through host pushes and causes a rerender. Usually fire an action with `void` and render
-the pushed state rather than depending on its immediate return.
-
-React, React DOM, and the JSX runtimes are bundled into `gui.js`. A normal package may use
-third-party React libraries, but the whole GUI graph must collapse to ONE React — two copies in one
-bundle means the renderer sets the hook dispatcher on an instance your components never read, and the
-GUI dies on its first `useState`. `kernelHost` dedupes the React specifiers for you; a dependency
-pinning its own React major is the case to watch. If a dependency emits chunks, follow
-`packages/app-draw` and keep the resulting `gui.js` single-file.
-
-### Imperative GUI
-
-Use `defineGUI` for Canvas, WebAssembly, a custom React root, or another imperative renderer:
+Every GUI entry exports `gui` from `defineGUI`. The SDK builds the typed client from the host's
+transport and bridges state pushes into your `update`; you own the rendering.
 
 ```ts
 import { defineGUI } from '@justfiles/app/browser'
@@ -381,17 +347,60 @@ import type { FooApp } from './app'
 
 export const gui = defineGUI<FooApp>({
 	mount(element, state, { client }) {
-		const render = (next: typeof state) => {
-			element.textContent = String(next?.count ?? 0)
+		const button = document.createElement('button')
+		button.type = 'button'
+		button.onclick = () => void client.increment({ amount: 1 })
+		element.append(button)
+
+		const render = (next: { count: number } | null) => {
+			button.textContent = String(next?.count ?? 0)
 		}
 		render(state)
-		return {
-			update: render,
-			unmount: () => element.replaceChildren()
-		}
+		return { update: render, unmount: () => button.remove() }
 	}
 })
 ```
+
+`state` is nullable — the host may mount before the kernel has persisted state for this app, so fall
+back to the reducer's `init`. State returns through host pushes; usually fire an action with `void`
+and render the pushed state rather than depending on its immediate return.
+
+### A React GUI
+
+The platform ships no UI framework and does no framework-specific codegen, so React is an ordinary
+dependency of your package. Add `@vitejs/plugin-react` to your own Vite config and mount a root
+inside `defineGUI`:
+
+```tsx
+import { defineGUI } from '@justfiles/app/browser'
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { type FooApp, type FooState, initialState } from './app'
+import Foo from './Foo'
+import './gui.css'
+
+export const gui = defineGUI<FooApp>({
+	mount(el, state, ctx) {
+		const root = createRoot(el)
+		const render = (next: FooState | null) =>
+			root.render(
+				<StrictMode>
+					<Foo state={next ?? initialState} actions={ctx.client} />
+				</StrictMode>
+			)
+		render(state)
+		return { update: render, unmount: () => root.unmount() }
+	}
+})
+```
+
+React, React DOM, and the JSX runtimes are bundled into `gui.js`. A normal package may use
+third-party React libraries, but the whole GUI graph must collapse to ONE React — two copies in one
+bundle means the renderer sets the hook dispatcher on an instance your components never read, and the
+GUI dies on its first `useState`. Set `resolve: { dedupe: ['react', 'react-dom'] }` in your own Vite
+config (every in-repo React app does); a dependency pinning its own React major is the case to watch.
+If a dependency emits chunks, follow `packages/app-draw` and keep the resulting `gui.js` single-file.
+
 
 Here the initial `state` is nullable. `mount` returns `{ update(state), unmount() }`; both methods may
 be async. The context supplies the typed `client`.

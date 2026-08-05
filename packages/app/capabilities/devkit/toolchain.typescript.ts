@@ -6,7 +6,7 @@
 //
 // typecheck builds a `ts.Program` over an in-memory `CompilerHost` that overlays
 // the draft's `ProjectInput.files` (and any `TypesBundle`) on the real host fs:
-// quay has `node_modules`, so `@justfiles/app` / `valibot` / `react` resolve
+// quay has `node_modules`, so `@justfiles/app` / `valibot` resolve
 // against the same source the runtime is bundled from. The container (Phase 4)
 // passes a baked `TypesBundle` instead; same code, no fs reliance.
 
@@ -50,8 +50,8 @@ export function tsTypecheck(
 	paths: TypePaths
 ): CheckResult {
 	// Root the virtual draft inside this package's own dir, so node resolution
-	// reaches `@justfiles/app` (self-reference) + its deps (`valibot`, `react`,
-	// `@types/react`) regardless of the host's cwd. The container (Phase 4) passes
+	// reaches `@justfiles/app` (self-reference) + its deps (`valibot`, `type-fest`)
+	// regardless of the host's cwd. The container (Phase 4) passes
 	// a complete `TypesBundle` instead and never touches the fs.
 	const root = `${import.meta.dirname}/__engine_draft__`
 	const norm = (path: string) => `${root}/${path}`
@@ -91,7 +91,7 @@ export function tsTypecheck(
 	const baseGetSource = host.getSourceFile.bind(host)
 	host.fileExists = (file) => overlay.has(file) || baseExists(file)
 	host.readFile = (file) => overlay.get(file) ?? baseRead(file)
-	// A directory import (`import … from "./"`, e.g. @types/react's jsx-runtime) probes
+	// A directory import (`import … from "./"`) probes
 	// `directoryExists` WITH a trailing slash; `dirs` holds the slash-free form, so
 	// normalise before the lookup or the no-fs (baked TypesBundle) path can't resolve
 	// the package's own index and JSX collapses to an empty namespace.

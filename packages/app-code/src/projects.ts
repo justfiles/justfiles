@@ -93,7 +93,7 @@ export async function seed(
 	_template: 'react' | 'vanilla' = 'react'
 ): Promise<void> {
 	await vol.writeFile(SRC(id, '/app.ts'), encoder.encode(starterApp))
-	await vol.writeFile(SRC(id, '/gui.tsx'), encoder.encode(starterGui))
+	await vol.writeFile(SRC(id, '/gui.ts'), encoder.encode(starterGui))
 	await writeProjectManifest(vol, id, name)
 }
 
@@ -141,7 +141,7 @@ export async function writeProjectManifest(
 	slug: string,
 	name = slug
 ): Promise<void> {
-	const manifest = { id: slug, name, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.tsx' }
+	const manifest = { id: slug, name, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.ts' }
 	await vol.writeFile(PROJECT(slug), encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`))
 }
 
@@ -167,25 +167,31 @@ export const app = defineApp({
 })
 `
 
-const starterGui = `import type { GUIProps } from '@justfiles/app/react'
+const starterGui = `// A framework-free GUI: plain DOM through \`defineGUI\`. App Code ships the
+// platform SDK and nothing else, so there is no framework to import here.
+//
+// Build the chrome ONCE in \`mount\` and mutate it on each state push. Rebuilding
+// the subtree instead would drop focus, caret, and selection.
+import { defineGUI } from '@justfiles/app/browser'
 import type { app } from './app'
 
-export default function Counter({ state, actions }: GUIProps<typeof app>) {
-	return (
-		<button
-			type="button"
-			onClick={() => void actions.increment({ amount: 1 })}
-			style={{
-				border: 0,
-				borderRadius: 8,
-				background: '#2563eb',
-				color: '#fff',
-				font: '16px system-ui, sans-serif',
-				padding: '10px 14px'
-			}}
-		>
-			Count: {state.count}
-		</button>
-	)
-}
+export const gui = defineGUI<typeof app>({
+	mount(root, state, { client }) {
+		// A bare \`<button>\`: the host injects the platform stylesheet, so it is
+		// already styled and already follows the OS light/dark theme. Your own
+		// layout CSS goes through \`injectStyle\` from the same module.
+		const button = document.createElement('button')
+		button.type = 'button'
+		button.onclick = () => void client.increment({ amount: 1 })
+		root.append(button)
+
+		// Null until the kernel has state for this app — mount on the app's init.
+		const render = (next: { count: number } | null) => {
+			button.textContent = \`Count: \${next?.count ?? 0}\`
+		}
+
+		render(state)
+		return { update: render, unmount: () => button.remove() }
+	}
+})
 `

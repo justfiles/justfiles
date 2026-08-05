@@ -2,8 +2,7 @@
 // same bundler-agnostic vfs rules as `toolchain.esbuild.ts`. Runs only under Bun
 // (`Bun.build` is in the runtime — see the migration spike), so it's selected via
 // the `#engine` runtime condition and never imported under Node. Same virtual
-// `runtime` injection (React included, nothing external), same `app.js`/`gui.js`
-// output shape.
+// `runtime` injection (nothing external), same `app.js`/`gui.js` output shape.
 // `.css` imports fold into `gui.js` as a runtime `injectStyle` (`cssModule`), the
 // same as the esbuild path — no host links a separate stylesheet (see `cssModule`).
 //
@@ -43,12 +42,6 @@ export function bunCompile(
 			// the root to a real, always-present dir so that probe succeeds; outputs are
 			// read back by their `.js`/`.css` suffix, so the relativised path is moot.
 			root: process.cwd(),
-			// Emit PRODUCTION automatic JSX (`jsx`/`jsxs` from `react/jsx-runtime`) like
-			// the esbuild path. Bun defaults to the dev runtime (`jsxDEV` from
-			// `react/jsx-dev-runtime`) when NODE_ENV isn't production — but the sysroot
-			// React is a production build whose `jsxDEV` is undefined, so a dev-JSX draft
-			// mounts to `jsxDEV is not a function`. NODE_ENV drives Bun's JSX runtime choice.
-			define: { 'process.env.NODE_ENV': '"production"' },
 			plugins: [vfs(sources, rt)]
 		})
 		if (!result.success) {

@@ -526,21 +526,9 @@ importers:
       '@types/node':
         specifier: ^25.7.0
         version: 25.7.0
-      '@types/react':
-        specifier: ^19
-        version: 19.2.7
-      '@types/react-dom':
-        specifier: ^19
-        version: 19.2.3(@types/react@19.2.7)
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
-      react:
-        specifier: ^19
-        version: 19.2.5
-      react-dom:
-        specifier: ^19
-        version: 19.2.5(react@19.2.5)
       tsdown:
         specifier: ^0.21.10
         version: 0.21.10(typescript@6.0.3)

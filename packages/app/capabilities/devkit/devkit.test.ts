@@ -87,23 +87,19 @@ describe('devkit compile', () => {
 		expect(out.state).toEqual({ count: 1 })
 	})
 
-	test('wraps a default React component gui.tsx as the app GUI, React inlined', async () => {
-		const guiTsx = `import type { GUIProps } from '@justfiles/app/react'
-import type { app } from './app'
-export default function Counter({ state, actions }: GUIProps<typeof app>) {
-	return <button onClick={() => void actions.increment({})}>{state.count}</button>
-}`
-		const { gui, diagnostics } = await compile(
-			{ 'app.ts': APP, 'gui.tsx': guiTsx },
-			{ app: 'app.ts', gui: 'gui.tsx' }
+	// App Code is a built-in authoring tool, not an npm dev environment. React is no
+	// longer in the sysroot, so a draft that reaches for it gets the same clear
+	// "not supported" diagnostic as any other npm package — not an opaque resolve error.
+	test('rejects a React import with the unsupported-package diagnostic', async () => {
+		const guiSrc = `import { useState } from 'react'
+export const gui = useState`
+		const { diagnostics } = await compile(
+			{ 'app.ts': APP, 'gui.ts': guiSrc },
+			{ app: 'app.ts', gui: 'gui.ts' }
 		)
-		expect(diagnostics).toEqual([])
-		// The `.tsx` default export is wrapped via the React GUI entry; that shim AND
-		// React itself come out of the runtime map, so nothing is left to resolve.
-		expect(gui).not.toMatch(/from\s*["']@justfiles\/app\/react["']/)
-		expect(gui).not.toMatch(/from\s*["']react(-dom)?(\/[^"']+)?["']/)
-		expect(gui).toContain('react.transitional.element')
-		expect(gui).not.toContain('initialState')
+		expect(diagnostics.map((d) => d.message).join('\n')).toMatch(
+			/External npm package "react" is not supported/
+		)
 	})
 
 	test('reports diagnostics on a compile error', async () => {
