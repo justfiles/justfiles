@@ -26,11 +26,3 @@ export const sdkRuntimeSpecs: readonly string[] = [
 	'@justfiles/app/capabilities/settings',
 	'valibot'
 ]
-
-const RUNTIME_SPECS = new Set<string>(sdkRuntimeSpecs)
-
-// Every bare specifier devkit can resolve. All of them come out of the app-code
-// sysroot's runtime map, so this is exactly the set a draft may import.
-export function isRuntimeSpec(spec: string): boolean {
-	return RUNTIME_SPECS.has(spec)
-}

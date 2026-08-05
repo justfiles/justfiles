@@ -4,10 +4,12 @@
 // from the calling app's installed bundle, so devkit needs no node_modules or host
 // package resolver.
 //
-// Deliberately tiny + dependency-free (only the `TypesBundle` TYPE from toolchain.ts,
-// erased at runtime): the app-code build PLUGIN imports `DEVKIT_SCHEMA`/`DevkitIndex`
-// from here in Vite's config context, so this must never drag in the kernel/fs graph.
+// Deliberately tiny + dependency-free (the `TypesBundle` TYPE from toolchain.ts is
+// erased at runtime, and runtime-specs.ts is a bare list): the app-code build PLUGIN
+// imports `DEVKIT_SCHEMA`/`DevkitIndex` from here in Vite's config context, so this
+// must never drag in the kernel/fs graph.
 
+import { sdkRuntimeSpecs } from '../../runtime-specs.ts'
 import type { TypePaths, TypesBundle } from './toolchain.ts'
 
 // `justfiles.devkit.v1`. The schema tag app-code stamps into `devkit/index.json` and
@@ -58,6 +60,11 @@ export async function loadTypes(
 // source). This is the JS twin of `loadTypes`: same installed bundle, no node_modules.
 // It carries the whole SDK, so a draft bundle is self-contained and the host serves no
 // library bytes.
+//
+// The map IS the set of specifiers a draft may import — a compile resolves against it
+// and nothing else. So completeness is checked once, here, against the SDK's own list:
+// an app-code bundle older than the host's SDK would otherwise surface as an opaque
+// "unsupported package" on whichever draft first imported the missing module.
 export async function loadRuntime(
 	read: (path: string) => Promise<Uint8Array>
 ): Promise<Record<string, string>> {
@@ -68,6 +75,9 @@ export async function loadRuntime(
 		const spec = rel.endsWith('.js') ? rel.slice(0, -3) : rel
 		runtime[spec] = new TextDecoder().decode(await read(`devkit/store/${id}`))
 	}
+	const missing = sdkRuntimeSpecs.filter((spec) => !(spec in runtime))
+	if (missing.length)
+		throw new Error(`devkit: sysroot is missing runtime module(s): ${missing.join(', ')}`)
 	return runtime
 }
 

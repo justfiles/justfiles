@@ -409,7 +409,7 @@ be async. The context supplies the typed `client`.
 is preferred; both package and draft builds fold it into `gui.js`.
 
 `Client<A>`, `createClient<A>(transport)`, and `Transport` are exported from `@justfiles/app` for
-low-level adapters. Regular GUIs should use `GUIProps` or the client supplied by `defineGUI`.
+low-level adapters. Regular GUIs should use the client supplied by `defineGUI`.
 
 Both hosts sandbox reducers. Frieren also runs every GUI in an opaque-origin, network-denied iframe.
 For portable apps, do not use `fetch`, cookies, host DOM access, or ambient credentials. Use declared

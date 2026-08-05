@@ -6,7 +6,6 @@
 // hand `compileVfs` a single `buildOne` strategy. One home for the substance; the
 // per-bundler glue stays tens of lines each.
 
-import { isRuntimeSpec } from '../../runtime-specs.ts'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
 // Devkit bundles every bare specifier it supports into the emitted entry from the
@@ -61,14 +60,13 @@ export function resolveRelative(
 }
 
 // Why devkit can't resolve this BARE specifier — both compile paths call this in their
-// `onResolve` terminal branch, after the `runtime` map has had its chance. A spec devkit
-// knows about but that the map lacks means an incomplete sysroot; anything else is an npm
-// package app-code deliberately doesn't support (it's a built-in authoring tool, not an
-// npm dev environment — authors who need arbitrary packages use create-app). Either way a
-// clear message in BOTH compile paths (and the browser esbuild-wasm fallback) beats the
-// bundler's opaque "Could not resolve".
+// `onResolve` terminal branch, after the `runtime` map has had its chance. The map is
+// complete by the time a compile runs (`loadRuntime` checks it against the SDK's own
+// list), so anything left here is an npm package app-code deliberately doesn't support:
+// it's a built-in authoring tool, not an npm dev environment — authors who need arbitrary
+// packages use create-app. A clear message in BOTH compile paths (and the browser
+// esbuild-wasm fallback) beats the bundler's opaque "Could not resolve".
 export function unsupportedImport(spec: string): string {
-	if (isRuntimeSpec(spec)) return `devkit runtime is missing module "${spec}"`
 	return `External npm package "${spec}" is not supported in app-code. Use packages/create-app for a full package project.`
 }
 

@@ -5,16 +5,14 @@
 
 import { expect, test } from 'vitest'
 import { buildRuntime } from './capabilities/devkit/devkit-runtime.ts'
-import { isRuntimeSpec, sdkRuntimeSpecs } from './runtime-specs.ts'
+import { sdkRuntimeSpecs } from './runtime-specs.ts'
 
 const REACT_FAMILY = /^react(-dom)?(\/|$)/
 const importSpecifiers = (source: string): string[] =>
 	[...source.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)].map((m) => m[1] as string)
 
-test('the spec list is unique and is what isRuntimeSpec answers for', () => {
+test('the spec list is unique', () => {
 	expect(new Set(sdkRuntimeSpecs).size).toBe(sdkRuntimeSpecs.length)
-	for (const spec of sdkRuntimeSpecs) expect(isRuntimeSpec(spec)).toBe(true)
-	expect(isRuntimeSpec('lodash')).toBe(false)
 })
 
 // App Code is a built-in authoring tool, not an npm dev environment: a draft gets the

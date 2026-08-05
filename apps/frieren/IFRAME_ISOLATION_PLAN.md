@@ -1,10 +1,14 @@
 # Frieren iframe isolation plan
 
-> Status: **planned.** Moves untrusted app code (GUI, then reducer) behind an
-> opaque-origin sandboxed `<iframe>` so a third-party app can no longer reach the
-> host origin, DOM, token, cookies, or synced volume. This is the browser analog
-> of the server's `globalOutbound: null`, and the concrete work behind
+> Status: **Steps 1–4 shipped; Step 5 open.** Moved untrusted app code (GUI, then
+> reducer) behind an opaque-origin sandboxed `<iframe>` so a third-party app can no
+> longer reach the host origin, DOM, token, cookies, or synced volume. This is the
+> browser analog of the server's `globalOutbound: null`, and the concrete work behind
 > `LOCAL_FIRST_PLAN.md` **Phase 5** and `APP_STORE_PLAN.md` **Trust**.
+>
+> The GUI frame is `FRAME_SRCDOC` in `src/apps/gui-channel.ts`; the reducer frame is
+> `REDUCER_FRAME_SRCDOC` in `src/apps/sandbox.worker.ts`. What remains is Step 5
+> (trust gating + lifecycle), which was always optional and decision-driven.
 >
 > Nothing here changes the **app authoring API**, the **kernel**, the **sandbox
 > protocol**, the **capability trust model**, or the **agent/server path**. It is a
@@ -13,20 +17,22 @@
 
 ---
 
-## Background: where the boundaries already are
+## Background: where the boundaries were before this plan
 
-An app is two halves with very different isolation today:
+The starting point Steps 1–4 moved away from. An app was two halves with very
+different isolation:
 
-- **Reducer (`app.ts`)** — runs in a **Web Worker** (`src/apps/sandbox.worker.ts`),
-  one per content-hashed bundle. Talks to the kernel only through the postMessage
+- **Reducer (`app.ts`)** — ran in a **Web Worker** (`src/apps/sandbox.worker.ts`),
+  one per content-hashed bundle. Talked to the kernel only through the postMessage
   RPC protocol in `packages/app/sandbox.ts`. Off the main thread, but **same-origin**
   (a Worker can `fetch()` with the user's cookies) → *not* a security boundary.
-- **GUI (`gui.tsx`)** — `import()`-ed from a blob URL and mounted with `createRoot`
-  into a plain `<div>` (`src/apps/host.ts` → `AppViewport.tsx`), in **the host
-  document, the host JS realm, and the host React singleton** (React is externalized
-  via the `/vendor/*.js` importmap). This is the real hole: the GUI can read the
-  Clerk token, `document.cookie`, `localStorage`, the whole synced volume in
-  IndexedDB, tamper with the shell, and exfiltrate anywhere.
+- **GUI** — `import()`-ed from a blob URL and mounted into a plain `<div>`
+  (`src/apps/host.ts` → `AppViewport.tsx`), in **the host document and the host JS
+  realm**, sharing the host's framework instance (at the time, React externalized via
+  a `/vendor/*.js` importmap — since removed; an app now bundles whatever framework it
+  uses). This was the real hole: the GUI could read the Clerk token,
+  `document.cookie`, `localStorage`, the whole synced volume in IndexedDB, tamper with
+  the shell, and exfiltrate anywhere.
 
 Of the five app↔system links, **only one is an in-realm function call**:
 
@@ -73,12 +79,12 @@ The plan builds A first (Step 3), then B (Step 4).
 - The capability trust model + scope resolution.
 - The server capability proxy + `_caps` WebSocket + token handling.
 - The agent path (server kernel + synced state file + `volume.watch`).
-- The app authoring API (`defineApp`, `GUIProps`, capabilities). App authors change
+- The app authoring API (`defineApp`, `defineGUI`, capabilities). App authors change
   nothing.
 
 ---
 
-## Step 1 — Remove the menu system (M)
+## Step 1 — Remove the menu system (M) ✅ SHIPPED
 
 ### Context
 
@@ -142,7 +148,7 @@ palette/shortcuts; app-code preview renders without a menubar.
 
 ---
 
-## Step 2 — GUI transport over a serializable channel, still in-realm (M)
+## Step 2 — GUI transport over a serializable channel, still in-realm (M) ✅ SHIPPED
 
 ### Context
 
@@ -211,7 +217,7 @@ pnpm run verify:ui                # open several apps; dispatch actions; confirm
 
 ---
 
-## Step 3 — Move the GUI into a sandboxed iframe (Topology A) (L)
+## Step 3 — Move the GUI into a sandboxed iframe (Topology A) (L) ✅ SHIPPED
 
 ### Context
 
@@ -234,15 +240,15 @@ persists in the stage, like the current durable wrapper).
   the module-level stage Map + `AppViewport` slot model (the iframe is even more durable
   across React reorders than a div).
 - **Bootstrap via `srcdoc`.** The iframe document is a tiny inline module that: opens a
-  port to the parent, receives the vendor React bytes + gui.js bytes + initial state,
-  stands up an importmap (see Vendor React appendix), `import()`s gui.js, and runs the
-  Step-2 guest bootstrap. It requests nothing over the network.
+  port to the parent, receives the gui.js bytes + initial state, `import()`s gui.js off
+  a blob URL, and runs the Step-2 guest bootstrap. It requests nothing over the network.
+  *(As shipped this needed no importmap: an app bundle carries whatever framework it
+  uses, so there is nothing left to resolve — see `FRAME_SRCDOC`.)*
 - **Deliver bytes, not URLs.** The host already reads gui.js from the volume in
-  `bootLocal`; additionally read the 5 `/vendor/*.js` files (the parent is same-origin
-  to `/vendor`, so this is trivial) and post all bytes into the iframe. This keeps the
-  opaque-origin iframe offline-capable and CORS-free.
+  `bootLocal` and posts the bytes into the iframe. This keeps the opaque-origin iframe
+  offline-capable and CORS-free.
 - **Hand off the port.** After the iframe signals ready, transfer `port2`:
-  `iframe.contentWindow.postMessage({ type: 'boot', guiCode, vendor, state }, '*',
+  `iframe.contentWindow.postMessage({ type: 'boot', guiCode, state }, '*',
   [port2])`. `guiHost` keeps `port1`.
 - **UX plumbing.** ResizeObserver is unnecessary (the iframe fills the stage);
   click-to-focus still works through the stage. The menubar is gone (Step 1), so there
@@ -260,7 +266,7 @@ const { port1, port2 } = new MessageChannel()
 guiHost(kernel, stage.id, port1)                        // trusted side stays here
 await frameReady(iframe)                                 // srcdoc posts 'ready'
 iframe.contentWindow!.postMessage(
-	{ type: 'boot', guiCode, vendor, state: snapshot },  // bytes, not URLs
+	{ type: 'boot', guiCode, state: snapshot },          // bytes, not URLs
 	'*',
 	[port2]                                               // the app's ONLY authority
 )
@@ -273,8 +279,7 @@ iframe.contentWindow!.postMessage(
 	window.addEventListener('message', async (e) => {
 		if (e.data?.type !== 'boot') return
 		const [port] = e.ports
-		installImportmap(e.data.vendor)          // react → blob: (appendix)
-		const mod = await import(blobUrl(e.data.guiCode))
+		const mod = await import(blobUrl(e.data.guiCode))  // self-contained: nothing to resolve
 		mod.gui.mount(document.getElementById('root'), e.data.state, { transport: guiClient(port) })
 	})
 	parent.postMessage({ type: 'ready' }, '*')
@@ -302,7 +307,7 @@ frame: `document.cookie` is empty, `window.parent`'s document is unreachable
 
 ---
 
-## Step 4 — Move the reducer worker into the iframe (Topology B) (M–L)
+## Step 4 — Move the reducer worker into the iframe (Topology B) (M–L) ✅ SHIPPED
 
 > **Risk gate: PASSED → Topology B (validated Chromium/Firefox/WebKit).**
 > A module Worker does **not** spawn from a blob URL inside a
@@ -416,7 +421,7 @@ state.
 - **5a — trust gate + CSP.** Add a trust flag (manifest field or host allowlist).
   Branch in `host.ts` between the Step-2 in-realm mount (built-ins) and the Step-3/4
   iframe mount (third-party). Add a CSP to the iframe document (`default-src 'none'`
-  plus only the blob/importmap it needs).
+  plus only the blob sources it needs).
 - **5b — suspend/restore.** State is already JSON-persisted at `/state/<id>.json` and
   rehydrated verbatim. Tear down a backgrounded untrusted iframe+worker and restore it
   from persisted state on re-focus (paying one cold start again), so resident memory
@@ -441,53 +446,6 @@ exact state.
 
 ---
 
-## Appendix — Vendor React for the iframe
-
-**No changes to React's code or bundle format.** `frieren:vendor-react`
-(`vite.config.ts`) already emits React as ESM at stable URLs (`/vendor/react.js`,
-`/vendor/react-dom.js`, `/vendor/react-dom-client.js`, `/vendor/jsx-runtime.js`,
-`/vendor/jsx-dev-runtime.js`), and gui.js already emits bare specifiers resolved by an
-importmap (`reactExternals` in `packages/app/runtime-specs.ts`). The only problem is
-**reachability from the iframe**:
-
-1. the host `index.html` importmap does not apply to the iframe document; and
-2. an opaque origin cannot fetch host-origin `/vendor/*.js` without CORS (`Origin: null`).
-
-**Approach (recommended): ship bytes, importmap → blob URLs.** The parent (same-origin
-to `/vendor`) reads the 5 files and posts them into the iframe with the `boot` message;
-the iframe builds `blob:` URLs and its own importmap:
-
-```js
-// inside the iframe bootstrap
-function installImportmap(vendor /* { 'react': bytes, 'react-dom': bytes, … } */) {
-	const map = { imports: {} }
-	for (const spec of ['react','react-dom','react-dom/client','react/jsx-runtime','react/jsx-dev-runtime'])
-		map.imports[spec] = URL.createObjectURL(new Blob([vendor[spec]], { type: 'text/javascript' }))
-	const el = document.createElement('script')
-	el.type = 'importmap'; el.textContent = JSON.stringify(map)
-	document.head.appendChild(el)
-}
-```
-
-The importmap **must** cover all 5 specifiers, because the vendor bundles cross-reference
-by bare specifier (`react-dom.js` externalizes `react`); with all 5 mapped, those
-internal imports re-resolve to the same blob → **one consistent React instance per
-frame**. Benefits: no serving/header/code change, offline-safe (bytes come from the
-parent's cache), and automatic version match (the iframe runs the exact React the host
-built — `vendorCacheKey` can't drift).
-
-Consequences (expected): each iframe gets its **own** React instance (separate realm);
-with byte-shipping the network download is zero and you pay only per-frame
-parse/instantiate (~10 ms/app). The **reducer worker still needs no React** — the
-`reducer`-reachable SDK guard in `runtime-specs.ts` stays intact; only the GUI iframe
-gets an importmap.
-
-*(Alternative, weaker: serve `/vendor/*` with `Access-Control-Allow-Origin` and point the
-iframe importmap at absolute URLs — a serving-config change, network-coupled, needs
-cross-origin SW caching for offline and versioned URLs.)*
-
----
-
 ## Appendix — Performance & scaling expectations
 
 - **Cold start (per app, first open):** ~50–150 ms desktop, ~200–500 ms mid mobile —
@@ -507,7 +465,7 @@ cross-origin SW caching for offline and versioned URLs.)*
 ## Appendix — URL-served apps, the app origin, and Service Workers
 
 A recurring question: quay/spud-mac serve each app by **URL** (`quayd` HTTP-serves
-`gui.js` + a shared-React importmap; the WKWebView loads `http://127.0.0.1:PORT/app/<id>`),
+`gui.js`; the WKWebView loads `http://127.0.0.1:PORT/app/<id>`),
 and a URL is a natural fit for an iframe `src`. `DevkitPreview {kind:'url'}` exists
 *because* quay has a server to serve that URL. Could frieren-web do the same, using a
 Service Worker as the "server" (it already ships one via VitePWA, and has all app
@@ -519,13 +477,13 @@ bytes offline in the Volume/IDB)?
 | Approach | Isolated (no token/DOM reach)? | SW can serve it offline? |
 |---|---|---|
 | `iframe src="/apps/x/"`, same-origin | ❌ same-origin reaches parent + token | ✅ |
-| `iframe sandbox src="/apps/x/"` (opaque) | ✅ | ⚠️ SW serves the *navigation*, but the opaque document is **not a SW-controlled client**, so its subresources (`gui.js`, `/vendor/*`) **bypass the SW** offline |
+| `iframe sandbox src="/apps/x/"` (opaque) | ✅ | ⚠️ SW serves the *navigation*, but the opaque document is **not a SW-controlled client**, so its subresources (`gui.js`, assets) **bypass the SW** offline |
 | dedicated **cross-origin** app domain, its own SW | ✅ (and process-isolatable) | ✅ |
 
 A same-origin document can always reach its same-origin parent (a `CSP: sandbox`
 header only reproduces the opaque case), so there is no header/blob/`data:` trick that
 gives same-origin SW-serving **and** isolation. To keep isolation on one origin you
-must inline `gui.js`+vendor+styles into the boot document — which is exactly what
+must inline `gui.js`+styles into the boot document — which is exactly what
 `srcdoc` already is. Serving that same inlined payload via `iframe src` + a SW
 navigation response instead of `srcdoc` + `postMessage` is a plumbing swap, not a
 different isolation model.

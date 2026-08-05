@@ -11,7 +11,6 @@
 		"./runtime-specs": "./runtime-specs.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
-		"./devkit-sysroot": "./capabilities/devkit/devkit-sysroot.ts",
 		"./appstore/fs": "./appstore.fs.ts",
 		"./toolchain/esbuild": "./capabilities/devkit/toolchain.esbuild.ts",
 		"./toolchain/bun": "./capabilities/devkit/toolchain.bun.ts",
@@ -69,10 +68,6 @@
 			"./dev-server": {
 				"types": "./dist/dev-server.d.ts",
 				"default": "./dist/dev-server.js"
-			},
-			"./devkit-sysroot": {
-				"types": "./dist/capabilities/devkit/devkit-sysroot.d.ts",
-				"default": "./dist/capabilities/devkit/devkit-sysroot.js"
 			},
 			"./appstore/fs": {
 				"types": "./dist/appstore.fs.d.ts",
@@ -189,7 +184,6 @@
 		"@justfiles/fs": "workspace:*",
 		"@standard-schema/spec": "^1.1.0",
 		"capnweb": "^0.8.0",
-		"es-module-lexer": "^2.1.0",
 		"fflate": "^0.8.3",
 		"type-fest": "^5.6.0"
 	}

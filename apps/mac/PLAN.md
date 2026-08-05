@@ -11,7 +11,7 @@ rendering in a `WKWebView`, all docking at one shared Node daemon (`quayd`). See
 ## Reuse — already in the monorepo
 
 Nothing here is built from scratch; `quay` is a new **host** over existing packages:
-`@justfiles/app` (kernel, `reactGui`, `volumeCapability`, `reconcileBuiltins`, devkit; depends on
+`@justfiles/app` (kernel, `defineGUI`, `volumeCapability`, `reconcileBuiltins`, devkit; depends on
 `capnweb`), `@justfiles/agent`, `@justfiles/fs` (`volume`, `nativeStorage`), and every `@justfiles/app-*`
 bundle. The WKWebView `.app` shape has already been proven by a small native POC.
 
@@ -163,13 +163,14 @@ Render real `gui.js` and round-trip a dispatch.
 
 ## Slice 7 — assets + Cap'n Web berths
 
-**Goal:** `quayd` serves `gui.js` + the shared-React importmap over localhost http; the booter loads
+**Goal:** `quayd` serves `gui.js` over localhost http; the booter loads
 `http://127.0.0.1:PORT/app/<id>?token=…`; a token-scoped **berth** (Cap'n Web) provides
-`dispatch`/`subscribe`/`state`; `reactGui` mounts the real GUI. `quayd` reads the bytes **from the Volume** —
+`dispatch`/`subscribe`/`state`; the bundle's exported `gui` mounts the real GUI. A bundle is
+self-contained — it carries whatever framework it uses — so there is nothing to serve alongside it. `quayd` reads the bytes **from the Volume** —
 the materialised `.app`s carry none.
 
-**Touches:** `quayd/server.ts` (http assets + importmap injection + Cap'n Web berth), booter (load URL +
-token), `reactGui` Transport shim.
+**Touches:** `quayd/server.ts` (http assets + Cap'n Web berth), booter (load URL + token), the
+`defineGUI` Transport shim.
 
 **Verify:** launching **Code** (or Counter) renders its **real** `gui.js`; an action round-trips
 (`berth.dispatch` → kernel → `app.update` → `subscribe` re-render) and state persists to

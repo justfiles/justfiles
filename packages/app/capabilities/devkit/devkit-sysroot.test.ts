@@ -154,3 +154,14 @@ test('a missing devkit/index.json is a clear error, not a silent node_modules re
 	await expect(loadTypes(missing)).rejects.toThrow(/devkit\/index\.json/)
 	await expect(loadRuntime(missing)).rejects.toThrow(/devkit\/index\.json/)
 })
+
+// The runtime map IS the set of specifiers a draft may import, so an app-code bundle
+// older than the host's SDK must fail at load, naming what is missing — not on whichever
+// draft first imports the absent module, where it would read as "unsupported package".
+test('an incomplete runtime sysroot fails at load, naming the missing modules', async () => {
+	const built = await buildRuntime()
+	const { valibot: _dropped, ...partial } = built
+	await expect(loadRuntime(sysroot({}, partial))).rejects.toThrow(
+		/sysroot is missing runtime module\(s\): valibot/
+	)
+})

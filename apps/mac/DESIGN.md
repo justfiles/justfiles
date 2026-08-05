@@ -223,9 +223,9 @@ interface Berth {
 
 - **Assets over localhost http.** The booter loads `http://127.0.0.1:PORT/app/<id>/`. `127.0.0.1` is a
   *secure context*, so `localStorage`/`IndexedDB`/ES-modules/importmap all work — dodging WebKit's
-  opaque-origin storage quirk. `quayd` injects the shared-React **importmap** into the app's HTML shell
-  and serves `gui.js` + icons. The booter writes **no** asset code.
-- **`reactGui` reused verbatim.** frieren mounts a GUI with a `Transport = { invoke, subscribe }`; here
+  opaque-origin storage quirk. `quayd` serves `gui.js` + icons; the bundle is self-contained, so there
+  is no framework to inject alongside it. The booter writes **no** asset code.
+- **The `defineGUI` mount reused verbatim.** frieren mounts a GUI with a `Transport = { invoke, subscribe }`; here
   `invoke`→`berth.dispatch`, `subscribe`→`berth.subscribe`. Only the transport changes.
 - **Token scoping.** `quayd` passes each booter a one-time token + app id as launch arguments; the
   webview presents the token on connect; `quayd` scopes that berth to **that one app**. The launcher's
@@ -330,7 +330,7 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 
 **Reused (already in the monorepo — no copy):**
 
-- `@justfiles/app` — kernel, SDK, `reactGui`, `kernelHost` build, `volumeCapability`, `reconcileBuiltins`, devkit; depends on `capnweb`.
+- `@justfiles/app` — kernel, SDK, `defineGUI`, `kernelHost` build, `volumeCapability`, `reconcileBuiltins`, devkit; depends on `capnweb`.
 - `@justfiles/agent` — runtime, tools, bash, `createAppCommand` + `AppController`.
 - `@justfiles/fs` — `volume`, `nativeStorage`, `chroot`.
 - Every `@justfiles/app-*` bundle (counter, files, paint, settings, code, …) — as-is.
