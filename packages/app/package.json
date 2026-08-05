@@ -95,10 +95,6 @@
 				"types": "./dist/capabilities/devkit/toolchain.worker.d.ts",
 				"default": "./dist/capabilities/devkit/toolchain.worker.js"
 			},
-			"./devkit-runtime": {
-				"types": "./dist/capabilities/devkit/devkit-runtime.d.ts",
-				"default": "./dist/capabilities/devkit/devkit-runtime.js"
-			},
 			"./appstore": {
 				"types": "./dist/appstore.d.ts",
 				"default": "./dist/appstore.js"
@@ -185,17 +181,9 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
-		"tsdown": "^0.21.10",
-		"valibot": "^1.1.0",
 		"vite": "^6 || ^7 || ^8"
 	},
 	"peerDependenciesMeta": {
-		"tsdown": {
-			"optional": true
-		},
-		"valibot": {
-			"optional": true
-		},
 		"vite": {
 			"optional": true
 		}
