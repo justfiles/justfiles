@@ -2,7 +2,7 @@ import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { Hono } from 'hono'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
 import { decodeLabel } from './id'
-import { type AppMetadata, findApp } from './store'
+import { type AppMetadata, findApp } from './catalog'
 
 type Env = { Bindings: CloudflareBindings }
 

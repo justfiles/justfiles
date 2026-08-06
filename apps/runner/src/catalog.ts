@@ -31,3 +31,18 @@ export async function findApp(id: string): Promise<AppMetadata | null> {
 }
 
 export async function publish() {}
+
+/**
+ * refresh catalog agianst the https://github.com/justfiles/app-catalog
+ */
+export async function refresh() {
+	// iterate all apps,
+	// - add new app to our record (db), put assets in R2.
+	// - if already exists, skip
+	// - if new version, update
+	// - questions:
+	//   - do we keep all versions in history or overwrite only copy?
+	//   - should we use D1 for records? show me the schema design
+	//   - should optimize to track delta instead of interate all each time, any suggestions?
+	//   - any concerns running this as a cron job on cloudflare workers. (perf, time, cost)
+}
