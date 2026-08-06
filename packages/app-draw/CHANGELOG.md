@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.2](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.4.1...draw-v0.4.2) (2026-08-06)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.3.0
+
 ## [0.4.1](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.4.0...draw-v0.4.1) (2026-08-05)
 
 

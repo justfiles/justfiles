@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.2](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.12.1...frieren-v0.12.2) (2026-08-06)
+
+
+### Bug Fixes
+
+* **app:** render on change, not on arrival ([#385](https://github.com/xiaoxinghu/justfiles/issues/385)) ([780241c](https://github.com/xiaoxinghu/justfiles/commit/780241c2df6106eb2c71a2d769604e463c332352))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.3.0
+
 ## [0.12.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.12.0...frieren-v0.12.1) (2026-08-05)
 
 
