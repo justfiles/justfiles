@@ -46,9 +46,18 @@ const compile = async (entry: string): Promise<string> => {
 		}
 	})
 	const outputs = Array.isArray(result) ? result : [result]
-	const chunk = outputs
+	const chunks = outputs
 		.flatMap((out) => ('output' in out ? out.output : []))
-		.find((part) => part.type === 'chunk' && part.isEntry)
+		.filter((part) => part.type === 'chunk')
+	// `codeSplitting: false` has to collapse everything into one chunk, because only
+	// the entry is written to disk. A second chunk would mean `app.js` ships an
+	// `import()` pointing at a file that was never emitted — a reducer that builds
+	// clean and dies at runtime. Fail the build instead.
+	if (chunks.length !== 1) {
+		const names = chunks.map((part) => part.fileName).join(', ')
+		throw new Error(`${entry}: expected one chunk, got ${chunks.length} (${names})`)
+	}
+	const chunk = chunks[0]
 	if (chunk?.type !== 'chunk') throw new Error(`failed to compile ${entry}`)
 	return chunk.code
 }

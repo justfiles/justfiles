@@ -22,7 +22,6 @@
 	},
 	"devDependencies": {
 		"@justfiles/tsconfig": "workspace:*",
-		"esbuild": "^0.27.0",
 		"typescript": "catalog:",
 		"vite": "^8.0.12"
 	}
