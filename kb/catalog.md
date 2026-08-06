@@ -1,10 +1,12 @@
 # JustApps community catalog
 
-Status: **planned, not started.**
+Status: **Phase 1 shipped.** [`justfiles/app-catalog`](https://github.com/justfiles/app-catalog)
+is public, holds its first entry, and validates pull requests. Submissions stay closed until the
+importer of Phase 2 exists, because a merged entry today would register an app nothing can install.
 
 ## Decision
 
-Create a dedicated public repository, `justfiles/catalog`, in the `justfiles` GitHub
+The public catalog is a dedicated repository, `justfiles/app-catalog`, in the `justfiles` GitHub
 organization. Keep the runner and its dependencies in the private monorepo (also named
 `justfiles`, and distinct from the organization) until they can build and operate using only
 public dependencies.
@@ -21,9 +23,11 @@ security boundary. They remain one project under the shared organization.
 
 ```text
 Public now
-├── justfiles/catalog
-├── justfiles/release           # reusable release workflow authors call
-└── justfiles/app-draw          # first app out of the monorepo; the template
+├── justfiles/app-catalog       # shipped
+└── justfiles/app-draw          # shipped; first app out of the monorepo, and the template
+
+Public next
+└── justfiles/release           # reusable release workflow authors call
 
 Private for now
 └── the monorepo
@@ -102,13 +106,14 @@ already the hierarchy: entries sort by namespace for free, and `apps/io.github.a
 carries, and splits the ID across path segments that then have to be checked for agreement.
 
 ```text
-justfiles/catalog
+justfiles/app-catalog
 ├── README.md                          # what this is, status, how to submit
 ├── CONTRIBUTING.md                    # the ladder, the rules, what the bot checks
 ├── CODE_OF_CONDUCT.md
 ├── SECURITY.md                        # how to report a malicious app
-├── LICENSE                            # this repository's code
-├── LICENSE-DATA                       # catalog entries; likely CC0
+├── LICENSE                            # this repository's code — MIT
+├── LICENSE-DATA                       # catalog entries — CC0 1.0
+├── .node-version                      # 24; the validator needs built-in type stripping
 ├── apps/
 │   ├── io.github.alice.calendar.json
 │   └── io.github.xiaoxing.notes.json
@@ -117,7 +122,7 @@ justfiles/catalog
 ├── .vscode/
 │   └── settings.json                  # maps apps/*.json to the schema
 └── .github/
-    ├── CODEOWNERS                     # schema/ and workflows/ only — see below
+    ├── CODEOWNERS                     # schema/ and .github/ only — see below
     ├── pull_request_template.md
     ├── ISSUE_TEMPLATE/
     │   └── report-app.yml             # abuse and malware reports
@@ -126,6 +131,11 @@ justfiles/catalog
     └── workflows/
         └── validate.yml
 ```
+
+The repository has no `package.json`, no lockfile and no `node_modules`: Node runs `validate.ts`
+directly, so there is nothing to install and nothing for a reviewer to have to trust. The
+trade-off is that nothing typechecks it, and an editor wants a global `@types/node` to resolve
+the `node:` imports.
 
 **The filename is the ID.** MELPA's recipes work this way, and two checks disappear with it:
 there is no ID field that can disagree with the filename, and the filesystem itself enforces
@@ -166,8 +176,15 @@ version bump, nothing to design today.
 `.vscode/settings.json` maps `apps/*.json` to the schema, so contributors get autocomplete and
 inline errors without a `$schema` key in every file — mistakes get caught before the pull
 request exists. `.github/scripts/validate.ts` lets contributors run the same checks locally,
-following Espanso's example; it runs the credential-free subset (schema, ID shape, namespace,
-repository reachable, ladder resolves) while the private importer does the rest.
+following Espanso's example; it runs the credential-free subset (entry shape, ID shape,
+namespace proof, rename links, no deleted entries, repository reachable and licensed, ladder
+resolves) while the private importer does everything that requires downloading bytes.
+
+The schema and the validator overlap deliberately rather than sharing an implementation. The
+schema exists for the editor and cannot express the rules that matter most — that the filename
+is the ID, that the namespace owns the repository, that a rename links both ways — so the
+validator is the authority and a JSON Schema library is a dependency the repository does not
+need to carry.
 
 ### CODEOWNERS is not an ownership mechanism
 
@@ -325,6 +342,23 @@ HACS's documentation warns that *"just publishing tags is not enough, you need t
 releases."* That rule exists only because they did not implement rung 3. Implementing it
 deletes the rule.
 
+**Rung 4 is first-party only at launch.** A third party without tags is told to push one, which
+costs a single command and pins every release to an immutable ref while the abuse model is
+unproven. The rung stays implemented, so lifting the restriction is a constant, not a feature.
+
+Three details that only show up against real repositories:
+
+- **The tags endpoint pages, and its order is not a promise.** Reading one page and taking the
+  highest is wrong on any repository with more than a hundred tags. Page it — capped, because
+  an app repository with five hundred tags is not the case to spend unbounded API calls on.
+- **Tags need normalising further than semver.** `v6.9` is a real tag on a real project and is
+  not semver. Default the missing components to zero rather than skipping the tag, or the
+  resolution silently falls through to a lower rung.
+- **A monorepo's latest release can belong to a different package.** `vitejs/vite` resolves at
+  rung 2 to a `create-vite@…` tag. The ladder still produces an immutable ref, so this is a
+  reporting problem rather than a correctness one: show the resolved tag in the pull-request
+  report and let the human notice.
+
 ### Which asset, when rung 1 hits
 
 Do not impose a filename convention. An author should be able to call their bundle `draw.zip`
@@ -401,6 +435,10 @@ than an inspection:
 ⚠ manifest version 1.2 ≠ tag v1.2.0 (using tag)
 ```
 
+The first three lines are what `validate.ts` prints today, in CI and on a contributor's machine.
+The rest needs the bundle, so it arrives with the importer — and the split is the point: the
+lines that can be produced without credentials are produced without credentials.
+
 MELPA pushes this verification onto authors — contributors run `make recipes/<name>` before
 submitting — which works for Emacs hackers and will not work here. CI is the right place. MELPA
 maintainers have publicly hit burnout, and their mitigation was handing out more push access; a
@@ -426,9 +464,9 @@ simply waits for the next tick.
 Fetch the whole repository as one tarball rather than file by file:
 
 ```text
-1. GET /repos/justfiles/catalog/commits/main   → head SHA
+1. GET /repos/justfiles/app-catalog/commits/main   → head SHA
    unchanged → done (one request, the common case)
-2. GET /repos/justfiles/catalog/tarball/{sha}  → whole catalog, one request
+2. GET /repos/justfiles/app-catalog/tarball/{sha}  → whole catalog, one request
 3. parse apps/*.json in memory, reconcile, record the SHA
 ```
 
@@ -581,9 +619,20 @@ Use separate code ownership for catalog entries, catalog schema and workflows. P
 main branch from direct pushes, force pushes and deletion, and require passing checks plus
 catalog-owner review.
 
-Rehosting also requires an explicit redistribution licence or permission from the app owner.
-Keep credentials, user data, private abuse reports, embargoed vulnerabilities and production
-logs outside the public repository.
+Rehosting also requires an explicit redistribution licence or permission from the app owner. The
+validator hard-fails an entry whose repository has no LICENSE at all, and warns rather than fails
+when GitHub reports one it cannot identify — that distinction is `license: null` versus
+`NOASSERTION`, and collapsing the two would either wave through unlicensed repositories or reject
+every hand-written licence. Keep credentials, user data, private abuse reports, embargoed
+vulnerabilities and production logs outside the public repository.
+
+**A freed GitHub username breaks namespace proof after the fact.** Ownership is proven against a
+login, but a login is not permanent: rename or delete the account and someone else can register
+it, at which point the `owner/name` already in an entry resolves to a stranger's repository. This
+is the one way the reverse-DNS scheme can be turned back into a squatting problem, and it cannot
+be caught by re-running the string comparison, which still passes. The importer must record each
+repository's immutable numeric ID alongside the entry and treat a change as a hard stop requiring
+review.
 
 ## Effect on the existing store
 
@@ -619,14 +668,19 @@ private even when all implementation code is open source.
 
 ## Rollout
 
-### Phase 1 — Public contract
+### Phase 1 — Public contract — **done**
 
-- Create the public catalog repository under the intended long-lived organization.
-- Choose licences for repository code and contributed catalog data.
-- Add the entry schema, the contribution rules, and `io.github.*` namespace proof — the only
-  proof mechanism at launch.
-- Publish `justfiles/release` and wire it into `packages/create-app`.
-- Mark the catalog experimental and state whether submissions are open.
+- ✅ `justfiles/app-catalog` is public, with `io.github.justfiles.draw` as its first entry.
+- ✅ Licences chosen: MIT for the repository's code, CC0 1.0 for the catalog entries. The list of
+  which apps exist should be reusable by anyone, including a competing client.
+- ✅ Entry schema, contribution rules, and `io.github.*` namespace proof — the only proof
+  mechanism at launch.
+- ✅ `validate.ts` and the pull-request workflow, both credential-free and dependency-free.
+- ✅ Marked experimental, with submissions closed until Phase 2 can ingest what gets merged.
+- ⬜ Publish `justfiles/release` and wire it into `packages/create-app`. Until then `app-draw`
+  carries the release workflow inline, and CONTRIBUTING tells authors to copy it. This is the
+  one Phase 1 item still outstanding, and it is load-bearing: without it, rung 1 is harder than
+  publishing to npm.
 
 ### Phase 2 — Private ingestion
 
@@ -650,17 +704,27 @@ private even when all implementation code is open source.
 - Keep the catalog and runner separate unless a demonstrated operational reason justifies
   combining them.
 
+## Decisions taken in Phase 1
+
+1. **Repository name — `justfiles/app-catalog`**, matching the `app-*` convention the
+   organization already uses. `justfiles/release` and `justfiles/runner` remain the intended
+   names for what has not been published yet.
+2. **Rung 4 is first-party only for now.** Third parties push a tag; the rung stays implemented
+   so opening it later is a constant change.
+3. **Attestation is required for rung 1**, not merely recorded. It is the only thing that makes a
+   zip as trustworthy as the tree rungs, where the served bytes simply are the source at a commit.
+4. **Licences: MIT for repository code, CC0 1.0 for catalog entries.** An app's own repository
+   must carry a licence permitting redistribution, and the validator enforces that a licence
+   exists.
+
 ## Open decisions
 
-1. Final GitHub organization and repository names.
-2. Whether rung 4 (rolling, untagged) is open to third parties at launch, or only to
-   first-party apps until the abuse model is proven.
-3. Whether attestation is required or merely recorded for rung 1 at launch.
-4. Whether capability grants carry across a rename, or the user is re-prompted. Carrying them
+1. Whether capability grants carry across a rename, or the user is re-prompted. Carrying them
    is the current lean — a rename does not change what the app does, and re-prompting on every
    rename trains people to click through consent sheets, which costs more security than it
    buys. Human review of the rename pull request is the real gate.
-5. Licence and redistribution requirements for app bundles and catalog metadata.
-6. Initial cache and rollback policy for stable asset URLs.
-7. Whether to adopt an Obsidian-style `versions.json` mapping app version to minimum runtime
+2. Initial cache and rollback policy for stable asset URLs.
+3. Whether to adopt an Obsidian-style `versions.json` mapping app version to minimum runtime
    version, so older clients resolve an older compatible release instead of a broken one.
+4. When submissions open, and whether that waits on the PR bot of Phase 3 or only on the
+   importer of Phase 2.
