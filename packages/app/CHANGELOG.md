@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.2.0...app-v0.3.0) (2026-08-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **app:** @justfiles/app now requires vite ^8.
+
+### Bug Fixes
+
+* **app:** render on change, not on arrival ([#385](https://github.com/xiaoxinghu/justfiles/issues/385)) ([780241c](https://github.com/xiaoxinghu/justfiles/commit/780241c2df6106eb2c71a2d769604e463c332352))
+
+
+### Code Refactoring
+
+* **app:** compile the reducer with Vite, drop the esbuild dependency ([#389](https://github.com/xiaoxinghu/justfiles/issues/389)) ([493a3ae](https://github.com/xiaoxinghu/justfiles/commit/493a3ae6f476565da5eaf85e82b8c827be8c9e4f))
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.1.0...app-v0.2.0) (2026-08-05)
 
 
