@@ -292,16 +292,31 @@ importers:
 
   apps/runner:
     dependencies:
+      '@justfiles/app':
+        specifier: workspace:*
+        version: link:../../packages/app
+      '@justfiles/fs':
+        specifier: workspace:*
+        version: link:../../packages/fs
       hono:
         specifier: 4.11.1
         version: 4.11.1
     devDependencies:
+      '@cloudflare/vite-plugin':
+        specifier: ^1.50.0
+        version: 1.50.0(vite@8.1.0(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0))(wrangler@4.118.0)
       '@justfiles/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vite:
+        specifier: ^8.1.0
+        version: 8.1.0(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
+      vite-ssr-components:
+        specifier: ^0.6.1
+        version: 0.6.1
       wrangler:
         specifier: ^4.118.0
         version: 4.118.0
@@ -1909,6 +1924,13 @@ packages:
     peerDependencies:
       vite: ^6.1.0 || ^7.0.0 || ^8.0.0
       wrangler: ^4.90.1
+
+  '@cloudflare/vite-plugin@1.50.0':
+    resolution: {integrity: sha512-zIhZim7Kr7OC22rlOkU81BLj0oRlUOqPRX+E6RU3hyRYg4xU1MbA3yiMIwFONr+jc/uV7Fxs20NlXrB89Fqjqg==}
+    hasBin: true
+    peerDependencies:
+      vite: ^6.1.0 || ^7.0.0 || ^8.0.0
+      wrangler: ^4.118.0
 
   '@cloudflare/workerd-darwin-64@1.20251125.0':
     resolution: {integrity: sha512-xDIVJi8fPxBseRoEIzLiUJb0N+DXnah/ynS+Unzn58HEoKLetUWiV/T1Fhned//lo5krnToG9KRgVRs0SOOTpw==}
@@ -8387,6 +8409,10 @@ packages:
       '@vite-pwa/assets-generator':
         optional: true
 
+  vite-ssr-components@0.6.1:
+    resolution: {integrity: sha512-KVHI6pYcF3NZ1f6OVUCx+H+ICBk8DqDHhDUjXoWqm/03sy08tGD2X785oAxqpRR6FKQu2Rvxo5UtfbD7l5UFzw==}
+    engines: {node: '>=18.0.0'}
+
   vite@6.4.2:
     resolution: {integrity: sha512-2N/55r4JDJ4gdrCvGgINMy+HH3iRpNIz8K6SFwVsA+JbQScLiC+clmAxBgwiSPgcG9U15QmvqCGWzMbqda5zGQ==}
     engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
@@ -8801,18 +8827,6 @@ packages:
 
   ws@8.18.0:
     resolution: {integrity: sha512-8VbfWfHLbbwu3+N6OKsOMpBdT4kXPDDB9cJk2bJ6mh9ucxdlnNvH1e+roYkKmN9Nxw2yjz7VzeO9oOz2zJ04Pw==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
-  ws@8.20.1:
-    resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -10146,6 +10160,19 @@ snapshots:
       - utf-8-validate
       - workerd
 
+  '@cloudflare/vite-plugin@1.50.0(vite@8.1.0(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0))(wrangler@4.118.0)':
+    dependencies:
+      '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260730.1)
+      miniflare: 5.20260730.0-alpha
+      unenv: 2.0.0-rc.24
+      vite: 8.1.0(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
+      workerd: 1.20260730.1
+      wrangler: 4.118.0
+      ws: 8.21.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   '@cloudflare/workerd-darwin-64@1.20251125.0':
     optional: true
 
@@ -10789,7 +10816,7 @@ snapshots:
       google-auth-library: 10.6.2
       p-retry: 4.6.2
       protobufjs: 7.5.8
-      ws: 8.20.1
+      ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -11216,7 +11243,7 @@ snapshots:
   '@mistralai/mistralai@2.2.6(@opentelemetry/api@1.9.0)':
     dependencies:
       '@opentelemetry/semantic-conventions': 1.43.0
-      ws: 8.20.1
+      ws: 8.21.0
       zod: 4.4.3
       zod-to-json-schema: 3.25.2(zod@4.4.3)
     optionalDependencies:
@@ -12760,7 +12787,7 @@ snapshots:
       debug: 4.4.3
       minimatch: 9.0.9
       semver: 7.8.0
-      tinyglobby: 0.2.16
+      tinyglobby: 0.2.17
       ts-api-utils: 2.5.0(typescript@6.0.3)
       typescript: 6.0.3
     transitivePeerDependencies:
@@ -15641,7 +15668,7 @@ snapshots:
 
   node-abi@3.92.0:
     dependencies:
-      semver: 7.8.0
+      semver: 7.8.5
     optional: true
 
   node-addon-api@8.9.0:
@@ -17420,6 +17447,14 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  vite-ssr-components@0.6.1:
+    dependencies:
+      '@babel/parser': 7.29.3
+      '@babel/traverse': 7.29.0
+      picomatch: 4.0.4
+    transitivePeerDependencies:
+      - supports-color
+
   vite@6.4.2(@types/node@25.7.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass@1.51.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0):
     dependencies:
       esbuild: 0.25.12
@@ -17443,9 +17478,9 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.4)
       picomatch: 4.0.4
-      postcss: 8.5.14
+      postcss: 8.5.15
       rollup: 4.60.4
-      tinyglobby: 0.2.16
+      tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 26.1.0
       fsevents: 2.3.3
@@ -17834,8 +17869,6 @@ snapshots:
     optional: true
 
   ws@8.18.0: {}
-
-  ws@8.20.1: {}
 
   ws@8.21.0: {}
 

@@ -1,34 +1,18 @@
 import { Hono } from 'hono'
 import { html } from 'hono/html'
+import { appId, route as appSite } from './app'
 
-type Env = {
-	Bindings: CloudflareBindings
-	Variables: { sub: string | null }
+type Env = { Bindings: CloudflareBindings }
+
+/** `<app>.<root>`: one whole site per app — its page, its worker, its assets. */
+
+/** The root domain: the runner itself, no app in sight. */
+const rootSite = new Hono<Env>()
+
+rootSite.get('/', (c) => c.html(html`<h1>runner</h1>`))
+
+export default {
+	// The host picks the site, so app routes exist only on app hosts and vice versa.
+	fetch: (req: Request, env: CloudflareBindings, ctx: ExecutionContext) =>
+		(appId(req, env) ? appSite : rootSite).fetch(req, env, ctx)
 }
-
-/** First label of `host` when it sits directly under `root`, else null (apex/unknown/deep host). */
-const subdomain = (host: string, root: string): string | null => {
-	const h = host.toLowerCase()
-	const suffix = `.${root.toLowerCase()}`
-	if (!h.endsWith(suffix)) return null
-	const label = h.slice(0, -suffix.length)
-	return /^[a-z0-9][a-z0-9-]*$/.test(label) ? label : null
-}
-
-const app = new Hono<Env>()
-
-app.use('*', async (c, next) => {
-	const { hostname } = new URL(c.req.url)
-	// `*.localhost` keeps `wrangler dev` working without extra config.
-	const root = hostname.endsWith('.localhost') ? 'localhost' : c.env.ROOT_DOMAIN
-	c.set('sub', subdomain(hostname, root))
-	await next()
-})
-
-app.get('/', (c) => {
-	const sub = c.get('sub')
-	if (!sub) return c.html(html`<h1>runner</h1>`)
-	return c.html(html`<h1>app: ${sub}</h1>`)
-})
-
-export default app

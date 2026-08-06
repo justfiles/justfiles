@@ -1,13 +1,17 @@
 import { expect, test } from 'vitest'
-import app from './index.ts'
+import worker from './index.ts'
 
 const env = { ROOT_DOMAIN: 'example.com' } as CloudflareBindings
 
-const get = (url: string) => app.request(url, {}, env)
+const get = (url: string) => worker.fetch(new Request(url), env, {} as ExecutionContext)
 
-test('routes the first host label to the handler', async () => {
-	const res = await get('https://app1.example.com/')
-	expect(await res.text()).toContain('app: app1')
+// The store holds whatever `bin/` holds, so these assert the SPLIT — which host
+// reaches the app site at all — rather than any particular app being hosted.
+
+test('a decodable label reaches the app site', async () => {
+	// nothing is published under `alice.notes`, so the app site 404s rather than
+	// falling through to the runner page
+	expect((await get('https://alice-notes.example.com/')).status).toBe(404)
 })
 
 test('apex and unknown hosts have no subdomain', async () => {
@@ -18,11 +22,18 @@ test('apex and unknown hosts have no subdomain', async () => {
 })
 
 test('*.localhost works in local dev', async () => {
-	const res = await get('http://app1.localhost:8787/')
-	expect(await res.text()).toContain('app: app1')
+	expect((await get('http://alice-notes.localhost:8787/')).status).toBe(404)
 })
 
-test('only accepts DNS-label subdomains', async () => {
-	const res = await get('https://_weird.example.com/')
-	expect(await res.text()).toContain('<h1>runner</h1>')
+test('the platform keeps every label an id cannot encode to', async () => {
+	// every id has two segments, so every app label carries a hyphen — and a-b-c style
+	// labels that are not the canonical encoding of anything are refused too
+	for (const host of ['www', 'api', 'store', '_weird', 'a---b']) {
+		expect(await (await get(`https://${host}.example.com/`)).text()).toContain('<h1>runner</h1>')
+	}
+})
+
+test('app routes do not exist on the apex host', async () => {
+	expect((await get('https://example.com/worker.js')).status).toBe(404)
+	expect((await get('https://example.com/logo.svg')).status).toBe(404)
 })

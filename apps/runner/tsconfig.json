@@ -1,7 +1,8 @@
 {
-	"extends": "@justfiles/tsconfig/base.json",
-	"compilerOptions": {
-		"types": ["./worker-configuration.d.ts"]
-	},
-	"include": ["src"]
+	"files": [],
+	"references": [
+		{ "path": "./tsconfig.worker.json" },
+		{ "path": "./tsconfig.client.json" },
+		{ "path": "./tsconfig.node.json" }
+	]
 }
