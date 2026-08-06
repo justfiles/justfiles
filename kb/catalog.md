@@ -1,4 +1,4 @@
-# JustFiles community catalog
+# JustApps community catalog
 
 Status: **planned, not started.**
 
@@ -49,7 +49,7 @@ interfaces.
 - Keep the marginal cost of a release at zero for both the author and the maintainer.
 - Avoid building a publisher dashboard or public publishing API initially.
 - Keep the public catalog independent of the private runner implementation.
-- Serve canonical, immutable snapshots from JustFiles infrastructure rather than mutable
+- Serve canonical, immutable snapshots from JustApps infrastructure rather than mutable
   upstream files.
 
 ## Non-goals
@@ -57,7 +57,7 @@ interfaces.
 - The catalog does not contain app assets.
 - The catalog does not record versions. Releases are discovered, never declared.
 - Merging a catalog entry does not mean unreviewed code is immediately live.
-- JustFiles never builds contributor source.
+- JustApps never builds contributor source.
 - The catalog repository is not the runner's runtime database.
 - Opening the catalog does not require opening the whole monorepo.
 
@@ -91,8 +91,8 @@ Deliberately **not** copied:
 
 The common direction is to use Git as the transparent control plane. Projects that promise
 stable installation or asset URLs generally snapshot artifacts into infrastructure they
-control. JustFiles needs that second property because it promises URLs such as
-`https://app1.mykodama.app/gui.js`.
+control. JustApps needs that second property because it promises URLs such as
+`https://app1.justapps.run/gui.js`.
 
 ## Public catalog shape
 
@@ -139,10 +139,12 @@ uniqueness, so two entries cannot claim the same ID. What remains is the pointer
 }
 ```
 
-There is **no version field**, no release strategy, no asset name and no display metadata.
-Everything else is discovered from the repository at import time, or lives in the app manifest
-inside the bundle. Duplicating it here would go stale and generate pull-request churn, which
-lands on the maintainer.
+There is **no version field**, no release strategy and no display metadata. Everything else is
+discovered from the repository at import time, or lives in the app manifest inside the bundle.
+Duplicating it here would go stale and generate pull-request churn, which lands on the maintainer.
+
+The one optional field is `"asset"`, and it is an escape hatch rather than configuration — see
+[Which asset, when rung 1 hits](#which-asset-when-rung-1-hits). Most entries never set it.
 
 IDs must be lowercase. On a case-insensitive filesystem — macOS, where this is developed —
 `Foo.json` and `foo.json` collide in a checkout but not in Git, so the validator has to reject
@@ -217,8 +219,8 @@ ID cannot be claimed.
 author without a domain is served by `io.github.*`, and because renames are supported, starting
 there costs nothing later. Add it when a real accepted app needs it.
 
-When it is added, use a DNS `TXT` record — `_justfiles.<domain>` naming the GitHub account
-entitled to the namespace — rather than `/.well-known/justfiles.txt`. The HTTPS variant looks
+When it is added, use a DNS `TXT` record — `_justapps.<domain>` naming the GitHub account
+entitled to the namespace — rather than `/.well-known/justapps.txt`. The HTTPS variant looks
 simpler and is worse: many owned domains serve no HTTP at all (parked, email-only, apex without
 `www`); following redirects cross-host is a genuine hole, so it needs same-registrable-domain
 limits, a hop cap and TLS validation; and on shared platforms `/.well-known/` may be writable by
@@ -309,7 +311,7 @@ something matches. Each rung asks strictly less of the author than the one above
 
 | # | Condition | Bytes | Version | Author effort |
 | --- | --- | --- | --- | --- |
-| 1 | Latest release has a `*.zip` asset | that asset | release tag | CI workflow |
+| 1 | Latest release has a `*.zip` asset | that asset (selected below) | release tag | CI workflow |
 | 2 | Latest release, no zip asset | repository tree at that tag | release tag | click *Publish release* |
 | 3 | No releases, tags exist | repository tree at newest semver tag | that tag | `git tag v1 && git push --tags` |
 | 4 | No tags at all | repository tree at default-branch `HEAD` | `YYYYMMDD.<sha7>` | `git push` |
@@ -322,6 +324,32 @@ them to rung 3 with no catalog change.
 HACS's documentation warns that *"just publishing tags is not enough, you need to publish
 releases."* That rule exists only because they did not implement rung 3. Implementing it
 deletes the rule.
+
+### Which asset, when rung 1 hits
+
+Do not impose a filename convention. An author should be able to call their bundle `draw.zip`
+because that is what it is. Resolve it the same way as everything else — a ladder, most specific
+first:
+
+| # | Rule |
+| --- | --- |
+| 1 | The entry sets `"asset"` and a release asset matches that name exactly |
+| 2 | Exactly one `*.zip` asset exists — it must be the one |
+| 3 | Several zips, one named `app.zip` |
+| 4 | Otherwise fail, listing the assets that were found |
+
+Rung 2 is the common case and costs the author nothing: one bundle, any name. Rung 1 exists only
+for repositories that ship several archives — a source zip beside the bundle, or per-platform
+artifacts later.
+
+**A stale `asset` falls through rather than failing.** If the field is set but nothing matches,
+continue down the ladder and *flag* it. An author who renames `draw.zip` to `draw-bundle.zip`
+should not have their releases stop importing until a catalog pull request lands; that is exactly
+the churn this design avoids everywhere else, and it matches the tag-mismatch stance above.
+
+Do not add `${version}` or `${platform}` interpolation the way Package Control does. Versioned
+names such as `draw-0.4.1.zip` are already handled by rung 2, since there is still only one zip.
+Per-platform assets are the case that would need it, and JustApps bundles are platform-neutral.
 
 ### Rules deleted by discovery
 
@@ -438,11 +466,11 @@ releases/{appId}/{releaseId}/files/images/logo.png
 releases/{appId}/{releaseId}/manifest.json
 ```
 
-A request for `https://app1.mykodama.app/gui.js` resolves the hostname to the app, looks up its
+A request for `https://app1.justapps.run/gui.js` resolves the hostname to the app, looks up its
 active release, and reads `releases/app1/{activeReleaseId}/files/gui.js`. Never overwrite mutable
 `app1/current/*` objects one at a time: a failed upload would expose files from two releases.
 
-Do not serve or reverse-proxy GitHub files at request time. JustFiles needs its own snapshot for
+Do not serve or reverse-proxy GitHub files at request time. JustApps needs its own snapshot for
 availability, correct content metadata, atomic releases, rollback, takedowns and proof of the
 exact bytes previously served.
 
@@ -461,10 +489,19 @@ third party can reproduce the snapshot from the recorded SHA.
 
 **The zip rung (1) needs attestation.** A zip has no verifiable link to the commit recorded
 alongside it; a maintainer with a stolen token can attach anything. Because `justfiles/release`
-supplies the workflow, it can call
-[`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance), and the
-importer can verify the Sigstore bundle. Requiring it is a stronger stance than npm allows,
-where provenance is opt-in.
+supplies the workflow, it can call [`actions/attest`](https://github.com/actions/attest), and the
+importer can verify the Sigstore bundle. Requiring it is a stronger stance than npm allows, where
+provenance is opt-in.
+
+Use `actions/attest@v4`, not `actions/attest-build-provenance`. As of v4 the latter is a thin
+wrapper over the former, and both GitHub's documentation and the action's own README say new
+implementations should use `actions/attest`. It needs `id-token: write` and `attestations: write`;
+`artifact-metadata: write` is required only for `push-to-registry`, which does not apply to a zip.
+
+Attestation is separate from *creating* the release, which these actions do not do. Cut the
+release with the GitHub CLI (`gh release create`), which is preinstalled on runners — the
+first-party `actions/create-release` has been archived, and reaching for a third-party action
+would mean pinning it to a commit SHA for no gain.
 
 The compiled catalog carries a `sha256` per file, matching what `CatalogFile` already records.
 Krew pins `uri` plus `sha256` in its index for the same reason. Obsidian ships no integrity
@@ -536,7 +573,7 @@ risk and should not share a limit; for reference, `app-draw`'s reducer is 7.7 KB
 
 **Reject bundles containing secrets.** This is the one hazard the repository-tree rungs
 introduce that a built `dist/` does not: a build step is a natural filter, and a raw tree has
-none. Someone commits a local-dev `.env` and it gets rehosted at a public URL on a JustFiles
+none. Someone commits a local-dev `.env` and it gets rehosted at a public URL on a JustApps
 domain. Hard-fail on `.env*`, `*.pem`, `id_rsa*`, `.npmrc` and `*.key`, with a clear message,
 and document it in CONTRIBUTING.
 
