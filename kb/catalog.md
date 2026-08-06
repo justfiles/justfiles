@@ -66,7 +66,9 @@ operations team behind them. Each contributed one specific mechanism.
 
 | Borrowed | From |
 | --- | --- |
-| Two-field entry; the repository is the source of truth | [Obsidian](https://github.com/obsidianmd/obsidian-releases), [MELPA](https://github.com/melpa/melpa) |
+| Minimal entry; the filename is the ID and the repository is the source of truth | [MELPA](https://github.com/melpa/melpa), [Obsidian](https://github.com/obsidianmd/obsidian-releases) |
+| Aliases for renamed apps (`:old-names`) | [MELPA](https://github.com/melpa/melpa) |
+| Tombstones so a retired ID stays unclaimable | [npm](https://blog.npmjs.org/post/141905368000/changes-to-npms-unpublish-policy) |
 | Auto-discovery from tags; no pull request per release | [Package Control](https://docs.sublimetext.io/reference/package-control/repository.html) |
 | Prioritised download fallback ladder | [HACS](https://www.hacs.xyz/docs/publish/start/) |
 | Commit-date versioning for untagged repositories | [MELPA](https://github.com/melpa/melpa) |
@@ -92,33 +94,45 @@ control. JustApps needs that second property because it promises URLs such as
 
 ## Public catalog shape
 
-Keep the repository small and use one file per app to avoid a single conflict-prone list.
+Keep the repository small, and use one flat file per app. Flat, because the reverse-DNS ID is
+already the hierarchy: entries sort by namespace for free, and `apps/io.github.alice.*` is the
+"everything by this author" query. Nesting by owner re-encodes information the name already
+carries, and splits the ID across path segments that then have to be checked for agreement.
 
 ```text
 justapps/catalog
-├── README.md
-├── CONTRIBUTING.md
-├── LICENSE
-├── SECURITY.md
+├── README.md                          # what this is, status, how to submit
+├── CONTRIBUTING.md                    # the ladder, the rules, what the bot checks
 ├── CODE_OF_CONDUCT.md
-├── schema/
-│   └── app.schema.json
+├── SECURITY.md                        # how to report a malicious app
+├── LICENSE                            # this repository's code
+├── LICENSE-DATA                       # catalog entries; likely CC0
 ├── apps/
 │   ├── io.github.alice.calendar.json
-│   └── dev.xiaoxing.notes.json
+│   └── io.github.xiaoxing.notes.json
+├── schema/
+│   └── app.schema.json
+├── .vscode/
+│   └── settings.json                  # maps apps/*.json to the schema
 └── .github/
-    ├── CODEOWNERS
+    ├── CODEOWNERS                     # schema/ and workflows/ only — see below
     ├── pull_request_template.md
+    ├── ISSUE_TEMPLATE/
+    │   └── report-app.yml             # abuse and malware reports
+    ├── scripts/
+    │   └── validate.ts                # contributors run this before submitting
     └── workflows/
         └── validate.yml
 ```
 
-A catalog entry is an admission record, not a metadata store. It carries identity and a
-pointer, and nothing else:
+**The filename is the ID.** MELPA's recipes work this way, and two checks disappear with it:
+there is no ID field that can disagree with the filename, and the filesystem itself enforces
+uniqueness, so two entries cannot claim the same ID. What remains is the pointer:
+
+`apps/io.github.alice.calendar.json`
 
 ```json
 {
-  "id": "io.github.alice.calendar",
   "repo": "alice/calendar"
 }
 ```
@@ -128,9 +142,50 @@ Everything else is discovered from the repository at import time, or lives in th
 inside the bundle. Duplicating it here would go stale and generate pull-request churn, which
 lands on the maintainer.
 
+IDs must be lowercase. On a case-insensitive filesystem — macOS, where this is developed —
+`Foo.json` and `foo.json` collide in a checkout but not in Git, so the validator has to reject
+uppercase rather than let the problem surface later.
+
+Lifecycle is a field, not a folder and not a deletion. `status` defaults to `active`:
+
+```json
+{ "repo": "alice/calendar", "status": "removed", "note": "malware, 2026-08-01" }
+```
+
+Keeping a removed entry preserves the audit trail *and* keeps the ID unclaimable, which is why
+deletion is the wrong operation — npm does the equivalent with security placeholder packages.
+
 Extend by adding defaulted fields, never by adding provider abstractions. When a second forge
 eventually matters, `"repo": "gitlab:user/proj"` covers it — bare stays GitHub, no schema
 version bump, nothing to design today.
+
+`.vscode/settings.json` maps `apps/*.json` to the schema, so contributors get autocomplete and
+inline errors without a `$schema` key in every file — mistakes get caught before the pull
+request exists. `.github/scripts/validate.ts` lets contributors run the same checks locally,
+following Espanso's example; it runs the credential-free subset (schema, ID shape, namespace,
+repository reachable, ladder resolves) while the private importer does the rest.
+
+### CODEOWNERS is not an ownership mechanism
+
+It is tempting to nest entries per author so that `apps/io.github.alice/ @alice` can gate
+review. This does not work: **CODEOWNERS entries only take effect for users with write access
+to the repository**, which third-party authors will not have, so such entries are silently
+inert. It would also grow the file by one line per author forever.
+
+Ownership is enforced by the bot comparing the pull-request author against the proven
+namespace. Keep CODEOWNERS for `schema/` and `.github/workflows/`, held by the catalog
+maintainer's own account.
+
+### Scale
+
+Flat directories are fine well past the point this matters: MELPA holds thousands of recipes,
+and Homebrew only sharded `Formula/` at around seven thousand files. The limit that arrives
+first is GitHub's web UI truncating directory listings near a thousand entries, and the fix is
+a mechanical `git mv` into `apps/io.github.a/…` at that point. Do not pay for it now.
+
+The one change that would force a real restructure is per-app assets — icons or screenshots
+would each need their own directory. That is an explicit non-goal, and it remains a mechanical
+migration if it ever changes.
 
 ## Ownership without a dispute process
 
@@ -143,17 +198,107 @@ owner, no release in twelve months, and no owner activity; they processed over 5
 mis-transfer and now [declines to move names on request](https://docs.npmjs.com/policies/disputes/).
 That entire apparatus exists only because those namespaces are flat.
 
-An ID must be reverse-DNS, and its namespace must be one the submitter can prove:
+An ID must be reverse-DNS, and its namespace must be one the submitter can prove.
 
-- `io.github.<user>.<app>` — proven automatically, because the catalog entry points at
-  `github.com/<user>/…`. Zero work for the author, zero for the maintainer. This is what
-  `packages/create-app` should generate by default.
-- `com.<domain>.<app>` — proven by a DNS `TXT` record or `/.well-known/justapps.txt` on that
-  domain, checked in CI.
+**Launch with one mechanism: `io.github.<user>.<app>`.** It is proven by a string comparison
+against data already in the entry, because it points at `github.com/<user>/…`. No DNS, no HTTP,
+no new failure modes, nothing that can flake. It costs the author nothing and the maintainer
+nothing, and it is what `packages/create-app` should generate by default.
 
 With this there is no name to squat, so there is no transfer policy, no abandonment policy and
 no dispute queue to staff. Reserved first-party prefixes stay reserved so a retired first-party
 ID cannot be claimed.
+
+### Custom domains, deferred to Phase 3
+
+`com.<domain>.<app>` is worth supporting eventually, but it is not earned at launch. Every
+author without a domain is served by `io.github.*`, and because renames are supported, starting
+there costs nothing later. Add it when a real accepted app needs it.
+
+When it is added, use a DNS `TXT` record — `_justapps.<domain>` naming the GitHub account
+entitled to the namespace — rather than `/.well-known/justapps.txt`. The HTTPS variant looks
+simpler and is worse: many owned domains serve no HTTP at all (parked, email-only, apex without
+`www`); following redirects cross-host is a genuine hole, so it needs same-registrable-domain
+limits, a hop cap and TLS validation; and on shared platforms `/.well-known/` may be writable by
+someone who is not the domain owner. DNS has none of that. Android's Digital Asset Links solve
+exactly this problem — binding a reverse-DNS ID to a domain — and GitHub's own organization
+verification is a DNS `TXT` challenge.
+
+Three edges to plan for rather than discover:
+
+- **Query over DoH, from two independent resolvers, and require agreement.** Plain `dig` on a
+  runner trusts one resolver with no DNSSEC validation.
+- **Negative caching will bite authors.** A lookup made before the record exists can cache the
+  `NXDOMAIN` for the zone's negative TTL, often five to sixty minutes. The instruction must be
+  *add the record first, then open the pull request*, and a re-run control is mandatory.
+- **Reverse-DNS is ambiguous about where the domain ends.** `com.alice.tools.notes` could be
+  `alice.com` plus app `tools.notes`, or `tools.alice.com` plus app `notes`. Try splits
+  longest-first, accept the first that proves, and record which domain proved so it is pinned
+  for later entries. Resolve against the Public Suffix List so a platform domain such as
+  `github.io` is never treated as claimable.
+
+This is also the only place CI performs network I/O against a host the contributor chooses,
+which is a further reason to prefer a DNS lookup over fetching an arbitrary URL, and to keep the
+workflow credential-free.
+
+## Renaming an app
+
+Renaming is a designed-in path, not a concession. It is what makes `io.github.*` safe to
+recommend as the default: an author starts with zero setup and moves to a branded namespace
+later, the same shape as the rung-4 to rung-3 graduation below. MELPA has run this for a decade
+as `:old-names`.
+
+The renamed entry declares its history, and the old path becomes a tombstone rather than a
+deletion:
+
+```json
+// apps/com.aliceapps.notes.json
+{ "repo": "alice/notes", "formerIds": ["io.github.alice.notes"] }
+```
+
+```json
+// apps/io.github.alice.notes.json
+{ "status": "renamed", "to": "com.aliceapps.notes" }
+```
+
+One pull request, two files. The bot verifies the two-way link — every `formerIds` entry has a
+tombstone pointing back, every tombstone is claimed — which is purely mechanical.
+
+**The tombstone is not optional.** Deleting the old file makes `io.github.alice.notes`
+claimable, and it is an ID that installed devices already trust. Squatting an abandoned ID is
+bad; squatting one with an existing install base is the worst outcome in the system. The
+filesystem-as-uniqueness-constraint only holds while the file stays.
+
+### The work is on the device, not in the catalog
+
+The ID is the app's identity in installed state — `/applications/<id>`, plus whatever keys app
+data and capability grants. Rename it naively and every existing install sees one app disappear
+and an unrelated one appear: lost data, lost grants, a duplicate in the store.
+
+So the compiled catalog carries an alias map, and reconcile gains one branch: if an installed ID
+appears as a `formerId`, rewrite the local record to the new ID and keep everything else. That
+slots into the reconcile pass that already runs, so it is a small addition — but it mutates
+device state, and a botched rename orphans user data. This is the part to get right.
+
+### Rules
+
+- **Renames always require human review, never auto-merge.** This is the highest-risk operation
+  in the catalog: it is precisely how an established app's install base would be hijacked.
+- **Both namespaces must be proven by the same pull-request author** — the old one against the
+  catalog's current repository pointer, the new one against the new pointer. An author also
+  moving repositories should do that in a separate pull request, so the old proof still holds
+  when it is checked.
+- **Collapse chains.** For `a → b → c`, the entry for `c` lists `["a", "b"]`, so a device that
+  has been offline since `a` jumps straight to `c` without walking the chain. The bot computes
+  this by carrying the old entry's `formerIds` forward.
+- **A manifest mismatch is a flag, not a failure.** After a rename the author's `manifest.json`
+  names the new ID while older releases name the old one. The catalog filename wins; the
+  mismatch is reported. This matches the tag-normalisation stance below.
+
+Opaque permanent IDs — a serial assigned at admission, with reverse-DNS as display only — would
+make renames free, and are not worth it: IDs stop being human-readable, `create-app` can no
+longer generate one offline, and the readable name becomes a separate mutable thing that people
+*can* fight over, giving back the dispute-process saving that motivated reverse-DNS.
 
 ## Release resolution
 
@@ -421,7 +566,8 @@ private even when all implementation code is open source.
 
 - Create the public catalog repository under the intended long-lived organization.
 - Choose licences for repository code and contributed catalog data.
-- Add the two-field schema, contribution rules and namespace proof.
+- Add the entry schema, the contribution rules, and `io.github.*` namespace proof — the only
+  proof mechanism at launch.
 - Publish `justapps/release` and wire it into `packages/create-app`.
 - Mark the catalog experimental and state whether submissions are open.
 
@@ -436,6 +582,8 @@ private even when all implementation code is open source.
 
 - Accept outside submissions.
 - Land the PR bot: namespace proof, ladder resolution report, auto-merge on all-green.
+- Add custom-domain proof when a real accepted app needs it.
+- Ship the alias map and the device-side rename migration.
 - Document deprecation, removal, moderation and appeal processes.
 
 ### Phase 4 — Open runtime
@@ -451,7 +599,11 @@ private even when all implementation code is open source.
 2. Whether rung 4 (rolling, untagged) is open to third parties at launch, or only to
    first-party apps until the abuse model is proven.
 3. Whether attestation is required or merely recorded for rung 1 at launch.
-4. Licence and redistribution requirements for app bundles and catalog metadata.
-5. Initial cache and rollback policy for stable asset URLs.
-6. Whether to adopt an Obsidian-style `versions.json` mapping app version to minimum runtime
+4. Whether capability grants carry across a rename, or the user is re-prompted. Carrying them
+   is the current lean — a rename does not change what the app does, and re-prompting on every
+   rename trains people to click through consent sheets, which costs more security than it
+   buys. Human review of the rename pull request is the real gate.
+5. Licence and redistribution requirements for app bundles and catalog metadata.
+6. Initial cache and rollback policy for stable asset URLs.
+7. Whether to adopt an Obsidian-style `versions.json` mapping app version to minimum runtime
    version, so older clients resolve an older compatible release instead of a broken one.
