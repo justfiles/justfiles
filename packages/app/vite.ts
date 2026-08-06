@@ -1,9 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
-import { createRunnableDevEnvironment } from 'vite'
+import { build, createRunnableDevEnvironment } from 'vite'
 import type { AppManifest } from './app.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
 
@@ -27,20 +26,40 @@ const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 // externalizes this plugin and resolves it with native Node, which can't
 // load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
 
-// Compile the reducer (`app.js`). Everything it references is inlined — nothing is
-// external — because a reducer Worker resolves no bare specifiers at runtime.
-const compile = (entry: string) => {
-	const result = buildSync({
-		entryPoints: [entry],
-		absWorkingDir: dirname(entry),
-		bundle: true,
-		write: false,
-		format: 'esm',
-		minify: true
+// Compile the reducer (`app.js`) with Vite itself, so this plugin carries no bundler
+// of its own — the app already has Vite, and Vite ships no esbuild. `configFile: false`
+// keeps the nested build from re-entering the app's config and this plugin. Everything
+// it references is inlined — nothing is external — because a reducer Worker resolves no
+// bare specifiers at runtime.
+const compile = async (entry: string): Promise<string> => {
+	const result = await build({
+		configFile: false,
+		logLevel: 'warn',
+		build: {
+			write: false,
+			minify: true,
+			// Match what esbuild emitted before: untranspiled modern output. The reducer
+			// runs in a Worker and is imported by Node to read its capabilities.
+			target: 'esnext',
+			lib: { entry, formats: ['es'], fileName: () => 'app.js' },
+			rollupOptions: { output: { codeSplitting: false } }
+		}
 	})
-	const output = result.outputFiles[0]
-	if (!output) throw new Error(`failed to compile ${entry}`)
-	return output.text
+	const outputs = Array.isArray(result) ? result : [result]
+	const chunks = outputs
+		.flatMap((out) => ('output' in out ? out.output : []))
+		.filter((part) => part.type === 'chunk')
+	// `codeSplitting: false` has to collapse everything into one chunk, because only
+	// the entry is written to disk. A second chunk would mean `app.js` ships an
+	// `import()` pointing at a file that was never emitted — a reducer that builds
+	// clean and dies at runtime. Fail the build instead.
+	if (chunks.length !== 1) {
+		const names = chunks.map((part) => part.fileName).join(', ')
+		throw new Error(`${entry}: expected one chunk, got ${chunks.length} (${names})`)
+	}
+	const chunk = chunks[0]
+	if (chunk?.type !== 'chunk') throw new Error(`failed to compile ${entry}`)
+	return chunk.code
 }
 
 function readPackageVersion(root: string): string | undefined {
@@ -196,7 +215,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				const out = resolve(root, 'dist')
 				mkdirSync(out, { recursive: true })
 				const appJs = resolve(out, 'app.js')
-				writeFileSync(appJs, compile(appEntry))
+				writeFileSync(appJs, await compile(appEntry))
 				const manifest: AppManifest = {
 					id: opts.id,
 					name: opts.name,
