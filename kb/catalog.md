@@ -1,36 +1,38 @@
-# JustApps community catalog
+# JustFiles community catalog
 
 Status: **planned, not started.**
 
 ## Decision
 
-Create a dedicated public repository for the JustApps catalog (working name
-`justapps/catalog`). Keep the runner and its dependencies in the private `justfiles`
-monorepo until they can build and operate using only public dependencies.
+Create a dedicated public repository, `justfiles/catalog`, in the `justfiles` GitHub
+organization. Keep the runner and its dependencies in the private monorepo (also named
+`justfiles`, and distinct from the organization) until they can build and operate using only
+public dependencies.
 
 **GitHub is the only distribution channel.** An author needs a GitHub account to open the
 catalog pull request, so requiring anything else — an npm account, a second namespace, a
 second account-recovery story — is a second barrier for no gain. One channel, done properly,
 beats two channels done partially.
 
-When ready, publish the runner separately (working name `justapps/runner`). Do not plan to
+When ready, publish the runner separately (working name `justfiles/runner`). Do not plan to
 move it into the catalog repository: the catalog is community governance and data, while the
 runner is executable infrastructure with a different contributor group, release cycle and
-security boundary. They can still be one project under a shared JustApps organization.
+security boundary. They remain one project under the shared organization.
 
 ```text
 Public now
-├── justapps/catalog
-└── justapps/release           # reusable release workflow authors call
+├── justfiles/catalog
+├── justfiles/release           # reusable release workflow authors call
+└── justfiles/app-draw          # first app out of the monorepo; the template
 
 Private for now
-└── justfiles
+└── the monorepo
     ├── apps/runner
     └── runner dependencies
 
 Public later
-├── justapps/runner
-├── justapps/sdk               # if needed
+├── justfiles/runner
+├── justfiles/sdk               # if needed
 └── reusable runtime packages  # extracted only when their boundaries are clear
 ```
 
@@ -47,7 +49,7 @@ interfaces.
 - Keep the marginal cost of a release at zero for both the author and the maintainer.
 - Avoid building a publisher dashboard or public publishing API initially.
 - Keep the public catalog independent of the private runner implementation.
-- Serve canonical, immutable snapshots from JustApps infrastructure rather than mutable
+- Serve canonical, immutable snapshots from JustFiles infrastructure rather than mutable
   upstream files.
 
 ## Non-goals
@@ -55,7 +57,7 @@ interfaces.
 - The catalog does not contain app assets.
 - The catalog does not record versions. Releases are discovered, never declared.
 - Merging a catalog entry does not mean unreviewed code is immediately live.
-- JustApps never builds contributor source.
+- JustFiles never builds contributor source.
 - The catalog repository is not the runner's runtime database.
 - Opening the catalog does not require opening the whole monorepo.
 
@@ -89,8 +91,8 @@ Deliberately **not** copied:
 
 The common direction is to use Git as the transparent control plane. Projects that promise
 stable installation or asset URLs generally snapshot artifacts into infrastructure they
-control. JustApps needs that second property because it promises URLs such as
-`https://app1.justapps.run/gui.js`.
+control. JustFiles needs that second property because it promises URLs such as
+`https://app1.mykodama.app/gui.js`.
 
 ## Public catalog shape
 
@@ -100,7 +102,7 @@ already the hierarchy: entries sort by namespace for free, and `apps/io.github.a
 carries, and splits the ID across path segments that then have to be checked for agreement.
 
 ```text
-justapps/catalog
+justfiles/catalog
 ├── README.md                          # what this is, status, how to submit
 ├── CONTRIBUTING.md                    # the ladder, the rules, what the bot checks
 ├── CODE_OF_CONDUCT.md
@@ -215,8 +217,8 @@ ID cannot be claimed.
 author without a domain is served by `io.github.*`, and because renames are supported, starting
 there costs nothing later. Add it when a real accepted app needs it.
 
-When it is added, use a DNS `TXT` record — `_justapps.<domain>` naming the GitHub account
-entitled to the namespace — rather than `/.well-known/justapps.txt`. The HTTPS variant looks
+When it is added, use a DNS `TXT` record — `_justfiles.<domain>` naming the GitHub account
+entitled to the namespace — rather than `/.well-known/justfiles.txt`. The HTTPS variant looks
 simpler and is worse: many owned domains serve no HTTP at all (parked, email-only, apex without
 `www`); following redirects cross-host is a genuine hole, so it needs same-registrable-domain
 limits, a hop cap and TLS validation; and on shared platforms `/.well-known/` may be writable by
@@ -396,9 +398,9 @@ simply waits for the next tick.
 Fetch the whole repository as one tarball rather than file by file:
 
 ```text
-1. GET /repos/justapps/catalog/commits/main   → head SHA
+1. GET /repos/justfiles/catalog/commits/main   → head SHA
    unchanged → done (one request, the common case)
-2. GET /repos/justapps/catalog/tarball/{sha}  → whole catalog, one request
+2. GET /repos/justfiles/catalog/tarball/{sha}  → whole catalog, one request
 3. parse apps/*.json in memory, reconcile, record the SHA
 ```
 
@@ -436,11 +438,11 @@ releases/{appId}/{releaseId}/files/images/logo.png
 releases/{appId}/{releaseId}/manifest.json
 ```
 
-A request for `https://app1.justapps.run/gui.js` resolves the hostname to the app, looks up its
+A request for `https://app1.mykodama.app/gui.js` resolves the hostname to the app, looks up its
 active release, and reads `releases/app1/{activeReleaseId}/files/gui.js`. Never overwrite mutable
 `app1/current/*` objects one at a time: a failed upload would expose files from two releases.
 
-Do not serve or reverse-proxy GitHub files at request time. JustApps needs its own snapshot for
+Do not serve or reverse-proxy GitHub files at request time. JustFiles needs its own snapshot for
 availability, correct content metadata, atomic releases, rollback, takedowns and proof of the
 exact bytes previously served.
 
@@ -458,7 +460,7 @@ no build step there is no gap between the source anyone can read and the bytes s
 third party can reproduce the snapshot from the recorded SHA.
 
 **The zip rung (1) needs attestation.** A zip has no verifiable link to the commit recorded
-alongside it; a maintainer with a stolen token can attach anything. Because `justapps/release`
+alongside it; a maintainer with a stolen token can attach anything. Because `justfiles/release`
 supplies the workflow, it can call
 [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance), and the
 importer can verify the Sigstore bundle. Requiring it is a stronger stance than npm allows,
@@ -475,13 +477,13 @@ must get `on: push: tags` right, get `permissions: contents: write` right, zip t
 directory with the correct root layout, and debug it in CI where every iteration is a push. The
 account-count argument for GitHub-only distribution only holds if that cost is removed.
 
-So publish `justapps/release` as a reusable workflow, and reduce the author's release
+So publish `justfiles/release` as a reusable workflow, and reduce the author's release
 configuration to this:
 
 ```yaml
 jobs:
   release:
-    uses: justapps/release/.github/workflows/release.yml@v1
+    uses: justfiles/release/.github/workflows/release.yml@v1
     with:
       build: pnpm build
       dist: dist
@@ -511,12 +513,30 @@ trigger deployment of runner code.
 
 Treat every source repository and archive as hostile. Defend against path traversal, absolute
 paths, symlinks, duplicate and case-colliding names, archive bombs, excessive file counts and
-unsupported file types. Cap bundle size (~10 MB) and file count (~500); this is also what keeps
-unzip-and-hash inside a Worker's 128 MB memory and CPU limits.
+unsupported file types.
+
+**Cap extracted bytes, not the download.** Compressed size bounds nothing that matters — GitHub
+serves the fetch and R2 egress is free — while extracted size is what a decompression bomb
+attacks and what has to fit in a Worker's 128 MB isolate. Calibrate against a real app rather
+than a round number: `app-draw` is 9.8 MB extracted and 2.7 MB zipped, almost all of it a single
+`gui.js` carrying a bundled Excalidraw. A 10 MB cap would reject the first serious app in the
+catalog. Cap extracted bytes at ~50 MB and file count at ~500, and leave compressed size alone.
+
+Stream each entry straight into its R2 object, so peak memory is the largest single file rather
+than the whole bundle; a ~20 MB per-file cap is what makes that bound meaningful. Enforce the
+total against the running decompressed count, never against the sizes declared in the archive
+header — those are attacker-controlled. Note also that `DecompressionStream` cannot read ZIP,
+which is a container format: parse the central directory, then hand each entry's payload to
+`DecompressionStream('deflate-raw')` so the inflate itself stays native.
+
+Cap `app.js` separately and far lower (~1 MB). It is the only file that becomes executable
+Worker code — `kernel.sandbox.ts` loads it as a module in a dynamically created Worker — whereas
+`gui.js` is an inert static asset no matter how large. The two files carry completely different
+risk and should not share a limit; for reference, `app-draw`'s reducer is 7.7 KB.
 
 **Reject bundles containing secrets.** This is the one hazard the repository-tree rungs
 introduce that a built `dist/` does not: a build step is a natural filter, and a raw tree has
-none. Someone commits a local-dev `.env` and it gets rehosted at a public URL on a JustApps
+none. Someone commits a local-dev `.env` and it gets rehosted at a public URL on a JustFiles
 domain. Hard-fail on `.env*`, `*.pem`, `id_rsa*`, `.npmrc` and `*.key`, with a clear message,
 and document it in CONTRIBUTING.
 
@@ -568,7 +588,7 @@ private even when all implementation code is open source.
 - Choose licences for repository code and contributed catalog data.
 - Add the entry schema, the contribution rules, and `io.github.*` namespace proof — the only
   proof mechanism at launch.
-- Publish `justapps/release` and wire it into `packages/create-app`.
+- Publish `justfiles/release` and wire it into `packages/create-app`.
 - Mark the catalog experimental and state whether submissions are open.
 
 ### Phase 2 — Private ingestion
