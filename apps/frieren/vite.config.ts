@@ -25,8 +25,10 @@ export default defineConfig({
 		// so wrangler never runs esbuild and locates maps solely by the trailing
 		// `//# sourceMappingURL=` comment on each chunk. Hence `true`, not 'hidden' —
 		// hidden drops that comment and wrangler silently uploads nothing. Client
-		// stays unmapped; its maps would be publicly served. Environment name is the
-		// worker name with `-` replaced by `_`.
+		// stays unmapped; its maps would be publicly served. The key is the
+		// top-level `name` with `-` replaced by `_` — NOT the per-env name, so
+		// CLOUDFLARE_ENV=staging (worker `frieren-staging`) builds through this
+		// same key.
 		frieren: { build: { sourcemap: true } }
 	},
 	plugins: [
