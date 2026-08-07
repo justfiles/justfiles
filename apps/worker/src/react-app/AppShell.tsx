@@ -1,4 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
+import { persistStorage } from '@justfiles/fs/storage/idb'
 import { Outlet } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
@@ -12,10 +13,12 @@ import { useVolume, VolumeProvider } from './useVolume'
 function AppShellInner({ userId }: { userId: string }) {
 	const { upsertEntry, removeEntry, refresh } = useVolume()
 
+	// Best-effort storage can be evicted whole — IndexedDB and the Cache API
+	// together — and Safari drops it after seven days without interaction.
 	useEffect(() => {
-		if (navigator.storage?.persist) {
-			navigator.storage.persist()
-		}
+		persistStorage().then((granted) => {
+			if (!granted) console.warn('storage is best-effort: the browser may evict this volume')
+		})
 	}, [])
 
 	// Prevent iOS from using non-scrollable areas as a handle to scroll the

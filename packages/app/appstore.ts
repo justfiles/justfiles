@@ -11,7 +11,8 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
-import type { AppManifest } from './app.ts'
+import { cachePath } from '@justfiles/fs/sync-replica'
+import type { AppManifest, InstalledApp } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -90,7 +91,15 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 			const app = builtinById.get(id) ?? (await store.latest(id))
 			if (!app) continue
 			const action = await decide(fs, app)
-			if (action === 'skip') continue
+			// An app that reached this device through sync never ran an install here, so
+			// this is where its mounted files get warmed — see `warmMounts`. Swallowed
+			// for the same reason the one after an install is: this app is NOT being
+			// updated, so a cache that stayed cold is not an update failure and must not
+			// be logged as one on every pass.
+			if (action === 'skip') {
+				if (app.baseUrl) await warmMounts(kernel, fs, id).catch(() => {})
+				continue
+			}
 			// Escalation guard: a non-builtin (re)install that declares more capabilities
 			// than the installed version is held (skipped) so re-consent can land first
 			// (Step 5). `escalates` is true only on real capability growth, so a same-
@@ -186,6 +195,81 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 		throw new Error(`catalog app missing its reducer: ${app.id}/${reducer}`)
 	}
 	await kernel.install(bundleFromFiles(spec, files))
+	// Past the commit point, so nothing here can be allowed to reject: the record and
+	// the reducer are live, and a caller that saw a rejection would report a failed
+	// install of a working app — `materialise` would stop before the rest of the
+	// built-ins, and a direct community install would report failure. The per-file
+	// swallow inside is not enough on its own; resolving the app back out of the
+	// volume is a read too, and it happens after the same commit.
+	if (app.baseUrl) await prefetchApp(kernel, app.id).catch(() => {})
+}
+
+/**
+ * Warm the cache with everything a hosted app mounts, so it runs offline.
+ *
+ * Fast-follow, not part of the install: the record and the reducer are already
+ * in the volume when this starts, so an interrupted prefetch leaves a working
+ * app with a cold cache rather than a half-installed one — which is why a
+ * failure here is swallowed. The files still mount on demand, exactly as before.
+ *
+ * Without it "installed" means only that the app can run WITH a network. The
+ * reducer is in the volume but the GUI is not, so a device that installs an app
+ * and goes offline has everything except the half it can see.
+ *
+ * It reads through `mount()` — fetch, verify against the pin, cache — rather
+ * than fetching in parallel, so it fills exactly the entries a later read looks
+ * for instead of a second copy that might not match.
+ */
+async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
+	const installed = await kernel.app(appId)
+	await warm(installed, Object.keys(installed.manifest.files ?? {}))
+}
+
+/**
+ * The same warming, for an app that never installed on THIS device.
+ *
+ * A hosted app arrives through sync fully formed — another device installed it,
+ * and the record and reducer replicated here — so no install ran locally and
+ * nothing filled the cache. `decide` is right to skip it (the volume does match
+ * the catalog; the mounted half is a cache, not part of the install), which
+ * leaves reconcile as the only pass that can notice, and multi-device is the
+ * ordinary way a second device gets an app.
+ *
+ * Cold paths only, because this runs on every pass: a warm app costs one `stat`
+ * per mounted file and reads nothing. Reading every path back through `mount()`
+ * would be correct but would move the app's whole payload each time.
+ *
+ * "Warm" is the question `mount()` asks — the record's pinned digest against the
+ * cached entry's — not merely whether something is there. A device that ran an
+ * older release and then received a newer record through sync has a cache full
+ * of the previous version's bytes at exactly the paths the new one mounts, and
+ * no local install ran to sweep them. Presence alone would call that warm and
+ * fetch nothing; the read that repairs a stale entry would then be the one made
+ * offline, which is the read that cannot.
+ */
+async function warmMounts(kernel: Kernel, fs: Volume, appId: string): Promise<void> {
+	const installed = await kernel.app(appId)
+	const cache = cachePath(`/applications/${appId}`)
+	const cold: string[] = []
+	for (const [path, pinned] of Object.entries(installed.manifest.files ?? {})) {
+		// The volume is content-addressed, so this stays a metadata lookup: `stat`
+		// reports the digest, and no payload is read to decide.
+		const stat = await fs.stat(`${cache}/${path}`).catch(() => null)
+		if (!stat || `sha256-${stat.contentHash ?? ''}` !== pinned) cold.push(path)
+	}
+	if (cold.length) await warm(installed, cold)
+}
+
+async function warm(installed: InstalledApp, queue: string[]): Promise<void> {
+	const readOne = async (): Promise<void> => {
+		// Swallowed per file: being offline, or reaching an origin that is not serving
+		// this release yet, leaves a cold cache rather than a broken app — the file
+		// mounts on demand later exactly as it did before. Both callers swallow the
+		// whole pass as well, because both run after the app is already usable.
+		for (let path = queue.pop(); path; path = queue.pop())
+			await installed.read(path).catch(() => {})
+	}
+	await Promise.all(Array.from({ length: Math.min(INSTALL_CONCURRENCY, queue.length) }, readOne))
 }
 
 // The app's own declared metadata — entry paths, capabilities, description — read from

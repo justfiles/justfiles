@@ -1,4 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
+import { persistStorage } from '@justfiles/fs/storage/idb'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { AgentProvider } from './agent/Provider'
@@ -60,6 +61,15 @@ function App() {
 		return () => {
 			cancelled = true
 		}
+	}, [])
+
+	// Best-effort storage is evicted whole — IndexedDB and the Cache API together
+	// — and Safari drops it after seven days without interaction. A signed-out
+	// profile has no replica anywhere, so for it that is the only copy.
+	useEffect(() => {
+		void persistStorage().then((granted) => {
+			if (!granted) console.warn('storage is best-effort: the browser may evict this profile')
+		})
 	}, [])
 
 	// Auth starts sync for the current account profile. It only switches profiles

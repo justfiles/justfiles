@@ -1,5 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import { cachePath } from '@justfiles/fs/sync-replica'
+import { FileType } from '@justfiles/fs/types'
 import type { AppBundle, AppManifest, InstalledApp } from './app.ts'
 import { isMountedFile, safeBundlePath } from './app.ts'
 import { trashBundle } from './trash.ts'
@@ -117,12 +118,58 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			throw e
 		}
 		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
-		// Whatever the previous version cached is now dead weight: the hashes this
-		// manifest pins would reject it anyway, so drop it and reclaim the space rather
-		// than wait for a read to notice.
-		await fs.rm(cachePath(root), { recursive: true, force: true }).catch(() => {})
+		// Past the commit point, so it cannot be allowed to fail the install: the new
+		// record and reducer are already live under `root`, and a caller that saw a
+		// rejection here would report a failure while the kernel forgot neither the old
+		// resolver nor emitted the install event. The unconditional wipe this replaced
+		// swallowed its own errors for the same reason; a cache left un-swept is stale
+		// bytes that the next read's hash check rejects anyway.
+		await sweepCache(root, manifest).catch(() => {})
 
 		return appId
+	}
+
+	/**
+	 * Drop what this release cannot use, and keep what it can.
+	 *
+	 * The tempting move is to wipe the cache outright, on the grounds that the
+	 * previous version's bytes are dead weight. They are not. A file that did not
+	 * change between two releases has the same digest, so the new manifest pins it
+	 * to the same hash and `mount()` would have served it straight from here —
+	 * wiping forces a re-download of *every* mounted file on *every* update, which
+	 * for a real app means shipping ~10 MB to fix an 11 KB reducer.
+	 *
+	 * So sweep against the pin set instead, which is what a service worker does on
+	 * activate: an entry goes only if this release does not mount that path, or
+	 * mounts it at a different digest. A local app pins nothing and mounts nothing,
+	 * so for one this empties the cache, which is correct.
+	 */
+	async function sweepCache(root: string, manifest: AppManifest): Promise<void> {
+		const cache = cachePath(root)
+		if (!(await fs.exists(cache))) return
+
+		// Collected first, deleted after: removing entries while walking the tree
+		// that produced them is the kind of thing that works until it does not.
+		const stale: string[] = []
+		const dirs: string[] = []
+		await fs.scan(cache, async (path, stat) => {
+			if (stat.type === FileType.Directory) {
+				dirs.push(path)
+				return
+			}
+			const pinned = manifest.files?.[path.slice(cache.length + 1)]
+			if (!pinned || `sha256-${stat.contentHash ?? ''}` !== pinned) stale.push(path)
+		})
+		for (const path of stale) await fs.rm(path, { force: true }).catch(() => {})
+
+		// Then whatever that emptied, deepest first so a parent is only judged once
+		// its children are gone. An app that restructures would otherwise leave a
+		// skeleton of empty directories behind on every release, for ever.
+		for (const dir of dirs.sort((a, b) => b.length - a.length)) {
+			if ((await fs.readdir(dir)).length === 0) {
+				await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+			}
+		}
 	}
 
 	// The declared entries have to actually exist. The reducer must be STAGED whatever

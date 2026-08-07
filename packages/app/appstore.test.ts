@@ -91,10 +91,34 @@ function bundle(files: Record<string, string>): AppBundle {
 // volume.stat reports each file's sha256 — so reconcile's content comparison
 // sees exactly what was installed. `blobs` is exposed so a test can simulate a
 // lost/un-hydrated file.
-function fakeWorld() {
+function fakeWorld(serve?: (path: string) => Uint8Array) {
 	const blobs = new Map<string, Uint8Array>() // volume path -> bytes
 	const installs: string[] = []
+	const requested: string[] = []
 	const kernel = {
+		// Models the real `mount()`: the cached copy when it matches the digest the
+		// RECORD pins, else the origin, written to the unsynced cache path. The prefetch
+		// runs through this, so a test can count origin hits and then take the origin
+		// away — and bytes an older record left behind are not served for a newer one.
+		app: async (id: string) => {
+			const record = blobs.get(`/applications/${id}/manifest.json`)
+			if (!record) throw new Error(`not installed: ${id}`)
+			const manifest = JSON.parse(new TextDecoder().decode(record)) as AppManifest
+			return {
+				manifest,
+				read: async (path: string) => {
+					const at = `/private/cache/applications/${id}/${path}`
+					const pinned = manifest.files?.[path]
+					const cached = blobs.get(at)
+					if (cached && (!pinned || `sha256-${await sha256Hex(cached)}` === pinned)) return cached
+					requested.push(path)
+					if (!serve) throw new Error(`offline: ${path}`)
+					const bytes = serve(path)
+					blobs.set(at, bytes)
+					return bytes
+				}
+			}
+		},
 		list: async (): Promise<AppManifest[]> => {
 			const ids = new Set<string>()
 			for (const path of blobs.keys()) {
@@ -139,7 +163,7 @@ function fakeWorld() {
 			return bytes
 		}
 	} as unknown as Volume
-	return { kernel, fs, installs, blobs }
+	return { kernel, fs, installs, blobs, requested }
 }
 
 describe('materialise', () => {
@@ -471,5 +495,144 @@ describe('semverGte', () => {
 		expect(semverGte('2.0.0', '1.9.9')).toBe(true)
 		expect(semverGte('1.2', '1.2.0')).toBe(true) // missing segment = 0
 		expect(semverGte('0.0.0', '1.0.0')).toBe(false) // versionless install is oldest
+	})
+})
+
+// ── fast-follow prefetch ─────────────────────────────────────────────────────
+
+// A hosted app with something to mount. `files` on the record is everything but
+// manifest.json and the reducer, so an app without a GUI mounts nothing at all.
+const HOSTED: Record<string, string> = {
+	'manifest.json': JSON.stringify({
+		id: 'app.x',
+		name: 'X',
+		version: '1.0.0',
+		app: 'app.js',
+		gui: 'gui.js'
+	}),
+	'app.js': '// code',
+	'gui.js': '// gui'
+}
+
+describe('prefetch', () => {
+	test('a hosted app reads offline once installed', async () => {
+		const store = await builtinStore(HOSTED)
+		const { kernel, requested } = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		await materialise(kernel, store)
+
+		// Fetched during the install, not on first read: "installed" has to mean the
+		// app works without a network, and the reducer alone is the half you cannot see.
+		expect(requested).toEqual(['gui.js'])
+
+		const offline = fakeWorld() // serves nothing
+		const installed = await kernel.app('app.x')
+		expect(new TextDecoder().decode(await installed.read('gui.js'))).toBe('// gui')
+		expect(requested).toEqual(['gui.js']) // still one — the second read hit the cache
+		expect(offline.requested).toEqual([])
+	})
+
+	test('an unreachable origin leaves the app installed with a cold cache', async () => {
+		const store = await builtinStore(HOSTED)
+		const { kernel, installs, requested } = fakeWorld() // offline from the start
+
+		await materialise(kernel, store)
+
+		// The install stands: the record and the reducer are in the volume, and the
+		// GUI mounts on demand later exactly as it did before.
+		expect(installs).toEqual(['app.x'])
+		expect(requested).toEqual(['gui.js'])
+	})
+
+	test('a local app has nothing to prefetch', async () => {
+		const store = await builtinStore(HOSTED, null)
+		const { kernel, installs, requested } = fakeWorld()
+		await materialise(kernel, store)
+		expect(installs).toEqual(['app.x'])
+		expect(requested).toEqual([])
+	})
+
+	test('a prefetch that cannot even resolve the app does not fail the install', async () => {
+		// The install has committed by the time the prefetch starts, so a transient
+		// failure reading the record back out is not a failed install: the caller would
+		// report one for a working app, and materialise would stop before the built-ins
+		// after it. Only the per-file reads were swallowed before.
+		const { kernel, installs } = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		const app = kernel.app
+		kernel.app = async () => {
+			kernel.app = app // one transient failure, on the prefetch that follows the install
+			throw new Error('storage is having a moment')
+		}
+
+		await expect(materialise(kernel, await builtinStore(HOSTED))).resolves.toBeUndefined()
+		expect(installs).toEqual(['app.x'])
+	})
+})
+
+describe('prefetch on the sync path', () => {
+	test('an app that arrived through sync is warmed by reconcile, once', async () => {
+		const store = await builtinStore(HOSTED)
+		const source = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		await materialise(source.kernel, store)
+
+		// The receiving device. Sync replicates the durable half — the record and the
+		// reducer — and nothing under `/private`, so the cache arrives empty and no
+		// install ever ran here to fill it.
+		const device = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		for (const [path, bytes] of source.blobs) {
+			if (!path.startsWith('/private/')) device.blobs.set(path, bytes)
+		}
+
+		await reconcile(device.kernel, device.fs, store)
+		expect(device.requested).toEqual(['gui.js'])
+		expect(device.installs).toEqual([]) // `decide` said skip; this is not a reinstall
+
+		// And not paid for again on every later pass — the watcher runs reconcile on
+		// each burst of sync traffic, so a warm app has to cost reads of nothing.
+		await reconcile(device.kernel, device.fs, store)
+		expect(device.requested).toEqual(['gui.js'])
+	})
+
+	test('a cache the previous release left behind counts as cold, not warm', async () => {
+		const v1: Record<string, string> = { ...HOSTED, 'gui.js': '// gui v1' }
+		const v2: Record<string, string> = {
+			'manifest.json': JSON.stringify({
+				id: 'app.x',
+				name: 'X',
+				version: '2.0.0',
+				app: 'app.js',
+				gui: 'gui.js'
+			}),
+			'app.js': '// code',
+			'gui.js': '// gui v2'
+		}
+
+		// This device ran v1, so its cache holds v1's bytes at the very path v2 mounts.
+		let serving = v1
+		const device = fakeWorld((path) => enc.encode(serving[path] ?? ''))
+		await materialise(device.kernel, await builtinStore(v1))
+		expect(device.requested).toEqual(['gui.js'])
+		serving = v2
+
+		// Then v2 arrives through sync — the record and the reducer replicate, the cache
+		// does not, and no install runs here to sweep what v1 left.
+		const source = fakeWorld((path) => enc.encode(v2[path] ?? ''))
+		const store = await builtinStore(v2)
+		await materialise(source.kernel, store)
+		for (const [path, bytes] of source.blobs) {
+			if (!path.startsWith('/private/')) device.blobs.set(path, bytes)
+		}
+		device.requested.length = 0
+		device.installs.length = 0 // only count what the reconcile below does
+
+		// Presence alone would call that warm and fetch nothing, leaving a device that
+		// looks stocked and cannot open its own GUI the moment it goes offline.
+		await reconcile(device.kernel, device.fs, store)
+		expect(device.requested).toEqual(['gui.js'])
+		expect(device.installs).toEqual([]) // still a skip, not a reinstall
+
+		const offline = fakeWorld() // serves nothing
+		const installed = await device.kernel.app('app.x')
+		expect(new TextDecoder().decode(await installed.read('gui.js'))).toBe('// gui v2')
+		expect(offline.requested).toEqual([])
 	})
 })
