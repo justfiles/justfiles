@@ -62,6 +62,8 @@ const published = {
 
 test('the index lists what is published, linking to each app origin', async () => {
 	const page = await (await get('https://example.com/', envWith(published))).text()
+	expect(page).toContain('<form method="post" action="/refresh">')
+	expect(page).toContain('<button type="submit">Refresh</button>')
 	expect(page).toContain('href="https://alice-notes.example.com/"')
 	expect(page).toContain('Notes')
 	// version-pinned, and served from the app's own origin

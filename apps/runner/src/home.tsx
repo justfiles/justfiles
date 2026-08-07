@@ -31,7 +31,10 @@ const STYLE = `
 @media (prefers-color-scheme: dark) { :root { --bg: #111114; --fg: #f2f2f4; --muted: #9a9aa6; --card: #1a1a1f; --line: #2a2a31 } }
 body { background: var(--bg); color: var(--fg); font: 16px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 0 auto; max-width: 44rem; padding: 4rem 1.5rem }
 h1 { font-size: 1.5rem; letter-spacing: -0.01em; margin: 0 }
+header { align-items: start; display: flex; gap: 1rem; justify-content: space-between }
 .lede { color: var(--muted); margin: 0.5rem 0 2.5rem }
+button { background: var(--card); border: 1px solid var(--line); border-radius: 0.5rem; color: inherit; cursor: pointer; font: inherit; padding: 0.5rem 0.75rem }
+button:hover { border-color: var(--muted) }
 ul { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); list-style: none; margin: 0; padding: 0 }
 a { align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 0.75rem; color: inherit; display: flex; gap: 0.875rem; padding: 1rem; text-decoration: none }
 a:hover { border-color: var(--muted) }
@@ -54,8 +57,15 @@ route.get('/', async (c) => {
 				<style>{STYLE}</style>
 			</head>
 			<body>
-				<h1>Apps</h1>
-				<p class="lede">Everything hosted on {c.env.ROOT_DOMAIN}, one origin each.</p>
+				<header>
+					<div>
+						<h1>Apps</h1>
+						<p class="lede">Everything hosted on {c.env.ROOT_DOMAIN}, one origin each.</p>
+					</div>
+					<form method="post" action="/refresh">
+						<button type="submit">Refresh</button>
+					</form>
+				</header>
 				{apps.length === 0 ? (
 					<p class="lede">Nothing published yet.</p>
 				) : (
@@ -95,9 +105,14 @@ route.get('/', async (c) => {
 	)
 })
 
+route.post('/refresh', async (c) => {
+	await refresh(c.env)
+	return c.redirect('/', 303)
+})
+
 // Running the reconcile on demand, and seeing what it decided. `import.meta.env.DEV`
 // is a compile-time constant, so `vite build` eliminates this branch outright —
-// production ships no admin route at all, rather than one behind a runtime check.
+// production ships no debug route at all, rather than one behind a runtime check.
 if (import.meta.env.DEV) {
 	route.get('/debug/refresh', async (c) => c.json(await refresh(c.env)))
 }
