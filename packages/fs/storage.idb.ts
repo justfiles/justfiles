@@ -1093,3 +1093,34 @@ export function idbStorage(
 		}
 	}
 }
+
+/**
+ * Ask the browser to keep this origin's storage, and report whether it will.
+ *
+ * Without this, everything a volume holds is "best-effort": the browser may
+ * evict it under storage pressure, and Safari deletes script-written storage
+ * after seven days of browser use with no interaction on the site. Eviction is
+ * ALL-OR-NOTHING per origin — IndexedDB and the Cache API go together — so for
+ * a local-first app whose volume does not sync anywhere, it is silent and total
+ * data loss rather than a cold cache.
+ *
+ * What it is worth differs by browser, and none of it is a guarantee. Firefox
+ * prompts. Chrome and Safari decide silently from engagement, so a first visit
+ * is usually refused and a later one may not be — which is why this asks again
+ * on every call rather than remembering a refusal. Safari's seven-day cap has
+ * no documented exemption other than installing to the home screen, so this
+ * complements a web app manifest rather than replacing one.
+ *
+ * `false` is an answer, not a failure. A host that promises local-first should
+ * treat it as a reason to offer sync or an export, not swallow it.
+ */
+export async function persistStorage(): Promise<boolean> {
+	const storage = globalThis.navigator?.storage
+	if (!storage?.persist) return false
+	try {
+		// Asking again when it has already been granted would re-prompt on Firefox.
+		return (await storage.persisted()) || (await storage.persist())
+	} catch {
+		return false
+	}
+}
