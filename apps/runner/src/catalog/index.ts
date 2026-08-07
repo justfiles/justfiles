@@ -18,7 +18,7 @@ export interface AppMetadata {
 
 /**
  * What we host under an id, or null when we host nothing there — which is every
- * id until an import has run and its first release has been approved.
+ * id until its first import completes.
  *
  * Called once per PAGE load and never per asset: the document it renders emits
  * version-pinned URLs, and those resolve by string construction. Two reads, not
@@ -41,7 +41,7 @@ export async function findApp(env: CloudflareBindings, id: string): Promise<AppM
  *
  * Listed out of the store rather than out of the catalog snapshot, because the
  * store is what is actually reachable: an entry exists from the moment its PR
- * lands and hosts nothing until an import has run and a release is approved.
+ * lands and hosts nothing until its first import completes.
  * This is the same walk `store.json` is specified to do — one `list` of `apps/`
  * and a read per app, no GitHub — and it collapses into a single read of that
  * projection once it exists. See kb/registry.md#storejson.
@@ -53,8 +53,6 @@ export async function listApps(env: CloudflareBindings): Promise<AppMetadata[]> 
 	)
 	return found.filter((app) => app !== null).sort((a, b) => a.name.localeCompare(b.name))
 }
-
-export async function publish() {}
 
 export interface Refresh extends CatalogRefresh {
 	/** Releases resolved this run whose bytes we do not hold yet, by app id. */

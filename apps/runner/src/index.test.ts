@@ -55,8 +55,12 @@ test('the platform keeps every label an id cannot encode to', async () => {
 const published = {
 	'apps/alice.notes/info.json': { current: '1.2.0' },
 	'apps/alice.notes/1.2.0/spec.json': { name: 'Notes', icon: 'icon.png' },
-	// imported but never approved: bytes in the store, no `current` to serve
-	'apps/bob.draft/info.json': { current: null },
+	// Imported by the old approval-gated runner: ready bytes, but no live pointer.
+	'apps/bob.draft/info.json': {
+		approved: false,
+		current: null,
+		releases: { '0.1.0': { version: '0.1.0', state: 'ready' } }
+	},
 	'apps/bob.draft/0.1.0/spec.json': { name: 'Draft' }
 }
 
@@ -68,7 +72,7 @@ test('the index lists what is published, linking to each app origin', async () =
 	expect(page).toContain('Notes')
 	// version-pinned, and served from the app's own origin
 	expect(page).toContain('src="https://alice-notes.example.com/v/1.2.0/icon.png"')
-	expect(page).not.toContain('Draft')
+	expect(page).toContain('Draft')
 })
 
 test('the index links to *.localhost in local dev', async () => {

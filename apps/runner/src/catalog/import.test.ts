@@ -177,7 +177,6 @@ const RESOLVED: Resolved = {
 const INFO: Info = {
 	repoNodeId: 'R_1',
 	defaultBranch: 'main',
-	approved: true,
 	current: null,
 	etags: {},
 	checkedAt: 0,
@@ -241,7 +240,7 @@ describe('zip', () => {
 })
 
 describe('importRelease', () => {
-	it('extracts a bundle, writes the spec, and publishes when approved', async () => {
+	it('extracts a bundle, writes the spec, and publishes it', async () => {
 		const env = await run(bundle())
 		const keys = [...env.objects.keys()].sort()
 
@@ -264,12 +263,6 @@ describe('importRelease', () => {
 		expect(info.current).toBe('1.0.0')
 		expect(info.releases['1.0.0']?.state).toBe('ready')
 		expect(info.error).toBeNull()
-	})
-
-	it('stages without publishing until a human approves', async () => {
-		const info = infoOf(await run(bundle(), { approved: false }))
-		expect(info.releases['1.0.0']?.state).toBe('ready')
-		expect(info.current).toBeNull()
 	})
 
 	it('serves the id we were asked for, not the one the manifest claims', async () => {

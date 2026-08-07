@@ -60,9 +60,7 @@ export interface Info {
 	repoNodeId: string
 	/** Where rung 4 looks; learned from the same response as `repoNodeId`. */
 	defaultBranch: string
-	/** First publication is explicit. */
-	approved: boolean
-	/** THE pointer — writing it is publishing. Null until approved. */
+	/** THE pointer — writing it is publishing. Null until the first import completes. */
 	current: string | null
 	/** Poll state. Advanced only by a run that left nothing undone; see below. */
 	etags: Partial<Record<Probe, string>>
@@ -121,7 +119,6 @@ export async function refreshApp(
 		writeInfo(env, id, {
 			repoNodeId: meta?.node_id ?? before?.repoNodeId ?? '',
 			defaultBranch: meta?.default_branch ?? before?.defaultBranch ?? '',
-			approved: before?.approved ?? false,
 			current: before?.current ?? null,
 			etags,
 			checkedAt: Math.floor(Date.now() / 1000),
@@ -298,7 +295,15 @@ async function commitOf(env: CloudflareBindings, repo: string, ref: string): Pro
 export async function readInfo(env: CloudflareBindings, id: string): Promise<Info | null> {
 	const obj = await env.STORE.get(infoKey(id))
 	if (!obj) return null
-	return await obj.json<Info>()
+
+	const info = await obj.json<Info & { approved?: boolean }>()
+	delete info.approved
+	if (info.current) return info
+
+	const latest = Object.values(info.releases)
+		.filter((release) => release.state === 'ready')
+		.sort((a, b) => b.at - a.at)[0]
+	return latest ? { ...info, current: latest.version } : info
 }
 
 /**

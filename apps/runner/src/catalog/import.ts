@@ -137,9 +137,8 @@ export async function importRelease(
 			...info,
 			error: null,
 			releases: { ...info?.releases, [resolved.version]: release },
-			// Publishing. The first one is explicit, so an unapproved app stages and
-			// waits; once approved every release goes live as it lands.
-			current: info?.approved ? resolved.version : (info?.current ?? null)
+			// The catalog PR is the approval; every imported release goes live as it lands.
+			current: resolved.version
 		})
 	} catch (err) {
 		const error = err instanceof Error ? err.message : String(err)
@@ -255,7 +254,6 @@ const sha256 = async (bytes: Uint8Array) =>
 const blank = (): Info => ({
 	repoNodeId: '',
 	defaultBranch: '',
-	approved: false,
 	current: null,
 	etags: {},
 	checkedAt: 0,
