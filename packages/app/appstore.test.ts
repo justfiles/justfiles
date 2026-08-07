@@ -91,10 +91,31 @@ function bundle(files: Record<string, string>): AppBundle {
 // volume.stat reports each file's sha256 — so reconcile's content comparison
 // sees exactly what was installed. `blobs` is exposed so a test can simulate a
 // lost/un-hydrated file.
-function fakeWorld() {
+function fakeWorld(serve?: (path: string) => Uint8Array) {
 	const blobs = new Map<string, Uint8Array>() // volume path -> bytes
 	const installs: string[] = []
+	const requested: string[] = []
 	const kernel = {
+		// Models the real `mount()`: a cached copy if there is one, else the origin,
+		// written to the unsynced cache path. The prefetch runs through this, so a
+		// test can count origin hits and then take the origin away.
+		app: async (id: string) => {
+			const record = blobs.get(`/applications/${id}/manifest.json`)
+			if (!record) throw new Error(`not installed: ${id}`)
+			return {
+				manifest: JSON.parse(new TextDecoder().decode(record)) as AppManifest,
+				read: async (path: string) => {
+					const at = `/private/cache/applications/${id}/${path}`
+					const cached = blobs.get(at)
+					if (cached) return cached
+					requested.push(path)
+					if (!serve) throw new Error(`offline: ${path}`)
+					const bytes = serve(path)
+					blobs.set(at, bytes)
+					return bytes
+				}
+			}
+		},
 		list: async (): Promise<AppManifest[]> => {
 			const ids = new Set<string>()
 			for (const path of blobs.keys()) {
@@ -139,7 +160,7 @@ function fakeWorld() {
 			return bytes
 		}
 	} as unknown as Volume
-	return { kernel, fs, installs, blobs }
+	return { kernel, fs, installs, blobs, requested }
 }
 
 describe('materialise', () => {
@@ -471,5 +492,59 @@ describe('semverGte', () => {
 		expect(semverGte('2.0.0', '1.9.9')).toBe(true)
 		expect(semverGte('1.2', '1.2.0')).toBe(true) // missing segment = 0
 		expect(semverGte('0.0.0', '1.0.0')).toBe(false) // versionless install is oldest
+	})
+})
+
+// ── fast-follow prefetch ─────────────────────────────────────────────────────
+
+// A hosted app with something to mount. `files` on the record is everything but
+// manifest.json and the reducer, so an app without a GUI mounts nothing at all.
+const HOSTED: Record<string, string> = {
+	'manifest.json': JSON.stringify({
+		id: 'app.x',
+		name: 'X',
+		version: '1.0.0',
+		app: 'app.js',
+		gui: 'gui.js'
+	}),
+	'app.js': '// code',
+	'gui.js': '// gui'
+}
+
+describe('prefetch', () => {
+	test('a hosted app reads offline once installed', async () => {
+		const store = await builtinStore(HOSTED)
+		const { kernel, requested } = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		await materialise(kernel, store)
+
+		// Fetched during the install, not on first read: "installed" has to mean the
+		// app works without a network, and the reducer alone is the half you cannot see.
+		expect(requested).toEqual(['gui.js'])
+
+		const offline = fakeWorld() // serves nothing
+		const installed = await kernel.app('app.x')
+		expect(new TextDecoder().decode(await installed.read('gui.js'))).toBe('// gui')
+		expect(requested).toEqual(['gui.js']) // still one — the second read hit the cache
+		expect(offline.requested).toEqual([])
+	})
+
+	test('an unreachable origin leaves the app installed with a cold cache', async () => {
+		const store = await builtinStore(HOSTED)
+		const { kernel, installs, requested } = fakeWorld() // offline from the start
+
+		await materialise(kernel, store)
+
+		// The install stands: the record and the reducer are in the volume, and the
+		// GUI mounts on demand later exactly as it did before.
+		expect(installs).toEqual(['app.x'])
+		expect(requested).toEqual(['gui.js'])
+	})
+
+	test('a local app has nothing to prefetch', async () => {
+		const store = await builtinStore(HOSTED, null)
+		const { kernel, installs, requested } = fakeWorld()
+		await materialise(kernel, store)
+		expect(installs).toEqual(['app.x'])
+		expect(requested).toEqual([])
 	})
 })

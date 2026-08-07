@@ -186,6 +186,37 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 		throw new Error(`catalog app missing its reducer: ${app.id}/${reducer}`)
 	}
 	await kernel.install(bundleFromFiles(spec, files))
+	if (app.baseUrl) await prefetchApp(kernel, app.id)
+}
+
+/**
+ * Warm the cache with everything a hosted app mounts, so it runs offline.
+ *
+ * Fast-follow, not part of the install: the record and the reducer are already
+ * in the volume when this starts, so an interrupted prefetch leaves a working
+ * app with a cold cache rather than a half-installed one — which is why a
+ * failure here is swallowed. The files still mount on demand, exactly as before.
+ *
+ * Without it "installed" means only that the app can run WITH a network. The
+ * reducer is in the volume but the GUI is not, so a device that installs an app
+ * and goes offline has everything except the half it can see.
+ *
+ * It reads through `mount()` — fetch, verify against the pin, cache — rather
+ * than fetching in parallel, so it fills exactly the entries a later read looks
+ * for instead of a second copy that might not match.
+ */
+export async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
+	const installed = await kernel.app(appId)
+	const queue = Object.keys(installed.manifest.files ?? {})
+	const readOne = async (): Promise<void> => {
+		// Swallowed per file, and only per file: being offline, or reaching an origin
+		// that is not serving this release yet, leaves a cold cache rather than a
+		// broken app — the file mounts on demand later exactly as it did before. A
+		// failure to resolve the app at all is a bug and stays loud.
+		for (let path = queue.pop(); path; path = queue.pop())
+			await installed.read(path).catch(() => {})
+	}
+	await Promise.all(Array.from({ length: Math.min(INSTALL_CONCURRENCY, queue.length) }, readOne))
 }
 
 // The app's own declared metadata — entry paths, capabilities, description — read from
