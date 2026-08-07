@@ -16,6 +16,24 @@
 	"vars": {
 		"ROOT_DOMAIN": "justapps.run"
 	},
+	// Everything we host: the catalog snapshot, per-app state, and every release's
+	// bytes. See kb/registry.md for the key layout.
+	"r2_buckets": [
+		{
+			"binding": "STORE",
+			"bucket_name": "runner-store"
+		}
+	],
+	// Reading a public repo still needs a token: unauthenticated GitHub is 60
+	// requests/hour *per IP*, and a Worker's egress IP is shared.
+	"secrets": {
+		"required": ["GITHUB_TOKEN"]
+	},
+	// Hourly, and deliberately not more often: a cron on an interval of an hour
+	// or more gets 15 minutes of CPU, where a sub-hourly one gets 30 seconds.
+	"triggers": {
+		"crons": ["0 * * * *"]
+	},
 	// Custom Domains cannot be wildcards, so subdomains need a route + a proxied
 	// wildcard DNS record (`*` AAAA `100::`, proxied) on the zone.
 	"routes": [
@@ -31,11 +49,22 @@
 	// `wrangler dev -e dev`: with no routes the local server keeps the request's
 	// Host header, so `http://app1.localhost:8787` reaches the Worker as app1.
 	// (With routes configured, wrangler rewrites every request to the zone apex.)
+	// Bindings are not inherited by a named environment, so anything above that
+	// `dev` also needs has to be repeated here.
 	"env": {
 		"dev": {
 			"routes": [],
 			"vars": {
 				"ROOT_DOMAIN": "justapps.run"
+			},
+			"r2_buckets": [
+				{
+					"binding": "STORE",
+					"bucket_name": "runner-store"
+				}
+			],
+			"secrets": {
+				"required": ["GITHUB_TOKEN"]
 			}
 		}
 	}

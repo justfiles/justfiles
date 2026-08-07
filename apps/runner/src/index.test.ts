@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest'
 import worker from './index.ts'
 
-const env = { ROOT_DOMAIN: 'example.com' } as CloudflareBindings
+// Only the var the host split reads; the store and token bindings never load.
+const env = { ROOT_DOMAIN: 'example.com' } as unknown as CloudflareBindings
 
 const get = (url: string) => worker.fetch(new Request(url), env, {} as ExecutionContext)
 
