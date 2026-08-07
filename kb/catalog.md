@@ -31,7 +31,7 @@ Public next
 
 Private for now
 └── the monorepo
-    ├── apps/runner
+    ├── the runner — the host that serves apps
     └── runner dependencies
 
 Public later
@@ -40,7 +40,7 @@ Public later
 └── reusable runtime packages  # extracted only when their boundaries are clear
 ```
 
-GitHub visibility is repository-wide, so `apps/runner` cannot be made public while the rest
+GitHub visibility is repository-wide, so the runner cannot be made public while the rest
 of this monorepo remains private. A dedicated catalog repository gives the community a useful
 public surface now without forcing a premature runner extraction or speculative package
 interfaces.
@@ -81,6 +81,8 @@ operations team behind them. Each contributed one specific mechanism.
 | `sha256` pinned per artifact in the index | [Krew](https://krew.sigs.k8s.io/docs/developer-guide/plugin-manifest/) |
 | Contributor-runnable validation script | [Espanso](https://github.com/espanso/hub) |
 | Central snapshot and rehost rather than upstream proxying | [MELPA](https://github.com/melpa/melpa), [Flathub](https://docs.flathub.org/docs/for-app-authors/submission) |
+| Publisher-scoped ids instead of a flat namespace | [VS Code](https://code.visualstudio.com/api/references/extension-manifest), [npm scopes](https://docs.npmjs.com/about-scopes) |
+| Inlining a dotted id into a single DNS label | [IPFS DNSLink](https://specs.ipfs.tech/http-gateways/subdomain-gateway/) |
 
 Deliberately **not** copied:
 
@@ -96,12 +98,12 @@ Deliberately **not** copied:
 The common direction is to use Git as the transparent control plane. Projects that promise
 stable installation or asset URLs generally snapshot artifacts into infrastructure they
 control. JustApps needs that second property because it promises URLs such as
-`https://app1.justapps.run/gui.js`.
+`https://justfiles-draw.justapps.run/gui.js`.
 
 ## Public catalog shape
 
-Keep the repository small, and use one flat file per app. Flat, because the reverse-DNS ID is
-already the hierarchy: entries sort by namespace for free, and `apps/io.github.alice.*` is the
+Keep the repository small, and use one flat file per app. Flat, because the ID is
+already the hierarchy: entries sort by publisher for free, and `apps/alice.*` is the
 "everything by this author" query. Nesting by owner re-encodes information the name already
 carries, and splits the ID across path segments that then have to be checked for agreement.
 
@@ -115,8 +117,8 @@ justfiles/app-catalog
 ├── LICENSE-DATA                       # catalog entries — CC0 1.0
 ├── .node-version                      # 24; the validator needs built-in type stripping
 ├── apps/
-│   ├── io.github.alice.calendar.json
-│   └── io.github.xiaoxing.notes.json
+│   ├── alice.calendar.json
+│   └── xiaoxing.notes.json
 ├── schema/
 │   └── app.schema.json
 ├── .vscode/
@@ -139,9 +141,11 @@ the `node:` imports.
 
 **The filename is the ID.** MELPA's recipes work this way, and two checks disappear with it:
 there is no ID field that can disagree with the filename, and the filesystem itself enforces
-uniqueness, so two entries cannot claim the same ID. What remains is the pointer:
+uniqueness, so two entries cannot claim the same ID. Because the ID also determines the app's
+hostname, that same constraint enforces hostname uniqueness — see
+[The ID is the hostname](#the-id-is-the-hostname). What remains is the pointer:
 
-`apps/io.github.alice.calendar.json`
+`apps/alice.calendar.json`
 
 ```json
 {
@@ -188,7 +192,7 @@ need to carry.
 
 ### CODEOWNERS is not an ownership mechanism
 
-It is tempting to nest entries per author so that `apps/io.github.alice/ @alice` can gate
+It is tempting to nest entries per author so that `apps/alice/ @alice` can gate
 review. This does not work: **CODEOWNERS entries only take effect for users with write access
 to the repository**, which third-party authors will not have, so such entries are silently
 inert. It would also grow the file by one line per author forever.
@@ -202,7 +206,7 @@ maintainer's own account.
 Flat directories are fine well past the point this matters: MELPA holds thousands of recipes,
 and Homebrew only sharded `Formula/` at around seven thousand files. The limit that arrives
 first is GitHub's web UI truncating directory listings near a thousand entries, and the fix is
-a mechanical `git mv` into `apps/io.github.a/…` at that point. Do not pay for it now.
+a mechanical `git mv` into `apps/a/…` at that point. Do not pay for it now.
 
 The one change that would force a real restructure is per-app assets — icons or screenshots
 would each need their own directory. That is an explicit non-goal, and it remains a mechanical
@@ -210,8 +214,8 @@ migration if it ever changes.
 
 ## Ownership without a dispute process
 
-Reverse-DNS app IDs make name disputes structurally impossible, which is the single largest
-saving available to a solo maintainer.
+Publisher-scoped app IDs make name disputes structurally impossible, which is the single
+largest saving available to a solo maintainer.
 
 PyPI's [PEP 541](https://www.python.org/dev/peps/pep-0541/) defines abandonment as unreachable
 owner, no release in twelve months, and no owner activity; they processed over 500 requests in
@@ -219,22 +223,50 @@ owner, no release in twelve months, and no owner activity; they processed over 5
 mis-transfer and now [declines to move names on request](https://docs.npmjs.com/policies/disputes/).
 That entire apparatus exists only because those namespaces are flat.
 
-An ID must be reverse-DNS, and its namespace must be one the submitter can prove.
+An ID is `<publisher>.<app>`, and the publisher must be a namespace the submitter can prove.
+App names are scoped by publisher, so two authors can both ship `draw` and neither has anything
+to fight over.
 
-**Launch with one mechanism: `io.github.<user>.<app>`.** It is proven by a string comparison
-against data already in the entry, because it points at `github.com/<user>/…`. No DNS, no HTTP,
-no new failure modes, nothing that can flake. It costs the author nothing and the maintainer
-nothing, and it is what `packages/create-app` should generate by default.
+**Launch with one mechanism: `<github-login>.<app>`** — `justfiles.draw`. It is proven by a
+string comparison against data already in the entry, because the entry points at
+`github.com/<login>/…`. No DNS, no HTTP, no new failure modes, nothing that can flake. It costs
+the author nothing and the maintainer nothing, and it is what `packages/create-app` should
+generate by default.
 
 With this there is no name to squat, so there is no transfer policy, no abandonment policy and
-no dispute queue to staff. Reserved first-party prefixes stay reserved so a retired first-party
-ID cannot be claimed.
+no dispute queue to staff. Reserved first-party publishers stay reserved so a retired
+first-party ID cannot be claimed.
+
+### Two ID shapes, told apart by segment count
+
+A domain-proved namespace keeps the reverse-DNS form, and one rule separates the two without
+any lookahead:
+
+| Segments | Shape | Publisher | Example |
+| --- | --- | --- | --- |
+| 2 | `<github-login>.<app>` | a GitHub user or org | `justfiles.draw` |
+| 3+ | `<reversed-domain>.<app>` | a domain | `com.alice.draw` → `alice.com` |
+
+**The app is always the last segment**, and app names never contain dots. That is what makes
+the split total: `com.alice.draw` cannot be GitHub user `com` shipping an app called
+`alice.draw`, because no such app name exists. It also settles what used to need
+longest-first split attempts — `com.alice.tools.notes` is unambiguously `tools.alice.com` plus
+`notes`, and nothing has to guess where the domain ends.
+
+**Why not `io.github.<user>.<app>` throughout.** Full reverse-DNS is dispute-free precisely
+because the name *is* the proof path, which is also why it grows with every proof mechanism
+added. A hosted app needs its whole ID to fit in one DNS label, and no short label can be
+derived from a four-segment ID. Dropping the ceremonial `io.github.` prefix keeps the ID at
+two tokens for the overwhelmingly common case while leaving the reverse-DNS form available for
+the case that actually needs it. This is VS Code's `<publisher>.<extension>` and npm's scopes,
+which are the two most widely deployed versions of the same trade.
 
 ### Custom domains, deferred to Phase 3
 
 `com.<domain>.<app>` is worth supporting eventually, but it is not earned at launch. Every
-author without a domain is served by `io.github.*`, and because renames are supported, starting
-there costs nothing later. Add it when a real accepted app needs it.
+author without a domain is served by `<github-login>.*`, and because renames are supported,
+starting there costs nothing later. Add it when a real accepted app needs it. Until then the
+validator rejects three-or-more-segment IDs outright rather than accepting an unprovable one.
 
 When it is added, use a DNS `TXT` record — `_justapps.<domain>` naming the GitHub account
 entitled to the namespace — rather than `/.well-known/justapps.txt`. The HTTPS variant looks
@@ -252,19 +284,70 @@ Three edges to plan for rather than discover:
 - **Negative caching will bite authors.** A lookup made before the record exists can cache the
   `NXDOMAIN` for the zone's negative TTL, often five to sixty minutes. The instruction must be
   *add the record first, then open the pull request*, and a re-run control is mandatory.
-- **Reverse-DNS is ambiguous about where the domain ends.** `com.alice.tools.notes` could be
-  `alice.com` plus app `tools.notes`, or `tools.alice.com` plus app `notes`. Try splits
-  longest-first, accept the first that proves, and record which domain proved so it is pinned
-  for later entries. Resolve against the Public Suffix List so a platform domain such as
-  `github.io` is never treated as claimable.
+- **Resolve the domain against the Public Suffix List** so a platform domain such as
+  `github.io` is never treated as claimable. The app being the last segment already fixes where
+  the domain *ends*; the PSL is what stops it starting too early.
+
+Note that the ambiguity this used to carry is gone. `com.alice.tools.notes` needed
+longest-first split attempts, a pinned record of which domain proved, and a rule for what to do
+when two of them could — all of which the last-segment rule deletes.
 
 This is also the only place CI performs network I/O against a host the contributor chooses,
 which is a further reason to prefer a DNS lookup over fetching an arbitrary URL, and to keep the
 workflow credential-free.
 
+## The ID is the hostname
+
+A hosted app gets its own origin, and a wildcard certificate matches exactly one label. So the
+dotted ID is inlined into a single DNS label:
+
+```text
+justfiles.draw   →   justfiles-draw.justapps.run
+com.alice.draw   →   com-alice-draw.justapps.run
+```
+
+Use [IPFS's DNSLink encoding](https://specs.ipfs.tech/http-gateways/subdomain-gateway/), which
+exists for exactly this reason — a dotted name that must become one label to get a unique
+origin under a wildcard certificate:
+
+```text
+encode:   every  -  →  --      then    every  .  →  -
+decode:   every standalone -  →  .     then  every  --  →  -
+```
+
+Escaping the hyphen rather than the dot is the whole trick. The common case comes out clean —
+`justfiles.draw` is `justfiles-draw`, not `justfiles--draw` — and it stays injective for the
+names that do carry hyphens, which GitHub logins (`nib-health.draw` → `nib--health-draw`) and
+punycoded IDN domains (`xn--…`) both do. Encoding the dot instead would be shorter to describe
+and would collide on the first IDN domain that arrived.
+
+Injectivity holds because no segment starts or ends with a hyphen, so `-.` and `.-` never occur
+— without that, `a-.b` and `a.-b` would both want `a---b`. The decoder must therefore reject
+non-canonical labels rather than resolve them: two labels reaching one app would be two origins
+over a single store. Re-encoding is the check, which rejects every ambiguous form without
+enumerating them, and it is a dozen lines in each direction.
+
+Three consequences worth stating:
+
+- **There is no slug registry.** The label is a pure function of the ID, so hosting introduces
+  no second namespace, no allocation chokepoint, no separate tombstone ledger, and no land
+  grab. This replaces the first-come-first-served slug the
+  [hosted-apps plan](./hosted-apps.md) originally called for.
+- **The platform owns the entire hyphen-free label space, permanently.** Every ID has at least
+  two segments, so every app label contains at least one hyphen; `www`, `api`, `store` and
+  `abuse` can never be produced by an app. No denylist to maintain. The only care needed is not
+  to give the platform a *hyphenated* hostname later — `beta-preview` would collide with
+  publisher `beta`, app `preview`.
+- **The 63-character DNS label limit binds the ID.** Validate the encoded label, not the ID, and
+  do it at submission time — otherwise a merged entry only fails when someone tries to reach it.
+
+Because the label is derived rather than allocated, a rename moves the origin, and the origin is
+storage identity for every anonymous visitor. That is the real cost of the derivation and it is
+what the next section is about.
+
 ## Renaming an app
 
-Renaming is a designed-in path, not a concession. It is what makes `io.github.*` safe to
+Renaming is a designed-in path, not a concession. It is what makes `<github-login>.*` safe to
 recommend as the default: an author starts with zero setup and moves to a branded namespace
 later, the same shape as the rung-4 to rung-3 graduation below. MELPA has run this for a decade
 as `:old-names`.
@@ -274,21 +357,23 @@ deletion:
 
 ```json
 // apps/com.aliceapps.notes.json
-{ "repo": "alice/notes", "formerIds": ["io.github.alice.notes"] }
+{ "repo": "alice/notes", "formerIds": ["alice.notes"] }
 ```
 
 ```json
-// apps/io.github.alice.notes.json
+// apps/alice.notes.json
 { "status": "renamed", "to": "com.aliceapps.notes" }
 ```
 
 One pull request, two files. The bot verifies the two-way link — every `formerIds` entry has a
 tombstone pointing back, every tombstone is claimed — which is purely mechanical.
 
-**The tombstone is not optional.** Deleting the old file makes `io.github.alice.notes`
-claimable, and it is an ID that installed devices already trust. Squatting an abandoned ID is
-bad; squatting one with an existing install base is the worst outcome in the system. The
-filesystem-as-uniqueness-constraint only holds while the file stays.
+**The tombstone is not optional.** Deleting the old file makes `alice.notes` claimable, and it
+is an ID that installed devices already trust. Squatting an abandoned ID is bad; squatting one
+with an existing install base is the worst outcome in the system. The
+filesystem-as-uniqueness-constraint only holds while the file stays. It also keeps the old
+*hostname* unclaimable, which matters more: `alice-notes.justapps.run` holds anonymous visitors'
+IndexedDB, and handing it to a new publisher would hand over their data.
 
 ### The work is on the device, not in the catalog
 
@@ -300,6 +385,20 @@ So the compiled catalog carries an alias map, and reconcile gains one branch: if
 appears as a `formerId`, rewrite the local record to the new ID and keep everything else. That
 slots into the reconcile pass that already runs, so it is a small addition — but it mutates
 device state, and a botched rename orphans user data. This is the part to get right.
+
+### A rename is not free for a hosted app
+
+On an installed device the alias map carries everything across. On the web it cannot: the ID
+determines the hostname, the hostname is the browser's storage key, and no server-side mapping
+reaches an anonymous visitor's IndexedDB. A rename therefore strands the hosted app's local
+data behind an origin nobody will visit again.
+
+That is a real limit on the "start on `<github-login>.*`, graduate to a domain later" story,
+and it is the one place the ID shape and the hosted-app model actively conflict. The mitigations
+are ordinary and none of them is free: rename before anyone is using the hosted app, keep a
+redirect from the old origin and accept that data does not follow it, or provide export/import
+across the two origins. Whichever is chosen has to be decided before hosted publishing opens,
+because after that every rename is a data-loss event.
 
 ### Rules
 
@@ -316,10 +415,12 @@ device state, and a botched rename orphans user data. This is the part to get ri
   names the new ID while older releases name the old one. The catalog filename wins; the
   mismatch is reported. This matches the tag-normalisation stance below.
 
-Opaque permanent IDs — a serial assigned at admission, with reverse-DNS as display only — would
-make renames free, and are not worth it: IDs stop being human-readable, `create-app` can no
+Opaque permanent IDs — a serial assigned at admission, with the readable name as display only —
+would make renames free, and are not worth it: IDs stop being human-readable, `create-app` can no
 longer generate one offline, and the readable name becomes a separate mutable thing that people
-*can* fight over, giving back the dispute-process saving that motivated reverse-DNS.
+*can* fight over, giving back the dispute-process saving that motivated publisher scoping. It
+would also put the hostname back into a registry, since an opaque serial is not a hostname
+anyone would type.
 
 ## Release resolution
 
@@ -427,7 +528,7 @@ The bot does everything mechanical before a human looks, so review is a judgemen
 than an inspection:
 
 ```text
-✓ id io.github.alice.calendar — namespace proven (repo owner)
+✓ id alice.calendar — namespace proven (repo owner) → alice-calendar.justapps.run
 ✓ repo public, MIT licensed
 ✓ resolved via rung 2 — repo tree at tag v1.2.0 (a3f9c21)
 ✓ manifest.json at /  →  app.js present
@@ -504,9 +605,10 @@ releases/{appId}/{releaseId}/files/images/logo.png
 releases/{appId}/{releaseId}/manifest.json
 ```
 
-A request for `https://app1.justapps.run/gui.js` resolves the hostname to the app, looks up its
-active release, and reads `releases/app1/{activeReleaseId}/files/gui.js`. Never overwrite mutable
-`app1/current/*` objects one at a time: a failed upload would expose files from two releases.
+A request for `https://justfiles-draw.justapps.run/gui.js` decodes the hostname to the app id,
+looks up its active release, and reads `releases/justfiles.draw/{activeReleaseId}/files/gui.js`.
+Never overwrite mutable `{appId}/current/*` objects one at a time: a failed upload would expose
+files from two releases.
 
 Do not serve or reverse-proxy GitHub files at request time. JustApps needs its own snapshot for
 availability, correct content metadata, atomic releases, rollback, takedowns and proof of the
@@ -629,7 +731,7 @@ vulnerabilities and production logs outside the public repository.
 **A freed GitHub username breaks namespace proof after the fact.** Ownership is proven against a
 login, but a login is not permanent: rename or delete the account and someone else can register
 it, at which point the `owner/name` already in an entry resolves to a stranger's repository. This
-is the one way the reverse-DNS scheme can be turned back into a squatting problem, and it cannot
+is the one way publisher scoping can be turned back into a squatting problem, and it cannot
 be caught by re-running the string comparison, which still passes. The importer must record each
 repository's immutable numeric ID alongside the entry and treat a change as a hard stop requiring
 review.
@@ -670,11 +772,11 @@ private even when all implementation code is open source.
 
 ### Phase 1 — Public contract — **done**
 
-- ✅ `justfiles/app-catalog` is public, with `io.github.justfiles.draw` as its first entry.
+- ✅ `justfiles/app-catalog` is public, with `justfiles.draw` as its first entry.
 - ✅ Licences chosen: MIT for the repository's code, CC0 1.0 for the catalog entries. The list of
   which apps exist should be reusable by anyone, including a competing client.
-- ✅ Entry schema, contribution rules, and `io.github.*` namespace proof — the only proof
-  mechanism at launch.
+- ✅ Entry schema, contribution rules, and `<github-login>.<app>` namespace proof — the only
+  proof mechanism at launch.
 - ✅ `validate.ts` and the pull-request workflow, both credential-free and dependency-free.
 - ✅ Marked experimental, with submissions closed until Phase 2 can ingest what gets merged.
 - ⬜ Publish `justfiles/release` and wire it into `packages/create-app`. Until then `app-draw`
@@ -716,6 +818,13 @@ private even when all implementation code is open source.
 4. **Licences: MIT for repository code, CC0 1.0 for catalog entries.** An app's own repository
    must carry a licence permitting redistribution, and the validator enforces that a licence
    exists.
+5. **IDs are `<publisher>.<app>`, not full reverse-DNS.** Two segments mean a GitHub login,
+   three or more a reversed domain, and the app is always the last segment. Taken after Phase 1
+   shipped, so `io.github.justfiles.draw` was renamed to `justfiles.draw`; no tombstone, because
+   the old shape is structurally unclaimable and nothing had installed from the catalog.
+6. **The hostname is derived from the ID by DNSLink inlining, not allocated.** This replaces the
+   first-come-first-served slug registry the [hosted-apps plan](./hosted-apps.md) called for,
+   and it is why the ID shape had to shrink in the first place.
 
 ## Open decisions
 
@@ -726,5 +835,7 @@ private even when all implementation code is open source.
 2. Initial cache and rollback policy for stable asset URLs.
 3. Whether to adopt an Obsidian-style `versions.json` mapping app version to minimum runtime
    version, so older clients resolve an older compatible release instead of a broken one.
-4. When submissions open, and whether that waits on the PR bot of Phase 3 or only on the
+4. What a rename does to a hosted app's anonymous local data, given that the origin moves with
+   the ID. Needed before hosted publishing opens, not before the catalog does.
+5. When submissions open, and whether that waits on the PR bot of Phase 3 or only on the
    importer of Phase 2.
