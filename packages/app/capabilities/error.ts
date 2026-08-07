@@ -20,14 +20,19 @@ export interface WireError {
 	method?: string
 }
 
+// Plain fields rather than parameter properties: this module is imported as
+// source by packages that compile with `erasableSyntaxOnly`.
 export class CapabilityError extends Error {
-	constructor(
-		readonly code: CapabilityCode,
-		readonly capability?: string,
-		readonly method?: string
-	) {
+	readonly code: CapabilityCode
+	readonly capability?: string
+	readonly method?: string
+
+	constructor(code: CapabilityCode, capability?: string, method?: string) {
 		super(code)
 		this.name = 'CapabilityError'
+		this.code = code
+		this.capability = capability
+		this.method = method
 	}
 }
 
