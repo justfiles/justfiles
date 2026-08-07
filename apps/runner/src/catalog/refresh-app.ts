@@ -118,22 +118,18 @@ export async function refreshApp(
 	}
 
 	const save = (etags: Info['etags'], error: string | null) =>
-		env.STORE.put(
-			infoKey(id),
-			JSON.stringify({
-				repoNodeId: meta?.node_id ?? before?.repoNodeId ?? '',
-				defaultBranch: meta?.default_branch ?? before?.defaultBranch ?? '',
-				approved: before?.approved ?? false,
-				current: before?.current ?? null,
-				etags,
-				checkedAt: Math.floor(Date.now() / 1000),
-				error,
-				// Carried through untouched. Recording a release is the import's write,
-				// and it has to come after `spec.json` — see kb/registry.md#import.
-				releases: before?.releases ?? {}
-			} satisfies Info),
-			{ httpMetadata: { contentType: 'application/json' } }
-		)
+		writeInfo(env, id, {
+			repoNodeId: meta?.node_id ?? before?.repoNodeId ?? '',
+			defaultBranch: meta?.default_branch ?? before?.defaultBranch ?? '',
+			approved: before?.approved ?? false,
+			current: before?.current ?? null,
+			etags,
+			checkedAt: Math.floor(Date.now() / 1000),
+			error,
+			// Carried through untouched. Recording a release is the import's write,
+			// and it has to come after `spec.json` — see kb/registry.md#import.
+			releases: before?.releases ?? {}
+		})
 
 	try {
 		if (!entry.repo) throw new Error('entry has no repo')
@@ -304,3 +300,13 @@ export async function readInfo(env: CloudflareBindings, id: string): Promise<Inf
 	if (!obj) return null
 	return await obj.json<Info>()
 }
+
+/**
+ * Two writers, by design: this function writes `etags`, and the import writes
+ * `releases` and `current`. Both read-modify-write the whole document, and both
+ * run once per app per run, in that order.
+ */
+export const writeInfo = (env: CloudflareBindings, id: string, info: Info) =>
+	env.STORE.put(infoKey(id), JSON.stringify(info), {
+		httpMetadata: { contentType: 'application/json' }
+	})

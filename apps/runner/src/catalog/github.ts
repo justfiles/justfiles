@@ -26,6 +26,20 @@ export const api = (env: CloudflareBindings, path: string, etag?: string | null)
 	})
 
 /**
+ * An archive download — a release asset, or the repository as a zipball.
+ *
+ * Both redirect to a storage host that rejects a second credential, so the
+ * Authorization header must not survive the hop. `fetch` strips it across
+ * origins per the Fetch standard, which is why the redirect is left to it rather
+ * than followed by hand.
+ */
+export const archive = (env: CloudflareBindings, path: string, signal: AbortSignal) =>
+	fetch(`${API}${path}`, {
+		headers: { accept: 'application/octet-stream', ...auth(env) },
+		signal
+	})
+
+/**
  * A GraphQL query. It supports no conditional requests, so it is only for reads
  * that something else has already established are necessary — one costs its
  * points every time, where a REST 304 costs none.

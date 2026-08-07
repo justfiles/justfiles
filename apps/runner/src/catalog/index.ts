@@ -2,6 +2,12 @@ import { importRelease } from './import'
 import { type Resolved, readInfo, refreshApp } from './refresh-app'
 import { type CatalogRefresh, refreshCatalog } from './refresh-catalog'
 
+/**
+ * Imports per run. Ten maximally-sized bundles is ~5,000 subrequests, half the
+ * per-invocation cap, leaving the polling pass room. Raise it for a backfill.
+ */
+const IMPORT_BUDGET = 10
+
 export interface AppMetadata {
 	id: string
 	name: string
@@ -69,7 +75,15 @@ export async function refresh(env: CloudflareBindings): Promise<Refresh> {
 
 	// Detecting and fetching are separate calls, so moving the fetch onto a Queue
 	// is a change to this loop and nothing else. See kb/registry.md.
-	for (const [id, resolved] of Object.entries(imports)) await importRelease(env, id, resolved)
+	//
+	// Budgeted because an import spends roughly one subrequest per bundle file
+	// against a 10,000 per-invocation cap, so a cold start on a fresh bucket is
+	// the one case that could exhaust it. Whatever is skipped keeps its previous
+	// ETags and is resolved again next run, so the backlog drains on its own.
+	for (const [id, resolved] of Object.entries(imports).slice(0, IMPORT_BUDGET)) {
+		const repo = catalog.entries[id]?.repo
+		if (repo) await importRelease(env, id, repo, resolved)
+	}
 
 	return { ...result, imports }
 }
