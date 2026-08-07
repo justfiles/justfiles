@@ -11,7 +11,8 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
-import type { AppManifest } from './app.ts'
+import { cachePath } from '@justfiles/fs/sync-replica'
+import type { AppManifest, InstalledApp } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -90,7 +91,12 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 			const app = builtinById.get(id) ?? (await store.latest(id))
 			if (!app) continue
 			const action = await decide(fs, app)
-			if (action === 'skip') continue
+			// An app that reached this device through sync never ran an install here, so
+			// this is where its mounted files get warmed — see `warmMounts`.
+			if (action === 'skip') {
+				if (app.baseUrl) await warmMounts(kernel, fs, id)
+				continue
+			}
 			// Escalation guard: a non-builtin (re)install that declares more capabilities
 			// than the installed version is held (skipped) so re-consent can land first
 			// (Step 5). `escalates` is true only on real capability growth, so a same-
@@ -205,9 +211,38 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
  * than fetching in parallel, so it fills exactly the entries a later read looks
  * for instead of a second copy that might not match.
  */
-export async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
+async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
 	const installed = await kernel.app(appId)
-	const queue = Object.keys(installed.manifest.files ?? {})
+	await warm(installed, Object.keys(installed.manifest.files ?? {}))
+}
+
+/**
+ * The same warming, for an app that never installed on THIS device.
+ *
+ * A hosted app arrives through sync fully formed — another device installed it,
+ * and the record and reducer replicated here — so no install ran locally and
+ * nothing filled the cache. `decide` is right to skip it (the volume does match
+ * the catalog; the mounted half is a cache, not part of the install), which
+ * leaves reconcile as the only pass that can notice, and multi-device is the
+ * ordinary way a second device gets an app.
+ *
+ * Cold paths only, because this runs on every pass: a warm app costs one `exists`
+ * per mounted file and reads nothing. Reading hits back through `mount()` would
+ * be correct but would move the app's whole payload each time. A cached entry
+ * whose bytes are wrong is repaired by the read that finds it, which is where
+ * that check already lives.
+ */
+async function warmMounts(kernel: Kernel, fs: Volume, appId: string): Promise<void> {
+	const installed = await kernel.app(appId)
+	const cache = cachePath(`/applications/${appId}`)
+	const cold: string[] = []
+	for (const path of Object.keys(installed.manifest.files ?? {})) {
+		if (!(await fs.exists(`${cache}/${path}`))) cold.push(path)
+	}
+	if (cold.length) await warm(installed, cold)
+}
+
+async function warm(installed: InstalledApp, queue: string[]): Promise<void> {
 	const readOne = async (): Promise<void> => {
 		// Swallowed per file, and only per file: being offline, or reaching an origin
 		// that is not serving this release yet, leaves a cold cache rather than a

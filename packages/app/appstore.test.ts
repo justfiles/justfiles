@@ -149,6 +149,7 @@ function fakeWorld(serve?: (path: string) => Uint8Array) {
 		}
 	} as unknown as Kernel
 	const fs = {
+		exists: async (path: string) => blobs.has(path),
 		stat: async (path: string) => {
 			const bytes = blobs.get(path)
 			if (!bytes) throw new Error(`ENOENT: ${path}`)
@@ -546,5 +547,30 @@ describe('prefetch', () => {
 		await materialise(kernel, store)
 		expect(installs).toEqual(['app.x'])
 		expect(requested).toEqual([])
+	})
+})
+
+describe('prefetch on the sync path', () => {
+	test('an app that arrived through sync is warmed by reconcile, once', async () => {
+		const store = await builtinStore(HOSTED)
+		const source = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		await materialise(source.kernel, store)
+
+		// The receiving device. Sync replicates the durable half — the record and the
+		// reducer — and nothing under `/private`, so the cache arrives empty and no
+		// install ever ran here to fill it.
+		const device = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		for (const [path, bytes] of source.blobs) {
+			if (!path.startsWith('/private/')) device.blobs.set(path, bytes)
+		}
+
+		await reconcile(device.kernel, device.fs, store)
+		expect(device.requested).toEqual(['gui.js'])
+		expect(device.installs).toEqual([]) // `decide` said skip; this is not a reinstall
+
+		// And not paid for again on every later pass — the watcher runs reconcile on
+		// each burst of sync traffic, so a warm app has to cost reads of nothing.
+		await reconcile(device.kernel, device.fs, store)
+		expect(device.requested).toEqual(['gui.js'])
 	})
 })
