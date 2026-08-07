@@ -639,14 +639,16 @@ export class Frieren extends DurableObject<Env> {
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
 
-	async webSocketClose(
-		ws: WebSocket,
-		code: number,
-		_reason: string,
-		_wasClean: boolean
-	): Promise<void> {
-		ws.close(code, 'Durable Object is closing WebSocket')
-	}
+	// NO `webSocketClose`. Our compatibility date (2026-04-10) enables
+	// `web_socket_auto_reply_to_close`, so the runtime sends the reciprocal Close frame
+	// and marks the socket CLOSED *before* a handler would run — reciprocating is dead
+	// code. It is also unsafe to reciprocate with the PEER's code: 1005 ("no status
+	// received") and 1006 ("abnormal closure") are reserved, describing how a socket
+	// died rather than anything that may be sent on the wire, so `close()` rejects them.
+	// Echoing one back threw `Invalid WebSocket close code` on every abrupt disconnect —
+	// a closed laptop, dropped wifi, a killed tab — which is ~99% of this Worker's error
+	// volume in production (348 in one week). Handling a close needs a handler; merely
+	// completing one does not.
 
 	async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
 		ws.close(1011, 'WebSocket error')
