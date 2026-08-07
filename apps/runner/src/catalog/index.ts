@@ -12,6 +12,8 @@ export interface AppMetadata {
 	id: string
 	name: string
 	version: string
+	/** Bundle-relative, for the web app manifest. Absent when the app ships none. */
+	icon?: string
 }
 
 /**
@@ -30,8 +32,8 @@ export async function findApp(env: CloudflareBindings, id: string): Promise<AppM
 
 	const spec = await env.STORE.get(`apps/${id}/${version}/spec.json`)
 	if (!spec) return null
-	const { name } = await spec.json<{ name: string }>()
-	return { id, name, version }
+	const { name, icon } = await spec.json<{ name: string; icon?: string }>()
+	return { id, name, version, icon }
 }
 
 export async function publish() {}

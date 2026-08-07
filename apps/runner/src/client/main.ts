@@ -78,3 +78,19 @@ const transport = {
 
 const { gui } = await guiModule
 gui.mount(root, await k.state(appId), { transport })
+
+// After mount, never before: the worker only earns its keep on the NEXT visit,
+// so registering it earlier would spend first-paint time on nothing. It caches
+// the shell and the platform bundle, which come from the network and would
+// otherwise make this page unreachable offline however complete the volume is.
+//
+// Not in dev, where Vite serves unhashed modules and a cache would fight HMR.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+	navigator.serviceWorker
+		.register('/sw.js')
+		.then(() => navigator.serviceWorker.ready)
+		// Which release to keep. The worker cannot know it — the version is only
+		// resolved per request — so the page that was rendered for it says.
+		.then((registration) => registration.active?.postMessage({ keep: base }))
+		.catch(() => {})
+}

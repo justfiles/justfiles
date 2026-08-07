@@ -3,6 +3,7 @@ import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { Hono } from 'hono'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
 import { findApp } from './catalog'
+import swSource from './client/sw.js?raw'
 import { decodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
@@ -86,6 +87,74 @@ route.get('/v/:version/*', async (c) => {
 	return c.body(body, 200, { 'content-type': mime(path), 'cache-control': IMMUTABLE })
 })
 
+// Never cached hard: a stale service worker is the one thing that cannot be
+// fixed from the server side. Browsers also bypass the HTTP cache when checking
+// for an update, so this only has to not fight them.
+route.get('/sw.js', (c) =>
+	c.body(swSource, 200, { 'content-type': MIME.js as string, 'cache-control': 'no-cache' })
+)
+
+/**
+ * The web app manifest, per app — this origin hosts exactly one, so it gets its
+ * own name and icon rather than the runner's.
+ *
+ * It is what makes the app installable, and installing is not cosmetic: a
+ * home-screen web app runs outside Safari's seven-day cap on script-writable
+ * storage, which is the only documented exemption from it. Without this, an app
+ * a Safari user has not opened in a week loses its whole origin — the volume
+ * and their documents with it, since eviction is all-or-nothing per origin.
+ *
+ * Named `.webmanifest`, not `manifest.json`: that name already means the app's
+ * own authored manifest, which is served from `/v/{version}/`.
+ */
+route.get('/manifest.webmanifest', async (c) => {
+	const id = appId(c.req.raw, c.env)
+	const app = id && (await findApp(c.env, id))
+	if (!app) return c.notFound()
+
+	const base = `/v/${app.version}/`
+	const icons = app.icon
+		? [
+				{
+					src: `${base}${app.icon}`,
+					sizes: await iconSize(c.env, `apps/${app.id}/${app.version}/files/${app.icon}`),
+					type: mime(app.icon),
+					purpose: 'any'
+				}
+			]
+		: []
+
+	return c.body(
+		JSON.stringify({
+			name: app.name,
+			short_name: app.name,
+			start_url: '/',
+			scope: '/',
+			display: 'standalone',
+			icons
+		}),
+		200,
+		{ 'content-type': 'application/manifest+json' }
+	)
+})
+
+/**
+ * A PNG states its dimensions in the IHDR chunk at a fixed offset, so 24 bytes
+ * of range read answer it. Worth the read rather than a guess: installability
+ * depends on the declared size being real — Chrome wants at least 144×144 — and
+ * a manifest that lies about it is worse than one with no icon.
+ */
+async function iconSize(env: CloudflareBindings, key: string): Promise<string> {
+	const head = await env.STORE.get(key, { range: { offset: 0, length: 24 } })
+	if (!head) return 'any'
+
+	const bytes = new Uint8Array(await head.arrayBuffer())
+	// Signature, then the IHDR length and tag, then width and height.
+	if (bytes.length < 24 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) return 'any'
+	const view = new DataView(bytes.buffer)
+	return `${view.getUint32(16)}x${view.getUint32(20)}`
+}
+
 /** The one route that asks what the live version is. */
 route.get('/', async (c) => {
 	const id = appId(c.req.raw, c.env)
@@ -101,6 +170,7 @@ route.get('/', async (c) => {
 				    into the platform entry below — so the browser only discovers it once
 				    that entry runs. Start the fetch at parse time instead. */}
 				<link rel="modulepreload" href={`${base}gui.js`} />
+				<link rel="manifest" href="/manifest.webmanifest" />
 				<style>{'html, body, #app { height: 100%; margin: 0 }'}</style>
 				<ViteClient />
 				<Script src="/src/client/main.ts" />
