@@ -92,9 +92,12 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 			if (!app) continue
 			const action = await decide(fs, app)
 			// An app that reached this device through sync never ran an install here, so
-			// this is where its mounted files get warmed — see `warmMounts`.
+			// this is where its mounted files get warmed — see `warmMounts`. Swallowed
+			// for the same reason the one after an install is: this app is NOT being
+			// updated, so a cache that stayed cold is not an update failure and must not
+			// be logged as one on every pass.
 			if (action === 'skip') {
-				if (app.baseUrl) await warmMounts(kernel, fs, id)
+				if (app.baseUrl) await warmMounts(kernel, fs, id).catch(() => {})
 				continue
 			}
 			// Escalation guard: a non-builtin (re)install that declares more capabilities
@@ -192,7 +195,13 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 		throw new Error(`catalog app missing its reducer: ${app.id}/${reducer}`)
 	}
 	await kernel.install(bundleFromFiles(spec, files))
-	if (app.baseUrl) await prefetchApp(kernel, app.id)
+	// Past the commit point, so nothing here can be allowed to reject: the record and
+	// the reducer are live, and a caller that saw a rejection would report a failed
+	// install of a working app — `materialise` would stop before the rest of the
+	// built-ins, and a direct community install would report failure. The per-file
+	// swallow inside is not enough on its own; resolving the app back out of the
+	// volume is a read too, and it happens after the same commit.
+	if (app.baseUrl) await prefetchApp(kernel, app.id).catch(() => {})
 }
 
 /**
@@ -226,28 +235,37 @@ async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
  * leaves reconcile as the only pass that can notice, and multi-device is the
  * ordinary way a second device gets an app.
  *
- * Cold paths only, because this runs on every pass: a warm app costs one `exists`
- * per mounted file and reads nothing. Reading hits back through `mount()` would
- * be correct but would move the app's whole payload each time. A cached entry
- * whose bytes are wrong is repaired by the read that finds it, which is where
- * that check already lives.
+ * Cold paths only, because this runs on every pass: a warm app costs one `stat`
+ * per mounted file and reads nothing. Reading every path back through `mount()`
+ * would be correct but would move the app's whole payload each time.
+ *
+ * "Warm" is the question `mount()` asks — the record's pinned digest against the
+ * cached entry's — not merely whether something is there. A device that ran an
+ * older release and then received a newer record through sync has a cache full
+ * of the previous version's bytes at exactly the paths the new one mounts, and
+ * no local install ran to sweep them. Presence alone would call that warm and
+ * fetch nothing; the read that repairs a stale entry would then be the one made
+ * offline, which is the read that cannot.
  */
 async function warmMounts(kernel: Kernel, fs: Volume, appId: string): Promise<void> {
 	const installed = await kernel.app(appId)
 	const cache = cachePath(`/applications/${appId}`)
 	const cold: string[] = []
-	for (const path of Object.keys(installed.manifest.files ?? {})) {
-		if (!(await fs.exists(`${cache}/${path}`))) cold.push(path)
+	for (const [path, pinned] of Object.entries(installed.manifest.files ?? {})) {
+		// The volume is content-addressed, so this stays a metadata lookup: `stat`
+		// reports the digest, and no payload is read to decide.
+		const stat = await fs.stat(`${cache}/${path}`).catch(() => null)
+		if (!stat || `sha256-${stat.contentHash ?? ''}` !== pinned) cold.push(path)
 	}
 	if (cold.length) await warm(installed, cold)
 }
 
 async function warm(installed: InstalledApp, queue: string[]): Promise<void> {
 	const readOne = async (): Promise<void> => {
-		// Swallowed per file, and only per file: being offline, or reaching an origin
-		// that is not serving this release yet, leaves a cold cache rather than a
-		// broken app — the file mounts on demand later exactly as it did before. A
-		// failure to resolve the app at all is a bug and stays loud.
+		// Swallowed per file: being offline, or reaching an origin that is not serving
+		// this release yet, leaves a cold cache rather than a broken app — the file
+		// mounts on demand later exactly as it did before. Both callers swallow the
+		// whole pass as well, because both run after the app is already usable.
 		for (let path = queue.pop(); path; path = queue.pop())
 			await installed.read(path).catch(() => {})
 	}

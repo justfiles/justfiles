@@ -96,18 +96,21 @@ function fakeWorld(serve?: (path: string) => Uint8Array) {
 	const installs: string[] = []
 	const requested: string[] = []
 	const kernel = {
-		// Models the real `mount()`: a cached copy if there is one, else the origin,
-		// written to the unsynced cache path. The prefetch runs through this, so a
-		// test can count origin hits and then take the origin away.
+		// Models the real `mount()`: the cached copy when it matches the digest the
+		// RECORD pins, else the origin, written to the unsynced cache path. The prefetch
+		// runs through this, so a test can count origin hits and then take the origin
+		// away — and bytes an older record left behind are not served for a newer one.
 		app: async (id: string) => {
 			const record = blobs.get(`/applications/${id}/manifest.json`)
 			if (!record) throw new Error(`not installed: ${id}`)
+			const manifest = JSON.parse(new TextDecoder().decode(record)) as AppManifest
 			return {
-				manifest: JSON.parse(new TextDecoder().decode(record)) as AppManifest,
+				manifest,
 				read: async (path: string) => {
 					const at = `/private/cache/applications/${id}/${path}`
+					const pinned = manifest.files?.[path]
 					const cached = blobs.get(at)
-					if (cached) return cached
+					if (cached && (!pinned || `sha256-${await sha256Hex(cached)}` === pinned)) return cached
 					requested.push(path)
 					if (!serve) throw new Error(`offline: ${path}`)
 					const bytes = serve(path)
@@ -149,7 +152,6 @@ function fakeWorld(serve?: (path: string) => Uint8Array) {
 		}
 	} as unknown as Kernel
 	const fs = {
-		exists: async (path: string) => blobs.has(path),
 		stat: async (path: string) => {
 			const bytes = blobs.get(path)
 			if (!bytes) throw new Error(`ENOENT: ${path}`)
@@ -548,6 +550,22 @@ describe('prefetch', () => {
 		expect(installs).toEqual(['app.x'])
 		expect(requested).toEqual([])
 	})
+
+	test('a prefetch that cannot even resolve the app does not fail the install', async () => {
+		// The install has committed by the time the prefetch starts, so a transient
+		// failure reading the record back out is not a failed install: the caller would
+		// report one for a working app, and materialise would stop before the built-ins
+		// after it. Only the per-file reads were swallowed before.
+		const { kernel, installs } = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
+		const app = kernel.app
+		kernel.app = async () => {
+			kernel.app = app // one transient failure, on the prefetch that follows the install
+			throw new Error('storage is having a moment')
+		}
+
+		await expect(materialise(kernel, await builtinStore(HOSTED))).resolves.toBeUndefined()
+		expect(installs).toEqual(['app.x'])
+	})
 })
 
 describe('prefetch on the sync path', () => {
@@ -572,5 +590,49 @@ describe('prefetch on the sync path', () => {
 		// each burst of sync traffic, so a warm app has to cost reads of nothing.
 		await reconcile(device.kernel, device.fs, store)
 		expect(device.requested).toEqual(['gui.js'])
+	})
+
+	test('a cache the previous release left behind counts as cold, not warm', async () => {
+		const v1: Record<string, string> = { ...HOSTED, 'gui.js': '// gui v1' }
+		const v2: Record<string, string> = {
+			'manifest.json': JSON.stringify({
+				id: 'app.x',
+				name: 'X',
+				version: '2.0.0',
+				app: 'app.js',
+				gui: 'gui.js'
+			}),
+			'app.js': '// code',
+			'gui.js': '// gui v2'
+		}
+
+		// This device ran v1, so its cache holds v1's bytes at the very path v2 mounts.
+		let serving = v1
+		const device = fakeWorld((path) => enc.encode(serving[path] ?? ''))
+		await materialise(device.kernel, await builtinStore(v1))
+		expect(device.requested).toEqual(['gui.js'])
+		serving = v2
+
+		// Then v2 arrives through sync — the record and the reducer replicate, the cache
+		// does not, and no install runs here to sweep what v1 left.
+		const source = fakeWorld((path) => enc.encode(v2[path] ?? ''))
+		const store = await builtinStore(v2)
+		await materialise(source.kernel, store)
+		for (const [path, bytes] of source.blobs) {
+			if (!path.startsWith('/private/')) device.blobs.set(path, bytes)
+		}
+		device.requested.length = 0
+		device.installs.length = 0 // only count what the reconcile below does
+
+		// Presence alone would call that warm and fetch nothing, leaving a device that
+		// looks stocked and cannot open its own GUI the moment it goes offline.
+		await reconcile(device.kernel, device.fs, store)
+		expect(device.requested).toEqual(['gui.js'])
+		expect(device.installs).toEqual([]) // still a skip, not a reinstall
+
+		const offline = fakeWorld() // serves nothing
+		const installed = await device.kernel.app('app.x')
+		expect(new TextDecoder().decode(await installed.read('gui.js'))).toBe('// gui v2')
+		expect(offline.requested).toEqual([])
 	})
 })
