@@ -1,8 +1,8 @@
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { Hono } from 'hono'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
-import { decodeLabel } from './id'
 import { type AppMetadata, findApp } from './catalog'
+import { decodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
 
@@ -24,7 +24,7 @@ export const appId = (req: Request, env: CloudflareBindings): string | null => {
 
 route.use('*', async (c, next) => {
 	const id = appId(c.req.raw, c.env)
-	const app = id ? await findApp(id) : null
+	const app = id ? await findApp(c.env, id) : null
 	if (!app) return c.notFound()
 	c.set('app', app)
 	await next()
@@ -77,6 +77,8 @@ route.get('/worker.js', (c) =>
 )
 
 route.get('/*', async (c) => {
+	// Streamed straight through, so a 10 MB bundle never becomes a 10 MB string
+	// in a 128 MB isolate.
 	const body = await c.var.app.asset(c.req.path)
 	if (body === null) return c.notFound()
 	return c.body(body, 200, { 'content-type': mime(c.req.path) })

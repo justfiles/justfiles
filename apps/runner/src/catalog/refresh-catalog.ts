@@ -1,43 +1,9 @@
-/**
- * The store, until R2: an app is a directory under `bin/` named by its id, and
- * Vite inlines each file into the Worker at build time. A lookup is an exact key
- * into that record, so neither an id nor a path can reach outside `bin/`.
- */
-const files = import.meta.glob('../bin/*/**', {
-	query: '?raw',
-	import: 'default'
-}) as Record<string, () => Promise<string>>
-
-export interface AppMetadata {
-	id: string
-	name: string
-	description?: string
-	version?: string
-	asset(path: string): Promise<string | null>
-}
-
-/** What we host under an id, or null when we host nothing there. */
-export async function findApp(id: string): Promise<AppMetadata | null> {
-	// Routes hand over a request path (`/gui.js`), the manifest a bare one (`gui.js`).
-	const asset = async (path: string) =>
-		(await files[`../bin/${id}/${path.replace(/^\//, '')}`]?.()) ?? null
-
-	const manifest = await asset('manifest.json')
-	if (!manifest) return null
-
-	// The directory is the id we serve under; the manifest only describes the app.
-	const { name, description, version } = JSON.parse(manifest) as Omit<AppMetadata, 'id' | 'asset'>
-	return { id, name, description, version, asset }
-}
-
-export async function publish() {}
+import { api, graphql } from './github'
 
 const OWNER = 'justfiles'
 const NAME = 'app-catalog'
 const BRANCH = 'main'
-const API = 'https://api.github.com'
 const CATALOG_KEY = 'catalog.json'
-const UA = 'justapps-runner (+https://justapps.run)'
 
 /**
  * Bumped whenever the stored shape changes — a field the parser starts reading,
@@ -98,22 +64,6 @@ export interface CatalogRefresh {
 	deleted: string[]
 }
 
-/** Reconcile everything: the catalog first, then each app it lists. */
-export async function refresh(env: CloudflareBindings): Promise<CatalogRefresh> {
-	const result = await refreshCatalog(env)
-	const { catalog, touched, deleted } = result
-	if (touched.length) console.info('catalog entries changed:', touched.join(', '))
-	if (deleted.length) console.warn('catalog entries deleted:', deleted.join(', '))
-
-	// Every active entry, not just the touched ones: a release is discovered and
-	// never declared, so an entry unchanged for a year still has to be asked.
-	for (const [id, entry] of Object.entries(catalog.entries)) {
-		if (entry.status !== 'active') continue
-		await refreshApp(env, id, entry)
-	}
-	return result
-}
-
 /**
  * Bring our snapshot of `justfiles/app-catalog` up to date, and report what
  * moved. See kb/registry.md.
@@ -126,7 +76,7 @@ export async function refresh(env: CloudflareBindings): Promise<CatalogRefresh> 
  * The snapshot is the cursor. Two objects each claiming "the commit we last
  * processed" can disagree; one cannot.
  */
-async function refreshCatalog(env: CloudflareBindings): Promise<CatalogRefresh> {
+export async function refreshCatalog(env: CloudflareBindings): Promise<CatalogRefresh> {
 	const previous = await readCatalog(env)
 
 	// The common case is that nothing has been merged, and one conditional
@@ -157,28 +107,6 @@ async function refreshCatalog(env: CloudflareBindings): Promise<CatalogRefresh> 
 	})
 	return { catalog, touched, deleted }
 }
-
-async function refreshApp(_env: CloudflareBindings, _id: string, _entry: Entry) {}
-
-/**
- * Authenticate every call, public repository or not: unauthenticated GitHub is
- * 60 requests/hour *per IP*, and a Worker's egress IP is shared with strangers.
- * The same reasoning is why nothing here reads `raw.githubusercontent.com`,
- * which cannot be authenticated for a public repo and is limited per IP too.
- */
-const auth = (env: CloudflareBindings) => ({
-	authorization: `Bearer ${env.GITHUB_TOKEN}`,
-	'user-agent': UA
-})
-
-const api = (env: CloudflareBindings, path: string, etag?: string | null) =>
-	fetch(`${API}${path}`, {
-		headers: {
-			accept: 'application/vnd.github+json',
-			...auth(env),
-			...(etag ? { 'if-none-match': etag } : {})
-		}
-	})
 
 async function readCatalog(env: CloudflareBindings): Promise<Catalog | null> {
 	const obj = await env.STORE.get(CATALOG_KEY)
@@ -211,9 +139,8 @@ const TREE = `query($owner:String!,$name:String!,$expr:String!){
 	}
 }`
 
-interface TreeResponse {
-	data?: { repository?: { object?: { entries?: { name: string; object?: { text?: string } }[] } } }
-	errors?: { message: string }[]
+interface TreeData {
+	repository?: { object?: { entries?: { name: string; object?: { text?: string } }[] } }
 }
 
 /**
@@ -225,29 +152,21 @@ interface TreeResponse {
  * nothing else here would use — releases are ZIPs. A tree read bills at ~1
  * point and needs no parser.
  *
- * The reason not to use GraphQL for release polling — no conditional requests —
- * does not apply: the ETag on `commits/main` has already established that
- * something changed before this runs.
+ * The reason not to use GraphQL generally — no conditional requests — does not
+ * apply: the ETag on `commits/main` has already established that something
+ * changed before this runs.
  *
  * Revisit once rung 1 forces a streaming ZIP reader to exist; the catalog as a
  * zipball would then be reuse rather than a second parser.
  */
 async function fetchEntries(env: CloudflareBindings): Promise<Record<string, Entry>> {
-	const res = await fetch(`${API}/graphql`, {
-		method: 'POST',
-		headers: { 'content-type': 'application/json', ...auth(env) },
-		body: JSON.stringify({
-			query: TREE,
-			variables: { owner: OWNER, name: NAME, expr: `refs/heads/${BRANCH}:apps` }
-		})
+	const data = await graphql<TreeData>(env, TREE, {
+		owner: OWNER,
+		name: NAME,
+		expr: `refs/heads/${BRANCH}:apps`
 	})
-	if (!res.ok) throw new Error(`catalog tree: ${res.status}`)
 
-	// GraphQL reports query failures as 200 with an `errors` array.
-	const { data, errors } = await res.json<TreeResponse>()
-	if (errors?.length) throw new Error(`catalog tree: ${errors[0]?.message}`)
-
-	const nodes = data?.repository?.object?.entries
+	const nodes = data.repository?.object?.entries
 	if (!nodes) throw new Error('catalog tree: no apps/ directory')
 
 	return Object.fromEntries(

@@ -1,13 +1,17 @@
 import { expect, test } from 'vitest'
 import worker from './index.ts'
 
-// Only the var the host split reads; the store and token bindings never load.
-const env = { ROOT_DOMAIN: 'example.com' } as unknown as CloudflareBindings
+// An empty store, so nothing is hosted under any id. The token binding, which
+// only the reconcile reads, never loads at all.
+const env = {
+	ROOT_DOMAIN: 'example.com',
+	STORE: { get: async () => null }
+} as unknown as CloudflareBindings
 
 const get = (url: string) => worker.fetch(new Request(url), env, {} as ExecutionContext)
 
-// The store holds whatever `bin/` holds, so these assert the SPLIT — which host
-// reaches the app site at all — rather than any particular app being hosted.
+// These assert the SPLIT — which host reaches the app site at all — rather than
+// any particular app being hosted, which is why the empty store is enough.
 
 test('a decodable label reaches the app site', async () => {
 	// nothing is published under `alice.notes`, so the app site 404s rather than
