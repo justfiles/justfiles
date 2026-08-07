@@ -11,18 +11,18 @@ const IMPORT_BUDGET = 10
 export interface AppMetadata {
 	id: string
 	name: string
-	description?: string
 	version: string
-	/** The bytes at a bundle path, streamed, or null when we hold no such file. */
-	asset(path: string): Promise<ReadableStream | null>
 }
 
 /**
  * What we host under an id, or null when we host nothing there — which is every
  * id until an import has run and its first release has been approved.
  *
- * One lookup, per page load rather than per asset: `info.json` names the live
- * version and `spec.json` describes it. See kb/registry.md#serving.
+ * Called once per PAGE load and never per asset: the document it renders emits
+ * version-pinned URLs, and those resolve by string construction. Two reads, not
+ * one, because `info.json` deliberately carries no display metadata — a second
+ * copy of an app's name would be a second thing that can be wrong, and the read
+ * is behind the same cache as the first.
  */
 export async function findApp(env: CloudflareBindings, id: string): Promise<AppMetadata | null> {
 	const version = (await readInfo(env, id))?.current
@@ -30,18 +30,8 @@ export async function findApp(env: CloudflareBindings, id: string): Promise<AppM
 
 	const spec = await env.STORE.get(`apps/${id}/${version}/spec.json`)
 	if (!spec) return null
-	const { name, description } = await spec.json<{ name: string; description?: string }>()
-
-	/**
-	 * **Resolves into `apps/{id}/{version}/files/` and nowhere else.** Grouping an
-	 * app's state and its content under one prefix put `info.json` — `approved`,
-	 * the poll ETags, the whole release history — beside the bytes we serve. The
-	 * `version` segment is what stops a request path climbing out to reach it.
-	 */
-	const asset = async (path: string) =>
-		(await env.STORE.get(`apps/${id}/${version}/files/${path.replace(/^\//, '')}`))?.body ?? null
-
-	return { id, name, description, version, asset }
+	const { name } = await spec.json<{ name: string }>()
+	return { id, name, version }
 }
 
 export async function publish() {}

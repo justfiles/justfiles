@@ -10,27 +10,31 @@ import { idbStorage } from '@justfiles/fs/storage/idb'
 // needs at runtime — kernel, volume, reducer — lives HERE, in the browser: the
 // app already owns this origin, so there is nothing on the page to isolate it
 // from, and the runner stays a router with no per-app compute. The app's own
-// bytes (`/app.js`, `/gui.js`, `/manifest.json`) are served by the runner out
-// of the store.
+// bytes are served by the runner out of the store, under `/v/{version}/`.
 
-// The app's own GUI, served at `/gui.js`: resolved by the browser, not the
-// build, so the specifier goes through a variable to stay out of Vite's import
-// analysis. Started here and awaited at the end — it downloads while the kernel
-// boots rather than after it.
-const guiUrl = '/gui.js'
-const guiModule = import(/* @vite-ignore */ guiUrl)
-
-// Who this page is: inlined by the runner onto the mount node, so booting costs
-// no `/manifest.json` round trip. Read first — a missing root is worth failing on
-// before any of the machinery below exists.
+// Who this page is, and where its bytes live: inlined by the runner onto the
+// mount node, so booting costs no `/manifest.json` round trip. Read first — a
+// missing root is worth failing on before any of the machinery below exists.
 const root = document.getElementById('app')
 if (!root) throw new Error('missing app root')
-const { id, name, version } = root.dataset
-if (!id || !name) throw new Error('missing app identity')
+const { id, name, version, base } = root.dataset
+if (!id || !name || !base) throw new Error('missing app identity')
 
-// `/worker.js` is the reducer isolate: platform code that imports `/app.js` and
-// answers the kernel's host↔isolate protocol. One app per origin, so one worker.
-const worker = new Worker('/worker.js', { type: 'module' })
+// `base` is `/v/{version}/`, emitted by the document that resolved the live
+// version. Every URL here hangs off it, so one page load can never mix bytes
+// from two releases — and the integrity pins an installed device holds keep
+// matching after the next publish.
+
+// The app's own GUI: resolved by the browser, not the build, so the specifier
+// goes through a variable to stay out of Vite's import analysis. Started here
+// and awaited at the end — it downloads while the kernel boots rather than
+// after it.
+const guiModule = import(/* @vite-ignore */ `${base}gui.js`)
+
+// `worker.js` is the reducer isolate: platform code that imports this release's
+// `app.js` and answers the kernel's host↔isolate protocol. One app per origin,
+// so one worker.
+const worker = new Worker(`${base}worker.js`, { type: 'module' })
 const { sandbox, fail } = sandboxClient({
 	post: (message) => worker.postMessage(message),
 	onMessage: (handler) => {
@@ -58,7 +62,7 @@ const appId = await k.install(
 		id,
 		name,
 		version,
-		app: await (await fetch('/app.js')).text()
+		app: await (await fetch(`${base}app.js`)).text()
 	})
 )
 
