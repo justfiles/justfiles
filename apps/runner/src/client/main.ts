@@ -3,7 +3,7 @@ import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { sandboxClient } from '@justfiles/app/sandbox'
 import { volume } from '@justfiles/fs'
-import { idbStorage } from '@justfiles/fs/storage/idb'
+import { idbStorage, persistStorage } from '@justfiles/fs/storage/idb'
 
 // The page's platform entry: real TypeScript, bundled by Vite and served as a
 // hashed static asset (see `route.get('/')` in ../app.tsx). Everything an app
@@ -78,6 +78,14 @@ const transport = {
 
 const { gui } = await guiModule
 gui.mount(root, await k.state(appId), { transport })
+
+// This origin holds one app and its documents, and nothing here syncs anywhere,
+// so eviction would be the only copy going. Asked for after mount, when the
+// browser has an engagement signal to weigh — Chrome and Safari decide silently
+// from one, and asking during boot is asking at the least convincing moment.
+persistStorage().then((granted) => {
+	if (!granted) console.warn('storage is best-effort: the browser may evict this app')
+})
 
 // After mount, never before: the worker only earns its keep on the NEXT visit,
 // so registering it earlier would spend first-paint time on nothing. It caches
