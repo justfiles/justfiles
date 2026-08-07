@@ -19,6 +19,16 @@ export default defineConfig({
 			'@': path.resolve(__dirname, './src')
 		}
 	},
+	environments: {
+		// Feeds `upload_source_maps` (wrangler.jsonc), which only ships maps that
+		// already exist: this plugin bundles the worker itself and sets `no_bundle`,
+		// so wrangler never runs esbuild and locates maps solely by the trailing
+		// `//# sourceMappingURL=` comment on each chunk. Hence `true`, not 'hidden' —
+		// hidden drops that comment and wrangler silently uploads nothing. Client
+		// stays unmapped; its maps would be publicly served. Environment name is the
+		// worker name with `-` replaced by `_`.
+		frieren: { build: { sourcemap: true } }
+	},
 	plugins: [
 		appstore(),
 		// NOTE: VitePWA conflicts with @cloudflare/vite-plugin when vitest resolves
