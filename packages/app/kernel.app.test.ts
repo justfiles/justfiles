@@ -334,3 +334,49 @@ test('uninstall sweeps the cache — no trash, nothing left to orphan', async ()
 	const entry = (await vol.readdir(`/trash/${day}`))[0]?.name ?? ''
 	expect(await vol.exists(`/trash/${day}/${entry}/manifest.json`)).toBe(true)
 })
+
+// ── updating a hosted app: what the cache keeps ──────────────────────────────
+
+test('an update keeps a cached file the new release still pins', async () => {
+	const vol = volume(memStorage())
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(vol, o.fetchAsset)
+
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	expect(decode(await (await s.get(id))?.read('gui.js'))).toBe('GUI')
+	expect(o.requested).toHaveLength(1)
+
+	// A release that changes only the reducer. `gui.js` is byte-identical, so the
+	// new record pins the same digest and the cached copy still satisfies it —
+	// wiping the cache here would re-download every mounted file to ship a reducer
+	// fix, which for a real app is ~10 MB to move 11 KB.
+	await s.install(await hostedBundle({ app: 'REDUCER v2', gui: 'GUI' }))
+	expect(decode(await vol.readFile(cachePath(`/applications/${id}/gui.js`)))).toBe('GUI')
+
+	expect(decode(await (await s.get(id))?.read('gui.js'))).toBe('GUI')
+	expect(o.requested).toHaveLength(1)
+})
+
+test('an update drops a cached file whose pinned hash moved', async () => {
+	const vol = volume(memStorage())
+	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
+
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	await (await s.get(id))?.read('gui.js')
+
+	await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI v2' }))
+	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(false)
+})
+
+test('an update drops a cached file the new release no longer mounts', async () => {
+	const vol = volume(memStorage())
+	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
+
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	await (await s.get(id))?.read('gui.js')
+
+	// Reinstalled as a local app: it pins nothing and mounts nothing, so the whole
+	// cache is stale by definition.
+	await s.install(appBundleFromMemory({ id, name: 'App', app: 'REDUCER', gui: 'GUI' }))
+	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(false)
+})
