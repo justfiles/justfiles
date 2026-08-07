@@ -118,7 +118,13 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			throw e
 		}
 		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
-		await sweepCache(root, manifest)
+		// Past the commit point, so it cannot be allowed to fail the install: the new
+		// record and reducer are already live under `root`, and a caller that saw a
+		// rejection here would report a failure while the kernel forgot neither the old
+		// resolver nor emitted the install event. The unconditional wipe this replaced
+		// swallowed its own errors for the same reason; a cache left un-swept is stale
+		// bytes that the next read's hash check rejects anyway.
+		await sweepCache(root, manifest).catch(() => {})
 
 		return appId
 	}

@@ -380,3 +380,20 @@ test('an update drops a cached file the new release no longer mounts', async () 
 	await s.install(appBundleFromMemory({ id, name: 'App', app: 'REDUCER', gui: 'GUI' }))
 	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(false)
 })
+
+test('a cache sweep that throws does not fail an install that already committed', async () => {
+	const vol = volume(memStorage())
+	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
+
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	await (await s.get(id))?.read('gui.js')
+
+	// The sweep runs past the commit point, so a transient storage error there must not
+	// be reported as a failed install: the new record and reducer are already live, and
+	// a caller that saw a rejection would leave the kernel holding the old reducer.
+	vol.scan = async () => {
+		throw new Error('transient storage failure')
+	}
+	await expect(s.install(await hostedBundle({ app: 'REDUCER v2', gui: 'GUI' }))).resolves.toBe(id)
+	expect(decode(await (await s.get(id))?.read('app.js'))).toBe('REDUCER v2')
+})
