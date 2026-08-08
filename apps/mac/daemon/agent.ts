@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import {
 	type AgentSession,
 	createAgentSession,
+	resolveTimezone,
 	type SessionEntry,
 	type SessionEvent
 } from '@justfiles/agent'
@@ -13,6 +14,7 @@ import { getVolume } from './fs'
 import { identity } from './identity'
 import { getKernel } from './kernel'
 import { accountsSecretCodec } from './keychain'
+import { scheduleDailyMaintenance } from './maintenance'
 import { notificationChannel } from './notify'
 import type { AgentEvent } from './protocol'
 import { DOCS_DIR } from './resources'
@@ -90,11 +92,15 @@ async function buildSession(): Promise<AgentSession> {
 		// when the soul changes — which is what a rename in Settings has to reach.
 		// The `read_doc` tool + docs system-prompt block: repo-root docs/*.md, resolved via
 		// DOCS_DIR; Bun reads the file at tool-call time.
-		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text()
+		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text(),
+		timezone: () => resolveTimezone(fs, undefined)
 	})
 	// Fan the session's events out to every connected chat via the sink main.ts wired (the
 	// `agent` pub/sub topic). `transcript` becomes the daemon's `history` frame.
 	session.subscribe((event) => broadcast(toAgentEvent(event)))
+	void scheduleDailyMaintenance(session).catch((error) =>
+		console.error('[agent] maintenance alarm failed:', error)
+	)
 	return session
 }
 

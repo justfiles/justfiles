@@ -9,6 +9,7 @@
 // The host-side `ai` capability: scope-gated, purpose-scoped context composition
 // over a low-level `generate` fn (the learning-context projection is internal).
 export { aiCapability, type GenerateText } from './ai.capability.ts'
+export { generateSoul } from './generate-soul.ts'
 // ── The seam a host implements: how apps are driven ─────────────────
 export type { AppController } from './justbash/app.ts'
 // ── The seam a host implements: what the user is looking at ─────────
@@ -17,11 +18,9 @@ export type { OsState, OsWindowInfo } from './justbash/os.ts'
 export { type LLMText, text } from './llm.text.ts'
 // ── The credential/model seam + one-shot text generation ────────────
 export { type AgentBackend, modelsBackend } from './llm.ts'
-// ── Onboarding / maintenance building blocks (host-owned, for now) ──
-// Soul generation and the daily-alarm timezone math still run in the host until they
-// fold into product methods (generateSoul / nextMaintenanceAt).
+// ── Onboarding building blocks ─────────────────────────────────────
 export { parseFrontmatter } from './markdown.ts'
-export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
+export type { SoulGenerationInput } from './prompts.ts'
 export type { ImageRef, SessionEntry } from './session.manager.ts'
 // ── The agent product ──────────────────────────────────────────────
 export {
@@ -33,4 +32,4 @@ export {
 } from './session.ts'
 // The UI builds its "/" menu from session.listSkills() — a skill, never a "command".
 export type { SkillMeta } from './skills.ts'
-export { nextFourAmInTimezone, resolveTimezone } from './timezone.ts'
+export { resolveTimezone } from './timezone.ts'
