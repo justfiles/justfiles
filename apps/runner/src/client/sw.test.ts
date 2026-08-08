@@ -107,6 +107,19 @@ it('prefers the network for the document, so a publish is seen at once', async (
 	expect(await (await get('/', 'navigate'))?.text()).toBe('a newer release')
 })
 
+// `/worker.js` is host code that moves with our deployments, not with a release.
+// Cached hard, a page would run an older host↔isolate protocol than the shell
+// that loaded it — and offline is the one case where a stale one still beats
+// nothing.
+it('keeps the reducer isolate aligned with the shell, and cached only offline', async () => {
+	await get('/worker.js')
+	online = () => new Response('a newer protocol', { status: 200 })
+	expect(await (await get('/worker.js'))?.text()).toBe('a newer protocol')
+
+	online = null
+	expect(await (await get('/worker.js'))?.text()).toBe('a newer protocol')
+})
+
 it('fails rather than inventing a response for something never cached', async () => {
 	online = null
 	await expect(get('/', 'navigate')).rejects.toThrow('offline')

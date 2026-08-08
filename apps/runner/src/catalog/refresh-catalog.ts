@@ -3,7 +3,7 @@ import { api, graphql } from './github'
 const OWNER = 'justfiles'
 const NAME = 'app-catalog'
 const BRANCH = 'main'
-const CATALOG_KEY = 'catalog.json'
+const SNAPSHOT_KEY = 'snapshot.json'
 
 /**
  * Bumped whenever the stored shape changes — a field the parser starts reading,
@@ -102,14 +102,14 @@ export async function refreshCatalog(env: CloudflareBindings): Promise<CatalogRe
 	const touched = Object.keys(entries).filter((id) => !same(id))
 	const deleted = Object.keys(before).filter((id) => !(id in entries))
 
-	await env.STORE.put(CATALOG_KEY, JSON.stringify(catalog), {
+	await env.STORE.put(SNAPSHOT_KEY, JSON.stringify(catalog), {
 		httpMetadata: { contentType: 'application/json' }
 	})
 	return { catalog, touched, deleted }
 }
 
 async function readCatalog(env: CloudflareBindings): Promise<Catalog | null> {
-	const obj = await env.STORE.get(CATALOG_KEY)
+	const obj = await env.STORE.get(SNAPSHOT_KEY)
 	if (!obj) return null
 	try {
 		const catalog = await obj.json<Catalog>()

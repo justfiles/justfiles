@@ -1,8 +1,9 @@
-import type { AppManifest } from '@justfiles/app'
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono/types'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
 import { findApp, servable } from './catalog'
+import { readRecord } from './catalog/refresh-app'
 import swSource from './client/sw.js?raw'
 import { decodeLabel } from './id'
 
@@ -41,13 +42,19 @@ const mime = (path: string) => MIME[path.split('.').pop() ?? ''] ?? 'application
 const IMMUTABLE = 'public, max-age=31536000, immutable'
 
 /**
+ * The one mutable document, cached only briefly: a publish becomes visible in
+ * about a minute, and the immutable URL it points at pays nothing.
+ */
+const POINTER = 'public, max-age=60'
+
+/**
  * `/v/{version}/…` is resolved by string construction: the shell below emits
  * version-pinned URLs, so nothing after the document has to ask what the live
  * version is. The one thing it does ask is whether the named version is a
  * release we finished importing — see `servable` — because the path is
  * caller-supplied and everything under it is cached for a year.
  *
- * It is also what keeps the app's own state out of reach. `info.json` sits in
+ * It is also what keeps the app's own state out of reach. `record.json` sits in
  * the same prefix as the bytes we serve, and the fixed `version` and `files`
  * segments are what a request path cannot climb out of: an R2 key is an opaque
  * string, so a `..` in one is a character, never a parent directory.
@@ -55,16 +62,18 @@ const IMMUTABLE = 'public, max-age=31536000, immutable'
 const versioned = (id: string, version: string) => `apps/${id}/${version}`
 
 /**
- * Everything under `/v/` is readable by any origin.
+ * The manifest and everything under `/v/` is readable by any origin.
  *
- * A desktop installs a hosted app by fetching this release's `spec.json` and
- * reducer from another origin, and mounts its GUI and assets the same way on
- * every cache miss — so without this the whole store is reachable only from the
- * app's own page, which is the one context that does not need it.
+ * A desktop installs a hosted app by fetching `/manifest.json` from another
+ * origin, and mounts its GUI and assets the same way on every cache miss — so
+ * without this the whole store is reachable only from the app's own page, which
+ * is the one context that does not need it. The pointer needs it as much as the
+ * release does: a redirect that fails the CORS check fails the fetch that
+ * followed it.
  *
  * `*` rather than an allowlist because there is nothing here to scope: these
  * bytes are already public, the origin carries no credentials to leak into a
- * cross-origin read, and every file is pinned by digest in the record that
+ * cross-origin read, and every file is pinned by digest in the manifest that
  * names it, so a reader that gets the wrong bytes rejects them itself. A
  * literal `*` also needs no `Vary`, which is what keeps this one CDN entry per
  * URL rather than one per requesting origin.
@@ -73,9 +82,27 @@ const versioned = (id: string, version: string) => `apps/${id}/${version}`
  * caller, a response without this header is a network error rather than a
  * status it can read and report.
  */
-route.use('/v/:version/*', async (c, next) => {
+const crossOrigin: MiddlewareHandler<Env> = async (c, next) => {
 	await next()
 	c.res.headers.set('access-control-allow-origin', '*')
+}
+route.use('/manifest.json', crossOrigin)
+route.use('/v/:version/*', crossOrigin)
+
+/**
+ * The current release, by redirect — the one route whose answer changes.
+ *
+ * A client follows it and derives the payload base from where it landed
+ * (`new URL('.', response.url)`), which is why `baseUrl` is in no stored
+ * document: the URL that served the manifest IS the answer, so a custom domain
+ * pins itself with nothing to guess and the app id never enters release data.
+ */
+route.get('/manifest.json', async (c) => {
+	const id = appId(c.req.raw, c.env)
+	const version = id ? (await readRecord(c.env, id))?.current : null
+	if (!version) return c.notFound()
+	c.header('cache-control', POINTER)
+	return c.redirect(`/v/${version}/manifest.json`, 302)
 })
 
 route.get('/v/:version/*', async (c) => {
@@ -84,33 +111,38 @@ route.get('/v/:version/*', async (c) => {
 	if (!id || !(await servable(c.env, id, version))) return c.notFound()
 	const path = c.req.path.slice(`/v/${version}/`.length)
 
-	// The reducer isolate: platform code, byte-identical for every app, but it
-	// imports one release's `app.js` and so is pinned like the bytes it loads.
-	if (path === 'worker.js')
-		return c.body(sandboxWorkerSource(`/v/${version}/app.js`, 'web'), 200, {
-			'content-type': MIME.js as string,
-			'cache-control': IMMUTABLE
-		})
-
-	// The installable record: what we stored, plus the one field we deliberately
-	// do not store. `baseUrl` comes from the host this request arrived on rather
-	// than from the id, so a custom domain pins itself with nothing to guess —
-	// and an app id never enters stored release data. See kb/registry.md.
-	if (path === 'spec.json') {
-		const spec = await c.env.STORE.get(`${versioned(id, version)}/spec.json`)
-		if (!spec) return c.notFound()
-		const manifest = await spec.json<AppManifest>()
-		return c.json({ ...manifest, baseUrl: `${new URL(c.req.url).origin}/v/${version}/` }, 200, {
-			'cache-control': IMMUTABLE
-		})
-	}
+	// The canonical manifest sits BESIDE the payload rather than inside it, because
+	// the bundle's authored manifest is control metadata that we never rehost — so
+	// this one name resolves one level up, and an app is free to ship a file called
+	// anything else, `worker.js` included.
+	const key =
+		path === 'manifest.json'
+			? `${versioned(id, version)}/manifest.json`
+			: `${versioned(id, version)}/files/${path}`
 
 	// Streamed straight through, so a 10 MB bundle never becomes a 10 MB string
-	// in a 128 MB isolate.
-	const body = (await c.env.STORE.get(`${versioned(id, version)}/files/${path}`))?.body
+	// in a 128 MB isolate — and what a device verifies is what we stored.
+	const body = (await c.env.STORE.get(key))?.body
 	if (!body) return c.notFound()
 	return c.body(body, 200, { 'content-type': mime(path), 'cache-control': IMMUTABLE })
 })
+
+/**
+ * The reducer isolate: host code, byte-identical for every app and every release.
+ *
+ * It belongs to the shell rather than to a release, so it is not under `/v/`: the
+ * page hands it the reducer's version-pinned URL as the Worker's `name`, and it
+ * dynamic-imports that. One body, and no per-release copy of platform code.
+ *
+ * `no-cache` because it changes with host deployments — a cached one against a
+ * newer shell is a protocol mismatch nobody can clear from the server side.
+ */
+route.get('/worker.js', (c) =>
+	c.body(sandboxWorkerSource(null, 'web'), 200, {
+		'content-type': MIME.js as string,
+		'cache-control': 'no-cache'
+	})
+)
 
 // Never cached hard: a stale service worker is the one thing that cannot be
 // fixed from the server side. Browsers also bypass the HTTP cache when checking
@@ -129,8 +161,8 @@ route.get('/sw.js', (c) =>
  * a Safari user has not opened in a week loses its whole origin — the volume
  * and their documents with it, since eviction is all-or-nothing per origin.
  *
- * Named `.webmanifest`, not `manifest.json`: that name already means the app's
- * own authored manifest, which is served from `/v/{version}/`.
+ * Named `.webmanifest`, not `manifest.json`: that name already means this app's
+ * release manifest, which is served from `/v/{version}/`.
  */
 route.get('/manifest.webmanifest', async (c) => {
 	const id = appId(c.req.raw, c.env)
@@ -180,7 +212,7 @@ async function iconSize(env: CloudflareBindings, key: string): Promise<string> {
 	return `${view.getUint32(16)}x${view.getUint32(20)}`
 }
 
-/** The one route that asks what the live version is. */
+/** The one page, and the one route that asks what the live version is. */
 route.get('/', async (c) => {
 	const id = appId(c.req.raw, c.env)
 	const app = id ? await findApp(c.env, id) : null
@@ -194,24 +226,26 @@ route.get('/', async (c) => {
 				{/* The GUI is the app's own code, served from the store rather than bundled
 				    into the platform entry below — so the browser only discovers it once
 				    that entry runs. Start the fetch at parse time instead. */}
-				<link rel="modulepreload" href={`${base}gui.js`} />
+				{app.gui ? <link rel="modulepreload" href={`${base}${app.gui}`} /> : null}
 				<link rel="manifest" href="/manifest.webmanifest" />
 				<style>{'html, body, #app { height: 100%; margin: 0 }'}</style>
 				<ViteClient />
 				<Script src="/src/client/main.ts" />
 			</head>
 			<body>
-				{/* The mount point, carrying the app's identity AND the version-pinned
-				    origin its bytes come from: resolving the live version is this
-				    request's job, so the page inherits the answer rather than asking
-				    again — and every URL the client builds stays pinned to the release
-				    this document was rendered for. */}
+				{/* The mount point, carrying the app's identity, the entry points its
+				    manifest declares, AND the version-pinned origin its bytes come from:
+				    resolving the live version is this request's job, so the page inherits
+				    the answer rather than asking again — and every URL the client builds
+				    stays pinned to the release this document was rendered for. */}
 				<div
 					id="app"
 					data-id={app.id}
 					data-name={app.name}
 					data-version={app.version}
 					data-base={base}
+					data-app={app.app}
+					data-gui={app.gui}
 				></div>
 			</body>
 		</html>

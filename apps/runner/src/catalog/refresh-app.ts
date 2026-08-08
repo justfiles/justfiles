@@ -13,7 +13,7 @@ const FIRST_PARTY = 'justfiles/'
 /** Rung 3 pages the tags endpoint, but not without end. 300 tags is plenty. */
 const TAG_PAGES = 3
 
-const infoKey = (id: string) => `apps/${id}/info.json`
+const recordKey = (id: string) => `apps/${id}/record.json`
 
 /** Which conditional read an ETag belongs to. Bounded: one per probe, no more. */
 type Probe = 'release' | 'head'
@@ -36,16 +36,24 @@ export interface Resolved {
  * A resolution whose bytes we hold. Frozen: a re-resolution landing on the same
  * version is compared, never rewritten.
  *
- * There is no `staging` state. `info.json` is written once every file has
+ * There is no `staging` state. `record.json` is written once every file has
  * landed, so a half-finished import leaves bytes in storage and no record here —
  * which is exactly the orphan the GC sweep in kb/registry.md looks for.
  */
 export interface Release extends Resolved {
-	/** Of the archive we downloaded. */
-	digest: string
-	/** Whole-app fingerprint, carried into the app spec. */
-	hash: string
-	bytes: number
+	/**
+	 * Provenance of the archive we downloaded, and nothing derived from the
+	 * manifest: the release's own `hash` lives in the manifest, and a second copy
+	 * here would be a second thing that can disagree.
+	 */
+	bundle: {
+		/** Of `bundle.zip` as we received it. */
+		digest: string
+		/** Of `bundle.zip`, compressed. */
+		size: number
+		/** Everything it extracted to, the authored manifest included. */
+		unpacked: number
+	}
 	state: 'ready' | 'yanked'
 	at: number
 }
@@ -55,7 +63,7 @@ export interface Release extends Resolved {
  * of kb/registry.md's table, and the half nothing can reconstruct. `repo` and
  * `status` are absent on purpose: one read of the catalog produces them.
  */
-export interface Info {
+export interface AppRecord {
 	/** GitHub's immutable repository id. Empty until first learned. */
 	repoNodeId: string
 	/** Where rung 4 looks; learned from the same response as `repoNodeId`. */
@@ -86,12 +94,12 @@ export async function refreshApp(
 	id: string,
 	entry: Entry
 ): Promise<Resolved | null> {
-	// Outside the try: a corrupt `info.json` must not be overwritten with a blank
+	// Outside the try: a corrupt `record.json` must not be overwritten with a blank
 	// one. Unlike the catalog snapshot, nothing upstream could rebuild it.
-	const before = await readInfo(env, id)
+	const before = await readRecord(env, id)
 
 	// What this run's polls saw. Written back only if it leaves nothing undone.
-	const polled: Info['etags'] = { ...before?.etags }
+	const polled: AppRecord['etags'] = { ...before?.etags }
 
 	/**
 	 * Identity is checked where it matters: before bytes are taken in, and at
@@ -115,8 +123,8 @@ export async function refreshApp(
 		return fetched
 	}
 
-	const save = (etags: Info['etags'], error: string | null) =>
-		writeInfo(env, id, {
+	const save = (etags: AppRecord['etags'], error: string | null) =>
+		writeRecord(env, id, {
 			repoNodeId: meta?.node_id ?? before?.repoNodeId ?? '',
 			defaultBranch: meta?.default_branch ?? before?.defaultBranch ?? '',
 			current: before?.current ?? null,
@@ -124,7 +132,7 @@ export async function refreshApp(
 			checkedAt: Math.floor(Date.now() / 1000),
 			error,
 			// Carried through untouched. Recording a release is the import's write,
-			// and it has to come after `spec.json` — see kb/registry.md#import.
+			// and it has to come after the manifest — see kb/registry.md#import.
 			releases: before?.releases ?? {}
 		})
 
@@ -166,7 +174,7 @@ async function resolveRelease(
 	env: CloudflareBindings,
 	entry: Entry,
 	repo: string,
-	etags: Info['etags'],
+	etags: AppRecord['etags'],
 	repoMeta: (repo: string) => Promise<RepoMeta>
 ): Promise<Resolved | null> {
 	// Rungs 1–2: the latest release. Its ETag is the whole optimisation — most
@@ -218,7 +226,7 @@ async function resolveRelease(
  */
 async function poll(
 	env: CloudflareBindings,
-	etags: Info['etags'],
+	etags: AppRecord['etags'],
 	probe: Probe,
 	path: string
 ): Promise<Response> {
@@ -291,27 +299,18 @@ async function commitOf(env: CloudflareBindings, repo: string, ref: string): Pro
 	return (await res.json<{ sha: string }>()).sha
 }
 
-/** Also the serving path's one lookup — `findApp` reads `current` from it. */
-export async function readInfo(env: CloudflareBindings, id: string): Promise<Info | null> {
-	const obj = await env.STORE.get(infoKey(id))
-	if (!obj) return null
-
-	const info = await obj.json<Info & { approved?: boolean }>()
-	delete info.approved
-	if (info.current) return info
-
-	const latest = Object.values(info.releases)
-		.filter((release) => release.state === 'ready')
-		.sort((a, b) => b.at - a.at)[0]
-	return latest ? { ...info, current: latest.version } : info
+/** Also the serving path's one lookup — the current pointer lives here. */
+export async function readRecord(env: CloudflareBindings, id: string): Promise<AppRecord | null> {
+	const obj = await env.STORE.get(recordKey(id))
+	return obj ? await obj.json<AppRecord>() : null
 }
 
 /**
- * Two writers, by design: this function writes `etags`, and the import writes
+ * Two writers, by design: this module writes `etags`, and the import writes
  * `releases` and `current`. Both read-modify-write the whole document, and both
  * run once per app per run, in that order.
  */
-export const writeInfo = (env: CloudflareBindings, id: string, info: Info) =>
-	env.STORE.put(infoKey(id), JSON.stringify(info), {
+export const writeRecord = (env: CloudflareBindings, id: string, record: AppRecord) =>
+	env.STORE.put(recordKey(id), JSON.stringify(record), {
 		httpMetadata: { contentType: 'application/json' }
 	})

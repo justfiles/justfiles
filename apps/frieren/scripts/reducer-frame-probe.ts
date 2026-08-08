@@ -1,5 +1,5 @@
 // Topology-B reducer-frame check. Validates that the REAL
-// `sandboxWorkerSource(..., 'web-iframe')` output — the classic reducer Worker
+// `sandboxWorkerSource(null, 'web')` output — the classic reducer Worker
 // used in Topology B — actually loads and answers the host↔isolate protocol
 // inside an opaque-origin `sandbox="allow-scripts"` iframe, under the frame CSP,
 // on real browsers. This is the one thing the node vitest suite can't cover (it
@@ -25,7 +25,7 @@ type EngineName = keyof typeof ENGINES
 
 const USAGE = `Usage: pnpm run verify:sandbox [chromium|firefox|webkit|all]
 
-Validates sandboxWorkerSource(..., 'web-iframe') (the Topology-B classic reducer
+Validates sandboxWorkerSource(null, 'web') (the Topology-B classic reducer
 Worker) loads + answers the host↔isolate protocol inside an opaque-origin
 sandboxed iframe under the frame CSP, on real browsers. Defaults to all engines.
 Requires: npx playwright install chromium firefox webkit`
@@ -42,7 +42,7 @@ function parseEngines(): EngineName[] {
 	process.exit(2)
 }
 
-const WORKER_SRC = sandboxWorkerSource('', 'web-iframe')
+const WORKER_SRC = sandboxWorkerSource(null, 'web')
 
 // A minimal self-contained reducer bundle (SDK already inlined by the compile).
 const APP = `export const app = {

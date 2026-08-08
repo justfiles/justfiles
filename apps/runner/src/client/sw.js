@@ -23,12 +23,21 @@ self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim(
 /** Frozen by construction: `/v/{version}/…` never changes, `/assets/…` is content-hashed. */
 const immutable = (path) => path.startsWith('/v/') || path.startsWith('/assets/')
 
+/**
+ * The host shell, which moves with our deployments rather than with a release:
+ * the document, and `/worker.js` — the reducer isolate's host half, which is one
+ * body for every app and carries the host↔isolate protocol. Pinning either to a
+ * cached copy would pin the page to an older protocol than the code it loads, so
+ * both take the network first and fall back to the cache only offline.
+ */
+const shell = (request, path) => request.mode === 'navigate' || path === '/worker.js'
+
 self.addEventListener('fetch', (event) => {
 	const url = new URL(event.request.url)
 	if (event.request.method !== 'GET' || url.origin !== self.location.origin) return
 
 	if (immutable(url.pathname)) event.respondWith(cacheFirst(event.request))
-	else if (event.request.mode === 'navigate') event.respondWith(networkFirst(event.request))
+	else if (shell(event.request, url.pathname)) event.respondWith(networkFirst(event.request))
 })
 
 /** Frozen bytes never need revalidating, so a hit is the end of it. */

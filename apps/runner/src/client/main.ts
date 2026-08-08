@@ -17,24 +17,29 @@ import { idbStorage, persistStorage } from '@justfiles/fs/storage/idb'
 // missing root is worth failing on before any of the machinery below exists.
 const root = document.getElementById('app')
 if (!root) throw new Error('missing app root')
-const { id, name, version, base } = root.dataset
-if (!id || !name || !base) throw new Error('missing app identity')
+const { id, name, version, base, app, gui: guiPath } = root.dataset
+if (!id || !name || !base || !app || !guiPath) throw new Error('missing app identity')
 
 // `base` is `/v/{version}/`, emitted by the document that resolved the live
 // version. Every URL here hangs off it, so one page load can never mix bytes
 // from two releases — and the integrity pins an installed device holds keep
-// matching after the next publish.
+// matching after the next publish. The entry points come from the manifest the
+// same way, so an app that names its reducer something else still boots.
 
 // The app's own GUI: resolved by the browser, not the build, so the specifier
 // goes through a variable to stay out of Vite's import analysis. Started here
 // and awaited at the end — it downloads while the kernel boots rather than
 // after it.
-const guiModule = import(/* @vite-ignore */ `${base}gui.js`)
+const guiModule = import(/* @vite-ignore */ `${base}${guiPath}`)
 
-// `worker.js` is the reducer isolate: platform code that imports this release's
-// `app.js` and answers the kernel's host↔isolate protocol. One app per origin,
-// so one worker.
-const worker = new Worker(`${base}worker.js`, { type: 'module' })
+// `/worker.js` is the reducer isolate: HOST code, one body for every app and
+// every release, so it carries no reducer URL of its own. This release's reducer
+// is handed over as the Worker's `name`, which the isolate dynamic-imports —
+// which is why the platform needs no per-release copy of itself under `/v/`.
+const worker = new Worker('/worker.js', {
+	type: 'module',
+	name: new URL(`${base}${app}`, location.href).href
+})
 const { sandbox, fail } = sandboxClient({
 	post: (message) => worker.postMessage(message),
 	onMessage: (handler) => {
@@ -62,7 +67,7 @@ const appId = await k.install(
 		id,
 		name,
 		version,
-		app: await (await fetch(`${base}app.js`)).text()
+		app: await (await fetch(`${base}${app}`)).text()
 	})
 )
 

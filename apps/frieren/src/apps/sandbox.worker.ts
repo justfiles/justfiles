@@ -105,8 +105,9 @@ type ReducerFrame = {
 
 // The reducer Worker source is constant: the app bundle's blob URL is passed to
 // the frame per-spawn and handed to the Worker as its `name` (read as self.name),
-// so this string never varies. See `sandboxWorkerSource(..., 'web-iframe')`.
-const WORKER_SRC = sandboxWorkerSource('', 'web-iframe')
+// so this string never varies. That is what the null `appUrl` asks for — see
+// `sandboxWorkerSource`, which also explains why this worker has to be classic.
+const WORKER_SRC = sandboxWorkerSource(null, 'web')
 
 // The hidden iframe's document. CSP makes it network-deny-by-default: only
 // inline (its own bootstrap) and blob: scripts run, only blob: workers spawn, and
