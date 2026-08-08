@@ -78,6 +78,17 @@ test('Files reads the real volume through the system-scoped volume capability', 
 	sandboxes.release(FILES)
 })
 
+test('soul preview keeps the capability error when no AI account is enabled', async () => {
+	const offline = await buildKernel(volume(await nativeStorage(await tempRoot('no-ai'))))
+
+	await expect(
+		offline.dispatch(SETTINGS, {
+			type: 'generateSoul',
+			params: { name: 'Fern', gender: 'female', archetype: 'companion' }
+		} as Message)
+	).rejects.toThrow('CAPABILITY_UNAVAILABLE')
+})
+
 test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)', async () => {
 	const sealedRoot = await tempRoot('sealed')
 	const sealed = await buildKernel(volume(await nativeStorage(sealedRoot)), {

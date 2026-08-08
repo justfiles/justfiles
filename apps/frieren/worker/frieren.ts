@@ -18,11 +18,11 @@ import {
 	type AgentBackend,
 	type AgentSession,
 	createAgentSession,
+	generateSoul as generateAgentSoul,
 	type LLMText,
 	modelsBackend,
 	parseFrontmatter,
 	resolveTimezone,
-	SOUL_GENERATION_PROMPT,
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
@@ -339,25 +339,9 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
-	private async generateSoul(
-		input: SoulGenerationInput
-	): Promise<{ text: string; firstWords: string }> {
-		if (!this.text) {
-			const { models, model } = this.aiRuntime()
-			this.text = text(this.meteredBackend(models, model))
-		}
-		const lines: string[] = [`agent name: ${input.agentName}`]
-		if (input.archetype) lines.push(`archetype: ${input.archetype}`)
-		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`)
-		if (input.userAge !== undefined) lines.push(`user age: ${input.userAge}`)
-		if (input.userGender) lines.push(`user gender: ${input.userGender}`)
-		const context = lines.join('\n')
-		const soul = await this.text.gen(SOUL_GENERATION_PROMPT, context)
-		const firstWords = await this.text.gen(
-			'Return one short opening sentence spoken by this agent. No label, explanation, or quotation marks.',
-			`${context}\n\nsoul:\n${soul}`
-		)
-		return { text: soul, firstWords: firstWords.trim() }
+	private async generateSoul(input: SoulGenerationInput): ReturnType<typeof generateAgentSoul> {
+		const { models, model } = this.aiRuntime()
+		return generateAgentSoul(this.meteredBackend(models, model), input, { firstWords: true })
 	}
 
 	private async reset() {
@@ -427,14 +411,13 @@ export class Frieren extends DurableObject<Env> {
 					// in their own calendar, not the worker's.
 					timezone: this.getTimezone,
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-						const { text, firstWords } = await this.generateSoul({
+						return this.generateSoul({
 							agentName: name,
 							agentGender: gender,
 							archetype: archetype as SoulGenerationInput['archetype'],
 							userAge,
 							userGender
 						})
-						return { body: text, firstWords }
 					}
 				}
 			})
@@ -580,7 +563,7 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
+		await scheduleDailyAlarm(this.ctx, this.session)
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -680,7 +663,7 @@ export class Frieren extends DurableObject<Env> {
 			const [client, server] = Object.values(pair)
 
 			this.ctx.acceptWebSocket(server)
-			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
+			await scheduleDailyAlarm(this.ctx, this.session)
 
 			const participants = await this.loadParticipants()
 			const history = sessionEntries2DisplayMessages((await this.session?.history()) ?? [])
