@@ -2,6 +2,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
+import { createLifetimeGate, type LifetimeToken } from '@justfiles/lifetime'
 import { PROFILE_PATH, readAgentName, SOUL_PATH } from './agent-defaults.ts'
 import {
 	type Assistant,
@@ -115,6 +116,7 @@ interface PendingQuestion {
 interface Built {
 	assistant: Assistant
 	text: LLMText
+	title: string
 	takePending: () => PendingQuestion | null
 }
 
@@ -133,7 +135,9 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	// Re-resolve the backend on every use and cache the built runtime keyed on `model +
 	// revision`, so a model switch or a token refresh takes effect on the next turn without a
 	// restart. The per-key promise dedupes concurrent builds; a failure clears the cache.
-	let active: { key: string; built: Promise<Built> } | null = null
+	const lifetime = createLifetimeGate(0)
+	let active: { key: string; token: LifetimeToken<number>; built: Promise<Built> } | null = null
+	let watching: Promise<void> | null = null
 
 	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
 	// become the system prompt, the agent's name becomes the banner title — and they change
@@ -144,14 +148,8 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	// This belongs HERE, not in each host: every host memoises a session, so every host
 	// would otherwise have to remember to invalidate it, and the one that forgets keeps
 	// answering as the agent the user just renamed. Sessions live as long as their process,
-	// so the watches are never torn down.
-	void Promise.all(
-		[SOUL_PATH, PROFILE_PATH].map((path) =>
-			volume.watch(path, () => {
-				active = null
-			})
-		)
-	)
+	// so the watches are never torn down. Registration is part of the lazy build: constructing
+	// a session must not touch storage before its host's migration barrier has completed.
 
 	return {
 		prompt: (message, source, onEvent) =>
@@ -168,21 +166,35 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	}
 
 	async function getBuilt(): Promise<Built> {
-		const llm = await resolveBackend()
-		const key = `${llm.model.id} ${llm.revision}`
-		if (!active || active.key !== key) {
-			const built = build(llm).catch((error) => {
-				if (active?.key === key) active = null
+		while (true) {
+			const llm = await resolveBackend()
+			const key = `${llm.model.id} ${llm.revision}`
+			const token = lifetime.current()
+			let selected = active
+			if (!selected || selected.key !== key || selected.token !== token) {
+				const built = build(llm)
+				selected = { key, token, built }
+				active = selected
+				void built.catch(() => {
+					if (active === selected) active = null
+				})
+			}
+			try {
+				const built = await selected.built
+				selected.token.assertCurrent()
+				title = built.title
+				return built
+			} catch (error) {
+				if (lifetime.current() !== selected.token) continue
 				throw error
-			})
-			active = { key, built }
+			}
 		}
-		return active.built
 	}
 
 	async function build(llm: AgentBackend): Promise<Built> {
+		await ensureWatching()
 		// Read where the rest of the identity is read, so the watch above refreshes it too.
-		if (options.title === undefined) title = await readAgentName(volume)
+		const builtTitle = options.title ?? (await readAgentName(volume))
 		const text = createText(llm)
 		const assistant = await createAssistant({
 			volume,
@@ -215,11 +227,37 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		return {
 			assistant,
 			text,
+			title: builtTitle,
 			takePending: () => {
 				const value = pending
 				pending = null
 				return value
 			}
+		}
+	}
+
+	async function ensureWatching(): Promise<void> {
+		watching ??= registerWatches().catch((error) => {
+			watching = null
+			throw error
+		})
+		return watching
+	}
+
+	async function registerWatches(): Promise<void> {
+		const unwatch: (() => void)[] = []
+		try {
+			for (const path of [SOUL_PATH, PROFILE_PATH]) {
+				unwatch.push(
+					await volume.watch(path, () => {
+						lifetime.replace(lifetime.current().value + 1)
+						active = null
+					})
+				)
+			}
+		} catch (error) {
+			for (const stop of unwatch) stop()
+			throw error
 		}
 	}
 
