@@ -69,7 +69,6 @@ import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
-import { ensureUsageSchema, readUsage } from './usage.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -328,7 +327,7 @@ export class Frieren extends DurableObject<Env> {
 	// What `host.usage` reads: the per-user meter + quota, projected into the
 	// host-agnostic snapshot the Settings app renders.
 	private async usageSnapshot(): Promise<UsageSnapshot> {
-		const report = await readUsage(this.db, this.ctx.storage.sql.databaseSize)
+		const report = await this.meter.readUsage(this.ctx.storage.sql.databaseSize)
 		const q = evaluate(report, await readTier(this.ctx.storage, DEV_TIER_OVERRIDE))
 		return {
 			tier: q.tier,
@@ -365,7 +364,6 @@ export class Frieren extends DurableObject<Env> {
 		const { models, model, generateImage } = this.aiRuntime()
 		this.generateImage = generateImage
 		await migrateCF(this.ctx.storage)
-		await ensureUsageSchema(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)
