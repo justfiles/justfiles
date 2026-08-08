@@ -54,6 +54,30 @@ const IMMUTABLE = 'public, max-age=31536000, immutable'
  */
 const versioned = (id: string, version: string) => `apps/${id}/${version}`
 
+/**
+ * Everything under `/v/` is readable by any origin.
+ *
+ * A desktop installs a hosted app by fetching this release's `spec.json` and
+ * reducer from another origin, and mounts its GUI and assets the same way on
+ * every cache miss — so without this the whole store is reachable only from the
+ * app's own page, which is the one context that does not need it.
+ *
+ * `*` rather than an allowlist because there is nothing here to scope: these
+ * bytes are already public, the origin carries no credentials to leak into a
+ * cross-origin read, and every file is pinned by digest in the record that
+ * names it, so a reader that gets the wrong bytes rejects them itself. A
+ * literal `*` also needs no `Vary`, which is what keeps this one CDN entry per
+ * URL rather than one per requesting origin.
+ *
+ * Applied after the handler so it covers the 404s too: to a cross-origin
+ * caller, a response without this header is a network error rather than a
+ * status it can read and report.
+ */
+route.use('/v/:version/*', async (c, next) => {
+	await next()
+	c.res.headers.set('access-control-allow-origin', '*')
+})
+
 route.get('/v/:version/*', async (c) => {
 	const id = appId(c.req.raw, c.env)
 	const version = c.req.param('version')
