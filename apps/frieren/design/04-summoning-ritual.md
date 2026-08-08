@@ -4,8 +4,8 @@
 > (`src/personalize/`, leftover from the old mandatory-onboarding design) with a
 > themed opt-in flow, and adds a permanent "unpersonalized" signal to the agent
 > surfaces. Builds on what already exists: seeded defaults
-> (`shared/agent-defaults.ts`), the soul-generation endpoint
-> (`worker` `/api/agent/soul`), and the worker re-reading `soul.md` every turn.
+> (`shared/agent-defaults.ts`), the Settings `agent.generateSoul` capability, and
+> the worker re-reading `soul.md` every turn.
 > Interactive mock (this doc's images are captured from it):
 > https://claude.ai/code/artifact/40dc1735-10d1-47e6-8ce0-3f9cfc55912b
 
@@ -196,9 +196,8 @@ Logically identical, structurally adapted:
 - The launcher panel is too small for the ritual; it opens as its own page the
   way apps do (`appUrl`-style route), not an overlay.
 - The ritual steps are plain React over a `Volume` plus one generation call —
-  extract to a shared package with the generation call injected (frieren →
-  worker `/api/agent/soul`, spud → daemon endpoint). Each host supplies only
-  the frame.
+  extract to a shared package with the generation call injected through the
+  Settings capability. Each host supplies only the frame.
 
 ## Build plan
 

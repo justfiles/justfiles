@@ -187,12 +187,6 @@ export class Frieren extends DurableObject<Env> {
 		// below calls it again for the agent's own backend — cheap and unchanged.
 		const { model: gatewayModel, apiKey: gatewayApiKey } = this.aiRuntime()
 		this.app = new Hono()
-			.post('/api/agent/soul', async (c) => {
-				const body = await c.req.json<SoulGenerationInput>()
-				if (!body?.agentName) return c.json({ error: 'agentName is required' }, 400)
-				const generated = await this.generateSoul(body)
-				return c.json(generated)
-			})
 			.post('/api/agent/face', async (c) => {
 				const body = await c.req.json<{ avatar?: string; expression?: string; hash?: string }>()
 				const expression = EXPRESSIONS.find((name) => name === body?.expression)
