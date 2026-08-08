@@ -1,4 +1,5 @@
 import { type AppManifest, safeBundlePath } from '@justfiles/app'
+import type { CatalogFile } from '@justfiles/app/appstore'
 import { archive } from './github'
 import { type Info, type Release, type Resolved, readInfo, writeInfo } from './refresh-app'
 import { entries, inflate, readCapped, type ZipEntry } from './zip'
@@ -74,6 +75,7 @@ export async function importRelease(
 		if (manifest.id && manifest.id !== id) console.warn(`${id}: manifest claims id ${manifest.id}`)
 
 		const digests: Record<string, string> = {}
+		const sizes: Record<string, number> = {}
 		let total = 0
 
 		for (const entry of all) {
@@ -95,6 +97,7 @@ export async function importRelease(
 			total += file.byteLength
 
 			digests[path] = `sha256-${await sha256(file)}`
+			sizes[path] = file.byteLength
 			await env.STORE.put(`${prefix}/files/${path}`, file)
 		}
 
@@ -120,6 +123,20 @@ export async function importRelease(
 		// rewrite of every spec we hold — see kb/registry.md#renames-are-deferred.
 		// A device reading this file unmodified would treat the app as unhosted.
 		await env.STORE.put(`${prefix}/bundle.zip`, bytes)
+
+		// The catalog's view of the same release, and the one document that
+		// describes EVERY file. `spec.json` above is an `AppManifest` and pins only
+		// the mounted half, so the reducer's digest is deliberately missing from it
+		// — but a store has to hand that digest out, because a device downloads the
+		// reducer into its volume and verifies it before it runs. Sizes live here
+		// for the same reason: they are a catalog fact, not a manifest one.
+		//
+		// Written before `spec.json` so it obeys the same rule as everything else
+		// here: `info.json` is the last write, and nothing a reader can reach
+		// through it may be missing by the time it lands.
+		await env.STORE.put(`${prefix}/files.json`, JSON.stringify(catalogFiles(digests, sizes)), {
+			httpMetadata: { contentType: 'application/json' }
+		})
 		await env.STORE.put(`${prefix}/spec.json`, JSON.stringify(spec), {
 			httpMetadata: { contentType: 'application/json' }
 		})
@@ -228,6 +245,20 @@ function bundlePath(entry: ZipEntry, root: string): string {
 	if (SECRET.test(path.slice(path.lastIndexOf('/') + 1)))
 		throw new Error(`${path}: refusing to rehost`)
 	return path
+}
+
+/**
+ * Every file of the release, as a store hands them out. Sorted by path so the
+ * document is stable across imports of the same bytes, and typed as the
+ * consumer's own `CatalogFile` so the two shapes cannot drift apart.
+ */
+function catalogFiles(
+	digests: Record<string, string>,
+	sizes: Record<string, number>
+): CatalogFile[] {
+	return Object.entries(digests)
+		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+		.map(([path, hash]) => ({ path, hash, size: sizes[path] as number }))
 }
 
 /**

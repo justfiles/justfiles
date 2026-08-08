@@ -108,7 +108,8 @@ export async function refreshCatalog(env: CloudflareBindings): Promise<CatalogRe
 	return { catalog, touched, deleted }
 }
 
-async function readCatalog(env: CloudflareBindings): Promise<Catalog | null> {
+/** The snapshot as it stands, without asking upstream anything. */
+export async function readCatalog(env: CloudflareBindings): Promise<Catalog | null> {
 	const obj = await env.STORE.get(CATALOG_KEY)
 	if (!obj) return null
 	try {

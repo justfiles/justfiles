@@ -265,6 +265,52 @@ describe('importRelease', () => {
 		expect(info.error).toBeNull()
 	})
 
+	// The store's half of the same release. `spec.json` is an `AppManifest` and
+	// pins only what mounts; a device downloads the reducer into its volume and
+	// verifies it there, so the digest `spec.json` omits has to live somewhere.
+	it('records every file, the reducer included, with its size', async () => {
+		const env = await run(bundle())
+		const files = JSON.parse(
+			new TextDecoder().decode(
+				env.objects.get('apps/justfiles.draw/1.0.0/files.json') as Uint8Array
+			)
+		)
+		expect(files.map((file: { path: string }) => file.path)).toEqual([
+			'app.js',
+			'gui.js',
+			'manifest.json'
+		])
+		expect(files[0]).toEqual({
+			path: 'app.js',
+			hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/),
+			size: 'export const reduce = () => {}'.length
+		})
+	})
+
+	// `info.json` is the last write, and nothing reachable through it may be
+	// missing by the time it lands — the same rule `spec.json` already obeys.
+	it('writes the file list before the record that publishes it', async () => {
+		const env = store()
+		seed(env)
+		// The map preserves insertion order, but `seed` already put `info.json` in
+		// it, so the order has to be observed rather than read off the keys.
+		const written: string[] = []
+		const put = env.STORE.put.bind(env.STORE)
+		env.STORE.put = ((key: string, value: never) => {
+			written.push(key)
+			return put(key, value)
+		}) as typeof env.STORE.put
+		serve(bundle())
+		await importRelease(env, 'justfiles.draw', 'justfiles/app-draw', RESOLVED)
+
+		expect(written.indexOf('apps/justfiles.draw/1.0.0/files.json')).toBeLessThan(
+			written.indexOf('apps/justfiles.draw/1.0.0/spec.json')
+		)
+		expect(written.indexOf('apps/justfiles.draw/1.0.0/spec.json')).toBeLessThan(
+			written.indexOf('apps/justfiles.draw/info.json')
+		)
+	})
+
 	it('serves the id we were asked for, not the one the manifest claims', async () => {
 		const env = await run(
 			zip([

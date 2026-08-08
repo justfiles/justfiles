@@ -3,15 +3,20 @@ import worker from './index.ts'
 
 /**
  * A store over a flat key→JSON map. `list` derives the app prefixes from the
- * keys the way R2's delimiter does — every key is `apps/<id>/…` here — and hands
- * back ONE per page, so every test that lists is also a test that pages.
+ * keys the way R2's delimiter does — every key under `apps/` is `apps/<id>/…` —
+ * and hands back ONE per page, so every test that lists is also a test that
+ * pages.
  */
 const store = (objects: Record<string, unknown>) => ({
 	get: async (key: string) =>
 		key in objects ? { json: async () => objects[key], body: JSON.stringify(objects[key]) } : null,
-	list: async ({ cursor }: { cursor?: string } = {}) => {
+	list: async ({ prefix = '', cursor }: { prefix?: string; cursor?: string } = {}) => {
 		const prefixes = [
-			...new Set(Object.keys(objects).map((key) => `${key.split('/').slice(0, 2).join('/')}/`))
+			...new Set(
+				Object.keys(objects)
+					.filter((key) => key.startsWith(prefix))
+					.map((key) => `${key.split('/').slice(0, 2).join('/')}/`)
+			)
 		]
 		const at = cursor ? Number(cursor) : 0
 		return {
@@ -60,12 +65,25 @@ test('the platform keeps every label an id cannot encode to', async () => {
 	}
 })
 
+const notesFiles = [
+	{ path: 'app.js', hash: 'sha256-aaa', size: 11 },
+	{ path: 'gui.js', hash: 'sha256-bbb', size: 22 },
+	{ path: 'icon.png', hash: 'sha256-ccc', size: 33 },
+	{ path: 'manifest.json', hash: 'sha256-ddd', size: 44 }
+]
+
 const published = {
 	'apps/alice.notes/info.json': {
 		current: '1.2.0',
 		releases: { '1.2.0': { version: '1.2.0', state: 'ready' } }
 	},
-	'apps/alice.notes/1.2.0/spec.json': { name: 'Notes', icon: 'icon.png' },
+	'apps/alice.notes/1.2.0/spec.json': {
+		name: 'Notes',
+		icon: 'icon.png',
+		description: 'Notes, but yours',
+		capabilities: { volume: { id: 'volume', scopes: [] } }
+	},
+	'apps/alice.notes/1.2.0/files.json': notesFiles,
 	'apps/alice.notes/1.2.0/files/gui.js': 'the app',
 	// What a crashed import leaves behind: bytes under a version no release
 	// record names.
@@ -76,8 +94,21 @@ const published = {
 		current: null,
 		releases: { '0.1.0': { version: '0.1.0', state: 'ready' } }
 	},
-	'apps/bob.draft/0.1.0/spec.json': { name: 'Draft' }
+	'apps/bob.draft/0.1.0/spec.json': { name: 'Draft' },
+	'apps/bob.draft/0.1.0/files.json': [{ path: 'app.js', hash: 'sha256-eee', size: 5 }],
+	'catalog.json': {
+		schema: 2,
+		entries: {
+			'alice.notes': { repo: 'alice/notes', status: 'active' },
+			'bob.draft': { repo: 'bob/draft', status: 'active' }
+		}
+	}
 }
+
+const storeApps = async (env = envWith(published)) =>
+	(await (await get('https://example.com/store.json', env)).json()) as {
+		apps: { id: string; baseUrl: string; files: unknown[]; repo?: string }[]
+	}
 
 test('the index lists what is published, linking to each app origin', async () => {
 	const page = await (await get('https://example.com/', envWith(published))).text()
@@ -91,6 +122,77 @@ test('the index lists what is published, linking to each app origin', async () =
 test('the index links to *.localhost in local dev', async () => {
 	const page = await (await get('http://localhost:8787/', envWith(published))).text()
 	expect(page).toContain('href="http://alice-notes.localhost:8787/"')
+})
+
+// What a desktop installs from: enough to build the record, verify every byte,
+// and show who it came from before granting anything.
+test('the store feed carries an installable record per app', async () => {
+	const { apps } = await storeApps()
+	const notes = apps.find((app) => app.id === 'alice.notes')
+	expect(notes).toMatchObject({
+		id: 'alice.notes',
+		name: 'Notes',
+		version: '1.2.0',
+		icon: 'icon.png',
+		description: 'Notes, but yours',
+		capabilities: { volume: { id: 'volume', scopes: [] } },
+		repo: 'alice/notes',
+		// Version-pinned and on the app's OWN origin, not this one.
+		baseUrl: 'https://alice-notes.example.com/v/1.2.0/',
+		files: notesFiles
+	})
+})
+
+// `spec.json` pins only what mounts, so the reducer's digest is missing from it
+// by design — and a device downloads the reducer into its volume and verifies it
+// there, so a feed without it cannot install anything.
+test('the feed pins the reducer, which the app spec does not', async () => {
+	const { apps } = await storeApps()
+	const notes = apps.find((app) => app.id === 'alice.notes')
+	expect(notes?.files).toContainEqual({ path: 'app.js', hash: 'sha256-aaa', size: 11 })
+})
+
+test('the feed is readable by any origin, and only briefly cacheable', async () => {
+	// Unlike everything under `/v/`, this resolves each app's LIVE version — it is
+	// the one document here that changes when a release lands.
+	const res = await get('https://example.com/store.json', envWith(published))
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	expect(res.headers.get('cache-control')).toBe('public, max-age=300')
+})
+
+// Removing an app stops it being offered; it does not stop it being served,
+// because a device pinned to one of its versions still has to resolve it.
+test('a parked entry drops out of the feed', async () => {
+	const parked = {
+		...published,
+		'catalog.json': {
+			schema: 2,
+			entries: { 'alice.notes': { repo: 'alice/notes', status: 'removed' } }
+		}
+	}
+	const { apps } = await storeApps(envWith(parked))
+	expect(apps.map((app) => app.id)).not.toContain('alice.notes')
+	// still served, and still on the index's terms — only the offer is withdrawn
+	expect(
+		(await get('https://alice-notes.example.com/v/1.2.0/gui.js', envWith(parked))).status
+	).toBe(200)
+})
+
+// The snapshot is derived state that the next tick rebuilds. Emptying the store
+// while every app in it is still being served would be the worse failure.
+test('a missing snapshot leaves the feed alone', async () => {
+	const { 'catalog.json': _, ...noSnapshot } = published
+	const { apps } = await storeApps(envWith(noSnapshot))
+	expect(apps.map((app) => app.id)).toContain('alice.notes')
+	expect(apps[0]?.repo).toBeUndefined()
+})
+
+// A release imported before `files.json` existed cannot be installed from, so it
+// is not offered as if it could be.
+test('a release with no file list is not offered', async () => {
+	const { 'apps/alice.notes/1.2.0/files.json': _, ...older } = published
+	const { apps } = await storeApps(envWith(older))
+	expect(apps.map((app) => app.id)).not.toContain('alice.notes')
 })
 
 test('a recorded release serves its bytes, frozen for a year', async () => {

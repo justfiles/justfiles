@@ -42,6 +42,38 @@ img, .icon { border-radius: 0.5rem; flex: none; height: 48px; object-fit: cover;
 .meta { color: var(--muted); font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 `
 
+/**
+ * The store feed: every app we host, as an installable record.
+ *
+ * The same projection the index below renders, so the page and the API cannot
+ * disagree about what is on offer. It is what a desktop resolves an app through
+ * — display metadata, declared capabilities, and every file's digest and size —
+ * and the successor to the npm-and-jsDelivr feed frieren carries today.
+ *
+ * Readable by any origin, for the same reason a release's bytes are: the client
+ * that installs from it is never this one. Cached briefly rather than for a
+ * year — unlike everything under `/v/`, this document resolves each app's LIVE
+ * version, so it is the one thing here that changes when a release lands.
+ */
+route.get('/store.json', async (c) => {
+	const apps = await listApps(c.env)
+	return c.json(
+		{
+			apps: apps.map((app) => ({
+				...app,
+				// From the id, not from the host this arrived on: the apex is not the
+				// app's origin, so unlike `/v/{version}/spec.json` there is nothing in
+				// the request to derive it from. Version-pinned, so a device that
+				// installs this record keeps fetching the release it verified against
+				// after a newer one is published.
+				baseUrl: `${appUrl(c.req.raw, c.env, app.id)}v/${app.version}/`
+			}))
+		},
+		200,
+		{ 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' }
+	)
+})
+
 /** The index: every app we host, each linking to the origin that serves it. */
 route.get('/', async (c) => {
 	const apps = await listApps(c.env)
