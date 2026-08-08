@@ -1,6 +1,8 @@
+import { encodeLabel } from '../id'
+import { type ReleaseManifest, STORE_SCHEMA, type StoreApp, type StoreIndex } from '../protocol'
 import { importRelease } from './import'
-import { type Resolved, readInfo, refreshApp } from './refresh-app'
-import { type CatalogRefresh, refreshCatalog } from './refresh-catalog'
+import { type Resolved, readRecord, refreshApp } from './refresh-app'
+import { type Catalog, type CatalogRefresh, refreshCatalog } from './refresh-catalog'
 
 /**
  * Imports per run. Ten maximally-sized bundles is ~5,000 subrequests, half the
@@ -8,59 +10,25 @@ import { type CatalogRefresh, refreshCatalog } from './refresh-catalog'
  */
 const IMPORT_BUDGET = 10
 
-export interface AppMetadata {
+const STORE_KEY = 'store.json'
+
+/**
+ * The release we host under an id, or null when we host nothing there — which is
+ * every id until its first import completes.
+ *
+ * Two reads, because `record.json` deliberately carries no display metadata — a
+ * second copy of an app's name would be a second thing that can be wrong. Called
+ * once per PAGE load and never per asset: the document it renders emits
+ * version-pinned URLs, and those resolve by string construction.
+ */
+export async function findApp(
+	env: CloudflareBindings,
 	id: string
-	name: string
-	version: string
-	/** Bundle-relative, for the web app manifest. Absent when the app ships none. */
-	icon?: string
-}
-
-/**
- * What we host under an id, or null when we host nothing there — which is every
- * id until its first import completes.
- *
- * Called once per PAGE load and never per asset: the document it renders emits
- * version-pinned URLs, and those resolve by string construction. Two reads, not
- * one, because `info.json` deliberately carries no display metadata — a second
- * copy of an app's name would be a second thing that can be wrong, and the read
- * is behind the same cache as the first.
- */
-export async function findApp(env: CloudflareBindings, id: string): Promise<AppMetadata | null> {
-	const version = (await readInfo(env, id))?.current
+): Promise<ReleaseManifest | null> {
+	const version = (await readRecord(env, id))?.current
 	if (!version) return null
-
-	const spec = await env.STORE.get(`apps/${id}/${version}/spec.json`)
-	if (!spec) return null
-	const { name, icon } = await spec.json<{ name: string; icon?: string }>()
-	return { id, name, version, icon }
-}
-
-/**
- * Every app we serve, for the root domain's index.
- *
- * Listed out of the store rather than out of the catalog snapshot, because the
- * store is what is actually reachable: an entry exists from the moment its PR
- * lands and hosts nothing until its first import completes.
- * This is the same walk `store.json` is specified to do — one `list` of `apps/`
- * and a read per app, no GitHub — and it collapses into a single read of that
- * projection once it exists. See kb/registry.md#storejson.
- */
-export async function listApps(env: CloudflareBindings): Promise<AppMetadata[]> {
-	// Paged to the end: `list` truncates, and an app past the first page would drop
-	// off the index while its own origin carried on serving it.
-	const prefixes: string[] = []
-	let cursor: string | undefined
-	do {
-		const page = await env.STORE.list({ prefix: 'apps/', delimiter: '/', cursor })
-		prefixes.push(...page.delimitedPrefixes)
-		cursor = page.truncated ? page.cursor : undefined
-	} while (cursor)
-
-	const found = await Promise.all(
-		prefixes.map((prefix) => findApp(env, prefix.slice('apps/'.length, -1)))
-	)
-	return found.filter((app) => app !== null).sort((a, b) => a.name.localeCompare(b.name))
+	const obj = await env.STORE.get(`apps/${id}/${version}/manifest.json`)
+	return obj ? await obj.json<ReleaseManifest>() : null
 }
 
 /**
@@ -77,12 +45,75 @@ export async function servable(
 	id: string,
 	version: string
 ): Promise<boolean> {
-	return (await readInfo(env, id))?.releases[version]?.state === 'ready'
+	return (await readRecord(env, id))?.releases[version]?.state === 'ready'
+}
+
+/** The browse index as stored. The root site's only read. */
+export async function readStore(env: CloudflareBindings): Promise<StoreIndex> {
+	const obj = await env.STORE.get(STORE_KEY)
+	return (await obj?.json<StoreIndex>()) ?? { schema: STORE_SCHEMA, apps: [] }
+}
+
+/**
+ * Rebuild `store.json` from R2 alone — one `list` of `apps/` and two reads per
+ * app, and never a GitHub request. If rebuilding it ever needed the network it
+ * would have silently become a second mirror of upstream, and the snapshot is
+ * deliberately the only one.
+ *
+ * Unconditional, and the last thing a refresh does: if a previous rebuild failed
+ * after a release was published, the next refresh repairs it. That is what buys
+ * us no dirty-marker protocol — the cost is one rebuild per tick over state we
+ * already have to read.
+ */
+export async function rebuildStore(env: CloudflareBindings, catalog: Catalog): Promise<StoreIndex> {
+	// Paged to the end: `list` truncates, and an app past the first page would drop
+	// off the index while its own origin carried on serving it.
+	const prefixes: string[] = []
+	let cursor: string | undefined
+	do {
+		const page = await env.STORE.list({ prefix: 'apps/', delimiter: '/', cursor })
+		prefixes.push(...page.delimitedPrefixes)
+		cursor = page.truncated ? page.cursor : undefined
+	} while (cursor)
+
+	const found = await Promise.all(
+		prefixes.map(async (prefix): Promise<StoreApp | null> => {
+			const id = prefix.slice('apps/'.length, -1)
+			const manifest = await findApp(env, id)
+			if (!manifest) return null
+
+			// Absolute, because a browse index is read from other origins than the one
+			// it lists. `manifestUrl` is the app's mutable pointer rather than this
+			// release's manifest: a client that follows it gets the current release and
+			// derives the payload base from where it landed.
+			const origin = `https://${encodeLabel(id)}.${env.ROOT_DOMAIN}`
+			return {
+				id,
+				name: manifest.name,
+				description: manifest.description,
+				version: manifest.version,
+				iconUrl: manifest.icon && `${origin}/v/${manifest.version}/${manifest.icon}`,
+				manifestUrl: `${origin}/manifest.json`,
+				repository: catalog.entries[id]?.repo && `https://github.com/${catalog.entries[id]?.repo}`
+			}
+		})
+	)
+
+	const index: StoreIndex = {
+		schema: STORE_SCHEMA,
+		apps: found.filter((app) => app !== null).sort((a, b) => a.name.localeCompare(b.name))
+	}
+	await env.STORE.put(STORE_KEY, JSON.stringify(index), {
+		httpMetadata: { contentType: 'application/json' }
+	})
+	return index
 }
 
 export interface Refresh extends CatalogRefresh {
 	/** Releases resolved this run whose bytes we do not hold yet, by app id. */
 	imports: Record<string, Resolved>
+	/** The projection this run left behind. */
+	store: StoreIndex
 }
 
 /** Reconcile everything: the catalog first, then each app it lists. */
@@ -119,5 +150,5 @@ export async function refresh(env: CloudflareBindings): Promise<Refresh> {
 		if (repo) await importRelease(env, id, repo, resolved)
 	}
 
-	return { ...result, imports }
+	return { ...result, imports, store: await rebuildStore(env, catalog) }
 }

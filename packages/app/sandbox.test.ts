@@ -85,13 +85,13 @@ export const app = {
 	}
 })
 
-// The 'web-iframe' transport (Topology B) must be a CLASSIC worker: a module
-// worker fails to load from a blob URL inside a Chromium opaque-origin sandboxed
-// iframe (see frieren's risk-gate-probe.ts). Its browser behaviour is validated
-// there and by reducer-frame-probe.ts; this locks the generator's shape so the
+// Topology B's reducer Worker must be CLASSIC: a module worker fails to load from
+// a blob URL inside a Chromium opaque-origin sandboxed iframe (see frieren's
+// risk-gate-probe.ts). Its browser behaviour is validated there and by
+// reducer-frame-probe.ts; this locks the generator's shape so the
 // Chromium-critical invariants can't silently regress.
-test('web-iframe transport emits a classic worker that dynamic-imports self.name', () => {
-	const src = sandboxWorkerSource('ignored', 'web-iframe')
+test('a null appUrl emits a classic-safe worker that dynamic-imports self.name', () => {
+	const src = sandboxWorkerSource(null, 'web')
 	// No static `import ... from` — classic workers reject it, and Chromium rejects
 	// module workers from blob URLs in opaque origins.
 	expect(src).not.toMatch(/^\s*import\s+[^(]/m)

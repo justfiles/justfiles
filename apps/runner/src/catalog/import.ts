@@ -1,6 +1,8 @@
 import { type AppManifest, safeBundlePath } from '@justfiles/app'
+import type { CatalogFile } from '@justfiles/app/appstore'
+import { MANIFEST_SCHEMA, type ReleaseManifest } from '../protocol'
 import { archive } from './github'
-import { type Info, type Release, type Resolved, readInfo, writeInfo } from './refresh-app'
+import { type AppRecord, type Release, type Resolved, readRecord, writeRecord } from './refresh-app'
 import { entries, inflate, readCapped, type ZipEntry } from './zip'
 
 /**
@@ -37,6 +39,16 @@ const ROOTS = ['', 'dist/', 'build/', 'src/']
 const SECRET = /^\.env|^\.npmrc$|^id_rsa|\.(pem|key)$/
 
 /**
+ * The bundle's own metadata file. It is CONTROL metadata, not payload: the
+ * importer validates it and projects its known fields into the canonical
+ * manifest, so its exact bytes stay in `bundle.zip` and are never rehosted under
+ * `files/`. Two documents called `manifest.json` meaning different things is
+ * precisely what that split avoids — what we serve at
+ * `/v/{version}/manifest.json` is ours, generated, and authoritative.
+ */
+const AUTHORED = 'manifest.json'
+
+/**
  * Fetch, validate and extract one resolved release, then record it.
  *
  * Its own module because it is its own phase: kb/registry.md keeps detection and
@@ -44,11 +56,12 @@ const SECRET = /^\.env|^\.npmrc$|^id_rsa|\.(pem|key)$/
  * own 15-minute wall clock, retries and backoff — stays a change to `refresh()`
  * and nothing else.
  *
- * **The write order is load-bearing.** Files, then `spec.json`, then `info.json`
- * — nothing is reachable until the last one, and a crash before it leaves bytes
- * that the GC sweep is designed to find rather than a release whose spec does
- * not exist. Failure is recorded on the app and retried next run; it never
- * throws at the caller, because one hostile archive must not stop the others.
+ * **The write order is load-bearing.** Payload, then the manifest, then the
+ * record — nothing is reachable until the last one, and a crash before it leaves
+ * bytes that the GC sweep is designed to find rather than a release whose
+ * manifest does not exist. Failure is recorded on the app and retried next run;
+ * it never throws at the caller, because one hostile archive must not stop the
+ * others.
  */
 export async function importRelease(
 	env: CloudflareBindings,
@@ -56,25 +69,30 @@ export async function importRelease(
 	repo: string,
 	resolved: Resolved
 ): Promise<void> {
-	const info = await readInfo(env, id)
+	const record = await readRecord(env, id)
 	const prefix = `apps/${id}/${resolved.version}`
 
 	try {
 		// A version is frozen once written. `refreshApp` already filters these out;
 		// this is the guard for two runs overlapping, which nothing else prevents.
-		if (info?.releases[resolved.version]) return
+		if (record?.releases[resolved.version]) return
 
 		const bytes = await download(env, repo, resolved)
 		const all = entries(bytes)
 		const root = bundleRoot(all)
 
-		// The manifest first, because it names the reducer — and the reducer is the
-		// one file whose cap differs, so nothing else can be read until it is known.
-		const manifest = await readManifest(bytes, all, root)
-		if (manifest.id && manifest.id !== id) console.warn(`${id}: manifest claims id ${manifest.id}`)
+		// The authored manifest first, because it names the reducer — and the reducer
+		// is the one file whose cap differs, so nothing else can be read until it is
+		// known.
+		const authored = await readAuthored(bytes, all, root)
+		if (authored.id && authored.id !== id) console.warn(`${id}: manifest claims id ${authored.id}`)
 
+		// Two collections, because they answer different questions. `files` is the
+		// payload we serve and a device mounts; `digests` also carries the authored
+		// manifest, so the whole-app hash still moves when metadata alone changes.
+		const files: CatalogFile[] = []
 		const digests: Record<string, string> = {}
-		let total = 0
+		let unpacked = 0
 
 		for (const entry of all) {
 			if (entry.name.endsWith('/') || !entry.name.startsWith(root)) continue
@@ -86,57 +104,48 @@ export async function importRelease(
 			if (digests[path] || Object.keys(digests).some((p) => p.toLowerCase() === path.toLowerCase()))
 				throw new Error(`${path}: duplicate`)
 			if (Object.keys(digests).length >= FILES_MAX) throw new Error(`over ${FILES_MAX} files`)
-			if (total >= TOTAL_MAX) throw new Error(`over ${TOTAL_MAX} bytes extracted`)
+			if (unpacked >= TOTAL_MAX) throw new Error(`over ${TOTAL_MAX} bytes extracted`)
 
 			// The remaining total is part of the cap, so no single entry can spend a
 			// budget the ones before it already used.
-			const cap = Math.min(path === manifest.app ? APP_MAX : FILE_MAX, TOTAL_MAX - total)
+			const cap = Math.min(path === authored.app ? APP_MAX : FILE_MAX, TOTAL_MAX - unpacked)
 			const file = await inflate(bytes, entry, cap)
-			total += file.byteLength
+			unpacked += file.byteLength
 
-			digests[path] = `sha256-${await sha256(file)}`
+			const hash = `sha256-${await sha256(file)}`
+			digests[path] = hash
+			if (path === AUTHORED) continue
+
+			// `size` is what came out of the inflate, never what the archive declared:
+			// it is what bounds a client's read before the hash can be checked, so a
+			// number the bundle chose would be a number an attacker chose.
+			files.push({ path, hash, size: file.byteLength })
 			await env.STORE.put(`${prefix}/files/${path}`, file)
 		}
 
-		if (!digests[manifest.app]) throw new Error(`manifest names ${manifest.app}, which is not here`)
+		if (!files.some((file) => file.path === authored.app))
+			throw new Error(`manifest names ${authored.app}, which is not here`)
 
-		const spec: AppManifest = {
-			...manifest,
-			// Ours, never the manifest's. An app claiming another id would otherwise
-			// be served — and trusted — under a name it does not own.
-			id,
-			// The tag is the immutable thing, so it wins where the two disagree.
-			version: resolved.version,
-			hash: await appHash(digests),
-			// The mounted half only. The reducer is durable on the device and never
-			// mounted, so an installed app keeps working after this release stops
-			// being served; `hash` above still covers it.
-			files: Object.fromEntries(Object.entries(digests).filter(([p]) => p !== manifest.app))
-		}
+		const manifest = project(id, resolved.version, authored, files, await appHash(digests))
 
-		// **`baseUrl` is deliberately absent**, and the serving route injects it. It
-		// is the only place an app id would appear in stored release data, so
-		// keeping it out is what makes a future rename a prefix move rather than a
-		// rewrite of every spec we hold — see kb/registry.md#renames-are-deferred.
-		// A device reading this file unmodified would treat the app as unhosted.
 		await env.STORE.put(`${prefix}/bundle.zip`, bytes)
-		await env.STORE.put(`${prefix}/spec.json`, JSON.stringify(spec), {
+		// One level above `files/`, so the document we generate can never be shadowed
+		// by a payload file of the same name.
+		await env.STORE.put(`${prefix}/manifest.json`, JSON.stringify(manifest), {
 			httpMetadata: { contentType: 'application/json' }
 		})
 
 		const release: Release = {
 			...resolved,
-			digest: `sha256-${await sha256(bytes)}`,
-			hash: spec.hash as string,
-			bytes: total,
+			bundle: { digest: `sha256-${await sha256(bytes)}`, size: bytes.byteLength, unpacked },
 			state: 'ready',
 			at: Math.floor(Date.now() / 1000)
 		}
-		await writeInfo(env, id, {
+		await writeRecord(env, id, {
 			...blank(),
-			...info,
+			...record,
 			error: null,
-			releases: { ...info?.releases, [resolved.version]: release },
+			releases: { ...record?.releases, [resolved.version]: release },
 			// The catalog PR is the approval; every imported release goes live as it lands.
 			current: resolved.version
 		})
@@ -145,7 +154,44 @@ export async function importRelease(
 		console.error(`import ${id} ${resolved.version}:`, error)
 		// Recorded rather than thrown, and retried next run — the resolution is not
 		// remembered, so a fixed release is picked up without anything to reset.
-		if (info) await writeInfo(env, id, { ...info, error })
+		if (record) await writeRecord(env, id, { ...record, error })
+	}
+}
+
+/**
+ * The canonical manifest: field by field, never a spread of the authored one.
+ *
+ * Authored metadata is INPUT. Copying it wholesale would carry an unknown field
+ * into a document we vouch for, and would let the bundle state its own `id`,
+ * `version`, `hash`, `files` or `baseUrl` — each of which is ours to decide. So
+ * the projection is written out, and adding a field to the wire format is an
+ * edit here rather than an omission nobody notices.
+ */
+function project(
+	id: string,
+	version: string,
+	authored: AppManifest,
+	files: CatalogFile[],
+	hash: string
+): ReleaseManifest {
+	return {
+		schema: MANIFEST_SCHEMA,
+		// Ours, never the bundle's. An app claiming another id would otherwise be
+		// served — and trusted — under a name it does not own.
+		id,
+		name: authored.name,
+		description: authored.description,
+		// The tag is the immutable thing, so it wins where the two disagree.
+		version,
+		icon: authored.icon,
+		app: authored.app,
+		gui: authored.gui,
+		cli: authored.cli,
+		capabilities: authored.capabilities,
+		hash,
+		// Sorted, so the document is a function of the release rather than of the
+		// order entries happened to sit in the archive.
+		files: files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 	}
 }
 
@@ -185,18 +231,18 @@ function bundleRoot(all: ZipEntry[]): string {
 	const wrapper = first && names.every((n) => n.startsWith(`${first}/`)) ? `${first}/` : ''
 
 	const has = new Set(names)
-	for (const dir of ROOTS) if (has.has(`${wrapper}${dir}manifest.json`)) return `${wrapper}${dir}`
-	throw new Error(`no manifest.json in ${ROOTS.map((r) => `${wrapper}${r || './'}`).join(', ')}`)
+	for (const dir of ROOTS) if (has.has(`${wrapper}${dir}${AUTHORED}`)) return `${wrapper}${dir}`
+	throw new Error(`no ${AUTHORED} in ${ROOTS.map((r) => `${wrapper}${r || './'}`).join(', ')}`)
 }
 
-async function readManifest(
+async function readAuthored(
 	bytes: Uint8Array,
 	all: ZipEntry[],
 	root: string
 ): Promise<AppManifest> {
 	// `bundleRoot` resolved against this exact name, so it is present.
-	const entry = all.find((e) => e.name === `${root}manifest.json`)
-	if (!entry) throw new Error('no manifest.json')
+	const entry = all.find((e) => e.name === `${root}${AUTHORED}`)
+	if (!entry) throw new Error(`no ${AUTHORED}`)
 
 	const raw = new TextDecoder().decode(await inflate(bytes, entry, APP_MAX))
 	const manifest = JSON.parse(raw) as AppManifest
@@ -234,8 +280,9 @@ function bundlePath(entry: ZipEntry, root: string): string {
  * The whole-app fingerprint, matching `appstore.ts`'s `appHash` exactly —
  * a device compares this string to decide whether an installed app is still the
  * published one, so the two have to agree byte for byte. Sorted by path, so it
- * is independent of archive order, and over EVERY file, so a manifest-only edit
- * that never touches the version still moves it.
+ * is independent of archive order, and over EVERY file including the authored
+ * manifest, so a metadata-only edit that never touches the version still moves
+ * it.
  */
 async function appHash(digests: Record<string, string>): Promise<string> {
 	const input = Object.entries(digests)
@@ -251,7 +298,7 @@ const sha256 = async (bytes: Uint8Array) =>
 		.join('')
 
 /** Only reached if an import somehow runs before the poll that creates the app. */
-const blank = (): Info => ({
+const blank = (): AppRecord => ({
 	repoNodeId: '',
 	defaultBranch: '',
 	current: null,

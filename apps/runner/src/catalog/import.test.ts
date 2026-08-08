@@ -1,7 +1,8 @@
 import { deflateRawSync } from 'node:zlib'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ReleaseManifest } from '../protocol'
 import { importRelease } from './import'
-import type { Info, Resolved } from './refresh-app'
+import type { AppRecord, Resolved } from './refresh-app'
 import { entries, inflate } from './zip'
 
 // A ZIP writer, because every interesting case here is an archive nobody would
@@ -174,7 +175,7 @@ const RESOLVED: Resolved = {
 	assetId: 1
 }
 
-const INFO: Info = {
+const RECORD: AppRecord = {
 	repoNodeId: 'R_1',
 	defaultBranch: 'main',
 	current: null,
@@ -184,17 +185,24 @@ const INFO: Info = {
 	releases: {}
 }
 
-const seed = (env: ReturnType<typeof store>, info: Partial<Info> = {}) =>
-	env.objects.set('apps/justfiles.draw/info.json', bytes(JSON.stringify({ ...INFO, ...info })))
-
-const infoOf = (env: ReturnType<typeof store>): Info =>
-	JSON.parse(
-		new TextDecoder().decode(env.objects.get('apps/justfiles.draw/info.json') as Uint8Array)
+const seed = (env: ReturnType<typeof store>, record: Partial<AppRecord> = {}) =>
+	env.objects.set(
+		'apps/justfiles.draw/record.json',
+		bytes(JSON.stringify({ ...RECORD, ...record }))
 	)
 
-const run = async (archive: Uint8Array, info: Partial<Info> = {}) => {
+const read = (env: ReturnType<typeof store>, key: string) =>
+	JSON.parse(new TextDecoder().decode(env.objects.get(key) as Uint8Array))
+
+const recordOf = (env: ReturnType<typeof store>): AppRecord =>
+	read(env, 'apps/justfiles.draw/record.json')
+
+const manifestOf = (env: ReturnType<typeof store>): ReleaseManifest =>
+	read(env, 'apps/justfiles.draw/1.0.0/manifest.json')
+
+const run = async (archive: Uint8Array, record: Partial<AppRecord> = {}) => {
 	const env = store()
-	seed(env, info)
+	seed(env, record)
 	serve(archive)
 	await importRelease(env, 'justfiles.draw', 'justfiles/app-draw', RESOLVED)
 	return env
@@ -240,42 +248,60 @@ describe('zip', () => {
 })
 
 describe('importRelease', () => {
-	it('extracts a bundle, writes the spec, and publishes it', async () => {
+	it('extracts a bundle, writes the canonical manifest, and publishes it', async () => {
 		const env = await run(bundle())
 		const keys = [...env.objects.keys()].sort()
 
 		expect(keys).toContain('apps/justfiles.draw/1.0.0/files/gui.js')
 		expect(keys).toContain('apps/justfiles.draw/1.0.0/bundle.zip')
+		// Control metadata, not payload: its bytes stay in the archive.
+		expect(keys).not.toContain('apps/justfiles.draw/1.0.0/files/manifest.json')
 
-		const spec = JSON.parse(
-			new TextDecoder().decode(env.objects.get('apps/justfiles.draw/1.0.0/spec.json') as Uint8Array)
-		)
-		// The resolved version wins over the manifest's, and the reducer is covered
-		// by `hash` but deliberately absent from the mounted `files`.
-		expect(spec.version).toBe('1.0.0')
-		expect(Object.keys(spec.files).sort()).toEqual(['gui.js', 'manifest.json'])
-		expect(spec.files['gui.js']).toMatch(/^sha256-[0-9a-f]{64}$/)
-		expect(spec.hash).toMatch(/^[0-9a-f]{64}$/)
-		// Injected at serve time, never stored — see kb/registry.md.
-		expect(spec.baseUrl).toBeUndefined()
+		const manifest = manifestOf(env)
+		expect(manifest.schema).toBe('justapps/manifest/v1')
+		// The resolved version wins over the authored one, and every payload file is
+		// pinned with its actual size — the reducer included.
+		expect(manifest.version).toBe('1.0.0')
+		expect(manifest.files.map((file) => file.path)).toEqual(['app.js', 'gui.js'])
+		expect(manifest.files[1]?.hash).toMatch(/^sha256-[0-9a-f]{64}$/)
+		expect(manifest.files[1]?.size).toBe('export const mount = () => {}'.length)
+		expect(manifest.hash).toMatch(/^[0-9a-f]{64}$/)
+		// Derived by the client from where the manifest was served, never stored.
+		expect(manifest).not.toHaveProperty('baseUrl')
 
-		const info = infoOf(env)
-		expect(info.current).toBe('1.0.0')
-		expect(info.releases['1.0.0']?.state).toBe('ready')
-		expect(info.error).toBeNull()
+		const record = recordOf(env)
+		expect(record.current).toBe('1.0.0')
+		expect(record.releases['1.0.0']?.state).toBe('ready')
+		// Provenance of the archive, and no second copy of the manifest's hash.
+		expect(record.releases['1.0.0']?.bundle.digest).toMatch(/^sha256-[0-9a-f]{64}$/)
+		expect(record.releases['1.0.0']?.bundle.unpacked).toBeGreaterThan(0)
+		expect(record.releases['1.0.0']).not.toHaveProperty('hash')
+		expect(record.error).toBeNull()
 	})
 
-	it('serves the id we were asked for, not the one the manifest claims', async () => {
+	it('drops authored fields that are ours to decide', async () => {
 		const env = await run(
 			zip([
-				{ name: 'manifest.json', body: MANIFEST.replace('justfiles.draw', 'someone.else') },
+				{
+					name: 'manifest.json',
+					body: JSON.stringify({
+						id: 'someone.else',
+						name: 'Draw',
+						app: 'app.js',
+						baseUrl: 'https://evil.example/',
+						hash: 'nonsense',
+						files: { 'gui.js': 'sha256-nonsense' },
+						include: ['whatever']
+					})
+				},
 				{ name: 'app.js', body: 'x' }
 			])
 		)
-		const spec = JSON.parse(
-			new TextDecoder().decode(env.objects.get('apps/justfiles.draw/1.0.0/spec.json') as Uint8Array)
-		)
-		expect(spec.id).toBe('justfiles.draw')
+		const manifest = manifestOf(env)
+		expect(manifest.id).toBe('justfiles.draw')
+		expect(manifest.hash).not.toBe('nonsense')
+		expect(manifest.files).toEqual([expect.objectContaining({ path: 'app.js' })])
+		expect(manifest).not.toHaveProperty('include')
 	})
 
 	it('finds the bundle under a zipball wrapper and a dist/ root', async () => {
@@ -293,7 +319,7 @@ describe('importRelease', () => {
 	})
 
 	// Every one of these records the failure and writes nothing reachable: the
-	// release never lands in info.json, so the app keeps serving what it had.
+	// release never lands in record.json, so the app keeps serving what it had.
 	const hostile: [string, Uint8Array, string][] = [
 		['path traversal', bundle([{ name: '../../escape.js', body: 'x' }]), 'invalid app bundle path'],
 		['an absolute path', bundle([{ name: '/etc/passwd', body: 'x' }]), 'invalid app bundle path'],
@@ -313,20 +339,25 @@ describe('importRelease', () => {
 	for (const [what, archive, message] of hostile) {
 		it(`refuses ${what}`, async () => {
 			const env = await run(archive)
-			const info = infoOf(env)
-			expect(info.error).toContain(message)
-			expect(info.current).toBeNull()
-			expect(info.releases['1.0.0']).toBeUndefined()
-			expect([...env.objects.keys()]).not.toContain('apps/justfiles.draw/1.0.0/spec.json')
+			const record = recordOf(env)
+			expect(record.error).toContain(message)
+			expect(record.current).toBeNull()
+			expect(record.releases['1.0.0']).toBeUndefined()
+			expect([...env.objects.keys()]).not.toContain('apps/justfiles.draw/1.0.0/manifest.json')
 		})
 	}
 
 	it('never rewrites a version it already holds', async () => {
 		const env = await run(bundle(), {
 			releases: {
-				'1.0.0': { ...RESOLVED, digest: 'd', hash: 'h', bytes: 1, state: 'ready', at: 0 }
+				'1.0.0': {
+					...RESOLVED,
+					bundle: { digest: 'd', size: 1, unpacked: 1 },
+					state: 'ready',
+					at: 0
+				}
 			}
 		})
-		expect([...env.objects.keys()]).not.toContain('apps/justfiles.draw/1.0.0/spec.json')
+		expect([...env.objects.keys()]).not.toContain('apps/justfiles.draw/1.0.0/manifest.json')
 	})
 })

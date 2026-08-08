@@ -126,35 +126,42 @@ function handleOf(pending: Pending | undefined): RawAppHandle {
 }
 
 // The isolate-side runtime, returned as source text to inline into the worker (a
-// Blob in the browser, a data: URL in Node). It imports the app bundle from
-// `appUrl`, services host requests, and bridges a running procedure's host-calls
-// back over the transport. `transport` selects the two primitives that differ
-// between a Web Worker (`self`) and a Node worker_thread (`parentPort`).
-export function sandboxWorkerSource(
-	appUrl: string,
-	transport: 'web' | 'node' | 'web-iframe'
-): string {
+// Blob in the browser, a data: URL in Node). It imports the app bundle, services
+// host requests, and bridges a running procedure's host-calls back over the
+// transport. `transport` selects the two primitives that differ between a Web
+// Worker (`self`) and a Node worker_thread (`parentPort`).
+//
+// A null `appUrl` means the reducer's URL is not known when this source is built
+// and arrives at runtime as the worker's `name` (`WorkerOptions.name`, read as
+// `self.name`). Two hosts need that. The registry serves ONE `/worker.js` for
+// every app it hosts, so the body cannot name a release. And Topology B's reducer
+// frame must spawn a CLASSIC worker — a *module* worker fails to load from a
+// blob: URL inside an opaque-origin sandboxed iframe on Chromium (see frieren's
+// risk-gate-probe.ts) — which cannot use a static import at all. Either way the
+// load is awaited before any message is handled, and a failure is captured in
+// __loadError and reported per-request below.
+//
+// It is web-only, and the overloads say so: `self.name` is a browser worker's
+// scope name, and Node's identically-spelled `WorkerOptions.name` is an inspector
+// title the isolate cannot read. Accepting the pair would emit `self.postMessage`
+// into a worker_thread and fail before the first message.
+export function sandboxWorkerSource(appUrl: string, transport: 'web' | 'node'): string
+export function sandboxWorkerSource(appUrl: null, transport: 'web'): string
+export function sandboxWorkerSource(appUrl: string | null, transport: 'web' | 'node'): string {
 	const head =
-		transport === 'node'
-			? `import { parentPort } from 'node:worker_threads'
-import { app } from ${JSON.stringify(appUrl)}
-const send = (m) => parentPort.postMessage(m)
-const listen = (h) => parentPort.on('message', h)`
-			: transport === 'web'
-				? `import { app } from ${JSON.stringify(appUrl)}
-const send = (m) => self.postMessage(m)
-const listen = (h) => { self.onmessage = (e) => h(e.data) }`
-				: // 'web-iframe': a CLASSIC worker. A *module* worker fails to load from a
-					// blob: URL inside an opaque-origin sandboxed iframe on Chromium (see
-					// frieren's risk-gate-probe.ts), so the reducer relocated into the frame
-					// (Topology B) must be classic. It can't use a static import, so it loads
-					// the app bundle by dynamic-import of the blob URL handed in as the Worker
-					// `name` (read as self.name), and gates every message on that load. A load
-					// failure is captured in __loadError and reported per-request below.
-					`const send = (m) => self.postMessage(m)
+		appUrl === null
+			? `const send = (m) => self.postMessage(m)
 let app, __loadError
 const __ready = import(self.name).then((m) => { app = m.app }, (e) => { __loadError = e })
 const listen = (h) => { self.onmessage = (e) => { __ready.then(() => h(e.data)) } }`
+			: transport === 'node'
+				? `import { parentPort } from 'node:worker_threads'
+import { app } from ${JSON.stringify(appUrl)}
+const send = (m) => parentPort.postMessage(m)
+const listen = (h) => parentPort.on('message', h)`
+				: `import { app } from ${JSON.stringify(appUrl)}
+const send = (m) => self.postMessage(m)
+const listen = (h) => { self.onmessage = (e) => h(e.data) }`
 	return `${head}
 let nextCallId = 0
 const pending = new Map()
@@ -186,8 +193,8 @@ async function handle(msg) {
 		else p.resolve(msg.result)
 		return
 	}
-	// A classic-iframe worker whose app bundle failed to dynamic-import (web-iframe
-	// head) rejects every request; other transports never declare __loadError.
+	// A worker whose app bundle failed to dynamic-import rejects every request; a
+	// statically-imported reducer never declares __loadError.
 	if (typeof __loadError !== 'undefined' && __loadError)
 		return send({ type: 'error', id: msg.id, error: errorToWire(__loadError) })
 	try {

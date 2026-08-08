@@ -9,9 +9,16 @@ import worker from './index.ts'
 const store = (objects: Record<string, unknown>) => ({
 	get: async (key: string) =>
 		key in objects ? { json: async () => objects[key], body: JSON.stringify(objects[key]) } : null,
+	put: async (key: string, value: string) => {
+		objects[key] = JSON.parse(value)
+	},
 	list: async ({ cursor }: { cursor?: string } = {}) => {
 		const prefixes = [
-			...new Set(Object.keys(objects).map((key) => `${key.split('/').slice(0, 2).join('/')}/`))
+			...new Set(
+				Object.keys(objects)
+					.filter((key) => key.startsWith('apps/'))
+					.map((key) => `${key.split('/').slice(0, 2).join('/')}/`)
+			)
 		]
 		const at = cursor ? Number(cursor) : 0
 		return {
@@ -61,36 +68,60 @@ test('the platform keeps every label an id cannot encode to', async () => {
 })
 
 const published = {
-	'apps/alice.notes/info.json': {
+	'apps/alice.notes/record.json': {
 		current: '1.2.0',
 		releases: { '1.2.0': { version: '1.2.0', state: 'ready' } }
 	},
-	'apps/alice.notes/1.2.0/spec.json': { name: 'Notes', icon: 'icon.png' },
+	'apps/alice.notes/1.2.0/manifest.json': {
+		schema: 'justapps/manifest/v1',
+		id: 'alice.notes',
+		name: 'Notes',
+		version: '1.2.0',
+		icon: 'icon.png',
+		app: 'app.js',
+		gui: 'gui.js',
+		hash: 'abc',
+		files: [{ path: 'gui.js', hash: 'sha256-abc', size: 7 }]
+	},
 	'apps/alice.notes/1.2.0/files/gui.js': 'the app',
 	// What a crashed import leaves behind: bytes under a version no release
 	// record names.
 	'apps/alice.notes/9.9.9/files/gui.js': 'half an app',
-	// Imported by the old approval-gated runner: ready bytes, but no live pointer.
-	'apps/bob.draft/info.json': {
-		approved: false,
-		current: null,
-		releases: { '0.1.0': { version: '0.1.0', state: 'ready' } }
-	},
-	'apps/bob.draft/0.1.0/spec.json': { name: 'Draft' }
+	// The browse index the last refresh left behind. The root site reads this and
+	// never walks the bucket per visitor.
+	'store.json': {
+		schema: 'justapps/store/v1',
+		apps: [
+			{
+				id: 'alice.notes',
+				name: 'Notes',
+				version: '1.2.0',
+				iconUrl: 'https://alice-notes.example.com/v/1.2.0/icon.png',
+				manifestUrl: 'https://alice-notes.example.com/manifest.json'
+			}
+		]
+	}
 }
 
-test('the index lists what is published, linking to each app origin', async () => {
+test('the index lists what the projection holds, linking to each app origin', async () => {
 	const page = await (await get('https://example.com/', envWith(published))).text()
 	expect(page).toContain('href="https://alice-notes.example.com/"')
 	expect(page).toContain('Notes')
 	// version-pinned, and served from the app's own origin
 	expect(page).toContain('src="https://alice-notes.example.com/v/1.2.0/icon.png"')
-	expect(page).toContain('Draft')
+})
+
+test('the projection is public, and readable by any origin', async () => {
+	const res = await get('https://example.com/store.json', envWith(published))
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	expect(await res.json()).toEqual(published['store.json'])
 })
 
 test('the index links to *.localhost in local dev', async () => {
 	const page = await (await get('http://localhost:8787/', envWith(published))).text()
 	expect(page).toContain('href="http://alice-notes.localhost:8787/"')
+	// the stored URLs name the zone, so the icon is re-based on this host too
+	expect(page).toContain('src="http://alice-notes.localhost:8787/v/1.2.0/icon.png"')
 })
 
 test('a recorded release serves its bytes, frozen for a year', async () => {
@@ -99,12 +130,52 @@ test('a recorded release serves its bytes, frozen for a year', async () => {
 	expect(res.headers.get('cache-control')).toContain('immutable')
 })
 
+// How an installer finds the current release, and how it learns where the bytes
+// are: the redirect's destination IS the payload base, so nothing has to be
+// declared in a document.
+test('the manifest pointer redirects to the current release, briefly cached', async () => {
+	const res = await get('https://alice-notes.example.com/manifest.json', envWith(published))
+	expect(res.status).toBe(302)
+	expect(res.headers.get('location')).toBe('/v/1.2.0/manifest.json')
+	expect(res.headers.get('cache-control')).toBe('public, max-age=60')
+	// a redirect that fails the CORS check fails the fetch that followed it
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+})
+
+test('the release manifest is served verbatim', async () => {
+	const res = await get('https://alice-notes.example.com/v/1.2.0/manifest.json', envWith(published))
+	expect(res.status).toBe(200)
+	expect(res.headers.get('cache-control')).toContain('immutable')
+	expect(await res.json()).toEqual(published['apps/alice.notes/1.2.0/manifest.json'])
+})
+
+// Host code, one body for every app: the reducer it loads arrives as the Worker's
+// `name`, so nothing here is pinned to a release — and it must not be cached
+// hard, or a page would run an older protocol than the shell that loaded it.
+test('the reducer isolate is host code, not a release asset', async () => {
+	const res = await get('https://alice-notes.example.com/worker.js', envWith(published))
+	expect(res.status).toBe(200)
+	expect(res.headers.get('cache-control')).toBe('no-cache')
+	expect(await res.text()).toContain('import(self.name)')
+})
+
+// An author may ship one; it is payload like any other file, and there is no
+// generated `/v/{version}/worker.js` to collide with it.
+test('a release may carry its own worker.js', async () => {
+	const env = envWith({
+		...published,
+		'apps/alice.notes/1.2.0/files/worker.js': 'the author\u2019s'
+	})
+	const res = await get('https://alice-notes.example.com/v/1.2.0/worker.js', env)
+	expect(await res.text()).toContain('author')
+})
+
 // A desktop installs and mounts a hosted app from another origin entirely, so
 // every one of these has to be readable cross-origin — including the 404, which
 // without the header reaches the caller as a network error instead of a status.
 test('everything under /v/ is readable by any origin', async () => {
 	const env = envWith(published)
-	for (const path of ['gui.js', 'worker.js', 'spec.json', 'nothing.js']) {
+	for (const path of ['gui.js', 'manifest.json', 'nothing.js']) {
 		const res = await get(`https://alice-notes.example.com/v/1.2.0/${path}`, env)
 		expect(res.headers.get('access-control-allow-origin')).toBe('*')
 	}
@@ -123,7 +194,7 @@ test('the app page itself is not cross-origin readable', async () => {
 // import and cached as immutable over bytes the retry then rewrites.
 test('a version no release record names is not served, bytes or not', async () => {
 	const env = envWith(published)
-	for (const path of ['gui.js', 'worker.js', 'spec.json']) {
+	for (const path of ['gui.js', 'manifest.json']) {
 		expect((await get(`https://alice-notes.example.com/v/9.9.9/${path}`, env)).status).toBe(404)
 	}
 })

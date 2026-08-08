@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { listApps, refresh } from './catalog'
+import { readStore, refresh } from './catalog'
 import { encodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
@@ -42,9 +42,25 @@ img, .icon { border-radius: 0.5rem; flex: none; height: 48px; object-fit: cover;
 .meta { color: var(--muted); font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 `
 
+/**
+ * The browse index.
+ *
+ * A stored projection rather than a listing assembled per request: the walk over
+ * every app happens once per refresh, not once per visitor, so what a client
+ * reads is what the last reconcile decided. Readable by any origin — a store
+ * front-end is not this one — and cached as briefly as the pointers it carries,
+ * since a publish moves both.
+ */
+route.get('/store.json', async (c) =>
+	c.json(await readStore(c.env), 200, {
+		'access-control-allow-origin': '*',
+		'cache-control': 'public, max-age=60'
+	})
+)
+
 /** The index: every app we host, each linking to the origin that serves it. */
 route.get('/', async (c) => {
-	const apps = await listApps(c.env)
+	const { apps } = await readStore(c.env)
 	return c.html(
 		<html lang="en">
 			<head>
@@ -61,20 +77,20 @@ route.get('/', async (c) => {
 				) : (
 					<ul>
 						{apps.map((app) => {
+							// Built from this request's host rather than taken from the stored
+							// entry, which is absolute for the benefit of other origins and so
+							// names the zone even in local dev. The icon keeps the stored path,
+							// which is version-pinned.
 							const url = appUrl(c.req.raw, c.env, app.id)
+							const icon = app.iconUrl && `${url}${new URL(app.iconUrl).pathname.slice(1)}`
 							return (
 								<li>
 									<a href={url}>
 										{/* The icon comes from the app's own origin, version-pinned like
 										    every other byte of it — the runner keeps no copy outside the
 										    release it belongs to. */}
-										{app.icon ? (
-											<img
-												src={`${url}v/${app.version}/${app.icon}`}
-												alt=""
-												width="48"
-												height="48"
-											/>
+										{icon ? (
+											<img src={icon} alt="" width="48" height="48" />
 										) : (
 											<span class="icon"></span>
 										)}
