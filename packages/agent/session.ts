@@ -2,7 +2,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
-import { createLifetimeGate, type LifetimeToken } from '@justfiles/lifetime'
+import { createLifetimeGate, type LifetimeToken, StaleLifetimeError } from '@justfiles/lifetime'
 import { PROFILE_PATH, readAgentName, SOUL_PATH } from './agent-defaults.ts'
 import {
 	type Assistant,
@@ -383,6 +383,12 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 // by design — two actionable cases, then a catch-all.
 export function classifyFailure(error: unknown): { body: string; route: Route } {
 	const raw = error instanceof Error ? error.message : String(error)
+	if (error instanceof StaleLifetimeError || /runtime reset/i.test(raw)) {
+		return {
+			body: 'The runtime reset while your request was running. Please try again.',
+			route: { kind: 'chat' }
+		}
+	}
 	if (/no ai (backend|provider)|ai is turned off|enable an ai provider/i.test(raw)) {
 		return {
 			body: 'No AI is turned on. Enable an AI provider in Settings → Accounts to start chatting.',

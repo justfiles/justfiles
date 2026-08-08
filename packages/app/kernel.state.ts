@@ -37,6 +37,8 @@ export interface StateStore {
 	// Forget an app's persisted + in-memory state (uninstall). The seq counter is
 	// left intact, so a reinstall keeps the version monotonic for push consumers.
 	drop(appId: AppId): Promise<void>
+	// Drop every in-memory belief when the owning runtime is disposed.
+	clear(): void
 }
 
 export function stateStore(fs: Volume): StateStore {
@@ -52,7 +54,7 @@ export function stateStore(fs: Volume): StateStore {
 	// would let a later commit BACK to that value skip its write, stranding disk
 	// ahead of memory until a reboot resurrected it.
 	const onDisk = new Map<AppId, string>()
-	return { current, commit, seq, invalidate, drop }
+	return { current, commit, seq, invalidate, drop, clear }
 
 	// The file's value plus its serialization, or `{}` when there is no file yet.
 	async function load(appId: AppId): Promise<{ value?: unknown; encoded?: string }> {
@@ -110,5 +112,11 @@ export function stateStore(fs: Volume): StateStore {
 		await fs.rm(`/state/${appId}.json`, { force: true })
 		states.delete(appId)
 		onDisk.delete(appId)
+	}
+
+	function clear(): void {
+		states.clear()
+		seqs.clear()
+		onDisk.clear()
 	}
 }

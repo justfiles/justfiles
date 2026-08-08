@@ -116,6 +116,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
+      '@justfiles/lifetime':
+        specifier: workspace:*
+        version: link:../../packages/lifetime
       '@justfiles/state':
         specifier: workspace:*
         version: link:../../packages/state

@@ -39,6 +39,8 @@ export interface Subscriptions {
 	ensure(appId: AppId): void
 	// Stop all of an app's streams (uninstall / pre-reinstall).
 	stop(appId: AppId): void
+	// Stop every stream and prevent an in-flight warm-up from re-arming one.
+	dispose(): void
 }
 
 // The subscription reconciler (Part D). `subscriptions(state)` (in the bundle)
@@ -60,8 +62,9 @@ export function subscriptionRuntime({
 	// state), so a DO hibernate/restart loses the host watchers and the next touch
 	// re-warms them.
 	const subs = new Map<AppId, Map<string, RunningSub>>()
+	let disposed = false
 
-	return { reconcile, ensure, stop }
+	return { reconcile, ensure, stop, dispose }
 
 	// The structural identity of a DECLARED stream. Every field of the descriptor is in
 	// it, `coalesce` included: `startStream` captures the descriptor it was started with,
@@ -76,7 +79,7 @@ export function subscriptionRuntime({
 	}
 
 	function reconcile(appId: AppId, desired: Subscription[]): void {
-		if (!subscribe) return
+		if (!subscribe || disposed) return
 		const want = new Map<string, Subscription>()
 		for (const sub of desired) want.set(subKey(sub), sub)
 		let running = subs.get(appId)
@@ -207,12 +210,17 @@ export function subscriptionRuntime({
 	// serializes with dispatch. No-op once warm — from there a state-changing
 	// dispatch keeps the set converged.
 	function ensure(appId: AppId): void {
-		if (subs.has(appId) || !subscribe) return
+		if (disposed || subs.has(appId) || !subscribe) return
 		subs.set(appId, new Map())
 		void enqueue(appId, async () => {
 			const desired = await loadDesired(appId)
 			if (desired) reconcile(appId, desired)
 		}).catch((error) => onError(appId, errMessage(error)))
+	}
+
+	function dispose(): void {
+		disposed = true
+		for (const appId of [...subs.keys()]) stop(appId)
 	}
 }
 

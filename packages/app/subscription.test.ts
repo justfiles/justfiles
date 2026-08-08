@@ -1,6 +1,6 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
 import { type Capabilities, type GetSandbox, kernel } from './kernel.ts'
 import source from './test-bundle/subscription.ts?raw'
@@ -69,6 +69,14 @@ async function until(cond: () => boolean | Promise<boolean>, label: string): Pro
 	throw new Error(`timeout: ${label}`)
 }
 
+function deferred(): { promise: Promise<void>; resolve(): void } {
+	let resolve!: () => void
+	const promise = new Promise<void>((done) => {
+		resolve = done
+	})
+	return { promise, resolve }
+}
+
 async function start(stream: Capabilities['subscribe']) {
 	const fs = volume(memStorage())
 	const k = kernel({
@@ -100,6 +108,66 @@ test('declaring a stream starts it and its events fold into state', async () => 
 	host.opened[0].emit({})
 	await until(async () => ((await k.state(appId)) as { events: number }).events === 2, 'two events')
 	expect(await k.state(appId)).toEqual({ watching: '/a', events: 2, lastSource: null })
+})
+
+test('disposing a kernel stops streams and prevents warm-up from re-arming them', async () => {
+	const host = fakeStream()
+	const { k, appId } = await start(host.stream)
+
+	await k.dispatch(appId, { type: 'open', params: { path: '/a' } })
+	await until(() => host.live().length === 1, 'stream /a started')
+	k.dispose()
+
+	expect(host.live()).toEqual([])
+	expect(host.opened[0].stopped).toBe(true)
+	await expect(k.state(appId)).rejects.toThrow(
+		'Runtime reset while the app was running. Try again.'
+	)
+	await new Promise((resolve) => setTimeout(resolve, 0))
+	expect(host.opened).toHaveLength(1)
+})
+
+test('background subscription work already in flight is discarded and logged on disposal', async () => {
+	const entered = deferred()
+	const release = deferred()
+	const delayed: GetSandbox = async (input) => {
+		const inner = await sandbox(input)
+		return {
+			...inner,
+			async run(message, ctx) {
+				if (message.type.startsWith('__sub/')) {
+					entered.resolve()
+					await release.promise
+				}
+				return inner.run(message, ctx)
+			}
+		}
+	}
+	const host = fakeStream()
+	const fs = volume(memStorage())
+	const k = kernel({
+		fs,
+		sandbox: delayed,
+		clock: {},
+		capabilities: { invoke: async () => undefined, subscribe: host.stream }
+	})
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.watch', name: 'Watch', app: code })
+	)
+	await k.dispatch(appId, { type: 'open', params: { path: '/a' } })
+	await until(() => host.live().length === 1, 'stream /a started')
+	const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+	host.opened[0].emit({})
+	await entered.promise
+	k.dispose()
+	release.resolve()
+	await until(() => logged.mock.calls.length === 1, 'discard logged')
+
+	expect(logged).toHaveBeenCalledWith(
+		expect.stringContaining('discarded background work after runtime reset')
+	)
+	logged.mockRestore()
 })
 
 test('switching the watched path stops the old stream and starts the new', async () => {

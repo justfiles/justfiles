@@ -145,6 +145,25 @@ test('smoke test kernel', async () => {
 	).rejects.toThrow(/invalid params for increment/)
 })
 
+test('disposed kernel surfaces reset and a fresh kernel cannot serve or recreate cached state', async () => {
+	const fs = volume(memStorage())
+	const app = appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	const first = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
+	const appId = await first.install(app)
+	await first.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
+	expect(await first.state(appId)).toEqual({ count: 5 })
+
+	first.dispose()
+	await fs.rm(`/state/${appId}.json`)
+	expect(() => first.dispatch(appId, { type: 'increment', params: { amount: 1 } })).toThrow(
+		'Runtime reset while the app was running. Try again.'
+	)
+
+	const second = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
+	expect(await second.state(appId)).toEqual({ count: 0 })
+	expect(await fs.exists(`/state/${appId}.json`)).toBe(false)
+})
+
 test('kernel attaches appId and the app-declared scopes to capability calls', async () => {
 	// The trust boundary moved into the kernel: the host executor receives the
 	// appId and the scopes the app DECLARED (volume → ['app'], test → []), read

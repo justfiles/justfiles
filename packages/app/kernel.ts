@@ -101,6 +101,8 @@ export interface Kernel {
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher (hidden ids omitted)
+	// Tear down the in-memory runtime. Durable state remains on the Volume.
+	dispose: () => void
 }
 
 type AppState = object
@@ -184,9 +186,11 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		actions,
 		subscribe,
 		app,
-		list
+		list,
+		dispose
 	}
 	const caps = typeof capabilities === 'function' ? capabilities(self) : capabilities
+	let disposed = false
 	// The command runtime (Part B) runs an edge's emitted Command off-queue and
 	// re-enters its Result via `dispatch`. It owns the in-flight count `settled`
 	// waits on (via `commands.pending`).
@@ -194,7 +198,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		resolve: resolver.resolve,
 		invoke: caps?.invoke,
 		dispatch,
-		onError: (appId, error) => emit({ type: 'app.error', appId, error })
+		onError: backgroundError
 	})
 	// The subscription reconciler (Part D) keeps the streams an app's state
 	// declares alive, re-entering each event via `dispatch`. `loadDesired` rebuilds
@@ -209,7 +213,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 			const sb = await loadSandbox(appId)
 			return (await sb.subscriptions?.(await states.current(appId))) ?? []
 		},
-		onError: (appId, error) => emit({ type: 'app.error', appId, error })
+		onError: backgroundError
 	})
 	const handlers = new Set<KernelEventHandler>()
 	// Per-app serialization. `queues` holds each app's tail promise so every
@@ -297,6 +301,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	}
 
 	async function settled(appId: AppId, seq: number, opts?: { timeout?: number }): Promise<unknown> {
+		assertActive()
 		const deadline = opts?.timeout ? Date.now() + opts.timeout : Number.POSITIVE_INFINITY
 		// Wait out both the queue and any in-flight command until neither advances:
 		// a queued task may enqueue more, and a command (run off-queue) re-enters
@@ -310,6 +315,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 				(tail ?? Promise.resolve()).catch(() => {}),
 				pendingCommand ?? Promise.resolve()
 			])
+			assertActive()
 			if (queues.get(appId) === tail && !commands.pending(appId)) {
 				if (states.seq(appId) >= seq) return state(appId)
 				throw new Error(
@@ -326,8 +332,22 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		for (const handler of [...handlers]) handler(event)
 	}
 
+	function backgroundError(appId: AppId, error: string): void {
+		if (disposed) {
+			console.error(`[app:${appId}] discarded background work after runtime reset: ${error}`)
+			return
+		}
+		emit({ type: 'app.error', appId, error })
+	}
+
+	function assertActive(): void {
+		if (disposed) throw new Error('Runtime reset while the app was running. Try again.')
+	}
+
 	async function install(app: AppBundle): Promise<AppId> {
+		assertActive()
 		const appId = await store.install(app)
+		assertActive()
 		// The bundle changed — its declared capabilities, procedures, and
 		// `subscriptions(state)` may have too. Drop the memoized caps/procs and stop
 		// the running streams, then re-warm against the NEW bundle so streams the
@@ -342,7 +362,9 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	}
 
 	async function uninstall(appId: AppId): Promise<void> {
+		assertActive()
 		await store.uninstall(appId)
+		assertActive()
 		// State and per-app data outlive the bundle dir, and the memoized
 		// caps/procs/streams are keyed off it — tear them all down here, the one
 		// place that crosses the stores into the runtime subsystems.
@@ -364,6 +386,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	// converged model), while the GUI gets the immediate result and renders via
 	// push.
 	function dispatch(appId: AppId, message: Message): Promise<unknown> {
+		assertActive()
 		// First touch of this app (post-boot/reinstall) warms its streams, so a
 		// procedure-only or non-state-changing dispatch still rehydrates them.
 		subs.ensure(appId)
@@ -374,12 +397,14 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 			reject = rej
 		})
 		enqueue(appId, async () => {
+			assertActive()
 			if ((await proceduresOf(appId)).has(message.type)) {
 				// Off-queue: kick it off, return so the slot frees immediately.
 				runProcedure(appId, message).then(settle, reject)
 				return
 			}
 			const committed = await dispatchNow(appId, message)
+			assertActive()
 			// Settle off-queue too — `settled` waits for the queue to drain, so
 			// awaiting it inside the slot would deadlock.
 			if (message.actor === 'agent' && committed.state !== undefined)
@@ -392,6 +417,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	type Committed = { result: unknown; state?: unknown; seq: number }
 
 	async function dispatchNow(appId: AppId, message: Message): Promise<Committed> {
+		assertActive()
 		if (!(await store.has(appId))) throw new Error(`app not found: ${appId}`)
 
 		// Read authoritative state from memory (hydrated from fs once). The queue
@@ -406,6 +432,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		// kernel hands it only the current state.
 		const sb = await loadSandbox(appId)
 		const out = await sb.run(message, { state: current })
+		assertActive()
 		// A public edge populates `state`; a procedure-routed read does not. Only
 		// commit + push when the transition produced a next state — that keeps
 		// caller-scoped reads (e.g. Files' readFile) from ballooning state.
@@ -437,6 +464,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	// and reads capabilities through the kernel — all without the procedure
 	// itself occupying the queue, so a long procedure never freezes the GUI.
 	async function runProcedure(appId: AppId, message: Message): Promise<unknown> {
+		assertActive()
 		const sb = await loadSandbox(appId)
 		if (!sb.runProcedure) throw new Error(`procedures unsupported by sandbox: ${appId}`)
 		const handle: RawAppHandle = {
@@ -446,17 +474,23 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 			invoke: (capability, method, ...args) =>
 				invokeCapability(appId, capability, method, args, message.actor)
 		}
-		return sb.runProcedure(message.type, message.params, handle)
+		const result = await sb.runProcedure(message.type, message.params, handle)
+		assertActive()
+		return result
 	}
 
 	async function state(appId: AppId): Promise<unknown> {
+		assertActive()
 		if (!(await store.has(appId))) throw new Error(`app not found: ${appId}`)
 		// Boot/connect path: a host snapshotting state is the first touch after a DO
 		// restart, so warm the app's streams from persisted state (Part D). Fire and
 		// forget — the snapshot itself doesn't depend on the streams being live yet.
 		subs.ensure(appId)
 		const current = await states.current(appId)
-		return current === undefined ? await initialState(appId) : current
+		assertActive()
+		const result = current === undefined ? await initialState(appId) : current
+		assertActive()
+		return result
 	}
 
 	// Re-read `/state/<id>.json` after it was written OUTSIDE this kernel (a synced
@@ -464,11 +498,13 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	// dispatch's read-modify-write (which would resurrect the stale value), then
 	// re-hydrates the cache so the caller's next `state()` reflects the file.
 	async function reload(appId: AppId): Promise<void> {
+		assertActive()
 		if (!(await store.has(appId))) return
 		await enqueue(appId, async () => {
 			states.invalidate(appId)
 			await states.current(appId)
 		})
+		assertActive()
 	}
 
 	async function initialState(appId: AppId): Promise<unknown> {
@@ -476,10 +512,12 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
+		assertActive()
 		// Agent first-touch is often listing tools before it dispatches — warm
 		// streams here too so they don't stay cold until the first action.
 		subs.ensure(appId)
 		const all = await allActions(appId)
+		assertActive()
 		const out: Record<string, ActionMeta> = {}
 		for (const type in all) {
 			// 'gui' procedures are for the GUI client only — keep them off the
@@ -495,17 +533,34 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	}
 
 	function subscribe(handler: KernelEventHandler): Unsubscribe {
+		assertActive()
 		handlers.add(handler)
 		return () => handlers.delete(handler)
 	}
 
 	async function app(appId: AppId): Promise<InstalledApp> {
+		assertActive()
 		const installed = await store.get(appId)
+		assertActive()
 		if (!installed) throw new Error(`app not found: ${appId}`)
 		return installed
 	}
 
 	async function list(): Promise<AppManifest[]> {
-		return (await store.list()).filter((manifest) => !hidden(manifest.id))
+		assertActive()
+		const manifests = await store.list()
+		assertActive()
+		return manifests.filter((manifest) => !hidden(manifest.id))
+	}
+
+	function dispose(): void {
+		if (disposed) return
+		disposed = true
+		subs.dispose()
+		states.clear()
+		resolver.clear()
+		procNames.clear()
+		queues.clear()
+		handlers.clear()
 	}
 }
