@@ -140,6 +140,13 @@ function handleOf(pending: Pending | undefined): RawAppHandle {
 // risk-gate-probe.ts) — which cannot use a static import at all. Either way the
 // load is awaited before any message is handled, and a failure is captured in
 // __loadError and reported per-request below.
+//
+// It is web-only, and the overloads say so: `self.name` is a browser worker's
+// scope name, and Node's identically-spelled `WorkerOptions.name` is an inspector
+// title the isolate cannot read. Accepting the pair would emit `self.postMessage`
+// into a worker_thread and fail before the first message.
+export function sandboxWorkerSource(appUrl: string, transport: 'web' | 'node'): string
+export function sandboxWorkerSource(appUrl: null, transport: 'web'): string
 export function sandboxWorkerSource(appUrl: string | null, transport: 'web' | 'node'): string {
 	const head =
 		appUrl === null
