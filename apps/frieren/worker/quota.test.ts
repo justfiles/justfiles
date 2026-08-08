@@ -1,6 +1,17 @@
+import { DatabaseSync } from 'node:sqlite'
+import type { Usage } from '@earendil-works/pi-ai'
+import type { DbAdapter, SqlValue } from '@justfiles/core'
 import { describe, expect, test } from 'vitest'
 import type { KvStorage } from './integrations/storage.ts'
-import { aiLimitsMicros, DEFAULT_TIER, evaluate, readTier, setTier, TIERS } from './quota.ts'
+import {
+	aiLimitsMicros,
+	createAiMeter,
+	DEFAULT_TIER,
+	evaluate,
+	readTier,
+	setTier,
+	TIERS
+} from './quota.ts'
 import type { AiUsage, StorageUsage, UsageReport } from './usage.ts'
 
 const MB = 1024 * 1024
@@ -22,6 +33,37 @@ function memKv(): KvStorage {
 			return new Map(map) as Map<string, T>
 		}
 	}
+}
+
+function realDb(): DbAdapter {
+	const sqlite = new DatabaseSync(':memory:')
+	sqlite.exec(
+		`CREATE TABLE fs_inodes (content_hash TEXT);
+		 CREATE TABLE fs_contents (content_hash TEXT, storage_kind INTEGER, size INTEGER);`
+	)
+	const db: DbAdapter = {
+		async query<T extends Record<string, unknown>>(sql: string, args: SqlValue[] = []) {
+			return sqlite
+				.prepare(sql)
+				.all(...(args as (string | number | bigint | null)[])) as unknown as T[]
+		},
+		async run(sql: string, args: SqlValue[] = []) {
+			sqlite.prepare(sql).run(...(args as (string | number | bigint | null)[]))
+		},
+		async transaction(fn) {
+			await fn(db)
+		}
+	}
+	return db
+}
+
+const EMPTY_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
 }
 
 function ai(burstUsd: number, weeklyUsd: number): AiUsage {
@@ -114,5 +156,73 @@ describe('tier storage', () => {
 		const kv = memKv()
 		await kv.put('usage/tier', 'enterprise')
 		expect(await readTier(kv)).toBe('free')
+	})
+})
+
+describe('createAiMeter schema readiness', () => {
+	test('construction does no schema work and concurrent cold calls initialise once', async () => {
+		const db = realDb()
+		const run = db.run.bind(db)
+		let creates = 0
+		let release!: () => void
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		db.run = async (sql, args) => {
+			if (sql.includes('CREATE TABLE IF NOT EXISTS usage_ai')) {
+				creates++
+				await blocked
+			}
+			await run(sql, args)
+		}
+
+		const meter = createAiMeter(db, memKv())
+		expect(creates).toBe(0)
+
+		const calls = [meter.admitOrThrow(), meter.admitOrThrow(), meter.admitOrThrow()]
+		expect(creates).toBe(1)
+		release()
+		await Promise.all(calls)
+		expect(creates).toBe(1)
+	})
+
+	test('readUsage initialises a cold meter', async () => {
+		const meter = createAiMeter(realDb(), memKv())
+
+		const report = await meter.readUsage(4096)
+
+		expect(report.ai).toMatchObject({
+			burst: { costUsd: 0, resetsAt: null },
+			weekly: { costUsd: 0 },
+			totalTokens: 0,
+			requests: 0,
+			lifetimeCostUsd: 0,
+			lifetimeRequests: 0
+		})
+		expect(report.storage.physicalBytes).toBe(4096)
+	})
+
+	test('record initialises a cold meter', async () => {
+		const meter = createAiMeter(realDb(), memKv())
+		await meter.record({ burstExpires: 0, weeklyKey: 0 }, EMPTY_USAGE)
+
+		expect((await meter.readUsage(0)).ai.lifetimeRequests).toBe(1)
+	})
+
+	test('failed initialisation is evicted so the next call retries', async () => {
+		const db = realDb()
+		const run = db.run.bind(db)
+		let creates = 0
+		db.run = async (sql, args) => {
+			if (sql.includes('CREATE TABLE IF NOT EXISTS usage_ai') && ++creates === 1) {
+				throw new Error('schema unavailable')
+			}
+			await run(sql, args)
+		}
+		const meter = createAiMeter(db, memKv())
+
+		await expect(meter.readUsage(0)).rejects.toThrow('schema unavailable')
+		await expect(meter.readUsage(0)).resolves.toBeDefined()
+		expect(creates).toBe(2)
 	})
 })

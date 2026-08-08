@@ -101,8 +101,8 @@ export interface AdmitHandle {
 
 // Create the one-row counter table (fresh DBs) and migrate a legacy monthly-window table in
 // place (add the burst/weekly columns; the shared lifetime/tokens/requests columns carry over,
-// old windowed spend is discarded — a one-time reset). Called once per DO boot (in reset()),
-// before any request.
+// old windowed spend is discarded — a one-time reset). The AI meter calls this lazily before
+// its first database operation.
 export async function ensureUsageSchema(db: DbAdapter): Promise<void> {
 	await db.run(
 		`CREATE TABLE IF NOT EXISTS usage_ai (

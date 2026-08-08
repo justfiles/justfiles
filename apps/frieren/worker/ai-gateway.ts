@@ -91,7 +91,7 @@ export interface AiModelDescriptor {
 }
 
 export interface AiGatewayDeps {
-	meter: AiMeter
+	meter: Pick<AiMeter, 'admitOrThrow' | 'record'>
 	// THE platform model — the same `Model` object `aiRuntime()` builds for the in-process agent
 	// backend, so the descriptor and the metered upstream can never drift from what the agent
 	// itself runs. Its `.cost` also backs the abort-time estimate below.

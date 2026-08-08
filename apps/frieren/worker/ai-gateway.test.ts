@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from 'vitest'
 import { createAiGateway, meterSseStream } from './ai-gateway.ts'
 import type { KvStorage } from './integrations/storage.ts'
 import { type AiMeter, createAiMeter, QuotaExceededError } from './quota.ts'
-import { type AdmitHandle, ensureUsageSchema, readAiUsage } from './usage.ts'
+import { type AdmitHandle, readAiUsage } from './usage.ts'
 
 // ── Shared fixtures ─────────────────────────────────────────────────────────
 
@@ -47,7 +47,6 @@ function memKv(): KvStorage {
 
 async function realMeter(): Promise<{ meter: AiMeter; db: DbAdapter }> {
 	const db = realDb()
-	await ensureUsageSchema(db)
 	return { meter: createAiMeter(db, memKv()), db }
 }
 
@@ -68,7 +67,7 @@ function testModel(id = 'test/model'): Model<Api> {
 	}
 }
 
-function fakeMeter(): AiMeter & {
+function fakeMeter(): Pick<AiMeter, 'admitOrThrow' | 'record'> & {
 	handles: AdmitHandle[]
 	records: { handle: AdmitHandle; usage: unknown }[]
 } {
@@ -267,7 +266,7 @@ describe('createAiGateway', () => {
 	})
 
 	test('over quota: 429, no upstream call', async () => {
-		const meter: AiMeter = {
+		const meter: Pick<AiMeter, 'admitOrThrow' | 'record'> = {
 			admitOrThrow: () =>
 				Promise.reject(new QuotaExceededError('AI limit reached — it resets soon.')),
 			record: vi.fn()
@@ -284,7 +283,7 @@ describe('createAiGateway', () => {
 	})
 
 	test('a meter failure that is NOT quota exhaustion is a 502, not a 429', async () => {
-		const meter: AiMeter = {
+		const meter: Pick<AiMeter, 'admitOrThrow' | 'record'> = {
 			admitOrThrow: () => Promise.reject(new Error('SQLITE_BUSY: database is locked')),
 			record: vi.fn()
 		}
@@ -304,7 +303,7 @@ describe('createAiGateway', () => {
 
 	test('a spent quota reports WHEN it resets, so a client need not poll to find out', async () => {
 		const resetsAt = Date.now() + 3_600_000
-		const meter: AiMeter = {
+		const meter: Pick<AiMeter, 'admitOrThrow' | 'record'> = {
 			admitOrThrow: () => Promise.reject(new QuotaExceededError('AI limit reached.', resetsAt)),
 			record: vi.fn()
 		}

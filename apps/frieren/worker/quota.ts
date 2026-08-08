@@ -4,8 +4,10 @@ import type { KvStorage } from './integrations/storage.ts'
 import {
 	type AdmitHandle,
 	admit,
+	ensureUsageSchema,
 	MICROS_PER_USD,
 	readAiUsage,
+	readUsage,
 	record,
 	type UsageReport
 } from './usage.ts'
@@ -107,6 +109,7 @@ export interface QuotaReport {
 export interface AiMeter {
 	admitOrThrow(): Promise<AdmitHandle>
 	record(handle: AdmitHandle, usage: Usage): Promise<void>
+	readUsage(physicalBytes: number): Promise<UsageReport>
 }
 
 // Thrown ONLY for the intentional case — `admit` found the cap already spent. Callers (the
@@ -153,8 +156,18 @@ export function createAiMeter(
 	storage: KvStorage,
 	devTierOverride?: string
 ): AiMeter {
+	// The promise is the concurrency barrier. A failed attempt is evicted for retry; a successful
+	// one lasts for this meter because filesystem resets do not remove usage_ai.
+	let readiness: Promise<void> | undefined
+	const ready = () =>
+		(readiness ??= ensureUsageSchema(db).catch((error) => {
+			readiness = undefined
+			throw error
+		}))
+
 	return {
 		async admitOrThrow() {
+			await ready()
 			const tier = await readTier(storage, devTierOverride)
 			const limits = aiLimitsMicros(tier)
 			const handle = await admit(
@@ -166,7 +179,14 @@ export function createAiMeter(
 			if (handle === null) throw await quotaExceeded(db, tier)
 			return handle
 		},
-		record: (handle, usage) => record(db, handle, usage)
+		async record(handle, usage) {
+			await ready()
+			await record(db, handle, usage)
+		},
+		async readUsage(physicalBytes) {
+			await ready()
+			return readUsage(db, physicalBytes)
+		}
 	}
 }
 
