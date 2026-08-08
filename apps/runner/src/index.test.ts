@@ -99,6 +99,25 @@ test('a recorded release serves its bytes, frozen for a year', async () => {
 	expect(res.headers.get('cache-control')).toContain('immutable')
 })
 
+// A desktop installs and mounts a hosted app from another origin entirely, so
+// every one of these has to be readable cross-origin — including the 404, which
+// without the header reaches the caller as a network error instead of a status.
+test('everything under /v/ is readable by any origin', async () => {
+	const env = envWith(published)
+	for (const path of ['gui.js', 'worker.js', 'spec.json', 'nothing.js']) {
+		const res = await get(`https://alice-notes.example.com/v/1.2.0/${path}`, env)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	}
+})
+
+// The shell is the standalone host, not a store asset. Nothing reads it
+// cross-origin, so it does not get widened along with the bytes it points at.
+test('the app page itself is not cross-origin readable', async () => {
+	const res = await get('https://alice-notes.example.com/manifest.webmanifest', envWith(published))
+	expect(res.status).toBe(200)
+	expect(res.headers.get('access-control-allow-origin')).toBe(null)
+})
+
 // The bytes are there for the taking; the release record is what makes them
 // reachable. Otherwise a guessed version could be answered out of a half-written
 // import and cached as immutable over bytes the retry then rewrites.
