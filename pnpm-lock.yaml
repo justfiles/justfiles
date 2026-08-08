@@ -507,6 +507,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
+      '@justfiles/lifetime':
+        specifier: workspace:*
+        version: link:../lifetime
       just-bash:
         specifier: 3.0.2
         version: 3.0.2

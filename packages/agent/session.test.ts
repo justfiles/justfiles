@@ -5,16 +5,30 @@ import {
 	createAssistantMessageEventStream,
 	type Model
 } from '@earendil-works/pi-ai'
-import { volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
-import { SOUL_PATH } from './agent-defaults.ts'
+import { PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts'
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
 import type { SessionEntry } from './session.manager.ts'
 import { createAgentSession, type SessionEvent } from './session.ts'
 
 const encoder = new TextEncoder()
+
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((done) => {
+		resolve = done
+	})
+	return { promise, resolve }
+}
+
+async function seedIdentity(vol: Volume, soul = '---\nagent_name: Kodama\n---\n\nYou are Kodama.') {
+	await vol.mkdir('/system/agents/main', { recursive: true })
+	await vol.writeFile(PROFILE_PATH, encoder.encode('---\nseeded: true\n---'))
+	await vol.writeFile(SOUL_PATH, encoder.encode(soul))
+}
 
 // A full AssistantMessage with the given content blocks. `stopReason`/`errorMessage` are
 // overridable so a test can script an error turn or a tool-call turn.
@@ -777,4 +791,121 @@ test('a soul written under a live session reaches the next turn', async () => {
 	const prompt = await session.systemPrompt()
 	expect(prompt).toContain('You are Fern.')
 	expect(prompt).not.toContain('You are Kodama.')
+})
+
+test('construction does not register watches before storage is migrated', async () => {
+	const vol = volume(memStorage())
+	let migrated = false
+	const registrations: string[] = []
+	const guarded: Volume = {
+		...vol,
+		async watch(path, listener, options) {
+			if (!migrated) throw new Error('database is not migrated')
+			registrations.push(path)
+			return vol.watch(path, listener, options)
+		}
+	}
+	const session = createAgentSession({
+		volume: guarded,
+		backend: scriptedBackend([]),
+		compaction: NO_COMPACTION
+	})
+
+	expect(registrations).toEqual([])
+	migrated = true
+	await seedIdentity(vol)
+	await session.systemPrompt()
+	expect(registrations.slice(0, 2)).toEqual([SOUL_PATH, PROFILE_PATH])
+})
+
+test('a watch racing a pending build discards it and retries against the current lifetime', async () => {
+	const vol = volume(memStorage())
+	await seedIdentity(vol)
+	const reached = deferred()
+	const release = deferred()
+	let soulReads = 0
+	const delayed: Volume = {
+		...vol,
+		async readFile(path) {
+			const bytes = await vol.readFile(path)
+			if (path === SOUL_PATH && ++soulReads === 2) {
+				reached.resolve()
+				await release.promise
+			}
+			return bytes
+		}
+	}
+	const session = createAgentSession({
+		volume: delayed,
+		backend: scriptedBackend([]),
+		compaction: NO_COMPACTION
+	})
+
+	const pending = session.systemPrompt()
+	await reached.promise
+	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Fern\n---\n\nYou are Fern.'))
+	await new Promise((resolve) => setTimeout(resolve, 0))
+	release.resolve()
+
+	await expect(pending).resolves.toContain('You are Fern.')
+	expect(soulReads).toBe(4)
+})
+
+test('concurrent callers share the current build', async () => {
+	const vol = volume(memStorage())
+	await seedIdentity(vol)
+	const reached = deferred()
+	const release = deferred()
+	let soulReads = 0
+	const delayed: Volume = {
+		...vol,
+		async readFile(path) {
+			const bytes = await vol.readFile(path)
+			if (path === SOUL_PATH && ++soulReads === 2) {
+				reached.resolve()
+				await release.promise
+			}
+			return bytes
+		}
+	}
+	const session = createAgentSession({
+		volume: delayed,
+		backend: scriptedBackend([]),
+		compaction: NO_COMPACTION
+	})
+
+	const first = session.systemPrompt()
+	const second = session.systemPrompt()
+	await reached.promise
+	release.resolve()
+
+	await expect(Promise.all([first, second])).resolves.toEqual([
+		expect.stringContaining('You are Kodama.'),
+		expect.stringContaining('You are Kodama.')
+	])
+	expect(soulReads).toBe(2)
+})
+
+test('a failed build is evicted so later access retries', async () => {
+	const vol = volume(memStorage())
+	await seedIdentity(vol)
+	let failed = false
+	const flaky: Volume = {
+		...vol,
+		async readFile(path) {
+			if (!failed && path === SOUL_PATH) {
+				failed = true
+				throw new Error('build failed')
+			}
+			return vol.readFile(path)
+		}
+	}
+	const session = createAgentSession({
+		volume: flaky,
+		backend: scriptedBackend([]),
+		compaction: NO_COMPACTION
+	})
+
+	await expect(session.systemPrompt()).rejects.toThrow('build failed')
+	await expect(session.systemPrompt()).resolves.toContain('You are Kodama.')
 })
