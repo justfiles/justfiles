@@ -1,0 +1,27 @@
+{
+	"name": "@justfiles/runner",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"preview": "vite build && vite preview",
+		"deploy": "vite build && wrangler deploy",
+		"typecheck": "tsc -b --noEmit",
+		"cf-typegen": "wrangler types --env-interface CloudflareBindings"
+	},
+	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"@justfiles/fs": "workspace:*",
+		"hono": "4.11.1"
+	},
+	"devDependencies": {
+		"@cloudflare/vite-plugin": "^1.50.0",
+		"@justfiles/tsconfig": "workspace:*",
+		"typescript": "catalog:",
+		"vite": "^8.1.0",
+		"vite-ssr-components": "^0.6.1",
+		"wrangler": "^4.118.0"
+	}
+}

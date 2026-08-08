@@ -515,13 +515,11 @@ Bot resolves the ladder and posts a report
         ↓
 Maintainer answers one question: is this app legitimate?
         ↓
-Merge registers the app
+Merge approves and registers the app
         ↓
 Private importer notices the catalog commit
         ↓
-Release is downloaded, validated and staged
-        ↓
-First publication is explicitly approved
+Release is downloaded, validated and published
 ```
 
 The bot does everything mechanical before a human looks, so review is a judgement call rather
@@ -789,7 +787,7 @@ private even when all implementation code is open source.
 - Make the private importer reconcile catalog `main` on a schedule.
 - Implement the resolution ladder and the secret, size and shape validators.
 - Record catalog commit, source commit, artifact digest and release ID.
-- Require explicit approval for first publication.
+- Treat the merged catalog PR as approval and publish the first validated import.
 
 ### Phase 3 — Community operation
 

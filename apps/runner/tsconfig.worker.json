@@ -1,0 +1,11 @@
+{
+	"extends": "@justfiles/tsconfig/base.json",
+	"compilerOptions": {
+		"types": ["vite/client", "./worker-configuration.d.ts"],
+		"jsx": "react-jsx",
+		"jsxImportSource": "hono/jsx"
+	},
+	// `src/client` is browser code with its own project (tsconfig.client.json).
+	"include": ["src"],
+	"exclude": ["src/client"]
+}

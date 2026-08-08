@@ -1,0 +1,8 @@
+{
+	"extends": "@justfiles/tsconfig/dom.json",
+	// `sw.js` is plain JS on purpose — it is served verbatim as the service
+	// worker, so it never passes through a compiler. This lets its test import it;
+	// `checkJs` stays off, so the file itself is resolved, not type-checked.
+	"compilerOptions": { "allowJs": true },
+	"include": ["src/client"]
+}

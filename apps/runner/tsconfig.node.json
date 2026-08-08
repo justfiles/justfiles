@@ -1,0 +1,4 @@
+{
+	"extends": "@justfiles/tsconfig/base.json",
+	"include": ["vite.config.ts"]
+}
