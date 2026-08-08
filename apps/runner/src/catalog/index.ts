@@ -47,11 +47,37 @@ export async function findApp(env: CloudflareBindings, id: string): Promise<AppM
  * projection once it exists. See kb/registry.md#storejson.
  */
 export async function listApps(env: CloudflareBindings): Promise<AppMetadata[]> {
-	const { delimitedPrefixes } = await env.STORE.list({ prefix: 'apps/', delimiter: '/' })
+	// Paged to the end: `list` truncates, and an app past the first page would drop
+	// off the index while its own origin carried on serving it.
+	const prefixes: string[] = []
+	let cursor: string | undefined
+	do {
+		const page = await env.STORE.list({ prefix: 'apps/', delimiter: '/', cursor })
+		prefixes.push(...page.delimitedPrefixes)
+		cursor = page.truncated ? page.cursor : undefined
+	} while (cursor)
+
 	const found = await Promise.all(
-		delimitedPrefixes.map((prefix) => findApp(env, prefix.slice('apps/'.length, -1)))
+		prefixes.map((prefix) => findApp(env, prefix.slice('apps/'.length, -1)))
 	)
 	return found.filter((app) => app !== null).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Whether a version may be served at all.
+ *
+ * The bytes of a release land before the record that publishes them, so a
+ * version that is merely *guessable* is not a version we have finished importing.
+ * Without this, a request naming one mid-import could be answered out of a
+ * half-written release and cached for a year as immutable — over bytes the retry
+ * then rewrites. It is also what takes a yanked release out of reach.
+ */
+export async function servable(
+	env: CloudflareBindings,
+	id: string,
+	version: string
+): Promise<boolean> {
+	return (await readInfo(env, id))?.releases[version]?.state === 'ready'
 }
 
 export interface Refresh extends CatalogRefresh {

@@ -2,7 +2,7 @@ import type { AppManifest } from '@justfiles/app'
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { Hono } from 'hono'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
-import { findApp } from './catalog'
+import { findApp, servable } from './catalog'
 import swSource from './client/sw.js?raw'
 import { decodeLabel } from './id'
 
@@ -41,10 +41,11 @@ const mime = (path: string) => MIME[path.split('.').pop() ?? ''] ?? 'application
 const IMMUTABLE = 'public, max-age=31536000, immutable'
 
 /**
- * `/v/{version}/…` is resolved by string construction and reaches the store
- * without a lookup, which is what makes ONE `info.json` read per PAGE load
- * enough — the shell below emits version-pinned URLs, so nothing after the
- * document has to ask what the live version is.
+ * `/v/{version}/…` is resolved by string construction: the shell below emits
+ * version-pinned URLs, so nothing after the document has to ask what the live
+ * version is. The one thing it does ask is whether the named version is a
+ * release we finished importing — see `servable` — because the path is
+ * caller-supplied and everything under it is cached for a year.
  *
  * It is also what keeps the app's own state out of reach. `info.json` sits in
  * the same prefix as the bytes we serve, and the fixed `version` and `files`
@@ -56,7 +57,7 @@ const versioned = (id: string, version: string) => `apps/${id}/${version}`
 route.get('/v/:version/*', async (c) => {
 	const id = appId(c.req.raw, c.env)
 	const version = c.req.param('version')
-	if (!id) return c.notFound()
+	if (!id || !(await servable(c.env, id, version))) return c.notFound()
 	const path = c.req.path.slice(`/v/${version}/`.length)
 
 	// The reducer isolate: platform code, byte-identical for every app, but it

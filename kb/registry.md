@@ -8,8 +8,10 @@ run, not one that ships — treat the names in it as the design's vocabulary rat
 symbols you can go and read.
 
 Serving is version-pinned: the shell resolves `current` once and every URL it emits hangs off
-`/v/{version}/`, so assets, the reducer isolate and the spec all resolve without a lookup and
-carry a year's `immutable`.
+`/v/{version}/`, so assets, the reducer isolate and the spec all resolve by string construction
+against a version nothing after the document has to look up, and carry a year's `immutable`.
+That version is still caller-supplied, so it is gated on the release record — see
+[The routes](#the-routes).
 
 Not built yet: `store.json` and garbage collection. A merged catalog PR is the publication
 approval; the importer publishes the release after validating and storing it.
@@ -412,7 +414,8 @@ would reject the repository-tree rungs almost everywhere.
 3. info.json      the release recorded; `current` flips to it
 ```
 
-Nothing is reachable until step 3, and a crash before it leaves an orphan that
+Nothing is reachable until step 3 — the serving path enforces it, refusing any version the
+record does not name — and a crash before it leaves an orphan that
 [garbage collection](#garbage-collection) is designed to find. Reversing steps 2 and 3 would
 make `info.json` claim a release whose spec does not exist.
 
@@ -437,13 +440,23 @@ release, its final `info.json` write publishes it; there is no second approval g
 | Route | Resolves to | Lookup |
 | --- | --- | --- |
 | `/` | the shell document | `info.json.current`, then that release's `spec.json` |
-| `/v/{version}/{path}` | `apps/{id}/{version}/files/{path}` | none — string construction |
-| `/v/{version}/spec.json` | that release's app spec, `baseUrl` injected | none |
-| `/v/{version}/worker.js` | `sandboxWorkerSource('/v/{version}/app.js', 'web')` | none — generated |
+| `/v/{version}/{path}` | `apps/{id}/{version}/files/{path}` | `info.json.releases[version]`, then string construction |
+| `/v/{version}/spec.json` | that release's app spec, `baseUrl` injected | the same, then the spec |
+| `/v/{version}/worker.js` | `sandboxWorkerSource('/v/{version}/app.js', 'web')` | the same; the body is generated |
 
 **The shell emits version-pinned URLs**, and nothing else resolves the live version. That is
-what makes the lookup per *page load* rather than per asset, and it means everything under
-`/v/…` is immutable and carries `Cache-Control: public, max-age=31536000, immutable`.
+what makes resolving `current` a per-*page-load* cost rather than a per-asset one, and it means
+everything under `/v/…` is immutable and carries `Cache-Control: public,
+max-age=31536000, immutable`.
+
+**The version in the path is caller-supplied, so it is checked against the release record.**
+Nothing under `/v/…` is served unless `info.json` names that version `ready` — the gate that
+makes "nothing is reachable until step 3" of the [write order](#import) true of the serving
+path and not just of the importer. Without it a guessed version could be answered out of a
+half-written import and cached for a year as immutable, over bytes the retry then rewrites; a
+yanked release would also stay reachable for ever. It costs one `info.json` GET on a cache
+miss, behind the same cache as the shell's, and it buys back the invariant the year-long
+`immutable` is only safe under.
 
 The document costs two reads rather than one, because `info.json` deliberately carries no
 display metadata: a second copy of an app's name is a second thing that can disagree, and both
