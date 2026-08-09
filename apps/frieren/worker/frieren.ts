@@ -68,7 +68,7 @@ import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
-import { commitReset } from './reset-instance.ts'
+import { commitReset, refuseWritesWhile } from './reset-instance.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -184,7 +184,10 @@ export class Frieren extends DurableObject<Env> {
 		if (env.ENCRYPTION_KEY) this.secretCodec = aesGcmSecretCodec(env.ENCRYPTION_KEY)
 		else console.warn('ENCRYPTION_KEY is not set — account credentials are stored in the clear')
 		const namespace = ctx.id.toString()
-		const adapter = createDOSqliteAdapter(ctx.storage)
+		// Everything below writes through this one adapter, which is what lets a committed
+		// reset stop in-flight work it can no longer safely let finish (see
+		// `refuseWritesWhile`). The reset itself runs before the flag is set, so it passes.
+		const adapter = refuseWritesWhile(createDOSqliteAdapter(ctx.storage), () => this.restarting)
 		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
 		this.db = adapter
 		this.fs = fs

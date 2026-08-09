@@ -1,6 +1,6 @@
-import type { DestructiveResetBody, ResetDecision } from '@justfiles/core'
+import type { DbAdapter, DestructiveResetBody, ResetDecision } from '@justfiles/core'
 import { describe, expect, test } from 'vitest'
-import { commitReset } from './reset-instance.ts'
+import { commitReset, refuseWritesWhile } from './reset-instance.ts'
 
 const request: DestructiveResetBody = {
 	mode: 'wipe',
@@ -23,6 +23,62 @@ function operations(decision: ResetDecision) {
 		}
 	}
 }
+
+// Records what actually reached storage, so a refused write is visibly absent.
+function adapter(written: string[]): DbAdapter {
+	return {
+		query: async () => [],
+		run: async (sql: string) => {
+			written.push(sql)
+		},
+		transaction: async (fn) => fn(adapter(written))
+	}
+}
+
+describe('refuseWritesWhile', () => {
+	test('lets an instance that is still serving write normally', async () => {
+		const written: string[] = []
+		const db = refuseWritesWhile(adapter(written), () => false)
+		await db.run('INSERT INTO fs_inodes VALUES (1)')
+		await db.transaction(async (tx) => tx.run('INSERT INTO fs_dirents VALUES (1)'))
+		expect(written).toEqual([
+			'INSERT INTO fs_inodes VALUES (1)',
+			'INSERT INTO fs_dirents VALUES (1)'
+		])
+	})
+
+	test('refuses the write an in-flight turn resumes into after a reset commits', async () => {
+		// The turn passed every entry check before the reset, awaited the model, and comes
+		// back to append its transcript into the tree the reset just created. Nothing asked
+		// it to stop, so the write boundary has to.
+		const written: string[] = []
+		let restarting = false
+		const db = refuseWritesWhile(adapter(written), () => restarting)
+		const turn = (async () => {
+			await Promise.resolve() // the model call
+			await db.run('INSERT INTO fs_inodes VALUES (1)')
+		})()
+		restarting = true
+		await expect(turn).rejects.toThrow('restarting')
+		expect(written).toEqual([])
+	})
+
+	test('refuses a transaction, not just a bare statement', async () => {
+		const written: string[] = []
+		const db = refuseWritesWhile(adapter(written), () => true)
+		await expect(
+			db.transaction(async (tx) => tx.run('INSERT INTO fs_inodes VALUES (1)'))
+		).rejects.toThrow('restarting')
+		expect(written).toEqual([])
+	})
+
+	test('keeps reads open, so a closed instance can still say who it is', async () => {
+		// `status()` has to answer through the fence — proving the old instance is gone is
+		// the one thing that must keep working while it refuses everything else.
+		const db = refuseWritesWhile(adapter([]), () => true)
+		await expect(db.query('SELECT generation FROM fs_generation')).resolves.toEqual([])
+	})
+})
 
 describe('commitReset', () => {
 	test('flushes to disk before answering, so the restart cannot discard the commit', async () => {
@@ -51,6 +107,25 @@ describe('commitReset', () => {
 		})
 		const result = await commitReset(request, ops)
 		expect(result).toEqual({ ok: true, generation: 2, replayed: true })
+	})
+
+	test('the reset itself still writes — the boundary closes only once it has committed', async () => {
+		// `refuseWritesWhile` reads the flag per call, and `commitReset` runs before the
+		// caller sets it, so the truncate and bump go through the same adapter they fence.
+		let restarting = false
+		const written: string[] = []
+		const db = refuseWritesWhile(adapter(written), () => restarting)
+		await commitReset(request, {
+			reset: async () => {
+				await db.run('DELETE FROM fs_inodes')
+				return { ok: true, next: { generation: 2 } }
+			},
+			sync: async () => {
+				restarting = true
+			}
+		})
+		expect(written).toEqual(['DELETE FROM fs_inodes'])
+		await expect(db.run('INSERT INTO fs_inodes VALUES (1)')).rejects.toThrow('restarting')
 	})
 
 	test('a failed flush fails the reset rather than reporting a commit that may not survive', async () => {
