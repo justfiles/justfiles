@@ -10,7 +10,7 @@ export async function hydrateInstalledAppBundles(getKernel: () => Promise<Kernel
 			// so a hydrated icon blob would have no reader.
 			//
 			// For a hosted app this warms the mount instead of the blob store — the read
-			// fetches from the origin and caches under `/private/cache`, which is what
+			// fetches from the origin through the service worker cache, which is what
 			// makes it launchable offline later. Same call, both shapes.
 			const paths = [manifest.app, manifest.gui].filter((p): p is string => Boolean(p))
 			await Promise.all(paths.map((path) => app.read(path).catch(() => undefined)))

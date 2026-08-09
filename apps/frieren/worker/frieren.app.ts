@@ -127,7 +127,11 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 				name: m.name,
 				description: m.description ?? '',
 				iconUrl:
-					m.icon && m.version ? appFileUrl({ id: m.id, version: m.version }, m.icon) : undefined
+					m.icon && m.baseUrl
+						? `${m.baseUrl.replace(/\/$/, '')}/${m.icon}`
+						: m.icon && m.version
+							? appFileUrl({ id: m.id, version: m.version }, m.icon)
+							: undefined
 			}))
 		} catch {
 			return []

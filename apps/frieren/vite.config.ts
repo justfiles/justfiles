@@ -67,8 +67,22 @@ export default defineConfig({
 			},
 			workbox: {
 				cleanupOutdatedCaches: true,
+				clientsClaim: true,
 				navigateFallback: '/index.html',
 				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/ws$/],
+				// Runner release URLs are immutable. Cache them on first use so an installed
+				// app's mounted GUI/assets keep working with no network; the volume retains
+				// only its manifest and reducer.
+				runtimeCaching: [
+					{
+						urlPattern: /^https:\/\/[^/]+\.justapps\.run\/v\/[^/]+\//,
+						handler: 'CacheFirst',
+						options: {
+							cacheName: 'justapps',
+							cacheableResponse: { statuses: [200] }
+						}
+					}
+				],
 				// Built-in app files are .js/.svg (already matched); add the catalog +
 				// per-app manifest.json so a warm browser can seed a new profile offline.
 				globPatterns: [

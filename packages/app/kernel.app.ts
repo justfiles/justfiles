@@ -1,6 +1,4 @@
 import type { Volume } from '@justfiles/fs'
-import { cachePath } from '@justfiles/fs/sync-replica'
-import { FileType } from '@justfiles/fs/types'
 import type { AppBundle, AppManifest, InstalledApp } from './app.ts'
 import { isMountedFile, safeBundlePath } from './app.ts'
 import { trashBundle } from './trash.ts'
@@ -47,9 +45,8 @@ const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/'
  * `AppManifest`):
  *
  *   hosted (`baseUrl`) — the record and the REDUCER. Everything else is MOUNTED from
- *                        the origin and cached at `/private/cache/applications/<id>/…`,
- *                        so the GUI and assets never replicate while the bytes a
- *                        headless kernel needs stay durable (see `isMountedFile`).
+ *                        the origin through the host's HTTP cache, so GUI/assets never
+ *                        replicate while the headless kernel stays durable.
  *   local              — the bundle's files, copied in and replicated. The only
  *                        correct shape when there is no origin to refetch from.
  *
@@ -63,8 +60,8 @@ const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/'
 interface Apps {
 	// Returns the stable appId; the kernel keys every other subsystem by it.
 	install(bundle: AppBundle): Promise<AppId>
-	// Remove the installed app, cached payload included. State/data the bundle
-	// accreted at runtime are the kernel's to tear down — this drops only the app.
+	// Remove the installed app. State/data the bundle accreted at runtime are the
+	// kernel's to tear down — this drops only the bundle.
 	uninstall(appId: AppId): Promise<void>
 	get(appId: AppId): Promise<InstalledApp | null>
 	// Cheap "is this app installed?" check — the kernel guards dispatch/state on it
@@ -118,58 +115,7 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			throw e
 		}
 		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
-		// Past the commit point, so it cannot be allowed to fail the install: the new
-		// record and reducer are already live under `root`, and a caller that saw a
-		// rejection here would report a failure while the kernel forgot neither the old
-		// resolver nor emitted the install event. The unconditional wipe this replaced
-		// swallowed its own errors for the same reason; a cache left un-swept is stale
-		// bytes that the next read's hash check rejects anyway.
-		await sweepCache(root, manifest).catch(() => {})
-
 		return appId
-	}
-
-	/**
-	 * Drop what this release cannot use, and keep what it can.
-	 *
-	 * The tempting move is to wipe the cache outright, on the grounds that the
-	 * previous version's bytes are dead weight. They are not. A file that did not
-	 * change between two releases has the same digest, so the new manifest pins it
-	 * to the same hash and `mount()` would have served it straight from here —
-	 * wiping forces a re-download of *every* mounted file on *every* update, which
-	 * for a real app means shipping ~10 MB to fix an 11 KB reducer.
-	 *
-	 * So sweep against the pin set instead, which is what a service worker does on
-	 * activate: an entry goes only if this release does not mount that path, or
-	 * mounts it at a different digest. A local app pins nothing and mounts nothing,
-	 * so for one this empties the cache, which is correct.
-	 */
-	async function sweepCache(root: string, manifest: AppManifest): Promise<void> {
-		const cache = cachePath(root)
-		if (!(await fs.exists(cache))) return
-
-		// Collected first, deleted after: removing entries while walking the tree
-		// that produced them is the kind of thing that works until it does not.
-		const stale: string[] = []
-		const dirs: string[] = []
-		await fs.scan(cache, async (path, stat) => {
-			if (stat.type === FileType.Directory) {
-				dirs.push(path)
-				return
-			}
-			const pinned = manifest.files?.[path.slice(cache.length + 1)]
-			if (!pinned || `sha256-${stat.contentHash ?? ''}` !== pinned) stale.push(path)
-		})
-		for (const path of stale) await fs.rm(path, { force: true }).catch(() => {})
-
-		// Then whatever that emptied, deepest first so a parent is only judged once
-		// its children are gone. An app that restructures would otherwise leave a
-		// skeleton of empty directories behind on every release, for ever.
-		for (const dir of dirs.sort((a, b) => b.length - a.length)) {
-			if ((await fs.readdir(dir)).length === 0) {
-				await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
-			}
-		}
 	}
 
 	// The declared entries have to actually exist. The reducer must be STAGED whatever
@@ -192,9 +138,6 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
-		// The cache holds no user data and no history, so it needs no trash semantics —
-		// and a cache directory with no manifest beside it is trivially sweepable.
-		await fs.rm(cachePath(root), { recursive: true, force: true }).catch(() => {})
 		if (!(await fs.exists(root))) return
 		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
@@ -221,39 +164,23 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	}
 
 	/**
-	 * One file of a hosted app, from the cache when it holds the right bytes and from
-	 * the origin when it does not.
+	 * One file of a hosted app, fetched from its pinned origin.
 	 *
-	 * The pinned hash IS the cache key. The volume is content-addressed, so checking a
-	 * cached file costs a `stat` rather than a re-hash — and because the check is against
-	 * the hash the MANIFEST pins, a cache left behind by an older version can never be
-	 * served as the current one. That is what makes eviction and refresh fall out for
-	 * free: nothing needs to invalidate the cache, because bytes that no longer match
-	 * the record simply stop being reachable.
+	 * Browser hosts put their service worker and HTTP cache in front of `fetchAsset`;
+	 * the synced volume holds only the manifest and reducer. Integrity is still
+	 * checked here before bytes execute, whether the response came from the network
+	 * or the service worker.
 	 *
 	 * It is also why a device can run an app it only ever received over sync. The record
 	 * travels with the app, so "what should be here" needs no catalog of this host's own
 	 * — the case that used to leave a device serving one version's GUI against another
 	 * version's reducer.
 	 */
-	async function mount(manifest: AppManifest, root: string, path: string): Promise<Uint8Array> {
+	async function mount(manifest: AppManifest, path: string): Promise<Uint8Array> {
 		const pinned = manifest.files?.[path]
-		const at = `${cachePath(root)}/${path}`
-		if (pinned) {
-			const stat = await fs.stat(at).catch(() => null)
-			if (stat && `sha256-${stat.contentHash ?? ''}` === pinned) return fs.readFile(at)
-		} else {
-			const cached = await fs.readFile(at).catch(() => null)
-			if (cached) return cached // unpinned: presence is all we can ask of it
-		}
 		if (!fetchAsset) throw new Error(`no asset fetcher: cannot mount ${manifest.id}/${path}`)
 		const data = await fetchAsset(`${manifest.baseUrl?.replace(/\/$/, '')}/${path}`)
 		if (pinned) await verify(manifest.id, path, data, pinned)
-		// Best-effort: a failed cache write costs a refetch, never the read itself.
-		await fs
-			.mkdir(parentOf(at), { recursive: true })
-			.then(() => fs.writeFile(at, data))
-			.catch(() => {})
 		return data
 	}
 
@@ -266,7 +193,7 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			read: async (path) => {
 				const safe = safeBundlePath(path)
 				return isMountedFile(manifest, safe)
-					? mount(manifest, root, safe)
+					? mount(manifest, safe)
 					: fs.readFile(`${root}/${safe}`)
 			}
 		}
@@ -274,8 +201,8 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 }
 
 // Integrity check on a mounted file: the manifest pins each file's `sha256-<hex>`
-// over the exact bytes the origin should serve. Verified before the bytes are cached
-// or executed, so a compromised or confused origin cannot substitute a payload —
+// over the exact bytes the origin should serve. Verified before the bytes execute,
+// so a compromised or confused origin cannot substitute a payload —
 // the same guarantee the catalog gave at install time, now carried by the record.
 async function verify(
 	appId: string,

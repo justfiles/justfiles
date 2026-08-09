@@ -4,7 +4,6 @@
 	"version": "0.12.2",
 	"type": "module",
 	"scripts": {
-		"predev": "WRANGLER_LOG=error tsx scripts/seed-store.ts",
 		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"build-apps": "turbo run build --filter @justfiles/app-notes --filter @justfiles/app-files --filter @justfiles/app-paint --filter @justfiles/app-settings --filter @justfiles/app-dictionary",

@@ -340,9 +340,9 @@ export type CapabilityDecl = Record<string, { id: string; scopes: string[] }>
  *
  * `baseUrl` is what splits the two shapes. With one, the manifest is a SPEC: an
  * immutable, version-pinned origin the bytes are mounted from, plus the hashes that
- * identify them. `/applications/<id>/` then holds this file and nothing else, and the
- * bytes live in `/private/cache` — refetched on a miss, never replicated, because the
- * origin can always re-serve them. Without one, the bundle IS the bytes: they are
+ * identify them. `/applications/<id>/` then holds this file and the reducer; mounted
+ * bytes use the host's HTTP cache and never replicate because the origin can re-serve
+ * them. Without one, the bundle IS the bytes: they are
  * copied into `/applications/<id>/` and replicate, which is the only correct answer
  * for an app authored locally (a devkit draft has no upstream to refetch from).
  *

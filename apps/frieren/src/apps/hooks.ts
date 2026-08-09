@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-	COMMUNITY_CATALOG_PATH,
-	type CommunityCatalog,
-	type CommunityCatalogApp,
+	type RunnerCatalogApp,
+	runnerAppStore,
 	UPDATE_CHECK_INTERVAL_MS
 } from '../../shared/appstore'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
@@ -13,7 +12,7 @@ import {
 	type InstallingApp,
 	subscribeInstalling
 } from './installing'
-import { installCommunityApp, installZipApp, uninstallLocalApp } from './manage'
+import { installRunnerApp, installZipApp, uninstallLocalApp } from './manage'
 import type { InstalledApp } from './types'
 
 function pickZipFile(): Promise<File | null> {
@@ -42,20 +41,16 @@ export function useInstallingApps(): InstallingApp[] {
 	return apps
 }
 
-// The community catalog (`/store/catalog.json`). Fetched on mount and re-fetched
-// on the same slow checkpoint as the update pass, so a long-lived tab's store
-// listing (and its held-update rows) don't go stale against a newer release. An
-// empty catalog (unpublished / not yet indexed) simply yields no candidates.
-// Discovery only — installing still routes through the consent sheet.
-export function useCommunityCatalog(): CommunityCatalogApp[] {
-	const [apps, setApps] = useState<CommunityCatalogApp[]>([])
+// Runner's store index, hydrated with each app's canonical manifest so discovery,
+// consent and update checks all use the same metadata the installer persists.
+export function useRunnerCatalog(): RunnerCatalogApp[] {
+	const [apps, setApps] = useState<RunnerCatalogApp[]>([])
 	useEffect(() => {
 		let live = true
 		const load = () => {
-			fetch(COMMUNITY_CATALOG_PATH)
-				.then((res) => (res.ok ? (res.json() as Promise<CommunityCatalog>) : null))
-				.then((cat) => {
-					if (live && cat) setApps(cat.apps)
+			runnerAppStore()
+				.then((store) => {
+					if (live && store) setApps(store.apps)
 				})
 				.catch(() => {})
 		}
@@ -82,7 +77,7 @@ export interface AppCommands {
 	 */
 	openSettings: (category?: 'agent' | 'appearance') => void
 	installApp: () => Promise<void>
-	installCommunity: (app: CommunityCatalogApp) => Promise<void>
+	installRunner: (app: RunnerCatalogApp) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
 }
 
@@ -135,15 +130,12 @@ export function useAppCommands(): AppCommands {
 		// Install runs in the background: mark the intent (tile + fs marker), return so
 		// the consent sheet closes and the desktop is usable, then download. The app
 		// isn't launchable until its bundle swaps in and `refresh` lists it.
-		const installCommunity = async (app: CommunityCatalogApp): Promise<void> => {
+		const installRunner = async (app: RunnerCatalogApp): Promise<void> => {
 			const fs = await volume
-			const iconUrl = app.icon
-				? `https://cdn.jsdelivr.net/npm/${app.npm}@${app.version}/dist/${app.icon}`
-				: undefined
-			await beginInstall(fs, { id: app.id, name: app.name, iconUrl })
+			await beginInstall(fs, { id: app.id, name: app.name, iconUrl: app.iconUrl })
 			void (async () => {
 				try {
-					await installCommunityApp(await localKernel(), app.id)
+					await installRunnerApp(await localKernel(), app.id)
 				} catch (e) {
 					alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
 				} finally {
@@ -169,6 +161,6 @@ export function useAppCommands(): AppCommands {
 				.catch((error: unknown) => console.error('[settings] open on', category, 'failed:', error))
 		}
 
-		return { launchApp, openSettings, installApp, installCommunity, uninstallApp }
+		return { launchApp, openSettings, installApp, installRunner, uninstallApp }
 	}, [client, dispatch, localKernel, volume])
 }

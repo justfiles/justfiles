@@ -2,7 +2,6 @@ import { createClerkClient } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
 import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
-import { runIndexer, serveCommunityCatalog } from './appstore/feed.ts'
 import { ACCEPTED_TOKENS, actingUserId } from './auth.ts'
 
 export { Frieren } from './frieren.ts'
@@ -57,11 +56,6 @@ app.get('/ws', tokenWs)
 // The one browser-opened socket per session: the shared capability-proxy (`_caps`).
 app.get('/api/apps/_caps/ws', tokenWs)
 
-// `/store/*` is the reserved app-store namespace: the community catalog is public
-// (no auth) and R2-backed, served by the worker rather than the static ASSETS
-// (which carry only the built-in catalog). Per-app pages/search can layer on here.
-app.get('/store/catalog.json', (c) => serveCommunityCatalog(c.env))
-
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())
 // `clerkMiddleware` already authenticates with `acceptsToken: 'any'`; naming the two kinds we
@@ -75,14 +69,6 @@ const routeToOwner = (c: Ctx) => {
 app.all('/fs/*', routeToOwner)
 app.all('/api/*', routeToOwner)
 
-// The worker is both a request handler and the app-store indexer: `scheduled`
-// runs on the cron trigger (wrangler.jsonc), rebuilding the community catalog in
-// R2 from the canonical `kodama-app` keyword plus the retired one it replaced
-// (see appstore/feed.ts).
-// `waitUntil` keeps it alive past the tick.
 export default {
-	fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx),
-	scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-		ctx.waitUntil(runIndexer(env))
-	}
+	fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx)
 }

@@ -59,8 +59,8 @@ const ICON_MIME: Record<string, string> = {
 }
 
 // Resolve an installed app's icon to a stable data URL read from its bundle in the
-// volume — works for built-ins, community apps, and devkit drafts alike (the old
-// static `/appstore/...` path only existed for built-ins, so community icons 404'd
+// bundle — works for built-ins, Runner apps, and devkit drafts alike (the old
+// static `/appstore/...` path only existed for built-ins, so hosted icons 404'd
 // to the SPA fallback). A devkit draft stores its icon AS a data URL, so that's
 // passed through. Data URLs (not blob: URLs) keep the value stable across refreshes
 // so the client's app-list dedup doesn't churn.

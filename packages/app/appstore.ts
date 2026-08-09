@@ -11,7 +11,6 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
-import { cachePath } from '@justfiles/fs/sync-replica'
 import type { AppManifest, InstalledApp } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
@@ -30,6 +29,13 @@ export interface CatalogApp {
 	// and the update-time escalation guard.
 	capabilities?: CapabilityDecl
 	files: CatalogFile[]
+	// A store-generated canonical manifest. Legacy stores leave this absent and
+	// expose their authored manifest as one of `files` instead.
+	manifest?: AppManifest
+	// A store-generated whole-app fingerprint. Legacy stores derive it from
+	// `files`; registries may include control metadata they deliberately do not
+	// rehost, so their canonical value cannot be reconstructed by the client.
+	hash?: string
 	// Where this version's files are served from, version-pinned and immutable. Set by
 	// a store that can re-serve its apps on demand (frieren's `/appstore` assets); a
 	// store whose bytes have no stable address (a packaged FS bundle) leaves it unset
@@ -92,12 +98,12 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 			if (!app) continue
 			const action = await decide(fs, app)
 			// An app that reached this device through sync never ran an install here, so
-			// this is where its mounted files get warmed — see `warmMounts`. Swallowed
+			// this is where its mounted files get prefetched into the host cache. Swallowed
 			// for the same reason the one after an install is: this app is NOT being
 			// updated, so a cache that stayed cold is not an update failure and must not
 			// be logged as one on every pass.
 			if (action === 'skip') {
-				if (app.baseUrl) await warmMounts(kernel, fs, id).catch(() => {})
+				if (app.baseUrl) await prefetchApp(kernel, id).catch(() => {})
 				continue
 			}
 			// Escalation guard: a non-builtin (re)install that declares more capabilities
@@ -130,7 +136,7 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 	// the migration off the copied layout does not depend on a version bump either.
 	if (installed && installed.baseUrl !== app.baseUrl) return gte ? 'repair' : 'skip'
 	if (!(await filesPresentAndMatch(fs, app, installed))) return gte ? 'repair' : 'skip'
-	if (installed?.hash === (await appHash(app))) return 'skip'
+	if (installed?.hash === (app.hash ?? (await appHash(app)))) return 'skip'
 	return gte ? 'upgrade' : 'skip'
 }
 
@@ -152,15 +158,29 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 // The on-demand install entry point (first-time install of a store app) and the path
 // `materialise`/`reconcile` use internally.
 const INSTALL_CONCURRENCY = 12
+const installing = new WeakMap<Kernel, Map<string, Promise<void>>>()
 
 export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
+	let byId = installing.get(kernel)
+	if (!byId) {
+		byId = new Map()
+		installing.set(kernel, byId)
+	}
+	const active = byId.get(app.id)
+	if (active) return active
+	const task = performInstall(kernel, store, app).finally(() => byId.delete(app.id))
+	byId.set(app.id, task)
+	return task
+}
+
+async function performInstall(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
 	const declared = await appManifest(store, app)
 	const reducer = safeBundlePath(declared.app)
 	const spec: AppManifest = {
 		...declared,
 		id: app.id,
 		version: app.version,
-		hash: await appHash(app),
+		hash: app.hash ?? (await appHash(app)),
 		// Where an app's bytes come from is the STORE's fact, never the bundle's claim —
 		// a published manifest that named its own origin would otherwise decide its own
 		// residency, and point the mount wherever it liked.
@@ -198,7 +218,7 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
 	// Past the commit point, so nothing here can be allowed to reject: the record and
 	// the reducer are live, and a caller that saw a rejection would report a failed
 	// install of a working app — `materialise` would stop before the rest of the
-	// built-ins, and a direct community install would report failure. The per-file
+	// built-ins, and a direct store install would report failure. The per-file
 	// swallow inside is not enough on its own; resolving the app back out of the
 	// volume is a read too, and it happens after the same commit.
 	if (app.baseUrl) await prefetchApp(kernel, app.id).catch(() => {})
@@ -216,9 +236,8 @@ export async function installApp(kernel: Kernel, store: AppStore, app: CatalogAp
  * reducer is in the volume but the GUI is not, so a device that installs an app
  * and goes offline has everything except the half it can see.
  *
- * It reads through `mount()` — fetch, verify against the pin, cache — rather
- * than fetching in parallel, so it fills exactly the entries a later read looks
- * for instead of a second copy that might not match.
+ * It reads through `mount()` — fetch and verify against the pin — so the host's
+ * fetch layer fills exactly the entries a later read requests.
  */
 async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
 	const installed = await kernel.app(appId)
@@ -235,31 +254,9 @@ async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
  * leaves reconcile as the only pass that can notice, and multi-device is the
  * ordinary way a second device gets an app.
  *
- * Cold paths only, because this runs on every pass: a warm app costs one `stat`
- * per mounted file and reads nothing. Reading every path back through `mount()`
- * would be correct but would move the app's whole payload each time.
- *
- * "Warm" is the question `mount()` asks — the record's pinned digest against the
- * cached entry's — not merely whether something is there. A device that ran an
- * older release and then received a newer record through sync has a cache full
- * of the previous version's bytes at exactly the paths the new one mounts, and
- * no local install ran to sweep them. Presence alone would call that warm and
- * fetch nothing; the read that repairs a stale entry would then be the one made
- * offline, which is the read that cannot.
+ * Reads still go through the host cache, so an already-cached immutable release
+ * does not move its payload again.
  */
-async function warmMounts(kernel: Kernel, fs: Volume, appId: string): Promise<void> {
-	const installed = await kernel.app(appId)
-	const cache = cachePath(`/applications/${appId}`)
-	const cold: string[] = []
-	for (const [path, pinned] of Object.entries(installed.manifest.files ?? {})) {
-		// The volume is content-addressed, so this stays a metadata lookup: `stat`
-		// reports the digest, and no payload is read to decide.
-		const stat = await fs.stat(`${cache}/${path}`).catch(() => null)
-		if (!stat || `sha256-${stat.contentHash ?? ''}` !== pinned) cold.push(path)
-	}
-	if (cold.length) await warm(installed, cold)
-}
-
 async function warm(installed: InstalledApp, queue: string[]): Promise<void> {
 	const readOne = async (): Promise<void> => {
 		// Swallowed per file: being offline, or reaching an origin that is not serving
@@ -276,6 +273,7 @@ async function warm(installed: InstalledApp, queue: string[]): Promise<void> {
 // the one catalog file that is always fetched even for a hosted install, because the
 // record has to carry it.
 async function appManifest(store: AppStore, app: CatalogApp): Promise<AppManifest> {
+	if (app.manifest) return app.manifest
 	const file = app.files.find((f) => f.path === 'manifest.json')
 	if (!file) throw new Error(`catalog app missing manifest.json: ${app.id}`)
 	const bytes = await store.read(app, 'manifest.json')

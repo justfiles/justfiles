@@ -14,16 +14,16 @@ import {
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { CommunityCatalogApp } from '../../shared/appstore'
+import type { RunnerCatalogApp } from '../../shared/appstore'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { resolveTranscriptImage } from '../agent/images'
 import { Whisper } from '../agent/Whisper'
 import {
 	useAppCommands,
-	useCommunityCatalog,
 	useInstalledApps,
-	useInstallingApps
+	useInstallingApps,
+	useRunnerCatalog
 } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { useAutoResize } from '../components/useAutoResize'
@@ -49,8 +49,8 @@ const MAX_INPUT_HEIGHT = 114
 
 type Row =
 	| { kind: 'app'; app: InstalledApp }
-	| { kind: 'store'; app: CommunityCatalogApp }
-	| { kind: 'update'; app: CommunityCatalogApp }
+	| { kind: 'store'; app: RunnerCatalogApp }
+	| { kind: 'update'; app: RunnerCatalogApp }
 	| { kind: 'ask' }
 
 // The sheet renders the whole conversation: the dedicated window is being faded
@@ -103,10 +103,8 @@ function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
 	return apps.filter((app) => matchesQuery(query, app.name, app.id, app.description))
 }
 
-function storeIconUrl(app: CommunityCatalogApp): string | undefined {
-	return app.icon
-		? `https://cdn.jsdelivr.net/npm/${app.npm}@${app.version}/dist/${app.icon}`
-		: undefined
+function storeIconUrl(app: RunnerCatalogApp): string | undefined {
+	return app.iconUrl
 }
 
 // Which *visual* line the caret sits on. Result-navigation arrows only fire at
@@ -179,8 +177,8 @@ export function Omnibar({
 }) {
 	const apps = useInstalledApps()
 	const installing = useInstallingApps()
-	const catalog = useCommunityCatalog()
-	const { launchApp, installCommunity } = useAppCommands()
+	const catalog = useRunnerCatalog()
+	const { launchApp, installRunner } = useAppCommands()
 	const agent = useAgentClient()
 	const session = useAgentSession()
 	const connection = useAgentConnection()
@@ -210,7 +208,7 @@ export function Omnibar({
 	const matches = useMemo(() => filterApps(apps, text), [apps, text])
 	useAutoResize(inputRef, query, MAX_INPUT_HEIGHT)
 
-	// Community discovery (flag-gated; `catalog` is empty when off). Store rows are
+	// Runner discovery. Store rows are
 	// catalog apps not already installed; held-update rows are installed apps whose
 	// catalog version declares MORE access than what's installed (Step 4 held it).
 	// Store rows appear while searching or browsing; held updates also lead the
@@ -872,7 +870,7 @@ export function Omnibar({
 				? createPortal(
 						<ConsentSheet
 							target={consent}
-							onConfirm={() => installCommunity(consent.app)}
+							onConfirm={() => installRunner(consent.app)}
 							onClose={() => setConsent(null)}
 						/>,
 						document.body

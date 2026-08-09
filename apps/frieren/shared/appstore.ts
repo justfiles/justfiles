@@ -1,47 +1,53 @@
-// frieren's app-store glue: built-in apps ship as static assets under
-// `/appstore` (emitted by `vite-appstore.ts`), and the `AppStore` reconcile +
-// catalog types live in `@justfiles/app/appstore`. This module keeps only the
-// frieren-specific asset addressing: the catalog schema tag, its served path, the
-// version-pathed per-file URL, and an `AppStore` over those assets.
+// Frieren's two app sources: built-ins co-ship under `/appstore`; public apps
+// are described by Runner at justapps.run and keep their immutable payloads
+// there. Both implement the same small AppStore seam used by install/reconcile.
 
-import type { AppStore, Catalog, CatalogApp } from '@justfiles/app/appstore'
+import type { AppManifest } from '@justfiles/app'
+import type { AppStore, Catalog, CatalogApp, CatalogFile } from '@justfiles/app/appstore'
 
 export const CATALOG_SCHEMA = 'frieren/appstore-catalog/v1'
 export const CATALOG_PATH = '/appstore/catalog.json'
+export const RUNNER_STORE_URL = 'https://justapps.run/store.json'
+export const RUNNER_STORE_SCHEMA = 'justapps/store/v1'
+export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 
-// The community feed: a second catalog, R2-backed and worker-served, carrying
-// everything the deploy doesn't pre-ship — third-party apps and the first-party
-// `app.justfiles.frieren.*` apps distributed via npm. Each entry adds the source pointer
-// (`npm` name + `publisher`) the client needs to resolve bytes from jsDelivr and
-// show provenance on the consent sheet. `files[].path` is relative to the
-// package's `dist/`, matching the built-in catalog. The `/store/*` path space is
-// reserved for the app store (catalog now; per-app pages/search later).
-export const COMMUNITY_CATALOG_SCHEMA = 'frieren/community-catalog/v1'
-export const COMMUNITY_CATALOG_PATH = '/store/catalog.json'
-
-// How often a long-lived tab re-checks the store: the update checkpoint (the
-// runtime's reconcile pass) and the catalog refetch behind the store UI. App
-// releases are rare and the indexer only runs hourly, so this is deliberately
-// slow — boot already covers the common case, and a failed update just waits for
-// the next checkpoint instead of queueing a retry.
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-export interface CommunityCatalogApp extends CatalogApp {
-	npm: string // npm package name; bytes resolve via jsDelivr
-	publisher: string // `npm:<username>`, shown on the consent sheet
-	repository?: string // linkified in the UI
+interface RunnerStoreEntry {
+	id: string
+	name: string
 	description?: string
+	version: string
+	iconUrl?: string
+	manifestUrl: string
+	repository?: string
 }
 
-export interface CommunityCatalog {
+interface RunnerStoreIndex {
 	schema: string
-	apps: CommunityCatalogApp[]
+	apps: RunnerStoreEntry[]
 }
 
-// Version-pathed so a release is immutable and permanently cacheable — which is also
-// what lets it be a manifest's `baseUrl`: the address names one exact version, so a
-// device can mount the version its record describes rather than whatever its own
-// catalog happens to carry.
+interface RunnerManifest extends Omit<AppManifest, 'files'> {
+	schema: string
+	version: string
+	hash: string
+	files: CatalogFile[]
+}
+
+export interface RunnerCatalogApp extends CatalogApp {
+	description?: string
+	iconUrl?: string
+	manifestUrl: string
+	repository?: string
+	manifest: AppManifest
+	hash: string
+}
+
+export interface RunnerAppStore extends AppStore {
+	apps: RunnerCatalogApp[]
+}
+
 export function appBaseUrl(app: { id: string; version: string }): string {
 	return `/appstore/apps/${app.id}/${app.version}`
 }
@@ -50,22 +56,12 @@ export function appFileUrl(app: { id: string; version: string }, path: string): 
 	return `${appBaseUrl(app)}/${path}`
 }
 
-// An AppStore over frieren's `/appstore` assets. `fetcher` is the caller's fetch
-// — the browser `fetch` for the local-only client, the `ASSETS` binding's fetch
-// for the worker. frieren's catalog carries only built-ins (co-shipped with the
-// deploy), so `builtins()` returns them all and `latest(id)` resolves from the
-// same set; a future public catalog would serve these from per-id/paginated
-// endpoints instead. Returns null when no catalog is published so callers skip
-// reconcile cleanly (offline first boot, or an asset build that hasn't run).
 export async function httpAppStore(
 	fetcher: (path: string) => Promise<Response>
 ): Promise<AppStore | null> {
 	const res = await fetcher(CATALOG_PATH)
 	if (!res.ok) return null
 	const catalog = (await res.json()) as Catalog
-	// Built-ins are HOSTED: the deploy that serves this client serves their files too,
-	// at an immutable version-pathed URL. So they install as a spec — `/applications/<id>`
-	// holds the manifest alone and the payload is mounted from here, never replicated.
 	const apps = catalog.apps.map((app) => ({ ...app, baseUrl: appBaseUrl(app) }))
 	const byId = new Map(apps.map((app) => [app.id, app]))
 	return {
@@ -83,21 +79,52 @@ export async function httpAppStore(
 	}
 }
 
-const JSDELIVR = 'https://cdn.jsdelivr.net/npm'
+// Fetch each mutable manifest pointer once and derive the immutable payload base
+// from its final redirected URL. The canonical manifest and reducer are what the
+// installer persists; every other file remains hosted by Runner.
+export async function runnerAppStore(
+	request: (url: string) => Promise<Response> = (url) => fetch(url)
+): Promise<RunnerAppStore | null> {
+	const storeResponse = await request(RUNNER_STORE_URL)
+	if (!storeResponse.ok) return null
+	const index = (await storeResponse.json()) as RunnerStoreIndex
+	if (index.schema !== RUNNER_STORE_SCHEMA || !Array.isArray(index.apps)) return null
 
-// An AppStore over the community catalog (`/store/catalog.json`). The catalog
-// comes through `fetcher` (worker/browser); bytes come straight from npm's CDN
-// (jsDelivr — CORS-open, immutable), verified against the pinned hash by the
-// installer. It ships no built-ins, so `builtins()` is empty and everything
-// resolves through `latest(id)`.
-export async function communityAppStore(
-	fetcher: (path: string) => Promise<Response>
-): Promise<AppStore | null> {
-	const res = await fetcher(COMMUNITY_CATALOG_PATH)
-	if (!res.ok) return null
-	const catalog = (await res.json()) as CommunityCatalog
-	const byId = new Map(catalog.apps.map((app) => [app.id, app]))
+	const apps = (
+		await Promise.all(
+			index.apps.map(async (entry): Promise<RunnerCatalogApp | null> => {
+				try {
+					const response = await request(entry.manifestUrl)
+					if (!response.ok) return null
+					const release = (await response.json()) as RunnerManifest
+					if (
+						release.schema !== RUNNER_MANIFEST_SCHEMA ||
+						release.id !== entry.id ||
+						!Array.isArray(release.files)
+					)
+						return null
+					const { schema: _schema, files, hash, ...manifest } = release
+					return {
+						...entry,
+						name: release.name,
+						description: release.description,
+						version: release.version,
+						icon: release.icon,
+						capabilities: release.capabilities,
+						files,
+						hash,
+						manifest,
+						baseUrl: new URL('.', response.url).href
+					}
+				} catch {
+					return null
+				}
+			})
+		)
+	).filter((app): app is RunnerCatalogApp => app !== null)
+	const byId = new Map(apps.map((app) => [app.id, app]))
 	return {
+		apps,
 		async builtins() {
 			return []
 		},
@@ -105,34 +132,27 @@ export async function communityAppStore(
 			return byId.get(id) ?? null
 		},
 		async read(app, path) {
-			const entry = byId.get(app.id)
-			if (!entry) throw new Error(`community: ${app.id} not in catalog`)
-			const file = await fetch(`${JSDELIVR}/${entry.npm}@${entry.version}/dist/${path}`)
-			if (!file.ok)
-				throw new Error(`community: ${entry.npm}@${entry.version}/${path} ${file.status}`)
+			const file = await request(`${app.baseUrl?.replace(/\/$/, '')}/${path}`)
+			if (!file.ok) throw new Error(`runner: ${app.id}/${path} ${file.status}`)
 			return new Uint8Array(await file.arrayBuffer())
 		}
 	}
 }
 
-// The store the boot/reconcile paths use: the co-shipped built-in store merged
-// with the community store. Built-ins are authoritative (they alone seed and win
-// `latest`); everything else resolves from the community catalog. `read` routes
-// by the community entry's `npm` field — built-in entries lack one. Degrades to
-// built-ins alone when the community catalog is empty/unpublished.
+// Built-ins remain authoritative; every other installed app resolves against
+// Runner. Both use the browser fetcher so hosted reads pass through the same SW.
 export async function bootAppStore(
 	fetcher: (path: string) => Promise<Response>
 ): Promise<AppStore | null> {
-	const builtin = await httpAppStore(fetcher)
-	const community = await communityAppStore(fetcher)
-	if (!builtin) return community
-	if (!community) return builtin
+	const [builtin, runner] = await Promise.all([httpAppStore(fetcher), runnerAppStore(fetcher)])
+	if (!builtin) return runner
+	if (!runner) return builtin
 	return {
 		builtins: () => builtin.builtins(),
 		async latest(id) {
-			return (await builtin.latest(id)) ?? (await community.latest(id))
+			return (await builtin.latest(id)) ?? (await runner.latest(id))
 		},
 		read: (app, path) =>
-			(app as CommunityCatalogApp).npm ? community.read(app, path) : builtin.read(app, path)
+			(app as RunnerCatalogApp).manifestUrl ? runner.read(app, path) : builtin.read(app, path)
 	}
 }
