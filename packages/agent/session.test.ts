@@ -7,14 +7,22 @@ import {
 } from '@earendil-works/pi-ai'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
+import { StaleLifetimeError } from '@justfiles/lifetime'
 import { describe, expect, test } from 'vitest'
 import { PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts'
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
 import type { SessionEntry } from './session.manager.ts'
-import { createAgentSession, type SessionEvent } from './session.ts'
+import { classifyFailure, createAgentSession, type SessionEvent } from './session.ts'
 
 const encoder = new TextEncoder()
+
+test('a stale foreground turn surfaces a retriable reset error without replaying it', () => {
+	expect(classifyFailure(new StaleLifetimeError(1, 2))).toEqual({
+		body: 'The runtime reset while your request was running. Please try again.',
+		route: { kind: 'chat' }
+	})
+})
 
 function deferred() {
 	let resolve!: () => void

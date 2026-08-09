@@ -17,6 +17,8 @@ export interface CapabilityResolver {
 	resolve(appId: AppId, name: string): Promise<Declared | undefined>
 	// Drop the memoized declarations for an app.
 	forget(appId: AppId): void
+	// Drop every declaration when the owning kernel is disposed.
+	clear(): void
 }
 
 // `load` reads an app's declarations from its bundle (local name → { id, scopes }).
@@ -43,6 +45,9 @@ export function capabilityResolver(
 		},
 		forget(appId) {
 			declared.delete(appId)
+		},
+		clear() {
+			declared.clear()
 		}
 	}
 }
