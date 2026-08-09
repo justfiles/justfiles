@@ -50,6 +50,10 @@ export interface AccountStore {
 	reseal(): Promise<void>
 }
 
+interface AccountMutationLane {
+	mutate<T>(operation: () => Promise<T>): Promise<T>
+}
+
 const DIR = '/private/accounts'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -59,7 +63,7 @@ const DECODE_FAILED = 'credentials could not be read on this device — re-conne
 
 export function volumeAccountStore(
 	fs: Volume,
-	opts: { secretCodec?: SecretCodec } = {}
+	opts: { accountLane?: AccountMutationLane; secretCodec?: SecretCodec } = {}
 ): AccountStore {
 	const codec = opts.secretCodec ?? clearSecretCodec
 	// The stored record, exactly as it sits on disk (creds still in whatever form the codec
@@ -89,6 +93,8 @@ export function volumeAccountStore(
 					.filter((e) => e.name.endsWith('.json'))
 					.map((e) => `${DIR}/${e.name}`)
 			: []
+	const mutate = <T>(operation: () => Promise<T>): Promise<T> =>
+		opts.accountLane?.mutate(operation) ?? operation()
 	const put = async (account: Account): Promise<void> => {
 		await fs.mkdir(DIR, { recursive: true })
 		const path = pathFor(account.id)
@@ -118,20 +124,19 @@ export function volumeAccountStore(
 			const path = pathFor(id)
 			return (await fs.exists(path)) ? read(path) : undefined
 		},
-		put,
-		reseal: async () => {
-			for (const path of await paths()) {
-				const stored = await readStored(path)
-				// Nothing to seal: no record, no creds lane, or already sealed (skipping is what
-				// keeps a boot with nothing to do free of writes). An unreadable record is sealed by
-				// definition, so it is skipped too — never rewritten, never lost.
-				if (!stored) continue
-				if (stored.creds === undefined || isSealed(stored.creds)) continue
-				await put(stored)
-			}
-		},
-		delete: async (id) => {
-			await fs.rm(pathFor(id), { force: true })
-		}
+		put: (account) => mutate(() => put(account)),
+		reseal: () =>
+			mutate(async () => {
+				for (const path of await paths()) {
+					const stored = await readStored(path)
+					// Nothing to seal: no record, no creds lane, or already sealed (skipping is what
+					// keeps a boot with nothing to do free of writes). An unreadable record is sealed by
+					// definition, so it is skipped too — never rewritten, never lost.
+					if (!stored) continue
+					if (stored.creds === undefined || isSealed(stored.creds)) continue
+					await put(stored)
+				}
+			}),
+		delete: (id) => mutate(() => fs.rm(pathFor(id), { force: true }))
 	}
 }

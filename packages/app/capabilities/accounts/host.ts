@@ -46,6 +46,7 @@ export interface AccountsOptions {
 
 export interface AccountLaneOwner {
 	ready(): Promise<void>
+	mutate<T>(operation: () => Promise<T>): Promise<T>
 }
 
 export interface AccountLaneOptions {
@@ -55,15 +56,23 @@ export interface AccountLaneOptions {
 
 // One owner per runtime Volume scope. Platform-account seeding is strict and single-flighted;
 // a failure evicts readiness so the next entry retries. Re-sealing is independent: it never
-// fails an entry, but a failed sweep is not memoized and is attempted again next time.
+// fails an entry, but a failed sweep is not memoized and is attempted again next time. The
+// mutation lane orders that background sweep with credential writes and deletes, so a stale
+// plaintext snapshot cannot overwrite or resurrect an account.
 export function createAccountLaneOwner(
 	volume: Volume,
 	opts: AccountLaneOptions = {}
 ): AccountLaneOwner {
 	let readiness: Promise<void> | undefined
 	let sealing: Promise<void> | undefined
+	let mutationTail: Promise<unknown> = Promise.resolve()
 
-	return {
+	const owner: AccountLaneOwner = {
+		mutate<T>(operation: () => Promise<T>): Promise<T> {
+			const result = mutationTail.then(operation, operation)
+			mutationTail = result.catch(() => undefined)
+			return result
+		},
 		async ready() {
 			if (!readiness) {
 				const pending = opts.ensure
@@ -77,7 +86,10 @@ export function createAccountLaneOwner(
 			await readiness
 
 			if (!opts.secretCodec || sealing) return
-			const pending = volumeAccountStore(volume, { secretCodec: opts.secretCodec })
+			const pending = volumeAccountStore(volume, {
+				accountLane: owner,
+				secretCodec: opts.secretCodec
+			})
 				.reseal()
 				.catch((error) => {
 					if (sealing === pending) sealing = undefined
@@ -86,6 +98,7 @@ export function createAccountLaneOwner(
 			sealing = pending
 		}
 	}
+	return owner
 }
 
 type Registry = Map<string, Provider>

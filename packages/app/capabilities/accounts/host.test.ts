@@ -24,6 +24,28 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 	return { promise, resolve }
 }
 
+function pausingCodec() {
+	const encrypted = aesGcmSecretCodec('host-key')
+	const started = deferred()
+	const release = deferred()
+	let encodes = 0
+	return {
+		codec: {
+			decode: encrypted.decode,
+			encode: async (...args: Parameters<typeof encrypted.encode>) => {
+				encodes++
+				if (encodes === 1) {
+					started.resolve()
+					await release.promise
+				}
+				return encrypted.encode(...args)
+			}
+		},
+		started,
+		release
+	}
+}
+
 // The credential-bearing stores are internal, so tests drive the facets through
 // `accountsCapabilities` over a real in-memory Volume. State the admin impl can't
 // express (pre-granted scopes, a specific active selection) is written straight to the
@@ -755,6 +777,66 @@ describe('account lane owner', () => {
 		expect(attempts).toBe(2)
 		expect(warn).toHaveBeenCalledOnce()
 		warn.mockRestore()
+	})
+
+	test('a paused re-seal cannot overwrite freshly connected credentials', async () => {
+		const vol = volume(memStorage())
+		await volumeAccountStore(vol).put({
+			id: 'u@openai',
+			provider: 'chatgpt',
+			creds: { access: 'OLD' }
+		})
+		const { codec, started, release } = pausingCodec()
+		const owner = createAccountLaneOwner(vol, { secretCodec: codec })
+		const caps = accountsCapabilities(testProviders(), vol, {
+			accountLane: owner,
+			secretCodec: codec
+		})
+
+		await owner.ready()
+		await started.promise
+		let settled = false
+		const connecting = caps.accounts.connect({ providerId: 'chatgpt' }).finally(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		release.resolve()
+
+		await expect(connecting).resolves.toEqual({ accountId: 'u@openai' })
+		await expect(
+			volumeAccountStore(vol, { secretCodec: codec }).get('u@openai')
+		).resolves.toMatchObject({ creds: { access: 'tok' } })
+	})
+
+	test('a paused re-seal cannot resurrect a disconnected account', async () => {
+		const vol = volume(memStorage())
+		await volumeAccountStore(vol).put({
+			id: 'u@openai',
+			provider: 'chatgpt',
+			creds: { access: 'OLD' }
+		})
+		const { codec, started, release } = pausingCodec()
+		const owner = createAccountLaneOwner(vol, { secretCodec: codec })
+		const caps = accountsCapabilities(testProviders(), vol, {
+			accountLane: owner,
+			secretCodec: codec
+		})
+
+		await owner.ready()
+		await started.promise
+		let settled = false
+		const disconnecting = caps.accounts.disconnect({ accountId: 'u@openai' }).finally(() => {
+			settled = true
+		})
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		release.resolve()
+
+		await expect(disconnecting).resolves.toBeUndefined()
+		await expect(
+			volumeAccountStore(vol, { secretCodec: codec }).get('u@openai')
+		).resolves.toBeUndefined()
 	})
 })
 
