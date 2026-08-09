@@ -15,10 +15,8 @@ export {
 	type GenerationState,
 	type ResetDecision,
 	type ResetMode,
-	type ResetStatus,
 	readGeneration,
 	readGenerationState,
-	readResetStatus,
 	resetVolume
 } from './reset'
 export { storage as sqliteStorage } from './storage.sqlite'

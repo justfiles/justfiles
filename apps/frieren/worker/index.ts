@@ -5,7 +5,7 @@ import { type Context, Hono } from 'hono'
 import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
 import { ACCEPTED_TOKENS, actingUserId } from './auth.ts'
 import { Frieren } from './frieren.ts'
-import { type AcknowledgedResetResult, acknowledgeReset } from './reset-ack.ts'
+import { resetAndTerminate } from './reset-ack.ts'
 
 export { Frieren }
 
@@ -22,12 +22,10 @@ const forwardToFrieren = (c: Ctx, userId: string) =>
 
 const ownerStub = (c: Ctx, userId: string) => c.env.FRIEREN.get(c.env.FRIEREN.idFromName(userId))
 
-const resetResponse = (c: Ctx, result: AcknowledgedResetResult | ResetResult) => {
-	if (result.ok) return c.json({ generation: result.generation })
-	if (result.error === 'reset_unconfirmed')
-		return c.json({ error: result.error, generation: result.generation }, 503)
-	return c.json({ error: result.error, generation: result.generation }, 409)
-}
+const resetResponse = (c: Ctx, result: ResetResult) =>
+	result.ok
+		? c.json({ generation: result.generation })
+		: c.json({ error: result.error, generation: result.generation }, 409)
 
 const app = new Hono<WorkerEnv>()
 
@@ -73,11 +71,12 @@ app.post('/fs/reset', clerkMiddleware(), async (c) => {
 	if (!userId) return new Response('Unauthorized', { status: 401 })
 	const parsed = ResetBody.safeParse(await c.req.json().catch(() => undefined))
 	if (!parsed.success) return c.json({ error: 'invalid reset request' }, 400)
-	const stub = ownerStub(c, userId)
 	const result =
 		parsed.data.mode === 'complete'
-			? await stub.completeReset(parsed.data.resetId)
-			: await acknowledgeReset(stub, parsed.data)
+			? await ownerStub(c, userId).completeReset(parsed.data.resetId)
+			: // A factory, not one handle: the restart kills the RPC session it went out on, so
+				// the readiness probe has to reconnect (see reset-ack.ts).
+				await resetAndTerminate(() => ownerStub(c, userId), parsed.data)
 	return resetResponse(c, result)
 })
 

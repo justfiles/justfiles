@@ -50,8 +50,8 @@ import {
 	type DbAdapter,
 	type DestructiveResetBody,
 	type ResetResult,
+	readGeneration,
 	readGenerationState,
-	readResetStatus,
 	resetVolume
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
@@ -68,7 +68,7 @@ import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
-import { commitResetAndRestart } from './reset-instance.ts'
+import { commitReset } from './reset-instance.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -119,6 +119,11 @@ type ServerMessage =
 
 const DEBUG_COMMAND = '/debug'
 
+// How long an instance that has committed a destructive reset refuses ordinary traffic
+// while it waits to be torn down. Generous next to the restart it covers (milliseconds),
+// short enough that a restart which never lands self-heals rather than stranding the user.
+const RESTART_GRACE_MS = 10_000
+
 // The platform's image engine, picked from pi's OpenRouter images catalog. Fixed for now —
 // a Settings picker (its own selection, separate from the text model) comes with
 // the active-image work (#194).
@@ -137,6 +142,15 @@ export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
 	private readonly fs: ReturnType<typeof cfFsStorage>
+	// This instance's own identity, in memory only, so a DIFFERENT value proves a DIFFERENT
+	// instance — the `/proc/sys/kernel/random/boot_id` a reboot check compares. The
+	// generation cannot serve as one: the instance that committed a reset reads the same
+	// reset SQLite as the instance that replaces it, and reports the same number.
+	private readonly instanceId = crypto.randomUUID()
+	// Set once a destructive reset commits: until the restart lands, this instance owns a
+	// filesystem that no longer exists. Time-bounded rather than a latch, so a restart that
+	// never arrives cannot wedge the object into refusing everything forever.
+	private restartingUntil = 0
 	// THE filesystem of this instance. A destructive reset commits and then terminates the
 	// Durable Object (reset-instance.ts), so an instance never spans two generations and
 	// nothing ever swaps this out — which is why it needs no fence, no lifetime, and no
@@ -255,12 +269,18 @@ export class Frieren extends DurableObject<Env> {
 			.route(
 				'/fs',
 				createFsApi(fs, {
-					// The two sides of the server volume's lineage: read the epoch, and
-					// mutate it. Both need the DO's raw store (and, for reset, a cache
-					// rebuild), so they are injected; createFsApi owns the routes.
+					// Reading the volume's lineage epoch needs the DO's raw store, so it is
+					// injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),
-					reset: (req) =>
-						req.mode === 'complete' ? this.completeReset(req.resetId) : this.resetAndRestart(req)
+					// Only the non-destructive marker clear. A destructive reset is a
+					// commit-then-restart handshake the authenticated Worker drives from
+					// OUTSIDE (reset-ack.ts), and it intercepts POST /fs/reset ahead of this
+					// route — committing here instead would leave THIS instance running at a
+					// generation it no longer owns.
+					reset: async (req) => {
+						if (req.mode === 'complete') return this.completeReset(req.resetId)
+						throw new Error('destructive reset is driven by the authenticated Worker')
+					}
 				})
 			)
 
@@ -269,20 +289,35 @@ export class Frieren extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(() => migrateCF(this.ctx.storage))
 	}
 
-	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
-		return this.ctx.blockConcurrencyWhile(() =>
-			commitResetAndRestart(request, {
-				reset: (body) => resetVolume(this.db, body),
-				terminate: (reason) => {
-					this.ctx.abort(reason)
-					throw new Error('DurableObjectState.abort() returned')
-				}
-			})
-		)
+	// What the caller compares across a restart: who is answering, and at which generation.
+	// Deliberately reachable while `restartingUntil` is refusing ordinary traffic — proving
+	// the old instance is gone is exactly what this is for.
+	public async status(): Promise<{ instanceId: string; generation: number }> {
+		return { instanceId: this.instanceId, generation: await readGeneration(this.db) }
 	}
 
-	public async resetStatus(operationId: string) {
-		return readResetStatus(this.db, operationId)
+	// Commit a destructive reset and answer with the generation it produced. The answer is
+	// the acknowledgement — the caller restarts this instance afterwards (reset-ack.ts), so
+	// nothing here terminates: an `abort()` would take the answer with it.
+	public async commitReset(request: DestructiveResetBody): Promise<ResetResult> {
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const result = await commitReset(request, {
+				reset: (body) => resetVolume(this.db, body),
+				sync: () => this.ctx.storage.sync()
+			})
+			// Inside the same barrier as the commit, so no request can slip in between the
+			// filesystem changing underneath this instance and it standing down.
+			if (result.ok && !result.replayed) this.restartingUntil = Date.now() + RESTART_GRACE_MS
+			return result
+		})
+	}
+
+	// Stop owning the generation this instance was built over. Never returns: `abort()`
+	// tears the instance down, so the RPC it arrived on dies with it and the caller sees a
+	// rejection. That rejection is the success case.
+	public async terminate(reason: string): Promise<void> {
+		this.ctx.abort(reason)
+		throw new Error('DurableObjectState.abort() returned')
 	}
 
 	// Non-destructive: it only drops the advisory marker once the adopt-mine republish
@@ -615,6 +650,15 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		// Committed a destructive reset and waiting to be torn down. Everything this instance
+		// holds in memory was built over a filesystem that no longer exists, so it serves one
+		// answer — come back in a moment — rather than a stale one. The replacement instance
+		// answers normally, so a client only has to retry, not learn a second protocol.
+		if (Date.now() < this.restartingUntil)
+			return Response.json(
+				{ error: 'restarting' },
+				{ status: 503, headers: { 'retry-after': '1' } }
+			)
 		this.cfTimezone = (request.cf as { timezone?: string } | undefined)?.timezone
 
 		// Handle WebSocket upgrade

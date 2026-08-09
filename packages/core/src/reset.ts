@@ -119,10 +119,6 @@ export type ResetDecision =
 	| { ok: true; next: GenerationState; replayed?: true }
 	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
-export type ResetStatus =
-	| { committed: true; generation: number }
-	| { committed: false; generation: number }
-
 // ── Pure decision ───────────────────────────────────────────────────────────
 
 /**
@@ -217,13 +213,6 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
 			next.committedReset?.generation ?? null
 		]
 	)
-}
-
-export async function readResetStatus(db: DbAdapter, operationId: string): Promise<ResetStatus> {
-	const state = await readGenerationState(db)
-	return state.committedReset?.operationId === operationId
-		? { committed: true, generation: state.committedReset.generation }
-		: { committed: false, generation: state.generation }
 }
 
 // ── Transaction bodies ──────────────────────────────────────────────────────────

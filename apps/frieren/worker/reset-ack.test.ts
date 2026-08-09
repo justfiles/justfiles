@@ -1,6 +1,6 @@
-import type { DestructiveResetBody, ResetResult, ResetStatus } from '@justfiles/core'
+import type { DestructiveResetBody, ResetResult } from '@justfiles/core'
 import { describe, expect, test, vi } from 'vitest'
-import { acknowledgeReset, type ResetRestartStub } from './reset-ack.ts'
+import { type ResetRestartStub, resetAndTerminate } from './reset-ack.ts'
 
 const request: DestructiveResetBody = {
 	mode: 'wipe',
@@ -8,93 +8,124 @@ const request: DestructiveResetBody = {
 	operationId: 'op-1'
 }
 
-function stub(options: {
-	reset: () => Promise<ResetResult>
-	status: () => Promise<ResetStatus>
-}): ResetRestartStub {
-	return {
-		resetAndRestart: options.reset,
-		resetStatus: options.status
+// No real waiting; the delays are the shape under test, not the clock.
+const instant = { delays: [0, 0, 0], wait: async () => {} }
+
+/**
+ * A namespace that behaves like the real one across a restart.
+ *
+ * `terminate` aborts the instance: the handle it went out on is dead from then on, and a
+ * handle taken afterwards reaches a REPLACEMENT with a new `instanceId` — after
+ * `startupCalls` attempts have failed, standing in for a cold start. Modelling both is the
+ * point: the protocol this replaced polled the dead handle and never once reached a
+ * replacement in production (#425).
+ */
+function namespace(
+	onCommit: () => Promise<ResetResult>,
+	options: { startupCalls?: number; neverRestarts?: boolean } = {}
+) {
+	const calls: string[] = []
+	let starting = options.startupCalls ?? 0
+	let live = { instanceId: 'boot-1', generation: 1 }
+	let aborted = false
+	const connect = (): ResetRestartStub => {
+		const bornAfterAbort = aborted
+		const reachable = async () => {
+			// The handle the abort went out on never works again.
+			if (aborted && !bornAfterAbort) throw new Error('the Durable Object was reset')
+			// Only a replacement is ever cold; the instance that took the commit is warm.
+			if (bornAfterAbort && starting > 0) {
+				starting -= 1
+				throw new Error('starting up')
+			}
+		}
+		return {
+			status: async () => {
+				await reachable()
+				calls.push('status')
+				return live
+			},
+			commitReset: async () => {
+				await reachable()
+				calls.push('commitReset')
+				return onCommit()
+			},
+			terminate: async () => {
+				await reachable()
+				calls.push('terminate')
+				aborted = true
+				if (!options.neverRestarts) live = { instanceId: 'boot-2', generation: 2 }
+				throw new Error('the Durable Object was reset')
+			}
+		}
 	}
+	return { connect, calls, didAbort: () => aborted }
 }
 
-describe('acknowledgeReset', () => {
-	test('confirms a reset that committed before the instance disconnected', async () => {
-		const result = await acknowledgeReset(
-			stub({
-				reset: async () => {
-					throw new Error('disconnected')
-				},
-				status: async () => ({ committed: true, generation: 2 })
-			}),
-			request,
-			{ delays: [0] }
-		)
+describe('resetAndTerminate', () => {
+	test('answers only once a replacement instance is serving', async () => {
+		const ns = namespace(async () => ({ ok: true, generation: 2 }))
+		const result = await resetAndTerminate(ns.connect, request, instant)
 		expect(result).toEqual({ ok: true, generation: 2 })
+		// Commit acknowledged before anything is torn down; the probe follows the restart.
+		expect(ns.calls).toEqual(['status', 'commitReset', 'terminate', 'status'])
 	})
 
-	test('never accepts a disconnect before commit as success', async () => {
-		const status = vi.fn(async () => ({ committed: false, generation: 1 }) as const)
-		const result = await acknowledgeReset(
-			stub({
-				reset: async () => {
-					throw new Error('disconnected')
-				},
-				status
-			}),
-			request,
-			{ delays: [0, 0, 0] }
-		)
-		expect(result).toEqual({ ok: false, error: 'reset_unconfirmed', generation: 1 })
-		expect(status).toHaveBeenCalledTimes(3)
-	})
-
-	test('returns stale reset decisions without confirmation', async () => {
-		const status = vi.fn()
-		const result = await acknowledgeReset(
-			stub({
-				reset: async () => ({
-					ok: false,
-					error: 'generation_stale',
-					generation: 3
-				}),
-				status
-			}),
-			request
-		)
-		expect(result).toEqual({ ok: false, error: 'generation_stale', generation: 3 })
-		expect(status).not.toHaveBeenCalled()
-	})
-
-	test('returns an idempotent duplicate directly', async () => {
-		const status = vi.fn()
-		const result = await acknowledgeReset(
-			stub({
-				reset: async () => ({ ok: true, generation: 2, replayed: true }),
-				status
-			}),
-			request
-		)
-		expect(result).toEqual({ ok: true, generation: 2, replayed: true })
-		expect(status).not.toHaveBeenCalled()
-	})
-
-	test('bounds retries while a fresh instance is unavailable', async () => {
-		const status = vi.fn(async () => {
-			throw new Error('restarting')
+	test('waits out a replacement that is still starting', async () => {
+		const ns = namespace(async () => ({ ok: true, generation: 2 }), { startupCalls: 2 })
+		await expect(resetAndTerminate(ns.connect, request, instant)).resolves.toEqual({
+			ok: true,
+			generation: 2
 		})
-		await expect(
-			acknowledgeReset(
-				stub({
-					reset: async () => {
-						throw new Error('disconnected')
-					},
-					status
-				}),
-				request,
-				{ delays: [0, 0] }
-			)
-		).resolves.toEqual({ ok: false, error: 'reset_unconfirmed', generation: undefined })
-		expect(status).toHaveBeenCalledTimes(2)
+		expect(ns.didAbort()).toBe(true)
+	})
+
+	test('an unreplaced instance is refused, and the committed reset still reported', async () => {
+		// `neverRestarts` leaves `instanceId` at boot-1 while storage still moves to
+		// generation 2 — so a generation check would pass against the very instance we are
+		// trying to replace, and only the identity check refuses it.
+		//
+		// And refusing it must not turn a real reset into a failure: the commit is durable
+		// and already acknowledged, so the probe is readiness, never evidence.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+		const ns = namespace(async () => ({ ok: true, generation: 2 }), { neverRestarts: true })
+		await expect(resetAndTerminate(ns.connect, request, instant)).resolves.toEqual({
+			ok: true,
+			generation: 2
+		})
+		expect(warn).toHaveBeenCalledOnce()
+		warn.mockRestore()
+	})
+
+	test('the restart rejecting is the success case, not a failed reset', async () => {
+		const ns = namespace(async () => ({ ok: true, generation: 2 }))
+		await expect(resetAndTerminate(ns.connect, request, instant)).resolves.toEqual({
+			ok: true,
+			generation: 2
+		})
+	})
+
+	test('a stale decision is returned as-is, with nothing restarted', async () => {
+		const ns = namespace(async () => ({ ok: false, error: 'generation_stale', generation: 3 }))
+		const result = await resetAndTerminate(ns.connect, request, instant)
+		expect(result).toEqual({ ok: false, error: 'generation_stale', generation: 3 })
+		expect(ns.calls).toEqual(['status', 'commitReset'])
+		expect(ns.didAbort()).toBe(false)
+	})
+
+	test('a replay is not restarted — the instance answering it owns that generation', async () => {
+		const ns = namespace(async () => ({ ok: true, generation: 2, replayed: true }))
+		const result = await resetAndTerminate(ns.connect, request, instant)
+		expect(result).toEqual({ ok: true, generation: 2, replayed: true })
+		expect(ns.calls).toEqual(['status', 'commitReset'])
+		expect(ns.didAbort()).toBe(false)
+	})
+
+	test('a commit that fails outright is not reported as a reset', async () => {
+		const ns = namespace(async () => {
+			throw new Error('unreachable')
+		})
+		await expect(resetAndTerminate(ns.connect, request, instant)).rejects.toThrow('unreachable')
+		expect(ns.didAbort()).toBe(false)
 	})
 })

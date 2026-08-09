@@ -1,6 +1,6 @@
 import type { DestructiveResetBody, ResetDecision } from '@justfiles/core'
-import { describe, expect, test, vi } from 'vitest'
-import { commitResetAndRestart } from './reset-instance.ts'
+import { describe, expect, test } from 'vitest'
+import { commitReset } from './reset-instance.ts'
 
 const request: DestructiveResetBody = {
 	mode: 'wipe',
@@ -8,55 +8,58 @@ const request: DestructiveResetBody = {
 	operationId: 'op-1'
 }
 
-describe('commitResetAndRestart', () => {
-	test('terminates immediately after a newly committed reset', async () => {
-		const calls: string[] = []
-		const committed: ResetDecision = {
-			ok: true,
-			next: {
-				generation: 2,
-				committedReset: { operationId: 'op-1', generation: 2 }
-			}
+// Records the order of the two things that must not be reordered: the write, then the
+// flush that makes it survive the restart the caller is about to trigger.
+function operations(decision: ResetDecision) {
+	const order: string[] = []
+	return {
+		order,
+		reset: async () => {
+			order.push('reset')
+			return decision
+		},
+		sync: async () => {
+			order.push('sync')
 		}
-		await expect(
-			commitResetAndRestart(request, {
-				reset: async () => {
-					calls.push('commit')
-					return committed
-				},
-				terminate: (reason) => {
-					calls.push(reason)
-					throw new Error('terminated')
-				}
-			})
-		).rejects.toThrow('terminated')
-		expect(calls).toEqual(['commit', 'filesystem reset: op-1'])
+	}
+}
+
+describe('commitReset', () => {
+	test('flushes to disk before answering, so the restart cannot discard the commit', async () => {
+		// The regression: DO SQLite writes ride the event's implicit transaction, which only
+		// commits when the output gate opens. The restart that follows this call stops that
+		// happening, so without the flush the truncate + bump are rolled back and the reset
+		// silently does nothing (#425).
+		const ops = operations({ ok: true, next: { generation: 2 } })
+		const result = await commitReset(request, ops)
+		expect(result).toEqual({ ok: true, generation: 2 })
+		expect(ops.order).toEqual(['reset', 'sync'])
 	})
 
-	test('returns stale and replay decisions without terminating', async () => {
-		const terminate = vi.fn((): never => {
-			throw new Error('unexpected')
+	test('a stale decision is returned without flushing anything', async () => {
+		const ops = operations({ ok: false, error: 'generation_stale', generation: 5 })
+		const result = await commitReset(request, ops)
+		expect(result).toEqual({ ok: false, error: 'generation_stale', generation: 5 })
+		expect(ops.order).toEqual(['reset'])
+	})
+
+	test('a replay answers with the generation the first delivery committed', async () => {
+		const ops = operations({
+			ok: true,
+			next: { generation: 2, committedReset: { operationId: 'op-1', generation: 2 } },
+			replayed: true
 		})
-		await expect(
-			commitResetAndRestart(request, {
-				reset: async () => ({
-					ok: false,
-					error: 'generation_stale',
-					generation: 2
-				}),
-				terminate
-			})
-		).resolves.toEqual({ ok: false, error: 'generation_stale', generation: 2 })
-		await expect(
-			commitResetAndRestart(request, {
-				reset: async () => ({
-					ok: true,
-					next: { generation: 2 },
-					replayed: true
-				}),
-				terminate
-			})
-		).resolves.toEqual({ ok: true, generation: 2, replayed: true })
-		expect(terminate).not.toHaveBeenCalled()
+		const result = await commitReset(request, ops)
+		expect(result).toEqual({ ok: true, generation: 2, replayed: true })
+	})
+
+	test('a failed flush fails the reset rather than reporting a commit that may not survive', async () => {
+		const result = commitReset(request, {
+			reset: async () => ({ ok: true, next: { generation: 2 } }),
+			sync: async () => {
+				throw new Error('disk')
+			}
+		})
+		await expect(result).rejects.toThrow('disk')
 	})
 })
