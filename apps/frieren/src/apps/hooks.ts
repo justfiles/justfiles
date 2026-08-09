@@ -41,11 +41,13 @@ export function useInstallingApps(): InstallingApp[] {
 	return apps
 }
 
-// Runner's store index, hydrated with each app's canonical manifest so discovery,
-// consent and update checks all use the same metadata the installer persists.
-export function useRunnerCatalog(): RunnerCatalogApp[] {
+// Runner's store index, hydrated with each app's canonical manifest only while the
+// user is searching or browsing the store. Reconciliation checks installed ids
+// separately, so an idle desktop never fans out across the whole public catalog.
+export function useRunnerCatalog(enabled: boolean): RunnerCatalogApp[] {
 	const [apps, setApps] = useState<RunnerCatalogApp[]>([])
 	useEffect(() => {
+		if (!enabled) return
 		let live = true
 		const load = () => {
 			runnerAppStore()
@@ -64,7 +66,7 @@ export function useRunnerCatalog(): RunnerCatalogApp[] {
 			live = false
 			clearInterval(timer)
 		}
-	}, [])
+	}, [enabled])
 	return apps
 }
 

@@ -177,7 +177,6 @@ export function Omnibar({
 }) {
 	const apps = useInstalledApps()
 	const installing = useInstallingApps()
-	const catalog = useRunnerCatalog()
 	const { launchApp, installRunner } = useAppCommands()
 	const agent = useAgentClient()
 	const session = useAgentSession()
@@ -202,6 +201,7 @@ export function Omnibar({
 	// all apps" lives (design/01-omnibar.md open question). Transient like the rest
 	// of the sheet: blur, Esc, or typing a query leaves it.
 	const [browseStore, setBrowseStore] = useState(false)
+	const catalog = useRunnerCatalog(browseStore || query.trim() !== '')
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 
 	const text = query.trim()
