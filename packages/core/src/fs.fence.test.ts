@@ -216,7 +216,12 @@ describe('/fs reset route — server', () => {
 		const res = await app.request('/reset', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })
+			body: JSON.stringify({
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				operationId: 'op-1',
+				resetId: 'r1'
+			})
 		})
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({ generation: 6 })
@@ -227,7 +232,12 @@ describe('/fs reset route — server', () => {
 		const res = await app.request('/reset', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ mode: 'adopt-mine', fromGeneration: 4, resetId: 'r1' })
+			body: JSON.stringify({
+				mode: 'adopt-mine',
+				fromGeneration: 4,
+				operationId: 'op-1',
+				resetId: 'r1'
+			})
 		})
 		expect(res.status).toBe(409)
 		expect(await res.json()).toEqual({ error: 'generation_stale', generation: 5 })
@@ -250,7 +260,12 @@ describe('/fs reset route — server', () => {
 		const res = await app.request('/reset', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', 'x-fs-generation': '1' },
-			body: JSON.stringify({ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })
+			body: JSON.stringify({
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				operationId: 'op-1',
+				resetId: 'r1'
+			})
 		})
 		expect(res.status).toBe(200) // NOT the fence's 409
 		expect(await res.json()).toEqual({ generation: 6 })
@@ -267,12 +282,22 @@ describe('/fs reset route — server', () => {
 		})
 		// Stale on purpose: the replica stamps x-fs-generation, and reset must not be fenced.
 		const replica = remoteSyncReplica(wireClient(app), { clientId: 'c1', generation: () => 1 })
-		expect(await replica.reset?.({ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })).toEqual(
-			{ generation: 6 }
-		)
+		expect(
+			await replica.reset?.({
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				operationId: 'op-1',
+				resetId: 'r1'
+			})
+		).toEqual({ generation: 6 })
 		await replica.reset?.({ mode: 'complete', resetId: 'r1' })
 		expect(calls).toEqual([
-			{ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' },
+			{
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				operationId: 'op-1',
+				resetId: 'r1'
+			},
 			{ mode: 'complete', resetId: 'r1' }
 		])
 	})

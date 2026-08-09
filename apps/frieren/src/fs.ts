@@ -548,7 +548,11 @@ export async function factoryReset(getToken: GetToken): Promise<void> {
 		// `wipe` is not part of the sync layer's reset (it discards content too), so
 		// it goes over the same typed /fs/reset route directly.
 		const res = await createFsClient(getToken).reset.$post({
-			json: { mode: 'wipe', fromGeneration: prev.sync?.generation() ?? 1 }
+			json: {
+				mode: 'wipe',
+				fromGeneration: prev.sync?.generation() ?? 1,
+				operationId: crypto.randomUUID()
+			}
 		})
 		if (!res.ok) throw new Error(`factory reset failed: ${res.status}`)
 	}

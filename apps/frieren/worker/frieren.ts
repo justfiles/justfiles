@@ -45,10 +45,11 @@ import {
 	clearReset,
 	createFsApi,
 	type DbAdapter,
+	type DestructiveResetBody,
 	type GenerationState,
-	type ResetBody,
 	type ResetResult,
 	readGenerationState,
+	readResetStatus,
 	resetVolume
 } from '@justfiles/core'
 import type { Volume } from '@justfiles/fs'
@@ -65,6 +66,7 @@ import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
+import { commitResetAndRestart } from './reset-instance.ts'
 import { createVolumeScopeOwner, type VolumeScope, type VolumeScopeOwner } from './volume-scope.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
@@ -238,7 +240,8 @@ export class Frieren extends DurableObject<Env> {
 					// mutate it. Both need the DO's raw store (and, for reset, a cache
 					// rebuild), so they are injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),
-					reset: (req) => this.handleReset(req)
+					reset: (req) =>
+						req.mode === 'complete' ? this.completeReset(req.resetId) : this.resetAndRestart(req)
 				})
 			)
 
@@ -248,12 +251,24 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	// The lineage-mutation capability behind POST /fs/reset (createFsApi validates
-	// the body and owns the HTTP envelope; this is the DO-level body it calls).
-	// `adopt-mine`/`wipe` — CAS + truncate + bump. `complete` — advisory: the
-	// initiator's republish drained, so clear the in-progress flag.
-	private async handleReset(req: ResetBody): Promise<ResetResult> {
-		return this.requireScopes().reset(req)
+	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
+		return this.ctx.blockConcurrencyWhile(() =>
+			commitResetAndRestart(request, {
+				reset: (body) => resetVolume(this.db, body),
+				terminate: (reason) => {
+					this.ctx.abort(reason)
+					throw new Error('DurableObjectState.abort() returned')
+				}
+			})
+		)
+	}
+
+	public async resetStatus(operationId: string) {
+		return readResetStatus(this.db, operationId)
+	}
+
+	public async completeReset(resetId: string): Promise<ResetResult> {
+		return this.requireScopes().reset({ mode: 'complete', resetId })
 	}
 
 	private requireScopes(): VolumeScopeOwner<AgentSession, FrierenApps> {

@@ -5,7 +5,8 @@
  * transactional body:
  *
  * - `decideReset` — a pure CAS over the `fs_generation` row: `fromGeneration` must
- *   match, so racing resets can't double-bump; `resetId` names the winner.
+ *   match, so racing resets can't double-bump; `operationId` makes delivery
+ *   idempotent and `resetId` names an adopt-mine republish.
  * - `resetVolume` — one SQLite transaction that CAS-checks, truncates the tree +
  *   sync tables (+ content for `wipe`), recreates the root inode, and bumps
  *   `generation`. Atomic against a real BEGIN/COMMIT adapter.
@@ -96,11 +97,16 @@ export interface GenerationState {
 	// instead of reusing cursors minted against another volume. A reset keeps it (same
 	// volume, new epoch); only a genuinely new volume mints a new one.
 	lineageId?: string
+	// The latest destructive reset committed in the same transaction as its
+	// generation bump. Unlike resetId, this survives adopt completion and also
+	// exists for wipe, so the outer Worker can prove an ambiguous disconnect.
+	committedReset?: { operationId: string; generation: number }
 }
 
 export type ResetRequest = {
 	mode: ResetMode
 	fromGeneration: number
+	operationId: string
 	resetId?: string
 	// The volume identity the initiator believes it is resetting. When present, it must
 	// match the volume's own `lineageId` or the reset is rejected — the /reset route is
@@ -110,8 +116,12 @@ export type ResetRequest = {
 }
 
 export type ResetDecision =
-	| { ok: true; next: GenerationState }
+	| { ok: true; next: GenerationState; replayed?: true }
 	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
+
+export type ResetStatus =
+	| { committed: true; generation: number }
+	| { committed: false; generation: number }
 
 // ── Pure decision ───────────────────────────────────────────────────────────
 
@@ -122,6 +132,8 @@ export type ResetDecision =
  * re-bootstraps rather than republishing, so it may omit it).
  */
 export function decideReset(current: GenerationState, req: ResetRequest): ResetDecision {
+	if (current.committedReset?.operationId === req.operationId)
+		return { ok: true, next: current, replayed: true }
 	if (req.fromGeneration !== current.generation)
 		return { ok: false, error: 'generation_stale', generation: current.generation }
 	// Identity CAS, atomic with the generation CAS: when THIS volume has an identity, an
@@ -139,7 +151,15 @@ export function decideReset(current: GenerationState, req: ResetRequest): ResetD
 	// unchanged — only the `generation` bumps.
 	return {
 		ok: true,
-		next: { generation: current.generation + 1, resetId: req.resetId, lineageId: current.lineageId }
+		next: {
+			generation: current.generation + 1,
+			resetId: req.resetId,
+			lineageId: current.lineageId,
+			committedReset: {
+				operationId: req.operationId,
+				generation: current.generation + 1
+			}
+		}
 	}
 }
 
@@ -147,14 +167,28 @@ export function decideReset(current: GenerationState, req: ResetRequest): ResetD
 
 /** Read the decoded generation row (pre-migration default: generation 1). */
 export async function readGenerationState(db: DbAdapter): Promise<GenerationState> {
-	const [row] = await db.query<{ generation: unknown; reset_id: unknown; lineage_id: unknown }>(
-		'SELECT generation, reset_id, lineage_id FROM fs_generation WHERE id = 1 LIMIT 1'
+	const [row] = await db.query<{
+		generation: unknown
+		reset_id: unknown
+		lineage_id: unknown
+		reset_operation_id: unknown
+		reset_operation_generation: unknown
+	}>(
+		`SELECT generation, reset_id, lineage_id, reset_operation_id, reset_operation_generation
+		 FROM fs_generation WHERE id = 1 LIMIT 1`
 	)
 	if (!row) return { generation: 1 }
 	return {
 		generation: Number(row.generation),
 		resetId: row.reset_id == null ? undefined : String(row.reset_id),
-		lineageId: row.lineage_id == null ? undefined : String(row.lineage_id)
+		lineageId: row.lineage_id == null ? undefined : String(row.lineage_id),
+		committedReset:
+			row.reset_operation_id == null || row.reset_operation_generation == null
+				? undefined
+				: {
+						operationId: String(row.reset_operation_id),
+						generation: Number(row.reset_operation_generation)
+					}
 	}
 }
 
@@ -168,12 +202,28 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
 	// migration and preserved across every reset (same volume, new epoch), so the
 	// on-conflict path leaves it untouched.
 	await db.run(
-		`INSERT INTO fs_generation(id, generation, reset_id) VALUES (1, ?, ?)
+		`INSERT INTO fs_generation(
+			id, generation, reset_id, reset_operation_id, reset_operation_generation
+		 ) VALUES (1, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			generation = excluded.generation,
-			reset_id = excluded.reset_id`,
-		[next.generation, next.resetId ?? null]
+			reset_id = excluded.reset_id,
+			reset_operation_id = excluded.reset_operation_id,
+			reset_operation_generation = excluded.reset_operation_generation`,
+		[
+			next.generation,
+			next.resetId ?? null,
+			next.committedReset?.operationId ?? null,
+			next.committedReset?.generation ?? null
+		]
 	)
+}
+
+export async function readResetStatus(db: DbAdapter, operationId: string): Promise<ResetStatus> {
+	const state = await readGenerationState(db)
+	return state.committedReset?.operationId === operationId
+		? { committed: true, generation: state.committedReset.generation }
+		: { committed: false, generation: state.generation }
 }
 
 // ── Transaction bodies ──────────────────────────────────────────────────────────
@@ -181,7 +231,8 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
 /**
  * Apply a reset in ONE transaction: CAS, truncate the tree + sync tables (+ the
  * content tables for `wipe`, so no client can fetch/search discarded bytes),
- * recreate the root inode, bump the generation, and store `resetId`. `adopt-mine`
+ * recreate the root inode, bump the generation, and store the operation acknowledgement
+ * plus `resetId`. `adopt-mine`
  * keeps the content tables — lazy blobs the republish reuses — and the private
  * subtrees, which no republish could restore (see `privateInos`).
  */
@@ -191,6 +242,10 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 		const current = await readGenerationState(tx)
 		const decision = decideReset(current, req)
 		if (!decision.ok) {
+			result = decision
+			return
+		}
+		if (decision.replayed) {
 			result = decision
 			return
 		}
@@ -232,7 +287,7 @@ export async function clearReset(db: DbAdapter, resetId: string): Promise<Genera
 	await db.transaction(async (tx) => {
 		const current = await readGenerationState(tx)
 		if (current.resetId === resetId) {
-			const next = { generation: current.generation }
+			const next = { ...current, resetId: undefined }
 			await writeGenerationState(tx, next)
 			result = next
 		} else {

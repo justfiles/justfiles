@@ -124,7 +124,13 @@ export interface BlobStore {
  * zod copy on the route). `wipe` is app-level (factory reset), so it is not here.
  */
 export type ResetRequest =
-	| { mode: 'adopt-mine'; fromGeneration: number; resetId: string; lineageId?: string }
+	| {
+			mode: 'adopt-mine'
+			fromGeneration: number
+			operationId: string
+			resetId: string
+			lineageId?: string
+	  }
 	| { mode: 'complete'; resetId: string }
 
 /**
@@ -494,9 +500,15 @@ export type SyncState = {
 	lineageId?: string
 	// In-flight "take mine" (adopt-mine), persisted BEFORE the reset CAS so a crash
 	// mid-republish resumes/adopts instead of discarding the volume it meant to
-	// publish. `fromGeneration` is the lineage the reset started from; `toGeneration`
-	// is the one it produced, set once the reset is confirmed (also marks local prep done).
-	pendingReset?: { resetId: string; fromGeneration: number; toGeneration?: number }
+	// publish. `operationId` is reused after an ambiguous transport failure;
+	// `fromGeneration` is the lineage the reset started from; `toGeneration` is the one
+	// it produced, set once the reset is confirmed (also marks local prep done).
+	pendingReset?: {
+		resetId: string
+		operationId?: string
+		fromGeneration: number
+		toGeneration?: number
+	}
 	pushCursor?: SyncCursor // over the local ChangeSource
 	pullCursor?: SyncCursor // over the remote's ChangeSource
 	// PathSyncState records are stored per-path under the same /.state/sync tree.

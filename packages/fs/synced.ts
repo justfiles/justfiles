@@ -450,7 +450,12 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * `reset-to-winner` = a newer/other reset is current, so take theirs.
 	 */
 	function resumeAction(
-		pending: { resetId: string; fromGeneration: number; toGeneration?: number },
+		pending: {
+			resetId: string
+			operationId?: string
+			fromGeneration: number
+			toGeneration?: number
+		},
 		server: { generation?: number; resetId?: string }
 	): 'resume' | 'adopt' | 'reset-to-winner' {
 		if (server.resetId === pending.resetId) return 'resume'
@@ -764,24 +769,33 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * clears the server's advisory flag.
 	 */
 	async function takeMine(): Promise<void> {
-		const fromGeneration = knownGeneration
+		const fromGeneration = knownPending?.fromGeneration ?? knownGeneration
 		if (fromGeneration === undefined) throw new Error('take mine requires a server generation')
 		if (!remoteReplica.reset) throw new Error('take mine requires a client<->server peer')
-		const resetId = crypto.randomUUID()
-		knownPending = { resetId, fromGeneration }
+		const resetId = knownPending?.resetId ?? crypto.randomUUID()
+		const operationId = knownPending?.operationId ?? crypto.randomUUID()
+		knownPending = { ...knownPending, resetId, operationId, fromGeneration }
 		await syncState.patch({ pendingReset: knownPending })
+		if (knownPending.toGeneration !== undefined) {
+			await flush()
+			return
+		}
 		let toGeneration: number | undefined
 		try {
 			;({ generation: toGeneration } = await remoteReplica.reset({
 				mode: 'adopt-mine',
 				fromGeneration,
+				operationId,
 				resetId,
 				// Fence the reset by identity too: the server rejects it unless this is still
 				// the volume we synced against, so an endpoint swap can't truncate another one.
 				lineageId: knownLineage
 			}))
 		} catch (e) {
-			await clearPendingReset() // the CAS failed/lost the race — nothing to resume
+			// A typed CAS/identity loss is definitive. Transport/5xx failures are
+			// ambiguous, so retain the durable operation id for an idempotent retry.
+			if (e instanceof GenerationStaleError || e instanceof LineageStaleError)
+				await clearPendingReset()
 			throw e
 		}
 		if (toGeneration === undefined) throw new Error('reset did not return a generation')

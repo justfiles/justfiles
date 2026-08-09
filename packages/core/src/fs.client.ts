@@ -395,6 +395,7 @@ export function remoteSyncReplica(
 			// server-side (it is registered ahead of the fence), so a stale client can
 			// still reset. A host without a reset capability answers 501.
 			const res = await client.reset.$post({ json: body })
+			await throwIfStale(res)
 			if (!res.ok) throw new Error(`reset ${body.mode} failed: ${res.status}`)
 			return { generation: (await res.json()).generation }
 		},
