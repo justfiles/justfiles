@@ -45,12 +45,17 @@ export type AccountChange = (
 ) => Account | undefined | Promise<Account | undefined>
 
 export interface AccountStore {
+	// Reads take their record's chain too, so they see one write or the other and never the
+	// middle of one: overwriting a file is deliberately NOT atomic (see `Volume.writeFile`),
+	// and on a backend that fills in place a torn read parses as no record at all — an
+	// account that blinks out of Settings, or an active AI that resolves to nothing.
 	list(): Promise<Account[]>
 	get(id: string): Promise<Account | undefined>
 	// THE write — there is no bare `put`, because every mutation here is really a
 	// read/decide/write and splitting those is what loses updates. The whole of `change`
 	// runs with nothing else touching the SAME account, so a token refresh that lands late
 	// simply sees the newer grant (or the deletion) and declines, instead of overwriting it.
+	// `change` therefore must not call back into the store for the account it is changing.
 	update(id: string, change: AccountChange): Promise<void>
 	delete(id: string): Promise<void>
 	// Seal every record still in the clear (see `hostAccounts` in host.ts for why a lazy
@@ -71,11 +76,11 @@ export function volumeAccountStore(
 	opts: { secretCodec?: SecretCodec } = {}
 ): AccountStore {
 	const codec = opts.secretCodec ?? clearSecretCodec
-	// One chain per account id: a logical operation on an account runs to completion before
-	// the next one on THAT account starts, and two different accounts never wait on each
-	// other. `/private` is host-local and never replicates, so one store per host instance is
-	// the whole coordination atom — there is nothing here for a cross-host lock to protect.
-	// Keyed by id, so the map is bounded by the accounts this host holds.
+	// One chain per account id: EVERY access to an account — read as much as write — runs to
+	// completion before the next one on THAT account starts, and two different accounts never
+	// wait on each other. `/private` is host-local and never replicates, so one store per host
+	// instance is the whole coordination atom — there is nothing here for a cross-host lock to
+	// protect. Keyed by id, so the map is bounded by the accounts this host holds.
 	const chains = new Map<string, Promise<unknown>>()
 	const serial = <T>(id: string, op: () => Promise<T>): Promise<T> => {
 		// `then(op, op)` so one failed operation does not poison the chain behind it.
@@ -107,11 +112,16 @@ export function volumeAccountStore(
 			return { ...stored, creds: undefined, lastError: DECODE_FAILED }
 		}
 	}
-	const paths = async (): Promise<string[]> =>
+	// Every record on disk, each with the id it is FILED under — `pathFor`'s inverse, so a
+	// scan can take a record's own chain before it opens the file rather than after.
+	const entries = async (): Promise<{ path: string; id: string }[]> =>
 		(await fs.exists(DIR))
 			? (await fs.readdir(DIR))
 					.filter((e) => e.name.endsWith('.json'))
-					.map((e) => `${DIR}/${e.name}`)
+					.map((e) => ({
+						path: `${DIR}/${e.name}`,
+						id: decodeURIComponent(e.name.slice(0, -'.json'.length))
+					}))
 			: []
 	// Publish a record. Always called from inside that account's chain.
 	const write = async (account: Account): Promise<void> => {
@@ -135,18 +145,19 @@ export function volumeAccountStore(
 		await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
 	}
 	return {
+		// One record at a time, each on its own chain: a list is a read of every account, so it
+		// is ordered against each account's writes and against none of the others'. The chains
+		// only ever hold local file work — `change` does its waiting outside — so this queues
+		// behind a write, never behind a browser redirect.
 		list: async () => {
 			const out: Account[] = []
-			for (const path of await paths()) {
-				const account = await read(path)
+			for (const { path, id } of await entries()) {
+				const account = await serial(id, () => read(path))
 				if (account) out.push(account)
 			}
 			return out
 		},
-		get: async (id) => {
-			const path = pathFor(id)
-			return (await fs.exists(path)) ? read(path) : undefined
-		},
+		get: (id) => serial(id, () => read(pathFor(id))),
 		update: (id, change) =>
 			serial(id, async () => {
 				const next = await change(await read(pathFor(id)))
@@ -154,13 +165,11 @@ export function volumeAccountStore(
 			}),
 		reseal: async () => {
 			let failure: unknown
-			for (const path of await paths()) {
+			for (const { path, id } of await entries()) {
 				try {
-					const scanned = await readStored(path)
-					if (!scanned) continue
-					await serial(scanned.id, async () => {
-						// Re-read INSIDE the chain: a mutation may have landed since the scan, and
-						// republishing the record the scan saw would silently undo it.
+					await serial(id, async () => {
+						// Opened INSIDE the chain, so what is decided on is what gets republished: a
+						// mutation landing between the two would otherwise be silently undone.
 						const stored = await readStored(path)
 						// Nothing to seal: no record, no creds lane, or already sealed (skipping is what
 						// keeps a sweep with nothing to do free of writes). An unreadable record is sealed

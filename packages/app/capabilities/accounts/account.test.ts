@@ -178,6 +178,31 @@ describe('one account at a time', () => {
 		expect((await store.get('u@openai.com'))?.creds).toEqual({ n: 2 })
 	})
 
+	test('a read queues behind the write in front of it, rather than catching it half-done', async () => {
+		// Overwriting a file is deliberately not atomic (see `Volume.writeFile`), and on a
+		// backend that fills in place a torn read parses as NO record — an account that blinks
+		// out of Settings, or an active AI that resolves to nothing, while the boot reseal
+		// sweep rewrites what is on disk underneath the first request.
+		const store = volumeAccountStore(volume(memStorage()))
+		await put(store, account({ creds: { v: 'old' } }))
+		let release = (): void => {}
+		const parked = new Promise<void>((r) => {
+			release = r
+		})
+		const writing = store.update('u@openai.com', async (current) => {
+			await parked
+			return { ...current!, creds: { v: 'new' } }
+		})
+		// Both issued while the write holds the chain: each must observe the completed write.
+		const reading = store.get('u@openai.com')
+		const listing = store.list()
+		release()
+		await writing
+
+		expect((await reading)?.creds).toEqual({ v: 'new' })
+		expect((await listing)[0]?.creds).toEqual({ v: 'new' })
+	})
+
 	test('a change that declines writes nothing at all', async () => {
 		const fs = volume(memStorage())
 		const store = volumeAccountStore(fs)
@@ -199,11 +224,14 @@ describe('one account at a time', () => {
 			await parked
 			return { id: 'a', provider: 'chatgpt', creds: {} }
 		})
+		// `b` goes all the way through — write AND read — while `a` is still parked. (Reading
+		// `a` here would correctly queue behind its own write, which is the test above.)
 		await store.update('b', () => ({ id: 'b', provider: 'chatgpt', creds: {} }))
 		expect(await store.get('b')).toMatchObject({ id: 'b' })
-		expect(await store.get('a')).toBeUndefined()
+
 		release()
 		await slow
+		expect(await store.get('a')).toMatchObject({ id: 'a' })
 	})
 
 	test('a credential this host cannot seal leaves the previous file untouched', async () => {
