@@ -302,6 +302,36 @@ export function volume(storage: Storage): Volume {
 	const metaRequests = createSingleFlight<Ino, InodeMeta>()
 	const dirLookupRequests = createSingleFlight<string, DirentMin | null>()
 
+	// A regular file's data writes are ordered against each other, per inode — what POSIX
+	// requires of `read`/`write` (XSH 2.9.7) and what Linux does by holding that inode's
+	// `i_rwsem` exclusively for a buffered write. The same lock is what makes `O_APPEND`
+	// atomic: the seek to end and the write cannot be split.
+	//
+	// `appendFile` below is exactly that seek-and-write, spread across a `getBlob` and a
+	// `putBlob` — and a backend is free to yield to real I/O between them (hashing the
+	// content, a round trip to object storage). Unordered, two appends read identical bytes
+	// and the later put silently drops the earlier entry; a `writeFile` landing inside one
+	// loses the whole edit the same way.
+	//
+	// Per INODE, as the kernel does it, so unrelated files never share a chain and still
+	// write concurrently. Per PROCESS, unlike the kernel: the window that remains is another
+	// writer of the same volume, which is the one lineage and sync answer.
+	const inodeWrites = new Map<Ino, Promise<unknown>>()
+
+	function writeSerially<T>(ino: Ino, write: () => Promise<T>): Promise<T> {
+		const result = (inodeWrites.get(ino) ?? Promise.resolve()).then(write)
+		// The chain a later writer joins never rejects, so one failed write cannot cancel
+		// the writes queued behind it.
+		const settled = result.catch(() => undefined)
+		inodeWrites.set(ino, settled)
+		// Forget the inode once its chain drains, so this maps what is in flight rather than
+		// every file the volume has ever written.
+		void settled.then(() => {
+			if (inodeWrites.get(ino) === settled) inodeWrites.delete(ino)
+		})
+		return result
+	}
+
 	function nowNs(): bigint {
 		return BigInt(Date.now()) * 1_000_000n
 	}
@@ -593,7 +623,7 @@ export function volume(storage: Storage): Volume {
 				const meta = await getMetaOrThrow(resolved)
 				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
-				await storage.putBlob(ino, data)
+				await writeSerially(ino, () => storage.putBlob(ino, data))
 			} else {
 				// An edit has nothing to edit. Refused HERE, where the path was just
 				// resolved, so no caller can create a file (and its parents) from a path it
@@ -644,7 +674,7 @@ export function volume(storage: Storage): Volume {
 					}
 					const winnerMeta = await getMetaOrThrow(winner)
 					if (winnerMeta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
-					await storage.putBlob(winner, data)
+					await writeSerially(winner, () => storage.putBlob(winner, data))
 					ino = winner
 				}
 			}
@@ -665,11 +695,13 @@ export function volume(storage: Storage): Volume {
 				const meta = await getMetaOrThrow(resolved)
 				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
-				const existing = await storage.getBlob(ino)
-				const merged = new Uint8Array(existing.length + data.length)
-				merged.set(existing)
-				merged.set(data, existing.length)
-				await storage.putBlob(ino, merged)
+				await writeSerially(ino, async () => {
+					const existing = await storage.getBlob(ino)
+					const merged = new Uint8Array(existing.length + data.length)
+					merged.set(existing)
+					merged.set(data, existing.length)
+					await storage.putBlob(ino, merged)
+				})
 			} else {
 				const { dirIno, name } = await resolveParent(path)
 				const now = nowNs()
