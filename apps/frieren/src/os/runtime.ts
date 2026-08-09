@@ -1,4 +1,3 @@
-import { ensureAgentDefaults } from '@justfiles/agent/defaults'
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
 import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/appstore'
@@ -45,10 +44,6 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		await seedBuiltins(await localKernel(), fs, {
 			waitForBootstrap: synced ? () => fs.flush() : undefined
 		})
-		// Local-only profiles have no server to seed the agent's identity files, so
-		// give them the same default soul + empty profile the server writes for
-		// synced ones. Idempotent, so it never clobbers a personalized soul.
-		if (!synced) await ensureAgentDefaults(fs)
 		if (!seedCancelled) client.refresh()
 	})().catch(() => {})
 	disposers.push(() => {

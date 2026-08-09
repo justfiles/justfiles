@@ -29,7 +29,7 @@ export interface VolumeScope<Session, Apps> {
 
 interface VolumeScopeFactories<Session, Apps> {
 	ready?(scope: VolumeScope<Session, Apps>): Promise<void>
-	session(scope: VolumeScope<Session, Apps>): Session
+	session(scope: VolumeScope<Session, Apps>, resetInProgress: () => boolean): Session
 	apps(scope: VolumeScope<Session, Apps>): Apps
 	disposeSession?(session: Session): void
 	disposeApps?(apps: Apps): void
@@ -53,13 +53,14 @@ export interface VolumeScopeOwner<Session, Apps> {
 
 export function createVolumeScopeOwner<Session, Apps>(options: {
 	storage: Storage
-	generation: number
+	state: GenerationState
 	factories: VolumeScopeFactories<Session, Apps>
 	reset: ResetOperations
 }): VolumeScopeOwner<Session, Apps> {
 	const { storage, factories, reset } = options
 	const executor = createSerialExecutor()
-	let current = createScope(options.generation)
+	let resetId = options.state.resetId
+	let current = createScope(options.state.generation)
 
 	function createScope(generation: number): OwnedVolumeScope<Session, Apps> {
 		const gate = createLifetimeGate(generation)
@@ -87,7 +88,7 @@ export function createVolumeScopeOwner<Session, Apps>(options: {
 			},
 			session() {
 				lifetime.assertCurrent()
-				session ??= factories.session(scope)
+				session ??= factories.session(scope, () => resetId !== undefined)
 				lifetime.assertCurrent()
 				return session
 			},
@@ -130,22 +131,33 @@ export function createVolumeScopeOwner<Session, Apps>(options: {
 		return executor.run(async () => {
 			if (request.mode === 'complete') {
 				const state = await reset.clear(request.resetId)
+				resetId = state.resetId
 				return { ok: true, generation: state.generation }
 			}
 
 			const before = await reset.read()
-			const decision = decideReset(before, request)
+			resetId = before.resetId
+			// A wipe never republishes. Ignore its optional correlation id so the durable
+			// marker can mean exactly one thing on the next DO wake: adopt-mine is unfinished.
+			const appliedRequest =
+				request.mode === 'wipe'
+					? ({ mode: 'wipe', fromGeneration: request.fromGeneration } as const)
+					: request
+			const decision = decideReset(before, appliedRequest)
 			if (!decision.ok) return decision
 
 			try {
 				current.dispose(decision.next.generation)
-				const applied = await reset.apply(request)
+				const applied = await reset.apply(appliedRequest)
 				if (!applied.ok || applied.next.generation !== decision.next.generation)
 					throw new Error('volume reset CAS changed inside the serial executor')
+				resetId = applied.next.resetId
 				publish(applied.next.generation)
 				return { ok: true, generation: applied.next.generation }
 			} catch (error) {
-				publish((await reset.read()).generation)
+				const state = await reset.read()
+				resetId = state.resetId
+				publish(state.generation)
 				throw error
 			}
 		})

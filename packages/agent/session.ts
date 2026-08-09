@@ -3,7 +3,12 @@ import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
 import { createLifetimeGate, type LifetimeToken, StaleLifetimeError } from '@justfiles/lifetime'
-import { PROFILE_PATH, readAgentName, SOUL_PATH } from './agent-defaults.ts'
+import {
+	createAgentIdentityOwner,
+	PROFILE_PATH,
+	readAgentName,
+	SOUL_PATH
+} from './agent-defaults.ts'
 import {
 	type Assistant,
 	consolidateMemory,
@@ -64,6 +69,9 @@ export interface AgentSessionOptions {
 	// Ask the agent for a per-sentence expression tag (`[pleased]…`) — see expression.ts.
 	// Only for a host that strips them before display; frieren maps them to avatar faces.
 	expressions?: boolean
+	// An adopt-mine reset is republishing an existing tree. Seeding during that window would
+	// invent competing defaults; the host's durable reset marker decides when it is safe.
+	identitySeedingSuppressed?: () => boolean
 }
 
 // One broad event stream the UI subscribes to — busy/transcript/error — so every open
@@ -122,6 +130,7 @@ interface Built {
 
 export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	const { volume, apps, notify, readDoc, timezone } = options
+	const identity = createAgentIdentityOwner(volume, options.identitySeedingSuppressed)
 	// The banner name. Re-read from the soul on every build (see below) unless the host
 	// insists on branding of its own, so a rename reaches notifications too.
 	let title = options.title ?? 'Assistant'
@@ -198,6 +207,7 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		const text = createText(llm)
 		const assistant = await createAssistant({
 			volume,
+			identity,
 			agent: createAgent(llm),
 			text,
 			compaction,

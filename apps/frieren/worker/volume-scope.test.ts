@@ -13,7 +13,7 @@ import {
 import { type Storage, volume } from '@justfiles/fs'
 import { StaleLifetimeError } from '@justfiles/lifetime'
 import { describe, expect, test, vi } from 'vitest'
-import { createVolumeScopeOwner } from './volume-scope'
+import { createVolumeScopeOwner, type VolumeScope } from './volume-scope'
 
 const migrationsDir = new URL('../../../packages/core/src/migrations/', import.meta.url)
 const schema = readdirSync(migrationsDir)
@@ -47,7 +47,13 @@ function makeDb(): { db: DbAdapter; storage: Storage } {
 	return { db, storage: sqliteStorage(db) }
 }
 
-type Resource = { kind: 'session' | 'apps'; generation: number; id: number }
+type Resource = {
+	kind: 'session' | 'apps'
+	generation: number
+	id: number
+	resetInProgress?: () => boolean
+}
+type TestScope = VolumeScope<Resource, Resource>
 type ApplyReset = (request: Exclude<ResetBody, { mode: 'complete' }>) => Promise<ResetDecision>
 
 async function testOwner(
@@ -55,7 +61,7 @@ async function testOwner(
 	db: DbAdapter,
 	options: {
 		apply?: ApplyReset
-		ready?: (generation: number) => Promise<void>
+		ready?: (scope: TestScope) => Promise<void>
 	} = {}
 ) {
 	let nextId = 0
@@ -63,18 +69,19 @@ async function testOwner(
 	const ready = options.ready
 	const owner = createVolumeScopeOwner<Resource, Resource>({
 		storage,
-		generation: (await readGenerationState(db)).generation,
+		state: await readGenerationState(db),
 		reset: {
 			read: () => readGenerationState(db),
 			apply: options.apply ?? ((request) => resetVolume(db, request)),
 			clear: (resetId) => clearReset(db, resetId)
 		},
 		factories: {
-			ready: ready ? (scope) => ready(scope.generation) : undefined,
-			session: (scope) => ({
+			ready,
+			session: (scope, resetInProgress) => ({
 				kind: 'session',
 				generation: scope.generation,
-				id: ++nextId
+				id: ++nextId,
+				resetInProgress
 			}),
 			apps: (scope) => ({ kind: 'apps', generation: scope.generation, id: ++nextId }),
 			disposeSession: (resource) => disposed.push(resource),
@@ -233,18 +240,55 @@ describe('volume scopes', () => {
 		expect(text(await current.volume.readFile('/file'))).toBe('republished')
 	})
 
-	test('retries stale readiness against the newly published scope', async () => {
+	test('an adopt marker suppresses the new scope until complete', async () => {
+		const { db, storage } = makeDb()
+		const state = await readGenerationState(db)
+		const { owner } = await testOwner(storage, db)
+
+		await owner.reset({
+			mode: 'adopt-mine',
+			fromGeneration: state.generation,
+			resetId: 'r1',
+			lineageId: state.lineageId
+		})
+		const scope = await owner.ready()
+		const session = scope.session()
+		expect(session.resetInProgress?.()).toBe(true)
+
+		await owner.reset({ mode: 'complete', resetId: 'r1' })
+		expect(session.resetInProgress?.()).toBe(false)
+	})
+
+	test('a fresh owner preserves an abandoned adopt marker and wipe clears it', async () => {
+		const { db, storage } = makeDb()
+		const state = await readGenerationState(db)
+		await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: state.generation,
+			resetId: 'abandoned',
+			lineageId: state.lineageId
+		})
+		const { owner } = await testOwner(storage, db)
+		expect((await owner.ready()).session().resetInProgress?.()).toBe(true)
+
+		await owner.reset({ mode: 'wipe', fromGeneration: state.generation + 1, resetId: 'wipe-id' })
+		expect((await owner.ready()).session().resetInProgress?.()).toBe(false)
+		expect((await readGenerationState(db)).resetId).toBeUndefined()
+	})
+
+	test('a readiness paused across reset cannot write into the new tree', async () => {
 		const { db, storage } = makeDb()
 		const firstReady = deferred()
 		const release = deferred()
 		const generations: number[] = []
 		const { owner } = await testOwner(storage, db, {
-			ready: async (generation) => {
-				generations.push(generation)
-				if (generation === 1) {
+			ready: async (scope) => {
+				generations.push(scope.generation)
+				if (scope.generation === 1) {
 					firstReady.resolve()
 					await release.promise
 				}
+				await scope.volume.writeFile('/identity-generation', bytes(String(scope.generation)))
 			}
 		})
 
@@ -255,6 +299,7 @@ describe('volume scopes', () => {
 
 		await expect(ready).resolves.toMatchObject({ generation: 2 })
 		expect(generations).toEqual([1, 2])
+		expect(text(await volume(storage).readFile('/identity-generation'))).toBe('2')
 	})
 
 	test('disposes watches and a fresh owner at the same generation is independent', async () => {

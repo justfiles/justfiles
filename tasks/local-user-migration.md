@@ -35,13 +35,13 @@ whatever they did as a local user should be offered to migrate over to the new a
 **Server side** (`apps/frieren/worker/index.ts`, `worker/frieren.ts`).
 - Each Clerk `userId` maps to a Durable Object via `FRIEREN.idFromName(userId)`.
   So the DO *is* the account's server volume.
-- On every DO boot `reset()` seeds defaults idempotently:
-  - `ensureAgentDefaults()` writes `/system/user.md` and
-    `/system/agents/main/soul.md` **only if absent**, each stamped
-    `seeded: true` in frontmatter (`shared/agent-defaults.ts`).
-  - `ensureAccount(spud)` seeds `/system/accounts/spud.json` (the platform AI
+- The platform account is prepared when the scoped runtime becomes ready:
+  - `ensureAccount(frieren)` seeds the platform AI
     backend; accounts live under `/system/accounts/`, see
     `packages/app/capabilities/accounts/store.ts`).
+- The agent runtime exclusively creates `/system/user.md` and
+  `/system/agents/main/soul.md` on first agent access. Settings treats missing files as
+  unbound and never triggers that owner.
 - Built-in apps are **client-materialised** (`src/apps/seed.ts` `seedBuiltins` →
   `materialise`/`reconcile`) and pushed up; a never-touched DO has no
   `/applications/*` yet.
