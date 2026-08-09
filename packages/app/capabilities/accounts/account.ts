@@ -5,10 +5,12 @@
 //
 // Storage: one JSON file per account under `/private/accounts/`, keyed by a
 // URL-encoded id, with `creds` the single encryptable lane via an optional
-// SecretCodec (default clear — see secret-codec.ts). `creds` are opaque here: only the
-// owning provider ever interprets them. `/private` never replicates, in either direction:
-// a capability routes to the host that owns the credential, so no peer needs the bytes
-// (see @justfiles/fs PRIVATE_PREFIXES).
+// SecretCodec (default clear — see secret-codec.ts). Records written before a key
+// exists can remain plaintext until the account lane's best-effort re-seal sweep
+// succeeds. `creds` are opaque here: only the owning provider ever interprets them.
+// `/private` never replicates, in either direction: a capability routes to the host
+// that owns the credential, so no peer needs the bytes (see @justfiles/fs
+// PRIVATE_PREFIXES).
 
 import type { Volume } from '@justfiles/fs'
 import { clearSecretCodec, isSealed } from './secret-codec.ts'
@@ -44,7 +46,7 @@ export interface AccountStore {
 	delete(id: string): Promise<void>
 	// Seal every record still in the clear (see `sealAccounts` in host.ts for why a lazy
 	// "encrypt on next write" is not enough). Idempotent: already-sealed records are
-	// skipped, so it costs one read per record on a boot with nothing to do.
+	// skipped, so it costs one read per record on an entry with nothing to do.
 	reseal(): Promise<void>
 }
 

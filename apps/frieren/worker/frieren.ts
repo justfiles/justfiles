@@ -30,12 +30,12 @@ import { IDENTITY_PATHS, PROFILE_PATH, readAgentName } from '@justfiles/agent/de
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
+	type AccountLaneOwner,
 	accountsCapabilities,
 	aesGcmSecretCodec,
-	ensureAccount,
+	createAccountLaneOwner,
 	resolveAiAccount,
-	type SecretCodec,
-	sealAccounts
+	type SecretCodec
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
@@ -308,15 +308,11 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
-	private async generateSoul(input: SoulGenerationInput): ReturnType<typeof generateAgentSoul> {
-		const { models, model } = this.createPlatformAi()
-		return generateAgentSoul(this.meteredBackend(models, model), input, { firstWords: true })
-	}
-
 	private createScopes(state: GenerationState): VolumeScopeOwner<AgentSession, FrierenApps> {
 		type Scope = VolumeScope<AgentSession, FrierenApps>
 		type ScopedAi = ReturnType<Frieren['createPlatformAi']> & { text: LLMText }
 		const scopedAi = new WeakMap<Scope, ScopedAi>()
+		const accountLanes = new WeakMap<Scope, AccountLaneOwner>()
 		const scopedImage = new WeakMap<Scope, ReturnType<typeof accountsCapabilities>['image']>()
 		const stopSession = new WeakMap<AgentSession, () => void>()
 		const getAi = (scope: Scope): ScopedAi => {
@@ -328,6 +324,23 @@ export class Frieren extends DurableObject<Env> {
 			}
 			return scoped
 		}
+		const getAccountLane = (scope: Scope): AccountLaneOwner => {
+			let owner = accountLanes.get(scope)
+			if (!owner) {
+				owner = createAccountLaneOwner(scope.volume, {
+					ensure: { accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
+					secretCodec: this.secretCodec
+				})
+				accountLanes.set(scope, owner)
+			}
+			return owner
+		}
+		const resolvePlatformAi = <T>(scope: Scope, mint: () => T | Promise<T>): Promise<T | null> =>
+			resolveAiAccount(
+				scope.volume,
+				({ providerId }) => (providerId === 'frieren' ? mint() : null),
+				{ accountLane: getAccountLane(scope), secretCodec: this.secretCodec }
+			)
 
 		return createVolumeScopeOwner({
 			storage: this.fs,
@@ -338,18 +351,12 @@ export class Frieren extends DurableObject<Env> {
 				clear: (resetId) => clearReset(this.db, resetId)
 			},
 			factories: {
-				ready: async (scope) => {
-					await ensureAccount(
-						scope.volume,
-						{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
-						{ secretCodec: this.secretCodec }
-					)
-					await sealAccounts(scope.volume, { secretCodec: this.secretCodec })
-				},
+				ready: (scope) => getAccountLane(scope).ready(),
 				apps: (scope) => {
 					const { text, generateImage } = getAi(scope)
 					const providers = buildProviders({ text, generateImage })
 					const caps = accountsCapabilities(providers, scope.volume, {
+						accountLane: getAccountLane(scope),
 						secretCodec: this.secretCodec,
 						origin: { kind: 'cloud' }
 					})
@@ -366,7 +373,12 @@ export class Frieren extends DurableObject<Env> {
 						fs: scope.volume,
 						loader: this.env.LOADER,
 						acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
-						text,
+						resolveText: async () => {
+							const resolved = await resolvePlatformAi(scope, () => text)
+							if (!resolved)
+								throw new Error('AI is turned off — enable an AI provider in Settings.')
+							return resolved
+						},
 						broadcast: (msg) => this.broadcast(msg),
 						image: caps.image,
 						email,
@@ -379,7 +391,13 @@ export class Frieren extends DurableObject<Env> {
 								paths: IDENTITY_PATHS,
 								timezone: () => resolveTimezone(scope.volume, this.cfTimezone),
 								generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-									return this.generateSoul({
+									const backend = await resolvePlatformAi(scope, () => {
+										const { models, model } = getAi(scope)
+										return this.meteredBackend(models, model)
+									})
+									if (!backend)
+										throw new Error('AI is turned off — enable an AI provider in Settings.')
+									return generateAgentSoul(backend, {
 										agentName: name,
 										agentGender: gender,
 										archetype: archetype as SoulGenerationInput['archetype'],
@@ -408,11 +426,8 @@ export class Frieren extends DurableObject<Env> {
 						identitySeedingSuppressed: resetInProgress,
 						capabilities: agentCaps,
 						backend: async () => {
-							const backend = await resolveAiAccount(
-								scope.volume,
-								({ providerId }) =>
-									providerId === 'frieren' ? this.meteredBackend(models, model) : null,
-								{ secretCodec: this.secretCodec }
+							const backend = await resolvePlatformAi(scope, () =>
+								this.meteredBackend(models, model)
 							)
 							if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
 							return backend

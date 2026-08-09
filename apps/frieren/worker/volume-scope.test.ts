@@ -1,6 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import {
+	type AccountLaneOwner,
+	createAccountLaneOwner,
+	resolveAiAccount
+} from '@justfiles/app/capabilities/accounts/host'
+import {
 	clearReset,
 	createSqliteAdapter,
 	type DbAdapter,
@@ -316,5 +321,105 @@ describe('volume scopes', () => {
 		const current = await second.owner.ready()
 		expect(current.generation).toBe(2)
 		await expect(current.volume.readFile('/watched')).resolves.toEqual(bytes('new'))
+	})
+
+	test('a wipe replaces the account lane and first AI resolution reseeds it', async () => {
+		const { db, storage } = makeDb()
+		type Runtime = { resolve(): Promise<string | null> }
+		type Scope = VolumeScope<Runtime, Runtime>
+		const lanes = new WeakMap<Scope, AccountLaneOwner>()
+		const lane = (scope: Scope): AccountLaneOwner => {
+			let owner = lanes.get(scope)
+			if (!owner) {
+				owner = createAccountLaneOwner(scope.volume, {
+					ensure: { accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] }
+				})
+				lanes.set(scope, owner)
+			}
+			return owner
+		}
+		const runtime = (scope: Scope): Runtime => ({
+			resolve: () =>
+				resolveAiAccount(scope.volume, ({ providerId }) => providerId, {
+					accountLane: lane(scope)
+				})
+		})
+		const owner = createVolumeScopeOwner<Runtime, Runtime>({
+			storage,
+			state: await readGenerationState(db),
+			reset: {
+				read: () => readGenerationState(db),
+				apply: (request) => resetVolume(db, request),
+				clear: (resetId) => clearReset(db, resetId)
+			},
+			factories: {
+				ready: (scope) => lane(scope).ready(),
+				session: runtime,
+				apps: runtime
+			}
+		})
+
+		const warm = await owner.ready()
+		await expect(warm.session().resolve()).resolves.toBe('frieren')
+		await owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		expect(await volume(storage).exists('/private/accounts/frieren.json')).toBe(false)
+
+		const fresh = await owner.ready()
+		await expect(fresh.session().resolve()).resolves.toBe('frieren')
+		expect(fresh.generation).toBe(2)
+		expect(await volume(storage).exists('/private/accounts/frieren.json')).toBe(true)
+		expect(await volume(storage).exists('/private/active-ai.json')).toBe(true)
+	})
+
+	test('account seeding paused across reset cannot write into the new tree', async () => {
+		const { db, storage } = makeDb()
+		const started = deferred()
+		const release = deferred()
+		type Runtime = { generation: number }
+		type Scope = VolumeScope<Runtime, Runtime>
+		const lanes = new WeakMap<Scope, AccountLaneOwner>()
+		const lane = (scope: Scope): AccountLaneOwner => {
+			let owner = lanes.get(scope)
+			if (!owner) {
+				if (scope.generation === 1) {
+					const write = scope.volume.writeFile.bind(scope.volume)
+					vi.spyOn(scope.volume, 'writeFile').mockImplementation(async (...args) => {
+						if (args[0] === '/private/accounts/frieren.json') {
+							started.resolve()
+							await release.promise
+						}
+						return write(...args)
+					})
+				}
+				owner = createAccountLaneOwner(scope.volume, {
+					ensure: { accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] }
+				})
+				lanes.set(scope, owner)
+			}
+			return owner
+		}
+		const owner = createVolumeScopeOwner<Runtime, Runtime>({
+			storage,
+			state: await readGenerationState(db),
+			reset: {
+				read: () => readGenerationState(db),
+				apply: (request) => resetVolume(db, request),
+				clear: (resetId) => clearReset(db, resetId)
+			},
+			factories: {
+				ready: (scope) => lane(scope).ready(),
+				session: (scope) => ({ generation: scope.generation }),
+				apps: (scope) => ({ generation: scope.generation })
+			}
+		})
+
+		const ready = owner.ready()
+		await started.promise
+		await owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		release.resolve()
+
+		await expect(ready).resolves.toMatchObject({ generation: 2 })
+		expect(await volume(storage).exists('/private/accounts/frieren.json')).toBe(true)
+		expect((await owner.ready()).generation).toBe(2)
 	})
 })

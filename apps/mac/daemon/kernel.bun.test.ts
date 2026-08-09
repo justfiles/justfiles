@@ -154,7 +154,10 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 	await buildKernel(volume(await nativeStorage(upgradeRoot)), {
 		secretCodec: aesGcmSecretCodec('a-test-root-secret')
 	})
-	expect(await readFile(accountPath, 'utf8')).not.toContain('PRE-EXISTING-PW')
+	await poll(
+		() => readFile(accountPath, 'utf8'),
+		(raw) => !raw.includes('PRE-EXISTING-PW')
+	)
 })
 
 test('a kernel whose key can never be read still boots — the creds lane degrades, the daemon does not (A4)', async () => {
@@ -194,7 +197,7 @@ test('a kernel whose key can never be read still boots — the creds lane degrad
 	// It BOOTED: a failed reseal sweep is best-effort, and files/apps/devkit/notify carry on.
 	expect((await dead.list()).map((app) => app.id)).toContain(FILES)
 	// The credential it could not seal is still there, unharmed — a key that comes back (the
-	// keychain unlocks) seals it on the next boot; nothing was destroyed in the meantime.
+	// keychain unlocks) seals it on the next account entry; nothing was destroyed meanwhile.
 	expect(await readFile(oldPath, 'utf8')).toContain('STILL-HERE-PW')
 
 	// And a NEW connect fails closed — no plaintext credential on disk, no daemon crash.

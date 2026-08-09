@@ -5,9 +5,10 @@ import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import {
+	type AccountLaneOwner,
 	accountsCapabilities,
-	type SecretCodec,
-	sealAccounts
+	createAccountLaneOwner,
+	type SecretCodec
 } from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
@@ -27,6 +28,7 @@ import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
+let accountLaneOnce: Promise<AccountLaneOwner> | undefined
 
 const systemAllowlist = ['app.justfiles.frieren.files']
 
@@ -43,8 +45,17 @@ export function getKernel(): Promise<Kernel> {
 	// The Keychain key lives behind `accountsSecretCodec`, which resolves it on first USE — so
 	// boot never touches the Keychain, and a Keychain this daemon cannot read costs the
 	// credential lane (A2 lists the record as "re-connect") rather than the whole daemon.
-	kernelOnce ??= getVolume().then((fs) => buildKernel(fs, { secretCodec: accountsSecretCodec }))
+	kernelOnce ??= Promise.all([getVolume(), getAccountLane()]).then(([fs, accountLane]) =>
+		buildKernel(fs, { accountLane, secretCodec: accountsSecretCodec })
+	)
 	return kernelOnce
+}
+
+export function getAccountLane(): Promise<AccountLaneOwner> {
+	accountLaneOnce ??= getVolume().then((fs) =>
+		createAccountLaneOwner(fs, { secretCodec: accountsSecretCodec })
+	)
+	return accountLaneOnce
 }
 
 // Build the kernel over a given Volume: the capability registry (volume/devkit/settings/
@@ -56,16 +67,17 @@ export function getKernel(): Promise<Kernel> {
 // that never opts in is hermetic (it mints no Keychain item on the machine running it).
 export async function buildKernel(
 	fs: Volume,
-	opts: { secretCodec?: SecretCodec } = {}
+	opts: { accountLane?: AccountLaneOwner; secretCodec?: SecretCodec } = {}
 ): Promise<Kernel> {
 	const { secretCodec } = opts
+	const accountLane = opts.accountLane ?? createAccountLaneOwner(fs, { secretCodec })
 	// Anything already on disk in the clear (an account connected before the Keychain key
 	// existed, or while it was unreadable) gets sealed now: `decode` deliberately passes a
 	// non-envelope through unchanged (that's what makes turning encryption on a no-flag-day
 	// change), so nothing else would ever rewrite a credential that doesn't rotate — iCloud's
-	// app-specific password is written once, at connect, and never again. Best-effort: a boot
-	// must succeed even if this fails.
-	await sealAccounts(fs, { secretCodec })
+	// app-specific password is written once, at connect, and never again. Best-effort: an entry
+	// must succeed even if this fails, and the owner retries the sweep on the next entry.
+	await accountLane.ready()
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
@@ -73,12 +85,13 @@ export async function buildKernel(
 	const ai = aiCapability({
 		volume: fs,
 		generate: async ({ system, prompt }) => {
-			const backend = await resolveAgentBackend(fs, { secretCodec })
+			const backend = await resolveAgentBackend(fs, { accountLane, secretCodec })
 			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return text(backend).gen(system, prompt)
 		}
 	})
 	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
+		accountLane,
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
 		// hostname so Settings can tell two Macs apart once E1/E2 land.
@@ -124,7 +137,7 @@ export async function buildKernel(
 					// daemon's own bundle, so a picker here needs nothing from the cloud.
 					builtins: BUILTIN_AVATARS,
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-						const backend = await resolveAgentBackend(fs, { secretCodec })
+						const backend = await resolveAgentBackend(fs, { accountLane, secretCodec })
 						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')
 						return generateSoul(backend, {
 							agentName: name,

@@ -6,6 +6,7 @@ import { volumeActiveAi } from './active-ai.ts'
 import {
 	accountsCapabilities,
 	aesGcmSecretCodec,
+	createAccountLaneOwner,
 	ensureAccount,
 	resolveAiAccount,
 	sealAccounts
@@ -14,6 +15,14 @@ import type { Auth, Provider } from './provider.ts'
 import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
 import { icloudProvider } from './providers/icloud.ts'
 import { platformProvider } from './providers/platform.ts'
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+	let resolve!: () => void
+	const promise = new Promise<void>((done) => {
+		resolve = done
+	})
+	return { promise, resolve }
+}
 
 // The credential-bearing stores are internal, so tests drive the facets through
 // `accountsCapabilities` over a real in-memory Volume. State the admin impl can't
@@ -607,6 +616,145 @@ describe('ensureAccount', () => {
 			'frieren'
 		)
 		expect(await vol.readFile('/private/accounts/u%40openai.json')).toEqual(sealed)
+	})
+})
+
+describe('account lane owner', () => {
+	const platform = { accountId: 'frieren', providerId: 'frieren', enabled: ['ai' as const] }
+
+	test('retries after a strict readiness failure', async () => {
+		const vol = volume(memStorage())
+		const actual = vol.writeFile.bind(vol)
+		const write = vi
+			.spyOn(vol, 'writeFile')
+			.mockRejectedValueOnce(new Error('offline'))
+			.mockImplementation((...args) => actual(...args))
+		const owner = createAccountLaneOwner(vol, { ensure: platform })
+
+		await expect(Promise.all([owner.ready(), owner.ready()])).rejects.toThrow('offline')
+		await expect(owner.ready()).resolves.toBeUndefined()
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
+		expect(
+			write.mock.calls.filter(([path]) => path === '/private/accounts/frieren.json')
+		).toHaveLength(2)
+	})
+
+	test('AI resolution waits until the platform account lane is seeded', async () => {
+		const vol = volume(memStorage())
+		const started = deferred()
+		const release = deferred()
+		const actual = vol.writeFile.bind(vol)
+		vi.spyOn(vol, 'writeFile').mockImplementation(async (...args) => {
+			if (args[0] === '/private/accounts/frieren.json') {
+				started.resolve()
+				await release.promise
+			}
+			return actual(...args)
+		})
+		const owner = createAccountLaneOwner(vol, { ensure: platform })
+		const mint = vi.fn(({ providerId }: { providerId: string }) => providerId)
+
+		const resolving = resolveAiAccount(vol, mint, { accountLane: owner })
+		await started.promise
+		expect(mint).not.toHaveBeenCalled()
+		release.resolve()
+
+		await expect(resolving).resolves.toBe('frieren')
+		expect(mint).toHaveBeenCalledOnce()
+	})
+
+	test('account capabilities and administration await the same single-flight owner', async () => {
+		const vol = volume(memStorage())
+		const started = deferred()
+		const release = deferred()
+		const actual = vol.writeFile.bind(vol)
+		let accountWrites = 0
+		vi.spyOn(vol, 'writeFile').mockImplementation(async (...args) => {
+			if (args[0] === '/private/accounts/frieren.json') {
+				accountWrites++
+				started.resolve()
+				await release.promise
+			}
+			return actual(...args)
+		})
+		const owner = createAccountLaneOwner(vol, { ensure: platform })
+		const caps = accountsCapabilities(testProviders(), vol, { accountLane: owner })
+		let listed = false
+		let invoked = false
+		const listing = caps.accounts.listAccounts({}).finally(() => {
+			listed = true
+		})
+		const invoking = caps.email.invoke(use('email', 'listUnread', { limit: 1 })).then(
+			() => undefined,
+			(error: unknown) => {
+				invoked = true
+				return error
+			}
+		)
+
+		await started.promise
+		await Promise.resolve()
+		expect(listed).toBe(false)
+		expect(invoked).toBe(false)
+		expect(accountWrites).toBe(1)
+		release.resolve()
+
+		await expect(listing).resolves.toMatchObject([{ accountId: 'frieren' }])
+		await expect(invoking).resolves.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+	})
+
+	test('a failed re-seal does not block AI and retries on the next entry', async () => {
+		const vol = volume(memStorage())
+		const path = '/private/accounts/u%40openai.json'
+		await volumeAccountStore(vol).put({
+			id: 'u@openai',
+			provider: 'chatgpt',
+			creds: { access: 'PLAINTEXT' }
+		})
+		await volumeActiveAi(vol).set({ accountId: 'u@openai' })
+		const encrypted = aesGcmSecretCodec('host-key')
+		const started = deferred()
+		let reject!: (error: Error) => void
+		const unavailable = new Promise<unknown>((_resolve, fail) => {
+			reject = fail
+		})
+		let attempts = 0
+		const codec = {
+			decode: encrypted.decode,
+			encode: async (...args: Parameters<typeof encrypted.encode>) => {
+				attempts++
+				if (attempts === 1) {
+					started.resolve()
+					return unavailable
+				}
+				return encrypted.encode(...args)
+			}
+		}
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+		const owner = createAccountLaneOwner(vol, { secretCodec: codec })
+
+		const first = resolveAiAccount(vol, ({ providerId }) => providerId, {
+			accountLane: owner,
+			secretCodec: codec
+		})
+		await started.promise
+		await expect(first).resolves.toBe('chatgpt')
+		reject(new Error('key unavailable'))
+		await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce())
+		expect(new TextDecoder().decode(await vol.readFile(path))).toContain('PLAINTEXT')
+
+		await expect(
+			resolveAiAccount(vol, ({ providerId }) => providerId, {
+				accountLane: owner,
+				secretCodec: codec
+			})
+		).resolves.toBe('chatgpt')
+		await vi.waitFor(async () => {
+			expect(new TextDecoder().decode(await vol.readFile(path))).not.toContain('PLAINTEXT')
+		})
+		expect(attempts).toBe(2)
+		expect(warn).toHaveBeenCalledOnce()
+		warn.mockRestore()
 	})
 })
 

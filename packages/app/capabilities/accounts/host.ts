@@ -39,6 +39,53 @@ export interface AccountsOptions {
 	// The DO passes `{ kind: 'cloud' }`; the mac daemon passes `{ kind: 'device', label:
 	// <hostname> }`. Omitted → `AccountInfo.origin` stays undefined.
 	origin?: AccountOrigin
+	// One readiness owner for this host runtime's account lane. Every account facet and
+	// standalone AI resolution awaits it before touching the stores.
+	accountLane?: AccountLaneOwner
+}
+
+export interface AccountLaneOwner {
+	ready(): Promise<void>
+}
+
+export interface AccountLaneOptions {
+	secretCodec?: SecretCodec
+	ensure?: { accountId: string; providerId: string; enabled: CapabilityId[] }
+}
+
+// One owner per runtime Volume scope. Platform-account seeding is strict and single-flighted;
+// a failure evicts readiness so the next entry retries. Re-sealing is independent: it never
+// fails an entry, but a failed sweep is not memoized and is attempted again next time.
+export function createAccountLaneOwner(
+	volume: Volume,
+	opts: AccountLaneOptions = {}
+): AccountLaneOwner {
+	let readiness: Promise<void> | undefined
+	let sealing: Promise<void> | undefined
+
+	return {
+		async ready() {
+			if (!readiness) {
+				const pending = opts.ensure
+					? ensureAccount(volume, opts.ensure, { secretCodec: opts.secretCodec })
+					: Promise.resolve()
+				readiness = pending
+				void pending.catch(() => {
+					if (readiness === pending) readiness = undefined
+				})
+			}
+			await readiness
+
+			if (!opts.secretCodec || sealing) return
+			const pending = volumeAccountStore(volume, { secretCodec: opts.secretCodec })
+				.reseal()
+				.catch((error) => {
+					if (sealing === pending) sealing = undefined
+					console.warn('accounts: could not seal credentials at rest', error)
+				})
+			sealing = pending
+		}
+	}
 }
 
 type Registry = Map<string, Provider>
@@ -365,11 +412,27 @@ export function accountsCapabilities(
 	const registry: Registry = new Map(providers.map((p) => [p.id, p]))
 	const accounts = volumeAccountStore(volume, opts)
 	const activeAi = volumeActiveAi(volume)
+	const ready = async <T>(run: () => Promise<T>): Promise<T> => {
+		await opts.accountLane?.ready()
+		return run()
+	}
+	const afterReady = (capability: Capability): Capability => ({
+		invoke: (call) => ready(() => capability.invoke(call)),
+		subscribe: (call, emit) => ready(() => capability.subscribe(call, emit))
+	})
+	const admin = accountsAdminImpl(providers, registry, accounts, activeAi, opts.origin)
+	const readyAdmin: AccountsAdmin = {
+		listProviders: (input) => ready(() => admin.listProviders(input)),
+		listAccounts: (input) => ready(() => admin.listAccounts(input)),
+		connect: (input) => ready(() => admin.connect(input)),
+		setEnabled: (input) => ready(() => admin.setEnabled(input)),
+		disconnect: (input) => ready(() => admin.disconnect(input))
+	}
 	return {
-		image: imageHost(accounts, activeAi, registry),
-		email: emailHost(accounts, registry),
-		calendar: calendarHost(accounts, registry),
-		accounts: accountsAdminImpl(providers, registry, accounts, activeAi, opts.origin)
+		image: afterReady(imageHost(accounts, activeAi, registry)),
+		email: afterReady(emailHost(accounts, registry)),
+		calendar: afterReady(calendarHost(accounts, registry)),
+		accounts: readyAdmin
 	}
 }
 
@@ -449,8 +512,9 @@ export interface AiAccountLease {
 export async function resolveAiAccount<T>(
 	volume: Volume,
 	mint: (lease: AiAccountLease) => T | Promise<T>,
-	opts: { secretCodec?: SecretCodec } = {}
+	opts: { accountLane?: AccountLaneOwner; secretCodec?: SecretCodec } = {}
 ): Promise<T | null> {
+	await opts.accountLane?.ready()
 	const accounts = volumeAccountStore(volume, opts)
 	const sel = await volumeActiveAi(volume).get()
 	if (!sel) return null

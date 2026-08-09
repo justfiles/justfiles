@@ -27,7 +27,7 @@ interface FrierenAppsDeps {
 	fs: Volume
 	loader: Parameters<typeof workerSandbox>[0] | undefined
 	acceptWebSocket: (ws: WebSocket) => void
-	text: LLMText
+	resolveText: () => Promise<LLMText>
 	broadcast: (msg: AppBroadcast) => void
 	// The account-backed capabilities, built from the Volume store by the DO (which
 	// also guards email/calendar with audit + rate-limit) and shared with the agent.
@@ -72,7 +72,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// resolved text service.
 	const ai = aiCapability({
 		volume: deps.fs,
-		generate: ({ system, prompt }) => deps.text.gen(system, prompt)
+		generate: async ({ system, prompt }) => (await deps.resolveText()).gen(system, prompt)
 	})
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),

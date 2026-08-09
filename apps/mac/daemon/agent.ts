@@ -12,7 +12,7 @@ import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
 import { identity } from './identity'
-import { getKernel } from './kernel'
+import { getAccountLane, getKernel } from './kernel'
 import { accountsSecretCodec } from './keychain'
 import { scheduleDailyMaintenance } from './maintenance'
 import { notificationChannel } from './notify'
@@ -71,13 +71,17 @@ function getSession(): Promise<AgentSession> {
 
 async function buildSession(): Promise<AgentSession> {
 	const fs = await getVolume()
+	const accountLane = await getAccountLane()
 	const session = createAgentSession({
 		volume: fs,
 		// Re-resolve every turn so a model switch / reconnect / OAuth refresh takes effect on
 		// the next prompt without restarting the daemon (resolveAgentBackend rotates near-expiry
 		// tokens; the session keys its build on model + revision and rebuilds losslessly).
 		backend: async () => {
-			const llm = await resolveAgentBackend(fs, { secretCodec: accountsSecretCodec })
+			const llm = await resolveAgentBackend(fs, {
+				accountLane,
+				secretCodec: accountsSecretCodec
+			})
 			// Worded to match `classifyFailure`'s no-AI branch, so the chat shows "enable an AI
 			// provider" with a route into Settings → Accounts instead of a raw stack trace. This is
 			// the state a freshly signed-in Mac is in until C2 (#298) gives it the platform backend.

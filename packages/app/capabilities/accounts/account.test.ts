@@ -50,17 +50,36 @@ describe('volumeAccountStore', () => {
 		expect(await store.get('u@openai.com')).toEqual(a)
 	})
 
+	test('does not persist plaintext when credential encoding fails', async () => {
+		const fs = volume(memStorage())
+		const store = volumeAccountStore(fs, {
+			secretCodec: {
+				decode: (raw) => raw,
+				encode: () => {
+					throw new Error('key unavailable')
+				}
+			}
+		})
+
+		await expect(store.put(account({ creds: { password: 'PLAINTEXT' } }))).rejects.toThrow(
+			'key unavailable'
+		)
+		expect(await fs.exists('/private/accounts/u%40openai.com.json')).toBe(false)
+	})
+
 	test('an encrypting codec leaves no credential in the bytes on disk', async () => {
 		const fs = volume(memStorage())
 		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('host-key') })
-		const a = account()
+		const a = account({
+			creds: { access: 'ACCESS-SECRET-DO-NOT-PERSIST', refresh: 'REFRESH-SECRET-DO-NOT-PERSIST' }
+		})
 		await store.put(a)
 
 		const bytes = new TextDecoder().decode(
 			await fs.readFile('/private/accounts/u%40openai.com.json')
 		)
-		expect(bytes).not.toContain('ref')
-		expect(bytes).not.toContain('tok')
+		expect(bytes).not.toContain('REFRESH-SECRET-DO-NOT-PERSIST')
+		expect(bytes).not.toContain('ACCESS-SECRET-DO-NOT-PERSIST')
 		expect(JSON.parse(bytes)).toMatchObject({
 			provider: 'chatgpt',
 			creds: { v: 1, alg: 'A256GCM' }

@@ -21,7 +21,11 @@ import {
 import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { type AgentBackend, modelsBackend, text } from '@justfiles/agent'
-import { resolveAiAccount, type SecretCodec } from '@justfiles/app/capabilities/accounts/host'
+import {
+	type AccountLaneOwner,
+	resolveAiAccount,
+	type SecretCodec
+} from '@justfiles/app/capabilities/accounts/host'
 import type {
 	AcquiredAccount,
 	BoundAccount,
@@ -175,7 +179,7 @@ export function chatgptProvider(): Provider {
 // is read/written sealed, not in the clear.
 export function resolveAgentBackend(
 	fs: Volume,
-	opts: { secretCodec?: SecretCodec } = {}
+	opts: { accountLane?: AccountLaneOwner; secretCodec?: SecretCodec } = {}
 ): Promise<AgentBackend | null> {
 	return resolveAiAccount(
 		fs,
