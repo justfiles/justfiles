@@ -22,11 +22,16 @@ const instant = { delays: [0, 0, 0], wait: async () => {} }
  */
 function namespace(
 	onCommit: () => Promise<ResetResult>,
-	options: { startupCalls?: number; neverRestarts?: boolean } = {}
+	options: { startupCalls?: number; neverRestarts?: boolean; fencedFromTheStart?: boolean } = {}
 ) {
 	const calls: string[] = []
 	let starting = options.startupCalls ?? 0
-	let live = { instanceId: 'boot-1', generation: 1 }
+	let live = {
+		instanceId: 'boot-1',
+		generation: 1,
+		// A committing instance stands down and stays that way until it is replaced.
+		restarting: options.fencedFromTheStart ?? false
+	}
 	let aborted = false
 	const connect = (): ResetRestartStub => {
 		const bornAfterAbort = aborted
@@ -48,13 +53,16 @@ function namespace(
 			commitReset: async () => {
 				await reachable()
 				calls.push('commitReset')
-				return onCommit()
+				const result = await onCommit()
+				if (result.ok && !result.replayed) live = { ...live, restarting: true }
+				return result
 			},
 			terminate: async () => {
 				await reachable()
 				calls.push('terminate')
 				aborted = true
-				if (!options.neverRestarts) live = { instanceId: 'boot-2', generation: 2 }
+				if (!options.neverRestarts)
+					live = { instanceId: 'boot-2', generation: 2, restarting: false }
 				throw new Error('the Durable Object was reset')
 			}
 		}
@@ -113,12 +121,38 @@ describe('resetAndTerminate', () => {
 		expect(ns.didAbort()).toBe(false)
 	})
 
-	test('a replay is not restarted — the instance answering it owns that generation', async () => {
+	test('a replay answered by a replacement is left alone', async () => {
+		// Not standing down ⇒ this instance was built after the commit, so it owns the
+		// generation it is serving and tearing it down would only cost a cold start.
 		const ns = namespace(async () => ({ ok: true, generation: 2, replayed: true }))
 		const result = await resetAndTerminate(ns.connect, request, instant)
 		expect(result).toEqual({ ok: true, generation: 2, replayed: true })
 		expect(ns.calls).toEqual(['status', 'commitReset'])
 		expect(ns.didAbort()).toBe(false)
+	})
+
+	test('a replay answered by the committing instance still restarts it', async () => {
+		// An invocation that died after the commit but before dispatching the restart leaves
+		// the committing instance alive and fenced. The retry reaches THAT instance, and
+		// returning early would strand it — fenced, serving nothing, never replaced.
+		const ns = namespace(async () => ({ ok: true, generation: 2, replayed: true }), {
+			fencedFromTheStart: true
+		})
+		const result = await resetAndTerminate(ns.connect, request, instant)
+		expect(result).toEqual({ ok: true, generation: 2, replayed: true })
+		expect(ns.calls).toEqual(['status', 'commitReset', 'terminate', 'status'])
+		expect(ns.didAbort()).toBe(true)
+	})
+
+	test('an instance that did not die is asked again, not left fenced', async () => {
+		// The fence has no deadline, so giving up on a live-but-standing-down instance would
+		// leave it refusing traffic indefinitely.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+		const ns = namespace(async () => ({ ok: true, generation: 2 }), { neverRestarts: true })
+		await resetAndTerminate(ns.connect, request, instant)
+		// One dispatch up front, then one per probe that still finds it standing down.
+		expect(ns.calls.filter((c) => c === 'terminate')).toHaveLength(1 + instant.delays.length)
+		warn.mockRestore()
 	})
 
 	test('a commit that fails outright is not reported as a reset', async () => {

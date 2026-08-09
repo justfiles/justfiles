@@ -1,7 +1,7 @@
 import type { DestructiveResetBody, ResetResult } from '@justfiles/core'
 
 export interface ResetRestartStub {
-	status(): Promise<{ instanceId: string; generation: number }>
+	status(): Promise<{ instanceId: string; generation: number; restarting: boolean }>
 	commitReset(request: DestructiveResetBody): Promise<ResetResult>
 	terminate(reason: string): Promise<void>
 }
@@ -35,8 +35,10 @@ const sleep = (delay: number) => new Promise<void>((resolve) => setTimeout(resol
  * in-memory identity distinguishes the two — the same reason a reboot check compares
  * `/proc/sys/kernel/random/boot_id` rather than trusting that the host answered.
  *
- * A replay is not restarted. That operation already committed and the instance answering
- * it was rebuilt after the commit, so it owns the generation it is serving.
+ * A replay is restarted only when the instance answering it is ALREADY standing down —
+ * which means it is the one that committed, reached again because a previous invocation
+ * died before it could dispatch the restart. An instance that is not standing down was
+ * built after the commit, so it owns the generation it is serving and must be left alone.
  */
 export async function resetAndTerminate(
 	connect: () => ResetRestartStub,
@@ -46,11 +48,13 @@ export async function resetAndTerminate(
 	const stub = connect()
 	const before = await stub.status()
 	const result = await stub.commitReset(request)
-	if (!result.ok || result.replayed) return result
+	if (!result.ok) return result
+	if (result.replayed && !before.restarting) return result
+	const reason = `filesystem reset: ${request.operationId}`
 	// Never awaited for success: the call dies with the object it tears down, so a rejection
 	// is the expected outcome. The probe below is what keeps the event alive until it lands.
-	void stub.terminate(`filesystem reset: ${request.operationId}`).catch(() => {})
-	if (!(await restarted(connect, before.instanceId, options)))
+	void stub.terminate(reason).catch(() => {})
+	if (!(await restarted(connect, before.instanceId, reason, options)))
 		console.warn(`reset ${request.operationId}: committed, but the restart went unconfirmed`)
 	return result
 }
@@ -58,6 +62,7 @@ export async function resetAndTerminate(
 async function restarted(
 	connect: () => ResetRestartStub,
 	previous: string,
+	reason: string,
 	options: { delays?: readonly number[]; wait?: (delay: number) => Promise<void> }
 ): Promise<boolean> {
 	for (const delay of options.delays ?? RESTART_DELAYS_MS) {
@@ -66,7 +71,15 @@ async function restarted(
 			// A FRESH handle every attempt. `abort()` tears down the RPC session, so the stub
 			// the terminate went out on can never reach the object again — reusing it is how
 			// the previous protocol managed to never once reach a replacement instance.
-			if ((await connect().status()).instanceId !== previous) return true
+			const now = await connect().status()
+			if (now.instanceId !== previous) return true
+			// The same instance, still standing down: the abort did not land. Ask again rather
+			// than leave it fenced, since the fence has no deadline of its own. Guarded on
+			// identity, so this can never tear down a healthy replacement.
+			if (now.restarting)
+				void connect()
+					.terminate(reason)
+					.catch(() => {})
 		} catch {
 			// Mid-teardown, or the replacement is still starting: the next attempt retries.
 		}

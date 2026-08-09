@@ -119,11 +119,6 @@ type ServerMessage =
 
 const DEBUG_COMMAND = '/debug'
 
-// How long an instance that has committed a destructive reset refuses ordinary traffic
-// while it waits to be torn down. Generous next to the restart it covers (milliseconds),
-// short enough that a restart which never lands self-heals rather than stranding the user.
-const RESTART_GRACE_MS = 10_000
-
 // The platform's image engine, picked from pi's OpenRouter images catalog. Fixed for now —
 // a Settings picker (its own selection, separate from the text model) comes with
 // the active-image work (#194).
@@ -147,10 +142,13 @@ export class Frieren extends DurableObject<Env> {
 	// generation cannot serve as one: the instance that committed a reset reads the same
 	// reset SQLite as the instance that replaces it, and reports the same number.
 	private readonly instanceId = crypto.randomUUID()
-	// Set once a destructive reset commits: until the restart lands, this instance owns a
-	// filesystem that no longer exists. Time-bounded rather than a latch, so a restart that
-	// never arrives cannot wedge the object into refusing everything forever.
-	private restartingUntil = 0
+	// Set once a destructive reset commits. From then on this instance owns caches — apps,
+	// session, the storage bootstrap — built over a tree that no longer exists, so it stops
+	// serving and waits to be torn down. It never clears: a deadline would hand the stale
+	// instance back its traffic exactly when the restart it was waiting for had failed. The
+	// flag lives in memory, so it dies with the instance and any eviction clears it, and the
+	// caller keeps asking a still-standing instance to abort (reset-ack.ts).
+	private restarting = false
 	// THE filesystem of this instance. A destructive reset commits and then terminates the
 	// Durable Object (reset-instance.ts), so an instance never spans two generations and
 	// nothing ever swaps this out — which is why it needs no fence, no lifetime, and no
@@ -289,11 +287,19 @@ export class Frieren extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(() => migrateCF(this.ctx.storage))
 	}
 
-	// What the caller compares across a restart: who is answering, and at which generation.
-	// Deliberately reachable while `restartingUntil` is refusing ordinary traffic — proving
-	// the old instance is gone is exactly what this is for.
-	public async status(): Promise<{ instanceId: string; generation: number }> {
-		return { instanceId: this.instanceId, generation: await readGeneration(this.db) }
+	// What the caller compares across a restart: who is answering, at which generation, and
+	// whether it is already standing down. Deliberately reachable while `restarting` refuses
+	// ordinary traffic — proving the old instance is gone is exactly what this is for.
+	public async status(): Promise<{
+		instanceId: string
+		generation: number
+		restarting: boolean
+	}> {
+		return {
+			instanceId: this.instanceId,
+			generation: await readGeneration(this.db),
+			restarting: this.restarting
+		}
 	}
 
 	// Commit a destructive reset and answer with the generation it produced. The answer is
@@ -307,7 +313,7 @@ export class Frieren extends DurableObject<Env> {
 			})
 			// Inside the same barrier as the commit, so no request can slip in between the
 			// filesystem changing underneath this instance and it standing down.
-			if (result.ok && !result.replayed) this.restartingUntil = Date.now() + RESTART_GRACE_MS
+			if (result.ok && !result.replayed) this.restarting = true
 			return result
 		})
 	}
@@ -560,6 +566,15 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		// An already-open socket never passes through `fetch`, so the restart fence has to be
+		// repeated here: an agent turn or a capability call would otherwise run against the
+		// session and apps this instance built over the tree the reset deleted, and write
+		// that back into the new generation. 1001 "going away" is what it is — the client
+		// reconnects and lands on the replacement.
+		if (this.restarting) {
+			ws.close(1001, 'restarting')
+			return
+		}
 		// The shared capability-proxy socket carries {caps:true}; agent sockets
 		// carry neither.
 		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
@@ -643,6 +658,10 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
+		// A queued alarm does not pass through `fetch` either, and daily maintenance WRITES.
+		// Skipping it costs nothing: the next WebSocket interaction re-arms the alarm, and by
+		// then the replacement instance is the one doing the work.
+		if (this.restarting) return
 		// The DO owns the synced fs, so daily trash retention and content collection
 		// run without an open tab. Both are best-effort and retry on the next alarm.
 		await runDailyMaintenance(this.fs, this.volume)
@@ -654,7 +673,7 @@ export class Frieren extends DurableObject<Env> {
 		// holds in memory was built over a filesystem that no longer exists, so it serves one
 		// answer — come back in a moment — rather than a stale one. The replacement instance
 		// answers normally, so a client only has to retry, not learn a second protocol.
-		if (Date.now() < this.restartingUntil)
+		if (this.restarting)
 			return Response.json(
 				{ error: 'restarting' },
 				{ status: 503, headers: { 'retry-after': '1' } }
