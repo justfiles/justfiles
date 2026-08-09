@@ -1,5 +1,4 @@
 import { memStorage, volume } from '@justfiles/fs'
-import { cachePath } from '@justfiles/fs/sync-replica'
 import { expect, test } from 'vitest'
 import { type AppBundle, type AppManifest, appBundleFromMemory } from './app.ts'
 import { apps } from './kernel.app.ts'
@@ -126,7 +125,6 @@ test('installing a hosted app writes the record and the reducer, nothing else', 
 	expect(await vol.exists(`/applications/${id}/manifest.json`)).toBe(true)
 	// The GUI is not, and nothing was fetched to install.
 	expect(await vol.exists(`/applications/${id}/gui.js`)).toBe(false)
-	expect(await vol.exists(cachePath(`/applications/${id}`))).toBe(false)
 })
 
 test('the reducer of a hosted app is read from the volume, never mounted', async () => {
@@ -141,7 +139,7 @@ test('the reducer of a hosted app is read from the volume, never mounted', async
 	expect(o.requested).toEqual([])
 })
 
-test('reading a hosted file mounts it from the origin and caches it', async () => {
+test('reading a hosted file goes through the host fetch layer, never the volume', async () => {
 	const vol = volume(memStorage())
 	const o = origin({ 'app.js': 'REDUCER', 'gui.js': 'GUI' })
 	const s = apps(vol, o.fetchAsset)
@@ -151,43 +149,30 @@ test('reading a hosted file mounts it from the origin and caches it', async () =
 	if (!installed) throw new Error('expected installed')
 	expect(decode(await installed.read('gui.js'))).toBe('GUI')
 	expect(o.requested).toEqual(['/appstore/apps/com.example.app/1.0.0/gui.js'])
-	expect(decode(await vol.readFile(cachePath(`/applications/${id}/gui.js`)))).toBe('GUI')
+	expect(await vol.exists(`/applications/${id}/gui.js`)).toBe(false)
 
-	// Second read is a cache hit — the origin is not asked again.
+	// The browser host may satisfy this second request from its SW cache; this layer
+	// deliberately makes the same fetch and integrity-check either way.
 	expect(decode(await installed.read('gui.js'))).toBe('GUI')
-	expect(o.requested).toHaveLength(1)
+	expect(o.requested).toHaveLength(2)
 })
 
-test('a mounted file that does not match its pinned hash is refused', async () => {
+test('a mounted file that does not match its pinned hash is refused and evicted', async () => {
 	const vol = volume(memStorage())
 	// The record pins the real bytes; the origin serves something else.
-	const s = apps(vol, origin({ 'gui.js': 'TAMPERED' }).fetchAsset)
+	const o = origin({ 'gui.js': 'TAMPERED' })
+	const evicted: string[] = []
+	const fetchAsset = Object.assign(o.fetchAsset, {
+		evict: async (url: string) => {
+			evicted.push(url)
+		}
+	})
+	const s = apps(vol, fetchAsset)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
 
 	const installed = await s.get(id)
 	await expect(installed?.read('gui.js')).rejects.toThrow(/hash mismatch/)
-	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(false)
-})
-
-// The cross-release case that used to serve one version's GUI against another's
-// reducer. A device can receive a record purely over sync — no install ran here, so
-// nothing wiped the cache — and the pinned hash is what stops the stale bytes.
-test('a cache left by an older version is not served for a newer record', async () => {
-	const vol = volume(memStorage())
-	const o = origin({ 'gui.js': 'GUI_V2' })
-	const s = apps(vol, o.fetchAsset)
-	const id = await s.install(await hostedBundle({ app: 'REDUCER_V1', gui: 'GUI_V1' }))
-
-	// Seed the cache as the v1 install would have, then let a v2 record arrive by sync.
-	await vol.mkdir(cachePath(`/applications/${id}`), { recursive: true })
-	await vol.writeFile(cachePath(`/applications/${id}/gui.js`), enc('GUI_V1'))
-	const v2 = await (await hostedBundle({ app: 'REDUCER_V2', gui: 'GUI_V2' })).manifest()
-	await vol.writeFile(`/applications/${id}/manifest.json`, enc(JSON.stringify(v2)))
-
-	const installed = await s.get(id)
-	if (!installed) throw new Error('expected installed')
-	expect(decode(await installed.read('gui.js'))).toBe('GUI_V2') // refetched, not the stale copy
-	expect(decode(await vol.readFile(cachePath(`/applications/${id}/gui.js`)))).toBe('GUI_V2')
+	expect(evicted).toEqual(['/appstore/apps/com.example.app/1.0.0/gui.js'])
 })
 
 test('a host with no asset fetcher cannot mount, but still runs the reducer', async () => {
@@ -209,18 +194,6 @@ test('a hosted record naming an entry its origin will not serve is rejected at i
 	await expect(apps(vol, origin({}).fetchAsset).install(unpinned)).rejects.toThrow(
 		/missing gui entry/
 	)
-})
-
-test('installing over a hosted app drops what the old version cached', async () => {
-	const vol = volume(memStorage())
-	const o = origin({ 'gui.js': 'GUI' })
-	const s = apps(vol, o.fetchAsset)
-	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
-	await (await s.get(id))?.read('gui.js')
-	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(true)
-
-	await s.install(await hostedBundle({ app: 'REDUCER2', gui: 'GUI2' }))
-	expect(await vol.exists(cachePath(`/applications/${id}`))).toBe(false)
 })
 
 // The migration: an app installed the old way (every file copied in and replicated)
@@ -317,83 +290,4 @@ test('uninstall moves the bundle to /trash atomically instead of deleting it', a
 		id: string
 	}
 	expect(manifest.id).toBe(id)
-})
-
-test('uninstall sweeps the cache — no trash, nothing left to orphan', async () => {
-	const vol = volume(memStorage())
-	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
-	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
-	await (await s.get(id))?.read('gui.js')
-	await s.uninstall(id)
-
-	expect(await s.has(id)).toBe(false)
-	expect(await vol.exists(cachePath(`/applications/${id}`))).toBe(false)
-	// Only the record is recoverable, and that is the half that carries meaning: the
-	// cache is refetchable bytes, so trashing it would buy nothing.
-	const day = (await vol.readdir('/trash'))[0]?.name ?? ''
-	const entry = (await vol.readdir(`/trash/${day}`))[0]?.name ?? ''
-	expect(await vol.exists(`/trash/${day}/${entry}/manifest.json`)).toBe(true)
-})
-
-// ── updating a hosted app: what the cache keeps ──────────────────────────────
-
-test('an update keeps a cached file the new release still pins', async () => {
-	const vol = volume(memStorage())
-	const o = origin({ 'gui.js': 'GUI' })
-	const s = apps(vol, o.fetchAsset)
-
-	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
-	expect(decode(await (await s.get(id))?.read('gui.js'))).toBe('GUI')
-	expect(o.requested).toHaveLength(1)
-
-	// A release that changes only the reducer. `gui.js` is byte-identical, so the
-	// new record pins the same digest and the cached copy still satisfies it —
-	// wiping the cache here would re-download every mounted file to ship a reducer
-	// fix, which for a real app is ~10 MB to move 11 KB.
-	await s.install(await hostedBundle({ app: 'REDUCER v2', gui: 'GUI' }))
-	expect(decode(await vol.readFile(cachePath(`/applications/${id}/gui.js`)))).toBe('GUI')
-
-	expect(decode(await (await s.get(id))?.read('gui.js'))).toBe('GUI')
-	expect(o.requested).toHaveLength(1)
-})
-
-test('an update drops a cached file whose pinned hash moved', async () => {
-	const vol = volume(memStorage())
-	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
-
-	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
-	await (await s.get(id))?.read('gui.js')
-
-	await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI v2' }))
-	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(false)
-})
-
-test('an update drops a cached file the new release no longer mounts', async () => {
-	const vol = volume(memStorage())
-	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
-
-	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
-	await (await s.get(id))?.read('gui.js')
-
-	// Reinstalled as a local app: it pins nothing and mounts nothing, so the whole
-	// cache is stale by definition.
-	await s.install(appBundleFromMemory({ id, name: 'App', app: 'REDUCER', gui: 'GUI' }))
-	expect(await vol.exists(cachePath(`/applications/${id}/gui.js`))).toBe(false)
-})
-
-test('a cache sweep that throws does not fail an install that already committed', async () => {
-	const vol = volume(memStorage())
-	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
-
-	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
-	await (await s.get(id))?.read('gui.js')
-
-	// The sweep runs past the commit point, so a transient storage error there must not
-	// be reported as a failed install: the new record and reducer are already live, and
-	// a caller that saw a rejection would leave the kernel holding the old reducer.
-	vol.scan = async () => {
-		throw new Error('transient storage failure')
-	}
-	await expect(s.install(await hostedBundle({ app: 'REDUCER v2', gui: 'GUI' }))).resolves.toBe(id)
-	expect(decode(await (await s.get(id))?.read('app.js'))).toBe('REDUCER v2')
 })

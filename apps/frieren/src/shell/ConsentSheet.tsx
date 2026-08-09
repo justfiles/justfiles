@@ -1,16 +1,8 @@
 import { useState } from 'react'
-import type { CommunityCatalogApp } from '../../shared/appstore'
+import type { RunnerCatalogApp } from '../../shared/appstore'
 
-// First-party apps live under the reserved prefix; the indexer's scope guard makes
-// the prefix a safe trust signal, so the client can badge them without a lookup.
 function isFirstParty(id: string): boolean {
-	return id.startsWith('app.justfiles.frieren.')
-}
-
-function iconUrl(app: CommunityCatalogApp): string | undefined {
-	return app.icon
-		? `https://cdn.jsdelivr.net/npm/${app.npm}@${app.version}/dist/${app.icon}`
-		: undefined
+	return id.startsWith('justfiles.') || id.startsWith('app.justfiles.frieren.')
 }
 
 // One capability line: the resource id and, if scoped, its scopes. This is the
@@ -21,16 +13,15 @@ function capabilityLabel(cap: { id: string; scopes: string[] }): string {
 }
 
 export interface ConsentTarget {
-	app: CommunityCatalogApp
+	app: RunnerCatalogApp
 	// `install` = first install; `update` = re-consent for a held, capability-
 	// escalating update (Step 4 held it rather than auto-applying).
 	mode: 'install' | 'update'
 }
 
 // The install-consent sheet: the one gate before third-party bytes touch the
-// volume. It shows the declared capabilities, the npm publisher, and either the
-// community disclaimer or the "by Kodama" badge — everything from static catalog
-// metadata, so nothing runs to render it.
+// volume. It shows the declared capabilities and Runner-provided provenance from
+// static metadata, so nothing runs to render it.
 export function ConsentSheet({
 	target,
 	onConfirm,
@@ -44,7 +35,7 @@ export function ConsentSheet({
 	const [busy, setBusy] = useState(false)
 	const firstParty = isFirstParty(app.id)
 	const caps = Object.values(app.capabilities ?? {})
-	const icon = iconUrl(app)
+	const icon = app.iconUrl
 
 	const confirm = async () => {
 		if (busy) return
@@ -82,9 +73,7 @@ export function ConsentSheet({
 		>
 			<div className="frn-onb-form">
 				<div className="frn-card">
-					<span className="frn-badge">
-						{firstParty ? 'by Kodama' : `Community · npm/${app.npm}`}
-					</span>
+					<span className="frn-badge">{firstParty ? 'by Kodama' : 'Verified by justapps.run'}</span>
 					<h2 className="frn-card-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
 						{icon ? (
 							<img src={icon} alt="" style={{ width: 28, height: 28, borderRadius: 6 }} />
@@ -98,24 +87,13 @@ export function ConsentSheet({
 							: 'Community app — not reviewed by Kodama. It runs with the access it declares below; review before installing.'}
 					</p>
 
-					<p className="frn-card-desc" style={{ opacity: 0.85 }}>
-						Publisher:{' '}
-						<a
-							href={`https://www.npmjs.com/package/${app.npm}`}
-							target="_blank"
-							rel="noreferrer noopener"
-						>
-							{app.publisher}
-						</a>
-						{app.repository ? (
-							<>
-								{' · '}
-								<a href={app.repository} target="_blank" rel="noreferrer noopener">
-									source
-								</a>
-							</>
-						) : null}
-					</p>
+					{app.repository ? (
+						<p className="frn-card-desc" style={{ opacity: 0.85 }}>
+							<a href={app.repository} target="_blank" rel="noreferrer noopener">
+								source
+							</a>
+						</p>
+					) : null}
 
 					<div className="frn-card-desc">
 						{caps.length ? (

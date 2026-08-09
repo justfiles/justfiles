@@ -56,11 +56,11 @@ export function guiHost(
 //
 // On `boot` the frame receives the port, gui bytes, and initial state; it imports
 // gui.js off a blob URL and mounts it against a port-backed transport (the guest
-// twin of `guiHost`). The bundle is self-contained — it carries whatever framework
-// it uses — so there is nothing to resolve and no importmap to install. Boot
-// failures are reported to the host for the error overlay.
+// twin of `guiHost`). The bundle carries its framework and all executable code,
+// so there is no importmap; the CSP permits only Excalidraw's optional Xiaolai font
+// host. Boot failures are reported to the host for the error overlay.
 export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data: https://esm.sh; media-src data: blob:; connect-src 'none'">
 <style>${macCss}</style>
 <style>html,body{margin:0;height:100%}#root{height:100%;overflow:hidden}</style>
 <div id="root"></div>

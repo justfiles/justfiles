@@ -1,22 +1,20 @@
 import { bundleFromZip, type Kernel } from '@justfiles/app'
 import { installApp } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
-import { communityAppStore, httpAppStore } from '../../shared/appstore'
+import { httpAppStore, runnerAppStore } from '../../shared/appstore'
 import { endInstall, readInstallMarkers, seedInstalling } from './installing'
 
 export async function installZipApp(kernel: Kernel, zip: Uint8Array): Promise<string> {
 	return kernel.install(bundleFromZip(zip))
 }
 
-// Install an app from the community catalog by id: resolve its latest entry, then
-// install with every file hash-verified from jsDelivr. The explicit,
-// consent-gated counterpart to reconcile's auto-update (the omnibar/consent UI in
-// Step 5 drives this).
-export async function installCommunityApp(kernel: Kernel, id: string): Promise<void> {
-	const store = await communityAppStore((path) => fetch(path))
-	if (!store) throw new Error('community store unavailable')
+// Resolve Runner's current manifest pointer, then persist its canonical manifest
+// and reducer. Mounted files remain on the immutable Runner release URL.
+export async function installRunnerApp(kernel: Kernel, id: string): Promise<void> {
+	const store = await runnerAppStore()
+	if (!store) throw new Error('app store unavailable')
 	const app = await store.latest(id)
-	if (!app) throw new Error(`not in community catalog: ${id}`)
+	if (!app) throw new Error(`not in app store: ${id}`)
 	await installApp(kernel, store, app)
 }
 
@@ -56,7 +54,7 @@ export async function resumePendingInstalls(
 			continue
 		}
 		try {
-			await installCommunityApp(kernel, marker.id)
+			await installRunnerApp(kernel, marker.id)
 		} catch {
 		} finally {
 			await endInstall(fs, marker.id)

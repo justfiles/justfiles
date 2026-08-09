@@ -14,16 +14,16 @@ import {
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { CommunityCatalogApp } from '../../shared/appstore'
+import type { RunnerCatalogApp } from '../../shared/appstore'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { resolveTranscriptImage } from '../agent/images'
 import { Whisper } from '../agent/Whisper'
 import {
 	useAppCommands,
-	useCommunityCatalog,
 	useInstalledApps,
-	useInstallingApps
+	useInstallingApps,
+	useRunnerCatalog
 } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { useAutoResize } from '../components/useAutoResize'
@@ -49,8 +49,8 @@ const MAX_INPUT_HEIGHT = 114
 
 type Row =
 	| { kind: 'app'; app: InstalledApp }
-	| { kind: 'store'; app: CommunityCatalogApp }
-	| { kind: 'update'; app: CommunityCatalogApp }
+	| { kind: 'store'; app: RunnerCatalogApp }
+	| { kind: 'update'; app: RunnerCatalogApp }
 	| { kind: 'ask' }
 
 // The sheet renders the whole conversation: the dedicated window is being faded
@@ -103,10 +103,8 @@ function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
 	return apps.filter((app) => matchesQuery(query, app.name, app.id, app.description))
 }
 
-function storeIconUrl(app: CommunityCatalogApp): string | undefined {
-	return app.icon
-		? `https://cdn.jsdelivr.net/npm/${app.npm}@${app.version}/dist/${app.icon}`
-		: undefined
+function storeIconUrl(app: RunnerCatalogApp): string | undefined {
+	return app.iconUrl
 }
 
 // Which *visual* line the caret sits on. Result-navigation arrows only fire at
@@ -179,8 +177,7 @@ export function Omnibar({
 }) {
 	const apps = useInstalledApps()
 	const installing = useInstallingApps()
-	const catalog = useCommunityCatalog()
-	const { launchApp, installCommunity } = useAppCommands()
+	const { launchApp, installRunner } = useAppCommands()
 	const agent = useAgentClient()
 	const session = useAgentSession()
 	const connection = useAgentConnection()
@@ -204,13 +201,16 @@ export function Omnibar({
 	// all apps" lives (design/01-omnibar.md open question). Transient like the rest
 	// of the sheet: blur, Esc, or typing a query leaves it.
 	const [browseStore, setBrowseStore] = useState(false)
+	const { apps: catalog, loading: catalogLoading } = useRunnerCatalog(
+		browseStore || query.trim() !== ''
+	)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 
 	const text = query.trim()
 	const matches = useMemo(() => filterApps(apps, text), [apps, text])
 	useAutoResize(inputRef, query, MAX_INPUT_HEIGHT)
 
-	// Community discovery (flag-gated; `catalog` is empty when off). Store rows are
+	// Runner discovery. Store rows are
 	// catalog apps not already installed; held-update rows are installed apps whose
 	// catalog version declares MORE access than what's installed (Step 4 held it).
 	// Store rows appear while searching or browsing; held updates also lead the
@@ -312,7 +312,11 @@ export function Omnibar({
 	// "Ask" row. The conversation window preempts it (coexistence rule) — there the
 	// row stays and just implies the send lands over in the window.
 	const noAppMatch =
-		text !== '' && matches.length === 0 && storeMatches.length === 0 && heldUpdates.length === 0
+		!catalogLoading &&
+		text !== '' &&
+		matches.length === 0 &&
+		storeMatches.length === 0 &&
+		heldUpdates.length === 0
 	const expanded =
 		focused || showNotifications || (chatOpen && session.isStreaming && !agentWindowOpen)
 	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
@@ -431,6 +435,7 @@ export function Omnibar({
 	const run = (index: number) => {
 		const row = rows[index]
 		if (!row) return
+		if (catalogLoading && row.kind === 'ask') return
 		if (row.kind === 'app') {
 			launchApp(row.app)
 			setQuery('')
@@ -609,7 +614,9 @@ export function Omnibar({
 					) : showList ? (
 						<ul className="frn-omnibar-list">
 							{browsing && rows.length === 0 ? (
-								<li className="frn-omnibar-center-empty">You've installed every App Store app.</li>
+								<li className="frn-omnibar-center-empty">
+									{catalogLoading ? 'Loading App Store…' : "You've installed every App Store app."}
+								</li>
 							) : null}
 							{rows.map((row, index) => {
 								const isSelected = index === selected
@@ -715,7 +722,7 @@ export function Omnibar({
 								)
 							})}
 						</ul>
-					) : apps.length > 0 || installing.length > 0 || catalog.length > 0 ? (
+					) : (
 						<div className="frn-omnibar-grid">
 							{apps.map((app) => (
 								<button
@@ -759,31 +766,29 @@ export function Omnibar({
 										<span className="frn-omnibar-tile-name">{app.name}</span>
 									</div>
 								))}
-							{catalog.length > 0 ? (
-								<button
-									type="button"
-									className="frn-omnibar-tile"
-									data-store="true"
-									title={
-										held.length === 1
-											? '1 app update needs your review'
-											: held.length
-												? `${held.length} app updates need your review`
-												: 'Browse the App Store'
-									}
-									onClick={() => setBrowseStore(true)}
-								>
-									<span className="frn-omnibar-icon">
-										<StorefrontIcon />
-										{held.length ? (
-											<span className="frn-omnibar-tile-badge">{held.length}</span>
-										) : null}
-									</span>
-									<span className="frn-omnibar-tile-name">App Store</span>
-								</button>
-							) : null}
+							<button
+								type="button"
+								className="frn-omnibar-tile"
+								data-store="true"
+								title={
+									held.length === 1
+										? '1 app update needs your review'
+										: held.length
+											? `${held.length} app updates need your review`
+											: 'Browse the App Store'
+								}
+								onClick={() => setBrowseStore(true)}
+							>
+								<span className="frn-omnibar-icon">
+									<StorefrontIcon />
+									{held.length ? (
+										<span className="frn-omnibar-tile-badge">{held.length}</span>
+									) : null}
+								</span>
+								<span className="frn-omnibar-tile-name">App Store</span>
+							</button>
 						</div>
-					) : null}
+					)}
 				</div>
 			) : null}
 			<form className="frn-omnibar-bar" onSubmit={submit}>
@@ -872,7 +877,7 @@ export function Omnibar({
 				? createPortal(
 						<ConsentSheet
 							target={consent}
-							onConfirm={() => installCommunity(consent.app)}
+							onConfirm={() => installRunner(consent.app)}
 							onClose={() => setConsent(null)}
 						/>,
 						document.body

@@ -1,6 +1,13 @@
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { type AppStore, type CatalogApp, materialise, reconcile, semverGte } from './appstore.ts'
+import {
+	type AppStore,
+	type CatalogApp,
+	installApp,
+	materialise,
+	reconcile,
+	semverGte
+} from './appstore.ts'
 import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()
@@ -93,13 +100,12 @@ function bundle(files: Record<string, string>): AppBundle {
 // lost/un-hydrated file.
 function fakeWorld(serve?: (path: string) => Uint8Array) {
 	const blobs = new Map<string, Uint8Array>() // volume path -> bytes
+	const hostCache = new Map<string, Uint8Array>()
 	const installs: string[] = []
 	const requested: string[] = []
 	const kernel = {
-		// Models the real `mount()`: the cached copy when it matches the digest the
-		// RECORD pins, else the origin, written to the unsynced cache path. The prefetch
-		// runs through this, so a test can count origin hits and then take the origin
-		// away — and bytes an older record left behind are not served for a newer one.
+		// Models the browser host: `fetchAsset` is fronted by a cache keyed by the
+		// immutable release URL. The app layer itself owns no cached volume bytes.
 		app: async (id: string) => {
 			const record = blobs.get(`/applications/${id}/manifest.json`)
 			if (!record) throw new Error(`not installed: ${id}`)
@@ -107,14 +113,13 @@ function fakeWorld(serve?: (path: string) => Uint8Array) {
 			return {
 				manifest,
 				read: async (path: string) => {
-					const at = `/private/cache/applications/${id}/${path}`
-					const pinned = manifest.files?.[path]
-					const cached = blobs.get(at)
-					if (cached && (!pinned || `sha256-${await sha256Hex(cached)}` === pinned)) return cached
+					const at = `${manifest.baseUrl}/${path}`
+					const cached = hostCache.get(at)
+					if (cached) return cached
 					requested.push(path)
 					if (!serve) throw new Error(`offline: ${path}`)
 					const bytes = serve(path)
-					blobs.set(at, bytes)
+					hostCache.set(at, bytes)
 					return bytes
 				}
 			}
@@ -133,11 +138,8 @@ function fakeWorld(serve?: (path: string) => Uint8Array) {
 			// Like the real kernel: the whole app root is REPLACED, so a file the new
 			// bundle does not stage is gone — which is what makes the migration off the
 			// copied layout free. A hosted bundle stages nothing but its record.
-			for (const path of [...blobs.keys()]) {
-				if (path.match(/^(\/private\/cache)?\/applications\/([^/]+)\//)?.[2] === manifest.id) {
-					blobs.delete(path)
-				}
-			}
+			for (const path of [...blobs.keys()])
+				if (path.match(/^\/applications\/([^/]+)\//)?.[1] === manifest.id) blobs.delete(path)
 			for await (const path of b.list()) {
 				blobs.set(`/applications/${manifest.id}/${path}`, await b.read(path))
 			}
@@ -145,10 +147,8 @@ function fakeWorld(serve?: (path: string) => Uint8Array) {
 			return manifest.id
 		},
 		uninstall: async (id: string): Promise<void> => {
-			for (const path of [...blobs.keys()]) {
-				if (path.match(/^(\/private\/cache)?\/applications\/([^/]+)\//)?.[2] === id)
-					blobs.delete(path)
-			}
+			for (const path of [...blobs.keys()])
+				if (path.match(/^\/applications\/([^/]+)\//)?.[1] === id) blobs.delete(path)
 		}
 	} as unknown as Kernel
 	const fs = {
@@ -194,6 +194,61 @@ describe('materialise', () => {
 	})
 })
 
+test('a canonical hosted release persists its manifest and reducer only', async () => {
+	const payload = { 'app.js': '// reducer', 'gui.js': '// gui' }
+	const files = await Promise.all(
+		Object.entries(payload).map(async ([path, content]) => ({
+			path,
+			hash: `sha256-${await sha256Hex(enc.encode(content))}`,
+			size: enc.encode(content).byteLength
+		}))
+	)
+	const app: CatalogApp = {
+		id: 'app.x',
+		name: 'X',
+		version: '1.0.0',
+		baseUrl: 'https://app.x.justapps.run/v/1.0.0/',
+		hash: 'runner-release-hash',
+		manifest: { id: 'app.x', name: 'X', version: '1.0.0', app: 'app.js', gui: 'gui.js' },
+		files
+	}
+	const store: AppStore = {
+		async builtins() {
+			return []
+		},
+		async latest() {
+			return app
+		},
+		async read(_app, path) {
+			return enc.encode(payload[path as keyof typeof payload])
+		}
+	}
+	const world = fakeWorld((path) => enc.encode(payload[path as keyof typeof payload]))
+
+	await Promise.all([
+		installApp(world.kernel, store, app),
+		installApp(world.kernel, store, app) // the volume watcher may reconcile mid-install
+	])
+
+	expect(world.installs).toEqual(['app.x'])
+	expect(new TextDecoder().decode(world.blobs.get('/applications/app.x/app.js')!)).toBe(
+		'// reducer'
+	)
+	expect(world.blobs.has('/applications/app.x/gui.js')).toBe(false)
+	const installed = JSON.parse(
+		new TextDecoder().decode(world.blobs.get('/applications/app.x/manifest.json')!)
+	) as AppManifest
+	expect(installed).toMatchObject({
+		baseUrl: app.baseUrl,
+		hash: app.hash,
+		files: { 'gui.js': files[1]?.hash }
+	})
+	expect(world.requested).toEqual(['gui.js'])
+
+	await reconcile(world.kernel, world.fs, store)
+	expect(world.installs).toEqual(['app.x'])
+})
+
 describe('reconcile', () => {
 	test('skips a built-in whose assets already match', async () => {
 		const store = await builtinStore(FILES)
@@ -222,7 +277,7 @@ describe('reconcile', () => {
 
 	test('reinstalls a copied app when a file is missing even if the hash matches', async () => {
 		// Self-heal for bytes that live IN the volume. A hosted app needs no equivalent:
-		// its payload is a cache, and a miss is refilled by the read that wants it.
+		// its payload is hosted, and a miss is refilled by the read that wants it.
 		const store = await builtinStore(FILES, null)
 		const { kernel, fs, installs, blobs } = fakeWorld()
 		await materialise(kernel, store)
@@ -368,7 +423,13 @@ describe('hosted apps', () => {
 		// path downloaded every file up front.
 		const store = await builtinStore(GUI_FILES)
 		const read: string[] = []
-		const spy = { ...store, read: (a: CatalogApp, p: string) => (read.push(p), store.read(a, p)) }
+		const spy = {
+			...store,
+			read(a: CatalogApp, p: string) {
+				read.push(p)
+				return store.read(a, p)
+			}
+		}
 		const { kernel } = fakeWorld()
 		await materialise(kernel, spy)
 		expect(read.sort()).toEqual(['app.js', 'manifest.json'])
@@ -575,12 +636,10 @@ describe('prefetch on the sync path', () => {
 		await materialise(source.kernel, store)
 
 		// The receiving device. Sync replicates the durable half — the record and the
-		// reducer — and nothing under `/private`, so the cache arrives empty and no
+		// reducer — but not the host cache, so the receiving browser starts cold and no
 		// install ever ran here to fill it.
 		const device = fakeWorld((path) => enc.encode(HOSTED[path] ?? ''))
-		for (const [path, bytes] of source.blobs) {
-			if (!path.startsWith('/private/')) device.blobs.set(path, bytes)
-		}
+		for (const [path, bytes] of source.blobs) device.blobs.set(path, bytes)
 
 		await reconcile(device.kernel, device.fs, store)
 		expect(device.requested).toEqual(['gui.js'])
@@ -613,14 +672,12 @@ describe('prefetch on the sync path', () => {
 		expect(device.requested).toEqual(['gui.js'])
 		serving = v2
 
-		// Then v2 arrives through sync — the record and the reducer replicate, the cache
-		// does not, and no install runs here to sweep what v1 left.
+		// Then v2 arrives through sync — the record and reducer replicate. Its immutable
+		// base URL differs, so the host cache cannot return v1 under the v2 request.
 		const source = fakeWorld((path) => enc.encode(v2[path] ?? ''))
 		const store = await builtinStore(v2)
 		await materialise(source.kernel, store)
-		for (const [path, bytes] of source.blobs) {
-			if (!path.startsWith('/private/')) device.blobs.set(path, bytes)
-		}
+		for (const [path, bytes] of source.blobs) device.blobs.set(path, bytes)
 		device.requested.length = 0
 		device.installs.length = 0 // only count what the reconcile below does
 

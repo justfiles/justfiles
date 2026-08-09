@@ -3,6 +3,7 @@ import { cloudflare } from '@cloudflare/vite-plugin'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { RUNNER_CACHE_MAX_ENTRIES, RUNNER_CACHE_NAME } from './shared/appstore.ts'
 import { appstore } from './vite-appstore.ts'
 
 export default defineConfig({
@@ -67,8 +68,27 @@ export default defineConfig({
 			},
 			workbox: {
 				cleanupOutdatedCaches: true,
+				clientsClaim: true,
 				navigateFallback: '/index.html',
 				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/ws$/],
+				// Runner release URLs are immutable. Cache them on first use so an installed
+				// app's mounted GUI/assets keep working with no network; the volume retains
+				// only its manifest and reducer. Bound the cache so superseded releases cannot
+				// accumulate forever; a hash failure also evicts its exact entry in the kernel.
+				runtimeCaching: [
+					{
+						urlPattern: /^https:\/\/[^/]+\.justapps\.run\/v\/[^/]+\//,
+						handler: 'CacheFirst',
+						options: {
+							cacheName: RUNNER_CACHE_NAME,
+							cacheableResponse: { statuses: [200] },
+							expiration: {
+								maxEntries: RUNNER_CACHE_MAX_ENTRIES,
+								purgeOnQuotaError: true
+							}
+						}
+					}
+				],
 				// Built-in app files are .js/.svg (already matched); add the catalog +
 				// per-app manifest.json so a warm browser can seed a new profile offline.
 				globPatterns: [
