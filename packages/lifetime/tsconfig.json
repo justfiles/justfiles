@@ -1,9 +1,0 @@
-{
-	"extends": "@justfiles/tsconfig/library.json",
-	"compilerOptions": {
-		"outDir": "./dist",
-		"rootDir": "."
-	},
-	"include": ["*.ts"],
-	"exclude": ["node_modules", "dist", "**/*.test.ts"]
-}

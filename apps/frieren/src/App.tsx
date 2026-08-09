@@ -74,8 +74,8 @@ function App() {
 
 	// Auth starts sync for the current account profile. It only switches profiles
 	// when Clerk resolves to signed-out or a different signed-in user. There is no
-	// onboarding gate: defaults are seeded (server for synced profiles, client for
-	// local ones), so every user lands straight on the desktop.
+	// onboarding gate: a volume with no identity files reads as the built-in agent
+	// (agent-defaults), so every user lands straight on the desktop.
 	useEffect(() => {
 		if (!isLoaded) return
 		let cancelled = false

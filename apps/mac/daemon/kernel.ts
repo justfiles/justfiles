@@ -1,7 +1,7 @@
 import { hostname } from 'node:os'
 import { aiCapability, generateSoul, type SoulGenerationInput, text } from '@justfiles/agent'
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
-import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
+import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -120,6 +120,7 @@ export async function buildKernel(
 				agent: {
 					volume: fs,
 					paths: IDENTITY_PATHS,
+					defaults: IDENTITY_DEFAULTS,
 					// This Mac serves its own avatar list, built-ins included — the art is in the
 					// daemon's own bundle, so a picker here needs nothing from the cloud.
 					builtins: BUILTIN_AVATARS,

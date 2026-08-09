@@ -1,19 +1,18 @@
 import type { Volume } from '@justfiles/fs'
-import { agentDir, avatarsDir, PROFILE, soul } from './paths.ts'
+import { avatarsDir, PROFILE, soul } from './paths.ts'
 
 // The platform's agent is ONE companion across terminals (web + desktop): these are the
-// identity files it reads from the Volume, plus the sensible defaults it seeds so it works
-// out of the box with NO onboarding gate — personalization is opt-in and overwrites them.
+// identity files it reads from the Volume, plus the built-in identity a MISSING one means,
+// so it works out of the box with NO onboarding gate — personalization is opt-in.
 //
-// Deliberately pi-free (only `@justfiles/fs`): the agent runtime owns seeding, while Settings
-// imports only the paths for its independent read/write surface. Import from
-// `@justfiles/agent/defaults`.
+// Deliberately pi-free (only `@justfiles/fs`): the agent runtime reads these files, while
+// Settings imports the paths and the defaults for its independent read/write surface. Import
+// from `@justfiles/agent/defaults`.
 //
 // The path constants are the PUBLIC spelling of package-internal paths.ts.
 export const SOUL_PATH = soul()
 export const AVATARS_DIR = avatarsDir()
 export const PROFILE_PATH = PROFILE
-export const AGENT_DIR = agentDir()
 
 /**
  * One avatar's directory — the id IS the avatar (see paths.ts for the layout). A ref in the
@@ -58,12 +57,20 @@ export async function avatarFaceHash(bytes: Uint8Array): Promise<string> {
 		.join('')
 }
 
-// A neutral, terminal-agnostic persona so a brand-new user gets a capable agent with no
-// setup. `seeded: true` marks it as an untouched default (a terminal detects "personalized"
-// by the absence of that flag). Personalization overwrites this file.
-const DEFAULT_AGENT_NAME = 'Kodama'
+// ABSENCE IS THE BUILT-IN IDENTITY. Nothing writes these files to make the agent usable:
+// a host booting against an empty Volume reads the defaults below and writes NOTHING, so an
+// adopt-mine republish has no competing default writer to race (#425). The files appear the
+// moment the user personalizes, and from then on they are the authoritative answer.
+//
+// So the default is TEXT, not a seed — every reader resolves a missing file to exactly these
+// bytes, which makes "no file" and "the untouched default" one state on every host. That is
+// also why they still carry `seeded: true`: a terminal detects "personalized" by the absence
+// of that flag, and a soul the user has not written yet must not read as one they did.
+//
+// A neutral, terminal-agnostic persona, so a brand-new user gets a capable agent with no setup.
+export const DEFAULT_AGENT_NAME = 'Kodama'
 
-const DEFAULT_SOUL = `---
+export const DEFAULT_SOUL = `---
 schema: frieren/agent-soul/v1
 agent_name: Kodama
 seeded: true
@@ -73,64 +80,39 @@ You are Kodama, a calm and capable companion. You help with whatever the user is
 `
 
 // An empty profile — no personal facts until the user chooses to share them.
-const DEFAULT_PROFILE = `---
+export const DEFAULT_PROFILE = `---
 schema: frieren/user-profile/v1
 seeded: true
 ---
 `
 
-const encoder = new TextEncoder()
+// The defaults keyed like IDENTITY_PATHS, for a host that has to be told BOTH: the `settings`
+// capability resolves a missing file through these (see `settingsHost`'s `AgentDeps`), so the
+// pane and the running agent read one identity. Passed for the same reason the paths are —
+// `@justfiles/app` cannot import back into this package.
+export const IDENTITY_DEFAULTS = {
+	soul: DEFAULT_SOUL,
+	profile: DEFAULT_PROFILE
+} as const
+
 const decoder = new TextDecoder()
 
-// The one reader the RUNTIME needs: what the agent is called. The `settings` capability
-// owns WRITING these files (it cannot import this package — the dependency runs the other
-// way), but every host that starts a session needs the name for the session title, and
-// the seeded default's name is the answer until someone personalizes.
+// The two readers every host shares. A missing file is not an empty one.
+export const readSoul = (volume: Volume): Promise<string> => readOr(volume, SOUL_PATH, DEFAULT_SOUL)
+export const readProfile = (volume: Volume): Promise<string> =>
+	readOr(volume, PROFILE_PATH, DEFAULT_PROFILE)
+
+async function readOr(volume: Volume, path: string, fallback: string): Promise<string> {
+	if (!(await volume.exists(path))) return fallback
+	return decoder.decode(await volume.readFile(path))
+}
+
+// What the agent is called. The `settings` capability owns WRITING these files (it cannot
+// import this package — the dependency runs the other way), but every host that starts a
+// session needs the name for the session title and its notification banner.
 export async function readAgentName(volume: Volume): Promise<string> {
-	if (!(await volume.exists(SOUL_PATH))) return DEFAULT_AGENT_NAME
-	const text = decoder.decode(await volume.readFile(SOUL_PATH))
+	const text = await readSoul(volume)
 	// Frontmatter only: the prose says the name too, and would match first otherwise.
 	const match = /^\s*agent_name:\s*(.+?)\s*$/m.exec(text.split('\n---')[0] ?? '')
 	return match?.[1] || DEFAULT_AGENT_NAME
-}
-
-export interface AgentIdentityOwner {
-	ready(): Promise<void>
-}
-
-// One owner per host runtime. Suppression stays outside the memo: an adopt-mine can begin
-// after a completed readiness, and every later entry must still be a no-op until complete.
-export function createAgentIdentityOwner(
-	volume: Volume,
-	suppressed: () => boolean = () => false
-): AgentIdentityOwner {
-	let readiness: Promise<void> | undefined
-	return {
-		ready() {
-			if (suppressed()) return Promise.resolve()
-			if (!readiness) {
-				const pending = seedAgentIdentity(volume)
-				readiness = pending
-				void pending.catch(() => {
-					if (readiness === pending) readiness = undefined
-				})
-			}
-			return readiness
-		}
-	}
-}
-
-async function seedAgentIdentity(volume: Volume): Promise<void> {
-	await volume.mkdir('/system', { recursive: true })
-	await create(PROFILE_PATH, DEFAULT_PROFILE)
-	await volume.mkdir(AGENT_DIR, { recursive: true })
-	await create(SOUL_PATH, DEFAULT_SOUL)
-
-	async function create(path: string, data: string): Promise<void> {
-		try {
-			await volume.writeFile(path, encoder.encode(data), { exclusive: true })
-		} catch (error) {
-			if (!(error instanceof Error) || !error.message.startsWith('EEXIST')) throw error
-		}
-	}
 }
