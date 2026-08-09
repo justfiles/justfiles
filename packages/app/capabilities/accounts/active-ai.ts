@@ -20,7 +20,12 @@ export interface ActiveAi {
 }
 
 export interface ActiveAiStore {
+	// `null` = nothing is selected, which is not the same as "no AI": an absent selection
+	// resolves to the host's built-in platform AI (see host.ts). No file is written to say so.
 	get(): Promise<ActiveAi | null>
+	// `null` REMOVES the pointer rather than storing a null: "the user chose nothing" and
+	// "the user chose the floor" have to be one state, or a wipe would leave a file behind
+	// that says something the derived default already says.
 	set(value: ActiveAi | null): Promise<void>
 }
 
@@ -39,6 +44,10 @@ export function volumeActiveAi(fs: Volume): ActiveAiStore {
 			}
 		},
 		set: async (value) => {
+			if (value === null) {
+				await fs.rm(PATH, { force: true })
+				return
+			}
 			await fs.mkdir(DIR, { recursive: true })
 			await fs.writeFile(PATH, enc.encode(JSON.stringify(value, null, 2)))
 		}

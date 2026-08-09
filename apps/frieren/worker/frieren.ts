@@ -35,12 +35,10 @@ import {
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
-	accountsCapabilities,
 	aesGcmSecretCodec,
-	ensureAccount,
-	resolveAiAccount,
-	type SecretCodec,
-	sealAccounts
+	type HostAccounts,
+	hostAccounts,
+	type SecretCodec
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
@@ -165,10 +163,9 @@ export class Frieren extends DurableObject<Env> {
 	// through (quota.ts) — so a platform-key call can never be metered two different ways.
 	private readonly meter: AiMeter
 	// Filesystem-derived resources, built on first use and kept for the instance's lifetime.
-	private accounts?: ReturnType<typeof accountsCapabilities>
+	private accounts?: HostAccounts
 	private apps?: FrierenApps
 	private session?: AgentSession
-	private seeding?: Promise<void>
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -302,29 +299,12 @@ export class Frieren extends DurableObject<Env> {
 	// rebuilds them from the same durable filesystem, so none of them can outlive the
 	// generation they were built over.
 
-	// The platform AI account seed plus a credential reseal: filesystem state both the
-	// account capabilities and the agent backend read. A failure drops the memo, so the
-	// next request retries instead of leaving the instance permanently unseeded.
-	private ensureAccounts(): Promise<void> {
-		if (this.seeding) return this.seeding
-		const pending = (async () => {
-			await ensureAccount(
-				this.volume,
-				{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
-				{ secretCodec: this.secretCodec }
-			)
-			await sealAccounts(this.volume, { secretCodec: this.secretCodec })
-		})()
-		this.seeding = pending
-		void pending.catch(() => {
-			if (this.seeding === pending) this.seeding = undefined
-		})
-		return pending
-	}
-
-	private getAccounts(): ReturnType<typeof accountsCapabilities> {
+	// The one account module for this instance. It seeds nothing: the platform AI account
+	// and the active-AI selection are derived from the providers below, so an empty
+	// `/private` — a fresh sign-up, or the volume a wipe leaves behind — already resolves AI.
+	private getAccounts(): HostAccounts {
 		if (this.accounts) return this.accounts
-		this.accounts = accountsCapabilities(
+		this.accounts = hostAccounts(
 			buildProviders({ text: this.platformText, generateImage: this.generateImage }),
 			this.volume,
 			{ secretCodec: this.secretCodec, origin: { kind: 'cloud' } }
@@ -347,7 +327,7 @@ export class Frieren extends DurableObject<Env> {
 			email: guardCapability(caps.email, { capability: 'email', audit, rateLimit }),
 			calendar: guardCapability(caps.calendar, { capability: 'calendar', audit, rateLimit }),
 			settings: settingsHost({
-				accounts: caps.accounts,
+				accounts: caps.admin,
 				usage: () => this.usageSnapshot(),
 				agent: {
 					volume: this.volume,
@@ -380,11 +360,8 @@ export class Frieren extends DurableObject<Env> {
 			volume: this.volume,
 			capabilities,
 			backend: async () => {
-				const backend = await resolveAiAccount(
-					this.volume,
-					({ providerId }) =>
-						providerId === 'frieren' ? this.meteredBackend(this.models, this.model) : null,
-					{ secretCodec: this.secretCodec }
+				const backend = await this.getAccounts().resolveAi(({ providerId }) =>
+					providerId === 'frieren' ? this.meteredBackend(this.models, this.model) : null
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
 				return backend
@@ -540,7 +517,6 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		await this.ensureAccounts()
 		// The shared capability-proxy socket carries {caps:true}; agent sockets
 		// carry neither.
 		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
@@ -624,7 +600,6 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
-		await this.ensureAccounts()
 		// The DO owns the synced fs, so daily trash retention and content collection
 		// run without an open tab. Both are best-effort and retry on the next alarm.
 		await runDailyMaintenance(this.fs, this.volume)
@@ -637,7 +612,6 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
-			await this.ensureAccounts()
 			const appRoute = new URL(request.url).pathname.match(/^\/api\/apps\/([^/]+)\/ws$/)
 			if (appRoute)
 				return this.getApps().acceptWebSocket(

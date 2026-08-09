@@ -15,7 +15,7 @@ import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/capabilities
 import type { Kernel, Message } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { buildKernel } from './kernel.ts'
+import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 
 const FILES = 'app.justfiles.frieren.files'
@@ -35,7 +35,8 @@ const tempRoot = async (name: string): Promise<string> => {
 
 beforeAll(async () => {
 	root = await tempRoot('')
-	kernel = await buildKernel(volume(await nativeStorage(root)))
+	const fs = volume(await nativeStorage(root))
+	kernel = await buildKernel(fs, daemonAccounts(fs))
 })
 afterAll(async () => {
 	for (const dir of roots) await rm(dir, { recursive: true, force: true })
@@ -79,7 +80,8 @@ test('Files reads the real volume through the system-scoped volume capability', 
 })
 
 test('soul preview keeps the capability error when no AI account is enabled', async () => {
-	const offline = await buildKernel(volume(await nativeStorage(await tempRoot('no-ai'))))
+	const fs = volume(await nativeStorage(await tempRoot('no-ai')))
+	const offline = await buildKernel(fs, daemonAccounts(fs))
 
 	await expect(
 		offline.dispatch(SETTINGS, {
@@ -91,9 +93,11 @@ test('soul preview keeps the capability error when no AI account is enabled', as
 
 test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)', async () => {
 	const sealedRoot = await tempRoot('sealed')
-	const sealed = await buildKernel(volume(await nativeStorage(sealedRoot)), {
-		secretCodec: aesGcmSecretCodec('a-test-root-secret')
-	})
+	const sealedFs = volume(await nativeStorage(sealedRoot))
+	const sealed = await buildKernel(
+		sealedFs,
+		daemonAccounts(sealedFs, { secretCodec: aesGcmSecretCodec('a-test-root-secret') })
+	)
 
 	// A form provider (iCloud) round-tripped through the daemon's REAL wiring: the
 	// settings app's `connectAccount` procedure invoking the `settings` capability's
@@ -128,7 +132,8 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 
 	// Connect an account with no codec — exactly what every account on disk before this
 	// feature landed looks like.
-	const clear = await buildKernel(volume(await nativeStorage(upgradeRoot)))
+	const clearFs = volume(await nativeStorage(upgradeRoot))
+	const clear = await buildKernel(clearFs, daemonAccounts(clearFs))
 	await clear.dispatch(SETTINGS, {
 		type: 'connectAccount',
 		params: {
@@ -151,16 +156,21 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 	// Reboot the SAME Volume with a key now available — nothing ever rewrites this record
 	// (an iCloud app-specific password is written once, at connect), so only a reseal sweep
 	// on boot can close the gap.
-	await buildKernel(volume(await nativeStorage(upgradeRoot)), {
-		secretCodec: aesGcmSecretCodec('a-test-root-secret')
-	})
-	expect(await readFile(accountPath, 'utf8')).not.toContain('PRE-EXISTING-PW')
+	const upgradedFs = volume(await nativeStorage(upgradeRoot))
+	daemonAccounts(upgradedFs, { secretCodec: aesGcmSecretCodec('a-test-root-secret') })
+	// The sweep is best-effort and never awaited — nothing may wait on a credential being
+	// sealed — so this polls for it rather than reading once.
+	await poll(
+		() => readFile(accountPath, 'utf8'),
+		(raw) => !raw.includes('PRE-EXISTING-PW')
+	)
 })
 
 test('a kernel whose key can never be read still boots — the creds lane degrades, the daemon does not (A4)', async () => {
 	const deadRoot = await tempRoot('nokey')
 	// A pre-A4 plaintext record, so the boot reseal sweep has work to do — and hits the wall.
-	const clear = await buildKernel(volume(await nativeStorage(deadRoot)))
+	const clearFs = volume(await nativeStorage(deadRoot))
+	const clear = await buildKernel(clearFs, daemonAccounts(clearFs))
 	await clear.dispatch(SETTINGS, {
 		type: 'connectAccount',
 		params: {
@@ -189,7 +199,8 @@ test('a kernel whose key can never be read still boots — the creds lane degrad
 			throw new Error('keychain: locked')
 		}
 	}
-	const dead = await buildKernel(volume(await nativeStorage(deadRoot)), { secretCodec: locked })
+	const deadFs = volume(await nativeStorage(deadRoot))
+	const dead = await buildKernel(deadFs, daemonAccounts(deadFs, { secretCodec: locked }))
 
 	// It BOOTED: a failed reseal sweep is best-effort, and files/apps/devkit/notify carry on.
 	expect((await dead.list()).map((app) => app.id)).toContain(FILES)

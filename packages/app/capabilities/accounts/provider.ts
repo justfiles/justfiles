@@ -3,7 +3,7 @@
 // credentials form, or nothing) with how to USE one (`capabilities.<kind>.bind`:
 // stored creds → a live capability impl). Providers are constructed per platform —
 // the constructor closes over whatever differs there (an AuthFlow, OAuth client
-// creds, the platform LLM) — and handed to `accountsCapabilities` (host.ts), which
+// creds, the platform LLM) — and handed to `hostAccounts` (host.ts), which
 // is generic over them: the host never names a provider.
 
 import type { AiCapability } from '../ai/index.ts'
