@@ -18,6 +18,7 @@ import {
 	decideReset,
 	type GenerationState,
 	readGenerationState,
+	readResetStatus,
 	resetVolume
 } from './reset'
 import { storage as sqliteStorage } from './storage.sqlite'
@@ -98,10 +99,7 @@ describe('reset — transaction body', () => {
 
 		const committed = await resetVolume(db, request)
 		expect(committed).toMatchObject({ ok: true, next: { generation: 2 } })
-		expect((await readGenerationState(db)).committedReset).toEqual({
-			operationId: 'op-1',
-			generation: 2
-		})
+		expect(await readResetStatus(db, 'op-1')).toEqual({ committed: true, generation: 2 })
 
 		await volume(storage).writeFile('/after.txt', enc.encode('after'))
 		expect(await resetVolume(db, request)).toMatchObject({
@@ -110,8 +108,7 @@ describe('reset — transaction body', () => {
 			next: { generation: 2 }
 		})
 		expect(await volume(storage).exists('/after.txt')).toBe(true)
-		// A DIFFERENT operation at the now-stale generation is not the committed one.
-		expect((await readGenerationState(db)).committedReset?.operationId).not.toBe('other')
+		expect(await readResetStatus(db, 'other')).toEqual({ committed: false, generation: 2 })
 	})
 
 	it('truncates the tree + sync tables and leaves a working root', async () => {
@@ -397,12 +394,7 @@ describe('reset — clearReset (advisory in-progress flag)', () => {
 		const owner = await clearReset(db, 'r1')
 		expect(owner).toMatchObject({ generation: 2, resetId: undefined })
 		expect((await readGenerationState(db)).resetId).toBeUndefined()
-		// Clearing the advisory marker leaves the committed operation intact — that record is
-		// what makes a redelivered reset idempotent, and it outlives the republish.
-		expect((await readGenerationState(db)).committedReset).toEqual({
-			operationId: 'op-1',
-			generation: 2
-		})
+		expect(await readResetStatus(db, 'op-1')).toEqual({ committed: true, generation: 2 })
 
 		// Idempotent — a retried clear after it's already cleared is a harmless no-op.
 		expect(await clearReset(db, 'r1')).toMatchObject({ generation: 2 })

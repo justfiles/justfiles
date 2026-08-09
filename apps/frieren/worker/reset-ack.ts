@@ -1,88 +1,67 @@
-import type { DestructiveResetBody, ResetResult } from '@justfiles/core'
+import type { DestructiveResetBody, ResetResult, ResetStatus } from '@justfiles/core'
+
+export type AcknowledgedResetResult =
+	| ResetResult
+	| { ok: false; error: 'reset_unconfirmed'; generation?: number }
 
 export interface ResetRestartStub {
-	status(): Promise<{ instanceId: string; generation: number; restarting: boolean }>
-	commitReset(request: DestructiveResetBody): Promise<ResetResult>
-	terminate(reason: string): Promise<void>
+	resetAndRestart(request: DestructiveResetBody): Promise<ResetResult>
+	resetStatus(operationId: string): Promise<ResetStatus>
 }
 
-// Backoff for the readiness probe. Sums to ~3s, against a restart that normally takes
-// milliseconds — long enough to absorb a cold start plus the constructor's migration.
-const RESTART_DELAYS_MS = [50, 100, 200, 400, 800, 1600] as const
+// Backoff for the confirmation. Deliberately starts non-zero: the first attempt would
+// otherwise land on an instance that is still being torn down and be spent proving nothing.
+// Sums to ~3s, enough to absorb a cold start plus the constructor's migration.
+const CONFIRM_DELAYS_MS = [50, 100, 200, 400, 800, 1600] as const
 
 const sleep = (delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay))
 
 /**
- * The outer Worker's half of a destructive reset: commit, restart, wait for the
- * replacement, then answer.
+ * The outer Worker's half of a destructive reset: ask, expect to be hung up on, then
+ * reconnect and find out what happened.
  *
- * The commit is acknowledged BEFORE anything is torn down. The Durable Object flushes to
- * disk and returns the generation it committed (reset-instance.ts), and the output gate
- * holds that response until the write is durable — so the returned generation IS the proof.
- * Nothing about the restart has to be interpreted as evidence. The protocol this replaced
- * committed and aborted in one call and then tried to prove the commit afterwards, over a
- * handle the abort had already killed: it could never confirm anything, and the commit did
- * not survive the abort either (#425).
+ * A committed reset never answers — the instance flushes to disk and destroys itself in the
+ * same turn (reset-instance.ts), which is what guarantees nothing of it survives to write
+ * into the tree it just created. So the disconnect carries no information on its own, and
+ * the proof is read afterwards from durable storage instead: `resetStatus` says whether THIS
+ * operation is the one the volume last committed.
  *
- * Waiting for the replacement is therefore a READINESS check, not proof — which is what
- * makes it safe to give up on. Its job is to keep the client from being told "done" while
- * the old instance could still answer with modules built over the filesystem that just
- * went away. A probe that times out costs legibility, never correctness: the reset is
- * already durable, and the old instance is refusing traffic on its own account meanwhile.
+ * Every call takes a FRESH stub. `abort()` tears down the RPC session, so the handle the
+ * reset went out on is dead and can never reach a replacement — polling it is why the first
+ * version of this protocol confirmed nothing in production, across two resets and ten
+ * attempts (#425). Reconnecting is the whole trick, exactly as it is after a remote reboot.
  *
- * "Is it back?" is answered by a CHANGED `instanceId`, not by the generation. The old
- * instance reads the same reset SQLite and reports the same generation, so only the
- * in-memory identity distinguishes the two — the same reason a reboot check compares
- * `/proc/sys/kernel/random/boot_id` rather than trusting that the host answered.
- *
- * A replay is restarted only when the instance answering it is ALREADY standing down —
- * which means it is the one that committed, reached again because a previous invocation
- * died before it could dispatch the restart. An instance that is not standing down was
- * built after the commit, so it owns the generation it is serving and must be left alone.
+ * Failing to confirm is reported as such and never guessed. The client keeps its durable
+ * `operationId`, so a retry either replays the same committed reset or lands as a fresh one
+ * against the generation it finds — never a second destructive reset it did not ask for.
  */
-export async function resetAndTerminate(
+export async function acknowledgeReset(
 	connect: () => ResetRestartStub,
 	request: DestructiveResetBody,
 	options: { delays?: readonly number[]; wait?: (delay: number) => Promise<void> } = {}
-): Promise<ResetResult> {
-	const stub = connect()
-	const before = await stub.status()
-	const result = await stub.commitReset(request)
-	if (!result.ok) return result
-	if (result.replayed && !before.restarting) return result
-	const reason = `filesystem reset: ${request.operationId}`
-	// Never awaited for success: the call dies with the object it tears down, so a rejection
-	// is the expected outcome. The probe below is what keeps the event alive until it lands.
-	void stub.terminate(reason).catch(() => {})
-	if (!(await restarted(connect, before.instanceId, reason, options)))
-		console.warn(`reset ${request.operationId}: committed, but the restart went unconfirmed`)
-	return result
-}
+): Promise<AcknowledgedResetResult> {
+	try {
+		const result = await connect().resetAndRestart(request)
+		// Anything returned is a decision the instance survived to report: a stale CAS, or a
+		// replay of an operation whose committing instance is already gone. A fresh commit
+		// cannot reach here, and if it somehow does, the confirmation below still settles it.
+		if (!result.ok || result.replayed) return result
+	} catch {
+		// Expected: the instance committed and took the call down with it. Ambiguous until
+		// storage says otherwise — a reset that failed before committing looks identical.
+	}
 
-async function restarted(
-	connect: () => ResetRestartStub,
-	previous: string,
-	reason: string,
-	options: { delays?: readonly number[]; wait?: (delay: number) => Promise<void> }
-): Promise<boolean> {
-	for (const delay of options.delays ?? RESTART_DELAYS_MS) {
+	let generation: number | undefined
+	for (const delay of options.delays ?? CONFIRM_DELAYS_MS) {
 		await (options.wait ?? sleep)(delay)
 		try {
-			// A FRESH handle every attempt. `abort()` tears down the RPC session, so the stub
-			// the terminate went out on can never reach the object again — reusing it is how
-			// the previous protocol managed to never once reach a replacement instance.
-			const now = await connect().status()
-			if (now.instanceId !== previous) return true
-			// The same instance, still standing down: the abort did not land. Ask again rather
-			// than leave it fenced, since the fence has no deadline of its own. Guarded on
-			// identity, so this can never tear down a healthy replacement.
-			if (now.restarting)
-				void connect()
-					.terminate(reason)
-					.catch(() => {})
+			const status = await connect().resetStatus(request.operationId)
+			generation = status.generation
+			if (status.committed) return { ok: true, generation: status.generation }
 		} catch {
-			// Mid-teardown, or the replacement is still starting: the next attempt retries.
+			// Still tearing down, or the replacement is still starting: the next attempt tries
+			// again on another new handle.
 		}
 	}
-	return false
+	return { ok: false, error: 'reset_unconfirmed', generation }
 }
