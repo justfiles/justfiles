@@ -18,6 +18,7 @@ import {
 	decideReset,
 	type GenerationState,
 	readGenerationState,
+	readResetStatus,
 	resetVolume
 } from './reset'
 import { storage as sqliteStorage } from './storage.sqlite'
@@ -50,13 +51,25 @@ describe('reset — pure CAS decision', () => {
 	const at = (o: Partial<GenerationState> = {}): GenerationState => ({ generation: 5, ...o })
 
 	it('decideReset CAS: applies only at fromGeneration, bumps + records resetId', () => {
-		const ok = decideReset(at(), { mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })
-		expect(ok).toEqual({ ok: true, next: { generation: 6, resetId: 'r1' } })
+		const ok = decideReset(at(), {
+			mode: 'adopt-mine',
+			fromGeneration: 5,
+			operationId: 'op-1',
+			resetId: 'r1'
+		})
+		expect(ok).toEqual({
+			ok: true,
+			next: {
+				generation: 6,
+				resetId: 'r1',
+				committedReset: { operationId: 'op-1', generation: 6 }
+			}
+		})
 
-		const wipe = decideReset(at(), { mode: 'wipe', fromGeneration: 5 })
-		expect(wipe).toEqual({ ok: true, next: { generation: 6, resetId: undefined } })
+		const wipe = decideReset(at(), { mode: 'wipe', fromGeneration: 5, operationId: 'op-2' })
+		expect(wipe).toMatchObject({ ok: true, next: { generation: 6 } })
 
-		const stale = decideReset(at(), { mode: 'wipe', fromGeneration: 4 })
+		const stale = decideReset(at(), { mode: 'wipe', fromGeneration: 4, operationId: 'op-3' })
 		expect(stale).toEqual({ ok: false, error: 'generation_stale', generation: 5 })
 	})
 })
@@ -66,13 +79,36 @@ describe('reset — transaction body', () => {
 		const { db } = makeDb()
 		expect((await readGenerationState(db)).generation).toBe(1)
 
-		const ok = await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
+		const ok = await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 		expect(ok).toMatchObject({ ok: true, next: { generation: 2, resetId: undefined } })
 		expect((await readGenerationState(db)).generation).toBe(2)
 
-		const stale = await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
+		const stale = await resetVolume(db, {
+			mode: 'wipe',
+			fromGeneration: 1,
+			operationId: 'op-2'
+		})
 		expect(stale).toEqual({ ok: false, error: 'generation_stale', generation: 2 })
 		expect((await readGenerationState(db)).generation).toBe(2) // unchanged
+	})
+
+	it('persists acknowledgement atomically and replays the same operation idempotently', async () => {
+		const { db, storage } = makeDb()
+		await volume(storage).writeFile('/before.txt', enc.encode('before'))
+		const request = { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' } as const
+
+		const committed = await resetVolume(db, request)
+		expect(committed).toMatchObject({ ok: true, next: { generation: 2 } })
+		expect(await readResetStatus(db, 'op-1')).toEqual({ committed: true, generation: 2 })
+
+		await volume(storage).writeFile('/after.txt', enc.encode('after'))
+		expect(await resetVolume(db, request)).toMatchObject({
+			ok: true,
+			replayed: true,
+			next: { generation: 2 }
+		})
+		expect(await volume(storage).exists('/after.txt')).toBe(true)
+		expect(await readResetStatus(db, 'other')).toEqual({ committed: false, generation: 2 })
 	})
 
 	it('truncates the tree + sync tables and leaves a working root', async () => {
@@ -82,7 +118,7 @@ describe('reset — transaction body', () => {
 		await vol.mkdir('/dir')
 		expect(await vol.exists('/a.txt')).toBe(true)
 
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
+		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 
 		// The reset writes the DB directly, so an existing volume's dirent/meta cache
 		// is stale — a fresh volume (as the DO rebuilds after a reset) sees the truth.
@@ -108,7 +144,7 @@ describe('reset — transaction body', () => {
 		expect(hash).toBeTruthy()
 		expect(await storage.caps?.content?.hasByHash(hash as string)).toBe(true)
 
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
+		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 
 		expect(await storage.caps?.content?.hasByHash(hash as string)).toBe(false)
 		const fts = await db.query('SELECT COUNT(*) AS n FROM fs_content_fts')
@@ -125,6 +161,7 @@ describe('reset — transaction body', () => {
 		const res = await resetVolume(db, {
 			mode: 'adopt-mine',
 			fromGeneration: 1,
+			operationId: 'op-1',
 			resetId: 'r1',
 			lineageId
 		})
@@ -150,7 +187,13 @@ describe('reset — transaction body', () => {
 		await vol.writeFile('/notes/mine.md', enc.encode('note'))
 		const { lineageId } = await readGenerationState(db)
 
-		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1', lineageId })
+		await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: 1,
+			operationId: 'op-1',
+			resetId: 'r1',
+			lineageId
+		})
 
 		const fresh = volume(storage)
 		expect(new TextDecoder().decode(await fresh.readFile('/private/accounts/google.json'))).toBe(
@@ -173,7 +216,7 @@ describe('reset — transaction body', () => {
 		await vol.mkdir('/private/accounts', { recursive: true })
 		await vol.writeFile('/private/accounts/google.json', enc.encode('{"refresh":"SEKRIT"}'))
 
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
+		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 
 		const fresh = volume(storage)
 		expect(await fresh.exists('/private')).toBe(false)
@@ -195,9 +238,9 @@ describe('reset — transaction body', () => {
 					throw new Error('crash after body')
 				})
 		}
-		await expect(resetVolume(boom, { mode: 'wipe', fromGeneration: 1 })).rejects.toThrow(
-			'crash after body'
-		)
+		await expect(
+			resetVolume(boom, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
+		).rejects.toThrow('crash after body')
 		// Old generation + old tree survive (rolled back).
 		expect((await readGenerationState(db)).generation).toBe(1)
 		expect(await vol.exists('/a.txt')).toBe(true)
@@ -225,11 +268,16 @@ describe('reset — lineage identity (issue #245)', () => {
 		expect(before.lineageId).toBeDefined()
 
 		// Pure decision carries the lineageId through unchanged.
-		expect(decideReset(before, { mode: 'wipe', fromGeneration: before.generation })).toEqual({
+		expect(
+			decideReset(before, {
+				mode: 'wipe',
+				fromGeneration: before.generation,
+				operationId: 'op-1'
+			})
+		).toMatchObject({
 			ok: true,
 			next: {
 				generation: before.generation + 1,
-				resetId: undefined,
 				lineageId: before.lineageId
 			}
 		})
@@ -238,6 +286,7 @@ describe('reset — lineage identity (issue #245)', () => {
 		await resetVolume(db, {
 			mode: 'adopt-mine',
 			fromGeneration: before.generation,
+			operationId: 'op-2',
 			resetId: 'r1',
 			lineageId: before.lineageId
 		})
@@ -254,6 +303,7 @@ describe('reset — lineage identity (issue #245)', () => {
 			decideReset(current, {
 				mode: 'adopt-mine',
 				fromGeneration: 5,
+				operationId: 'op-1',
 				resetId: 'r1',
 				lineageId: 'vol-B'
 			})
@@ -262,10 +312,11 @@ describe('reset — lineage identity (issue #245)', () => {
 			decideReset(current, {
 				mode: 'adopt-mine',
 				fromGeneration: 5,
+				operationId: 'op-2',
 				resetId: 'r1',
 				lineageId: 'vol-A'
 			})
-		).toEqual({ ok: true, next: { generation: 6, resetId: 'r1', lineageId: 'vol-A' } })
+		).toMatchObject({ ok: true, next: { generation: 6, resetId: 'r1', lineageId: 'vol-A' } })
 	})
 
 	// A MISSING lineageId is rejected too (not just a mismatched one): a pre-lineage or
@@ -273,15 +324,17 @@ describe('reset — lineage identity (issue #245)', () => {
 	// `wipe` (factory reset) is NOT forced to carry a lineageId.
 	it('decideReset requires a lineageId for adopt-mine, but not for wipe', () => {
 		const current: GenerationState = { generation: 5, lineageId: 'vol-A' }
-		expect(decideReset(current, { mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })).toEqual({
-			ok: false,
-			error: 'lineage_stale',
-			generation: 5
-		})
-		expect(decideReset(current, { mode: 'wipe', fromGeneration: 5 })).toEqual({
-			ok: true,
-			next: { generation: 6, resetId: undefined, lineageId: 'vol-A' }
-		})
+		expect(
+			decideReset(current, {
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				operationId: 'op-1',
+				resetId: 'r1'
+			})
+		).toEqual({ ok: false, error: 'lineage_stale', generation: 5 })
+		expect(
+			decideReset(current, { mode: 'wipe', fromGeneration: 5, operationId: 'op-2' })
+		).toMatchObject({ ok: true, next: { generation: 6, lineageId: 'vol-A' } })
 	})
 
 	it('resetVolume rejects an adopt-mine that omits the lineageId and leaves the volume intact', async () => {
@@ -292,6 +345,7 @@ describe('reset — lineage identity (issue #245)', () => {
 		const res = await resetVolume(db, {
 			mode: 'adopt-mine',
 			fromGeneration: before.generation,
+			operationId: 'op-1',
 			resetId: 'r1'
 		})
 		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
@@ -307,6 +361,7 @@ describe('reset — lineage identity (issue #245)', () => {
 		const res = await resetVolume(db, {
 			mode: 'adopt-mine',
 			fromGeneration: before.generation,
+			operationId: 'op-1',
 			resetId: 'r1',
 			lineageId: 'some-other-volume'
 		})
@@ -321,7 +376,13 @@ describe('reset — clearReset (advisory in-progress flag)', () => {
 	it('clears the flag only for the matching reset; a stale/duplicate clear is a no-op', async () => {
 		const { db } = makeDb()
 		const { lineageId } = await readGenerationState(db)
-		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1', lineageId })
+		await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: 1,
+			operationId: 'op-1',
+			resetId: 'r1',
+			lineageId
+		})
 		expect((await readGenerationState(db)).resetId).toBe('r1')
 
 		// A non-matching resetId leaves the flag untouched.
@@ -331,8 +392,9 @@ describe('reset — clearReset (advisory in-progress flag)', () => {
 
 		// The owner clears it; the generation is unchanged.
 		const owner = await clearReset(db, 'r1')
-		expect(owner).toEqual({ generation: 2 })
+		expect(owner).toMatchObject({ generation: 2, resetId: undefined })
 		expect((await readGenerationState(db)).resetId).toBeUndefined()
+		expect(await readResetStatus(db, 'op-1')).toEqual({ committed: true, generation: 2 })
 
 		// Idempotent — a retried clear after it's already cleared is a harmless no-op.
 		expect(await clearReset(db, 'r1')).toMatchObject({ generation: 2 })

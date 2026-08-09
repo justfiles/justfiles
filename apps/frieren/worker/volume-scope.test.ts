@@ -111,7 +111,7 @@ describe('volume scopes', () => {
 
 		const read = scope.volume.readFile('/old')
 		await started.promise
-		await owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		await owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 		release.resolve()
 
 		await expect(read).rejects.toBeInstanceOf(StaleLifetimeError)
@@ -135,7 +135,7 @@ describe('volume scopes', () => {
 
 		const write = scope.volume.writeFile('/old', bytes('finished'))
 		await started.promise
-		const reset = owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		const reset = owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 		release.resolve()
 
 		await expect(write).resolves.toBeUndefined()
@@ -156,7 +156,7 @@ describe('volume scopes', () => {
 		})
 		const old = await owner.ready()
 
-		const reset = owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		const reset = owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 		await applying.promise
 		expect(() => old.volume.writeFile('/late', bytes('wrong tree'))).toThrow(StaleLifetimeError)
 		release.resolve()
@@ -171,7 +171,9 @@ describe('volume scopes', () => {
 		const current = await owner.ready()
 		const resources = [current.session(), current.apps()]
 
-		await expect(owner.reset({ mode: 'wipe', fromGeneration: 0 })).resolves.toEqual({
+		await expect(
+			owner.reset({ mode: 'wipe', fromGeneration: 0, operationId: 'op-1' })
+		).resolves.toEqual({
 			ok: false,
 			error: 'generation_stale',
 			generation: 1
@@ -189,7 +191,9 @@ describe('volume scopes', () => {
 		const old = await owner.ready()
 		const oldResources = [old.session(), old.apps()]
 
-		await expect(owner.reset({ mode: 'wipe', fromGeneration: 1 })).resolves.toEqual({
+		await expect(
+			owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
+		).resolves.toEqual({
 			ok: true,
 			generation: 2
 		})
@@ -212,9 +216,9 @@ describe('volume scopes', () => {
 		})
 		const old = await owner.ready()
 
-		await expect(owner.reset({ mode: 'wipe', fromGeneration: 1 })).rejects.toThrow(
-			'lost response after commit'
-		)
+		await expect(
+			owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
+		).rejects.toThrow('lost response after commit')
 		const current = await owner.ready()
 		expect(current).not.toBe(old)
 		expect(current.generation).toBe(2)
@@ -248,6 +252,7 @@ describe('volume scopes', () => {
 		await owner.reset({
 			mode: 'adopt-mine',
 			fromGeneration: state.generation,
+			operationId: 'op-1',
 			resetId: 'r1',
 			lineageId: state.lineageId
 		})
@@ -265,13 +270,18 @@ describe('volume scopes', () => {
 		await resetVolume(db, {
 			mode: 'adopt-mine',
 			fromGeneration: state.generation,
+			operationId: 'op-1',
 			resetId: 'abandoned',
 			lineageId: state.lineageId
 		})
 		const { owner } = await testOwner(storage, db)
 		expect((await owner.ready()).session().resetInProgress?.()).toBe(true)
 
-		await owner.reset({ mode: 'wipe', fromGeneration: state.generation + 1, resetId: 'wipe-id' })
+		await owner.reset({
+			mode: 'wipe',
+			fromGeneration: state.generation + 1,
+			operationId: 'op-2'
+		})
 		expect((await owner.ready()).session().resetInProgress?.()).toBe(false)
 		expect((await readGenerationState(db)).resetId).toBeUndefined()
 	})
@@ -294,7 +304,7 @@ describe('volume scopes', () => {
 
 		const ready = owner.ready()
 		await firstReady.promise
-		await owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		await owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 		release.resolve()
 
 		await expect(ready).resolves.toMatchObject({ generation: 2 })
@@ -308,7 +318,7 @@ describe('volume scopes', () => {
 		const old = await owner.ready()
 		const listener = vi.fn()
 		await old.volume.watch('/watched', listener)
-		await owner.reset({ mode: 'wipe', fromGeneration: 1 })
+		await owner.reset({ mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
 		await (await owner.ready()).volume.writeFile('/watched', bytes('new'))
 		expect(listener).not.toHaveBeenCalled()
 

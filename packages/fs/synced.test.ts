@@ -455,6 +455,7 @@ interface FakeServer {
 	lineageId: string | undefined
 	/** The advisory "reset in progress" flag surfaced on the handshake. */
 	resetId: string | undefined
+	operationId: string | undefined
 	/** Override the generation echoed on pull pages (default: `generation`). */
 	deltaGeneration: number | undefined
 	/** How many times the client ran a full bootstrap (pathScan) against us. */
@@ -463,6 +464,8 @@ interface FakeServer {
 	pushError: Error | undefined
 	/** If set, `reset` throws it — simulates a lost CAS / offline server. */
 	resetError: Error | undefined
+	/** If set, the reset commits and then throws once — simulates a lost acknowledgement. */
+	resetAfterCommitError: Error | undefined
 	/** Every push received (for take-mine republish tests). */
 	pushes: Array<{ changes: PathChange[] }>
 	seed(path: string, content: string): void
@@ -479,10 +482,12 @@ function fakeServer(
 		generation: init.generation,
 		lineageId: init.lineageId,
 		resetId: undefined,
+		operationId: undefined,
 		deltaGeneration: undefined,
 		scanCalls: 0,
 		pushError: undefined,
 		resetError: undefined,
+		resetAfterCommitError: undefined,
 		pushes: [],
 		seed(path, content) {
 			const data = enc.encode(content)
@@ -499,6 +504,7 @@ function fakeServer(
 		clear() {
 			puts.clear()
 			blobs.clear()
+			server.operationId = undefined
 		},
 		replica: {} as SyncReplica
 	}
@@ -518,8 +524,15 @@ function fakeServer(
 				server.resetId = undefined
 				return {}
 			}
+			if (server.operationId === body.operationId) return { generation: server.generation }
 			server.generation = (server.generation ?? 0) + 1
 			server.resetId = body.resetId
+			server.operationId = body.operationId
+			if (server.resetAfterCommitError) {
+				const error = server.resetAfterCommitError
+				server.resetAfterCommitError = undefined
+				throw error
+			}
 			return { generation: server.generation }
 		},
 		pathScan: async () => {
@@ -569,7 +582,12 @@ async function readSyncState(local: LocalBackend): Promise<{
 	lineageId?: string
 	pullCursor?: string
 	pushCursor?: string
-	pendingReset?: { resetId: string; fromGeneration: number; toGeneration?: number }
+	pendingReset?: {
+		resetId: string
+		operationId?: string
+		fromGeneration: number
+		toGeneration?: number
+	}
 }> {
 	return JSON.parse(dec.decode(await volume(local).readFile('/.state/sync')))
 }
@@ -766,19 +784,46 @@ describe('synced (generation / client-reset)', () => {
 		expect((await readSyncState(local)).pendingReset).toBeUndefined() // cleared on completion
 	})
 
-	// The intent is persisted BEFORE the CAS, so a CAS that never lands must roll it
-	// back — there is nothing to resume, and local must survive untouched.
-	it('take mine rolls the intent back when the reset fails', async () => {
+	// A transport failure is ambiguous: the reset may have committed before the
+	// response was lost. Preserve the operation id so the next attempt is idempotent.
+	it('take mine preserves and reuses its operation after an ambiguous failure', async () => {
 		const server = fakeServer({ generation: 1 })
 		const local = memStorage()
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		await vol.writeFile('/mine.txt', enc.encode('local'))
-		server.resetError = new Error('lost the CAS')
+		server.resetError = new Error('connection lost')
 
-		await expect(vol.takeMine()).rejects.toThrow('lost the CAS')
+		await expect(vol.takeMine()).rejects.toThrow('connection lost')
 		expect(await vol.exists('/mine.txt')).toBe(true) // untouched
-		expect((await readSyncState(local)).pendingReset).toBeUndefined() // nothing to resume
+		const pending = (await readSyncState(local)).pendingReset
+		expect(pending?.operationId).toBeDefined()
 		expect((await readSyncState(local)).generation).toBe(1) // lineage unchanged
+
+		server.resetError = undefined
+		await vol.takeMine()
+		expect((await readSyncState(local)).pendingReset).toBeUndefined()
+	})
+
+	it('take mine retry does not advance the generation twice after commit then disconnect', async () => {
+		const server = fakeServer({ generation: 1 })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		server.resetAfterCommitError = new Error('connection lost after commit')
+
+		await expect(vol.takeMine()).rejects.toThrow('connection lost after commit')
+		expect(server.generation).toBe(2)
+		await vol.takeMine()
+		expect(server.generation).toBe(2)
+	})
+
+	it('take mine clears its intent after a definitive stale decision', async () => {
+		const server = fakeServer({ generation: 1 })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		server.resetError = new GenerationStaleError(2)
+
+		await expect(vol.takeMine()).rejects.toBeInstanceOf(GenerationStaleError)
+		expect((await readSyncState(local)).pendingReset).toBeUndefined()
 	})
 
 	// A peer with no lineage (P2P, or a legacy server): "take mine" has nothing to

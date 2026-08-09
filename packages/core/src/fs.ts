@@ -163,6 +163,7 @@ export const ResetBody = z.discriminatedUnion('mode', [
 	z.object({
 		mode: z.literal('adopt-mine'),
 		fromGeneration: z.number().int(),
+		operationId: z.string().min(1),
 		resetId: z.string(),
 		// The volume identity the client believes it is republishing onto. The reset
 		// capability validates it atomically with the generation CAS (see reset.ts), so a
@@ -172,14 +173,16 @@ export const ResetBody = z.discriminatedUnion('mode', [
 	z.object({
 		mode: z.literal('wipe'),
 		fromGeneration: z.number().int(),
-		resetId: z.string().optional()
+		operationId: z.string().min(1),
+		lineageId: z.string().optional()
 	}),
 	z.object({ mode: z.literal('complete'), resetId: z.string() })
 ])
 export type ResetBody = z.infer<typeof ResetBody>
+export type DestructiveResetBody = Exclude<ResetBody, { mode: 'complete' }>
 
 export type ResetResult =
-	| { ok: true; generation: number }
+	| { ok: true; generation: number; replayed?: true }
 	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
 async function sha256Hex(data: Uint8Array): Promise<string> {

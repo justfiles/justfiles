@@ -1,10 +1,13 @@
 import { createClerkClient } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
+import { ResetBody, type ResetResult } from '@justfiles/core'
 import { type Context, Hono } from 'hono'
 import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
 import { ACCEPTED_TOKENS, actingUserId } from './auth.ts'
+import { Frieren } from './frieren.ts'
+import { type AcknowledgedResetResult, acknowledgeReset } from './reset-ack.ts'
 
-export { Frieren } from './frieren.ts'
+export { Frieren }
 
 type WorkerEnv = { Bindings: Env }
 type Ctx = Context<WorkerEnv>
@@ -16,6 +19,15 @@ const requireClerkSecret = (env: Env): string => {
 
 const forwardToFrieren = (c: Ctx, userId: string) =>
 	c.env.FRIEREN.get(c.env.FRIEREN.idFromName(userId)).fetch(c.req.raw)
+
+const ownerStub = (c: Ctx, userId: string) => c.env.FRIEREN.get(c.env.FRIEREN.idFromName(userId))
+
+const resetResponse = (c: Ctx, result: AcknowledgedResetResult | ResetResult) => {
+	if (result.ok) return c.json({ generation: result.generation })
+	if (result.error === 'reset_unconfirmed')
+		return c.json({ error: result.error, generation: result.generation }, 503)
+	return c.json({ error: result.error, generation: result.generation }, 409)
+}
 
 const app = new Hono<WorkerEnv>()
 
@@ -55,6 +67,19 @@ const tokenWs = async (c: Ctx) => {
 app.get('/ws', tokenWs)
 // The one browser-opened socket per session: the shared capability-proxy (`_caps`).
 app.get('/api/apps/_caps/ws', tokenWs)
+
+app.post('/fs/reset', clerkMiddleware(), async (c) => {
+	const userId = actingUserId(getAuth(c, { acceptsToken: ACCEPTED_TOKENS }))
+	if (!userId) return new Response('Unauthorized', { status: 401 })
+	const parsed = ResetBody.safeParse(await c.req.json().catch(() => undefined))
+	if (!parsed.success) return c.json({ error: 'invalid reset request' }, 400)
+	const stub = ownerStub(c, userId)
+	const result =
+		parsed.data.mode === 'complete'
+			? await stub.completeReset(parsed.data.resetId)
+			: await acknowledgeReset(stub, parsed.data)
+	return resetResponse(c, result)
+})
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())

@@ -137,18 +137,14 @@ export function createVolumeScopeOwner<Session, Apps>(options: {
 
 			const before = await reset.read()
 			resetId = before.resetId
-			// A wipe never republishes. Ignore its optional correlation id so the durable
-			// marker can mean exactly one thing on the next DO wake: adopt-mine is unfinished.
-			const appliedRequest =
-				request.mode === 'wipe'
-					? ({ mode: 'wipe', fromGeneration: request.fromGeneration } as const)
-					: request
-			const decision = decideReset(before, appliedRequest)
+			const decision = decideReset(before, request)
 			if (!decision.ok) return decision
+			if (decision.replayed)
+				return { ok: true, generation: decision.next.generation, replayed: true }
 
 			try {
 				current.dispose(decision.next.generation)
-				const applied = await reset.apply(appliedRequest)
+				const applied = await reset.apply(request)
 				if (!applied.ok || applied.next.generation !== decision.next.generation)
 					throw new Error('volume reset CAS changed inside the serial executor')
 				resetId = applied.next.resetId
