@@ -100,9 +100,18 @@ interface HostVolume {
 	rename(oldPath: string, newPath: string): Promise<void>
 }
 
+// What a MISSING identity file reads as. Nothing seeds these files, so absence is the
+// built-in identity rather than an empty form: the pane opens on the same agent the running
+// one answers as. Injected beside the paths, and for the same reason.
+export interface IdentityDefaults {
+	soul: string
+	profile: string
+}
+
 export interface AgentDeps {
 	volume: HostVolume
 	paths: IdentityPaths
+	defaults: IdentityDefaults
 	// The art the app ships, as `{ <id>: { resting: dataUrl, states } }` — injected for the
 	// same reason the paths are (it lives in `@justfiles/agent/avatars`, which cannot be
 	// imported back). These are the `builtin/<id>` refs: they cost the user no storage,
@@ -262,10 +271,13 @@ function gender(value?: string): 'female' | 'male' | null {
 
 async function read(
 	vol: HostVolume,
-	path: string
+	path: string,
+	fallback: string
 ): Promise<{ frontmatter: Frontmatter; body: string }> {
-	// A missing file is the same user-visible state as an untouched seeded one: unbound.
-	if (!(await vol.exists(path))) return { frontmatter: { seeded: 'true' }, body: '' }
+	// A missing file is not an empty one: it reads as the built-in default, byte for byte, so
+	// "never personalized" is one state — unbound, with a name and prose to show — whether or
+	// not the file happens to exist yet.
+	if (!(await vol.exists(path))) return parse(fallback)
 	return parse(decoder.decode(await vol.readFile(path)))
 }
 
@@ -336,7 +348,14 @@ function appearanceMethods({ volume: vol, wallpaper }: AppearanceDeps): Served {
 	}
 }
 
-function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: AgentDeps): Served {
+function agentMethods({
+	volume: vol,
+	paths,
+	defaults,
+	builtins,
+	timezone,
+	generateSoul
+}: AgentDeps): Served {
 	// Every identity write is READ-MODIFY-WRITE (a profile patch merges with the file, a
 	// soul write preserves the avatar being worn) and the panes fire them per field as the
 	// user edits — so they queue. Without this, two writes read the same file and the slower
@@ -348,7 +367,7 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 		return next
 	}
 	const readSoul = async (): Promise<AgentSoul> => {
-		const { frontmatter, body } = await read(vol, paths.soul)
+		const { frontmatter, body } = await read(vol, paths.soul, defaults.soul)
 		return {
 			name: frontmatter.agent_name ?? '',
 			gender: gender(frontmatter.agent_gender),
@@ -358,7 +377,7 @@ function agentMethods({ volume: vol, paths, builtins, timezone, generateSoul }: 
 		}
 	}
 	const readProfile = async (): Promise<UserFacts> => {
-		const { frontmatter } = await read(vol, paths.profile)
+		const { frontmatter } = await read(vol, paths.profile, defaults.profile)
 		return {
 			name: frontmatter.name ?? '',
 			birthDate: frontmatter.birth_date ?? '',

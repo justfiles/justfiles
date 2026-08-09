@@ -1,5 +1,5 @@
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
-import { IDENTITY_PATHS } from '@justfiles/agent/defaults'
+import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import {
 	type Capabilities,
 	type Capability,
@@ -58,7 +58,12 @@ export function clientCapabilities(
 				user: getUser,
 				// The built-in art rides along because `agent.listAvatars` is served HERE: the
 				// shell already has these bytes in its bundle, so offering them costs nothing.
-				agent: { volume: fs, paths: IDENTITY_PATHS, builtins: BUILTIN_AVATARS },
+				agent: {
+					volume: fs,
+					paths: IDENTITY_PATHS,
+					defaults: IDENTITY_DEFAULTS,
+					builtins: BUILTIN_AVATARS
+				},
 				// The wallpaper is served here too, and for the same reason: it is a file on this
 				// thread's Volume, at the path the desktop already watches — so Settings writing a
 				// colour or a photo repaints the desktop through the watch, offline, with no

@@ -81,7 +81,7 @@ export interface UserProfile {
 // so no consumer re-implements the frontmatter parse — there were three copies of it
 // before this capability existed.
 export interface AgentSoul {
-	// `agent_name`. Empty while the seeded default is in place and nothing was written.
+	// `agent_name` — the built-in default's while nothing has been written.
 	name: string
 	// The whole vocabulary. null only on a hand-edited or seeded file that omits it.
 	gender: 'female' | 'male' | null
@@ -98,10 +98,12 @@ export interface AgentSoul {
 	avatar: string | null
 	// The prose: the system prompt the agent wakes up with.
 	body: string
-	// True while this is the untouched default seeded at boot — i.e. "unbound", the state
-	// that sends the pane to the summoning instead of showing a form. It earns its place by
-	// saying which default: an unbound agent still has a name and prose to show, and this is
-	// what tells the pane they are the boot seed's rather than the user's.
+	// True while this is still the built-in default — i.e. "unbound", the state that sends the
+	// pane to the summoning instead of showing a form. It earns its place by saying which
+	// default: an unbound agent still has a name and prose to show, and this is what tells the
+	// pane they are the platform's rather than the user's. (Nothing writes the default to the
+	// Volume, so the file behind an unbound soul may not exist at all — the host resolves that
+	// absence to the same bytes, which is why one flag can answer for both.)
 	seeded: boolean
 }
 

@@ -375,8 +375,10 @@ const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'private', 'state'
 // `/private` tree (credentials, the active-AI selection, and the app cache, which
 // refills from its origin), app bundles, or per-app UI state.
 const MIGRATE_SKIP = ['/.state', '/private', '/applications', '/state']
-// The two identity files the DO seeds as `seeded: true` defaults — the only paths
-// a migration is allowed to overwrite (with the user's personalized version).
+// The two identity files — the only paths a migration is allowed to overwrite (with the
+// user's personalized version). Nothing writes them until someone personalizes, so on the
+// destination they are usually absent rather than a `seeded: true` default; both read as
+// "not personalized" below, which is what makes either safe to replace.
 const IDENTITY_PATHS = new Set([SOUL_PATH, PROFILE_PATH])
 
 // The anonymous (signed-out) profile's DB name, resolved WITHOUT touching
@@ -394,8 +396,10 @@ function openLocalSource(): { volume: Volume; destroy: () => void } {
 	return { volume: volume(storage), destroy: () => storage.destroy() }
 }
 
-// A soul/profile file is "personalized" once the user overwrites the seeded
-// default — the default carries `seeded: true` in frontmatter (agent-defaults).
+// A soul/profile file is "personalized" once the user writes one of their own. An absent
+// file is the built-in identity (agent-defaults), and so is one still carrying `seeded: true`
+// in its frontmatter — a file a host wrote back when defaults were seeded, or one synced from
+// such a device. Neither is the user's.
 async function isPersonalized(vol: Volume, path: string): Promise<boolean> {
 	if (!(await vol.exists(path))) return false
 	const text = new TextDecoder().decode(await vol.readFile(path))
@@ -494,9 +498,9 @@ export function migrateLocalProfileInto(): Promise<void> {
 // dir, then writeFile children into it. Per-path conflict policy: the offer is
 // non-blocking, so between the freshness check and confirmation the account can
 // gain content (the user makes a note; another device syncs one in). So NEVER
-// clobber an existing destination path — the one exception is replacing the
-// account's still-seeded identity default with the user's personalized soul/
-// profile, which is the whole point of migrating identity.
+// clobber an existing destination path — the one exception is replacing an
+// identity file the account never personalized with the user's own soul/profile,
+// which is the whole point of migrating identity.
 async function copyUserData(src: Volume, dst: Volume): Promise<void> {
 	const skip = (p: string) => MIGRATE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
 	await src.scan('/', async (path, stat) => {
@@ -511,8 +515,8 @@ async function copyUserData(src: Volume, dst: Volume): Promise<void> {
 	})
 }
 
-// True only for an identity file whose account copy is still the seeded default
-// and whose local copy the user personalized — the sole allowed overwrite.
+// True only for an identity file the account never personalized and the local
+// profile did — the sole allowed overwrite.
 async function replacesSeededIdentity(src: Volume, dst: Volume, path: string): Promise<boolean> {
 	if (!IDENTITY_PATHS.has(path)) return false
 	return (await isPersonalized(src, path)) && !(await isPersonalized(dst, path))

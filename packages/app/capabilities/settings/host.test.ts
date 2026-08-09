@@ -309,6 +309,14 @@ const PATHS = {
 	profile: '/system/user.md'
 }
 
+// What a MISSING file reads as, injected for the same reason. Nothing writes these to the
+// Volume, so absence is the built-in identity — the pane opens on the same agent that is
+// answering, not on an empty form.
+const DEFAULTS = {
+	soul: '---\nagent_name: Kodama\nseeded: true\n---\n\nYou are Kodama.\n',
+	profile: '---\nseeded: true\n---\n'
+}
+
 // The art the app ships, injected for the same reason the paths are (it lives in
 // `@justfiles/agent`, which depends on this package). Two states, so `files` has something
 // to report and the pane has a list of states to offer.
@@ -323,7 +331,7 @@ function agentHost(over: Partial<SettingsHostDeps['agent']> = {}) {
 		vol,
 		caps: settingsHost({
 			accounts,
-			agent: { volume: vol, paths: PATHS, builtins: BUILTINS, ...over }
+			agent: { volume: vol, paths: PATHS, defaults: DEFAULTS, builtins: BUILTINS, ...over }
 		})
 	}
 }
@@ -356,10 +364,11 @@ test('agent.writeSoul then readSoul round-trips, through the paths the host was 
 	expect(text.trimEnd().endsWith('You are Fern.')).toBe(true)
 })
 
-test('the seeded default reads as unbound, so the pane can send you to the summoning', async () => {
+test('the built-in default reads as unbound, so the pane can send you to the summoning', async () => {
 	const { vol, caps } = agentHost()
-	// What the agent identity owner seeds on first agent access (kept as a literal: this asserts the
-	// reading of a seeded file, not the seeder).
+	// A soul file that IS the default — one a host wrote before defaults stopped being seeded,
+	// or one synced from such a device (kept as a literal: this asserts the reading of a
+	// defaulted file, not who produced it).
 	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(
 		PATHS.soul,
@@ -369,13 +378,33 @@ test('the seeded default reads as unbound, so the pane can send you to the summo
 	)
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
 		name: 'Kodama',
+		body: 'You are Kodama.',
 		seeded: true
 	})
-	// A volume where nothing was ever seeded is the same user-visible state.
+	// NO FILE IS THE SAME STATE, down to the name and prose the pane shows: nothing seeds
+	// these files any more, so absence has to read as the default rather than as an empty form
+	// — otherwise a rename typed into a fresh account would write a soul with no persona in it.
 	const virgin = agentHost()
 	expect(await virgin.caps.invoke(call('agent.readSoul'))).toMatchObject({
-		name: '',
+		name: 'Kodama',
+		body: 'You are Kodama.',
 		seeded: true
+	})
+})
+
+// A patch merges with what `readSoul` reports, so the default standing in for a missing file
+// has to be there too: renaming an agent nobody has bound must keep the built-in prose.
+test('a rename against a volume with no soul keeps the built-in prose', async () => {
+	const { vol, caps } = agentHost()
+
+	await caps.invoke(call('agent.writeSoul', { name: 'Fern' }))
+
+	expect(decode(await vol.readFile(PATHS.soul))).toContain('You are Kodama.')
+	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
+		name: 'Fern',
+		body: 'You are Kodama.',
+		// Written by the user now, whatever it still says.
+		seeded: false
 	})
 })
 
@@ -495,6 +524,7 @@ test('no step of a publish can lose the state the user is wearing', async () => 
 	const caps = settingsHost({
 		agent: {
 			paths: PATHS,
+			defaults: DEFAULTS,
 			builtins: BUILTINS,
 			volume: Object.assign(Object.create(vol), {
 				writeFile: (path: string, data: Uint8Array) =>

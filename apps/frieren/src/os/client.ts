@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
@@ -155,7 +156,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// --- agent session (BehaviorSubject) ---
 	let connectionState: ConnectionState = 'disconnected'
 	let userName = 'You'
-	let agentName = 'Kodama'
+	let agentName = DEFAULT_AGENT_NAME
 	let messages: AgentMessage[] = []
 	let isStreaming = false
 	let currentAssistantId: string | null = null
@@ -384,7 +385,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			reconnectAttempts = 0
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
-				agentName = data.participants.agentName || 'Kodama'
+				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
 			connectionState = 'ready'
 			emitAgent()
@@ -395,7 +396,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (data.type === 'history') {
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
-				agentName = data.participants.agentName || 'Kodama'
+				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
 			const restored: AgentMessage[] = (data.messages ?? []).map((m) => ({
 				id: crypto.randomUUID(),

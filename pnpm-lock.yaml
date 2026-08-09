@@ -507,9 +507,6 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
-      '@justfiles/lifetime':
-        specifier: workspace:*
-        version: link:../lifetime
       just-bash:
         specifier: 3.0.2
         version: 3.0.2
@@ -963,18 +960,6 @@ importers:
       tsdown:
         specifier: ^0.21.5
         version: 0.21.10(typescript@6.0.3)
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-
-  packages/lifetime:
-    devDependencies:
-      '@justfiles/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/node':
-        specifier: ^25.7.0
-        version: 25.7.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

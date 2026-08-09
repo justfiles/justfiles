@@ -1,6 +1,6 @@
 import type { Volume } from '@justfiles/fs'
+import { readProfile } from './agent-defaults.ts'
 import { parseFrontmatter } from './markdown'
-import { PROFILE as PROFILE_PATH } from './paths.ts'
 
 export const DEFAULT_TIMEZONE = 'UTC'
 
@@ -8,11 +8,10 @@ export async function resolveTimezone(
 	volume: Volume,
 	cfTimezone: string | undefined
 ): Promise<string> {
-	if (await volume.exists(PROFILE_PATH)) {
-		const fm = parseFrontmatter(new TextDecoder().decode(await volume.readFile(PROFILE_PATH)))
-		if (fm.timezone) return fm.timezone
-	}
-	return cfTimezone ?? DEFAULT_TIMEZONE
+	// Through the shared reader, so a missing profile is the built-in one — which carries no
+	// timezone, exactly like the untouched default file it stands in for.
+	const { timezone } = parseFrontmatter(await readProfile(volume))
+	return timezone || cfTimezone || DEFAULT_TIMEZONE
 }
 
 export function dateInTz(at: Date, tz: string): { year: number; month: number; day: number } {

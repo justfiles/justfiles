@@ -1,7 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
 import { ageCalibration } from './age-calibration'
-import type { AgentIdentityOwner } from './agent-defaults'
+import { readProfile, readSoul } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { deviceId } from './device'
 import { createReadDocTool, docsPrompt } from './docs'
@@ -24,7 +24,6 @@ import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
 type AssistantProps = {
 	volume: Volume
-	identity: AgentIdentityOwner
 	agent: Agent
 	text: LLMText
 	compaction: CompactionSettings
@@ -84,7 +83,6 @@ export interface Assistant {
 
 export async function createAssistant({
 	volume,
-	identity,
 	agent,
 	text,
 	compaction,
@@ -94,7 +92,6 @@ export async function createAssistant({
 	expressions,
 	os = false
 }: AssistantProps): Promise<Assistant> {
-	await identity.ready()
 	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
 	// only when there is something to read, so a host with no skills sees no dead tool.
 	const skillRegistry = createVolumeSkillRegistry(volume)
@@ -241,16 +238,16 @@ export async function createAssistant({
 	}
 
 	async function resolveSystemPrompt(): Promise<string> {
-		// No onboarding gate: `createAssistant` seeds a default persona (agent-defaults) so a
-		// soul is normally present; if it is still missing we fall back to a blank persona so
-		// the agent keeps working (skills, docs, tools) and never blocks the user.
-		const soul = (await file(volume, paths.soul(agentId)).text()) || ''
+		// No onboarding gate and no seeding: a missing soul IS the built-in persona
+		// (agent-defaults), so a brand-new Volume wakes up as the same agent a seeded one did —
+		// and nothing here writes to the Volume to make that true.
+		const soul = await readSoul(volume)
 
 		const prompt = systemPrompt(soul)
 		// Orientation first, before any injected body: the agent knows where it is, which paths
 		// are the user's, and which are the host's, before it reads a word of their content.
 		prompt.add('# your filesystem', filesystemPrompt({ os }))
-		const profile = await file(volume, paths.PROFILE).text()
+		const profile = await readProfile(volume)
 		if (profile) {
 			prompt.add('# about the user', profile)
 			const calibration = ageCalibration(profile)

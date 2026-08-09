@@ -26,7 +26,12 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import { IDENTITY_PATHS, PROFILE_PATH, readAgentName } from '@justfiles/agent/defaults'
+import {
+	IDENTITY_DEFAULTS,
+	IDENTITY_PATHS,
+	readAgentName,
+	readProfile
+} from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -159,9 +164,6 @@ export class Frieren extends DurableObject<Env> {
 	// The one admit->run->record seam `meteredBackend` and the `/api/ai` gateway both bill
 	// through (quota.ts) — so a platform-key call can never be metered two different ways.
 	private readonly meter: AiMeter
-	// The advisory adopt-mine marker, read once at construction. A committed destructive
-	// reset restarts the instance, so this can only change through `completeReset`.
-	private resetInProgress = false
 	// Filesystem-derived resources, built on first use and kept for the instance's lifetime.
 	private accounts?: ReturnType<typeof accountsCapabilities>
 	private apps?: FrierenApps
@@ -267,10 +269,7 @@ export class Frieren extends DurableObject<Env> {
 
 		// The DO's one initialization seam: no request runs until the schema exists, so
 		// nothing else needs a readiness gate.
-		ctx.blockConcurrencyWhile(async () => {
-			await migrateCF(this.ctx.storage)
-			this.resetInProgress = (await readGenerationState(this.db)).resetId !== undefined
-		})
+		ctx.blockConcurrencyWhile(() => migrateCF(this.ctx.storage))
 	}
 
 	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
@@ -293,7 +292,6 @@ export class Frieren extends DurableObject<Env> {
 	// drained, so the instance and everything it owns keep running.
 	public async completeReset(resetId: string): Promise<ResetResult> {
 		const state = await clearReset(this.db, resetId)
-		this.resetInProgress = state.resetId !== undefined
 		return { ok: true, generation: state.generation }
 	}
 
@@ -354,6 +352,7 @@ export class Frieren extends DurableObject<Env> {
 				agent: {
 					volume: this.volume,
 					paths: IDENTITY_PATHS,
+					defaults: IDENTITY_DEFAULTS,
 					timezone: () => resolveTimezone(this.volume, this.cfTimezone),
 					generateSoul: ({ name, gender, archetype, userAge, userGender }) =>
 						this.generateSoul({
@@ -379,7 +378,6 @@ export class Frieren extends DurableObject<Env> {
 			: undefined
 		const session = createAgentSession({
 			volume: this.volume,
-			identitySeedingSuppressed: () => this.resetInProgress,
 			capabilities,
 			backend: async () => {
 				const backend = await resolveAiAccount(
@@ -686,19 +684,11 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async loadParticipants(volume: Volume): Promise<DisplayParticipants> {
-		const [profile, agentName] = await Promise.all([
-			readFrontmatter(volume, PROFILE_PATH),
-			readAgentName(volume)
-		])
+		const [profile, agentName] = await Promise.all([readProfile(volume), readAgentName(volume)])
 
 		return {
-			userName: profile.name || 'You',
+			userName: parseFrontmatter(profile).name || 'You',
 			agentName
 		}
 	}
-}
-
-async function readFrontmatter(vol: Volume, path: string): Promise<Record<string, string>> {
-	if (!(await vol.exists(path))) return {}
-	return parseFrontmatter(new TextDecoder().decode(await vol.readFile(path)))
 }

@@ -2,13 +2,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
-import { createLifetimeGate, type LifetimeToken, StaleLifetimeError } from '@justfiles/lifetime'
-import {
-	createAgentIdentityOwner,
-	PROFILE_PATH,
-	readAgentName,
-	SOUL_PATH
-} from './agent-defaults.ts'
+import { PROFILE_PATH, readAgentName, SOUL_PATH } from './agent-defaults.ts'
 import {
 	type Assistant,
 	consolidateMemory,
@@ -69,9 +63,6 @@ export interface AgentSessionOptions {
 	// Ask the agent for a per-sentence expression tag (`[pleased]…`) — see expression.ts.
 	// Only for a host that strips them before display; frieren maps them to avatar faces.
 	expressions?: boolean
-	// An adopt-mine reset is republishing an existing tree. Seeding during that window would
-	// invent competing defaults; the host's durable reset marker decides when it is safe.
-	identitySeedingSuppressed?: () => boolean
 }
 
 // One broad event stream the UI subscribes to — busy/transcript/error — so every open
@@ -130,7 +121,6 @@ interface Built {
 
 export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	const { volume, apps, notify, readDoc, timezone } = options
-	const identity = createAgentIdentityOwner(volume, options.identitySeedingSuppressed)
 	// The banner name. Re-read from the soul on every build (see below) unless the host
 	// insists on branding of its own, so a rename reaches notifications too.
 	let title = options.title ?? 'Assistant'
@@ -144,8 +134,13 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	// Re-resolve the backend on every use and cache the built runtime keyed on `model +
 	// revision`, so a model switch or a token refresh takes effect on the next turn without a
 	// restart. The per-key promise dedupes concurrent builds; a failure clears the cache.
-	const lifetime = createLifetimeGate(0)
-	let active: { key: string; token: LifetimeToken<number>; built: Promise<Built> } | null = null
+	//
+	// `revision` is this cache's own clock, private to the session: the identity watches below
+	// bump it, and a build that started before a bump can never become active — it is simply
+	// retried against the files as they are now. Nothing outside sees it; it is not a lifetime,
+	// a fence, or a token a caller has to carry.
+	let revision = 0
+	let active: { key: string; revision: number; built: Promise<Built> } | null = null
 	let watching: Promise<void> | null = null
 
 	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
@@ -178,23 +173,26 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		while (true) {
 			const llm = await resolveBackend()
 			const key = `${llm.model.id} ${llm.revision}`
-			const token = lifetime.current()
+			const at = revision
 			let selected = active
-			if (!selected || selected.key !== key || selected.token !== token) {
+			if (!selected || selected.key !== key || selected.revision !== at) {
 				const built = build(llm)
-				selected = { key, token, built }
+				selected = { key, revision: at, built }
 				active = selected
 				void built.catch(() => {
 					if (active === selected) active = null
 				})
 			}
+			// Checked AFTER the await, on both paths: a watch that fired while this build ran
+			// invalidated it, so neither its Assistant nor its failure may be handed back — the
+			// loop reads the current files instead.
 			try {
 				const built = await selected.built
-				selected.token.assertCurrent()
+				if (selected.revision !== revision) continue
 				title = built.title
 				return built
 			} catch (error) {
-				if (lifetime.current() !== selected.token) continue
+				if (selected.revision !== revision) continue
 				throw error
 			}
 		}
@@ -207,7 +205,6 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		const text = createText(llm)
 		const assistant = await createAssistant({
 			volume,
-			identity,
 			agent: createAgent(llm),
 			text,
 			compaction,
@@ -260,7 +257,7 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 			for (const path of [SOUL_PATH, PROFILE_PATH]) {
 				unwatch.push(
 					await volume.watch(path, () => {
-						lifetime.replace(lifetime.current().value + 1)
+						revision++
 						active = null
 					})
 				)
@@ -393,12 +390,6 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 // by design — two actionable cases, then a catch-all.
 export function classifyFailure(error: unknown): { body: string; route: Route } {
 	const raw = error instanceof Error ? error.message : String(error)
-	if (error instanceof StaleLifetimeError || /runtime reset/i.test(raw)) {
-		return {
-			body: 'The runtime reset while your request was running. Please try again.',
-			route: { kind: 'chat' }
-		}
-	}
 	if (/no ai (backend|provider)|ai is turned off|enable an ai provider/i.test(raw)) {
 		return {
 			body: 'No AI is turned on. Enable an AI provider in Settings → Accounts to start chatting.',

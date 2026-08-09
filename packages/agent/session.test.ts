@@ -7,9 +7,8 @@ import {
 } from '@earendil-works/pi-ai'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
-import { StaleLifetimeError } from '@justfiles/lifetime'
 import { describe, expect, test } from 'vitest'
-import { PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts'
+import { DEFAULT_AGENT_NAME, PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts'
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
 import type { SessionEntry } from './session.manager.ts'
@@ -17,9 +16,12 @@ import { classifyFailure, createAgentSession, type SessionEvent } from './sessio
 
 const encoder = new TextEncoder()
 
-test('a stale foreground turn surfaces a retriable reset error without replaying it', () => {
-	expect(classifyFailure(new StaleLifetimeError(1, 2))).toEqual({
-		body: 'The runtime reset while your request was running. Please try again.',
+// A destructive reset replaces the whole Durable Object now (#425), so there is no
+// in-process "the runtime moved under you" failure left for the agent to name — and the
+// agent's public surface knows nothing about resets, generations or lifetimes.
+test('a reset is not a classified agent failure', () => {
+	expect(classifyFailure(new Error('runtime reset'))).toEqual({
+		body: 'Agent error: runtime reset',
 		route: { kind: 'chat' }
 	})
 })
@@ -777,6 +779,43 @@ describe('retiring a session on rollover', () => {
 	})
 })
 
+// A brand-new instance has no identity files, and must neither refuse to work nor invent
+// them: an adopt-mine republish is about to land the user's real ones, and a default written
+// here would be a second writer racing it (#425).
+test('a session against an empty volume is the built-in agent and seeds nothing', async () => {
+	const vol = volume(memStorage())
+	const session = createAgentSession({
+		volume: vol,
+		backend: scriptedBackend([]),
+		compaction: NO_COMPACTION
+	})
+
+	const prompt = await session.systemPrompt()
+	expect(prompt).toContain(`You are ${DEFAULT_AGENT_NAME},`)
+	expect(prompt).toContain('# about the user')
+	expect(await vol.exists(SOUL_PATH)).toBe(false)
+	expect(await vol.exists(PROFILE_PATH)).toBe(false)
+})
+
+// The other half of seeding nothing: the identity watches cover a path that does not exist
+// yet, so the soul an adopt-mine republish lands takes over from the built-in default on the
+// next turn — the same way an edit made here would.
+test('a soul arriving on a volume that had none replaces the built-in default', async () => {
+	const vol = volume(memStorage())
+	const session = createAgentSession({
+		volume: vol,
+		backend: scriptedBackend([]),
+		compaction: NO_COMPACTION
+	})
+	expect(await session.systemPrompt()).toContain(`You are ${DEFAULT_AGENT_NAME},`)
+
+	await vol.mkdir('/system/agents/main', { recursive: true })
+	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Fern\n---\n\nYou are Fern.'))
+	await new Promise((resolve) => setTimeout(resolve, 0))
+
+	expect(await session.systemPrompt()).toContain('You are Fern.')
+})
+
 // A session reads the identity files when it BUILDS its runtime, and every host memoises
 // the session — so without this, renaming the agent in Settings changed the file and
 // nothing else until the host restarted. Watching belongs to the session for exactly that
@@ -826,7 +865,7 @@ test('construction does not register watches before storage is migrated', async 
 	expect(registrations.slice(0, 2)).toEqual([SOUL_PATH, PROFILE_PATH])
 })
 
-test('a watch racing a pending build discards it and retries against the current lifetime', async () => {
+test('a watch racing a pending build discards it and retries against the current files', async () => {
 	const vol = volume(memStorage())
 	await seedIdentity(vol)
 	const reached = deferred()

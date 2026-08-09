@@ -17,9 +17,9 @@ export function MigrationSheet({ onClose }: { onClose: () => void }) {
 		setError(null)
 		try {
 			await migrateLocalProfileInto()
-			// A migrated soul/avatar overwrote the account's seeded default; the agent
-			// identity is cached in React state, so refresh it or the omnibar/avatar keep
-			// showing the fresh-account defaults until a reload.
+			// A migrated soul/avatar replaced the identity the account never personalized;
+			// the agent identity is cached in React state, so refresh it or the omnibar/avatar
+			// keep showing the built-in defaults until a reload.
 			await refreshIdentity().catch(() => {})
 			onClose()
 		} catch {
