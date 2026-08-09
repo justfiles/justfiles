@@ -119,6 +119,9 @@ export type ResetDecision =
 	| { ok: true; next: GenerationState; replayed?: true }
 	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
+// The answer to "did MY reset land?", asked of a fresh instance after the committing one
+// terminated itself. `committed` is what the caller waits for; `generation` lets a negative
+// answer still report where the volume actually is.
 export type ResetStatus =
 	| { committed: true; generation: number }
 	| { committed: false; generation: number }
@@ -219,6 +222,12 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
 	)
 }
 
+/**
+ * Whether `operationId` is the reset this volume last committed. The committing instance
+ * terminates itself the moment the commit is durable, so its caller never receives an
+ * answer — this is how that caller proves, against a fresh instance, that the disconnect it
+ * saw was a success rather than a failure.
+ */
 export async function readResetStatus(db: DbAdapter, operationId: string): Promise<ResetStatus> {
 	const state = await readGenerationState(db)
 	return state.committedReset?.operationId === operationId

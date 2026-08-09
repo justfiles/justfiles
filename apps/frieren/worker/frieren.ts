@@ -50,6 +50,7 @@ import {
 	type DbAdapter,
 	type DestructiveResetBody,
 	type ResetResult,
+	type ResetStatus,
 	readGenerationState,
 	readResetStatus,
 	resetVolume
@@ -68,7 +69,7 @@ import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
-import { commitResetAndRestart } from './reset-instance.ts'
+import { commitReset } from './reset-instance.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -255,12 +256,18 @@ export class Frieren extends DurableObject<Env> {
 			.route(
 				'/fs',
 				createFsApi(fs, {
-					// The two sides of the server volume's lineage: read the epoch, and
-					// mutate it. Both need the DO's raw store (and, for reset, a cache
-					// rebuild), so they are injected; createFsApi owns the routes.
+					// Reading the volume's lineage epoch needs the DO's raw store, so it is
+					// injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),
-					reset: (req) =>
-						req.mode === 'complete' ? this.completeReset(req.resetId) : this.resetAndRestart(req)
+					// Only the non-destructive marker clear. A destructive reset is a
+					// commit-then-restart handshake the authenticated Worker drives from
+					// OUTSIDE (reset-ack.ts), and it intercepts POST /fs/reset ahead of this
+					// route — committing here instead would leave THIS instance running at a
+					// generation it no longer owns.
+					reset: async (req) => {
+						if (req.mode === 'complete') return this.completeReset(req.resetId)
+						throw new Error('destructive reset is driven by the authenticated Worker')
+					}
 				})
 			)
 
@@ -269,19 +276,29 @@ export class Frieren extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(() => migrateCF(this.ctx.storage))
 	}
 
+	// Commit a destructive reset and take this instance down with it. A successful commit
+	// never answers — the abort destroys the isolate mid-call — so the caller proves what
+	// happened by asking a fresh instance (reset-ack.ts). Only a decision this instance
+	// survives to report, a stale CAS or an idempotent replay, comes back as a value.
 	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
 		return this.ctx.blockConcurrencyWhile(() =>
-			commitResetAndRestart(request, {
+			commitReset(request, {
 				reset: (body) => resetVolume(this.db, body),
+				sync: () => this.ctx.storage.sync(),
 				terminate: (reason) => {
 					this.ctx.abort(reason)
+					// Belt and braces: if `abort()` ever returns, throwing out of
+					// `blockConcurrencyWhile` terminates and resets the object anyway, so the
+					// instance cannot survive its own reset either way.
 					throw new Error('DurableObjectState.abort() returned')
 				}
 			})
 		)
 	}
 
-	public async resetStatus(operationId: string) {
+	// Did `operationId` commit? Asked of whatever instance exists now, which is how a caller
+	// turns the disconnect it saw into an answer.
+	public async resetStatus(operationId: string): Promise<ResetStatus> {
 		return readResetStatus(this.db, operationId)
 	}
 
