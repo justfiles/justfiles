@@ -45,6 +45,9 @@ export type LocalProfile = {
 	// Whether the one-time "bring your local work into this account" offer was
 	// resolved for this account profile. Absent = never asked.
 	migration?: 'migrated' | 'dismissed'
+	// A remote wipe whose acknowledgement/local deletion has not completed. Kept
+	// outside the IDB being deleted so a 503 retry reuses the committed operation.
+	pendingFactoryReset?: { operationId: string; fromGeneration: number }
 }
 
 const REGISTRY_KEY = 'frieren-profiles'
@@ -106,6 +109,23 @@ function profileForUser(remoteUserId: string): LocalProfile {
 
 function forgetProfileEntry(id: string): void {
 	writeRegistry(readRegistry().filter((p) => p.id !== id))
+}
+
+function factoryResetOperation(profileId: string, fromGeneration: number) {
+	const profiles = readRegistry()
+	const profile = profiles.find((entry) => entry.id === profileId)
+	if (!profile) throw new Error('factory reset profile is missing')
+	profile.pendingFactoryReset ??= { operationId: crypto.randomUUID(), fromGeneration }
+	writeRegistry(profiles)
+	return profile.pendingFactoryReset
+}
+
+function clearFactoryResetOperation(profileId: string): void {
+	const profiles = readRegistry()
+	const profile = profiles.find((entry) => entry.id === profileId)
+	if (!profile?.pendingFactoryReset) return
+	delete profile.pendingFactoryReset
+	writeRegistry(profiles)
 }
 
 function dbName(profileId: string): string {
@@ -544,20 +564,30 @@ export async function resetTakeMine(): Promise<void> {
 export async function factoryReset(getToken: GetToken): Promise<void> {
 	const prev = active
 	if (!prev) return
+	let operation: LocalProfile['pendingFactoryReset']
 	if (prev.remoteUserId) {
 		// `wipe` is not part of the sync layer's reset (it discards content too), so
-		// it goes over the same typed /fs/reset route directly.
+		// it goes over the same typed /fs/reset route directly. Persist the request
+		// outside IDB first: a 503 is ambiguous, and retrying must confirm the same
+		// operation rather than race it with a new id at the old generation.
+		operation = factoryResetOperation(prev.profileId, prev.sync?.generation() ?? 1)
 		const res = await createFsClient(getToken).reset.$post({
 			json: {
 				mode: 'wipe',
-				fromGeneration: prev.sync?.generation() ?? 1,
-				operationId: crypto.randomUUID()
+				fromGeneration: operation.fromGeneration,
+				operationId: operation.operationId
 			}
 		})
-		if (!res.ok) throw new Error(`factory reset failed: ${res.status}`)
+		if (!res.ok) {
+			// A conflict is definitive: this operation did not commit and cannot be
+			// replayed. Transport/5xx failures remain ambiguous and retain the marker.
+			if (res.status === 409) clearFactoryResetOperation(prev.profileId)
+			throw new Error(`factory reset failed: ${res.status}`)
+		}
 	}
 	const name = prev.dbName
 	await releaseFsVolume({ flush: false })
 	await deleteIdb(name)
+	if (operation) clearFactoryResetOperation(prev.profileId)
 	location.reload()
 }
