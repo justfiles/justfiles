@@ -5,9 +5,9 @@ import { agentDir, avatarsDir, PROFILE, soul } from './paths.ts'
 // identity files it reads from the Volume, plus the sensible defaults it seeds so it works
 // out of the box with NO onboarding gate — personalization is opt-in and overwrites them.
 //
-// Deliberately pi-free (only `@justfiles/fs`): `createAssistant` seeds through it, and a
-// terminal's *client* can import the paths + seeder for its own pre-seed / personalization
-// UI without pulling in the agent runtime. Import from `@justfiles/agent/defaults`.
+// Deliberately pi-free (only `@justfiles/fs`): the agent runtime owns seeding, while Settings
+// imports only the paths for its independent read/write surface. Import from
+// `@justfiles/agent/defaults`.
 //
 // The path constants are the PUBLIC spelling of package-internal paths.ts.
 export const SOUL_PATH = soul()
@@ -94,17 +94,43 @@ export async function readAgentName(volume: Volume): Promise<string> {
 	return match?.[1] || DEFAULT_AGENT_NAME
 }
 
-// Write the default soul + empty profile if they are missing. Idempotent: an existing
-// (personalized) file is never overwritten, so returning users keep their persona.
-export async function ensureAgentDefaults(volume: Volume): Promise<void> {
-	if (!(await volume.exists(PROFILE_PATH))) {
-		// After a wipe the whole volume is empty, so `/system` may not exist yet and
-		// `writeFile` does not create parents — ensure it before writing the profile.
-		await volume.mkdir('/system', { recursive: true })
-		await volume.writeFile(PROFILE_PATH, encoder.encode(DEFAULT_PROFILE))
+export interface AgentIdentityOwner {
+	ready(): Promise<void>
+}
+
+// One owner per host runtime. Suppression stays outside the memo: an adopt-mine can begin
+// after a completed readiness, and every later entry must still be a no-op until complete.
+export function createAgentIdentityOwner(
+	volume: Volume,
+	suppressed: () => boolean = () => false
+): AgentIdentityOwner {
+	let readiness: Promise<void> | undefined
+	return {
+		ready() {
+			if (suppressed()) return Promise.resolve()
+			if (!readiness) {
+				const pending = seedAgentIdentity(volume)
+				readiness = pending
+				void pending.catch(() => {
+					if (readiness === pending) readiness = undefined
+				})
+			}
+			return readiness
+		}
 	}
-	if (!(await volume.exists(SOUL_PATH))) {
-		await volume.mkdir(AGENT_DIR, { recursive: true })
-		await volume.writeFile(SOUL_PATH, encoder.encode(DEFAULT_SOUL))
+}
+
+async function seedAgentIdentity(volume: Volume): Promise<void> {
+	await volume.mkdir('/system', { recursive: true })
+	await create(PROFILE_PATH, DEFAULT_PROFILE)
+	await volume.mkdir(AGENT_DIR, { recursive: true })
+	await create(SOUL_PATH, DEFAULT_SOUL)
+
+	async function create(path: string, data: string): Promise<void> {
+		try {
+			await volume.writeFile(path, encoder.encode(data), { exclusive: true })
+		} catch (error) {
+			if (!(error instanceof Error) || !error.message.startsWith('EEXIST')) throw error
+		}
 	}
 }

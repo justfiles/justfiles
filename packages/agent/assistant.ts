@@ -1,7 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
 import { ageCalibration } from './age-calibration'
-import { ensureAgentDefaults } from './agent-defaults'
+import type { AgentIdentityOwner } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { deviceId } from './device'
 import { createReadDocTool, docsPrompt } from './docs'
@@ -24,6 +24,7 @@ import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
 type AssistantProps = {
 	volume: Volume
+	identity: AgentIdentityOwner
 	agent: Agent
 	text: LLMText
 	compaction: CompactionSettings
@@ -83,6 +84,7 @@ export interface Assistant {
 
 export async function createAssistant({
 	volume,
+	identity,
 	agent,
 	text,
 	compaction,
@@ -92,9 +94,7 @@ export async function createAssistant({
 	expressions,
 	os = false
 }: AssistantProps): Promise<Assistant> {
-	// Seed the platform's default persona + empty profile if absent, so the agent always has
-	// a working identity and never blocks on "onboarding". Idempotent; personalization wins.
-	await ensureAgentDefaults(volume)
+	await identity.ready()
 	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
 	// only when there is something to read, so a host with no skills sees no dead tool.
 	const skillRegistry = createVolumeSkillRegistry(volume)

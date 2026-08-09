@@ -358,7 +358,7 @@ test('agent.writeSoul then readSoul round-trips, through the paths the host was 
 
 test('the seeded default reads as unbound, so the pane can send you to the summoning', async () => {
 	const { vol, caps } = agentHost()
-	// What `ensureAgentDefaults` seeds at boot (kept as a literal: this asserts the
+	// What the agent identity owner seeds on first agent access (kept as a literal: this asserts the
 	// reading of a seeded file, not the seeder).
 	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(

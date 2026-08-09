@@ -9,6 +9,7 @@ import type { LLMText } from './llm.text.ts'
 import { filesystemPrompt, systemPrompt } from './prompts.ts'
 
 const encoder = new TextEncoder()
+const identity = { ready: async () => {} }
 
 function testTool(name: string): AgentTool {
 	const parameters = Type.Object({})
@@ -73,6 +74,7 @@ describe('assistant prompt', () => {
 	test('retries an empty assistant response before persisting', async () => {
 		const rt = await createAssistant({
 			volume: volume(memStorage()),
+			identity,
 			agent: scriptedAgent([assistant([]), assistant([{ type: 'text', text: 'Recovered' }])]),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -105,6 +107,7 @@ describe('assistant prompt', () => {
 		agent.state.tools = [imageTool]
 		const rt = await createAssistant({
 			volume: volume(memStorage()),
+			identity,
 			agent,
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -131,6 +134,7 @@ describe('assistant tool API', () => {
 		const agent = new Agent()
 		const rt = await createAssistant({
 			volume: volume(memStorage()),
+			identity,
 			agent,
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -155,6 +159,7 @@ describe('assistant tool API', () => {
 		const agent = new Agent()
 		const rt = await createAssistant({
 			volume: vol,
+			identity,
 			agent,
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },
@@ -189,6 +194,7 @@ describe('assistant tool API', () => {
 		)
 		const rt = await createAssistant({
 			volume: vol,
+			identity,
 			agent: new Agent(),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -199,6 +205,7 @@ describe('assistant tool API', () => {
 	test('adds the apps block from appsPrompt', async () => {
 		const rt = await createAssistant({
 			volume: volume(memStorage()),
+			identity,
 			agent: new Agent(),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },
@@ -212,6 +219,7 @@ describe('assistant tool API', () => {
 		const make = (os: boolean) =>
 			createAssistant({
 				volume: volume(memStorage()),
+				identity,
 				agent: new Agent(),
 				text: testText(),
 				compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },

@@ -26,12 +26,7 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import {
-	ensureAgentDefaults,
-	IDENTITY_PATHS,
-	PROFILE_PATH,
-	readAgentName
-} from '@justfiles/agent/defaults'
+import { IDENTITY_PATHS, PROFILE_PATH, readAgentName } from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -50,6 +45,7 @@ import {
 	clearReset,
 	createFsApi,
 	type DbAdapter,
+	type GenerationState,
 	type ResetBody,
 	type ResetResult,
 	readGenerationState,
@@ -248,7 +244,7 @@ export class Frieren extends DurableObject<Env> {
 
 		ctx.blockConcurrencyWhile(async () => {
 			await migrateCF(this.ctx.storage)
-			this.scopes = this.createScopes((await readGenerationState(this.db)).generation)
+			this.scopes = this.createScopes(await readGenerationState(this.db))
 		})
 	}
 
@@ -317,7 +313,7 @@ export class Frieren extends DurableObject<Env> {
 		return generateAgentSoul(this.meteredBackend(models, model), input, { firstWords: true })
 	}
 
-	private createScopes(generation: number): VolumeScopeOwner<AgentSession, FrierenApps> {
+	private createScopes(state: GenerationState): VolumeScopeOwner<AgentSession, FrierenApps> {
 		type Scope = VolumeScope<AgentSession, FrierenApps>
 		type ScopedAi = ReturnType<Frieren['createPlatformAi']> & { text: LLMText }
 		const scopedAi = new WeakMap<Scope, ScopedAi>()
@@ -335,7 +331,7 @@ export class Frieren extends DurableObject<Env> {
 
 		return createVolumeScopeOwner({
 			storage: this.fs,
-			generation,
+			state,
 			reset: {
 				read: () => readGenerationState(this.db),
 				apply: (request) => resetVolume(this.db, request),
@@ -343,7 +339,6 @@ export class Frieren extends DurableObject<Env> {
 			},
 			factories: {
 				ready: async (scope) => {
-					await ensureAgentDefaults(scope.volume)
 					await ensureAccount(
 						scope.volume,
 						{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
@@ -396,7 +391,7 @@ export class Frieren extends DurableObject<Env> {
 						})
 					})
 				},
-				session: (scope) => {
+				session: (scope, resetInProgress) => {
 					const { models, model, generateImage } = getAi(scope)
 					const apps = scope.apps()
 					const image = scopedImage.get(scope)
@@ -410,6 +405,7 @@ export class Frieren extends DurableObject<Env> {
 							: undefined
 					const session = createAgentSession({
 						volume: scope.volume,
+						identitySeedingSuppressed: resetInProgress,
 						capabilities: agentCaps,
 						backend: async () => {
 							const backend = await resolveAiAccount(
