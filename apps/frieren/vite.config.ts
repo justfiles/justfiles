@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { cloudflare } from '@cloudflare/vite-plugin'
 import react from '@vitejs/plugin-react'
@@ -6,7 +8,28 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { RUNNER_CACHE_MAX_ENTRIES, RUNNER_CACHE_NAME } from './shared/appstore.ts'
 import { appstore } from './vite-appstore.ts'
 
+// WHICH BUILD THIS IS, stamped in here because only the build knows: the running bundle
+// cannot ask a server what it is, and a version number alone does not always name one
+// build. Staging redeploys from `main` on every push (see the deploy workflow), so its
+// version number names every commit since the last release — the head commit is what tells
+// two staging builds apart. Production deploys from a `frieren-v*` tag, where the version
+// number IS the build and a commit would only be noise. Settings prints it verbatim
+// (`host.version`; see src/apps/capabilities.client.ts).
+function buildVersion(): string {
+	const { version } = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf8')) as {
+		version: string
+	}
+	if (process.env.CLOUDFLARE_ENV !== 'staging') return version
+	// GitHub Actions hands the commit it checked out; a local staging build asks git.
+	const sha =
+		process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' })
+	return `${version}+${sha.trim().slice(0, 7)}`
+}
+
 export default defineConfig({
+	define: {
+		'import.meta.env.VITE_FRIEREN_VERSION': JSON.stringify(buildVersion())
+	},
 	server: {
 		// In dev, @cloudflare/vite-plugin serves the worker's `env.ASSETS.fetch()`
 		// through this dev server. Those requests carry the synthetic `assets.invalid`

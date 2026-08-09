@@ -24,6 +24,11 @@ import { frierenCompile, frierenRunner } from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
 
+// Which build this is, stamped in at build time (see vite.config.ts). Undefined only under
+// a bare config with no stamp — a test run — where `host.version` then reports itself
+// UNAVAILABLE, exactly as it does on a host that doesn't know its own build.
+const VERSION = import.meta.env.VITE_FRIEREN_VERSION as string | undefined
+
 // App notifications run entirely in the browser: `notifyHost` stamps `source =
 // appId` (kernel-trusted, unspoofable), then this channel writes straight to the
 // one notification store — no DO round-trip, so it works offline. A click defaults
@@ -56,6 +61,10 @@ export function clientCapabilities(
 			volume: volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
 			settings: settingsHost({
 				user: getUser,
+				// Served here for the same reason `user` is: the build the user is running is
+				// THIS bundle, and only it knows what it is. Asking the DO would answer for the
+				// server half, which a stale service worker can leave a version behind.
+				version: VERSION,
 				// The built-in art rides along because `agent.listAvatars` is served HERE: the
 				// shell already has these bytes in its bundle, so offering them costs nothing.
 				agent: {

@@ -114,6 +114,10 @@ async function createAuthedVolume(token: string) {
 
 async function seedOnboarding(token: string) {
 	const vol = await createAuthedVolume(token)
+	// FIRST: nothing seeds `/system` any more (identity defaults are resolved from an absent
+	// file), so a brand-new test user's volume has no such directory and the profile write
+	// below fails with ENOENT before it can create one.
+	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(
 		PROFILE_PATH,
 		encoder.encode(
@@ -127,7 +131,6 @@ async function seedOnboarding(token: string) {
 			].join('\n')
 		)
 	)
-	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(
 		SOUL_PATH,
 		encoder.encode(

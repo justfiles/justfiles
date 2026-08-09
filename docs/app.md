@@ -641,6 +641,10 @@ Privileged capability signatures:
 	name?: string
 	avatarUrl?: string
 } | null>
+// Which build the host is, as one opaque string to print verbatim (frieren's staging
+// carries the head commit; production carries the version number). UNAVAILABLE on a host
+// that doesn't know its own build.
+'host.version'(input: {}): Promise<string>
 // The desktop wallpaper, as the bytes at the shell's one well-known path — a flat colour
 // is bytes too (the tiny SVG Settings writes for one). Reading null means unset; writing
 // null puts the shell back on its own default. UNAVAILABLE on a host whose shell has no

@@ -141,6 +141,10 @@ export interface SettingsHostDeps {
 	accounts?: AccountsAdmin
 	usage?: GetUsage
 	user?: GetUser
+	// Which build this host is, already composed (see the contract). A constant and not a
+	// thunk, because a running build cannot become a different one — a host stamps it in at
+	// build time and wires it here. Absent ⇒ `host.version` is UNAVAILABLE.
+	version?: string
 	// The agent's identity files, where the Volume is (both hosts).
 	agent?: AgentDeps
 	// The desktop's look, where a desktop has one.
@@ -154,7 +158,7 @@ export interface SettingsHostDeps {
 type Served = { [K in keyof SettingsCapability]?: SettingsCapability[K] }
 
 export function settingsHost(deps: SettingsHostDeps): Capability {
-	const { accounts, usage, user, agent, appearance, remote } = deps
+	const { accounts, usage, user, version, agent, appearance, remote } = deps
 	const served: Served = {
 		...(accounts && {
 			'accounts.listProviders': (i) => accounts.listProviders(i),
@@ -164,6 +168,7 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 			'accounts.disconnect': (i) => accounts.disconnect(i)
 		}),
 		...(usage && { 'host.usage': async () => usage() }),
+		...(version && { 'host.version': async () => version }),
 		...(agent && agentMethods(agent)),
 		...(appearance && appearanceMethods(appearance)),
 		// Always local, even with no dep: "no one is signed in" is an answer, not an
