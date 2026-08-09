@@ -57,7 +57,7 @@ export interface AccountInfo {
 	origin?: AccountOrigin
 }
 
-// The admin methods, as `accountsCapabilities` hands them to `settingsHost`. Not a
+// The admin methods, as `hostAccounts` hands them to `settingsHost`. Not a
 // capability: a plain impl, so composing it needs no second contract.
 export interface AccountsAdmin {
 	listProviders(input: Record<string, never>): Promise<ProviderInfo[]>

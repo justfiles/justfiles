@@ -5,9 +5,9 @@ import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import {
-	accountsCapabilities,
-	type SecretCodec,
-	sealAccounts
+	type HostAccounts,
+	hostAccounts,
+	type SecretCodec
 } from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
@@ -17,7 +17,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { builtinStore } from './builtins'
-import { chatgptProvider, resolveAgentBackend } from './chatgpt'
+import { chatgptProvider, codexBackend } from './chatgpt'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { identity } from './identity'
@@ -27,45 +27,60 @@ import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
+let accountsOnce: Promise<HostAccounts> | undefined
 
 const systemAllowlist = ['app.justfiles.frieren.files']
 
 // The daemon's account providers: the shared Google/iCloud modules wired to the
 // loopback auth flow + env OAuth client, plus the daemon-local ChatGPT provider
-// (which rides pi-ai's Codex runtime).
+// (which rides pi-ai's Codex runtime). No builtin AI here — this Mac has no platform
+// floor, so with nothing selected there is simply no AI.
 const accountsProviders = () => [
 	googleProvider({ flow: loopbackAuthFlow(), client: googleClient() }),
 	icloudProvider(),
 	chatgptProvider()
 ]
 
-export function getKernel(): Promise<Kernel> {
+// One account module over a Volume. `getAccounts` memoises this for the daemon process;
+// tests build a throwaway one over a temp Volume. `secretCodec` seals the creds lane at
+// rest — the default stays the pre-A4 clear codec, so a test that never opts in is hermetic
+// (it mints no Keychain item on the machine running it).
+export function daemonAccounts(fs: Volume, opts: { secretCodec?: SecretCodec } = {}): HostAccounts {
+	return hostAccounts(accountsProviders(), fs, {
+		// Every account this daemon holds was connected directly on this Mac (D1) — the
+		// `device` lane in the "one account, many hosts" design (#296). Labelled by
+		// hostname so Settings can tell two Macs apart once E1/E2 land.
+		origin: { kind: 'device', label: hostname() },
+		...opts
+	})
+}
+
+// The daemon's ONE account module. Settings, the `ai` capability, soul generation and the
+// agent's own backend all resolve through this instance, so a credential write can never
+// race a read taken from a second store over the same files.
+export function getAccounts(): Promise<HostAccounts> {
 	// The Keychain key lives behind `accountsSecretCodec`, which resolves it on first USE — so
 	// boot never touches the Keychain, and a Keychain this daemon cannot read costs the
 	// credential lane (A2 lists the record as "re-connect") rather than the whole daemon.
-	kernelOnce ??= getVolume().then((fs) => buildKernel(fs, { secretCodec: accountsSecretCodec }))
+	accountsOnce ??= getVolume().then((fs) =>
+		daemonAccounts(fs, { secretCodec: accountsSecretCodec })
+	)
+	return accountsOnce
+}
+
+export function getKernel(): Promise<Kernel> {
+	kernelOnce ??= Promise.all([getVolume(), getAccounts()]).then(([fs, accounts]) =>
+		buildKernel(fs, accounts)
+	)
 	return kernelOnce
 }
 
-// Build the kernel over a given Volume: the capability registry (volume/devkit/settings/
-// email/calendar/ai/notify), the reducer sandbox pool, and the seeded builtin catalog.
-// `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
-// temp Volume (so they never touch the real support tree or share the daemon's singleton).
-// `secretCodec` seals the accounts store at rest. `getKernel` — the only production caller —
-// supplies the real Keychain-backed one; the default stays the pre-A4 clear codec so a test
-// that never opts in is hermetic (it mints no Keychain item on the machine running it).
-export async function buildKernel(
-	fs: Volume,
-	opts: { secretCodec?: SecretCodec } = {}
-): Promise<Kernel> {
-	const { secretCodec } = opts
-	// Anything already on disk in the clear (an account connected before the Keychain key
-	// existed, or while it was unreadable) gets sealed now: `decode` deliberately passes a
-	// non-envelope through unchanged (that's what makes turning encryption on a no-flag-day
-	// change), so nothing else would ever rewrite a credential that doesn't rotate — iCloud's
-	// app-specific password is written once, at connect, and never again. Best-effort: a boot
-	// must succeed even if this fails.
-	await sealAccounts(fs, { secretCodec })
+// Build the kernel over a given Volume + that Volume's account module: the capability
+// registry (volume/devkit/settings/email/calendar/ai/notify), the reducer sandbox pool, and
+// the seeded builtin catalog. `getKernel` memoises this over the process Volume; tests build
+// a throwaway kernel over a temp Volume (so they never touch the real support tree or share
+// the daemon's singleton).
+export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
@@ -73,17 +88,10 @@ export async function buildKernel(
 	const ai = aiCapability({
 		volume: fs,
 		generate: async ({ system, prompt }) => {
-			const backend = await resolveAgentBackend(fs, { secretCodec })
+			const backend = await accounts.resolveAi(codexBackend)
 			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return text(backend).gen(system, prompt)
 		}
-	})
-	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
-		// Every account this daemon holds was connected directly on this Mac (D1) — the
-		// `device` lane in the "one account, many hosts" design (#296). Labelled by
-		// hostname so Settings can tell two Macs apart once E1/E2 land.
-		origin: { kind: 'device', label: hostname() },
-		secretCodec
 	})
 
 	const k = kernel({
@@ -115,7 +123,7 @@ export async function buildKernel(
 			// absent (signed out, or nothing turned on) makes only Rewrite UNAVAILABLE, so the
 			// pane still works and you write the soul yourself.
 			settings: settingsHost({
-				accounts,
+				accounts: accounts.admin,
 				user: () => identity.currentUser(),
 				agent: {
 					volume: fs,
@@ -125,7 +133,7 @@ export async function buildKernel(
 					// daemon's own bundle, so a picker here needs nothing from the cloud.
 					builtins: BUILTIN_AVATARS,
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-						const backend = await resolveAgentBackend(fs, { secretCodec })
+						const backend = await accounts.resolveAi(codexBackend)
 						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')
 						return generateSoul(backend, {
 							agentName: name,
@@ -137,8 +145,8 @@ export async function buildKernel(
 					}
 				}
 			}),
-			email,
-			calendar,
+			email: accounts.email,
+			calendar: accounts.calendar,
 			ai,
 			// Sandboxed apps reach the host's notification channel here; the kernel stamps
 			// `source = appId` so a banner routes back to the app that raised it.

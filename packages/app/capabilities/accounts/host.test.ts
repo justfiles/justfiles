@@ -1,24 +1,18 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
-import { volumeAccountStore } from './account.ts'
+import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
-import {
-	accountsCapabilities,
-	aesGcmSecretCodec,
-	ensureAccount,
-	resolveAiAccount,
-	sealAccounts
-} from './host.ts'
+import { aesGcmSecretCodec, hostAccounts } from './host.ts'
 import type { Auth, Provider } from './provider.ts'
 import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
 import { icloudProvider } from './providers/icloud.ts'
 import { platformProvider } from './providers/platform.ts'
 
-// The credential-bearing stores are internal, so tests drive the facets through
-// `accountsCapabilities` over a real in-memory Volume. State the admin impl can't
-// express (pre-granted scopes, a specific active selection) is written straight to the
-// account store / active-AI pointer — the same Volume the capabilities read.
+// The credential-bearing store is internal, so tests drive the facets through
+// `hostAccounts` over a real in-memory Volume. State the admin surface can't express
+// (pre-granted scopes, a specific active selection) is written straight to the account
+// store / active-AI pointer — the same Volume the module reads.
 // The admin impl is a plain object (it reaches apps only through the gated `settings`
 // capability — see settings/host.test.ts for the gate), so it is called directly here.
 
@@ -89,9 +83,14 @@ function testProviders(
 	]
 }
 
+// The store's only write is a read/decide/write; "just store this record" is the change
+// that ignores what was there (see account.test.ts).
+const put = (store: AccountStore, account: Account): Promise<void> =>
+	store.update(account.id, () => account)
+
 async function setup(providers: Provider[] = testProviders()) {
 	const vol = volume(memStorage())
-	const caps = accountsCapabilities(providers, vol)
+	const caps = hostAccounts(providers, vol)
 	return { caps, vol, accounts: volumeAccountStore(vol), activeAi: volumeActiveAi(vol) }
 }
 
@@ -101,13 +100,26 @@ function use(capability: string, method: string, input: unknown): CapabilityCall
 function json(body: unknown): Response {
 	return new Response(JSON.stringify(body), { status: 200 })
 }
+async function until(check: () => Promise<void> | void): Promise<void> {
+	let last: unknown
+	for (let i = 0; i < 200; i++) {
+		try {
+			await check()
+			return
+		} catch (e) {
+			last = e
+			await new Promise((r) => setTimeout(r, 5))
+		}
+	}
+	throw last
+}
 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('accounts admin impl', () => {
 	test('listProviders projects the registry', async () => {
 		const { caps } = await setup()
-		const list = await caps.accounts.listProviders({})
+		const list = await caps.admin.listProviders({})
 		expect(list.map((p) => [p.id, p.authKind, p.capabilities.sort().join('+')])).toEqual([
 			['google', 'interactive', 'calendar+email'],
 			['icloud', 'form', 'calendar'],
@@ -121,7 +133,7 @@ describe('accounts admin impl', () => {
 
 	test('connect (interactive) derives accountId; connect requests no scopes yet', async () => {
 		const { caps, accounts } = await setup()
-		expect(await caps.accounts.connect({ providerId: 'google' })).toEqual({
+		expect(await caps.admin.connect({ providerId: 'google' })).toEqual({
 			accountId: 'me@gmail.com'
 		})
 		const account = await accounts.get('me@gmail.com')
@@ -136,7 +148,7 @@ describe('accounts admin impl', () => {
 	test('connect (form) keys the account by the acquired identity', async () => {
 		const { caps, accounts } = await setup()
 		expect(
-			await caps.accounts.connect({
+			await caps.admin.connect({
 				providerId: 'icloud',
 				credentials: { username: 'u@me.com', password: 'p' }
 			})
@@ -150,10 +162,10 @@ describe('accounts admin impl', () => {
 
 	test('listAccounts derives enablement from scopes + the active-AI selection', async () => {
 		const { caps, accounts, activeAi } = await setup()
-		await accounts.put({ id: 'g', provider: 'google', creds: {}, scopes: [GMAIL_SCOPE] })
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		await put(accounts, { id: 'g', provider: 'google', creds: {}, scopes: [GMAIL_SCOPE] })
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai', model: 'default' })
-		const list = await caps.accounts.listAccounts({})
+		const list = await caps.admin.listAccounts({})
 		expect(list.find((a) => a.accountId === 'g')?.enabled).toEqual(['email'])
 		const ai = list.find((a) => a.accountId === 'u@openai')
 		expect(ai?.enabled).toEqual(['ai'])
@@ -168,19 +180,19 @@ describe('accounts admin impl', () => {
 	describe('origin', () => {
 		test('every account is stamped with the configured origin', async () => {
 			const vol = volume(memStorage())
-			const caps = accountsCapabilities(testProviders(), vol, {
+			const caps = hostAccounts(testProviders(), vol, {
 				origin: { kind: 'device', label: 'Fern’s MacBook' }
 			})
-			await caps.accounts.connect({ providerId: 'chatgpt' })
-			const [account] = await caps.accounts.listAccounts({})
+			await caps.admin.connect({ providerId: 'chatgpt' })
+			const [account] = await caps.admin.listAccounts({})
 			expect(account?.origin).toEqual({ kind: 'device', label: 'Fern’s MacBook' })
 		})
 
 		test('the cloud variant stamps the same way', async () => {
 			const vol = volume(memStorage())
-			const caps = accountsCapabilities(testProviders(), vol, { origin: { kind: 'cloud' } })
-			await caps.accounts.connect({ providerId: 'chatgpt' })
-			const [account] = await caps.accounts.listAccounts({})
+			const caps = hostAccounts(testProviders(), vol, { origin: { kind: 'cloud' } })
+			await caps.admin.connect({ providerId: 'chatgpt' })
+			const [account] = await caps.admin.listAccounts({})
 			expect(account?.origin).toEqual({ kind: 'cloud' })
 		})
 
@@ -188,22 +200,22 @@ describe('accounts admin impl', () => {
 			// Today's DO/mac callers, before this field existed — forward compatibility with
 			// a reader that defaults an absent origin to 'cloud' (see app-settings).
 			const { caps } = await setup()
-			await caps.accounts.connect({ providerId: 'chatgpt' })
-			const [account] = await caps.accounts.listAccounts({})
+			await caps.admin.connect({ providerId: 'chatgpt' })
+			const [account] = await caps.admin.listAccounts({})
 			expect(account?.origin).toBeUndefined()
 		})
 	})
 
 	test('enabling email widens scope via incremental consent; disabling drops it', async () => {
 		const { caps, accounts } = await setup()
-		await accounts.put({ id: 'me@gmail.com', provider: 'google', creds: { refresh: 'R' } })
-		await caps.accounts.setEnabled({
+		await put(accounts, { id: 'me@gmail.com', provider: 'google', creds: { refresh: 'R' } })
+		await caps.admin.setEnabled({
 			accountId: 'me@gmail.com',
 			capability: 'email',
 			enabled: true
 		})
 		expect((await accounts.get('me@gmail.com'))?.scopes).toContain(GMAIL_SCOPE)
-		await caps.accounts.setEnabled({
+		await caps.admin.setEnabled({
 			accountId: 'me@gmail.com',
 			capability: 'email',
 			enabled: false
@@ -218,13 +230,13 @@ describe('accounts admin impl', () => {
 			scopes
 		}))
 		const { caps, accounts } = await setup(testProviders({ google: fakeGoogle(acquire) }))
-		await accounts.put({
+		await put(accounts, {
 			id: 'me@gmail.com',
 			provider: 'google',
 			creds: { refresh: 'R' },
 			scopes: [GMAIL_SCOPE]
 		})
-		await caps.accounts.setEnabled({
+		await caps.admin.setEnabled({
 			accountId: 'me@gmail.com',
 			capability: 'email',
 			enabled: true
@@ -232,27 +244,50 @@ describe('accounts admin impl', () => {
 		expect(acquire).not.toHaveBeenCalled()
 	})
 
+	test('widened consent landing after a disconnect does not resurrect the account', async () => {
+		// The browser flow can take minutes; the write that follows takes the account as it is
+		// by then, not as it was when the toggle was clicked.
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		await put(accounts, { id: 'me@gmail.com', provider: 'google', creds: { refresh: 'R' } })
+		const caps = hostAccounts(
+			testProviders({
+				google: fakeGoogle(async ({ scopes }) => {
+					await accounts.delete('me@gmail.com')
+					return { accountId: 'me@gmail.com', creds: { refresh: 'WIDENED' }, scopes }
+				})
+			}),
+			vol
+		)
+		await caps.admin.setEnabled({
+			accountId: 'me@gmail.com',
+			capability: 'email',
+			enabled: true
+		})
+		expect(await accounts.get('me@gmail.com')).toBeUndefined()
+	})
+
 	test('a form provider capability cannot be soft-disabled (disconnect instead)', async () => {
 		const { caps } = await setup()
-		await caps.accounts.connect({
+		await caps.admin.connect({
 			providerId: 'icloud',
 			credentials: { username: 'u@me.com', password: 'p' }
 		})
-		await caps.accounts.setEnabled({
+		await caps.admin.setEnabled({
 			accountId: 'u@me.com',
 			capability: 'calendar',
 			enabled: false
 		})
-		const list = await caps.accounts.listAccounts({})
+		const list = await caps.admin.listAccounts({})
 		expect(list.find((a) => a.accountId === 'u@me.com')?.enabled).toContain('calendar')
 	})
 
 	test('ai is single-active: enabling it points the selection, freeing the previous', async () => {
 		const { caps, accounts, activeAi } = await setup()
-		await accounts.put({ id: 'a1', provider: 'chatgpt', creds: {} })
-		await accounts.put({ id: 'a2', provider: 'chatgpt', creds: {} })
+		await put(accounts, { id: 'a1', provider: 'chatgpt', creds: {} })
+		await put(accounts, { id: 'a2', provider: 'chatgpt', creds: {} })
 		await activeAi.set({ accountId: 'a1' })
-		await caps.accounts.setEnabled({
+		await caps.admin.setEnabled({
 			accountId: 'a2',
 			capability: 'ai',
 			enabled: true,
@@ -261,55 +296,46 @@ describe('accounts admin impl', () => {
 		expect(await activeAi.get()).toEqual({ accountId: 'a2', model: 'default' })
 	})
 
-	test('disconnect removes the account and clears the active-AI pointer', async () => {
-		// No builtin AI account on this volume, so there is no floor to fall back to.
-		const { caps, accounts, activeAi } = await setup()
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: {} })
+	test('disconnect removes the account and drops the active-AI pointer', async () => {
+		// No builtin AI provider here, so there is no floor: the host is left with no AI.
+		const { caps, accounts, activeAi } = await setup([fakeChatgpt()])
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: {} })
 		await activeAi.set({ accountId: 'u@openai' })
-		await caps.accounts.disconnect({ accountId: 'u@openai' })
+		await caps.admin.disconnect({ accountId: 'u@openai' })
 		expect(await accounts.get('u@openai')).toBeUndefined()
 		expect(await activeAi.get()).toBeNull()
-	})
-
-	// The builtin AI needs no credentials, so it is the floor: a user's own AI account takes
-	// over while it is selected, and everything that would clear the selection lands back on
-	// the builtin instead of leaving the user with no AI at all.
-	describe('the builtin AI is the floor', () => {
-		const withFloor = async () => {
-			const s = await setup()
-			await s.accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
-			await s.activeAi.set({ accountId: 'frieren' })
-			await s.accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
-			return s
-		}
-
-		test('turning a user AI account off hands the selection back to the builtin', async () => {
-			const { caps, activeAi } = await withFloor()
-			await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
-			expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
-			await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: false })
-			expect(await activeAi.get()).toEqual({ accountId: 'frieren' })
-		})
-
-		test('disconnecting the active user AI account falls back to the builtin', async () => {
-			const { caps, activeAi } = await withFloor()
-			await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
-			await caps.accounts.disconnect({ accountId: 'u@openai' })
-			expect(await activeAi.get()).toEqual({ accountId: 'frieren' })
-		})
-
-		test('the builtin has no off state — unchecking it re-selects it', async () => {
-			const { caps, activeAi } = await withFloor()
-			await caps.accounts.setEnabled({ accountId: 'frieren', capability: 'ai', enabled: false })
-			expect(await activeAi.get()).toEqual({ accountId: 'frieren' })
-			const list = await caps.accounts.listAccounts({})
-			expect(list.find((a) => a.accountId === 'frieren')?.enabled).toContain('ai')
-		})
+		expect(await caps.resolveAi((l) => l.providerId)).toBeNull()
 	})
 })
 
-describe('use-facet dispatch', () => {
-	test('image.generateImage rides the active-AI selection', async () => {
+// The built-in platform account is DERIVED from the provider registry: a `builtin`
+// provider that backs `ai` is the platform's own, one account, no credentials. Absence of
+// a file is therefore that account rather than a missing one — which is what lets a fresh
+// sign-up (and the volume a destructive reset leaves behind) resolve AI with nothing on
+// disk and no seeding step for a republish to race.
+describe('the built-in platform account is derived', () => {
+	const PRIVATE_FILES = ['/private/accounts/frieren.json', '/private/active-ai.json']
+
+	test('an empty volume already lists and resolves the platform AI — and stays empty', async () => {
+		const { caps, vol } = await setup()
+		const list = await caps.admin.listAccounts({})
+		expect(list).toMatchObject([{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] }])
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+		// Nothing was written to make either of those true.
+		for (const path of PRIVATE_FILES) expect(await vol.exists(path)).toBe(false)
+	})
+
+	test('an absent and a dangling selection resolve the same floor', async () => {
+		const { caps, activeAi } = await setup()
+		const absent = await caps.resolveAi((l) => l.providerId)
+		// e.g. a retired account id, or an account connected on another host — the selection
+		// lane is host-private, so a pointer can outlive the record it names.
+		await activeAi.set({ accountId: 'nobody-here' })
+		expect(await caps.resolveAi((l) => l.providerId)).toBe(absent)
+		expect(absent).toBe('frieren')
+	})
+
+	test('a live user selection overrides the floor, and image follows it', async () => {
 		const { caps, accounts, activeAi } = await setup(
 			testProviders({
 				platform: platformProvider({
@@ -318,19 +344,96 @@ describe('use-facet dispatch', () => {
 				})
 			})
 		)
-		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
-		await activeAi.set({ accountId: 'frieren' })
+		// The floor answers text and image together.
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
 		await expect(
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
 		).resolves.toEqual({ images: [{ data: 'b64:a red panda', mimeType: 'image/png' }] })
+
+		// Selecting the user's own AI takes BOTH over — this provider backs no image engine,
+		// so images go with it rather than quietly falling back to the platform's.
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		await activeAi.set({ accountId: 'u@openai' })
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('chatgpt')
+		await expect(
+			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
+		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', capability: 'image' })
 	})
 
+	test('a selected account whose credentials are unreadable stays listed, but AI falls back', async () => {
+		// The key rotated (or was never deployed): the record reads back with `creds: undefined`
+		// and mints nothing, so honouring the selection would strand the user with a dead agent.
+		// The record itself is untouched — its sealed bytes wait for the restored key.
+		const vol = volume(memStorage())
+		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
+			id: 'u@openai',
+			provider: 'chatgpt',
+			creds: { access: 'tok' }
+		})
+		const sealed = await vol.readFile('/private/accounts/u%40openai.json')
+		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
+		const caps = hostAccounts(testProviders(), vol, { secretCodec: aesGcmSecretCodec('host-key') })
+
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+		const list = await caps.admin.listAccounts({})
+		expect(list.find((a) => a.accountId === 'u@openai')?.lastError).toBeTruthy()
+		expect(list.find((a) => a.accountId === 'frieren')?.enabled).toContain('ai')
+		expect(await vol.readFile('/private/accounts/u%40openai.json')).toEqual(sealed)
+		// The dangling selection is left alone too: re-selecting is a click once the key is back.
+		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'u@openai', model: 'gpt' })
+	})
+
+	test('turning a user AI account off, or disconnecting it, lands back on the floor', async () => {
+		const { caps, accounts, activeAi } = await setup()
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+
+		await caps.admin.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
+		expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
+		await caps.admin.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: false })
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+
+		await caps.admin.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
+		await caps.admin.disconnect({ accountId: 'u@openai' })
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+	})
+
+	test('the floor has no off state — unchecking it re-selects it, and writes nothing', async () => {
+		const { caps, vol } = await setup()
+		await caps.admin.setEnabled({ accountId: 'frieren', capability: 'ai', enabled: false })
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+		const list = await caps.admin.listAccounts({})
+		expect(list.find((a) => a.accountId === 'frieren')?.enabled).toContain('ai')
+		expect(await vol.exists('/private/active-ai.json')).toBe(false)
+	})
+
+	test('a leftover platform record is superseded, not trusted', async () => {
+		// The seeding this replaced wrote `/private/accounts/frieren.json`. Under a rotated key
+		// that record reads back broken — which must never be what the platform AI looks like.
+		const vol = volume(memStorage())
+		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
+			id: 'frieren',
+			provider: 'frieren',
+			creds: {}
+		})
+		const caps = hostAccounts(testProviders(), vol, { secretCodec: aesGcmSecretCodec('host-key') })
+		const list = await caps.admin.listAccounts({})
+		expect(list.filter((a) => a.accountId === 'frieren')).toHaveLength(1)
+		expect(list.find((a) => a.accountId === 'frieren')?.lastError).toBeUndefined()
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+	})
+
+	test('a host with no builtin AI provider has no floor at all', async () => {
+		const { caps } = await setup([fakeGoogle(), icloudProvider()])
+		expect(await caps.admin.listAccounts({})).toEqual([])
+		expect(await caps.resolveAi((l) => l.providerId)).toBeNull()
+	})
+})
+
+describe('use-facet dispatch', () => {
 	test('image is UNAVAILABLE when the active AI provider has no image binding', async () => {
 		// The default platform provider carries no image engine; chatgpt never does. Either
 		// way the active account decides — image swaps (or vanishes) with the AI switch.
-		const { caps, accounts, activeAi } = await setup()
-		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
-		await activeAi.set({ accountId: 'frieren' })
+		const { caps } = await setup()
 		await expect(
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', capability: 'image' })
@@ -365,13 +468,13 @@ describe('use-facet dispatch', () => {
 			}
 		)
 		const { caps, accounts } = await setup()
-		await accounts.put({
+		await put(accounts, {
 			id: 'g1',
 			provider: 'google',
 			creds: { refresh: 't1', accountId: 'g1' },
 			scopes: [GMAIL_SCOPE]
 		})
-		await accounts.put({
+		await put(accounts, {
 			id: 'g2',
 			provider: 'google',
 			creds: { refresh: 't2', accountId: 'g2' },
@@ -419,12 +522,12 @@ describe('use-facet dispatch', () => {
 			// reported success.
 			const { caps, accounts } = await setup(
 				testProviders({
-					google: persistingGoogle(() => caps.accounts.disconnect({ accountId: 'g1' }), {
+					google: persistingGoogle(() => caps.admin.disconnect({ accountId: 'g1' }), {
 						refresh: 'rotated'
 					})
 				})
 			)
-			await accounts.put({ id: 'g1', provider: 'google', creds: { refresh: 'R' } })
+			await put(accounts, { id: 'g1', provider: 'google', creds: { refresh: 'R' } })
 			await caps.email.invoke(use('email', 'listUnread', {}))
 			expect(await accounts.get('g1')).toBeUndefined()
 		})
@@ -435,12 +538,12 @@ describe('use-facet dispatch', () => {
 			// update that leaves the user re-connecting.
 			const vol = volume(memStorage())
 			const accounts = volumeAccountStore(vol)
-			await accounts.put({ id: 'g1', provider: 'google', creds: { refresh: 'R' } })
-			const caps = accountsCapabilities(
+			await put(accounts, { id: 'g1', provider: 'google', creds: { refresh: 'R' } })
+			const caps = hostAccounts(
 				testProviders({
 					google: persistingGoogle(
 						() =>
-							accounts.put({
+							put(accounts, {
 								id: 'g1',
 								provider: 'google',
 								creds: { refresh: 'NEWLY-CONSENTED' },
@@ -461,11 +564,10 @@ describe('use-facet dispatch', () => {
 		test('successive rotations from one client all land', async () => {
 			// The compare-and-set must not be a one-shot: pi-ai's Codex store rotates repeatedly
 			// through the same lease, and every rotation has to reach the record.
-			const vol = volume(memStorage())
-			const accounts = volumeAccountStore(vol)
-			await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
-			await volumeActiveAi(vol).set({ accountId: 'u@openai' })
-			await resolveAiAccount(vol, async (l) => {
+			const { caps, accounts, activeAi } = await setup()
+			await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+			await activeAi.set({ accountId: 'u@openai' })
+			await caps.resolveAi(async (l) => {
 				await l.persist({ access: 'r1' })
 				await l.persist({ access: 'r2' })
 			})
@@ -481,23 +583,18 @@ describe('use-facet dispatch', () => {
 	})
 })
 
-// `resolveAiAccount` is the account lease the text `ai` capability is built on
-// (host-owned, not an accounts capability). It resolves the single active-AI
-// selection into a caller-minted backend, forwarding the selected model and a
-// `persist` that writes rotated credentials back to the shared account.
-describe('resolveAiAccount', () => {
+// `resolveAi` is the account lease the text `ai` capability is built on (host-owned, not
+// an accounts capability). It resolves the active AI — the SAME answer the admin
+// projection and `image` read — into a caller-minted backend, forwarding the selected
+// model and a `persist` that writes rotated credentials back to the shared account.
+describe('resolveAi', () => {
 	test('leases the active selection with its model + provider to the caller', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		const { caps, accounts, activeAi } = await setup()
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai', model: 'default' })
-		const lease = await resolveAiAccount(vol, (l) => ({
-			creds: l.creds,
-			config: l.config,
-			providerId: l.providerId
-		}))
-		expect(lease).toEqual({
+		await expect(
+			caps.resolveAi((l) => ({ creds: l.creds, config: l.config, providerId: l.providerId }))
+		).resolves.toEqual({
 			creds: { access: 'tok' },
 			config: { model: 'default' },
 			providerId: 'chatgpt'
@@ -505,178 +602,46 @@ describe('resolveAiAccount', () => {
 	})
 
 	test('persist writes a rotated credential back to the shared account', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		const { caps, accounts, activeAi } = await setup()
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai' })
-		await resolveAiAccount(vol, (l) => l.persist({ access: 'rotated' }))
+		await caps.resolveAi((l) => l.persist({ access: 'rotated' }))
 		expect((await accounts.get('u@openai'))?.creds).toEqual({ access: 'rotated' })
 	})
 
 	test('persist after a disconnect does not resurrect the account', async () => {
 		// Same rule as the use facets: the lease holds a snapshot, and a token refresh landing
 		// after the account was disconnected must not write the credential back.
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		const activeAi = volumeActiveAi(vol)
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		const { caps, accounts, activeAi } = await setup()
+		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai' })
-		await resolveAiAccount(vol, async (l) => {
+		await caps.resolveAi(async (l) => {
 			await accounts.delete('u@openai')
 			await l.persist({ access: 'rotated' })
 		})
 		expect(await accounts.get('u@openai')).toBeUndefined()
 	})
 
-	test('is null with no active selection', async () => {
-		const vol = volume(memStorage())
-		expect(await resolveAiAccount(vol, () => 'x')).toBeNull()
+	test('the floor leases no model, so the platform picks its own', async () => {
+		const { caps } = await setup()
+		await expect(caps.resolveAi((l) => l.config)).resolves.toEqual({})
 	})
 })
 
-// The platform AI is the floor: a signed-in user must always end up with a backend, so
-// this seeds the account AND claims the single-active selection whenever nothing live
-// answers. The selection rides synced `/system` while the accounts it names live on
-// host-only `/private`, so a pointer can outlive its account — that is a leftover, not a
-// choice, and honouring it would leave the agent with no backend until the user toggled AI
-// on by hand in Settings.
-describe('ensureAccount', () => {
-	const platform = { accountId: 'frieren', providerId: 'frieren', enabled: ['ai' as const] }
-
-	test('a fresh volume gets the account and the active-AI selection', async () => {
-		const vol = volume(memStorage())
-		await ensureAccount(vol, platform)
-		expect(await volumeAccountStore(vol).get('frieren')).toMatchObject({ provider: 'frieren' })
-		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
-	})
-
-	test('a selection naming an account this host does not have is claimed, not honoured', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
-		// e.g. a retired account id, or an account connected on another host.
-		await volumeActiveAi(vol).set({ accountId: 'spud' })
-		await ensureAccount(vol, platform)
-		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
-		await expect(resolveAiAccount(vol, (l) => l.providerId)).resolves.toBe('frieren')
-	})
-
-	test('another live account keeps the selection, model and all', async () => {
-		const vol = volume(memStorage())
-		const accounts = volumeAccountStore(vol)
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
-		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
-		await ensureAccount(vol, platform)
-		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'u@openai', model: 'gpt' })
-	})
-
-	test('AI is never off: the floor takes the selection back after a switch away', async () => {
-		// The user's own account takes over while it is selected; unchecking it (or losing it)
-		// lands back on the platform AI rather than on "no AI at all".
-		const vol = volume(memStorage())
-		const caps = accountsCapabilities(testProviders(), vol)
-		await ensureAccount(vol, platform)
-		await volumeAccountStore(vol).put({ id: 'u@openai', provider: 'chatgpt', creds: {} })
-		await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
-		await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: false })
-		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
-		await ensureAccount(vol, platform)
-		await expect(resolveAiAccount(vol, (l) => l.providerId)).resolves.toBe('frieren')
-	})
-
-	test('a selection whose credentials this host cannot read is claimed too', async () => {
-		// The key rotated (or is not deployed yet), so the selected account reads back with
-		// `creds: undefined` and mints nothing. Existence is not enough: `resolveAiAccount` would
-		// hand back no backend, i.e. a dead agent, so the floor takes over. The record itself is
-		// left alone — its sealed bytes wait for the restored key, and re-selecting it is a click.
-		const vol = volume(memStorage())
-		const codec = aesGcmSecretCodec('host-key')
-		await volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }).put({
-			id: 'u@openai',
-			provider: 'chatgpt',
-			creds: { access: 'tok' }
-		})
-		const sealed = await vol.readFile('/private/accounts/u%40openai.json')
-		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
-
-		await ensureAccount(vol, platform, { secretCodec: codec })
-
-		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'frieren' })
-		await expect(resolveAiAccount(vol, (l) => l.providerId, { secretCodec: codec })).resolves.toBe(
-			'frieren'
-		)
-		expect(await vol.readFile('/private/accounts/u%40openai.json')).toEqual(sealed)
-	})
-})
-
-// Encryption at rest is one codec shared by EVERY entry point that builds the store: a
-// codec on some but not all of them means half the reads can't decrypt, so these tests
-// pin the wiring, not the crypto (see secret-codec.test.ts for that).
+// Encryption at rest is one codec for the ONE store this module builds, so there is no
+// second entry point it could be missing from. These pin the wiring, not the crypto (see
+// secret-codec.test.ts for that).
 describe('secretCodec wiring', () => {
 	const codec = aesGcmSecretCodec('host-key')
 
-	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount', async () => {
+	test('what the admin surface writes sealed, the AI lease still reads', async () => {
 		const vol = volume(memStorage())
-		const caps = accountsCapabilities(testProviders(), vol, { secretCodec: codec })
-		await caps.accounts.connect({ providerId: 'chatgpt' })
-		await caps.accounts.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
-		// On disk the creds are sealed; the facet that needs them still reads them.
+		const caps = hostAccounts(testProviders(), vol, { secretCodec: codec })
+		await caps.admin.connect({ providerId: 'chatgpt' })
+		await caps.admin.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
 		const raw = new TextDecoder().decode(await vol.readFile('/private/accounts/u%40openai.json'))
 		expect(raw).not.toContain('tok')
-		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
-			access: 'tok'
-		})
-		// ensureAccount seals its seed too, and still sees an existing account as present.
-		await ensureAccount(
-			vol,
-			{ accountId: 'frieren', providerId: 'frieren', enabled: [] },
-			{
-				secretCodec: codec
-			}
-		)
-		const seeded = JSON.parse(
-			new TextDecoder().decode(await vol.readFile('/private/accounts/frieren.json'))
-		)
-		expect(seeded.creds).toMatchObject({ v: 1, alg: 'A256GCM' })
-	})
-
-	test('a credential-less seed heals a record the key can no longer open', async () => {
-		// Rotating the key would otherwise leave the platform AI account listed-but-dead,
-		// i.e. no agent backend. It carries no secret, so re-seeding it costs nothing.
-		const vol = volume(memStorage())
-		await volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }).put({
-			id: 'frieren',
-			provider: 'frieren',
-			creds: {}
-		})
-		await ensureAccount(
-			vol,
-			{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
-			{
-				secretCodec: codec
-			}
-		)
-		expect((await volumeAccountStore(vol, { secretCodec: codec }).get('frieren'))?.creds).toEqual(
-			{}
-		)
-	})
-
-	test('sealAccounts is a no-op without a key, and seals with one', async () => {
-		const vol = volume(memStorage())
-		await volumeAccountStore(vol).put({ id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
-		const path = '/private/accounts/u%40me.com.json'
-		const clear = await vol.readFile(path)
-
-		// No key ⇒ nothing to seal with, so the record is left exactly as it was.
-		await sealAccounts(vol)
-		expect(await vol.readFile(path)).toEqual(clear)
-
-		await sealAccounts(vol, { secretCodec: codec })
-		expect(new TextDecoder().decode(await vol.readFile(path))).not.toContain('PW')
-		expect(await volumeAccountStore(vol, { secretCodec: codec }).get('u@me.com')).toMatchObject({
-			creds: { p: 'PW' }
-		})
+		await expect(caps.resolveAi((l) => l.creds)).resolves.toEqual({ access: 'tok' })
 	})
 
 	test('a record this host cannot decrypt lists with an error and is unusable', async () => {
@@ -684,18 +649,90 @@ describe('secretCodec wiring', () => {
 		// the user can re-connect it) and a credential-using call reports UNAVAILABLE rather
 		// than leaking a decrypt exception.
 		const vol = volume(memStorage())
-		await volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }).put({
+		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
 			id: 'me@gmail.com',
 			provider: 'google',
 			creds: { refresh: 'r' },
 			scopes: [GMAIL_SCOPE]
 		})
-		const caps = accountsCapabilities(testProviders(), vol, { secretCodec: codec })
-		const list = await caps.accounts.listAccounts({})
-		expect(list).toMatchObject([{ accountId: 'me@gmail.com', providerId: 'google' }])
-		expect(list[0].lastError).toBeTruthy()
+		const caps = hostAccounts(testProviders(), vol, { secretCodec: codec })
+		const list = await caps.admin.listAccounts({})
+		expect(list.find((a) => a.accountId === 'me@gmail.com')?.lastError).toBeTruthy()
 		await expect(caps.email.invoke(use('email', 'listUnread', { limit: 1 }))).rejects.toMatchObject(
 			{ code: 'CAPABILITY_UNAVAILABLE' }
 		)
+	})
+
+	// The sweep exists because `decode` deliberately passes a non-envelope through, so nothing
+	// else ever rewrites a credential that does not rotate (an iCloud app-specific password is
+	// written exactly once, at connect). It is best effort: no caller waits on it, and no
+	// caller can see whether it ran.
+	describe('sealing what is already on disk', () => {
+		const sealedRecord = async (vol: Volume) =>
+			new TextDecoder().decode(await vol.readFile('/private/accounts/u%40me.com.json'))
+
+		test('a plaintext record is sealed without any caller asking', async () => {
+			const vol = volume(memStorage())
+			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
+			hostAccounts(testProviders(), vol, { secretCodec: codec })
+			await until(async () => expect(await sealedRecord(vol)).not.toContain('PW'))
+			expect(await volumeAccountStore(vol, { secretCodec: codec }).get('u@me.com')).toMatchObject({
+				creds: { p: 'PW' }
+			})
+		})
+
+		test('the sweep is handed to the host to keep alive past the call that kicked it', async () => {
+			// Nobody awaits it, so on a Worker the runtime may end the event (or hibernate the
+			// Durable Object) before it finishes — and the records it targets are exactly the
+			// ones nothing else ever rewrites, so "next time" would never come.
+			const vol = volume(memStorage())
+			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
+			const retained: Promise<unknown>[] = []
+			hostAccounts(testProviders(), vol, {
+				secretCodec: codec,
+				waitUntil: (work) => retained.push(work)
+			})
+			expect(retained).toHaveLength(1)
+			// Settled, not raw: a failed sweep is a warning, never an unhandled rejection riding
+			// out on the host's event.
+			await expect(retained[0]).resolves.toBeUndefined()
+			expect(await sealedRecord(vol)).not.toContain('PW')
+		})
+
+		test('with no key there is nothing to seal with, so the record is left as it was', async () => {
+			const vol = volume(memStorage())
+			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
+			const before = await sealedRecord(vol)
+			hostAccounts(testProviders(), vol)
+			await new Promise((r) => setTimeout(r, 10))
+			expect(await sealedRecord(vol)).toEqual(before)
+		})
+
+		test('a sweep that fails blocks nothing and retries on a later account entry', async () => {
+			// A locked Keychain must not cost the platform AI, and must not be memoised as a
+			// permanent verdict — the keychain may be open by the next time anyone asks.
+			vi.spyOn(console, 'warn').mockImplementation(() => {})
+			const vol = volume(memStorage())
+			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
+			let locked = true
+			const flaky: SecretCodec = {
+				encode: (creds, id) => {
+					if (locked) throw new Error('keychain: locked')
+					return codec.encode(creds, id)
+				},
+				decode: (raw, id) => codec.decode(raw, id)
+			}
+			const caps = hostAccounts(testProviders(), vol, { secretCodec: flaky })
+
+			// The platform AI answers while the sweep is failing, and the credential survives.
+			await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+			expect(await sealedRecord(vol)).toContain('PW')
+
+			locked = false
+			await until(async () => {
+				await caps.admin.listAccounts({})
+				expect(await sealedRecord(vol)).not.toContain('PW')
+			})
+		})
 	})
 })

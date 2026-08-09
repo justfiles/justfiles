@@ -21,14 +21,13 @@ import {
 import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { type AgentBackend, modelsBackend, text } from '@justfiles/agent'
-import { resolveAiAccount, type SecretCodec } from '@justfiles/app/capabilities/accounts/host'
+import type { AiAccountLease } from '@justfiles/app/capabilities/accounts/host'
 import type {
 	AcquiredAccount,
 	BoundAccount,
 	Provider
 } from '@justfiles/app/capabilities/accounts/providers'
 import type { AiCapability } from '@justfiles/app/capabilities/ai'
-import type { Volume } from '@justfiles/fs'
 
 // pi-ai's built-in Codex provider owns the model catalogue, the OAuth login flow, and
 // token refresh. Registered on a Models collection per credential source; safe to share
@@ -166,29 +165,18 @@ export function chatgptProvider(): Provider {
 	}
 }
 
-// Resolve the ai-enabled account into a backend for the daemon's agent runtime.
-// `resolveAiAccount` borrows the account from the internal store; the daemon never holds the
-// store or the creds outside this closure. The token is sealed inside pi Models (which
-// refreshes it under its credential-store lock and `persist`s the rotated creds); the
-// agent drives the model but never holds the credential. `secretCodec` (A2) is the daemon's
-// own Keychain-backed key (see keychain.ts) — passed through so the account record on disk
-// is read/written sealed, not in the clear.
-export function resolveAgentBackend(
-	fs: Volume,
-	opts: { secretCodec?: SecretCodec } = {}
-): Promise<AgentBackend | null> {
-	return resolveAiAccount(
-		fs,
-		({ creds, config, persist }) => {
-			const models = codexRuntime(accountCredentials(creds, persist))
-			const model = pickModel(models, (config as { model?: string } | undefined)?.model)
-			// Fold the token's expiry into the cache revision: it changes when the grant is
-			// refreshed OR replaced by a fresh sign-in, so a re-sign-in rebuilds the session over
-			// the new credentials instead of reusing the runtime bound to the old (possibly
-			// revoked) ones. A plain refresh Models handles in place; the rebuild is lossless.
-			const expires = (creds as { expires?: number }).expires
-			return model ? modelsBackend(models, model, String(expires ?? '')) : null
-		},
-		opts
-	)
+// Mint the daemon's agent backend from the active-AI account. Handed to the account
+// module's `resolveAi`, which lends the account without ever handing over the store: the
+// creds never leave this closure. The token is sealed inside pi Models (which refreshes it
+// under its credential-store lock and `persist`s the rotated creds); the agent drives the
+// model but never holds the credential.
+export function codexBackend({ creds, config, persist }: AiAccountLease): AgentBackend | null {
+	const models = codexRuntime(accountCredentials(creds, persist))
+	const model = pickModel(models, (config as { model?: string } | undefined)?.model)
+	// Fold the token's expiry into the cache revision: it changes when the grant is
+	// refreshed OR replaced by a fresh sign-in, so a re-sign-in rebuilds the session over
+	// the new credentials instead of reusing the runtime bound to the old (possibly
+	// revoked) ones. A plain refresh Models handles in place; the rebuild is lossless.
+	const expires = (creds as { expires?: number }).expires
+	return model ? modelsBackend(models, model, String(expires ?? '')) : null
 }

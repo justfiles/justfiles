@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import type { Kernel, Message } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { buildKernel } from './kernel.ts'
+import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 
 const CODE = 'app.justfiles.frieren.code'
@@ -24,7 +24,8 @@ let kernel: Kernel
 
 beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), 'daemon-devkit-'))
-	kernel = await buildKernel(volume(await nativeStorage(root)))
+	const fs = volume(await nativeStorage(root))
+	kernel = await buildKernel(fs, daemonAccounts(fs))
 })
 afterAll(async () => {
 	await rm(root, { recursive: true, force: true })

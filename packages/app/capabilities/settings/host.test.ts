@@ -1,6 +1,6 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { expect, test, vi } from 'vitest'
-import { accountsCapabilities } from '../accounts/host.ts'
+import { hostAccounts } from '../accounts/host.ts'
 import { icloudProvider } from '../accounts/providers/icloud.ts'
 import { platformProvider } from '../accounts/providers/platform.ts'
 import type { Capabilities, CapabilityCall } from '../types.ts'
@@ -54,7 +54,7 @@ const snapshot = {
 function host(over: Omit<SettingsHostDeps, 'accounts'> = {}) {
 	const vol = volume(memStorage())
 	const providers = [icloudProvider(), platformProvider({ generate: async () => 'x' })]
-	const { accounts } = accountsCapabilities(providers, vol)
+	const { admin: accounts } = hostAccounts(providers, vol)
 	return settingsHost({ accounts, ...over })
 }
 
@@ -156,7 +156,7 @@ test('a method with no dep here goes to the remote, frame intact; the rest stay 
 test('accounts.listAccounts unions the local list with the remote one when both are wired', async () => {
 	const vol = volume(memStorage())
 	const providers = [icloudProvider(), platformProvider({ generate: async () => 'x' })]
-	const { accounts } = accountsCapabilities(providers, vol, {
+	const { admin: accounts } = hostAccounts(providers, vol, {
 		origin: { kind: 'device', label: 'This Mac' }
 	})
 	await accounts.connect({
@@ -177,7 +177,9 @@ test('accounts.listAccounts unions the local list with the remote one when both 
 	const caps = settingsHost({ accounts, remote })
 
 	const list = (await caps.invoke(call('accounts.listAccounts'))) as { accountId: string }[]
-	expect(list.map((a) => a.accountId).sort()).toEqual(['g@gmail.com', 'u@me.com'])
+	// `frieren` is this side's derived built-in platform account (its provider list carries
+	// the builtin AI) — it needs no record on disk to be listed.
+	expect(list.map((a) => a.accountId).sort()).toEqual(['frieren', 'g@gmail.com', 'u@me.com'])
 })
 
 // The Mac's own catalog never carries the cloud's built-in AI provider (its
@@ -192,7 +194,7 @@ test('accounts.listProviders unions the catalog, deduped by id (this side wins)'
 	const vol = volume(memStorage())
 	// This host's own catalog lacks the cloud-only built-in — the real shape of the
 	// Mac daemon.
-	const { accounts } = accountsCapabilities([icloudProvider()], vol)
+	const { admin: accounts } = hostAccounts([icloudProvider()], vol)
 	const cloudProviders = [
 		{ id: 'frieren', name: 'Kodama', authKind: 'none', builtin: true, capabilities: ['ai'] },
 		// Same id as the local catalog's — the collision case.
@@ -226,7 +228,7 @@ test('with only the local lane configured (no remote), the list is local alone �
 		})
 	)
 	const list = (await caps.invoke(call('accounts.listAccounts'))) as { accountId: string }[]
-	expect(list.map((a) => a.accountId)).toEqual(['u@me.com'])
+	expect(list.map((a) => a.accountId)).toEqual(['u@me.com', 'frieren'])
 })
 
 test('connect/setEnabled/disconnect stay routed to the local dep, never the remote', async () => {
@@ -326,7 +328,7 @@ const BUILTINS = {
 
 function agentHost(over: Partial<SettingsHostDeps['agent']> = {}) {
 	const vol = volume(memStorage())
-	const { accounts } = accountsCapabilities([icloudProvider()], vol)
+	const { admin: accounts } = hostAccounts([icloudProvider()], vol)
 	return {
 		vol,
 		caps: settingsHost({
