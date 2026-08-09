@@ -21,7 +21,8 @@ const METHODS = [
 	'accounts.setEnabled',
 	'accounts.disconnect',
 	'host.usage',
-	'host.user'
+	'host.user',
+	'host.version'
 ]
 
 // Every method that needs the Volume (or the generator): served only where its dep is.
@@ -100,7 +101,12 @@ test('accounts.* administer the machine: connect, project, toggle ai, disconnect
 })
 
 test('a non-allowlisted app cannot tell any of it exists', async () => {
-	const caps = host({ usage: async () => snapshot, user: async () => ({ id: 'u' }) })
+	// Every dep wired, so each method really is served here — what refuses is the gate.
+	const caps = host({
+		usage: async () => snapshot,
+		user: async () => ({ id: 'u' }),
+		version: '1.0.0'
+	})
 	for (const method of METHODS) {
 		await expect(caps.invoke(call(method, {}, 'app.evil'))).rejects.toMatchObject({
 			code: 'CAPABILITY_UNAVAILABLE',
@@ -127,6 +133,18 @@ test('host.user is null with no session — an answer, not an error', async () =
 	expect(
 		await host({ user: () => ({ id: 'u1', name: 'Fern' }) }).invoke(call('host.user'))
 	).toEqual({ id: 'u1', name: 'Fern' })
+})
+
+test('host.version is the stamped build, UNAVAILABLE on a host that has none', async () => {
+	// Opaque to everything here: the host composed it (frieren's staging carries the head
+	// commit), and the pane prints exactly what comes back.
+	expect(await host({ version: '0.12.2+abc1234' }).invoke(call('host.version'))).toBe(
+		'0.12.2+abc1234'
+	)
+	// The Mac app stamps none — the System pane says so rather than inventing one.
+	await expect(host().invoke(call('host.version'))).rejects.toMatchObject({
+		code: 'CAPABILITY_UNAVAILABLE'
+	})
 })
 
 test('a method with no dep here goes to the remote, frame intact; the rest stay local', async () => {

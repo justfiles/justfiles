@@ -19,6 +19,7 @@ import {
 	wornAvatar
 } from './app.ts'
 import { AppearancePane } from './appearance-pane.tsx'
+import { SystemPane } from './system-pane.tsx'
 
 // How a provider projects an `ai`-capability account's config for the picker
 // (see the host `describe`): the selected model + the list to choose from.
@@ -130,7 +131,8 @@ export const gui = defineGUI<SettingsApp>({
 
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
 	{ id: 'accounts', label: 'Accounts', glyph: '@' },
-	{ id: 'appearance', label: 'Appearance', glyph: '◐' }
+	{ id: 'appearance', label: 'Appearance', glyph: '◐' },
+	{ id: 'system', label: 'System', glyph: 'ⓘ' }
 ]
 
 const CAP_LABEL: Record<CapabilityId, string> = {
@@ -182,9 +184,11 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 				) : null}
 				{state.category === 'accounts' ? <AccountsPanel state={state} client={client} /> : null}
 				{state.category === 'account' ? <AccountPane state={state} client={client} /> : null}
-				{/* The one pane that needs no reducer state: a wallpaper is bytes on the Volume
-				    (see `readWallpaper`), so the pane reads the file and holds the answer itself. */}
+				{/* The two panes that need no reducer state, for the same reason: a wallpaper is
+				    bytes on the Volume and a version is a fact about THIS device (see
+				    `readWallpaper` / `readVersion`), so each asks the host and holds its answer. */}
 				{state.category === 'appearance' ? <AppearancePane client={client} /> : null}
+				{state.category === 'system' ? <SystemPane client={client} /> : null}
 			</section>
 		</div>
 	)

@@ -204,3 +204,13 @@ test('appearance is a category the sidebar can select', async () => {
 	)
 	expect(state?.category).toBe('appearance')
 })
+
+// The build itself is NOT reducer state (see `readVersion`) — the only thing the reducer
+// knows about System is that the sidebar can select it.
+test('system is a category the sidebar can select', async () => {
+	const { state } = await app.dispatch(
+		{ type: 'selectCategory', params: { category: 'system' } },
+		{ state: initialState }
+	)
+	expect(state?.category).toBe('system')
+})

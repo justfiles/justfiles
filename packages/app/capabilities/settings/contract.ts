@@ -159,6 +159,16 @@ export interface SettingsCapability {
 	// The signed-in user, or null when no one is signed in (the Mac app before native
 	// auth; a signed-out web session). Null is a valid state, never an error.
 	'host.user'(input: Record<string, never>): Promise<UserProfile | null>
+	// WHICH BUILD THIS IS, as one opaque string the System pane prints verbatim. The HOST
+	// composes it, because only the host knows what identifies one of its own builds:
+	// frieren's staging redeploys from `main` on every push, so a version number there names
+	// many different builds and the head commit rides along; production deploys from a tag,
+	// where the version number IS the build. Nothing downstream parses it — a shape would
+	// only invite a consumer to disagree with the host about what a build is called.
+	//
+	// CAPABILITY_UNAVAILABLE on a host that does not know its own build (the Mac app today),
+	// which the pane says plainly rather than printing a version it inferred.
+	'host.version'(input: Record<string, never>): Promise<string>
 	// The agent's own identity, on the Volume. Served wherever the Volume is (both
 	// hosts), which is what finally gives the Mac app personalization.
 	'agent.readSoul'(input: Record<string, never>): Promise<AgentSoul>

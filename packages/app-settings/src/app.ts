@@ -33,7 +33,7 @@ import * as v from 'valibot'
 // NOTHING BINARY LIVES HERE. Reducer state is JSON-encoded to `/state/<appId>.json`
 // and replicates; an avatar's bytes travel GUI↔host as a procedure's argument, and its
 // picture comes back as a data URL from `listAvatars` (see `putAvatarFile`).
-export type Category = 'agent' | 'account' | 'accounts' | 'appearance'
+export type Category = 'agent' | 'account' | 'accounts' | 'appearance' | 'system'
 
 // ── the wallpaper ─────────────────────────────────────────────────────────────
 // A WALLPAPER IS ONE FILE, AND A COLOUR IS A FILE TOO. The shell paints whatever image
@@ -273,7 +273,9 @@ export const app = defineApp({
 			{ description: 'Note that an avatar on the volume changed, so readers re-read it.' }
 		),
 		selectCategory: t.on(
-			v.object({ category: v.picklist(['agent', 'account', 'accounts', 'appearance']) }),
+			v.object({
+				category: v.picklist(['agent', 'account', 'accounts', 'appearance', 'system'])
+			}),
 			(state, { category }) => ({ ...state, category, error: null }),
 			{ description: 'Switch the selected settings category.' }
 		),
@@ -411,6 +413,17 @@ export const app = defineApp({
 				// sidebar row, another device) that the art is different now.
 				await app.dispatch({ type: 'avatarChanged', params: {} })
 			}
+		}),
+		// NOR IS THE BUILD, AND FOR A SHARPER REASON THAN THE WALLPAPER'S. A version is a
+		// fact about the DEVICE IN FRONT OF YOU, and this state replicates: put it here and
+		// the phone that synced last would tell the laptop what the laptop is running. So the
+		// System pane asks the host it is actually running on and holds the answer itself —
+		// the one place where "which build" can only ever mean this one.
+		readVersion: p.procedure({
+			description: 'Read which build of the host this device is running.',
+			audience: 'gui',
+			schema: v.object({}),
+			run: (_input, app) => app.invoke('settings', 'host.version', {}) as Promise<string>
 		}),
 		// ── the wallpaper ─────────────────────────────────────────────────────────
 		// NOTHING ABOUT THE WALLPAPER IS IN STATE. The bytes are bytes (state is JSON, and it
