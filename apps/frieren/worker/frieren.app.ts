@@ -41,8 +41,6 @@ interface FrierenAppsDeps {
 
 export interface FrierenApps {
 	readonly controller: AppController
-	// The scope owns disposal; construction stays lazy until an app is touched.
-	kernel(): Kernel
 	dispose(): void
 	// The agent's `os windows` port: the persisted shell snapshot, projected.
 	windows(): Promise<readonly OsWindowInfo[]>
@@ -236,7 +234,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	return {
 		controller,
-		kernel: getKernel,
 		dispose: () => {
 			disposed = true
 			kernelInstance?.dispose()

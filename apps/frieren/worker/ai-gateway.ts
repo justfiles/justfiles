@@ -92,13 +92,13 @@ export interface AiModelDescriptor {
 
 export interface AiGatewayDeps {
 	meter: Pick<AiMeter, 'admitOrThrow' | 'record'>
-	// THE platform model — the same `Model` object `aiRuntime()` builds for the in-process agent
+	// THE platform model — the same `Model` object `createPlatformAi()` builds for the in-process agent
 	// backend, so the descriptor and the metered upstream can never drift from what the agent
 	// itself runs. Its `.cost` also backs the abort-time estimate below.
 	model: Model<Api>
 	// The raw upstream call: an OpenAI-shaped request body in, the raw (streamed or not)
 	// upstream `Response` out. Injected so tests never touch the network — production points
-	// it at whichever backend `aiRuntime()` selected (OpenRouter in prod, LM Studio in dev).
+	// it at whichever backend `createPlatformAi()` selected (OpenRouter in prod, LM Studio in dev).
 	upstream: (body: Record<string, unknown>, signal: AbortSignal) => Promise<Response>
 	waitUntil: (promise: Promise<unknown>) => void
 }

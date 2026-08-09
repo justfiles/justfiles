@@ -33,7 +33,6 @@ import {
 	readAgentName
 } from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
-import type { Kernel } from '@justfiles/app'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
@@ -70,12 +69,7 @@ import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
-import {
-	createRuntimeHost,
-	createSerialExecutor,
-	type RuntimeHost,
-	type RuntimeScope
-} from './runtime.ts'
+import { createVolumeScopeOwner, type VolumeScope, type VolumeScopeOwner } from './volume-scope.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -144,8 +138,7 @@ export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
 	private readonly fs: ReturnType<typeof cfFsStorage>
-	private readonly executor = createSerialExecutor()
-	private runtime?: RuntimeHost<AgentSession, FrierenApps, Kernel>
+	private scopes?: VolumeScopeOwner<AgentSession, FrierenApps>
 	// The image engine is env-derived and independent of a filesystem scope.
 	private generateImage?: (prompt: string, source?: GeneratedImage) => Promise<GeneratedImage[]>
 	// In-flight face generations, keyed `${hash}:${expression}` — a second tab (or a repeat
@@ -187,8 +180,8 @@ export class Frieren extends DurableObject<Env> {
 		)
 
 		// The gateway's model + upstream are fixed for this DO's lifetime (env-derived, no
-		// network call). Scoped agent resources build their own equivalent runtime lazily.
-		const { model: gatewayModel, apiKey: gatewayApiKey, generateImage } = this.aiRuntime()
+		// network call). Scoped agent resources build their own equivalent AI stack lazily.
+		const { model: gatewayModel, apiKey: gatewayApiKey, generateImage } = this.createPlatformAi()
 		this.generateImage = generateImage
 		this.app = new Hono()
 			.post('/api/agent/face', async (c) => {
@@ -201,10 +194,10 @@ export class Frieren extends DurableObject<Env> {
 				if (!expression || !body?.hash || !avatar || /[/\\]|^\./.test(avatar)) {
 					return c.json({ error: 'avatar, expression and hash are required' }, 400)
 				}
-				const runtime = await this.readyRuntime()
+				const scope = await this.readyScope()
 				const face = await generateFace(
 					{
-						volume: runtime.volume,
+						volume: scope.volume,
 						storage: ctx.storage,
 						generate: this.generateImage,
 						inFlight: this.facesInFlight
@@ -255,7 +248,7 @@ export class Frieren extends DurableObject<Env> {
 
 		ctx.blockConcurrencyWhile(async () => {
 			await migrateCF(this.ctx.storage)
-			this.runtime = this.createRuntime((await readGenerationState(this.db)).generation)
+			this.scopes = this.createScopes((await readGenerationState(this.db)).generation)
 		})
 	}
 
@@ -264,16 +257,16 @@ export class Frieren extends DurableObject<Env> {
 	// `adopt-mine`/`wipe` — CAS + truncate + bump. `complete` — advisory: the
 	// initiator's republish drained, so clear the in-progress flag.
 	private async handleReset(req: ResetBody): Promise<ResetResult> {
-		return this.runtimeHost().reset(req)
+		return this.requireScopes().reset(req)
 	}
 
-	private runtimeHost(): RuntimeHost<AgentSession, FrierenApps, Kernel> {
-		if (!this.runtime) throw new Error('runtime not initialised')
-		return this.runtime
+	private requireScopes(): VolumeScopeOwner<AgentSession, FrierenApps> {
+		if (!this.scopes) throw new Error('volume scopes not initialised')
+		return this.scopes
 	}
 
-	private readyRuntime(): Promise<RuntimeScope<AgentSession, FrierenApps, Kernel>> {
-		return this.runtimeHost().ready()
+	private readyScope(): Promise<VolumeScope<AgentSession, FrierenApps>> {
+		return this.requireScopes().ready()
 	}
 
 	// The platform backend, cap-gated + metered through `this.meter` (quota.ts) — the same seam
@@ -320,30 +313,29 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async generateSoul(input: SoulGenerationInput): ReturnType<typeof generateAgentSoul> {
-		const { models, model } = this.aiRuntime()
+		const { models, model } = this.createPlatformAi()
 		return generateAgentSoul(this.meteredBackend(models, model), input, { firstWords: true })
 	}
 
-	private createRuntime(generation: number): RuntimeHost<AgentSession, FrierenApps, Kernel> {
-		type Scope = RuntimeScope<AgentSession, FrierenApps, Kernel>
-		type ScopedAi = ReturnType<Frieren['aiRuntime']> & { text: LLMText }
+	private createScopes(generation: number): VolumeScopeOwner<AgentSession, FrierenApps> {
+		type Scope = VolumeScope<AgentSession, FrierenApps>
+		type ScopedAi = ReturnType<Frieren['createPlatformAi']> & { text: LLMText }
 		const scopedAi = new WeakMap<Scope, ScopedAi>()
 		const scopedImage = new WeakMap<Scope, ReturnType<typeof accountsCapabilities>['image']>()
 		const stopSession = new WeakMap<AgentSession, () => void>()
 		const getAi = (scope: Scope): ScopedAi => {
-			let runtime = scopedAi.get(scope)
-			if (!runtime) {
-				const ai = this.aiRuntime()
-				runtime = { ...ai, text: text(this.meteredBackend(ai.models, ai.model)) }
-				scopedAi.set(scope, runtime)
+			let scoped = scopedAi.get(scope)
+			if (!scoped) {
+				const ai = this.createPlatformAi()
+				scoped = { ...ai, text: text(this.meteredBackend(ai.models, ai.model)) }
+				scopedAi.set(scope, scoped)
 			}
-			return runtime
+			return scoped
 		}
 
-		return createRuntimeHost({
+		return createVolumeScopeOwner({
 			storage: this.fs,
 			generation,
-			executor: this.executor,
 			reset: {
 				read: () => readGenerationState(this.db),
 				apply: (request) => resetVolume(this.db, request),
@@ -443,24 +435,22 @@ export class Frieren extends DurableObject<Env> {
 					)
 					return session
 				},
-				kernel: (scope) => scope.apps().kernel(),
 				disposeSession: (session) => {
 					stopSession.get(session)?.()
 					session.abort()
 				},
-				disposeApps: (apps) => apps.dispose(),
-				disposeKernel: (kernel) => kernel.dispose()
+				disposeApps: (apps) => apps.dispose()
 			}
 		})
 	}
 
-	// The platform AI runtime: a pi `Models` + selected model, plus (production only)
+	// The platform AI stack: a pi `Models` + selected model, plus (production only)
 	// an image-generation fn over pi's parallel `ImagesModels` stack — same OpenRouter
 	// key, its own model. Local dev (LM Studio) has no image engine, so `generateImage`
 	// is absent and the platform backs no image capability there. The api key is supplied
 	// through a small CredentialStore (a stored key wins over ambient env), so the
 	// token never rides on the backend — `modelsBackend` seals it inside `Models`.
-	private aiRuntime(): {
+	private createPlatformAi(): {
 		models: Models
 		model: Model<Api>
 		// The gateway's own upstream key — kept alongside `model` so both routes forward to
@@ -543,16 +533,16 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		const runtime = await this.readyRuntime()
+		const scope = await this.readyScope()
 		// The shared capability-proxy socket carries {caps:true}; agent sockets
 		// carry neither.
 		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
 		if (attachment?.caps) {
-			await runtime.apps().handleMessage(ws, undefined, message)
+			await scope.apps().handleMessage(ws, undefined, message)
 			return
 		}
 
-		await scheduleDailyAlarm(this.ctx, runtime.session())
+		await scheduleDailyAlarm(this.ctx, scope.session())
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -569,17 +559,17 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'abort') {
-			runtime.session().abort()
+			scope.session().abort()
 			return
 		}
 
 		if (parsed.type === 'app_open' && parsed.id) {
-			await runtime.apps().open(parsed.id)
+			await scope.apps().open(parsed.id)
 			return
 		}
 
 		if (parsed.type === 'app_close') {
-			await runtime.apps().close(parsed.id)
+			await scope.apps().close(parsed.id)
 			return
 		}
 
@@ -589,7 +579,7 @@ export class Frieren extends DurableObject<Env> {
 				ws.send(
 					JSON.stringify({
 						type: 'debug',
-						message: await runtime.session().systemPrompt()
+						message: await scope.session().systemPrompt()
 					} satisfies ServerMessage)
 				)
 				return
@@ -598,7 +588,7 @@ export class Frieren extends DurableObject<Env> {
 			// Stream the raw turn events (live token/tool deltas) to this socket. The session's
 			// turn runner catches + classifies failures (surfaced via the `error` subscription
 			// wired in reset), so this never rejects.
-			await runtime
+			await scope
 				.session()
 				.prompt(parsed.text, 'user', (event) =>
 					ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
@@ -629,11 +619,11 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
-		const runtime = await this.readyRuntime()
+		const scope = await this.readyScope()
 		// The DO owns the synced fs, so daily trash retention and content collection
 		// run without an open tab. Both are best-effort and retry on the next alarm.
-		await runDailyMaintenance(this.fs, runtime.volume)
-		await runtime.session().runMaintenance()
+		await runDailyMaintenance(this.fs, scope.volume)
+		await scope.session().runMaintenance()
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -642,10 +632,10 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
-			const runtime = await this.readyRuntime()
+			const scope = await this.readyScope()
 			const appRoute = new URL(request.url).pathname.match(/^\/api\/apps\/([^/]+)\/ws$/)
 			if (appRoute)
-				return runtime
+				return scope
 					.apps()
 					.acceptWebSocket(appRoute[1], request.headers.get('Sec-WebSocket-Protocol'))
 
@@ -655,10 +645,10 @@ export class Frieren extends DurableObject<Env> {
 			const [client, server] = Object.values(pair)
 
 			this.ctx.acceptWebSocket(server)
-			await scheduleDailyAlarm(this.ctx, runtime.session())
+			await scheduleDailyAlarm(this.ctx, scope.session())
 
-			const participants = await this.loadParticipants(runtime.volume)
-			const history = sessionEntries2DisplayMessages(await runtime.session().history())
+			const participants = await this.loadParticipants(scope.volume)
+			const history = sessionEntries2DisplayMessages(await scope.session().history())
 			if (history.length > 0) {
 				server.send(
 					JSON.stringify({
@@ -674,7 +664,7 @@ export class Frieren extends DurableObject<Env> {
 				JSON.stringify({
 					type: 'ready',
 					participants,
-					apps: await runtime.apps().list()
+					apps: await scope.apps().list()
 				} satisfies ServerMessage)
 			)
 

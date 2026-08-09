@@ -51,7 +51,7 @@ async function realMeter(): Promise<{ meter: AiMeter; db: DbAdapter }> {
 }
 
 // A stand-in for the platform catalogue's one model. `cost` backs the abort-time estimate;
-// values are USD per 1M tokens, same shape `aiRuntime()`'s real models carry.
+// values are USD per 1M tokens, same shape `createPlatformAi()`'s real models carry.
 function testModel(id = 'test/model'): Model<Api> {
 	return {
 		id,
