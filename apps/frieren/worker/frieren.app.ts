@@ -41,7 +41,6 @@ interface FrierenAppsDeps {
 
 export interface FrierenApps {
 	readonly controller: AppController
-	dispose(): void
 	// The agent's `os windows` port: the persisted shell snapshot, projected.
 	windows(): Promise<readonly OsWindowInfo[]>
 	list(): Promise<readonly DisplayApp[]>
@@ -63,7 +62,6 @@ const CAPS_SOCKET = '_caps'
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
-	let disposed = false
 
 	// The server kernel's capability seam: `volume` and `ai` are local units; the
 	// account-backed `email`/`calendar` and the `settings` admin surface are handed in
@@ -97,7 +95,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	})
 
 	function getKernel(): Kernel {
-		if (disposed) throw new Error('Runtime reset while the app was running. Try again.')
 		if (kernelInstance) return kernelInstance
 		if (!deps.loader) throw new Error('LOADER binding unavailable')
 		kernelInstance = kernel({
@@ -238,10 +235,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	return {
 		controller,
-		dispose: () => {
-			disposed = true
-			kernelInstance?.dispose()
-		},
 		windows: () => readWindows(deps.fs),
 		list,
 		open,

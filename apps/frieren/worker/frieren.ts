@@ -46,13 +46,12 @@ import {
 	createFsApi,
 	type DbAdapter,
 	type DestructiveResetBody,
-	type GenerationState,
 	type ResetResult,
 	readGenerationState,
 	readResetStatus,
 	resetVolume
 } from '@justfiles/core'
-import type { Volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
@@ -67,7 +66,6 @@ import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
 import { commitResetAndRestart } from './reset-instance.ts'
-import { createVolumeScopeOwner, type VolumeScope, type VolumeScopeOwner } from './volume-scope.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -136,9 +134,20 @@ export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
 	private readonly fs: ReturnType<typeof cfFsStorage>
-	private scopes?: VolumeScopeOwner<AgentSession, FrierenApps>
-	// The image engine is env-derived and independent of a filesystem scope.
-	private generateImage?: (prompt: string, source?: GeneratedImage) => Promise<GeneratedImage[]>
+	// THE filesystem of this instance. A destructive reset commits and then terminates the
+	// Durable Object (reset-instance.ts), so an instance never spans two generations and
+	// nothing ever swaps this out — which is why it needs no fence, no lifetime, and no
+	// readiness gate. The next instance builds its own over the same durable storage.
+	private readonly volume: Volume
+	// The platform AI stack — env-derived, no network call, so it is built once for the
+	// instance and shared by the `/api/ai` gateway, the app `ai` capability, and the agent.
+	private readonly models: Models
+	private readonly model: Model<Api>
+	private readonly platformText: LLMText
+	private readonly generateImage?: (
+		prompt: string,
+		source?: GeneratedImage
+	) => Promise<GeneratedImage[]>
 	// In-flight face generations, keyed `${hash}:${expression}` — a second tab (or a repeat
 	// of the same expression) joins the running call instead of paying for a second image.
 	private readonly facesInFlight = new Map<string, Promise<GeneratedImage | null>>()
@@ -150,6 +159,14 @@ export class Frieren extends DurableObject<Env> {
 	// The one admit->run->record seam `meteredBackend` and the `/api/ai` gateway both bill
 	// through (quota.ts) — so a platform-key call can never be metered two different ways.
 	private readonly meter: AiMeter
+	// The advisory adopt-mine marker, read once at construction. A committed destructive
+	// reset restarts the instance, so this can only change through `completeReset`.
+	private resetInProgress = false
+	// Filesystem-derived resources, built on first use and kept for the instance's lifetime.
+	private accounts?: ReturnType<typeof accountsCapabilities>
+	private apps?: FrierenApps
+	private session?: AgentSession
+	private seeding?: Promise<void>
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -160,6 +177,9 @@ export class Frieren extends DurableObject<Env> {
 		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
 		this.db = adapter
 		this.fs = fs
+		// Constructing a Volume touches no storage; the migration barrier below still runs
+		// before any request can call a method on it.
+		this.volume = volume(fs)
 		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
 
 		// Proactive server->client sync: any committed write to the server volume
@@ -177,10 +197,11 @@ export class Frieren extends DurableObject<Env> {
 			})
 		)
 
-		// The gateway's model + upstream are fixed for this DO's lifetime (env-derived, no
-		// network call). Scoped agent resources build their own equivalent AI stack lazily.
-		const { model: gatewayModel, apiKey: gatewayApiKey, generateImage } = this.createPlatformAi()
+		const { models, model, apiKey, generateImage } = this.createPlatformAi()
+		this.models = models
+		this.model = model
 		this.generateImage = generateImage
+		this.platformText = text(this.meteredBackend(models, model))
 		this.app = new Hono()
 			.post('/api/agent/face', async (c) => {
 				const body = await c.req.json<{ avatar?: string; expression?: string; hash?: string }>()
@@ -192,10 +213,9 @@ export class Frieren extends DurableObject<Env> {
 				if (!expression || !body?.hash || !avatar || /[/\\]|^\./.test(avatar)) {
 					return c.json({ error: 'avatar, expression and hash are required' }, 400)
 				}
-				const scope = await this.readyScope()
 				const face = await generateFace(
 					{
-						volume: scope.volume,
+						volume: this.volume,
 						storage: ctx.storage,
 						generate: this.generateImage,
 						inFlight: this.facesInFlight
@@ -219,13 +239,13 @@ export class Frieren extends DurableObject<Env> {
 				'/api/ai',
 				createAiGateway({
 					meter: this.meter,
-					model: gatewayModel,
+					model,
 					upstream: (body, signal) =>
-						fetch(`${gatewayModel.baseUrl}/chat/completions`, {
+						fetch(`${model.baseUrl}/chat/completions`, {
 							method: 'POST',
 							headers: {
 								'content-type': 'application/json',
-								authorization: `Bearer ${gatewayApiKey}`
+								authorization: `Bearer ${apiKey}`
 							},
 							body: JSON.stringify(body),
 							signal
@@ -245,9 +265,11 @@ export class Frieren extends DurableObject<Env> {
 				})
 			)
 
+		// The DO's one initialization seam: no request runs until the schema exists, so
+		// nothing else needs a readiness gate.
 		ctx.blockConcurrencyWhile(async () => {
 			await migrateCF(this.ctx.storage)
-			this.scopes = this.createScopes(await readGenerationState(this.db))
+			this.resetInProgress = (await readGenerationState(this.db)).resetId !== undefined
 		})
 	}
 
@@ -267,17 +289,119 @@ export class Frieren extends DurableObject<Env> {
 		return readResetStatus(this.db, operationId)
 	}
 
+	// Non-destructive: it only drops the advisory marker once the adopt-mine republish
+	// drained, so the instance and everything it owns keep running.
 	public async completeReset(resetId: string): Promise<ResetResult> {
-		return this.requireScopes().reset({ mode: 'complete', resetId })
+		const state = await clearReset(this.db, resetId)
+		this.resetInProgress = state.resetId !== undefined
+		return { ok: true, generation: state.generation }
 	}
 
-	private requireScopes(): VolumeScopeOwner<AgentSession, FrierenApps> {
-		if (!this.scopes) throw new Error('volume scopes not initialised')
-		return this.scopes
+	// ── Instance-owned resources ──────────────────────────────────────────
+	//
+	// Built on first use and kept for the instance's lifetime. Eviction — or the restart a
+	// destructive reset forces — throws them away with the instance, and the next instance
+	// rebuilds them from the same durable filesystem, so none of them can outlive the
+	// generation they were built over.
+
+	// The platform AI account seed plus a credential reseal: filesystem state both the
+	// account capabilities and the agent backend read. A failure drops the memo, so the
+	// next request retries instead of leaving the instance permanently unseeded.
+	private ensureAccounts(): Promise<void> {
+		if (this.seeding) return this.seeding
+		const pending = (async () => {
+			await ensureAccount(
+				this.volume,
+				{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
+				{ secretCodec: this.secretCodec }
+			)
+			await sealAccounts(this.volume, { secretCodec: this.secretCodec })
+		})()
+		this.seeding = pending
+		void pending.catch(() => {
+			if (this.seeding === pending) this.seeding = undefined
+		})
+		return pending
 	}
 
-	private readyScope(): Promise<VolumeScope<AgentSession, FrierenApps>> {
-		return this.requireScopes().ready()
+	private getAccounts(): ReturnType<typeof accountsCapabilities> {
+		if (this.accounts) return this.accounts
+		this.accounts = accountsCapabilities(
+			buildProviders({ text: this.platformText, generateImage: this.generateImage }),
+			this.volume,
+			{ secretCodec: this.secretCodec, origin: { kind: 'cloud' } }
+		)
+		return this.accounts
+	}
+
+	private getApps(): FrierenApps {
+		if (this.apps) return this.apps
+		const caps = this.getAccounts()
+		const audit = new AuditLog(this.ctx.storage)
+		const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
+		this.apps = frierenApps({
+			fs: this.volume,
+			loader: this.env.LOADER,
+			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
+			text: this.platformText,
+			broadcast: (msg) => this.broadcast(msg),
+			image: caps.image,
+			email: guardCapability(caps.email, { capability: 'email', audit, rateLimit }),
+			calendar: guardCapability(caps.calendar, { capability: 'calendar', audit, rateLimit }),
+			settings: settingsHost({
+				accounts: caps.accounts,
+				usage: () => this.usageSnapshot(),
+				agent: {
+					volume: this.volume,
+					paths: IDENTITY_PATHS,
+					timezone: () => resolveTimezone(this.volume, this.cfTimezone),
+					generateSoul: ({ name, gender, archetype, userAge, userGender }) =>
+						this.generateSoul({
+							agentName: name,
+							agentGender: gender,
+							archetype: archetype as SoulGenerationInput['archetype'],
+							userAge,
+							userGender
+						})
+				}
+			})
+		})
+		return this.apps
+	}
+
+	private getSession(): AgentSession {
+		if (this.session) return this.session
+		const apps = this.getApps()
+		const image = this.getAccounts().image
+		// No image engine (local dev) ⇒ no image tools, rather than tools that always fail.
+		const capabilities = this.generateImage
+			? { invoke: capabilityRegistry({ image }).invoke, tools: [imageAgentTools] }
+			: undefined
+		const session = createAgentSession({
+			volume: this.volume,
+			identitySeedingSuppressed: () => this.resetInProgress,
+			capabilities,
+			backend: async () => {
+				const backend = await resolveAiAccount(
+					this.volume,
+					({ providerId }) =>
+						providerId === 'frieren' ? this.meteredBackend(this.models, this.model) : null,
+					{ secretCodec: this.secretCodec }
+				)
+				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
+				return backend
+			},
+			apps: apps.controller,
+			osState: async () => ({ windows: await apps.windows() }),
+			timezone: () => resolveTimezone(this.volume, this.cfTimezone),
+			notify: (notification) => this.broadcast({ type: 'notification', notification }),
+			expressions: true
+		})
+		session.subscribe((event) => {
+			if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
+		})
+		this.session = session
+		return session
 	}
 
 	// The platform backend, cap-gated + metered through `this.meter` (quota.ts) — the same seam
@@ -324,134 +448,8 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async generateSoul(input: SoulGenerationInput): ReturnType<typeof generateAgentSoul> {
-		const { models, model } = this.createPlatformAi()
-		return generateAgentSoul(this.meteredBackend(models, model), input, { firstWords: true })
-	}
-
-	private createScopes(state: GenerationState): VolumeScopeOwner<AgentSession, FrierenApps> {
-		type Scope = VolumeScope<AgentSession, FrierenApps>
-		type ScopedAi = ReturnType<Frieren['createPlatformAi']> & { text: LLMText }
-		const scopedAi = new WeakMap<Scope, ScopedAi>()
-		const scopedImage = new WeakMap<Scope, ReturnType<typeof accountsCapabilities>['image']>()
-		const stopSession = new WeakMap<AgentSession, () => void>()
-		const getAi = (scope: Scope): ScopedAi => {
-			let scoped = scopedAi.get(scope)
-			if (!scoped) {
-				const ai = this.createPlatformAi()
-				scoped = { ...ai, text: text(this.meteredBackend(ai.models, ai.model)) }
-				scopedAi.set(scope, scoped)
-			}
-			return scoped
-		}
-
-		return createVolumeScopeOwner({
-			storage: this.fs,
-			state,
-			reset: {
-				read: () => readGenerationState(this.db),
-				apply: (request) => resetVolume(this.db, request),
-				clear: (resetId) => clearReset(this.db, resetId)
-			},
-			factories: {
-				ready: async (scope) => {
-					await ensureAccount(
-						scope.volume,
-						{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
-						{ secretCodec: this.secretCodec }
-					)
-					await sealAccounts(scope.volume, { secretCodec: this.secretCodec })
-				},
-				apps: (scope) => {
-					const { text, generateImage } = getAi(scope)
-					const providers = buildProviders({ text, generateImage })
-					const caps = accountsCapabilities(providers, scope.volume, {
-						secretCodec: this.secretCodec,
-						origin: { kind: 'cloud' }
-					})
-					scopedImage.set(scope, caps.image)
-					const audit = new AuditLog(this.ctx.storage)
-					const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
-					const email = guardCapability(caps.email, { capability: 'email', audit, rateLimit })
-					const calendar = guardCapability(caps.calendar, {
-						capability: 'calendar',
-						audit,
-						rateLimit
-					})
-					return frierenApps({
-						fs: scope.volume,
-						loader: this.env.LOADER,
-						acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
-						text,
-						broadcast: (msg) => this.broadcast(msg),
-						image: caps.image,
-						email,
-						calendar,
-						settings: settingsHost({
-							accounts: caps.accounts,
-							usage: () => this.usageSnapshot(),
-							agent: {
-								volume: scope.volume,
-								paths: IDENTITY_PATHS,
-								timezone: () => resolveTimezone(scope.volume, this.cfTimezone),
-								generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-									return this.generateSoul({
-										agentName: name,
-										agentGender: gender,
-										archetype: archetype as SoulGenerationInput['archetype'],
-										userAge,
-										userGender
-									})
-								}
-							}
-						})
-					})
-				},
-				session: (scope, resetInProgress) => {
-					const { models, model, generateImage } = getAi(scope)
-					const apps = scope.apps()
-					const image = scopedImage.get(scope)
-					if (generateImage && !image) throw new Error('scoped image capability not initialised')
-					const agentCaps =
-						generateImage && image
-							? {
-									invoke: capabilityRegistry({ image }).invoke,
-									tools: [imageAgentTools]
-								}
-							: undefined
-					const session = createAgentSession({
-						volume: scope.volume,
-						identitySeedingSuppressed: resetInProgress,
-						capabilities: agentCaps,
-						backend: async () => {
-							const backend = await resolveAiAccount(
-								scope.volume,
-								({ providerId }) =>
-									providerId === 'frieren' ? this.meteredBackend(models, model) : null,
-								{ secretCodec: this.secretCodec }
-							)
-							if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
-							return backend
-						},
-						apps: apps.controller,
-						osState: async () => ({ windows: await apps.windows() }),
-						timezone: () => resolveTimezone(scope.volume, this.cfTimezone),
-						notify: (notification) => this.broadcast({ type: 'notification', notification }),
-						expressions: true
-					})
-					stopSession.set(
-						session,
-						session.subscribe((event) => {
-							if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
-						})
-					)
-					return session
-				},
-				disposeSession: (session) => {
-					stopSession.get(session)?.()
-					session.abort()
-				},
-				disposeApps: (apps) => apps.dispose()
-			}
+		return generateAgentSoul(this.meteredBackend(this.models, this.model), input, {
+			firstWords: true
 		})
 	}
 
@@ -544,16 +542,16 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		const scope = await this.readyScope()
+		await this.ensureAccounts()
 		// The shared capability-proxy socket carries {caps:true}; agent sockets
 		// carry neither.
 		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
 		if (attachment?.caps) {
-			await scope.apps().handleMessage(ws, undefined, message)
+			await this.getApps().handleMessage(ws, undefined, message)
 			return
 		}
 
-		await scheduleDailyAlarm(this.ctx, scope.session())
+		await scheduleDailyAlarm(this.ctx, this.getSession())
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -570,17 +568,17 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'abort') {
-			scope.session().abort()
+			this.getSession().abort()
 			return
 		}
 
 		if (parsed.type === 'app_open' && parsed.id) {
-			await scope.apps().open(parsed.id)
+			await this.getApps().open(parsed.id)
 			return
 		}
 
 		if (parsed.type === 'app_close') {
-			await scope.apps().close(parsed.id)
+			await this.getApps().close(parsed.id)
 			return
 		}
 
@@ -590,7 +588,7 @@ export class Frieren extends DurableObject<Env> {
 				ws.send(
 					JSON.stringify({
 						type: 'debug',
-						message: await scope.session().systemPrompt()
+						message: await this.getSession().systemPrompt()
 					} satisfies ServerMessage)
 				)
 				return
@@ -598,12 +596,10 @@ export class Frieren extends DurableObject<Env> {
 
 			// Stream the raw turn events (live token/tool deltas) to this socket. The session's
 			// turn runner catches + classifies failures (surfaced via the `error` subscription
-			// wired in reset), so this never rejects.
-			await scope
-				.session()
-				.prompt(parsed.text, 'user', (event) =>
-					ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
-				)
+			// wired where the session is built), so this never rejects.
+			await this.getSession().prompt(parsed.text, 'user', (event) =>
+				ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
+			)
 		}
 	}
 
@@ -630,11 +626,11 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
-		const scope = await this.readyScope()
+		await this.ensureAccounts()
 		// The DO owns the synced fs, so daily trash retention and content collection
 		// run without an open tab. Both are best-effort and retry on the next alarm.
-		await runDailyMaintenance(this.fs, scope.volume)
-		await scope.session().runMaintenance()
+		await runDailyMaintenance(this.fs, this.volume)
+		await this.getSession().runMaintenance()
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -643,12 +639,13 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
-			const scope = await this.readyScope()
+			await this.ensureAccounts()
 			const appRoute = new URL(request.url).pathname.match(/^\/api\/apps\/([^/]+)\/ws$/)
 			if (appRoute)
-				return scope
-					.apps()
-					.acceptWebSocket(appRoute[1], request.headers.get('Sec-WebSocket-Protocol'))
+				return this.getApps().acceptWebSocket(
+					appRoute[1],
+					request.headers.get('Sec-WebSocket-Protocol')
+				)
 
 			// Agent is long-lived — transformContext re-reads soul.md every turn,
 			// so there is no need to recreate the agent on reconnect.
@@ -656,10 +653,10 @@ export class Frieren extends DurableObject<Env> {
 			const [client, server] = Object.values(pair)
 
 			this.ctx.acceptWebSocket(server)
-			await scheduleDailyAlarm(this.ctx, scope.session())
+			await scheduleDailyAlarm(this.ctx, this.getSession())
 
-			const participants = await this.loadParticipants(scope.volume)
-			const history = sessionEntries2DisplayMessages(await scope.session().history())
+			const participants = await this.loadParticipants(this.volume)
+			const history = sessionEntries2DisplayMessages(await this.getSession().history())
 			if (history.length > 0) {
 				server.send(
 					JSON.stringify({
@@ -675,7 +672,7 @@ export class Frieren extends DurableObject<Env> {
 				JSON.stringify({
 					type: 'ready',
 					participants,
-					apps: await scope.apps().list()
+					apps: await this.getApps().list()
 				} satisfies ServerMessage)
 			)
 
