@@ -44,8 +44,11 @@ export function useInstallingApps(): InstallingApp[] {
 // Runner's store index, hydrated with each app's canonical manifest only while the
 // user is searching or browsing the store. Reconciliation checks installed ids
 // separately, so an idle desktop never fans out across the whole public catalog.
-export function useRunnerCatalog(enabled: boolean): RunnerCatalogApp[] {
-	const [apps, setApps] = useState<RunnerCatalogApp[]>([])
+export function useRunnerCatalog(enabled: boolean): {
+	apps: RunnerCatalogApp[]
+	loading: boolean
+} {
+	const [apps, setApps] = useState<RunnerCatalogApp[] | null>(null)
 	useEffect(() => {
 		if (!enabled) return
 		let live = true
@@ -58,7 +61,9 @@ export function useRunnerCatalog(enabled: boolean): RunnerCatalogApp[] {
 				.then((catalog) => {
 					if (live) setApps(catalog)
 				})
-				.catch(() => {})
+				.catch(() => {
+					if (live) setApps([])
+				})
 		}
 		load()
 		const timer = setInterval(load, UPDATE_CHECK_INTERVAL_MS)
@@ -67,7 +72,7 @@ export function useRunnerCatalog(enabled: boolean): RunnerCatalogApp[] {
 			clearInterval(timer)
 		}
 	}, [enabled])
-	return apps
+	return { apps: apps ?? [], loading: enabled && apps === null }
 }
 
 // The first-party Settings app, which the shell opens by id: it is the only place the

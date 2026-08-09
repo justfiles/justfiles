@@ -201,7 +201,9 @@ export function Omnibar({
 	// all apps" lives (design/01-omnibar.md open question). Transient like the rest
 	// of the sheet: blur, Esc, or typing a query leaves it.
 	const [browseStore, setBrowseStore] = useState(false)
-	const catalog = useRunnerCatalog(browseStore || query.trim() !== '')
+	const { apps: catalog, loading: catalogLoading } = useRunnerCatalog(
+		browseStore || query.trim() !== ''
+	)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 
 	const text = query.trim()
@@ -310,7 +312,11 @@ export function Omnibar({
 	// "Ask" row. The conversation window preempts it (coexistence rule) — there the
 	// row stays and just implies the send lands over in the window.
 	const noAppMatch =
-		text !== '' && matches.length === 0 && storeMatches.length === 0 && heldUpdates.length === 0
+		!catalogLoading &&
+		text !== '' &&
+		matches.length === 0 &&
+		storeMatches.length === 0 &&
+		heldUpdates.length === 0
 	const expanded =
 		focused || showNotifications || (chatOpen && session.isStreaming && !agentWindowOpen)
 	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
@@ -429,6 +435,7 @@ export function Omnibar({
 	const run = (index: number) => {
 		const row = rows[index]
 		if (!row) return
+		if (catalogLoading && row.kind === 'ask') return
 		if (row.kind === 'app') {
 			launchApp(row.app)
 			setQuery('')
@@ -607,7 +614,9 @@ export function Omnibar({
 					) : showList ? (
 						<ul className="frn-omnibar-list">
 							{browsing && rows.length === 0 ? (
-								<li className="frn-omnibar-center-empty">You've installed every App Store app.</li>
+								<li className="frn-omnibar-center-empty">
+									{catalogLoading ? 'Loading App Store…' : "You've installed every App Store app."}
+								</li>
 							) : null}
 							{rows.map((row, index) => {
 								const isSelected = index === selected
@@ -713,7 +722,7 @@ export function Omnibar({
 								)
 							})}
 						</ul>
-					) : apps.length > 0 || installing.length > 0 || catalog.length > 0 ? (
+					) : (
 						<div className="frn-omnibar-grid">
 							{apps.map((app) => (
 								<button
@@ -757,31 +766,29 @@ export function Omnibar({
 										<span className="frn-omnibar-tile-name">{app.name}</span>
 									</div>
 								))}
-							{catalog.length > 0 ? (
-								<button
-									type="button"
-									className="frn-omnibar-tile"
-									data-store="true"
-									title={
-										held.length === 1
-											? '1 app update needs your review'
-											: held.length
-												? `${held.length} app updates need your review`
-												: 'Browse the App Store'
-									}
-									onClick={() => setBrowseStore(true)}
-								>
-									<span className="frn-omnibar-icon">
-										<StorefrontIcon />
-										{held.length ? (
-											<span className="frn-omnibar-tile-badge">{held.length}</span>
-										) : null}
-									</span>
-									<span className="frn-omnibar-tile-name">App Store</span>
-								</button>
-							) : null}
+							<button
+								type="button"
+								className="frn-omnibar-tile"
+								data-store="true"
+								title={
+									held.length === 1
+										? '1 app update needs your review'
+										: held.length
+											? `${held.length} app updates need your review`
+											: 'Browse the App Store'
+								}
+								onClick={() => setBrowseStore(true)}
+							>
+								<span className="frn-omnibar-icon">
+									<StorefrontIcon />
+									{held.length ? (
+										<span className="frn-omnibar-tile-badge">{held.length}</span>
+									) : null}
+								</span>
+								<span className="frn-omnibar-tile-name">App Store</span>
+							</button>
 						</div>
-					) : null}
+					)}
 				</div>
 			) : null}
 			<form className="frn-omnibar-bar" onSubmit={submit}>
