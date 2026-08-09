@@ -43,6 +43,13 @@ export interface AccountsOptions {
 	// The DO passes `{ kind: 'cloud' }`; the mac daemon passes `{ kind: 'device', label:
 	// <hostname> }`. Omitted → `AccountInfo.origin` stays undefined.
 	origin?: AccountOrigin
+	// How this host keeps best-effort background work alive past the call that started it.
+	// The one such piece of work is the reseal sweep, which no caller awaits — on a Worker
+	// that means the runtime may end the event (or hibernate the Durable Object) before it
+	// finishes, and the plaintext it exists to close would survive, since nothing else ever
+	// rewrites those records. The DO passes `ctx.waitUntil`; a long-lived process (the mac
+	// daemon) has an event loop that outlives every request and needs nothing here.
+	waitUntil?: (work: Promise<unknown>) => void
 }
 
 // A short-lived borrow of the active-AI account, for building the agent's own LLM
@@ -270,15 +277,23 @@ export function hostAccounts(
 	// the module comes up (the plaintext this closes belongs to records nothing else rewrites,
 	// so waiting for a read would be waiting forever) and again on any later account entry if
 	// that attempt failed — a Keychain that was locked may be open by then.
+	//
+	// Not awaited is not the same as not retained: `opts.waitUntil` is what holds the sweep
+	// open past the call that kicked it on a host whose events end (see AccountsOptions). It
+	// is handed the SETTLED chain, so a failed sweep stays a warning rather than surfacing as
+	// an unhandled rejection in the host's event.
 	let sealing: Promise<void> | undefined
 	const seal = (): void => {
 		if (!opts.secretCodec || sealing) return
 		const attempt = store.reseal()
 		sealing = attempt
-		attempt.catch((e) => {
+		// Attached unconditionally — `?.()` would not evaluate its argument without a
+		// `waitUntil`, leaving a host that needs none with an unhandled rejection.
+		const settled = attempt.catch((e) => {
 			console.warn('accounts: could not seal credentials at rest', e)
 			if (sealing === attempt) sealing = undefined
 		})
+		opts.waitUntil?.(settled)
 	}
 	seal()
 

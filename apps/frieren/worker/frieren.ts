@@ -307,7 +307,15 @@ export class Frieren extends DurableObject<Env> {
 		this.accounts = hostAccounts(
 			buildProviders({ text: this.platformText, generateImage: this.generateImage }),
 			this.volume,
-			{ secretCodec: this.secretCodec, origin: { kind: 'cloud' } }
+			{
+				secretCodec: this.secretCodec,
+				origin: { kind: 'cloud' },
+				// The credential reseal is the module's one piece of background work, and no
+				// caller awaits it — so the request that built this module has to hold it open,
+				// or the runtime may end the event before a record nothing else ever rewrites
+				// gets sealed.
+				waitUntil: (work) => this.ctx.waitUntil(work)
+			}
 		)
 		return this.accounts
 	}

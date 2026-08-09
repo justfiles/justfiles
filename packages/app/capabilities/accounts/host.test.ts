@@ -681,6 +681,24 @@ describe('secretCodec wiring', () => {
 			})
 		})
 
+		test('the sweep is handed to the host to keep alive past the call that kicked it', async () => {
+			// Nobody awaits it, so on a Worker the runtime may end the event (or hibernate the
+			// Durable Object) before it finishes — and the records it targets are exactly the
+			// ones nothing else ever rewrites, so "next time" would never come.
+			const vol = volume(memStorage())
+			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
+			const retained: Promise<unknown>[] = []
+			hostAccounts(testProviders(), vol, {
+				secretCodec: codec,
+				waitUntil: (work) => retained.push(work)
+			})
+			expect(retained).toHaveLength(1)
+			// Settled, not raw: a failed sweep is a warning, never an unhandled rejection riding
+			// out on the host's event.
+			await expect(retained[0]).resolves.toBeUndefined()
+			expect(await sealedRecord(vol)).not.toContain('PW')
+		})
+
 		test('with no key there is nothing to seal with, so the record is left as it was', async () => {
 			const vol = volume(memStorage())
 			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
