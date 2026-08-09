@@ -37,7 +37,6 @@
 		"@justfiles/core": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
-		"@justfiles/lifetime": "workspace:*",
 		"@justfiles/state": "workspace:*",
 		"@justfiles/ui": "workspace:*",
 		"@earendil-works/pi-agent-core": "^0.80.10",
