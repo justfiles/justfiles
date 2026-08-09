@@ -49,8 +49,12 @@ export function useRunnerCatalog(): RunnerCatalogApp[] {
 		let live = true
 		const load = () => {
 			runnerAppStore()
-				.then((store) => {
-					if (live && store) setApps(store.apps)
+				.then(async (store) => {
+					if (store) return store.catalog()
+					return []
+				})
+				.then((catalog) => {
+					if (live) setApps(catalog)
 				})
 				.catch(() => {})
 		}

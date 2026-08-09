@@ -9,7 +9,11 @@ type AppId = string
 // assets. Injected because it is a host concern (the browser's `fetch` in frieren),
 // and optional because a host that only ever runs reducers never mounts anything: the
 // DO reads `manifest.app`, which is in the volume by construction.
-export type FetchAsset = (url: string) => Promise<Uint8Array>
+export type FetchAsset = ((url: string) => Promise<Uint8Array>) & {
+	// A browser cache may have persisted a response before this layer verifies its
+	// manifest pin. Let the host remove that exact entry on mismatch.
+	evict?: (url: string) => Promise<void>
+}
 
 function bytes(text: string): Uint8Array {
 	return new TextEncoder().encode(text)
@@ -179,8 +183,16 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function mount(manifest: AppManifest, path: string): Promise<Uint8Array> {
 		const pinned = manifest.files?.[path]
 		if (!fetchAsset) throw new Error(`no asset fetcher: cannot mount ${manifest.id}/${path}`)
-		const data = await fetchAsset(`${manifest.baseUrl?.replace(/\/$/, '')}/${path}`)
-		if (pinned) await verify(manifest.id, path, data, pinned)
+		const url = `${manifest.baseUrl?.replace(/\/$/, '')}/${path}`
+		const data = await fetchAsset(url)
+		if (pinned) {
+			try {
+				await verify(manifest.id, path, data, pinned)
+			} catch (error) {
+				await fetchAsset.evict?.(url).catch(() => {})
+				throw error
+			}
+		}
 		return data
 	}
 

@@ -1,6 +1,7 @@
 import { type Kernel, kernel } from '@justfiles/app'
 import type { GetUser } from '@justfiles/app/capabilities/settings/host'
 import type { Volume } from '@justfiles/fs'
+import { RUNNER_CACHE_NAME } from '../../shared/appstore'
 import { clientCapabilities } from './capabilities.client'
 import { notifyCatalog } from './host'
 import { browserSandbox } from './sandbox.worker'
@@ -10,17 +11,25 @@ export function createClientKernel(options: {
 	getToken: () => Promise<string | null>
 	getUser?: GetUser
 }): Kernel {
+	const fetchAsset = Object.assign(
+		async (url: string) => {
+			const res = await fetch(url)
+			if (!res.ok) throw new Error(`appstore: ${url} ${res.status}`)
+			return new Uint8Array(await res.arrayBuffer())
+		},
+		{
+			evict: async (url: string) => {
+				await (await caches.open(RUNNER_CACHE_NAME)).delete(url)
+			}
+		}
+	)
 	const k = kernel({
 		fs: options.fs,
 		sandbox: browserSandbox(),
 		clock: {},
 		// A hosted app's payload is mounted with plain fetch. Built-ins are precached;
 		// Runner's immutable release URLs use the service worker runtime cache.
-		fetchAsset: async (url) => {
-			const res = await fetch(url)
-			if (!res.ok) throw new Error(`appstore: ${url} ${res.status}`)
-			return new Uint8Array(await res.arrayBuffer())
-		},
+		fetchAsset,
 		capabilities: clientCapabilities(options.fs, options.getToken, options.getUser)
 	})
 	// A devkit install/uninstall mutates this kernel's catalog; the OS launcher

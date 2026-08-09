@@ -10,6 +10,8 @@ export const CATALOG_PATH = '/appstore/catalog.json'
 export const RUNNER_STORE_URL = 'https://justapps.run/store.json'
 export const RUNNER_STORE_SCHEMA = 'justapps/store/v1'
 export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
+export const RUNNER_CACHE_NAME = 'justapps'
+export const RUNNER_CACHE_MAX_ENTRIES = 500
 
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -45,7 +47,7 @@ export interface RunnerCatalogApp extends CatalogApp {
 }
 
 export interface RunnerAppStore extends AppStore {
-	apps: RunnerCatalogApp[]
+	catalog(): Promise<RunnerCatalogApp[]>
 }
 
 export function appBaseUrl(app: { id: string; version: string }): string {
@@ -79,9 +81,9 @@ export async function httpAppStore(
 	}
 }
 
-// Fetch each mutable manifest pointer once and derive the immutable payload base
-// from its final redirected URL. The canonical manifest and reducer are what the
-// installer persists; every other file remains hosted by Runner.
+// Fetch the small index up front, then each mutable manifest pointer at most once
+// and only when its id is needed. Reconcile asks for installed ids; browsing calls
+// catalog() and deliberately hydrates every entry.
 export async function runnerAppStore(
 	request: (url: string) => Promise<Response> = (url) => fetch(url)
 ): Promise<RunnerAppStore | null> {
@@ -90,9 +92,12 @@ export async function runnerAppStore(
 	const index = (await storeResponse.json()) as RunnerStoreIndex
 	if (index.schema !== RUNNER_STORE_SCHEMA || !Array.isArray(index.apps)) return null
 
-	const apps = (
-		await Promise.all(
-			index.apps.map(async (entry): Promise<RunnerCatalogApp | null> => {
+	const byId = new Map(index.apps.map((entry) => [entry.id, entry]))
+	const loaded = new Map<string, Promise<RunnerCatalogApp | null>>()
+	const load = (entry: RunnerStoreEntry): Promise<RunnerCatalogApp | null> => {
+		let app = loaded.get(entry.id)
+		if (!app) {
+			app = (async () => {
 				try {
 					const response = await request(entry.manifestUrl)
 					if (!response.ok) return null
@@ -119,17 +124,23 @@ export async function runnerAppStore(
 				} catch {
 					return null
 				}
-			})
-		)
-	).filter((app): app is RunnerCatalogApp => app !== null)
-	const byId = new Map(apps.map((app) => [app.id, app]))
+			})()
+			loaded.set(entry.id, app)
+		}
+		return app
+	}
 	return {
-		apps,
+		async catalog() {
+			return (await Promise.all(index.apps.map(load))).filter(
+				(app): app is RunnerCatalogApp => app !== null
+			)
+		},
 		async builtins() {
 			return []
 		},
 		async latest(id) {
-			return byId.get(id) ?? null
+			const entry = byId.get(id)
+			return entry ? load(entry) : null
 		},
 		async read(app, path) {
 			const file = await request(`${app.baseUrl?.replace(/\/$/, '')}/${path}`)

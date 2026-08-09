@@ -157,14 +157,22 @@ test('reading a hosted file goes through the host fetch layer, never the volume'
 	expect(o.requested).toHaveLength(2)
 })
 
-test('a mounted file that does not match its pinned hash is refused', async () => {
+test('a mounted file that does not match its pinned hash is refused and evicted', async () => {
 	const vol = volume(memStorage())
 	// The record pins the real bytes; the origin serves something else.
-	const s = apps(vol, origin({ 'gui.js': 'TAMPERED' }).fetchAsset)
+	const o = origin({ 'gui.js': 'TAMPERED' })
+	const evicted: string[] = []
+	const fetchAsset = Object.assign(o.fetchAsset, {
+		evict: async (url: string) => {
+			evicted.push(url)
+		}
+	})
+	const s = apps(vol, fetchAsset)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
 
 	const installed = await s.get(id)
 	await expect(installed?.read('gui.js')).rejects.toThrow(/hash mismatch/)
+	expect(evicted).toEqual(['/appstore/apps/com.example.app/1.0.0/gui.js'])
 })
 
 test('a host with no asset fetcher cannot mount, but still runs the reducer', async () => {

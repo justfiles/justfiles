@@ -70,6 +70,7 @@ describe('runnerAppStore', () => {
 		}
 
 		const store = await runnerAppStore(request)
+		expect(seen).toEqual([RUNNER_STORE_URL])
 		const app = await store?.latest(release.id)
 		expect(app).toMatchObject({
 			id: release.id,
@@ -79,6 +80,8 @@ describe('runnerAppStore', () => {
 			manifest: { app: 'app.js', gui: 'gui.js' }
 		})
 		expect(await store?.builtins()).toEqual([])
+		await store?.latest(release.id)
+		expect(seen.filter((url) => url === manifestUrl)).toHaveLength(1)
 		expect([...(await store!.read(app!, 'app.js'))]).toEqual([1, 2, 3])
 		expect(seen.at(-1)).toBe('https://com.example.notes.justapps.run/v/1.2.0/app.js')
 	})
@@ -89,7 +92,7 @@ describe('runnerAppStore', () => {
 				? json(runner, RUNNER_STORE_URL)
 				: new Response(null, { status: 404 })
 		)
-		expect(store?.apps).toEqual([])
+		expect(await store?.catalog()).toEqual([])
 	})
 })
 
