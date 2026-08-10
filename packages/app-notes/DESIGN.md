@@ -981,7 +981,12 @@ Three decisions inside that:
 - **The check is the app's, not `packages/fs`'.** §1b's rule again: a promise whose strength varied per
   backend is not one a call site can reason about. None is needed here, because the read and the write ride
   `serially` with every other write this app makes — one act against *our* writers, which is the pair that
-  produces this. The window that remains is another process, as it is for `claimPath`.
+  produces this. Outside the chain is every writer that does not ride it: another app instance, and — in this
+  very process — the sync engine's apply, which lands through the storage journal (`applyJournaled`) *below*
+  `Volume.writeFile`, so a `writeFile` precondition would not cover that one either; the two writers never
+  meet at that layer. A pull inside the read-then-write gap is therefore a stated window, as it is for
+  `claimPath` — closing it means a lock the sync applier takes, or a compare-and-swap in the journal, which is
+  a permanent mechanism bought for a millisecond.
 - **A refusal is a value, not a throw.** `save` comes back `{ wrote: false, disk }` carrying what is there
   now. Nothing can be decided without those bytes, and reading them again would be a second guess at a
   moving target.
@@ -1111,7 +1116,8 @@ writers this app actually has** — the answer decides which findings are defect
   case, and the watch cannot answer it, because the buffer is dirty exactly when it matters. Hence `save`'s
   `base` precondition, `mergeAppend`, and the buffer's `conflict` (§1b). A sync-applied write arrives as an
   ordinary `volume.watch` event already tagged `source: 'remote'`, so it needs nothing of its own: the sync
-  engine resolves its own replicas, and what reaches the note here is just another external writer.
+  engine resolves its own replicas, and what reaches the note here is just another external writer — one
+  `base` catches in the shape a pull actually has (it lands, and the save composed before it is refused).
 - **The app racing itself.** Autosave against open, flush against rename, import against the tree's drag. These
   are ordered by construction: one flush chain, one claim chain, a sequential import loop.
 

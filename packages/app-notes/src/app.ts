@@ -568,8 +568,17 @@ export const app = defineApp({
 		// It is the APP's check and not a `writeFile` precondition, for §1b's reason: a promise
 		// whose strength varied by backend is not one a call site can reason about. Here none is
 		// needed — every write this app makes rides `serially`, so the read and the write are one
-		// act against our own writers, which is the pair that produced the bug. The window that
-		// remains is another process, exactly as it is for `claimPath`.
+		// act against our own writers, which is the pair that produced the bug.
+		//
+		// Outside the chain is every writer that does not ride it: another app instance, and — in
+		// this very process — the sync engine's apply (`localReplica.applyPathChanges`,
+		// `packages/fs/synced.ts`), which lands through the storage journal (`applyJournaled`),
+		// BELOW `Volume.writeFile`. So a `writeFile` precondition would not close that one either:
+		// the two writers never meet at that layer. What `base` does catch is the shape a pull
+		// actually has — the remote body lands, the watch fires, and a save composed before it is
+		// refused; only a pull INSIDE this read-then-write gap slips past. Closing that needs a
+		// lock the sync applier takes, or a compare-and-swap in the journal — a permanent
+		// mechanism for a millisecond, so it stays a stated window, as it is for `claimPath`.
 		//
 		// Optional, and without it this writes as it always did: the agent calling `save` holds no
 		// buffer and has no base, and its own direct file writes never came through here at all.

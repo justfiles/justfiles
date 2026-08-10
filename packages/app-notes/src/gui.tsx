@@ -585,7 +585,13 @@ function Notes({ state, actions }: NotesProps) {
 	// the open note changing on disk (`revision` — `reload` ignores it while dirty, since
 	// the buffer is then newer than the disk). A path we cannot read is not one to stay
 	// pointed at, so the buffer detaches and this says why.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: `revision` is a cache-busting trigger — a bump means the open file changed on disk.
+	//
+	// A conflict stops the transition rather than cancelling it: the buffer may not be replaced
+	// while the question is up, but `openPath` has already moved on — the tree shows the note the
+	// user asked for while the editor still holds the previous one. So `conflict` is a RETRY
+	// trigger: answering it (either way) makes the buffer settleable, and this comes round and
+	// finishes the open that was refused.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `revision` is a cache-busting trigger — a bump means the open file changed on disk — and `buffer.conflict` is the RETRY trigger for a transition a conflict refused.
 	useEffect(() => {
 		if (openPath === null) return
 		// A MOVE is not an open. `openPath` cannot say why it changed, so the reducer says:
@@ -620,7 +626,7 @@ function Notes({ state, actions }: NotesProps) {
 		return () => {
 			current = false
 		}
-	}, [openPath, revision, movedFrom, buf, followMove, actions])
+	}, [openPath, revision, movedFrom, buffer.conflict, buf, followMove, actions])
 
 	// The reducer says nothing is open (the user pressed New, or the agent dispatched it)
 	// while the buffer still holds a note. Letting go means SETTLING first, so unsaved
