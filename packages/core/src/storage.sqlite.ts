@@ -98,6 +98,13 @@ const SCAN_PAGE_SIZE = 200
 // It bounds the READ, which capping the discarded rows does not: the steady state
 // is a journal with nothing to discard, and finding that out must not cost a scan.
 const JOURNAL_PRUNE_WINDOW = 1000
+// Deleted paths collected per run. Smaller than the coalescing window because the
+// delete names each path individually.
+const TOMBSTONE_SWEEP_LIMIT = 500
+// How long a deleted path stays in the journal. A device that has been away longer
+// re-bootstraps (keeping its local data) instead of resuming, so this is the window
+// in which an offline device stays on the cheap path — not a correctness bound.
+const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 // R2 takes up to 1000 keys per `delete`.
 const BLOB_DELETE_BATCH = 1000
 const INLINE_TEXT_LIMIT_BYTES = 256 * 1024
@@ -610,11 +617,69 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		// `path` duplicates `change_json.$.path` deliberately: it is the ONLY column the
 		// prune groups by, and paying one string write here buys an index range scan
 		// instead of a `json_extract` over every row of the table (0007_journal_path).
-		await tx.run('INSERT INTO fs_path_journal(local_source, change_json, path) VALUES (?, ?, ?)', [
-			localSource ?? null,
-			JSON.stringify(change),
-			change.path
-		])
+		// `at_ns` is what the retention window measures (0009_journal_floor).
+		await tx.run(
+			'INSERT INTO fs_path_journal(local_source, change_json, path, at_ns) VALUES (?, ?, ?, ?)',
+			[localSource ?? null, JSON.stringify(change), change.path, nowNs()]
+		)
+	}
+
+	/**
+	 * Collect the journal rows of paths that have been DELETED for longer than the
+	 * retention window, and raise the floor a reader may resume from. Returns whether
+	 * the sweep drained.
+	 *
+	 * This is the one prune that a lagging cursor cannot survive, which is what the
+	 * floor is for: coalescing only ever removes a row that a HIGHER seq on the same
+	 * path supersedes, so any reader still converges — but a path's LAST row has no
+	 * successor, and a reader below it would simply never learn the path is gone.
+	 * `journal_pruned_below` records that, and `GET /path/changes` answers `410` under
+	 * it so the device re-bootstraps (keeping its local data) instead of diverging.
+	 *
+	 * ALL of a path's rows go, or none. A path with `put@10` and `delete@50` that lost
+	 * only its delete would coalesce back to the put — the file returns from the dead
+	 * for every device that bootstraps afterwards. The sweep selects by PATH, so it
+	 * takes every row a path owns; and the caller runs it only on the run that
+	 * FINISHES a coalescing pass, which bounds what that costs — a path this sweep can
+	 * reach was coalesced during the pass and has gained nothing since, because a row
+	 * written since would be newer than the retention horizon.
+	 *
+	 * `fs_path_version` decides what "deleted" means (the same test the tombstone
+	 * snapshot uses), so no row here is parsed as JSON.
+	 */
+	async function sweepTombstones(tx: DbAdapter): Promise<boolean> {
+		// `CAST(? AS INTEGER)` below, and not a bare `?`: the Durable Object adapter
+		// binds a bigint as TEXT (apps/frieren/worker/db.do.ts `normalizeArgs`), and
+		// `MAX(at_ns)` is a function result, which carries no column affinity — so
+		// SQLite would compare by STORAGE CLASS, where every integer sorts below every
+		// string. The window would silently be zero, and every tombstone would go on the
+		// first run.
+		const horizon = nowNs() - BigInt(TOMBSTONE_RETENTION_MS) * 1_000_000n
+		const aged = await tx.query<{ path: unknown; newest: unknown }>(
+			`SELECT journal.path AS path, MAX(journal.seq) AS newest
+			 FROM fs_path_journal AS journal
+			 JOIN fs_path_version AS version ON version.path = journal.path
+			 WHERE version.tombstone_version > 0 AND version.tombstone_version >= version.version
+			 GROUP BY journal.path
+			 HAVING MAX(journal.at_ns) < CAST(? AS INTEGER)
+			 ORDER BY newest
+			 LIMIT ?`,
+			[horizon, TOMBSTONE_SWEEP_LIMIT]
+		)
+		if (aged.length === 0) return true
+		const paths = aged.map((row) => String(row.path))
+		await tx.run(
+			`DELETE FROM fs_path_journal WHERE path IN (${paths.map(() => '?').join(', ')})`,
+			paths
+		)
+		// The floor is the highest seq collected: a reader AT it has already seen every
+		// row up to and including it, so only a reader strictly below has lost history.
+		const floor = aged.reduce((max, row) => Math.max(max, toNumber(row.newest)), 0)
+		await tx.run(
+			'UPDATE fs_generation SET journal_pruned_below = MAX(journal_pruned_below, ?) WHERE id = 1',
+			[floor]
+		)
+		return aged.length < TOMBSTONE_SWEEP_LIMIT
 	}
 
 	/** Journal a local `put` for a linked path (shared driver over the sqlite port). */
@@ -1315,15 +1380,17 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					await tx.run('UPDATE fs_generation SET journal_coalesce_path = ? WHERE id = 1', [
 						done ? '' : String(window[window.length - 1]?.path ?? '')
 					])
-					// Content is collected only on the run that finishes a pass — a THROTTLE,
-					// not a barrier. The scan below is a full pass over `fs_contents`, which a
-					// continuation wakes for every 60s; once per pass is enough.
+					// Nothing below runs until a pass over the journal finishes — a THROTTLE,
+					// not a barrier. The content scan below is a full pass over `fs_contents`,
+					// which a continuation would wake for every 60s; once per pass is enough.
+					// The tombstone sweep wants the same gate for a reason of its own (see
+					// `sweepTombstones`).
 					//
 					// It is deliberately not written as "collect only while no superseded row
 					// survives". That would read as a guarantee it cannot give: an overwrite
 					// already drops the superseded bytes inline, in its own transaction, while
 					// the journal row naming them waits for the prune (#446). Nothing here
-					// makes such a row safe to serve, and no ordering of these two sweeps can.
+					// makes such a row safe to serve, and no ordering of these sweeps can.
 					if (!done) return
 					const rows = await tx.query<{ content_hash: unknown }>(
 						`SELECT content_hash FROM fs_contents
@@ -1333,6 +1400,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						await maybeDeleteOrphanedContent(tx, String(row.content_hash), orphanedR2Keys)
 						reclaimed++
 					}
+					done = await sweepTombstones(tx)
 				})
 				await deleteBlobs(orphanedR2Keys)
 				return { reclaimed, done }
@@ -1363,10 +1431,25 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			},
 			async head() {
 				await ensureBootstrapped()
+				// Never below the floor. `MAX(seq)` alone can sit UNDER it — collect a path
+				// deleted at seq 50 while a live path's only row is seq 10, and the journal's
+				// head is 10 — so a bootstrap would hand back a resume cursor that its own
+				// next pull refuses as pruned, and the replica would re-bootstrap forever.
+				// Everything up to the floor is already accounted for by the snapshot.
 				const [row] = await db.query<{ head: unknown }>(
-					'SELECT COALESCE(MAX(seq), 0) AS head FROM fs_path_journal'
+					`SELECT MAX(
+						(SELECT COALESCE(MAX(seq), 0) FROM fs_path_journal),
+						COALESCE((SELECT journal_pruned_below FROM fs_generation WHERE id = 1), 0)
+					 ) AS head`
 				)
 				return toNumber(row?.head ?? 0)
+			},
+			async prunedBelow() {
+				await ensureBootstrapped()
+				const [row] = await db.query<{ floor: unknown }>(
+					'SELECT journal_pruned_below AS floor FROM fs_generation WHERE id = 1 LIMIT 1'
+				)
+				return toNumber(row?.floor ?? 0)
 			},
 			// One-time reset/migration path: the full journal is intentionally read
 			// in memory so only its latest state is republished.

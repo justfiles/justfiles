@@ -2,6 +2,7 @@ import { persistedState } from './persistedState'
 import type { Storage } from './storage'
 import {
 	type BlobStore,
+	CursorPrunedError,
 	GenerationStaleError,
 	journaledChangeSource,
 	LineageStaleError,
@@ -629,6 +630,14 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			}
 			await checkMidSessionReset(generation)
 		} catch (e) {
+			// The remote's journal no longer covers our pull cursor: it collected the
+			// deletions we are missing, past their retention window. Re-bootstrap WITHOUT
+			// discarding local — the snapshot re-establishes what exists, its tombstone set
+			// supplies what no longer does, and un-pushed offline edits survive both.
+			if (e instanceof CursorPrunedError) {
+				await rebootstrapKeepingLocal()
+				return
+			}
 			// An IDENTITY-fenced write (`lineage_stale`): the endpoint is a different volume at
 			// the SAME generation, so a generation reconcile would no-op. Re-run the full
 			// lineage reconcile from a fresh handshake NOW (rather than deferring to the next
