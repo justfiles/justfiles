@@ -1,5 +1,6 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
 import {
+	CursorPrunedError,
 	GenerationStaleError,
 	LineageStaleError,
 	type SyncReplica
@@ -415,6 +416,13 @@ export function remoteSyncReplica(
 				},
 				{ init: { cache: 'no-store' } }
 			)
+			// 410: the server's journal no longer covers this cursor (it collected the
+			// deletions we are missing). Typed, so `synced()` re-bootstraps keeping local
+			// rather than treating it as a transport failure and retrying forever.
+			if (res.status === 410) {
+				const body = (await res.json().catch(() => null)) as { prunedBelow?: number } | null
+				throw new CursorPrunedError(body?.prunedBelow)
+			}
 			if (!res.ok) throw new Error(`pathDeltas failed: ${res.status}`)
 			const data = await res.json()
 			return {

@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memStorage } from './storage.mem'
 import {
+	CursorPrunedError,
 	GenerationStaleError,
 	journaledChangeSource,
 	localSyncReplica,
@@ -462,6 +463,8 @@ interface FakeServer {
 	scanCalls: number
 	/** If set, the next push (applyPathChanges) throws it — simulates a fence 409. */
 	pushError: Error | undefined
+	/** If set, the next pull (pathDeltas) throws it — simulates a 410 cursor_pruned. */
+	deltaError: Error | undefined
 	/** If set, `reset` throws it — simulates a lost CAS / offline server. */
 	resetError: Error | undefined
 	/** If set, the reset commits and then throws once — simulates a lost acknowledgement. */
@@ -492,6 +495,7 @@ function fakeServer(
 		scanCalls: 0,
 		scanAskedTombstones: false,
 		pushError: undefined,
+		deltaError: undefined,
 		resetError: undefined,
 		resetAfterCommitError: undefined,
 		pushes: [],
@@ -556,12 +560,19 @@ function fakeServer(
 				generation: server.generation
 			}
 		},
-		pathDeltas: async (cursor) => ({
-			changes: [],
-			to: cursor || '0',
-			done: true,
-			generation: server.deltaGeneration ?? server.generation
-		}),
+		pathDeltas: async (cursor) => {
+			if (server.deltaError) {
+				const e = server.deltaError
+				server.deltaError = undefined
+				throw e
+			}
+			return {
+				changes: [],
+				to: cursor || '0',
+				done: true,
+				generation: server.deltaGeneration ?? server.generation
+			}
+		},
 		applyPathChanges: async (changes, _get) => {
 			if (server.pushError) {
 				const e = server.pushError
@@ -644,6 +655,30 @@ describe('synced (generation / client-reset)', () => {
 		expect(await vol.exists('/gone.md')).toBe(false)
 		// Adoption still holds for what the server DOES have: local content wins.
 		expect(dec.decode(await vol.readFile('/keep.md'))).toBe('mine')
+	})
+
+	// The whole point of the retention horizon: a device under the floor re-enters
+	// through the snapshot rather than resuming a stream that no longer holds what it
+	// missed — and keeps its own work while doing it.
+	it('re-bootstraps keeping local when the remote pruned past our cursor', async () => {
+		const server = fakeServer({ generation: 5, files: { '/theirs.md': 'theirs' } })
+		server.seedTombstone('/gone.md', 9)
+		const local = memStorage()
+		const localVol = volume(local)
+		await localVol.writeFile('/gone.md', enc.encode('deleted while we were away'))
+		await localVol.writeFile('/offline.md', enc.encode('written while we were away'))
+		await seedSyncState(local, { generation: 5, pullCursor: '3', pushCursor: '3' })
+		server.deltaError = new CursorPrunedError(7)
+
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect((await readSyncState(local)).pullCursor).toBeUndefined() // cursors dropped
+		await vol.flush() // the re-bootstrap itself
+
+		// Lossless in BOTH directions: the deletion we missed lands…
+		expect(await vol.exists('/gone.md')).toBe(false)
+		// …the edit we made offline survives, and the server's file arrives.
+		expect(dec.decode(await vol.readFile('/offline.md'))).toBe('written while we were away')
+		expect(dec.decode(await vol.readFile('/theirs.md'))).toBe('theirs')
 	})
 
 	// The tombstone is older than the local edit, so LWW keeps the file: a deletion

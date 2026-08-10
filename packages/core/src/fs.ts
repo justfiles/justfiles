@@ -2,6 +2,7 @@ import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
 import {
+	CursorPrunedError,
 	journaledChangeSource,
 	localSyncReplica,
 	PAGE,
@@ -339,10 +340,21 @@ export function createFsApi(
 			// Path sync: PULL (client reads the server's ChangeSource)
 			.get('/path/changes', zValidator('query', DeltaQuery), async (c) => {
 				const { cursor, excludeOrigin, limit } = c.req.valid('query')
-				const { changes, to, done } = await replica.pathDeltas(cursor, { excludeOrigin, limit })
+				let page: Awaited<ReturnType<typeof replica.pathDeltas>>
+				try {
+					page = await replica.pathDeltas(cursor, { excludeOrigin, limit })
+				} catch (error) {
+					// The journal no longer covers this cursor: the deletions it is missing
+					// were collected past their retention window. 410 Gone, and the client
+					// re-enters through the snapshot — the same answer Kubernetes gives a
+					// compacted watch cursor.
+					if (error instanceof CursorPrunedError)
+						return c.json({ error: 'cursor_pruned', prunedBelow: error.prunedBelow }, 410)
+					throw error
+				}
 				const lineage = await readLineage()
 				c.header('Cache-Control', 'no-store')
-				return c.json(DeltaPage.parse({ changes, to, done, generation: lineage?.generation }))
+				return c.json(DeltaPage.parse({ ...page, generation: lineage?.generation }))
 			})
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {

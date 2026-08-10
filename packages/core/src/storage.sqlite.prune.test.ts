@@ -6,8 +6,15 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
+import {
+	CursorPrunedError,
+	journaledChangeSource,
+	treeChangeSource
+} from '@justfiles/fs/sync-replica'
 import { describe, expect, it } from 'vitest'
 import { createSqliteAdapter } from './db.sqlite'
+import { createFsApi } from './fs'
+import { createFsClient, remoteSyncReplica } from './fs.client'
 import { storage as sqliteStorage } from './storage.sqlite'
 
 const migrationsDir = new URL('./migrations/', import.meta.url)
@@ -55,6 +62,27 @@ function seedJournal(db: DatabaseSync, path: string, count: number): void {
 	)
 	for (let i = 0; i < count; i++)
 		insert.run(JSON.stringify({ kind: 'delete', path, version: String(i + 1) }), path)
+}
+
+/** Backdate every journal row past any retention window. */
+function ageJournal(db: DatabaseSync): void {
+	db.exec('UPDATE fs_path_journal SET at_ns = 1')
+}
+
+function makeStorage() {
+	const db = open()
+	const storage = sqliteStorage(createSqliteAdapter(bigIntSafe(db)))
+	return { db, storage, vol: volume(storage) }
+}
+
+function prunedBelow(db: DatabaseSync): number {
+	return Number(
+		(
+			db.prepare('SELECT journal_pruned_below AS floor FROM fs_generation').get() as {
+				floor: number
+			}
+		).floor
+	)
 }
 
 describe('0007_journal_path', () => {
@@ -135,6 +163,134 @@ describe('sqlite journal prune', () => {
 
 		expect((await content.gcUnreferenced()).done).toBe(true)
 		expect(await content.hasByHash(orphaned)).toBe(false)
+	})
+})
+
+describe('sqlite tombstone sweep', () => {
+	it('keeps a fresh tombstone, and moves no floor', async () => {
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.rm('/gone.md')
+
+		expect((await storage.caps?.content?.gcUnreferenced())?.done).toBe(true)
+
+		expect(journalPaths(db)).toEqual(['/gone.md'])
+		expect(prunedBelow(db)).toBe(0)
+	})
+
+	it('collects a tombstone past the window, and raises the floor to it', async () => {
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.rm('/gone.md')
+		await vol.writeFile('/here.md', bytes('here'))
+		ageJournal(db)
+		const deleteSeq = Number(
+			(
+				db.prepare("SELECT MAX(seq) AS seq FROM fs_path_journal WHERE path = '/gone.md'").get() as {
+					seq: number
+				}
+			).seq
+		)
+
+		await storage.caps?.content?.gcUnreferenced()
+
+		// The deleted path is gone from the journal; the live one is untouched.
+		expect(journalPaths(db)).toEqual(['/here.md'])
+		expect(prunedBelow(db)).toBe(deleteSeq)
+		// `fs_path_version` still holds the tombstone — it is the authoritative set a
+		// re-bootstrapping replica is served, and it is not what this sweep collects.
+		expect(await storage.caps?.pathSnapshot?.tombstones('', 10)).toHaveLength(1)
+	})
+
+	it('never leaves a put behind when it takes the delete', async () => {
+		// The resurrection bug this rule exists for: a path with put@n and delete@m that
+		// loses only its delete coalesces back to the put, and the file returns from the
+		// dead on every device that bootstraps afterwards.
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/gone.md', bytes('v1'))
+		await vol.writeFile('/gone.md', bytes('v2'))
+		await vol.rm('/gone.md')
+		ageJournal(db)
+
+		// Two runs: the first coalesces, the second (with nothing left to coalesce) sweeps.
+		await storage.caps?.content?.gcUnreferenced()
+		await storage.caps?.content?.gcUnreferenced()
+
+		expect(journalPaths(db)).toEqual([])
+	})
+
+	it('leaves a resurrected path alone — it is live again', async () => {
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/back.md', bytes('first'))
+		await vol.rm('/back.md')
+		await vol.writeFile('/back.md', bytes('again'))
+		ageJournal(db)
+
+		await storage.caps?.content?.gcUnreferenced()
+		await storage.caps?.content?.gcUnreferenced()
+
+		expect(journalPaths(db)).toEqual(['/back.md'])
+		expect(prunedBelow(db)).toBe(0)
+	})
+})
+
+describe('sqlite pruned-cursor floor', () => {
+	it('refuses a delta read from below the floor, and serves one at it', async () => {
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.rm('/gone.md')
+		await vol.writeFile('/here.md', bytes('here'))
+		ageJournal(db)
+		await storage.caps?.content?.gcUnreferenced()
+		const floor = prunedBelow(db)
+		expect(floor).toBeGreaterThan(0)
+		const source = journaledChangeSource(storage)
+
+		await expect(source.pathDeltas(String(floor - 1))).rejects.toBeInstanceOf(CursorPrunedError)
+		// AT the floor the reader has already seen every collected row.
+		expect((await source.pathDeltas(String(floor))).done).toBe(true)
+	})
+
+	it('hands a bootstrap a resume cursor its own next pull will accept', async () => {
+		// The loop this prevents: collect a path deleted at a HIGH seq while a live path's
+		// only row sits at a low one, and `MAX(seq)` falls under the floor — so every
+		// bootstrap would hand back a cursor its next pull refuses, forever.
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/here.md', bytes('here')) // low seq, survives
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.rm('/gone.md') // high seq, collected
+		ageJournal(db)
+		await storage.caps?.content?.gcUnreferenced()
+		expect(prunedBelow(db)).toBeGreaterThan(0)
+
+		const scan = await treeChangeSource(storage).pathScan(undefined, { limit: 10 })
+
+		expect(Number(scan.syncCursor)).toBeGreaterThanOrEqual(prunedBelow(db))
+		await expect(journaledChangeSource(storage).pathDeltas(scan.syncCursor)).resolves.toMatchObject(
+			{ done: true }
+		)
+	})
+
+	it('answers a pruned cursor with 410, and the client raises it as a typed error', async () => {
+		const { db, storage, vol } = makeStorage()
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.rm('/gone.md')
+		ageJournal(db)
+		await storage.caps?.content?.gcUnreferenced()
+		const app = createFsApi(storage)
+
+		const res = await app.request('/path/changes?cursor=0')
+		expect(res.status).toBe(410)
+		expect(await res.json()).toMatchObject({ error: 'cursor_pruned' })
+
+		const client = createFsClient({
+			baseUrl: 'http://prune.test',
+			fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+				app.request(input as string, init)) as unknown as typeof fetch
+		})
+		await expect(
+			remoteSyncReplica(client, { clientId: 'c1' }).pathDeltas('0')
+		).rejects.toBeInstanceOf(CursorPrunedError)
 	})
 })
 
