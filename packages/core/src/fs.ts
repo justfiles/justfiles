@@ -140,6 +140,11 @@ const DeltaPage = z.object({
 // Snapshot: pagination position and sync high-water are DISTINCT.
 const ScanPage = z.object({
 	changes: z.array(PathChange),
+	// The server's DELETED paths, on the pages that carry them — served only when
+	// asked for (see SnapshotQuery). A snapshot says what exists; a replica that
+	// re-bootstraps while KEEPING its local data also needs what no longer does, or
+	// its next push republishes files another device deleted.
+	tombstones: z.array(PathChange).optional(),
 	next: z.string().optional(), // opaque next-page token; absent when done
 	syncCursor: z.string(), // delta high-water frozen at scan start; resume here
 	done: z.boolean(),
@@ -153,7 +158,11 @@ const DeltaQuery = z.object({
 })
 const SnapshotQuery = z.object({
 	page: z.string().optional(),
-	limit: z.coerce.number().int().positive().optional()
+	limit: z.coerce.number().int().positive().optional(),
+	// Presence means "also send the tombstones". A literal rather than a coerced
+	// boolean: on a query string `?tombstones=false` coerces to TRUE, and this flag
+	// decides whether a fresh device pages through a set it has no use for.
+	tombstones: z.literal('1').optional()
 })
 const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
 const HashParam = z.object({ hash: ContentHash })
@@ -337,8 +346,8 @@ export function createFsApi(
 			})
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
-				const { page, limit } = c.req.valid('query')
-				const scan = await replica.pathScan(page, { limit })
+				const { page, limit, tombstones } = c.req.valid('query')
+				const scan = await replica.pathScan(page, { limit, tombstones: tombstones === '1' })
 				const lineage = await readLineage()
 				return c.json(ScanPage.parse({ ...scan, generation: lineage?.generation }))
 			})

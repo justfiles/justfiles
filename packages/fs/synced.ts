@@ -250,14 +250,32 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function bootstrap(): Promise<number | undefined> {
 		const everPushed = (await syncState.get()).pushCursor !== undefined
+		// Does this replica hold synced paths already? Then ask for the remote's
+		// TOMBSTONES too. A re-bootstrap that keeps local data (`rebootstrapKeepingLocal`
+		// — a lineage it cannot verify, or a cursor the server has pruned past) takes the
+		// adoption path below, where local wins and `reconcileLocal` never runs: without
+		// the deletions, this replica's next push republishes every file another device
+		// removed while it was away. A virgin replica has nothing to protect and asks for
+		// nothing — the snapshot alone is the whole truth for it.
+		const keepsLocal = (await localVol.readdir('/')).some((e) => !isIgnored(`/${e.name}`))
 		const remotePaths = new Set<string>()
 		let page: string | undefined
 		let syncCursor = ''
 		let generation: number | undefined
 		do {
-			const result = await remoteReplica.pathScan(page, { limit: PAGE })
+			const result = await remoteReplica.pathScan(page, { limit: PAGE, tombstones: keepsLocal })
 			syncCursor = result.syncCursor
 			generation = result.generation
+			// Applied in their OWN call, never merged into the puts: `applyPathChanges`
+			// coalesces a batch by path and keeps the LAST entry, so a path that was
+			// deleted and later recreated would resolve by position instead of by version.
+			// Two calls means each is settled against local state by LWW, in either order.
+			if (result.tombstones?.length)
+				await localReplica.applyPathChanges(
+					result.tombstones,
+					(h) => remoteReplica.getBlobByHash(h),
+					{ source: REMOTE_SOURCE }
+				)
 			// Adoption keep-local: on a FIRST bootstrap (never pushed), a path that
 			// already exists locally WINS — keep its content and re-stamp it above the
 			// remote version (via the version seam) so our next push overwrites the

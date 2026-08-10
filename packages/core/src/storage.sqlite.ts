@@ -2,6 +2,7 @@ import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfi
 import type { PathStorePort } from '@justfiles/fs/storage.shared'
 import {
 	applyJournaledOver,
+	buildDeleteChange,
 	buildPutChange,
 	joinPath,
 	journalDeleteOver,
@@ -1106,9 +1107,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		},
 
 		// The sync snapshot, read from the tree instead of replayed from the journal
-		// (see PathSnapshotStore). Keyset-paged by canonical path, and a short page ONLY
-		// at the end — `treeChangeSource` reads a short page as the end of the snapshot,
-		// so no filtering may happen after the LIMIT.
+		// (see PathSnapshotStore). Both halves are keyset-paged by canonical path and
+		// return a short page ONLY at the end — `treeChangeSource` reads a short page as
+		// the end of a phase, so no filtering may happen after the LIMIT.
 		pathSnapshot: {
 			async puts(after: string, limit: number): Promise<PathChange[]> {
 				await ensureBootstrapped()
@@ -1181,6 +1182,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					)
 					return change ? [change] : []
 				})
+			},
+			async tombstones(after: string, limit: number): Promise<PathChange[]> {
+				await ensureBootstrapped()
+				// `tombstone_version >= version` is what "currently deleted" means here: a
+				// local put always mints a version ABOVE the tombstone high-water
+				// (`nextVersion`), and an applied remote put only fast-forwards `version`.
+				// So a resurrected path sorts out of this set and back into `puts`.
+				const rows = await db.query<{ path: unknown; tombstone_version: unknown }>(
+					`SELECT path, tombstone_version FROM fs_path_version
+					 WHERE tombstone_version > 0 AND tombstone_version >= version AND path > ?
+					 ORDER BY path
+					 LIMIT ?`,
+					[after, limit]
+				)
+				return rows.map((row) =>
+					buildDeleteChange(String(row.path), toNumber(row.tombstone_version), localActorId)
+				)
 			}
 		},
 

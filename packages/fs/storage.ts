@@ -172,8 +172,8 @@ export interface StorageCapabilities {
 	pathApply?: PathMutationStore
 
 	/**
-	 * The sync snapshot, read from the TREE rather than replayed from the journal —
-	 * see `PathSnapshotStore`. A backend without it can
+	 * The sync snapshot, read from the TREE (and the tombstone set) rather than
+	 * replayed from the journal — see `PathSnapshotStore`. A backend without it can
 	 * still be a sync source; its snapshot just comes from `journaledChangeSource`,
 	 * which is why its journal can never be pruned below one row per path.
 	 */
