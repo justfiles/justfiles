@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.13.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.12.2...frieren-v0.13.0) (2026-08-10)
+
+
+### Features
+
+* **app:** show which build a device is running ([#435](https://github.com/xiaoxinghu/justfiles/issues/435)) ([cdba3de](https://github.com/xiaoxinghu/justfiles/commit/cdba3dec291bbd6b676e61782a130c6ff5a54d86))
+* **runner:** import and host catalog apps ([#400](https://github.com/xiaoxinghu/justfiles/issues/400)) ([eaab024](https://github.com/xiaoxinghu/justfiles/commit/eaab0247f491ff527d9b298d2040d69174e4eaca))
+
+
+### Bug Fixes
+
+* **frieren:** emit worker source maps so upload_source_maps works ([#395](https://github.com/xiaoxinghu/justfiles/issues/395)) ([8196ab8](https://github.com/xiaoxinghu/justfiles/commit/8196ab82d7d08325b83b6affa41863ef69f8c30b))
+* **frieren:** stop reciprocating a WebSocket close with the peer's own code ([#397](https://github.com/xiaoxinghu/justfiles/issues/397)) ([4ba9fd6](https://github.com/xiaoxinghu/justfiles/commit/4ba9fd66ab0882d5fa1eb51fc36e4b275b64d456))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.4.0
+
 ## [0.12.2](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.12.1...frieren-v0.12.2) (2026-08-06)
 
 
