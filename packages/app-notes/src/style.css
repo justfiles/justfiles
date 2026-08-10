@@ -59,6 +59,20 @@
 	font-size: 12px;
 	opacity: 0.7;
 }
+/* The conflict prompt sits where the status line does, but reads as a question that
+   is waiting: full opacity, and it stays until one of the two buttons answers it. */
+.notes-conflict {
+	flex: none;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 12px;
+	padding: 6px 12px;
+	font-size: 12px;
+}
+.notes-conflict button {
+	font-size: 12px;
+}
 .notes-body {
 	position: relative;
 	flex: 1;

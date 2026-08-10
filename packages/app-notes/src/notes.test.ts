@@ -13,6 +13,7 @@ import {
 	localDateStamp,
 	localTimeStamp,
 	matchNotes,
+	mergeAppend,
 	namesEntry,
 	noteTitle,
 	renameTarget,
@@ -211,6 +212,23 @@ test('the scratch is not a path in the knowledge base', () => {
 	expect(SCRATCH_FILE).toBe('/scratch.md')
 	expect(illegalName('.scratch')).not.toBe(null)
 	expect(sanitizeName('.scratch')).toBe('scratch')
+})
+
+test('only a pure append is merged behind the user; anything else is a question', () => {
+	// The journal case: the note gained an entry at the end while the user was editing it. Both
+	// sets of words are kept, in the order they were written.
+	expect(mergeAppend('standup', 'standup, edited', 'standup\n\n14:32 kept')).toBe(
+		'standup, edited\n\n14:32 kept'
+	)
+	// A note that was empty when it was read is the same rule, not a special case.
+	expect(mergeAppend('', 'mine', 'theirs')).toBe('minetheirs')
+	// Nothing was appended (the base is intact and nothing follows it): the user's words stand.
+	expect(mergeAppend('same', 'mine', 'same')).toBe('mine')
+	// Rewritten, edited in the middle, or truncated — the change is not something this can
+	// reconstruct, so it does not try. `null` is the answer that reaches the user.
+	expect(mergeAppend('standup', 'standup, edited', 'rewritten from the top')).toBe(null)
+	expect(mergeAppend('one\ntwo', 'one\ntwo, edited', 'one\nEDITED\ntwo')).toBe(null)
+	expect(mergeAppend('one\ntwo', 'one\ntwo, edited', 'one')).toBe(null)
 })
 
 test('the kept words are taken out by MAPPED offsets, so the right copy goes', () => {
