@@ -62,7 +62,7 @@ type DirentRow = {
 	dir_ino: unknown
 }
 
-/** One row of the `TREE_CTE` join: the walked path plus its inode's columns. */
+/** One row of the `TREE_PAGE` join: the entry's stored path plus its inode's columns. */
 type TreeRow = {
 	path: unknown
 	ino: unknown
@@ -112,23 +112,32 @@ const STORAGE_NONE = 0
 const STORAGE_INLINE = 1
 const STORAGE_R2 = 2
 
-// The whole tree as (path, ino) pairs in parent-before-child order, walked DOWN
-// from the root's dirents. `path` is RELATIVE — no leading '/' — because that is
-// what `fullScan`'s page cursor has always been; a canonical path is one `'/' ||`
-// away, and only the sync snapshot needs it. Shared by `fullScan` (the VFS tree
-// walk) and `pathSnapshot.puts` (the sync snapshot), which differ only in what they
-// select from it.
-const TREE_CTE = `WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
-		SELECT name, ino, dir_ino, name
-		FROM fs_dirents
-		WHERE dir_ino = ?
-		UNION ALL
-		SELECT tree.path || '/' || child.name, child.ino, child.dir_ino, child.name
-		FROM tree
-		JOIN fs_inodes inode ON inode.ino = tree.ino
-		JOIN fs_dirents child ON child.dir_ino = tree.ino
-		WHERE inode.type = ?
-	)`
+// The tree, one page at a time, keyset-paged by canonical path — the shape shared by
+// `fullScan` (the VFS tree walk) and `pathSnapshot.puts` (the sync snapshot), which
+// differ only in what they select and filter.
+//
+// `path` is a stored column (0010_dirent_path.sql), so this is an index range scan:
+// it reads the page and nothing else. It was a recursive CTE that rebuilt the WHOLE
+// tree per page, which made a paged scan quadratic in the page count.
+//
+// `path > ?` is never true of NULL, so an entry unreachable from the root stays out
+// of the scan — the same answer the walk gave by never reaching it. Ordering by the
+// canonical path is parent-before-child ('/a' sorts under '/a/b'), which the VFS
+// walk relies on to resolve each entry's parent before the entry.
+const TREE_PAGE = `SELECT
+		dirent.path,
+		dirent.ino,
+		dirent.dir_ino,
+		dirent.name,
+		inode.type,
+		inode.mode,
+		inode.size,
+		inode.mtime_ns,
+		inode.ctime_ns,
+		inode.content_hash,
+		inode.symlink_target
+	FROM fs_dirents AS dirent
+	JOIN fs_inodes AS inode ON inode.ino = dirent.ino`
 
 function nowNs(): bigint {
 	return BigInt(Date.now()) * 1_000_000n
@@ -565,21 +574,48 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	// transaction, with a version from fs_path_version and ORIGIN =
 	// options.source ?? localActorId. Mirrors the memStorage reference impl.
 
-	/** Resolve ino -> canonical path via a recursive walk up the dirent chain; null if unlinked. */
+	/**
+	 * Resolve ino -> canonical path; null when the inode is unlinked, or linked under
+	 * a directory that is itself unreachable from the root (`fs_dirents.path` is NULL
+	 * there — see 0010_dirent_path.sql).
+	 *
+	 * One indexed lookup. This used to be a recursive walk up the dirent chain, paid
+	 * on every single-file mutation.
+	 */
 	async function pathOf(tx: DbAdapter, ino: Ino): Promise<string | null> {
 		if (ino === ROOT_INO) return '/'
-		const rows = await tx.query<{ name: unknown; depth: unknown }>(
-			`WITH RECURSIVE up(ino, name, dir_ino, depth) AS (
-				SELECT ino, name, dir_ino, 0 FROM fs_dirents WHERE ino = ?
-				UNION ALL
-				SELECT d.ino, d.name, d.dir_ino, up.depth + 1
-				FROM fs_dirents d JOIN up ON d.ino = up.dir_ino
-			)
-			SELECT name, depth FROM up ORDER BY depth DESC`,
+		const [row] = await tx.query<{ path: unknown }>(
+			'SELECT path FROM fs_dirents WHERE ino = ? LIMIT 1',
 			[ino]
 		)
-		if (rows.length === 0) return null
-		return `/${rows.map((r) => String(r.name)).join('/')}`
+		return row ? toStringOrNull(row.path) : null
+	}
+
+	/**
+	 * Move a subtree's stored paths from one base to another, in one indexed range
+	 * update — the write-side half of materialising the path.
+	 *
+	 * A descendant's stored path is `oldBase` + '/' + rest, so the descendants are
+	 * exactly the range [oldBase || '/', oldBase || '0'): '0' is the code point after
+	 * '/', so the range holds every path under the directory and nothing beside it
+	 * (`/a-b` sorts below `/a/`, `/ab` above `/a0`). The base's own entry is matched
+	 * separately, and rewrites to `newBase` because `substr` past the end gives ''.
+	 *
+	 * `length()` is SQLite's, deliberately: the offset counts CHARACTERS, and a JS
+	 * `.length` would count a UTF-16 pair twice — one emoji in a directory name and
+	 * every descendant path below it would be cut in the wrong place.
+	 */
+	async function rebaseSubtreePaths(
+		tx: DbAdapter,
+		oldBase: string,
+		newBase: string
+	): Promise<void> {
+		await tx.run(
+			`UPDATE fs_dirents
+			 SET path = ? || substr(path, length(?) + 1)
+			 WHERE path = ? OR (path >= ? AND path < ?)`,
+			[newBase, oldBase, oldBase, `${oldBase}/`, `${oldBase}0`]
+		)
 	}
 
 	async function readPathVersion(
@@ -740,7 +776,11 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	async function ensureDirPath(tx: DbAdapter, path: string): Promise<Ino> {
 		if (path === '/') return ROOT_INO
 		let cur: Ino = ROOT_INO
+		// The walk already holds each segment's canonical path, so a created entry
+		// stores it directly rather than deriving it back.
+		let sofar = ''
 		for (const seg of path.slice(1).split('/')) {
+			sofar = `${sofar}/${seg}`
 			const dirent = await getDirent(tx, cur, seg)
 			if (dirent) {
 				cur = String(dirent.ino)
@@ -753,12 +793,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
 				[ino, FileType.Directory, 0o755, 0, stamp, stamp, STORAGE_NONE]
 			)
-			await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-				cur,
-				seg,
-				ino,
-				FileType.Directory
-			])
+			await tx.run(
+				'INSERT INTO fs_dirents(dir_ino, name, ino, type, path) VALUES (?, ?, ?, ?, ?)',
+				[cur, seg, ino, FileType.Directory, sofar]
+			)
 			cur = ino
 		}
 		return cur
@@ -827,6 +865,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		type: FileType
 	): Promise<void> {
 		const existing = await getDirent(tx, dirIno, name)
+		// An existing entry keeps its path: (dir_ino, name) is unchanged, so the name
+		// this rebinds still sits where it did. Only a NEW entry has a path to resolve.
 		if (existing)
 			await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
 				ino,
@@ -834,13 +874,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				dirIno,
 				name
 			])
-		else
-			await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-				dirIno,
-				name,
-				ino,
-				type
-			])
+		else {
+			const dirPath = await pathOf(tx, dirIno)
+			await tx.run(
+				'INSERT INTO fs_dirents(dir_ino, name, ino, type, path) VALUES (?, ?, ?, ?, ?)',
+				[dirIno, name, ino, type, dirPath === null ? null : joinPath(dirPath, name)]
+			)
+		}
 	}
 
 	// The storage-independent seam the shared apply driver (storage.shared.ts) calls,
@@ -1027,17 +1067,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						storageKind
 					]
 				)
-				await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-					dirIno,
-					name,
-					ino,
-					meta.type
-				])
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) {
-					path = joinPath(dirPath, name)
-					await journalPut(tx, path, ino, options)
-				}
+				path = dirPath === null ? undefined : joinPath(dirPath, name)
+				await tx.run(
+					'INSERT INTO fs_dirents(dir_ino, name, ino, type, path) VALUES (?, ?, ?, ?, ?)',
+					[dirIno, name, ino, meta.type, path ?? null]
+				)
+				if (path !== undefined) await journalPut(tx, path, ino, options)
 			})
 
 			emit({ ino, kind: 'meta', source: options?.source })
@@ -1097,6 +1133,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					oldDirIno,
 					oldName
 				])
+				// The rebind moves ONE entry; every stored path below it moves with it.
+				await rebaseSubtreePaths(tx, oldBase, newBase)
 				movedIno = String(source.ino)
 				// Journal the move as ordered subtree changes: delete child-before-parent
 				// (never orphan a live child under a deleted dir), then put parent-before-
@@ -1138,28 +1176,15 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 		async fullScan(cursor: string) {
 			await ensureBootstrapped()
-			// `tree.path > ''` holds for every path (a dirent name is never empty), so the
-			// first page needs no separate query.
+			// `path > ''` holds for every canonical path, so the first page needs no
+			// separate query. The cursor is this backend's own opaque token — a canonical
+			// path — and never leaves the caller's paging loop.
 			const rows = await db.query<TreeRow>(
-				`${TREE_CTE}
-					SELECT
-						tree.path,
-						tree.ino,
-						tree.dir_ino,
-						tree.name,
-						inode.type,
-						inode.mode,
-						inode.size,
-						inode.mtime_ns,
-						inode.ctime_ns,
-						inode.content_hash,
-						inode.symlink_target
-					FROM tree
-					JOIN fs_inodes inode ON inode.ino = tree.ino
-					WHERE tree.path > ?
-					ORDER BY tree.path
+				`${TREE_PAGE}
+					WHERE dirent.path > ?
+					ORDER BY dirent.path
 					LIMIT ?`,
-				[ROOT_INO, FileType.Directory, cursor, SCAN_PAGE_SIZE]
+				[cursor, SCAN_PAGE_SIZE]
 			)
 
 			const xattrsByIno = await readXattrsByIno(
@@ -1198,60 +1223,38 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		pathSnapshot: {
 			async puts(after: string, limit: number): Promise<PathChange[]> {
 				await ensureBootstrapped()
-				// The version is joined onto the PAGE, never inside the recursive CTE: the
-				// CTE walks the tree and the join would be re-evaluated at every step of it.
-				// A path with no version row was created by tree repair (`ensureDirPath`
-				// resurrecting a deleted ancestor), which mints no version — 0 loses every
-				// LWW compare, which is the right answer for a directory the receiving
-				// replica will recreate from its children anyway.
+				// The version is joined onto the PAGE, never inside it: the page is a range
+				// scan of the path index, and joining inside would re-evaluate the join for
+				// every row it walks past. A path with no version row was created by tree
+				// repair (`ensureDirPath` resurrecting a deleted ancestor), which mints no
+				// version — 0 loses every LWW compare, which is the right answer for a
+				// directory the receiving replica will recreate from its children anyway.
 				//
 				// A regular file with no contentHash is excluded HERE, in SQL, for the same
 				// reason the journal never carries one (see `buildPutChange`): a wire put
 				// must be hydratable. Doing it after the LIMIT would shorten the page and
 				// read as the end of the snapshot.
 				const rows = await db.query<TreeRow & { version: unknown }>(
-					`${TREE_CTE},
-					page AS (
-						SELECT
-							tree.path AS path,
-							tree.ino AS ino,
-							tree.dir_ino AS dir_ino,
-							tree.name AS name,
-							inode.type AS type,
-							inode.mode AS mode,
-							inode.size AS size,
-							inode.mtime_ns AS mtime_ns,
-							inode.ctime_ns AS ctime_ns,
-							inode.content_hash AS content_hash,
-							inode.symlink_target AS symlink_target
-						FROM tree
-						JOIN fs_inodes inode ON inode.ino = tree.ino
-						WHERE tree.path > ?
+					`WITH page AS (
+						${TREE_PAGE}
+						WHERE dirent.path > ?
 						  AND (inode.type <> ? OR inode.content_hash IS NOT NULL)
-						ORDER BY tree.path
+						ORDER BY dirent.path
 						LIMIT ?
 					)
 					SELECT page.*, version.version
 					FROM page
-					LEFT JOIN fs_path_version version ON version.path = '/' || page.path
+					LEFT JOIN fs_path_version version ON version.path = page.path
 					ORDER BY page.path`,
-					[
-						ROOT_INO,
-						FileType.Directory,
-						// The cursor is canonical; the CTE's paths are relative.
-						after.startsWith('/') ? after.slice(1) : after,
-						FileType.Regular,
-						limit
-					]
+					[after, FileType.Regular, limit]
 				)
 				const xattrs = await readXattrsByIno(
 					db,
 					rows.map((row) => String(row.ino))
 				)
 				return rows.flatMap((row) => {
-					const path = `/${String(row.path)}`
 					const change = buildPutChange(
-						path,
+						String(row.path),
 						{
 							type: toNumber(row.type) as FileType,
 							size: toBigInt(row.size),
@@ -1625,26 +1628,25 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			await db.transaction(async (tx) => {
 				await ensureDirentTarget(tx, dirIno, entry)
 				const existing = await getDirent(tx, dirIno, name)
-				if (existing) {
-					await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
-						entry.ino,
-						entry.type,
-						dirIno,
-						name
-					])
-				} else {
-					await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-						dirIno,
-						name,
-						entry.ino,
-						entry.type
-					])
-				}
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) {
-					path = joinPath(dirPath, name)
-					await journalPut(tx, path, entry.ino, options)
+				path = dirPath === null ? undefined : joinPath(dirPath, name)
+				// This binds ONE name and nothing below it. Linking a directory that is
+				// already linked somewhere else would leave its descendants' stored paths
+				// under the old base — but `putDirent` cannot tell that MOVE from a second
+				// link, having no old name to unbind. Moving a subtree is `atomicMove`,
+				// which is handed both ends and is what the VFS uses on this backend.
+				if (existing) {
+					await tx.run(
+						'UPDATE fs_dirents SET ino = ?, type = ?, path = ? WHERE dir_ino = ? AND name = ?',
+						[entry.ino, entry.type, path ?? null, dirIno, name]
+					)
+				} else {
+					await tx.run(
+						'INSERT INTO fs_dirents(dir_ino, name, ino, type, path) VALUES (?, ?, ?, ?, ?)',
+						[dirIno, name, entry.ino, entry.type, path ?? null]
+					)
 				}
+				if (path !== undefined) await journalPut(tx, path, entry.ino, options)
 			})
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, path, source: options?.source })
 		},
