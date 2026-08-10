@@ -38,6 +38,14 @@
 			"bucket_name": "frieren-fs-blobs"
 		}
 	],
+	// Keep this empty list. The app-store indexer moved to `apps/runner` (#420), which
+	// took its `scheduled()` handler with it — but deleting the key does NOT unregister
+	// the schedule, because wrangler only syncs triggers when the key is present. The
+	// hourly cron kept firing at a worker that could no longer answer it, one
+	// `Handler does not export a scheduled() function` per hour. An empty list unregisters.
+	"triggers": {
+		"crons": []
+	},
 	"migrations": [
 		{
 			"tag": "v1",
@@ -72,6 +80,10 @@
 				"binding": "ASSETS",
 				"not_found_handling": "single-page-application",
 				"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws"]
+			},
+			// Same as prod: staging carries the same orphaned hourly cron.
+			"triggers": {
+				"crons": []
 			},
 			"r2_buckets": [
 				{
