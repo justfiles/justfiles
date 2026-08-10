@@ -1,7 +1,7 @@
 {
 	"apps/cli": "0.2.9",
 	"apps/worker": "0.9.1",
-	"apps/frieren": "0.13.0",
+	"apps/frieren": "0.13.1",
 	"packages/fs": "0.6.0",
 	"packages/app": "0.4.0",
 	"packages/app-code": "0.2.4"

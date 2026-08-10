@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.13.0...frieren-v0.13.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **frieren:** unregister the orphaned hourly cron ([#451](https://github.com/xiaoxinghu/justfiles/issues/451)) ([60bdc83](https://github.com/xiaoxinghu/justfiles/commit/60bdc83421926d44cf3a2faa281d8b05d3d83ab2))
+
 ## [0.13.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.12.2...frieren-v0.13.0) (2026-08-10)
 
 
