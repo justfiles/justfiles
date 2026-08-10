@@ -820,6 +820,75 @@ test('a keep that races the day’s first keep does not lose one of them', async
 	expect(body).toContain('two')
 })
 
+test('a save refuses the body it was not composed over, and writes nothing', async () => {
+	// Ordering the writes cannot save this one: the entry landed BEFORE the save started, so
+	// the buffer's text simply never contained it and writing that text would erase it. The
+	// precondition is what turns a silent loss into an answerable question (issue #367).
+	const vol = twoVolumes({ '/journal/2026-06-19.md': '09:00 standup' })
+	const h = handle(initialState, vol.invoke)
+	await app.runProcedure('journal', { date: '2026-06-19', text: '14:32 kept' }, h.app)
+	const outcome = await app.runProcedure(
+		'save',
+		{ path: '/journal/2026-06-19.md', text: '09:00 standup, edited', base: '09:00 standup' },
+		h.app
+	)
+	expect(outcome).toEqual({
+		path: '/journal/2026-06-19.md',
+		wrote: false,
+		disk: '09:00 standup\n\n14:32 kept'
+	})
+	// Untouched — and the current body came back, which is the only way the caller can put
+	// the two versions together.
+	expect(vol.kb.get('/journal/2026-06-19.md')).toBe('09:00 standup\n\n14:32 kept')
+	// The same save over the body it now knows about lands.
+	expect(
+		await app.runProcedure(
+			'save',
+			{
+				path: '/journal/2026-06-19.md',
+				text: '09:00 standup, edited\n\n14:32 kept',
+				base: '09:00 standup\n\n14:32 kept'
+			},
+			h.app
+		)
+	).toEqual({ path: '/journal/2026-06-19.md', wrote: true })
+	expect(vol.kb.get('/journal/2026-06-19.md')).toBe('09:00 standup, edited\n\n14:32 kept')
+})
+
+test('a keep and a save that overlap lose neither', async () => {
+	// The read and the write are one act because they ride the same chain as every other
+	// write this app makes (`serially`). Without that the append could land between them and
+	// the save would still overwrite it — a precondition with a gap is only a guess.
+	const vol = twoVolumes({ '/journal/2026-06-19.md': 'first thing' })
+	const h = handle(initialState, vol.invoke)
+	const [, saved] = await Promise.all([
+		app.runProcedure('journal', { date: '2026-06-19', text: 'kept from the scratch' }, h.app),
+		app.runProcedure(
+			'save',
+			{ path: '/journal/2026-06-19.md', text: 'first thing, edited', base: 'first thing' },
+			h.app
+		)
+	])
+	const body = vol.kb.get('/journal/2026-06-19.md') ?? ''
+	// Either order is fine, and neither loses anything: the save first, then the entry
+	// appended to it — or the entry first, and the save refused with the typing still held by
+	// the buffer that has it.
+	expect(body).toContain('kept from the scratch')
+	expect(body.includes('first thing, edited') || !(saved as { wrote: boolean }).wrote).toBe(true)
+})
+
+test('a save with no base is unconditional, as it was', async () => {
+	// The agent has no buffer and no base — and this is also how an answered conflict writes,
+	// which is what "keep mine" means (see buffer.ts `overwrite`).
+	const vol = twoVolumes({ '/Kyoto.md': 'changed by somebody else' })
+	const h = handle(initialState, vol.invoke)
+	expect(await app.runProcedure('save', { path: '/Kyoto.md', text: 'mine' }, h.app)).toEqual({
+		path: '/Kyoto.md',
+		wrote: true
+	})
+	expect(vol.kb.get('/Kyoto.md')).toBe('mine')
+})
+
 test('the agent may READ the scratch, but not overwrite it', async () => {
 	// Reading answers "what's in my scratch?" — a fair question. Writing the whole buffer
 	// would let the agent erase words the user has not filed yet, and `journal`/`create` are

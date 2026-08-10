@@ -71,6 +71,30 @@ export function splitSelection(
 }
 
 /**
+ * The body to write when the note changed on disk under a dirty buffer — or `null` when the two
+ * versions cannot be reconciled without asking the user.
+ *
+ * `base` is what the buffer read, `mine` is what the user has typed since, `disk` is what is
+ * there now. Everything the editor writes is a WHOLE body, so a save composed before someone
+ * else's change erases it — the reason `save` refuses one it did not expect (DESIGN.md §1b).
+ * Refusing is the honest answer in general, but it is the wrong one for the case that is
+ * actually common here: the agent APPENDS. `journal` adds the day's entry to the end of a note
+ * the user may have open, and both sides are then keeping different words in one file, so
+ * "reload or overwrite" makes the user throw one of them away for nothing.
+ *
+ * A pure append is exactly recognisable — the body on disk still STARTS with the base — and its
+ * merge is exactly determined: the user's text, then the words that arrived after the base. No
+ * diff, no hunks, no three-way merge; anything less obvious than "only added to the end" is
+ * `null`, and the user decides.
+ *
+ * The tail is taken from `disk`, never from a remembered entry: whatever landed after the base
+ * is what the note gained, whoever wrote it.
+ */
+export function mergeAppend(base: string, mine: string, disk: string): string | null {
+	return disk.startsWith(base) ? `${mine}${disk.slice(base.length)}` : null
+}
+
+/**
  * Take the kept words out of the scratch — the ones at `[from, to)` in `before` — from `now`,
  * which is whatever the buffer holds by the time the write has landed. `null` when that cannot
  * be done honestly.

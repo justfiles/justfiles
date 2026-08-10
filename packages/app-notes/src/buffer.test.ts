@@ -15,15 +15,21 @@ function fakeIO(disk: Record<string, string> = {}) {
 	let hold: { promise: Promise<void>; release: () => void } | null = null
 	const failures: Array<Error | null> = []
 	const io: BufferIO = {
-		async save(path, text) {
+		async save(path, text, base) {
 			calls.push(`save ${path}`)
 			if (hold) await hold.promise
 			const failure = failures.shift()
 			if (failure) throw failure
 			// A save EDITS: the real one asks for `update: true`, so a note that is not there
 			// is ENOENT rather than a file conjured at that path (DESIGN.md §1a‴).
-			if (disk[path] === undefined) throw new Error(`ENOENT: ${path}`)
+			const body = disk[path]
+			if (body === undefined) throw new Error(`ENOENT: ${path}`)
+			// …and only over the body the caller expected, which is the other precondition the
+			// real `save` applies (see app.ts). A write that would replace something else does
+			// not happen, and the bytes that are there come back instead.
+			if (base !== null && body !== base) return { wrote: false as const, disk: body }
 			disk[path] = text
+			return { wrote: true as const }
 		},
 		async create(text) {
 			calls.push('create')
@@ -169,7 +175,7 @@ test('a folder pretending to be a note is refused by the read, and nothing is op
 	const outcome = await buf.open('/Archive.md')
 	expect(outcome).toMatchObject({ opened: false, because: 'unreadable', path: '/Archive.md' })
 	// Pointing at nothing, and not showing the previous note's body as if it were open.
-	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null, conflict: false })
 })
 
 test('words typed while an unreadable note was on its way become a note of their own', async () => {
@@ -247,7 +253,12 @@ test('typing during a read keeps the keystrokes, saves them, and still opens the
 	release()
 	expect(await opening).toEqual({ opened: true })
 	expect(disk['/Kyoto.md']).toBe('kyoto, half a thought') // saved where it was typed
-	expect(buf.snapshot()).toEqual({ text: 'osaka', dirty: false, path: '/Osaka.md' })
+	expect(buf.snapshot()).toEqual({
+		text: 'osaka',
+		dirty: false,
+		path: '/Osaka.md',
+		conflict: false
+	})
 	expect(calls).toEqual(['read /Kyoto.md', 'read /Osaka.md', 'save /Kyoto.md', 'read /Osaka.md'])
 })
 
@@ -273,7 +284,7 @@ test('a read that fails because the note is GONE lets go of it', async () => {
 	await buf.open('/Kyoto.md')
 	failNext(new Error('ENOENT: /notes/Kyoto.md'))
 	expect(await buf.open('/Kyoto.md')).toMatchObject({ gone: true })
-	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null, conflict: false })
 })
 
 test('a buffer can be put back when the operation that emptied it did not happen', async () => {
@@ -285,7 +296,7 @@ test('a buffer can be put back when the operation that emptied it did not happen
 	buf.type('unsaved edits')
 	const before = buf.snapshot()
 	const undiscard = buf.discard('/Kyoto.md')
-	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null, conflict: false })
 	undiscard?.() // …the delete failed
 	expect(buf.snapshot()).toEqual(before)
 	expect(await buf.settle()).toEqual({ settled: true })
@@ -309,7 +320,12 @@ test('the way back declines once the user has typed into the emptied buffer', as
 	const undiscard = buf.discard('/Kyoto.md')
 	buf.type('a fresh thought')
 	undiscard?.() // …the delete failed, but the buffer has moved on
-	expect(buf.snapshot()).toEqual({ text: 'a fresh thought', dirty: true, path: null })
+	expect(buf.snapshot()).toEqual({
+		text: 'a fresh thought',
+		dirty: true,
+		path: null,
+		conflict: false
+	})
 })
 
 test('a save that fails about an address the buffer has left is not a diagnosis', async () => {
@@ -331,7 +347,8 @@ test('a save that fails about an address the buffer has left is not a diagnosis'
 	expect(buf.snapshot()).toEqual({
 		text: 'edited while it moved',
 		dirty: false,
-		path: '/Travel/Kyoto.md'
+		path: '/Travel/Kyoto.md',
+		conflict: false
 	})
 	expect(disk['/Travel/Kyoto.md']).toBe('edited while it moved')
 	expect(calls).toEqual(['read /Kyoto.md', 'save /Kyoto.md', 'save /Travel/Kyoto.md'])
@@ -378,7 +395,12 @@ test('a reload that cannot read REPORTS it, and changes nothing', async () => {
 	expect(outcome).toMatchObject({ opened: false, because: 'unreadable', gone: false })
 	// Unchanged: still attached, still clean, still the text it had. A transient failure must
 	// not detach (that would fork a duplicate) and must not empty the buffer either.
-	expect(buf.snapshot()).toEqual({ text: 'first', dirty: false, path: '/Kyoto.md' })
+	expect(buf.snapshot()).toEqual({
+		text: 'first',
+		dirty: false,
+		path: '/Kyoto.md',
+		conflict: false
+	})
 })
 
 test('a move carries the buffer with it, so the next save lands at the new path', async () => {
@@ -399,7 +421,7 @@ test('a deleted note is DISCARDED, not settled', async () => {
 	await buf.open('/Kyoto.md')
 	buf.type('edits nobody wants')
 	buf.discard('/Kyoto.md')
-	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null, conflict: false })
 	expect(await buf.settle()).toEqual({ settled: true })
 	// No write of any kind after the delete: a pending save would put the note back.
 	expect(calls).toEqual(['read /Kyoto.md'])
@@ -412,7 +434,140 @@ test('deleting the folder the buffer lives in discards it, a sibling does not', 
 	buf.discard('/Trips 2') // a prefix of the string, but not a parent of the path
 	expect(buf.snapshot()).toMatchObject({ dirty: true, path: '/Trips/Kyoto.md' })
 	buf.discard('/Trips')
-	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null, conflict: false })
+})
+
+test('an entry appended while the user typed is merged, and both survive', async () => {
+	// THE case (issue #367): the agent files a journal entry into the note the user has open,
+	// mid-word. The buffer's text never contained that entry, so a plain full-body save would
+	// erase it — and the buffer would report success, which is the shape of loss nobody ever
+	// notices. Only added-at-the-end is merged, so no one has to be asked.
+	const { buf, disk, calls } = buffer({ '/journal/2026-06-19.md': '09:00\nstandup' })
+	await buf.open('/journal/2026-06-19.md')
+	buf.type('09:00\nstandup, edited')
+	disk['/journal/2026-06-19.md'] = '09:00\nstandup\n\n14:32\nkept from the scratch'
+	expect(await buf.settle()).toEqual({ settled: true })
+	expect(disk['/journal/2026-06-19.md']).toBe(
+		'09:00\nstandup, edited\n\n14:32\nkept from the scratch'
+	)
+	expect(buf.snapshot()).toMatchObject({ dirty: false, conflict: false })
+	// Refused once, then written once — over the body the merge was composed from.
+	expect(calls).toEqual([
+		'read /journal/2026-06-19.md',
+		'save /journal/2026-06-19.md',
+		'save /journal/2026-06-19.md'
+	])
+})
+
+test('a body that changed some other way is REFUSED, and nothing is written', async () => {
+	const { buf, disk } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	buf.type('mine, unsaved')
+	disk['/Kyoto.md'] = 'theirs, rewritten from the top'
+	expect(await buf.settle()).toEqual({
+		settled: false,
+		because: 'stale',
+		path: '/Kyoto.md'
+	})
+	// Both versions still exist: theirs on disk, mine in the buffer — which is the whole
+	// point. The buffer stays attached, so the answer can still be given about THIS note.
+	expect(disk['/Kyoto.md']).toBe('theirs, rewritten from the top')
+	expect(buf.snapshot()).toEqual({
+		text: 'mine, unsaved',
+		dirty: true,
+		path: '/Kyoto.md',
+		conflict: true
+	})
+})
+
+test('an unanswered conflict stops writing — it does not ask the volume again', async () => {
+	const { buf, disk, calls } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	buf.type('mine')
+	disk['/Kyoto.md'] = 'theirs'
+	expect((await buf.settle()).settled).toBe(false)
+	// The user keeps typing — which is what happens while a prompt is up. Every one of those
+	// keystrokes used to be a reason to write; now none of them is, because the answer would
+	// be the same refusal and each retry costs a read of the note.
+	buf.type('mine, more')
+	expect(await buf.settle()).toMatchObject({ because: 'stale' })
+	expect(calls).toEqual(['read /Kyoto.md', 'save /Kyoto.md'])
+	// And nothing may replace it while it is unanswered: rule 1 does not have an exception
+	// for a question the user has not looked at yet.
+	expect(await buf.open('/Osaka.md')).toMatchObject({ opened: false, because: 'unsettled' })
+})
+
+test('“keep mine” writes over what is there, once — and only once', async () => {
+	const { buf, disk } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	buf.type('mine')
+	disk['/Kyoto.md'] = 'theirs'
+	await buf.settle()
+	expect(await buf.overwrite()).toEqual({ settled: true })
+	expect(disk['/Kyoto.md']).toBe('mine')
+	expect(buf.snapshot()).toEqual({ text: 'mine', dirty: false, path: '/Kyoto.md', conflict: false })
+	// The answer was about THAT disagreement. The bytes just written are the buffer's claim
+	// again, so a later external change is a fresh question rather than a silent overwrite.
+	buf.type('mine, later')
+	disk['/Kyoto.md'] = 'theirs, again'
+	expect(await buf.settle()).toMatchObject({ because: 'stale' })
+	expect(disk['/Kyoto.md']).toBe('theirs, again')
+})
+
+test('“use the file” takes the disk body, and only if it can be read', async () => {
+	const { buf, disk, failNext } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	buf.type('mine')
+	disk['/Kyoto.md'] = 'theirs'
+	await buf.settle()
+	// A revert that cannot read must not cost the user their words AND leave them nothing.
+	failNext(new Error('EIO: disk'))
+	expect(await buf.revert()).toMatchObject({ opened: false, because: 'unreadable', gone: false })
+	expect(buf.snapshot()).toMatchObject({ text: 'mine', dirty: true, conflict: true })
+	expect(await buf.revert()).toEqual({ opened: true })
+	expect(buf.snapshot()).toEqual({
+		text: 'theirs',
+		dirty: false,
+		path: '/Kyoto.md',
+		conflict: false
+	})
+	// Clean and current, so the buffer is settled without touching the volume.
+	expect(await buf.settle()).toEqual({ settled: true })
+})
+
+test('typing through a revert outranks it — the words stay, and so does the question', async () => {
+	const { buf, disk, freeze } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	buf.type('mine')
+	disk['/Kyoto.md'] = 'theirs'
+	await buf.settle()
+	const release = freeze()
+	const reverting = buf.revert()
+	await inFlight()
+	buf.type('mine, and newer') // the user changed their mind while the read was out
+	release()
+	expect(await reverting).toEqual({ opened: true })
+	expect(buf.snapshot()).toMatchObject({ text: 'mine, and newer', dirty: true, conflict: true })
+})
+
+test('a note that vanished while conflicted becomes a note of its own', async () => {
+	// The conflict was a question about a note that exists. Deleted, there is nothing left to
+	// answer — the words are the user's and have to land somewhere, so the buffer detaches.
+	const { buf, disk } = buffer({ '/Kyoto.md': 'first' })
+	await buf.open('/Kyoto.md')
+	buf.type('Kyoto\nmine')
+	disk['/Kyoto.md'] = 'theirs'
+	await buf.settle()
+	delete disk['/Kyoto.md']
+	expect(await buf.revert()).toMatchObject({ opened: false, because: 'unreadable', gone: true })
+	expect(buf.snapshot()).toMatchObject({
+		text: 'Kyoto\nmine',
+		dirty: true,
+		path: null,
+		conflict: false
+	})
+	expect(await buf.settle()).toEqual({ settled: true })
+	expect(disk['/Kyoto.md']).toBe('Kyoto\nmine')
 })
 
 test('a scratch note that cannot be created anywhere stays unsaved', async () => {
@@ -423,5 +578,5 @@ test('a scratch note that cannot be created anywhere stays unsaved', async () =>
 	expect(buf.snapshot()).toMatchObject({ dirty: true, text: 'Doomed note\nsome words' })
 	// And the next transition retries it rather than dropping it.
 	expect(await buf.clear()).toEqual({ settled: true })
-	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null })
+	expect(buf.snapshot()).toEqual({ text: '', dirty: false, path: null, conflict: false })
 })

@@ -69,8 +69,9 @@ const dec = new TextDecoder()
 // Ordered, that interleaving cannot exist: save-then-append keeps both, append-then-save
 // keeps the typing and loses only the entry. What ordering does NOT do is make an append
 // survive a full-body `save` that was composed before it — the buffer's text never contained
-// the entry, so writing it erases it. That is the ordinary two-writers-one-note case
-// (DESIGN.md §8), whose real answer is a precondition on `save` rather than a lock.
+// the entry, so writing it erases it. That is answered where it arises, by `save`'s `base`
+// precondition (see there) rather than by a lock; the chain is what lets that check be one act
+// with the write instead of a guess.
 //
 // A path-conditional version of this ("serialize saves to journal paths") was the obvious
 // smaller fix and is the wrong shape: the journal note is not special as a FILE, it is
@@ -534,7 +535,9 @@ export const app = defineApp({
 			}
 		}),
 
-		// Persist a note's body. A PROCEDURE, not an edge, because the caller has to know
+		// Persist a note's body — and only over the body the caller expected to be there.
+		//
+		// A PROCEDURE, not an edge, because the caller has to know
 		// whether the bytes landed while it still holds them: the GUI flushes before it
 		// opens another note, starts a new one, or moves this one, and a fire-and-forget
 		// write would report its failure after that transition — against a different
@@ -548,18 +551,59 @@ export const app = defineApp({
 		// in it. So the write is where the path is proven, and ENOENT is the signal that
 		// the note is gone — which the GUI answers by keeping the buffer and detaching it
 		// (see `gui.tsx`). Creating is `create`'s job.
+		//
+		// `base` is the same idea for CONTENT rather than for the path: the body the caller last
+		// saw. A save is a WHOLE body composed from a read that happened at some earlier moment,
+		// so without `base` it says nothing about what it replaces — an append landing in that gap
+		// (`journal`, Files, a sync pull) is erased by an editor that believes it saved. With it
+		// the write is a compare-and-swap, which is the answer every editor gives this: Emacs
+		// checks the visited file's modtime before saving, VS Code an etag, HTTP an `If-Match`.
+		// Refuse, and let whoever holds the words decide.
+		//
+		// Compared on the BODY, not on an mtime, because ours cannot carry the answer: both
+		// backends stamp at millisecond granularity (`storage.idb.ts`, `storage.fs.ts`) and the
+		// interleaving this defends is an in-memory append and a save inside one millisecond. Git
+		// names the same trap ("racily clean") and falls back to comparing content too.
+		//
+		// It is the APP's check and not a `writeFile` precondition, for §1b's reason: a promise
+		// whose strength varied by backend is not one a call site can reason about. Here none is
+		// needed — every write this app makes rides `serially`, so the read and the write are one
+		// act against our own writers, which is the pair that produced the bug.
+		//
+		// Outside the chain is every writer that does not ride it: another app instance, and — in
+		// this very process — the sync engine's apply (`localReplica.applyPathChanges`,
+		// `packages/fs/synced.ts`), which lands through the storage journal (`applyJournaled`),
+		// BELOW `Volume.writeFile`. So a `writeFile` precondition would not close that one either:
+		// the two writers never meet at that layer. What `base` does catch is the shape a pull
+		// actually has — the remote body lands, the watch fires, and a save composed before it is
+		// refused; only a pull INSIDE this read-then-write gap slips past. Closing that needs a
+		// lock the sync applier takes, or a compare-and-swap in the journal — a permanent
+		// mechanism for a millisecond, so it stays a stated window, as it is for `claimPath`.
+		//
+		// Optional, and without it this writes as it always did: the agent calling `save` holds no
+		// buffer and has no base, and its own direct file writes never came through here at all.
 		save: p.procedure({
 			description:
-				'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one).',
-			schema: v.object({ path: noteSchema, text: v.string() }),
-			async run({ path, text }, app) {
+				'Overwrite an EXISTING note’s body — fails if the note is gone (use `create` for a new one). Pass `base` (the body you last read) to make the write conditional: if the note changed since, nothing is written and the body that is there now comes back as `disk`.',
+			schema: v.object({ path: noteSchema, text: v.string(), base: v.optional(v.string()) }),
+			async run(
+				{ path, text, base },
+				app
+			): Promise<{ path: string; wrote: true } | { path: string; wrote: false; disk: string }> {
 				// On the chain with every other write into the KB (see `serially`): a body write that
 				// lands INSIDE `journal`'s read-modify-write is the one interleaving that loses the
-				// user's typing with no copy left anywhere.
-				await serially(() =>
-					app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
-				)
-				return { path }
+				// user's typing with no copy left anywhere. The check rides it for the same reason —
+				// a read and a write with a gap between them is a guess, not a precondition.
+				return serially(async () => {
+					if (base !== undefined) {
+						// The read is also `update: true`'s check: a note that is gone still says ENOENT
+						// here, so the buffer still detaches instead of forking a duplicate.
+						const disk = dec.decode(await app.invoke('volume', 'readFile', path))
+						if (disk !== base) return { path, wrote: false, disk }
+					}
+					await app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+					return { path, wrote: true }
+				})
 			}
 		}),
 

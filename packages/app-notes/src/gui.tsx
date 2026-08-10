@@ -56,13 +56,23 @@ const missingFolder = (failure: unknown) => failedWith(failure, 'ENOENT', 'ENOTD
 const explain = (outcome: Unsettled) =>
 	outcome.because === 'gone'
 		? 'The note you were editing was moved or deleted — your changes are kept here'
-		: `Could not save ${outcome.path ? displayPath(outcome.path) : 'this note'} — ${outcome.error.message}`
+		: outcome.because === 'stale'
+			? // Said when something ELSE wanted the buffer — flushing before an open, a move, a
+				// delete. The prompt below is where the answer is given, so this only explains why
+				// that did not happen; it never announces the conflict on its own.
+				`${displayPath(outcome.path)} changed on disk — answer that first`
+			: `Could not save ${outcome.path ? displayPath(outcome.path) : 'this note'} — ${outcome.error.message}`
 
 // The scratch's own wording. Its failures are a shorter list than a note's — it cannot be
 // renamed or deleted, so "gone" is not a thing that happens to it (and if the volume ever
 // says so, the next write re-creates it: see `scratchIO.create`).
 const explainScratch = (outcome: Unsettled) =>
-	`Could not save the scratch — ${outcome.error.message}`
+	outcome.because === 'stale'
+		? // Not reachable: the scratch writes with no precondition (see `scratchIO.save`), so it
+			// is never refused. Answered rather than asserted — the machine's type covers both of
+			// its instances, and a caller's fact is not a thing to prove with a throw.
+			'The scratch changed elsewhere — reopen the window to see it'
+		: `Could not save the scratch — ${outcome.error.message}`
 
 // Said when the kept words could not be taken out of the scratch, because they were edited
 // while the write was in flight (see `promoteScratch`). The user has them twice, which is
@@ -293,11 +303,21 @@ function Notes({ state, actions }: NotesProps) {
 	// the rules ("nothing replaces an unsettled buffer", "a failed write stays unsaved",
 	// "gone and busy call for opposite recoveries", "writes do not overlap", "a stale read
 	// is discarded"), and this component only drives it and renders its state.
-	const [buffer, setBuffer] = useState<BufferState>({ text: '', dirty: false, path: null })
+	const [buffer, setBuffer] = useState<BufferState>({
+		text: '',
+		dirty: false,
+		path: null,
+		conflict: false
+	})
 	// The SCRATCH buffer (DESIGN.md §6): the same machine, a second instance. It holds the
 	// words the user has not decided anything about, and it is what the editor shows whenever
 	// no note is open — the app has no inert surface any more.
-	const [scratch, setScratch] = useState<BufferState>({ text: '', dirty: false, path: null })
+	const [scratch, setScratch] = useState<BufferState>({
+		text: '',
+		dirty: false,
+		path: null,
+		conflict: false
+	})
 	// Its text comes from disk a round trip after mount, and the editor stays read-only until
 	// it arrives: keystrokes typed over an unfinished read would be saved on top of the words
 	// being read. `failed` is the same surface with a reason and a way back (window focus).
@@ -397,9 +417,10 @@ function Notes({ state, actions }: NotesProps) {
 	// out here: where a note lands, what it is called, and the fact that `save`/`readNote`
 	// are procedures that throw.
 	const io = useRef<BufferIO>({
-		save: async (path, text) => {
-			await actionsRef.current.save({ path, text })
-		},
+		// `base` travels as the precondition on the write (see `save` in app.ts). Absent when the
+		// buffer has no claim on what is there — a conflict the user has answered.
+		save: async (path, text, base) =>
+			await actionsRef.current.save(base === null ? { path, text } : { path, text, base }),
 		create: (text) => createIn(nameRef.current, text, dirRef.current),
 		read: async (path) => (await actionsRef.current.readNote({ path })).text
 	})
@@ -420,8 +441,12 @@ function Notes({ state, actions }: NotesProps) {
 		// The path is IGNORED: the scratch lives at `SCRATCH_FILE` in the app's own volume, and
 		// the procedure knows where that is. So the machine's sentinel path can never leak into
 		// the knowledge base.
+		// No precondition, so no `base`: the scratch has one writer with one window on it, and
+		// `saveScratch` re-creates it rather than refusing (see there). A conflict is a question
+		// about a note two people kept words in; the scratch is nobody else's.
 		save: async (_path, text) => {
 			await actionsRef.current.saveScratch({ text })
+			return { wrote: true }
 		},
 		// "These words have no address" means the scratch IS their address — so this both writes
 		// and re-attaches. Reached only if a write ever failed with a gone-class code; a note's
@@ -445,6 +470,21 @@ function Notes({ state, actions }: NotesProps) {
 		if (outcome.settled) return true
 		setStatus(explain(outcome))
 		return false
+	}, [buf])
+
+	// The two answers to a conflict, which is the one question this app asks that only the user
+	// can settle: the note changed on disk under words that are still unsaved, and neither copy
+	// can be kept without losing the other. Everything else the buffer meets it decides itself
+	// (DESIGN.md §1a‴) — this is the exception, so it is a prompt and not a status line.
+	const overwrite = useCallback(async () => {
+		const outcome = await buf.overwrite()
+		if (!outcome.settled) setStatus(explain(outcome))
+	}, [buf])
+
+	const revert = useCallback(async () => {
+		const outcome = await buf.revert()
+		if (outcome.opened || outcome.because === 'unsettled') return
+		setStatus(`Cannot read ${displayPath(outcome.path)} — ${outcome.error.message}`)
 	}, [buf])
 
 	// The scratch's half of the same rule. Called before anything that takes the editor away
@@ -518,12 +558,17 @@ function Notes({ state, actions }: NotesProps) {
 	// Debounced autosave: `text` is the reset trigger — each keystroke restarts the
 	// timer, so the write fires once the user pauses, not after the first key. A failure
 	// leaves the buffer dirty, so this effect simply comes round again.
+	//
+	// A conflict is the exception: the machine would refuse every one of these anyway (see
+	// `settleNow`), and each refusal would replace the status line with a second way of saying
+	// what the prompt already says. It resumes by itself, since answering makes the buffer
+	// change.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `buffer.text` is the debounce RESET — each keystroke must restart the timer, even though the body does not read it.
 	useEffect(() => {
-		if (!buffer.dirty) return
+		if (!buffer.dirty || buffer.conflict) return
 		const id = setTimeout(() => void settle(), AUTOSAVE_MS)
 		return () => clearTimeout(id)
-	}, [buffer.text, buffer.dirty, settle])
+	}, [buffer.text, buffer.dirty, buffer.conflict, settle])
 
 	// The scratch autosaves on the same terms as a note. It keeps typing itself to disk even
 	// while a note is on screen (its machine is not the editor's), so nothing is lost by
@@ -540,7 +585,13 @@ function Notes({ state, actions }: NotesProps) {
 	// the open note changing on disk (`revision` — `reload` ignores it while dirty, since
 	// the buffer is then newer than the disk). A path we cannot read is not one to stay
 	// pointed at, so the buffer detaches and this says why.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: `revision` is a cache-busting trigger — a bump means the open file changed on disk.
+	//
+	// A conflict stops the transition rather than cancelling it: the buffer may not be replaced
+	// while the question is up, but `openPath` has already moved on — the tree shows the note the
+	// user asked for while the editor still holds the previous one. So `conflict` is a RETRY
+	// trigger: answering it (either way) makes the buffer settleable, and this comes round and
+	// finishes the open that was refused.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `revision` is a cache-busting trigger — a bump means the open file changed on disk — and `buffer.conflict` is the RETRY trigger for a transition a conflict refused.
 	useEffect(() => {
 		if (openPath === null) return
 		// A MOVE is not an open. `openPath` cannot say why it changed, so the reducer says:
@@ -575,7 +626,7 @@ function Notes({ state, actions }: NotesProps) {
 		return () => {
 			current = false
 		}
-	}, [openPath, revision, movedFrom, buf, followMove, actions])
+	}, [openPath, revision, movedFrom, buffer.conflict, buf, followMove, actions])
 
 	// The reducer says nothing is open (the user pressed New, or the agent dispatched it)
 	// while the buffer still holds a note. Letting go means SETTLING first, so unsaved
@@ -1596,6 +1647,22 @@ function Notes({ state, actions }: NotesProps) {
 				</div>
 			) : null}
 			{status ? <p className="notes-status">{status}</p> : null}
+			{/* Not a status line: a status line clears itself (see the effect above), and this one
+			    has to stay until it is answered — the buffer writes nothing while it is up. */}
+			{buffer.conflict ? (
+				<p className="notes-conflict" role="alert">
+					<span>
+						{buffer.path ? displayPath(buffer.path) : 'This note'} changed on disk while you were
+						editing it.
+					</span>
+					<button type="button" onClick={() => void overwrite()}>
+						Keep mine
+					</button>
+					<button type="button" onClick={() => void revert()}>
+						Use the file
+					</button>
+				</p>
+			) : null}
 			<div className="notes-body" ref={bodyRef} data-dragging={dragging || undefined}>
 				{listOpen ? (
 					<div className="notes-side" style={{ width: listWidth }}>

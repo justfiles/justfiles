@@ -302,6 +302,9 @@ a separate defect:
 5. A read that resolves after the buffer **moved on** is discarded — including a read whose note was deleted
    while its body was in flight, which is why the machine remembers what it is *about* to hold, not only what
    it holds.
+6. A write never replaces a body the buffer **has not seen**. It remembers what it read, so a note that
+   changed underneath is merged when the change was only an append, and otherwise becomes a question for the
+   user — never a silent overwrite reported as a success (§1b).
 
 Those rules lived across eight call sites in `gui.tsx` as five mutable refs plus a habit, which is why four
 successive review rounds found four more instances of the same shape: every new failure mode was a new branch
@@ -958,12 +961,45 @@ a spelling is one more thing to remember at the next call site.
 
 **What ordering does not do**, stated plainly: it cannot make an appended entry survive a full-body `save`
 that was composed before the append landed. The buffer's text never contained the entry, so writing it erases
-it — ordered or not. That is the ordinary two-writers-one-note case (§8, last-write-wins bounded by the
-autosave debounce), mitigated by the watch, which re-reads the open note on every external change *unless the
-buffer is dirty* — i.e. everywhere except while the user is mid-word in that exact note. The real answer is a
-precondition on `save` (refuse to overwrite a body that changed since it was read) rather than a lock, which
-is a change to `save`'s contract and the buffer machine's recovery rules, so it is tracked separately rather
-than smuggled in here (issue #367).
+it — ordered or not. The watch mitigates it (an external change re-reads the open note) *unless the buffer is
+dirty* — i.e. everywhere except while the user is mid-word in that exact note, which is the one moment this
+happens in.
+
+So the write carries a **precondition**: `save({ path, text, base })` writes only over `base`, the body the
+buffer last agreed with disk about. That is the answer every editor gives this — Emacs checks the visited
+file's modtime before saving and asks; VS Code compares an etag and offers *Compare* / *Overwrite*; HTTP
+spells it `If-Match`. A lock is not the answer, and nor is a CRDT: there is one user here, and the question
+"whose words survive" has to reach them.
+
+Three decisions inside that:
+
+- **Compared on the body, not on an mtime.** Both backends stamp at millisecond granularity
+  (`storage.idb.ts`, `storage.fs.ts`) and this interleaving is an in-memory append and a save inside one
+  millisecond. VS Code's mtime+size etag has a standing data-loss bug for exactly this reason
+  (microsoft/vscode#119002); git met it as *racily clean* and falls back to comparing content. `base` is
+  free to carry — the buffer holds the text it read anyway — so there is no hash to compute and none to keep.
+- **The check is the app's, not `packages/fs`'.** §1b's rule again: a promise whose strength varied per
+  backend is not one a call site can reason about. None is needed here, because the read and the write ride
+  `serially` with every other write this app makes — one act against *our* writers, which is the pair that
+  produces this. Outside the chain is every writer that does not ride it: another app instance, and — in this
+  very process — the sync engine's apply, which lands through the storage journal (`applyJournaled`) *below*
+  `Volume.writeFile`, so a `writeFile` precondition would not cover that one either; the two writers never
+  meet at that layer. A pull inside the read-then-write gap is therefore a stated window, as it is for
+  `claimPath` — closing it means a lock the sync applier takes, or a compare-and-swap in the journal, which is
+  a permanent mechanism bought for a millisecond.
+- **A refusal is a value, not a throw.** `save` comes back `{ wrote: false, disk }` carrying what is there
+  now. Nothing can be decided without those bytes, and reading them again would be a second guess at a
+  moving target.
+
+**Merged when it can be, asked when it cannot.** A refusal that always reached the user would be a bad trade
+for the case that produces it: the agent APPENDS, so "reload or overwrite" would make the user throw away
+either their sentence or the entry they just kept, for a change that conflicts with nothing. A pure append is
+exactly recognisable — the body on disk still starts with `base` — and its merge is exactly determined
+(`mergeAppend`): the user's text, then whatever arrived after the base. The buffer takes it and writes again,
+conditional on *that* body, so a second append cannot be lost either. Anything less obvious is not
+reconstructed: it becomes `conflict`, the buffer stops writing, and the editor shows the two answers —
+**keep mine** (write with no base) or **use the file** (re-read, and only if that read lands). No diff, no
+hunks, no three-way merge.
 
 Not pushed down into `packages/fs` either: an atomic append means something different on every backend
 (`O_APPEND` here, a transaction there), which is exactly the per-backend promise §1b decided a call site
@@ -1076,6 +1112,12 @@ writers this app actually has** — the answer decides which findings are defect
 - **The disk changing underneath, from outside the app.** An editor elsewhere, a sync daemon, `rm` in a
   terminal. Hence: watches, `update: true` / `parents: false`, per-backend `putBlob` ENOENT, the inode checks
   in `storage.fs`, `exclusive` writes. A write to something that is gone is a failure, not a no-op.
+- **A body that changed under unsaved words.** The agent's append, an edit from Files, a sync pull — all one
+  case, and the watch cannot answer it, because the buffer is dirty exactly when it matters. Hence `save`'s
+  `base` precondition, `mergeAppend`, and the buffer's `conflict` (§1b). A sync-applied write arrives as an
+  ordinary `volume.watch` event already tagged `source: 'remote'`, so it needs nothing of its own: the sync
+  engine resolves its own replicas, and what reaches the note here is just another external writer — one
+  `base` catches in the shape a pull actually has (it lands, and the save composed before it is refused).
 - **The app racing itself.** Autosave against open, flush against rename, import against the tree's drag. These
   are ordered by construction: one flush chain, one claim chain, a sequential import loop.
 
@@ -1084,10 +1126,14 @@ writers this app actually has** — the answer decides which findings are defect
 - **Two clients mutating the same note inside one round trip.** There is one GUI per app window and one
   sequential agent; a second GUI editing the *same* note in the same millisecond is not a shape this product
   has. Where a rule can be honoured for free we honour it (the reducer answers containment questions from
-  current state, not from a procedure's snapshot — that is cheaper *and* more correct). Where it would cost a
-  new mechanism — reservations, cross-client locks, undoing a local discard that a concurrent move made
-  unnecessary — we do not pay: the exposure is bounded by the autosave debounce, and the mechanism would be
-  permanent.
+  current state, not from a procedure's snapshot — that is cheaper *and* more correct; `save`'s precondition
+  happens to cover a second window too, because it is a fact about the file rather than about who wrote it).
+  Where it would cost a new mechanism — reservations, cross-client locks, undoing a local discard that a
+  concurrent move made unnecessary — we do not pay: the mechanism would be permanent.
+- **Merging two real edits.** A conflict is shown, never resolved: only an append is merged, because only an
+  append can be reconstructed from what the buffer already knows. Diffing the two versions, offering hunks, or
+  keeping both as `… (conflicted copy)` are all a second editor's worth of product, and the honest answer for
+  one user with two versions of one note is to be asked which one they meant.
 - **Emulating primitives the platform lacks.** POSIX has no atomic no-replace rename and Node reaches neither
   `renameat2` nor `renamex_np`, so the native backend looks before it renames and says so — no `link` +
   `unlink` (which stops being a move, and on macOS follows a symlink), and no in-process lock either, because
