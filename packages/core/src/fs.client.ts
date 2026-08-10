@@ -429,13 +429,17 @@ export function remoteSyncReplica(
 			const res = await client.path.snapshot.$get({
 				query: {
 					page,
-					limit: opts?.limit !== undefined ? String(opts.limit) : undefined
+					limit: opts?.limit !== undefined ? String(opts.limit) : undefined,
+					// Asked for only when this replica has local data to protect, so a fresh
+					// device never pages through the server's tombstone set.
+					tombstones: opts?.tombstones ? '1' : undefined
 				}
 			})
 			if (!res.ok) throw new Error(`pathScan failed: ${res.status}`)
 			const data = await res.json()
 			return {
 				changes: data.changes.map((c) => PathChange.parse(c)),
+				...(data.tombstones ? { tombstones: data.tombstones.map((c) => PathChange.parse(c)) } : {}),
 				next: data.next,
 				syncCursor: data.syncCursor,
 				done: data.done,
