@@ -629,6 +629,12 @@ export class Frieren extends DurableObject<Env> {
 		// run without an open tab. Both are best-effort and retry on the next alarm.
 		const { daily } = await runDailyMaintenance(this.fs, this.volume, this.ctx.storage)
 		if (daily) await this.getSession().runMaintenance()
+		// A continuation OWNS the one alarm slot until it drains, so every interaction
+		// during it called `scheduleDailyAlarm`, found the slot taken and gave up — and
+		// the wake that ends the chain leaves the slot EMPTY. Without this, tomorrow's
+		// maintenance waits for another interaction that may never come. While the chain
+		// still has work the slot holds the sweep's own re-arm, which this leaves alone.
+		else await scheduleDailyAlarm(this.ctx, this.getSession())
 	}
 
 	async fetch(request: Request): Promise<Response> {

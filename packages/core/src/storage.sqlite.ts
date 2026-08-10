@@ -1244,10 +1244,15 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					await tx.run('UPDATE fs_generation SET journal_coalesce_path = ? WHERE id = 1', [
 						done ? '' : String(window[window.length - 1]?.path ?? '')
 					])
-					// Content is collected only on the run that finishes the pass. A superseded
-					// row still holds the OLD contentHash, whose inode reference is already gone
-					// — so collecting the bytes while such a row can still be served would hand
-					// a lagging client a put pointing at nothing.
+					// Content is collected only on the run that finishes a pass — a THROTTLE,
+					// not a barrier. The scan below is a full pass over `fs_contents`, which a
+					// continuation wakes for every 60s; once per pass is enough.
+					//
+					// It is deliberately not written as "collect only while no superseded row
+					// survives". That would read as a guarantee it cannot give: an overwrite
+					// already drops the superseded bytes inline, in its own transaction, while
+					// the journal row naming them waits for the prune (#446). Nothing here
+					// makes such a row safe to serve, and no ordering of these two sweeps can.
 					if (!done) return
 					const rows = await tx.query<{ content_hash: unknown }>(
 						`SELECT content_hash FROM fs_contents

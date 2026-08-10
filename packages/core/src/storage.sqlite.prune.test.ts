@@ -159,9 +159,9 @@ describe('sqlite journal prune', () => {
 	})
 
 	it('collects no content until a pass over the journal finishes', async () => {
-		// A superseded row still names the OLD contentHash, whose inode reference is
-		// already gone. Collecting the bytes while such a row can still be served would
-		// hand a lagging client a put pointing at nothing.
+		// A throttle, not a barrier: the content scan reads all of `fs_contents`, and a
+		// continuation wakes once a minute. What it is NOT is protection for a superseded
+		// row's bytes — an overwrite drops those inline, before any sweep runs (#446).
 		const db = open()
 		const content = sqliteStorage(createSqliteAdapter(bigIntSafe(db))).caps?.content
 		if (!content) throw new Error('sqlite must offer a content store')
