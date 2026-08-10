@@ -849,14 +849,14 @@ export function idbStorage(
 				const live = new Set<string>()
 				for (const inode of await tx.objectStore('inodes').getAll())
 					if (inode.contentHash) live.add(inode.contentHash)
-				let count = 0
+				let reclaimed = 0
 				let freed = 0
 				let cursor = await tx.objectStore('content').openCursor()
 				while (cursor) {
 					if (!live.has(cursor.value.contentHash)) {
 						freed += cursor.value.sizeBytes
 						await cursor.delete()
-						count++
+						reclaimed++
 					}
 					cursor = await cursor.continue()
 				}
@@ -866,7 +866,8 @@ export function idbStorage(
 					await tx.objectStore('meta').put(Math.max(0, total - freed), 'totalContentBytes')
 				}
 				await tx.done
-				return count
+				// The whole prune runs in one IndexedDB transaction, so it always drains.
+				return { reclaimed, done: true }
 			}
 		},
 		pathApply: {

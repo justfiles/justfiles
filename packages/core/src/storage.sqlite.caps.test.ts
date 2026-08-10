@@ -280,7 +280,7 @@ describe('sqlite write-then-publish: atomicCreate stages its content inside the 
 		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
 		const winner = text(await vol.readFile('/id'))
 		expect(['AAAA', 'BBBB']).toContain(winner)
-		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0) // nothing was orphaned
+		expect((await s.caps!.content!.gcUnreferenced!()).reclaimed).toBe(0) // nothing was orphaned
 		expect(text(await vol.readFile('/id'))).toBe(winner)
 	})
 
@@ -345,8 +345,9 @@ function makeSqliteWithR2() {
 			const data = objects.get(key)
 			return data ? { arrayBuffer: async () => data.buffer } : null
 		},
-		delete: async (key: string) => {
-			objects.delete(key)
+		// One key or a batch, like R2 itself — the sweep deletes in batches.
+		delete: async (keys: string | string[]) => {
+			for (const key of typeof keys === 'string' ? [keys] : keys) objects.delete(key)
 		}
 	}
 	// The DO's adapter, faithfully: `transaction` is `await fn(adapter)` with NO
@@ -414,6 +415,6 @@ describe('sqlite atomicCreate with R2-routed content', () => {
 		)
 		expect([...(await vol.readFile('/taken.bin'))]).toEqual([...binary(9)])
 		// The loser's content was never recorded: nothing unreferenced to reclaim.
-		expect(await s.caps!.content!.gcUnreferenced!()).toBe(0)
+		expect((await s.caps!.content!.gcUnreferenced!()).reclaimed).toBe(0)
 	})
 })

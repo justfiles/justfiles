@@ -16,6 +16,9 @@ import MIGRATION_0005 from './0005_lineage_id.sql'
 // biome-ignore lint/suspicious/noTsIgnore: TypeScript cannot resolve bundler-loaded .sql imports in this package.
 // @ts-ignore Bundlers load SQL as text for this package.
 import MIGRATION_0006 from './0006_reset_operation.sql'
+// biome-ignore lint/suspicious/noTsIgnore: TypeScript cannot resolve bundler-loaded .sql imports in this package.
+// @ts-ignore Bundlers load SQL as text for this package.
+import MIGRATION_0007 from './0007_journal_path.sql'
 
 export type MigrationEntry = {
 	version: number
@@ -28,5 +31,6 @@ export const coreMigrations: MigrationEntry[] = [
 	{ version: 3, sql: MIGRATION_0003 },
 	{ version: 4, sql: MIGRATION_0004 },
 	{ version: 5, sql: MIGRATION_0005 },
-	{ version: 6, sql: MIGRATION_0006 }
+	{ version: 6, sql: MIGRATION_0006 },
+	{ version: 7, sql: MIGRATION_0007 }
 ]

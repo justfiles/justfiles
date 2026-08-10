@@ -171,7 +171,7 @@ describe('write-then-publish: the claim carries its content, not a promise of it
 		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
 		const winner = dec.decode(await vol.readFile('/id'))
 		expect(['AAAA', 'BBBB']).toContain(winner)
-		expect(await storage.caps!.content!.gcUnreferenced!()).toBe(0) // nothing was orphaned
+		expect((await storage.caps!.content!.gcUnreferenced!()).reclaimed).toBe(0) // nothing was orphaned
 		expect(dec.decode(await vol.readFile('/id'))).toBe(winner) // winner untouched
 	})
 
