@@ -75,6 +75,29 @@ function makeStorage() {
 	return { db, storage, vol: volume(storage) }
 }
 
+/**
+ * The Durable Object's argument binding, faithfully: it stringifies every bigint
+ * (apps/frieren/worker/db.do.ts `normalizeArgs`), because the DO's `sql.exec` does
+ * not take them. A comparison against a TEXT-bound number is not the comparison it
+ * looks like — an INTEGER sorts below every string when neither side carries column
+ * affinity — so any predicate over a `*_ns` value must survive this shape.
+ */
+function makeDoLikeStorage() {
+	const db = open()
+	const real = createSqliteAdapter(bigIntSafe(db))
+	const stringifyBigints = (args?: unknown[]) =>
+		args?.map((arg) => (typeof arg === 'bigint' ? arg.toString() : arg)) as
+			| Parameters<typeof real.query>[1]
+			| undefined
+	const doLike: typeof real = {
+		query: (sql, args) => real.query(sql, stringifyBigints(args)),
+		run: (sql, args) => real.run(sql, stringifyBigints(args)),
+		transaction: (fn) => fn(doLike)
+	}
+	const storage = sqliteStorage(doLike)
+	return { db, storage, vol: volume(storage) }
+}
+
 function prunedBelow(db: DatabaseSync): number {
 	return Number(
 		(
@@ -173,6 +196,20 @@ describe('sqlite tombstone sweep', () => {
 		await vol.rm('/gone.md')
 
 		expect((await storage.caps?.content?.gcUnreferenced())?.done).toBe(true)
+
+		expect(journalPaths(db)).toEqual(['/gone.md'])
+		expect(prunedBelow(db)).toBe(0)
+	})
+
+	it('keeps a fresh tombstone on the Durable Object, where bigints bind as text', async () => {
+		// Without an explicit CAST the horizon comparison is integer-vs-string, which is
+		// always true — the window silently collapses to zero and the first daily run
+		// takes every tombstone the volume has.
+		const { db, storage, vol } = makeDoLikeStorage()
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.rm('/gone.md')
+
+		await storage.caps?.content?.gcUnreferenced()
 
 		expect(journalPaths(db)).toEqual(['/gone.md'])
 		expect(prunedBelow(db)).toBe(0)

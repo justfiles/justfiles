@@ -644,6 +644,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	 * snapshot uses), so no row here is parsed as JSON.
 	 */
 	async function sweepTombstones(tx: DbAdapter): Promise<boolean> {
+		// `CAST(? AS INTEGER)` below, and not a bare `?`: the Durable Object adapter
+		// binds a bigint as TEXT (apps/frieren/worker/db.do.ts `normalizeArgs`), and
+		// `MAX(at_ns)` is a function result, which carries no column affinity — so
+		// SQLite would compare by STORAGE CLASS, where every integer sorts below every
+		// string. The window would silently be zero, and every tombstone would go on the
+		// first run.
 		const horizon = nowNs() - BigInt(TOMBSTONE_RETENTION_MS) * 1_000_000n
 		const aged = await tx.query<{ path: unknown; newest: unknown }>(
 			`SELECT journal.path AS path, MAX(journal.seq) AS newest
@@ -651,7 +657,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			 JOIN fs_path_version AS version ON version.path = journal.path
 			 WHERE version.tombstone_version > 0 AND version.tombstone_version >= version.version
 			 GROUP BY journal.path
-			 HAVING MAX(journal.at_ns) < ?
+			 HAVING MAX(journal.at_ns) < CAST(? AS INTEGER)
 			 ORDER BY newest
 			 LIMIT ?`,
 			[horizon, TOMBSTONE_SWEEP_LIMIT]
