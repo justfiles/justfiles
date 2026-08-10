@@ -28,7 +28,8 @@ type BlobStore = {
 		}
 	): Promise<unknown>
 	get(key: string): Promise<BlobObject | null>
-	delete?(key: string): Promise<void>
+	/** One key or a batch — R2's own signature, so a sweep costs one round trip per 1000. */
+	delete?(keys: string | string[]): Promise<void>
 }
 
 type StorageOptions = {
@@ -73,6 +74,15 @@ type ContentRow = {
 const ROOT_INO: Ino = '1'
 const DIR_PAGE_SIZE = 200
 const SCAN_PAGE_SIZE = 200
+// Journal paths examined per prune run. The sweep runs in ONE Durable Object
+// event, where `db.transaction` is a no-op wrapper (apps/frieren/worker/db.do.ts)
+// so the whole write set flushes at once — a window keeps that event bounded no
+// matter how large the journal is, and the caller re-arms while work remains.
+// It bounds the READ, which capping the discarded rows does not: the steady state
+// is a journal with nothing to discard, and finding that out must not cost a scan.
+const JOURNAL_PRUNE_WINDOW = 1000
+// R2 takes up to 1000 keys per `delete`.
+const BLOB_DELETE_BATCH = 1000
 const INLINE_TEXT_LIMIT_BYTES = 256 * 1024
 const STORAGE_NONE = 0
 const STORAGE_INLINE = 1
@@ -337,6 +347,18 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return `${namespace}/fs/blobs/sha256/${contentHash}`
 	}
 
+	/**
+	 * Drop orphaned blobs from the external store, batched. Always OUTSIDE the
+	 * transaction that dropped their rows: R2 can never join it, and the rows are
+	 * what make the bytes reachable — so losing the deletes leaks paid-for garbage
+	 * (#333), while losing the rows would be data loss.
+	 */
+	async function deleteBlobs(keys: string[]): Promise<void> {
+		if (!blobStore?.delete) return
+		for (let i = 0; i < keys.length; i += BLOB_DELETE_BATCH)
+			await blobStore.delete(keys.slice(i, i + BLOB_DELETE_BATCH))
+	}
+
 	// Storing content is TWO halves, and which transaction each belongs in is the whole
 	// point of separating them.
 	//
@@ -530,9 +552,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		change: PathChange,
 		localSource?: string
 	): Promise<void> {
-		await tx.run('INSERT INTO fs_path_journal(local_source, change_json) VALUES (?, ?)', [
+		// `path` duplicates `change_json.$.path` deliberately: it is the ONLY column the
+		// prune groups by, and paying one string write here buys an index range scan
+		// instead of a `json_extract` over every row of the table (0007_journal_path).
+		await tx.run('INSERT INTO fs_path_journal(local_source, change_json, path) VALUES (?, ?, ?)', [
 			localSource ?? null,
-			JSON.stringify(change)
+			JSON.stringify(change),
+			change.path
 		])
 	}
 
@@ -754,11 +780,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		})
 
 		emit({ ino, kind: 'content', source: options?.source })
-		if (blobStore?.delete) {
-			for (const key of orphanedR2Keys) {
-				await blobStore.delete(key)
-			}
-		}
+		await deleteBlobs(orphanedR2Keys)
 	}
 
 	// ── StorageCapabilities ──────────────────────────────────────────────────────
@@ -950,11 +972,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					await journalPut(tx, newBase + n.rel, n.ino, options)
 			})
 
-			if (blobStore?.delete) {
-				for (const key of orphanedR2Keys) {
-					await blobStore.delete(key)
-				}
-			}
+			await deleteBlobs(orphanedR2Keys)
 
 			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
 			if (movedIno !== null) {
@@ -1192,30 +1210,61 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					await storeContentIfMissing(tx, hash, data)
 				})
 			},
-			async gcUnreferenced(): Promise<number> {
+			async gcUnreferenced() {
 				await ensureBootstrapped()
 				const orphanedR2Keys: string[] = []
-				let count = 0
+				let reclaimed = 0
+				let done = false
 				await db.transaction(async (tx) => {
-					await tx.run(
-						`DELETE FROM fs_path_journal
-						 WHERE seq NOT IN (
-							SELECT MAX(seq)
-							FROM fs_path_journal
-							GROUP BY json_extract(change_json, '$.path')
-						 )`
+					// Coalesce the journal to the newest row per path, one WINDOW of paths at
+					// a time, resuming where the last run stopped. `path` is a real column
+					// now, so this is a range scan of the (path, seq) index — it reads the
+					// window and nothing else, and each path it does find work on costs one
+					// indexed delete rather than a JSON parse per row.
+					const [cursor] = await tx.query<{ resume: unknown }>(
+						'SELECT journal_coalesce_path AS resume FROM fs_generation WHERE id = 1 LIMIT 1'
 					)
+					const window = await tx.query<{ path: unknown; keep: unknown; held: unknown }>(
+						`SELECT path, MAX(seq) AS keep, COUNT(*) AS held
+						 FROM fs_path_journal
+						 WHERE path > ?
+						 GROUP BY path
+						 LIMIT ?`,
+						[toStringOrNull(cursor?.resume) ?? '', JOURNAL_PRUNE_WINDOW]
+					)
+					for (const row of window)
+						if (toNumber(row.held) > 1)
+							await tx.run('DELETE FROM fs_path_journal WHERE path = ? AND seq < ?', [
+								String(row.path),
+								toNumber(row.keep)
+							])
+					// A short window is the end of the journal: the pass is over, so the next
+					// run starts a fresh one.
+					done = window.length < JOURNAL_PRUNE_WINDOW
+					await tx.run('UPDATE fs_generation SET journal_coalesce_path = ? WHERE id = 1', [
+						done ? '' : String(window[window.length - 1]?.path ?? '')
+					])
+					// Content is collected only on the run that finishes a pass — a THROTTLE,
+					// not a barrier. The scan below is a full pass over `fs_contents`, which a
+					// continuation wakes for every 60s; once per pass is enough.
+					//
+					// It is deliberately not written as "collect only while no superseded row
+					// survives". That would read as a guarantee it cannot give: an overwrite
+					// already drops the superseded bytes inline, in its own transaction, while
+					// the journal row naming them waits for the prune (#446). Nothing here
+					// makes such a row safe to serve, and no ordering of these two sweeps can.
+					if (!done) return
 					const rows = await tx.query<{ content_hash: unknown }>(
 						`SELECT content_hash FROM fs_contents
 						 WHERE content_hash NOT IN (SELECT content_hash FROM fs_inodes WHERE content_hash IS NOT NULL)`
 					)
 					for (const row of rows) {
 						await maybeDeleteOrphanedContent(tx, String(row.content_hash), orphanedR2Keys)
-						count++
+						reclaimed++
 					}
 				})
-				if (blobStore?.delete) for (const key of orphanedR2Keys) await blobStore.delete(key)
-				return count
+				await deleteBlobs(orphanedR2Keys)
+				return { reclaimed, done }
 			}
 		},
 		journal: {
@@ -1361,11 +1410,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				await deleteInodeInTx(tx, ino, orphanedR2Keys)
 				deleted = true
 			})
-			if (blobStore?.delete) {
-				for (const key of orphanedR2Keys) {
-					await blobStore.delete(key)
-				}
-			}
+			await deleteBlobs(orphanedR2Keys)
 			if (deleted) emit({ ino, kind: 'meta' })
 		},
 

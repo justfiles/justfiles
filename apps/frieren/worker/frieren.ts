@@ -620,13 +620,21 @@ export class Frieren extends DurableObject<Env> {
 		ws.close(1011, 'WebSocket error')
 	}
 
-	// Do not reschedule here — only WebSocket interactions set the next alarm,
-	// so a silent day naturally stops the daily routine.
+	// Do not reschedule the DAILY routine here — only WebSocket interactions set that
+	// alarm, so a silent day naturally stops it. The one exception is owned by
+	// `runDailyMaintenance`: a storage sweep that ran out of budget re-arms itself, and
+	// reports `daily: false` on the wake that resumes it.
 	async alarm(): Promise<void> {
 		// The DO owns the synced fs, so daily trash retention and content collection
 		// run without an open tab. Both are best-effort and retry on the next alarm.
-		await runDailyMaintenance(this.fs, this.volume)
-		await this.getSession().runMaintenance()
+		const { daily } = await runDailyMaintenance(this.fs, this.volume, this.ctx.storage)
+		if (daily) await this.getSession().runMaintenance()
+		// A continuation OWNS the one alarm slot until it drains, so every interaction
+		// during it called `scheduleDailyAlarm`, found the slot taken and gave up — and
+		// the wake that ends the chain leaves the slot EMPTY. Without this, tomorrow's
+		// maintenance waits for another interaction that may never come. While the chain
+		// still has work the slot holds the sweep's own re-arm, which this leaves alone.
+		else await scheduleDailyAlarm(this.ctx, this.getSession())
 	}
 
 	async fetch(request: Request): Promise<Response> {
