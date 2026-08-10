@@ -2,6 +2,7 @@ import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfi
 import type { PathStorePort } from '@justfiles/fs/storage.shared'
 import {
 	applyJournaledOver,
+	buildPutChange,
 	joinPath,
 	journalDeleteOver,
 	journalPutOver,
@@ -60,6 +61,21 @@ type DirentRow = {
 	dir_ino: unknown
 }
 
+/** One row of the `TREE_CTE` join: the walked path plus its inode's columns. */
+type TreeRow = {
+	path: unknown
+	ino: unknown
+	dir_ino: unknown
+	name: unknown
+	type: unknown
+	mode: unknown
+	size: unknown
+	mtime_ns: unknown
+	ctime_ns: unknown
+	content_hash: unknown
+	symlink_target: unknown
+}
+
 type ContentRow = {
 	content_hash: unknown
 	storage_kind: unknown
@@ -87,6 +103,24 @@ const INLINE_TEXT_LIMIT_BYTES = 256 * 1024
 const STORAGE_NONE = 0
 const STORAGE_INLINE = 1
 const STORAGE_R2 = 2
+
+// The whole tree as (path, ino) pairs in parent-before-child order, walked DOWN
+// from the root's dirents. `path` is RELATIVE — no leading '/' — because that is
+// what `fullScan`'s page cursor has always been; a canonical path is one `'/' ||`
+// away, and only the sync snapshot needs it. Shared by `fullScan` (the VFS tree
+// walk) and `pathSnapshot.puts` (the sync snapshot), which differ only in what they
+// select from it.
+const TREE_CTE = `WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
+		SELECT name, ino, dir_ino, name
+		FROM fs_dirents
+		WHERE dir_ino = ?
+		UNION ALL
+		SELECT tree.path || '/' || child.name, child.ino, child.dir_ino, child.name
+		FROM tree
+		JOIN fs_inodes inode ON inode.ino = tree.ino
+		JOIN fs_dirents child ON child.dir_ino = tree.ino
+		WHERE inode.type = ?
+	)`
 
 function nowNs(): bigint {
 	return BigInt(Date.now()) * 1_000_000n
@@ -163,6 +197,26 @@ function metaFromRow(row: InodeRow): InodeMeta {
 		contentHash: toStringOrNull(row.content_hash) ?? undefined,
 		symlinkTarget: toStringOrNull(row.symlink_target) ?? undefined
 	}
+}
+
+/** Every xattr of a page's inodes, in one query, grouped by ino. */
+async function readXattrsByIno(
+	tx: DbAdapter,
+	inos: string[]
+): Promise<Map<string, Record<string, Uint8Array>>> {
+	const byIno = new Map<string, Record<string, Uint8Array>>()
+	if (inos.length === 0) return byIno
+	const rows = await tx.query<{ ino: unknown; name: unknown; value: unknown }>(
+		`SELECT ino, name, value FROM fs_xattrs WHERE ino IN (${inos.map(() => '?').join(', ')})`,
+		inos
+	)
+	for (const row of rows) {
+		const ino = String(row.ino)
+		const xattrs = byIno.get(ino) ?? {}
+		xattrs[String(row.name)] = toUint8Array(row.value)
+		byIno.set(ino, xattrs)
+	}
+	return byIno
 }
 
 async function listAllXattrs(tx: DbAdapter, ino: Ino): Promise<Record<string, Uint8Array>> {
@@ -998,114 +1052,34 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 		async fullScan(cursor: string) {
 			await ensureBootstrapped()
-			const rows =
-				cursor === ''
-					? await db.query<{
-							path: unknown
-							ino: unknown
-							dir_ino: unknown
-							name: unknown
-							type: unknown
-							mode: unknown
-							size: unknown
-							mtime_ns: unknown
-							ctime_ns: unknown
-							content_hash: unknown
-							symlink_target: unknown
-						}>(
-							`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
-							SELECT name, ino, dir_ino, name
-							FROM fs_dirents
-							WHERE dir_ino = ?
-							UNION ALL
-							SELECT tree.path || '/' || child.name, child.ino, child.dir_ino, child.name
-							FROM tree
-							JOIN fs_inodes inode ON inode.ino = tree.ino
-							JOIN fs_dirents child ON child.dir_ino = tree.ino
-							WHERE inode.type = ?
-						)
-						SELECT
-							tree.path,
-							tree.ino,
-							tree.dir_ino,
-							tree.name,
-							inode.type,
-							inode.mode,
-							inode.size,
-							inode.mtime_ns,
-							inode.ctime_ns,
-							inode.content_hash,
-							inode.symlink_target
-						FROM tree
-						JOIN fs_inodes inode ON inode.ino = tree.ino
-						ORDER BY tree.path
-						LIMIT ?`,
-							[ROOT_INO, FileType.Directory, SCAN_PAGE_SIZE]
-						)
-					: await db.query<{
-							path: unknown
-							ino: unknown
-							dir_ino: unknown
-							name: unknown
-							type: unknown
-							mode: unknown
-							size: unknown
-							mtime_ns: unknown
-							ctime_ns: unknown
-							content_hash: unknown
-							symlink_target: unknown
-						}>(
-							`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
-							SELECT name, ino, dir_ino, name
-							FROM fs_dirents
-							WHERE dir_ino = ?
-							UNION ALL
-							SELECT tree.path || '/' || child.name, child.ino, child.dir_ino, child.name
-							FROM tree
-							JOIN fs_inodes inode ON inode.ino = tree.ino
-							JOIN fs_dirents child ON child.dir_ino = tree.ino
-							WHERE inode.type = ?
-						)
-						SELECT
-							tree.path,
-							tree.ino,
-							tree.dir_ino,
-							tree.name,
-							inode.type,
-							inode.mode,
-							inode.size,
-							inode.mtime_ns,
-							inode.ctime_ns,
-							inode.content_hash,
-							inode.symlink_target
-						FROM tree
-						JOIN fs_inodes inode ON inode.ino = tree.ino
-						WHERE tree.path > ?
-						ORDER BY tree.path
-						LIMIT ?`,
-							[ROOT_INO, FileType.Directory, cursor, SCAN_PAGE_SIZE]
-						)
+			// `tree.path > ''` holds for every path (a dirent name is never empty), so the
+			// first page needs no separate query.
+			const rows = await db.query<TreeRow>(
+				`${TREE_CTE}
+					SELECT
+						tree.path,
+						tree.ino,
+						tree.dir_ino,
+						tree.name,
+						inode.type,
+						inode.mode,
+						inode.size,
+						inode.mtime_ns,
+						inode.ctime_ns,
+						inode.content_hash,
+						inode.symlink_target
+					FROM tree
+					JOIN fs_inodes inode ON inode.ino = tree.ino
+					WHERE tree.path > ?
+					ORDER BY tree.path
+					LIMIT ?`,
+				[ROOT_INO, FileType.Directory, cursor, SCAN_PAGE_SIZE]
+			)
 
-			// Fetch xattrs for all inodes in this page in one query.
-			const fileInos = rows
-				.filter((row) => toNumber(row.type) === FileType.Regular)
-				.map((row) => String(row.ino))
-			const xattrsByIno = new Map<string, Record<string, Uint8Array>>()
-			if (fileInos.length > 0) {
-				const placeholders = fileInos.map(() => '?').join(', ')
-				const xattrRows = await db.query<{ ino: unknown; name: unknown; value: unknown }>(
-					`SELECT ino, name, value FROM fs_xattrs WHERE ino IN (${placeholders})`,
-					fileInos
-				)
-				for (const row of xattrRows) {
-					const ino = String(row.ino)
-					if (!xattrsByIno.has(ino)) xattrsByIno.set(ino, {})
-					const xattrs = xattrsByIno.get(ino)
-					if (xattrs) {
-						xattrs[String(row.name)] = toUint8Array(row.value)
-					}
-				}
-			}
+			const xattrsByIno = await readXattrsByIno(
+				db,
+				rows.filter((row) => toNumber(row.type) === FileType.Regular).map((row) => String(row.ino))
+			)
 
 			return {
 				entries: rows.map((row) => {
@@ -1128,6 +1102,85 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					}
 				}),
 				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : ''
+			}
+		},
+
+		// The sync snapshot, read from the tree instead of replayed from the journal
+		// (see PathSnapshotStore). Keyset-paged by canonical path, and a short page ONLY
+		// at the end — `treeChangeSource` reads a short page as the end of the snapshot,
+		// so no filtering may happen after the LIMIT.
+		pathSnapshot: {
+			async puts(after: string, limit: number): Promise<PathChange[]> {
+				await ensureBootstrapped()
+				// The version is joined onto the PAGE, never inside the recursive CTE: the
+				// CTE walks the tree and the join would be re-evaluated at every step of it.
+				// A path with no version row was created by tree repair (`ensureDirPath`
+				// resurrecting a deleted ancestor), which mints no version — 0 loses every
+				// LWW compare, which is the right answer for a directory the receiving
+				// replica will recreate from its children anyway.
+				//
+				// A regular file with no contentHash is excluded HERE, in SQL, for the same
+				// reason the journal never carries one (see `buildPutChange`): a wire put
+				// must be hydratable. Doing it after the LIMIT would shorten the page and
+				// read as the end of the snapshot.
+				const rows = await db.query<TreeRow & { version: unknown }>(
+					`${TREE_CTE},
+					page AS (
+						SELECT
+							tree.path AS path,
+							tree.ino AS ino,
+							tree.dir_ino AS dir_ino,
+							tree.name AS name,
+							inode.type AS type,
+							inode.mode AS mode,
+							inode.size AS size,
+							inode.mtime_ns AS mtime_ns,
+							inode.ctime_ns AS ctime_ns,
+							inode.content_hash AS content_hash,
+							inode.symlink_target AS symlink_target
+						FROM tree
+						JOIN fs_inodes inode ON inode.ino = tree.ino
+						WHERE tree.path > ?
+						  AND (inode.type <> ? OR inode.content_hash IS NOT NULL)
+						ORDER BY tree.path
+						LIMIT ?
+					)
+					SELECT page.*, version.version
+					FROM page
+					LEFT JOIN fs_path_version version ON version.path = '/' || page.path
+					ORDER BY page.path`,
+					[
+						ROOT_INO,
+						FileType.Directory,
+						// The cursor is canonical; the CTE's paths are relative.
+						after.startsWith('/') ? after.slice(1) : after,
+						FileType.Regular,
+						limit
+					]
+				)
+				const xattrs = await readXattrsByIno(
+					db,
+					rows.map((row) => String(row.ino))
+				)
+				return rows.flatMap((row) => {
+					const path = `/${String(row.path)}`
+					const change = buildPutChange(
+						path,
+						{
+							type: toNumber(row.type) as FileType,
+							size: toBigInt(row.size),
+							mode: toNumber(row.mode),
+							mtimeNs: toBigInt(row.mtime_ns),
+							ctimeNs: toBigInt(row.ctime_ns),
+							contentHash: toStringOrNull(row.content_hash) ?? undefined,
+							symlinkTarget: toStringOrNull(row.symlink_target) ?? undefined
+						},
+						xattrs.get(String(row.ino)) ?? {},
+						toNumber(row.version ?? 0),
+						localActorId
+					)
+					return change ? [change] : []
+				})
 			}
 		},
 

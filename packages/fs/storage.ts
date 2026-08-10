@@ -1,4 +1,4 @@
-import type { JournalStore, PathMutationStore } from './sync-replica'
+import type { JournalStore, PathMutationStore, PathSnapshotStore } from './sync-replica'
 import type { FileType, Ino } from './types'
 
 export interface InodeMeta {
@@ -170,6 +170,14 @@ export interface StorageCapabilities {
 	 * txn; blob bytes are materialised out-of-band.
 	 */
 	pathApply?: PathMutationStore
+
+	/**
+	 * The sync snapshot, read from the TREE rather than replayed from the journal —
+	 * see `PathSnapshotStore`. A backend without it can
+	 * still be a sync source; its snapshot just comes from `journaledChangeSource`,
+	 * which is why its journal can never be pruned below one row per path.
+	 */
+	pathSnapshot?: PathSnapshotStore
 
 	/**
 	 * The backend's hash-addressed content store. Blobs are keyed by content hash

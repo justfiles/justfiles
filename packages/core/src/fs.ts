@@ -1,7 +1,12 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
-import { journaledChangeSource, localSyncReplica, PAGE } from '@justfiles/fs/sync-replica'
+import {
+	journaledChangeSource,
+	localSyncReplica,
+	PAGE,
+	treeChangeSource
+} from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { Hono } from 'hono'
@@ -224,10 +229,17 @@ export function createFsApi(
 	// The server serves the path endpoints over its own local SyncReplica. Origin
 	// is stamped per-request from SOURCE_HEADER (see POST /path/changes), so the
 	// construction-time localActorId is only a fallback.
-	const replica = localSyncReplica(backend, journaledChangeSource(backend), {
-		lazyContent: false,
-		localActorId: 'server'
-	})
+	//
+	// `treeChangeSource` where the backend can serve its own tree, so the snapshot is
+	// READ from the tree rather than replayed from the journal — the one thing that
+	// pinned journal retention to one row per path forever. A backend without
+	// `caps.pathSnapshot` keeps the journal-replayed snapshot, and its journal keeps
+	// that floor.
+	const replica = localSyncReplica(
+		backend,
+		backend.caps?.pathSnapshot ? treeChangeSource(backend) : journaledChangeSource(backend),
+		{ lazyContent: false, localActorId: 'server' }
+	)
 	const mutationOptions = (request: Request): { source?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
 		return source ? { source } : {}
@@ -326,11 +338,9 @@ export function createFsApi(
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
 				const { page, limit } = c.req.valid('query')
-				const { changes, next, syncCursor, done } = await replica.pathScan(page, { limit })
+				const scan = await replica.pathScan(page, { limit })
 				const lineage = await readLineage()
-				return c.json(
-					ScanPage.parse({ changes, next, syncCursor, done, generation: lineage?.generation })
-				)
+				return c.json(ScanPage.parse({ ...scan, generation: lineage?.generation }))
 			})
 
 			// Path sync: PUSH (client writes path-changes; server applies to its Storage)
