@@ -2,8 +2,9 @@
 //
 // Coalescing the journal to answer "what does this volume hold?" is what pinned
 // journal retention to one row per path forever: an emptied journal reported an
-// empty volume. These tests hold the snapshot to the tree instead — including the
-// case that used to be impossible, a full volume behind an EMPTY journal.
+// empty volume, and a collected tombstone resurrected its file on every new device.
+// These tests hold the snapshot to the tree instead — including the case that used
+// to be impossible, a full volume behind an EMPTY journal.
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -121,8 +122,44 @@ describe('sqlite caps.pathSnapshot', () => {
 	})
 })
 
+describe('sqlite caps.pathSnapshot tombstones', () => {
+	it('reports deleted paths as deletes, at their tombstone version', async () => {
+		const { storage, vol } = makeSqlite()
+		await vol.writeFile('/gone.md', bytes('gone'))
+		await vol.writeFile('/here.md', bytes('here'))
+		await vol.rm('/gone.md')
+
+		const tombstones = await snapshotOf(storage).tombstones('', 100)
+
+		expect(paths(tombstones)).toEqual(['/gone.md'])
+		expect(tombstones[0]?.kind).toBe('delete')
+		expect(tombstones[0]?.version).toBe('2') // put@1, delete@2
+	})
+
+	it('leaves a resurrected path out — it is live, so it belongs to the puts', async () => {
+		const { storage, vol } = makeSqlite()
+		await vol.writeFile('/back.md', bytes('first'))
+		await vol.rm('/back.md')
+		await vol.writeFile('/back.md', bytes('again'))
+
+		expect(await snapshotOf(storage).tombstones('', 100)).toEqual([])
+		expect(paths(await snapshotOf(storage).puts('', 100))).toEqual(['/back.md'])
+	})
+
+	it('pages by path', async () => {
+		const { storage, vol } = makeSqlite()
+		for (const name of ['a', 'b', 'c']) {
+			await vol.writeFile(`/${name}.md`, bytes(name))
+			await vol.rm(`/${name}.md`)
+		}
+
+		expect(paths(await snapshotOf(storage).tombstones('', 2))).toEqual(['/a.md', '/b.md'])
+		expect(paths(await snapshotOf(storage).tombstones('/b.md', 2))).toEqual(['/c.md'])
+	})
+})
+
 describe('treeChangeSource', () => {
-	it('reports the live tree, and nothing the journal still remembers', async () => {
+	it('reports the live tree, and no tombstones unless they were asked for', async () => {
 		const { storage, vol } = makeSqlite()
 		await vol.writeFile('/a.md', bytes('a'))
 		await vol.rm('/a.md')
@@ -131,7 +168,27 @@ describe('treeChangeSource', () => {
 		const page = await treeChangeSource(storage).pathScan(undefined, { limit: 100 })
 
 		expect(paths(page.changes)).toEqual(['/b.md'])
+		expect(page.tombstones).toBeUndefined()
 		expect(page.done).toBe(true)
+	})
+
+	it('hands over to the tombstones after the puts, then finishes', async () => {
+		const { storage, vol } = makeSqlite()
+		await vol.writeFile('/a.md', bytes('a'))
+		await vol.rm('/a.md')
+		await vol.writeFile('/b.md', bytes('b'))
+		const source = treeChangeSource(storage)
+
+		const first = await source.pathScan(undefined, { limit: 100, tombstones: true })
+		expect(paths(first.changes)).toEqual(['/b.md'])
+		expect(first.done).toBe(false)
+
+		const second = await source.pathScan(first.next, { limit: 100, tombstones: true })
+		expect(second.changes).toEqual([])
+		expect(paths(second.tombstones ?? [])).toEqual(['/a.md'])
+		expect(second.done).toBe(true)
+		// Every page is cut at the SAME frozen delta high-water.
+		expect(second.syncCursor).toBe(first.syncCursor)
 	})
 
 	it('pages by path, cutting every page at the same frozen high-water', async () => {
@@ -175,41 +232,56 @@ describe('treeChangeSource', () => {
 })
 
 describe('GET /path/snapshot', () => {
-	type Page = { changes: PathChange[]; next?: string; done: boolean }
+	type Page = { changes: PathChange[]; tombstones?: PathChange[]; next?: string; done: boolean }
 
 	/** Page the whole snapshot the way a bootstrap does — follow `next` until done. */
-	async function drain(app: ReturnType<typeof createFsApi>): Promise<string[]> {
+	async function drain(
+		app: ReturnType<typeof createFsApi>,
+		opts: { tombstones?: boolean } = {}
+	): Promise<{ puts: string[]; tombstones: string[] }> {
 		const puts: string[] = []
+		const tombstones: string[] = []
 		let page: string | undefined
 		for (;;) {
 			const query = new URLSearchParams()
 			if (page !== undefined) query.set('page', page)
+			if (opts.tombstones) query.set('tombstones', '1')
 			const res = await app.request(`/path/snapshot?${query}`)
 			expect(res.status).toBe(200)
 			const body = (await res.json()) as Page
 			puts.push(...paths(body.changes))
-			if (body.done || body.next === undefined) return puts
+			tombstones.push(...paths(body.tombstones ?? []))
+			if (body.done || body.next === undefined) return { puts, tombstones }
 			page = body.next
 		}
 	}
 
-	it('serves the live tree, not a replay of the journal', async () => {
+	it('serves the live tree, and the tombstones only when asked', async () => {
 		const { storage, vol } = makeSqlite()
 		await vol.writeFile('/gone.md', bytes('gone'))
 		await vol.rm('/gone.md')
 		await vol.writeFile('/here.md', bytes('here'))
 		const app = createFsApi(storage)
 
-		expect(await drain(app)).toEqual(['/here.md'])
+		expect(await drain(app)).toEqual({ puts: ['/here.md'], tombstones: [] })
+		expect(await drain(app, { tombstones: true })).toEqual({
+			puts: ['/here.md'],
+			tombstones: ['/gone.md']
+		})
 	})
 
-	it('never names a private path', async () => {
+	it('never names a private path, in either half', async () => {
 		const { storage, vol } = makeSqlite()
 		await vol.mkdir('/private', { recursive: true })
 		await vol.writeFile('/private/token', bytes('secret'))
+		await vol.writeFile('/private/old', bytes('secret'))
+		await vol.rm('/private/old')
 		await vol.writeFile('/public.md', bytes('public'))
 		const app = createFsApi(storage)
 
-		expect(await drain(app)).toEqual(['/public.md'])
+		expect(await drain(app, { tombstones: true })).toEqual({
+			puts: ['/public.md'],
+			tombstones: []
+		})
 	})
 })

@@ -56,15 +56,23 @@ export interface ChangeSource {
 	 * at snapshot START and echoed on every page, so after the final page the
 	 * caller resumes `pathDeltas(syncCursor)` without gaps (idempotent overlap).
 	 *
+	 * `opts.tombstones` also asks for the source's DELETED paths, returned in
+	 * `tombstones` on the pages that carry them (a source that cannot serve them
+	 * omits the field). A snapshot alone says only what exists; a re-bootstrap that
+	 * KEEPS local data needs what no longer does, or it republishes files another
+	 * replica removed. Off by default — a replica with nothing local to protect
+	 * should not page through a set it would only discard.
+	 *
 	 * `generation` (client<->server only) is the server volume's lineage epoch,
 	 * echoed on every page so `synced()` catches a reset mid-scan without a second
 	 * handshake. Local/P2P sources leave it undefined.
 	 */
 	pathScan(
 		page?: SyncCursor,
-		opts?: { limit?: number }
+		opts?: { limit?: number; tombstones?: boolean }
 	): Promise<{
 		changes: PathChange[]
+		tombstones?: PathChange[]
 		next?: SyncCursor
 		syncCursor: SyncCursor
 		done: boolean
@@ -192,18 +200,24 @@ export interface JournalStore {
  * The snapshot seam, served from the TREE rather than from the journal.
  *
  * Coalescing the journal to build a snapshot is what pinned journal retention to
- * one row per path FOREVER: an emptied journal would report an empty volume. A
- * backend that can enumerate its own tree answers the question directly, and
- * journal retention drops to a performance question.
+ * one row per path FOREVER: an emptied journal would report an empty volume, and a
+ * collected tombstone would resurrect its file on every new device. A backend that
+ * can enumerate its own tree and its own tombstones answers both questions
+ * directly, and journal retention drops to a performance question.
  *
- * Keyset-paged by path (`after` is exclusive, '' starts), returning fewer than
- * `limit` rows only at the end. Path order is parent-before-child — a parent path
- * is a strict prefix ending at the separator — so a page can always be applied as
- * it arrives.
+ * Both halves are keyset-paged by path (`after` is exclusive, '' starts) and return
+ * fewer than `limit` rows only at the end. Path order is parent-before-child — a
+ * parent path is a strict prefix ending at the separator — so a page can always be
+ * applied as it arrives.
  */
 export interface PathSnapshotStore {
 	/** Every live path as a wire `put`, at its current version. */
 	puts(after: string, limit: number): Promise<PathChange[]>
+	/**
+	 * Every DELETED path as a wire `delete`, at its tombstone version. A path that
+	 * was deleted and later recreated is live, so it appears in `puts` instead.
+	 */
+	tombstones(after: string, limit: number): Promise<PathChange[]>
 }
 
 /**
@@ -353,13 +367,15 @@ export function journaledChangeSource(store: Storage): ChangeSource {
  *
  * That replay is why the journal could never be pruned below one row per path — the
  * journal WAS the snapshot, so an emptied one reported an empty volume. Reading the
- * tree instead makes journal retention a performance question.
+ * tree instead makes journal retention a performance question, and lets a
+ * re-bootstrapping replica be served the tombstone set as well (see
+ * `PathSnapshotStore`).
  *
- * The page token carries the frozen delta high-water and the last path of the
- * previous page, exactly as the journal-served one did. Freezing only the CURSOR —
- * not the tree — is the same bargain that version made: a page read later than the
- * freeze can only be NEWER than the delta stream that resumes at it, and applying a
- * change twice is idempotent under LWW.
+ * The page token carries the frozen delta high-water, the phase (`p`uts, then
+ * `t`ombstones), and the last path of the previous page. Freezing only the CURSOR —
+ * not the tree — is the same bargain the journal version made: a page read later
+ * than the freeze can only be NEWER than the delta stream that resumes at it, and
+ * applying a change twice is idempotent under LWW.
  */
 export function treeChangeSource(store: Storage): ChangeSource {
 	const journaled = journaledChangeSource(store)
@@ -374,25 +390,47 @@ export function treeChangeSource(store: Storage): ChangeSource {
 			const snapshot = requireSnapshot()
 			const limit = opts?.limit ?? PAGE
 			let head: string
+			let phase: 'p' | 't' = 'p'
 			let after = ''
 			if (page) {
-				// `head:encodedPath` — the same token the journal-served source used, so a
-				// bootstrap in flight across the switch resumes instead of restarting.
-				// encodeURIComponent leaves ':' alone, so only the head is split off.
+				// `head:phase:encodedPath`. encodeURIComponent leaves ':' alone, so the head
+				// and the phase are split off individually rather than by `split(':')`.
 				const i = page.indexOf(':')
 				head = i < 0 ? page : page.slice(0, i)
 				const rest = i < 0 ? '' : page.slice(i + 1)
-				// The pre-keyset form was a numeric offset, which cannot map onto path order.
-				if (!/^\d+$/.test(rest)) after = decodeURIComponent(rest)
+				const marked = /^([pt]):/.exec(rest)
+				if (marked) {
+					phase = marked[1] === 't' ? 't' : 'p'
+					after = decodeURIComponent(rest.slice(2))
+				} else if (!/^\d+$/.test(rest)) {
+					// The journal-served token (`head:encodedPath`) paged puts by path too, so a
+					// bootstrap in flight across the switch resumes instead of restarting. Its
+					// own predecessor was a numeric offset, which cannot map onto path order.
+					after = decodeURIComponent(rest)
+				}
 			} else {
 				head = String(await requireJournal(store).head())
 			}
-			const changes = await snapshot.puts(after, limit)
-			const last = changes.at(-1)?.path
-			const done = changes.length < limit || last === undefined
+			const token = (nextPhase: 'p' | 't', lastPath: string): SyncCursor =>
+				`${head}:${nextPhase}:${encodeURIComponent(lastPath)}`
+
+			if (phase === 'p') {
+				const changes = await snapshot.puts(after, limit)
+				const last = changes.at(-1)?.path
+				// A short page ends the puts. Hand over to the tombstones only when they
+				// were asked for; otherwise the snapshot is complete here.
+				if (changes.length >= limit && last !== undefined)
+					return { changes, next: token('p', last), syncCursor: head, done: false }
+				if (!opts?.tombstones) return { changes, syncCursor: head, done: true }
+				return { changes, next: token('t', ''), syncCursor: head, done: false }
+			}
+			const tombstones = await snapshot.tombstones(after, limit)
+			const last = tombstones.at(-1)?.path
+			const done = tombstones.length < limit || last === undefined
 			return {
-				changes,
-				next: done ? undefined : `${head}:${encodeURIComponent(last)}`,
+				changes: [],
+				tombstones,
+				next: done ? undefined : token('t', last),
 				syncCursor: head,
 				done
 			}
@@ -491,7 +529,13 @@ export function localSyncReplica(
 		},
 		async pathScan(page, opts) {
 			const res = await changes.pathScan(page, opts)
-			return { ...res, changes: res.changes.filter((c) => !isIgnored(c.path)) }
+			return {
+				...res,
+				changes: res.changes.filter((c) => !isIgnored(c.path)),
+				// A tombstone names a path too, and `/private/**` never crosses the wire in
+				// EITHER direction — not even to say it is gone.
+				...(res.tombstones ? { tombstones: res.tombstones.filter((c) => !isIgnored(c.path)) } : {})
+			}
 		},
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
 			// Hard exclusion (see syncIgnore): a peer can never inject local-only state or a

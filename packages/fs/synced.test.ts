@@ -468,7 +468,11 @@ interface FakeServer {
 	resetAfterCommitError: Error | undefined
 	/** Every push received (for take-mine republish tests). */
 	pushes: Array<{ changes: PathChange[] }>
+	/** Whether the last bootstrap asked for the tombstone set. */
+	scanAskedTombstones: boolean
 	seed(path: string, content: string): void
+	/** A path this volume no longer has — served only when the scan asks. */
+	seedTombstone(path: string, version: number): void
 	/** Empty the tree + blobs — simulate the endpoint becoming a different, empty volume. */
 	clear(): void
 }
@@ -478,6 +482,7 @@ function fakeServer(
 ): FakeServer {
 	const blobs = new Map<string, Uint8Array>()
 	const puts = new Map<string, PathChange>()
+	const tombs = new Map<string, PathChange>()
 	const server: FakeServer = {
 		generation: init.generation,
 		lineageId: init.lineageId,
@@ -485,10 +490,14 @@ function fakeServer(
 		operationId: undefined,
 		deltaGeneration: undefined,
 		scanCalls: 0,
+		scanAskedTombstones: false,
 		pushError: undefined,
 		resetError: undefined,
 		resetAfterCommitError: undefined,
 		pushes: [],
+		seedTombstone(path, version) {
+			tombs.set(path, { kind: 'delete', path, version: String(version) })
+		},
 		seed(path, content) {
 			const data = enc.encode(content)
 			const hash = sha256Hex(data)
@@ -503,6 +512,7 @@ function fakeServer(
 		},
 		clear() {
 			puts.clear()
+			tombs.clear()
 			blobs.clear()
 			server.operationId = undefined
 		},
@@ -535,10 +545,12 @@ function fakeServer(
 			}
 			return { generation: server.generation }
 		},
-		pathScan: async () => {
+		pathScan: async (_page, opts) => {
 			server.scanCalls++
+			server.scanAskedTombstones = opts?.tombstones === true
 			return {
 				changes: [...puts.values()],
+				...(opts?.tombstones ? { tombstones: [...tombs.values()] } : {}),
 				syncCursor: '0',
 				done: true,
 				generation: server.generation
@@ -610,6 +622,44 @@ describe('synced (generation / client-reset)', () => {
 		expect(dec.decode(await vol.readFile('/server.txt'))).toBe('hi')
 		expect((await readSyncState(local)).generation).toBe(5)
 		expect(server.scanCalls).toBeGreaterThanOrEqual(1)
+		// Nothing local to protect: the snapshot is the whole truth, so this replica
+		// never pages through a tombstone set it would only discard.
+		expect(server.scanAskedTombstones).toBe(false)
+	})
+
+	// A bootstrap that KEEPS local data (rebootstrapKeepingLocal — an unverifiable
+	// lineage, or a cursor the server pruned past) skips reconcileLocal, so a deletion
+	// it missed would be republished by its own push unless the server says so.
+	it('a bootstrap with local data applies the deletions it missed', async () => {
+		const server = fakeServer({ generation: 5, files: { '/keep.md': 'theirs' } })
+		server.seedTombstone('/gone.md', 3)
+		const local = memStorage()
+		await volume(local).writeFile('/keep.md', enc.encode('mine'))
+		await volume(local).writeFile('/gone.md', enc.encode('deleted elsewhere'))
+		await seedSyncState(local, { generation: 5 }) // no cursors → bootstrap
+
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+
+		expect(server.scanAskedTombstones).toBe(true)
+		expect(await vol.exists('/gone.md')).toBe(false)
+		// Adoption still holds for what the server DOES have: local content wins.
+		expect(dec.decode(await vol.readFile('/keep.md'))).toBe('mine')
+	})
+
+	// The tombstone is older than the local edit, so LWW keeps the file: a deletion
+	// must not outrank work done after it.
+	it('keeps a local path whose version outranks the remote tombstone', async () => {
+		const server = fakeServer({ generation: 5 })
+		server.seedTombstone('/notes.md', 1)
+		const local = memStorage()
+		const localVol = volume(local)
+		await localVol.writeFile('/notes.md', enc.encode('v1'))
+		await localVol.writeFile('/notes.md', enc.encode('v2')) // version 2 > tombstone 1
+		await seedSyncState(local, { generation: 5 })
+
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+
+		expect(dec.decode(await vol.readFile('/notes.md'))).toBe('v2')
 	})
 
 	// equal → normal push/pull; no bootstrap, no reset.
