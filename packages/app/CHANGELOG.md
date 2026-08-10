@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.3.0...app-v0.4.0) (2026-08-10)
+
+
+### Features
+
+* **app:** show which build a device is running ([#435](https://github.com/xiaoxinghu/justfiles/issues/435)) ([cdba3de](https://github.com/xiaoxinghu/justfiles/commit/cdba3dec291bbd6b676e61782a130c6ff5a54d86))
+
 ## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.2.0...app-v0.3.0) (2026-08-06)
 
 
