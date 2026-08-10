@@ -74,11 +74,13 @@ type ContentRow = {
 const ROOT_INO: Ino = '1'
 const DIR_PAGE_SIZE = 200
 const SCAN_PAGE_SIZE = 200
-// Journal rows discarded per prune run. The sweep runs in ONE Durable Object
+// Journal paths examined per prune run. The sweep runs in ONE Durable Object
 // event, where `db.transaction` is a no-op wrapper (apps/frieren/worker/db.do.ts)
-// so the whole write set flushes at once — a slice keeps that event bounded no
-// matter how far behind the journal is, and the caller re-arms while work remains.
-const JOURNAL_PRUNE_LIMIT = 1000
+// so the whole write set flushes at once — a window keeps that event bounded no
+// matter how large the journal is, and the caller re-arms while work remains.
+// It bounds the READ, which capping the discarded rows does not: the steady state
+// is a journal with nothing to discard, and finding that out must not cost a scan.
+const JOURNAL_PRUNE_WINDOW = 1000
 // R2 takes up to 1000 keys per `delete`.
 const BLOB_DELETE_BATCH = 1000
 const INLINE_TEXT_LIMIT_BYTES = 256 * 1024
@@ -1214,33 +1216,38 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				let reclaimed = 0
 				let done = false
 				await db.transaction(async (tx) => {
-					// Coalesce the journal to the newest row per path, a bounded slice at a
-					// time. `path` is a real column now, so "is this row superseded?" is an
-					// index lookup rather than a JSON parse.
-					const victims = await tx.query<{ seq: unknown }>(
-						`SELECT seq FROM fs_path_journal AS j
-						 WHERE seq < (SELECT MAX(seq) FROM fs_path_journal WHERE path = j.path)
-						 ORDER BY seq
-						 LIMIT ?`,
-						[JOURNAL_PRUNE_LIMIT]
+					// Coalesce the journal to the newest row per path, one WINDOW of paths at
+					// a time, resuming where the last run stopped. `path` is a real column
+					// now, so this is a range scan of the (path, seq) index — it reads the
+					// window and nothing else, and each path it does find work on costs one
+					// indexed delete rather than a JSON parse per row.
+					const [cursor] = await tx.query<{ resume: unknown }>(
+						'SELECT journal_coalesce_path AS resume FROM fs_generation WHERE id = 1 LIMIT 1'
 					)
-					done = victims.length < JOURNAL_PRUNE_LIMIT
-					const lastVictim = victims[victims.length - 1]
-					if (lastVictim !== undefined)
-						// Re-stating the predicate rather than listing the seqs keeps this to one
-						// bind variable; `seq <=` bounds it to exactly the slice read above.
-						await tx.run(
-							`DELETE FROM fs_path_journal
-							 WHERE seq <= ?
-							   AND seq < (
-								SELECT MAX(seq) FROM fs_path_journal AS j WHERE j.path = fs_path_journal.path
-							   )`,
-							[toNumber(lastVictim.seq)]
-						)
-					// Content is collected only once the journal is fully coalesced. A
-					// superseded row still holds the OLD contentHash, whose inode reference is
-					// already gone — so collecting the bytes while such a row can still be
-					// served would hand a lagging client a put pointing at nothing.
+					const window = await tx.query<{ path: unknown; keep: unknown; held: unknown }>(
+						`SELECT path, MAX(seq) AS keep, COUNT(*) AS held
+						 FROM fs_path_journal
+						 WHERE path > ?
+						 GROUP BY path
+						 LIMIT ?`,
+						[toStringOrNull(cursor?.resume) ?? '', JOURNAL_PRUNE_WINDOW]
+					)
+					for (const row of window)
+						if (toNumber(row.held) > 1)
+							await tx.run('DELETE FROM fs_path_journal WHERE path = ? AND seq < ?', [
+								String(row.path),
+								toNumber(row.keep)
+							])
+					// A short window is the end of the journal: the pass is over, so the next
+					// run starts a fresh one.
+					done = window.length < JOURNAL_PRUNE_WINDOW
+					await tx.run('UPDATE fs_generation SET journal_coalesce_path = ? WHERE id = 1', [
+						done ? '' : String(window[window.length - 1]?.path ?? '')
+					])
+					// Content is collected only on the run that finishes the pass. A superseded
+					// row still holds the OLD contentHash, whose inode reference is already gone
+					// — so collecting the bytes while such a row can still be served would hand
+					// a lagging client a put pointing at nothing.
 					if (!done) return
 					const rows = await tx.query<{ content_hash: unknown }>(
 						`SELECT content_hash FROM fs_contents

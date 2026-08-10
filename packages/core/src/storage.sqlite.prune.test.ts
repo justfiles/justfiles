@@ -57,6 +57,17 @@ function seedJournal(db: DatabaseSync, path: string, count: number): void {
 		insert.run(JSON.stringify({ kind: 'delete', path, version: String(i + 1) }), path)
 }
 
+/** Seed `paths` distinct paths, `each` rows apiece, in a stable path order. */
+function seedPaths(db: DatabaseSync, paths: number, each: number): void {
+	for (let i = 0; i < paths; i++) seedJournal(db, `/f${String(i).padStart(4, '0')}.json`, each)
+}
+
+/** Where the prune's walk stopped — '' once a pass is over. */
+function resumePath(db: DatabaseSync): string {
+	const row = db.prepare('SELECT journal_coalesce_path AS p FROM fs_generation WHERE id = 1').get()
+	return String((row as { p: string }).p)
+}
+
 describe('0007_journal_path', () => {
 	it('backfills the path of every row written before the column existed', () => {
 		const db = open(6)
@@ -82,20 +93,49 @@ describe('sqlite journal prune', () => {
 		expect(journalPaths(db)).toEqual(['/notes', '/notes/one.md'])
 	})
 
-	it('discards superseded rows in bounded slices, and says when work remains', async () => {
+	it('walks a bounded window of paths, and resumes where it stopped', async () => {
 		const db = open()
 		const content = sqliteStorage(createSqliteAdapter(bigIntSafe(db))).caps?.content
 		if (!content) throw new Error('sqlite must offer a content store')
-		// 1200 rows on one path: 1199 superseded, more than one run's budget.
-		seedJournal(db, '/busy.json', 1200)
+		// 1200 paths with a superseded row each: more paths than one run's window.
+		seedPaths(db, 1200, 2)
 
 		const first = await content.gcUnreferenced()
 		expect(first.done).toBe(false)
-		expect(journalCount(db)).toBe(200) // 1000 discarded, no more
+		expect(journalCount(db)).toBe(1400) // 1000 paths coalesced, 200 not yet reached
+		expect(resumePath(db)).toBe('/f0999.json')
 
 		const second = await content.gcUnreferenced()
 		expect(second.done).toBe(true)
-		expect(journalCount(db)).toBe(1)
+		expect(journalCount(db)).toBe(1200)
+		expect(resumePath(db)).toBe('') // the pass is over; the next run starts a new one
+	})
+
+	it('reads only its window when there is nothing at all to discard', async () => {
+		// The P1 on #442, and the steady state: bounding the DISCARDED rows bounds the
+		// writes and not the reads, so a journal that is already coalesced — which has
+		// no rows to discard — was read end to end, with an index lookup per row, on
+		// every daily event. The window is what makes this run stop early.
+		const db = open()
+		const content = sqliteStorage(createSqliteAdapter(bigIntSafe(db))).caps?.content
+		if (!content) throw new Error('sqlite must offer a content store')
+		seedPaths(db, 1200, 1)
+
+		expect((await content.gcUnreferenced()).done).toBe(false)
+		expect(resumePath(db)).toBe('/f0999.json') // stopped at the window, not at the end
+		expect(journalCount(db)).toBe(1200) // nothing to discard, and nothing discarded
+
+		expect((await content.gcUnreferenced()).done).toBe(true)
+		expect(journalCount(db)).toBe(1200)
+	})
+
+	it('coalesces one path in one delete, however many rows it holds', async () => {
+		const db = open()
+		const content = sqliteStorage(createSqliteAdapter(bigIntSafe(db))).caps?.content
+		if (!content) throw new Error('sqlite must offer a content store')
+		seedJournal(db, '/busy.json', 1200)
+
+		expect((await content.gcUnreferenced()).done).toBe(true)
 		expect(journalPaths(db)).toEqual(['/busy.json'])
 	})
 
@@ -118,7 +158,7 @@ describe('sqlite journal prune', () => {
 		expect(journalCount(db)).toBe(2)
 	})
 
-	it('collects no content until the journal is fully coalesced', async () => {
+	it('collects no content until a pass over the journal finishes', async () => {
 		// A superseded row still names the OLD contentHash, whose inode reference is
 		// already gone. Collecting the bytes while such a row can still be served would
 		// hand a lagging client a put pointing at nothing.
@@ -128,7 +168,7 @@ describe('sqlite journal prune', () => {
 		// Bytes no inode references — what a lost claim leaves behind.
 		const orphaned = 'a'.repeat(64)
 		await content.putByHash(orphaned, bytes('orphan'))
-		seedJournal(db, '/busy.json', 1200)
+		seedPaths(db, 1200, 2)
 
 		expect((await content.gcUnreferenced()).done).toBe(false)
 		expect(await content.hasByHash(orphaned)).toBe(true)
