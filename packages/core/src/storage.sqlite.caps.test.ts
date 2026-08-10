@@ -174,23 +174,29 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 	it('journals a delete and fast-forwards the tombstone (resurrection sorts above it)', async () => {
 		const s = makeSqlite()
 		const vol = volume(s)
-		await vol.writeFile('/f', bytes('v1')) // put@1
-		await vol.rm('/f') // delete@2
-		await vol.writeFile('/f', bytes('v2')) // put@3 (> tombstone)
-		expect((await rowsFor(s, '/f')).map((r) => `${r.kind}@${r.version}`)).toEqual([
-			'put@1',
-			'delete@2',
-			'put@3'
-		])
+		// Read after each step: the journal keeps only a path's newest row (#446), so
+		// the version sequence is observed as it is stamped, not recovered afterwards.
+		const latest = async () => (await rowsFor(s, '/f')).map((r) => `${r.kind}@${r.version}`)
+
+		await vol.writeFile('/f', bytes('v1'))
+		expect(await latest()).toEqual(['put@1'])
+
+		await vol.rm('/f')
+		expect(await latest()).toEqual(['delete@2'])
+
+		await vol.writeFile('/f', bytes('v2'))
+		expect(await latest()).toEqual(['put@3']) // above the tombstone, not back at 1
 	})
 
 	it('honours an explicit version pin (import/replay)', async () => {
 		const s = makeSqlite()
 		const vol = volume(s)
-		await vol.mkdir('/a') // put@1
+		await vol.mkdir('/a')
+		expect((await rowsFor(s, '/a')).map((r) => r.version)).toEqual(['1'])
+
 		const ino = (await vol.stat('/a')).ino
 		await s.setMeta(ino, { mode: 0o700 }, { version: 99 })
-		expect((await rowsFor(s, '/a')).map((r) => r.version)).toEqual(['1', '99'])
+		expect((await rowsFor(s, '/a')).map((r) => r.version)).toEqual(['99'])
 	})
 
 	it('pages via readFrom and reports head', async () => {

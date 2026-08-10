@@ -622,6 +622,26 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			'INSERT INTO fs_path_journal(local_source, change_json, path, at_ns) VALUES (?, ?, ?, ?)',
 			[localSource ?? null, JSON.stringify(change), change.path, nowNs()]
 		)
+		// AT MOST ONE ROW PER PATH, always — a new row takes out the rows it supersedes,
+		// here, rather than leaving them for the daily prune (#446).
+		//
+		// This is correctness, not tidiness. THIS backend drops a superseded contentHash
+		// inline (`maybeDeleteOrphanedContent`, in the same transaction as the overwrite),
+		// so a surviving older row names bytes the volume no longer has. `pathDeltas`
+		// coalesces each page by path and normally hides such a row behind its successor
+		// — but only within one page, and a page cut between the two serves the stale one
+		// alone. The client fetches its hash, gets nothing, and the pull cursor never
+		// advances past that page again.
+		//
+		// After the INSERT, never before it: `db.transaction` is a no-op wrapper on the
+		// Durable Object (apps/frieren/worker/db.do.ts), so a delete-then-insert would
+		// expose an instant with no row for this path at all. `seq` is AUTOINCREMENT, so
+		// the row just written is the new maximum and no reader's cursor can be above it.
+		await tx.run(
+			`DELETE FROM fs_path_journal
+			 WHERE path = ? AND seq < (SELECT MAX(seq) FROM fs_path_journal WHERE path = ?)`,
+			[change.path, change.path]
+		)
 	}
 
 	/**
@@ -1357,6 +1377,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					// now, so this is a range scan of the (path, seq) index — it reads the
 					// window and nothing else, and each path it does find work on costs one
 					// indexed delete rather than a JSON parse per row.
+					//
+					// `appendJournalRow` now coalesces as it writes (#446), so this finds work
+					// only in history written before that — a volume that has drained its
+					// backlog once walks the window and finds nothing, forever.
 					const [cursor] = await tx.query<{ resume: unknown }>(
 						'SELECT journal_coalesce_path AS resume FROM fs_generation WHERE id = 1 LIMIT 1'
 					)
