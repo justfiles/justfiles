@@ -259,15 +259,13 @@ export class Frieren extends DurableObject<Env> {
 					// Reading the volume's lineage epoch needs the DO's raw store, so it is
 					// injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),
-					// Only the non-destructive marker clear. A destructive reset is a
-					// commit-then-restart handshake the authenticated Worker drives from
-					// OUTSIDE (reset-ack.ts), and it intercepts POST /fs/reset ahead of this
-					// route — committing here instead would leave THIS instance running at a
-					// generation it no longer owns.
-					reset: async (req) => {
-						if (req.mode === 'complete') return this.completeReset(req.resetId)
-						throw new Error('destructive reset is driven by the authenticated Worker')
-					}
+					// Only the non-destructive marker clear — the destructive half is not
+					// injectable, by design. A destructive reset is a commit-then-restart
+					// handshake the authenticated Worker drives from OUTSIDE (reset-ack.ts),
+					// and it intercepts POST /fs/reset ahead of this route — committing here
+					// instead would leave THIS instance running at a generation it no longer
+					// owns.
+					complete: (resetId) => this.completeReset(resetId)
 				})
 			)
 
