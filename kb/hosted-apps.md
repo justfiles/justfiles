@@ -171,8 +171,8 @@ name its own source. `baseUrl` alone selects one of two shapes:
   replicates. App Code drafts, zip installs, Mac's packaged built-ins, and today's
   jsDelivr community installs use this shape because the volume is their durable copy.
 - **present — hosted app.** `/applications/<id>/` holds the installed `manifest.json`
-  and `app.js`. Every other bundle file is mounted from `baseUrl` and cached locally
-  under `/private/cache/applications/<id>/…`.
+  and `app.js`. Every other bundle file is mounted from `baseUrl` and cached by the
+  HOST, not the volume — in frieren, the service worker's `justapps` Cache API bucket.
 
 The reducer is deliberately never mounted. The DO has no asset fetcher and must be able
 to run an installed app after the origin has stopped serving that release. #373 keeps
@@ -182,15 +182,17 @@ part worth keeping out of sync.
 `hash` fingerprints every catalog path and digest, including the authored manifest and
 reducer. `files` carries the per-file pins for the mounted half. On read, the kernel:
 
-1. checks the cached file's content hash against the installed pin;
-2. fetches `<baseUrl>/<path>` on a miss or mismatch;
-3. verifies the bytes before returning or caching them; and
-4. treats a failed cache write as a refetch cost, not a failed app read.
+1. fetches `<baseUrl>/<path>`, which the host may satisfy from its own cache;
+2. verifies the returned bytes against the installed pin; and
+3. evicts that exact cache entry on a mismatch, so the next read refetches.
 
-The pin is the logical cache key: stale bytes from another release become unreachable.
-Install and upgrade clear the previous cache eagerly; uninstall sweeps it without trash
-semantics. All install staging now lives under `/private/tmp/app-installs`, so temporary
-bytes never churn sync either.
+The kernel makes the same call either way — it does not know whether a byte came from
+the network or the cache, which is what keeps the integrity check unconditional.
+Because a release URL is immutable, stale bytes from another release are simply never
+addressed. Uninstall evicts the app's pinned URLs before trashing the record, since the
+record is the only thing that can name them; growth is otherwise bounded by the service
+worker's own expiration. All install staging lives under `/private/tmp/app-installs`, so
+temporary bytes never churn sync either.
 
 Reconciliation checks only the files that belong in the volume — the manifest record
 and reducer for a hosted app. A missing mounted file repairs itself on read. A change to
@@ -303,7 +305,7 @@ A hosted install therefore has this shape:
 ```text
 /applications/<id>/manifest.json       synced installed record
 /applications/<id>/app.js              synced reducer for browser and DO kernels
-/private/cache/applications/<id>/…     device-local GUI, icon, and assets
+caches.open('justapps')                browser-local GUI, icon, and assets
 ```
 
 The DO deliberately has no `fetchAsset`. Keeping `app.js` durable prevents an installed
@@ -563,7 +565,7 @@ Reached separately, by a project with third-party apps actually in production.
 
 - #373: apps bundle their own framework; hosts inject only the platform stylesheet.
 - #376/#379: the installed manifest is an integrity-pinned app spec; Frieren's built-ins
-  mount GUI bytes into `/private/cache` while the record and reducer sync.
+  mount GUI bytes through the service worker cache while the record and reducer sync.
 **Prototyped, on an unmerged branch and not in the tree**
 
 - Host routing and deployment configuration: a one-label host decodes to an app id, and
@@ -605,7 +607,7 @@ Reached separately, by a project with third-party apps actually in production.
    cookie/site boundary is explicitly accepted.
 4. The installer enriches the manifest with `baseUrl`, whole-app `hash`, and mounted-file
    pins; entry fields stay relative. URL-as-bytes first, URL-as-page later, same app spec.
-5. Hosted apps sync `manifest.json` + `app.js`; other files mount into `/private/cache`.
+5. Hosted apps sync `manifest.json` + `app.js`; other files mount through the host cache.
 6. The runtime is a third `GetSandbox`, pinned into each artifact, with the
    reducer in a Worker.
 7. v1 visitors are anonymous; publishers authenticate, but there is **no review gate on

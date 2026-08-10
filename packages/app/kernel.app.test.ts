@@ -263,6 +263,54 @@ test('uninstall removes the bundle', async () => {
 	expect(await s.list()).toEqual([])
 })
 
+test('uninstall evicts the hosted payload from the host cache', async () => {
+	// The payload never entered the volume, so trashing the bundle would leave it in the
+	// host's (per-origin) cache with nothing left to name it by.
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	await s.uninstall(id)
+
+	// Every pinned file, and only those: the reducer came from the volume and was
+	// never fetched, so it has no cache entry.
+	expect(evicted).toEqual(['/appstore/apps/com.example.app/1.0.0/gui.js'])
+	expect(await s.has(id)).toBe(false)
+})
+
+test('an eviction that fails does not fail the uninstall', async () => {
+	const vol = volume(memStorage())
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async () => {
+				throw new Error('cache unavailable')
+			}
+		})
+	)
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	await s.uninstall(id)
+	expect(await s.has(id)).toBe(false)
+})
+
+test('a host with no evict hook uninstalls cleanly', async () => {
+	// The DO and apps/mac pass a plain fetcher — they have no browser cache to sweep.
+	const vol = volume(memStorage())
+	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	await s.uninstall(id)
+	expect(await s.has(id)).toBe(false)
+})
+
 test('uninstall moves the bundle to /trash atomically instead of deleting it', async () => {
 	// The bundle leaves /applications in ONE atomic rename (no torn intermediate
 	// state a racing reconcile could "repair"), and its bytes survive under /trash.

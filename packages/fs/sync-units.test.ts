@@ -15,7 +15,6 @@ import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
 import {
-	cachePath,
 	ignorePrefixes,
 	journaledChangeSource,
 	localSyncReplica,
@@ -236,13 +235,9 @@ describe('the built-in private class', () => {
 // where this host keeps everything it does not replicate, and the cache mirrors the
 // volume namespace inside it.
 describe('the cache lane', () => {
-	it('mirrors the volume namespace under /private/cache', () => {
-		expect(cachePath('/applications/notes/gui.js')).toBe('/private/cache/applications/notes/gui.js')
-	})
-
 	it('is never replicated, because /private never is', () => {
 		const p = syncIgnore()
-		expect(p(cachePath('/applications/notes/gui.js'))).toBe(true)
+		expect(p('/private/cache/applications/notes/gui.js')).toBe(true)
 		expect(p('/private/tmp/app-installs/x')).toBe(true)
 	})
 
@@ -496,7 +491,7 @@ describe('localSyncReplica', () => {
 	it('never sends or accepts a cache-lane path, with no host ignore configured', async () => {
 		const rows = [
 			{ seq: 1, change: put('/applications/notes/app.js', '1', 'reducer') },
-			{ seq: 2, change: put(cachePath('/applications/notes/gui.js'), '1', 'gui') }
+			{ seq: 2, change: put('/private/cache/applications/notes/gui.js', '1', 'gui') }
 		]
 		const { changes } = await makeReplica(fakeJournalStore(rows)).pathDeltas('', {})
 		expect(changes.map((c) => c.path)).toEqual(['/applications/notes/app.js'])
@@ -504,10 +499,10 @@ describe('localSyncReplica', () => {
 		const store = memStorage()
 		const vol = volume(store)
 		await makeReplica(store).applyPathChanges(
-			[put(cachePath('/applications/notes/gui.js'), '1', 'gui')],
+			[put('/private/cache/applications/notes/gui.js', '1', 'gui')],
 			async () => bytes('gui')
 		)
-		expect(await vol.exists(cachePath('/applications/notes/gui.js'))).toBe(false)
+		expect(await vol.exists('/private/cache/applications/notes/gui.js')).toBe(false)
 	})
 
 	// The cache mirrors the volume's namespace from a SEPARATE root, so a peer's
@@ -520,15 +515,15 @@ describe('localSyncReplica', () => {
 		const replica = makeReplica(store, false, (p) => p.endsWith('.DS_Store'))
 		await vol.mkdir('/applications/notes', { recursive: true })
 		await vol.writeFile('/applications/notes/app.js', bytes('reducer'))
-		await vol.mkdir(cachePath('/applications/notes'), { recursive: true })
-		await vol.writeFile(cachePath('/applications/notes/gui.js'), bytes('gui'))
+		await vol.mkdir('/private/cache/applications/notes', { recursive: true })
+		await vol.writeFile('/private/cache/applications/notes/gui.js', bytes('gui'))
 
 		await replica.applyPathChanges(
 			[del('/applications/notes/app.js', '99'), del('/applications/notes', '99')],
 			async () => bytes('')
 		)
 		expect(await vol.exists('/applications/notes')).toBe(false)
-		expect(await vol.exists(cachePath('/applications/notes/gui.js'))).toBe(true)
+		expect(await vol.exists('/private/cache/applications/notes/gui.js')).toBe(true)
 	})
 
 	it('never emits an ignored path from pathDeltas or pathScan', async () => {
