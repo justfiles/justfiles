@@ -197,109 +197,91 @@ describe('/fs reset flag — server', () => {
 	})
 })
 
-// Reset is a first-class /fs route over a HOST-INJECTED capability (the CAS +
-// truncate needs the host's raw store). The library only owns the envelope: it
-// validates the body, delegates, and maps the result to 200/409 — and registers
-// the route AHEAD of the fence, so a stale client (exactly the one that needs to
-// reset) still reaches the capability's own CAS.
+// The reset route serves ONLY the non-destructive `complete`, over a host-injected
+// capability. A destructive mode is answered 501 here however the host is wired: the
+// truncate + bump has to be ordered against every write in flight, which a capability
+// called from a request handler cannot promise (#404), so a host that supports it owns
+// this URL upstream instead. The route is still registered AHEAD of the fence, so a
+// stale client — exactly the one that needs to reset — reaches it at all.
 describe('/fs reset route — server', () => {
 	const capability = (generation: number) => ({
 		lineage: () => ({ generation }),
-		reset: async (req: ResetBody): Promise<ResetResult> =>
-			req.mode === 'complete' || req.fromGeneration === generation
-				? { ok: true, generation: generation + 1 }
-				: { ok: false, error: 'generation_stale' as const, generation }
+		complete: async (): Promise<ResetResult> => ({ ok: true, generation })
 	})
 
-	it('delegates to the injected capability and returns the new generation', async () => {
-		const app = createFsApi(memStorage(), capability(5))
-		const res = await app.request('/reset', {
+	const post = (app: ReturnType<typeof createFsApi>, body: ResetBody, headers?: HeadersInit) =>
+		app.request('/reset', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				mode: 'adopt-mine',
-				fromGeneration: 5,
-				operationId: 'op-1',
-				resetId: 'r1'
-			})
+			headers: { 'Content-Type': 'application/json', ...headers },
+			body: JSON.stringify(body)
 		})
+
+	const adoptMine: ResetBody = {
+		mode: 'adopt-mine',
+		fromGeneration: 5,
+		operationId: 'op-1',
+		resetId: 'r1'
+	}
+
+	it('delegates a complete to the injected capability and returns the generation', async () => {
+		const app = createFsApi(memStorage(), capability(5))
+		const res = await post(app, { mode: 'complete', resetId: 'r1' })
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({ generation: 6 })
+		expect(await res.json()).toEqual({ generation: 5 })
 	})
 
-	it('409s when the capability rejects the CAS', async () => {
-		const app = createFsApi(memStorage(), capability(5))
-		const res = await app.request('/reset', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				mode: 'adopt-mine',
-				fromGeneration: 4,
-				operationId: 'op-1',
-				resetId: 'r1'
+	it('409s when the capability rejects the clear', async () => {
+		const app = createFsApi(memStorage(), {
+			lineage: () => ({ generation: 5 }),
+			complete: async () => ({
+				ok: false as const,
+				error: 'generation_stale' as const,
+				generation: 5
 			})
 		})
+		const res = await post(app, { mode: 'complete', resetId: 'r1' })
 		expect(res.status).toBe(409)
 		expect(await res.json()).toEqual({ error: 'generation_stale', generation: 5 })
 	})
 
-	it('501s when the host injects no reset capability', async () => {
+	it('501s a destructive mode even with a complete capability injected', async () => {
+		// The library never truncates: it cannot order that against the writes it is
+		// serving. A host that supports it answers this URL ahead of this app.
+		const app = createFsApi(memStorage(), capability(5))
+		const res = await post(app, adoptMine)
+		expect(res.status).toBe(501)
+	})
+
+	it('501s when the host injects no complete capability', async () => {
 		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5 }) })
-		const res = await app.request('/reset', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ mode: 'complete', resetId: 'r1' })
-		})
+		const res = await post(app, { mode: 'complete', resetId: 'r1' })
 		expect(res.status).toBe(501)
 	})
 
 	// The fence-exemption guard: reset is registered before the push fence, so a
-	// STALE generation header does not 409 it — the capability's CAS decides.
+	// STALE generation header does not 409 it.
 	it('is exempt from the push fence (a stale header still reaches the capability)', async () => {
 		const app = createFsApi(memStorage(), capability(5))
-		const res = await app.request('/reset', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', 'x-fs-generation': '1' },
-			body: JSON.stringify({
-				mode: 'adopt-mine',
-				fromGeneration: 5,
-				operationId: 'op-1',
-				resetId: 'r1'
-			})
-		})
+		const res = await post(app, { mode: 'complete', resetId: 'r1' }, { 'x-fs-generation': '1' })
 		expect(res.status).toBe(200) // NOT the fence's 409
-		expect(await res.json()).toEqual({ generation: 6 })
+		expect(await res.json()).toEqual({ generation: 5 })
 	})
 
-	it('remoteSyncReplica.reset drives the route (adopt-mine → generation, complete → {})', async () => {
-		const calls: ResetBody[] = []
+	it('remoteSyncReplica.reset drives the route (complete → the capability)', async () => {
+		const calls: string[] = []
 		const app = createFsApi(memStorage(), {
 			lineage: () => ({ generation: 5 }),
-			reset: async (req) => {
-				calls.push(req)
+			complete: async (resetId) => {
+				calls.push(resetId)
 				return { ok: true, generation: 6 }
 			}
 		})
 		// Stale on purpose: the replica stamps x-fs-generation, and reset must not be fenced.
 		const replica = remoteSyncReplica(wireClient(app), { clientId: 'c1', generation: () => 1 })
-		expect(
-			await replica.reset?.({
-				mode: 'adopt-mine',
-				fromGeneration: 5,
-				operationId: 'op-1',
-				resetId: 'r1'
-			})
-		).toEqual({ generation: 6 })
-		await replica.reset?.({ mode: 'complete', resetId: 'r1' })
-		expect(calls).toEqual([
-			{
-				mode: 'adopt-mine',
-				fromGeneration: 5,
-				operationId: 'op-1',
-				resetId: 'r1'
-			},
-			{ mode: 'complete', resetId: 'r1' }
-		])
+		expect(await replica.reset?.({ mode: 'complete', resetId: 'r1' })).toEqual({ generation: 6 })
+		expect(calls).toEqual(['r1'])
+		// The same client path, aimed at a destructive mode this server does not own.
+		await expect(replica.reset?.(adoptMine)).rejects.toThrow('reset adopt-mine failed: 501')
 	})
 })
 

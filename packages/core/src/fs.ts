@@ -203,11 +203,17 @@ export function createFsApi(
 		// stay on the legacy path. Surfaced on the handshake, echoed on every pull/scan
 		// page, and enforced on every mutating write.
 		lineage?: () => GenerationState | Promise<GenerationState>
-		// The write side of that lineage, behind POST /reset: CAS on `fromGeneration`,
-		// truncate, bump. Injected because it needs the host's raw transactional store
-		// (and, for a DO, a cache rebuild) — the library only owns the HTTP envelope.
-		// Omitted => /reset answers 501.
-		reset?: (req: ResetBody) => Promise<ResetResult>
+		// The NON-destructive half of POST /reset: clear the advisory in-progress marker
+		// once the initiator's republish drained. It changes no generation and truncates
+		// nothing, so it is safe to serve from inside this app, alongside live writes.
+		//
+		// The destructive half (`adopt-mine`, `wipe`) is deliberately NOT injectable: a
+		// truncate + bump has to be ordered against every write the host is serving, which
+		// no capability called from a request handler can promise (#404). A host that
+		// supports it owns this URL upstream and answers ahead of this app (frieren commits
+		// the reset and then terminates the instance that made it, which is what orders it).
+		// Omitted => /reset answers 501, same as a destructive mode.
+		complete?: (resetId: string) => Promise<ResetResult>
 	}
 ) {
 	const errorMessage = (error: unknown): string =>
@@ -232,12 +238,15 @@ export function createFsApi(
 
 			// ── Lineage mutation ───────────────────────────────────────────────────
 			// Registered BEFORE the fence below, so it is exempt from it: a stale client
-			// is exactly the one that needs to reset. It self-guards via the injected
-			// capability's own CAS. Always in the chain (so the typed client carries it);
-			// 501 when the host injects no reset capability.
+			// is exactly the one that needs to reset. Always in the chain (so the typed
+			// client carries the whole shape of this URL, including the 200/409 a host's
+			// own destructive handler answers with upstream); 501 for a destructive mode
+			// and for a host that injects no `complete`.
 			.post('/reset', zValidator('json', ResetBody), async (c) => {
-				if (!opts?.reset) return c.json({ error: 'reset not supported' }, 501)
-				const result = await opts.reset(c.req.valid('json'))
+				const body = c.req.valid('json')
+				if (body.mode !== 'complete' || !opts?.complete)
+					return c.json({ error: 'reset not supported' }, 501)
+				const result = await opts.complete(body.resetId)
 				return result.ok
 					? c.json({ generation: result.generation })
 					: c.json({ error: result.error, generation: result.generation }, 409)
@@ -248,9 +257,19 @@ export function createFsApi(
 			// lineage; a present-but-stale value is rejected with 409 so the client
 			// resets instead of clobbering a fresh reset baseline. An absent header
 			// (legacy client) is allowed. GET/HEAD are reads; /reset is registered above
-			// this fence and self-guards via its CAS. There is no publishing lock — a
-			// "take mine" republish rides ordinary sync at the new generation and passes
-			// this same check, and other devices converge eventually.
+			// this fence, because a stale client is exactly the one that needs to reset.
+			//
+			// This fences a client that has not YET learned about a reset — a device still
+			// pushing at generation N after another device reset the volume to N+1. It is
+			// NOT what orders a write against the reset itself: the check and the write are
+			// separate turns, so nothing here could be. That ordering is the host's, and it
+			// is structural rather than checked — the destructive reset commits and destroys
+			// the instance in the same turn (#404, apps/frieren/worker/reset-instance.ts),
+			// so no request that passed this fence survives to write into the new tree.
+			//
+			// There is no publishing lock — a "take mine" republish rides ordinary sync at
+			// the new generation and passes this same check, and other devices converge
+			// eventually.
 			.use('*', async (c, next) => {
 				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
 					const header = c.req.header(GENERATION_HEADER)
