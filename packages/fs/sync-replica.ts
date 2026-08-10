@@ -189,6 +189,16 @@ export interface JournalStore {
 	/** Latest seq (snapshot resume). */
 	head(): Promise<number>
 	/**
+	 * The lowest seq a reader may resume from. Rows at or below it have been
+	 * collected WITHOUT a successor on the same path (a deleted path aged past its
+	 * retention window), so a cursor strictly under it can no longer be brought up to
+	 * date incrementally — it would never learn those paths are gone.
+	 *
+	 * Absent on a backend that never collects a path's last row, where every removed
+	 * row is superseded by a higher seq and any cursor still converges.
+	 */
+	prunedBelow?(): Promise<number>
+	/**
 	 * Replace journal history with one locally-authored latest row per path so a
 	 * re-bootstrap republishes current state, including unpushed tombstones.
 	 * `dropDeletes` is safe only after "take mine" has emptied the target.
@@ -313,7 +323,14 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 		async pathDeltas(cursor, opts) {
 			const journal = requireJournal(store)
 			const limit = opts?.limit ?? PAGE
-			const rows = await journal.readFrom(Number(cursor || '0'), limit)
+			const from = Number(cursor || '0')
+			// Below the floor the journal no longer holds the history this reader is
+			// missing (see JournalStore.prunedBelow). Refusing here rather than answering
+			// with what survives is the whole point: the rows that are gone are exactly
+			// the ones that said a path no longer exists.
+			const floor = (await journal.prunedBelow?.()) ?? 0
+			if (from < floor) throw new CursorPrunedError(floor)
+			const rows = await journal.readFrom(from, limit)
 			// Two independent echo filters (see ChangeSource): origin client-id for
 			// pull, local apply source for push. Both applied here; neither stalls the
 			// cursor — `to` advances to the last RAW row so a fully-filtered page still
@@ -708,6 +725,29 @@ export class GenerationStaleError extends Error {
 		super('generation_stale')
 		this.name = 'GenerationStaleError'
 		this.generation = generation
+	}
+}
+
+/**
+ * A pull resumed from a cursor the remote's journal no longer covers: the paths
+ * deleted while this device was away have aged past the retention window, and their
+ * rows are gone with no successor to report them (see `JournalStore.prunedBelow`).
+ * The remote answers `410 cursor_pruned`; `synced()` catches it and re-bootstraps
+ * WITHOUT discarding local data, which is lossless in both directions — the device
+ * keeps its offline edits, and the snapshot's tombstone set supplies the deletions
+ * it missed.
+ *
+ * The shape is the standard one: Kubernetes answers a compacted watch cursor with
+ * `410 Gone` → re-list → resume, and Kafka's `delete.retention.ms` draws the same
+ * horizon with the same documented resurrection failure when a reader falls under it.
+ */
+export class CursorPrunedError extends Error {
+	/** The lowest cursor the remote can still serve, when it reported one. */
+	readonly prunedBelow?: number
+	constructor(prunedBelow?: number) {
+		super('cursor_pruned')
+		this.name = 'CursorPrunedError'
+		this.prunedBelow = prunedBelow
 	}
 }
 
