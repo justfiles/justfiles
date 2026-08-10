@@ -189,6 +189,24 @@ export interface JournalStore {
 }
 
 /**
+ * The snapshot seam, served from the TREE rather than from the journal.
+ *
+ * Coalescing the journal to build a snapshot is what pinned journal retention to
+ * one row per path FOREVER: an emptied journal would report an empty volume. A
+ * backend that can enumerate its own tree answers the question directly, and
+ * journal retention drops to a performance question.
+ *
+ * Keyset-paged by path (`after` is exclusive, '' starts), returning fewer than
+ * `limit` rows only at the end. Path order is parent-before-child — a parent path
+ * is a strict prefix ending at the separator — so a page can always be applied as
+ * it arrives.
+ */
+export interface PathSnapshotStore {
+	/** Every live path as a wire `put`, at its current version. */
+	puts(after: string, limit: number): Promise<PathChange[]>
+}
+
+/**
  * The transactional path-apply seam. Owned backends (SQLite + IDB) implement it
  * so the local `SyncReplica` can apply remote changes atomically without the
  * version generator clobbering the incoming version/origin. Touches ONLY the tree
@@ -265,20 +283,21 @@ async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<Pa
 		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
+function requireJournal(store: Storage): JournalStore {
+	const journal = store.caps?.journal
+	if (!journal) throw new Error('backend exposes no path journal (caps.journal)')
+	return journal
+}
+
 /**
  * The `ChangeSource` for owned backends (SQLite + IDB): reads the write-intercept
  * `JournalStore` the backend exposes via `caps.journal`. The journal is intrinsic
  * to the store, so it is read from the store rather than passed separately.
  */
 export function journaledChangeSource(store: Storage): ChangeSource {
-	const requireJournal = (): JournalStore => {
-		const journal = store.caps?.journal
-		if (!journal) throw new Error('backend exposes no path journal (caps.journal)')
-		return journal
-	}
 	return {
 		async pathDeltas(cursor, opts) {
-			const journal = requireJournal()
+			const journal = requireJournal(store)
 			const limit = opts?.limit ?? PAGE
 			const rows = await journal.readFrom(Number(cursor || '0'), limit)
 			// Two independent echo filters (see ChangeSource): origin client-id for
@@ -298,7 +317,7 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			}
 		},
 		async pathScan(page, opts) {
-			const journal = requireJournal()
+			const journal = requireJournal(store)
 			const limit = opts?.limit ?? PAGE
 			// Freeze the delta high-water at snapshot START and carry it (+ the page
 			// key) in the opaque page token, so every page is cut at the SAME frozen
@@ -323,6 +342,60 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			const done = !lastPath || changes.length >= remaining.length
 			const next = done ? undefined : `${head}:${encodeURIComponent(lastPath)}`
 			return { changes, next, syncCursor: head, done }
+		}
+	}
+}
+
+/**
+ * The `ChangeSource` for a backend that can enumerate its own tree: deltas from the
+ * journal exactly as above, but the SNAPSHOT from `caps.pathSnapshot` instead of a
+ * coalesced replay of the whole journal.
+ *
+ * That replay is why the journal could never be pruned below one row per path — the
+ * journal WAS the snapshot, so an emptied one reported an empty volume. Reading the
+ * tree instead makes journal retention a performance question.
+ *
+ * The page token carries the frozen delta high-water and the last path of the
+ * previous page, exactly as the journal-served one did. Freezing only the CURSOR —
+ * not the tree — is the same bargain that version made: a page read later than the
+ * freeze can only be NEWER than the delta stream that resumes at it, and applying a
+ * change twice is idempotent under LWW.
+ */
+export function treeChangeSource(store: Storage): ChangeSource {
+	const journaled = journaledChangeSource(store)
+	const requireSnapshot = (): PathSnapshotStore => {
+		const snapshot = store.caps?.pathSnapshot
+		if (!snapshot) throw new Error('backend serves no tree snapshot (caps.pathSnapshot)')
+		return snapshot
+	}
+	return {
+		pathDeltas: journaled.pathDeltas,
+		async pathScan(page, opts) {
+			const snapshot = requireSnapshot()
+			const limit = opts?.limit ?? PAGE
+			let head: string
+			let after = ''
+			if (page) {
+				// `head:encodedPath` — the same token the journal-served source used, so a
+				// bootstrap in flight across the switch resumes instead of restarting.
+				// encodeURIComponent leaves ':' alone, so only the head is split off.
+				const i = page.indexOf(':')
+				head = i < 0 ? page : page.slice(0, i)
+				const rest = i < 0 ? '' : page.slice(i + 1)
+				// The pre-keyset form was a numeric offset, which cannot map onto path order.
+				if (!/^\d+$/.test(rest)) after = decodeURIComponent(rest)
+			} else {
+				head = String(await requireJournal(store).head())
+			}
+			const changes = await snapshot.puts(after, limit)
+			const last = changes.at(-1)?.path
+			const done = changes.length < limit || last === undefined
+			return {
+				changes,
+				next: done ? undefined : `${head}:${encodeURIComponent(last)}`,
+				syncCursor: head,
+				done
+			}
 		}
 	}
 }
