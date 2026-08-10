@@ -529,8 +529,10 @@ export type SyncState = {
  *
  *   /private/accounts, /private/connections — nobody else MAY have these. Secrets.
  *   /private/cache/**                       — nobody else NEEDS to: reconstructible
- *                                             from an upstream that can re-serve them
- *                                             (see `cachePath`). Freely evictable.
+ *                                             from an upstream that can re-serve them.
+ *                                             Freely evictable. Currently UNOCCUPIED —
+ *                                             the browser host caches an app's payload
+ *                                             in its own service worker, not the volume.
  *   /private/tmp/**                         — in flight, and about to be renamed away.
  *
  * The split matters for sweeps, not for sync: losing a cache is a refill, losing a
@@ -549,19 +551,6 @@ export type SyncState = {
  * profile-migration skip list.
  */
 export const PRIVATE_PREFIXES = ['/.state', '/private'] as const
-
-/**
- * Where a volume path's cached bytes live: `/private/cache` MIRRORS the volume's own
- * namespace, so `/private/cache/applications/x/gui.js` holds what would otherwise sit
- * at `/applications/x/gui.js`.
- *
- * The volume path stays the file's identity and the mapping is a string concat — no
- * index, no lookup table, and a missing file is just a missing file that the reader
- * refetches. Never applied to a path already under `/private`.
- */
-export function cachePath(path: string): string {
-	return `/private/cache${path}`
-}
 
 /**
  * A segment-aware prefix matcher — the primitive the built-in class and a host's own

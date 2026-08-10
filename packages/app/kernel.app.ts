@@ -43,6 +43,11 @@ const INSTALL_TMP = '/private/tmp/app-installs'
 
 const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/')
 
+// Where the origin serves one mounted file. Shared by the reader and by uninstall's
+// eviction, so the two can never address the same byte differently.
+const assetUrl = (manifest: AppManifest, path: string): string =>
+	`${manifest.baseUrl?.replace(/\/$/, '')}/${path}`
+
 /**
  * The app store: the host fs is the source of truth for what is INSTALLED, laid out
  * under `/applications/<id>`. What lives there depends on the manifest (see
@@ -143,6 +148,7 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return
+		await evictMounted(root).catch(() => {})
 		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
 		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
@@ -150,6 +156,25 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 		// bundle it would try to "repair"/resurrect. The bytes survive under /trash until
 		// the retention sweep drops that day (see trash.ts).
 		await trashBundle(fs, root, appId)
+	}
+
+	// A hosted app's payload is in the HOST's cache, not the volume, so trashing the
+	// bundle leaves those bytes behind — per ORIGIN, which every profile then pays for
+	// and none can name. The record pins each mounted path and is still readable here,
+	// which makes this the last point where the URLs are derivable at all.
+	//
+	// Best-effort, like the mount-time call: a host with no browser cache passes no
+	// `evict`, and a cache that refuses must not fail the uninstall. Reinstall is
+	// unaffected — a release is immutable, so a re-fetch returns the same verified bytes.
+	async function evictMounted(root: string): Promise<void> {
+		const evict = fetchAsset?.evict
+		if (!evict) return
+		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
+		await Promise.all(
+			Object.keys(manifest.files ?? {})
+				.filter((path) => isMountedFile(manifest, path))
+				.map((path) => evict(assetUrl(manifest, path)))
+		)
 	}
 
 	async function has(appId: AppId): Promise<boolean> {
@@ -183,7 +208,7 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function mount(manifest: AppManifest, path: string): Promise<Uint8Array> {
 		const pinned = manifest.files?.[path]
 		if (!fetchAsset) throw new Error(`no asset fetcher: cannot mount ${manifest.id}/${path}`)
-		const url = `${manifest.baseUrl?.replace(/\/$/, '')}/${path}`
+		const url = assetUrl(manifest, path)
 		const data = await fetchAsset(url)
 		if (pinned) {
 			try {
