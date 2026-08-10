@@ -404,13 +404,14 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				)
 				const live = new Set<string>()
 				for (const m of metas.values()) if (m.contentHash) live.add(m.contentHash)
-				let count = 0
+				let reclaimed = 0
 				for (const hash of [...hashBlobs.keys()])
 					if (!live.has(hash)) {
 						hashBlobs.delete(hash)
-						count++
+						reclaimed++
 					}
-				return count
+				// An in-memory prune has no budget to run out of, so it always drains.
+				return { reclaimed, done: true }
 			}
 		},
 		pathApply: {

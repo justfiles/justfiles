@@ -21,7 +21,7 @@ type BlobStore = {
 		}
 	): Promise<unknown>
 	get(key: string): Promise<BlobObject | null>
-	delete?(key: string): Promise<void>
+	delete?(keys: string | string[]): Promise<void>
 }
 
 const normalizeArgs = (
