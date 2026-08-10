@@ -24,12 +24,6 @@
 			"package-name": "@justfiles/app-code",
 			"component": "code",
 			"bump-minor-pre-major": true
-		},
-		"packages/app-draw": {
-			"release-type": "node",
-			"package-name": "@justfiles/app-draw",
-			"component": "draw",
-			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]
