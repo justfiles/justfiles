@@ -1,4 +1,4 @@
-import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
+import type { DBSchema, IDBPDatabase, IDBPObjectStore, IDBPTransaction, StoreNames } from 'idb'
 import { openDB } from 'idb'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { PathStorePort } from './storage.shared'
@@ -88,7 +88,11 @@ interface GhostoreFsSchema extends DBSchema {
 	}
 	dirty: { key: string; value: DirtyRecord }
 	meta: { key: string; value: unknown }
-	journal: { key: number; value: JournalRecord }
+	journal: {
+		key: number
+		value: JournalRecord
+		indexes: { 'by-path': string }
+	}
 	pathver: { key: string; value: PathVerRecord }
 }
 
@@ -124,7 +128,7 @@ const KeyRange = (
 // Constants
 // ---------------------------------------------------------------------------
 
-const DB_VERSION = 5
+const DB_VERSION = 6
 const DEFAULT_CONTENT_CAP = 50 * 1024 * 1024 // 50 MB
 const ROOT_INO: Ino = '1'
 const DIR_PAGE = 100
@@ -146,6 +150,70 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 	return toHex(new Uint8Array(digest))
 }
 
+// ---------------------------------------------------------------------------
+// Journal
+// ---------------------------------------------------------------------------
+
+type JournalStoreOf<Mode extends 'readwrite' | 'versionchange'> = IDBPObjectStore<
+	GhostoreFsSchema,
+	ArrayLike<StoreNames<GhostoreFsSchema>>,
+	'journal',
+	Mode
+>
+
+/**
+ * Append a journal row, and take out the rows it supersedes.
+ *
+ * AT MOST ONE ROW PER PATH, always — the invariant the SQLite backend holds by the
+ * same rule (#446). Here it is what keeps the journal bounded at all: nothing on
+ * the device collects it (`gcUnreferenced` runs in the Durable Object, against the
+ * other backend), so an append-only journal gives every browser profile a floor
+ * that only rises (#439).
+ *
+ * One row per path is also the FLOOR, not a target to go under: this backend serves
+ * no tree snapshot, so a bootstrapping peer is answered by replaying the journal
+ * (`snapshotPutsUpTo`), and the latest row per path is exactly that answer.
+ *
+ * Add first, then delete below the key `add` returns — that key is the exact cut,
+ * so nothing has to go looking for the maximum. Every row this removes has a
+ * higher-seq successor on the same path, so a reader resuming at ANY seq still
+ * converges, and this backend needs no `prunedBelow` floor.
+ */
+async function appendJournalRow(
+	journal: JournalStoreOf<'readwrite'>,
+	change: PathChange,
+	localSource?: string
+): Promise<void> {
+	const seq = await journal.add({ change, localSource })
+	let cursor = await journal.index('by-path').openCursor(change.path)
+	while (cursor && cursor.primaryKey < seq) {
+		await cursor.delete()
+		cursor = await cursor.continue()
+	}
+}
+
+/**
+ * Collapse existing history to one row per path — the one-time counterpart of the
+ * rule above, for a profile that filled its journal before this version.
+ *
+ * Runs in the version-change transaction, so it runs once and holds the database
+ * alone. Without it the backlog would only drain a path at a time, as each path is
+ * next written, and a path never written again would keep its rows forever.
+ */
+async function coalesceJournal(journal: JournalStoreOf<'versionchange'>): Promise<void> {
+	const latest = new Map<string, number>()
+	let cursor = await journal.openCursor()
+	while (cursor) {
+		latest.set(cursor.value.change.path, cursor.key)
+		cursor = await cursor.continue()
+	}
+	cursor = await journal.openCursor()
+	while (cursor) {
+		if (latest.get(cursor.value.change.path) !== cursor.key) await cursor.delete()
+		cursor = await cursor.continue()
+	}
+}
+
 export type IdbStorage = Storage & {
 	/** Root directory inode — always '1' for this backend. */
 	readonly rootIno: Ino
@@ -164,7 +232,8 @@ export type IdbStorage = Storage & {
  *   xattrs   — extended attributes keyed by [ino, name]
  *   dirty    — inodes with unflushed local writes (protected from LRU eviction)
  *   meta     — key-value bootstrap state (rootIno, totalContentBytes, etc.)
- *   journal  — append-only path-stamped change log (outbound sync source of truth)
+ *   journal  — path-stamped change log, ONE row per path (outbound sync source of
+ *              truth, and the snapshot a bootstrapping peer is replayed)
  *   pathver  — per-path { version, tombstone } scalars
  *
  * The root inode is always '1' (matching the memStorage convention).
@@ -193,7 +262,7 @@ export function idbStorage(
 	function getDb(): Promise<Db> {
 		if (!dbPromise) {
 			dbPromise = openDB<GhostoreFsSchema>(dbName, DB_VERSION, {
-				upgrade(db, oldVersion, _newVersion, transaction) {
+				async upgrade(db, oldVersion, _newVersion, transaction) {
 					if (oldVersion < 1) {
 						db.createObjectStore('inodes', { keyPath: 'ino' })
 
@@ -235,6 +304,16 @@ export function idbStorage(
 						// Path journal (outbound sync source of truth) + per-path version scalars.
 						db.createObjectStore('journal', { keyPath: 'seq', autoIncrement: true })
 						db.createObjectStore('pathver', { keyPath: 'path' })
+					}
+					if (oldVersion < 6) {
+						// The journal keeps ONE row per path from here on (see appendJournalRow),
+						// which needs an index to find the superseded rows without a full scan.
+						const journal = transaction.objectStore('journal')
+						if (!journal.indexNames.contains('by-path'))
+							journal.createIndex('by-path', 'change.path')
+						// Rows written before that rule are collapsed once, here. Awaiting only IDB
+						// requests keeps this version-change transaction alive to the end of it.
+						await coalesceJournal(journal)
 					}
 				},
 				blocked() {
@@ -510,7 +589,7 @@ export function idbStorage(
 				await tx.objectStore('pathver').put({ path, version, tombstone })
 			},
 			async appendJournalRow(change, localSource) {
-				await tx.objectStore('journal').add({ change, localSource })
+				await appendJournalRow(tx.objectStore('journal'), change, localSource)
 			},
 			emit(change) {
 				emits.push(change)
@@ -771,7 +850,8 @@ export function idbStorage(
 			async append(changes, localSource) {
 				const db = await getDb()
 				const tx = db.transaction(['journal'], 'readwrite')
-				for (const change of changes) await tx.objectStore('journal').add({ change, localSource })
+				const journal = tx.objectStore('journal')
+				for (const change of changes) await appendJournalRow(journal, change, localSource)
 				await tx.done
 			},
 			async readFrom(seq, limit) {
@@ -808,6 +888,8 @@ export function idbStorage(
 					(change) => !opts?.dropDeletes || change.kind === 'put'
 				)
 				await journal.clear()
+				// A plain add: the store is empty and `current` already holds one row per
+				// path, so there is nothing for appendJournalRow to supersede.
 				for (const change of current) await journal.add({ change })
 				await tx.done
 			}
@@ -830,22 +912,13 @@ export function idbStorage(
 				await storeContentByHashTx(tx, hash, bytes)
 				await tx.done
 			},
+			// Content only. The journal compacts itself on the write path (see
+			// appendJournalRow), so this has no journal pass to run — which matters,
+			// because on a browser NOTHING calls this: the daily sweep runs in the
+			// Durable Object, against the SQLite backend.
 			async gcUnreferenced() {
 				const db = await getDb()
-				const tx = db.transaction(['content', 'inodes', 'journal', 'meta'], 'readwrite') as FullTx
-				const journal = tx.objectStore('journal')
-				const latest = new Map<string, number>()
-				let journalCursor = await journal.openCursor()
-				while (journalCursor) {
-					latest.set(journalCursor.value.change.path, journalCursor.key)
-					journalCursor = await journalCursor.continue()
-				}
-				journalCursor = await journal.openCursor()
-				while (journalCursor) {
-					if (latest.get(journalCursor.value.change.path) !== journalCursor.key)
-						await journalCursor.delete()
-					journalCursor = await journalCursor.continue()
-				}
+				const tx = db.transaction(['content', 'inodes', 'meta'], 'readwrite') as FullTx
 				const live = new Set<string>()
 				for (const inode of await tx.objectStore('inodes').getAll())
 					if (inode.contentHash) live.add(inode.contentHash)

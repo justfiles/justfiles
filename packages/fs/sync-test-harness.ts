@@ -681,7 +681,7 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 		}
 	},
 	{
-		name: 'content GC compacts journal rows without changing the latest sequence',
+		name: 'the journal keeps one row per path, with no sweep in between',
 		run: async (makeBackend) => {
 			const storage = makeBackend()
 			const journal = storage.caps?.journal
@@ -690,22 +690,35 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 			await vol.writeFile('/state.json', bytes('old'))
 			await vol.writeFile('/other.json', bytes('other'))
 			await vol.writeFile('/state.json', bytes('current'))
-			const before = await journal.readFrom(0, 100)
-			const latest = before.findLast((row) => row.change.path === '/state.json')
-			if (!latest) throw new Error('conformance: state path was not journaled')
 
-			await storage.caps?.content?.gcUnreferenced()
-
+			// Nothing is called between the writes and the read: the rule is held by the
+			// write, because a browser profile has nowhere to run a prune (#439).
 			const rows = await journal.readFrom(0, 100)
 			const stateRows = rows.filter((row) => row.change.path === '/state.json')
-			assertEq(stateRows.length, 1, 'compaction retained a superseded row')
-			assertEq(stateRows[0]?.seq, latest.seq, 'compaction changed the latest sequence')
+			assertEq(stateRows.length, 1, 'a superseded row outlived its successor')
+			assertEq(stateRows[0]?.seq, await journal.head(), 'the surviving row is not the newest')
 			if (stateRows[0]?.change.kind === 'put')
-				assertEq(
-					stateRows[0].change.contentHash,
-					sha256('current'),
-					'compaction retained stale content'
-				)
+				assertEq(stateRows[0].change.contentHash, sha256('current'), 'the surviving row is stale')
+			// Per path, not a global compaction — an untouched path keeps its row.
+			const other = rows.find((row) => row.change.path === '/other.json')
+			if (!other) throw new Error('conformance: the second path was not journaled')
+
+			// The batch seam holds the same rule, including within one batch.
+			await journal.append([other.change, other.change], REMOTE_SOURCE)
+			const batched = (await journal.readFrom(0, 100)).filter(
+				(row) => row.change.path === '/other.json'
+			)
+			assertEq(batched.length, 1, 'a batch append left a superseded row behind')
+			assertEq(batched[0]?.localSource, REMOTE_SOURCE, 'the surviving row is not the newest')
+
+			// A tombstone supersedes the put, so a removed path leaves ONE row — the floor
+			// this rule stops at, since nothing else reports that the path is gone.
+			await vol.rm('/state.json')
+			const removed = (await journal.readFrom(0, 100)).filter(
+				(row) => row.change.path === '/state.json'
+			)
+			assertEq(removed.length, 1, 'a tombstone did not take out the put it supersedes')
+			assertEq(removed[0]?.change.kind, 'delete', 'the tombstone is not the surviving row')
 		}
 	},
 	{

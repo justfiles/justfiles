@@ -182,7 +182,20 @@ export interface JournalRow {
 }
 
 export interface JournalStore {
-	/** Append rows within the mutation's own transaction. */
+	/**
+	 * Append rows within the mutation's own transaction, and take out the rows they
+	 * supersede: the journal holds AT MOST ONE ROW PER PATH, always.
+	 *
+	 * By construction, not by sweep. A superseded row is never read — `pathDeltas`
+	 * coalesces it away, and the snapshot keeps only the latest per path — but it is
+	 * not harmless: it names a `contentHash` the volume may already have dropped, and
+	 * a page cut between it and its successor serves it alone (#446). Leaving it for a
+	 * later prune also asks every backend to have somewhere to run one, which a
+	 * browser profile does not (#439).
+	 *
+	 * One row per path is the FLOOR. Going under it loses a path (or, worse, a
+	 * tombstone) that no successor reports — see `prunedBelow`.
+	 */
 	append(changes: PathChange[], localSource?: string): Promise<void>
 	/** Ordered by seq ascending, strictly after `seq`. */
 	readFrom(seq: number, limit: number): Promise<JournalRow[]>

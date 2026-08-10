@@ -43,14 +43,17 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 	const pathVersion = new Map<string, number>()
 	const tombstone = new Map<string, number>()
 
-	// Path journal (write-intercept): an append-only, path-stamped, seq-ordered log.
-	// Shared by the `caps.journal` primitive, the per-mutation stamping, and
-	// `caps.pathApply.applyJournaled`. `seq` is this backend's SyncCursor.
+	// Path journal (write-intercept): a path-stamped, seq-ordered log holding AT MOST
+	// ONE ROW PER PATH — a new row takes out the rows it supersedes (see
+	// JournalStore.append). Shared by the `caps.journal` primitive, the per-mutation
+	// stamping, and `caps.pathApply.applyJournaled`. `seq` is this backend's SyncCursor.
 	const journalRows: JournalRow[] = []
 	let journalSeq = 0
 	function appendJournal(changes: PathChange[], localSource?: string): void {
 		for (const change of changes) {
 			journalSeq += 1
+			const superseded = journalRows.findIndex((row) => row.change.path === change.path)
+			if (superseded >= 0) journalRows.splice(superseded, 1)
 			journalRows.push({ seq: journalSeq, change, localSource })
 		}
 	}
@@ -395,13 +398,8 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			async putByHash(hash, data) {
 				hashBlobs.set(hash, data.slice())
 			},
+			// Content only — the journal compacts itself on the write path (appendJournal).
 			async gcUnreferenced() {
-				const latest = new Map(journalRows.map((row) => [row.change.path, row]))
-				journalRows.splice(
-					0,
-					journalRows.length,
-					...[...latest.values()].sort((a, b) => a.seq - b.seq)
-				)
 				const live = new Set<string>()
 				for (const m of metas.values()) if (m.contentHash) live.add(m.contentHash)
 				let reclaimed = 0

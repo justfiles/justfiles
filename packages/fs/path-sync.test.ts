@@ -322,39 +322,24 @@ describe('path-sync semantics', () => {
 		expect(text(await client.readFile('/d/f0'))).toBe('CHANGED') // delta overlaps snapshot idempotently
 	})
 
-	test('snapshot pagination stays complete when GC compacts the journal between pages', async () => {
-		const serverStorage = memStorage()
-		const { client, server, bootstrap } = wire(memStorage(), serverStorage)
-		await server.writeFile('/a', bytes('old'))
-		await server.writeFile('/b', bytes('b'))
-		await server.writeFile('/a', bytes('current'))
-		let compacted = false
-		await bootstrap({
-			limit: 1,
-			onPage: async ({ done }) => {
-				if (done || compacted) return
-				compacted = true
-				await serverStorage.caps!.content!.gcUnreferenced()
-			}
-		})
-		expect(text(await client.readFile('/a'))).toBe('current')
-		expect(text(await client.readFile('/b'))).toBe('b')
-	})
-
-	test('snapshot pagination survives GC removing an already-emitted frozen row', async () => {
-		const serverStorage = memStorage()
-		const { client, server, bootstrap } = wire(memStorage(), serverStorage)
+	// NO "GC compacts the journal between pages" CASE. There is no compaction left to
+	// land mid-pagination: a journal holds one row per path from the moment it is
+	// written (see JournalStore.append), so the only way a row can leave the snapshot
+	// under a paging reader is a WRITE superseding it — which is the case below.
+	test('snapshot pagination survives a write removing an already-emitted frozen row', async () => {
+		const { client, server, bootstrap } = wire(memStorage(), memStorage())
 		await server.writeFile('/a', bytes('old'))
 		await server.writeFile('/b', bytes('b'))
 		await server.writeFile('/c', bytes('c'))
-		let compacted = false
+		let superseded = false
 		const { syncCursor } = await bootstrap({
 			limit: 1,
 			onPage: async ({ done }) => {
-				if (done || compacted) return
-				compacted = true
+				if (done || superseded) return
+				superseded = true
+				// Takes out the row the frozen snapshot would still page over, and writes
+				// its successor ABOVE the frozen cursor.
 				await server.writeFile('/a', bytes('new'))
-				await serverStorage.caps!.content!.gcUnreferenced()
 			}
 		})
 		await client.pullFrom!(syncCursor)
