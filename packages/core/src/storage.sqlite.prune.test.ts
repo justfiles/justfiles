@@ -6,11 +6,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
-import {
-	CursorPrunedError,
-	journaledChangeSource,
-	treeChangeSource
-} from '@justfiles/fs/sync-replica'
+import { CursorPrunedError, journaledChangeSource, treeChangeSource } from '@justfiles/sync/replica'
 import { describe, expect, it } from 'vitest'
 import { createSqliteAdapter } from './db.sqlite'
 import { createFsApi } from './fs'

@@ -1,5 +1,8 @@
-import { persistedState } from './persistedState'
-import type { Storage } from './storage'
+import { type Volume, volume } from '@justfiles/fs'
+import { persistedState } from '@justfiles/fs/persistedState'
+import type { Storage } from '@justfiles/fs/storage'
+import type { Ino } from '@justfiles/fs/types'
+import { FileType } from '@justfiles/fs/types'
 import {
 	type BlobStore,
 	CursorPrunedError,
@@ -12,12 +15,9 @@ import {
 	type SyncReplica,
 	type SyncState,
 	syncIgnore
-} from './sync-replica'
-import type { PathChange } from './sync-wire'
-import { parseVersion } from './sync-wire'
-import type { Ino } from './types'
-import { FileType } from './types'
-import { type Volume, volume } from './volume'
+} from './replica'
+import type { PathChange } from './wire'
+import { parseVersion } from './wire'
 
 /**
  * The peer this volume syncs against. Two topologies:
@@ -298,7 +298,13 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 				remotePaths.add(c.path)
 				if (!everPushed && (await localVol.exists(c.path))) {
 					const st = await localVol.stat(c.path)
-					await props.local.setMeta(st.ino, {}, { version: parseVersion(c.version) + 1 })
+					await props.local.setMeta(
+						st.ino,
+						{},
+						{
+							observed: { version: parseVersion(c.version) + 1 }
+						}
+					)
 					continue
 				}
 				toApply.push(c)

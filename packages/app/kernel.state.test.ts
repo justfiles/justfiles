@@ -1,4 +1,5 @@
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStorage } from '@justfiles/sync/storage/mem'
 import { expect, test } from 'vitest'
 import { stateStore } from './kernel.state.ts'
 

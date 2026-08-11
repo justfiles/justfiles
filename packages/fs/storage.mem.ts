@@ -1,9 +1,6 @@
-import type { InodeMeta, StorageCapabilities, StorageChange } from './storage'
-import type { PathSyncStore, TreePort } from './storage.shared'
-import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
-import type { JournaledStorage, JournaledSyncModule, JournalRow } from './sync-replica'
-import type { PathChange } from './sync-wire'
-import { coalesceByPath } from './sync-wire'
+import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type { MutationObserver, TreePort } from './storage.shared'
+import { joinPath } from './storage.shared'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -13,46 +10,27 @@ import { FileType } from './types'
  * exercised. `atomicCreate` always mints via it (defaulting to `crypto.randomUUID`
  * when not supplied), matching every other shipped backend (idb, node, sqlite): a
  * bare `memStorage()` is NOT a degraded, non-atomic mode. Root is always `'1'`.
- * `localActorId` is the backend's client-id, stamped as the ORIGIN
- * (`PathChange.source`) on local mutations.
  */
-export function memStorage(opts?: {
+export type MemStorageExtension<Attached extends object> = {
+	observer: MutationObserver
+	attach(tree: TreePort): Attached
+}
+
+export function memStorage<Attached extends object = Record<never, never>>(opts?: {
 	mintIno?: () => Ino
-	localActorId?: string
-}): JournaledStorage {
+	extension?: MemStorageExtension<Attached>
+}): Storage & Attached {
 	const metas = new Map<Ino, InodeMeta>()
-	// Content is hash-addressed (matching R2): the inode holds a `contentHash` ref,
-	// the bytes live here keyed by that hash. Dedupes and lets pulled content be
-	// materialised out-of-band by the SyncReplica's BlobStore.
+	// Content is hash-addressed: the inode holds a `contentHash` reference and the
+	// bytes live here under that hash. This deduplicates content and permits direct access.
 	const hashBlobs = new Map<string, Uint8Array>()
 	const dirs = new Map<string, DirentMin>() // key: `${dirIno}\0${name}`
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
 	const mintIno = opts?.mintIno
-	const localActorId = opts?.localActorId ?? 'local'
 	// Reverse index child ino -> { parent, name } (one dirent per ino; hard links
 	// unsupported). Powers O(depth) `pathOf(ino)` for in-transaction path stamping.
 	const parentOf = new Map<Ino, { parent: Ino; name: string }>()
-	// The per-path scalar version generator (outgoing versions) + tombstones. This
-	// is the backend's generator, distinct from the engine's PathSyncState baseline.
-	const pathVersion = new Map<string, number>()
-	const tombstone = new Map<string, number>()
-
-	// Path journal (write-intercept): a path-stamped, seq-ordered log holding AT MOST
-	// ONE ROW PER PATH — a new row takes out the rows it supersedes (see
-	// JournalStore.append). Shared by the sync module's journal, the per-mutation
-	// stamping, and path apply. `seq` is this backend's SyncCursor.
-	const journalRows: JournalRow[] = []
-	let journalSeq = 0
-	function appendJournal(changes: PathChange[], localSource?: string): void {
-		for (const change of changes) {
-			journalSeq += 1
-			const superseded = journalRows.findIndex((row) => row.change.path === change.path)
-			if (superseded >= 0) journalRows.splice(superseded, 1)
-			journalRows.push({ seq: journalSeq, change, localSource })
-		}
-	}
-
 	const listeners = new Set<(change: StorageChange) => void>()
 	function emit(change: StorageChange): void {
 		if (listeners.size === 0) return
@@ -138,17 +116,14 @@ export function memStorage(opts?: {
 		return `/${segs.join('/')}`
 	}
 
-	/** User-xattr snapshot for an inode (base64/`trusted.sync.*` handling in wire). */
+	/** User-xattr snapshot for an inode. */
 	function xattrRecord(ino: Ino): Record<string, Uint8Array> {
 		const m = xattrs.get(ino)
 		if (!m) return {}
 		return Object.fromEntries(m)
 	}
 
-	// ── Path-sync port (the storage-independent seam for the shared apply driver) ─
-	// mem is synchronous + atomic (single-threaded JS), so there is no transaction
-	// and emits fire inline. The shared driver (storage.shared.ts) owns the
-	// orchestration; this port is just the minimal per-backend primitives.
+	// The in-memory backend is synchronous and atomic, so emits fire inline.
 	const treePort: TreePort = {
 		mintIno: mint,
 		async resolveIno(path) {
@@ -173,10 +148,10 @@ export function memStorage(opts?: {
 		},
 		async upsertInode(ino, meta, contentHash, snapshot) {
 			metas.set(ino, { ...meta, contentHash })
-			// Replace the whole USER-xattr set with the snapshot; keep trusted.sync.*.
+			// Replace user xattrs with the snapshot. Keep backend-owned attributes.
 			const existing = xattrs.get(ino)
 			if (existing)
-				for (const k of [...existing.keys()]) if (!k.startsWith('trusted.sync.')) existing.delete(k)
+				for (const k of [...existing.keys()]) if (!k.startsWith('trusted.')) existing.delete(k)
 			if (Object.keys(snapshot).length > 0) {
 				let m = xattrs.get(ino)
 				if (!m) {
@@ -208,23 +183,7 @@ export function memStorage(opts?: {
 		emit
 	}
 
-	const pathSyncStore: PathSyncStore = {
-		async readPathVersion(path) {
-			return { version: pathVersion.get(path) ?? 0, tombstone: tombstone.get(path) ?? 0 }
-		},
-		async setPathVersion(path, version, tomb) {
-			pathVersion.set(path, version)
-			tombstone.set(path, tomb)
-		},
-		async appendJournalRow(change, localSource) {
-			appendJournal([change], localSource)
-		}
-	}
-
-	// The filesystem announces its tree writes here; this module decides what to
-	// record (ROADMAP item 3 / #454). Attached unconditionally for now — inverting
-	// the construction is a later slice.
-	const observer = pathSyncObserver(pathSyncStore, localActorId)
+	const observer = opts?.extension?.observer
 
 	/** All paths in the subtree rooted at `ino`, as `{ ino, rel }` (root rel = ''). */
 	function enumerateSubtree(ino: Ino): { ino: Ino; rel: string }[] {
@@ -297,9 +256,9 @@ export function memStorage(opts?: {
 			parentOf.set(ino, { parent: dirIno, name })
 			const dirPath = pathOf(dirIno)
 			const path = dirPath === null ? undefined : joinPath(dirPath, name)
-			emit({ ino, kind: 'meta', source: options?.source })
-			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
-			await observer.record(
+			emit({ ino, kind: 'meta', source: options?.origin })
+			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.origin })
+			await observer?.record(
 				treePort,
 				{ kind: 'link', dirIno, name, ino, type: stored.type },
 				options
@@ -332,7 +291,7 @@ export function memStorage(opts?: {
 				parentOf.delete(displaced.ino)
 			}
 			const displacedIno = displaced && displaced.ino !== src.ino ? displaced.ino : null
-			await observer.record(
+			await observer?.record(
 				treePort,
 				{
 					kind: 'move',
@@ -351,7 +310,7 @@ export function memStorage(opts?: {
 				dirIno: newDir,
 				name: newName,
 				path: newBase,
-				source: options?.source
+				source: options?.origin
 			})
 			emit({
 				ino: src.ino,
@@ -359,36 +318,11 @@ export function memStorage(opts?: {
 				dirIno: oldDir,
 				name: oldName,
 				path: oldBase,
-				source: options?.source
+				source: options?.origin
 			})
 			return displacedIno
 		},
 
-		// ── Path-sync seams ──────────────────────────────────────────────────────
-		async clearSyncState() {
-			pathVersion.clear()
-			tombstone.clear()
-			journalRows.length = 0
-			journalSeq = 0
-		},
-		journal: {
-			async append(changes, localSource) {
-				appendJournal(changes, localSource)
-			},
-			async readFrom(seq, limit) {
-				return journalRows.filter((r) => r.seq > seq).slice(0, limit)
-			},
-			async head() {
-				return journalRows[journalRows.length - 1]?.seq ?? 0
-			},
-			async adoptAllAsLocal(opts) {
-				const current = coalesceByPath(journalRows.map((row) => row.change)).filter(
-					(change) => !opts?.dropDeletes || change.kind === 'put'
-				)
-				journalRows.length = 0
-				appendJournal(current)
-			}
-		},
 		content: {
 			async getByHash(hash) {
 				return hashBlobs.get(hash)?.slice() ?? null
@@ -399,7 +333,7 @@ export function memStorage(opts?: {
 			async putByHash(hash, data) {
 				hashBlobs.set(hash, data.slice())
 			},
-			// Content only — the journal compacts itself on the write path (appendJournal).
+			// The in-memory sweep has no separate maintenance phase.
 			async gcUnreferenced() {
 				const live = new Set<string>()
 				for (const m of metas.values()) if (m.contentHash) live.add(m.contentHash)
@@ -412,23 +346,13 @@ export function memStorage(opts?: {
 				// An in-memory prune has no budget to run out of, so it always drains.
 				return { reclaimed, done: true }
 			}
-		},
-		pathApply: {
-			async localChange(path) {
-				return localChangeOver(treePort, pathSyncStore, path, localActorId)
-			},
-			async applyJournaled(changes, opts) {
-				await applyJournaledOver(treePort, pathSyncStore, changes, opts)
-			}
 		}
-	} satisfies StorageCapabilities & JournaledSyncModule
-	const { clearSyncState, journal, pathApply, ...caps } = implemented
-	const sync: JournaledSyncModule = { clearSyncState, journal, pathApply }
+	} satisfies StorageCapabilities
+	const caps = implemented
 
-	return {
+	const storage: Storage = {
 		rootIno,
 		caps,
-		sync,
 
 		async getMeta(ino) {
 			return metas.get(ino) ?? null
@@ -438,8 +362,8 @@ export function memStorage(opts?: {
 			const existing = metas.get(ino)
 			if (existing) {
 				metas.set(ino, { ...existing, ...patch })
-				emit({ ino, kind: 'meta', source: options?.source })
-				await observer.record(treePort, { kind: 'meta', ino }, options)
+				emit({ ino, kind: 'meta', source: options?.origin })
+				await observer?.record(treePort, { kind: 'meta', ino }, options)
 				return
 			}
 			if (patch.type === undefined) return
@@ -454,7 +378,7 @@ export function memStorage(opts?: {
 				symlinkTarget: patch.symlinkTarget
 			}
 			metas.set(ino, full)
-			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'meta', source: options?.origin })
 		},
 
 		async deleteInode(ino) {
@@ -479,7 +403,7 @@ export function memStorage(opts?: {
 			// its awaiting caller (writeFile) sees the new content/hash.
 			// Fail before announcing anything if the inode has already gone.
 			if (!metas.has(ino)) throw new Error(`ENOENT: ino ${ino}`)
-			emit({ ino, kind: 'content', source: options?.source })
+			emit({ ino, kind: 'content', source: options?.origin })
 			const hash = await sha256Hex(data)
 			hashBlobs.set(hash, data.slice())
 			// Re-read AFTER the hash: that await is a window, and this is the check that
@@ -498,7 +422,7 @@ export function memStorage(opts?: {
 				mtimeNs: stamp,
 				ctimeNs: stamp
 			})
-			await observer.record(treePort, { kind: 'content', ino, contentHash: hash }, options)
+			await observer?.record(treePort, { kind: 'content', ino, contentHash: hash }, options)
 		},
 
 		async getDirent(dirIno, name) {
@@ -515,9 +439,9 @@ export function memStorage(opts?: {
 				dirIno,
 				name,
 				path: dirPath === null ? undefined : joinPath(dirPath, name),
-				source: options?.source
+				source: options?.origin
 			})
-			await observer.record(
+			await observer?.record(
 				treePort,
 				{ kind: 'link', dirIno, name, ino: entry.ino, type: entry.type },
 				options
@@ -536,9 +460,9 @@ export function memStorage(opts?: {
 					dirIno,
 					name,
 					path: dirPath === null ? undefined : joinPath(dirPath, name),
-					source: options?.source
+					source: options?.origin
 				})
-				await observer.record(
+				await observer?.record(
 					treePort,
 					{ kind: 'unlink', dirIno, name, ino: existing.ino },
 					options
@@ -559,4 +483,6 @@ export function memStorage(opts?: {
 			return { entries, next: '' }
 		}
 	}
+
+	return Object.assign(storage, opts?.extension?.attach(treePort)) as Storage & Attached
 }

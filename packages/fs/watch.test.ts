@@ -60,7 +60,7 @@ describe('storage subscribe cap', () => {
 		// this is the update path (writeFile's other branch / a direct putBlob),
 		// untouched by write-then-publish.
 		changes.length = 0
-		await storage.putBlob(ino, enc.encode('bye'), { source: 'remote' })
+		await storage.putBlob(ino, enc.encode('bye'), { origin: 'remote' })
 		expect(changes).toEqual([{ ino, kind: 'content', source: 'remote' }])
 	})
 
@@ -118,7 +118,7 @@ describe('volume.watch', () => {
 			lastSource = e.source
 		})
 
-		await storage.putBlob(ino, enc.encode('agent'), { source: 'remote' })
+		await storage.putBlob(ino, enc.encode('agent'), { origin: 'remote' })
 		await flush()
 		expect(lastSource).toBe('remote')
 	})

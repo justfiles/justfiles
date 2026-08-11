@@ -1,6 +1,7 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
-import { journaledChangeSource } from '@justfiles/fs/sync-replica'
+import { journaledChangeSource } from '@justfiles/sync/replica'
+import { memStorage } from '@justfiles/sync/storage/mem'
 import { describe, expect, it, vi } from 'vitest'
 import { runDailyMaintenance } from './daily-maintenance'
 

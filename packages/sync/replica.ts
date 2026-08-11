@@ -9,12 +9,12 @@
  * (in `@justfiles/core`) is the HTTP client to the `/fs` path endpoints.
  */
 
-import type { ContentStore, Storage } from './storage'
-import { incomingWins, orderForApply } from './storage.shared'
-import type { PathChange } from './sync-wire'
-import { coalesceByPath } from './sync-wire'
-import { FileType } from './types'
-import { volume } from './volume'
+import { volume } from '@justfiles/fs'
+import type { ContentStore, Storage } from '@justfiles/fs/storage'
+import { FileType } from '@justfiles/fs/types'
+import { incomingWins, orderForApply } from './path'
+import type { PathChange } from './wire'
+import { coalesceByPath } from './wire'
 
 /**
  * A cursor is an opaque, monotonically increasing position in one replica's

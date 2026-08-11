@@ -572,7 +572,7 @@ export const app = defineApp({
 		//
 		// Outside the chain is every writer that does not ride it: another app instance, and — in
 		// this very process — the sync engine's apply (`localReplica.applyPathChanges`,
-		// `packages/fs/synced.ts`), which lands through the storage journal (`applyJournaled`),
+		// `packages/sync/synced.ts`), which lands through the storage journal (`applyJournaled`),
 		// BELOW `Volume.writeFile`. So a `writeFile` precondition would not close that one either:
 		// the two writers never meet at that layer. What `base` does catch is the shape a pull
 		// actually has — the remote body lands, the watch fires, and a save composed before it is

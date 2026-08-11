@@ -1,4 +1,5 @@
-import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
+import { chroot, type Volume, volume } from '@justfiles/fs'
+import { memStorage } from '@justfiles/sync/storage/mem'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'

@@ -19,15 +19,15 @@
  */
 
 import { createHash } from 'node:crypto'
-import { memStorage } from './storage.mem'
-import type { JournaledStorage, SyncReplica } from './sync-replica'
-import { journaledChangeSource, localSyncReplica, PAGE } from './sync-replica'
-import type { PathChange } from './sync-wire'
+import type { Volume } from '@justfiles/fs'
+import { chroot, volume, WATCH_BURST_MS } from '@justfiles/fs'
+import type { Ino, Stat } from '@justfiles/fs/types'
+import { FileType } from '@justfiles/fs/types'
+import type { JournaledStorage, SyncReplica } from './replica'
+import { journaledChangeSource, localSyncReplica, PAGE } from './replica'
+import { memStorage } from './storage/mem'
 import { REMOTE_SOURCE, synced } from './synced'
-import type { Ino, Stat } from './types'
-import { FileType } from './types'
-import type { Volume } from './volume'
-import { chroot, volume, WATCH_BURST_MS } from './volume'
+import type { PathChange } from './wire'
 
 /**
  * Constructs a backend for the harness. `memStorage` is the default; the
@@ -252,7 +252,7 @@ function makePeer(
 	}
 
 	// Stage meta directly on the backend, journaling a put. A pinned `version` is
-	// threaded to setMeta -> journalPut (see MutationOptions.version), so a staged
+	// handed to the observer through setMeta, so a staged
 	// write ships that EXACT version and sets the backend path_version to match —
 	// which is what LWW compares on both replicas.
 	async function applyStageMeta(
@@ -266,7 +266,10 @@ function makePeer(
 		if (o.mode !== undefined) patch.mode = o.mode
 		if (o.contentHash !== undefined) patch.contentHash = o.contentHash
 		if (Object.keys(patch).length === 0 && o.version === undefined && o.source === undefined) return
-		await storage.setMeta(st.ino, patch, { version: o.version, source: o.source })
+		await storage.setMeta(st.ino, patch, {
+			origin: o.source,
+			observed: { version: o.version }
+		})
 	}
 
 	return peer
@@ -541,7 +544,7 @@ export async function treeSnapshot(peer: Peer): Promise<Record<string, string>> 
 // The same path-sync semantics, run against EVERY owned backend (mem, IDB,
 // SQLite/DO) so the SHIPPING backends — not just this memStorage-based harness —
 // are proven against identical specs. Cases are plain data (`{ name, run(makeBackend) }`),
-// registered by two separate vitest files: packages/fs/sync-conformance.test.ts
+// registered by separate backend conformance test files.
 // (mem + idb) and packages/core/src/storage.sqlite.conformance.test.ts (sqlite via
 // node:sqlite). They live here in the harness — not a prod-looking module, and not
 // a `*.test.ts` — because both test files import them, and a test file that also

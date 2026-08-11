@@ -106,7 +106,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	 * visible means a user or a sweep can delete it, hidden would mean nothing ever
 	 * could. dpkg's `.dpkg-tmp` and git's `tmp_obj_*` are visible for the same reason. A
 	 * scan from ANOTHER process can likewise still catch one mid-publish; that window is
-	 * short, and replicating a file that then vanishes is recoverable in a way that
+	 * short, and copying a file that then vanishes is recoverable in a way that
 	 * eating a note is not.
 	 */
 	const inflight = new Set<string>()
@@ -174,8 +174,8 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const s = await lstat(childPath)
 			const ino = String(s.ino)
 			pathMap.set(ino, childPath)
-			emit({ ino, kind: 'meta', source: options?.source })
-			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(childPath), source: options?.source })
+			emit({ ino, kind: 'meta', source: options?.origin })
+			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(childPath), source: options?.origin })
 			return ino
 		},
 
@@ -201,14 +201,14 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			}
 			if (displaced !== null) pathMap.delete(displaced)
 
-			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.origin })
 			emit({
 				ino: srcIno,
 				kind: 'dirent',
 				dirIno: newDir,
 				name: newName,
 				path: volPath(newPath),
-				source: options?.source
+				source: options?.origin
 			})
 			emit({
 				ino: srcIno,
@@ -216,7 +216,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 				dirIno: oldDir,
 				name: oldName,
 				path: volPath(oldPath),
-				source: options?.source
+				source: options?.origin
 			})
 			return displaced
 		},
@@ -249,7 +249,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 				const t = new Date(Number(patch.mtimeNs / 1_000_000n))
 				await lutimes(path, t, t)
 			}
-			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'meta', source: options?.origin })
 		},
 
 		async deleteInode(ino) {
@@ -276,7 +276,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			// being written back into existence.
 			const handle = await open(getPath(ino), 'r+')
 			try {
-				// …but a PATH is not an identity. Unlink-and-recreate (what a sync client, an
+				// …but a PATH is not an identity. Unlink-and-recreate (what another writer, an
 				// editor's atomic save, or `rm` + touch does) leaves the name pointing at a
 				// different inode, and this handle would then truncate a stranger's file and
 				// report success. The handle knows what it opened, so ask it: content is
@@ -298,7 +298,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			} finally {
 				await handle.close()
 			}
-			emit({ ino, kind: 'content', source: options?.source })
+			emit({ ino, kind: 'content', source: options?.origin })
 		},
 
 		async getDirent(dirIno, name) {
@@ -319,7 +319,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const dstPath = join(getPath(dirIno), name)
 			await _rename(srcPath, dstPath)
 			pathMap.set(ino, dstPath)
-			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(dstPath), source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(dstPath), source: options?.origin })
 		},
 
 		async deleteDirent(dirIno, name, options) {
@@ -328,7 +328,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const ino = String(s.ino)
 			if (s.isDirectory()) await rmdir(childPath)
 			else await unlink(childPath)
-			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(childPath), source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(childPath), source: options?.origin })
 		},
 
 		async listDirents(dirIno, cursor) {

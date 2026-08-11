@@ -9,9 +9,9 @@
  * base64, `version` as a decimal string (compared NUMERICALLY, never lexically).
  */
 
+import type { InodeMeta } from '@justfiles/fs/storage'
+import { FileType } from '@justfiles/fs/types'
 import { z } from 'zod'
-import type { InodeMeta } from './storage'
-import { FileType } from './types'
 
 // ── Identity primitives ──────────────────────────────────────────────────────
 

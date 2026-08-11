@@ -11,7 +11,7 @@ vi.mock('@justfiles/core', () => ({
 	createFsClient: () => ({ reset: { $post: H.reset } })
 }))
 
-vi.mock('@justfiles/fs/storage/idb', () => ({
+vi.mock('@justfiles/sync/storage/idb', () => ({
 	idbStorage: (name: string) => ({
 		name,
 		rootIno: '1',
@@ -22,7 +22,10 @@ vi.mock('@justfiles/fs/storage/idb', () => ({
 vi.mock('@justfiles/fs', () => ({
 	volume: () => ({
 		readFile: async () => new Uint8Array()
-	}),
+	})
+}))
+
+vi.mock('@justfiles/sync', () => ({
 	synced: async () => ({
 		readFile: async () => new Uint8Array(),
 		flush: async () => {},

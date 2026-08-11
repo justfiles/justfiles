@@ -12,12 +12,12 @@
  */
 
 import 'fake-indexeddb/auto'
+import { volume } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
 import { openDB } from 'idb'
 import { describe, expect, it } from 'vitest'
-import { idbStorage } from './storage.idb'
-import type { PathChange } from './sync-wire'
-import { FileType } from './types'
-import { volume } from './volume'
+import { idbStorage } from './storage/idb'
+import type { PathChange } from './wire'
 
 /** Distinct wire-shaped hashes: the assertions turn on WHICH row survived. */
 const hash = (n: number): string => String(n).padStart(64, '0')

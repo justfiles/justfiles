@@ -18,7 +18,7 @@
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
-import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import type { DbAdapter } from './db'
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap

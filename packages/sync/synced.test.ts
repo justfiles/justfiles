@@ -9,8 +9,9 @@
  */
 
 import { createHash } from 'node:crypto'
+import { volume } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { memStorage } from './storage.mem'
 import {
 	CursorPrunedError,
 	GenerationStaleError,
@@ -18,11 +19,10 @@ import {
 	localSyncReplica,
 	PAGE,
 	type SyncReplica
-} from './sync-replica'
-import type { PathChange } from './sync-wire'
+} from './replica'
+import { memStorage } from './storage/mem'
 import { REMOTE_SOURCE, synced } from './synced'
-import { FileType } from './types'
-import { volume } from './volume'
+import type { PathChange } from './wire'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -1465,7 +1465,7 @@ describe('synced (orphaned blob)', () => {
 		await localVolume.writeFile('/healthy.txt', enc.encode('healthy'))
 		await localVolume.writeFile('/orphan.txt', enc.encode('temporary'))
 		const orphan = await localVolume.stat('/orphan.txt')
-		await local.setMeta(orphan.ino, { contentHash: 'd'.repeat(64) }, { version: 99 })
+		await local.setMeta(orphan.ino, { contentHash: 'd'.repeat(64) }, { observed: { version: 99 } })
 
 		const remote = memStorage()
 		const vol = await synced({ local, remote, interval: 99_999 })
@@ -1487,7 +1487,13 @@ describe('synced (orphaned blob)', () => {
 		const localVolume = volume(local)
 		await localVolume.writeFile('/recovered.txt', enc.encode('temporary'))
 		const recovered = await localVolume.stat('/recovered.txt')
-		await local.setMeta(recovered.ino, { contentHash: sha256Hex(content) }, { version: 99 })
+		await local.setMeta(
+			recovered.ino,
+			{ contentHash: sha256Hex(content) },
+			{
+				observed: { version: 99 }
+			}
+		)
 
 		const vol = await synced({ local, remote, interval: 99_999 })
 		destroyers.push(() => vol.destroy())

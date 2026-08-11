@@ -1,6 +1,6 @@
 /**
  * `fake-indexeddb/auto` MUST be imported before `storage.idb` (its module-load
- * `IDBKeyRange` capture reads the global) — see sync-conformance.test.ts.
+ * `IDBKeyRange` capture reads the global).
  *
  * Pins the fix for a Codex finding on #322: `atomicCreate` previously never
  * marked a freshly created, content-bearing inode dirty (only `putBlob` did),

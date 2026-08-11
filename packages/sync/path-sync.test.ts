@@ -4,8 +4,10 @@
  * `sync-units.test.ts`.
  */
 
+import { chroot, volume, WATCH_BURST_MS } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
 import { afterEach, describe, expect, test } from 'vitest'
-import { memStorage } from './storage.mem'
+import { memStorage } from './storage/mem'
 import {
 	adoptionPeers,
 	bytes,
@@ -20,8 +22,6 @@ import {
 	uuidIno,
 	wire
 } from './sync-test-harness'
-import { FileType } from './types'
-import { chroot, volume, WATCH_BURST_MS } from './volume'
 
 // Let watch deliveries land. The single-path watch coalesces onto a microtask, the
 // recursive one is rate-bounded (see WATCH_BURST_MS); one wait covers both.

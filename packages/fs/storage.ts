@@ -13,15 +13,10 @@ export interface InodeMeta {
 }
 
 export type MutationOptions = {
-	source?: string
-	/**
-	 * Pin this mutation's outgoing path version to an EXACT value instead of the
-	 * auto-incremented generator value (which also SETS the backend `path_version`,
-	 * so it can move down as well as up). For applying a mutation at a known version
-	 * — deterministic import/replay, and the test harness's concurrent-version
-	 * staging. Omitted => the backend generates the next version.
-	 */
-	version?: number
+	/** Opaque label for whoever caused this write; echoed on the change feed. */
+	origin?: string
+	/** Handed verbatim to the mutation observer. The filesystem never reads it. */
+	observed?: unknown
 }
 
 /** Kind of change reported by the Storage change feed (see `subscribe`). */
@@ -38,8 +33,7 @@ export type StorageChangeKind = 'meta' | 'content' | 'dirent'
  *   backend supplies it, except where the parent is already unlinked (nothing to
  *   name); an absent `path` means "unknown", so scoped listeners must assume the
  *   worst and fire.
- * `source` carries the `MutationOptions.source` the write was tagged with —
- * sync-applied writes are tagged so listeners can filter out remote echoes.
+ * `source` carries the `MutationOptions.origin` label the write was tagged with.
  */
 export interface StorageChange {
 	ino: Ino
@@ -147,8 +141,8 @@ export interface StorageCapabilities {
 	 * `volume.watch`. The listener fires once per committed mutation entry point
 	 * (`setMeta`/`putBlob`/`putDirent`/`deleteDirent`/`deleteInode` and the
 	 * atomic caps), AFTER the write commits. Detection lives here, below the
-	 * volume wrapper, because sync applies remote pulls straight to Storage —
-	 * a volume-level interceptor would miss exactly those changes.
+	 * volume wrapper, because other writers can call Storage directly — a
+	 * volume-level interceptor would miss those changes.
 	 *
 	 * Implementations must make this near-zero cost when there are no listeners.
 	 * Returns an unsubscribe function.
@@ -158,8 +152,8 @@ export interface StorageCapabilities {
 	/**
 	 * The backend's hash-addressed content store. Blobs are keyed by content hash
 	 * (matching R2), so the inode holds a `contentHash` reference and the bytes live
-	 * here. The local `SyncReplica.BlobStore` reads/writes it directly to materialise
-	 * pulled content out-of-band and to hydrate lazy stubs; `getBlob` resolves an
+	 * here. Other layers can read and write it directly to materialise content
+	 * out-of-band and to hydrate lazy stubs; `getBlob` resolves an
 	 * inode's bytes through it. A stored hash with no referencing path is a harmless
 	 * orphan (GC reclaims it); a referenced hash with no blob is a lazy stub.
 	 */
@@ -172,22 +166,16 @@ export interface ContentStore {
 	hasByHash(hash: string): Promise<boolean>
 	/**
 	 * Store `data` under `hash`. TRUSTS the caller — the backend does NOT verify
-	 * `sha256(data) === hash`. The sync engine supplies a hash it already computed
-	 * (re-hashing every pulled blob would be wasteful), so a lying caller corrupts
-	 * the store: any non-sync caller MUST pass a hash computed from exactly these bytes.
+	 * `sha256(data) === hash`. A caller can supply a hash it already computed, so a
+	 * lying caller corrupts the store. The hash must match these bytes.
 	 */
 	putByHash(hash: string, data: Uint8Array): Promise<void>
 	/**
-	 * Reclaim every stored blob that no inode's `contentHash` references. Out-of-band
-	 * ONLY — NEVER call from the apply path: `applyJournaled` applies a rename's
-	 * deletes before its puts, so a mid-apply sweep would drop bytes the same batch
-	 * re-references. Owned backends discard superseded journal rows first, so every
-	 * remaining delta references current content.
+	 * Reclaim every stored blob that no inode's `contentHash` references. Run this
+	 * only when no active batch can temporarily remove and then restore a reference.
 	 *
-	 * `done` is false when the journal prune ran out of its per-call budget with work
-	 * left — the sweep did not reach the content phase, and the caller should call
-	 * again rather than wait for the next scheduled run. A backend whose prune is
-	 * unbounded always reports true.
+	 * `done` is false when the operation ran out of its per-call budget with work
+	 * left. The caller should call again. An unbounded backend always reports true.
 	 */
 	gcUnreferenced(): Promise<{ reclaimed: number; done: boolean }>
 }
@@ -199,7 +187,7 @@ export interface ContentStore {
  * No nlink management, no cross-store side effects. The VFS owns sequencing.
  *
  * Hard links are not supported; steady state should have one directory entry
- * per inode. Sync replay can still create a transient second name during
+ * per inode. A move can still create a transient second name during
  * rename/move, so backends should treat deleteInode as a no-op while the inode
  * is still referenced by any dirent.
  *
@@ -221,7 +209,7 @@ export interface Storage {
 	 * Partial update of metadata fields.
 	 * If the inode does not exist AND patch contains enough fields to construct a
 	 * full InodeMeta (type, size, mode, mtimeNs, ctimeNs), the inode is created.
-	 * This "upsert" behaviour lets the sync layer materialise remote inodes.
+	 * This "upsert" behaviour lets a caller materialise an inode.
 	 */
 	setMeta(ino: Ino, patch: Partial<InodeMeta>, options?: MutationOptions): Promise<void>
 
@@ -251,9 +239,8 @@ export interface Storage {
 	 *
 	 * The backend MUST update size and contentHash in metadata as a side effect,
 	 * and MUST stamp `mtimeNs`/`ctimeNs` with the time of the write — in the same
-	 * commit, so the journal row a peer receives carries the new time. Callers that
-	 * need an exact timestamp (sync materialising a remote inode, `utimes`) set it
-	 * afterwards through `setMeta`.
+	 * commit, so observers receive the new time. Callers that need an exact timestamp
+	 * set it afterwards through `setMeta`.
 	 */
 	putBlob(ino: Ino, data: Uint8Array, options?: MutationOptions): Promise<void>
 

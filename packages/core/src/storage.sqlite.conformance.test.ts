@@ -1,7 +1,7 @@
 // Runs the shared path-sync backend conformance suite (`pathSyncConformanceCases`,
-// in `packages/fs/sync-test-harness.ts`) against the SQLite/DO backend under vitest.
+// in `packages/sync/sync-test-harness.ts`) against the SQLite/DO backend under vitest.
 // This is the same suite that runs against `memStorage` and `idbStorage` in
-// `packages/fs/sync-conformance.test.ts` — proving the SHIPPING backends against
+// `packages/sync/sync-conformance.test.ts` — proving the SHIPPING backends against
 // identical specs, not just the memStorage test double.
 //
 // The backend takes an abstract `DbAdapter`; here we back it with node's built-in
@@ -12,7 +12,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, test } from 'vitest'
-import { pathSyncConformanceCases } from '../../fs/sync-test-harness'
+import { pathSyncConformanceCases } from '../../sync/sync-test-harness'
 import { createSqliteAdapter } from './db.sqlite'
 import { storage as sqliteStorage } from './storage.sqlite'
 

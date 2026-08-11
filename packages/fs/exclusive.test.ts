@@ -264,7 +264,7 @@ describe.each(backends)('rename on %s', (_name, make) => {
 
 test('a write refuses a pathname that now holds a different file', async () => {
 	// The native backend addresses content by inode but reaches it through a pathname,
-	// and a replace-under-the-same-name (a sync client, another editor's atomic save)
+	// and a replace-under-the-same-name (another writer or an editor's atomic save)
 	// leaves that name pointing at a stranger. A save that resolved before the swap must
 	// not truncate what is there now — the handle is asked what it actually opened.
 	const dir = nativeDir()
@@ -434,8 +434,8 @@ test('the name is complete the instant the claim resolves', async () => {
 })
 
 test('a publish in flight is never listed, and leaves no residue', async () => {
-	// `listDirents` is what native sync's scan+diff walks, so a visible temp name is a
-	// file it would try to replicate and then find gone. Not a RED test against the old
+	// `listDirents` is what an external scanner walks, so a visible temp name is a
+	// file it would copy and then find gone. Not a RED test against the old
 	// code (which had no temp file at all) — it is the guard on the new mechanism.
 	const dir = nativeDir()
 	const vol = volume(await nativeStorage(dir))

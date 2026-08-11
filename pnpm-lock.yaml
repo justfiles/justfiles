@@ -119,6 +119,9 @@ importers:
       '@justfiles/state':
         specifier: workspace:*
         version: link:../../packages/state
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../../packages/sync
       '@justfiles/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -347,6 +350,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../../packages/sync
       '@justfiles/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -507,6 +513,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../sync
       just-bash:
         specifier: 3.0.2
         version: 3.0.2
@@ -532,6 +541,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../sync
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
@@ -921,6 +933,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../sync
       hono:
         specifier: 4.11.1
         version: 4.11.1
@@ -944,9 +959,6 @@ importers:
       idb:
         specifier: ^8.0.3
         version: 8.0.3
-      zod:
-        specifier: ^4.3.6
-        version: 4.4.3
     devDependencies:
       '@justfiles/tsconfig':
         specifier: workspace:*
@@ -982,6 +994,34 @@ importers:
       react:
         specifier: ^19.2.1
         version: 19.2.5
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
+  packages/sync:
+    dependencies:
+      '@justfiles/fs':
+        specifier: workspace:*
+        version: link:../fs
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+    devDependencies:
+      '@justfiles/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.7.0
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
+      tsdown:
+        specifier: ^0.21.5
+        version: 0.21.10(typescript@6.0.3)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

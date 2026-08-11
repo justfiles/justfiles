@@ -1,13 +1,14 @@
 /**
- * Unit tests for the pure path-sync rules in `storage.shared.ts`.
+ * Unit tests for the pure path-sync rules in `path.ts`.
  *
  * These functions are the nuanced, bug-prone decisions extracted OUT of the
  * `memStorage` test double so they can be shared by every owned backend
  * (mem, SQLite/DO, IDB) and tested directly here — the same logic that ships.
  */
 
+import type { InodeMeta } from '@justfiles/fs/storage'
+import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
-import type { InodeMeta } from './storage'
 import {
 	buildDeleteChange,
 	buildPutChange,
@@ -19,11 +20,10 @@ import {
 	sortChildFirst,
 	sortParentFirst,
 	splitPath
-} from './storage.shared'
+} from './path'
 import { sha256 } from './sync-test-harness'
-import type { PathChange } from './sync-wire'
-import { PathChange as PathChangeSchema } from './sync-wire'
-import { FileType } from './types'
+import type { PathChange } from './wire'
+import { PathChange as PathChangeSchema } from './wire'
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 

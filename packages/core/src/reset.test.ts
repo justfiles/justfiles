@@ -5,7 +5,7 @@
 //
 // The take-mine republish rides ordinary sync (no publishing lock, no finalize),
 // so this file covers only the server-side reset primitives; the client-side
-// resume/adopt/republish logic lives in packages/fs/synced.test.ts.
+// resume/adopt/republish logic lives in packages/sync/synced.test.ts.
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'

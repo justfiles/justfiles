@@ -48,9 +48,8 @@ export function persistedState<T>(
 	}
 
 	// First touch is a CLAIM, not exists()-then-write. Two cells over the SAME
-	// underlying storage can initialize at the same moment — `synced()` mints
-	// `/.state/clientid` through this very primitive while an app-level reader of that
-	// same path is doing it too — and they must converge on ONE value rather than mint
+	// underlying storage can initialize at the same moment, and they must converge
+	// on ONE value rather than mint
 	// two and silently overwrite one with the other. `exists()` then `set()` is a TOCTOU
 	// where both cells see nothing and both write.
 	//

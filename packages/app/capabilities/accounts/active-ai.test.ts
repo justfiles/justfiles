@@ -1,5 +1,5 @@
 import { memStorage, volume } from '@justfiles/fs'
-import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import { describe, expect, test } from 'vitest'
 import { volumeActiveAi } from './active-ai.ts'
 
