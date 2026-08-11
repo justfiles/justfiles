@@ -140,6 +140,30 @@ describe('fs_path_index', () => {
 		expect(indexedPaths(db)).toEqual(['/onto.md'])
 	})
 
+	it('leaves tree and index untouched when a rename would displace a non-empty dir', async () => {
+		// `atomicMove` unindexes ONE path for the entry it displaces, which is only
+		// sound because a displaced directory can never still have children: the
+		// dirents' `ON DELETE RESTRICT` fails the inode delete and the whole mutation
+		// rolls back. If that guard ever softens, the descendants keep their rows in
+		// `fs_path_index` with no parent to reach them, and `pathSnapshot.puts`
+		// serves those detached paths to the next device that bootstraps — the tree
+		// walk it replaced could not, because it started from the root.
+		const { db, storage, vol } = makeSqlite()
+		await vol.mkdir('/src')
+		await vol.writeFile('/src/a.md', bytes('a'))
+		await vol.mkdir('/dst')
+		await vol.writeFile('/dst/child.md', bytes('child'))
+		const before = indexedPaths(db)
+
+		await expect(vol.rename('/src', '/dst')).rejects.toThrow()
+
+		expect(disagreements(db)).toEqual([])
+		expect(indexedPaths(db)).toEqual(before)
+		const snapshot = storage.caps?.pathSnapshot
+		if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
+		expect((await snapshot.puts('', 100)).map((c) => c.path)).toEqual(before)
+	})
+
 	it('indexes the apply side too, including dirs it repairs into place', async () => {
 		const { db, storage, vol } = makeSqlite()
 		await vol.mkdir('/kept')

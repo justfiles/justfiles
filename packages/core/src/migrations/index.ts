@@ -27,7 +27,7 @@ import MIGRATION_0008 from './0008_tombstone_index.sql'
 import MIGRATION_0009 from './0009_journal_floor.sql'
 // biome-ignore lint/suspicious/noTsIgnore: TypeScript cannot resolve bundler-loaded .sql imports in this package.
 // @ts-ignore Bundlers load SQL as text for this package.
-import MIGRATION_0010 from './0010_dirent_path.sql'
+import MIGRATION_0010 from './0010_path_index.sql'
 
 export type MigrationEntry = {
 	version: number
