@@ -1722,6 +1722,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				await ensureDirentTarget(tx, dirIno, entry)
 				const existing = await getDirent(tx, dirIno, name)
 				if (existing) {
+					// Same rule as `atomicMove`: rebinding this name away from a non-empty
+					// directory would strand its descendants — indexed under a path nothing
+					// reaches, and published by `pathSnapshot.puts`. The caller's follow-up
+					// `deleteInode` cannot save us; it is a separate call, so the rebind has
+					// already committed by the time its foreign key refuses.
+					if (
+						String(existing.ino) !== String(entry.ino) &&
+						(await hasChildDirents(tx, String(existing.ino)))
+					)
+						throw new Error(`ENOTEMPTY: ${name}`)
 					await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
 						entry.ino,
 						entry.type,
@@ -1753,6 +1763,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			await db.transaction(async (tx) => {
 				const existing = await getDirent(tx, dirIno, name)
 				if (!existing) return
+				// `volume.rm` checks emptiness before it gets here, but that check and this
+				// write are separate calls, so a child added in between would leave its row
+				// in `fs_path_index` with the parent gone. The route's follow-up
+				// `deleteInode` is likewise its own call — its foreign key refuses AFTER this
+				// delete has committed. The apply side already refuses the same case
+				// (storage.shared.ts, via `dirHasLiveChildren`); this is the direct caller's.
+				if (await hasChildDirents(tx, String(existing.ino))) throw new Error(`ENOTEMPTY: ${name}`)
 				removedIno = String(existing.ino)
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
 				const dirPath = await pathOf(tx, dirIno)

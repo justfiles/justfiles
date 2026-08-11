@@ -157,45 +157,67 @@ describe('fs_path_index', () => {
 		expect(indexedPaths(db)).toEqual(['/onto.md'])
 	})
 
-	// Both adapter shapes, because the guard has to hold on the one that ships.
+	// Every entry point that can drop a directory out of the tree has to refuse while
+	// it still holds children, and each needs its OWN guard because each writes the
+	// index itself. Otherwise the descendants keep their rows in `fs_path_index` with
+	// no parent to reach them and `pathSnapshot.puts` serves those detached paths to
+	// the next device that bootstraps — the tree walk it replaced could not, because
+	// it started from the root.
+	//
+	// The dirents' `ON DELETE RESTRICT` is not that guarantee. It fires late — after
+	// the dirent and its index row are already gone — and on `deleteDirent` it fires
+	// in a LATER CALL entirely (the route's follow-up `deleteInode`). So it only ever
+	// looked like a guard on an adapter that can roll back, and neither shipping
+	// adapter can: both DO adapters implement `transaction` as `await fn(adapter)`,
+	// leaning on the Durable Object's implicit per-event commit. Each of these
+	// reproduced a detached row under `rollback: false` before its guard existed.
+	const displacements = [
+		{
+			what: 'atomicMove displaces it',
+			act: ({ vol }: ReturnType<typeof makeSqlite>) => vol.rename('/src', '/dst')
+		},
+		{
+			what: 'putDirent rebinds its name',
+			act: async ({ storage }: ReturnType<typeof makeSqlite>) => {
+				const src = await storage.getDirent('1', 'src')
+				if (!src) throw new Error('fixture: /src missing')
+				await storage.putDirent('1', 'dst', { ino: src.ino, type: src.type })
+			}
+		},
+		{
+			what: 'deleteDirent unlinks it',
+			act: ({ storage }: ReturnType<typeof makeSqlite>) => storage.deleteDirent('1', 'dst')
+		}
+	]
+
 	for (const rollback of [true, false]) {
-		it(`refuses to displace a non-empty dir, rollback: ${rollback}`, async () => {
-			// `atomicMove` unindexes ONE path for the entry it displaces, so a displaced
-			// directory must never still have children — otherwise they keep their rows in
-			// `fs_path_index` with no parent to reach them, and `pathSnapshot.puts` serves
-			// those detached paths to the next device that bootstraps. The tree walk it
-			// replaced could not, because it started from the root.
-			//
-			// The dirents' `ON DELETE RESTRICT` is NOT that guarantee. It fires late —
-			// after the destination's dirent and index row are already gone — so it only
-			// looks like one on an adapter that can roll back. Neither shipping adapter
-			// can: both DO adapters implement `transaction` as `await fn(adapter)`, leaning
-			// on the Durable Object's implicit per-event commit. Run with `rollback: false`
-			// this case reproduced the detached row before `atomicMove` learned to refuse
-			// the move up front.
-			const { db, storage, vol } = makeSqlite({ rollback })
-			await vol.mkdir('/src')
-			await vol.writeFile('/src/a.md', bytes('a'))
-			await vol.mkdir('/dst')
-			await vol.writeFile('/dst/child.md', bytes('child'))
-			const before = indexedPaths(db)
+		for (const { what, act } of displacements) {
+			it(`refuses a non-empty dir when ${what}, rollback: ${rollback}`, async () => {
+				const ctx = makeSqlite({ rollback })
+				const { db, storage, vol } = ctx
+				await vol.mkdir('/src')
+				await vol.writeFile('/src/a.md', bytes('a'))
+				await vol.mkdir('/dst')
+				await vol.writeFile('/dst/child.md', bytes('child'))
+				const before = indexedPaths(db)
 
-			const error = await vol.rename('/src', '/dst').then(
-				() => null,
-				(e: Error) => e
-			)
+				const error = await act(ctx).then(
+					() => null,
+					(e: Error) => e
+				)
 
-			// State first, message second: what makes this a bug is the detached row, not
-			// the wording. Asserting the message up front would mask the difference between
-			// the two adapters — both would fail on the wrong error string, and only this
-			// order shows that `rollback: false` also leaves the volume corrupted.
-			expect(disagreements(db)).toEqual([])
-			expect(indexedPaths(db)).toEqual(before)
-			const snapshot = storage.caps?.pathSnapshot
-			if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
-			expect((await snapshot.puts('', 100)).map((c) => c.path)).toEqual(before)
-			expect(error?.message).toMatch(/^ENOTEMPTY/)
-		})
+				// State first, message second: what makes this a bug is the detached row, not
+				// the wording. Asserting the message up front would mask the difference between
+				// the adapters — both would fail on the wrong error string, and only this order
+				// shows that `rollback: false` also leaves the volume corrupted.
+				expect(disagreements(db)).toEqual([])
+				expect(indexedPaths(db)).toEqual(before)
+				const snapshot = storage.caps?.pathSnapshot
+				if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
+				expect((await snapshot.puts('', 100)).map((c) => c.path)).toEqual(before)
+				expect(error?.message).toMatch(/^ENOTEMPTY/)
+			})
+		}
 	}
 
 	it('indexes the apply side too, including dirs it repairs into place', async () => {
