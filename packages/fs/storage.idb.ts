@@ -1,10 +1,16 @@
 import type { DBSchema, IDBPDatabase, IDBPObjectStore, IDBPTransaction, StoreNames } from 'idb'
 import { openDB } from 'idb'
-import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
-import type { PathStorePort } from './storage.shared'
+import type {
+	InodeMeta,
+	MutationOptions,
+	Storage,
+	StorageCapabilities,
+	StorageChange
+} from './storage'
+import type { PathSyncStore, TreeEffect, TreePort } from './storage.shared'
 import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
 import type { JournalRow } from './sync-replica'
-import { coalesceByPath, inodeMetaFromSync, type PathChange } from './sync-wire'
+import { coalesceByPath, type PathChange } from './sync-wire'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -237,10 +243,6 @@ export function idbStorage(
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
 	// The backend's client-id, stamped as ORIGIN (PathChange.source) on local writes.
 	const localActorId = options?.localActorId ?? 'local'
-	// The filesystem announces its tree writes here; this module decides what to
-	// record (storage.shared.ts ROADMAP item 3 / #454). Attached unconditionally for
-	// now — inverting the construction is a later slice.
-	const observer = pathSyncObserver(localActorId)
 	let dbPromise: Promise<Db> | null = null
 
 	// Change feed — the substrate for volume.watch. Listeners fire after a
@@ -513,19 +515,22 @@ export function idbStorage(
 	}
 
 	/** Install a remote put's tree metadata + contentHash REFERENCE; replace user xattrs. */
-	async function upsertInodeFromSyncTx(tx: FullTx, ino: Ino, change: PathChange): Promise<void> {
-		if (change.kind !== 'put') return
-		const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
-		const type = meta.type ?? FileType.Regular
+	async function upsertInodeTx(
+		tx: FullTx,
+		ino: Ino,
+		meta: InodeMeta,
+		contentHash: string | undefined,
+		snapshot: Record<string, Uint8Array>
+	): Promise<void> {
 		const existing = await tx.objectStore('inodes').get(ino)
 		await tx.objectStore('inodes').put({
 			ino,
-			type,
-			size: meta.size ?? 0n,
-			mode: meta.mode ?? defaultModeForType(type),
-			mtimeNs: meta.mtimeNs ?? 0n,
-			ctimeNs: 0n, // ctime is set locally at apply time, never wired
-			contentHash: change.contentHash,
+			type: meta.type,
+			size: meta.size,
+			mode: meta.mode,
+			mtimeNs: meta.mtimeNs,
+			ctimeNs: meta.ctimeNs,
+			contentHash,
 			symlinkTarget: meta.symlinkTarget,
 			lastAccessedAt: existing?.lastAccessedAt ?? Date.now()
 		})
@@ -541,9 +546,13 @@ export function idbStorage(
 	// (storage.shared.ts) call, bound to one transaction. `emit` is buffered so
 	// applyJournaled can flush AFTER the txn commits (idb fires change events
 	// post-commit).
-	function makePathPort(tx: FullTx): { port: PathStorePort; emits: StorageChange[] } {
+	function makePathPorts(tx: FullTx): {
+		tree: TreePort
+		sync: PathSyncStore
+		emits: StorageChange[]
+	} {
 		const emits: StorageChange[] = []
-		const port: PathStorePort = {
+		const tree: TreePort = {
 			mintIno: () => crypto.randomUUID(),
 			resolveIno: (path) => resolveInoTx(tx, path),
 			pathOf: (ino) => pathOfTx(tx, ino),
@@ -560,7 +569,8 @@ export function idbStorage(
 				const xattrs = Object.fromEntries(xrecs.map((x) => [x.name, x.value.slice()]))
 				return { meta: metaFromRecord(rec), xattrs }
 			},
-			upsertInodeFromSync: (ino, change) => upsertInodeFromSyncTx(tx, ino, change),
+			upsertInode: (ino, meta, contentHash, xattrs) =>
+				upsertInodeTx(tx, ino, meta, contentHash, xattrs),
 			async setDirent(dirIno, name, ino, type) {
 				await tx.objectStore('dirs').put({ dirIno, name, ino, type })
 			},
@@ -579,6 +589,11 @@ export function idbStorage(
 				const child = await tx.objectStore('dirs').index('by-dir').get(ino)
 				return child !== undefined
 			},
+			emit(change) {
+				emits.push(change)
+			}
+		}
+		const sync: PathSyncStore = {
 			async readPathVersion(path) {
 				const rec = await tx.objectStore('pathver').get(path)
 				return { version: rec?.version ?? 0, tombstone: rec?.tombstone ?? 0 }
@@ -588,12 +603,14 @@ export function idbStorage(
 			},
 			async appendJournalRow(change, localSource) {
 				await appendJournalRow(tx.objectStore('journal'), change, localSource)
-			},
-			emit(change) {
-				emits.push(change)
 			}
 		}
-		return { port, emits }
+		return { tree, sync, emits }
+	}
+
+	async function record(tx: FullTx, effect: TreeEffect, options?: MutationOptions): Promise<void> {
+		const { tree, sync } = makePathPorts(tx)
+		await pathSyncObserver(sync, localActorId).record(tree, effect, options)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -670,17 +687,13 @@ export function idbStorage(
 			// guarantee never applies to a freshly created file, and a later write's
 			// eviction sweep can silently drop its unsynced content. Sync-pulled
 			// creates never reach this function (they go through
-			// upsertInodeFromSyncTx, which correctly never marks dirty — pulled
+			// upsertInodeTx, which correctly never marks dirty — pulled
 			// content is safely re-fetchable), so this can't misfire on remote writes.
 			if (stored.contentHash) {
 				await tx.objectStore('dirty').put({ ino, markedAt: now })
 			}
 			const dirPath = await pathOfTx(tx, dirIno)
-			await observer.record(
-				makePathPort(tx).port,
-				{ kind: 'link', dirIno, name, ino, type: stored.type },
-				options
-			)
+			await record(tx, { kind: 'link', dirIno, name, ino, type: stored.type }, options)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
 			emit({
@@ -739,8 +752,8 @@ export function idbStorage(
 
 			// ONE effect, however big the subtree is — what recording it costs is the
 			// observer's call, not this backend's.
-			await observer.record(
-				makePathPort(tx).port,
+			await record(
+				tx,
 				{
 					kind: 'move',
 					fromDirIno: oldDir,
@@ -942,7 +955,8 @@ export function idbStorage(
 				const db = await getDb()
 				// Reads only; the port needs a readwrite-typed tx but writes nothing here.
 				const tx = db.transaction(['dirs', 'inodes', 'xattrs', 'pathver'], 'readwrite') as FullTx
-				const change = await localChangeOver(makePathPort(tx).port, path, localActorId)
+				const { tree, sync } = makePathPorts(tx)
+				const change = await localChangeOver(tree, sync, path, localActorId)
 				await tx.done
 				return change
 			},
@@ -952,8 +966,8 @@ export function idbStorage(
 					['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
 					'readwrite'
 				) as FullTx
-				const bound = makePathPort(tx)
-				await applyJournaledOver(bound.port, changes, opts)
+				const bound = makePathPorts(tx)
+				await applyJournaledOver(bound.tree, bound.sync, changes, opts)
 				await tx.done
 				// emit AFTER commit so a volume over idb invalidates its cache on the pull.
 				for (const change of bound.emits) emit(change)
@@ -1001,7 +1015,7 @@ export function idbStorage(
 				return
 			}
 			await tx.objectStore('inodes').put({ ...rec, ...partial })
-			await observer.record(makePathPort(tx).port, { kind: 'meta', ino }, options)
+			await record(tx, { kind: 'meta', ino }, options)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
 		},
@@ -1066,11 +1080,7 @@ export function idbStorage(
 				ctimeNs: stamp
 			})
 			await tx.objectStore('dirty').put({ ino, markedAt: Date.now() })
-			await observer.record(
-				makePathPort(tx).port,
-				{ kind: 'content', ino, contentHash: hash },
-				options
-			)
+			await record(tx, { kind: 'content', ino, contentHash: hash }, options)
 			await tx.done
 			emit({ ino, kind: 'content', source: options?.source })
 		},
@@ -1089,11 +1099,7 @@ export function idbStorage(
 			) as FullTx
 			await tx.objectStore('dirs').put({ dirIno, name, ino: entry.ino, type: entry.type })
 			const dirPath = await pathOfTx(tx, dirIno)
-			await observer.record(
-				makePathPort(tx).port,
-				{ kind: 'link', dirIno, name, ino: entry.ino, type: entry.type },
-				options
-			)
+			await record(tx, { kind: 'link', dirIno, name, ino: entry.ino, type: entry.type }, options)
 			await tx.done
 			emit({
 				ino: entry.ino,
@@ -1118,11 +1124,7 @@ export function idbStorage(
 			}
 			const dirPath = await pathOfTx(tx, dirIno)
 			await tx.objectStore('dirs').delete([dirIno, name])
-			await observer.record(
-				makePathPort(tx).port,
-				{ kind: 'unlink', dirIno, name, ino: existing.ino },
-				options
-			)
+			await record(tx, { kind: 'unlink', dirIno, name, ino: existing.ino }, options)
 			await tx.done
 			emit({
 				ino: existing.ino,
