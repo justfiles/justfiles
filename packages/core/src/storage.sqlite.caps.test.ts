@@ -142,7 +142,7 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 		s: ReturnType<typeof sqliteStorage>,
 		path: string
 	): Promise<Array<{ kind: string; version: string; contentHash?: string }>> => {
-		const rows = await s.caps!.journal!.readFrom(0, 1000)
+		const rows = await s.sync.journal.readFrom(0, 1000)
 		return rows
 			.filter((r) => r.change.path === path)
 			.map((r) => ({
@@ -205,15 +205,15 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 		await vol.mkdir('/a')
 		await vol.mkdir('/b')
 		await vol.mkdir('/c')
-		expect(await s.caps!.journal!.head()).toBe(3)
-		expect((await s.caps!.journal!.readFrom(0, 2)).map((r) => r.seq)).toEqual([1, 2])
-		expect((await s.caps!.journal!.readFrom(2, 2)).map((r) => r.seq)).toEqual([3])
+		expect(await s.sync.journal.head()).toBe(3)
+		expect((await s.sync.journal.readFrom(0, 2)).map((r) => r.seq)).toEqual([1, 2])
+		expect((await s.sync.journal.readFrom(2, 2)).map((r) => r.seq)).toEqual([3])
 	})
 
 	it('records local writes with no localSource tag', async () => {
 		const s = makeSqlite()
 		await volume(s).mkdir('/a')
-		const [row] = await s.caps!.journal!.readFrom(0, 1)
+		const [row] = await s.sync.journal.readFrom(0, 1)
 		expect(row.localSource).toBeUndefined() // set only by the remote apply seam (slice 4)
 	})
 })

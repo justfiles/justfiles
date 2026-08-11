@@ -46,7 +46,7 @@ test('state and seq are tracked per app', async () => {
 test('a commit that lands the same value writes nothing', async () => {
 	const storage = memStorage()
 	const s = stateStore(volume(storage))
-	const journal = storage.caps?.journal
+	const journal = storage.sync.journal
 	if (!journal) throw new Error('memStorage exposes no journal')
 	await s.commit('a', { n: 1 })
 	const head = await journal.head()
@@ -66,7 +66,7 @@ test('a commit that lands the same value writes nothing', async () => {
 test('a hydrated store skips a re-commit of what it read', async () => {
 	const storage = memStorage()
 	const fs = volume(storage)
-	const journal = storage.caps?.journal
+	const journal = storage.sync.journal
 	if (!journal) throw new Error('memStorage exposes no journal')
 	await stateStore(fs).commit('a', { n: 7 })
 	const head = await journal.head()

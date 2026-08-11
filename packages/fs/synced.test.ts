@@ -237,7 +237,7 @@ describe('synced (lifecycle)', () => {
 	it('reports error status when a sync fails', async () => {
 		// A P2P remote whose scan rejects forces the loop into the error branch.
 		const broken = memStorage()
-		Object.assign(broken.caps ?? {}, {
+		Object.assign(broken.sync, {
 			journal: {
 				append: () => Promise.reject(new Error('boom')),
 				readFrom: () => Promise.reject(new Error('boom')),
@@ -360,7 +360,7 @@ describe('synced (lifecycle)', () => {
 		const remote = memStorage()
 		const remoteVol = volume(remote)
 		await remoteVol.writeFile('/z.txt', enc.encode('old'))
-		const baseReplica = localSyncReplica(remote, journaledChangeSource(remote), {
+		const baseReplica = localSyncReplica(remote, journaledChangeSource(remote.sync), remote.sync, {
 			lazyContent: false,
 			localActorId: 'server'
 		})

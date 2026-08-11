@@ -58,7 +58,7 @@ describe('idbStorage journal upgrade', () => {
 		await seedV5(name, [put('/a.txt', 1), put('/b.txt', 1), put('/a.txt', 2), put('/a.txt', 3)])
 
 		const storage = idbStorage(name)
-		const journal = storage.caps?.journal
+		const journal = storage.sync.journal
 		if (!journal) throw new Error('backend exposes no path journal')
 		const rows = await journal.readFrom(0, 100)
 
@@ -75,7 +75,7 @@ describe('idbStorage journal upgrade', () => {
 		await seedV5(name, [put('/a.txt', 1)])
 
 		const storage = idbStorage(name)
-		const journal = storage.caps?.journal
+		const journal = storage.sync.journal
 		if (!journal) throw new Error('backend exposes no path journal')
 		expect(await journal.readFrom(0, 100)).toHaveLength(1)
 

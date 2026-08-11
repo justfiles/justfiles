@@ -6,7 +6,7 @@
  * under test is:
  *   - the `sync-wire` helpers (`syncMetaFromInode`, `changeDigest`, …),
  *   - the `sync-replica` adapters (`journaledChangeSource`, `localSyncReplica`),
- *   - the backend seams (`memStorage().caps.journal` / `.caps.pathApply`),
+ *   - the backend seams (`memStorage().sync.journal` / `.sync.pathApply`),
  *   - the `synced()` engine (push/pull/bootstrap/reconcile).
  *
  * `twoPeers()` builds two REAL local `SyncReplica`s over independent backends
@@ -19,9 +19,8 @@
  */
 
 import { createHash } from 'node:crypto'
-import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
-import type { SyncReplica } from './sync-replica'
+import type { JournaledStorage, SyncReplica } from './sync-replica'
 import { journaledChangeSource, localSyncReplica, PAGE } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { REMOTE_SOURCE, synced } from './synced'
@@ -37,7 +36,10 @@ import { chroot, volume, WATCH_BURST_MS } from './volume'
  * mem and idb construct synchronously; sqlite migrates synchronously via
  * `node:sqlite`).
  */
-export type BackendFactory = (opts?: { mintIno?: () => Ino; localActorId?: string }) => Storage
+export type BackendFactory = (opts?: {
+	mintIno?: () => Ino
+	localActorId?: string
+}) => JournaledStorage
 
 // ── Byte / hash helpers ───────────────────────────────────────────────────────
 
@@ -83,7 +85,7 @@ function trackedStorage(
 	makeBackend: BackendFactory,
 	opts?: { mintIno?: () => Ino; localActorId?: string }
 ): {
-	storage: Storage
+	storage: JournaledStorage
 	orphanCount: () => Promise<number>
 } {
 	const base = makeBackend(opts)
@@ -196,7 +198,7 @@ function makePeer(
 	opts: { id: string; lazyContent?: boolean; ignore?: (path: string) => boolean }
 ): Peer {
 	const vol = volume(storage)
-	const replica = localSyncReplica(storage, journaledChangeSource(storage), {
+	const replica = localSyncReplica(storage, journaledChangeSource(storage.sync), storage.sync, {
 		lazyContent: opts.lazyContent ?? false,
 		localActorId: opts.id,
 		ignore: opts.ignore
@@ -545,10 +547,8 @@ export async function treeSnapshot(peer: Peer): Promise<Record<string, string>> 
 // a `*.test.ts` — because both test files import them, and a test file that also
 // registers its own `describe`/`test` can't be cleanly imported by another.
 //
-// A case throws on failure. A backend that has not implemented the path-sync seams
-// (`caps.journal` / `caps.pathApply` / `caps.content` + local-mutation journaling)
-// fails these for the right reason (`not implemented`), and passes them once it
-// lands the seams.
+// A case throws on failure. Each factory supplies a filesystem paired with its
+// journaled sync module; `caps.content` stays on the filesystem.
 
 /** Real elapsed time, so a second write lands on a later millisecond. */
 function sleep(ms: number): Promise<void> {
@@ -574,6 +574,21 @@ export interface ConformanceCase {
 
 /** The shared cases. Each exercises the core seams (journal deltas, apply, blobs). */
 export const pathSyncConformanceCases: ConformanceCase[] = [
+	{
+		name: 'keeps sync state outside Storage.caps',
+		run: async (makeBackend) => {
+			const storage = makeBackend()
+			const caps = storage.caps ?? {}
+			for (const key of ['journal', 'pathApply', 'pathSnapshot', 'clearSyncState'])
+				assertEq(key in caps, false, `${key} leaked into Storage.caps`)
+			assertEq(typeof storage.sync.journal.head, 'function', 'sync module has no journal')
+			assertEq(
+				typeof storage.sync.pathApply.applyJournaled,
+				'function',
+				'sync module has no apply seam'
+			)
+		}
+	},
 	{
 		name: 'converges a create by path (delta + apply + blob-by-hash)',
 		run: async (makeBackend) => {
@@ -684,8 +699,7 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 		name: 'the journal keeps one row per path, with no sweep in between',
 		run: async (makeBackend) => {
 			const storage = makeBackend()
-			const journal = storage.caps?.journal
-			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const journal = storage.sync.journal
 			const vol = volume(storage)
 			await vol.writeFile('/state.json', bytes('old'))
 			await vol.writeFile('/other.json', bytes('other'))
@@ -725,8 +739,7 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 		name: 'adoptAllAsLocal compacts history to the latest state per path',
 		run: async (makeBackend) => {
 			const storage = makeBackend()
-			const journal = storage.caps?.journal
-			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const journal = storage.sync.journal
 			const vol = volume(storage)
 			await vol.writeFile('/deleted.txt', bytes('gone'))
 			await vol.rm('/deleted.txt')
@@ -751,8 +764,7 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 		name: 'adoptAllAsLocal can omit tombstones for an empty target',
 		run: async (makeBackend) => {
 			const storage = makeBackend()
-			const journal = storage.caps?.journal
-			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const journal = storage.sync.journal
 			const vol = volume(storage)
 			await vol.writeFile('/deleted.txt', bytes('gone'))
 			await vol.rm('/deleted.txt')
@@ -798,8 +810,7 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 		name: 'a content write moves mtime forward, and the new time ships in the journal',
 		run: async (makeBackend) => {
 			const storage = makeBackend()
-			const journal = storage.caps?.journal
-			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const journal = storage.sync.journal
 			const vol = volume(storage)
 			await vol.writeFile('/note.md', bytes('draft'))
 			const created = (await vol.stat('/note.md')).mtimeNs

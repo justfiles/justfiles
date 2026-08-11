@@ -45,12 +45,12 @@ const bytes = (s: string) => new TextEncoder().encode(s)
 const paths = (changes: PathChange[]) => changes.map((c) => c.path)
 
 function snapshotOf(storage: ReturnType<typeof makeSqlite>['storage']) {
-	const snapshot = storage.caps?.pathSnapshot
+	const snapshot = storage.sync.pathSnapshot
 	if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
 	return snapshot
 }
 
-describe('sqlite caps.pathSnapshot', () => {
+describe('sqlite sync.pathSnapshot', () => {
 	it('reports every live path as a put, in parent-before-child order', async () => {
 		const { storage, vol } = makeSqlite()
 		await vol.mkdir('/notes')
@@ -122,7 +122,7 @@ describe('sqlite caps.pathSnapshot', () => {
 	})
 })
 
-describe('sqlite caps.pathSnapshot tombstones', () => {
+describe('sqlite sync.pathSnapshot tombstones', () => {
 	it('reports deleted paths as deletes, at their tombstone version', async () => {
 		const { storage, vol } = makeSqlite()
 		await vol.writeFile('/gone.md', bytes('gone'))
@@ -165,7 +165,7 @@ describe('treeChangeSource', () => {
 		await vol.rm('/a.md')
 		await vol.writeFile('/b.md', bytes('b'))
 
-		const page = await treeChangeSource(storage).pathScan(undefined, { limit: 100 })
+		const page = await treeChangeSource(storage.sync).pathScan(undefined, { limit: 100 })
 
 		expect(paths(page.changes)).toEqual(['/b.md'])
 		expect(page.tombstones).toBeUndefined()
@@ -177,7 +177,7 @@ describe('treeChangeSource', () => {
 		await vol.writeFile('/a.md', bytes('a'))
 		await vol.rm('/a.md')
 		await vol.writeFile('/b.md', bytes('b'))
-		const source = treeChangeSource(storage)
+		const source = treeChangeSource(storage.sync)
 
 		const first = await source.pathScan(undefined, { limit: 100, tombstones: true })
 		expect(paths(first.changes)).toEqual(['/b.md'])
@@ -194,7 +194,7 @@ describe('treeChangeSource', () => {
 	it('pages by path, cutting every page at the same frozen high-water', async () => {
 		const { storage, vol } = makeSqlite()
 		for (const name of ['a', 'b', 'c']) await vol.writeFile(`/${name}.md`, bytes(name))
-		const source = treeChangeSource(storage)
+		const source = treeChangeSource(storage.sync)
 
 		const first = await source.pathScan(undefined, { limit: 2 })
 		expect(paths(first.changes)).toEqual(['/a.md', '/b.md'])
@@ -212,7 +212,7 @@ describe('treeChangeSource', () => {
 		const { storage, vol } = makeSqlite()
 		for (const name of ['a', 'b', 'c']) await vol.writeFile(`/${name}.md`, bytes(name))
 
-		const page = await treeChangeSource(storage).pathScan(`9:${encodeURIComponent('/b.md')}`, {
+		const page = await treeChangeSource(storage.sync).pathScan(`9:${encodeURIComponent('/b.md')}`, {
 			limit: 100
 		})
 
@@ -224,7 +224,7 @@ describe('treeChangeSource', () => {
 		const { storage, vol } = makeSqlite()
 		await vol.writeFile('/a.md', bytes('a'))
 
-		const delta = await treeChangeSource(storage).pathDeltas('', { limit: 100 })
+		const delta = await treeChangeSource(storage.sync).pathDeltas('', { limit: 100 })
 
 		expect(paths(delta.changes)).toEqual(['/a.md'])
 		expect(delta.done).toBe(true)

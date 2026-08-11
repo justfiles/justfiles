@@ -1,4 +1,3 @@
-import type { JournalStore, PathMutationStore, PathSnapshotStore } from './sync-replica'
 import type { FileType, Ino } from './types'
 
 export interface InodeMeta {
@@ -157,29 +156,6 @@ export interface StorageCapabilities {
 	subscribe?(listener: (change: StorageChange) => void): () => void
 
 	/**
-	 * The write-intercept path journal (owned backends: SQLite + IDB). Appended in
-	 * the same transaction as each mutation; feeds the path `ChangeSource` and the
-	 * local `SyncReplica`. Absent on non-owned backends (native uses scan+diff).
-	 */
-	journal?: JournalStore
-
-	/**
-	 * The transactional path-apply seam used by `SyncReplica.applyPathChanges` on
-	 * pull (owned backends). Installs tree metadata + `contentHash` ref + journal
-	 * row (incoming version/origin verbatim) + `path_version` fast-forward in ONE
-	 * txn; blob bytes are materialised out-of-band.
-	 */
-	pathApply?: PathMutationStore
-
-	/**
-	 * The sync snapshot, read from the TREE (and the tombstone set) rather than
-	 * replayed from the journal — see `PathSnapshotStore`. A backend without it can
-	 * still be a sync source; its snapshot just comes from `journaledChangeSource`,
-	 * which is why its journal can never be pruned below one row per path.
-	 */
-	pathSnapshot?: PathSnapshotStore
-
-	/**
 	 * The backend's hash-addressed content store. Blobs are keyed by content hash
 	 * (matching R2), so the inode holds a `contentHash` reference and the bytes live
 	 * here. The local `SyncReplica.BlobStore` reads/writes it directly to materialise
@@ -188,16 +164,6 @@ export interface StorageCapabilities {
 	 * orphan (GC reclaims it); a referenced hash with no blob is a lazy stub.
 	 */
 	content?: ContentStore
-
-	/**
-	 * Drop this replica's local sync state — the path journal + the per-path version
-	 * generator (versions + tombstones) — WITHOUT touching the tree or content. Used
-	 * by a client reset ("take theirs"): after a server lineage reset, local version
-	 * tombstones from deleting the old tree would outrank the re-pulled server puts
-	 * (versions aren't comparable across lineages), so the discard must clear them for
-	 * a clean re-bootstrap. Owned backends only.
-	 */
-	clearSyncState?(): Promise<void>
 }
 
 /** Hash-addressed content store (see `StorageCapabilities.content`). */

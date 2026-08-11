@@ -54,7 +54,7 @@ describe('daily maintenance', () => {
 
 		expect(await content.hasByHash(oldHash)).toBe(true)
 		await runDailyMaintenance(storage, vol, alarmState())
-		const delta = await journaledChangeSource(storage).pathDeltas('', { limit: 1 })
+		const delta = await journaledChangeSource(storage.sync).pathDeltas('', { limit: 1 })
 
 		expect(await content.hasByHash(oldHash)).toBe(false)
 		expect(await content.hasByHash(currentHash)).toBe(true)

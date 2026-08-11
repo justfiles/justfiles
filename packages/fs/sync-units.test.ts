@@ -5,15 +5,14 @@
  *   - wire helpers (`syncMetaFromInode` / `inodeMetaFromSync` / `changeDigest` /
  *     `coalesceByPath`);
  *   - the adapter seams (`journaledChangeSource` / `localSyncReplica`);
- *   - the backend seams (`memStorage().caps.journal` / `.caps.pathApply`);
+ *   - the backend seams (`memStorage().sync.journal` / `.sync.pathApply`);
  *   - the LOCKED wire schema (`PathChange` / `SyncMeta` / `Version`) + numeric
  *     version helpers + `isCanonicalPath`, which pin the contract.
  */
 
 import { describe, expect, it } from 'vitest'
-import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
-import type { JournalRow, JournalStore } from './sync-replica'
+import type { JournaledStorage, JournalRow, JournalStore } from './sync-replica'
 import {
 	ignorePrefixes,
 	journaledChangeSource,
@@ -95,15 +94,19 @@ function symlink(
 	}
 }
 
-function makeReplica(store: Storage, lazyContent = false, ignore?: (path: string) => boolean) {
-	return localSyncReplica(store, journaledChangeSource(store), {
+function makeReplica(
+	store: JournaledStorage,
+	lazyContent = false,
+	ignore?: (path: string) => boolean
+) {
+	return localSyncReplica(store, journaledChangeSource(store.sync), store.sync, {
 		lazyContent,
 		localActorId: 'me',
 		ignore
 	})
 }
 
-function fakeJournalStore(rows: JournalRow[]): Storage {
+function fakeJournalStore(rows: JournalRow[]): JournaledStorage {
 	const base = memStorage()
 	const journal: JournalStore = {
 		async append() {},
@@ -129,7 +132,7 @@ function fakeJournalStore(rows: JournalRow[]): Storage {
 			)
 		}
 	}
-	return { ...base, caps: { ...base.caps, journal } }
+	return { ...base, sync: { ...base.sync, journal } }
 }
 
 // ── Wire schema (locked) ──────────────────────────────────────────────────────
@@ -392,7 +395,7 @@ describe('journaledChangeSource.pathDeltas', () => {
 			fakeJournalStore([
 				{ seq: 1, change: put('/a', '1', 'x') },
 				{ seq: 2, change: put('/a', '2', 'y') }
-			])
+			]).sync
 		)
 		const { changes, done } = await cs.pathDeltas('', {})
 		expect(changes).toEqual([put('/a', '2', 'y')])
@@ -404,7 +407,7 @@ describe('journaledChangeSource.pathDeltas', () => {
 			fakeJournalStore([
 				{ seq: 1, change: { ...put('/a', '1', 'x'), source: 'me' } },
 				{ seq: 2, change: { ...put('/b', '1', 'y'), source: 'other' } }
-			])
+			]).sync
 		)
 		const { changes } = await cs.pathDeltas('', { excludeOrigin: 'me' })
 		expect(changes.map((c) => c.path)).toEqual(['/b'])
@@ -415,7 +418,7 @@ describe('journaledChangeSource.pathDeltas', () => {
 			fakeJournalStore([
 				{ seq: 1, change: put('/a', '1', 'x'), localSource: REMOTE_SOURCE },
 				{ seq: 2, change: put('/b', '1', 'y') }
-			])
+			]).sync
 		)
 		const { changes } = await cs.pathDeltas('', { excludeLocalSource: REMOTE_SOURCE })
 		expect(changes.map((c) => c.path)).toEqual(['/b'])
@@ -426,7 +429,7 @@ describe('journaledChangeSource.pathDeltas', () => {
 			fakeJournalStore([
 				{ seq: 1, change: put('/a', '1', 'x') },
 				{ seq: 2, change: put('/b', '1', 'y') }
-			])
+			]).sync
 		)
 		const first = await cs.pathDeltas('', { limit: 1 })
 		expect(first.done).toBe(false)
@@ -437,11 +440,10 @@ describe('journaledChangeSource.pathDeltas', () => {
 
 // ── backend seams: memStorage journal + pathApply ─────────────────────────────
 
-describe('memStorage caps.journal', () => {
+describe('memStorage sync.journal', () => {
 	it('append then readFrom returns rows in seq order with localSource', async () => {
 		const store = memStorage()
-		const journal = store.caps?.journal
-		if (!journal) throw new Error('no journal cap')
+		const journal = store.sync.journal
 		await journal.append([put('/a', '1', 'x')])
 		await journal.append([put('/b', '1', 'y')], REMOTE_SOURCE)
 		const rows = await journal.readFrom(0, 10)
@@ -451,17 +453,17 @@ describe('memStorage caps.journal', () => {
 	})
 })
 
-describe('memStorage caps.pathApply.applyJournaled', () => {
+describe('memStorage sync.pathApply.applyJournaled', () => {
 	it('installs meta + contentHash ref and journals the change verbatim', async () => {
 		const store = memStorage()
 		const vol = volume(store)
 		const change = put('/notes/a', '3', 'hi')
-		await store.caps?.pathApply?.applyJournaled([change], { localSource: REMOTE_SOURCE })
+		await store.sync.pathApply.applyJournaled([change], { localSource: REMOTE_SOURCE })
 		const st = await vol.stat('/notes/a')
 		expect(st.contentHash).toBe(change.contentHash)
-		const rows = await store.caps?.journal?.readFrom(0, 10)
-		expect(rows?.at(-1)?.change.version).toBe('3')
-		expect(rows?.at(-1)?.localSource).toBe(REMOTE_SOURCE)
+		const rows = await store.sync.journal.readFrom(0, 10)
+		expect(rows.at(-1)?.change.version).toBe('3')
+		expect(rows.at(-1)?.localSource).toBe(REMOTE_SOURCE)
 	})
 })
 
@@ -690,7 +692,7 @@ describe('journaledChangeSource.pathDeltas cursor progress', () => {
 			fakeJournalStore([
 				{ seq: 1, change: { ...put('/a', '1', 'x'), source: 'me' } },
 				{ seq: 2, change: { ...put('/b', '1', 'y'), source: 'me' } }
-			])
+			]).sync
 		)
 		const res = await cs.pathDeltas('', { excludeOrigin: 'me', limit: 2 })
 		expect(res.changes).toEqual([]) // everything filtered
@@ -703,7 +705,7 @@ describe('journaledChangeSource.pathDeltas cursor progress', () => {
 			fakeJournalStore([
 				{ seq: 1, change: put('/a', '1', 'x'), localSource: REMOTE_SOURCE },
 				{ seq: 2, change: put('/b', '1', 'y'), localSource: REMOTE_SOURCE }
-			])
+			]).sync
 		)
 		const res = await cs.pathDeltas('', { excludeLocalSource: REMOTE_SOURCE, limit: 2 })
 		expect(res.changes).toEqual([]) // everything filtered
@@ -714,15 +716,15 @@ describe('journaledChangeSource.pathDeltas cursor progress', () => {
 
 // ── PathMutationStore version/tombstone generator — issue #144 item 3 ─────────
 
-describe('memStorage caps.pathApply version/tombstone generator', () => {
-	async function lastRow(store: Storage, pred: (r: JournalRow) => boolean) {
-		const rows = (await store.caps?.journal?.readFrom(0, 100)) ?? []
+describe('memStorage sync.pathApply version/tombstone generator', () => {
+	async function lastRow(store: JournaledStorage, pred: (r: JournalRow) => boolean) {
+		const rows = await store.sync.journal.readFrom(0, 100)
 		return rows.findLast(pred)
 	}
 
 	it('journals the incoming change verbatim (version + origin source preserved)', async () => {
 		const store = memStorage()
-		await store.caps?.pathApply?.applyJournaled([{ ...put('/a', '5', 'x'), source: 'origin' }], {
+		await store.sync.pathApply.applyJournaled([{ ...put('/a', '5', 'x'), source: 'origin' }], {
 			localSource: REMOTE_SOURCE
 		})
 		const row = await lastRow(store, (r) => r.change.path === '/a')
@@ -734,7 +736,7 @@ describe('memStorage caps.pathApply version/tombstone generator', () => {
 	it('fast-forwards path_version so a later local edit exceeds the applied version', async () => {
 		const store = memStorage()
 		const vol = volume(store)
-		await store.caps?.pathApply?.applyJournaled([put('/a', '5', 'x')], {
+		await store.sync.pathApply.applyJournaled([put('/a', '5', 'x')], {
 			localSource: REMOTE_SOURCE
 		})
 		await vol.writeFile('/a', bytes('local-edit'))
@@ -745,10 +747,10 @@ describe('memStorage caps.pathApply version/tombstone generator', () => {
 	it('versions a recreate above the tombstone of a prior delete', async () => {
 		const store = memStorage()
 		const vol = volume(store)
-		await store.caps?.pathApply?.applyJournaled([put('/a', '5', 'x')], {
+		await store.sync.pathApply.applyJournaled([put('/a', '5', 'x')], {
 			localSource: REMOTE_SOURCE
 		})
-		await store.caps?.pathApply?.applyJournaled([del('/a', '7')], { localSource: REMOTE_SOURCE })
+		await store.sync.pathApply.applyJournaled([del('/a', '7')], { localSource: REMOTE_SOURCE })
 		await vol.writeFile('/a', bytes('recreated'))
 		const recreate = await lastRow(
 			store,
@@ -790,9 +792,9 @@ describe('ordering invariants', () => {
 		const vol = volume(store)
 		await vol.mkdir('/old/sub', { recursive: true })
 		await vol.writeFile('/old/sub/f', bytes('x'))
-		const head = (await store.caps?.journal?.head()) ?? 0
+		const head = await store.sync.journal.head()
 		await vol.rename('/old', '/new')
-		const rows = (await store.caps?.journal?.readFrom(head, 100)) ?? []
+		const rows = await store.sync.journal.readFrom(head, 100)
 		const seq = rows.map((r) => `${r.change.kind} ${r.change.path}`)
 		const at = (s: string) => seq.indexOf(s)
 		// deletes: child before parent

@@ -264,6 +264,20 @@ export interface PathMutationStore {
 	applyJournaled(changes: PathChange[], opts: { localSource?: string }): Promise<void>
 }
 
+/** Sync-owned seams for one journaled filesystem backend. */
+export interface JournaledSyncModule {
+	readonly journal: JournalStore
+	readonly pathApply: PathMutationStore
+	readonly pathSnapshot?: PathSnapshotStore
+	/** Drop journal + path versions without touching the tree or content. */
+	clearSyncState(): Promise<void>
+}
+
+/** A filesystem paired with its separate journaled sync module. */
+export interface JournaledStorage extends Storage {
+	readonly sync: JournaledSyncModule
+}
+
 // ── Native (scan + diff) seams ────────────────────────────────────────────────
 
 /** path -> last-agreed identity. Persisted (sidecar SQLite/LevelDB), NOT in-RAM. */
@@ -320,21 +334,14 @@ async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<Pa
 		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
-function requireJournal(store: Storage): JournalStore {
-	const journal = store.caps?.journal
-	if (!journal) throw new Error('backend exposes no path journal (caps.journal)')
-	return journal
-}
-
 /**
  * The `ChangeSource` for owned backends (SQLite + IDB): reads the write-intercept
- * `JournalStore` the backend exposes via `caps.journal`. The journal is intrinsic
- * to the store, so it is read from the store rather than passed separately.
+ * journal from its sync module.
  */
-export function journaledChangeSource(store: Storage): ChangeSource {
+export function journaledChangeSource(sync: JournaledSyncModule): ChangeSource {
 	return {
 		async pathDeltas(cursor, opts) {
-			const journal = requireJournal(store)
+			const journal = sync.journal
 			const limit = opts?.limit ?? PAGE
 			const from = Number(cursor || '0')
 			// Below the floor the journal no longer holds the history this reader is
@@ -361,7 +368,7 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			}
 		},
 		async pathScan(page, opts) {
-			const journal = requireJournal(store)
+			const journal = sync.journal
 			const limit = opts?.limit ?? PAGE
 			// Freeze the delta high-water at snapshot START and carry it (+ the page
 			// key) in the opaque page token, so every page is cut at the SAME frozen
@@ -392,7 +399,7 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 
 /**
  * The `ChangeSource` for a backend that can enumerate its own tree: deltas from the
- * journal exactly as above, but the SNAPSHOT from `caps.pathSnapshot` instead of a
+ * journal exactly as above, but the SNAPSHOT from the sync module instead of a
  * coalesced replay of the whole journal.
  *
  * That replay is why the journal could never be pruned below one row per path — the
@@ -407,11 +414,11 @@ export function journaledChangeSource(store: Storage): ChangeSource {
  * than the freeze can only be NEWER than the delta stream that resumes at it, and
  * applying a change twice is idempotent under LWW.
  */
-export function treeChangeSource(store: Storage): ChangeSource {
-	const journaled = journaledChangeSource(store)
+export function treeChangeSource(sync: JournaledSyncModule): ChangeSource {
+	const journaled = journaledChangeSource(sync)
 	const requireSnapshot = (): PathSnapshotStore => {
-		const snapshot = store.caps?.pathSnapshot
-		if (!snapshot) throw new Error('backend serves no tree snapshot (caps.pathSnapshot)')
+		const snapshot = sync.pathSnapshot
+		if (!snapshot) throw new Error('sync module serves no tree snapshot')
 		return snapshot
 	}
 	return {
@@ -439,7 +446,7 @@ export function treeChangeSource(store: Storage): ChangeSource {
 					after = decodeURIComponent(rest)
 				}
 			} else {
-				head = String(await requireJournal(store).head())
+				head = String(await sync.journal.head())
 			}
 			const token = (nextPhase: 'p' | 't', lastPath: string): SyncCursor =>
 				`${head}:${nextPhase}:${encodeURIComponent(lastPath)}`
@@ -493,7 +500,7 @@ export function nativeChangeSource(
  * The local `SyncReplica`, COMPOSED over a lean `Storage` + an INJECTED
  * `ChangeSource` (journaled for owned backends, native for scan+diff). It
  * delegates detection to `changes` and adds `ChangeApplier` + `BlobStore` over
- * the `Storage` (`caps.pathApply` + the content store). `lazyContent` fixes
+ * the filesystem + its sync module. `lazyContent` fixes
  * eager vs lazy hydration; `ignore` marks paths this replica never sends, never
  * accepts and never sweeps — composed with the built-in private class, which it
  * cannot weaken (see `syncIgnore`).
@@ -501,6 +508,7 @@ export function nativeChangeSource(
 export function localSyncReplica(
 	storage: Storage,
 	changes: ChangeSource,
+	sync: JournaledSyncModule,
 	opts: { lazyContent: boolean; localActorId: string; ignore?: (path: string) => boolean }
 ): SyncReplica {
 	const isIgnored = syncIgnore(opts.ignore)
@@ -544,11 +552,6 @@ export function localSyncReplica(
 		if (!content) throw new Error('backend exposes no content store (caps.content)')
 		return content
 	}
-	const requirePathApply = (): PathMutationStore => {
-		const pathApply = storage.caps?.pathApply
-		if (!pathApply) throw new Error('backend exposes no path-apply seam (caps.pathApply)')
-		return pathApply
-	}
 	return {
 		async pathDeltas(cursor, opts) {
 			// Hard exclusion (see syncIgnore): local-only state, credentials and this host's
@@ -575,7 +578,7 @@ export function localSyncReplica(
 			const admissible: PathChange[] = []
 			for (const c of incoming)
 				if (!isIgnored(c.path) && !(await shieldsIgnored(c))) admissible.push(c)
-			const pathApply = requirePathApply()
+			const pathApply = sync.pathApply
 			// Deterministic LWW against the CURRENT local state, read before applying:
 			// keep only changes that beat their local path (numeric version, then a
 			// source-independent digest tie-break). Without this, concurrent equal-

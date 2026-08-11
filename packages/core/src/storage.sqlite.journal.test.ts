@@ -12,7 +12,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
-import type { Storage } from '@justfiles/fs/storage'
+import type { JournaledStorage } from '@justfiles/fs/sync-replica'
 import { journaledChangeSource } from '@justfiles/fs/sync-replica'
 import { describe, expect, it } from 'vitest'
 import { createSqliteAdapter } from './db.sqlite'
@@ -55,8 +55,8 @@ function journalRows(db: DatabaseSync): Array<{ seq: number; path: string }> {
 }
 
 /** Every contentHash the journal hands out, draining the deltas at this page size. */
-async function hashesServedAtPageSize(storage: Storage, limit: number): Promise<string[]> {
-	const source = journaledChangeSource(storage)
+async function hashesServedAtPageSize(storage: JournaledStorage, limit: number): Promise<string[]> {
+	const source = journaledChangeSource(storage.sync)
 	const served: string[] = []
 	let cursor = '0'
 	for (;;) {
@@ -103,7 +103,7 @@ describe('sqlite journal: one row per path', () => {
 
 	it('holds one row per path when the sync layer applies a remote change', async () => {
 		const { db, storage } = make()
-		const journal = storage.caps?.journal
+		const journal = storage.sync.journal
 		if (!journal) throw new Error('sqlite must expose a path journal')
 		const remote = (version: string) =>
 			({
@@ -163,7 +163,7 @@ describe('sqlite journal: what a delta page may name', () => {
 	it('still advances the cursor one row at a time', async () => {
 		const { storage, vol } = make()
 		for (const name of ['a', 'b', 'c']) await vol.writeFile(`/${name}.md`, bytes(name))
-		const source = journaledChangeSource(storage)
+		const source = journaledChangeSource(storage.sync)
 
 		const paths: string[] = []
 		let cursor = '0'

@@ -66,7 +66,7 @@ import { FileType } from './types'
 //      for convergence; deferred to keep 2a a pure refactor.
 //
 //   2b. [DONE 95c5b6c2] IMPLEMENT IDB PATH-SYNC. idbStorage now implements
-//      caps.journal / caps.content / caps.pathApply + per-mutation journaling via
+//      sync.journal / caps.content / sync.pathApply + per-mutation journaling via
 //      the shared driver + a per-txn TreePort (conformance 5/5). The port
 //      shape (from 2a) needed NO reshaping for IndexedDB — idb is the third proven
 //      backend. Content was re-keyed from ino-addressed to HASH-addressed
@@ -99,9 +99,9 @@ import { FileType } from './types'
 //        2. [DONE] Decouple the port from the wire: `upsertInode` takes
 //           `InodeMeta`, and path versions + `appendJournalRow` live on a
 //           sync-owned store.
-//        3. `journal` / `pathApply` / `pathSnapshot` / `clearSyncState` leave
-//           `StorageCapabilities`; `SyncReplica` is COMPOSED from (filesystem, sync
-//           module) instead of read off `storage.caps`.
+//        3. [DONE] `journal` / `pathApply` / `pathSnapshot` / `clearSyncState`
+//           leave `StorageCapabilities`; `SyncReplica` is COMPOSED from
+//           (filesystem, sync module) instead of reading sync from `storage.caps`.
 //        4. Move the files to `packages/sync` and let imports enforce the boundary.
 //           Intention did not hold this line — a sync-shaped column reached
 //           `fs_dirents` in #453 without anyone having to argue for it. A compiler
@@ -147,7 +147,7 @@ import { FileType } from './types'
 //      body, a NativeIndex impl, an FsWatcher impl, a nativeSyncReplica (apply +
 //      blob-serve over the fs's EXISTING lean mutators), and one branch in synced()
 //      to pick native vs localSyncReplica. Untouched: every DB backend,
-//      journaledChangeSource, localSyncReplica, caps.journal/pathApply/content, the
+//      journaledChangeSource, localSyncReplica, sync.journal/pathApply, caps.content, the
 //      TreePort + applyJournaledOver driver.
 //
 //      THE SEAM REFRAMING (why this simplifies rather than diverges): native-fs
@@ -155,7 +155,7 @@ import { FileType } from './types'
 //      implements + a sidecar NativeIndex (SYNC-ENGINE state, not Storage state):
 //      apply writes via putBlob/atomicCreate/deleteDirent (recording the applied
 //      version in NativeIndex to suppress echo); blob-serve is hash->path via
-//      NativeIndex + getBlob. This reveals caps.journal/pathApply/content as
+//      NativeIndex + getBlob. This reveals sync.journal/pathApply + caps.content as
 //      localSyncReplica's DB-FLAVOURED ingredients, NOT the universal sync contract
 //      — the universal contract is SyncReplica (= ChangeSource & ChangeApplier &
 //      BlobStore), composed differently per backend. That is the whole unification;

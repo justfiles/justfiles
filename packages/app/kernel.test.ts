@@ -247,7 +247,7 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	// turn — and the pair never settles.
 	const storage = memStorage()
 	const fs = volume(storage)
-	const journal = storage.caps?.journal
+	const journal = storage.sync.journal
 	if (!journal) throw new Error('memStorage exposes no journal')
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
