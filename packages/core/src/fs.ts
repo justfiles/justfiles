@@ -3,9 +3,11 @@ import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
 import {
 	CursorPrunedError,
+	type JournaledStorage,
 	journaledChangeSource,
 	localSyncReplica,
 	PAGE,
+	type SyncReplica,
 	treeChangeSource
 } from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
@@ -240,16 +242,24 @@ export function createFsApi(
 	// is stamped per-request from SOURCE_HEADER (see POST /path/changes), so the
 	// construction-time localActorId is only a fallback.
 	//
-	// `treeChangeSource` where the backend can serve its own tree, so the snapshot is
+	// `treeChangeSource` where the sync module can serve its own tree, so the snapshot is
 	// READ from the tree rather than replayed from the journal — the one thing that
-	// pinned journal retention to one row per path forever. A backend without
-	// `caps.pathSnapshot` keeps the journal-replayed snapshot, and its journal keeps
+	// pinned journal retention to one row per path forever. A module without a
+	// path snapshot keeps the journal-replayed snapshot, and its journal keeps
 	// that floor.
-	const replica = localSyncReplica(
-		backend,
-		backend.caps?.pathSnapshot ? treeChangeSource(backend) : journaledChangeSource(backend),
-		{ lazyContent: false, localActorId: 'server' }
-	)
+	const sync = (backend as Partial<JournaledStorage>).sync
+	const replica = sync
+		? localSyncReplica(
+				backend,
+				sync.pathSnapshot ? treeChangeSource(sync) : journaledChangeSource(sync),
+				sync,
+				{ lazyContent: false, localActorId: 'server' }
+			)
+		: undefined
+	const requireReplica = (): SyncReplica => {
+		if (!replica) throw new Error('backend has no sync module')
+		return replica
+	}
 	const mutationOptions = (request: Request): { source?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
 		return source ? { source } : {}
@@ -340,7 +350,8 @@ export function createFsApi(
 			// Path sync: PULL (client reads the server's ChangeSource)
 			.get('/path/changes', zValidator('query', DeltaQuery), async (c) => {
 				const { cursor, excludeOrigin, limit } = c.req.valid('query')
-				let page: Awaited<ReturnType<typeof replica.pathDeltas>>
+				const replica = requireReplica()
+				let page: Awaited<ReturnType<SyncReplica['pathDeltas']>>
 				try {
 					page = await replica.pathDeltas(cursor, { excludeOrigin, limit })
 				} catch (error) {
@@ -359,6 +370,7 @@ export function createFsApi(
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
 				const { page, limit, tombstones } = c.req.valid('query')
+				const replica = requireReplica()
 				const scan = await replica.pathScan(page, { limit, tombstones: tombstones === '1' })
 				const lineage = await readLineage()
 				return c.json(ScanPage.parse({ ...scan, generation: lineage?.generation }))
@@ -367,6 +379,7 @@ export function createFsApi(
 			// Path sync: PUSH (client writes path-changes; server applies to its Storage)
 			.put('/blob/:hash', zValidator('param', HashParam), async (c) => {
 				const { hash } = c.req.valid('param')
+				const replica = requireReplica()
 				const data = new Uint8Array(await c.req.arrayBuffer())
 				// The server MUST verify sha256(bytes) === hash before accepting a blob.
 				if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
@@ -376,6 +389,7 @@ export function createFsApi(
 
 			.post('/blobs/missing', zValidator('json', MissingBlobsBody), async (c) => {
 				const { hashes } = c.req.valid('json')
+				const replica = requireReplica()
 				const missing: string[] = []
 				for (const hash of hashes) {
 					if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
@@ -385,6 +399,7 @@ export function createFsApi(
 
 			.post('/path/changes', zValidator('json', PathChangesBody), async (c) => {
 				const { changes } = c.req.valid('json')
+				const replica = requireReplica()
 				// SERVER-AUTHORITATIVE origin: ignore any `source` in the body, stamp the
 				// authenticated caller's client-id on every applied change.
 				const callerId = c.req.header(SOURCE_HEADER) ?? undefined
@@ -412,6 +427,7 @@ export function createFsApi(
 			// the method here; a missing blob is a 404, never a 500.
 			.on(['GET', 'HEAD'], '/blob/:hash', zValidator('param', HashParam), async (c) => {
 				const { hash } = c.req.valid('param')
+				const replica = requireReplica()
 				if (c.req.method === 'HEAD')
 					return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
 				if (!(await replica.hasBlobByHash(hash))) return c.body(null, 404)

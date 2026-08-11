@@ -4,6 +4,7 @@ import {
 	type BlobStore,
 	CursorPrunedError,
 	GenerationStaleError,
+	type JournaledStorage,
 	journaledChangeSource,
 	LineageStaleError,
 	localSyncReplica,
@@ -40,7 +41,7 @@ type RemotePeer =
 	  }) => SyncReplica)
 
 type Props = {
-	local: Storage
+	local: JournaledStorage
 	remote: RemotePeer
 	interval?: number
 	lazyContent?: boolean
@@ -149,11 +150,25 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const isIgnored = syncIgnore(props.ignore)
 
 	// The local replica always wraps props.local (a journaled backend).
-	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
-		lazyContent,
-		localActorId: id,
-		ignore: props.ignore
-	})
+	const localReplica = localSyncReplica(
+		props.local,
+		journaledChangeSource(props.local.sync),
+		props.local.sync,
+		{
+			lazyContent,
+			localActorId: id,
+			ignore: props.ignore
+		}
+	)
+	const localReplicaFor = (storage: Storage): SyncReplica => {
+		const sync = (storage as Partial<JournaledStorage>).sync
+		if (!sync) throw new Error('local peer has no sync module')
+		return localSyncReplica(storage, journaledChangeSource(sync), sync, {
+			lazyContent,
+			localActorId: id,
+			ignore: props.ignore
+		})
+	}
 
 	// Topology selection — the ONE place client<->server differs from P2P. Both
 	// yield a `SyncReplica`, so push/pull/bootstrap below are topology-agnostic.
@@ -170,11 +185,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 					generation: () => knownGeneration,
 					lineageId: () => knownLineage
 				})
-			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
-					lazyContent,
-					localActorId: id,
-					ignore: props.ignore
-				})
+			: localReplicaFor(props.remote)
 
 	// The client<->server handshake, run ONCE before the first sync. A local peer
 	// shares this build so P2P skips it (see `sync()`).
@@ -378,7 +389,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// lineage reset the server's versions aren't comparable to ours, so a leftover
 		// tombstone would outrank a re-pulled put and strand that path. Owned backends
 		// only; a P2P/native peer has no such state.
-		await props.local.caps?.clearSyncState?.()
+		await props.local.sync.clearSyncState()
 		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
 	}
 
@@ -400,7 +411,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// ordinary push (`excludeLocalSource: REMOTE_SOURCE`) would filter it out and
 		// bootstrap (everPushed=false) never re-stamps a path absent from the new snapshot,
 		// stranding it local-only forever. Adopting makes every preserved path publishable.
-		await props.local.caps?.journal?.adoptAllAsLocal?.()
+		await props.local.sync.journal.adoptAllAsLocal()
 		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
 	}
 
@@ -457,7 +468,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	async function applyTakeMinePrep(toGeneration: number): Promise<void> {
 		if (!knownPending) return
 		await recordGeneration(toGeneration)
-		await props.local.caps?.journal?.adoptAllAsLocal?.({ dropDeletes: true })
+		await props.local.sync.journal.adoptAllAsLocal({ dropDeletes: true })
 		knownPending = { ...knownPending, toGeneration }
 		await syncState.patch({ pendingReset: knownPending, pushCursor: '0', pullCursor: '0' })
 	}

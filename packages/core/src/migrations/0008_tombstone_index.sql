@@ -1,7 +1,7 @@
 -- The tombstone set, as an index.
 --
 -- `fs_path_version` holds one row per path ever touched, and the sync snapshot now
--- serves the DELETED ones to a re-bootstrapping replica (caps.pathSnapshot). Paging
+-- serves the DELETED ones to a re-bootstrapping replica (sync.pathSnapshot). Paging
 -- that set through the table's own primary key would walk every LIVE path too — the
 -- overwhelming majority — and load each row to test it.
 --

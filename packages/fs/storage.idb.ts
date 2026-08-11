@@ -1,15 +1,9 @@
 import type { DBSchema, IDBPDatabase, IDBPObjectStore, IDBPTransaction, StoreNames } from 'idb'
 import { openDB } from 'idb'
-import type {
-	InodeMeta,
-	MutationOptions,
-	Storage,
-	StorageCapabilities,
-	StorageChange
-} from './storage'
+import type { InodeMeta, MutationOptions, StorageCapabilities, StorageChange } from './storage'
 import type { PathSyncStore, TreeEffect, TreePort } from './storage.shared'
 import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
-import type { JournalRow } from './sync-replica'
+import type { JournaledStorage, JournaledSyncModule, JournalRow } from './sync-replica'
 import { coalesceByPath, type PathChange } from './sync-wire'
 import type { Ino } from './types'
 import { FileType } from './types'
@@ -212,7 +206,7 @@ async function coalesceJournal(journal: JournalStoreOf<'versionchange'>): Promis
 	}
 }
 
-export type IdbStorage = Storage & {
+export type IdbStorage = JournaledStorage & {
 	/** Root directory inode — always '1' for this backend. */
 	readonly rootIno: Ino
 	/** Close the database and release resources. */
@@ -617,7 +611,7 @@ export function idbStorage(
 	// Capabilities
 	// ---------------------------------------------------------------------------
 
-	const caps: StorageCapabilities = {
+	const implemented = {
 		async getXattr(ino, name) {
 			const db = await getDb()
 			const rec = await db.get('xattrs', [ino, name])
@@ -843,8 +837,8 @@ export function idbStorage(
 			}
 		},
 
-		// Drop local sync state (journal + version generator) for a client reset —
-		// see StorageCapabilities.clearSyncState. Tree + content are left intact.
+		// Drop local sync state (journal + version generator) for a client reset.
+		// Tree + content are left intact.
 		async clearSyncState() {
 			const db = await getDb()
 			const tx = db.transaction(['journal', 'pathver'], 'readwrite')
@@ -973,7 +967,9 @@ export function idbStorage(
 				for (const change of bound.emits) emit(change)
 			}
 		}
-	}
+	} satisfies StorageCapabilities & JournaledSyncModule
+	const { clearSyncState, journal, pathApply, ...caps } = implemented
+	const sync: JournaledSyncModule = { clearSyncState, journal, pathApply }
 
 	// ---------------------------------------------------------------------------
 	// Storage implementation
@@ -982,6 +978,7 @@ export function idbStorage(
 	return {
 		rootIno: ROOT_INO,
 		caps,
+		sync,
 
 		destroy() {
 			dbPromise?.then((db) => db.close()).catch(() => {})

@@ -1,7 +1,7 @@
-import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type { InodeMeta, StorageCapabilities, StorageChange } from './storage'
 import type { PathSyncStore, TreePort } from './storage.shared'
 import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
-import type { JournalRow } from './sync-replica'
+import type { JournaledStorage, JournaledSyncModule, JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath } from './sync-wire'
 import type { DirentMin, Ino } from './types'
@@ -16,7 +16,10 @@ import { FileType } from './types'
  * `localActorId` is the backend's client-id, stamped as the ORIGIN
  * (`PathChange.source`) on local mutations.
  */
-export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }): Storage {
+export function memStorage(opts?: {
+	mintIno?: () => Ino
+	localActorId?: string
+}): JournaledStorage {
 	const metas = new Map<Ino, InodeMeta>()
 	// Content is hash-addressed (matching R2): the inode holds a `contentHash` ref,
 	// the bytes live here keyed by that hash. Dedupes and lets pulled content be
@@ -37,8 +40,8 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 
 	// Path journal (write-intercept): a path-stamped, seq-ordered log holding AT MOST
 	// ONE ROW PER PATH — a new row takes out the rows it supersedes (see
-	// JournalStore.append). Shared by the `caps.journal` primitive, the per-mutation
-	// stamping, and `caps.pathApply.applyJournaled`. `seq` is this backend's SyncCursor.
+	// JournalStore.append). Shared by the sync module's journal, the per-mutation
+	// stamping, and path apply. `seq` is this backend's SyncCursor.
 	const journalRows: JournalRow[] = []
 	let journalSeq = 0
 	function appendJournal(changes: PathChange[], localSource?: string): void {
@@ -236,7 +239,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		return out
 	}
 
-	const caps: StorageCapabilities = {
+	const implemented = {
 		async getXattr(ino, name) {
 			return xattrs.get(ino)?.get(name)?.slice() ?? null
 		},
@@ -418,11 +421,14 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				await applyJournaledOver(treePort, pathSyncStore, changes, opts)
 			}
 		}
-	}
+	} satisfies StorageCapabilities & JournaledSyncModule
+	const { clearSyncState, journal, pathApply, ...caps } = implemented
+	const sync: JournaledSyncModule = { clearSyncState, journal, pathApply }
 
 	return {
 		rootIno,
 		caps,
+		sync,
 
 		async getMeta(ino) {
 			return metas.get(ino) ?? null

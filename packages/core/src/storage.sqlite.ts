@@ -1,4 +1,9 @@
-import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfiles/fs/storage'
+import type {
+	InodeMeta,
+	MutationOptions,
+	StorageCapabilities,
+	StorageChange
+} from '@justfiles/fs/storage'
 import type { PathSyncStore, TreeEffect, TreePort } from '@justfiles/fs/storage.shared'
 import {
 	applyJournaledOver,
@@ -8,6 +13,7 @@ import {
 	localChangeOver,
 	pathSyncObserver
 } from '@justfiles/fs/storage.shared'
+import type { JournaledStorage, JournaledSyncModule } from '@justfiles/fs/sync-replica'
 import { coalesceByPath, type PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
@@ -261,7 +267,7 @@ function inferText(data: Uint8Array, limit: number): { text: string; mimeType: s
 	return { text, mimeType: 'text/plain; charset=utf-8' }
 }
 
-export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
+export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledStorage {
 	const blobStore = options.blobStore
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
@@ -925,7 +931,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 	// ── StorageCapabilities ──────────────────────────────────────────────────────
 
-	const caps = {
+	const implemented = {
 		async getXattr(ino: Ino, name: string): Promise<Uint8Array | null> {
 			await ensureBootstrapped()
 			const rows = await db.query<{ value: unknown }>(
@@ -1321,8 +1327,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 
-		// Drop local sync state (journal + version generator) for a client reset —
-		// see StorageCapabilities.clearSyncState. Tree + content are left intact.
+		// Drop local sync state (journal + version generator) for a client reset.
+		// Tree + content are left intact.
 		async clearSyncState(): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
@@ -1512,13 +1518,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				for (const change of pendingEmits) emit(change)
 			}
 		}
-	}
+	} satisfies StorageCapabilities & JournaledSyncModule
+	const { clearSyncState, journal, pathApply, pathSnapshot, ...caps } = implemented
+	const sync: JournaledSyncModule = { clearSyncState, journal, pathApply, pathSnapshot }
 
 	// ── Storage implementation ─────────────────────────────────────────
 
 	return {
 		rootIno: ROOT_INO,
 		caps,
+		sync,
 
 		async getMeta(ino: Ino) {
 			await ensureBootstrapped()

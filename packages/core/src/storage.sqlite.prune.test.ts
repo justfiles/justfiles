@@ -276,7 +276,7 @@ describe('sqlite tombstone sweep', () => {
 		expect(prunedBelow(db)).toBe(deleteSeq)
 		// `fs_path_version` still holds the tombstone — it is the authoritative set a
 		// re-bootstrapping replica is served, and it is not what this sweep collects.
-		expect(await storage.caps?.pathSnapshot?.tombstones('', 10)).toHaveLength(1)
+		expect(await storage.sync.pathSnapshot?.tombstones('', 10)).toHaveLength(1)
 	})
 
 	it('never leaves a put behind when it takes the delete', async () => {
@@ -321,7 +321,7 @@ describe('sqlite pruned-cursor floor', () => {
 		await storage.caps?.content?.gcUnreferenced()
 		const floor = prunedBelow(db)
 		expect(floor).toBeGreaterThan(0)
-		const source = journaledChangeSource(storage)
+		const source = journaledChangeSource(storage.sync)
 
 		await expect(source.pathDeltas(String(floor - 1))).rejects.toBeInstanceOf(CursorPrunedError)
 		// AT the floor the reader has already seen every collected row.
@@ -340,12 +340,12 @@ describe('sqlite pruned-cursor floor', () => {
 		await storage.caps?.content?.gcUnreferenced()
 		expect(prunedBelow(db)).toBeGreaterThan(0)
 
-		const scan = await treeChangeSource(storage).pathScan(undefined, { limit: 10 })
+		const scan = await treeChangeSource(storage.sync).pathScan(undefined, { limit: 10 })
 
 		expect(Number(scan.syncCursor)).toBeGreaterThanOrEqual(prunedBelow(db))
-		await expect(journaledChangeSource(storage).pathDeltas(scan.syncCursor)).resolves.toMatchObject(
-			{ done: true }
-		)
+		await expect(
+			journaledChangeSource(storage.sync).pathDeltas(scan.syncCursor)
+		).resolves.toMatchObject({ done: true })
 	})
 
 	it('answers a pruned cursor with 410, and the client raises it as a typed error', async () => {

@@ -1,4 +1,4 @@
-import { apiStorage } from '@justfiles/core'
+import { apiStorage, remoteSyncReplica } from '@justfiles/core'
 import {
 	volume as createVolume,
 	decodeXattr,
@@ -320,10 +320,15 @@ async function loadInitialEntries(
 	}
 }
 
-async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
+export async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 	const local = idbStorage('justfiles-fs')
 	const remote = await apiStorage(fsClient)
-	const volume = await synced({ local, remote, lazyContent: true })
+	const volume = await synced({
+		local,
+		remote: ({ clientId, generation, lineageId }) =>
+			remoteSyncReplica(fsClient, { clientId, generation, lineageId }),
+		lazyContent: true
+	})
 	const remoteVolume = createVolume(remote)
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()

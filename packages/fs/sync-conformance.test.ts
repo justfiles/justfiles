@@ -2,7 +2,7 @@
  * Runs the backend conformance suite (`pathSyncConformanceCases`, in
  * `sync-test-harness.ts`) under vitest for the backends reachable in Node:
  *   - `memStorage`  — implements the path-sync seams.
- *   - `idbStorage`  — pending until it implements `caps.journal` / `caps.pathApply`
+ *   - `idbStorage`  — pending until it implements `sync.journal` / `sync.pathApply`
  *     / `caps.content` + local-mutation journaling. It CONSTRUCTS fine (via
  *     `fake-indexeddb`), so these fail for the right reason (`not implemented`) and
  *     pass when the backend lands.
