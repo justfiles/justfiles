@@ -195,7 +195,7 @@ describe('sqlite path-sync journal (write-intercept, slice 3)', () => {
 		expect((await rowsFor(s, '/a')).map((r) => r.version)).toEqual(['1'])
 
 		const ino = (await vol.stat('/a')).ino
-		await s.setMeta(ino, { mode: 0o700 }, { version: 99 })
+		await s.setMeta(ino, { mode: 0o700 }, { observed: { version: 99 } })
 		expect((await rowsFor(s, '/a')).map((r) => r.version)).toEqual(['99'])
 	})
 

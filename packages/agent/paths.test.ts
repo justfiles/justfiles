@@ -1,5 +1,5 @@
 import { GENERATED_IMAGES_DIR } from '@justfiles/app/capabilities/image'
-import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import { describe, expect, test } from 'vitest'
 import * as paths from './paths.ts'
 import FILESYSTEM from './prompts/filesystem.md?raw'

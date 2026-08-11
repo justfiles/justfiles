@@ -4,19 +4,20 @@ import type {
 	StorageCapabilities,
 	StorageChange
 } from '@justfiles/fs/storage'
-import type { PathSyncStore, TreeEffect, TreePort } from '@justfiles/fs/storage.shared'
+import type { TreeEffect, TreePort } from '@justfiles/fs/storage.shared'
+import { joinPath } from '@justfiles/fs/storage.shared'
+import type { Ino } from '@justfiles/fs/types'
+import { FileType } from '@justfiles/fs/types'
 import {
 	applyJournaledOver,
 	buildDeleteChange,
 	buildPutChange,
-	joinPath,
 	localChangeOver,
+	type PathSyncStore,
 	pathSyncObserver
-} from '@justfiles/fs/storage.shared'
-import type { JournaledStorage, JournaledSyncModule } from '@justfiles/fs/sync-replica'
-import { coalesceByPath, type PathChange } from '@justfiles/fs/sync-wire'
-import type { Ino } from '@justfiles/fs/types'
-import { FileType } from '@justfiles/fs/types'
+} from '@justfiles/sync/path'
+import type { JournaledStorage, JournaledSyncModule } from '@justfiles/sync/replica'
+import { coalesceByPath, type PathChange } from '@justfiles/sync/wire'
 import type { DbAdapter } from './db'
 
 type BlobObject = {
@@ -41,7 +42,7 @@ type StorageOptions = {
 	blobStore?: BlobStore
 	namespace?: string
 	inlineTextLimitBytes?: number
-	/** Default ORIGIN for local writes without an explicit `options.source`. */
+	/** Default origin for local writes without an explicit `options.origin`. */
 	localActorId?: string
 }
 
@@ -563,9 +564,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 
 	// ── Path-sync journaling (write-intercept, path-stamped; epic slice 3) ────────
 	// Every mutation through the public primitives appends a path-stamped journal
-	// row — via the shared PURE builders (storage.shared.ts) — inside its OWN
+	// row — via the shared pure builders in @justfiles/sync/path — inside its OWN
 	// transaction, with a version from fs_path_version and ORIGIN =
-	// options.source ?? localActorId. Mirrors the memStorage reference impl.
+	// options.origin ?? localActorId. Mirrors the memory reference implementation.
 
 	/** Resolve ino -> canonical path via a recursive walk up the dirent chain; null if unlinked. */
 	async function pathOf(tx: DbAdapter, ino: Ino): Promise<string | null> {
@@ -706,7 +707,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 
 	/**
 	 * Announce one tree change to the attached observer, inside the mutation's own
-	 * transaction and after the write (storage.shared.ts ROADMAP item 3 / #454).
+	 * transaction and after the write (#454).
 	 */
 	async function record(
 		tx: DbAdapter,
@@ -843,7 +844,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 	}
 
 	// The storage-independent seam the shared apply driver + the mutation observer
-	// (storage.shared.ts) call, bound to one transaction (or `db` for read-only
+	// sync path operation, bound to one transaction (or `db` for read-only
 	// localChange). `emit` is buffered so a transactional apply can flush AFTER commit.
 	function makePathPorts(tx: DbAdapter): {
 		tree: TreePort
@@ -875,7 +876,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 			async deleteInodeIfUnreferenced(ino) {
 				// Delete tree metadata + xattrs, but NEVER the blob content: a later put in
 				// the same batch may re-reference the bytes (rename applies deletes first).
-				// Blob GC is out-of-band (storage.shared.ts ROADMAP item 4).
+				// Blob GC is out-of-band.
 				if (await hasDirentReference(tx, ino)) return
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
 				await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
@@ -925,7 +926,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 			await record(tx, { kind: 'content', ino, contentHash }, options)
 		})
 
-		emit({ ino, kind: 'content', source: options?.source })
+		emit({ ino, kind: 'content', source: options?.origin })
 		await deleteBlobs(orphanedR2Keys)
 	}
 
@@ -1044,8 +1045,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 				await record(tx, { kind: 'link', dirIno, name, ino, type: meta.type }, options)
 			})
 
-			emit({ ino, kind: 'meta', source: options?.source })
-			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
+			emit({ ino, kind: 'meta', source: options?.origin })
+			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.origin })
 			return ino
 		},
 
@@ -1118,7 +1119,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 
 			await deleteBlobs(orphanedR2Keys)
 
-			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.origin })
 			if (movedIno !== null) {
 				emit({
 					ino: movedIno,
@@ -1126,7 +1127,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 					dirIno: newDirIno,
 					name: newName,
 					path: newPath,
-					source: options?.source
+					source: options?.origin
 				})
 				emit({
 					ino: movedIno,
@@ -1134,7 +1135,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 					dirIno: oldDirIno,
 					name: oldName,
 					path: oldPath,
-					source: options?.source
+					source: options?.origin
 				})
 			}
 			return displaced
@@ -1294,8 +1295,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 		// ── Path-sync seams ───────────────────────────────────────────────────
 		//
 		// SQLITE PATH-SYNC EPIC — remaining slices (one commit each; reference impl in
-		// storage.mem.ts + storage.shared.ts + sync-replica.ts, specs in
-		// packages/fs/sync-test-harness.ts `pathSyncConformanceCases`):
+		// @justfiles/sync, specified by `pathSyncConformanceCases`):
 		//
 		//   1. [DONE] caps.content — hash-addressed blob store (below).
 		//   2. [DONE] caps.subscribe — in-memory change feed + emit() on every committed
@@ -1582,7 +1582,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 				changed = true
 				await record(tx, { kind: 'meta', ino }, options)
 			})
-			if (changed) emit({ ino, kind: 'meta', source: options?.source })
+			if (changed) emit({ ino, kind: 'meta', source: options?.origin })
 		},
 
 		async deleteInode(ino: Ino) {
@@ -1651,7 +1651,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 				if (dirPath !== null) path = joinPath(dirPath, name)
 				await record(tx, { kind: 'link', dirIno, name, ino: entry.ino, type: entry.type }, options)
 			})
-			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, path, source: options?.source })
+			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, path, source: options?.origin })
 		},
 
 		async deleteDirent(dirIno: Ino, name: string, options?: MutationOptions) {
@@ -1668,7 +1668,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 				await record(tx, { kind: 'unlink', dirIno, name, ino: removedIno }, options)
 			})
 			if (removedIno !== null)
-				emit({ ino: removedIno, kind: 'dirent', dirIno, name, path, source: options?.source })
+				emit({ ino: removedIno, kind: 'dirent', dirIno, name, path, source: options?.origin })
 		},
 
 		async listDirents(dirIno: Ino, cursor: string) {

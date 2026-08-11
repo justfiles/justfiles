@@ -36,7 +36,7 @@ export interface Stat {
 	/**
 	 * Hash of the file's current content (e.g. SHA-256, hex-encoded).
 	 * Promoted from backend-private InodeMeta to the public Stat surface
-	 * because upper layers (sync, embedding pipeline) need it as a change
+	 * because upper layers need it as a change
 	 * signal without reading file content.
 	 */
 	contentHash?: string

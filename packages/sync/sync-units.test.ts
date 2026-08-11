@@ -10,18 +10,21 @@
  *     version helpers + `isCanonicalPath`, which pin the contract.
  */
 
+import { volume } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
-import { memStorage } from './storage.mem'
-import type { JournaledStorage, JournalRow, JournalStore } from './sync-replica'
+import type { JournaledStorage, JournalRow, JournalStore } from './replica'
 import {
 	ignorePrefixes,
 	journaledChangeSource,
 	localSyncReplica,
 	PRIVATE_PREFIXES,
 	syncIgnore
-} from './sync-replica'
+} from './replica'
+import { memStorage } from './storage/mem'
 import { bytes, sha256, text } from './sync-test-harness'
-import type { PathChange, SyncMeta } from './sync-wire'
+import { REMOTE_SOURCE } from './synced'
+import type { PathChange, SyncMeta } from './wire'
 import {
 	ContentHash,
 	changeDigest,
@@ -34,10 +37,7 @@ import {
 	parseVersion,
 	syncMetaFromInode,
 	Version
-} from './sync-wire'
-import { REMOTE_SOURCE } from './synced'
-import { FileType } from './types'
-import { volume } from './volume'
+} from './wire'
 
 // ── change builders (all schema-valid) ────────────────────────────────────────
 

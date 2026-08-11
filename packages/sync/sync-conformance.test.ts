@@ -16,8 +16,8 @@
 
 import 'fake-indexeddb/auto'
 import { describe, test } from 'vitest'
-import { idbStorage } from './storage.idb'
-import { memStorage } from './storage.mem'
+import { idbStorage } from './storage/idb'
+import { memStorage } from './storage/mem'
 import type { BackendFactory } from './sync-test-harness'
 import { pathSyncConformanceCases } from './sync-test-harness'
 

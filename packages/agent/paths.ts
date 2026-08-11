@@ -6,7 +6,7 @@
 // Package-internal: it is not re-exported from index.ts. The few paths a host needs are
 // the public names in `@justfiles/agent/defaults`.
 
-import { PRIVATE_PREFIXES } from '@justfiles/fs/sync-replica'
+import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 
 export const NOTES_DIR = '/notes'
 export const PICTURES_DIR = '/pictures' // == GENERATED_IMAGES_DIR (image capability); asserted in the test

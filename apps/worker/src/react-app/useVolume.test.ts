@@ -17,11 +17,12 @@ vi.mock('@justfiles/core', () => ({
 vi.mock('@justfiles/fs', () => ({
 	decodeXattr: vi.fn(),
 	GHOSTORE_XATTR: {},
-	synced: mocks.synced,
 	volume: mocks.createVolume
 }))
 
-vi.mock('@justfiles/fs/storage/idb', () => ({ idbStorage: mocks.idbStorage }))
+vi.mock('@justfiles/sync', () => ({ synced: mocks.synced }))
+
+vi.mock('@justfiles/sync/storage/idb', () => ({ idbStorage: mocks.idbStorage }))
 
 import { createVolumeRuntime } from './useVolume'
 

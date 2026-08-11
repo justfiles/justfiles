@@ -1,6 +1,6 @@
 /**
  * `persistedState`'s first touch is a CLAIM, and that is the whole point of these
- * tests. Two cells over the SAME storage can initialize at the same moment — `synced()`
+ * tests. Two cells over the SAME storage can initialize at the same moment
  * mints `/.state/clientid` through this primitive while `deviceId()` reads that same
  * path through it too — and they must converge on ONE value. `exists()` then `set()`
  * would be a TOCTOU where both see nothing and both write.

@@ -1,10 +1,14 @@
-import type { DBSchema, IDBPDatabase, IDBPObjectStore, IDBPTransaction, StoreNames } from 'idb'
+import type { DBSchema, IDBPDatabase, IDBPTransaction, StoreNames } from 'idb'
 import { openDB } from 'idb'
-import type { InodeMeta, MutationOptions, StorageCapabilities, StorageChange } from './storage'
-import type { PathSyncStore, TreeEffect, TreePort } from './storage.shared'
-import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
-import type { JournaledStorage, JournaledSyncModule, JournalRow } from './sync-replica'
-import { coalesceByPath, type PathChange } from './sync-wire'
+import type {
+	InodeMeta,
+	MutationOptions,
+	Storage,
+	StorageCapabilities,
+	StorageChange
+} from './storage'
+import type { TreeEffect, TreePort } from './storage.shared'
+import { joinPath } from './storage.shared'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -49,18 +53,6 @@ interface DirtyRecord {
 	markedAt: number
 }
 
-interface JournalRecord {
-	seq?: number
-	change: PathChange
-	localSource?: string
-}
-
-interface PathVerRecord {
-	path: string
-	version: number
-	tombstone: number
-}
-
 interface GhostoreFsSchema extends DBSchema {
 	inodes: { key: string; value: InodeRecord }
 	content: {
@@ -80,25 +72,10 @@ interface GhostoreFsSchema extends DBSchema {
 	}
 	dirty: { key: string; value: DirtyRecord }
 	meta: { key: string; value: unknown }
-	journal: {
-		key: number
-		value: JournalRecord
-		indexes: { 'by-path': string }
-	}
-	pathver: { key: string; value: PathVerRecord }
 }
 
 type Db = IDBPDatabase<GhostoreFsSchema>
-type AllStores = (
-	| 'inodes'
-	| 'content'
-	| 'dirs'
-	| 'xattrs'
-	| 'dirty'
-	| 'meta'
-	| 'journal'
-	| 'pathver'
-)[]
+type AllStores = ('inodes' | 'content' | 'dirs' | 'xattrs' | 'dirty' | 'meta')[]
 type FullTx = IDBPTransaction<GhostoreFsSchema, AllStores, 'readwrite'>
 type KeyRangeLike = NonNullable<Parameters<Db['getAll']>[1]>
 const KeyRange = (
@@ -142,71 +119,27 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 	return toHex(new Uint8Array(digest))
 }
 
-// ---------------------------------------------------------------------------
-// Journal
-// ---------------------------------------------------------------------------
-
-type JournalStoreOf<Mode extends 'readwrite' | 'versionchange'> = IDBPObjectStore<
-	GhostoreFsSchema,
-	ArrayLike<StoreNames<GhostoreFsSchema>>,
-	'journal',
-	Mode
->
-
-/**
- * Append a journal row, and take out the rows it supersedes.
- *
- * AT MOST ONE ROW PER PATH, always — the invariant the SQLite backend holds by the
- * same rule (#446). Here it is what keeps the journal bounded at all: nothing on
- * the device collects it (`gcUnreferenced` runs in the Durable Object, against the
- * other backend), so an append-only journal gives every browser profile a floor
- * that only rises (#439).
- *
- * One row per path is also the FLOOR, not a target to go under: this backend serves
- * no tree snapshot, so a bootstrapping peer is answered by replaying the journal
- * (`snapshotPutsUpTo`), and the latest row per path is exactly that answer.
- *
- * Add first, then delete below the key `add` returns — that key is the exact cut,
- * so nothing has to go looking for the maximum. Every row this removes has a
- * higher-seq successor on the same path, so a reader resuming at ANY seq still
- * converges, and this backend needs no `prunedBelow` floor.
- */
-async function appendJournalRow(
-	journal: JournalStoreOf<'readwrite'>,
-	change: PathChange,
-	localSource?: string
-): Promise<void> {
-	const seq = await journal.add({ change, localSource })
-	let cursor = await journal.index('by-path').openCursor(change.path)
-	while (cursor && cursor.primaryKey < seq) {
-		await cursor.delete()
-		cursor = await cursor.continue()
-	}
+export type IdbStorageExtensionHost = {
+	run<T>(
+		stores: readonly string[],
+		callback: (transaction: unknown, tree: TreePort) => Promise<T>
+	): Promise<T>
 }
 
-/**
- * Collapse existing history to one row per path — the one-time counterpart of the
- * rule above, for a profile that filled its journal before this version.
- *
- * Runs in the version-change transaction, so it runs once and holds the database
- * alone. Without it the backlog would only drain a path at a time, as each path is
- * next written, and a path never written again would keep its rows forever.
- */
-async function coalesceJournal(journal: JournalStoreOf<'versionchange'>): Promise<void> {
-	const latest = new Map<string, number>()
-	let cursor = await journal.openCursor()
-	while (cursor) {
-		latest.set(cursor.value.change.path, cursor.key)
-		cursor = await cursor.continue()
-	}
-	cursor = await journal.openCursor()
-	while (cursor) {
-		if (latest.get(cursor.value.change.path) !== cursor.key) await cursor.delete()
-		cursor = await cursor.continue()
-	}
+export type IdbStorageExtension<Attached extends object> = {
+	readonly version: number
+	readonly stores: readonly string[]
+	upgrade(database: unknown, oldVersion: number, transaction: unknown): Promise<void> | void
+	record(
+		transaction: unknown,
+		tree: TreePort,
+		effect: TreeEffect,
+		options?: MutationOptions
+	): Promise<void>
+	attach(host: IdbStorageExtensionHost): Attached
 }
 
-export type IdbStorage = JournaledStorage & {
+export type IdbStorage = Storage & {
 	/** Root directory inode — always '1' for this backend. */
 	readonly rootIno: Ino
 	/** Close the database and release resources. */
@@ -216,27 +149,32 @@ export type IdbStorage = JournaledStorage & {
 /**
  * IndexedDB-backed Storage with LRU content eviction.
  *
- * Uses eight object stores:
+ * Uses six object stores:
  *   inodes   — inode metadata (no nlink)
- *   content  — file data, HASH-addressed by contentHash (dedup + blob-by-hash
- *              sync), subject to LRU eviction up to contentCapBytes
+ *   content  — file data, hash-addressed by contentHash, subject to LRU eviction
+ *              up to contentCapBytes
  *   dirs     — directory entries keyed by [dirIno, name]; by-ino reverse index
  *   xattrs   — extended attributes keyed by [ino, name]
  *   dirty    — inodes with unflushed local writes (protected from LRU eviction)
  *   meta     — key-value bootstrap state (rootIno, totalContentBytes, etc.)
- *   journal  — path-stamped change log, ONE row per path (outbound sync source of
- *              truth, and the snapshot a bootstrapping peer is replayed)
- *   pathver  — per-path { version, tombstone } scalars
  *
  * The root inode is always '1' (matching the memStorage convention).
  */
-export function idbStorage(
+export function idbStorage(dbName: string, options?: { contentCapBytes?: number }): IdbStorage
+export function idbStorage<Attached extends object>(
 	dbName: string,
-	options?: { contentCapBytes?: number; localActorId?: string }
-): IdbStorage {
+	options: { contentCapBytes?: number; extension: IdbStorageExtension<Attached> }
+): IdbStorage & Attached
+export function idbStorage<Attached extends object>(
+	dbName: string,
+	options?: { contentCapBytes?: number; extension?: IdbStorageExtension<Attached> }
+): IdbStorage & Attached {
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
-	// The backend's client-id, stamped as ORIGIN (PathChange.source) on local writes.
-	const localActorId = options?.localActorId ?? 'local'
+	const extension = options?.extension
+	const storesFor = (stores: readonly StoreNames<GhostoreFsSchema>[]): string[] => [
+		...stores,
+		...(extension?.stores ?? [])
+	]
 	let dbPromise: Promise<Db> | null = null
 
 	// Change feed — the substrate for volume.watch. Listeners fire after a
@@ -253,7 +191,7 @@ export function idbStorage(
 
 	function getDb(): Promise<Db> {
 		if (!dbPromise) {
-			dbPromise = openDB<GhostoreFsSchema>(dbName, DB_VERSION, {
+			dbPromise = openDB<GhostoreFsSchema>(dbName, extension?.version ?? DB_VERSION, {
 				async upgrade(db, oldVersion, _newVersion, transaction) {
 					if (oldVersion < 1) {
 						db.createObjectStore('inodes', { keyPath: 'ino' })
@@ -272,41 +210,26 @@ export function idbStorage(
 					}
 					if (oldVersion < 3) {
 						// Recreate inodes store without nlink column.
-						// Data migration not required — existing data bootstrapped via sync.
+						// The caller rebuilds data after this schema change.
 						if (db.objectStoreNames.contains('inodes')) {
 							db.deleteObjectStore('inodes')
 						}
 						db.createObjectStore('inodes', { keyPath: 'ino' })
 					}
 					if (oldVersion < 4 && (db as IDBPDatabase).objectStoreNames.contains('updates')) {
-						// Drop the legacy FsOp delta log — replaced by the path journal
-						// (owned by the SyncReplica), which the outbound sync now reads.
+						// Drop the obsolete FsOp delta log.
 						;(db as IDBPDatabase).deleteObjectStore('updates')
 					}
 					if (oldVersion < 5) {
-						// Content becomes HASH-addressed (dedup + blob-by-hash sync). Recreate
-						// the store keyed by contentHash; cached local bytes re-materialise via
-						// sync (matching the inodes recreation above).
+						// Content becomes hash-addressed. Recreate the store with contentHash keys.
 						if (db.objectStoreNames.contains('content')) db.deleteObjectStore('content')
 						const content = db.createObjectStore('content', { keyPath: 'contentHash' })
 						content.createIndex('by-lru', 'lastAccessedAt')
 						// pathOf(ino) walks UP the tree via a reverse dirent index.
 						const dirs = transaction.objectStore('dirs')
 						if (!dirs.indexNames.contains('by-ino')) dirs.createIndex('by-ino', 'ino')
-						// Path journal (outbound sync source of truth) + per-path version scalars.
-						db.createObjectStore('journal', { keyPath: 'seq', autoIncrement: true })
-						db.createObjectStore('pathver', { keyPath: 'path' })
 					}
-					if (oldVersion < 6) {
-						// The journal keeps ONE row per path from here on (see appendJournalRow),
-						// which needs an index to find the superseded rows without a full scan.
-						const journal = transaction.objectStore('journal')
-						if (!journal.indexNames.contains('by-path'))
-							journal.createIndex('by-path', 'change.path')
-						// Rows written before that rule are collapsed once, here. Awaiting only IDB
-						// requests keeps this version-change transaction alive to the end of it.
-						await coalesceJournal(journal)
-					}
+					await extension?.upgrade(db, oldVersion, transaction)
 				},
 				blocked() {
 					console.warn(`[idbStorage] DB "${dbName}" is blocked — another tab may be open`)
@@ -350,8 +273,7 @@ export function idbStorage(
 		if (total + addingBytes <= cap) return
 
 		const tx = db.transaction(['content', 'dirty', 'inodes', 'meta'], 'readwrite')
-		// Never evict content still referenced by a DIRTY (unsynced) inode — those
-		// bytes cannot be re-fetched. Synced/pulled content is safely re-fetchable.
+		// Never evict content referenced by a dirty inode. Those bytes cannot be fetched again.
 		const dirtyHashes = new Set<string>()
 		for (const ino of await tx.objectStore('dirty').getAllKeys()) {
 			const inode = await tx.objectStore('inodes').get(ino)
@@ -441,7 +363,7 @@ export function idbStorage(
 	}
 
 	// ---------------------------------------------------------------------------
-	// Path-sync helpers (per-backend: pathOf walk-up, tree ops, apply port)
+	// Tree helpers used by optional storage extensions.
 	// ---------------------------------------------------------------------------
 
 	/** Resolve ino -> canonical path by walking UP the by-ino dirent index; null if unlinked. */
@@ -528,21 +450,16 @@ export function idbStorage(
 			symlinkTarget: meta.symlinkTarget,
 			lastAccessedAt: existing?.lastAccessedAt ?? Date.now()
 		})
-		// Replace the whole USER-xattr set with the snapshot; keep trusted.sync.*.
+		// Replace user xattrs with the snapshot. Keep backend-owned attributes.
 		const xrecs = await tx.objectStore('xattrs').index('by-ino').getAll(ino)
 		for (const x of xrecs)
-			if (!x.name.startsWith('trusted.sync.')) await tx.objectStore('xattrs').delete([ino, x.name])
+			if (!x.name.startsWith('trusted.')) await tx.objectStore('xattrs').delete([ino, x.name])
 		for (const [name, value] of Object.entries(snapshot))
 			await tx.objectStore('xattrs').put({ ino, name, value })
 	}
 
-	// The storage-independent seam the shared apply driver + the mutation observer
-	// (storage.shared.ts) call, bound to one transaction. `emit` is buffered so
-	// applyJournaled can flush AFTER the txn commits (idb fires change events
-	// post-commit).
-	function makePathPorts(tx: FullTx): {
+	function makeTreePort(tx: FullTx): {
 		tree: TreePort
-		sync: PathSyncStore
 		emits: StorageChange[]
 	} {
 		const emits: StorageChange[] = []
@@ -587,24 +504,12 @@ export function idbStorage(
 				emits.push(change)
 			}
 		}
-		const sync: PathSyncStore = {
-			async readPathVersion(path) {
-				const rec = await tx.objectStore('pathver').get(path)
-				return { version: rec?.version ?? 0, tombstone: rec?.tombstone ?? 0 }
-			},
-			async setPathVersion(path, version, tombstone) {
-				await tx.objectStore('pathver').put({ path, version, tombstone })
-			},
-			async appendJournalRow(change, localSource) {
-				await appendJournalRow(tx.objectStore('journal'), change, localSource)
-			}
-		}
-		return { tree, sync, emits }
+		return { tree, emits }
 	}
 
 	async function record(tx: FullTx, effect: TreeEffect, options?: MutationOptions): Promise<void> {
-		const { tree, sync } = makePathPorts(tx)
-		await pathSyncObserver(sync, localActorId).record(tree, effect, options)
+		if (!extension) return
+		await extension.record(tx, makeTreePort(tx).tree, effect, options)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -661,9 +566,9 @@ export function idbStorage(
 			// with ZERO inode references, where a `gcUnreferenced()` sweep reclaims it —
 			// correctly — and the claim then publishes a `contentHash` pointing at nothing.
 			const tx = db.transaction(
-				['inodes', 'dirs', 'xattrs', 'pathver', 'journal', 'dirty', 'content', 'meta'],
+				storesFor(['inodes', 'dirs', 'xattrs', 'dirty', 'content', 'meta']) as never,
 				'readwrite'
-			) as FullTx
+			) as unknown as FullTx
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
 			if (existing) {
 				await tx.done
@@ -679,24 +584,22 @@ export function idbStorage(
 			// in-place edit through putBlob — mark it dirty here, in the SAME
 			// transaction, or evictContent's "never reclaim a dirty inode's bytes"
 			// guarantee never applies to a freshly created file, and a later write's
-			// eviction sweep can silently drop its unsynced content. Sync-pulled
-			// creates never reach this function (they go through
-			// upsertInodeTx, which correctly never marks dirty — pulled
-			// content is safely re-fetchable), so this can't misfire on remote writes.
+			// eviction sweep can silently drop new content. Direct tree imports use
+			// upsertInodeTx and do not mark content dirty because it is recoverable.
 			if (stored.contentHash) {
 				await tx.objectStore('dirty').put({ ino, markedAt: now })
 			}
 			const dirPath = await pathOfTx(tx, dirIno)
 			await record(tx, { kind: 'link', dirIno, name, ino, type: stored.type }, options)
 			await tx.done
-			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'meta', source: options?.origin })
 			emit({
 				ino,
 				kind: 'dirent',
 				dirIno,
 				name,
 				path: dirPath === null ? undefined : joinPath(dirPath, name),
-				source: options?.source
+				source: options?.origin
 			})
 			return ino
 		},
@@ -704,9 +607,9 @@ export function idbStorage(
 		async atomicMove(oldDir, oldName, newDir, newName, options) {
 			const db = await getDb()
 			const tx = db.transaction(
-				['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'meta', 'pathver', 'journal'],
+				storesFor(['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'meta']) as never,
 				'readwrite'
-			) as FullTx
+			) as unknown as FullTx
 
 			const source = await tx.objectStore('dirs').get([oldDir, oldName])
 			if (!source) {
@@ -731,7 +634,7 @@ export function idbStorage(
 				// — `Storage.deleteInode`'s rule, which this path used to skip. The order is the
 				// whole trick: asked before the delete, the check would find the very entry being
 				// replaced and never free anything (an inode leaked per replace); asked after, it
-				// sees only OTHER names. Sync replay legitimately leaves a transient second one
+				// sees only OTHER names. A move can leave a transient second one
 				// during a move, and freeing a still-named inode leaves that survivor pointing at
 				// nothing. Same shape as memStorage's `hasDirentReference` guard.
 				await tx.objectStore('dirs').delete([newDir, newName])
@@ -761,14 +664,14 @@ export function idbStorage(
 			)
 
 			await tx.done
-			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.origin })
 			emit({
 				ino: source.ino,
 				kind: 'dirent',
 				dirIno: newDir,
 				name: newName,
 				path: newBase,
-				source: options?.source
+				source: options?.origin
 			})
 			emit({
 				ino: source.ino,
@@ -776,7 +679,7 @@ export function idbStorage(
 				dirIno: oldDir,
 				name: oldName,
 				path: oldBase,
-				source: options?.source
+				source: options?.origin
 			})
 			return displaced
 		},
@@ -837,64 +740,6 @@ export function idbStorage(
 			}
 		},
 
-		// Drop local sync state (journal + version generator) for a client reset.
-		// Tree + content are left intact.
-		async clearSyncState() {
-			const db = await getDb()
-			const tx = db.transaction(['journal', 'pathver'], 'readwrite')
-			await tx.objectStore('journal').clear()
-			await tx.objectStore('pathver').clear()
-			await tx.done
-		},
-
-		journal: {
-			async append(changes, localSource) {
-				const db = await getDb()
-				const tx = db.transaction(['journal'], 'readwrite')
-				const journal = tx.objectStore('journal')
-				for (const change of changes) await appendJournalRow(journal, change, localSource)
-				await tx.done
-			},
-			async readFrom(seq, limit) {
-				const db = await getDb()
-				const out: JournalRow[] = []
-				let cursor = await db
-					.transaction('journal')
-					.objectStore('journal')
-					.openCursor(KeyRange.lowerBound(seq + 1) as never)
-				while (cursor && out.length < limit) {
-					out.push({
-						seq: cursor.key,
-						change: cursor.value.change,
-						localSource: cursor.value.localSource
-					})
-					cursor = await cursor.continue()
-				}
-				return out
-			},
-			async head() {
-				const db = await getDb()
-				const cursor = await db
-					.transaction('journal')
-					.objectStore('journal')
-					.openCursor(null, 'prev')
-				return cursor ? cursor.key : 0
-			},
-			// Replace history with one locally-authored latest row per path.
-			async adoptAllAsLocal(opts) {
-				const db = await getDb()
-				const tx = db.transaction(['journal'], 'readwrite')
-				const journal = tx.objectStore('journal')
-				const current = coalesceByPath((await journal.getAll()).map((row) => row.change)).filter(
-					(change) => !opts?.dropDeletes || change.kind === 'put'
-				)
-				await journal.clear()
-				// A plain add: the store is empty and `current` already holds one row per
-				// path, so there is nothing for appendJournalRow to supersede.
-				for (const change of current) await journal.add({ change })
-				await tx.done
-			}
-		},
 		content: {
 			async getByHash(hash) {
 				const db = await getDb()
@@ -909,17 +754,14 @@ export function idbStorage(
 				const db = await getDb()
 				const bytes = data.slice()
 				await evictContent(db, bytes.length, hash)
-				const tx = db.transaction(['content', 'meta'], 'readwrite') as FullTx
+				const tx = db.transaction(['content', 'meta'], 'readwrite') as unknown as FullTx
 				await storeContentByHashTx(tx, hash, bytes)
 				await tx.done
 			},
-			// Content only. The journal compacts itself on the write path (see
-			// appendJournalRow), so this has no journal pass to run — which matters,
-			// because on a browser NOTHING calls this: the daily sweep runs in the
-			// Durable Object, against the SQLite backend.
+			// This sweep covers content only and drains in one transaction.
 			async gcUnreferenced() {
 				const db = await getDb()
-				const tx = db.transaction(['content', 'inodes', 'meta'], 'readwrite') as FullTx
+				const tx = db.transaction(['content', 'inodes', 'meta'], 'readwrite') as unknown as FullTx
 				const live = new Set<string>()
 				for (const inode of await tx.objectStore('inodes').getAll())
 					if (inode.contentHash) live.add(inode.contentHash)
@@ -943,42 +785,17 @@ export function idbStorage(
 				// The whole prune runs in one IndexedDB transaction, so it always drains.
 				return { reclaimed, done: true }
 			}
-		},
-		pathApply: {
-			async localChange(path) {
-				const db = await getDb()
-				// Reads only; the port needs a readwrite-typed tx but writes nothing here.
-				const tx = db.transaction(['dirs', 'inodes', 'xattrs', 'pathver'], 'readwrite') as FullTx
-				const { tree, sync } = makePathPorts(tx)
-				const change = await localChangeOver(tree, sync, path, localActorId)
-				await tx.done
-				return change
-			},
-			async applyJournaled(changes, opts) {
-				const db = await getDb()
-				const tx = db.transaction(
-					['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
-					'readwrite'
-				) as FullTx
-				const bound = makePathPorts(tx)
-				await applyJournaledOver(bound.tree, bound.sync, changes, opts)
-				await tx.done
-				// emit AFTER commit so a volume over idb invalidates its cache on the pull.
-				for (const change of bound.emits) emit(change)
-			}
 		}
-	} satisfies StorageCapabilities & JournaledSyncModule
-	const { clearSyncState, journal, pathApply, ...caps } = implemented
-	const sync: JournaledSyncModule = { clearSyncState, journal, pathApply }
+	} satisfies StorageCapabilities
+	const caps = implemented
 
 	// ---------------------------------------------------------------------------
 	// Storage implementation
 	// ---------------------------------------------------------------------------
 
-	return {
+	const storage: IdbStorage = {
 		rootIno: ROOT_INO,
 		caps,
-		sync,
 
 		destroy() {
 			dbPromise?.then((db) => db.close()).catch(() => {})
@@ -995,12 +812,12 @@ export function idbStorage(
 		async setMeta(ino, partial, options) {
 			const db = await getDb()
 			const tx = db.transaction(
-				['inodes', 'dirs', 'xattrs', 'pathver', 'journal'],
+				storesFor(['inodes', 'dirs', 'xattrs']) as never,
 				'readwrite'
-			) as FullTx
+			) as unknown as FullTx
 			const rec = await tx.objectStore('inodes').get(ino)
 			if (!rec) {
-				// Unlinked inode (createNode's setMeta before putDirent) — no path to journal.
+				// This inode is not linked yet (setMeta runs before putDirent).
 				const next = buildMissingInodeRecord(ino, partial)
 				if (!next) {
 					await tx.done
@@ -1008,13 +825,13 @@ export function idbStorage(
 				}
 				await tx.objectStore('inodes').put(next)
 				await tx.done
-				emit({ ino, kind: 'meta', source: options?.source })
+				emit({ ino, kind: 'meta', source: options?.origin })
 				return
 			}
 			await tx.objectStore('inodes').put({ ...rec, ...partial })
 			await record(tx, { kind: 'meta', ino }, options)
 			await tx.done
-			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'meta', source: options?.origin })
 		},
 
 		async deleteInode(ino) {
@@ -1055,9 +872,9 @@ export function idbStorage(
 			const hash = await sha256Hex(bytes)
 			await evictContent(db, bytes.length, hash)
 			const tx = db.transaction(
-				['content', 'inodes', 'dirty', 'meta', 'dirs', 'xattrs', 'pathver', 'journal'],
+				storesFor(['content', 'inodes', 'dirty', 'meta', 'dirs', 'xattrs']) as never,
 				'readwrite'
-			) as FullTx
+			) as unknown as FullTx
 			// Read the inode FIRST, in the transaction that will write: a deleted inode must
 			// fail the write rather than leave its content behind as an orphan.
 			const inode = await tx.objectStore('inodes').get(ino)
@@ -1079,7 +896,7 @@ export function idbStorage(
 			await tx.objectStore('dirty').put({ ino, markedAt: Date.now() })
 			await record(tx, { kind: 'content', ino, contentHash: hash }, options)
 			await tx.done
-			emit({ ino, kind: 'content', source: options?.source })
+			emit({ ino, kind: 'content', source: options?.origin })
 		},
 
 		async getDirent(dirIno, name) {
@@ -1091,9 +908,9 @@ export function idbStorage(
 		async putDirent(dirIno, name, entry, options) {
 			const db = await getDb()
 			const tx = db.transaction(
-				['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
+				storesFor(['dirs', 'inodes', 'xattrs']) as never,
 				'readwrite'
-			) as FullTx
+			) as unknown as FullTx
 			await tx.objectStore('dirs').put({ dirIno, name, ino: entry.ino, type: entry.type })
 			const dirPath = await pathOfTx(tx, dirIno)
 			await record(tx, { kind: 'link', dirIno, name, ino: entry.ino, type: entry.type }, options)
@@ -1104,16 +921,16 @@ export function idbStorage(
 				dirIno,
 				name,
 				path: dirPath === null ? undefined : joinPath(dirPath, name),
-				source: options?.source
+				source: options?.origin
 			})
 		},
 
 		async deleteDirent(dirIno, name, options) {
 			const db = await getDb()
 			const tx = db.transaction(
-				['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
+				storesFor(['dirs', 'inodes', 'xattrs']) as never,
 				'readwrite'
-			) as FullTx
+			) as unknown as FullTx
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
 			if (!existing) {
 				await tx.done
@@ -1129,7 +946,7 @@ export function idbStorage(
 				dirIno,
 				name,
 				path: dirPath === null ? undefined : joinPath(dirPath, name),
-				source: options?.source
+				source: options?.origin
 			})
 		},
 
@@ -1149,6 +966,27 @@ export function idbStorage(
 			}
 		}
 	}
+
+	const attached = extension?.attach({
+		async run(stores, callback) {
+			const db = await getDb()
+			const tx = db.transaction(stores as never, 'readwrite') as unknown as FullTx
+			const bound = makeTreePort(tx)
+			try {
+				const result = await callback(tx, bound.tree)
+				await tx.done
+				for (const change of bound.emits) emit(change)
+				return result
+			} catch (error) {
+				try {
+					tx.abort()
+				} catch {}
+				throw error
+			}
+		}
+	})
+
+	return Object.assign(storage, attached) as IdbStorage & Attached
 }
 
 /**
@@ -1158,7 +996,7 @@ export function idbStorage(
  * evict it under storage pressure, and Safari deletes script-written storage
  * after seven days of browser use with no interaction on the site. Eviction is
  * ALL-OR-NOTHING per origin — IndexedDB and the Cache API go together — so for
- * a local-first app whose volume does not sync anywhere, it is silent and total
+ * a local-first app with no external copy, it is silent and total
  * data loss rather than a cold cache.
  *
  * What it is worth differs by browser, and none of it is a guarantee. Firefox
@@ -1169,7 +1007,7 @@ export function idbStorage(
  * complements a web app manifest rather than replacing one.
  *
  * `false` is an answer, not a failure. A host that promises local-first should
- * treat it as a reason to offer sync or an export, not swallow it.
+ * treat it as a reason to offer an external copy or export, not swallow it.
  */
 export async function persistStorage(): Promise<boolean> {
 	const storage = globalThis.navigator?.storage

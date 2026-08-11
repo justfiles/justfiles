@@ -1,13 +1,8 @@
 import { apiStorage, remoteSyncReplica } from '@justfiles/core'
-import {
-	volume as createVolume,
-	decodeXattr,
-	GHOSTORE_XATTR,
-	synced,
-	type Volume
-} from '@justfiles/fs'
-import { idbStorage } from '@justfiles/fs/storage/idb'
+import { volume as createVolume, decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
+import { synced } from '@justfiles/sync'
+import { idbStorage } from '@justfiles/sync/storage/idb'
 import {
 	createContext,
 	createElement,

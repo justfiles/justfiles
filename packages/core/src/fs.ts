@@ -1,6 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
+import type { FileType } from '@justfiles/fs/types'
 import {
 	CursorPrunedError,
 	type JournaledStorage,
@@ -9,9 +10,8 @@ import {
 	PAGE,
 	type SyncReplica,
 	treeChangeSource
-} from '@justfiles/fs/sync-replica'
-import { PathChange } from '@justfiles/fs/sync-wire'
-import type { FileType } from '@justfiles/fs/types'
+} from '@justfiles/sync/replica'
+import { PathChange } from '@justfiles/sync/wire'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { GenerationState } from './reset'
@@ -103,7 +103,7 @@ const LINEAGE_HEADER = 'x-fs-lineage'
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
-// Wire schema is imported from @justfiles/fs/sync-wire (PathChange); the page
+// Wire schema is imported from @justfiles/sync/wire (PathChange); the page
 // shapes below reuse it schema-first. `protocolVersion` = wire contract;
 // `schemaVersion` = /.state/sync shape. Both are 1 for this design.
 const PROTOCOL_VERSION = 1
@@ -260,9 +260,9 @@ export function createFsApi(
 		if (!replica) throw new Error('backend has no sync module')
 		return replica
 	}
-	const mutationOptions = (request: Request): { source?: string } => {
+	const mutationOptions = (request: Request): { origin?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
-		return source ? { source } : {}
+		return source ? { origin: source } : {}
 	}
 
 	return (
@@ -379,20 +379,22 @@ export function createFsApi(
 			// Path sync: PUSH (client writes path-changes; server applies to its Storage)
 			.put('/blob/:hash', zValidator('param', HashParam), async (c) => {
 				const { hash } = c.req.valid('param')
-				const replica = requireReplica()
+				const content = backend.caps?.content
+				if (!content) return c.json({ error: 'not supported' }, 501)
 				const data = new Uint8Array(await c.req.arrayBuffer())
 				// The server MUST verify sha256(bytes) === hash before accepting a blob.
 				if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
-				await replica.putBlobByHash(hash, data)
+				await content.putByHash(hash, data)
 				return c.body(null, 204)
 			})
 
 			.post('/blobs/missing', zValidator('json', MissingBlobsBody), async (c) => {
 				const { hashes } = c.req.valid('json')
-				const replica = requireReplica()
+				const content = backend.caps?.content
+				if (!content) return c.json({ error: 'not supported' }, 501)
 				const missing: string[] = []
 				for (const hash of hashes) {
-					if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
+					if (!(await content.hasByHash(hash))) missing.push(hash)
 				}
 				return c.json({ missing })
 			})
@@ -427,11 +429,12 @@ export function createFsApi(
 			// the method here; a missing blob is a 404, never a 500.
 			.on(['GET', 'HEAD'], '/blob/:hash', zValidator('param', HashParam), async (c) => {
 				const { hash } = c.req.valid('param')
-				const replica = requireReplica()
+				const content = backend.caps?.content
+				if (!content) return c.body(null, 501)
 				if (c.req.method === 'HEAD')
-					return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
-				if (!(await replica.hasBlobByHash(hash))) return c.body(null, 404)
-				const data = await replica.getBlobByHash(hash)
+					return c.body(null, (await content.hasByHash(hash)) ? 200 : 404)
+				const data = await content.getByHash(hash)
+				if (!data) return c.body(null, 404)
 				return new Response(data.buffer as ArrayBuffer, {
 					headers: { 'Content-Type': 'application/octet-stream' }
 				})

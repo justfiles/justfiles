@@ -4,9 +4,10 @@ import {
 	type FsClient,
 	remoteSyncReplica
 } from '@justfiles/core'
-import { type SyncStatus as FsSyncStatus, synced, type Volume, volume } from '@justfiles/fs'
-import { idbStorage } from '@justfiles/fs/storage/idb'
+import { type Volume, volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
+import { type SyncStatus as FsSyncStatus, synced } from '@justfiles/sync'
+import { idbStorage } from '@justfiles/sync/storage/idb'
 
 export type { FsClient, Volume }
 export type SyncStatus = FsSyncStatus | 'local-only'

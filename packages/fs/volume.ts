@@ -89,8 +89,8 @@ export interface Volume {
 	 *
 	 * An OVERWRITE is NOT atomic, deliberately. Making it atomic means publishing a
 	 * new inode under the same name, which churns everything keyed by inode (the
-	 * native backend's path map, `metaCache`, `watch`'s change feed, native sync's
-	 * scan+diff) and defeats `putBlob`'s check that the inode it opened is still the
+	 * native backend's path map, `metaCache`, and `watch`'s change feed) and defeats
+	 * `putBlob`'s check that the inode it opened is still the
 	 * one the name points at. So a reader concurrent with an overwrite observes the
 	 * old bytes or the new ones, and on a backend that fills in place (native) a torn
 	 * state in between — the same as POSIX, and as Node's `fs.writeFile`. Order it, or
@@ -99,8 +99,8 @@ export interface Volume {
 	 * Atomicity here is about VISIBILITY, not durability: nothing is fsynced.
 	 *
 	 * Moves the file's `mtimeNs`/`ctimeNs` to now, so mtime means "when these bytes
-	 * last changed" and an app can sort by recency. A sync-applied write instead
-	 * carries the ORIGIN's mtime (it is the same edit, not a new one). Directory
+	 * last changed" and an app can sort by recency. A write with an imported timestamp
+	 * keeps that time because it is the same edit, not a new one. Directory
 	 * mtime is NOT maintained — no caller reads it.
 	 *
 	 * `exclusive` and `update` are the two ends of one question — what must be true of
@@ -260,8 +260,7 @@ export interface Volume {
 	 * the path to a fresh inode still fires (and the next event re-resolves).
 	 *
 	 * The event carries the `source` the write was tagged with, so callers can
-	 * ignore their own writes (sync tags remote-applied pulls; local user
-	 * writes carry none). The path need not exist yet — once a dentry binds it,
+	 * ignore their own writes. The path need not exist yet — once a dentry binds it,
 	 * the watch picks it up.
 	 *
 	 * With `{ recursive: true }` the watch instead reports STRUCTURAL changes
@@ -269,8 +268,8 @@ export interface Volume {
 	 * `path` itself or of any ancestor (which takes the whole subtree with it);
 	 * pair it with a `scan` of the same path to rebuild the listing. Content/meta
 	 * edits to existing files do NOT fire — watch the concrete file for those. That
-	 * holds for a pulled edit too: sync applying a put over a path this replica
-	 * already holds is an edit, not structure (see `applyJournaledOver`). This is the
+	 * also holds when another writer updates a path that already exists: it is an
+	 * edit, not structure. This is the
 	 * substrate for a directory browser's auto-refresh.
 	 *
 	 * A recursive delivery is a WAKE, not a log: it says the listing is stale and
@@ -290,7 +289,7 @@ export interface Volume {
 
 /** Payload delivered to a `volume.watch` listener. */
 export interface WatchEvent {
-	/** The `MutationOptions.source` the triggering write was tagged with. */
+	/** The `MutationOptions.origin` the triggering write was tagged with. */
 	source?: string
 }
 
@@ -315,7 +314,7 @@ export function volume(storage: Storage): Volume {
 	//
 	// Per INODE, as the kernel does it, so unrelated files never share a chain and still
 	// write concurrently. Per PROCESS, unlike the kernel: the window that remains is another
-	// writer of the same volume, which is the one lineage and sync answer.
+	// writer of the same volume, which needs coordination above this layer.
 	const inodeWrites = new Map<Ino, Promise<unknown>>()
 
 	function writeSerially<T>(ino: Ino, write: () => Promise<T>): Promise<T> {
@@ -1088,11 +1087,8 @@ export function volume(storage: Storage): Volume {
 		}
 	}
 
-	// Keep the path caches coherent with writes that bypass this wrapper. Sync
-	// applies remote pulls straight to Storage (see synced.ts/applyOp), so without
-	// this a `stat` after a pull could return stale meta. Driving invalidation off
-	// the storage feed covers both our own writes (harmless re-invalidation) and
-	// foreign ones (the actual fix).
+	// Keep path caches coherent with writes that bypass this wrapper. Driving
+	// invalidation from the storage feed covers both local and direct backend writes.
 	storage.caps?.subscribe?.((change) => {
 		if (change.kind === 'dirent' && change.dirIno !== undefined) invalidateDirCache(change.dirIno)
 		invalidateIno(change.ino)

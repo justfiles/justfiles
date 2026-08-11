@@ -73,11 +73,14 @@ const H = vi.hoisted(() => {
 
 vi.mock('@justfiles/core', () => ({ remoteSyncReplica: () => ({}), createFsClient: () => ({}) }))
 
-vi.mock('@justfiles/fs/storage/idb', () => ({ idbStorage: (name: string) => H.getStore(name) }))
+vi.mock('@justfiles/sync/storage/idb', () => ({ idbStorage: (name: string) => H.getStore(name) }))
 
 vi.mock('@justfiles/fs', () => ({
 	memStorage: () => H.newStore(),
-	volume: (store: Parameters<typeof H.makeVolume>[0]) => H.makeVolume(store),
+	volume: (store: Parameters<typeof H.makeVolume>[0]) => H.makeVolume(store)
+}))
+
+vi.mock('@justfiles/sync', () => ({
 	synced: async ({ local }: { local: Parameters<typeof H.makeVolume>[0] }) => {
 		const v = H.makeVolume(local)
 		return {
@@ -131,14 +134,14 @@ async function loadFs(registry: StoredProfile[]) {
 }
 
 async function seedProfile(id: string, files: Record<string, string>): Promise<void> {
-	const { idbStorage } = await import('@justfiles/fs/storage/idb')
+	const { idbStorage } = await import('@justfiles/sync/storage/idb')
 	const { volume } = await import('@justfiles/fs')
 	const vol = volume(idbStorage(`frieren-fs-profile-${id}`) as never)
 	for (const [path, body] of Object.entries(files)) await vol.writeFile(path, enc.encode(body))
 }
 
 async function accountVolume() {
-	const { idbStorage } = await import('@justfiles/fs/storage/idb')
+	const { idbStorage } = await import('@justfiles/sync/storage/idb')
 	const { volume } = await import('@justfiles/fs')
 	return volume(idbStorage('frieren-fs-profile-account-profile') as never)
 }

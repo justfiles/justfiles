@@ -4,10 +4,11 @@
 // `remoteSyncReplica` + the inode `apiStorage`), which stamp the header and
 // surface the 409 as a typed error.
 
-import { memStorage, volume } from '@justfiles/fs'
-import { GenerationStaleError, LineageStaleError } from '@justfiles/fs/sync-replica'
-import type { PathChange } from '@justfiles/fs/sync-wire'
+import { volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
+import { GenerationStaleError, LineageStaleError } from '@justfiles/sync/replica'
+import { memStorage } from '@justfiles/sync/storage/mem'
+import type { PathChange } from '@justfiles/sync/wire'
 import { describe, expect, it } from 'vitest'
 import { createFsApi, type ResetBody, type ResetResult } from './fs'
 import { apiStorage, createFsClient, remoteSyncReplica } from './fs.client'

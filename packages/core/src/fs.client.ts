@@ -1,12 +1,12 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
+import type { FileType } from '@justfiles/fs/types'
 import {
 	CursorPrunedError,
 	GenerationStaleError,
 	LineageStaleError,
 	type SyncReplica
-} from '@justfiles/fs/sync-replica'
-import { PathChange } from '@justfiles/fs/sync-wire'
-import type { FileType } from '@justfiles/fs/types'
+} from '@justfiles/sync/replica'
+import { PathChange } from '@justfiles/sync/wire'
 import { hc, type InferResponseType } from 'hono/client'
 import type { createFsApi } from './fs'
 
@@ -121,7 +121,7 @@ export async function apiStorage(
 	const currentGeneration = (): number | undefined => options.generation?.()
 	const withHeaders = <T extends Record<string, unknown>>(req: T, mopts?: MutationOptions): T => {
 		const header: Record<string, string> = {}
-		if (mopts?.source) header[FS_SOURCE_HEADER] = mopts.source
+		if (mopts?.origin) header[FS_SOURCE_HEADER] = mopts.origin
 		const gen = currentGeneration()
 		if (gen !== undefined) header[FS_GENERATION_HEADER] = String(gen)
 		return Object.keys(header).length > 0 ? ({ ...req, header } as T) : req
@@ -187,7 +187,7 @@ export async function apiStorage(
 					param: { ino },
 					header: {
 						'Content-Type': 'application/octet-stream',
-						...(options?.source ? { [FS_SOURCE_HEADER]: options.source } : {}),
+						...(options?.origin ? { [FS_SOURCE_HEADER]: options.origin } : {}),
 						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
 					}
 				} as Parameters<(typeof client.inodes)[':ino']['blob']['$put']>[0],

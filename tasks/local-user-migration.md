@@ -52,7 +52,7 @@ soul + `seeded: true` profile, `spud.json`, and the sync bookkeeping under
 
 ## The sync layer is local-first
 
-`synced()` (`packages/fs/synced.ts`) returns a usable local volume immediately
+`synced()` (`packages/sync/synced.ts`) returns a usable local volume immediately
 and runs the first bootstrap/pull in the background. After the account profile's
 first sync settles, its **local IDB mirrors the DO** — so we can read the account
 volume locally to learn what the server has, instead of a bespoke remote probe.

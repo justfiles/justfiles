@@ -4,7 +4,7 @@
 // instead of reporting 404 — which broke push's `hasBlobByHash` presence check.
 
 import { memStorage } from '@justfiles/fs'
-import { PAGE } from '@justfiles/fs/sync-replica'
+import { PAGE } from '@justfiles/sync/replica'
 import { describe, expect, it } from 'vitest'
 import { createFsApi } from './fs'
 import { createFsClient, remoteSyncReplica } from './fs.client'

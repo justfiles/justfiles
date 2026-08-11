@@ -10,7 +10,7 @@
  *
  * `Storage.deleteInode` already states the rule ("backends should no-op if the inode is
  * still referenced by any directory entry") and says why the case is real rather than
- * theoretical: sync replay legitimately creates a transient second name during a move, so a
+ * theoretical: a move can create a transient second name, so a
  * displacing rename can meet one. mem and SQLite honoured it on this path; IDB's
  * `atomicMove` called a `freeIno` helper that did not.
  *
@@ -55,7 +55,7 @@ describe.each(backends)('a displacing rename on %s', (_name, make) => {
 		await vol.writeFile('/shared.md', enc.encode('two names, one inode'))
 		const ino = (await vol.stat('/shared.md')).ino
 
-		// The transient second name `Storage` documents sync replay creating during a move.
+		// The transient second name documents the state that a move can create.
 		await storage.putDirent(storage.rootIno, 'alias.md', { ino, type: FileType.Regular })
 		expect((await storage.getDirent(storage.rootIno, 'alias.md'))?.ino).toBe(ino)
 
