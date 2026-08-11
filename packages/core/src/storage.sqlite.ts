@@ -1,15 +1,12 @@
 import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfiles/fs/storage'
-import type { PathStorePort } from '@justfiles/fs/storage.shared'
+import type { PathStorePort, TreeEffect } from '@justfiles/fs/storage.shared'
 import {
 	applyJournaledOver,
 	buildDeleteChange,
 	buildPutChange,
 	joinPath,
-	journalDeleteOver,
-	journalPutOver,
 	localChangeOver,
-	sortChildFirst,
-	sortParentFirst
+	pathSyncObserver
 } from '@justfiles/fs/storage.shared'
 import { coalesceByPath, inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
@@ -269,6 +266,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
 	const localActorId = options.localActorId ?? 'local'
+	// The filesystem announces its tree writes here; this module decides what to
+	// record (storage.shared.ts ROADMAP item 3 / #454). Attached unconditionally for
+	// now — inverting the construction is a later slice.
+	const observer = pathSyncObserver(localActorId)
 
 	let bootstrapPromise: Promise<void> | null = null
 
@@ -702,23 +703,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return aged.length < TOMBSTONE_SWEEP_LIMIT
 	}
 
-	/** Journal a local `put` for a linked path (shared driver over the sqlite port). */
-	async function journalPut(
+	/**
+	 * Announce one tree change to the attached observer, inside the mutation's own
+	 * transaction and after the write (storage.shared.ts ROADMAP item 3 / #454).
+	 */
+	async function record(
 		tx: DbAdapter,
-		path: string,
-		ino: Ino,
+		effect: TreeEffect,
 		options?: MutationOptions
 	): Promise<void> {
-		await journalPutOver(makePathPort(tx).port, path, ino, localActorId, options)
-	}
-
-	/** Journal a local `delete` for a path (shared driver over the sqlite port). */
-	async function journalDelete(
-		tx: DbAdapter,
-		path: string,
-		options?: MutationOptions
-	): Promise<void> {
-		await journalDeleteOver(makePathPort(tx).port, path, localActorId, options)
+		await observer.record(makePathPort(tx).port, effect, options)
 	}
 
 	// ── Path-sync apply (remote pull; epic slice 4) ──────────────────────────────
@@ -843,15 +837,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			])
 	}
 
-	// The storage-independent seam the shared apply driver (storage.shared.ts) calls,
-	// bound to one transaction (or `db` for read-only localChange). `emit` is buffered
-	// so a transactional apply can flush AFTER commit. pathOf / enumerateSubtree stay
-	// out of the port — they are per-backend (recursive CTE) and used by the mutators.
+	// The storage-independent seam the shared apply driver + the mutation observer
+	// (storage.shared.ts) call, bound to one transaction (or `db` for read-only
+	// localChange). `emit` is buffered so a transactional apply can flush AFTER commit.
 	function makePathPort(tx: DbAdapter): { port: PathStorePort; emits: StorageChange[] } {
 		const emits: StorageChange[] = []
 		const port: PathStorePort = {
 			mintIno: randomId,
 			resolveIno: (path) => resolveIno(tx, path),
+			pathOf: (ino) => pathOf(tx, ino),
+			enumerateSubtree: (ino) => enumerateSubtree(tx, ino),
 			ensureDirPath: (path) => ensureDirPath(tx, path),
 			async getDirent(dirIno, name) {
 				const d = await getDirent(tx, dirIno, name)
@@ -915,8 +910,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 			await maybeDeleteOrphanedContent(tx, toStringOrNull(inode.content_hash), orphanedR2Keys)
 
-			const path = await pathOf(tx, ino)
-			if (path !== null) await journalPut(tx, path, ino, options)
+			await record(tx, { kind: 'content', ino, contentHash }, options)
 		})
 
 		emit({ ino, kind: 'content', source: options?.source })
@@ -1034,10 +1028,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					meta.type
 				])
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) {
-					path = joinPath(dirPath, name)
-					await journalPut(tx, path, ino, options)
-				}
+				if (dirPath !== null) path = joinPath(dirPath, name)
+				await record(tx, { kind: 'link', dirIno, name, ino, type: meta.type }, options)
 			})
 
 			emit({ ino, kind: 'meta', source: options?.source })
@@ -1071,16 +1063,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				const destination = await getDirent(tx, newDirIno, newName)
 				if (destination && String(destination.ino) === String(source.ino)) return
 
-				// Enumerate the moving subtree + resolve both parents' paths BEFORE the
-				// rebind, so we can journal an ordered delete(old) + put(new) below.
+				// Both parents' paths, for the change feed below (and the same ENOENT a
+				// move out of / into an unlinked directory has always raised).
 				const oldDirPath = await pathOf(tx, oldDirIno)
 				const newDirPath = await pathOf(tx, newDirIno)
 				if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
-				const oldBase = joinPath(oldDirPath, oldName)
-				const newBase = joinPath(newDirPath, newName)
-				oldPath = oldBase
-				newPath = newBase
-				const subtree = await enumerateSubtree(tx, String(source.ino))
+				oldPath = joinPath(oldDirPath, oldName)
+				newPath = joinPath(newDirPath, newName)
 
 				if (destination) {
 					displaced = String(destination.ino)
@@ -1098,18 +1087,21 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					oldName
 				])
 				movedIno = String(source.ino)
-				// Journal the move as ordered subtree changes: delete child-before-parent
-				// (never orphan a live child under a deleted dir), then put parent-before-
-				// child (the dir exists before its entries). A moved regular file keeps its
-				// contentHash, so journalPut re-emits a put referencing the already-present
-				// bytes — only the dirent rebinds.
-				for (const p of sortChildFirst(
-					subtree.map((n) => oldBase + n.rel),
-					(x) => x
-				))
-					await journalDelete(tx, p, options)
-				for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
-					await journalPut(tx, newBase + n.rel, n.ino, options)
+				// ONE effect, however big the subtree is — what recording it costs is the
+				// observer's call, not this backend's.
+				await record(
+					tx,
+					{
+						kind: 'move',
+						fromDirIno: oldDirIno,
+						fromName: oldName,
+						toDirIno: newDirIno,
+						toName: newName,
+						ino: movedIno,
+						displaced
+					},
+					options
+				)
 			})
 
 			await deleteBlobs(orphanedR2Keys)
@@ -1572,8 +1564,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					]
 				)
 				changed = true
-				const path = await pathOf(tx, ino)
-				if (path !== null) await journalPut(tx, path, ino, options)
+				await record(tx, { kind: 'meta', ino }, options)
 			})
 			if (changed) emit({ ino, kind: 'meta', source: options?.source })
 		},
@@ -1641,10 +1632,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					])
 				}
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) {
-					path = joinPath(dirPath, name)
-					await journalPut(tx, path, entry.ino, options)
-				}
+				if (dirPath !== null) path = joinPath(dirPath, name)
+				await record(tx, { kind: 'link', dirIno, name, ino: entry.ino, type: entry.type }, options)
 			})
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, path, source: options?.source })
 		},
@@ -1659,10 +1648,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				removedIno = String(existing.ino)
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) {
-					path = joinPath(dirPath, name)
-					await journalDelete(tx, path, options)
-				}
+				if (dirPath !== null) path = joinPath(dirPath, name)
+				await record(tx, { kind: 'unlink', dirIno, name, ino: removedIno }, options)
 			})
 			if (removedIno !== null)
 				emit({ ino: removedIno, kind: 'dirent', dirIno, name, path, source: options?.source })

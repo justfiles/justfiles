@@ -2,15 +2,7 @@ import type { DBSchema, IDBPDatabase, IDBPObjectStore, IDBPTransaction, StoreNam
 import { openDB } from 'idb'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { PathStorePort } from './storage.shared'
-import {
-	applyJournaledOver,
-	joinPath,
-	journalDeleteOver,
-	journalPutOver,
-	localChangeOver,
-	sortChildFirst,
-	sortParentFirst
-} from './storage.shared'
+import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
 import type { JournalRow } from './sync-replica'
 import { coalesceByPath, inodeMetaFromSync, type PathChange } from './sync-wire'
 import type { Ino } from './types'
@@ -245,6 +237,10 @@ export function idbStorage(
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
 	// The backend's client-id, stamped as ORIGIN (PathChange.source) on local writes.
 	const localActorId = options?.localActorId ?? 'local'
+	// The filesystem announces its tree writes here; this module decides what to
+	// record (storage.shared.ts ROADMAP item 3 / #454). Attached unconditionally for
+	// now — inverting the construction is a later slice.
+	const observer = pathSyncObserver(localActorId)
 	let dbPromise: Promise<Db> | null = null
 
 	// Change feed — the substrate for volume.watch. Listeners fire after a
@@ -541,15 +537,17 @@ export function idbStorage(
 			await tx.objectStore('xattrs').put({ ino, name, value })
 	}
 
-	// The storage-independent seam the shared apply driver (storage.shared.ts) calls,
-	// bound to one transaction. `emit` is buffered so applyJournaled can flush AFTER
-	// the txn commits (idb fires change events post-commit). pathOf / enumerateSubtree
-	// stay out of the port — they are per-backend (dirent walks) and used by mutators.
+	// The storage-independent seam the shared apply driver + the mutation observer
+	// (storage.shared.ts) call, bound to one transaction. `emit` is buffered so
+	// applyJournaled can flush AFTER the txn commits (idb fires change events
+	// post-commit).
 	function makePathPort(tx: FullTx): { port: PathStorePort; emits: StorageChange[] } {
 		const emits: StorageChange[] = []
 		const port: PathStorePort = {
 			mintIno: () => crypto.randomUUID(),
 			resolveIno: (path) => resolveInoTx(tx, path),
+			pathOf: (ino) => pathOfTx(tx, ino),
+			enumerateSubtree: (ino) => enumerateSubtreeTx(tx, ino),
 			ensureDirPath: (path) => ensureDirPathTx(tx, path),
 			async getDirent(dirIno, name) {
 				const d = await tx.objectStore('dirs').get([dirIno, name])
@@ -677,18 +675,12 @@ export function idbStorage(
 			if (stored.contentHash) {
 				await tx.objectStore('dirty').put({ ino, markedAt: now })
 			}
-			// A file with no content yet is journaled by the following putBlob (once
-			// hashed) — see buildPutChange's self-skip. One already carrying a
-			// contentHash journals right here, below.
 			const dirPath = await pathOfTx(tx, dirIno)
-			if (dirPath !== null)
-				await journalPutOver(
-					makePathPort(tx).port,
-					joinPath(dirPath, name),
-					ino,
-					localActorId,
-					options
-				)
+			await observer.record(
+				makePathPort(tx).port,
+				{ kind: 'link', dirIno, name, ino, type: stored.type },
+				options
+			)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
 			emit({
@@ -722,9 +714,6 @@ export function idbStorage(
 			}
 			const oldBase = joinPath(oldDirPath, oldName)
 			const newBase = joinPath(newDirPath, newName)
-			// Enumerate BEFORE mutating (children keep their parent-ino-keyed dirents;
-			// only the top entry rebinds).
-			const subtree = await enumerateSubtreeTx(tx, source.ino)
 
 			const destination = await tx.objectStore('dirs').get([newDir, newName])
 			let displaced: Ino | null = null
@@ -748,16 +737,21 @@ export function idbStorage(
 				.objectStore('dirs')
 				.put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
 
-			// Journal the move as ordered subtree changes: deletes child-before-parent,
-			// then puts parent-before-child (ordering shared with apply).
-			const port = makePathPort(tx).port
-			for (const p of sortChildFirst(
-				subtree.map((n) => oldBase + n.rel),
-				(x) => x
-			))
-				await journalDeleteOver(port, p, localActorId, options)
-			for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
-				await journalPutOver(port, newBase + n.rel, n.ino, localActorId, options)
+			// ONE effect, however big the subtree is — what recording it costs is the
+			// observer's call, not this backend's.
+			await observer.record(
+				makePathPort(tx).port,
+				{
+					kind: 'move',
+					fromDirIno: oldDir,
+					fromName: oldName,
+					toDirIno: newDir,
+					toName: newName,
+					ino: source.ino,
+					displaced
+				},
+				options
+			)
 
 			await tx.done
 			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
@@ -1007,10 +1001,7 @@ export function idbStorage(
 				return
 			}
 			await tx.objectStore('inodes').put({ ...rec, ...partial })
-			// A linked inode's metadata changed (chmod/utimes/…) — journal it.
-			const path = await pathOfTx(tx, ino)
-			if (path !== null)
-				await journalPutOver(makePathPort(tx).port, path, ino, localActorId, options)
+			await observer.record(makePathPort(tx).port, { kind: 'meta', ino }, options)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
 		},
@@ -1064,22 +1055,22 @@ export function idbStorage(
 				throw new Error(`ENOENT: ino ${ino}`)
 			}
 			await storeContentByHashTx(tx, hash, bytes)
-			{
-				// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
-				// stamped before the journal row is built so the new time ships with it.
-				const stamp = BigInt(Date.now()) * 1_000_000n
-				await tx.objectStore('inodes').put({
-					...inode,
-					size: BigInt(bytes.length),
-					contentHash: hash,
-					mtimeNs: stamp,
-					ctimeNs: stamp
-				})
-				await tx.objectStore('dirty').put({ ino, markedAt: Date.now() })
-				const path = await pathOfTx(tx, ino)
-				if (path !== null)
-					await journalPutOver(makePathPort(tx).port, path, ino, localActorId, options)
-			}
+			// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
+			// stamped before the effect is announced so the new time ships with it.
+			const stamp = BigInt(Date.now()) * 1_000_000n
+			await tx.objectStore('inodes').put({
+				...inode,
+				size: BigInt(bytes.length),
+				contentHash: hash,
+				mtimeNs: stamp,
+				ctimeNs: stamp
+			})
+			await tx.objectStore('dirty').put({ ino, markedAt: Date.now() })
+			await observer.record(
+				makePathPort(tx).port,
+				{ kind: 'content', ino, contentHash: hash },
+				options
+			)
 			await tx.done
 			emit({ ino, kind: 'content', source: options?.source })
 		},
@@ -1097,16 +1088,12 @@ export function idbStorage(
 				'readwrite'
 			) as FullTx
 			await tx.objectStore('dirs').put({ dirIno, name, ino: entry.ino, type: entry.type })
-			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
 			const dirPath = await pathOfTx(tx, dirIno)
-			if (dirPath !== null)
-				await journalPutOver(
-					makePathPort(tx).port,
-					joinPath(dirPath, name),
-					entry.ino,
-					localActorId,
-					options
-				)
+			await observer.record(
+				makePathPort(tx).port,
+				{ kind: 'link', dirIno, name, ino: entry.ino, type: entry.type },
+				options
+			)
 			await tx.done
 			emit({
 				ino: entry.ino,
@@ -1129,16 +1116,13 @@ export function idbStorage(
 				await tx.done
 				return
 			}
-			// Resolve the parent path BEFORE unlinking so the delete is stamped correctly.
 			const dirPath = await pathOfTx(tx, dirIno)
 			await tx.objectStore('dirs').delete([dirIno, name])
-			if (dirPath !== null)
-				await journalDeleteOver(
-					makePathPort(tx).port,
-					joinPath(dirPath, name),
-					localActorId,
-					options
-				)
+			await observer.record(
+				makePathPort(tx).port,
+				{ kind: 'unlink', dirIno, name, ino: existing.ino },
+				options
+			)
 			await tx.done
 			emit({
 				ino: existing.ino,

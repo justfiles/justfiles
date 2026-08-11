@@ -1,14 +1,6 @@
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { PathStorePort } from './storage.shared'
-import {
-	applyJournaledOver,
-	joinPath,
-	journalDeleteOver,
-	journalPutOver,
-	localChangeOver,
-	sortChildFirst,
-	sortParentFirst
-} from './storage.shared'
+import { applyJournaledOver, joinPath, localChangeOver, pathSyncObserver } from './storage.shared'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath, inodeMetaFromSync } from './sync-wire'
@@ -159,6 +151,12 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		async resolveIno(path) {
 			return resolveIno(path)
 		},
+		async pathOf(ino) {
+			return pathOf(ino)
+		},
+		async enumerateSubtree(ino) {
+			return enumerateSubtree(ino)
+		},
 		async ensureDirPath(path) {
 			return ensureDir(path)
 		},
@@ -227,6 +225,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		},
 		emit
 	}
+
+	// The filesystem announces its tree writes here; this module decides what to
+	// record (ROADMAP item 3 / #454). Attached unconditionally for now — inverting
+	// the construction is a later slice.
+	const observer = pathSyncObserver(localActorId)
 
 	/** All paths in the subtree rooted at `ino`, as `{ ino, rel }` (root rel = ''). */
 	function enumerateSubtree(ino: Ino): { ino: Ino; rel: string }[] {
@@ -301,14 +304,17 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			const path = dirPath === null ? undefined : joinPath(dirPath, name)
 			emit({ ino, kind: 'meta', source: options?.source })
 			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
-			if (dirPath)
-				await journalPutOver(pathPort, joinPath(dirPath, name), ino, localActorId, options)
+			await observer.record(
+				pathPort,
+				{ kind: 'link', dirIno, name, ino, type: stored.type },
+				options
+			)
 			return ino
 		},
 
-		// Atomic rename — moves a name (and its whole subtree) in one step. Journals
-		// the move as an ordered subtree delete+put: deletes child-before-parent (never
-		// orphan a live child under a deleted dir), then puts parent-before-child.
+		// Atomic rename — moves a name (and its whole subtree) in one step, and
+		// announces it as ONE effect however big the subtree is. What that costs to
+		// record is the observer's call, not this backend's.
 		async atomicMove(oldDir, oldName, newDir, newName, options) {
 			const oldKey = dirKey(oldDir, oldName)
 			const src = dirs.get(oldKey)
@@ -318,9 +324,6 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
 			const oldBase = joinPath(oldDirPath, oldName)
 			const newBase = joinPath(newDirPath, newName)
-			// Enumerate BEFORE mutating (paths are prefix-rewritten, children keep their
-			// parent-ino-keyed dirents — only the top entry rebinds).
-			const subtree = enumerateSubtree(src.ino)
 			const newKey = dirKey(newDir, newName)
 			const displaced = dirs.get(newKey) ?? null
 			dirs.delete(oldKey)
@@ -333,17 +336,20 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				xattrs.delete(displaced.ino)
 				parentOf.delete(displaced.ino)
 			}
-			// Journal the move as ordered subtree changes: deletes child-before-parent
-			// (never orphan a live child under a deleted dir), then puts parent-before-
-			// child (the dir exists before its entries) — ordering shared with apply.
-			const deletePaths = sortChildFirst(
-				subtree.map((n) => oldBase + n.rel),
-				(p) => p
+			const displacedIno = displaced && displaced.ino !== src.ino ? displaced.ino : null
+			await observer.record(
+				pathPort,
+				{
+					kind: 'move',
+					fromDirIno: oldDir,
+					fromName: oldName,
+					toDirIno: newDir,
+					toName: newName,
+					ino: src.ino,
+					displaced: displacedIno
+				},
+				options
 			)
-			for (const p of deletePaths) await journalDeleteOver(pathPort, p, localActorId, options)
-			const putNodes = sortParentFirst(subtree, (n) => newBase + n.rel)
-			for (const n of putNodes)
-				await journalPutOver(pathPort, newBase + n.rel, n.ino, localActorId, options)
 			emit({
 				ino: src.ino,
 				kind: 'dirent',
@@ -360,7 +366,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				path: oldBase,
 				source: options?.source
 			})
-			return displaced && displaced.ino !== src.ino ? displaced.ino : null
+			return displacedIno
 		},
 
 		// ── Path-sync seams ──────────────────────────────────────────────────────
@@ -435,10 +441,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			if (existing) {
 				metas.set(ino, { ...existing, ...patch })
 				emit({ ino, kind: 'meta', source: options?.source })
-				// A linked inode's metadata changed (chmod/utimes/…) — journal it. An
-				// unlinked inode (createNode's setMeta before putDirent) has no path yet.
-				const path = pathOf(ino)
-				if (path) await journalPutOver(pathPort, path, ino, localActorId, options)
+				await observer.record(pathPort, { kind: 'meta', ino }, options)
 				return
 			}
 			if (patch.type === undefined) return
@@ -487,20 +490,17 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			// caller — a save that saved nothing reachable.
 			const meta = metas.get(ino)
 			if (!meta) throw new Error(`ENOENT: ino ${ino}`)
-			{
-				// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
-				// stamped before the journal row is built so the new time ships with it.
-				const stamp = BigInt(Date.now()) * 1_000_000n
-				metas.set(ino, {
-					...meta,
-					contentHash: hash,
-					size: BigInt(data.length),
-					mtimeNs: stamp,
-					ctimeNs: stamp
-				})
-				const path = pathOf(ino)
-				if (path) await journalPutOver(pathPort, path, ino, localActorId, options)
-			}
+			// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
+			// stamped before the effect is announced so the new time ships with it.
+			const stamp = BigInt(Date.now()) * 1_000_000n
+			metas.set(ino, {
+				...meta,
+				contentHash: hash,
+				size: BigInt(data.length),
+				mtimeNs: stamp,
+				ctimeNs: stamp
+			})
+			await observer.record(pathPort, { kind: 'content', ino, contentHash: hash }, options)
 		},
 
 		async getDirent(dirIno, name) {
@@ -519,14 +519,15 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				path: dirPath === null ? undefined : joinPath(dirPath, name),
 				source: options?.source
 			})
-			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
-			if (dirPath)
-				await journalPutOver(pathPort, joinPath(dirPath, name), entry.ino, localActorId, options)
+			await observer.record(
+				pathPort,
+				{ kind: 'link', dirIno, name, ino: entry.ino, type: entry.type },
+				options
+			)
 		},
 
 		async deleteDirent(dirIno, name, options) {
 			const existing = dirs.get(dirKey(dirIno, name))
-			// Resolve the path BEFORE unlinking so the delete is stamped correctly.
 			const dirPath = pathOf(dirIno)
 			dirs.delete(dirKey(dirIno, name))
 			if (existing) {
@@ -539,8 +540,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 					path: dirPath === null ? undefined : joinPath(dirPath, name),
 					source: options?.source
 				})
-				if (dirPath)
-					await journalDeleteOver(pathPort, joinPath(dirPath, name), localActorId, options)
+				await observer.record(
+					pathPort,
+					{ kind: 'unlink', dirIno, name, ino: existing.ino },
+					options
+				)
 			}
 		},
 

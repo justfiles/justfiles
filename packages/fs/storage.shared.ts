@@ -10,10 +10,14 @@
  * Deliberately minimal: the PURE leaf rules are free functions, and the apply
  * ORCHESTRATION (`applyJournaledOver` / `localChangeOver` / `journalPutOver` /
  * `journalDeleteOver`) runs over a tiny per-backend `PathStorePort`. Each backend
- * still owns its storage access, atomicity, `pathOf(ino)` walk, and subtree
- * enumeration (a Map walk vs a set-based SQL query vs an IDB cursor) — the port
- * is only the storage-independent seam the shared driver needs. See PATH-SYNC
- * ROADMAP item 2 below.
+ * still owns its storage access and atomicity; the port is the
+ * storage-independent seam the shared driver needs (a Map walk vs a recursive
+ * SQL CTE vs an IDB cursor behind one signature). See PATH-SYNC ROADMAP item 2
+ * below.
+ *
+ * `pathSyncObserver` is the LOCAL half of that: the backends no longer journal,
+ * they announce a `TreeEffect` and this module decides what to record. See
+ * ROADMAP item 3 (#454).
  */
 
 import type { InodeMeta, MutationOptions, StorageChange } from './storage'
@@ -66,30 +70,46 @@ import { FileType } from './types'
 //      New primitives: pathOf via a dirs 'by-ino' index, resolveIno, ensureDirPath,
 //      enumerateSubtree, upsertInodeFromSync; new journal + pathver object stores.
 //
-//   3. [DEMOTED · path-sync] ADR: JOURNALING AS A COMPOSABLE CHANGE STREAM — NOT
-//      REQUIRED FOR SYNC. Original ambition: make interception-journaling a
-//      detachable extension (backends announce "path P changed"; an attached layer
-//      builds journal rows), unifying the durable journal + the ephemeral
-//      emit()/subscribe feed into "one change, two subscribers". WHY DEMOTED: the
-//      generic, minimal sync seam the engine actually needs ALREADY exists — it is
-//      ChangeSource (pathDeltas + pathScan), the two-method contract behind
-//      SyncReplica. Detection strategy is fully hidden there: journaledChangeSource
-//      (intercept) and nativeChangeSource (observe, item 5) are two strategies at
-//      the SAME seam. Item 3 was aimed one layer too deep — at the internal plumbing
-//      of a SINGLE ChangeSource impl. And its headline "composability" payoff needed
-//      a consumer that wanted to ATTACH interception journaling; native-fs (item 5,
-//      Path B) is OBSERVED, never intercept-journals, so that consumer does not
-//      exist. What remains is OPTIONAL DB-internal cleanup (fold the journal +
-//      emit/subscribe into one in-txn stream) — cleanliness, not correctness (the
-//      last correctness motive, the putBlob self-skip, was proven benign; see the
-//      "empty regular file" conformance case). Do it ONLY if it later earns its
-//      keep; it is NOT part of the sync roadmap. Rejected alongside (kept for the
-//      record): a `treeOverOrderedKv` engine implementing the tree over a generic
-//      store (flattens sqlite/idb to a dumb KV, discarding their CTE /
-//      secondary-index strengths — not worth it). If ever revived, the ONE hard
-//      constraint stands: to stay atomic the mutation hook must fire INSIDE the
-//      backend txn and hand the handler a tx-scoped PathStorePort (an after-commit
-//      on('event') cannot journal a delete — the row is already gone).
+//   3. [IN PROGRESS · #454] THE MUTATION HOOK: THE FILESYSTEM ANNOUNCES, THE SYNC
+//      MODULE RECORDS. Demoted once, for a reason that has since expired. The
+//      demotion said the "composability" payoff needed a consumer that wanted to
+//      ATTACH interception journaling, and native-fs (item 5) OBSERVES rather than
+//      intercepts, so no such consumer existed. ID-ADDRESSED MOVES ARE THAT
+//      CONSUMER. Our wire carries only put and delete AT A PATH, so `atomicMove`
+//      explodes a directory rename into 2N journal rows (~160 ms for 4000
+//      descendants) — Dropbox's Sync Engine Classic exactly, which their Nucleus
+//      rewrite fixed by keying nodes by id so a move costs the same whatever the
+//      subtree size. That is a SECOND interception strategy over the SAME backends:
+//      same tree writes, different recording. Without the hook, adopting it means
+//      editing `atomicMove` in three backends; with it, replacing one module.
+//
+//      Staged (each lands alone, conformance green throughout):
+//        1. [DONE] The hook. `TreeEffect` + `MutationObserver` (below); every
+//           backend's mutators announce one effect per tree change instead of
+//           journaling, and `pathSyncObserver` records. `move` is ONE effect
+//           whatever the subtree size — the observer, not the filesystem, decides
+//           whether that means 2N rows or one. That is the line the swap needs, and
+//           the only reason `move` is not modelled as unlink + link.
+//        2. Decouple the port from the wire: `upsertInode` takes `InodeMeta`, and
+//           `appendJournalRow` moves to a sync-owned store.
+//        3. `journal` / `pathApply` / `pathSnapshot` / `clearSyncState` leave
+//           `StorageCapabilities`; `SyncReplica` is COMPOSED from (filesystem, sync
+//           module) instead of read off `storage.caps`.
+//        4. Move the files to `packages/sync` and let imports enforce the boundary.
+//           Intention did not hold this line — a sync-shaped column reached
+//           `fs_dirents` in #453 without anyone having to argue for it. A compiler
+//           checks an import boundary.
+//
+//      The ONE hard constraint the demotion recorded stands, and is honoured: to
+//      stay atomic the hook fires INSIDE the backend txn and hands the observer a
+//      tx-scoped port (an after-commit `on('event')` cannot journal a delete — the
+//      row is already gone). So a `Storage` wrapping a `Storage` can never work: a
+//      wrapper cannot join the inner transaction, and the interface can never grow
+//      a transaction primitive because `storage.fs.ts` could not implement one —
+//      POSIX has no multi-file transaction. Composition here is INVERSION, not
+//      decoration. Rejected alongside (kept for the record): a `treeOverOrderedKv`
+//      engine implementing the tree over a generic store (flattens sqlite/idb to a
+//      dumb KV, discarding their CTE / secondary-index strengths — not worth it).
 //
 //   4. [DONE(path-sync)] CONTENT GC. applyJournaled deliberately does NOT reclaim
 //      orphaned blobs (a rename's delete would otherwise drop the bytes its own
@@ -259,10 +279,10 @@ export function orderForApply(changes: PathChange[]): PathChange[] {
 // now lives ONCE here, driven through `PathStorePort`; each backend supplies a
 // thin port bound to its own store (and, where relevant, its own transaction).
 //
-// What STAYS per-backend (cannot be shared): pathOf(ino), subtree enumeration,
-// and atomicity/transaction boundaries — a Map walk vs a recursive CTE vs an IDB
-// cursor are legitimately different. The port methods below are the minimal
-// storage-independent seam the shared driver needs.
+// What STAYS per-backend (cannot be shared): the IMPLEMENTATIONS — a Map walk vs
+// a recursive CTE vs an IDB cursor — and atomicity / transaction boundaries. The
+// port methods below are the minimal storage-independent seam the shared driver
+// and the mutation observer need.
 
 /**
  * The minimal per-backend storage seam the shared apply driver calls. Every
@@ -281,15 +301,27 @@ export function orderForApply(changes: PathChange[]): PathChange[] {
  * Storage seam and NOT part of the package's public API (kept off index.ts).
  * Non-journaling backends legitimately do not implement it — e.g. nativeStorage
  * (storage.fs.ts) has no journal/pathApply at all — it syncs by OBSERVATION
- * (ROADMAP item 5, scan+diff), which needs no port. ROADMAP item 3 (a mutation
- * hook that would relocate WHO calls this port) is DEMOTED; if ever revived, the
- * seam persists — do not widen it.
+ * (ROADMAP item 5, scan+diff), which needs no port. ROADMAP item 3 (#454) is the
+ * live refactor of WHO calls it: the mutation observer, not the backend. The seam
+ * persists — do not widen it.
  */
 export interface PathStorePort {
 	/** Mint a fresh inode id (UUID, numeric, …) for a pulled path with no local inode. */
 	mintIno(): Ino
 	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
 	resolveIno(path: string): Promise<Ino | null>
+	/**
+	 * Resolve an ino to its canonical path by walking UP to root; null if the inode
+	 * is unlinked (nothing names it, so there is no path to record).
+	 */
+	pathOf(ino: Ino): Promise<string | null>
+	/**
+	 * Every node in the subtree rooted at `ino`, as `{ ino, rel }` — the root's `rel`
+	 * is `''` and a descendant's is its path relative to the root (`/a/b`). Only the
+	 * backend can walk its own tree, but only the OBSERVER decides what a subtree
+	 * costs to record, which is why this is on the port rather than in `atomicMove`.
+	 */
+	enumerateSubtree(ino: Ino): Promise<{ ino: Ino; rel: string }[]>
 	/** Ensure every segment of a directory path exists (tree repair); return the deepest ino. */
 	ensureDirPath(path: string): Promise<Ino>
 	/** The entry currently linked at `(dirIno, name)`, or null. */
@@ -374,6 +406,111 @@ export async function journalDeleteOver(
 	const version = nextVersion(cur.version, cur.tombstone)
 	await port.setPathVersion(path, version, Math.max(cur.tombstone, version))
 	await port.appendJournalRow(buildDeleteChange(path, version, options?.source ?? actorId))
+}
+
+// ── The mutation hook (ROADMAP item 3 / #454) ─────────────────────────────────
+
+/**
+ * What changed in the tree, in the FILESYSTEM's own vocabulary — no paths, no
+ * versions, no wire. One effect per tree change, announced in the order applied.
+ *
+ * `move` is ONE effect whatever the subtree size: the filesystem does not
+ * enumerate descendants, and the observer decides whether a directory rename
+ * means 2N rows or one. That is the only reason `move` is not modelled as
+ * `unlink` + `link`, and it is what makes an id-addressed recorder a module swap
+ * rather than a third edit to `atomicMove`.
+ */
+export type TreeEffect =
+	| { kind: 'link'; dirIno: Ino; name: string; ino: Ino; type: FileType }
+	| { kind: 'unlink'; dirIno: Ino; name: string; ino: Ino }
+	| {
+			kind: 'move'
+			fromDirIno: Ino
+			fromName: string
+			toDirIno: Ino
+			toName: string
+			ino: Ino
+			/** The inode the move overwrote at the destination, or null. */
+			displaced: Ino | null
+	  }
+	| { kind: 'meta'; ino: Ino }
+	| { kind: 'content'; ino: Ino; contentHash: string }
+
+/**
+ * Whoever records what the filesystem announced. Called INSIDE the mutation's own
+ * transaction, AFTER the tree write, with a tx-scoped port for its reads and for
+ * writing its own state — never after commit, where an unlink's row is already
+ * gone and the recording could no longer roll back with the mutation.
+ *
+ * The filesystem never reads back anything an observer wrote.
+ */
+export interface MutationObserver {
+	record(port: PathStorePort, effect: TreeEffect, options?: MutationOptions): Promise<void>
+}
+
+/**
+ * The path-addressed observer: records every effect as journal rows at canonical
+ * paths, which is what today's wire (put/delete AT A PATH) can carry. A directory
+ * move therefore costs 2N rows — an ordered subtree delete (child-before-parent,
+ * so no live child is ever orphaned under a deleted dir) then put
+ * (parent-before-child, so the dir exists before its entries). That cost lives
+ * HERE, in one place, precisely so an id-addressed recorder can replace it
+ * without touching a backend.
+ *
+ * An effect on an inode nothing names (`pathOf` -> null) records nothing: there
+ * is no path to journal it at. That covers `createNode`'s bare `setMeta` before
+ * the dirent exists, and any write through a detached subtree.
+ */
+export function pathSyncObserver(actorId: string): MutationObserver {
+	return {
+		async record(port, effect, options) {
+			switch (effect.kind) {
+				case 'link': {
+					const dirPath = await port.pathOf(effect.dirIno)
+					if (dirPath === null) return
+					await journalPutOver(port, joinPath(dirPath, effect.name), effect.ino, actorId, options)
+					return
+				}
+				case 'unlink': {
+					const dirPath = await port.pathOf(effect.dirIno)
+					if (dirPath === null) return
+					await journalDeleteOver(port, joinPath(dirPath, effect.name), actorId, options)
+					return
+				}
+				case 'move': {
+					const fromDirPath = await port.pathOf(effect.fromDirIno)
+					const toDirPath = await port.pathOf(effect.toDirIno)
+					if (fromDirPath === null || toDirPath === null) return
+					const oldBase = joinPath(fromDirPath, effect.fromName)
+					const newBase = joinPath(toDirPath, effect.toName)
+					// Enumerated AFTER the rebind, which is safe and is the point: a move
+					// rebinds the TOP entry only, so every descendant keeps its
+					// parent-ino-keyed dirent and the subtree's shape is unchanged.
+					const subtree = await port.enumerateSubtree(effect.ino)
+					for (const p of sortChildFirst(
+						subtree.map((n) => oldBase + n.rel),
+						(x) => x
+					))
+						await journalDeleteOver(port, p, actorId, options)
+					// A moved regular file keeps its contentHash, so this put references the
+					// already-present bytes — only the name moved.
+					for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
+						await journalPutOver(port, newBase + n.rel, n.ino, actorId, options)
+					return
+				}
+				// Both are a put of the inode's current state at its path — the journal row
+				// is built by reading the inode back, so `content`'s hash needs no special
+				// handling here. They stay separate effects because the FILESYSTEM
+				// distinguishes them, and an observer is free to as well.
+				case 'meta':
+				case 'content': {
+					const path = await port.pathOf(effect.ino)
+					if (path === null) return
+					await journalPutOver(port, path, effect.ino, actorId, options)
+				}
+			}
+		}
+	}
 }
 
 /**
