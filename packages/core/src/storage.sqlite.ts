@@ -355,6 +355,15 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		}
 	}
 
+	/** Does this inode hold directory entries — i.e. is it a non-empty directory? */
+	async function hasChildDirents(tx: DbAdapter, ino: Ino): Promise<boolean> {
+		const rows = await tx.query<{ present: unknown }>(
+			'SELECT 1 AS present FROM fs_dirents WHERE dir_ino = ? LIMIT 1',
+			[ino]
+		)
+		return rows.length > 0
+	}
+
 	async function hasDirentReference(tx: DbAdapter, ino: Ino): Promise<boolean> {
 		const rows = await tx.query<{ present: unknown }>(
 			'SELECT 1 AS present FROM fs_dirents WHERE ino = ? LIMIT 1',
@@ -951,13 +960,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
 				await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
 			},
-			async dirHasLiveChildren(ino) {
-				const rows = await tx.query<{ present: unknown }>(
-					'SELECT 1 AS present FROM fs_dirents WHERE dir_ino = ? LIMIT 1',
-					[ino]
-				)
-				return rows.length > 0
-			},
+			dirHasLiveChildren: (ino) => hasChildDirents(tx, ino),
 			readPathVersion: (path) => readPathVersion(tx, path),
 			setPathVersion: (path, version, tombstone) => setPathVersion(tx, path, version, tombstone),
 			appendJournalRow: (change, localSource) => appendJournalRow(tx, change, localSource),
@@ -1160,14 +1163,26 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				const subtree = await enumerateSubtree(tx, String(source.ino))
 
 				if (destination) {
+					// POSIX: a rename never replaces a non-empty directory. Refused BEFORE any
+					// write rather than left to the dirents' foreign key, because the DO
+					// adapters run WITHOUT a transaction — `transaction` there is
+					// `await fn(adapter)` (apps/worker/src/worker/db.do.ts,
+					// apps/frieren/worker/db.do.ts), leaning on the Durable Object's implicit
+					// per-event commit. A constraint error raised partway through therefore
+					// keeps the statements before it: the destination's dirent gone, its
+					// children still holding rows in `fs_path_index` with no parent to reach
+					// them, and `pathSnapshot.puts` serving those detached paths to the next
+					// device that bootstraps. A displaced FILE has no child dirents, so it
+					// falls through here as before.
+					if (await hasChildDirents(tx, String(destination.ino)))
+						throw new Error(`ENOTEMPTY: ${newBase}`)
 					displaced = String(destination.ino)
 					await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [
 						newDirIno,
 						newName
 					])
-					// Before the move indexes the same path below. (A displaced DIRECTORY with
-					// children cannot get here — its inode delete fails the dirents' foreign
-					// key — so there is never a subtree to unindex, only this one path.)
+					// Before the move indexes the same path below. The check above leaves only
+					// one path to drop — never a subtree.
 					await unindexPath(tx, newBase)
 					await deleteInodeInTx(tx, String(destination.ino), orphanedR2Keys)
 				}
