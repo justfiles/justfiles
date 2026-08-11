@@ -9,6 +9,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
 import type { DbAdapter } from './db'
 import { createSqliteAdapter } from './db.sqlite'
@@ -66,6 +67,13 @@ const bytes = (s: string) => new TextEncoder().encode(s)
  * is the one the readers used to do per page, and the FULL OUTER shape catches drift
  * in both directions: a path the tree has and the index lost, and one the index kept
  * after the tree dropped it.
+ *
+ * The recursion descends only through DIRECTORIES, because `TREE_CTE` does
+ * (`WHERE inode.type = ?`) and this has to be the same walk the readers perform. An
+ * earlier version omitted that join and was blind to a whole class: turn a non-empty
+ * directory into a regular file and its children stop being reachable — the readers
+ * see a leaf, while an untyped walk happily descends into dirent rows that no longer
+ * hang off anything, agrees with the index, and reports nothing wrong.
  */
 function disagreements(db: DatabaseSync): { path: unknown; indexed: unknown; walked: unknown }[] {
 	return db
@@ -74,7 +82,10 @@ function disagreements(db: DatabaseSync): { path: unknown; indexed: unknown; wal
 				SELECT '/' || name, ino FROM fs_dirents WHERE dir_ino = '1'
 				UNION ALL
 				SELECT tree.path || '/' || child.name, child.ino
-				FROM tree JOIN fs_dirents child ON child.dir_ino = tree.ino
+				FROM tree
+				JOIN fs_inodes inode ON inode.ino = tree.ino
+				JOIN fs_dirents child ON child.dir_ino = tree.ino
+				WHERE inode.type = ${FileType.Directory}
 			)
 			SELECT idx.path AS path, idx.ino AS indexed, tree.ino AS walked
 			FROM fs_path_index AS idx
@@ -246,6 +257,45 @@ describe('fs_path_index', () => {
 
 		expect(disagreements(db)).toEqual([])
 		expect(indexedPaths(db)).toEqual(['/kept', '/pulled', '/pulled/deep', '/pulled/deep/file.md'])
+	})
+
+	it('refuses a pulled put that would turn a non-empty dir into a file', async () => {
+		// The apply side reuses the bound inode, so a put that changes /p's TYPE keeps
+		// the children pointing at it while the readers stop descending — `TREE_CTE`
+		// recurses only through directories. /p/child.md would then be indexed, absent
+		// from the tree, and handed to the next device that bootstraps.
+		//
+		// Resolved like a losing ancestor delete rather than by unindexing the subtree:
+		// the child is live, so the ancestor's type change loses, and the peer that
+		// applies the child's own put resurrects the directory via `ensureDirPath`.
+		// Unindexing instead would leave the dirent row orphaned under a regular file —
+		// the index would agree with a tree that is itself broken.
+		const { db, storage, vol } = makeSqlite()
+		await vol.mkdir('/p')
+		await vol.writeFile('/p/child.md', bytes('c'))
+		const apply = storage.caps?.pathApply
+		if (!apply) throw new Error('sqlite must apply journaled changes')
+
+		await apply.applyJournaled(
+			[
+				{
+					kind: 'put',
+					path: '/p',
+					version: '9',
+					source: 'peer',
+					contentHash: 'b'.repeat(64),
+					meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '7', size: '1' }
+				}
+			],
+			{ localSource: 'remote' }
+		)
+
+		expect(disagreements(db)).toEqual([])
+		expect(indexedPaths(db)).toEqual(['/p', '/p/child.md'])
+		// /p is still a directory, so the child is still reachable — and still served.
+		const snapshot = storage.caps?.pathSnapshot
+		if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
+		expect((await snapshot.puts('', 100)).map((c) => c.path)).toEqual(['/p', '/p/child.md'])
 	})
 
 	it('is rebuilt by a reset, around whatever the reset kept', async () => {

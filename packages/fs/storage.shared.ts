@@ -400,6 +400,21 @@ export async function applyJournaledOver(
 			const bound = await port.getDirent(parentIno, name)
 			const ino = bound?.ino ?? port.mintIno()
 			const type = change.meta.type
+			// The delete branch's tree-integrity invariant, in its other form: a put must
+			// not turn a directory that still has live children into a non-directory. The
+			// inode is REUSED, so the children keep pointing at it while the walk stops
+			// descending (it only recurses through directories) — unreachable in the tree,
+			// still carried by whatever the backend derives from it. Same resolution as a
+			// losing ancestor delete: the ancestor loses, and the peer that applies the
+			// surviving child's put resurrects the directory via ensureDirPath. Skip
+			// entirely — no rebind, no version, no journal row.
+			if (
+				bound !== null &&
+				bound.type === FileType.Directory &&
+				type !== FileType.Directory &&
+				(await port.dirHasLiveChildren(ino))
+			)
+				continue
 			await port.upsertInodeFromSync(ino, change)
 			await port.setDirent(parentIno, name, ino, type)
 			port.emit({ ino, kind: 'meta', source: opts.localSource })
