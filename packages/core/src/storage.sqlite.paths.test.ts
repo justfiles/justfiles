@@ -1,10 +1,10 @@
-// The materialised dirent path (#439 item 3, 0010_dirent_path.sql).
+// The sync path index (#439 item 3, 0010_path_index.sql).
 //
-// `fs_dirents.path` is now the answer to "where is this entry?", so these tests hold
-// it to the walk it replaced: after every mutation the stored path must equal the
-// path a recursive walk from the root would build. A writer that forgets to set it,
-// or a rename that leaves a descendant behind, shows up here rather than as a file
-// served under the wrong name to the next device that bootstraps.
+// `fs_path_index` is DERIVED state: it must agree with the tree after every
+// mutation, and the filesystem must not depend on it. Both halves are tested here —
+// the first because an index that drifts serves a file under the wrong name to the
+// next device that bootstraps, the second because it is the whole reason this lives
+// in its own table instead of as a column on `fs_dirents`.
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -12,6 +12,7 @@ import { volume } from '@justfiles/fs'
 import { describe, expect, it } from 'vitest'
 import { createSqliteAdapter } from './db.sqlite'
 import { parseSqlStatements } from './migrations/utils'
+import { resetVolume } from './reset'
 import { storage as sqliteStorage } from './storage.sqlite'
 
 const migrationsDir = new URL('./migrations/', import.meta.url)
@@ -22,9 +23,7 @@ const migrationFiles = readdirSync(migrationsDir)
 const sqlOf = (file: string) => readFileSync(new URL(file, migrationsDir), 'utf8')
 const schema = migrationFiles.map(sqlOf).join('\n')
 
-function makeSqlite() {
-	const db = new DatabaseSync(':memory:')
-	db.exec(schema)
+const adapterOf = (db: DatabaseSync) => {
 	const db64 = {
 		prepare(sql: string) {
 			const stmt = db.prepare(sql)
@@ -33,43 +32,53 @@ function makeSqlite() {
 		},
 		exec: (sql: string) => db.exec(sql)
 	}
-	const storage = sqliteStorage(
-		createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0])
-	)
+	return createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0])
+}
+
+function makeSqlite() {
+	const db = new DatabaseSync(':memory:')
+	db.exec(schema)
+	const storage = sqliteStorage(adapterOf(db))
 	return { db, storage, vol: volume(storage) }
 }
 
 const bytes = (s: string) => new TextEncoder().encode(s)
 
 /**
- * Entries whose stored path disagrees with the walk — the invariant, stated as a
- * query. `IS NOT` rather than `<>` so an entry the walk cannot reach (NULL on both
- * sides) counts as agreement.
+ * Where the index and the tree disagree — the invariant, stated as a query. The walk
+ * is the one the readers used to do per page, and the FULL OUTER shape catches drift
+ * in both directions: a path the tree has and the index lost, and one the index kept
+ * after the tree dropped it.
  */
-function disagreements(db: DatabaseSync): { name: unknown; stored: unknown; walked: unknown }[] {
+function disagreements(db: DatabaseSync): { path: unknown; indexed: unknown; walked: unknown }[] {
 	return db
 		.prepare(
-			`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
-				SELECT '/' || name, ino, dir_ino, name FROM fs_dirents WHERE dir_ino = '1'
+			`WITH RECURSIVE tree(path, ino) AS (
+				SELECT '/' || name, ino FROM fs_dirents WHERE dir_ino = '1'
 				UNION ALL
-				SELECT tree.path || '/' || child.name, child.ino, child.dir_ino, child.name
+				SELECT tree.path || '/' || child.name, child.ino
 				FROM tree JOIN fs_dirents child ON child.dir_ino = tree.ino
 			)
-			SELECT dirent.name AS name, dirent.path AS stored, tree.path AS walked
-			FROM fs_dirents AS dirent
-			LEFT JOIN tree ON tree.dir_ino = dirent.dir_ino AND tree.name = dirent.name
-			WHERE dirent.path IS NOT tree.path`
+			SELECT idx.path AS path, idx.ino AS indexed, tree.ino AS walked
+			FROM fs_path_index AS idx
+			LEFT JOIN tree ON tree.path = idx.path
+			WHERE idx.ino IS NOT tree.ino
+			UNION ALL
+			SELECT tree.path, idx.ino, tree.ino
+			FROM tree
+			LEFT JOIN fs_path_index AS idx ON idx.path = tree.path
+			WHERE idx.ino IS NOT tree.ino`
 		)
-		.all() as { name: unknown; stored: unknown; walked: unknown }[]
+		.all() as { path: unknown; indexed: unknown; walked: unknown }[]
 }
 
-const storedPaths = (db: DatabaseSync): string[] =>
-	(db.prepare('SELECT path FROM fs_dirents ORDER BY path').all() as { path: unknown }[]).map(
+const indexedPaths = (db: DatabaseSync): string[] =>
+	(db.prepare('SELECT path FROM fs_path_index ORDER BY path').all() as { path: unknown }[]).map(
 		(row) => String(row.path)
 	)
 
-describe('fs_dirents.path', () => {
-	it('matches the walk after creates, writes, moves and deletes', async () => {
+describe('fs_path_index', () => {
+	it('agrees with the tree after creates, writes, moves and deletes', async () => {
 		const { db, vol } = makeSqlite()
 		await vol.mkdir('/notes')
 		await vol.mkdir('/notes/2026')
@@ -85,23 +94,29 @@ describe('fs_dirents.path', () => {
 		await vol.rm('/archive/one.md')
 		await vol.rm('/link.md')
 		expect(disagreements(db)).toEqual([])
-		expect(storedPaths(db)).toEqual(['/archive', '/archive/two.md', '/notes', '/top.md'])
+		expect(indexedPaths(db)).toEqual(['/archive', '/archive/two.md', '/notes', '/top.md'])
 	})
 
-	it('moves every descendant path when a directory is renamed', async () => {
+	it('moves every descendant when a directory is renamed', async () => {
 		const { db, storage, vol } = makeSqlite()
 		await vol.mkdir('/a')
 		await vol.mkdir('/a/deep')
 		await vol.writeFile('/a/deep/leaf.md', bytes('leaf'))
-		// A sibling whose name only just misses the subtree range: '-' sorts below '/'
-		// and 'b' above '0', so both bracket the descendants without being in them.
+		// Siblings that bracket the subtree range without being in it: '-' sorts below
+		// '/' and 'b' above '0'.
 		await vol.writeFile('/a-sibling.md', bytes('sibling'))
 		await vol.writeFile('/ab.md', bytes('ab'))
 
 		await vol.rename('/a', '/z')
 
 		expect(disagreements(db)).toEqual([])
-		expect(storedPaths(db)).toEqual(['/a-sibling.md', '/ab.md', '/z', '/z/deep', '/z/deep/leaf.md'])
+		expect(indexedPaths(db)).toEqual([
+			'/a-sibling.md',
+			'/ab.md',
+			'/z',
+			'/z/deep',
+			'/z/deep/leaf.md'
+		])
 		// The snapshot a bootstrapping device pages through reads those same rows.
 		const snapshot = storage.caps?.pathSnapshot
 		if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
@@ -114,28 +129,27 @@ describe('fs_dirents.path', () => {
 		])
 	})
 
-	it('journals a write under the moved path, not the one it was created at', async () => {
-		const { storage, vol } = makeSqlite()
-		await vol.mkdir('/a')
-		await vol.writeFile('/a/note.md', bytes('one'))
-		await vol.rename('/a', '/b')
+	it('reindexes a rename that displaces an existing file', async () => {
+		const { db, vol } = makeSqlite()
+		await vol.writeFile('/from.md', bytes('from'))
+		await vol.writeFile('/onto.md', bytes('onto'))
 
-		await vol.writeFile('/b/note.md', bytes('two'))
+		await vol.rename('/from.md', '/onto.md')
 
-		const journal = storage.caps?.journal
-		if (!journal) throw new Error('sqlite must expose a journal')
-		const rows = await journal.readFrom(0, 100)
-		expect(rows.at(-1)?.change.path).toBe('/b/note.md')
+		expect(disagreements(db)).toEqual([])
+		expect(indexedPaths(db)).toEqual(['/onto.md'])
 	})
 
-	it('fills the path on the apply side too, including dirs it repairs into place', async () => {
+	it('indexes the apply side too, including dirs it repairs into place', async () => {
 		const { db, storage, vol } = makeSqlite()
 		await vol.mkdir('/kept')
 		const apply = storage.caps?.pathApply
 		if (!apply) throw new Error('sqlite must apply journaled changes')
 
-		// A pulled put whose parents do not exist yet: `ensureDirPath` creates them, and
-		// `setDirent` binds the leaf — the two writers on the sync side of the tree.
+		// A pulled put whose parents do not exist yet: `ensureDirPath` creates them and
+		// `setDirent` binds the leaf — the two writers on the sync side of the tree. The
+		// repaired directories mint no version and get no journal row, which is why the
+		// index follows the TREE rather than the journal.
 		await apply.applyJournaled(
 			[
 				{
@@ -151,38 +165,66 @@ describe('fs_dirents.path', () => {
 		)
 
 		expect(disagreements(db)).toEqual([])
-		expect(storedPaths(db)).toEqual(['/kept', '/pulled', '/pulled/deep', '/pulled/deep/file.md'])
+		expect(indexedPaths(db)).toEqual(['/kept', '/pulled', '/pulled/deep', '/pulled/deep/file.md'])
+	})
+
+	it('is rebuilt by a reset, around whatever the reset kept', async () => {
+		const { db, storage, vol } = makeSqlite()
+		await vol.mkdir('/private')
+		await vol.writeFile('/private/key.json', bytes('secret'))
+		await vol.writeFile('/note.md', bytes('note'))
+
+		// `adopt-mine` truncates the tree so the initiator can republish it, but keeps
+		// the private subtrees no republish could restore. The index has to follow both
+		// halves, which is why the reset rebuilds it from the tree rather than emptying
+		// it like the journal beside it.
+		const [{ lineage_id: lineageId }] = db
+			.prepare('SELECT lineage_id FROM fs_generation WHERE id = 1')
+			.all() as { lineage_id: string }[]
+		const decision = await resetVolume(adapterOf(db), {
+			mode: 'adopt-mine',
+			fromGeneration: 1,
+			operationId: 'r1',
+			lineageId
+		})
+		expect(decision.ok).toBe(true)
+
+		expect(disagreements(db)).toEqual([])
+		expect(indexedPaths(db)).toEqual(['/private', '/private/key.json'])
 		const snapshot = storage.caps?.pathSnapshot
 		if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
 		expect((await snapshot.puts('', 100)).map((c) => c.path)).toEqual([
-			'/kept',
-			'/pulled',
-			'/pulled/deep',
-			'/pulled/deep/file.md'
+			'/private',
+			'/private/key.json'
 		])
 	})
 
-	it('pages the scan by canonical path, resuming from the cursor it returned', async () => {
-		const { storage, vol } = makeSqlite()
+	it('is derived state: the filesystem works with the index emptied', async () => {
+		const { db, storage, vol } = makeSqlite()
 		await vol.mkdir('/notes')
 		await vol.writeFile('/notes/one.md', bytes('one'))
-		await vol.writeFile('/top.md', bytes('top'))
-		const scan = storage.caps?.fullScan
-		if (!scan) throw new Error('sqlite must serve a full scan')
 
-		const all = await scan('')
-		expect(all.entries.map((e) => e.name)).toEqual(['notes', 'one.md', 'top.md'])
-		expect(all.next).toBe('')
-		// The cursor is a canonical path, and resuming from one mid-tree returns the
-		// rest — parent before child, which is what the VFS walk resolves names by.
-		expect((await scan('/notes')).entries.map((e) => e.name)).toEqual(['one.md', 'top.md'])
+		db.exec('DELETE FROM fs_path_index')
+
+		// Every filesystem operation still answers. Only the sync snapshot goes quiet,
+		// and the migration carries the walk that rebuilds it.
+		expect(new TextDecoder().decode(await vol.readFile('/notes/one.md'))).toBe('one')
+		expect((await vol.readdir('/notes')).map((e) => e.name)).toEqual(['one.md'])
+		await vol.writeFile('/notes/two.md', bytes('two'))
+		await vol.rename('/notes/two.md', '/notes/three.md')
+		await vol.rm('/notes/three.md')
+		expect((await vol.readdir('/notes')).map((e) => e.name)).toEqual(['one.md'])
+
+		const snapshot = storage.caps?.pathSnapshot
+		if (!snapshot) throw new Error('sqlite must serve a tree snapshot')
+		expect(await snapshot.puts('', 100)).toEqual([])
 	})
 })
 
-describe('0010_dirent_path backfill', () => {
-	it('fills every entry the walk reaches, and leaves an unreachable one NULL', () => {
-		// The database as it stood BEFORE this migration: every earlier migration, and
-		// dirents written without a path.
+describe('0010_path_index', () => {
+	it('backfills every path the walk reaches, and skips what it cannot', () => {
+		// The database as it stood BEFORE this migration: every earlier migration, and a
+		// tree written without an index.
 		const db = new DatabaseSync(':memory:')
 		db.exec(
 			migrationFiles
@@ -213,18 +255,17 @@ describe('0010_dirent_path backfill', () => {
 
 		// Statement by statement, the way the Durable Object applies it — a migration
 		// this one's prose split wrongly would run there and not here.
-		const statements = parseSqlStatements(sqlOf('0010_dirent_path.sql'))
-		expect(statements).toHaveLength(3) // add the column, backfill it, index it
+		const statements = parseSqlStatements(sqlOf('0010_path_index.sql'))
+		expect(statements).toHaveLength(2) // create the table, backfill it
 		for (const statement of statements) db.exec(statement)
 
-		const rows = db.prepare('SELECT name, path FROM fs_dirents ORDER BY name').all() as {
-			name: unknown
-			path: unknown
-		}[]
-		expect(rows).toEqual([
-			{ name: 'ghost.md', path: null },
-			{ name: 'notes', path: '/notes' },
-			{ name: 'one.md', path: '/notes/one.md' }
+		expect(
+			(db.prepare('SELECT path, ino FROM fs_path_index ORDER BY path').all() as unknown[]).map(
+				(row) => row as { path: unknown; ino: unknown }
+			)
+		).toEqual([
+			{ path: '/notes', ino: 'd1' },
+			{ path: '/notes/one.md', ino: 'f1' }
 		])
 	})
 })

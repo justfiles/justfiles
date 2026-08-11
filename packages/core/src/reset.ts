@@ -264,6 +264,22 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.
 		for (const table of TREE_TABLES) await tx.run(`DELETE FROM ${table}${survives}`, keep)
 		for (const table of SYNC_TABLES) await tx.run(`DELETE FROM ${table}`)
+		// The path index mirrors the TREE, so it is truncated and rebuilt from what
+		// survived rather than emptied like the sync history above — an `adopt-mine`
+		// keeps the private subtrees, and their paths must stay indexed. Rebuilt with
+		// the walk 0010_path_index.sql carries; this is the operation that migration
+		// promises is always available.
+		await tx.run('DELETE FROM fs_path_index')
+		await tx.run(
+			`WITH RECURSIVE tree(path, ino) AS (
+				SELECT '/' || name, ino FROM fs_dirents WHERE dir_ino = ?
+				UNION ALL
+				SELECT tree.path || '/' || child.name, child.ino
+				FROM tree JOIN fs_dirents child ON child.dir_ino = tree.ino
+			)
+			INSERT INTO fs_path_index(path, ino) SELECT path, ino FROM tree`,
+			[ROOT_INO]
+		)
 		if (req.mode === 'wipe')
 			for (const table of CONTENT_TABLES) await tx.run(`DELETE FROM ${table}`)
 		// Recreate root ino=1 so the volume has a root immediately (the storage's
