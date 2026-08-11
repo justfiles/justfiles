@@ -9,8 +9,8 @@
  *
  * Deliberately minimal: the PURE leaf rules are free functions, and the apply
  * ORCHESTRATION (`applyJournaledOver` / `localChangeOver` / `journalPutOver` /
- * `journalDeleteOver`) runs over a tiny per-backend `PathStorePort`. Each backend
- * still owns its storage access and atomicity; the port is the
+ * `journalDeleteOver`) runs over a tiny per-backend `TreePort` plus a sync-owned
+ * `PathSyncStore`. Each backend still owns its storage access and atomicity; the port is the
  * storage-independent seam the shared driver needs (a Map walk vs a recursive
  * SQL CTE vs an IDB cursor behind one signature). See PATH-SYNC ROADMAP item 2
  * below.
@@ -22,7 +22,13 @@
 
 import type { InodeMeta, MutationOptions, StorageChange } from './storage'
 import type { PathChange } from './sync-wire'
-import { changeDigest, compareVersion, encodeVersion, syncMetaFromInode } from './sync-wire'
+import {
+	changeDigest,
+	compareVersion,
+	encodeVersion,
+	inodeMetaFromSync,
+	syncMetaFromInode
+} from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -49,26 +55,26 @@ import { FileType } from './types'
 //      sqlite, differing only in storage-primitive access, txn wrapping, and emit
 //      timing. The orchestration now lives ONCE here (`applyJournaledOver` /
 //      `localChangeOver` / `journalPutOver` / `journalDeleteOver`), driven through
-//      the per-backend `PathStorePort` (below). mem + sqlite were retrofitted and
+//      the per-backend `TreePort` (below). mem + sqlite were retrofitted and
 //      stay green (sqlite conformance 5/5). pathOf / resolveIno-walk /
 //      ensureDirPath / enumerateSubtree stay per-backend (Map-walk vs recursive
 //      CTE) — they cannot be shared. NOTE: the port was shaped from mem + sqlite
 //      only; idb (2b) is the third impl that VALIDATES it — reshape the port there
 //      if idb needs it (mem + sqlite conformance guard against regressions).
 //      STILL TODO (micro): set ctime = nowNs() at apply (currently 0n in each
-//      backend's port.upsertInodeFromSync) — ctime is a local attr, never compared
+//      backend's port.upsertInode) — ctime is a local attr, never compared
 //      for convergence; deferred to keep 2a a pure refactor.
 //
 //   2b. [DONE 95c5b6c2] IMPLEMENT IDB PATH-SYNC. idbStorage now implements
 //      caps.journal / caps.content / caps.pathApply + per-mutation journaling via
-//      the shared driver + a per-txn PathStorePort (conformance 5/5). The port
+//      the shared driver + a per-txn TreePort (conformance 5/5). The port
 //      shape (from 2a) needed NO reshaping for IndexedDB — idb is the third proven
 //      backend. Content was re-keyed from ino-addressed to HASH-addressed
 //      (DB_VERSION 4->5): getBlob resolves ino->contentHash->bytes, putBlob hashes
 //      then stores by hash, caps.content operates directly; LRU eviction re-keyed
 //      to hashes (skips DIRTY inodes' content); unlink no longer GCs shared bytes.
 //      New primitives: pathOf via a dirs 'by-ino' index, resolveIno, ensureDirPath,
-//      enumerateSubtree, upsertInodeFromSync; new journal + pathver object stores.
+//      enumerateSubtree, upsertInode; new journal + pathver object stores.
 //
 //   3. [IN PROGRESS · #454] THE MUTATION HOOK: THE FILESYSTEM ANNOUNCES, THE SYNC
 //      MODULE RECORDS. Demoted once, for a reason that has since expired. The
@@ -90,8 +96,9 @@ import { FileType } from './types'
 //           whatever the subtree size — the observer, not the filesystem, decides
 //           whether that means 2N rows or one. That is the line the swap needs, and
 //           the only reason `move` is not modelled as unlink + link.
-//        2. Decouple the port from the wire: `upsertInode` takes `InodeMeta`, and
-//           `appendJournalRow` moves to a sync-owned store.
+//        2. [DONE] Decouple the port from the wire: `upsertInode` takes
+//           `InodeMeta`, and path versions + `appendJournalRow` live on a
+//           sync-owned store.
 //        3. `journal` / `pathApply` / `pathSnapshot` / `clearSyncState` leave
 //           `StorageCapabilities`; `SyncReplica` is COMPOSED from (filesystem, sync
 //           module) instead of read off `storage.caps`.
@@ -141,7 +148,7 @@ import { FileType } from './types'
 //      blob-serve over the fs's EXISTING lean mutators), and one branch in synced()
 //      to pick native vs localSyncReplica. Untouched: every DB backend,
 //      journaledChangeSource, localSyncReplica, caps.journal/pathApply/content, the
-//      PathStorePort + applyJournaledOver driver.
+//      TreePort + applyJournaledOver driver.
 //
 //      THE SEAM REFRAMING (why this simplifies rather than diverges): native-fs
 //      grows ZERO new Storage caps. It syncs over the lean CRUD it already
@@ -158,7 +165,7 @@ import { FileType } from './types'
 //      (every delta re-scans+diffs; add the watcher later); content has no natural
 //      hash-addressed store on a real fs (reverse-lookup via NativeIndex, no sidecar
 //      blob cache). native-fs VALIDATES that SyncReplica is the right generic seam
-//      (as idb validated PathStorePort); extract any real duplication AFTER it lands.
+//      (as idb validated TreePort); extract any real duplication AFTER it lands.
 //      FIRST STEP (tracer bullet): implement nativeChangeSource.pathScan (full walk
 //      -> puts) + an in-memory NativeIndex + a trivial FsWatcher, and prove a one-way
 //      native -> mem sync through the conformance harness. No apply/persistence yet.
@@ -276,8 +283,8 @@ export function orderForApply(changes: PathChange[]): PathChange[] {
 // `applyJournaled` / `localChange` / per-mutation journaling were IDENTICAL
 // control flow in every owned backend, differing only in storage-primitive
 // access (Map vs SQL vs IDB), tx wrapping, and emit timing. The orchestration
-// now lives ONCE here, driven through `PathStorePort`; each backend supplies a
-// thin port bound to its own store (and, where relevant, its own transaction).
+// now lives ONCE here, driven through `TreePort` + `PathSyncStore`; each backend
+// supplies thin ports bound to its own store and, where relevant, transaction.
 //
 // What STAYS per-backend (cannot be shared): the IMPLEMENTATIONS — a Map walk vs
 // a recursive CTE vs an IDB cursor — and atomicity / transaction boundaries. The
@@ -305,7 +312,7 @@ export function orderForApply(changes: PathChange[]): PathChange[] {
  * live refactor of WHO calls it: the mutation observer, not the backend. The seam
  * persists — do not widen it.
  */
-export interface PathStorePort {
+export interface TreePort {
 	/** Mint a fresh inode id (UUID, numeric, …) for a pulled path with no local inode. */
 	mintIno(): Ino
 	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
@@ -328,8 +335,13 @@ export interface PathStorePort {
 	getDirent(dirIno: Ino, name: string): Promise<DirentMin | null>
 	/** Current metadata + user-xattr snapshot for an inode; null if it has no metadata. */
 	readMetaXattrs(ino: Ino): Promise<{ meta: InodeMeta; xattrs: Record<string, Uint8Array> } | null>
-	/** Install a remote put's tree metadata + contentHash REFERENCE (never writes blob bytes). */
-	upsertInodeFromSync(ino: Ino, change: PathChange): Promise<void>
+	/** Install inode metadata + contentHash REFERENCE (never writes blob bytes). */
+	upsertInode(
+		ino: Ino,
+		meta: InodeMeta,
+		contentHash: string | undefined,
+		xattrs: Record<string, Uint8Array>
+	): Promise<void>
 	/** Link `(dirIno, name) -> ino` (insert or rebind). */
 	setDirent(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<void>
 	/** Unlink `(dirIno, name)`. */
@@ -338,14 +350,18 @@ export interface PathStorePort {
 	deleteInodeIfUnreferenced(ino: Ino): Promise<void>
 	/** True if `ino` is a directory that still has at least one live child dirent. */
 	dirHasLiveChildren(ino: Ino): Promise<boolean>
+	/** Signal the change feed (volume cache + watch). Backends may defer past commit. */
+	emit(change: StorageChange): void
+}
+
+/** Sync-owned persistence bound to the same transaction as its `TreePort`. */
+export interface PathSyncStore {
 	/** The path's `{ version, tombstone }` scalars ({0,0} when unknown). */
 	readPathVersion(path: string): Promise<{ version: number; tombstone: number }>
 	/** Persist the path's version + tombstone scalars. */
 	setPathVersion(path: string, version: number, tombstone: number): Promise<void>
 	/** Append one row to the path journal (the outbound sync source of truth). */
 	appendJournalRow(change: PathChange, localSource?: string): Promise<void>
-	/** Signal the change feed (volume cache + watch). Backends may defer past commit. */
-	emit(change: StorageChange): void
 }
 
 /**
@@ -354,7 +370,8 @@ export interface PathStorePort {
  * `source` is excluded from the digest, so `actorId` is arbitrary.
  */
 export async function localChangeOver(
-	port: PathStorePort,
+	port: TreePort,
+	store: PathSyncStore,
 	path: string,
 	actorId: string
 ): Promise<PathChange | null> {
@@ -362,11 +379,11 @@ export async function localChangeOver(
 	if (ino !== null) {
 		const mx = await port.readMetaXattrs(ino)
 		if (mx) {
-			const cur = await port.readPathVersion(path)
+			const cur = await store.readPathVersion(path)
 			return buildPutChange(path, mx.meta, mx.xattrs, cur.version, actorId)
 		}
 	}
-	const cur = await port.readPathVersion(path)
+	const cur = await store.readPathVersion(path)
 	return cur.tombstone > 0 ? buildDeleteChange(path, cur.tombstone, actorId) : null
 }
 
@@ -379,7 +396,8 @@ export async function localChangeOver(
  * ROADMAP item 3's empty-file finding).
  */
 export async function journalPutOver(
-	port: PathStorePort,
+	port: TreePort,
+	store: PathSyncStore,
 	path: string,
 	ino: Ino,
 	actorId: string,
@@ -387,25 +405,25 @@ export async function journalPutOver(
 ): Promise<void> {
 	const mx = await port.readMetaXattrs(ino)
 	if (!mx) return
-	const cur = await port.readPathVersion(path)
+	const cur = await store.readPathVersion(path)
 	const version = options?.version ?? nextVersion(cur.version, cur.tombstone)
 	const change = buildPutChange(path, mx.meta, mx.xattrs, version, options?.source ?? actorId)
 	if (!change) return
-	await port.setPathVersion(path, version, cur.tombstone)
-	await port.appendJournalRow(change)
+	await store.setPathVersion(path, version, cur.tombstone)
+	await store.appendJournalRow(change)
 }
 
 /** Journal a local `delete` for a path and fast-forward its tombstone high-water. */
 export async function journalDeleteOver(
-	port: PathStorePort,
+	store: PathSyncStore,
 	path: string,
 	actorId: string,
 	options?: MutationOptions
 ): Promise<void> {
-	const cur = await port.readPathVersion(path)
+	const cur = await store.readPathVersion(path)
 	const version = nextVersion(cur.version, cur.tombstone)
-	await port.setPathVersion(path, version, Math.max(cur.tombstone, version))
-	await port.appendJournalRow(buildDeleteChange(path, version, options?.source ?? actorId))
+	await store.setPathVersion(path, version, Math.max(cur.tombstone, version))
+	await store.appendJournalRow(buildDeleteChange(path, version, options?.source ?? actorId))
 }
 
 // ── The mutation hook (ROADMAP item 3 / #454) ─────────────────────────────────
@@ -445,7 +463,7 @@ export type TreeEffect =
  * The filesystem never reads back anything an observer wrote.
  */
 export interface MutationObserver {
-	record(port: PathStorePort, effect: TreeEffect, options?: MutationOptions): Promise<void>
+	record(port: TreePort, effect: TreeEffect, options?: MutationOptions): Promise<void>
 }
 
 /**
@@ -461,20 +479,27 @@ export interface MutationObserver {
  * is no path to journal it at. That covers `createNode`'s bare `setMeta` before
  * the dirent exists, and any write through a detached subtree.
  */
-export function pathSyncObserver(actorId: string): MutationObserver {
+export function pathSyncObserver(store: PathSyncStore, actorId: string): MutationObserver {
 	return {
 		async record(port, effect, options) {
 			switch (effect.kind) {
 				case 'link': {
 					const dirPath = await port.pathOf(effect.dirIno)
 					if (dirPath === null) return
-					await journalPutOver(port, joinPath(dirPath, effect.name), effect.ino, actorId, options)
+					await journalPutOver(
+						port,
+						store,
+						joinPath(dirPath, effect.name),
+						effect.ino,
+						actorId,
+						options
+					)
 					return
 				}
 				case 'unlink': {
 					const dirPath = await port.pathOf(effect.dirIno)
 					if (dirPath === null) return
-					await journalDeleteOver(port, joinPath(dirPath, effect.name), actorId, options)
+					await journalDeleteOver(store, joinPath(dirPath, effect.name), actorId, options)
 					return
 				}
 				case 'move': {
@@ -491,11 +516,11 @@ export function pathSyncObserver(actorId: string): MutationObserver {
 						subtree.map((n) => oldBase + n.rel),
 						(x) => x
 					))
-						await journalDeleteOver(port, p, actorId, options)
+						await journalDeleteOver(store, p, actorId, options)
 					// A moved regular file keeps its contentHash, so this put references the
 					// already-present bytes — only the name moved.
 					for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
-						await journalPutOver(port, newBase + n.rel, n.ino, actorId, options)
+						await journalPutOver(port, store, newBase + n.rel, n.ino, actorId, options)
 					return
 				}
 				// Both are a put of the inode's current state at its path — the journal row
@@ -506,7 +531,7 @@ export function pathSyncObserver(actorId: string): MutationObserver {
 				case 'content': {
 					const path = await port.pathOf(effect.ino)
 					if (path === null) return
-					await journalPutOver(port, path, effect.ino, actorId, options)
+					await journalPutOver(port, store, path, effect.ino, actorId, options)
 				}
 			}
 		}
@@ -524,7 +549,8 @@ export function pathSyncObserver(actorId: string): MutationObserver {
  * commit.
  */
 export async function applyJournaledOver(
-	port: PathStorePort,
+	port: TreePort,
+	store: PathSyncStore,
 	changes: PathChange[],
 	opts: { localSource?: string }
 ): Promise<void> {
@@ -537,7 +563,8 @@ export async function applyJournaledOver(
 			const bound = await port.getDirent(parentIno, name)
 			const ino = bound?.ino ?? port.mintIno()
 			const type = change.meta.type
-			await port.upsertInodeFromSync(ino, change)
+			const { meta, xattrs } = inodeMetaFromSync(change.meta)
+			await port.upsertInode(ino, { ...meta, ctimeNs: 0n }, change.contentHash, xattrs)
 			await port.setDirent(parentIno, name, ino, type)
 			port.emit({ ino, kind: 'meta', source: opts.localSource })
 			// `dirent` means the parent's entry SET changed, so it is emitted only when
@@ -585,10 +612,10 @@ export async function applyJournaledOver(
 				})
 			if (ino !== null) port.emit({ ino, kind: 'meta', source: opts.localSource })
 		}
-		const cur = await port.readPathVersion(p)
+		const cur = await store.readPathVersion(p)
 		const tombstone =
 			change.kind === 'delete' ? Math.max(cur.tombstone, changeVersion) : cur.tombstone
-		await port.setPathVersion(p, Math.max(cur.version, changeVersion), tombstone)
-		await port.appendJournalRow(change, opts.localSource)
+		await store.setPathVersion(p, Math.max(cur.version, changeVersion), tombstone)
+		await store.appendJournalRow(change, opts.localSource)
 	}
 }

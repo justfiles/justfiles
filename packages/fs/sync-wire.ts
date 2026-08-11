@@ -170,14 +170,14 @@ export function syncMetaFromInode(meta: InodeMeta, xattrs?: Record<string, Uint8
 }
 
 /**
- * Convert a wire `SyncMeta` back into a backend `InodeMeta` patch (ctime is set
- * locally at apply time, never from the wire) plus the decoded xattr snapshot.
+ * Convert a wire `SyncMeta` back into inode metadata without local ctime plus the
+ * decoded xattr snapshot.
  */
 export function inodeMetaFromSync(sm: SyncMeta): {
-	meta: Partial<InodeMeta>
+	meta: Omit<InodeMeta, 'ctimeNs'>
 	xattrs: Record<string, Uint8Array>
 } {
-	const meta: Partial<InodeMeta> = {
+	const meta: Omit<InodeMeta, 'ctimeNs'> = {
 		type: sm.type,
 		mode: sm.mode,
 		mtimeNs: BigInt(sm.mtimeNs),

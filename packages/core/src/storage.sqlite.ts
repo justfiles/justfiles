@@ -1,5 +1,5 @@
 import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfiles/fs/storage'
-import type { PathStorePort, TreeEffect } from '@justfiles/fs/storage.shared'
+import type { PathSyncStore, TreeEffect, TreePort } from '@justfiles/fs/storage.shared'
 import {
 	applyJournaledOver,
 	buildDeleteChange,
@@ -8,7 +8,7 @@ import {
 	localChangeOver,
 	pathSyncObserver
 } from '@justfiles/fs/storage.shared'
-import { coalesceByPath, inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
+import { coalesceByPath, type PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import type { DbAdapter } from './db'
@@ -266,11 +266,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
 	const localActorId = options.localActorId ?? 'local'
-	// The filesystem announces its tree writes here; this module decides what to
-	// record (storage.shared.ts ROADMAP item 3 / #454). Attached unconditionally for
-	// now — inverting the construction is a later slice.
-	const observer = pathSyncObserver(localActorId)
-
 	let bootstrapPromise: Promise<void> | null = null
 
 	// Change feed — the substrate for volume.watch and, critically, cache
@@ -712,7 +707,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		effect: TreeEffect,
 		options?: MutationOptions
 	): Promise<void> {
-		await observer.record(makePathPort(tx).port, effect, options)
+		const { tree, sync } = makePathPorts(tx)
+		await pathSyncObserver(sync, localActorId).record(tree, effect, options)
 	}
 
 	// ── Path-sync apply (remote pull; epic slice 4) ──────────────────────────────
@@ -778,11 +774,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	// Upsert an inode from a remote put's SyncMeta: tree metadata + the contentHash
 	// REFERENCE (bytes are materialised out-of-band by applyPathChanges), and REPLACE
 	// the user-xattr set with the wire snapshot (local-only trusted.sync.* untouched).
-	// ctime is set locally (0, matching the mem reference), never wired.
-	async function upsertInodeFromSync(tx: DbAdapter, ino: Ino, change: PathChange): Promise<void> {
-		if (change.kind !== 'put') return
-		const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
-		const type = meta.type ?? FileType.Regular
+	// The shared apply driver converts the wire payload before it reaches this tree seam.
+	async function upsertInode(
+		tx: DbAdapter,
+		ino: Ino,
+		meta: InodeMeta,
+		contentHash: string | undefined,
+		snapshot: Record<string, Uint8Array>
+	): Promise<void> {
 		await tx.run(
 			`INSERT INTO fs_inodes(ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
@@ -792,12 +791,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			   content_hash = excluded.content_hash, symlink_target = excluded.symlink_target`,
 			[
 				ino,
-				type,
-				meta.mode ?? defaultModeForType(type),
-				Number(meta.size ?? 0n),
-				meta.mtimeNs ?? 0n,
-				0n,
-				change.contentHash ?? null,
+				meta.type,
+				meta.mode,
+				Number(meta.size),
+				meta.mtimeNs,
+				meta.ctimeNs,
+				contentHash ?? null,
 				meta.symlinkTarget ?? null,
 				STORAGE_NONE
 			]
@@ -840,9 +839,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	// The storage-independent seam the shared apply driver + the mutation observer
 	// (storage.shared.ts) call, bound to one transaction (or `db` for read-only
 	// localChange). `emit` is buffered so a transactional apply can flush AFTER commit.
-	function makePathPort(tx: DbAdapter): { port: PathStorePort; emits: StorageChange[] } {
+	function makePathPorts(tx: DbAdapter): {
+		tree: TreePort
+		sync: PathSyncStore
+		emits: StorageChange[]
+	} {
 		const emits: StorageChange[] = []
-		const port: PathStorePort = {
+		const tree: TreePort = {
 			mintIno: randomId,
 			resolveIno: (path) => resolveIno(tx, path),
 			pathOf: (ino) => pathOf(tx, ino),
@@ -857,7 +860,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				if (!row) return null
 				return { meta: metaFromRow(row), xattrs: await listAllXattrs(tx, ino) }
 			},
-			upsertInodeFromSync: (ino, change) => upsertInodeFromSync(tx, ino, change),
+			upsertInode: (ino, meta, contentHash, xattrs) =>
+				upsertInode(tx, ino, meta, contentHash, xattrs),
 			setDirent: (dirIno, name, ino, type) => setDirent(tx, dirIno, name, ino, type),
 			async deleteDirent(dirIno, name) {
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
@@ -877,14 +881,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				)
 				return rows.length > 0
 			},
-			readPathVersion: (path) => readPathVersion(tx, path),
-			setPathVersion: (path, version, tombstone) => setPathVersion(tx, path, version, tombstone),
-			appendJournalRow: (change, localSource) => appendJournalRow(tx, change, localSource),
 			emit(change) {
 				emits.push(change)
 			}
 		}
-		return { port, emits }
+		const sync: PathSyncStore = {
+			readPathVersion: (path) => readPathVersion(tx, path),
+			setPathVersion: (path, version, tombstone) => setPathVersion(tx, path, version, tombstone),
+			appendJournalRow: (change, localSource) => appendJournalRow(tx, change, localSource)
+		}
+		return { tree, sync, emits }
 	}
 
 	async function updateInodeContent(
@@ -1489,7 +1495,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				// linked path's put, else a tombstone's delete, else null). Reads only, so
 				// it binds the port to `db` rather than opening a transaction.
 				await ensureBootstrapped()
-				return localChangeOver(makePathPort(db).port, path, localActorId)
+				const { tree, sync } = makePathPorts(db)
+				return localChangeOver(tree, sync, path, localActorId)
 			},
 			async applyJournaled(changes: PathChange[], opts: { localSource?: string }): Promise<void> {
 				// Remote-authored apply in ONE txn (shared driver over the sqlite port).
@@ -1498,9 +1505,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				await ensureBootstrapped()
 				let pendingEmits: StorageChange[] = []
 				await db.transaction(async (tx) => {
-					const bound = makePathPort(tx)
+					const bound = makePathPorts(tx)
 					pendingEmits = bound.emits
-					await applyJournaledOver(bound.port, changes, opts)
+					await applyJournaledOver(bound.tree, bound.sync, changes, opts)
 				})
 				for (const change of pendingEmits) emit(change)
 			}
