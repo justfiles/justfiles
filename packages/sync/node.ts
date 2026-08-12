@@ -352,15 +352,25 @@ async function tombstone(nodes: NodeStore, ino: Ino): Promise<NodeMutation | nul
  */
 function crossings(view: Projection, oldPath: string, newPath: string): string[] {
 	const suffixes = new Set<string>()
+	// Roots are NFC; the two ends came from the tree and may be spelled either way.
+	const from = oldPath.normalize('NFC')
+	const to = newPath.normalize('NFC')
 	for (const root of view.roots) {
-		if (root.startsWith(`${oldPath}/`)) suffixes.add(root.slice(oldPath.length))
-		if (root.startsWith(`${newPath}/`)) suffixes.add(root.slice(newPath.length))
+		if (root.startsWith(`${from}/`)) suffixes.add(root.slice(from.length))
+		if (root.startsWith(`${to}/`)) suffixes.add(root.slice(to.length))
 	}
 	// Shortest first, so a parent is settled before anything nested under it.
 	return [...suffixes].sort()
 }
 
-/** Walk `suffix` down from a node through the NODE store, by name. */
+/**
+ * Walk `suffix` down from a node through the NODE store, by name.
+ *
+ * The suffix was sliced off a normalised ignore root, while a node's name is
+ * whatever spelling it was created with — so the comparison normalises too. A
+ * lookup that missed here would leave a subtree shared at a path this replica has
+ * been told to hide, which is the failure that must not happen.
+ */
 async function descend(
 	nodes: NodeStore,
 	rootId: SyncNodeId,
@@ -370,7 +380,8 @@ async function descend(
 	for (const segment of suffix.split('/')) {
 		if (segment === '') continue
 		if (!current) return null
-		current = (await nodes.children(current.id)).find((c) => c.name === segment) ?? null
+		const children = await nodes.children(current.id)
+		current = children.find((c) => c.name.normalize('NFC') === segment) ?? null
 	}
 	return current
 }
@@ -513,9 +524,12 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 							const after = view.ignored(newPath + suffix)
 							if (before === after) continue
 							if (after) {
-								const ino = await port.resolveIno(newPath + suffix)
-								const leavingId = ino === null ? null : await nodes.idFor(ino)
-								if (leavingId !== null) await unpublish(op, leavingId)
+								// Found through the NODE store, not the tree: the suffix carries the
+								// ignore root's spelling and `resolveIno` matches names exactly, so a
+								// tree lookup would miss a differently-spelled twin and leave the
+								// subtree shared behind the boundary.
+								const leaving = await descend(nodes, id, suffix)
+								if (leaving) await unpublish(op, leaving.id)
 							} else entering.push(suffix)
 						}
 						await op.add(
@@ -944,6 +958,32 @@ export async function snapshotOf(
 	return out.filter((e) => e.path > afterPath).slice(0, limit)
 }
 
+/**
+ * A relayed delta stream reached a row this replica cannot express to a peer: the
+ * row it applied names a node that now sits behind ITS OWN ignore boundary.
+ *
+ * Neither answer available incrementally is correct. Passing the row on relays
+ * past the boundary. Dropping it silently leaves the peer holding a copy of
+ * something it will never be told about again — the cursor advances and the
+ * correction never comes. A withdrawal cannot be synthesised either: `delete`
+ * tombstones the ID, so the node could never come back under it.
+ *
+ * So the stream refuses, exactly as `CursorPrunedError` does when a journal can no
+ * longer answer a cursor, and for the same reason: the incremental channel has
+ * lost the ability to bring this reader up to date. The caller re-bootstraps from
+ * `nodeScan`, which is projection-filtered and reflects current state.
+ *
+ * Reconciling what the peer must then DROP is the ignore-policy reconciliation
+ * task's job (a snapshot says what exists, not what stopped existing). This class
+ * is the honest boundary of what v2 can do incrementally, not a complete repair.
+ */
+export class ProjectionCursorError extends Error {
+	constructor() {
+		super('projection_cursor')
+		this.name = 'ProjectionCursorError'
+	}
+}
+
 // ── Replica ───────────────────────────────────────────────────────────────────
 
 /** The v2 counterpart of `SyncReplica`: detection + apply + content, node-addressed. */
@@ -994,10 +1034,8 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			for (const row of kept) {
 				// A replica may always send what it AUTHORED: its own projection decided
 				// what got recorded, and an unpublication is precisely a row about nodes
-				// that are now hidden HERE. What it RELAYS is another matter — a row it
-				// applied from a peer with a wider view can name a path this replica was
-				// told to hide, and passing that on would relay straight past its own
-				// boundary. Judged by where each node sits NOW, which errs toward hiding.
+				// that are hidden HERE now — filtering that out would strand the peer
+				// holding the copy it must remove.
 				if (row.localSource === undefined || sync.view.roots.length === 0) {
 					operations.push(row.operation)
 					continue
@@ -1005,8 +1043,22 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 				const visible: NodeMutation[] = []
 				for (const m of row.operation.mutations) {
 					const node = await sync.nodes.get(m.nodeId)
-					const path = node ? await effectivePath(sync.nodes, node.parentId, node.name) : null
-					if (path !== null && !sync.view.ignored(path)) visible.push(m)
+					// Nothing was applied for a node this replica never took, so there is
+					// nothing of its own to pass on.
+					if (!node) continue
+					const path = await effectivePath(sync.nodes, node.parentId, node.name)
+					if (path !== null && !sync.view.ignored(path)) {
+						visible.push(m)
+						continue
+					}
+					// Hidden here. A create, update or delete of such a node was never
+					// relayed as visible either — visibility only ever changes by a MOVE, of
+					// the node or of an ancestor — so dropping it tells a reader nothing it
+					// could already have. A move is the transition itself: the reader may
+					// hold this node, and no correction it can act on exists (see
+					// ProjectionCursorError). Refuse the stream instead of quietly
+					// stranding it.
+					if (m.kind === 'move') throw new ProjectionCursorError()
 				}
 				if (visible.length > 0) operations.push({ mutations: visible })
 			}

@@ -16,7 +16,7 @@ import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import { expect, test } from 'vitest'
 import type { NodeMutation, NodeOperation, NodeState, NodeStorage } from './node'
-import { mutationsOf, nodeSyncReplica, ROOT_NODE_ID } from './node'
+import { mutationsOf, nodeSyncReplica, ProjectionCursorError, ROOT_NODE_ID } from './node'
 import { memNodeStore, nodeMemStorage, nodeSyncExtension } from './storage/node-mem'
 
 /** Local apply tag: rows the sync layer wrote are never pushed back. */
@@ -824,6 +824,79 @@ test('a relaying replica does not pass on what its own policy hides', async () =
 	})
 	expect(await c.vol.exists('/vault')).toBe(false)
 	expect(text(await c.vol.readFile('/open.txt'))).toBe('open')
+})
+
+test('a relay refuses a stream it cannot express rather than dropping the transition', async () => {
+	const { a, b, sync } = nodePeers({ bIgnore: ['/vault'] })
+	await a.vol.mkdir('/vault')
+	await a.vol.writeFile('/foo.txt', bytes('shared'))
+	await sync()
+
+	// C is mid-stream over B's relayed journal, and already holds /foo.txt.
+	const c = makePeer('c')
+	const first = await b.replica.nodeDeltas('', { limit: 500 })
+	await c.replica.applyNodeOperations(first.operations, (h) => b.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+	expect(text(await c.vol.readFile('/foo.txt'))).toBe('shared')
+
+	// A hides it behind B's boundary. B cannot relay that as a move — the node it
+	// names is one B may not describe — and silently dropping it would leave C
+	// holding /foo.txt with no correction ever coming.
+	await a.vol.rename('/foo.txt', '/vault/foo.txt')
+	await sync()
+
+	await expect(b.replica.nodeDeltas(first.to, { limit: 500 })).rejects.toThrow(
+		ProjectionCursorError
+	)
+	// Refusing discloses nothing, and leaves the cursor where it was.
+	const reopened = await b.replica.nodeScan()
+	const named = mutationsOf(reopened.operations).map((m) => (m.kind === 'create' ? m.name : ''))
+	expect(named).not.toContain('vault')
+	expect(named).not.toContain('foo.txt')
+})
+
+test('a nested crossing is planned by tree spelling, not by the ignore list spelling', async () => {
+	// The ignore root is composed; the directory in the tree is decomposed.
+	const composed = '/dst/caf\u00e9'
+	const decomposed = 'cafe\u0301'
+	const { a, b, sync } = nodePeers({ bIgnore: [composed] })
+	await a.vol.mkdir(`/src/${decomposed}`, { recursive: true })
+	await a.vol.writeFile(`/src/${decomposed}/f.txt`, bytes('secret'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	expect(text(await b.vol.readFile(`/src/${decomposed}/f.txt`))).toBe('secret')
+
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	// B must recognise the decomposed child as the composed root it was given.
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+	expect(await b.vol.exists(`/dst/${decomposed}`)).toBe(false)
+})
+
+test('an unpublication finds the crossing subtree whatever its spelling', async () => {
+	const composed = '/dst/caf\u00e9'
+	const decomposed = 'cafe\u0301'
+	const { a, b, sentOps, sync } = nodePeers({ aIgnore: [composed] })
+	await a.vol.mkdir(`/src/${decomposed}`, { recursive: true })
+	await a.vol.writeFile(`/src/${decomposed}/f.txt`, bytes('secret'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	expect(text(await b.vol.readFile(`/src/${decomposed}/f.txt`))).toBe('secret')
+	sentOps.length = 0
+
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	// The subtree left A's projection, so A withdraws it — matching the tree's
+	// spelling, not the one the caller happened to configure.
+	expect(sentOps).toHaveLength(1)
+	expect(sentOps[0]?.mutations.map((m) => m.kind)).toEqual(['delete', 'delete', 'move'])
+	expect(await b.vol.exists(`/dst/${decomposed}`)).toBe(false)
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+	// A keeps its own bytes behind the boundary.
+	expect(text(await a.vol.readFile(`/dst/${decomposed}/f.txt`))).toBe('secret')
 })
 
 test('an ignore root matches whatever Unicode spelling the tree holds', async () => {
