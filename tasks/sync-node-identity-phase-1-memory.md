@@ -74,45 +74,17 @@ It is acceptable to add a separate experimental constructor such as `nodeSynced`
 
 For this phase, use deterministic single-writer revisions in the in-memory reference. Full server-authoritative stale-write and collision rules are phase 4.
 
-## Visibility boundary requirements
+## Deliberate phase boundary
 
-Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shieldsIgnored` in `packages/sync/replica.ts` first.
+This tracer bullet synchronizes the complete tree. Ignore lists, filtered subscriptions,
+local-only overlays, projection crossings, and policy-change reconciliation belong to
+[the dedicated projection task](./sync-node-identity-ignore-policy-reconciliation.md),
+after the transactional adapters and authoritative server rules exist.
 
-- Add one minimal serializable `ignore: readonly string[]` list per replica. Normalize canonical absolute paths, remove duplicates, sort them, and use segment-aware prefix matching. A listed directory hides its complete subtree.
-- Do not put `/private` or another product path in `packages/sync`. The engine excludes only its own persisted state without caller configuration.
-- The node store is the synchronized projection. Purely ignored local nodes have no sync-ID mapping.
-- A live server-known node that this host does not materialize can have `localIno: null`. It is not a tombstone and must not bind to same-path local ignored content.
-- Add logical `publishTree` and `unpublishTree`. Publication assigns fresh IDs and is parent-first. Unpublication sends the exact expected descendant ID/revision manifest, tombstones old shared IDs, and preserves local bytes.
-- Resolve both effective paths from the moved inode and parent chains before classification. Do not decide visibility from `parentId + name` alone.
-- Scan normalized ignore roots below both move locations. If descendant visibility changes, plan one atomic top-level move plus the minimum affected publish and unpublish subtrees. Do not enumerate unrelated descendants.
-- Apply visibility before snapshots, deltas, tombstones, blobs, and incoming tree changes.
-
-### Cycle 8: ignored data is absent from the wire
-
-**RED:** Give both replicas caller-provided `/private` ignores. Create, update, and delete independent files there. Assert that snapshots, deltas, tombstones, mutations, and blob calls never contain them. Assert that each replica keeps its own bytes. Repeat for the engine's state without listing it.
-
-**GREEN:** Add projection filtering at node snapshot, delta, apply, and blob boundaries.
-
-### Cycle 9: all four local move transitions
-
-**RED:** Test visible -> visible, ignored -> ignored, ignored -> visible, and visible -> ignored with a nested subtree. Also move a visible root between paths where a nested ignore root makes one descendant subtree enter or leave the projection. Assert one move, zero operations, one complete publication, one logical unpublication, and one atomic compound projection move. Assert fresh IDs after republish and local-byte survival after unpublish.
-
-**GREEN:** Add path reconstruction and the minimal projection planner. Enumerate descendants only for publish and unpublish.
-
-### Cycle 10: receiving projection and ancestor shielding
-
-**RED:** Give replica B a nested ignore. Move a remote subtree across B's boundary in both directions. Assert subtree fetch or local removal without echo. Send a remote ancestor delete and file replacement. Assert that B preserves its ignored child and skips the unsafe apply.
-
-**GREEN:** Persist non-materialized remote state as needed, fetch on ignored -> visible receive, and port `shieldsIgnored` to node mutations.
-
-### Added acceptance criteria
-
-- [x] Memory v2 applies one caller-provided ignore list symmetrically in both directions.
-- [x] Replica A and replica B can keep different bytes at the same ignored path.
-- [x] Ignored nodes do not acquire sync IDs and ignored hashes never reach the blob protocol.
-- [x] IDs are not reused after unpublish and later republish.
-- [x] Only projection-preserving visible -> visible moves have the no-enumeration guarantee.
-- [x] Nested ignore intersections enumerate only affected publish or unpublish subtrees.
+Phase 1 therefore gives `localIno: null` one meaning only: a tombstone. It does not
+model a live-but-hidden node or make a memory relay filter another replica's accepted
+journal. Keeping those states out of the reference adapter makes the node identity and
+constant-cost move invariant independently testable.
 
 ## RED/GREEN TDD specification
 
