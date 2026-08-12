@@ -152,6 +152,7 @@ Remove duplication and deepen the node-sync module only after all cycles pass. K
 - [x] No test depends on local inode and sync ID values being equal.
 - [x] Tombstones retain identity after the local inode is removed.
 - [x] Retained journal pages never reference content superseded before delivery.
+- [x] Retained journal replay stays referentially closed when a moved node's old directory is later deleted.
 - [x] `packages/fs` gains no sync imports or sync concepts.
 - [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 

@@ -200,6 +200,22 @@ test('a retained journal bootstraps an empty peer one page at a time', async () 
 	expect(await b.orphanCount()).toBe(0)
 })
 
+test('a retained journal preserves a moved child after its old parent is deleted', async () => {
+	const { a, b, sync } = nodePeers()
+	await a.vol.mkdir('/old')
+	await a.vol.writeFile('/old/f.txt', bytes('kept'))
+	await a.vol.mkdir('/new')
+	await a.vol.rename('/old/f.txt', '/new/f.txt')
+	await a.vol.rm('/old')
+
+	await sync(1)
+
+	expect(await b.layout()).toEqual(await a.layout())
+	expect(text(await b.vol.readFile('/new/f.txt'))).toBe('kept')
+	expect((await b.nodeAt('/new/f.txt'))?.id).toBe((await a.nodeAt('/new/f.txt'))?.id)
+	expect(await b.orphanCount()).toBe(0)
+})
+
 test('a rename of a populated directory is one move and preserves descendant state', async () => {
 	const { a, b, sent, echoed, sync } = nodePeers()
 	await a.vol.mkdir('/old/deep', { recursive: true })

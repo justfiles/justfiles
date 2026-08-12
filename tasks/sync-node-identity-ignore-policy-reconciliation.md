@@ -88,11 +88,14 @@ materialization state machine. Preserve these lessons in the implementation:
   cursor, and content for the final page is fetched after that page is returned. The
   [snapshot handoff task](./sync-node-identity-snapshot-handoff.md) owns explicit
   session lifetime, release, and expiry without adding application-facing surface.
-- Compact the mutation journal by node before content GC can expose an obsolete hash
-  on a page by itself. A delete supersedes all earlier mutations for that node. A
-  newer update supersedes older updates but must refresh a retained create for
-  cursors that predate the node. Journal only accepted mutations, or a stale retry
-  can replace the retained current state.
+- Compact content-bearing mutation history before content GC can expose an obsolete
+  hash on a page by itself. A file delete supersedes its earlier mutations, while a
+  deleted directory's history may still be replay scaffolding for a surviving child
+  that moved out before first sync. Retained bootstrap history must stay referentially
+  closed until snapshot handoff permits pruning. A newer update supersedes older
+  updates but must refresh a retained create for cursors that predate the node.
+  Journal only accepted mutations, or a stale retry can replace the retained current
+  state.
 - Normalize policy paths consistently, but do not assume one normalized spelling
   identifies one filesystem entry. Filesystems can contain multiple siblings whose
   names normalize alike, so every matching entry must be classified. Authority-side

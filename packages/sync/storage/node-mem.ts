@@ -4,7 +4,7 @@ import {
 	memStorage as filesystemStorage,
 	type MemStorageExtension
 } from '@justfiles/fs/storage/mem'
-import type { Ino } from '@justfiles/fs/types'
+import { FileType, type Ino } from '@justfiles/fs/types'
 import {
 	applyNodeOperationsOver,
 	type NodeJournalRow,
@@ -46,7 +46,11 @@ export function memNodeStore(): NodeStore {
 					.filter((mutation) => mutation.kind === 'delete')
 					.map((mutation) => mutation.nodeId)
 			)
-			// Every retained hash must survive content GC even when served on its own page.
+			const scaffold = new Set(
+				[...deleted].filter((id) => states.get(id)?.type === FileType.Directory)
+			)
+			// Directory history remains replay scaffolding for surviving moved children.
+			// Other deleted history must go so no retained page references stale content.
 			for (let index = rows.length - 1; index >= 0; index--) {
 				const row = rows[index]
 				if (!row) continue
@@ -54,7 +58,7 @@ export function memNodeStore(): NodeStore {
 				const mutations = previous
 					.filter(
 						(mutation) =>
-							!deleted.has(mutation.nodeId) &&
+							(!deleted.has(mutation.nodeId) || scaffold.has(mutation.nodeId)) &&
 							(mutation.kind !== 'update' || !updates.has(mutation.nodeId))
 					)
 					.map((mutation) => {
