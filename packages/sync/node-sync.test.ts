@@ -981,6 +981,36 @@ test('a receiver reconciles EVERY spelling of a crossing subtree', async () => {
 	expect(new Set(fetched).size).toBe(2)
 })
 
+test('an entering crossing never unlinks the local-only data already at that name', async () => {
+	const { a, b, echoed, sync } = nodePeers({ bIgnore: ['/src/cache'] })
+	await a.vol.mkdir('/src/cache', { recursive: true })
+	await a.vol.writeFile('/src/cache/theirs.txt', bytes('theirs'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	// B holds A's `cache` as state only — the path is outside B's projection.
+	expect(await b.vol.exists('/src/cache')).toBe(false)
+
+	// B keeps its OWN bytes at that ignored path, which is what ignoring is for.
+	// They get no identity, so no peer has ever seen them.
+	await b.vol.mkdir('/src/cache')
+	await b.vol.writeFile('/src/cache/keep.bin', bytes('mine'))
+	await sync()
+	expect(await b.nodeAt('/src/cache')).toBe(null)
+
+	// The ANCESTOR moves, so `/dst/cache` is no longer ignored here and A's subtree
+	// enters B's projection — onto a name B's own directory already holds.
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+	// Nothing was stranded: sync never unlinked the only reference to those bytes.
+	expect(await b.orphanCount()).toBe(0)
+	expect(echoed).toEqual([])
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+	// A is untouched behind its own side of the boundary.
+	expect(text(await a.vol.readFile('/dst/cache/theirs.txt'))).toBe('theirs')
+})
+
 test('a rename during a paged bootstrap cannot drop a node from the snapshot', async () => {
 	const { a, b, bootstrap, sync } = nodePeers()
 	await a.vol.writeFile('/m.txt', bytes('m'))

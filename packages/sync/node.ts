@@ -695,6 +695,27 @@ async function shields(
 }
 
 /**
+ * Is `(parentIno, name)` held by an inode SYNC DOES NOT OWN? A crossing that comes
+ * into view lands on a name that sat behind this replica's boundary until the move
+ * — and an ancestor's rebind carries whatever this replica kept there along with
+ * it. Those bytes have no identity, so no peer has seen them and no journal row
+ * describes them: binding the peer's node over that dirent would unlink their only
+ * reference and strand them.
+ *
+ * An exact-name check is the right one here, unlike everywhere else in this file:
+ * a differently-spelled twin gets a dirent of its own and is never written over.
+ */
+async function heldLocally(
+	port: TreePort,
+	nodes: NodeStore,
+	parentIno: Ino,
+	name: string
+): Promise<boolean> {
+	const existing = await port.getDirent(parentIno, name)
+	return existing !== null && (await nodes.idFor(existing.ino)) === null
+}
+
+/**
  * Give a node — and everything under it that this replica knows — local inodes,
  * building them from the state alone. A node that this replica ignores keeps its
  * state and stays out of the tree, however it arrived.
@@ -792,6 +813,11 @@ async function reconcileCrossings(
 			if (node.localIno !== null) continue
 			const parent = node.parentId === null ? null : await nodes.get(node.parentId)
 			if (parent?.localIno == null) continue
+			// The rebind above carried this replica's own data to that name, kept there
+			// while the path was hidden. Leaving the two divergent is what ignoring
+			// already meant, and it destroys nothing; skipping mutates no tree state, so
+			// there is no local change to push back and nothing flaps.
+			if (await heldLocally(port, nodes, parent.localIno, node.name)) continue
 			const { parentPath } = splitPath(newPath + suffix)
 			await materialise(port, nodes, view, node, parent.localIno, parentPath, source)
 		}
