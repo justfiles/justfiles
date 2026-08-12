@@ -79,7 +79,7 @@ export function nodeSyncExtension(
 				nodeSync: {
 					nodes,
 					view,
-					snapshot: (after, limit) => snapshotOf(nodes, after, limit),
+					snapshot: (after, limit) => snapshotOf(nodes, view, after, limit),
 					apply: (operations, o) => applyNodeOperationsOver(tree, nodes, view, operations, o)
 				}
 			}

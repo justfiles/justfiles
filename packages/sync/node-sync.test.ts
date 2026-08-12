@@ -741,3 +741,54 @@ test('a remote ancestor delete or replacement cannot destroy a locally ignored c
 	expect((await b.vol.lstat('/box')).type).toBe(FileType.Directory)
 	expect(echoed).toEqual([])
 })
+
+// ── Asymmetric policies: a replica never holds or re-serves what it hides ──────
+
+test('a receiver fetches no bytes for a node its own policy hides', async () => {
+	const { a, b, fetched, sync } = nodePeers({ bIgnore: ['/vault'] })
+	await a.vol.mkdir('/vault/deep', { recursive: true })
+	await a.vol.writeFile('/vault/deep/secret.txt', bytes('classified'))
+	await a.vol.writeFile('/open.txt', bytes('open'))
+	const secret = (await a.vol.stat('/vault/deep/secret.txt')).contentHash ?? ''
+	const open = (await a.vol.stat('/open.txt')).contentHash ?? ''
+
+	await sync()
+
+	// B holds the STATE (it is not a tombstone) but never asked for the bytes.
+	expect(await b.nodes.get((await a.nodeAt('/vault'))?.id ?? '')).toMatchObject({ deleted: false })
+	expect(fetched).toContain(open)
+	expect(fetched).not.toContain(secret)
+	expect(await b.replica.hasBlobByHash(secret)).toBe(false)
+})
+
+test('a receiver does not re-serve a snapshot of what its own policy hides', async () => {
+	const { a, b, sync } = nodePeers({ bIgnore: ['/vault'] })
+	await a.vol.mkdir('/vault/deep', { recursive: true })
+	await a.vol.writeFile('/vault/deep/secret.txt', bytes('classified'))
+	await a.vol.writeFile('/open.txt', bytes('open'))
+
+	await sync()
+
+	const scan = await b.replica.nodeScan()
+	const named = mutationsOf(scan.operations).map((m) => (m.kind === 'create' ? m.name : ''))
+	expect(named).toEqual(['open.txt'])
+	// A, which hides nothing, still serves the whole tree.
+	expect(mutationsOf((await a.replica.nodeScan()).operations)).toHaveLength(4)
+})
+
+test('an ignore root is canonicalised before it is matched', async () => {
+	const { a, b, sync } = nodePeers({ aIgnore: ['/x/../private', '//dup//keys/', '/./dot'] })
+	for (const dir of ['/private', '/dup/keys', '/dot']) {
+		await a.vol.mkdir(dir, { recursive: true })
+		await a.vol.writeFile(`${dir}/f.txt`, bytes('hidden'))
+	}
+	await a.vol.writeFile('/open.txt', bytes('open'))
+
+	await sync()
+
+	for (const dir of ['/private', '/dup/keys', '/dot']) {
+		expect(await a.nodeAt(`${dir}/f.txt`)).toBe(null)
+		expect(await b.vol.exists(`${dir}/f.txt`)).toBe(false)
+	}
+	expect(text(await b.vol.readFile('/open.txt'))).toBe('open')
+})

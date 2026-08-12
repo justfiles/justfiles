@@ -123,12 +123,35 @@ export interface Projection {
 	ignored(path: string): boolean
 }
 
+/**
+ * The canonical form of one ignore root, or null when it names nothing this can
+ * hide. A root is matched against paths the VOLUME resolved, so it has to be
+ * reduced the same way first: `/x/../private`, `//private/` and `/./private` all
+ * name `/private`, and a matcher that took them literally would leave `/private`
+ * visible — an ignore list failing OPEN, which is the dangerous direction.
+ */
+function canonicalRoot(raw: string): string | null {
+	if (!raw.startsWith('/')) return null
+	const segments: string[] = []
+	for (const segment of raw.split('/')) {
+		if (segment === '' || segment === '.') continue
+		if (segment === '..') {
+			segments.pop()
+			continue
+		}
+		segments.push(segment.normalize('NFC'))
+	}
+	// Everything reduced away: that is the root itself, which would ignore the whole
+	// volume. A caller that wants to sync nothing does not connect a replica.
+	return segments.length === 0 ? null : `/${segments.join('/')}`
+}
+
 /** Normalise a caller's ignore list and give it segment-aware matching. */
 export function projection(ignore?: readonly string[]): Projection {
 	const seen = new Set<string>()
 	for (const raw of ignore ?? []) {
-		const trimmed = raw.replace(/\/+$/, '')
-		if (trimmed.startsWith('/') && trimmed.length > 1) seen.add(trimmed.normalize('NFC'))
+		const root = canonicalRoot(raw)
+		if (root !== null) seen.add(root)
 	}
 	const roots: string[] = []
 	// Shortest first, so a root already covered by an ancestor root is dropped.
@@ -558,12 +581,19 @@ export async function applyNodeOperationsOver(
 export async function effectivePath(
 	nodes: NodeStore,
 	parentId: SyncNodeId | null,
-	name: string
+	name: string,
+	/**
+	 * Ancestors that are not in the store yet because they arrived in the same
+	 * batch. Needed only before an apply — a create's parent may be two mutations
+	 * ahead of it.
+	 */
+	incoming?: ReadonlyMap<SyncNodeId, { parentId: SyncNodeId; name: string }>
 ): Promise<string | null> {
 	const segments = [name]
 	let cursor = parentId
 	while (cursor !== null && cursor !== ROOT_NODE_ID) {
-		const parent = await nodes.get(cursor)
+		const pending = incoming?.get(cursor)
+		const parent = pending ?? (await nodes.get(cursor))
 		if (!parent) return null
 		segments.unshift(parent.name)
 		cursor = parent.parentId
@@ -809,12 +839,17 @@ async function applyMutation(
 
 /**
  * Every live node of the projection as a `create`, ordered by effective path. Read
- * from the node store alone — the tree is not consulted, so a node this replica
- * holds without materialising is still served, and a bootstrap needs no journal
- * history.
+ * from the node store alone — the tree is not consulted, so a bootstrap needs no
+ * journal history.
+ *
+ * Filtered by THIS replica's own view, which is not the same as "everything it
+ * materialises": a peer with a narrower policy sends nodes this replica keeps as
+ * state without materialising, and re-serving those to a third replica would
+ * relay past a boundary this one was told to respect.
  */
 export async function snapshotOf(
 	nodes: NodeStore,
+	view: Projection,
 	afterPath: string,
 	limit: number
 ): Promise<{ path: string; mutation: NodeMutation }[]> {
@@ -822,6 +857,7 @@ export async function snapshotOf(
 	async function walk(parent: NodeState, parentPath: string): Promise<void> {
 		for (const child of await nodes.children(parent.id)) {
 			const path = joinPath(parentPath, child.name)
+			if (view.ignored(path)) continue
 			out.push({
 				path,
 				mutation: {
@@ -925,32 +961,61 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 		},
 		async applyNodeOperations(operations, getBlobByHash, opts) {
 			const store = content()
+			const mutations = mutationsOf([...operations])
+			// Where each node ends up ONCE THE WHOLE BATCH HAS LANDED. A create's parent
+			// can be two mutations ahead of it, and a later move can carry it across the
+			// boundary, so neither the store nor a single mutation can answer this alone.
+			const incoming = new Map<SyncNodeId, { parentId: SyncNodeId; name: string }>()
+			for (const m of mutations)
+				if (m.kind === 'create' || m.kind === 'move')
+					incoming.set(m.nodeId, { parentId: m.parentId, name: m.name })
+			const locate = async (id: SyncNodeId): Promise<string | null> => {
+				const node = incoming.get(id) ?? (await sync.nodes.get(id))
+				return node ? effectivePath(sync.nodes, node.parentId, node.name, incoming) : null
+			}
+
 			const wanted: string[] = []
-			for (const m of mutationsOf([...operations])) {
-				if (m.kind === 'create' || m.kind === 'update') {
+			for (const m of mutations) {
+				if (m.kind === 'delete') continue
+				const location = await locate(m.nodeId)
+				// Bytes are only ever requested for what this replica will actually hold.
+				// Asking for a hash the sender can see and this replica hides would pull the
+				// content past its own boundary, and an unresolvable path never applies.
+				if (!location || sync.view.ignored(location)) continue
+				if (m.kind !== 'move') {
 					if (m.contentHash) wanted.push(m.contentHash)
 					continue
 				}
 				// A move can bring a subtree this replica holds but does not materialise
 				// back into view. The bytes are fetched HERE, before the transaction: an
 				// apply is local and atomic, and cannot wait on a network.
-				if (m.kind !== 'move') continue
-				const path = await effectivePath(sync.nodes, m.parentId, m.name)
-				if (path === null || sync.view.ignored(path)) continue
-				const node = await sync.nodes.get(m.nodeId)
-				if (!node || node.localIno !== null) continue
-				const pending = [node]
+				const moved = await sync.nodes.get(m.nodeId)
+				if (!moved || moved.localIno !== null) continue
+				const pending = [{ node: moved, path: location }]
 				while (pending.length > 0) {
 					const next = pending.pop()
-					if (!next) break
-					if (next.contentHash) wanted.push(next.contentHash)
-					pending.push(...(await sync.nodes.children(next.id)))
+					if (!next || sync.view.ignored(next.path)) continue
+					if (next.node.contentHash) wanted.push(next.node.contentHash)
+					for (const child of await sync.nodes.children(next.node.id))
+						pending.push({ node: child, path: joinPath(next.path, child.name) })
 				}
 			}
 			for (const hash of new Set(wanted))
 				if (!(await store.hasByHash(hash))) await store.putByHash(hash, await getBlobByHash(hash))
 			await sync.apply(operations, opts)
 		},
+		/**
+		 * Serves any hash the content store holds, INCLUDING one an ignored local file
+		 * put there — the same contract as the path replica, and as every
+		 * content-addressed store (git, IPFS, a block server): the address IS the
+		 * proof of possession, so asking for a hash means already holding the bytes
+		 * it names. What it leaks is confirmation, not content.
+		 *
+		 * Narrowing it to hashes some live visible node references needs a hash -> node
+		 * index, which the memory reference would have to answer with a full scan.
+		 * That index belongs with the SQLite store, next to the authorisation that
+		 * decides WHO may ask (phases 2 and 4), not here.
+		 */
 		async getBlobByHash(hash) {
 			const blob = await content().getByHash(hash)
 			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
