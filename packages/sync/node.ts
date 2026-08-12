@@ -228,8 +228,22 @@ export interface NodeSyncModule {
 	 * Live projection nodes as `create` mutations, ordered by effective path
 	 * (which is parent-before-child, since a parent path is a strict prefix), keyset
 	 * paged after `afterPath`. The path is paging bookkeeping and never wire.
+	 *
+	 * Every page of one `session` reads a view FROZEN when the session began. It
+	 * cannot be served from live state: a rename during the scan can carry a node
+	 * from ahead of the keyset to behind it, and the delta that follows describes it
+	 * with a `move`, which names an id the reader was never given. The tree order is
+	 * not stable under renames, so the freeze is what makes the paging whole.
+	 *
+	 * An adapter that can no longer answer a session (it kept a bounded number, or
+	 * restarted) throws `ProjectionCursorError` rather than silently continuing from
+	 * current state.
 	 */
-	snapshot(afterPath: string, limit: number): Promise<{ path: string; mutation: NodeMutation }[]>
+	snapshot(
+		session: string,
+		afterPath: string,
+		limit: number
+	): Promise<{ path: string; mutation: NodeMutation }[]>
 	/** Apply remote operations to the tree, the identity mapping and the journal. */
 	apply(operations: readonly NodeOperation[], opts?: { source?: string }): Promise<void>
 }
@@ -361,6 +375,20 @@ function crossings(view: Projection, oldPath: string, newPath: string): string[]
 	}
 	// Shortest first, so a parent is settled before anything nested under it.
 	return [...suffixes].sort()
+}
+
+/**
+ * Walk `suffix` down from an inode through the TREE, matching normalised names —
+ * the counterpart of `descend` for a subtree that has no sync identity yet, and so
+ * cannot be found through the node store at all.
+ */
+async function descendIno(
+	port: TreePort,
+	ino: Ino,
+	suffix: string
+): Promise<{ ino: Ino; rel: string } | null> {
+	const subtree = await port.enumerateSubtree(ino)
+	return subtree.find((n) => n.rel.normalize('NFC') === suffix) ?? null
 }
 
 /**
@@ -543,9 +571,12 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 							effect.ino
 						)
 						for (const suffix of entering) {
-							const path = newPath + suffix
-							const ino = await port.resolveIno(path)
-							if (ino !== null) await publish(port, op, path, ino)
+							// Found by walking the moved subtree with normalised names, not by
+							// resolving the suffix as a literal path: the suffix carries the
+							// ignore root's spelling, and an exact-match resolve would miss a
+							// differently-spelled twin and silently never publish it.
+							const found = await descendIno(port, effect.ino, suffix)
+							if (found) await publish(port, op, newPath + found.rel, found.ino)
 						}
 					} else if (isShared) {
 						// It was outside the projection, so nothing about it was ever shared:
@@ -926,9 +957,7 @@ async function applyMutation(
  */
 export async function snapshotOf(
 	nodes: NodeStore,
-	view: Projection,
-	afterPath: string,
-	limit: number
+	view: Projection
 ): Promise<{ path: string; mutation: NodeMutation }[]> {
 	const out: { path: string; mutation: NodeMutation }[] = []
 	async function walk(parent: NodeState, parentPath: string): Promise<void> {
@@ -955,7 +984,7 @@ export async function snapshotOf(
 	// Path order IS parent-before-child (a parent path is a strict prefix of its
 	// child's), so one sort serves both the ordering guarantee and keyset paging.
 	out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
-	return out.filter((e) => e.path > afterPath).slice(0, limit)
+	return out
 }
 
 /**
@@ -1048,6 +1077,16 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 					if (!node) continue
 					const path = await effectivePath(sync.nodes, node.parentId, node.name)
 					if (path !== null && !sync.view.ignored(path)) {
+						// The node itself is visible, but a move carries its whole subtree —
+						// and a descendant may have crossed this replica's boundary, which the
+						// reader cannot be told about. Refuse whenever an ignore root sits
+						// under the move's destination rather than trying to work out which
+						// side of it the descendants were on.
+						if (
+							m.kind === 'move' &&
+							sync.view.roots.some((r) => r.startsWith(`${path.normalize('NFC')}/`))
+						)
+							throw new ProjectionCursorError()
 						visible.push(m)
 						continue
 					}
@@ -1075,21 +1114,28 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			// `head:encodedPath` — the delta high-water is frozen at snapshot START and
 			// echoed on every page, so the caller resumes `nodeDeltas(syncCursor)` with no
 			// gap (an overlapping replay is idempotent).
+			// `head.session:encodedPath`. The session names the frozen view every page
+			// of one scan is cut from; the head is the delta high-water to resume at.
 			let head: string
+			let session: string
 			let after = ''
 			if (page) {
-				const i = page.indexOf(':')
-				head = i < 0 ? page : page.slice(0, i)
-				after = i < 0 ? '' : decodeURIComponent(page.slice(i + 1))
+				const mark = page.indexOf(':')
+				const left = mark < 0 ? page : page.slice(0, mark)
+				const dot = left.indexOf('.')
+				head = dot < 0 ? left : left.slice(0, dot)
+				session = dot < 0 ? '' : left.slice(dot + 1)
+				after = mark < 0 ? '' : decodeURIComponent(page.slice(mark + 1))
 			} else {
 				head = String(await sync.nodes.head())
+				session = crypto.randomUUID()
 			}
-			const entries = await sync.snapshot(after, limit)
+			const entries = await sync.snapshot(session, after, limit)
 			const last = entries.at(-1)?.path
 			const done = entries.length < limit || last === undefined
 			return {
 				operations: entries.length === 0 ? [] : [{ mutations: entries.map((e) => e.mutation) }],
-				next: done ? undefined : `${head}:${encodeURIComponent(last)}`,
+				next: done ? undefined : `${head}.${session}:${encodeURIComponent(last)}`,
 				syncCursor: head,
 				done
 			}

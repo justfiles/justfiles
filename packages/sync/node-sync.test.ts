@@ -899,6 +899,69 @@ test('an unpublication finds the crossing subtree whatever its spelling', async 
 	expect(text(await a.vol.readFile(`/dst/${decomposed}/f.txt`))).toBe('secret')
 })
 
+test('a rename during a paged bootstrap cannot drop a node from the snapshot', async () => {
+	const { a, b, bootstrap, sync } = nodePeers()
+	await a.vol.writeFile('/m.txt', bytes('m'))
+	await a.vol.writeFile('/z.txt', bytes('z'))
+
+	// After the first page the cursor sits at `/m.txt`. Renaming `/z.txt` to
+	// `/a.txt` moves it BEHIND that cursor: a snapshot read from current state
+	// would never send it, and the delta that follows carries only a `move`,
+	// which names an id the receiver was never given.
+	await bootstrap(1, async (_operations, page) => {
+		if (page === 1) await a.vol.rename('/z.txt', '/a.txt')
+	})
+	await sync()
+
+	expect(text(await b.vol.readFile('/a.txt'))).toBe('z')
+	expect(text(await b.vol.readFile('/m.txt'))).toBe('m')
+	expect(await b.vol.exists('/z.txt')).toBe(false)
+	expect((await b.nodeAt('/a.txt'))?.id).toBe((await a.nodeAt('/a.txt'))?.id)
+})
+
+test('a relay refuses a move whose DESCENDANT crossed its boundary', async () => {
+	const { a, b, sync } = nodePeers({ bIgnore: ['/dst/hidden'] })
+	await a.vol.mkdir('/src/hidden', { recursive: true })
+	await a.vol.writeFile('/src/hidden/secret.txt', bytes('secret'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+
+	const c = makePeer('c')
+	const first = await b.replica.nodeDeltas('', { limit: 500 })
+	await c.replica.applyNodeOperations(first.operations, (h) => b.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+	expect(text(await c.vol.readFile('/src/hidden/secret.txt'))).toBe('secret')
+
+	// The moved ROOT stays visible to B, so the row looks relayable — but the
+	// descendant crossed B's boundary, and passing the move on would leave C
+	// holding the secret at a path B may not describe.
+	await a.vol.rename('/src', '/dst')
+	await sync()
+	expect(await b.vol.exists('/dst/hidden')).toBe(false)
+
+	await expect(b.replica.nodeDeltas(first.to, { limit: 500 })).rejects.toThrow(
+		ProjectionCursorError
+	)
+})
+
+test('an entering crossing is published whatever the tree spelling', async () => {
+	const composed = '/src/caf\u00e9'
+	const decomposed = 'cafe\u0301'
+	const { a, b, sync } = nodePeers({ aIgnore: [composed] })
+	await a.vol.mkdir(`/src/${decomposed}`, { recursive: true })
+	await a.vol.writeFile(`/src/${decomposed}/f.txt`, bytes('now shared'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	expect(await b.vol.exists(`/src/${decomposed}`)).toBe(false)
+
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	expect(text(await b.vol.readFile(`/dst/${decomposed}/f.txt`))).toBe('now shared')
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+})
+
 test('an ignore root matches whatever Unicode spelling the tree holds', async () => {
 	// The tree holds the DECOMPOSED spelling (what a macOS volume hands back); the
 	// caller configured the composed one. Same path, two encodings — written as

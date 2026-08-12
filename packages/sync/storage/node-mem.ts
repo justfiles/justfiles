@@ -15,11 +15,13 @@ import type { Ino } from '@justfiles/fs/types'
 import {
 	applyNodeOperationsOver,
 	type NodeJournalRow,
+	type NodeMutation,
 	type NodeState,
 	type NodeStorage,
 	type NodeStore,
 	type NodeSyncModule,
 	nodeSyncObserver,
+	ProjectionCursorError,
 	projection,
 	snapshotOf
 } from '../node'
@@ -72,6 +74,30 @@ export function nodeSyncExtension(
 	ignore?: readonly string[]
 ): MemStorageExtension<{ nodeSync: NodeSyncModule }> {
 	const view = projection(ignore)
+	// One frozen ordered view per live scan. A page cut from current state could
+	// miss a node a concurrent rename carried behind the keyset, and the delta that
+	// follows would describe it with a `move` naming an id the reader never got.
+	const scans = new Map<string, { path: string; mutation: NodeMutation }[]>()
+	const SCANS_KEPT = 4
+	async function snapshot(
+		session: string,
+		after: string,
+		limit: number
+	): Promise<{ path: string; mutation: NodeMutation }[]> {
+		let entries = scans.get(session)
+		if (!entries) {
+			// A resumed page whose frozen view is gone cannot be answered consistently,
+			// and answering it from current state is the very bug the freeze prevents.
+			if (after !== '') throw new ProjectionCursorError()
+			entries = await snapshotOf(nodes, view)
+			scans.set(session, entries)
+			for (const stale of [...scans.keys()].slice(0, Math.max(0, scans.size - SCANS_KEPT)))
+				scans.delete(stale)
+		}
+		const page = entries.filter((e) => e.path > after).slice(0, limit)
+		if (page.length < limit) scans.delete(session)
+		return page
+	}
 	return {
 		observer: nodeSyncObserver(nodes, view),
 		attach(tree) {
@@ -79,7 +105,7 @@ export function nodeSyncExtension(
 				nodeSync: {
 					nodes,
 					view,
-					snapshot: (after, limit) => snapshotOf(nodes, view, after, limit),
+					snapshot,
 					apply: (operations, o) => applyNodeOperationsOver(tree, nodes, view, operations, o)
 				}
 			}
