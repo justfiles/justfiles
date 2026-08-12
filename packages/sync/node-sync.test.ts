@@ -505,6 +505,24 @@ test('a paged bootstrap applies parents before children and loses no delta', asy
 	expect((await b.nodeAt('/aaa-late.txt'))?.id).toBe((await a.nodeAt('/aaa-late.txt'))?.id)
 })
 
+test('a paged bootstrap retains frozen content through source GC', async () => {
+	const { a, b, bootstrap, sync } = nodePeers()
+	await a.vol.writeFile('/a.txt', bytes('first'))
+	await a.vol.writeFile('/z.txt', bytes('old'))
+	const frozenHash = (await a.nodeAt('/z.txt'))?.contentHash ?? ''
+
+	await bootstrap(1, async (_operations, page) => {
+		if (page !== 1) return
+		await a.vol.writeFile('/z.txt', bytes('new'))
+		await a.storage.caps?.content?.gcUnreferenced()
+		expect(await a.replica.hasBlobByHash(frozenHash)).toBe(true)
+	})
+
+	expect(text(await b.vol.readFile('/z.txt'))).toBe('old')
+	await sync()
+	expect(text(await b.vol.readFile('/z.txt'))).toBe('new')
+})
+
 test('a rename during a paged bootstrap cannot drop a node', async () => {
 	const { a, b, bootstrap, sync } = nodePeers()
 	await a.vol.writeFile('/m.txt', bytes('m'))

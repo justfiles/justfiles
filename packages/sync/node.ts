@@ -118,6 +118,8 @@ export interface NodeSyncModule {
 		afterPath: string,
 		limit: number
 	): Promise<{ path: string; mutation: NodeMutation }[]>
+	/** Content retained by a frozen snapshot after the live inode moved on. */
+	snapshotBlob?(hash: string): Promise<Uint8Array | null>
 	apply(operations: readonly NodeOperation[], opts?: { source?: string }): Promise<void>
 }
 
@@ -527,11 +529,13 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			await sync.apply(operations, opts)
 		},
 		async getBlobByHash(hash) {
-			const blob = await content().getByHash(hash)
+			const blob = (await content().getByHash(hash)) ?? (await sync.snapshotBlob?.(hash))
 			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
 			return blob
 		},
-		hasBlobByHash: (hash) => content().hasByHash(hash),
+		async hasBlobByHash(hash) {
+			return (await content().hasByHash(hash)) || (await sync.snapshotBlob?.(hash)) != null
+		},
 		putBlobByHash: async (hash, data) => {
 			await content().putByHash(hash, data)
 		}

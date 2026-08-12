@@ -79,6 +79,9 @@ materialization state machine. Preserve these lessons in the implementation:
   relaying a partial page can place a replacement directory after retained children
   or before its new parent. Add that behavior only with the later reconciliation
   planner, which can re-emit the affected subtree in parent-first order.
+- A frozen snapshot must pin the blobs named by all of its pages for as long as the
+  snapshot remains resumable. Freezing only node metadata lets content GC reclaim a
+  not-yet-served hash after a concurrent update or delete.
 - Compact the mutation journal by node before content GC can expose an obsolete hash
   on a page by itself. A delete supersedes all earlier mutations for that node. A
   newer update supersedes older updates but must refresh a retained create for

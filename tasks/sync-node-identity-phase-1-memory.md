@@ -149,6 +149,7 @@ Remove duplication and deepen the node-sync module only after all cycles pass. K
 - [x] Each replica owns only its `sync ID <-> local inode` mapping.
 - [x] No test depends on local inode and sync ID values being equal.
 - [x] Tombstones retain identity after the local inode is removed.
+- [x] A frozen memory snapshot retains its referenced blobs across content GC.
 - [x] `packages/fs` gains no sync imports or sync concepts.
 - [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
