@@ -378,7 +378,7 @@ function crossings(view: Projection, oldPath: string, newPath: string): string[]
 }
 
 /**
- * Walk `suffix` down from an inode through the TREE, matching normalised names —
+ * Every subtree at `suffix` below an inode in the TREE, matching normalised names —
  * the counterpart of `descend` for a subtree that has no sync identity yet, and so
  * cannot be found through the node store at all.
  */
@@ -386,32 +386,36 @@ async function descendIno(
 	port: TreePort,
 	ino: Ino,
 	suffix: string
-): Promise<{ ino: Ino; rel: string } | null> {
+): Promise<{ ino: Ino; rel: string }[]> {
 	const subtree = await port.enumerateSubtree(ino)
-	return subtree.find((n) => n.rel.normalize('NFC') === suffix) ?? null
+	return subtree.filter((n) => n.rel.normalize('NFC') === suffix)
 }
 
 /**
- * Walk `suffix` down from a node through the NODE store, by name.
+ * Every node at `suffix` below `rootId` in the NODE store, matching by name.
  *
  * The suffix was sliced off a normalised ignore root, while a node's name is
  * whatever spelling it was created with — so the comparison normalises too. A
  * lookup that missed here would leave a subtree shared at a path this replica has
  * been told to hide, which is the failure that must not happen.
+ *
+ * ALL matches, never the first: two siblings can carry the composed and the
+ * decomposed spelling of one name, and the matcher — which normalises the path it
+ * is given — hides both. Settling only one leaves its twin shared behind the
+ * boundary, which is the same leak in a subtler dress.
  */
-async function descend(
-	nodes: NodeStore,
-	rootId: SyncNodeId,
-	suffix: string
-): Promise<NodeState | null> {
-	let current = await nodes.get(rootId)
+async function descend(nodes: NodeStore, rootId: SyncNodeId, suffix: string): Promise<NodeState[]> {
+	const root = await nodes.get(rootId)
+	let frontier = root ? [root] : []
 	for (const segment of suffix.split('/')) {
 		if (segment === '') continue
-		if (!current) return null
-		const children = await nodes.children(current.id)
-		current = children.find((c) => c.name.normalize('NFC') === segment) ?? null
+		const next: NodeState[] = []
+		for (const node of frontier)
+			for (const child of await nodes.children(node.id))
+				if (child.name.normalize('NFC') === segment) next.push(child)
+		frontier = next
 	}
-	return current
+	return frontier
 }
 
 // ── The observer: one TreeEffect in, one node operation out ───────────────────
@@ -556,8 +560,8 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 								// ignore root's spelling and `resolveIno` matches names exactly, so a
 								// tree lookup would miss a differently-spelled twin and leave the
 								// subtree shared behind the boundary.
-								const leaving = await descend(nodes, id, suffix)
-								if (leaving) await unpublish(op, leaving.id)
+								for (const leaving of await descend(nodes, id, suffix))
+									await unpublish(op, leaving.id)
 							} else entering.push(suffix)
 						}
 						await op.add(
@@ -575,8 +579,8 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 							// resolving the suffix as a literal path: the suffix carries the
 							// ignore root's spelling, and an exact-match resolve would miss a
 							// differently-spelled twin and silently never publish it.
-							const found = await descendIno(port, effect.ino, suffix)
-							if (found) await publish(port, op, newPath + found.rel, found.ino)
+							for (const found of await descendIno(port, effect.ino, suffix))
+								await publish(port, op, newPath + found.rel, found.ino)
 						}
 					} else if (isShared) {
 						// It was outside the projection, so nothing about it was ever shared:
@@ -780,17 +784,17 @@ async function reconcileCrossings(
 		const before = view.ignored(oldPath + suffix)
 		const after = view.ignored(newPath + suffix)
 		if (before === after) continue
-		const node = await descend(nodes, rootId, suffix)
-		if (!node) continue
-		if (after) {
-			if (node.localIno !== null) await dematerialise(port, nodes, node, source)
-			continue
+		for (const node of await descend(nodes, rootId, suffix)) {
+			if (after) {
+				if (node.localIno !== null) await dematerialise(port, nodes, node, source)
+				continue
+			}
+			if (node.localIno !== null) continue
+			const parent = node.parentId === null ? null : await nodes.get(node.parentId)
+			if (parent?.localIno == null) continue
+			const { parentPath } = splitPath(newPath + suffix)
+			await materialise(port, nodes, view, node, parent.localIno, parentPath, source)
 		}
-		if (node.localIno !== null) continue
-		const parent = node.parentId === null ? null : await nodes.get(node.parentId)
-		if (parent?.localIno == null) continue
-		const { parentPath } = splitPath(newPath + suffix)
-		await materialise(port, nodes, view, node, parent.localIno, parentPath, source)
 	}
 }
 
@@ -1194,8 +1198,8 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 				if (from === null) continue
 				for (const suffix of crossings(sync.view, from, location)) {
 					if (!sync.view.ignored(from + suffix) || sync.view.ignored(location + suffix)) continue
-					const node = await descend(sync.nodes, m.nodeId, suffix)
-					if (node) await collect(node, location + suffix)
+					for (const node of await descend(sync.nodes, m.nodeId, suffix))
+						await collect(node, location + suffix)
 				}
 			}
 			for (const hash of new Set(wanted))

@@ -899,6 +899,88 @@ test('an unpublication finds the crossing subtree whatever its spelling', async 
 	expect(text(await a.vol.readFile(`/dst/${decomposed}/f.txt`))).toBe('secret')
 })
 
+test('an unpublication withdraws EVERY spelling of a crossing subtree', async () => {
+	// Two SIBLINGS whose names normalise alike. The matcher hides both — it
+	// normalises the path it is given — so a planner that stops at the first match
+	// leaves the other shared behind the boundary.
+	const composed = 'caf\u00e9'
+	const decomposed = 'cafe\u0301'
+	expect(composed).not.toBe(decomposed)
+	const { a, b, sentOps, sync } = nodePeers({ aIgnore: [`/dst/${composed}`] })
+	for (const spelling of [composed, decomposed]) {
+		await a.vol.mkdir(`/src/${spelling}`, { recursive: true })
+		await a.vol.writeFile(`/src/${spelling}/f.txt`, bytes(`secret ${spelling}`))
+	}
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	for (const spelling of [composed, decomposed])
+		expect(text(await b.vol.readFile(`/src/${spelling}/f.txt`))).toBe(`secret ${spelling}`)
+	sentOps.length = 0
+
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	expect(sentOps).toHaveLength(1)
+	for (const spelling of [composed, decomposed]) {
+		expect(await b.vol.exists(`/dst/${spelling}`)).toBe(false)
+		// A keeps its own bytes at the now-ignored path.
+		expect(text(await a.vol.readFile(`/dst/${spelling}/f.txt`))).toBe(`secret ${spelling}`)
+	}
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+})
+
+test('an entering crossing publishes EVERY spelling of the subtree', async () => {
+	const composed = 'caf\u00e9'
+	const decomposed = 'cafe\u0301'
+	const { a, b, sync } = nodePeers({ aIgnore: [`/src/${composed}`] })
+	for (const spelling of [composed, decomposed]) {
+		await a.vol.mkdir(`/src/${spelling}`, { recursive: true })
+		await a.vol.writeFile(`/src/${spelling}/f.txt`, bytes(`now shared ${spelling}`))
+	}
+	await sync()
+	for (const spelling of [composed, decomposed])
+		expect(await b.vol.exists(`/src/${spelling}`)).toBe(false)
+
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	for (const spelling of [composed, decomposed])
+		expect(text(await b.vol.readFile(`/dst/${spelling}/f.txt`))).toBe(`now shared ${spelling}`)
+})
+
+test('a receiver reconciles EVERY spelling of a crossing subtree', async () => {
+	const composed = 'caf\u00e9'
+	const decomposed = 'cafe\u0301'
+	const { a, b, fetched, sync } = nodePeers({ bIgnore: [`/dst/${composed}`] })
+	for (const spelling of [composed, decomposed]) {
+		await a.vol.mkdir(`/src/${spelling}`, { recursive: true })
+		await a.vol.writeFile(`/src/${spelling}/f.txt`, bytes(`secret ${spelling}`))
+	}
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+
+	// Into B's ignore root: B must dematerialise both siblings, not just the first.
+	await a.vol.rename('/src', '/dst')
+	await sync()
+	for (const spelling of [composed, decomposed])
+		expect(await b.vol.exists(`/dst/${spelling}`)).toBe(false)
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+
+	// B names neither sibling's bytes now, so a sweep reclaims them — the return
+	// leg below has to re-fetch both rather than pass on what was left behind.
+	await b.storage.caps?.content?.gcUnreferenced()
+	fetched.length = 0
+
+	// And back out again: both return, with their bytes fetched again.
+	await a.vol.rename('/dst', '/back')
+	await sync()
+	for (const spelling of [composed, decomposed])
+		expect(text(await b.vol.readFile(`/back/${spelling}/f.txt`))).toBe(`secret ${spelling}`)
+	// Two distinct bodies, so two fetches: the sweep really did reclaim them, and
+	// the pre-fetch walked BOTH entering subtrees rather than one.
+	expect(new Set(fetched).size).toBe(2)
+})
+
 test('a rename during a paged bootstrap cannot drop a node from the snapshot', async () => {
 	const { a, b, bootstrap, sync } = nodePeers()
 	await a.vol.writeFile('/m.txt', bytes('m'))
