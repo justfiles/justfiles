@@ -6,7 +6,7 @@
    Deliberately nothing else: no reset beyond the shell's own layout. The frame
    ships no global `box-sizing` either, so adding one here would make `pnpm dev`
    disagree with the host, which is the one thing this file must not do. */
-@import "../design/mac.css";
+@import "@justfiles/design/mac.css";
 
 html,
 body {
