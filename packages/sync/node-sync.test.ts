@@ -315,32 +315,19 @@ test('a first sync skips content deleted before delivery', async () => {
 	expect(fetched).not.toContain(staleHash)
 })
 
-test('a rebootstrap create supersedes journal content for a downstream peer', async () => {
+test('a phase-1 snapshot create cannot overwrite a known node', async () => {
 	const a = makePeer('a')
 	const b = makePeer('b')
-	const c = makePeer('c')
 	await a.vol.writeFile('/note.txt', bytes('v1'))
 	const create = await a.replica.nodeDeltas('', { limit: 100 })
 	await b.replica.applyNodeOperations(create.operations, (hash) => a.replica.getBlobByHash(hash))
 	await a.vol.writeFile('/note.txt', bytes('v2'))
-	const update = await a.replica.nodeDeltas(create.to, { limit: 100 })
-	await b.replica.applyNodeOperations(update.operations, (hash) => a.replica.getBlobByHash(hash))
-
-	await a.vol.writeFile('/note.txt', bytes('v3'))
 	const snapshot = await a.replica.nodeScan(undefined, { limit: 100 })
-	await b.replica.applyNodeOperations(snapshot.operations, (hash) => a.replica.getBlobByHash(hash))
-	await b.storage.caps?.content?.gcUnreferenced()
+	await b.replica.applyNodeOperations(snapshot.operations, () =>
+		Promise.reject(new Error('known snapshot create fetched content'))
+	)
 
-	let cursor = ''
-	let done = false
-	while (!done) {
-		const page = await b.replica.nodeDeltas(cursor, { limit: 1 })
-		await c.replica.applyNodeOperations(page.operations, (hash) => b.replica.getBlobByHash(hash))
-		cursor = page.to
-		done = page.done
-	}
-
-	expect(text(await c.vol.readFile('/note.txt'))).toBe('v3')
+	expect(text(await b.vol.readFile('/note.txt'))).toBe('v1')
 })
 
 test('a delete tombstones its id and a recreated path gets a new one', async () => {

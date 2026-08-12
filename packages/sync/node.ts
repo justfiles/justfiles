@@ -308,23 +308,14 @@ async function applyMutation(
 	source?: string
 ): Promise<boolean> {
 	const previous = await nodes.get(mutation.nodeId)
-	if (previous && previous.revision >= mutation.revision) return false
+	if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+		return false
 
 	if (mutation.kind === 'create') {
 		const parent = await nodes.get(mutation.parentId)
 		if (parent?.localIno == null) return false
-		const ino = previous?.localIno ?? port.mintIno()
-		if (
-			previous?.localIno != null &&
-			(previous.parentId !== mutation.parentId || previous.name !== mutation.name)
-		) {
-			const oldParent = previous.parentId === null ? null : await nodes.get(previous.parentId)
-			if (oldParent?.localIno != null) {
-				await port.deleteDirent(oldParent.localIno, previous.name)
-				await emitDirent(port, ino, oldParent.localIno, previous.name, source)
-			}
-		}
-		const state = nextState(mutation, previous, ino)
+		const ino = port.mintIno()
+		const state = nextState(mutation, null, ino)
 		if (!state) return false
 		const { meta, xattrs } = inodeMetaFromSync(mutation.meta)
 		await port.upsertInode(ino, { ...meta, ctimeNs: 0n }, mutation.contentHash, xattrs)
@@ -527,7 +518,8 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			for (const mutation of mutationsOf(operations)) {
 				if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
 				const previous = await sync.nodes.get(mutation.nodeId)
-				if (previous && previous.revision >= mutation.revision) continue
+				if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+					continue
 				if (mutation.contentHash) wanted.add(mutation.contentHash)
 			}
 			for (const hash of wanted)

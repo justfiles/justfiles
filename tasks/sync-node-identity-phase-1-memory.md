@@ -86,6 +86,10 @@ model a live-but-hidden node or make a memory relay filter another replica's acc
 journal. Keeping those states out of the reference adapter makes the node identity and
 constant-cost move invariant independently testable.
 
+A snapshot `create` materializes only an unknown ID. Phase 1 does not accept one as a
+higher-revision overwrite of a known node; non-empty rebootstrap requires topology
+reconciliation and belongs to the later projection task.
+
 ## RED/GREEN TDD specification
 
 Complete one cycle before starting the next.

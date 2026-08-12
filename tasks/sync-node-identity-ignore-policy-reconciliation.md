@@ -74,11 +74,16 @@ materialization state machine. Preserve these lessons in the implementation:
   projection changes. The memory adapter needs an explicit staged transaction if it
   remains the reference for this behavior; primitive-by-primitive apply is not
   sufficient.
+- Phase 1 snapshots only bootstrap unknown IDs. Accepting a higher-revision snapshot
+  create for a known node turns non-empty rebootstrap into topology reconciliation:
+  relaying a partial page can place a replacement directory after retained children
+  or before its new parent. Add that behavior only with the later reconciliation
+  planner, which can re-emit the affected subtree in parent-first order.
 - Compact the mutation journal by node before content GC can expose an obsolete hash
-  on a page by itself. An accepted snapshot create or delete supersedes all earlier
-  mutations for that node. A newer update supersedes older updates but must refresh
-  a retained create for cursors that predate the node. Journal only accepted
-  mutations, or a stale retry can replace the retained current state.
+  on a page by itself. A delete supersedes all earlier mutations for that node. A
+  newer update supersedes older updates but must refresh a retained create for
+  cursors that predate the node. Journal only accepted mutations, or a stale retry
+  can replace the retained current state.
 - Normalize policy paths consistently, but do not assume one normalized spelling
   identifies one filesystem entry. Filesystems can contain multiple siblings whose
   names normalize alike, so every matching entry must be classified. Authority-side
