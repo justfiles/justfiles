@@ -391,14 +391,26 @@ function crossings(view: Projection, oldPath: string, newPath: string): string[]
  * Every subtree at `suffix` below an inode in the TREE, matching normalised names —
  * the counterpart of `descend` for a subtree that has no sync identity yet, and so
  * cannot be found through the node store at all.
+ *
+ * Read out of an ALREADY-WALKED tree rather than walking one: the caller has to
+ * walk the moved tree anyway to publish what it finds, and a suffix per ignore root
+ * must not cost a pass each.
  */
-async function descendIno(
-	port: TreePort,
-	ino: Ino,
+function descendIno(
+	subtree: readonly { ino: Ino; rel: string }[],
 	suffix: string
-): Promise<{ ino: Ino; rel: string }[]> {
-	const subtree = await port.enumerateSubtree(ino)
+): { ino: Ino; rel: string }[] {
 	return subtree.filter((n) => n.rel.normalize('NFC') === suffix)
+}
+
+/** The slice of a walked tree at `rel`, re-based so the slice's own root is ''. */
+function below(
+	subtree: readonly { ino: Ino; rel: string }[],
+	rel: string
+): { ino: Ino; rel: string }[] {
+	return subtree
+		.filter((n) => n.rel === rel || n.rel.startsWith(`${rel}/`))
+		.map((n) => ({ ino: n.ino, rel: n.rel.slice(rel.length) }))
 }
 
 /**
@@ -463,12 +475,17 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 	type Operation = ReturnType<typeof open>
 
 	/**
-	 * Publish the local subtree at `path` — every node in it gets a FRESH identity,
-	 * parent before child, and a nested ignore root inside it stays out. O(N) by
-	 * design: this is the boundary crossing, not the ordinary move.
+	 * Publish the local subtree ALREADY WALKED as `subtree` (rels relative to `path`)
+	 * — every node in it gets a FRESH identity, parent before child, and a nested
+	 * ignore root inside it stays out. O(N) by design: this is the boundary crossing,
+	 * not the ordinary move.
 	 */
-	async function publish(port: TreePort, op: Operation, path: string, ino: Ino): Promise<void> {
-		const subtree = await port.enumerateSubtree(ino)
+	async function publish(
+		port: TreePort,
+		op: Operation,
+		path: string,
+		subtree: readonly { ino: Ino; rel: string }[]
+	): Promise<void> {
 		// `rel` order is parent-before-child: a parent's rel is a prefix of its child's.
 		for (const entry of [...subtree].sort((x, y) => (x.rel < y.rel ? -1 : 1))) {
 			const full = path + entry.rel
@@ -546,6 +563,8 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 					const isShared = destId !== null && !view.ignored(newPath)
 
 					const op = open()
+					/** The moved tree, walked at most ONCE however many crossings it holds. */
+					let walked: { ino: Ino; rel: string }[] | null = null
 					// A move over a live name frees that node's inode, so its tombstone
 					// belongs to the SAME operation — the destination name is never held by
 					// two live nodes, not even between two applies.
@@ -585,17 +604,18 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 							effect.ino
 						)
 						for (const suffix of entering) {
-							// Found by walking the moved subtree with normalised names, not by
-							// resolving the suffix as a literal path: the suffix carries the
+							// Found by matching normalised names inside ONE walk of the moved tree,
+							// not by resolving the suffix as a literal path: the suffix carries the
 							// ignore root's spelling, and an exact-match resolve would miss a
 							// differently-spelled twin and silently never publish it.
-							for (const found of await descendIno(port, effect.ino, suffix))
-								await publish(port, op, newPath + found.rel, found.ino)
+							walked ??= await port.enumerateSubtree(effect.ino)
+							for (const found of descendIno(walked, suffix))
+								await publish(port, op, newPath + found.rel, below(walked, found.rel))
 						}
 					} else if (isShared) {
 						// It was outside the projection, so nothing about it was ever shared:
 						// the whole subtree is published under new identities.
-						await publish(port, op, newPath, effect.ino)
+						await publish(port, op, newPath, await port.enumerateSubtree(effect.ino))
 					} else if (wasShared) {
 						await unpublish(op, id)
 					}
@@ -770,6 +790,32 @@ async function materialise(
 }
 
 /**
+ * Remove the dirent that currently names `node`, keeping the inode, its content and
+ * the identity. Two callers want exactly this and nothing more: a dematerialisation
+ * drops the inode afterwards, a relocation binds it under its new parent.
+ */
+async function unname(
+	port: TreePort,
+	nodes: NodeStore,
+	node: NodeState,
+	source?: string
+): Promise<void> {
+	if (node.localIno === null) return
+	const parent = node.parentId === null ? null : await nodes.get(node.parentId)
+	if (parent?.localIno == null) return
+	const dirPath = await port.pathOf(parent.localIno)
+	await port.deleteDirent(parent.localIno, node.name)
+	port.emit({
+		ino: node.localIno,
+		kind: 'dirent',
+		dirIno: parent.localIno,
+		name: node.name,
+		...(dirPath === null ? {} : { path: joinPath(dirPath, node.name) }),
+		source
+	})
+}
+
+/**
  * Take back the local materialisation of a node this replica may no longer show,
  * child first. The IDENTITY survives (`localIno: null`, not a tombstone) — the peer
  * still holds these nodes, so a later move back into view restores them.
@@ -782,19 +828,17 @@ async function dematerialise(
 ): Promise<void> {
 	for (const child of await nodes.children(node.id)) await dematerialise(port, nodes, child, source)
 	if (node.localIno !== null) {
-		const parent = node.parentId === null ? null : await nodes.get(node.parentId)
-		if (parent?.localIno != null) {
-			const dirPath = await port.pathOf(parent.localIno)
-			await port.deleteDirent(parent.localIno, node.name)
-			port.emit({
-				ino: node.localIno,
-				kind: 'dirent',
-				dirIno: parent.localIno,
-				name: node.name,
-				...(dirPath === null ? {} : { path: joinPath(dirPath, node.name) }),
-				source
-			})
+		// Anything still linked below it once the shared children are gone is THIS
+		// replica's own — kept behind a nested ignore root, so it has no identity, no
+		// peer copy and no journal row to rebuild it from. Unlinking the directory would
+		// strand it, so the NAME stays and sync merely stops owning it: the same
+		// tree-integrity rule a delete already obeys, which never removes a directory
+		// that still has live children.
+		if (await port.dirHasLiveChildren(node.localIno)) {
+			await nodes.save({ ...node, localIno: null })
+			return
 		}
+		await unname(port, nodes, node, source)
 		await port.deleteInodeIfUnreferenced(node.localIno)
 		port.emit({ ino: node.localIno, kind: 'meta', source })
 	}
@@ -869,6 +913,12 @@ async function applyMutation(
 			return
 		}
 		if (await shields(port, view, parentIno, m.name, path)) return
+		// A snapshot describes CURRENT state as a create, so a re-bootstrap can name a
+		// node this replica already holds — under a different parent, if it moved since
+		// the page that was lost. Release the old name first: the tree would otherwise
+		// keep both, and the stale one names a location no peer describes any more.
+		if (prev?.localIno != null && (prev.parentId !== m.parentId || prev.name !== m.name))
+			await unname(port, nodes, prev, source)
 		await materialise(port, nodes, view, state, parentIno, splitPath(path).parentPath, source)
 		return
 	}

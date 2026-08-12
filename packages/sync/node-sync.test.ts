@@ -999,6 +999,95 @@ test('a receiver reconciles EVERY spelling of a crossing subtree', async () => {
 	expect(new Set(fetched).size).toBe(2)
 })
 
+test('a move behind the boundary keeps the local-only data below it reachable', async () => {
+	// The mirror of the entering case: an ancestor leaves this receiver's view, and
+	// the only dirent naming it is the one that also holds B's OWN data, kept behind
+	// a nested ignore root with no identity and no copy on any peer.
+	const { a, b, echoed, sync } = nodePeers({ bIgnore: ['/src/cache', '/vault'] })
+	await a.vol.mkdir('/src')
+	await a.vol.mkdir('/vault')
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	await b.vol.mkdir('/src/cache')
+	await b.vol.writeFile('/src/cache/keep.bin', bytes('mine'))
+	await sync()
+
+	// A carries the whole subtree behind B's OTHER ignore root.
+	await a.vol.rename('/src', '/vault/src')
+	await sync()
+
+	expect(text(await b.vol.readFile('/src/cache/keep.bin'))).toBe('mine')
+	expect(await b.orphanCount()).toBe(0)
+	// What LEFT B's view is gone from the tree, as it should be — only the name that
+	// still reaches B's own data survives, and sync no longer owns it. Nothing was
+	// written back, so nothing flaps.
+	expect(await b.vol.exists('/src/open.txt')).toBe(false)
+	expect(await b.nodeAt('/src')).toBe(null)
+	expect(echoed).toEqual([])
+	// A is on the far side of the boundary, and unaffected.
+	expect(text(await a.vol.readFile('/vault/src/open.txt'))).toBe('open')
+})
+
+test('a DESCENDANT crossing behind the boundary keeps local-only data too', async () => {
+	const { a, b, sync } = nodePeers({ bIgnore: ['/dst/hidden', '/src/hidden/cache'] })
+	await a.vol.mkdir('/src/hidden', { recursive: true })
+	await a.vol.writeFile('/src/hidden/theirs.txt', bytes('theirs'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	await b.vol.mkdir('/src/hidden/cache')
+	await b.vol.writeFile('/src/hidden/cache/keep.bin', bytes('mine'))
+	await sync()
+
+	// The moved ROOT stays visible to B; `hidden` crosses into its boundary — and
+	// B's own bytes sit below `hidden`.
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+	expect(text(await b.vol.readFile('/dst/hidden/cache/keep.bin'))).toBe('mine')
+	// The shared file below `hidden` did leave B's view; only B's own data stayed.
+	expect(await b.vol.exists('/dst/hidden/theirs.txt')).toBe(false)
+	expect(await b.orphanCount()).toBe(0)
+})
+
+test('a re-bootstrapped create relocates a node this replica already holds', async () => {
+	const { a, b, bootstrap } = nodePeers()
+	await a.vol.mkdir('/one')
+	await a.vol.mkdir('/two')
+	await a.vol.writeFile('/one/f.txt', bytes('f'))
+	await bootstrap()
+	expect(text(await b.vol.readFile('/one/f.txt'))).toBe('f')
+
+	// The delta cursor is gone (a lost projection cursor, a restarted peer), so the
+	// receiver re-bootstraps. A snapshot describes CURRENT state, so the node it
+	// already holds at `/one` arrives as a higher-revision create under `/two`.
+	await a.vol.rename('/one/f.txt', '/two/f.txt')
+	await bootstrap()
+
+	expect(await b.layout()).toEqual(await a.layout())
+	expect((await b.nodeAt('/two/f.txt'))?.id).toBe((await a.nodeAt('/two/f.txt'))?.id)
+	expect(await b.orphanCount()).toBe(0)
+})
+
+test('an entering crossing walks the moved tree ONCE', async () => {
+	const { a, b, sync } = nodePeers({ counting: true, aIgnore: ['/src/cache'] })
+	await a.vol.mkdir('/src/cache/deep', { recursive: true })
+	await a.vol.writeFile('/src/cache/deep/mine.txt', bytes('mine'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	const before = a.enumerated()
+
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	// Locating the crossing root and publishing what is under it read the SAME walk:
+	// a move of a huge directory with one small crossing pays for one pass, not one
+	// per suffix plus one per publication.
+	expect(a.enumerated() - before).toBe(1)
+	expect(text(await b.vol.readFile('/dst/cache/deep/mine.txt'))).toBe('mine')
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+})
+
 test('an entering crossing never unlinks the local-only data already at that name', async () => {
 	const { a, b, echoed, sync } = nodePeers({ bIgnore: ['/src/cache'] })
 	await a.vol.mkdir('/src/cache', { recursive: true })
