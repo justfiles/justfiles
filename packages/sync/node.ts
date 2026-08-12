@@ -204,8 +204,10 @@ export type NodeJournalRow = {
  * state plus tombstones, and an ordered journal.
  *
  * An adapter must commit a tree mutation, its identity mapping, its node state
- * and its journal row TOGETHER. In memory that is free; elsewhere it is one
- * transaction.
+ * and its journal row TOGETHER: one transaction where the backend has them. The
+ * memory reference has no transaction primitive at all (see `storage.mem.ts`), so
+ * it is atomic per PRIMITIVE only — `applyNodeOperationsOver` is documented
+ * accordingly.
  */
 export interface NodeStore {
 	get(id: SyncNodeId): Promise<NodeState | null>
@@ -213,6 +215,14 @@ export interface NodeStore {
 	idFor(ino: Ino): Promise<SyncNodeId | null>
 	/** Live (non-tombstoned) children of a node. */
 	children(parentId: SyncNodeId): Promise<NodeState[]>
+	/**
+	 * Every live node, in ONE CONSISTENT READ — the frozen view a snapshot is cut
+	 * from. It is a single call rather than a walk on purpose: a walk awaits once per
+	 * directory, and a rename landing between two of those reads leaves the node in
+	 * neither half of the result. In memory that is one pass over the state map; in a
+	 * database it is one query, inside a read transaction.
+	 */
+	live(): Promise<NodeState[]>
 	save(state: NodeState): Promise<void>
 	append(operation: NodeOperation, localSource?: string): Promise<void>
 	read(after: number, limit: number): Promise<NodeJournalRow[]>
@@ -629,6 +639,12 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
  * observer does not re-record what sync itself applied — the same arrangement
  * `applyJournaledOver` uses. Blob bytes are materialised out-of-band, before this
  * call.
+ *
+ * An operation's all-or-nothing guarantee is the ADAPTER's, not this loop's: a
+ * database adapter calls this inside one transaction (as `storage/idb.ts` does for
+ * v1), while the memory reference has no transaction primitive and is therefore
+ * atomic per primitive only — a subscriber can see a multi-mutation crossing
+ * half-applied. The seam, not the driver, is where that gets fixed (phase 2).
  */
 export async function applyNodeOperationsOver(
 	port: TreePort,
@@ -980,6 +996,10 @@ async function applyMutation(
  * from the node store alone — the tree is not consulted, so a bootstrap needs no
  * journal history.
  *
+ * ONE consistent read, then pure work: paths are reconstructed from `parentId`
+ * in memory rather than by descending the store, so nothing a concurrent writer
+ * does can land between two reads of this view.
+ *
  * Filtered by THIS replica's own view, which is not the same as "everything it
  * materialises": a peer with a narrower policy sends nodes this replica keeps as
  * state without materialising, and re-serving those to a third replica would
@@ -989,28 +1009,43 @@ export async function snapshotOf(
 	nodes: NodeStore,
 	view: Projection
 ): Promise<{ path: string; mutation: NodeMutation }[]> {
-	const out: { path: string; mutation: NodeMutation }[] = []
-	async function walk(parent: NodeState, parentPath: string): Promise<void> {
-		for (const child of await nodes.children(parent.id)) {
-			const path = joinPath(parentPath, child.name)
-			if (view.ignored(path)) continue
-			out.push({
-				path,
-				mutation: {
-					kind: 'create',
-					nodeId: child.id,
-					parentId: parent.id,
-					name: child.name,
-					revision: child.revision,
-					meta: child.meta,
-					...(child.contentHash === undefined ? {} : { contentHash: child.contentHash })
-				}
-			})
-			if (child.type === FileType.Directory) await walk(child, path)
-		}
+	const live = await nodes.live()
+	const byId = new Map(live.map((n) => [n.id, n]))
+	// Memoised so a deep tree costs one walk per node, not one per ancestor.
+	const paths = new Map<SyncNodeId, string | null>()
+	if (byId.has(ROOT_NODE_ID)) paths.set(ROOT_NODE_ID, '/')
+	/** Effective path, or null for a node no longer reachable from the root. */
+	function pathOf(node: NodeState): string | null {
+		const known = paths.get(node.id)
+		if (known !== undefined) return known
+		// Unreachable until proven otherwise, so a `parentId` cycle — which only a peer
+		// could send — resolves to null instead of recurring forever. Descending from
+		// the root never reached such a node either.
+		paths.set(node.id, null)
+		const parent = node.parentId === null ? undefined : byId.get(node.parentId)
+		const parentPath = parent === undefined ? null : pathOf(parent)
+		const path = parentPath === null ? null : joinPath(parentPath, node.name)
+		paths.set(node.id, path)
+		return path
 	}
-	const root = await nodes.get(ROOT_NODE_ID)
-	if (root) await walk(root, '/')
+	const out: { path: string; mutation: NodeMutation }[] = []
+	for (const node of live) {
+		if (node.id === ROOT_NODE_ID || node.parentId === null) continue
+		const path = pathOf(node)
+		if (path === null || view.ignored(path)) continue
+		out.push({
+			path,
+			mutation: {
+				kind: 'create',
+				nodeId: node.id,
+				parentId: node.parentId,
+				name: node.name,
+				revision: node.revision,
+				meta: node.meta,
+				...(node.contentHash === undefined ? {} : { contentHash: node.contentHash })
+			}
+		})
+	}
 	// Path order IS parent-before-child (a parent path is a strict prefix of its
 	// child's), so one sort serves both the ordering guarantee and keyset paging.
 	out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0))
@@ -1177,8 +1212,18 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			// can be two mutations ahead of it, and a later move can carry it across the
 			// boundary, so neither the store nor a single mutation can answer this alone.
 			const incoming = new Map<SyncNodeId, { parentId: SyncNodeId; name: string }>()
+			/**
+			 * A revision this replica has already passed. `applyMutation` rejects it, so
+			 * planning around it would fetch bytes for a tree change that cannot happen —
+			 * and a retried move names a location the node has since left, which may be on
+			 * the other side of the CURRENT boundary.
+			 */
+			const stale = async (m: NodeMutation): Promise<boolean> => {
+				const prev = await sync.nodes.get(m.nodeId)
+				return prev !== null && prev.revision >= m.revision
+			}
 			for (const m of mutations)
-				if (m.kind === 'create' || m.kind === 'move')
+				if ((m.kind === 'create' || m.kind === 'move') && !(await stale(m)))
 					incoming.set(m.nodeId, { parentId: m.parentId, name: m.name })
 			const locate = async (id: SyncNodeId): Promise<string | null> => {
 				const node = incoming.get(id) ?? (await sync.nodes.get(id))
@@ -1199,6 +1244,7 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			}
 			for (const m of mutations) {
 				if (m.kind === 'delete') continue
+				if (await stale(m)) continue
 				const location = await locate(m.nodeId)
 				// Bytes are only ever requested for what this replica will actually hold.
 				// Asking for a hash the sender can see and this replica hides would pull the

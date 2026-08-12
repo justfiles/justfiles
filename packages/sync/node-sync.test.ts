@@ -15,7 +15,7 @@ import { joinPath } from '@justfiles/fs/storage.shared'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import { expect, test } from 'vitest'
-import type { NodeMutation, NodeOperation, NodeState, NodeStorage } from './node'
+import type { NodeMutation, NodeOperation, NodeState, NodeStorage, NodeStore } from './node'
 import { mutationsOf, nodeSyncReplica, ProjectionCursorError, ROOT_NODE_ID } from './node'
 import { memNodeStore, nodeMemStorage, nodeSyncExtension } from './storage/node-mem'
 
@@ -44,7 +44,10 @@ function inoMinter(prefix: string): (() => Ino) & { minted: () => Ino[] } {
  * in both the recorder (the port handed to `observer.record`) and the applier (the
  * port handed to `attach`) — the O(1)-move guarantee, checked rather than assumed.
  */
-function makePeer(id: string, opts?: { counting?: boolean; ignore?: readonly string[] }) {
+function makePeer(
+	id: string,
+	opts?: { counting?: boolean; ignore?: readonly string[]; store?: NodeStore }
+) {
 	let enumerated = 0
 	const counted = (port: TreePort): TreePort => ({
 		...port,
@@ -56,7 +59,7 @@ function makePeer(id: string, opts?: { counting?: boolean; ignore?: readonly str
 	const mintIno = inoMinter(id)
 	let storage: NodeStorage
 	if (opts?.counting) {
-		const base = nodeSyncExtension(memNodeStore(), opts.ignore)
+		const base = nodeSyncExtension(opts.store ?? memNodeStore(), opts.ignore)
 		storage = memStorage({
 			mintIno,
 			extension: {
@@ -64,6 +67,8 @@ function makePeer(id: string, opts?: { counting?: boolean; ignore?: readonly str
 				attach: (tree) => base.attach(counted(tree))
 			}
 		})
+	} else if (opts?.store) {
+		storage = memStorage({ mintIno, extension: nodeSyncExtension(opts.store, opts.ignore) })
 	} else {
 		storage = nodeMemStorage({ mintIno, ignore: opts?.ignore })
 	}
@@ -95,6 +100,19 @@ function makePeer(id: string, opts?: { counting?: boolean; ignore?: readonly str
 			for (const ino of mintIno.minted())
 				if (!reachable.has(ino) && (await storage.getMeta(ino))) orphans += 1
 			return orphans
+		},
+		/** Every path this replica holds, root excluded — for comparing two trees. */
+		async layout(): Promise<string[]> {
+			const out: string[] = []
+			async function walk(dir: string): Promise<void> {
+				for (const entry of await vol.readdir(dir)) {
+					const path = joinPath(dir, entry.name)
+					out.push(path)
+					if (entry.type === FileType.Directory) await walk(path)
+				}
+			}
+			await walk('/')
+			return out.sort()
 		},
 		/** The sync node bound to whatever this replica has at `path` (null if none). */
 		async nodeAt(path: string): Promise<NodeState | null> {
@@ -1029,6 +1047,108 @@ test('a rename during a paged bootstrap cannot drop a node from the snapshot', a
 	expect(text(await b.vol.readFile('/m.txt'))).toBe('m')
 	expect(await b.vol.exists('/z.txt')).toBe(false)
 	expect((await b.nodeAt('/a.txt'))?.id).toBe((await a.nodeAt('/a.txt'))?.id)
+})
+
+test('a mutation landing DURING snapshot construction cannot strand a node', async () => {
+	// The page boundary is not the only seam: ONE page must also be cut from a single
+	// instant. This store fires a rename after EVERY read the snapshot takes, so an
+	// implementation that descends the store directory by directory has a mutation
+	// land between two of its reads — the node is in neither half, and the `move`
+	// that follows names an id the receiver was never given.
+	const base = memNodeStore()
+	let fire: (() => Promise<void>) | null = null
+	let firing = false
+	const after = async (): Promise<void> => {
+		// The rename reads the store itself; without this it would re-enter forever.
+		if (!fire || firing) return
+		firing = true
+		await fire()
+		firing = false
+	}
+	const store: NodeStore = {
+		...base,
+		async children(parentId) {
+			const out = await base.children(parentId)
+			await after()
+			return out
+		},
+		async live() {
+			const out = await base.live()
+			await after()
+			return out
+		}
+	}
+	const a = makePeer('a', { store })
+	const b = makePeer('b')
+	await a.vol.mkdir('/a')
+	await a.vol.mkdir('/b')
+	const names = ['1.txt', '2.txt', '3.txt', '4.txt']
+	for (const name of names) await a.vol.writeFile(`/b/${name}`, bytes(name))
+	// Each read moves the next file into `/a` — a directory a descending read has
+	// already passed by the time the later ones fire.
+	const queued = [...names]
+	fire = async () => {
+		const name = queued.shift()
+		if (name) await a.vol.rename(`/b/${name}`, `/a/${name}`)
+	}
+
+	const scan = await a.replica.nodeScan(undefined, { limit: 1000 })
+	fire = null
+	await b.replica.applyNodeOperations(scan.operations, (h) => a.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+	const delta = await a.replica.nodeDeltas(scan.syncCursor, { limit: 1000 })
+	await b.replica.applyNodeOperations(delta.operations, (h) => a.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+
+	// Whatever moved mid-scan, the pair converges — and on the same identities.
+	expect(queued.length).toBeLessThan(names.length)
+	expect(await b.layout()).toEqual(await a.layout())
+	for (const path of await a.layout())
+		expect((await b.nodeAt(path))?.id).toBe((await a.nodeAt(path))?.id)
+})
+
+test('a stale retried move fetches no bytes and moves nothing', async () => {
+	const a = makePeer('a')
+	const b = makePeer('b', { ignore: ['/vault'] })
+	await a.vol.mkdir('/vault')
+	await a.vol.writeFile('/doc.txt', bytes('doc'))
+	const first = await a.replica.nodeDeltas('', { limit: 1000 })
+	await b.replica.applyNodeOperations(first.operations, (h) => a.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+	// Revision 2 keeps it visible to B, so this is a row B can apply.
+	await a.vol.rename('/doc.txt', '/doc2.txt')
+	const visible = await a.replica.nodeDeltas(first.to, { limit: 1000 })
+	await b.replica.applyNodeOperations(visible.operations, (h) => a.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+	// Revision 3 carries it behind B's boundary: B drops the materialisation and
+	// sweeps the bytes it no longer holds a name for.
+	await a.vol.rename('/doc2.txt', '/vault/doc2.txt')
+	const hidden = await a.replica.nodeDeltas(visible.to, { limit: 1000 })
+	await b.replica.applyNodeOperations(hidden.operations, (h) => a.replica.getBlobByHash(h), {
+		source: REMOTE
+	})
+	expect(await b.vol.exists('/doc2.txt')).toBe(false)
+	await b.storage.caps?.content?.gcUnreferenced()
+
+	// The transport retries revision 2 after an ambiguous failure. `applyMutation`
+	// rejects it as stale — so planning bytes for its destination pulls content back
+	// across the boundary B is currently keeping, for a change that cannot happen.
+	const fetched: string[] = []
+	await b.replica.applyNodeOperations(
+		visible.operations,
+		(h) => {
+			fetched.push(h)
+			return a.replica.getBlobByHash(h)
+		},
+		{ source: REMOTE }
+	)
+
+	expect(fetched).toEqual([])
+	expect(await b.vol.exists('/doc2.txt')).toBe(false)
 })
 
 test('a relay refuses a move whose DESCENDANT crossed its boundary', async () => {

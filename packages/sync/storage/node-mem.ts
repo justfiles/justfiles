@@ -45,6 +45,14 @@ export function memNodeStore(): NodeStore {
 			for (const s of states.values()) if (s.parentId === parentId && !s.deleted) out.push(s)
 			return out
 		},
+		// One synchronous pass: nothing can interleave, so the caller gets the state as
+		// of a single instant — the consistent read a database would take in a
+		// transaction.
+		async live() {
+			const out: NodeState[] = []
+			for (const s of states.values()) if (!s.deleted) out.push(s)
+			return out
+		},
 		async save(state) {
 			const prev = states.get(state.id)
 			if (prev?.localIno != null && prev.localIno !== state.localIno) byIno.delete(prev.localIno)
