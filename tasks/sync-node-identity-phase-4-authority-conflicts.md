@@ -106,29 +106,6 @@ A single node revision serializes metadata, content, location, and deletion in v
 - Existing generation and lineage fences apply before mutation acceptance.
 - A mutation from a stale generation or different lineage is rejected without recording its operation ID as accepted.
 
-## Visibility boundary requirements
-
-Boundary operations use the same authoritative revision, name-claim, and retry rules as ordinary mutations.
-
-- Validate a complete `publishTree` before commit: operation ID, parent revision, every parent relation, name claim, type, cycle rule, content hash, and effective connection ignore list.
-- One invalid node rejects the full publication. No prefix becomes accepted state.
-- `unpublishTree` carries the expected ID and revision of every node it removes. At commit, the server verifies that the manifest is the exact current subtree. Any set or revision mismatch rejects the full operation. Exact retry succeeds.
-- Republish always uses fresh IDs. A tombstoned ID cannot be reactivated.
-- A destination collision or stale base rejects the full operation and requires pull/replan. Do not synthesize a conflict-copy name.
-- A client cannot bypass an ignore rule with an unknown parent, forged chain, or existing node moved below an ignored root.
-- Do not add an aggregate subtree revision that rewrites ancestors on every descendant change. Exact O(N) manifest validation is acceptable because unpublication already removes O(N) nodes.
-
-### Additional RED/GREEN cycle: atomic boundary validation
-
-**RED:** Submit publications with an occupied descendant name, stale parent, reused tombstoned ID, missing blob, and destination ignored by the server or client subscription. For unpublication, test one descendant revision change and one new descendant after the client builds its manifest. Assert full rejection with no node, mapping, journal prefix, tombstone, or blob reference. Retry valid publish and unpublish operations and assert idempotent success.
-
-**GREEN:** Validate against one authoritative transaction snapshot. Commit the complete logical operation and all node rows together.
-
-### Added acceptance criteria
-
-- [ ] Conflict handling cannot partially disclose ignored publication or partially remove a shared subtree.
-- [ ] Server authority tests cover the effective ignore list, not only replica helpers.
-
 ## RED/GREEN TDD specification
 
 Run every cycle against the public HTTP replica path with SQLite. Add the same adapter-independent cases to memory and IndexedDB conformance when applicable.
@@ -209,3 +186,4 @@ Centralize acceptance rules only after the complete behavior passes on SQLite. R
 - A three-tree planner.
 - Peer-to-peer simultaneous-write convergence without a server.
 - Separate metadata and location revision counters.
+- Ignore-list projection and compound boundary operations; the dedicated reconciliation task owns them.

@@ -208,6 +208,7 @@ Each phase task contains its own ordered RED/GREEN specification.
 Complete the tasks in this order:
 
 - [x] [phase 1: memory reference](./sync-node-identity-phase-1-memory.md)
+- [ ] [snapshot handoff](./sync-node-identity-snapshot-handoff.md)
 - [ ] [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
 - [ ] [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
 - [ ] [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md)

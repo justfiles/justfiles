@@ -8,14 +8,11 @@ import type { Ino } from '@justfiles/fs/types'
 import {
 	applyNodeOperationsOver,
 	type NodeJournalRow,
-	type NodeMutation,
 	type NodeState,
 	type NodeStorage,
 	type NodeStore,
 	type NodeSyncModule,
-	nodeSyncObserver,
-	SnapshotCursorError,
-	snapshotOf
+	nodeSyncObserver
 } from '../node'
 
 export function memNodeStore(): NodeStore {
@@ -30,9 +27,6 @@ export function memNodeStore(): NodeStore {
 		},
 		async idFor(ino) {
 			return byIno.get(ino) ?? null
-		},
-		async live() {
-			return [...states.values()].filter((state) => !state.deleted)
 		},
 		async save(state) {
 			const previous = states.get(state.id)
@@ -88,53 +82,16 @@ export function memNodeStore(): NodeStore {
 	}
 }
 
-type SnapshotEntry = { path: string; mutation: NodeMutation }
-
-function nodeSyncExtensionOver(
-	nodes: NodeStore,
-	readBlob?: (hash: string) => Promise<Uint8Array | null>
+/** Attach node recording and apply behavior to a memory filesystem. */
+export function nodeSyncExtension(
+	nodes: NodeStore
 ): MemStorageExtension<{ nodeSync: NodeSyncModule }> {
-	const scans = new Map<string, { entries: SnapshotEntry[]; blobs: Map<string, Uint8Array> }>()
-	const SCANS_KEPT = 4
-
-	async function snapshot(session: string, after: string, limit: number) {
-		let scan = scans.get(session)
-		if (!scan) {
-			if (after !== '') throw new SnapshotCursorError()
-			const entries = await snapshotOf(nodes)
-			const blobs = new Map<string, Uint8Array>()
-			if (readBlob)
-				for (const hash of new Set(
-					entries.flatMap(({ mutation }) =>
-						mutation.kind === 'create' && mutation.contentHash ? [mutation.contentHash] : []
-					)
-				)) {
-					const blob = await readBlob(hash)
-					if (blob) blobs.set(hash, blob)
-				}
-			scan = { entries, blobs }
-			scans.set(session, scan)
-			for (const stale of [...scans.keys()].slice(0, Math.max(0, scans.size - SCANS_KEPT)))
-				scans.delete(stale)
-		}
-		// Keep completed scans until bounded eviction: their final page may still fetch blobs.
-		return scan.entries.filter((entry) => entry.path > after).slice(0, limit)
-	}
-
 	return {
 		observer: nodeSyncObserver(nodes),
 		attach(tree) {
 			return {
 				nodeSync: {
 					nodes,
-					snapshot,
-					async snapshotBlob(hash) {
-						for (const { blobs } of scans.values()) {
-							const blob = blobs.get(hash)
-							if (blob) return blob.slice()
-						}
-						return null
-					},
 					apply: (operations, opts) => applyNodeOperationsOver(tree, nodes, operations, opts)
 				}
 			}
@@ -142,22 +99,9 @@ function nodeSyncExtensionOver(
 	}
 }
 
-/** Attach node recording and apply behavior to a memory filesystem. */
-export function nodeSyncExtension(
-	nodes: NodeStore
-): MemStorageExtension<{ nodeSync: NodeSyncModule }> {
-	return nodeSyncExtensionOver(nodes)
-}
-
 export function nodeMemStorage(opts?: { mintIno?: () => Ino }): NodeStorage {
-	let readBlob = async (_hash: string): Promise<Uint8Array | null> => null
-	const extension = nodeSyncExtensionOver(memNodeStore(), (hash) => readBlob(hash))
-	const storage = filesystemStorage({
+	return filesystemStorage({
 		mintIno: opts?.mintIno,
-		extension
+		extension: nodeSyncExtension(memNodeStore())
 	})
-	const content = storage.caps?.content
-	if (!content) throw new Error('memory backend exposes no content store')
-	readBlob = content.getByHash.bind(content)
-	return storage
 }

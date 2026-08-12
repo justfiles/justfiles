@@ -41,7 +41,7 @@ Define these domain concepts in sync vocabulary:
 - `SyncNodeId`: shared logical node identity.
 - `NodeMutation`: `create`, `update`, `move`, and `delete` mutations addressed by sync ID.
 - `NodeState`: the last accepted local sync state for a node.
-- A minimal persistence interface that supports bidirectional `SyncNodeId <-> local Ino` lookup, live state, tombstones, an ordered journal, and a consistent snapshot.
+- A minimal persistence interface that supports bidirectional `SyncNodeId <-> local Ino` lookup, live state, tombstones, and an ordered journal.
 
 Build an in-memory adapter and a node-aware mutation observer. The adapter is the reference behavior for later SQLite and IndexedDB implementations.
 
@@ -49,7 +49,7 @@ A node create must bind a generated sync ID to the local inode in the same logic
 
 Add a memory-to-memory v2 replica path that can:
 
-1. bootstrap an empty replica from a node snapshot;
+1. bootstrap an empty replica by replaying the retained node journal;
 2. push ordered node mutations;
 3. apply them to another memory filesystem;
 4. retain the same sync IDs while each replica uses its own local inodes;
@@ -69,7 +69,7 @@ It is acceptable to add a separate experimental constructor such as `nodeSynced`
 - Repeating an accepted mutation is idempotent.
 - Delete removes the local inode binding but retains a tombstone for the sync ID.
 - Recreating the same path creates a new sync ID.
-- Snapshot order is parent before child. Recursive delete order is child before parent.
+- Journal replay creates parents before children. Recursive delete order is child before parent.
 - Hard links stay unsupported.
 
 For this phase, use deterministic single-writer revisions in the in-memory reference. Full server-authoritative stale-write and collision rules are phase 4.
@@ -86,9 +86,11 @@ model a live-but-hidden node or make a memory relay filter another replica's acc
 journal. Keeping those states out of the reference adapter makes the node identity and
 constant-cost move invariant independently testable.
 
-A snapshot `create` materializes only an unknown ID. Phase 1 does not accept one as a
-higher-revision overwrite of a known node; non-empty rebootstrap requires topology
-reconciliation and belongs to the later projection task.
+Phase 1 retains enough journal state to initialize an empty memory replica. A bounded,
+current-state bootstrap needs an atomic handoff between node state, content retention,
+and the delta high-water; that belongs to the
+[snapshot handoff task](./sync-node-identity-snapshot-handoff.md). Non-empty
+rebootstrap remains topology reconciliation and belongs to the later projection task.
 
 ## RED/GREEN TDD specification
 
@@ -98,7 +100,7 @@ Complete one cycle before starting the next.
 
 **RED:** Add a public integration test that creates `/docs/note.md` on replica A, syncs to empty replica B, and asserts through the node-sync interface that both replicas use the same node IDs for `/docs` and `/docs/note.md` while their local inode IDs can differ.
 
-**GREEN:** Add `SyncNodeId`, the minimal identity/state store, root binding, create recording, snapshot, and receive-side create materialization needed for this test only.
+**GREEN:** Add `SyncNodeId`, the minimal identity/state store, root binding, create recording, journal replay, and receive-side create materialization needed for this test only.
 
 ### Cycle 2: one move mutation
 
@@ -130,11 +132,11 @@ Complete one cycle before starting the next.
 
 **GREEN:** Add mutation identity or accepted-revision checks sufficient to make retry safe.
 
-### Cycle 7: ordered bootstrap
+### Cycle 7: retained-journal bootstrap
 
-**RED:** Bootstrap a deep tree into an empty replica with a small page size. Assert that every parent mapping exists before a child is applied and that deltas after the frozen snapshot cursor are not lost.
+**RED:** Make several offline creates, updates, and moves, then sync into an empty replica with a one-operation page size. Assert final paths, bytes, and shared IDs converge without orphaned inodes.
 
-**GREEN:** Add consistent node snapshot paging and delta resume behavior equivalent to the current path snapshot guarantee.
+**GREEN:** Retain and compact the ordered journal so replay from the initial cursor remains parent-first and references only current content. Leave bounded current-state snapshots to the next task.
 
 ### Refactor only after GREEN
 
@@ -143,13 +145,13 @@ Remove duplication and deepen the node-sync module only after all cycles pass. K
 ## Acceptance criteria
 
 - [x] Protocol v1 tests remain unchanged and green.
-- [x] A public memory v2 conformance suite covers create, bootstrap, update, move, delete, retry, and path reuse.
+- [x] A public memory v2 conformance suite covers create, retained-journal bootstrap, update, move, delete, retry, and path reuse.
 - [x] A projection-preserving 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
 - [x] The projection-preserving visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
 - [x] Each replica owns only its `sync ID <-> local inode` mapping.
 - [x] No test depends on local inode and sync ID values being equal.
 - [x] Tombstones retain identity after the local inode is removed.
-- [x] A frozen memory snapshot retains its referenced blobs across content GC.
+- [x] Retained journal pages never reference content superseded before delivery.
 - [x] `packages/fs` gains no sync imports or sync concepts.
 - [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 

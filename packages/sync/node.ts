@@ -100,8 +100,6 @@ export type NodeJournalRow = {
 export interface NodeStore {
 	get(id: SyncNodeId): Promise<NodeState | null>
 	idFor(ino: Ino): Promise<SyncNodeId | null>
-	/** Every live node in one consistent read. */
-	live(): Promise<NodeState[]>
 	save(state: NodeState): Promise<void>
 	/** Append accepted mutations while removing rows they supersede. */
 	append(operation: NodeOperation, localSource?: string): Promise<void>
@@ -112,14 +110,6 @@ export interface NodeStore {
 /** Sync-owned seams attached to one node-addressed filesystem backend. */
 export interface NodeSyncModule {
 	readonly nodes: NodeStore
-	/** A frozen, parent-first snapshot page. Paths are paging keys, not wire identity. */
-	snapshot(
-		session: string,
-		afterPath: string,
-		limit: number
-	): Promise<{ path: string; mutation: NodeMutation }[]>
-	/** Content retained by a frozen snapshot after the live inode moved on. */
-	snapshotBlob?(hash: string): Promise<Uint8Array | null>
 	apply(operations: readonly NodeOperation[], opts?: { source?: string }): Promise<void>
 }
 
@@ -388,59 +378,6 @@ export async function applyNodeOperationsOver(
 	}
 }
 
-// ── Frozen snapshots ─────────────────────────────────────────────────────────
-
-/** Every live node as a parent-first create, built from one consistent store read. */
-export async function snapshotOf(
-	nodes: NodeStore
-): Promise<{ path: string; mutation: NodeMutation }[]> {
-	const live = await nodes.live()
-	const byId = new Map(live.map((node) => [node.id, node]))
-	const paths = new Map<SyncNodeId, string | null>()
-	if (byId.has(ROOT_NODE_ID)) paths.set(ROOT_NODE_ID, '/')
-
-	function pathOf(node: NodeState): string | null {
-		const known = paths.get(node.id)
-		if (known !== undefined) return known
-		// Mark first so corrupt parent cycles resolve to unreachable instead of recursing.
-		paths.set(node.id, null)
-		const parent = node.parentId === null ? undefined : byId.get(node.parentId)
-		const parentPath = parent === undefined ? null : pathOf(parent)
-		const path = parentPath === null ? null : joinPath(parentPath, node.name)
-		paths.set(node.id, path)
-		return path
-	}
-
-	const entries: { path: string; mutation: NodeMutation }[] = []
-	for (const node of live) {
-		if (node.id === ROOT_NODE_ID || node.parentId === null) continue
-		const path = pathOf(node)
-		if (path === null) continue
-		entries.push({
-			path,
-			mutation: {
-				kind: 'create',
-				nodeId: node.id,
-				parentId: node.parentId,
-				name: node.name,
-				revision: node.revision,
-				meta: node.meta,
-				...(node.contentHash === undefined ? {} : { contentHash: node.contentHash })
-			}
-		})
-	}
-	entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-	return entries
-}
-
-/** A paged snapshot can no longer resume from its frozen view. */
-export class SnapshotCursorError extends Error {
-	constructor() {
-		super('snapshot_cursor')
-		this.name = 'SnapshotCursorError'
-	}
-}
-
 // ── Replica ──────────────────────────────────────────────────────────────────
 
 export interface NodeReplica {
@@ -448,15 +385,6 @@ export interface NodeReplica {
 		cursor: SyncCursor,
 		opts?: { excludeLocalSource?: string; limit?: number }
 	): Promise<{ operations: NodeOperation[]; to: SyncCursor; done: boolean }>
-	nodeScan(
-		page?: SyncCursor,
-		opts?: { limit?: number }
-	): Promise<{
-		operations: NodeOperation[]
-		next?: SyncCursor
-		syncCursor: SyncCursor
-		done: boolean
-	}>
 	applyNodeOperations(
 		operations: readonly NodeOperation[],
 		getBlobByHash: (hash: string) => Promise<Uint8Array>,
@@ -488,32 +416,6 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 				done: rows.length < limit
 			}
 		},
-		async nodeScan(page, opts) {
-			const limit = opts?.limit ?? PAGE
-			let head: string
-			let session: string
-			let after = ''
-			if (page) {
-				const separator = page.indexOf(':')
-				const prefix = separator < 0 ? page : page.slice(0, separator)
-				const dot = prefix.indexOf('.')
-				head = dot < 0 ? prefix : prefix.slice(0, dot)
-				session = dot < 0 ? '' : prefix.slice(dot + 1)
-				after = separator < 0 ? '' : decodeURIComponent(page.slice(separator + 1))
-			} else {
-				head = String(await sync.nodes.head())
-				session = crypto.randomUUID()
-			}
-			const entries = await sync.snapshot(session, after, limit)
-			const last = entries.at(-1)?.path
-			const done = entries.length < limit || last === undefined
-			return {
-				operations: entries.length === 0 ? [] : [{ mutations: entries.map((e) => e.mutation) }],
-				next: done ? undefined : `${head}.${session}:${encodeURIComponent(last)}`,
-				syncCursor: head,
-				done
-			}
-		},
 		async applyNodeOperations(operations, getBlobByHash, opts) {
 			const store = content()
 			const wanted = new Set<string>()
@@ -529,12 +431,12 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			await sync.apply(operations, opts)
 		},
 		async getBlobByHash(hash) {
-			const blob = (await content().getByHash(hash)) ?? (await sync.snapshotBlob?.(hash))
+			const blob = await content().getByHash(hash)
 			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
 			return blob
 		},
 		async hasBlobByHash(hash) {
-			return (await content().hasByHash(hash)) || (await sync.snapshotBlob?.(hash)) != null
+			return content().hasByHash(hash)
 		},
 		putBlobByHash: async (hash, data) => {
 			await content().putByHash(hash, data)

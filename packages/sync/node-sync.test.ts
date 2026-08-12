@@ -156,35 +156,16 @@ function nodePeers(opts?: { counting?: boolean }) {
 			for (let count = 0; count < times; count++)
 				await b.replica.applyNodeOperations(result.operations, blobsOf(a), { source: REMOTE })
 			return result.operations
-		},
-		async bootstrap(
-			limit?: number,
-			inspect?: (operations: NodeOperation[], page: number) => Promise<void>
-		): Promise<string[]> {
-			let page: string | undefined
-			let cursor = ''
-			const highWaters: string[] = []
-			do {
-				const result = await a.replica.nodeScan(page, { limit })
-				cursor = result.syncCursor
-				highWaters.push(cursor)
-				sent.push(...mutationsOf(result.operations))
-				if (inspect) await inspect(result.operations, highWaters.length)
-				await b.replica.applyNodeOperations(result.operations, blobsOf(a), { source: REMOTE })
-				page = result.done ? undefined : result.next
-			} while (page)
-			cursors.ab = cursor
-			return highWaters
 		}
 	}
 }
 
 test('a create gives both replicas the same node id over independent inodes', async () => {
-	const { a, b, bootstrap } = nodePeers()
+	const { a, b, sync } = nodePeers()
 	await a.vol.mkdir('/docs')
 	await a.vol.writeFile('/docs/note.md', bytes('hello'))
 
-	await bootstrap()
+	await sync()
 
 	expect(text(await b.vol.readFile('/docs/note.md'))).toBe('hello')
 	const docsA = await a.nodeAt('/docs')
@@ -200,6 +181,23 @@ test('a create gives both replicas the same node id over independent inodes', as
 	expect(docsA?.localIno).not.toBe(docsB?.localIno)
 	expect((await a.nodeAt('/'))?.id).toBe(ROOT_NODE_ID)
 	expect((await b.nodeAt('/'))?.id).toBe(ROOT_NODE_ID)
+})
+
+test('a retained journal bootstraps an empty peer one page at a time', async () => {
+	const { a, b, sync } = nodePeers()
+	await a.vol.mkdir('/old/deep', { recursive: true })
+	await a.vol.writeFile('/old/deep/note.txt', bytes('v1'))
+	await a.vol.writeFile('/old/deep/note.txt', bytes('v2'))
+	await a.vol.rename('/old', '/new')
+
+	await sync(1)
+
+	expect(await b.layout()).toEqual(await a.layout())
+	expect(text(await b.vol.readFile('/new/deep/note.txt'))).toBe('v2')
+	expect((await b.nodeAt('/new/deep/note.txt'))?.id).toBe(
+		(await a.nodeAt('/new/deep/note.txt'))?.id
+	)
+	expect(await b.orphanCount()).toBe(0)
 })
 
 test('a rename of a populated directory is one move and preserves descendant state', async () => {
@@ -313,21 +311,6 @@ test('a first sync skips content deleted before delivery', async () => {
 
 	expect(await b.vol.exists('/note.txt')).toBe(false)
 	expect(fetched).not.toContain(staleHash)
-})
-
-test('a phase-1 snapshot create cannot overwrite a known node', async () => {
-	const a = makePeer('a')
-	const b = makePeer('b')
-	await a.vol.writeFile('/note.txt', bytes('v1'))
-	const create = await a.replica.nodeDeltas('', { limit: 100 })
-	await b.replica.applyNodeOperations(create.operations, (hash) => a.replica.getBlobByHash(hash))
-	await a.vol.writeFile('/note.txt', bytes('v2'))
-	const snapshot = await a.replica.nodeScan(undefined, { limit: 100 })
-	await b.replica.applyNodeOperations(snapshot.operations, () =>
-		Promise.reject(new Error('known snapshot create fetched content'))
-	)
-
-	expect(text(await b.vol.readFile('/note.txt'))).toBe('v1')
 })
 
 test('a delete tombstones its id and a recreated path gets a new one', async () => {
@@ -469,118 +452,4 @@ test('a stale received update cannot replace retained journal state', async () =
 	await c.replica.applyNodeOperations(retained.operations, (hash) => a.replica.getBlobByHash(hash))
 
 	expect(text(await c.vol.readFile('/note.txt'))).toBe('v3')
-})
-
-test('a paged bootstrap applies parents before children and loses no delta', async () => {
-	const { a, b, bootstrap, sync } = nodePeers()
-	const leaves: string[] = []
-	for (let index = 0; index < 4; index++) {
-		let path = ''
-		for (let depth = 0; depth < 4; depth++) path += `/d${index}x${depth}`
-		await a.vol.mkdir(path, { recursive: true })
-		await a.vol.writeFile(`${path}/leaf.txt`, bytes(`leaf ${index}`))
-		leaves.push(`${path}/leaf.txt`)
-	}
-
-	const known = new Set<string>([ROOT_NODE_ID])
-	const highWaters = await bootstrap(3, async (operations, page) => {
-		for (const mutation of mutationsOf(operations)) {
-			expect(mutation.kind).toBe('create')
-			if (mutation.kind !== 'create') continue
-			expect(known.has(mutation.parentId)).toBe(true)
-			known.add(mutation.nodeId)
-		}
-		if (page === 1) await a.vol.writeFile('/aaa-late.txt', bytes('late'))
-	})
-
-	expect(highWaters.length).toBeGreaterThan(3)
-	expect(new Set(highWaters).size).toBe(1)
-	for (const [index, leaf] of leaves.entries())
-		expect(text(await b.vol.readFile(leaf))).toBe(`leaf ${index}`)
-	expect(await b.orphanCount()).toBe(0)
-	expect(await b.vol.exists('/aaa-late.txt')).toBe(false)
-
-	await sync()
-	expect(text(await b.vol.readFile('/aaa-late.txt'))).toBe('late')
-	expect((await b.nodeAt('/aaa-late.txt'))?.id).toBe((await a.nodeAt('/aaa-late.txt'))?.id)
-})
-
-test('a paged bootstrap retains frozen content through source GC', async () => {
-	const { a, b, bootstrap, sync } = nodePeers()
-	await a.vol.writeFile('/a.txt', bytes('first'))
-	await a.vol.writeFile('/z.txt', bytes('old'))
-	const frozenHash = (await a.nodeAt('/z.txt'))?.contentHash ?? ''
-
-	await bootstrap(1, async (_operations, page) => {
-		if (page !== 1) return
-		await a.vol.writeFile('/z.txt', bytes('new'))
-		await a.storage.caps?.content?.gcUnreferenced()
-		expect(await a.replica.hasBlobByHash(frozenHash)).toBe(true)
-	})
-
-	expect(text(await b.vol.readFile('/z.txt'))).toBe('old')
-	await sync()
-	expect(text(await b.vol.readFile('/z.txt'))).toBe('new')
-})
-
-test('a rename during a paged bootstrap cannot drop a node', async () => {
-	const { a, b, bootstrap, sync } = nodePeers()
-	await a.vol.writeFile('/m.txt', bytes('m'))
-	await a.vol.writeFile('/z.txt', bytes('z'))
-
-	await bootstrap(1, async (_operations, page) => {
-		if (page === 1) await a.vol.rename('/z.txt', '/a.txt')
-	})
-	await sync()
-
-	expect(text(await b.vol.readFile('/a.txt'))).toBe('z')
-	expect(text(await b.vol.readFile('/m.txt'))).toBe('m')
-	expect(await b.vol.exists('/z.txt')).toBe(false)
-	expect((await b.nodeAt('/a.txt'))?.id).toBe((await a.nodeAt('/a.txt'))?.id)
-})
-
-test('a mutation during snapshot construction cannot strand a node', async () => {
-	const base = memNodeStore()
-	let fire: (() => Promise<void>) | null = null
-	let firing = false
-	const after = async (): Promise<void> => {
-		if (!fire || firing) return
-		firing = true
-		await fire()
-		firing = false
-	}
-	const store: NodeStore = {
-		...base,
-		async live() {
-			const nodes = await base.live()
-			await after()
-			return nodes
-		}
-	}
-	const a = makePeer('a', { store })
-	const b = makePeer('b')
-	await a.vol.mkdir('/a')
-	await a.vol.mkdir('/b')
-	const names = ['1.txt', '2.txt', '3.txt', '4.txt']
-	for (const name of names) await a.vol.writeFile(`/b/${name}`, bytes(name))
-	const queued = [...names]
-	fire = async () => {
-		const name = queued.shift()
-		if (name) await a.vol.rename(`/b/${name}`, `/a/${name}`)
-	}
-
-	const scan = await a.replica.nodeScan(undefined, { limit: 1000 })
-	fire = null
-	await b.replica.applyNodeOperations(scan.operations, (hash) => a.replica.getBlobByHash(hash), {
-		source: REMOTE
-	})
-	const delta = await a.replica.nodeDeltas(scan.syncCursor, { limit: 1000 })
-	await b.replica.applyNodeOperations(delta.operations, (hash) => a.replica.getBlobByHash(hash), {
-		source: REMOTE
-	})
-
-	expect(queued.length).toBeLessThan(names.length)
-	expect(await b.layout()).toEqual(await a.layout())
-	for (const path of await a.layout())
-		expect((await b.nodeAt(path))?.id).toBe((await a.nodeAt(path))?.id)
 })

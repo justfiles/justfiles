@@ -15,8 +15,9 @@ AFK vertical slice through the shared sync contract, memory reference, SQLite se
 
 ## Blocked by
 
-- [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for node identity, snapshots, and constant-cost moves over a complete tree.
-- [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for server persistence and filtered transport.
+- [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for node identity and constant-cost moves over a complete tree.
+- [snapshot handoff](./sync-node-identity-snapshot-handoff.md) for atomic current-state bootstrap sessions.
+- [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for server persistence and HTTP transport.
 - [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md) for durable browser state.
 - [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md) for remote-authoritative conflict rules and idempotent operations.
 
@@ -74,14 +75,19 @@ materialization state machine. Preserve these lessons in the implementation:
   projection changes. The memory adapter needs an explicit staged transaction if it
   remains the reference for this behavior; primitive-by-primitive apply is not
   sufficient.
-- Phase 1 snapshots only bootstrap unknown IDs. Accepting a higher-revision snapshot
-  create for a known node turns non-empty rebootstrap into topology reconciliation:
+- Current-state snapshots only bootstrap unknown IDs until this task lands. Accepting
+  a higher-revision snapshot create for a known node turns non-empty rebootstrap into
+  topology reconciliation:
   relaying a partial page can place a replacement directory after retained children
   or before its new parent. Add that behavior only with the later reconciliation
   planner, which can re-emit the affected subtree in parent-first order.
-- A frozen snapshot must pin the blobs named by all of its pages for as long as the
-  snapshot remains resumable. Freezing only node metadata lets content GC reclaim a
-  not-yet-served hash after a concurrent update or delete.
+- A frozen snapshot must own one atomic state/content cut and keep every referenced
+  blob readable until the receiver closes or expires the session. Freezing node
+  metadata and pinning blobs afterward has a race with mutation and content GC.
+  Keeping a bounded page cache is also insufficient: eviction can invalidate a live
+  cursor, and content for the final page is fetched after that page is returned. The
+  [snapshot handoff task](./sync-node-identity-snapshot-handoff.md) owns explicit
+  session lifetime, release, and expiry without adding application-facing surface.
 - Compact the mutation journal by node before content GC can expose an obsolete hash
   on a page by itself. A delete supersedes all earlier mutations for that node. A
   newer update supersedes older updates but must refresh a retained create for
