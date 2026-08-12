@@ -141,9 +141,10 @@ function canonicalRoot(raw: string): string | null {
 		}
 		segments.push(segment.normalize('NFC'))
 	}
-	// Everything reduced away: that is the root itself, which would ignore the whole
-	// volume. A caller that wants to sync nothing does not connect a replica.
-	return segments.length === 0 ? null : `/${segments.join('/')}`
+	// Everything reduced away: the volume root, which hides the whole volume. Reading
+	// that as "hide nothing" would synchronise every path the caller asked to keep
+	// back — the fail-open direction again, and the widest possible instance of it.
+	return segments.length === 0 ? '/' : `/${segments.join('/')}`
 }
 
 /** Normalise a caller's ignore list and give it segment-aware matching. */
@@ -153,6 +154,9 @@ export function projection(ignore?: readonly string[]): Projection {
 		const root = canonicalRoot(raw)
 		if (root !== null) seen.add(root)
 	}
+	// The volume root subsumes every other root, and needs its own matcher: a
+	// segment-aware prefix of `/` would be `//…`, which names nothing.
+	if (seen.has('/')) return { roots: ['/'], ignored: () => true }
 	const roots: string[] = []
 	// Shortest first, so a root already covered by an ancestor root is dropped.
 	for (const p of [...seen].sort()) if (!roots.some((r) => p.startsWith(`${r}/`))) roots.push(p)
@@ -388,29 +392,33 @@ function crossings(view: Projection, oldPath: string, newPath: string): string[]
 }
 
 /**
- * Every subtree at `suffix` below an inode in the TREE, matching normalised names —
- * the counterpart of `descend` for a subtree that has no sync identity yet, and so
+ * Every inode at `suffix` below `ino` in the TREE, matching NORMALISED names — the
+ * counterpart of `descend` for a subtree that has no sync identity yet, and so
  * cannot be found through the node store at all.
  *
- * Read out of an ALREADY-WALKED tree rather than walking one: the caller has to
- * walk the moved tree anyway to publish what it finds, and a suffix per ignore root
- * must not cost a pass each.
+ * Descends the directories the suffix NAMES, one level at a time, rather than
+ * walking the moved tree and filtering it: a move of a huge directory with one
+ * small crossing then costs the crossing's own path, not every descendant. It
+ * carries a frontier because a directory can hold SEVERAL names that normalise to
+ * the same one — an exact-match lookup would find one twin and leave the other
+ * shared behind the boundary.
  */
-function descendIno(
-	subtree: readonly { ino: Ino; rel: string }[],
+async function descendTree(
+	port: TreePort,
+	ino: Ino,
 	suffix: string
-): { ino: Ino; rel: string }[] {
-	return subtree.filter((n) => n.rel.normalize('NFC') === suffix)
-}
-
-/** The slice of a walked tree at `rel`, re-based so the slice's own root is ''. */
-function below(
-	subtree: readonly { ino: Ino; rel: string }[],
-	rel: string
-): { ino: Ino; rel: string }[] {
-	return subtree
-		.filter((n) => n.rel === rel || n.rel.startsWith(`${rel}/`))
-		.map((n) => ({ ino: n.ino, rel: n.rel.slice(rel.length) }))
+): Promise<{ ino: Ino; rel: string }[]> {
+	let frontier = [{ ino, rel: '' }]
+	for (const segment of suffix.split('/').slice(1)) {
+		const next: { ino: Ino; rel: string }[] = []
+		for (const at of frontier)
+			for (const child of await port.dirChildren(at.ino))
+				if (child.name.normalize('NFC') === segment)
+					next.push({ ino: child.ino, rel: `${at.rel}/${child.name}` })
+		if (next.length === 0) return []
+		frontier = next
+	}
+	return frontier
 }
 
 /**
@@ -563,8 +571,6 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 					const isShared = destId !== null && !view.ignored(newPath)
 
 					const op = open()
-					/** The moved tree, walked at most ONCE however many crossings it holds. */
-					let walked: { ino: Ino; rel: string }[] | null = null
 					// A move over a live name frees that node's inode, so its tombstone
 					// belongs to the SAME operation — the destination name is never held by
 					// two live nodes, not even between two applies.
@@ -604,13 +610,13 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 							effect.ino
 						)
 						for (const suffix of entering) {
-							// Found by matching normalised names inside ONE walk of the moved tree,
-							// not by resolving the suffix as a literal path: the suffix carries the
-							// ignore root's spelling, and an exact-match resolve would miss a
-							// differently-spelled twin and silently never publish it.
-							walked ??= await port.enumerateSubtree(effect.ino)
-							for (const found of descendIno(walked, suffix))
-								await publish(port, op, newPath + found.rel, below(walked, found.rel))
+							// Found by descending the suffix and matching NORMALISED names, not by
+							// resolving it as a literal path: the suffix carries the ignore root's
+							// spelling, and an exact-match resolve would miss a differently-spelled
+							// twin and silently never publish it. Only what actually enters the
+							// projection is walked — the rest of the moved tree is never read.
+							for (const found of await descendTree(port, effect.ino, suffix))
+								await publish(port, op, newPath + found.rel, await port.enumerateSubtree(found.ino))
 						}
 					} else if (isShared) {
 						// It was outside the projection, so nothing about it was ever shared:
@@ -913,6 +919,13 @@ async function applyMutation(
 			return
 		}
 		if (await shields(port, view, parentIno, m.name, path)) return
+		// The name may be held by an inode SYNC DOES NOT OWN: an ancestor's rebind can
+		// carry this replica's own data — kept behind a nested ignore root, so it has no
+		// identity and no copy on any peer — to a path that is now visible, and a
+		// snapshot describes that path as a create. Binding over it would unlink the only
+		// reference to those bytes. Same rule the entering crossing obeys, and the same
+		// outcome: the two stay divergent, which is what ignoring already meant.
+		if (await heldLocally(port, nodes, parentIno, m.name)) return
 		// A snapshot describes CURRENT state as a create, so a re-bootstrap can name a
 		// node this replica already holds — under a different parent, if it moved since
 		// the page that was lost. Release the old name first: the tree would otherwise

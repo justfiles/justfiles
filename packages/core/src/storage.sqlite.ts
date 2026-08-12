@@ -857,6 +857,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 			resolveIno: (path) => resolveIno(tx, path),
 			pathOf: (ino) => pathOf(tx, ino),
 			enumerateSubtree: (ino) => enumerateSubtree(tx, ino),
+			async dirChildren(dirIno) {
+				const rows = await tx.query<{ name: unknown; ino: unknown }>(
+					'SELECT name, ino FROM fs_dirents WHERE dir_ino = ?',
+					[dirIno]
+				)
+				return rows.map((r) => ({ name: toStringOrNull(r.name) ?? '', ino: String(r.ino) }))
+			},
 			ensureDirPath: (path) => ensureDirPath(tx, path),
 			async getDirent(dirIno, name) {
 				const d = await getDirent(tx, dirIno, name)

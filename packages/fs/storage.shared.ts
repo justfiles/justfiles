@@ -15,6 +15,8 @@ export interface TreePort {
 	resolveIno(path: string): Promise<Ino | null>
 	pathOf(ino: Ino): Promise<string | null>
 	enumerateSubtree(ino: Ino): Promise<{ ino: Ino; rel: string }[]>
+	/** One directory's entries. The cheap counterpart of `enumerateSubtree`. */
+	dirChildren(dirIno: Ino): Promise<{ name: string; ino: Ino }[]>
 	ensureDirPath(path: string): Promise<Ino>
 	getDirent(dirIno: Ino, name: string): Promise<DirentMin | null>
 	readMetaXattrs(ino: Ino): Promise<{ meta: InodeMeta; xattrs: Record<string, Uint8Array> } | null>

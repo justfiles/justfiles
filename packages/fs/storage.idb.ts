@@ -468,6 +468,10 @@ export function idbStorage<Attached extends object>(
 			resolveIno: (path) => resolveInoTx(tx, path),
 			pathOf: (ino) => pathOfTx(tx, ino),
 			enumerateSubtree: (ino) => enumerateSubtreeTx(tx, ino),
+			async dirChildren(dirIno) {
+				const rows = await tx.objectStore('dirs').index('by-dir').getAll(dirIno)
+				return rows.map((d) => ({ name: d.name, ino: d.ino }))
+			},
 			ensureDirPath: (path) => ensureDirPathTx(tx, path),
 			async getDirent(dirIno, name) {
 				const d = await tx.objectStore('dirs').get([dirIno, name])

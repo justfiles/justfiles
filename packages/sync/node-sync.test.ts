@@ -49,11 +49,14 @@ function makePeer(
 	opts?: { counting?: boolean; ignore?: readonly string[]; store?: NodeStore }
 ) {
 	let enumerated = 0
+	let walked = 0
 	const counted = (port: TreePort): TreePort => ({
 		...port,
-		enumerateSubtree(ino) {
+		async enumerateSubtree(ino) {
 			enumerated += 1
-			return port.enumerateSubtree(ino)
+			const out = await port.enumerateSubtree(ino)
+			walked += out.length
+			return out
 		}
 	})
 	const mintIno = inoMinter(id)
@@ -83,6 +86,8 @@ function makePeer(
 		nodes,
 		/** How often this replica walked a subtree. */
 		enumerated: () => enumerated,
+		/** How many nodes those walks actually read — the cost, not the call count. */
+		walked: () => walked,
 		/**
 		 * Inodes this replica minted that hold metadata but no name — the classic
 		 * failure of an apply that mints a second inode for a node it already has.
@@ -1069,23 +1074,29 @@ test('a re-bootstrapped create relocates a node this replica already holds', asy
 	expect(await b.orphanCount()).toBe(0)
 })
 
-test('an entering crossing walks the moved tree ONCE', async () => {
+test('an entering crossing walks ONLY the crossing subtree', async () => {
 	const { a, b, sync } = nodePeers({ counting: true, aIgnore: ['/src/cache'] })
 	await a.vol.mkdir('/src/cache/deep', { recursive: true })
 	await a.vol.writeFile('/src/cache/deep/mine.txt', bytes('mine'))
 	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	// Bulk that does NOT cross: a cost that counts these is a cost that scales with
+	// the moved tree instead of with what actually changed visibility.
+	await a.vol.mkdir('/src/bulk')
+	for (let i = 0; i < 20; i++) await a.vol.writeFile(`/src/bulk/${i}.txt`, bytes(`${i}`))
 	await sync()
-	const before = a.enumerated()
+	const calls = a.enumerated()
+	const nodes = a.walked()
 
 	await a.vol.rename('/src', '/dst')
 	await sync()
 
-	// Locating the crossing root and publishing what is under it read the SAME walk:
-	// a move of a huge directory with one small crossing pays for one pass, not one
-	// per suffix plus one per publication.
-	expect(a.enumerated() - before).toBe(1)
+	// Locating the crossing descends the suffix it names; only the subtree that
+	// actually enters the projection is walked, once — `cache`, `deep`, `mine.txt`.
+	expect(a.enumerated() - calls).toBe(1)
+	expect(a.walked() - nodes).toBe(3)
 	expect(text(await b.vol.readFile('/dst/cache/deep/mine.txt'))).toBe('mine')
 	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+	expect(text(await b.vol.readFile('/dst/bulk/7.txt'))).toBe('7')
 })
 
 test('an entering crossing never unlinks the local-only data already at that name', async () => {
@@ -1116,6 +1127,33 @@ test('an entering crossing never unlinks the local-only data already at that nam
 	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
 	// A is untouched behind its own side of the boundary.
 	expect(text(await a.vol.readFile('/dst/cache/theirs.txt'))).toBe('theirs')
+})
+
+test('a snapshot create never unlinks the local-only data at that name', async () => {
+	// The same collision as the entering crossing above, reached by the OTHER route.
+	// A snapshot describes CURRENT state, so a re-bootstrap re-offers the node B
+	// declined to materialise over its own bytes — this time as a create.
+	const { a, b, sync, bootstrap } = nodePeers({ bIgnore: ['/src/cache'] })
+	await a.vol.mkdir('/src/cache', { recursive: true })
+	await a.vol.writeFile('/src/cache/theirs.txt', bytes('theirs'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	await b.vol.mkdir('/src/cache')
+	await b.vol.writeFile('/src/cache/keep.bin', bytes('mine'))
+	await sync()
+	await a.vol.rename('/src', '/dst')
+	await sync()
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+
+	// A touches the crossing node, so the snapshot's create for it outranks the state
+	// B holds; B's delta cursor is gone, so it re-bootstraps instead of catching up.
+	await a.vol.rename('/dst/cache', '/cache')
+	await a.vol.rename('/cache', '/dst/cache')
+	await bootstrap()
+
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+	expect(await b.orphanCount()).toBe(0)
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
 })
 
 test('a rename during a paged bootstrap cannot drop a node from the snapshot', async () => {
@@ -1300,6 +1338,25 @@ test('an ignore root matches whatever Unicode spelling the tree holds', async ()
 	expect(await a.nodeAt(`${decomposed}/f.txt`)).toBe(null)
 	expect(await b.vol.exists(decomposed)).toBe(false)
 	expect(text(await b.vol.readFile('/open.txt'))).toBe('open')
+})
+
+test('an ignore root that reduces to the volume root hides everything', async () => {
+	// A caller asking to ignore `/` — spelled any way that reduces to it — is asking
+	// to synchronise nothing. Answering that with "ignore nothing" fails OPEN, which
+	// is the one direction an ignore list must never fail in.
+	const { a, b, sync } = nodePeers({ bIgnore: ['/x/..'] })
+	await a.vol.mkdir('/docs')
+	await a.vol.writeFile('/docs/note.md', bytes('hi'))
+	await b.vol.writeFile('/mine.txt', bytes('mine'))
+
+	await sync()
+
+	// B accepts the identities as state and materialises none of them.
+	expect(await b.layout()).toEqual(['/mine.txt'])
+	expect(await b.orphanCount()).toBe(0)
+	// And nothing of B's own crosses either — the boundary is symmetric.
+	expect(await b.nodeAt('/mine.txt')).toBe(null)
+	expect(await a.vol.exists('/mine.txt')).toBe(false)
 })
 
 test('an ignore root is canonicalised before it is matched', async () => {

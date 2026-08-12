@@ -135,6 +135,13 @@ export function memStorage<Attached extends object = Record<never, never>>(opts?
 		async enumerateSubtree(ino) {
 			return enumerateSubtree(ino)
 		},
+		async dirChildren(dirIno) {
+			const prefix = `${dirIno}\0`
+			const out: { name: string; ino: Ino }[] = []
+			for (const [key, entry] of dirs)
+				if (key.startsWith(prefix)) out.push({ name: key.slice(prefix.length), ino: entry.ino })
+			return out
+		},
 		async ensureDirPath(path) {
 			return ensureDir(path)
 		},
