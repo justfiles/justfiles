@@ -717,10 +717,15 @@ export async function effectivePath(
 /**
  * Would writing over `(parentIno, name)` destroy a directory that holds something
  * this replica ignores? An ignored path only survives while its ANCESTORS do, and
- * a regular-file inode cannot hold dirents, so a remote delete or replacement of
- * such a directory is SKIPPED: the local tree keeps it and diverges from the peer
- * there, which is what ignoring already means. Skipping mutates nothing, so there
- * is no new local change to push back and nothing flaps.
+ * a regular-file inode cannot hold dirents, so the tree write is REFUSED: the local
+ * tree keeps it and diverges from the peer there, which is what ignoring already
+ * means. Refusing mutates nothing, so there is no new local change to push back and
+ * nothing flaps.
+ *
+ * What the caller does with the STATE differs by mutation, and the difference is
+ * whether the peer offered a new location to accept: a create or a move accepts it
+ * and binds nothing, while a delete has none and keeps the node it declined to
+ * remove.
  */
 async function shields(
 	port: TreePort,
@@ -918,14 +923,24 @@ async function applyMutation(
 			await nodes.save({ ...state, localIno: null })
 			return
 		}
-		if (await shields(port, view, parentIno, m.name, path)) return
-		// The name may be held by an inode SYNC DOES NOT OWN: an ancestor's rebind can
-		// carry this replica's own data — kept behind a nested ignore root, so it has no
-		// identity and no copy on any peer — to a path that is now visible, and a
-		// snapshot describes that path as a create. Binding over it would unlink the only
-		// reference to those bytes. Same rule the entering crossing obeys, and the same
-		// outcome: the two stay divergent, which is what ignoring already meant.
-		if (await heldLocally(port, nodes, parentIno, m.name)) return
+		// A name sync MUST NOT WRITE OVER, for either of two reasons that mean the same
+		// thing — it reaches data this replica keeps and no peer has. `shields`: the
+		// dirent is a directory holding paths this replica ignores. `heldLocally`: the
+		// dirent's inode has no sync identity at all, this replica's own bytes carried to
+		// a visible path by an ancestor's rebind and kept there.
+		//
+		// The STATE is accepted all the same. Refusing the whole row would leave the node
+		// bound at a location no peer describes any more, with the cursor already past the
+		// only row that said so — so it keeps its identity and revision, binds nothing,
+		// and gives up the name it held before.
+		if (
+			(await shields(port, view, parentIno, m.name, path)) ||
+			(await heldLocally(port, nodes, parentIno, m.name))
+		) {
+			if (prev?.localIno != null) await dematerialise(port, nodes, prev, source)
+			await nodes.save({ ...state, localIno: null })
+			return
+		}
 		// A snapshot describes CURRENT state as a create, so a re-bootstrap can name a
 		// node this replica already holds — under a different parent, if it moved since
 		// the page that was lost. Release the old name first: the tree would otherwise
@@ -948,14 +963,16 @@ async function applyMutation(
 		// ones whose old and new effective paths straddle an ignore root of this
 		// replica's own.
 		const oldPath = await effectivePath(nodes, prev.parentId, prev.name)
-		const visible = toIno !== null && path !== null && !view.ignored(path)
-		if (
-			visible &&
-			path !== null &&
+		// A name this replica may not write over counts exactly as a name outside its
+		// projection: the state is accepted, nothing is bound. Same two reasons as a
+		// create — a directory holding ignored paths, or a name held by an inode sync does
+		// not own — and the same alternative, which is to strand bytes no peer has.
+		const visible =
 			toIno !== null &&
-			(await shields(port, view, toIno, m.name, path))
-		)
-			return
+			path !== null &&
+			!view.ignored(path) &&
+			!(await shields(port, view, toIno, m.name, path)) &&
+			!(await heldLocally(port, nodes, toIno, m.name))
 		if (visible && prev.localIno !== null && to.localIno !== null) {
 			await nodes.save(state)
 			// ONE dirent rebind, whatever the subtree holds — every descendant is keyed
@@ -1004,7 +1021,10 @@ async function applyMutation(
 			return
 		}
 		// Withdraw from the OLD location — the dirent to remove is the one the node
-		// still has — and only then record where it now belongs.
+		// still has — and only then record where it now belongs. Reached either because
+		// the destination is outside this replica's projection or because the name there
+		// is not sync's to take; the node is state-only afterwards, so a later move to a
+		// free name restores it from state rather than needing a re-bootstrap.
 		if (prev.localIno !== null) await dematerialise(port, nodes, prev, source)
 		await nodes.save({ ...state, localIno: null })
 		return

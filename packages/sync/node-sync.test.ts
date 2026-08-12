@@ -1129,6 +1129,49 @@ test('an entering crossing never unlinks the local-only data already at that nam
 	expect(text(await a.vol.readFile('/dst/cache/theirs.txt'))).toBe('theirs')
 })
 
+test('a remote move onto a locally-held name keeps the local data and withdraws', async () => {
+	// The receiver's tree holds this name for data of its OWN, carried to a visible
+	// path by an ancestor's rebind. A rebind here would unlink the only reference to
+	// those bytes — so the state is accepted and NOTHING is bound: the node keeps its
+	// identity and revision, and gives up the name it held before.
+	const { a, b, echoed, sync } = nodePeers({ bIgnore: ['/src/cache'] })
+	await a.vol.mkdir('/src')
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await a.vol.writeFile('/old', bytes('theirs'))
+	await sync()
+	await b.vol.mkdir('/src/cache')
+	await b.vol.writeFile('/src/cache/keep.bin', bytes('mine'))
+	await sync()
+	await a.vol.rename('/src', '/dst')
+	await sync()
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+
+	// A moves the node B holds at `/old` onto the very name B's own directory holds.
+	await a.vol.rename('/old', '/dst/cache')
+	await sync()
+
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+	expect((await b.vol.lstat('/dst/cache')).type).toBe(FileType.Directory)
+	// The old name went with the move: keeping it would show a path no peer describes,
+	// with no correction ever coming.
+	expect(await b.vol.exists('/old')).toBe(false)
+	expect(await b.orphanCount()).toBe(0)
+	expect(echoed).toEqual([])
+	// State accepted in full, materialisation declined — so a later move to a free name
+	// restores it from state rather than needing a re-bootstrap.
+	const moved = await a.nodeAt('/dst/cache')
+	const held = moved ? await b.nodes.get(moved.id) : null
+	expect(held?.revision).toBe(moved?.revision)
+	expect(held?.parentId).toBe(moved?.parentId)
+	expect(held?.localIno).toBe(null)
+
+	// And it does: A moves it on, and B materialises it from the state it kept.
+	await a.vol.rename('/dst/cache', '/dst/back.txt')
+	await sync()
+	expect(text(await b.vol.readFile('/dst/back.txt'))).toBe('theirs')
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+})
+
 test('a snapshot create never unlinks the local-only data at that name', async () => {
 	// The same collision as the entering crossing above, reached by the OTHER route.
 	// A snapshot describes CURRENT state, so a re-bootstrap re-offers the node B
@@ -1154,6 +1197,37 @@ test('a snapshot create never unlinks the local-only data at that name', async (
 	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
 	expect(await b.orphanCount()).toBe(0)
 	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+})
+
+test('a snapshot create that relocates onto a held name still accepts the state', async () => {
+	// The create above declined a name for a node it did not hold anywhere. This one
+	// holds the node at `/old`: declining the WHOLE row would keep it bound at a
+	// location no peer describes, with the scan cursor already past the move.
+	const { a, b, sync, bootstrap } = nodePeers({ bIgnore: ['/src/cache'] })
+	await a.vol.mkdir('/src')
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await a.vol.writeFile('/old', bytes('theirs'))
+	await sync()
+	await b.vol.mkdir('/src/cache')
+	await b.vol.writeFile('/src/cache/keep.bin', bytes('mine'))
+	await sync()
+	await a.vol.rename('/src', '/dst')
+	await sync()
+	expect(text(await b.vol.readFile('/old'))).toBe('theirs')
+
+	// A relocates it onto B's locally-held name; B's delta cursor is gone, so the
+	// relocation reaches it as a snapshot create instead.
+	await a.vol.rename('/old', '/dst/cache')
+	await bootstrap()
+
+	expect(text(await b.vol.readFile('/dst/cache/keep.bin'))).toBe('mine')
+	expect(await b.vol.exists('/old')).toBe(false)
+	expect(await b.orphanCount()).toBe(0)
+	const moved = await a.nodeAt('/dst/cache')
+	const held = moved ? await b.nodes.get(moved.id) : null
+	expect(held?.revision).toBe(moved?.revision)
+	expect(held?.parentId).toBe(moved?.parentId)
+	expect(held?.localIno).toBe(null)
 })
 
 test('a rename during a paged bootstrap cannot drop a node from the snapshot', async () => {
