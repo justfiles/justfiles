@@ -1,0 +1,206 @@
+---
+project: packages/sync
+status: planned
+source_issue: 462
+---
+
+# sync: replace path identity with stable node IDs for O(1) moves
+
+## Problem
+
+The filesystem tree is already inode-addressed. A database rename updates one `fs_dirents` row and emits one `TreeEffect.move`. The sync protocol is still path-addressed: `PathChange` supports only `put(path)` and `delete(path)`. `pathSyncObserver` therefore expands a move of a subtree with `N` nodes into `2N` journal rows.
+
+A measured rename of a directory with 4,000 files produces 8,002 journal sequence entries and takes about 166 ms before network fanout. With a page size of 500, each peer needs 17 delta pages. The cost then repeats for every receiving replica.
+
+[Issue #454](https://github.com/xiaoxinghu/justfiles/issues/454) and [PR #461](https://github.com/xiaoxinghu/justfiles/pull/461) created the required seam: the filesystem emits one transaction-scoped `move` effect, and the sync module decides how to record it. This epic uses that seam.
+
+## Goal
+
+Make sync identity independent of path. A move or rename that stays inside the synchronized projection must produce one durable node mutation, one wire mutation, and one atomic move on each receiving database-backed replica, regardless of subtree size.
+
+## Identity model
+
+- Every logical file and directory has one globally unique `SyncNodeId` shared by all replicas.
+- Every replica, including the server, stores its own `SyncNodeId <-> local Ino` mapping.
+- A replica never sends its local inode on the wire and never knows another replica's local inode.
+- There is no separate server or remote ID.
+- The creating replica generates the sync ID before it publishes the create. Use a collision-resistant UUID. This must work offline.
+- The root has one well-known sync ID. Each replica binds it to its own `rootIno`.
+- A new object at a previously used path gets a new sync ID.
+- A deleted node keeps a tombstone with its sync ID and last accepted revision after its local inode is removed.
+- An implementation may use the same UUID value for the local inode and sync ID, but no interface or test can depend on equality.
+
+Example for one logical file:
+
+```text
+sync ID S-123
+  client A: S-123 <-> local inode A-91
+  client B: S-123 <-> local inode B-27
+  server:   S-123 <-> local inode R-44
+```
+
+## Node state
+
+Each replica must be able to persist at least:
+
+```ts
+type SyncNodeState = {
+	id: SyncNodeId
+	localIno: Ino | null
+	parentId: SyncNodeId | null
+	name: string
+	type: FileType
+	revision: number
+	deleted: boolean
+	contentHash?: string
+}
+```
+
+The exact stored shape can differ by adapter. The sync module owns the meaning. `packages/fs` must not import sync vocabulary.
+
+## Wire behavior
+
+Protocol v2 carries node mutations, not paths or local inodes:
+
+```ts
+type NodeMutation =
+	| { kind: 'create'; nodeId: SyncNodeId; parentId: SyncNodeId; name: string; baseRevision: 0; meta: SyncMeta; contentHash?: string }
+	| { kind: 'update'; nodeId: SyncNodeId; baseRevision: number; meta: SyncMeta; contentHash?: string }
+	| { kind: 'move'; nodeId: SyncNodeId; parentId: SyncNodeId; name: string; baseRevision: number }
+	| { kind: 'delete'; nodeId: SyncNodeId; baseRevision: number }
+```
+
+The accepted wire schema can refine this shape. It must preserve these facts:
+
+- Identity is `nodeId`.
+- Location is `parentId + name`.
+- Content remains hash-addressed and is not uploaded again for a move.
+- Mutations are idempotent under retry.
+- Parents are created before children.
+- Deletes are applied child before parent when a recursive delete is represented as multiple node deletes.
+- A visible-to-visible move never enumerates descendants.
+
+## Visibility boundary
+
+This section is normative. It narrows every unqualified move-cost statement in this task. Protocol v2 represents the synchronized projection of a local tree. It does not represent excluded local nodes.
+
+### Security invariant
+
+- `PRIVATE_PREFIXES` in `packages/sync/replica.ts` remains a non-configurable floor. A host `ignore` predicate can only widen it.
+- Apply visibility before outbound publication, inbound materialization, snapshot and delta generation, tombstone generation, and blob transfer.
+- A node-addressed implementation must reconstruct the effective path by walking `parentId` links. A cache is permitted, but correctness cannot depend on a stale cache.
+- No mutation can disclose an ignored destination path or post-boundary node metadata, content hash, or content. An unpublish operation can name only IDs that were already shared.
+- The server must reject client mutations that enter built-in `/.state` or `/private`. Clients must also enforce the rule on receive.
+- An incoming delete, replacement, or move must not destroy or expose a locally ignored descendant. Preserve the current `shieldsIgnored` behavior: skip an unsafe apply and allow deliberate local divergence.
+
+### Projection transitions
+
+Classify a local move from its effective old and new paths:
+
+- visible -> visible: emit one `move`; preserve all IDs; do not enumerate descendants.
+- ignored -> ignored: emit nothing.
+- ignored -> visible: emit `publishTree`; enumerate parent before child; assign fresh sync IDs; upload only missing blobs.
+- visible -> ignored: emit `unpublishTree`; tombstone formerly shared IDs; remove the remote subtree; keep local bytes.
+
+IDs do not survive exit from the synchronized projection. A later move out of `/private` publishes fresh IDs. A node that has always been ignored has no sync-ID mapping.
+
+For a host-specific ignore, the server can still own the remote node. A client can keep non-materialized remote node state with `localIno: null`, but it must not bind that state to same-path local ignored content. On a remote ignored -> visible transition, fetch and materialize the complete subtree. On visible -> ignored, remove only the synchronized materialization and do not echo a server delete.
+
+### Boundary operations
+
+- `publishTree(parentId, name, manifest)` is one logical operation with an O(N) parent-first manifest. Large manifests can use resumable staging, but no partial tree can become visible.
+- `unpublishTree(rootId)` can be one logical wire operation. Cleanup is O(N), because all formerly shared nodes need removal or tombstones.
+- Retry is idempotent. Failure before commit exposes no projection change. Retry after commit returns the accepted result.
+- A stale revision or name collision rejects the complete operation and requires pull/replan. Do not create conflict-copy names in this work.
+
+Boundary work is intentionally O(N). The O(1) guarantee applies only to visible -> visible moves.
+
+### Required security tests
+
+- [ ] `/.state/**` and `/private/**` never appear in snapshots, deltas, mutations, tombstones, blob requests, or blob responses.
+- [ ] visible -> visible produces one move for 0, 1, 100, and 4,000 descendants.
+- [ ] ignored -> ignored produces no wire work.
+- [ ] ignored -> visible publishes the complete subtree parent first with fresh IDs.
+- [ ] visible -> ignored removes the complete remote subtree while local private bytes survive.
+- [ ] A remote mutation cannot inject a built-in private path.
+- [ ] A remote ancestor delete or replacement cannot destroy a locally ignored descendant.
+- [ ] A host-specific ignored -> visible receive fetches missing descendants; visible -> ignored does not echo a delete.
+- [ ] Crash and retry cannot expose a partial publication or leak a private blob.
+
+## Server authority and conflicts
+
+The current topology is client-server. The server serializes accepted node mutations and assigns the next revision.
+
+- A mutation names the last server revision observed by the author.
+- A mutation against an unknown node fails, except for `create`.
+- Repeating an already accepted mutation is an idempotent success.
+- A stale update, move, or delete must not silently overwrite newer state.
+- A create or move cannot claim a `(parentId, name)` held by another live node.
+- A parent must exist and be a live directory.
+- A directory cannot move below itself or create a cycle.
+- A deleted sync ID cannot be rebound to a new local inode as a new object.
+- The server returns enough accepted state for the author to advance without receiving its own echo.
+- Other clients receive the accepted node ID, location, metadata, and revision through the ordered change stream.
+
+Conflict product behavior must be deterministic. The first implementation can reject stale or colliding mutations and require a pull/replan. Do not invent conflict-copy names in this epic.
+
+## Adapter seam
+
+`packages/sync` defines a small node-sync persistence interface and the shared rules. It has adapters or integration implementations for:
+
+- memory, as the reference and conformance adapter;
+- SQLite, used by the server and database-backed hosts;
+- IndexedDB, used by browser clients;
+- native filesystem, using a persisted sidecar index and reconciliation because POSIX cannot join a sidecar transaction.
+
+SQLite and IndexedDB must commit the filesystem mutation, identity mapping, accepted node state, and journal row atomically. Native filesystem support documents and tests its weaker crash model and repairs by reconciliation.
+
+## Compatibility
+
+Protocol v2 must ship beside path protocol v1 until a separate removal phase proves that deployed clients no longer require v1.
+
+- The handshake advertises supported protocol versions.
+- A client selects one protocol for a sync cycle. It cannot mix v1 and v2 cursors.
+- Existing trees are backfilled without changing file content or user-visible paths.
+- Mixed-version server operation must keep v1 and v2 clients convergent during the compatibility window, even though a move can still fan out on the v1 side.
+- Cutover uses lineage/generation fencing so a stale cursor cannot cross identity models.
+
+## Non-goals
+
+- Do not rewrite `packages/fs`.
+- Do not implement Dropbox's full Local/Remote/Synced three-tree planner only to fix rename fanout.
+- Do not add hard links. The current one-dirent-per-inode rule stays.
+- Recursive delete and visibility-boundary publication or unpublication can remain O(N) in v2. Only visible-to-visible move and rename must be independent of subtree size.
+- Do not expose sync IDs through the public `Volume` interface unless a later user-facing requirement needs it.
+
+## TDD rule for all phases
+
+Use vertical RED -> GREEN cycles. Add one behavior test, confirm that it fails for the expected reason, add the minimum implementation, and confirm that it passes before the next test. Test through public sync, replica, and volume interfaces. Do not test private helpers or database rows when observable behavior is available.
+
+Each phase task contains its own ordered RED/GREEN specification.
+
+## Phases
+
+Complete the tasks in this order:
+
+- [ ] [phase 1: memory reference](./sync-node-identity-phase-1-memory.md)
+- [ ] [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
+- [ ] [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
+- [ ] [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md)
+- [ ] [phase 5: migration](./sync-node-identity-phase-5-migration.md)
+- [ ] [phase 6: native filesystem](./sync-node-identity-phase-6-native-fs.md)
+- [ ] [phase 7: retire path v1](./sync-node-identity-phase-7-retire-v1.md)
+
+## Global acceptance criteria
+
+- [ ] Moving a visible directory to another visible path with 4,000 descendants appends exactly one v2 move mutation on the source and server.
+- [ ] A visible-to-visible move uses no subtree enumeration in the v2 observer or applier.
+- [ ] Every receiving database-backed replica applies the move through one atomic top-entry rebind.
+- [ ] No file content is uploaded for a pure move.
+- [ ] Create, update, move, delete, offline create, retry, restart, and bootstrap converge across memory, SQLite, and IndexedDB adapters.
+- [ ] Stale revisions, missing parents, occupied names, and cycles have deterministic tested results.
+- [ ] A deleted path followed by a new create has two distinct sync IDs.
+- [ ] Native filesystem restart and crash reconciliation restore a correct mapping and change stream.
+- [ ] Protocol v1 is removed only after compatibility and migration tests pass.
+- [ ] `packages/fs` contains no sync ID, revision, node journal, or protocol concepts.
+- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass after every phase.
