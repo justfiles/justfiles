@@ -52,8 +52,8 @@ Wire an IndexedDB-backed browser replica to the v2 HTTP server from [phase 2: SQ
 - Offline create generates and persists the final sync ID before any server contact.
 - A transaction cannot expose a file-system node without its mapping and journal row.
 - A received create uses a local inode that can differ from the server and other clients.
-- A received visible-to-visible move resolves node and parent sync IDs locally and performs one top-entry move.
-- A visible-to-visible move of any subtree size adds one local v2 journal row and sends one node mutation.
+- A received projection-preserving visible-to-visible move resolves node and parent sync IDs locally and performs one top-entry move.
+- A projection-preserving visible-to-visible move of any subtree size adds one local v2 journal row and sends one node mutation.
 - A pulled mutation is tagged so it does not echo back as a new local mutation.
 - A deleted node keeps a durable tombstone while its local inode binding becomes null.
 - Restart preserves mapping, tombstone, cursor, and pending local mutations.
@@ -98,7 +98,7 @@ IndexedDB must pass the same visibility conformance behavior as memory and SQLit
 
 ### Cycle 4: constant-cost move
 
-**RED:** Create 4,000 descendants in IndexedDB, advance the v2 cursor, rename the ancestor between visible paths, and sync. Assert one outgoing move, one new local v2 journal row, one server row, and zero blob uploads.
+**RED:** Create 4,000 descendants in IndexedDB, advance the v2 cursor, rename the ancestor between visible paths with no intersecting ignore root, and sync. Assert one outgoing move, one new local v2 journal row, one server row, and zero blob uploads.
 
 **GREEN:** Record and apply the top-entry move without `enumerateSubtree`, cursors, or writes per descendant.
 
@@ -131,7 +131,7 @@ IndexedDB must pass the same visibility conformance behavior as memory and SQLit
 - [ ] IndexedDB passes the shared v2 conformance suite.
 - [ ] Upgrade tests preserve all existing file, blob, dirty, v1 sync, and application state.
 - [ ] Offline create survives restart and later syncs with its original client-generated sync ID.
-- [ ] A 4,000-descendant move between visible paths creates one local and one server v2 row, with no content upload.
+- [ ] A projection-preserving 4,000-descendant move between visible paths creates one local and one server v2 row, with no content upload.
 - [ ] Pulled changes do not echo.
 - [ ] Tombstones and mappings survive restart.
 - [ ] Failed transactions leave no partial tree or sync state.

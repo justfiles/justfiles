@@ -45,7 +45,7 @@ Define these domain concepts in sync vocabulary:
 
 Build an in-memory adapter and a node-aware mutation observer. The adapter is the reference behavior for later SQLite and IndexedDB implementations.
 
-A node create must bind a generated sync ID to the local inode in the same logical commit as its journal record. A visible-to-visible move must look up only the moved node and destination parent IDs. It must not call `enumerateSubtree`.
+A node create must bind a generated sync ID to the local inode in the same logical commit as its journal record. A projection-preserving visible-to-visible move must look up only the moved node and destination parent IDs. It must not call `enumerateSubtree`.
 
 Add a memory-to-memory v2 replica path that can:
 
@@ -64,7 +64,7 @@ It is acceptable to add a separate experimental constructor such as `nodeSynced`
 - A child mutation references its parent by sync ID.
 - A create on a receiver mints or selects a receiver-local inode and binds it to the received sync ID.
 - A move mutation contains only moved node ID, destination parent ID, destination name, and revision information.
-- Applying a visible-to-visible move preserves the moved node ID and all descendant IDs and content hashes.
+- Applying a projection-preserving visible-to-visible move preserves the moved node ID and all descendant IDs and content hashes.
 - A pure move transfers no content bytes.
 - Repeating an accepted mutation is idempotent.
 - Delete removes the local inode binding but retains a tombstone for the sync ID.
@@ -82,8 +82,9 @@ Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shi
 - Do not put `/private` or another product path in `packages/sync`. The engine excludes only its own persisted state without caller configuration.
 - The node store is the synchronized projection. Purely ignored local nodes have no sync-ID mapping.
 - A live server-known node that this host does not materialize can have `localIno: null`. It is not a tombstone and must not bind to same-path local ignored content.
-- Add logical `publishTree` and `unpublishTree`. Publication assigns fresh IDs and is parent-first. Unpublication tombstones old shared IDs while it preserves local bytes.
+- Add logical `publishTree` and `unpublishTree`. Publication assigns fresh IDs and is parent-first. Unpublication sends the exact expected descendant ID/revision manifest, tombstones old shared IDs, and preserves local bytes.
 - Resolve both effective paths from the moved inode and parent chains before classification. Do not decide visibility from `parentId + name` alone.
+- Scan normalized ignore roots below both move locations. If descendant visibility changes, plan one atomic top-level move plus the minimum affected publish and unpublish subtrees. Do not enumerate unrelated descendants.
 - Apply visibility before snapshots, deltas, tombstones, blobs, and incoming tree changes.
 
 ### Cycle 8: ignored data is absent from the wire
@@ -94,7 +95,7 @@ Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shi
 
 ### Cycle 9: all four local move transitions
 
-**RED:** Test visible -> visible, ignored -> ignored, ignored -> visible, and visible -> ignored with a nested subtree. Assert one move, zero operations, one complete publication, and one logical unpublication. Assert fresh IDs after republish and local-byte survival after unpublish.
+**RED:** Test visible -> visible, ignored -> ignored, ignored -> visible, and visible -> ignored with a nested subtree. Also move a visible root between paths where a nested ignore root makes one descendant subtree enter or leave the projection. Assert one move, zero operations, one complete publication, one logical unpublication, and one atomic compound projection move. Assert fresh IDs after republish and local-byte survival after unpublish.
 
 **GREEN:** Add path reconstruction and the minimal projection planner. Enumerate descendants only for publish and unpublish.
 
@@ -110,7 +111,8 @@ Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shi
 - [ ] Replica A and replica B can keep different bytes at the same ignored path.
 - [ ] Ignored nodes do not acquire sync IDs and ignored hashes never reach the blob protocol.
 - [ ] IDs are not reused after unpublish and later republish.
-- [ ] Only visible -> visible moves have the no-enumeration guarantee.
+- [ ] Only projection-preserving visible -> visible moves have the no-enumeration guarantee.
+- [ ] Nested ignore intersections enumerate only affected publish or unpublish subtrees.
 
 ## RED/GREEN TDD specification
 
@@ -166,8 +168,8 @@ Remove duplication and deepen the node-sync module only after all cycles pass. K
 
 - [ ] Protocol v1 tests remain unchanged and green.
 - [ ] A public memory v2 conformance suite covers create, bootstrap, update, move, delete, retry, and path reuse.
-- [ ] A 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
-- [ ] The visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
+- [ ] A projection-preserving 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
+- [ ] The projection-preserving visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
 - [ ] Each replica owns only its `sync ID <-> local inode` mapping.
 - [ ] No test depends on local inode and sync ID values being equal.
 - [ ] Tombstones retain identity after the local inode is removed.

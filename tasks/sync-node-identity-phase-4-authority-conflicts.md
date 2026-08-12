@@ -112,14 +112,15 @@ Boundary operations use the same authoritative revision, name-claim, and retry r
 
 - Validate a complete `publishTree` before commit: operation ID, parent revision, every parent relation, name claim, type, cycle rule, content hash, and effective connection ignore list.
 - One invalid node rejects the full publication. No prefix becomes accepted state.
-- `unpublishTree` tombstones every formerly shared ID. Exact retry succeeds; stale or conflicting retry fails.
+- `unpublishTree` carries the expected ID and revision of every node it removes. At commit, the server verifies that the manifest is the exact current subtree. Any set or revision mismatch rejects the full operation. Exact retry succeeds.
 - Republish always uses fresh IDs. A tombstoned ID cannot be reactivated.
 - A destination collision or stale base rejects the full operation and requires pull/replan. Do not synthesize a conflict-copy name.
 - A client cannot bypass an ignore rule with an unknown parent, forged chain, or existing node moved below an ignored root.
+- Do not add an aggregate subtree revision that rewrites ancestors on every descendant change. Exact O(N) manifest validation is acceptable because unpublication already removes O(N) nodes.
 
 ### Additional RED/GREEN cycle: atomic boundary validation
 
-**RED:** Submit publications with an occupied descendant name, stale parent, reused tombstoned ID, missing blob, and destination ignored by the server or client subscription. Assert full rejection with no node, mapping, journal prefix, or blob reference. Retry valid publish and unpublish operations and assert idempotent success.
+**RED:** Submit publications with an occupied descendant name, stale parent, reused tombstoned ID, missing blob, and destination ignored by the server or client subscription. For unpublication, test one descendant revision change and one new descendant after the client builds its manifest. Assert full rejection with no node, mapping, journal prefix, tombstone, or blob reference. Retry valid publish and unpublish operations and assert idempotent success.
 
 **GREEN:** Validate against one authoritative transaction snapshot. Commit the complete logical operation and all node rows together.
 

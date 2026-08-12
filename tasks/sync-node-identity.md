@@ -78,7 +78,7 @@ The accepted wire schema can refine this shape. It must preserve these facts:
 - Mutations are idempotent under retry.
 - Parents are created before children.
 - Deletes are applied child before parent when a recursive delete is represented as multiple node deletes.
-- A visible-to-visible move never enumerates descendants.
+- A projection-preserving visible-to-visible move never enumerates descendants.
 
 ## Visibility boundary
 
@@ -98,12 +98,15 @@ This section is normative. It narrows every unqualified move-cost statement in t
 
 ### Projection transitions
 
-Classify a local move from its effective old and new paths:
+Classify a local move from its effective old and new paths. Root visibility alone is not sufficient. Scan the normalized ignore roots for an intersection below the old or new subtree and map each relative suffix to the other location.
 
-- visible -> visible: emit one `move`; preserve all IDs; do not enumerate descendants.
+- visible -> visible with no descendant visibility change: emit one `move`; preserve all IDs; do not enumerate descendants.
 - ignored -> ignored: emit nothing.
 - ignored -> visible: emit `publishTree`; enumerate parent before child; assign fresh sync IDs; upload only missing blobs.
 - visible -> ignored: emit `unpublishTree`; tombstone formerly shared IDs; remove the remote subtree; keep local bytes.
+- visible -> visible with an intersecting ignore root: emit one atomic projection-move operation. It moves the shared root and publishes or unpublishes only descendant subtrees whose visibility changes. This path is O(number of affected nodes), not O(1).
+
+The intersection check walks the ignore list, not the moved filesystem subtree. Version 1 has absolute ignored roots without glob or negation syntax. Do not add a general pattern-transition planner here.
 
 IDs do not survive a local filesystem move out of the synchronized projection. A later move back to a visible path publishes fresh IDs. A node that has always been ignored has no sync-ID mapping.
 
@@ -118,20 +121,25 @@ The server can own an independent node at a path ignored by a client. A client c
 - Removing an ignore root compares the filtered remote snapshot with local bytes. Remote wins a same-path conflict; equal content binds to the remote ID; a local-only path publishes with fresh IDs. Data loss is permitted when remote wins.
 - An existing account with no saved policy hash performs the same full reconciliation and records a baseline.
 - Reconciliation is resumable and internal to sync. Application code supplies only the ignore list.
+- Do not assume coordinated deployment. Clients can run different lists during a rolling release. Each connection enforces its current effective list and reconciles when that replica later opens with a new hash.
+- A policy change is best effort, not an atomic account-wide cutover. Sync does not promise temporary cross-client visibility consistency, historical reconstruction, or a lossless merge while releases are mixed. Normal convergence resumes after active replicas use the new policy.
 
 ### Boundary operations
 
 - `publishTree(parentId, name, manifest)` is one logical operation with an O(N) parent-first manifest. Large manifests can use resumable staging, but no partial tree can become visible.
-- `unpublishTree(rootId)` can be one logical wire operation. Cleanup is O(N), because all formerly shared nodes need removal or tombstones.
+- `unpublishTree(rootId, manifest)` is one logical wire operation. Its child-first manifest contains the expected ID and revision of every live shared node being removed. At commit, the server verifies that this is the exact current subtree, with no added, removed, moved, or updated descendant.
+- Do not maintain an aggregate revision up every ancestor. Exact manifest validation keeps unpublication O(N) without adding path-length write fanout to ordinary descendant updates.
+- A projection move that intersects nested ignore roots commits its top-level move and all required publish and unpublish manifests atomically. No intermediate path can expose ignored data.
 - Retry is idempotent. Failure before commit exposes no projection change. Retry after commit returns the accepted result.
 - A stale revision or name collision rejects the complete operation and requires pull/replan. Do not create conflict-copy names in this work.
 
-Boundary work is intentionally O(N). The O(1) guarantee applies only to visible -> visible moves.
+Boundary work is intentionally O(N). The O(1) guarantee applies only to projection-preserving visible -> visible moves.
 
 ### Required security tests
 
 - [ ] Engine state and caller-ignored paths never appear in snapshots, deltas, mutations, tombstones, blob requests, or blob responses.
-- [ ] visible -> visible produces one move for 0, 1, 100, and 4,000 descendants.
+- [ ] A projection-preserving visible -> visible move produces one move for 0, 1, 100, and 4,000 descendants.
+- [ ] A visible -> visible root move that crosses a nested ignore root atomically publishes or unpublishes the affected descendant subtree and never exposes it at an ignored path.
 - [ ] ignored -> ignored produces no wire work.
 - [ ] ignored -> visible publishes the complete subtree parent first with fresh IDs.
 - [ ] visible -> ignored removes the complete remote subtree while local ignored bytes survive.
@@ -140,6 +148,7 @@ Boundary work is intentionally O(N). The O(1) guarantee applies only to visible 
 - [ ] An ignored -> visible receive fetches missing descendants; visible -> ignored does not echo a delete.
 - [ ] A changed ignore list reconciles automatically on launch and an unchanged list does no scan or cursor reset.
 - [ ] Crash and retry cannot expose a partial publication or leak an ignored blob.
+- [ ] A concurrent descendant update or addition rejects a stale unpublish manifest without partial removal.
 
 ## Server authority and conflicts
 
@@ -184,7 +193,7 @@ Protocol v2 must ship beside path protocol v1 until a separate removal phase pro
 - Do not rewrite `packages/fs`.
 - Do not implement Dropbox's full Local/Remote/Synced three-tree planner only to fix rename fanout.
 - Do not add hard links. The current one-dirent-per-inode rule stays.
-- Recursive delete and visibility-boundary publication or unpublication can remain O(N) in v2. Only visible-to-visible move and rename must be independent of subtree size.
+- Recursive delete and visibility-boundary publication or unpublication can remain O(N) in v2. Only a projection-preserving visible-to-visible move or rename must be independent of subtree size.
 - Do not expose sync IDs through the public `Volume` interface unless a later user-facing requirement needs it.
 
 ## TDD rule for all phases
@@ -208,8 +217,8 @@ Complete the tasks in this order:
 
 ## Global acceptance criteria
 
-- [ ] Moving a visible directory to another visible path with 4,000 descendants appends exactly one v2 move mutation on the source and server.
-- [ ] A visible-to-visible move uses no subtree enumeration in the v2 observer or applier.
+- [ ] Moving a visible directory to another visible path with 4,000 descendants appends exactly one v2 move mutation on the source and server when no ignore root changes descendant visibility.
+- [ ] A projection-preserving visible-to-visible move uses no subtree enumeration in the v2 observer or applier.
 - [ ] Every receiving database-backed replica applies the move through one atomic top-entry rebind.
 - [ ] No file content is uploaded for a pure move.
 - [ ] Create, update, move, delete, offline create, retry, restart, and bootstrap converge across memory, SQLite, and IndexedDB adapters.

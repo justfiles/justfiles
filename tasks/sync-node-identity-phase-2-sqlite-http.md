@@ -69,8 +69,8 @@ A fresh SQLite server and a memory client must be able to create, update, move, 
 - The server binds the well-known root sync ID to its current `ROOT_INO` during initialization.
 - A client-generated sync ID is persisted without replacement.
 - Receiving a create allocates a server-local inode and binds it to the supplied sync ID.
-- Receiving a visible-to-visible move resolves the node and both parents through the server's mappings, then performs one atomic top-entry move.
-- A visible-to-visible move does not enumerate descendants and does not add per-descendant journal or version state.
+- Receiving a projection-preserving visible-to-visible move resolves the node and both parents through the server's mappings, then performs one atomic top-entry move.
+- A projection-preserving visible-to-visible move does not enumerate descendants and does not add per-descendant journal or version state.
 - Accepted mutations use one ordered server cursor and survive process restart.
 - Snapshot paging freezes the delta high-water at snapshot start.
 - Blob validation happens before a content-bearing create or update is accepted.
@@ -88,12 +88,13 @@ The SQLite and HTTP slice must enforce the visibility contract from the memory r
 - Exclude effective ignored data from node snapshots, deltas, tombstones, and blob routes before serialization.
 - The server independently reconstructs ancestry and rejects create, move, or publish operations under the effective connection list. A client cannot weaken the server list.
 - `publishTree` can use resumable staging, but it validates every node and blob before one atomic filesystem, mapping, revision, and journal commit. Staged nodes are not visible.
-- `unpublishTree` atomically removes the shared projection and records tombstones. The client keeps its ignored local bytes without live mappings to old IDs.
+- `unpublishTree` atomically verifies an exact descendant ID/revision manifest, removes the shared projection, and records tombstones. The client keeps its ignored local bytes without live mappings to old IDs.
+- A visible root move that intersects a nested ignore root commits the top-level move and affected publish or unpublish manifests in one SQLite transaction.
 - Server-local ignored nodes stay independent from same-path ignored nodes on clients.
 
 ### Additional RED/GREEN cycle: HTTP boundary security
 
-**RED:** Give the server and client different ignore roots. Through HTTP, run all four transitions with nested trees. Inspect metadata and blob calls. Assert that the connection uses the union, no ignored destination or content crosses HTTP, publication is all-or-nothing, unpublication removes the visible remote nodes, and retry is idempotent. Send a crafted mutation into either ignored root and assert rejection before blob fetch.
+**RED:** Give the server and client different ignore roots. Through HTTP, run all four root transitions and a visible-root move that crosses a nested ignore boundary. Inspect metadata and blob calls. Assert that the connection uses the union, no ignored destination or content crosses HTTP, each compound operation is all-or-nothing, unpublication removes the visible remote nodes, and retry is idempotent. Send a crafted mutation into either ignored root and assert rejection before blob fetch.
 
 **GREEN:** Reuse the phase-1 planner. Add server validation, staged publication, transactional commit, and filtered transport.
 
@@ -119,7 +120,7 @@ The SQLite and HTTP slice must enforce the visibility contract from the memory r
 
 ### Cycle 3: HTTP constant-cost move
 
-**RED:** Seed 4,000 descendants, advance the v2 cursor, rename the root directory between visible paths from the client, and sync through HTTP. Assert one outgoing move, one new server journal row, no blob PUT, and the full tree under the new path on a new bootstrap client.
+**RED:** Seed 4,000 descendants, advance the v2 cursor, rename the root directory between visible paths with no intersecting ignore root, and sync through HTTP. Assert one outgoing move, one new server journal row, no blob PUT, and the full tree under the new path on a new bootstrap client.
 
 **GREEN:** Resolve sync IDs to server-local inodes and use one atomic move. Do not enumerate descendants.
 
@@ -155,8 +156,8 @@ After all cycles pass, remove repeated encode/decode or transaction wiring. Do n
 
 - [ ] SQLite passes the shared v2 conformance suite.
 - [ ] The HTTP client/server path passes create, bootstrap, update, move, delete, retry, restart, and snapshot/delta tests.
-- [ ] A 4,000-descendant move between visible paths creates one source mutation and one server journal row.
-- [ ] The SQLite visible-to-visible v2 move path performs no recursive CTE or descendant enumeration.
+- [ ] A projection-preserving 4,000-descendant move between visible paths creates one source mutation and one server journal row.
+- [ ] The SQLite projection-preserving visible-to-visible v2 move path performs no recursive CTE or descendant enumeration.
 - [ ] A pure move uploads no blobs.
 - [ ] Mapping, node state, journal, and filesystem writes share one transaction.
 - [ ] The server never stores client-local inode IDs.

@@ -63,8 +63,8 @@ OS identity can be reused. If the adapter cannot prove continuity, treat the eve
 - Initial scan walks the tree parent before child, assigns sync IDs to unknown nodes, and persists a consistent sidecar snapshot.
 - Incremental watcher output is a set of candidate paths, not authoritative state.
 - Reconciliation stats candidates and compares observed file identity with the sidecar. Size and timestamps are invalidation hints, not proof that content is unchanged.
-- The same known file identity moved between visible paths produces one v2 move.
-- A visible-to-visible directory move does not emit descendant moves. Descendants keep their parent-ID relationships and sync IDs.
+- The same known file identity moved between visible paths produces one v2 move when the move preserves the projection.
+- A projection-preserving visible-to-visible directory move does not emit descendant moves. Descendants keep their parent-ID relationships and sync IDs.
 - A vanished known identity produces delete. A new unknown identity produces create.
 - Content or metadata change on the same identity produces update.
 - Periodic or restart full scan repairs missed, coalesced, and overflowed watcher events. It rehashes visible regular files when the adapter cannot prove content continuity with a reliable persisted change token.
@@ -97,14 +97,14 @@ OS identity can be reused. If the adapter cannot prove continuity, treat the eve
 Native observation must apply visibility before ID assignment, hashing, or pending mutation creation. Keep the sidecar outside the synchronized root or in the sync engine's internally excluded state.
 
 - Initial and repair scans prune ignored subtrees. Purely ignored nodes get no sync IDs or sync hash-cache entries.
-- Classify a detected rename from old and new effective paths. visible -> visible is one move; ignored -> ignored is silent; ignored -> visible publishes fresh IDs; visible -> ignored unpublishes old IDs and keeps bytes.
+- Classify a detected rename from old and new effective paths and scan nested ignore roots below both locations. A projection-preserving visible -> visible rename is one move; ignored -> ignored is silent; ignored -> visible publishes fresh IDs; visible -> ignored unpublishes old IDs and keeps bytes; an intersecting visible-root rename uses one compound projection move.
 - A remote move across this replica's ignore boundary fetches the subtree when it becomes visible or removes only synchronized materialization when it becomes ignored. It does not echo.
 - A remote delete, replacement, or move of an ancestor cannot destroy or expose locally ignored descendants. Skip unsafe apply.
 - Crash repair cannot infer identity continuity across an ignored interval. Re-entry uses fresh IDs.
 
 ### Cycle 11: external rename crosses visibility
 
-**RED:** Rename a nested native tree through all four transitions with the fake watcher. Assert one move, no operation, complete fresh-ID publication, and complete unpublication with byte survival. Assert no ignored file is hashed or offered as a blob.
+**RED:** Rename a nested native tree through all four root transitions and through a visible-root move that crosses a nested ignore boundary. Assert one move, no operation, complete fresh-ID publication, complete unpublication with byte survival, and one atomic compound projection move. Assert no ignored file is hashed or offered as a blob.
 
 **GREEN:** Run the shared projection classifier before identity and content work.
 
@@ -117,7 +117,7 @@ Native observation must apply visibility before ID assignment, hashing, or pendi
 ### Added acceptance criteria
 
 - [ ] Watcher overflow and full reconciliation cannot leak an ignored node.
-- [ ] The O(1) native move bound applies only to visible -> visible.
+- [ ] The O(1) native move bound applies only to projection-preserving visible -> visible.
 - [ ] No identity is retained or guessed across an ignored interval.
 
 ## RED/GREEN TDD specification
@@ -138,7 +138,7 @@ Use deterministic fake watcher and file-identity adapters for behavior tests. Ad
 
 ### Cycle 3: external 4,000-descendant directory move
 
-**RED:** Rename a directory with 4,000 descendants between visible paths outside `Volume`. Reconcile the root move candidates and assert one v2 move and unchanged descendant sync IDs. The steady-state move path must not walk descendants.
+**RED:** Rename a directory with 4,000 descendants between visible paths outside `Volume`, with no intersecting ignore root. Reconcile the root move candidates and assert one v2 move and unchanged descendant sync IDs. The steady-state move path must not walk descendants.
 
 **GREEN:** Represent the tree by parent sync IDs. Do not rewrite stored descendant paths.
 
@@ -188,7 +188,7 @@ Use deterministic fake watcher and file-identity adapters for behavior tests. Ad
 
 - [ ] Native sync uses the shared v2 node interface and wire protocol.
 - [ ] Every replica maintains only its own native identity/local inode to sync-ID mapping.
-- [ ] External and remote directory moves between visible paths produce one v2 move independent of subtree size.
+- [ ] External and remote directory moves between visible paths produce one v2 move independent of subtree size when no nested ignore root changes descendant visibility.
 - [ ] Descendant sidecar records do not store paths that require prefix rewrites.
 - [ ] Ambiguous inode reuse becomes delete plus create, never an identity guess.
 - [ ] Restart and full reconciliation repair missed events and both native/sidecar crash orderings.

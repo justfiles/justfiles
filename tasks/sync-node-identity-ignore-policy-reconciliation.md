@@ -121,6 +121,18 @@ Before normal push and pull:
 
 `localFirst` can still return a usable local volume, but status remains `syncing` until reconciliation completes. Writes during reconciliation remain journaled and are processed after the new cursor commits. They cannot bypass the new list.
 
+## Rolling deployment expectations
+
+Ignore-list changes are infrequent deployment configuration changes. Do not require every platform or installed client to update at the same time.
+
+- Each replica uses the list in its installed release. It reconciles only when that replica next opens with a different normalized hash.
+- During a mixed release, different clients can have different effective lists and filtered cursors. This is supported connection behavior, not an error.
+- A newly ignored path can remain visible on the server and on clients that still use the old list. An updated client must still preserve its ignored local bytes and must not receive that path.
+- A server-list update hides the path from every later v2 subscription because the server list is part of every connection union. It does not require immediate physical cleanup.
+- After clients adopt the same policy and reconnect, ordinary sync can converge the shared projection.
+
+This task provides best-effort damage control. It does not promise an atomic account-wide policy switch, simultaneous visibility across mixed releases, reconstruction of bytes that an older client already overwrote, or a lossless three-way merge. Add a separate versioned rollout protocol only if a future product requirement needs those guarantees.
+
 ## Best-effort reconciliation rules
 
 ### A path becomes ignored
@@ -213,7 +225,7 @@ Complete one cycle before starting the next. Test through `synced()`, public vol
 
 ### Cycle 8: two clients with different lists
 
-**RED:** Connect two clients with different ignore roots to one server. Assert independent filtered cursors, independent same-path local bytes, normal convergence outside each list, and no policy change by one client alters the other client's remote projection.
+**RED:** Connect old-release and new-release clients with different ignore roots to one server. Keep the old client active while the new client reconciles. Assert independent filtered cursors, preservation of the new client's ignored bytes, normal convergence outside each list, and no policy change by one client alters the other client's remote projection. Do not require temporary account-wide visibility consistency.
 
 **GREEN:** Scope subscription state and policy hashes to each connection or client cursor. Do not store one client list as global server policy.
 
@@ -242,6 +254,7 @@ Do not expose reconciliation methods, policy versions, cursors, or operation IDs
 - [ ] Cursors cannot cross effective policy hashes or identity epochs.
 - [ ] Crash and restart cannot leak ignored data, lose post-snapshot writes, or duplicate IDs.
 - [ ] Two clients can use different lists without changing each other's server view.
+- [ ] Rolling deployment does not require simultaneous client updates or promise an atomic account-wide policy cutover.
 - [ ] Memory, SQLite, and IndexedDB pass the same public conformance cases.
 - [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
@@ -250,4 +263,6 @@ Do not expose reconciliation methods, policy versions, cursors, or operation IDs
 - Glob, negation, regular-expression, or `.gitignore` grammar.
 - A destructive global purge of an ignored path from every replica, backup, and version history.
 - Conflict-copy UI or recovery of a local loser after remote-wins replacement.
+- Lossless recovery from writes or overwrites performed by an older release before it adopts the new list.
+- An atomic policy rollout across offline clients and different platform release schedules.
 - Native watcher and sidecar integration; [phase 6](./sync-node-identity-phase-6-native-fs.md) applies this contract to native storage.

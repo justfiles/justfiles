@@ -105,7 +105,7 @@ Migration and the v1/v2 bridge must preserve the current visibility boundary.
 - Server backfill and client binding use each replica's current ignore list. Skipped local nodes get no shared IDs.
 - If an old or corrupt fixture contains v1 tombstones or journal rows for ignored paths, do not translate them to v2. Remove them without publication.
 - The bridge expands `publishTree` to parent-first v1 puts and `unpublishTree` to child-first v1 deletes. It never emits the new ignored destination.
-- Classify a v1-authored boundary move from both old and new paths. Translate it to publish, unpublish, or no-op, not an ordinary move.
+- Classify a v1-authored boundary move from both old and new paths and from nested ignore roots that intersect the moved subtree. Translate it to the minimum move, publish, unpublish, or compound projection operation.
 - Cutover and reset preserve each replica's ignored bytes and never bind them to remote IDs.
 
 ### Additional RED/GREEN cycle: ignored-path migration fixture

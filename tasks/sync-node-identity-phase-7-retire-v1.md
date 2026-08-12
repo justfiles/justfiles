@@ -61,9 +61,9 @@ Add permanent operation-count regression tests for move and fanout. Do not use w
 
 - One logical node has one sync ID across every replica and one local inode mapping per replica.
 - Create, update, move, and delete are the only synchronization mutations.
-- Moving or renaming one node between visible paths appends one source mutation and one accepted server mutation.
-- Each receiving replica applies one visible-to-visible move. That work is O(number of replicas), not O(subtree nodes x replicas).
-- A visible-to-visible move never enumerates descendants, creates descendant tombstones, rewrites descendant sync state, or transfers content.
+- Moving or renaming one node between visible paths appends one source mutation and one accepted server mutation when the move preserves the projection.
+- Each receiving replica applies one projection-preserving visible-to-visible move. That work is O(number of replicas), not O(subtree nodes x replicas).
+- A projection-preserving visible-to-visible move never enumerates descendants, creates descendant tombstones, rewrites descendant sync state, or transfers content.
 - Recursive delete remains child-first O(N).
 - Snapshot and delta cursors operate on node state and preserve the frozen-high-water guarantee.
 - Node tombstone retention preserves stale-client correctness. If collection removes the last mutation needed by a lagging cursor, the journal floor forces authoritative rebootstrap.
@@ -74,7 +74,8 @@ Add permanent operation-count regression tests for move and fanout. Do not use w
 
 Permanent performance assertions must distinguish ordinary moves from visibility-boundary transitions.
 
-- visible -> visible remains one move with no descendant work.
+- projection-preserving visible -> visible remains one move with no descendant work.
+- visible -> visible at the root with a nested ignore intersection uses one compound projection move and O(number of affected nodes) boundary work.
 - ignored -> ignored produces no mutation, journal row, or blob work.
 - ignored -> visible and visible -> ignored use `publishTree` and `unpublishTree`. They are O(N) by design because the projection gains or loses N nodes.
 - A boundary operation can use paged payloads, but publication is atomic and resumable. Tests count nodes and pages; they do not claim O(1).
@@ -82,13 +83,13 @@ Permanent performance assertions must distinguish ordinary moves from visibility
 
 ### Additional RED/GREEN cycle: permanent visibility boundary
 
-**RED:** Add backend-independent tests for all four transitions, ignored-byte survival, fresh republish IDs, inbound rejection, nested ancestor shielding, crash-safe publication, and absence of ignored data from all metadata and blob endpoints.
+**RED:** Add backend-independent tests for all four root transitions, nested ignore intersections during visible-root moves, ignored-byte survival, fresh republish IDs, inbound rejection, exact unpublish revision fencing, nested ancestor shielding, crash-safe publication, and absence of ignored data from all metadata and blob endpoints.
 
 **GREEN:** Remove any v2 path that bypasses the shared projection planner. Keep canonical path utilities used for visibility.
 
 ### Added acceptance criteria
 
-- [ ] Every O(1) move test uses visible source and destination paths.
+- [ ] Every O(1) move test uses visible source and destination paths and proves that no nested ignore root changes descendant visibility.
 - [ ] Boundary fanout has no duplicate node work.
 - [ ] Removing path v1 does not remove path-aware visibility evaluation.
 
@@ -96,7 +97,7 @@ Permanent performance assertions must distinguish ordinary moves from visibility
 
 ### Cycle 1: permanent move operation bound
 
-**RED:** Add a backend-independent test that creates subtrees with 0, 1, 100, and 4,000 descendants, moves the root between visible paths, and asserts for every size:
+**RED:** Add a backend-independent test that creates subtrees with 0, 1, 100, and 4,000 descendants, moves the root between visible paths with no intersecting ignore root, and asserts for every size:
 
 - one source node-journal row;
 - one outgoing mutation;
@@ -158,8 +159,8 @@ After removal tests pass, simplify names from experimental `v2` forms to the pri
 - [ ] The removal gate has explicit owner confirmation.
 - [ ] Protocol v1 routes, wire records, cursor fields, observers, and persistence have no production consumer and are removed.
 - [ ] Migrated SQLite and IndexedDB fixtures retain complete v2 state after v1 collection.
-- [ ] A visible-to-visible move creates exactly one mutation at each journal and one delivery per receiving replica for all tested subtree sizes.
-- [ ] A visible-to-visible move performs no descendant enumeration, state rewrite, or content transfer.
+- [ ] A projection-preserving visible-to-visible move creates exactly one mutation at each journal and one delivery per receiving replica for all tested subtree sizes.
+- [ ] A projection-preserving visible-to-visible move performs no descendant enumeration, state rewrite, or content transfer.
 - [ ] Node tombstone collection and journal-floor rebootstrap are correct for stale clients.
 - [ ] Seeded randomized convergence covers all supported adapters and is reproducible.
 - [ ] Comments and docs describe node identity as the only current model.
