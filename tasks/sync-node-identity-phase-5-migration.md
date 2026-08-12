@@ -19,6 +19,7 @@ AFK migration and rollout slice. It must preserve user data and old-client conve
 - [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
 - [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
 - [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md)
+- [ignore-policy reconciliation](./sync-node-identity-ignore-policy-reconciliation.md)
 
 ## Context for a fresh agent
 
@@ -83,7 +84,7 @@ Perform cutover before the synced volume is returned to application callers, so 
 2. On a connected cold start, complete a normal v1 push and pull until both sides are drained and generation/lineage are stable.
 3. Request the server's consistent v2 snapshot and high-water.
 4. Bind received sync IDs to matching existing local inodes by canonical path and type. Reuse content already present by hash.
-5. Materialize remote-only nodes and remove or reconcile local nodes absent from the authoritative post-drain snapshot, using the current ignored/private-path rules.
+5. Materialize remote-only nodes and remove or reconcile local nodes absent from the authoritative post-drain snapshot, using the current ignore-list rules.
 6. Commit the complete mapping, v2 cursor, identity epoch, and selected protocol atomically in the client's sync store.
 7. Only then expose the volume and record new mutations through v2.
 8. Keep v1 state until rollback policy permits its collection in phase 7.
@@ -101,21 +102,21 @@ Because v1 is fully drained before the application receives the volume, local un
 
 Migration and the v1/v2 bridge must preserve the current visibility boundary.
 
-- Server backfill and client binding skip built-in and host-ignored nodes. Skipped local nodes get no shared IDs.
-- If an old or corrupt fixture contains private v1 tombstones or journal rows, do not translate them to v2. Remove them without publication.
-- The bridge expands `publishTree` to parent-first v1 puts and `unpublishTree` to child-first v1 deletes. It never emits the new private destination.
+- Server backfill and client binding use each replica's current ignore list. Skipped local nodes get no shared IDs.
+- If an old or corrupt fixture contains v1 tombstones or journal rows for ignored paths, do not translate them to v2. Remove them without publication.
+- The bridge expands `publishTree` to parent-first v1 puts and `unpublishTree` to child-first v1 deletes. It never emits the new ignored destination.
 - Classify a v1-authored boundary move from both old and new paths. Translate it to publish, unpublish, or no-op, not an ordinary move.
-- Cutover and reset preserve each host's ignored bytes and never bind them to remote IDs.
+- Cutover and reset preserve each replica's ignored bytes and never bind them to remote IDs.
 
-### Additional RED/GREEN cycle: private migration fixture
+### Additional RED/GREEN cycle: ignored-path migration fixture
 
-**RED:** Migrate a fixture with visible files, independent client/server `/private` trees, `/.state`, host-ignored descendants, and pending v1 boundary changes. Assert visible convergence, no private ID or wire record, correct bridge expansion, and local-byte survival at every crash point.
+**RED:** Migrate a fixture with visible files, independent client/server ignored trees, sync-engine state, caller-ignored descendants, and pending v1 boundary changes. Assert visible convergence, no ignored-path ID or wire record, correct bridge expansion, and local-byte survival at every crash point.
 
 **GREEN:** Apply the shared projection classifier during backfill, bridge, cutover, reset, and recovery.
 
 ### Added acceptance criteria
 
-- [ ] Mixed v1/v2 operation never weakens the private floor.
+- [ ] Mixed v1/v2 operation never weakens either endpoint's ignore list.
 - [ ] No migration snapshot, bridge row, or recovery log discloses an ignored path or hash.
 
 ## RED/GREEN TDD specification

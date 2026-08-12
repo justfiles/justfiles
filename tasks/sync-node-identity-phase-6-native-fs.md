@@ -19,6 +19,7 @@ AFK native-filesystem vertical slice. It uses observation and reconciliation, no
 - [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for the v2 node contract.
 - [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for the remote v2 replica.
 - [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md) for accepted mutation and conflict behavior.
+- [ignore-policy reconciliation](./sync-node-identity-ignore-policy-reconciliation.md) for the persisted policy hash and launch-time transition behavior.
 
 It does not need v1/v2 production cutover from [phase 5: migration](./sync-node-identity-phase-5-migration.md) to begin.
 
@@ -93,11 +94,11 @@ OS identity can be reused. If the adapter cannot prove continuity, treat the eve
 
 ## Visibility boundary requirements
 
-Native observation must apply visibility before ID assignment, hashing, or pending mutation creation. Keep the sidecar outside the synchronized root or inside a built-in private path.
+Native observation must apply visibility before ID assignment, hashing, or pending mutation creation. Keep the sidecar outside the synchronized root or in the sync engine's internally excluded state.
 
-- Initial and repair scans prune ignored subtrees unless a host rule requires child traversal. Purely ignored nodes get no sync IDs or sync hash-cache entries.
+- Initial and repair scans prune ignored subtrees. Purely ignored nodes get no sync IDs or sync hash-cache entries.
 - Classify a detected rename from old and new effective paths. visible -> visible is one move; ignored -> ignored is silent; ignored -> visible publishes fresh IDs; visible -> ignored unpublishes old IDs and keeps bytes.
-- A remote move across this host's extra ignore boundary fetches the subtree when it becomes visible or removes only synchronized materialization when it becomes ignored. It does not echo.
+- A remote move across this replica's ignore boundary fetches the subtree when it becomes visible or removes only synchronized materialization when it becomes ignored. It does not echo.
 - A remote delete, replacement, or move of an ancestor cannot destroy or expose locally ignored descendants. Skip unsafe apply.
 - Crash repair cannot infer identity continuity across an ignored interval. Re-entry uses fresh IDs.
 
@@ -107,9 +108,9 @@ Native observation must apply visibility before ID assignment, hashing, or pendi
 
 **GREEN:** Run the shared projection classifier before identity and content work.
 
-### Cycle 12: remote apply protects host ignores
+### Cycle 12: remote apply protects caller ignores
 
-**RED:** Configure a nested host ignore. Receive moves across it and destructive ancestor changes. Assert fetch on ignored -> visible, removal without echo on visible -> ignored, and preservation of the ignored child on ancestor delete or replacement.
+**RED:** Configure a nested caller ignore. Receive moves across it and destructive ancestor changes. Assert fetch on ignored -> visible, removal without echo on visible -> ignored, and preservation of the ignored child on ancestor delete or replacement.
 
 **GREEN:** Persist only remote non-materialized state needed for transitions and port ancestor shielding to native apply.
 
@@ -117,7 +118,7 @@ Native observation must apply visibility before ID assignment, hashing, or pendi
 
 - [ ] Watcher overflow and full reconciliation cannot leak an ignored node.
 - [ ] The O(1) native move bound applies only to visible -> visible.
-- [ ] No identity is retained or guessed across a private interval.
+- [ ] No identity is retained or guessed across an ignored interval.
 
 ## RED/GREEN TDD specification
 

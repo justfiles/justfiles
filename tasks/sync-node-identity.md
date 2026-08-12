@@ -84,13 +84,16 @@ The accepted wire schema can refine this shape. It must preserve these facts:
 
 This section is normative. It narrows every unqualified move-cost statement in this task. Protocol v2 represents the synchronized projection of a local tree. It does not represent excluded local nodes.
 
-### Security invariant
+### One generic ignore list
 
-- `PRIVATE_PREFIXES` in `packages/sync/replica.ts` remains a non-configurable floor. A host `ignore` predicate can only widen it.
+- Each replica receives one serializable `ignore: readonly string[]` list. The sync package contains no `/private` or other product-specific paths.
+- An ignored path is outside that replica's synchronization projection in both directions. The replica keeps its own local bytes and does not bind them to another replica's same-path bytes.
+- A connection uses the union of the server and client lists. A client can widen only its connection view; it cannot weaken the server list or delete server data by changing its list.
+- The sync engine always excludes its own persisted state. This is an implementation invariant, not a business ignore rule.
 - Apply visibility before outbound publication, inbound materialization, snapshot and delta generation, tombstone generation, and blob transfer.
 - A node-addressed implementation must reconstruct the effective path by walking `parentId` links. A cache is permitted, but correctness cannot depend on a stale cache.
 - No mutation can disclose an ignored destination path or post-boundary node metadata, content hash, or content. An unpublish operation can name only IDs that were already shared.
-- The server must reject client mutations that enter built-in `/.state` or `/private`. Clients must also enforce the rule on receive.
+- The server must apply the effective connection list before serialization and mutation acceptance. The client must also enforce its own list on receive.
 - An incoming delete, replacement, or move must not destroy or expose a locally ignored descendant. Preserve the current `shieldsIgnored` behavior: skip an unsafe apply and allow deliberate local divergence.
 
 ### Projection transitions
@@ -102,9 +105,19 @@ Classify a local move from its effective old and new paths:
 - ignored -> visible: emit `publishTree`; enumerate parent before child; assign fresh sync IDs; upload only missing blobs.
 - visible -> ignored: emit `unpublishTree`; tombstone formerly shared IDs; remove the remote subtree; keep local bytes.
 
-IDs do not survive exit from the synchronized projection. A later move out of `/private` publishes fresh IDs. A node that has always been ignored has no sync-ID mapping.
+IDs do not survive a local filesystem move out of the synchronized projection. A later move back to a visible path publishes fresh IDs. A node that has always been ignored has no sync-ID mapping.
 
-For a host-specific ignore, the server can still own the remote node. A client can keep non-materialized remote node state with `localIno: null`, but it must not bind that state to same-path local ignored content. On a remote ignored -> visible transition, fetch and materialize the complete subtree. On visible -> ignored, remove only the synchronized materialization and do not echo a server delete.
+The server can own an independent node at a path ignored by a client. A client can keep non-materialized remote node state with `localIno: null`, but it must not bind that state to same-path local ignored content. On a remote ignored -> visible transition, fetch and materialize the complete subtree. On visible -> ignored, remove only the synchronized materialization and do not echo a server delete.
+
+### Ignore-list changes
+
+- Sync normalizes and hashes each list. The caller does not supply a version.
+- The client sends its list and hash when it opens a sync subscription. The server combines it with its own list and binds every snapshot and delta cursor to the effective hash.
+- A changed hash invalidates the old projection cursor and runs automatic best-effort reconciliation before normal push and pull.
+- Adding an ignore root masks matching nodes and preserves each replica's local bytes. The policy change alone emits no user delete and does not delete another replica's copy.
+- Removing an ignore root compares the filtered remote snapshot with local bytes. Remote wins a same-path conflict; equal content binds to the remote ID; a local-only path publishes with fresh IDs. Data loss is permitted when remote wins.
+- An existing account with no saved policy hash performs the same full reconciliation and records a baseline.
+- Reconciliation is resumable and internal to sync. Application code supplies only the ignore list.
 
 ### Boundary operations
 
@@ -117,15 +130,16 @@ Boundary work is intentionally O(N). The O(1) guarantee applies only to visible 
 
 ### Required security tests
 
-- [ ] `/.state/**` and `/private/**` never appear in snapshots, deltas, mutations, tombstones, blob requests, or blob responses.
+- [ ] Engine state and caller-ignored paths never appear in snapshots, deltas, mutations, tombstones, blob requests, or blob responses.
 - [ ] visible -> visible produces one move for 0, 1, 100, and 4,000 descendants.
 - [ ] ignored -> ignored produces no wire work.
 - [ ] ignored -> visible publishes the complete subtree parent first with fresh IDs.
-- [ ] visible -> ignored removes the complete remote subtree while local private bytes survive.
-- [ ] A remote mutation cannot inject a built-in private path.
+- [ ] visible -> ignored removes the complete remote subtree while local ignored bytes survive.
+- [ ] A remote mutation cannot inject a path ignored by the receiving replica or effective connection policy.
 - [ ] A remote ancestor delete or replacement cannot destroy a locally ignored descendant.
-- [ ] A host-specific ignored -> visible receive fetches missing descendants; visible -> ignored does not echo a delete.
-- [ ] Crash and retry cannot expose a partial publication or leak a private blob.
+- [ ] An ignored -> visible receive fetches missing descendants; visible -> ignored does not echo a delete.
+- [ ] A changed ignore list reconciles automatically on launch and an unchanged list does no scan or cursor reset.
+- [ ] Crash and retry cannot expose a partial publication or leak an ignored blob.
 
 ## Server authority and conflicts
 
@@ -187,6 +201,7 @@ Complete the tasks in this order:
 - [ ] [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
 - [ ] [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
 - [ ] [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md)
+- [ ] [ignore-policy reconciliation](./sync-node-identity-ignore-policy-reconciliation.md)
 - [ ] [phase 5: migration](./sync-node-identity-phase-5-migration.md)
 - [ ] [phase 6: native filesystem](./sync-node-identity-phase-6-native-fs.md)
 - [ ] [phase 7: retire path v1](./sync-node-identity-phase-7-retire-v1.md)
@@ -199,6 +214,7 @@ Complete the tasks in this order:
 - [ ] No file content is uploaded for a pure move.
 - [ ] Create, update, move, delete, offline create, retry, restart, and bootstrap converge across memory, SQLite, and IndexedDB adapters.
 - [ ] Stale revisions, missing parents, occupied names, and cycles have deterministic tested results.
+- [ ] One generic per-replica ignore list is reconciled automatically when it changes, including existing accounts with no saved policy hash.
 - [ ] A deleted path followed by a new create has two distinct sync IDs.
 - [ ] Native filesystem restart and crash reconciliation restore a correct mapping and change stream.
 - [ ] Protocol v1 is removed only after compatibility and migration tests pass.

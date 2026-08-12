@@ -110,23 +110,23 @@ A single node revision serializes metadata, content, location, and deletion in v
 
 Boundary operations use the same authoritative revision, name-claim, and retry rules as ordinary mutations.
 
-- Validate a complete `publishTree` before commit: operation ID, parent revision, every parent relation, name claim, type, cycle rule, content hash, and built-in private-prefix rule.
+- Validate a complete `publishTree` before commit: operation ID, parent revision, every parent relation, name claim, type, cycle rule, content hash, and effective connection ignore list.
 - One invalid node rejects the full publication. No prefix becomes accepted state.
 - `unpublishTree` tombstones every formerly shared ID. Exact retry succeeds; stale or conflicting retry fails.
 - Republish always uses fresh IDs. A tombstoned ID cannot be reactivated.
 - A destination collision or stale base rejects the full operation and requires pull/replan. Do not synthesize a conflict-copy name.
-- A client cannot bypass the private rule with an unknown parent, forged chain, or existing node moved below a private root.
+- A client cannot bypass an ignore rule with an unknown parent, forged chain, or existing node moved below an ignored root.
 
 ### Additional RED/GREEN cycle: atomic boundary validation
 
-**RED:** Submit publications with an occupied descendant name, stale parent, reused tombstoned ID, missing blob, and private destination. Assert full rejection with no node, mapping, journal prefix, or blob reference. Retry valid publish and unpublish operations and assert idempotent success.
+**RED:** Submit publications with an occupied descendant name, stale parent, reused tombstoned ID, missing blob, and destination ignored by the server or client subscription. Assert full rejection with no node, mapping, journal prefix, or blob reference. Retry valid publish and unpublish operations and assert idempotent success.
 
 **GREEN:** Validate against one authoritative transaction snapshot. Commit the complete logical operation and all node rows together.
 
 ### Added acceptance criteria
 
-- [ ] Conflict handling cannot partially disclose private publication or partially remove a shared subtree.
-- [ ] Server authority tests cover the private floor, not only replica helpers.
+- [ ] Conflict handling cannot partially disclose ignored publication or partially remove a shared subtree.
+- [ ] Server authority tests cover the effective ignore list, not only replica helpers.
 
 ## RED/GREEN TDD specification
 

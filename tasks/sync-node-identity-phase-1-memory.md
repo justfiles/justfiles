@@ -76,18 +76,19 @@ For this phase, use deterministic single-writer revisions in the in-memory refer
 
 ## Visibility boundary requirements
 
-Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore`, `PRIVATE_PREFIXES`, and `shieldsIgnored` in `packages/sync/replica.ts` first.
+Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shieldsIgnored` in `packages/sync/replica.ts` first.
 
-- Add a minimal canonical-path visibility policy. Built-in private prefixes are always active. A host policy can only add exclusions.
+- Add one minimal serializable `ignore: readonly string[]` list per replica. Normalize canonical absolute paths, remove duplicates, sort them, and use segment-aware prefix matching. A listed directory hides its complete subtree.
+- Do not put `/private` or another product path in `packages/sync`. The engine excludes only its own persisted state without caller configuration.
 - The node store is the synchronized projection. Purely ignored local nodes have no sync-ID mapping.
 - A live server-known node that this host does not materialize can have `localIno: null`. It is not a tombstone and must not bind to same-path local ignored content.
 - Add logical `publishTree` and `unpublishTree`. Publication assigns fresh IDs and is parent-first. Unpublication tombstones old shared IDs while it preserves local bytes.
 - Resolve both effective paths from the moved inode and parent chains before classification. Do not decide visibility from `parentId + name` alone.
 - Apply visibility before snapshots, deltas, tombstones, blobs, and incoming tree changes.
 
-### Cycle 8: private data is absent from the wire
+### Cycle 8: ignored data is absent from the wire
 
-**RED:** Create, update, and delete files under `/.state` and `/private` on both memory replicas. Assert that snapshots, deltas, tombstones, mutations, and blob calls never contain them. Assert that each replica keeps its own bytes.
+**RED:** Give both replicas caller-provided `/private` ignores. Create, update, and delete independent files there. Assert that snapshots, deltas, tombstones, mutations, and blob calls never contain them. Assert that each replica keeps its own bytes. Repeat for the engine's state without listing it.
 
 **GREEN:** Add projection filtering at node snapshot, delta, apply, and blob boundaries.
 
@@ -99,14 +100,15 @@ Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore`, `PRIVAT
 
 ### Cycle 10: receiving projection and ancestor shielding
 
-**RED:** Give replica B a nested host ignore. Move a remote subtree across B's boundary in both directions. Assert subtree fetch or local removal without echo. Send a remote ancestor delete and file replacement. Assert that B preserves its ignored child and skips the unsafe apply.
+**RED:** Give replica B a nested ignore. Move a remote subtree across B's boundary in both directions. Assert subtree fetch or local removal without echo. Send a remote ancestor delete and file replacement. Assert that B preserves its ignored child and skips the unsafe apply.
 
 **GREEN:** Persist non-materialized remote state as needed, fetch on ignored -> visible receive, and port `shieldsIgnored` to node mutations.
 
 ### Added acceptance criteria
 
-- [ ] Memory v2 applies the same built-in and host ignore policy in both directions.
-- [ ] Private nodes do not acquire sync IDs and private hashes never reach the blob protocol.
+- [ ] Memory v2 applies one caller-provided ignore list symmetrically in both directions.
+- [ ] Replica A and replica B can keep different bytes at the same ignored path.
+- [ ] Ignored nodes do not acquire sync IDs and ignored hashes never reach the blob protocol.
 - [ ] IDs are not reused after unpublish and later republish.
 - [ ] Only visible -> visible moves have the no-enumeration guarantee.
 

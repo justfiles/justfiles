@@ -84,22 +84,23 @@ This phase can use the deterministic revision rules from phase 1. Complete confl
 
 The SQLite and HTTP slice must enforce the visibility contract from the memory reference as a security boundary.
 
-- Exclude private and host-ignored data from node snapshots, deltas, tombstones, and blob routes before serialization.
-- The server independently reconstructs ancestry and rejects create, move, or publish operations under built-in private prefixes.
+- Add an ignore-list subscription to the v2 handshake. The server calculates the effective connection list as the union of its normalized list and the client's normalized list.
+- Exclude effective ignored data from node snapshots, deltas, tombstones, and blob routes before serialization.
+- The server independently reconstructs ancestry and rejects create, move, or publish operations under the effective connection list. A client cannot weaken the server list.
 - `publishTree` can use resumable staging, but it validates every node and blob before one atomic filesystem, mapping, revision, and journal commit. Staged nodes are not visible.
-- `unpublishTree` atomically removes the shared projection and records tombstones. The client keeps its private local bytes without live mappings to old IDs.
-- Server-local private nodes stay independent from same-path private nodes on clients.
+- `unpublishTree` atomically removes the shared projection and records tombstones. The client keeps its ignored local bytes without live mappings to old IDs.
+- Server-local ignored nodes stay independent from same-path ignored nodes on clients.
 
 ### Additional RED/GREEN cycle: HTTP boundary security
 
-**RED:** Through the HTTP replica, run all four transitions with a nested tree. Inspect metadata and blob calls. Assert no private destination or content crosses HTTP, publication is all-or-nothing, unpublication removes all remote nodes, and retry is idempotent. Send a crafted mutation into `/private` and assert rejection before blob fetch.
+**RED:** Give the server and client different ignore roots. Through HTTP, run all four transitions with nested trees. Inspect metadata and blob calls. Assert that the connection uses the union, no ignored destination or content crosses HTTP, publication is all-or-nothing, unpublication removes the visible remote nodes, and retry is idempotent. Send a crafted mutation into either ignored root and assert rejection before blob fetch.
 
 **GREEN:** Reuse the phase-1 planner. Add server validation, staged publication, transactional commit, and filtered transport.
 
 ### Added acceptance criteria
 
-- [ ] A direct HTTP caller cannot bypass the built-in private floor.
-- [ ] Failed publication exposes no partial tree or private blob.
+- [ ] A direct HTTP caller cannot weaken the server ignore list or bypass its own declared connection list.
+- [ ] Failed publication exposes no partial tree or ignored blob.
 - [ ] Publish and unpublish survive SQLite restart and safe retry.
 
 ## RED/GREEN TDD specification

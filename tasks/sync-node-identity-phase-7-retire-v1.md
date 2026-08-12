@@ -67,7 +67,7 @@ Add permanent operation-count regression tests for move and fanout. Do not use w
 - Recursive delete remains child-first O(N).
 - Snapshot and delta cursors operate on node state and preserve the frozen-high-water guarantee.
 - Node tombstone retention preserves stale-client correctness. If collection removes the last mutation needed by a lagging cursor, the journal floor forces authoritative rebootstrap.
-- Generation, lineage, reset, ignored/private paths, lazy content, and blob GC continue to work.
+- Generation, lineage, reset, ignored paths, lazy content, and blob GC continue to work.
 - Existing v1 data can be collected only after successful v2 migration state proves it is no longer the sole copy of needed identity or cursor information.
 
 ## Visibility boundary requirements
@@ -78,11 +78,11 @@ Permanent performance assertions must distinguish ordinary moves from visibility
 - ignored -> ignored produces no mutation, journal row, or blob work.
 - ignored -> visible and visible -> ignored use `publishTree` and `unpublishTree`. They are O(N) by design because the projection gains or loses N nodes.
 - A boundary operation can use paged payloads, but publication is atomic and resumable. Tests count nodes and pages; they do not claim O(1).
-- Keep built-in and host-ignore tests as permanent security tests after v1 removal.
+- Keep engine-state and caller-ignore tests as permanent security tests after v1 removal.
 
 ### Additional RED/GREEN cycle: permanent visibility boundary
 
-**RED:** Add backend-independent tests for all four transitions, fresh republish IDs, private-byte survival, inbound rejection, nested ancestor shielding, crash-safe publication, and absence of ignored data from all metadata and blob endpoints.
+**RED:** Add backend-independent tests for all four transitions, ignored-byte survival, fresh republish IDs, inbound rejection, nested ancestor shielding, crash-safe publication, and absence of ignored data from all metadata and blob endpoints.
 
 **GREEN:** Remove any v2 path that bypasses the shared projection planner. Keep canonical path utilities used for visibility.
 

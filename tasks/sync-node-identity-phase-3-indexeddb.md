@@ -66,13 +66,13 @@ IndexedDB must pass the same visibility conformance behavior as memory and SQLit
 
 ### Additional RED/GREEN cycle: offline boundary transition
 
-**RED:** Create a nested private subtree offline, move it to a visible path, and restart before and after upload. Assert one complete publication with fresh IDs and no duplicate blobs. Move it back to `/private`, restart, and assert complete remote removal while local bytes survive. Also assert that inbound private mutations and an unsafe ancestor replacement are not applied.
+**RED:** Create a nested ignored subtree offline, move it to a visible path, and restart before and after upload. Assert one complete publication with fresh IDs and no duplicate blobs. Move it back to the ignored root, restart, and assert complete remote removal while local bytes survive. Also assert that inbound ignored mutations and an unsafe ancestor replacement are not applied.
 
 **GREEN:** Store pending publish/unpublish operations and stable operation IDs in the same IndexedDB transaction as projection state. Resume them through the shared planner.
 
 ### Added acceptance criteria
 
-- [ ] IndexedDB metadata and blob access never expose built-in or host-ignored local content.
+- [ ] IndexedDB metadata and blob access never expose engine state or caller-ignored local content.
 - [ ] An aborted transaction leaves no partial mapping or partial publication.
 - [ ] A formerly shared subtree gets fresh IDs after it leaves and re-enters the projection.
 
