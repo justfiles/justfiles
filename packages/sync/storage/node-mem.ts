@@ -47,9 +47,9 @@ export function memNodeStore(): NodeStore {
 					.filter((mutation) => mutation.kind === 'update')
 					.map((mutation) => [mutation.nodeId, mutation])
 			)
-			const deleted = new Set(
+			const replaced = new Set(
 				operation.mutations
-					.filter((mutation) => mutation.kind === 'delete')
+					.filter((mutation) => mutation.kind === 'create' || mutation.kind === 'delete')
 					.map((mutation) => mutation.nodeId)
 			)
 			// Every retained hash must survive content GC even when served on its own page.
@@ -60,7 +60,7 @@ export function memNodeStore(): NodeStore {
 				const mutations = previous
 					.filter(
 						(mutation) =>
-							!deleted.has(mutation.nodeId) &&
+							!replaced.has(mutation.nodeId) &&
 							(mutation.kind !== 'update' || !updates.has(mutation.nodeId))
 					)
 					.map((mutation) => {
