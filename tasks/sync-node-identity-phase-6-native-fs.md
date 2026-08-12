@@ -46,7 +46,7 @@ Persist at least:
 - current local file identity key;
 - parent sync ID and name;
 - accepted node revision and tombstone state;
-- hash cache keyed by stable observed file identity plus metadata;
+- hash cache keyed by stable observed file identity plus a content-change token that the adapter declares reliable;
 - watcher or reconciliation cursor;
 - pending local node mutations and their operation IDs.
 
@@ -62,12 +62,12 @@ OS identity can be reused. If the adapter cannot prove continuity, treat the eve
 
 - Initial scan walks the tree parent before child, assigns sync IDs to unknown nodes, and persists a consistent sidecar snapshot.
 - Incremental watcher output is a set of candidate paths, not authoritative state.
-- Reconciliation stats candidates and compares observed file identity with the sidecar.
+- Reconciliation stats candidates and compares observed file identity with the sidecar. Size and timestamps are invalidation hints, not proof that content is unchanged.
 - The same known file identity moved between visible paths produces one v2 move.
 - A visible-to-visible directory move does not emit descendant moves. Descendants keep their parent-ID relationships and sync IDs.
 - A vanished known identity produces delete. A new unknown identity produces create.
 - Content or metadata change on the same identity produces update.
-- Periodic or restart full scan repairs missed, coalesced, and overflowed watcher events.
+- Periodic or restart full scan repairs missed, coalesced, and overflowed watcher events. It rehashes visible regular files when the adapter cannot prove content continuity with a reliable persisted change token.
 
 ### Remote apply
 
@@ -87,9 +87,9 @@ OS identity can be reused. If the adapter cannot prove continuity, treat the eve
 
 ### Content
 
-- Cache content hash by native identity, mtime, and size. Any mismatch requires re-hash.
-- A pure move reuses the cached hash and uploads no bytes.
-- Serving a blob by hash resolves the current path through the sidecar and verifies the file still matches before returning bytes.
+- Reuse a cached hash only when native identity and a reliable content-change token are unchanged. Treat mtime and size only as cheap reasons to invalidate the cache.
+- A pure move with uninterrupted observation and proven content continuity reuses the cached hash and uploads no bytes. A repair scan must rehash when it cannot prove continuity.
+- Serving a blob by hash resolves the current path through the sidecar and verifies the actual bytes against the requested hash before returning them. A matching identity, mtime, and size is not sufficient.
 - If bytes changed after hashing, report a retryable local-change condition. Do not send bytes under the wrong hash.
 
 ## Visibility boundary requirements
@@ -150,9 +150,9 @@ Use deterministic fake watcher and file-identity adapters for behavior tests. Ad
 
 ### Cycle 5: missed watcher events
 
-**RED:** Mutate several files without watcher candidates, then run full reconciliation. Assert the same create, update, move, and delete stream as direct observation, with no duplicate operation IDs.
+**RED:** Mutate several files without watcher candidates, then run full reconciliation. Include an in-place content edit that keeps the same identity and size and restores the old mtime. Assert the same create, update, move, and delete stream as direct observation, with no duplicate operation IDs.
 
-**GREEN:** Implement full scan as repair over the same comparison rules.
+**GREEN:** Implement full scan as repair over the same comparison rules. Rehash when no adapter-provided change token proves that bytes are unchanged.
 
 ### Cycle 6: remote move and echo suppression
 
@@ -174,9 +174,9 @@ Use deterministic fake watcher and file-identity adapters for behavior tests. Ad
 
 ### Cycle 9: hash race
 
-**RED:** Change a file between hash calculation and blob read. Assert the adapter never serves new bytes under the old hash and returns a retryable local-change result.
+**RED:** Change a file between hash calculation and blob read while preserving identity, size, and mtime. Assert the adapter never serves new bytes under the old hash and returns a retryable local-change result.
 
-**GREEN:** Re-stat or otherwise verify identity, mtime, and size around hash-addressed reads.
+**GREEN:** Hash the bytes read for the response and compare them with the requested hash before the response becomes observable. Return a retryable local-change result on mismatch.
 
 ### Cycle 10: end-to-end native and SQLite sync
 
@@ -192,6 +192,7 @@ Use deterministic fake watcher and file-identity adapters for behavior tests. Ad
 - [ ] Descendant sidecar records do not store paths that require prefix rewrites.
 - [ ] Ambiguous inode reuse becomes delete plus create, never an identity guess.
 - [ ] Restart and full reconciliation repair missed events and both native/sidecar crash orderings.
+- [ ] A same-size edit with unchanged mtime cannot survive a repair scan under a stale hash.
 - [ ] A pure move uploads no content.
 - [ ] Blob reads cannot return bytes under a stale hash.
 - [ ] Deterministic tests do not depend on real watcher timing.

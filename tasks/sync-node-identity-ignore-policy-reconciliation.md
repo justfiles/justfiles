@@ -183,7 +183,7 @@ Complete one cycle before starting the next. Test through `synced()`, public vol
 
 ### Cycle 3: add an ignore root
 
-**RED:** Start with different client and server bytes under a visible `/private`, complete sync, then relaunch the client with `/private` ignored. Assert that the client keeps its local bytes, the server keeps its bytes, no policy-generated delete crosses the wire, no mapping claims agreed live state, and later changes on either side stay private.
+**RED:** Complete a visible baseline sync for `/private`, then disconnect the client. Write different exact byte sequences to the same path on the offline client and server. Relaunch the client with `/private` ignored. Assert that each endpoint keeps its pre-launch byte sequence, no policy-generated delete or content transfer crosses the wire, no mapping claims agreed live state, and later changes on either side stay independent.
 
 **GREEN:** Add visible-to-ignored startup masking and commit the new policy state after it completes.
 
