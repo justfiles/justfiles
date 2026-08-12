@@ -103,6 +103,7 @@ export interface NodeStore {
 	/** Every live node in one consistent read. */
 	live(): Promise<NodeState[]>
 	save(state: NodeState): Promise<void>
+	/** Append accepted mutations while removing rows they supersede. */
 	append(operation: NodeOperation, localSource?: string): Promise<void>
 	read(after: number, limit: number): Promise<NodeJournalRow[]>
 	head(): Promise<number>
@@ -305,13 +306,13 @@ async function applyMutation(
 	nodes: NodeStore,
 	mutation: NodeMutation,
 	source?: string
-): Promise<void> {
+): Promise<boolean> {
 	const previous = await nodes.get(mutation.nodeId)
-	if (previous && previous.revision >= mutation.revision) return
+	if (previous && previous.revision >= mutation.revision) return false
 
 	if (mutation.kind === 'create') {
 		const parent = await nodes.get(mutation.parentId)
-		if (parent?.localIno == null) return
+		if (parent?.localIno == null) return false
 		const ino = previous?.localIno ?? port.mintIno()
 		if (
 			previous?.localIno != null &&
@@ -324,7 +325,7 @@ async function applyMutation(
 			}
 		}
 		const state = nextState(mutation, previous, ino)
-		if (!state) return
+		if (!state) return false
 		const { meta, xattrs } = inodeMetaFromSync(mutation.meta)
 		await port.upsertInode(ino, { ...meta, ctimeNs: 0n }, mutation.contentHash, xattrs)
 		await port.setDirent(parent.localIno, mutation.name, ino, mutation.meta.type)
@@ -332,21 +333,22 @@ async function applyMutation(
 		port.emit({ ino, kind: 'meta', source })
 		await emitDirent(port, ino, parent.localIno, mutation.name, source)
 		if (mutation.meta.type === FileType.Regular) port.emit({ ino, kind: 'content', source })
-		return
+		return true
 	}
 
-	if (!previous || previous.localIno === null) return
+	if (!previous || previous.localIno === null) return false
 	if (mutation.kind === 'move') {
 		const from = previous.parentId === null ? null : await nodes.get(previous.parentId)
 		const to = await nodes.get(mutation.parentId)
-		if (from?.localIno == null || to?.localIno == null) return
+		if (from?.localIno == null || to?.localIno == null) return false
 		await port.deleteDirent(from.localIno, previous.name)
 		await port.setDirent(to.localIno, mutation.name, previous.localIno, previous.type)
 		const state = nextState(mutation, previous, previous.localIno)
-		if (state) await nodes.save(state)
+		if (!state) return false
+		await nodes.save(state)
 		await emitDirent(port, previous.localIno, from.localIno, previous.name, source)
 		await emitDirent(port, previous.localIno, to.localIno, mutation.name, source)
-		return
+		return true
 	}
 	if (mutation.kind === 'delete') {
 		const parent = previous.parentId === null ? null : await nodes.get(previous.parentId)
@@ -356,19 +358,21 @@ async function applyMutation(
 		}
 		await port.deleteInodeIfUnreferenced(previous.localIno)
 		const state = nextState(mutation, previous, null)
-		if (state) await nodes.save(state)
+		if (!state) return false
+		await nodes.save(state)
 		port.emit({ ino: previous.localIno, kind: 'meta', source })
-		return
+		return true
 	}
 
 	const state = nextState(mutation, previous, previous.localIno)
-	if (!state) return
+	if (!state) return false
 	const { meta, xattrs } = inodeMetaFromSync(mutation.meta)
 	await port.upsertInode(previous.localIno, { ...meta, ctimeNs: 0n }, mutation.contentHash, xattrs)
 	await nodes.save(state)
 	port.emit({ ino: previous.localIno, kind: 'meta', source })
 	if (mutation.meta.type === FileType.Regular)
 		port.emit({ ino: previous.localIno, kind: 'content', source })
+	return true
 }
 
 /**
@@ -384,9 +388,10 @@ export async function applyNodeOperationsOver(
 ): Promise<void> {
 	await bindRoot(port, nodes)
 	for (const operation of operations) {
+		const accepted: NodeMutation[] = []
 		for (const mutation of operation.mutations)
-			await applyMutation(port, nodes, mutation, opts?.source)
-		await nodes.append(operation, opts?.source)
+			if (await applyMutation(port, nodes, mutation, opts?.source)) accepted.push(mutation)
+		if (accepted.length > 0) await nodes.append({ mutations: accepted }, opts?.source)
 	}
 }
 

@@ -271,6 +271,50 @@ test('an edit arrives under the same node id and location', async () => {
 	expect((await b.vol.stat('/docs/note.md')).size).toBe((await a.vol.stat('/docs/note.md')).size)
 })
 
+test('a lagging peer skips superseded update blobs after source GC', async () => {
+	const { a, b, fetched, sync } = nodePeers()
+	await a.vol.writeFile('/note.txt', bytes('v1'))
+	await sync()
+
+	await a.vol.writeFile('/note.txt', bytes('v2'))
+	const staleHash = (await a.nodeAt('/note.txt'))?.contentHash
+	await a.vol.writeFile('/note.txt', bytes('v3'))
+	await a.storage.caps?.content?.gcUnreferenced()
+	fetched.length = 0
+
+	await sync(1)
+
+	expect(text(await b.vol.readFile('/note.txt'))).toBe('v3')
+	expect(fetched).not.toContain(staleHash)
+})
+
+test('a first sync skips a create blob superseded by offline edits', async () => {
+	const { a, b, deliver, fetched } = nodePeers()
+	await a.vol.writeFile('/note.txt', bytes('v1'))
+	const staleHash = (await a.nodeAt('/note.txt'))?.contentHash
+	await a.vol.writeFile('/note.txt', bytes('v2'))
+	await a.vol.writeFile('/note.txt', bytes('v3'))
+	await a.storage.caps?.content?.gcUnreferenced()
+
+	await deliver(1)
+
+	expect(text(await b.vol.readFile('/note.txt'))).toBe('v3')
+	expect(fetched).not.toContain(staleHash)
+})
+
+test('a first sync skips content deleted before delivery', async () => {
+	const { a, b, deliver, fetched } = nodePeers()
+	await a.vol.writeFile('/note.txt', bytes('obsolete'))
+	const staleHash = (await a.nodeAt('/note.txt'))?.contentHash
+	await a.vol.rm('/note.txt')
+	await a.storage.caps?.content?.gcUnreferenced()
+
+	await deliver(1)
+
+	expect(await b.vol.exists('/note.txt')).toBe(false)
+	expect(fetched).not.toContain(staleHash)
+})
+
 test('a delete tombstones its id and a recreated path gets a new one', async () => {
 	const { a, b, sync } = nodePeers()
 	await a.vol.mkdir('/docs')
@@ -389,6 +433,27 @@ test('a stale content mutation fetches no bytes and changes nothing', async () =
 		contentHash: nodeA?.contentHash
 	})
 	expect(nodeB?.localIno).not.toBe(nodeA?.localIno)
+})
+
+test('a stale received update cannot replace retained journal state', async () => {
+	const a = makePeer('a')
+	const c = makePeer('c')
+	await a.vol.writeFile('/note.txt', bytes('v1'))
+	const create = await a.replica.nodeDeltas('', { limit: 100 })
+	await a.vol.writeFile('/note.txt', bytes('v2'))
+	const stale = await a.replica.nodeDeltas(create.to, { limit: 100 })
+	await a.vol.writeFile('/note.txt', bytes('v3'))
+
+	await a.replica.applyNodeOperations(
+		stale.operations,
+		() => Promise.reject(new Error('stale mutation fetched content')),
+		{ source: REMOTE }
+	)
+	await a.storage.caps?.content?.gcUnreferenced()
+	const retained = await a.replica.nodeDeltas('', { limit: 100 })
+	await c.replica.applyNodeOperations(retained.operations, (hash) => a.replica.getBlobByHash(hash))
+
+	expect(text(await c.vol.readFile('/note.txt'))).toBe('v3')
 })
 
 test('a paged bootstrap applies parents before children and loses no delta', async () => {
