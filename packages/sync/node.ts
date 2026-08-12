@@ -157,7 +157,12 @@ export function projection(ignore?: readonly string[]): Projection {
 	// Shortest first, so a root already covered by an ancestor root is dropped.
 	for (const p of [...seen].sort()) if (!roots.some((r) => p.startsWith(`${r}/`))) roots.push(p)
 	const matches = ignorePrefixes(roots)
-	return { roots, ignored: (path) => roots.length > 0 && matches(path) }
+	// BOTH sides are reduced to NFC, never just the root. A tree can hold either
+	// spelling of the same name — a macOS volume hands back the decomposed one —
+	// and normalising only what the caller wrote would leave the decomposed twin
+	// visible. Matching both spellings hides more than asked, which is the safe
+	// direction for a boundary; hiding less is a leak.
+	return { roots, ignored: (path) => roots.length > 0 && matches(path.normalize('NFC')) }
 }
 
 // ── Node state + the adapter seam ─────────────────────────────────────────────
@@ -338,6 +343,38 @@ async function tombstone(nodes: NodeStore, ino: Ino): Promise<NodeMutation | nul
 	return { kind: 'delete', nodeId: id, revision: prev.revision + 1 }
 }
 
+/**
+ * The ignore roots that sit strictly BELOW either end of a move, as suffixes
+ * relative to the moved node. Scanning the ignore LIST (never the moved subtree)
+ * is what keeps an ordinary move independent of subtree size — and both the
+ * recorder and the applier need it, because a move that changes NO node's
+ * visibility for the author can still change it for the receiver.
+ */
+function crossings(view: Projection, oldPath: string, newPath: string): string[] {
+	const suffixes = new Set<string>()
+	for (const root of view.roots) {
+		if (root.startsWith(`${oldPath}/`)) suffixes.add(root.slice(oldPath.length))
+		if (root.startsWith(`${newPath}/`)) suffixes.add(root.slice(newPath.length))
+	}
+	// Shortest first, so a parent is settled before anything nested under it.
+	return [...suffixes].sort()
+}
+
+/** Walk `suffix` down from a node through the NODE store, by name. */
+async function descend(
+	nodes: NodeStore,
+	rootId: SyncNodeId,
+	suffix: string
+): Promise<NodeState | null> {
+	let current = await nodes.get(rootId)
+	for (const segment of suffix.split('/')) {
+		if (segment === '') continue
+		if (!current) return null
+		current = (await nodes.children(current.id)).find((c) => c.name === segment) ?? null
+	}
+	return current
+}
+
 // ── The observer: one TreeEffect in, one node operation out ───────────────────
 
 /**
@@ -413,21 +450,6 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 			await op.add({ kind: 'delete', nodeId: node.id, revision: node.revision + 1 }, null)
 	}
 
-	/**
-	 * The ignore roots that sit strictly BELOW either end of a move, as suffixes
-	 * relative to the moved node. Scanning the ignore LIST (never the moved subtree)
-	 * is what keeps an ordinary move independent of subtree size.
-	 */
-	function crossings(oldPath: string, newPath: string): string[] {
-		const suffixes = new Set<string>()
-		for (const root of view.roots) {
-			if (root.startsWith(`${oldPath}/`)) suffixes.add(root.slice(oldPath.length))
-			if (root.startsWith(`${newPath}/`)) suffixes.add(root.slice(newPath.length))
-		}
-		// Shortest first, so a published parent exists before a nested one is decided.
-		return [...suffixes].sort()
-	}
-
 	return {
 		async record(port, effect) {
 			await bindRoot(port, nodes)
@@ -486,7 +508,7 @@ export function nodeSyncObserver(nodes: NodeStore, view: Projection): MutationOb
 						// ignore root sits under either end (the ordinary case) this is exactly
 						// one move, and nothing walks the subtree.
 						const entering: string[] = []
-						for (const suffix of crossings(oldPath, newPath)) {
+						for (const suffix of crossings(view, oldPath, newPath)) {
 							const before = view.ignored(oldPath + suffix)
 							const after = view.ignored(newPath + suffix)
 							if (before === after) continue
@@ -693,6 +715,40 @@ async function dematerialise(
 	await nodes.save({ ...node, localIno: null })
 }
 
+/**
+ * A move can leave the moved node visible here and still change what its
+ * DESCENDANTS may be — the receiver's ignore roots are its own, and the author
+ * knew nothing about them. Only the subtrees whose visibility actually flips are
+ * touched; when no root sits under either end this loop does not run at all, so
+ * the constant-cost rebind above keeps its cost.
+ */
+async function reconcileCrossings(
+	port: TreePort,
+	nodes: NodeStore,
+	view: Projection,
+	rootId: SyncNodeId,
+	oldPath: string,
+	newPath: string,
+	source?: string
+): Promise<void> {
+	for (const suffix of crossings(view, oldPath, newPath)) {
+		const before = view.ignored(oldPath + suffix)
+		const after = view.ignored(newPath + suffix)
+		if (before === after) continue
+		const node = await descend(nodes, rootId, suffix)
+		if (!node) continue
+		if (after) {
+			if (node.localIno !== null) await dematerialise(port, nodes, node, source)
+			continue
+		}
+		if (node.localIno !== null) continue
+		const parent = node.parentId === null ? null : await nodes.get(node.parentId)
+		if (parent?.localIno == null) continue
+		const { parentPath } = splitPath(newPath + suffix)
+		await materialise(port, nodes, view, node, parent.localIno, parentPath, source)
+	}
+}
+
 async function applyMutation(
 	port: TreePort,
 	nodes: NodeStore,
@@ -734,6 +790,10 @@ async function applyMutation(
 		const state = nextState(m, prev, prev.localIno)
 		if (!state) return
 		const path = await effectivePath(nodes, m.parentId, m.name)
+		// Read BEFORE the state moves: the descendants that change visibility are the
+		// ones whose old and new effective paths straddle an ignore root of this
+		// replica's own.
+		const oldPath = await effectivePath(nodes, prev.parentId, prev.name)
 		const visible = toIno !== null && path !== null && !view.ignored(path)
 		if (
 			visible &&
@@ -769,6 +829,9 @@ async function applyMutation(
 					source
 				})
 			}
+			// The moved node stayed visible here, but a descendant may not have.
+			if (view.roots.length > 0 && oldPath !== null && path !== null)
+				await reconcileCrossings(port, nodes, view, m.nodeId, oldPath, path, source)
 			return
 		}
 		// The move crossed THIS replica's visibility boundary, in one direction or the
@@ -927,8 +990,28 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			const kept = rows.filter(
 				(r) => !opts?.excludeLocalSource || r.localSource !== opts.excludeLocalSource
 			)
+			const operations: NodeOperation[] = []
+			for (const row of kept) {
+				// A replica may always send what it AUTHORED: its own projection decided
+				// what got recorded, and an unpublication is precisely a row about nodes
+				// that are now hidden HERE. What it RELAYS is another matter — a row it
+				// applied from a peer with a wider view can name a path this replica was
+				// told to hide, and passing that on would relay straight past its own
+				// boundary. Judged by where each node sits NOW, which errs toward hiding.
+				if (row.localSource === undefined || sync.view.roots.length === 0) {
+					operations.push(row.operation)
+					continue
+				}
+				const visible: NodeMutation[] = []
+				for (const m of row.operation.mutations) {
+					const node = await sync.nodes.get(m.nodeId)
+					const path = node ? await effectivePath(sync.nodes, node.parentId, node.name) : null
+					if (path !== null && !sync.view.ignored(path)) visible.push(m)
+				}
+				if (visible.length > 0) operations.push({ mutations: visible })
+			}
 			return {
-				operations: kept.map((r) => r.operation),
+				operations,
 				// The cursor advances over the RAW rows, so a fully-filtered page still
 				// makes progress.
 				to: String(rows[rows.length - 1]?.seq ?? from),
@@ -975,6 +1058,17 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 			}
 
 			const wanted: string[] = []
+			/** Every hash under a subtree about to be materialised, boundary respected. */
+			const collect = async (root: NodeState, rootPath: string): Promise<void> => {
+				const pending = [{ node: root, path: rootPath }]
+				while (pending.length > 0) {
+					const next = pending.pop()
+					if (!next || sync.view.ignored(next.path)) continue
+					if (next.node.contentHash) wanted.push(next.node.contentHash)
+					for (const child of await sync.nodes.children(next.node.id))
+						pending.push({ node: child, path: joinPath(next.path, child.name) })
+				}
+			}
 			for (const m of mutations) {
 				if (m.kind === 'delete') continue
 				const location = await locate(m.nodeId)
@@ -990,14 +1084,20 @@ export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeRep
 				// back into view. The bytes are fetched HERE, before the transaction: an
 				// apply is local and atomic, and cannot wait on a network.
 				const moved = await sync.nodes.get(m.nodeId)
-				if (!moved || moved.localIno !== null) continue
-				const pending = [{ node: moved, path: location }]
-				while (pending.length > 0) {
-					const next = pending.pop()
-					if (!next || sync.view.ignored(next.path)) continue
-					if (next.node.contentHash) wanted.push(next.node.contentHash)
-					for (const child of await sync.nodes.children(next.node.id))
-						pending.push({ node: child, path: joinPath(next.path, child.name) })
+				if (!moved) continue
+				if (moved.localIno === null) {
+					await collect(moved, location)
+					continue
+				}
+				// The moved node is already materialised, so the move changes nothing for
+				// it — but a DESCENDANT can still cross this replica's own boundary into
+				// view, and it needs its bytes just the same.
+				const from = await effectivePath(sync.nodes, moved.parentId, moved.name)
+				if (from === null) continue
+				for (const suffix of crossings(sync.view, from, location)) {
+					if (!sync.view.ignored(from + suffix) || sync.view.ignored(location + suffix)) continue
+					const node = await descend(sync.nodes, m.nodeId, suffix)
+					if (node) await collect(node, location + suffix)
 				}
 			}
 			for (const hash of new Set(wanted))

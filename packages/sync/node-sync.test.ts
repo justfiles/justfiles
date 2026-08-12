@@ -776,6 +776,75 @@ test('a receiver does not re-serve a snapshot of what its own policy hides', asy
 	expect(mutationsOf((await a.replica.nodeScan()).operations)).toHaveLength(4)
 })
 
+test('a remote move that crosses a nested RECEIVER ignore reconciles the descendants', async () => {
+	const { a, b, fetched, sync } = nodePeers({ bIgnore: ['/dst/hidden'] })
+	await a.vol.mkdir('/src/hidden/deep', { recursive: true })
+	await a.vol.writeFile('/src/hidden/deep/f.txt', bytes('secret'))
+	await a.vol.writeFile('/src/open.txt', bytes('open'))
+	await sync()
+	// Nothing is hidden at `/src`, so B holds the whole subtree.
+	expect(text(await b.vol.readFile('/src/hidden/deep/f.txt'))).toBe('secret')
+	const hiddenId = (await a.nodeAt('/src/hidden'))?.id ?? ''
+
+	// The moved root stays visible to B; one descendant crosses INTO its ignore.
+	await a.vol.rename('/src', '/dst')
+	await sync()
+
+	expect(text(await b.vol.readFile('/dst/open.txt'))).toBe('open')
+	expect(await b.vol.exists('/dst/hidden')).toBe(false)
+	expect(await b.nodes.get(hiddenId)).toMatchObject({ deleted: false, localIno: null })
+
+	// And back out: the descendant returns, bytes and all.
+	await b.storage.caps?.content?.gcUnreferenced()
+	fetched.length = 0
+	await a.vol.rename('/dst', '/back')
+	await sync()
+
+	expect(text(await b.vol.readFile('/back/hidden/deep/f.txt'))).toBe('secret')
+	expect((await b.nodeAt('/back/hidden'))?.id).toBe(hiddenId)
+	expect(text(await b.vol.readFile('/back/open.txt'))).toBe('open')
+})
+
+test('a relaying replica does not pass on what its own policy hides', async () => {
+	const { a, b, sync } = nodePeers({ bIgnore: ['/vault'] })
+	await a.vol.mkdir('/vault')
+	await a.vol.writeFile('/vault/secret.txt', bytes('classified'))
+	await a.vol.writeFile('/open.txt', bytes('open'))
+	await sync()
+
+	// C pulls B's WHOLE journal, including the rows B applied from A.
+	const c = makePeer('c')
+	const relayed = await b.replica.nodeDeltas('', { limit: 500 })
+	const named = mutationsOf(relayed.operations).map((m) => (m.kind === 'create' ? m.name : ''))
+	expect(named).not.toContain('vault')
+	expect(named).not.toContain('secret.txt')
+
+	await c.replica.applyNodeOperations(relayed.operations, (hash) => b.replica.getBlobByHash(hash), {
+		source: REMOTE
+	})
+	expect(await c.vol.exists('/vault')).toBe(false)
+	expect(text(await c.vol.readFile('/open.txt'))).toBe('open')
+})
+
+test('an ignore root matches whatever Unicode spelling the tree holds', async () => {
+	// The tree holds the DECOMPOSED spelling (what a macOS volume hands back); the
+	// caller configured the composed one. Same path, two encodings — written as
+	// escapes so no editor can quietly normalise the test into a tautology.
+	const decomposed = '/cafe\u0301'
+	const composed = '/caf\u00e9'
+	expect(decomposed).not.toBe(composed)
+	const { a, b, sync } = nodePeers({ aIgnore: [composed] })
+	await a.vol.mkdir(decomposed)
+	await a.vol.writeFile(`${decomposed}/f.txt`, bytes('hidden'))
+	await a.vol.writeFile('/open.txt', bytes('open'))
+
+	await sync()
+
+	expect(await a.nodeAt(`${decomposed}/f.txt`)).toBe(null)
+	expect(await b.vol.exists(decomposed)).toBe(false)
+	expect(text(await b.vol.readFile('/open.txt'))).toBe('open')
+})
+
 test('an ignore root is canonicalised before it is matched', async () => {
 	const { a, b, sync } = nodePeers({ aIgnore: ['/x/../private', '//dup//keys/', '/./dot'] })
 	for (const dir of ['/private', '/dup/keys', '/dot']) {
