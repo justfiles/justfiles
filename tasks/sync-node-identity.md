@@ -115,7 +115,8 @@ The server can own an independent node at a path ignored by a client. A client c
 ### Ignore-list changes
 
 - Sync normalizes and hashes each list. The caller does not supply a version.
-- The client sends its list and hash when it opens a sync subscription. The server combines it with its own list and binds every snapshot and delta cursor to the effective hash.
+- The client sends its normalized list and hash when it opens a sync subscription. The server combines it with its own list and returns the normalized effective list, effective hash, and identity epoch. The client verifies the hash and that the effective list contains every client root before it accepts the subscription.
+- The client uses the returned effective list for reconciliation and both-direction filtering. It persists that list with its hash. Every snapshot and delta cursor is bound to the effective hash.
 - A changed hash invalidates the old projection cursor and runs automatic best-effort reconciliation before normal push and pull.
 - Adding an ignore root masks matching nodes and preserves each replica's local bytes. The policy change alone emits no user delete and does not delete another replica's copy.
 - Removing an ignore root compares the filtered remote snapshot with local bytes. Remote wins a same-path conflict; equal content binds to the remote ID; a local-only path publishes with fresh IDs. Data loss is permitted when remote wins.

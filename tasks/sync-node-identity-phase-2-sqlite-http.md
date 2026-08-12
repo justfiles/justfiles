@@ -84,7 +84,8 @@ This phase can use the deterministic revision rules from phase 1. Complete confl
 
 The SQLite and HTTP slice must enforce the visibility contract from the memory reference as a security boundary.
 
-- Add an ignore-list subscription to the v2 handshake. The server calculates the effective connection list as the union of its normalized list and the client's normalized list.
+- Add an ignore-list subscription to the v2 handshake. The client sends its normalized list and hash. The server calculates the effective connection list as the union of its normalized list and the client's normalized list, then returns the normalized effective list, its hash, and the identity epoch.
+- Before it accepts the subscription, the client normalizes the returned list, recalculates its hash, and verifies that it contains every client root. A mismatch is a typed protocol error and no cursor or projection state advances.
 - Exclude effective ignored data from node snapshots, deltas, tombstones, and blob routes before serialization.
 - The server independently reconstructs ancestry and rejects create, move, or publish operations under the effective connection list. A client cannot weaken the server list.
 - `publishTree` can use resumable staging, but it validates every node and blob before one atomic filesystem, mapping, revision, and journal commit. Staged nodes are not visible.
@@ -94,13 +95,14 @@ The SQLite and HTTP slice must enforce the visibility contract from the memory r
 
 ### Additional RED/GREEN cycle: HTTP boundary security
 
-**RED:** Give the server and client different ignore roots. Through HTTP, run all four root transitions and a visible-root move that crosses a nested ignore boundary. Inspect metadata and blob calls. Assert that the connection uses the union, no ignored destination or content crosses HTTP, each compound operation is all-or-nothing, unpublication removes the visible remote nodes, and retry is idempotent. Send a crafted mutation into either ignored root and assert rejection before blob fetch.
+**RED:** Give the server and client different ignore roots. Assert that the handshake returns the normalized union and a matching hash. Reject a response with a wrong hash or a missing client root before cursor advancement. Through HTTP, run all four root transitions and a visible-root move that crosses a nested ignore boundary. Inspect metadata and blob calls. Assert that the connection uses the union, no ignored destination or content crosses HTTP, each compound operation is all-or-nothing, unpublication removes the visible remote nodes, and retry is idempotent. Send a crafted mutation into either ignored root and assert rejection before blob fetch.
 
 **GREEN:** Reuse the phase-1 planner. Add server validation, staged publication, transactional commit, and filtered transport.
 
 ### Added acceptance criteria
 
 - [ ] A direct HTTP caller cannot weaken the server ignore list or bypass its own declared connection list.
+- [ ] A client rejects an effective list whose hash is invalid or which omits one of its declared roots.
 - [ ] Failed publication exposes no partial tree or ignored blob.
 - [ ] Publish and unpublish survive SQLite restart and safe retry.
 

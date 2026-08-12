@@ -75,7 +75,19 @@ For one client/server connection, the effective list is:
 normalize(server ignore union client ignore)
 ```
 
-The client sends its normalized list and hash when it opens the v2 subscription. The server applies the union before snapshot and delta serialization and before accepting mutations. A client can widen its view but cannot weaken the server list. The client still filters received data as a second enforcement point.
+The client sends its normalized list and hash when it opens the v2 subscription. The server applies the union before snapshot and delta serialization and before accepting mutations. It returns:
+
+```ts
+type IgnoreSubscriptionPolicy = {
+	effectiveIgnore: readonly string[]
+	effectiveHash: string
+	identityEpoch: string
+}
+```
+
+The client normalizes `effectiveIgnore`, recalculates `effectiveHash`, and verifies that every client root is present before it accepts a cursor. It uses the effective list for reconciliation and for local filtering in both directions. A mismatch is a typed protocol error and does not advance local state.
+
+A client can add exclusions for its connection but cannot weaken the server list. The client still filters received data as a second enforcement point.
 
 ## Persisted state
 
@@ -85,6 +97,7 @@ Persist at least:
 
 ```ts
 type IgnorePolicyState = {
+	effectiveIgnore: readonly string[]
 	localHash: string
 	effectiveHash: string
 	remoteIdentityEpoch: string
@@ -101,6 +114,7 @@ type IgnorePolicyState = {
 The stored shape can differ. It must preserve these observable guarantees:
 
 - the same normalized list has the same hash on every runtime;
+- restart retains the exact effective roots needed to classify paths without asking the application to know the server list;
 - a cursor is valid only for the effective policy hash that created it;
 - restart resumes one reconciliation operation instead of starting a competing one;
 - the new hash becomes active only after the new projection and cursor commit.
@@ -110,13 +124,13 @@ The stored shape can differ. It must preserve these observable guarantees:
 Before normal push and pull:
 
 1. Normalize and hash the local list.
-2. Open the remote subscription and receive the effective hash and identity epoch.
-3. Compare these values with persisted sync state.
+2. Open the remote subscription and receive the normalized effective list, effective hash, and identity epoch.
+3. Verify the effective list and hash, then compare them with persisted sync state.
 4. If they match, use the existing cursors without a tree scan.
 5. If either differs or no prior state exists, freeze a filtered remote snapshot and pause normal push and pull.
 6. Compare local materialization, local node mappings, and the filtered remote snapshot.
 7. Apply the best-effort rules below in resumable pages.
-8. Atomically commit the effective hash, identity epoch, and new cursor.
+8. Atomically commit the effective list, effective hash, identity epoch, and new cursor.
 9. Resume normal sync.
 
 `localFirst` can still return a usable local volume, but status remains `syncing` until reconciliation completes. Writes during reconciliation remain journaled and are processed after the new cursor commits. They cannot bypass the new list.
@@ -189,9 +203,9 @@ Complete one cycle before starting the next. Test through `synced()`, public vol
 
 ### Cycle 2: connection union and cursor fencing
 
-**RED:** Give the server `/server-private` and the client `/client-private`. Assert that neither subtree appears in the HTTP snapshot, delta, tombstone, or blob calls. Reuse that cursor with a different client list and assert a typed rebootstrap response.
+**RED:** Give the server `/server-private` and the client `/client-private`. Assert that the handshake returns both roots in canonical order with a matching hash and that neither subtree appears in the HTTP snapshot, delta, tombstone, or blob calls. Return a wrong hash and a list that omits the client root; assert a typed protocol error before any local state advances. Reuse a valid cursor with a different client list and assert a typed rebootstrap response.
 
-**GREEN:** Add the subscription descriptor, effective union, filtered transport, and policy-bound cursor validation.
+**GREEN:** Add the subscription descriptor, returned effective union, client verification, filtered transport, and policy-bound cursor validation.
 
 ### Cycle 3: add an ignore root
 
@@ -246,6 +260,7 @@ Do not expose reconciliation methods, policy versions, cursors, or operation IDs
 - [ ] The only product-supplied concept is one `ignore: readonly string[]` list per replica.
 - [ ] `packages/sync` contains no product-specific ignored path.
 - [ ] The server and client union is enforced before all metadata and blob transport.
+- [ ] The client receives, verifies, persists, and enforces the normalized effective list without exposing server-policy concepts to the application.
 - [ ] An unchanged normalized list starts without a full scan.
 - [ ] A changed list reconciles automatically before normal sync.
 - [ ] Adding an ignore root preserves independent local and server bytes and emits no policy-generated user delete.
