@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 source_issue: 463
 ---
 
@@ -107,12 +107,12 @@ Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shi
 
 ### Added acceptance criteria
 
-- [ ] Memory v2 applies one caller-provided ignore list symmetrically in both directions.
-- [ ] Replica A and replica B can keep different bytes at the same ignored path.
-- [ ] Ignored nodes do not acquire sync IDs and ignored hashes never reach the blob protocol.
-- [ ] IDs are not reused after unpublish and later republish.
-- [ ] Only projection-preserving visible -> visible moves have the no-enumeration guarantee.
-- [ ] Nested ignore intersections enumerate only affected publish or unpublish subtrees.
+- [x] Memory v2 applies one caller-provided ignore list symmetrically in both directions.
+- [x] Replica A and replica B can keep different bytes at the same ignored path.
+- [x] Ignored nodes do not acquire sync IDs and ignored hashes never reach the blob protocol.
+- [x] IDs are not reused after unpublish and later republish.
+- [x] Only projection-preserving visible -> visible moves have the no-enumeration guarantee.
+- [x] Nested ignore intersections enumerate only affected publish or unpublish subtrees.
 
 ## RED/GREEN TDD specification
 
@@ -166,15 +166,15 @@ Remove duplication and deepen the node-sync module only after all cycles pass. K
 
 ## Acceptance criteria
 
-- [ ] Protocol v1 tests remain unchanged and green.
-- [ ] A public memory v2 conformance suite covers create, bootstrap, update, move, delete, retry, and path reuse.
-- [ ] A projection-preserving 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
-- [ ] The projection-preserving visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
-- [ ] Each replica owns only its `sync ID <-> local inode` mapping.
-- [ ] No test depends on local inode and sync ID values being equal.
-- [ ] Tombstones retain identity after the local inode is removed.
-- [ ] `packages/fs` gains no sync imports or sync concepts.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] Protocol v1 tests remain unchanged and green.
+- [x] A public memory v2 conformance suite covers create, bootstrap, update, move, delete, retry, and path reuse.
+- [x] A projection-preserving 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
+- [x] The projection-preserving visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
+- [x] Each replica owns only its `sync ID <-> local inode` mapping.
+- [x] No test depends on local inode and sync ID values being equal.
+- [x] Tombstones retain identity after the local inode is removed.
+- [x] `packages/fs` gains no sync imports or sync concepts.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

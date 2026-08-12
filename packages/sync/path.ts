@@ -93,6 +93,11 @@ import {
 //      same tree writes, different recording. Without the hook, adopting it means
 //      editing `atomicMove` in three backends; with it, replacing one module.
 //
+//      THE SECOND RECORDER NOW EXISTS: `node.ts` (protocol v2) records the SAME
+//      effects from the SAME backends as node mutations, and a directory rename is
+//      one row there instead of 2N here. It runs beside v1, not over it — nothing
+//      below is deprecated until the migration phases retire the path protocol.
+//
 //      Staged (each lands alone, conformance green throughout):
 //        1. [DONE] The hook. `TreeEffect` + `MutationObserver` (below); every
 //           backend's mutators announce one effect per tree change instead of
