@@ -1,0 +1,18 @@
+name: publish-sync
+
+on:
+  push:
+    tags:
+      - 'sync-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      package_name: Sync
+      working_directory: packages/sync
