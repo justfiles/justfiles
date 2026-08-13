@@ -7,17 +7,24 @@
  * many descendants it contains.
  */
 
-import type { Storage } from '@justfiles/fs/storage'
+import type { ContentStore, Storage, StorageCapabilities } from '@justfiles/fs/storage'
 import type { MutationObserver, TreePort } from '@justfiles/fs/storage.shared'
 import { joinPath } from '@justfiles/fs/storage.shared'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import { z } from 'zod'
+import { verifyBytes } from './content'
+import type {
+	NodeSnapshotBlob,
+	NodeSnapshotBusy,
+	NodeSnapshotClose,
+	NodeSnapshotPage,
+	NodeSnapshotRestart,
+	NodeSnapshotSessions
+} from './node-snapshot'
 import type { SyncCursor } from './replica'
 import { PAGE } from './replica'
 import { ContentHash, inodeMetaFromSync, SyncMeta, syncMetaFromInode } from './wire'
-
-export type { NodeSnapshotSessions } from './node-snapshot'
 
 // ── Identity and wire ────────────────────────────────────────────────────────
 
@@ -114,11 +121,84 @@ export interface NodeStore {
 /** Sync-owned seams attached to one node-addressed filesystem backend. */
 export interface NodeSyncModule {
 	readonly nodes: NodeStore
-	apply(operations: readonly NodeOperation[], opts?: { source?: string }): Promise<void>
+	apply(
+		operations: readonly NodeOperation[],
+		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
+	): Promise<void>
 }
 
-export interface NodeStorage extends Storage {
-	readonly nodeSync: NodeSyncModule
+/** Optimized sync behavior attached without extending the filesystem package. */
+export interface SyncCapability {
+	nodeDeltas(
+		cursor: SyncCursor,
+		opts?: { excludeLocalSource?: string; limit?: number }
+	): Promise<{ operations: NodeOperation[]; to: SyncCursor; done: boolean }>
+	wantedContent(operations: readonly NodeOperation[]): Promise<string[]>
+	applyNodeOperations(
+		operations: readonly NodeOperation[],
+		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
+	): Promise<void>
+	getBlobByHash(hash: string): Promise<Uint8Array>
+	nodeSnapshot(
+		page?: string,
+		opts?: { limit?: number }
+	): Promise<NodeSnapshotPage | NodeSnapshotRestart | NodeSnapshotBusy>
+	getSnapshotBlob(session: string, hash: string): Promise<NodeSnapshotBlob>
+	closeSnapshot(session: string): Promise<NodeSnapshotClose>
+}
+
+/** Assemble the shared capability surface over adapter-owned persistence and snapshots. */
+export function createSyncCapability(
+	module: NodeSyncModule,
+	snapshots: NodeSnapshotSessions,
+	getBlob: (ino: Ino) => Promise<Uint8Array>
+): SyncCapability {
+	return {
+		async nodeDeltas(cursor, opts) {
+			const limit = opts?.limit ?? PAGE
+			const from = Number(cursor || '0')
+			const rows = await module.nodes.read(from, limit)
+			return {
+				operations: rows
+					.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
+					.map((row) => row.operation),
+				to: String(rows.at(-1)?.seq ?? from),
+				done: rows.length < limit
+			}
+		},
+		async wantedContent(operations) {
+			const wanted = new Set<string>()
+			for (const mutation of mutationsOf(operations)) {
+				if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
+				const previous = await module.nodes.get(mutation.nodeId)
+				if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+					continue
+				if (mutation.contentHash) wanted.add(mutation.contentHash)
+			}
+			return [...wanted]
+		},
+		applyNodeOperations: (operations, opts) => module.apply(operations, opts),
+		async getBlobByHash(hash) {
+			for (const node of await module.nodes.live()) {
+				if (node.contentHash !== hash || node.localIno === null) continue
+				return verifyBytes(hash, await getBlob(node.localIno))
+			}
+			throw new Error(`ENOENT: blob ${hash}`)
+		},
+		nodeSnapshot: (page, opts) => snapshots.page(page, opts?.limit ?? PAGE),
+		getSnapshotBlob: (session, hash) => snapshots.getBlob(session, hash),
+		closeSnapshot: (session) => snapshots.close(session)
+	}
+}
+
+/** Attach a sync-owned capability while keeping the filesystem type unchanged. */
+export function withSyncCapability(storage: Storage, sync: SyncCapability): SyncCapableStorage {
+	return Object.assign(storage, { caps: { ...storage.caps, sync } })
+}
+
+/** A filesystem whose optional sync accelerator was assembled by `packages/sync`. */
+export type SyncCapableStorage = Storage & {
+	readonly caps: StorageCapabilities & { readonly sync: SyncCapability }
 }
 
 /** Fold one accepted mutation into this replica's state. */
@@ -301,7 +381,7 @@ async function applyMutation(
 	port: TreePort,
 	nodes: NodeStore,
 	mutation: NodeMutation,
-	source?: string
+	opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
 ): Promise<boolean> {
 	const previous = await nodes.get(mutation.nodeId)
 	if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
@@ -314,12 +394,19 @@ async function applyMutation(
 		const state = nextState(mutation, null, ino)
 		if (!state) return false
 		const { meta, xattrs } = inodeMetaFromSync(mutation.meta)
-		await port.upsertInode(ino, { ...meta, ctimeNs: 0n }, mutation.contentHash, xattrs)
+		await port.upsertInode(
+			ino,
+			{ ...meta, ctimeNs: 0n },
+			mutation.contentHash,
+			xattrs,
+			mutation.contentHash === undefined ? undefined : opts?.content?.get(mutation.contentHash)
+		)
 		await port.setDirent(parent.localIno, mutation.name, ino, mutation.meta.type)
 		await nodes.save(state)
-		port.emit({ ino, kind: 'meta', source })
-		await emitDirent(port, ino, parent.localIno, mutation.name, source)
-		if (mutation.meta.type === FileType.Regular) port.emit({ ino, kind: 'content', source })
+		port.emit({ ino, kind: 'meta', source: opts?.source })
+		await emitDirent(port, ino, parent.localIno, mutation.name, opts?.source)
+		if (mutation.meta.type === FileType.Regular)
+			port.emit({ ino, kind: 'content', source: opts?.source })
 		return true
 	}
 
@@ -333,32 +420,38 @@ async function applyMutation(
 		const state = nextState(mutation, previous, previous.localIno)
 		if (!state) return false
 		await nodes.save(state)
-		await emitDirent(port, previous.localIno, from.localIno, previous.name, source)
-		await emitDirent(port, previous.localIno, to.localIno, mutation.name, source)
+		await emitDirent(port, previous.localIno, from.localIno, previous.name, opts?.source)
+		await emitDirent(port, previous.localIno, to.localIno, mutation.name, opts?.source)
 		return true
 	}
 	if (mutation.kind === 'delete') {
 		const parent = previous.parentId === null ? null : await nodes.get(previous.parentId)
 		if (parent?.localIno != null) {
 			await port.deleteDirent(parent.localIno, previous.name)
-			await emitDirent(port, previous.localIno, parent.localIno, previous.name, source)
+			await emitDirent(port, previous.localIno, parent.localIno, previous.name, opts?.source)
 		}
 		await port.deleteInodeIfUnreferenced(previous.localIno)
 		const state = nextState(mutation, previous, null)
 		if (!state) return false
 		await nodes.save(state)
-		port.emit({ ino: previous.localIno, kind: 'meta', source })
+		port.emit({ ino: previous.localIno, kind: 'meta', source: opts?.source })
 		return true
 	}
 
 	const state = nextState(mutation, previous, previous.localIno)
 	if (!state) return false
 	const { meta, xattrs } = inodeMetaFromSync(mutation.meta)
-	await port.upsertInode(previous.localIno, { ...meta, ctimeNs: 0n }, mutation.contentHash, xattrs)
+	await port.upsertInode(
+		previous.localIno,
+		{ ...meta, ctimeNs: 0n },
+		mutation.contentHash,
+		xattrs,
+		mutation.contentHash === undefined ? undefined : opts?.content?.get(mutation.contentHash)
+	)
 	await nodes.save(state)
-	port.emit({ ino: previous.localIno, kind: 'meta', source })
+	port.emit({ ino: previous.localIno, kind: 'meta', source: opts?.source })
 	if (mutation.meta.type === FileType.Regular)
-		port.emit({ ino: previous.localIno, kind: 'content', source })
+		port.emit({ ino: previous.localIno, kind: 'content', source: opts?.source })
 	return true
 }
 
@@ -371,13 +464,13 @@ export async function applyNodeOperationsOver(
 	port: TreePort,
 	nodes: NodeStore,
 	operations: readonly NodeOperation[],
-	opts?: { source?: string }
+	opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
 ): Promise<void> {
 	await bindRoot(port, nodes)
 	for (const operation of operations) {
 		const accepted: NodeMutation[] = []
 		for (const mutation of operation.mutations)
-			if (await applyMutation(port, nodes, mutation, opts?.source)) accepted.push(mutation)
+			if (await applyMutation(port, nodes, mutation, opts)) accepted.push(mutation)
 		if (accepted.length > 0) await nodes.append({ mutations: accepted }, opts?.source)
 	}
 }
@@ -397,53 +490,80 @@ export interface NodeReplica {
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	hasBlobByHash(hash: string): Promise<boolean>
 	putBlobByHash(hash: string, data: Uint8Array): Promise<void>
+	nodeSnapshot: SyncCapability['nodeSnapshot']
+	getSnapshotBlob: SyncCapability['getSnapshotBlob']
+	closeSnapshot: SyncCapability['closeSnapshot']
 }
 
-/** A local node replica over one filesystem and its node-sync module. */
-export function nodeSyncReplica(storage: Storage, sync: NodeSyncModule): NodeReplica {
-	const content = () => {
-		const store = storage.caps?.content
-		if (!store) throw new Error('backend exposes no content store (caps.content)')
-		return store
-	}
+/** A local node replica over one filesystem and its discovered sync capability. */
+export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore): NodeReplica {
+	const staged = new Map<string, Uint8Array>()
+	const content = addressed
+		? {
+				async prepare(hashes: readonly string[], getBlob: (hash: string) => Promise<Uint8Array>) {
+					for (const hash of hashes) {
+						if (await addressed.hasByHash(hash)) continue
+						await addressed.putByHash(hash, await verifyBytes(hash, await getBlob(hash)))
+					}
+					return undefined
+				},
+				async get(hash: string) {
+					const blob = await addressed.getByHash(hash)
+					if (!blob) throw new Error(`ENOENT: blob ${hash}`)
+					return blob
+				},
+				has: (hash: string) => addressed.hasByHash(hash),
+				async put(hash: string, data: Uint8Array) {
+					await addressed.putByHash(hash, await verifyBytes(hash, data))
+				},
+				release(_hashes: readonly string[]) {}
+			}
+		: {
+				async prepare(hashes: readonly string[], getBlob: (hash: string) => Promise<Uint8Array>) {
+					const blobs = new Map<string, Uint8Array>()
+					for (const hash of hashes) {
+						const blob = staged.get(hash) ?? (await getBlob(hash))
+						blobs.set(hash, await verifyBytes(hash, blob))
+					}
+					return blobs
+				},
+				async get(hash: string) {
+					const pending = staged.get(hash)
+					if (pending) return pending.slice()
+					return sync.getBlobByHash(hash)
+				},
+				async has(hash: string) {
+					try {
+						await this.get(hash)
+						return true
+					} catch {
+						return false
+					}
+				},
+				async put(hash: string, data: Uint8Array) {
+					staged.set(hash, (await verifyBytes(hash, data)).slice())
+				},
+				release(hashes: readonly string[]) {
+					for (const hash of hashes) staged.delete(hash)
+				}
+			}
 
 	return {
-		async nodeDeltas(cursor, opts) {
-			const limit = opts?.limit ?? PAGE
-			const from = Number(cursor || '0')
-			const rows = await sync.nodes.read(from, limit)
-			return {
-				operations: rows
-					.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
-					.map((row) => row.operation),
-				to: String(rows.at(-1)?.seq ?? from),
-				done: rows.length < limit
-			}
-		},
+		nodeSnapshot: sync.nodeSnapshot,
+		getSnapshotBlob: sync.getSnapshotBlob,
+		closeSnapshot: sync.closeSnapshot,
+		nodeDeltas: sync.nodeDeltas,
 		async applyNodeOperations(operations, getBlobByHash, opts) {
-			const store = content()
-			const wanted = new Set<string>()
-			for (const mutation of mutationsOf(operations)) {
-				if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
-				const previous = await sync.nodes.get(mutation.nodeId)
-				if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
-					continue
-				if (mutation.contentHash) wanted.add(mutation.contentHash)
+			const wanted = await sync.wantedContent(operations)
+			const blobs = await content.prepare(wanted, getBlobByHash)
+			try {
+				await sync.applyNodeOperations(operations, { ...opts, content: blobs })
+			} finally {
+				content.release(wanted)
 			}
-			for (const hash of wanted)
-				if (!(await store.hasByHash(hash))) await store.putByHash(hash, await getBlobByHash(hash))
-			await sync.apply(operations, opts)
 		},
-		async getBlobByHash(hash) {
-			const blob = await content().getByHash(hash)
-			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
-			return blob
-		},
-		async hasBlobByHash(hash) {
-			return content().hasByHash(hash)
-		},
-		putBlobByHash: async (hash, data) => {
-			await content().putByHash(hash, data)
-		}
+		getBlobByHash: (hash) => content.get(hash),
+		hasBlobByHash: (hash) => content.has(hash),
+		putBlobByHash: (hash, data) => content.put(hash, data)
 	}
 }

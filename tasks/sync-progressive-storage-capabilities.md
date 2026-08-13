@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 ---
 
 # sync: add progressive storage capabilities and universal fallbacks
@@ -233,18 +233,18 @@ internal node persistence or snapshot lifecycle merely to make tests convenient.
 
 ## Acceptance criteria
 
-- [ ] Implementing only `Storage` is sufficient for quiescent full-scan sync.
-- [ ] `caps.content` and `caps.sync` independently improve the selected strategy.
-- [ ] Every one of the four capability combinations passes public memory behavior.
-- [ ] Missing `caps.content` never throws merely because sync needs file bytes.
-- [ ] Missing `caps.sync` selects reconciliation instead of rejecting the backend.
-- [ ] `caps.sync` preserves the completed stable-ID, compact-move, retry, and
+- [x] Implementing only `Storage` is sufficient for quiescent full-scan sync.
+- [x] `caps.content` and `caps.sync` independently improve the selected strategy.
+- [x] Every one of the four capability combinations passes public memory behavior.
+- [x] Missing `caps.content` never throws merely because sync needs file bytes.
+- [x] Missing `caps.sync` selects reconciliation instead of rejecting the backend.
+- [x] `caps.sync` preserves the completed stable-ID, compact-move, retry, and
   snapshot-handoff behavior.
-- [ ] Shared sync rules are not copied into the memory adapter.
-- [ ] `packages/fs` contains no `sync` capability declaration, sync import, node ID,
+- [x] Shared sync rules are not copied into the memory adapter.
+- [x] `packages/fs` contains no `sync` capability declaration, sync import, node ID,
   journal, revision, snapshot-session, or protocol concept.
-- [ ] The only minimum backend interface remains `Storage`.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] The only minimum backend interface remains `Storage`.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

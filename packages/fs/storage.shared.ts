@@ -22,7 +22,8 @@ export interface TreePort {
 		ino: Ino,
 		meta: InodeMeta,
 		contentHash: string | undefined,
-		xattrs: Record<string, Uint8Array>
+		xattrs: Record<string, Uint8Array>,
+		content?: Uint8Array
 	): Promise<void>
 	setDirent(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<void>
 	deleteDirent(dirIno: Ino, name: string): Promise<void>

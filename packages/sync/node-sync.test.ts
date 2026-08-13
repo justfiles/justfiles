@@ -1,20 +1,33 @@
 /** Node-addressed sync (protocol v2), replica to replica over memory. */
 
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
 import type { TreePort } from '@justfiles/fs/storage.shared'
 import { joinPath } from '@justfiles/fs/storage.shared'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import { expect, test, vi } from 'vitest'
-import type { NodeMutation, NodeOperation, NodeState, NodeStorage, NodeStore } from './node'
-import { mutationsOf, nodeSyncReplica, ROOT_NODE_ID } from './node'
+import { storageSyncReplica } from './index'
+import type { NodeMutation, NodeOperation, NodeState, NodeStore, SyncCapableStorage } from './node'
+import { mutationsOf, ROOT_NODE_ID } from './node'
 import { NODE_SNAPSHOT_TTL_MS } from './node-snapshot'
-import { memNodeStore, nodeMemReplica, nodeMemStorage, nodeSyncExtension } from './storage/node-mem'
+import { memNodeStore, nodeMemStorage } from './storage/node-mem'
 
 const REMOTE = 'remote'
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 const text = (value: Uint8Array): string => new TextDecoder().decode(value)
+
+function optimizedReplica(storage: SyncCapableStorage) {
+	const selected = storageSyncReplica(storage)
+	if (selected.strategy !== 'incremental') throw new Error('expected incremental sync')
+	return selected.replica
+}
+
+test('memory exposes optimized sync only through its capability object', () => {
+	const storage = nodeMemStorage()
+
+	expect(storage).not.toHaveProperty('nodeSync')
+	expect(storage.caps?.sync).toBeDefined()
+})
 
 function inoMinter(prefix: string): (() => Ino) & { minted: () => Ino[] } {
 	let count = 0
@@ -38,27 +51,14 @@ function makePeer(id: string, opts?: { counting?: boolean; store?: NodeStore }) 
 		}
 	})
 	const mintIno = inoMinter(id)
-	let storage: NodeStorage
-	if (opts?.counting) {
-		const extension = nodeSyncExtension(opts.store ?? memNodeStore())
-		storage = memStorage({
-			mintIno,
-			extension: {
-				observer: {
-					record: (port, effect, options) =>
-						extension.observer.record(counted(port), effect, options)
-				},
-				attach: (tree) => extension.attach(counted(tree))
-			}
-		})
-	} else if (opts?.store) {
-		storage = memStorage({ mintIno, extension: nodeSyncExtension(opts.store) })
-	} else {
-		storage = nodeMemStorage({ mintIno })
-	}
-	const replica = nodeSyncReplica(storage, storage.nodeSync)
+	const nodes = opts?.store ?? memNodeStore()
+	const storage: SyncCapableStorage = nodeMemStorage({
+		mintIno,
+		store: nodes,
+		mapTree: opts?.counting ? counted : undefined
+	})
+	const replica = optimizedReplica(storage)
 	const vol = volume(storage)
-	const nodes = storage.nodeSync.nodes
 	return {
 		storage,
 		replica,
@@ -104,13 +104,15 @@ type NodePeer = ReturnType<typeof makePeer>
 
 function makeSnapshotPeer(id: string, store?: NodeStore) {
 	const mintIno = inoMinter(id)
-	const { storage, replica } = nodeMemReplica({ mintIno, store })
+	const nodes = store ?? memNodeStore()
+	const storage = nodeMemStorage({ mintIno, store: nodes })
+	const replica = optimizedReplica(storage)
 	const vol = volume(storage)
 	return {
 		storage,
 		replica,
 		vol,
-		nodes: storage.nodeSync.nodes,
+		nodes,
 		async orphanCount(): Promise<number> {
 			const reachable = new Set<Ino>([storage.rootIno])
 			async function walk(dir: string): Promise<void> {
@@ -140,10 +142,15 @@ function makeSnapshotPeer(id: string, store?: NodeStore) {
 		async nodeAt(path: string): Promise<NodeState | null> {
 			const stat = await vol.lstat(path).catch(() => null)
 			if (!stat) return null
-			const nodeId = await storage.nodeSync.nodes.idFor(stat.ino)
-			return nodeId === null ? null : storage.nodeSync.nodes.get(nodeId)
+			const nodeId = await nodes.idFor(stat.ino)
+			return nodeId === null ? null : nodes.get(nodeId)
 		}
 	}
+}
+
+function withoutContent(storage: SyncCapableStorage): SyncCapableStorage {
+	const { content: _content, ...caps } = storage.caps
+	return { ...storage, caps }
 }
 
 function nodePeers(opts?: { counting?: boolean }) {
@@ -355,6 +362,52 @@ test('a snapshot token keeps every advertised blob readable across an opening ra
 		source: REMOTE
 	})
 	expect(text(await b.vol.readFile('/note.txt'))).toBe('new')
+})
+
+test('sync without content capability eagerly materializes retained snapshot bytes and updates', async () => {
+	const sourceBase = nodeMemStorage()
+	const targetBase = nodeMemStorage()
+	const source = withoutContent(sourceBase)
+	const target = withoutContent(targetBase)
+	const sourceReplica = optimizedReplica(source)
+	const targetReplica = optimizedReplica(target)
+	const sourceVolume = volume(source)
+	const targetVolume = volume(target)
+
+	await sourceVolume.writeFile('/note.txt', bytes('old'))
+	const snapshot = await sourceReplica.nodeSnapshot(undefined, { limit: 100 })
+	expect(snapshot.status).toBe('ok')
+	if (snapshot.status !== 'ok') throw new Error(snapshot.status)
+
+	await sourceVolume.writeFile('/note.txt', bytes('new'))
+	await sourceBase.caps.content?.gcUnreferenced()
+	await targetReplica.applyNodeOperations(
+		snapshot.operations,
+		async (hash) => {
+			const blob = await sourceReplica.getSnapshotBlob(snapshot.session, hash)
+			if (blob.status !== 'ok') throw new Error(blob.status)
+			return blob.data
+		},
+		{ source: REMOTE }
+	)
+	expect(text(await targetVolume.readFile('/note.txt'))).toBe('old')
+	const oldHash = mutationsOf(snapshot.operations).find(
+		(mutation) => mutation.kind === 'create'
+	)?.contentHash
+	if (!oldHash) throw new Error('missing snapshot content hash')
+	expect(await targetReplica.hasBlobByHash(oldHash)).toBe(true)
+
+	const delta = await sourceReplica.nodeDeltas(snapshot.syncCursor)
+	await targetReplica.applyNodeOperations(
+		delta.operations,
+		(hash) => sourceReplica.getBlobByHash(hash),
+		{
+			source: REMOTE
+		}
+	)
+	expect(text(await targetVolume.readFile('/note.txt'))).toBe('new')
+	expect(source.caps.content).toBeUndefined()
+	expect(target.caps.content).toBeUndefined()
 })
 
 test.each([
