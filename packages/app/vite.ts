@@ -140,6 +140,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
 	const appEntry = resolve(root, opts.app)
 	const guiEntry = resolve(root, opts.gui)
+	const guiPath = relative(root, guiEntry).split('\\').join('/')
 	let emitted = false
 	return [
 		{
@@ -152,6 +153,9 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
+						// The generated page hides the GUI from Vite's startup scan. Scan its
+						// real entry once so coupled dependencies optimize in the same pass.
+						optimizeDeps: { entries: [guiPath] },
 						environments: {
 							kernel: {
 								consumer: 'server',
@@ -196,8 +200,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				if (id === DEV_STYLE_ID) return `import ${JSON.stringify(DEV_STYLE_CSS)}`
 				if (id === DEV_BOOTSTRAP_ID) return devBootstrapEntry()
 				if (id === RESOLVED_VIRTUAL_GUI_ID) {
-					const guiSpecifier = `/${relative(root, guiEntry).split('\\').join('/')}`
-					return `export { gui } from ${JSON.stringify(guiSpecifier)}\n`
+					return `export { gui } from ${JSON.stringify(`/${guiPath}`)}\n`
 				}
 				return null
 			},
