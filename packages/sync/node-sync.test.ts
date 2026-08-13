@@ -467,6 +467,16 @@ test('the memory session bound rejects excess opens without evicting live tokens
 	expect((await a.replica.nodeSnapshot(undefined, { limit: 1 })).status).toBe('ok')
 })
 
+test('a non-positive snapshot page limit is rejected without admitting a session', async () => {
+	const a = makeSnapshotPeer('a')
+	await a.vol.writeFile('/note.txt', bytes('note'))
+
+	for (let attempt = 0; attempt < 4; attempt++)
+		await expect(a.replica.nodeSnapshot(undefined, { limit: 0 })).rejects.toThrow(RangeError)
+
+	expect((await a.replica.nodeSnapshot(undefined, { limit: 1 })).status).toBe('ok')
+})
+
 test('a retained journal preserves a moved child after its old parent is deleted', async () => {
 	const { a, b, sync } = nodePeers()
 	await a.vol.mkdir('/old')

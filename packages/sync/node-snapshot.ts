@@ -129,6 +129,8 @@ export function nodeSnapshotSessions(open: () => Promise<SnapshotView>): NodeSna
 
 	return {
 		async page(page, limit) {
+			if (!Number.isSafeInteger(limit) || limit < 1)
+				throw new RangeError('snapshot page limit must be a positive integer')
 			await expire()
 			let session: string
 			let after = ''
