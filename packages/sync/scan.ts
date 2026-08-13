@@ -27,7 +27,8 @@ export interface FullScanReplica {
 
 async function readTree(
 	storage: Storage,
-	addressed?: ContentStore
+	addressed?: ContentStore,
+	captureBlobs = true
 ): Promise<{
 	entries: FullScanEntry[]
 	blobs: Map<string, Uint8Array>
@@ -48,13 +49,16 @@ async function readTree(
 		}
 		const entry: FullScanEntry = { path, meta: syncMetaFromInode(inode, xattrs) }
 		if (inode.type === FileType.Regular) {
-			const stored = inode.contentHash ? await addressed?.getByHash(inode.contentHash) : undefined
-			const data = stored ?? (await storage.getBlob(stat.ino))
-			const contentHash = inode.contentHash ?? (await hashBytes(data))
-			await verifyBytes(contentHash, data)
-			entry.contentHash = contentHash
-			entry.meta.size = String(data.length)
-			if (!blobs.has(contentHash)) blobs.set(contentHash, data.slice())
+			if (inode.contentHash) entry.contentHash = inode.contentHash
+			if (captureBlobs) {
+				const stored = inode.contentHash ? await addressed?.getByHash(inode.contentHash) : undefined
+				const data = stored ?? (await storage.getBlob(stat.ino))
+				const contentHash = inode.contentHash ?? (await hashBytes(data))
+				await verifyBytes(contentHash, data)
+				entry.contentHash = contentHash
+				entry.meta.size = String(data.length)
+				if (!blobs.has(contentHash)) blobs.set(contentHash, data.slice())
+			}
 		}
 		entries.push(entry)
 	})
@@ -95,7 +99,7 @@ export function fullScanReplica(storage: Storage, addressed?: ContentStore): Ful
 		async apply(entries, getBlobByHash) {
 			const ignored = syncIgnore()
 			const admissible = entries.filter((entry) => !ignored(entry.path))
-			const current = await readTree(storage, addressed)
+			const current = await readTree(storage, addressed, false)
 			const wanted = new Set(admissible.map((entry) => entry.path))
 			for (const entry of [...current.entries].sort((a, b) => b.path.length - a.path.length))
 				if (!wanted.has(entry.path)) await fs.rm(entry.path, { recursive: true, force: true })

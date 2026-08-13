@@ -1,6 +1,8 @@
 import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
+import { FileType } from '@justfiles/fs/types'
 import { expect, test } from 'vitest'
+import { hashBytes } from './content'
 import { storageSyncReplica } from './index'
 import type { SyncCapableStorage } from './node'
 import { nodeMemStorage } from './storage/node-mem'
@@ -134,6 +136,28 @@ test('full scan treats xattr enumeration order as insignificant', async () => {
 		'user.b': 'Yg=='
 	})
 	await snapshot.close()
+})
+
+test('full scan reconciles a target lazy stub without reading its bytes', async () => {
+	const storage = withoutSync(nodeMemStorage())
+	const fs = volume(storage)
+	const hash = await hashBytes(bytes('remote'))
+	await storage.setMeta('lazy', {
+		type: FileType.Regular,
+		size: 6n,
+		mode: 0o644,
+		mtimeNs: 0n,
+		ctimeNs: 0n,
+		contentHash: hash
+	})
+	await storage.putDirent(storage.rootIno, 'lazy.txt', {
+		ino: 'lazy',
+		type: FileType.Regular
+	})
+
+	await scanningReplica(storage).apply([], () => Promise.reject(new Error('unexpected fetch')))
+
+	expect(await fs.exists('/lazy.txt')).toBe(false)
 })
 
 test('base storage converges quiescent create, update, rename, and delete through inode blobs', async () => {

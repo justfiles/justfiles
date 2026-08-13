@@ -429,6 +429,54 @@ test('sync without content keeps returned delta bytes readable across an update'
 	expect(text(await targetVolume.readFile('/note.txt'))).toBe('old')
 })
 
+test('sync without content captures delta bytes atomically with the journal read', async () => {
+	const base = memNodeStore()
+	let pause = false
+	let reached!: () => void
+	let resume!: () => void
+	const paused = new Promise<void>((resolve) => {
+		reached = resolve
+	})
+	const resumed = new Promise<void>((resolve) => {
+		resume = resolve
+	})
+	const store: NodeStore = {
+		...base,
+		async read(after, limit) {
+			const rows = await base.read(after, limit)
+			if (pause) {
+				reached()
+				await resumed
+			}
+			return rows
+		}
+	}
+	const source = withoutContent(nodeMemStorage({ store }))
+	const target = withoutContent(nodeMemStorage())
+	const sourceReplica = optimizedReplica(source)
+	const targetReplica = optimizedReplica(target)
+	const sourceVolume = volume(source)
+	const targetVolume = volume(target)
+
+	await sourceVolume.writeFile('/note.txt', bytes('old'))
+	const old = await sourceVolume.lstat('/note.txt')
+	pause = true
+	const reading = sourceReplica.nodeDeltas('')
+	await paused
+	const updating = sourceVolume.writeFile('/note.txt', bytes('new'))
+	while ((await source.getMeta(old.ino))?.contentHash === old.contentHash)
+		await new Promise((resolve) => setTimeout(resolve, 0))
+	resume()
+	const delta = await reading
+	await updating
+
+	await targetReplica.applyNodeOperations(delta.operations, (hash) =>
+		sourceReplica.getBlobByHash(hash)
+	)
+
+	expect(text(await targetVolume.readFile('/note.txt'))).toBe('old')
+})
+
 test.each([
 	['default', undefined],
 	['injected store', memNodeStore()]

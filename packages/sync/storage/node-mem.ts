@@ -190,7 +190,16 @@ export function nodeMemStorage(opts?: {
 				}
 			}
 		},
-		createSyncCapability(module, snapshots, filesystem.getBlob)
+		createSyncCapability(
+			module,
+			snapshots,
+			async (hash) => {
+				const blob = await content.getByHash(hash)
+				if (!blob) throw new Error(`ENOENT: blob ${hash}`)
+				return blob
+			},
+			exclusive
+		)
 	)
 }
 
