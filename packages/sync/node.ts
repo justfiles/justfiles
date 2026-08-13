@@ -14,13 +14,14 @@ import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import { z } from 'zod'
 import { verifyBytes } from './content'
-import type {
-	NodeSnapshotBlob,
-	NodeSnapshotBusy,
-	NodeSnapshotClose,
-	NodeSnapshotPage,
-	NodeSnapshotRestart,
-	NodeSnapshotSessions
+import {
+	type NodeSnapshotBlob,
+	type NodeSnapshotBusy,
+	type NodeSnapshotClose,
+	type NodeSnapshotPage,
+	type NodeSnapshotRestart,
+	nodeSnapshotSessions,
+	type SnapshotView
 } from './node-snapshot'
 import type { SyncCursor } from './replica'
 import { PAGE } from './replica'
@@ -125,6 +126,7 @@ export interface NodeSyncModule {
 		operations: readonly NodeOperation[],
 		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
 	): Promise<void>
+	openSnapshotView(): Promise<SnapshotView>
 }
 
 /** Optimized sync behavior attached without extending the filesystem package. */
@@ -152,13 +154,25 @@ export interface SyncCapability {
 	closeSnapshot(session: string): Promise<NodeSnapshotClose>
 }
 
-/** Assemble the shared capability surface over adapter-owned persistence and snapshots. */
+/** Assemble the shared capability surface over one filesystem extension module. */
 export function createSyncCapability(
+	storage: Storage,
 	module: NodeSyncModule,
-	snapshots: NodeSnapshotSessions,
-	getBlobByHash: (hash: string) => Promise<Uint8Array>,
 	exclusive: <T>(task: () => Promise<T>) => Promise<T> = (task) => task()
 ): SyncCapability {
+	const snapshots = nodeSnapshotSessions(() => module.openSnapshotView())
+	const content = storage.caps?.content
+
+	async function readLiveBlob(hash: string): Promise<Uint8Array> {
+		for (const node of await module.nodes.live()) {
+			if (node.contentHash !== hash || node.localIno === null) continue
+			const blob = content ? await content.getByHash(hash) : await storage.getBlob(node.localIno)
+			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
+			return verifyBytes(hash, blob)
+		}
+		throw new Error(`ENOENT: blob ${hash}`)
+	}
+
 	return {
 		nodeDeltas: (cursor, opts) =>
 			exclusive(async () => {
@@ -175,7 +189,7 @@ export function createSyncCapability(
 						if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
 						const hash = mutation.contentHash
 						if (!hash || retainedContent.has(hash)) continue
-						const blob = await verifyBytes(hash, await getBlobByHash(hash))
+						const blob = await readLiveBlob(hash)
 						retainedContent.set(hash, blob.slice())
 					}
 				}
@@ -198,13 +212,7 @@ export function createSyncCapability(
 			return [...wanted]
 		},
 		applyNodeOperations: (operations, opts) => module.apply(operations, opts),
-		async getBlobByHash(hash) {
-			for (const node of await module.nodes.live()) {
-				if (node.contentHash !== hash || node.localIno === null) continue
-				return verifyBytes(hash, await getBlobByHash(hash))
-			}
-			throw new Error(`ENOENT: blob ${hash}`)
-		},
+		getBlobByHash: readLiveBlob,
 		nodeSnapshot: (page, opts) => snapshots.page(page, opts?.limit ?? PAGE),
 		getSnapshotBlob: (session, hash) => snapshots.getBlob(session, hash),
 		closeSnapshot: (session) => snapshots.close(session)

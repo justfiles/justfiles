@@ -19,7 +19,7 @@ import {
 	type SyncCapableStorage,
 	withSyncCapability
 } from '../node'
-import { nodeSnapshotEntries, nodeSnapshotSessions } from '../node-snapshot'
+import { nodeSnapshotEntries } from '../node-snapshot'
 
 export function memNodeStore(): NodeStore {
 	const states = new Map<string, NodeState>()
@@ -134,7 +134,7 @@ function nodeSyncExtensionOver(
 				}
 			}
 		}
-	} satisfies MemStorageExtension<{ sync: NodeSyncModule }>
+	} satisfies MemStorageExtension<{ sync: Omit<NodeSyncModule, 'openSnapshotView'> }>
 }
 
 export function nodeMemStorage(opts?: {
@@ -151,34 +151,36 @@ export function nodeMemStorage(opts?: {
 	const { sync: module, ...filesystem } = attached
 	const content = filesystem.caps?.content
 	if (!content) throw new Error('memory backend exposes no content store')
-	const snapshots = nodeSnapshotSessions(() =>
-		exclusive(async () => {
-			const syncCursor = String(await nodes.head())
-			const entries = nodeSnapshotEntries(await nodes.live())
-			const blobs = new Map<string, Uint8Array>()
-			for (const hash of new Set(
-				entries.flatMap(({ mutation }) =>
-					mutation.kind === 'create' && mutation.contentHash ? [mutation.contentHash] : []
-				)
-			)) {
-				const blob = await content.getByHash(hash)
-				if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
-				blobs.set(hash, await verifyBytes(hash, blob))
-			}
-			return {
-				entries,
-				syncCursor,
-				async getBlob(hash: string) {
-					const blob = blobs.get(hash)
+	const sync: NodeSyncModule = {
+		...module,
+		openSnapshotView: () =>
+			exclusive(async () => {
+				const syncCursor = String(await nodes.head())
+				const entries = nodeSnapshotEntries(await nodes.live())
+				const blobs = new Map<string, Uint8Array>()
+				for (const hash of new Set(
+					entries.flatMap(({ mutation }) =>
+						mutation.kind === 'create' && mutation.contentHash ? [mutation.contentHash] : []
+					)
+				)) {
+					const blob = await content.getByHash(hash)
 					if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
-					return blob.slice()
-				},
-				async close() {
-					blobs.clear()
+					blobs.set(hash, await verifyBytes(hash, blob))
 				}
-			}
-		})
-	)
+				return {
+					entries,
+					syncCursor,
+					async getBlob(hash: string) {
+						const blob = blobs.get(hash)
+						if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
+						return blob.slice()
+					},
+					async close() {
+						blobs.clear()
+					}
+				}
+			})
+	}
 	return withSyncCapability(
 		{
 			...filesystem,
@@ -190,16 +192,7 @@ export function nodeMemStorage(opts?: {
 				}
 			}
 		},
-		createSyncCapability(
-			module,
-			snapshots,
-			async (hash) => {
-				const blob = await content.getByHash(hash)
-				if (!blob) throw new Error(`ENOENT: blob ${hash}`)
-				return blob
-			},
-			exclusive
-		)
+		createSyncCapability(filesystem, sync, exclusive)
 	)
 }
 
