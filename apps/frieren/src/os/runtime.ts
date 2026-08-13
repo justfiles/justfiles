@@ -32,7 +32,10 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	const disposers: (() => void)[] = []
 	const synced = activeProfileHasRemoteUser()
 	const readyVolume = volume.then(async (fs) => {
-		if (synced) await fs.flush()
+		if (synced) {
+			await fs.flush()
+			if (fs.status() !== 'synced') throw new Error('initial sync failed')
+		}
 		await migrateFirstPartyAppIds(fs)
 		return fs
 	})
