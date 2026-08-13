@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.frieren.dictionary',
+						id: 'justfiles.dictionary',
 						name: 'Dictionary',
 						description: 'Look up words and short terms, explained for the reader',
 						icon: 'icon.png',

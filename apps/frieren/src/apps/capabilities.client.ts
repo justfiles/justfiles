@@ -58,7 +58,7 @@ export function clientCapabilities(
 	const fallback = networkFallback(getToken)
 	return capabilityRegistry(
 		{
-			volume: volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
+			volume: volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }),
 			settings: settingsHost({
 				user: getUser,
 				// Served here for the same reason `user` is: the build the user is running is

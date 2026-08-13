@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.frieren.settings',
+						id: 'justfiles.settings',
 						name: 'Settings',
 						description: 'Connect accounts and choose what they power',
 						icon: 'icon.png',

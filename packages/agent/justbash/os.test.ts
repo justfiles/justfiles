@@ -21,17 +21,17 @@ function shell(windows: readonly OsWindowInfo[]) {
 describe('os windows', () => {
 	test('lists the windows, marking the focused one', async () => {
 		const run = shell([
-			{ appId: 'app.justfiles.frieren.notes', title: 'Notes — groceries', focused: true },
-			{ appId: 'app.justfiles.frieren.pixel', title: 'Pixel', focused: false },
+			{ appId: 'justfiles.notes', title: 'Notes — groceries', focused: true },
+			{ appId: 'justfiles.pixel', title: 'Pixel', focused: false },
 			{ title: 'Chat', focused: false, minimized: true }
 		])
 		const { text, exitCode } = await run('os windows')
 		expect(exitCode).toBe(0)
 		expect(text).toBe(
 			[
-				'* app.justfiles.frieren.notes Notes — groceries',
-				'  app.justfiles.frieren.pixel Pixel',
-				'  -                           Chat (minimized)'
+				'* justfiles.notes Notes — groceries',
+				'  justfiles.pixel Pixel',
+				'  -               Chat (minimized)'
 			].join('\n')
 		)
 	})

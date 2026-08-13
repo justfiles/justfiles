@@ -16,6 +16,7 @@ import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
+import { migrateFirstPartyAppIds } from '../../shared/migrate-app-ids'
 import { builtinStore } from './builtins'
 import { chatgptProvider, codexBackend } from './chatgpt'
 import { getVolume } from './fs'
@@ -29,7 +30,7 @@ import { toolchain } from './toolchain'
 let kernelOnce: Promise<Kernel> | undefined
 let accountsOnce: Promise<HostAccounts> | undefined
 
-const systemAllowlist = ['app.justfiles.frieren.files']
+const systemAllowlist = ['justfiles.files']
 
 // The daemon's account providers: the shared Google/iCloud modules wired to the
 // loopback auth flow + env OAuth client, plus the daemon-local ChatGPT provider
@@ -81,6 +82,7 @@ export function getKernel(): Promise<Kernel> {
 // a throwaway kernel over a temp Volume (so they never touch the real support tree or share
 // the daemon's singleton).
 export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
+	await migrateFirstPartyAppIds(fs)
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and

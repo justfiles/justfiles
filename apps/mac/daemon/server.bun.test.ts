@@ -14,8 +14,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from './main.ts'
 
-const NOTES = 'app.justfiles.frieren.notes'
-const FILES = 'app.justfiles.frieren.files'
+const NOTES = 'justfiles.notes'
+const FILES = 'justfiles.files'
 let root: string
 let server: ReturnType<typeof createServer>
 let port: number

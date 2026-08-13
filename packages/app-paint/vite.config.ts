@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.frieren.paint',
+						id: 'justfiles.paint',
 						name: 'Paint',
 						description: 'Pixel drawing',
 						icon: 'icon.png',

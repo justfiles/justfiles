@@ -54,7 +54,7 @@ import type {
 
 // The one identity gate. Not a scope: a declared scope would hand the host admin
 // surface to any sideloaded app that declares `settings`.
-export const SETTINGS_ALLOWLIST = new Set(['app.justfiles.frieren.settings'])
+export const SETTINGS_ALLOWLIST = new Set(['justfiles.settings'])
 
 // Where the host reads usage from (the frieren DO's per-user meter + quota) and who
 // is signed in (Clerk in the browser; the native account later). Thunks, so every

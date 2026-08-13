@@ -67,11 +67,11 @@ test('files watches the open file: one fileChanged per write, stops on clear', a
 	const fs = volume(memStorage())
 	await fs.writeFile('/notes.txt', enc.encode('hello'))
 
-	const v = probe(volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }))
+	const v = probe(volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }))
 	const k = kernel({ fs, sandbox, clock: {}, capabilities: capabilityRegistry({ volume: v.cap }) })
-	// Files declares the `system` scope, allowlisted only for `app.justfiles.frieren.files`.
+	// Files declares the `system` scope, allowlisted only for `justfiles.files`.
 	const id = await k.install(
-		appBundleFromMemory({ id: 'app.justfiles.frieren.files', name: 'Files', app: code })
+		appBundleFromMemory({ id: 'justfiles.files', name: 'Files', app: code })
 	)
 
 	// The recursive tree watch is always declared (it drives auto-refresh); the
@@ -111,10 +111,10 @@ test('files converges from the recursive watch alone, with no refresh/GUI', asyn
 	const fs = volume(memStorage())
 	await fs.writeFile('/a.txt', enc.encode('a'))
 
-	const v = probe(volumeCapability(fs, { systemAllowlist: ['app.justfiles.frieren.files'] }))
+	const v = probe(volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }))
 	const k = kernel({ fs, sandbox, clock: {}, capabilities: capabilityRegistry({ volume: v.cap }) })
 	const id = await k.install(
-		appBundleFromMemory({ id: 'app.justfiles.frieren.files', name: 'Files', app: code })
+		appBundleFromMemory({ id: 'justfiles.files', name: 'Files', app: code })
 	)
 	await until(() => v.live() === 1, 'recursive tree watch established')
 

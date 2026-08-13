@@ -134,7 +134,9 @@ export function NewProjectScreen(props: {
 						setId(value)
 					}}
 				>
-					<div className="app-code-hint">Folder: /projects/{id} · must be unique</div>
+					<div className="app-code-hint">
+						Use your GitHub user or organization: &lt;github-login&gt;.&lt;app&gt;
+					</div>
 				</TextField>
 				<div className="app-code-hint">
 					Apps build against the platform SDK only — external npm packages aren't supported.

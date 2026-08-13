@@ -10,7 +10,7 @@ import { createJustBashTool } from './index.ts'
 // an inline JSON value is unquoted, so its quotes are stripped before the command
 // ever sees it. A fake controller stands in for the kernel — it validates the one
 // action shape the tests care about.
-const PIXEL = 'app.justfiles.frieren.pixel'
+const PIXEL = 'justfiles.pixel'
 // A `.pixel` dump `show` returns — multi-line, so it proves a procedure result is
 // printed verbatim (real newlines) and pipes back into setGrid unmangled.
 const SHOW_TEXT = 'pixel 1\nsize 2 2\npalette\n0 #ffffff\ngrid\n0.\n.0\n'

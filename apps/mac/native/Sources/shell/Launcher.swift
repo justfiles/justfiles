@@ -25,7 +25,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private static let surfaceHeight: CGFloat = 460
 	// The Settings mini-app's catalog id — the target a `settings` route opens. The route
 	// carries only `kind`/`pane`, so the launcher (which knows the host catalog) names the app.
-	private static let settingsAppId = "app.justfiles.frieren.settings"
+	private static let settingsAppId = "justfiles.settings"
 
 	// What sits above the composer right now. The launcher rests in `grid` (the app
 	// springboard — every app on summon, filtered as you type); when a query matches no app

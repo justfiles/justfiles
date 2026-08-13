@@ -123,7 +123,7 @@ test('settings is local and allowlist-gated; accounts/usage are no longer regist
 		appId
 	})
 
-	expect(await caps.invoke(settings('app.justfiles.frieren.settings'))).toEqual({
+	expect(await caps.invoke(settings('justfiles.settings'))).toEqual({
 		id: 'u1',
 		name: 'Fern'
 	})

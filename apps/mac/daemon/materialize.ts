@@ -190,12 +190,13 @@ async function renderIconset(set: string, letter: string, source?: string): Prom
 
 // The macOS bundle id of a projected mini-app. An id in our own namespace is used
 // VERBATIM — we own it, so nothing can collide — while any other id (a community app's
-// `com.company.todo`, which could match a real installed app) is namespaced so it can
+// `alice.todo`, which could match a real installed app) is namespaced so it can
 // never shadow that app in LaunchServices. The app id itself stays the storage identity;
 // this is only the CFBundle id. Launcher.swift/Grid.swift mirror this rule.
-const NAMESPACE = 'app.justfiles.frieren.'
+const APP_NAMESPACE = 'justfiles.'
+const BUNDLE_NAMESPACE = 'app.justfiles.frieren.'
 function bundleIdFor(appId: string): string {
-	return appId.startsWith(NAMESPACE) ? appId : `${NAMESPACE}ext.${appId}`
+	return appId.startsWith(APP_NAMESPACE) ? appId : `${BUNDLE_NAMESPACE}ext.${appId}`
 }
 
 function plist(app: ProjectionApp, bin: string): string {

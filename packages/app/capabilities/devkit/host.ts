@@ -78,7 +78,7 @@ export const noopRunner: Runner = {
 
 // Implement the `devkit` capability from two backend functions + a runner. The
 // factory is caller-aware: every method threads the calling app's id (`ctx.appId`,
-// e.g. Code = `app.justfiles.frieren.code`, never hardcoded) so the right app's sysroot loads. The
+// e.g. Code = `justfiles.code`, never hardcoded) so the right app's sysroot loads. The
 // per-app toolchain is built lazily and cached — a session that never builds loads
 // no sysroot. `compile(input, runtime)` is required; `typecheck(input, types,
 // paths)` is optional (omit it → the factory degrades typecheck to

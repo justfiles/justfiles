@@ -15,9 +15,9 @@ submission form, no review queue, and no account with Kodama. **Publishing to np
 is the submission.** Clients download your built bytes straight from npm's CDN
 (jsDelivr) and verify them against hashes the indexer pinned at publish time.
 
-1. Pick a bundle id. It is reverse-DNS and lives in `vite.config.ts`
-   (`kernelHost({ id })`) — e.g. `com.example.my-app`. Use a domain you control;
-   the `app.justfiles.frieren.*` prefix is reserved for first-party apps. The id is your
+1. Pick a bundle id. It is `<github-login>.<app>` and lives in `vite.config.ts`
+   (`kernelHost({ id })`) — e.g. `alice.notes`. The GitHub user or organization must own
+   the app repository; `justfiles.*` is reserved for first-party apps. The id is your
    app's permanent storage identity, so choose it once and keep it stable across
    versions.
 2. `pnpm build` — the tarball ships the built `dist/` only (`files: ["dist"]`),

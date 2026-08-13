@@ -18,8 +18,8 @@ import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 
-const FILES = 'app.justfiles.frieren.files'
-const SETTINGS = 'app.justfiles.frieren.settings'
+const FILES = 'justfiles.files'
+const SETTINGS = 'justfiles.settings'
 let root: string
 let kernel: Kernel
 
@@ -57,7 +57,7 @@ test('seeds the builtin catalog into the fresh Volume', async () => {
 	const ids = (await kernel.list()).map((app) => app.id)
 	// reconcile ran during buildKernel — the launcher's catalog is populated.
 	expect(ids).toContain(FILES)
-	expect(ids).toContain('app.justfiles.frieren.code')
+	expect(ids).toContain('justfiles.code')
 })
 
 test('Files reads the real volume through the system-scoped volume capability', async () => {

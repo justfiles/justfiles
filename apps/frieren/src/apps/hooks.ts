@@ -78,7 +78,7 @@ export function useRunnerCatalog(enabled: boolean): {
 // The first-party Settings app, which the shell opens by id: it is the only place the
 // agent can be personalized now (the `settings` capability's `agent.*` methods), and two
 // shell affordances point at it — the desktop menu and the omnibar's whisper.
-const SETTINGS_APP = { id: 'app.justfiles.frieren.settings', name: 'Settings' }
+const SETTINGS_APP = { id: 'justfiles.settings', name: 'Settings' }
 
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void

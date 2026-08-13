@@ -10,7 +10,7 @@ export default defineConfig({
 	resolve: { dedupe: ['react', 'react-dom'] },
 	plugins: [
 		kernelHost({
-			id: 'app.justfiles.frieren.code',
+			id: 'justfiles.code',
 			name: 'Code',
 			icon: 'icon.png',
 			description: 'Build and run apps directly in Kodama.',

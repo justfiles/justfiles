@@ -62,24 +62,25 @@ function fakeVolume(): VolumeApi & { dump(): Record<string, string> } {
 
 test('listProjects returns {slug,name}, tolerating a missing project.json', async () => {
 	const vol = fakeVolume()
-	await createProject(vol, 'My Cool App', 'com.example.my-cool-app')
+	await createProject(vol, 'My Cool App', 'alice.my-cool-app')
 	await vol.writeFile('/projects/untitled/src/app.ts', enc('//')) // legacy, no project.json
 	expect(await listProjects(vol)).toEqual([
-		{ slug: 'com.example.my-cool-app', name: 'My Cool App' },
+		{ slug: 'alice.my-cool-app', name: 'My Cool App' },
 		{ slug: 'untitled', name: 'untitled' } // fallback to slug
 	])
 })
 
 test('createProject rejects a bad id, a dup id; seeds project.json', async () => {
 	const vol = fakeVolume()
-	await expect(createProject(vol, 'X', 'nope')).rejects.toThrow() // not reverse-DNS
-	const { slug } = await createProject(vol, 'X', 'com.example.x')
-	expect(slug).toBe('com.example.x')
-	expect(JSON.parse(vol.dump()['/projects/com.example.x/project.json']!)).toMatchObject({
-		id: 'com.example.x',
+	await expect(createProject(vol, 'X', 'nope')).rejects.toThrow()
+	await expect(createProject(vol, 'X', 'com.example.x')).rejects.toThrow()
+	const { slug } = await createProject(vol, 'X', 'alice.x')
+	expect(slug).toBe('alice.x')
+	expect(JSON.parse(vol.dump()['/projects/alice.x/project.json']!)).toMatchObject({
+		id: 'alice.x',
 		name: 'X'
 	})
-	await expect(createProject(vol, 'X2', 'com.example.x')).rejects.toThrow(/exists/)
+	await expect(createProject(vol, 'X2', 'alice.x')).rejects.toThrow(/exists/)
 })
 
 test('slugifyName derives a sane id segment', () => {
@@ -89,11 +90,11 @@ test('slugifyName derives a sane id segment', () => {
 
 test('saveMeta rewrites name/version/description; id + entries preserved', async () => {
 	const vol = fakeVolume()
-	await createProject(vol, 'X', 'com.example.x')
-	await saveMeta(vol, 'com.example.x', { name: 'Renamed', version: '1.0.0', description: 'hi' })
-	const m = JSON.parse(vol.dump()['/projects/com.example.x/project.json']!)
+	await createProject(vol, 'X', 'alice.x')
+	await saveMeta(vol, 'alice.x', { name: 'Renamed', version: '1.0.0', description: 'hi' })
+	const m = JSON.parse(vol.dump()['/projects/alice.x/project.json']!)
 	expect(m).toMatchObject({
-		id: 'com.example.x',
+		id: 'alice.x',
 		name: 'Renamed',
 		version: '1.0.0',
 		description: 'hi'
@@ -103,9 +104,9 @@ test('saveMeta rewrites name/version/description; id + entries preserved', async
 
 test('removeProject drops the project folder and its scratch', async () => {
 	const vol = fakeVolume()
-	await createProject(vol, 'X', 'com.example.x')
-	await vol.writeFile('/.devkit/com.example.x/state/s.json', enc('{}'))
-	await removeProject(vol, 'com.example.x')
-	expect(await vol.exists('/projects/com.example.x')).toBe(false)
-	expect(await vol.exists('/.devkit/com.example.x')).toBe(false)
+	await createProject(vol, 'X', 'alice.x')
+	await vol.writeFile('/.devkit/alice.x/state/s.json', enc('{}'))
+	await removeProject(vol, 'alice.x')
+	expect(await vol.exists('/projects/alice.x')).toBe(false)
+	expect(await vol.exists('/.devkit/alice.x')).toBe(false)
 })

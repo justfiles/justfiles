@@ -20,13 +20,13 @@ export const ICON = (slug: string) => `/projects/${slug}/icon`
 // The build contract devkit reads (identity + entry/icon paths). Project root.
 export const PROJECT = (slug: string) => `/projects/${slug}/project.json`
 
-// Reverse-DNS bundle id: 2+ dot-separated segments, each [a-z][a-z0-9-]*. A
-// strict subset of the folder slug, so the id is always a valid folder name.
+// Catalog bundle id: `<github-login>.<app>`, with lowercase segments and internal hyphens.
+// It is also a strict subset of the folder slug, so the id is always a valid folder name.
 export const bundleIdSchema = v.pipe(
 	v.string(),
 	v.regex(
-		/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/,
-		'bundle id must be reverse-DNS, e.g. com.example.my-app'
+		/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
+		'bundle id must be <github-login>.<app>, e.g. alice.notes'
 	)
 )
 

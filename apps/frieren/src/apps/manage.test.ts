@@ -75,14 +75,14 @@ describe('local app management', () => {
 
 	test('refuses to uninstall built-ins (reconcile reinstalls them on launch)', async () => {
 		const { fs, k } = setup()
-		const id = await installZipApp(k, appZip('app.justfiles.frieren.paint'))
+		const id = await installZipApp(k, appZip('justfiles.paint'))
 		await seedState(fs, id)
 		stubCatalog(id)
 
 		await expect(uninstallLocalApp(k, id)).rejects.toThrow(/cannot be uninstalled/)
 
-		expect(await fs.exists('/applications/app.justfiles.frieren.paint')).toBe(true)
-		expect(await fs.exists('/state/app.justfiles.frieren.paint.json')).toBe(true)
-		expect(await fs.exists('/data/app.justfiles.frieren.paint')).toBe(true)
+		expect(await fs.exists('/applications/justfiles.paint')).toBe(true)
+		expect(await fs.exists('/state/justfiles.paint.json')).toBe(true)
+		expect(await fs.exists('/data/justfiles.paint')).toBe(true)
 	})
 })

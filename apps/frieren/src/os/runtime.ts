@@ -1,5 +1,6 @@
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
+import { migrateFirstPartyAppIds } from '../../../shared/migrate-app-ids'
 import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
@@ -29,21 +30,29 @@ export interface OsRuntimeEnv {
 export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	const { store, client, flushPersist, volume, localKernel } = env
 	const disposers: (() => void)[] = []
+	const synced = activeProfileHasRemoteUser()
+	const readyVolume = volume.then(async (fs) => {
+		if (synced) {
+			await fs.flush()
+			if (fs.status() !== 'synced') throw new Error('initial sync failed')
+		}
+		await migrateFirstPartyAppIds(fs)
+		return fs
+	})
+	const readyKernel = async () => {
+		await readyVolume
+		return localKernel()
+	}
 
 	// --- boot: hydrate persisted OS state; the reducer lifts the loading gate ---
-	void bootOsStore(store, volume)
+	void bootOsStore(store, readyVolume)
 
 	// --- boot: materialise built-in apps ---
 	let seedCancelled = false
 	void (async () => {
-		const fs = await volume
-		// The client is the sole materialiser of built-in apps. A synced profile waits
-		// for the first bootstrap before deciding, so an account that already has apps
-		// isn't re-seeded; a local-only profile seeds immediately.
-		const synced = activeProfileHasRemoteUser()
-		await seedBuiltins(await localKernel(), fs, {
-			waitForBootstrap: synced ? () => fs.flush() : undefined
-		})
+		const fs = await readyVolume
+		// Migration runs after the first sync and before the new built-ins are installed.
+		await seedBuiltins(await readyKernel(), fs)
 		if (!seedCancelled) client.refresh()
 	})().catch(() => {})
 	disposers.push(() => {
@@ -54,7 +63,7 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	// Fire-and-forget: the tiles reappear immediately (seeded from the markers) and
 	// the downloads restart in the background, exactly like a fresh install.
 	void (async () => {
-		await resumePendingInstalls(await localKernel(), await volume, () => client.refresh())
+		await resumePendingInstalls(await readyKernel(), await readyVolume, () => client.refresh())
 	})().catch(() => {})
 
 	// --- trash retention: purge uninstalled bundles past the retention window ---
@@ -62,8 +71,8 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	// alarm), reliable regardless of an open tab; the deletes sync down. A local-only
 	// (signed-out) profile has no server, so it sweeps its own trash here — cheap +
 	// idempotent, on boot and a slow interval for long-lived tabs.
-	if (!activeProfileHasRemoteUser()) {
-		const sweep = () => void volume.then((fs) => sweepTrash(fs)).catch(() => {})
+	if (!synced) {
+		const sweep = () => void readyVolume.then((fs) => sweepTrash(fs)).catch(() => {})
 		sweep()
 		const timer = setInterval(sweep, 12 * 60 * 60 * 1000)
 		disposers.push(() => clearInterval(timer))
@@ -100,7 +109,7 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 				return
 			}
 			reconciling = true
-			void (async () => reconcileInstalled(await localKernel(), await volume))()
+			void (async () => reconcileInstalled(await readyKernel(), await readyVolume))()
 				.catch(() => {})
 				.finally(() => {
 					reconciling = false
@@ -110,7 +119,7 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 					}
 				})
 		}
-		void volume.then((fs) => {
+		void readyVolume.then((fs) => {
 			void fs
 				.watch(
 					// Not created yet on a first boot — seeding makes it. A recursive watch with
@@ -164,7 +173,7 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 				return
 			}
 			running = true
-			void hydrateInstalledAppBundles(localKernel)
+			void hydrateInstalledAppBundles(readyKernel)
 				.catch(() => {})
 				.finally(() => {
 					running = false

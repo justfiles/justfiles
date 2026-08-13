@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.frieren.draw',
+						id: 'justfiles.draw',
 						name: 'Draw',
 						description: 'A freeform sketchpad backed by Excalidraw',
 						icon: 'icon.png',
