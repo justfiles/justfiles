@@ -47,12 +47,18 @@ async function makeApp(id: string, version: string, capabilities: Caps = {}) {
 	return { app, files }
 }
 
-// A store with no built-ins over a set of makeApp entries.
-function memStore(entries: Awaited<ReturnType<typeof makeApp>>[]): AppStore {
+// A store over makeApp entries. Optional ids model host-trusted built-ins.
+function memStore(
+	entries: Awaited<ReturnType<typeof makeApp>>[],
+	builtinIds: string[] = []
+): AppStore {
 	const byId = new Map(entries.map((e) => [e.app.id, e]))
 	return {
 		async builtins() {
-			return []
+			return builtinIds.flatMap((id) => {
+				const entry = byId.get(id)
+				return entry ? [entry.app] : []
+			})
 		},
 		async latest(id) {
 			return byId.get(id)?.app ?? null
@@ -141,5 +147,20 @@ describe('reconcile capability-escalation guard', () => {
 		const same = await makeApp('com.x.app2', '1.1.0', { volume: { id: 'volume', scopes: ['/a'] } })
 		await reconcile(k, fs, memStore([same]))
 		expect(await installedVersion(fs, 'com.x.app2')).toBe('1.1.0')
+	})
+
+	test('auto-applies capability growth for a trusted first-party built-in', async () => {
+		const { fs, k } = setup()
+		const v1 = await makeApp('justfiles.notes', '1.0.0', {
+			volume: { id: 'volume', scopes: ['/notes'] }
+		})
+		await installApp(k, memStore([v1]), v1.app)
+
+		const v2 = await makeApp('justfiles.notes', '1.1.0', {
+			volume: { id: 'volume', scopes: ['/notes'] },
+			ai: { id: 'ai', scopes: [] }
+		})
+		await reconcile(k, fs, memStore([v2], ['justfiles.notes']))
+		expect(await installedVersion(fs, 'justfiles.notes')).toBe('1.1.0')
 	})
 })

@@ -1,6 +1,7 @@
 // Frieren's two app sources: bundled apps co-ship under `/appstore`; Runner apps
-// keep their immutable payloads at justapps.run. A bounded Runner subset is
-// preinstalled. Both sources use the same AppStore seam for install/reconcile.
+// keep their immutable payloads at justapps.run. A host-owned allowlist promotes
+// first-party Runner apps to trusted built-ins. Runner is only their delivery
+// channel; every other Runner app stays behind install and escalation consent.
 
 import type { AppManifest } from '@justfiles/app'
 import type { AppStore, Catalog, CatalogApp, CatalogFile } from '@justfiles/app/appstore'
@@ -13,7 +14,7 @@ export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 export const RUNNER_CACHE_NAME = 'justapps'
 export const RUNNER_CACHE_MAX_ENTRIES = 500
 
-const PREINSTALLED_RUNNER_IDS = ['justfiles.notes']
+const TRUSTED_PREINSTALLED_RUNNER_IDS = ['justfiles.notes']
 
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -140,7 +141,7 @@ export async function runnerAppStore(
 		async builtins() {
 			return (
 				await Promise.all(
-					PREINSTALLED_RUNNER_IDS.map((id) => {
+					TRUSTED_PREINSTALLED_RUNNER_IDS.map((id) => {
 						const entry = byId.get(id)
 						return entry ? load(entry) : null
 					})
@@ -159,8 +160,9 @@ export async function runnerAppStore(
 	}
 }
 
-// Bundled apps remain authoritative. Selected Runner apps join the bounded
-// preinstalled set; every other Runner app is installed from the store UI.
+// Bundled apps remain authoritative. Host-trusted first-party Runner apps join
+// the built-in set and may update without capability re-consent. Every other
+// Runner app is installed from the store UI and keeps the escalation guard.
 export async function bootAppStore(
 	fetcher: (path: string) => Promise<Response>
 ): Promise<AppStore | null> {

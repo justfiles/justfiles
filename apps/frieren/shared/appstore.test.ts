@@ -11,6 +11,7 @@ import {
 
 const manifestUrl = 'https://justfiles-notes.justapps.run/manifest.json'
 const releaseUrl = 'https://justfiles-notes.justapps.run/v/1.2.0/manifest.json'
+const taskManifestUrl = 'https://com-example-tasks.justapps.run/manifest.json'
 const release = {
 	schema: RUNNER_MANIFEST_SCHEMA,
 	id: 'justfiles.notes',
@@ -37,6 +38,12 @@ const runner = {
 			iconUrl: 'https://justfiles-notes.justapps.run/v/1.2.0/icon.svg',
 			manifestUrl,
 			repository: 'https://example.com/notes'
+		},
+		{
+			id: 'com.example.tasks',
+			name: 'Tasks',
+			version: '1.0.0',
+			manifestUrl: taskManifestUrl
 		}
 	]
 }
@@ -79,11 +86,23 @@ describe('runnerAppStore', () => {
 			hash: 'release-hash',
 			manifest: { app: 'app.js', gui: 'gui.js' }
 		})
-		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['justfiles.notes'])
 		await store?.latest(release.id)
 		expect(seen.filter((url) => url === manifestUrl)).toHaveLength(1)
 		expect([...(await store!.read(app!, 'app.js'))]).toEqual([1, 2, 3])
 		expect(seen.at(-1)).toBe('https://justfiles-notes.justapps.run/v/1.2.0/app.js')
+	})
+
+	test('trusts only host-allowlisted Runner apps as built-ins', async () => {
+		const seen: string[] = []
+		const store = await runnerAppStore(async (url) => {
+			seen.push(url)
+			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
+			if (url === manifestUrl) return json(release, releaseUrl)
+			return new Response(null, { status: 404 })
+		})
+
+		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['justfiles.notes'])
+		expect(seen).not.toContain(taskManifestUrl)
 	})
 
 	test('omits an app whose canonical manifest cannot be loaded', async () => {
