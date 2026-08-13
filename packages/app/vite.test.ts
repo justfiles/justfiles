@@ -2,7 +2,7 @@ import { resolveConfig } from 'vite'
 import { expect, test } from 'vitest'
 import { kernelHost } from './vite.ts'
 
-test('dev scans the GUI hidden behind the custom app shell', async () => {
+test('dev scans the GUI hidden behind the generated page', async () => {
 	const config = await resolveConfig(
 		{
 			configFile: false,
