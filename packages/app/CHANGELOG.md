@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.2...app-v0.4.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **app:** embed sources in published source maps ([#482](https://github.com/xiaoxinghu/justfiles/issues/482)) ([716bcd5](https://github.com/xiaoxinghu/justfiles/commit/716bcd5fc3fc4a4097aa65de4dbd86738a3ebe42))
+
 ## [0.4.2](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.1...app-v0.4.2) (2026-08-13)
 
 
