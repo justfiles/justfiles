@@ -129,9 +129,12 @@ export function fullScanReplica(storage: Storage, addressed?: ContentStore): Ful
 						if (existing) await fs.rm(entry.path, { force: true })
 						await fs.symlink(entry.meta.symlinkTarget ?? '', entry.path)
 					}
-				} else if (!existing || existing.contentHash !== entry.contentHash) {
+				} else {
 					if (!entry.contentHash) throw new Error(`missing content hash: ${entry.path}`)
-					await fs.writeFile(entry.path, await blob(entry.contentHash))
+					if (!existing || existing.contentHash !== entry.contentHash)
+						await fs.writeFile(entry.path, await blob(entry.contentHash))
+					else if (addressed && !(await addressed.hasByHash(entry.contentHash)))
+						await blob(entry.contentHash)
 				}
 
 				const ino = (await fs.lstat(entry.path)).ino

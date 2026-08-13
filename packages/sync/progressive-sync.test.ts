@@ -160,6 +160,36 @@ test('full scan reconciles a target lazy stub without reading its bytes', async 
 	expect(await fs.exists('/lazy.txt')).toBe(false)
 })
 
+test('full scan hydrates a matching target lazy stub', async () => {
+	const sourceStorage = withoutSync(nodeMemStorage())
+	const targetStorage = withoutSync(nodeMemStorage())
+	const source = scanningReplica(sourceStorage)
+	const target = scanningReplica(targetStorage)
+	const sourceVolume = volume(sourceStorage)
+	const targetVolume = volume(targetStorage)
+	await sourceVolume.writeFile('/lazy.txt', bytes('remote'))
+	const snapshot = await source.scan()
+	const hash = snapshot.entries[0]?.contentHash
+	if (!hash) throw new Error('missing source content hash')
+	await targetStorage.setMeta('lazy', {
+		type: FileType.Regular,
+		size: 6n,
+		mode: 0o644,
+		mtimeNs: 0n,
+		ctimeNs: 0n,
+		contentHash: hash
+	})
+	await targetStorage.putDirent(targetStorage.rootIno, 'lazy.txt', {
+		ino: 'lazy',
+		type: FileType.Regular
+	})
+
+	await target.apply(snapshot.entries, (contentHash) => snapshot.getBlobByHash(contentHash))
+	await snapshot.close()
+
+	expect(text(await targetVolume.readFile('/lazy.txt'))).toBe('remote')
+})
+
 test('base storage converges quiescent create, update, rename, and delete through inode blobs', async () => {
 	const sourceCalls = { reads: 0, writes: 0 }
 	const targetCalls = { reads: 0, writes: 0 }
