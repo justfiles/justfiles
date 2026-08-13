@@ -153,7 +153,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
-						// The generated page hides the GUI from Vite's startup scan. Scan its
+						// The generated page does not expose the GUI to Vite's startup scan. Scan its
 						// real entry once so coupled dependencies optimize in the same pass.
 						optimizeDeps: { entries: [guiPath] },
 						environments: {
