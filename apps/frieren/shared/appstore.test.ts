@@ -9,11 +9,12 @@ import {
 	runnerAppStore
 } from './appstore.ts'
 
-const manifestUrl = 'https://com.example.notes.justapps.run/manifest.json'
-const releaseUrl = 'https://com.example.notes.justapps.run/v/1.2.0/manifest.json'
+const manifestUrl = 'https://justfiles-notes.justapps.run/manifest.json'
+const releaseUrl = 'https://justfiles-notes.justapps.run/v/1.2.0/manifest.json'
+const taskManifestUrl = 'https://com-example-tasks.justapps.run/manifest.json'
 const release = {
 	schema: RUNNER_MANIFEST_SCHEMA,
-	id: 'com.example.notes',
+	id: 'justfiles.notes',
 	name: 'Notes',
 	description: 'Write things down',
 	version: '1.2.0',
@@ -34,9 +35,15 @@ const runner = {
 			id: release.id,
 			name: release.name,
 			version: release.version,
-			iconUrl: 'https://com.example.notes.justapps.run/v/1.2.0/icon.svg',
+			iconUrl: 'https://justfiles-notes.justapps.run/v/1.2.0/icon.svg',
 			manifestUrl,
 			repository: 'https://example.com/notes'
+		},
+		{
+			id: 'com.example.tasks',
+			name: 'Tasks',
+			version: '1.0.0',
+			manifestUrl: taskManifestUrl
 		}
 	]
 }
@@ -75,15 +82,27 @@ describe('runnerAppStore', () => {
 		expect(app).toMatchObject({
 			id: release.id,
 			version: '1.2.0',
-			baseUrl: 'https://com.example.notes.justapps.run/v/1.2.0/',
+			baseUrl: 'https://justfiles-notes.justapps.run/v/1.2.0/',
 			hash: 'release-hash',
 			manifest: { app: 'app.js', gui: 'gui.js' }
 		})
-		expect(await store?.builtins()).toEqual([])
 		await store?.latest(release.id)
 		expect(seen.filter((url) => url === manifestUrl)).toHaveLength(1)
 		expect([...(await store!.read(app!, 'app.js'))]).toEqual([1, 2, 3])
-		expect(seen.at(-1)).toBe('https://com.example.notes.justapps.run/v/1.2.0/app.js')
+		expect(seen.at(-1)).toBe('https://justfiles-notes.justapps.run/v/1.2.0/app.js')
+	})
+
+	test('trusts only host-allowlisted Runner apps as built-ins', async () => {
+		const seen: string[] = []
+		const store = await runnerAppStore(async (url) => {
+			seen.push(url)
+			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
+			if (url === manifestUrl) return json(release, releaseUrl)
+			return new Response(null, { status: 404 })
+		})
+
+		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['justfiles.notes'])
+		expect(seen).not.toContain(taskManifestUrl)
 	})
 
 	test('omits an app whose canonical manifest cannot be loaded', async () => {
@@ -97,7 +116,7 @@ describe('runnerAppStore', () => {
 })
 
 describe('bootAppStore', () => {
-	test('merges built-ins with Runner; built-ins remain authoritative', async () => {
+	test('merges bundled and preinstalled Runner apps', async () => {
 		const request = async (url: string): Promise<Response> => {
 			if (url === CATALOG_PATH) return json(builtin)
 			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
@@ -105,8 +124,29 @@ describe('bootAppStore', () => {
 			return new Response(null, { status: 404 })
 		}
 		const store = await bootAppStore(request)
-		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['justfiles.files'])
+		expect((await store?.builtins())?.map((app) => app.id)).toEqual([
+			'justfiles.files',
+			'justfiles.notes'
+		])
 		expect((await store?.latest('justfiles.files'))?.version).toBe('0.1.0')
 		expect((await store?.latest(release.id))?.version).toBe('1.2.0')
+	})
+
+	test('keeps a bundled app authoritative over the same Runner id', async () => {
+		const bundledNotes = {
+			...builtin,
+			apps: [{ ...builtin.apps[0], id: release.id, name: 'Bundled Notes' }]
+		}
+		const request = async (url: string): Promise<Response> => {
+			if (url === CATALOG_PATH) return json(bundledNotes)
+			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
+			if (url === manifestUrl) return json(release, releaseUrl)
+			return new Response(null, { status: 404 })
+		}
+		const store = await bootAppStore(request)
+		const apps = await store?.builtins()
+		expect(apps).toHaveLength(1)
+		expect(apps?.[0]).toMatchObject({ id: release.id, name: 'Bundled Notes' })
+		expect(await store?.latest(release.id)).toMatchObject({ name: 'Bundled Notes' })
 	})
 })

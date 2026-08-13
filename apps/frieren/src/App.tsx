@@ -8,7 +8,7 @@ import {
 	activeProfileId,
 	activeRemoteUserId,
 	attachRemoteUser,
-	openProfile,
+	openBootProfile,
 	shouldOfferMigration,
 	switchToLocalProfile
 } from './fs'
@@ -49,14 +49,13 @@ function App() {
 	const [chooserForUserId, setChooserForUserId] = useState<string | null>(null)
 	const showChooser = chooserForUserId !== null && chooserForUserId === userId
 
-	// Boot the current browser profile immediately — independent of Clerk. If the
-	// current profile belongs to an account, its local replica renders before sync.
+	// Boot a local profile immediately. A remembered account profile waits for the
+	// auth effect below to start sync before it mounts the runtime.
 	useEffect(() => {
 		let cancelled = false
 		void (async () => {
-			await openProfile()
-			if (cancelled) return
-			setProfileId(activeProfileId())
+			const id = await openBootProfile()
+			if (!cancelled && id) setProfileId(id)
 		})().catch(() => {})
 		return () => {
 			cancelled = true

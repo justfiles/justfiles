@@ -272,6 +272,13 @@ export function openProfile(): Promise<ProfileVolume> {
 	return Promise.resolve(openProfileVolume(currentProfile()))
 }
 
+// A local profile can start the runtime before Clerk resolves. An account profile
+// waits for attachRemoteUser() to start sync, so runtime bootstrap can flush it.
+export async function openBootProfile(): Promise<string | null> {
+	await openProfile()
+	return activeProfileHasRemoteUser() ? null : activeProfileId()
+}
+
 export function activeProfileId(): string | null {
 	return active?.profileId ?? null
 }

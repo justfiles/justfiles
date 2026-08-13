@@ -106,6 +106,16 @@ describe('profile session switching', () => {
 		expect(fs.activeRemoteUserId()).toBe('user-1')
 	})
 
+	test('holds the current account profile until auth starts sync', async () => {
+		const { fs } = await loadFs([
+			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 2 },
+			{ id: 'local', lastOpenedAt: 1 }
+		])
+
+		await expect(fs.openBootProfile()).resolves.toBeNull()
+		expect(fs.activeProfileId()).toBe('account-profile')
+	})
+
 	test('boot opens local when the signed-out profile is current', async () => {
 		const { fs } = await loadFs([
 			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 1 },
@@ -115,6 +125,12 @@ describe('profile session switching', () => {
 		await fs.openProfile()
 
 		expect(fs.activeProfileId()).toBe('local')
+	})
+
+	test('returns the current local profile before auth resolves', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+
+		await expect(fs.openBootProfile()).resolves.toBe('local')
 	})
 
 	test('sign-out switches from an account profile back to local', async () => {
