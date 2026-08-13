@@ -17,6 +17,7 @@ AFK native-filesystem vertical slice. It uses observation and reconciliation, no
 ## Blocked by
 
 - [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for the v2 node contract.
+- [progressive storage capabilities](./sync-progressive-storage-capabilities.md) for the storage-only fallback and `caps.sync` boundary.
 - [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for the remote v2 replica.
 - [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md) for accepted mutation and conflict behavior.
 - [ignore-policy reconciliation](./sync-node-identity-ignore-policy-reconciliation.md) for the persisted policy hash and launch-time transition behavior.
@@ -38,7 +39,15 @@ Do not attach a transactional mutation observer to native storage. Finder, edito
 
 ## What to build
 
-Replace or extend the path-based `NativeIndex` scaffold with a v2 native node sidecar that implements the shared node-sync roles.
+Replace or extend the path-based `NativeIndex` scaffold with a v2 native node sidecar
+that implements the reconciled internal adapter primitives and is assembled into
+`caps.sync` by shared code.
+
+A bare native `Storage` is already syncable through the scan fallback. This phase
+adds the optional accelerator: durable stable identity, watcher candidates, cached
+hashes, pending operations, and restart repair. Its advertised consistency is
+`reconciled`, never transactional. Do not make the sidecar a new minimum Storage
+requirement.
 
 Persist at least:
 
@@ -187,6 +196,10 @@ Use deterministic fake watcher and file-identity adapters for behavior tests. Ad
 ## Acceptance criteria
 
 - [ ] Native sync uses the shared v2 node interface and wire protocol.
+- [ ] Native storage without `caps.sync` remains viable through full scanning; the
+  sidecar-backed `caps.sync` only strengthens identity, incrementality, and repair.
+- [ ] The native capability is assembled from shared sync rules and advertises
+  reconciled consistency.
 - [ ] Every replica maintains only its own native identity/local inode to sync-ID mapping.
 - [ ] External and remote directory moves between visible paths produce one v2 move independent of subtree size when no nested ignore root changes descendant visibility.
 - [ ] Descendant sidecar records do not store paths that require prefix rewrites.

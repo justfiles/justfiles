@@ -18,6 +18,7 @@ AFK vertical slice through shared sync rules, SQLite persistence, server routes,
 
 - [phase 1: memory reference](./sync-node-identity-phase-1-memory.md)
 - [snapshot handoff](./sync-node-identity-snapshot-handoff.md)
+- [progressive storage capabilities](./sync-progressive-storage-capabilities.md) for the `caps.sync` boundary, shared capability construction, and content-independent fallback.
 
 ## Context for a fresh agent
 
@@ -39,7 +40,15 @@ The server is another replica. It stores only `SyncNodeId <-> its local Ino`. It
 
 ## What to build
 
-Implement the phase-1 node-sync persistence interface for SQLite and expose a protocol-v2 HTTP replica path.
+Implement the internal transactional sync adapter for SQLite, construct the shared
+`SyncCapability`, and expose it as `storage.caps.sync`. Do not expose a top-level
+`nodeSync`/`sync` property or copy the memory sync rules into SQLite.
+
+Phase 2 is the second implementation of the primitive seam introduced by
+[progressive storage capabilities](./sync-progressive-storage-capabilities.md).
+Refine that internal seam where SQLite proves it necessary, but keep node state,
+journal, snapshot sessions, and transaction ports out of the package-root backend
+author surface.
 
 Add migration-owned tables for:
 
@@ -78,6 +87,10 @@ A fresh SQLite server and a memory client must be able to create, update, move, 
 - A projection-preserving visible-to-visible move does not enumerate descendants and does not add per-descendant journal or version state.
 - Accepted mutations use one ordered server cursor and survive process restart.
 - Snapshot paging freezes the delta high-water at snapshot start.
+- SQLite advertises optimized sync only through the sync-owned structural
+  `caps.sync` refinement; `packages/fs` gains no sync vocabulary.
+- The capability remains usable when `caps.content` is hidden: transfer is eager
+  through ordinary blob operations, even if SQLite internally stores blobs by hash.
 - Blob validation happens before a content-bearing create or update is accepted.
 - The server stamps authenticated origin information. It does not trust a client-supplied origin.
 - A failed transaction exposes none of the filesystem change, mapping, node state, or journal row.
@@ -92,6 +105,9 @@ This phase can use the deterministic revision rules from phase 1. Complete confl
 **RED:** Run the shared v2 conformance tracer for root binding and create against a fresh in-memory SQLite database. Close and reopen a file-backed database and assert that the same sync ID resolves to the same server-local inode.
 
 **GREEN:** Add the migration, SQLite node store, root binding, and create transaction needed for this test.
+
+Construct the capability with the shared adapter factory and expose it at
+`caps.sync`; do not add another SQLite-specific sync facade.
 
 ### Cycle 2: HTTP create
 
@@ -141,6 +157,10 @@ After all cycles pass, remove repeated encode/decode or transaction wiring. Do n
 - [ ] The SQLite projection-preserving visible-to-visible v2 move path performs no recursive CTE or descendant enumeration.
 - [ ] A pure move uploads no blobs.
 - [ ] Mapping, node state, journal, and filesystem writes share one transaction.
+- [ ] SQLite uses the shared capability construction and exposes it only as
+  `caps.sync` from `packages/sync`'s structural refinement.
+- [ ] Hiding `caps.content` selects eager ordinary-blob transfer without disabling
+  SQLite node sync.
 - [ ] The server never stores client-local inode IDs.
 - [ ] V1 endpoints and conformance tests remain green.
 - [ ] New migration tests work from both a fresh schema and every existing migration level.

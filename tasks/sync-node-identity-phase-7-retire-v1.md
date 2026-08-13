@@ -43,6 +43,11 @@ Read all phase tasks in [sync node identity epic](./sync-node-identity.md) and c
 
 Remove protocol v1 and its compatibility bridge. Make node-addressed v2 the only sync engine.
 
+Do not confuse retiring the path-v1 protocol with removing storage-only sync. A
+backend with no `caps.sync` must still use full-tree reconciliation through the
+shared current-state planner. That fallback may identify a rename as delete plus
+create and does not inherit the optimized move bound.
+
 Remove or replace:
 
 - path-only wire schemas and replica roles that have no remaining consumer;
@@ -68,6 +73,8 @@ Add permanent operation-count regression tests for move and fanout. Do not use w
 - Snapshot and delta cursors operate on node state and preserve the frozen-high-water guarantee.
 - Node tombstone retention preserves stale-client correctness. If collection removes the last mutation needed by a lagging cursor, the journal floor forces authoritative rebootstrap.
 - Generation, lineage, reset, ignored paths, lazy content, and blob GC continue to work.
+- Capability selection still supports all four combinations of `caps.sync` and
+  `caps.content`; only obsolete v1 wire and persistence are removed.
 - Existing v1 data can be collected only after successful v2 migration state proves it is no longer the sole copy of needed identity or cursor information.
 
 ## Visibility boundary requirements
@@ -150,6 +157,15 @@ Permanent performance assertions must distinguish ordinary moves from visibility
 
 **GREEN:** Fix only behavior exposed by reproducible seeds. Do not weaken invariants to accept corrupt states.
 
+### Cycle 9: plain Storage survives v1 removal
+
+**RED:** Remove every v1 route and adapter from the test build, then sync a plain
+`Storage` with no optional capabilities through create, update, rename, delete, and
+non-empty rebootstrap. Assert full-scan convergence and complete bytes.
+
+**GREEN:** Keep the protocol-independent current-state reconciler and ordinary-blob
+strategy. Delete only v1 wire, journal, and compatibility code.
+
 ### Refactor only after GREEN
 
 After removal tests pass, simplify names from experimental `v2` forms to the primary sync vocabulary. Keep compatibility aliases only if an external package still needs a deprecation period.
@@ -164,6 +180,9 @@ After removal tests pass, simplify names from experimental `v2` forms to the pri
 - [ ] Node tombstone collection and journal-floor rebootstrap are correct for stale clients.
 - [ ] Seeded randomized convergence covers all supported adapters and is reproducible.
 - [ ] Comments and docs describe node identity as the only current model.
+- [ ] A plain `Storage` remains syncable after path-v1 removal, without claiming
+  stable identity or constant-cost moves.
+- [ ] All four `caps.sync`/`caps.content` combinations remain covered after cleanup.
 - [ ] `packages/fs` stays sync-free.
 - [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 

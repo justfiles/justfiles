@@ -17,6 +17,7 @@ AFK vertical slice through the shared sync contract, memory reference, SQLite se
 
 - [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for node identity and constant-cost moves over a complete tree.
 - [snapshot handoff](./sync-node-identity-snapshot-handoff.md) for atomic current-state bootstrap sessions.
+- [progressive storage capabilities](./sync-progressive-storage-capabilities.md) for optimized-capability selection and the storage-only scanning fallback.
 - [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for server persistence and HTTP transport.
 - [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md) for durable browser state.
 - [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md) for remote-authoritative conflict rules and idempotent operations.
@@ -40,6 +41,12 @@ Read:
 - The node contract and adapters from the blocking tasks.
 
 Keep the public surface small. The application supplies paths. Sync owns policy identity, subscription filtering, reconciliation, persistence, recovery, and best-effort conflict handling.
+
+This task also completes non-empty reconciliation for the storage-only fallback.
+When `caps.sync` is absent, the same projection/materialization planner consumes a
+fresh full-tree scan instead of node deltas. When `caps.content` is also absent, it
+reads ordinary inode blobs and calculates hashes. Do not maintain a second fallback
+reconciler or require a hidden sync module merely to handle absence.
 
 ## Findings from the phase-1 prototype
 
@@ -318,6 +325,17 @@ Complete one cycle before starting the next. Test through `synced()`, public vol
 
 **GREEN:** Include the server list in the effective hash and run the same internal reconciler when a server volume opens.
 
+### Cycle 10: non-empty storage-only fallback
+
+**RED:** Run the non-empty reconciliation cases through a plain `Storage` with both
+`caps.sync` and `caps.content` absent. Cover local-only, remote-only, equal bytes,
+different bytes, moves, deletions, and restart during paging. Assert documented
+remote-authoritative convergence with complete bytes and no capability error.
+
+**GREEN:** Feed full scans and ordinary-blob content access into the same
+projection/materialization planner. Retain or recalculate enough scan state to
+validate pages and retry a changing tree; do not invent incremental guarantees.
+
 ## Refactor only after GREEN
 
 Keep one projection classifier and one policy normalizer in `packages/sync`. Memory, SQLite, IndexedDB, HTTP, and later native code must use the shared behavior rather than reimplementing pattern rules.
@@ -340,6 +358,8 @@ Do not expose reconciliation methods, policy versions, cursors, or operation IDs
 - [ ] Two clients can use different lists without changing each other's server view.
 - [ ] Rolling deployment does not require simultaneous client updates or promise an atomic account-wide policy cutover.
 - [ ] Memory, SQLite, and IndexedDB pass the same public conformance cases.
+- [ ] The non-empty reconciliation planner also works with plain `Storage` and no
+  optional capabilities.
 - [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope

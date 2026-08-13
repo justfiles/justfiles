@@ -92,6 +92,13 @@ and the delta high-water; that belongs to the
 [snapshot handoff task](./sync-node-identity-snapshot-handoff.md). Non-empty
 rebootstrap remains topology reconciliation and belongs to the later projection task.
 
+The completed `NodeStorage`/`NodeSyncModule` surface is the tracer-bullet assembly,
+not the final backend-author contract. The follow-up
+[progressive storage capabilities](./sync-progressive-storage-capabilities.md) task
+keeps these rules and behavior, moves optimized discovery to the sync-owned
+`caps.sync` refinement, and adds the capability fallbacks before durable adapters
+are implemented.
+
 ## RED/GREEN TDD specification
 
 Complete one cycle before starting the next.

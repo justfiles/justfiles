@@ -17,6 +17,7 @@ AFK vertical slice through IndexedDB persistence, browser-local transactions, re
 ## Blocked by
 
 - [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for the shared v2 contract and memory reference behavior.
+- [progressive storage capabilities](./sync-progressive-storage-capabilities.md) for the shared `caps.sync` construction and capability matrix.
 - [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for the production v2 HTTP server path.
 
 ## Context for a fresh agent
@@ -34,7 +35,15 @@ IndexedDB can atomically update several object stores in one transaction. Use th
 
 ## What to build
 
-Implement the shared v2 node-sync persistence interface for IndexedDB.
+Implement the minimal internal IndexedDB primitives required by the shared
+`SyncCapability` factory. Expose the result as `storage.caps.sync`; do not add a
+top-level sync refinement or reimplement node mutation and snapshot rules.
+
+IndexedDB is the third implementation that validates the adapter seam after memory
+and SQLite. Simplify or reshape the internal primitive interface if all three become
+smaller, then treat it as the starting point for a future PostgreSQL adapter. Do not
+promote database tables, `NodeStore`, transaction ports, or snapshot sessions to the
+package-root author surface.
 
 Add versioned object stores or indexes for:
 
@@ -59,6 +68,8 @@ Wire an IndexedDB-backed browser replica to the v2 HTTP server from [phase 2: SQ
 - A deleted node keeps a durable tombstone while its local inode binding becomes null.
 - Restart preserves mapping, tombstone, cursor, and pending local mutations.
 - Existing lazy-content and dirty-content guarantees remain intact.
+- Hiding `caps.content` keeps sync viable through eager ordinary-blob transfer;
+  advertised lazy hydration requires `caps.content`.
 - Path protocol v1 object stores remain usable during compatibility.
 
 ## RED/GREEN TDD specification
@@ -121,6 +132,10 @@ Wire an IndexedDB-backed browser replica to the v2 HTTP server from [phase 2: SQ
 - [ ] Tombstones and mappings survive restart.
 - [ ] Failed transactions leave no partial tree or sync state.
 - [ ] Lazy content still hydrates after an ancestor move.
+- [ ] IndexedDB exposes the shared optimized path at `caps.sync` and contains no
+  copied sync policy.
+- [ ] With `caps.content` hidden, IndexedDB node sync converges eagerly rather than
+  throwing a missing-content-capability error.
 - [ ] V1 IndexedDB conformance remains green.
 - [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
