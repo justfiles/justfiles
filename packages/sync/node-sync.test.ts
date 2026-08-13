@@ -6,10 +6,11 @@ import type { TreePort } from '@justfiles/fs/storage.shared'
 import { joinPath } from '@justfiles/fs/storage.shared'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import type { NodeMutation, NodeOperation, NodeState, NodeStorage, NodeStore } from './node'
 import { mutationsOf, nodeSyncReplica, ROOT_NODE_ID } from './node'
-import { memNodeStore, nodeMemStorage, nodeSyncExtension } from './storage/node-mem'
+import { NODE_SNAPSHOT_TTL_MS } from './node-snapshot'
+import { memNodeStore, nodeMemReplica, nodeMemStorage, nodeSyncExtension } from './storage/node-mem'
 
 const REMOTE = 'remote'
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
@@ -100,6 +101,50 @@ function makePeer(id: string, opts?: { counting?: boolean; store?: NodeStore }) 
 }
 
 type NodePeer = ReturnType<typeof makePeer>
+
+function makeSnapshotPeer(id: string, store?: NodeStore) {
+	const mintIno = inoMinter(id)
+	const { storage, replica } = nodeMemReplica({ mintIno, store })
+	const vol = volume(storage)
+	return {
+		storage,
+		replica,
+		vol,
+		nodes: storage.nodeSync.nodes,
+		async orphanCount(): Promise<number> {
+			const reachable = new Set<Ino>([storage.rootIno])
+			async function walk(dir: string): Promise<void> {
+				for (const entry of await vol.readdir(dir)) {
+					reachable.add(entry.ino)
+					if (entry.type === FileType.Directory) await walk(joinPath(dir, entry.name))
+				}
+			}
+			await walk('/')
+			let orphans = 0
+			for (const ino of mintIno.minted())
+				if (!reachable.has(ino) && (await storage.getMeta(ino))) orphans += 1
+			return orphans
+		},
+		async layout(): Promise<string[]> {
+			const paths: string[] = []
+			async function walk(dir: string): Promise<void> {
+				for (const entry of await vol.readdir(dir)) {
+					const path = joinPath(dir, entry.name)
+					paths.push(path)
+					if (entry.type === FileType.Directory) await walk(path)
+				}
+			}
+			await walk('/')
+			return paths.sort()
+		},
+		async nodeAt(path: string): Promise<NodeState | null> {
+			const stat = await vol.lstat(path).catch(() => null)
+			if (!stat) return null
+			const nodeId = await storage.nodeSync.nodes.idFor(stat.ino)
+			return nodeId === null ? null : storage.nodeSync.nodes.get(nodeId)
+		}
+	}
+}
 
 function nodePeers(opts?: { counting?: boolean }) {
 	const a = makePeer('a', opts)
@@ -198,6 +243,228 @@ test('a retained journal bootstraps an empty peer one page at a time', async () 
 		(await a.nodeAt('/new/deep/note.txt'))?.id
 	)
 	expect(await b.orphanCount()).toBe(0)
+})
+
+test('a frozen snapshot plus its delta high-water converges after mutations between pages', async () => {
+	const a = makeSnapshotPeer('a')
+	const b = makeSnapshotPeer('b')
+	await a.vol.mkdir('/before/deep', { recursive: true })
+	await a.vol.writeFile('/before/deep/a.txt', bytes('a'))
+	await a.vol.writeFile('/before/deep/z.txt', bytes('z'))
+
+	let next: string | undefined
+	let highWater = ''
+	let session = ''
+	let pages = 0
+	do {
+		const page = await a.replica.nodeSnapshot(next, { limit: 1 })
+		expect(page.status).toBe('ok')
+		if (page.status !== 'ok') throw new Error(page.status)
+		highWater = page.syncCursor
+		session = page.session
+		await b.replica.applyNodeOperations(
+			page.operations,
+			async (hash) => {
+				const blob = await a.replica.getSnapshotBlob(page.session, hash)
+				expect(blob.status).toBe('ok')
+				if (blob.status !== 'ok') throw new Error(blob.status)
+				return blob.data
+			},
+			{ source: REMOTE }
+		)
+		next = page.next
+		pages++
+		if (pages === 1) {
+			await a.vol.rename('/before', '/after')
+			await a.vol.writeFile('/late.txt', bytes('late'))
+		}
+	} while (next)
+	expect(await a.replica.closeSnapshot(session)).toEqual({ status: 'ok' })
+
+	const delta = await a.replica.nodeDeltas(highWater, { limit: 100 })
+	await b.replica.applyNodeOperations(delta.operations, (hash) => a.replica.getBlobByHash(hash), {
+		source: REMOTE
+	})
+
+	expect(pages).toBeGreaterThan(1)
+	expect(await b.layout()).toEqual(await a.layout())
+	expect(text(await b.vol.readFile('/after/deep/z.txt'))).toBe('z')
+	expect(text(await b.vol.readFile('/late.txt'))).toBe('late')
+	for (const path of await a.layout())
+		expect((await b.nodeAt(path))?.id).toBe((await a.nodeAt(path))?.id)
+	expect(await b.orphanCount()).toBe(0)
+})
+
+test('a snapshot token keeps every advertised blob readable across an opening race and GC', async () => {
+	const base = memNodeStore()
+	let pause = false
+	let reached!: () => void
+	let resume!: () => void
+	const paused = new Promise<void>((resolve) => {
+		reached = resolve
+	})
+	const resumed = new Promise<void>((resolve) => {
+		resume = resolve
+	})
+	const store: NodeStore = {
+		...base,
+		async head() {
+			const head = await base.head()
+			if (pause) {
+				reached()
+				await resumed
+			}
+			return head
+		}
+	}
+	const a = makeSnapshotPeer('a', store)
+	const b = makeSnapshotPeer('b')
+	await a.vol.writeFile('/note.txt', bytes('old'))
+	const old = await a.nodeAt('/note.txt')
+	if (old?.localIno == null || old.contentHash === undefined) throw new Error('missing old node')
+
+	pause = true
+	const opening = a.replica.nodeSnapshot(undefined, { limit: 100 })
+	await paused
+	const updating = a.vol.writeFile('/note.txt', bytes('new'))
+	while ((await a.storage.getMeta(old.localIno))?.contentHash === old.contentHash)
+		await new Promise((resolve) => setTimeout(resolve, 0))
+	const collecting = a.storage.caps?.content?.gcUnreferenced()
+	resume()
+	const page = await opening
+	await updating
+	await collecting
+
+	expect(page.status).toBe('ok')
+	if (page.status !== 'ok') throw new Error(page.status)
+	const retained = await a.replica.getSnapshotBlob(page.session, old.contentHash)
+	expect(retained).toEqual({ status: 'ok', data: bytes('old') })
+	await b.replica.applyNodeOperations(
+		page.operations,
+		async (hash) => {
+			const blob = await a.replica.getSnapshotBlob(page.session, hash)
+			if (blob.status !== 'ok') throw new Error(blob.status)
+			return blob.data
+		},
+		{ source: REMOTE }
+	)
+	expect(text(await b.vol.readFile('/note.txt'))).toBe('old')
+
+	const delta = await a.replica.nodeDeltas(page.syncCursor, { limit: 100 })
+	await b.replica.applyNodeOperations(delta.operations, (hash) => a.replica.getBlobByHash(hash), {
+		source: REMOTE
+	})
+	expect(text(await b.vol.readFile('/note.txt'))).toBe('new')
+})
+
+test.each([
+	['default', undefined],
+	['injected store', memNodeStore()]
+] as const)('%s memory adapter retains an unserved snapshot blob', async (_name, store) => {
+	const a = makeSnapshotPeer('a', store)
+	const b = makeSnapshotPeer('b')
+	await a.vol.writeFile('/a.txt', bytes('a'))
+	await a.vol.writeFile('/z.txt', bytes('old'))
+
+	const first = await a.replica.nodeSnapshot(undefined, { limit: 1 })
+	expect(first.status).toBe('ok')
+	if (first.status !== 'ok') throw new Error(first.status)
+	await a.vol.writeFile('/z.txt', bytes('new'))
+	await a.storage.caps?.content?.gcUnreferenced()
+
+	let page = first
+	for (;;) {
+		await b.replica.applyNodeOperations(
+			page.operations,
+			async (hash) => {
+				const blob = await a.replica.getSnapshotBlob(page.session, hash)
+				if (blob.status !== 'ok') throw new Error(blob.status)
+				return blob.data
+			},
+			{ source: REMOTE }
+		)
+		if (!page.next) break
+		const next = await a.replica.nodeSnapshot(page.next, { limit: 1 })
+		expect(next.status).toBe('ok')
+		if (next.status !== 'ok') throw new Error(next.status)
+		page = next
+	}
+	expect(await a.replica.closeSnapshot(page.session)).toEqual({ status: 'ok' })
+
+	expect(text(await b.vol.readFile('/z.txt'))).toBe('old')
+	const delta = await a.replica.nodeDeltas(first.syncCursor, { limit: 100 })
+	await b.replica.applyNodeOperations(delta.operations, (hash) => a.replica.getBlobByHash(hash), {
+		source: REMOTE
+	})
+	expect(text(await b.vol.readFile('/z.txt'))).toBe('new')
+})
+
+test('the final snapshot page retains blobs until close and closed tokens restart', async () => {
+	const a = makeSnapshotPeer('a')
+	await a.vol.writeFile('/a.txt', bytes('a'))
+	await a.vol.writeFile('/z.txt', bytes('old'))
+	const oldHash = (await a.nodeAt('/z.txt'))?.contentHash
+	if (!oldHash) throw new Error('missing old hash')
+
+	const first = await a.replica.nodeSnapshot(undefined, { limit: 1 })
+	expect(first.status).toBe('ok')
+	if (first.status !== 'ok' || !first.next) throw new Error('missing first page')
+	const final = await a.replica.nodeSnapshot(first.next, { limit: 1 })
+	expect(final).toMatchObject({ status: 'ok', done: true })
+	expect(final).not.toHaveProperty('next')
+	if (final.status !== 'ok') throw new Error(final.status)
+
+	await a.vol.writeFile('/z.txt', bytes('new'))
+	await a.storage.caps?.content?.gcUnreferenced()
+	expect(await a.replica.getSnapshotBlob(final.session, oldHash)).toEqual({
+		status: 'ok',
+		data: bytes('old')
+	})
+	expect(await a.replica.closeSnapshot(final.session)).toEqual({ status: 'ok' })
+	expect(await a.replica.getSnapshotBlob(final.session, oldHash)).toEqual({ status: 'restart' })
+	expect(await a.replica.nodeSnapshot(first.next, { limit: 1 })).toEqual({ status: 'restart' })
+	expect(await a.replica.closeSnapshot('unknown')).toEqual({ status: 'restart' })
+})
+
+test('an abandoned snapshot expires to the same restart result', async () => {
+	vi.useFakeTimers()
+	try {
+		const a = makeSnapshotPeer('a')
+		await a.vol.writeFile('/a.txt', bytes('old'))
+		await a.vol.writeFile('/z.txt', bytes('later'))
+		const hash = (await a.nodeAt('/a.txt'))?.contentHash
+		if (!hash) throw new Error('missing hash')
+		const page = await a.replica.nodeSnapshot(undefined, { limit: 1 })
+		if (page.status !== 'ok') throw new Error(page.status)
+
+		await vi.advanceTimersByTimeAsync(NODE_SNAPSHOT_TTL_MS + 1)
+
+		expect(await a.replica.getSnapshotBlob(page.session, hash)).toEqual({ status: 'restart' })
+		expect(await a.replica.closeSnapshot(page.session)).toEqual({ status: 'restart' })
+		if (!page.next) throw new Error('missing next page')
+		expect(await a.replica.nodeSnapshot(page.next, { limit: 1 })).toEqual({
+			status: 'restart'
+		})
+	} finally {
+		vi.useRealTimers()
+	}
+})
+
+test('the memory session bound rejects excess opens without evicting live tokens', async () => {
+	const a = makeSnapshotPeer('a')
+	const admitted = []
+	for (let index = 0; index < 4; index++) {
+		const page = await a.replica.nodeSnapshot(undefined, { limit: 1 })
+		expect(page.status).toBe('ok')
+		if (page.status !== 'ok') throw new Error(page.status)
+		admitted.push(page)
+	}
+
+	expect(await a.replica.nodeSnapshot(undefined, { limit: 1 })).toEqual({ status: 'busy' })
+	for (const page of admitted) {
+		expect(await a.replica.closeSnapshot(page.session)).toEqual({ status: 'ok' })
+	}
+	expect((await a.replica.nodeSnapshot(undefined, { limit: 1 })).status).toBe('ok')
 })
 
 test('a retained journal preserves a moved child after its old parent is deleted', async () => {
