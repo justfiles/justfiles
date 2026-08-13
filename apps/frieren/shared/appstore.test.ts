@@ -44,7 +44,7 @@ const builtin = {
 	schema: CATALOG_SCHEMA,
 	apps: [
 		{
-			id: 'app.justfiles.frieren.files',
+			id: 'justfiles.files',
 			name: 'Files',
 			version: '0.1.0',
 			files: [{ path: 'app.js', hash: 'sha256-b', size: 1 }]
@@ -105,8 +105,8 @@ describe('bootAppStore', () => {
 			return new Response(null, { status: 404 })
 		}
 		const store = await bootAppStore(request)
-		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['app.justfiles.frieren.files'])
-		expect((await store?.latest('app.justfiles.frieren.files'))?.version).toBe('0.1.0')
+		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['justfiles.files'])
+		expect((await store?.latest('justfiles.files'))?.version).toBe('0.1.0')
 		expect((await store?.latest(release.id))?.version).toBe('1.2.0')
 	})
 })

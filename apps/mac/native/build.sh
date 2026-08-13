@@ -113,7 +113,7 @@ build_launcher() {
 build_booter() { # Name
 	name="$1"
 	# The bundle id IS the app id for ids in our namespace (see daemon/materialize.ts).
-	id="app.justfiles.frieren.$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+	id="justfiles.$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
 	app="$name.app"
 	make_bundle "$app" "$name" "$id" "$id" ""
 	echo "built $app (booter, id=$id)"
@@ -133,12 +133,12 @@ copy_builtin() { # resources_dir app_id package_dir
 }
 
 copy_builtins() { # resources_dir
-	copy_builtin "$1" app.justfiles.frieren.code app-code
-	copy_builtin "$1" app.justfiles.frieren.draw app-draw
-	copy_builtin "$1" app.justfiles.frieren.files app-files
-	copy_builtin "$1" app.justfiles.frieren.notes app-notes
-	copy_builtin "$1" app.justfiles.frieren.paint app-paint
-	copy_builtin "$1" app.justfiles.frieren.settings app-settings
+	copy_builtin "$1" justfiles.code app-code
+	copy_builtin "$1" justfiles.draw app-draw
+	copy_builtin "$1" justfiles.files app-files
+	copy_builtin "$1" justfiles.notes app-notes
+	copy_builtin "$1" justfiles.paint app-paint
+	copy_builtin "$1" justfiles.settings app-settings
 }
 
 # A self-contained, shippable Kodama.app backed by the daemon (apps/mac/daemon): the

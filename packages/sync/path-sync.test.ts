@@ -57,17 +57,13 @@ describe('path-sync semantics', () => {
 	// In-place update keeps the local ino
 	test('updating content at a path reuses the local inode and converges', async () => {
 		const { client, server, syncBoth } = twoPeers()
-		await server.writeFile('/applications/app.justfiles.frieren.code/gui.js', bytes('v1'))
+		await server.writeFile('/applications/justfiles.code/gui.js', bytes('v1'))
 		await syncBoth()
-		const inoBefore = (await client.stat('/applications/app.justfiles.frieren.code/gui.js')).ino
-		await server.writeFile('/applications/app.justfiles.frieren.code/gui.js', bytes('v2'))
+		const inoBefore = (await client.stat('/applications/justfiles.code/gui.js')).ino
+		await server.writeFile('/applications/justfiles.code/gui.js', bytes('v2'))
 		await syncBoth()
-		expect(text(await client.readFile('/applications/app.justfiles.frieren.code/gui.js'))).toBe(
-			'v2'
-		)
-		expect((await client.stat('/applications/app.justfiles.frieren.code/gui.js')).ino).toBe(
-			inoBefore
-		)
+		expect(text(await client.readFile('/applications/justfiles.code/gui.js'))).toBe('v2')
+		expect((await client.stat('/applications/justfiles.code/gui.js')).ino).toBe(inoBefore)
 		expect(await orphanCount(client)).toBe(0)
 	})
 
@@ -86,12 +82,12 @@ describe('path-sync semantics', () => {
 	test('pulled file is a stub carrying the desired hash; first read hydrates by hash', async () => {
 		const BIG = 'x'.repeat(4096)
 		const { client, server, syncBoth } = twoPeers({ lazyContent: true })
-		await server.writeFile('/applications/app.justfiles.frieren.code/gui.js', bytes(BIG))
+		await server.writeFile('/applications/justfiles.code/gui.js', bytes(BIG))
 		await syncBoth()
-		const st = await client.stat('/applications/app.justfiles.frieren.code/gui.js')
+		const st = await client.stat('/applications/justfiles.code/gui.js')
 		expect(st.contentHash).toBe(sha256(BIG))
 		expect(await client.hasLocalBlob(st.contentHash!)).toBe(false)
-		expect(text(await client.readFile('/applications/app.justfiles.frieren.code/gui.js'))).toBe(BIG)
+		expect(text(await client.readFile('/applications/justfiles.code/gui.js'))).toBe(BIG)
 		expect(await client.hasLocalBlob(st.contentHash!)).toBe(true)
 	})
 

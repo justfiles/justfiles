@@ -3,7 +3,7 @@ import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 
 // Draw is a thin, file-based wrapper over Excalidraw. Everything lives in the
-// app's private volume (`/data/app.justfiles.frieren.draw`). Scene bytes (an Excalidraw
+// app's private volume (`/data/justfiles.draw`). Scene bytes (an Excalidraw
 // scene JSON) NEVER enter reducer state — the GUI re-reads them on open and
 // autosaves them on change, exactly like app-notes' body text. Reducer state
 // holds only the semantic fact "which drawing is open" plus the last error, so

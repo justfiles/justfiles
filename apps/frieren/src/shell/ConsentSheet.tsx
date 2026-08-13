@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { RunnerCatalogApp } from '../../shared/appstore'
 
 function isFirstParty(id: string): boolean {
-	return id.startsWith('justfiles.') || id.startsWith('app.justfiles.frieren.')
+	return id.startsWith('justfiles.')
 }
 
 // One capability line: the resource id and, if scoped, its scopes. This is the

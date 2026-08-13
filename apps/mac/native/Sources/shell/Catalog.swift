@@ -14,8 +14,9 @@ struct CatalogApp: Decodable {
 // daemon/materialize.ts: an id in our own namespace is used verbatim, anything else is
 // namespaced so it can never shadow a real installed app in LaunchServices.
 func miniAppBundleId(_ appId: String) -> String {
-	let ns = "app.justfiles.frieren."
-	return appId.hasPrefix(ns) ? appId : ns + "ext." + appId
+	let appNamespace = "justfiles."
+	let bundleNamespace = "app.justfiles.frieren."
+	return appId.hasPrefix(appNamespace) ? appId : bundleNamespace + "ext." + appId
 }
 
 // One slash command for the composer's `/` menu — matches the daemon's CommandMeta

@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.frieren.pixel',
+						id: 'justfiles.pixel',
 						name: 'Pixel',
 						description:
 							'Indexed pixel-art editor — a palette-indexed canvas you draw in or drive with an agent.',

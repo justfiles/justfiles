@@ -1,7 +1,7 @@
 // Devkit install/preview coverage — build & install through the
 // daemon's REAL wiring: `buildKernel` (kernel + reducer sandbox pool + the `devkit`
 // capability whose compile/typecheck run in the daemon's toolchain worker) over a throwaway
-// temp Volume. We drive Code (`app.justfiles.frieren.code`) the way its GUI does — create a project, open it,
+// temp Volume. We drive Code (`justfiles.code`) the way its GUI does — create a project, open it,
 // install — and assert the freshly-built app lands in the SAME catalog the launcher lists,
 // then that `run` installs a hidden, servable preview that `stop` tears down. Bun-only
 // (`bun test`): the reducer sandbox uses blob-URL Workers and the toolchain worker compiles
@@ -17,7 +17,7 @@ import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 
-const CODE = 'app.justfiles.frieren.code'
+const CODE = 'justfiles.code'
 const NEW_APP = 'demo.widget'
 let root: string
 let kernel: Kernel

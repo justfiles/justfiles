@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest'
 
 // Guard: the retired public brand ("spud", in any casing) and the retired first-party id
 // prefixes must not come back. Both were fully renamed — the brand to Kodama (public copy)
-// / frieren (internal ids), the ids to `app.justfiles.frieren.*` — so any new occurrence in
+// / frieren (internal ids), and first-party app ids to `justfiles.*` — so any new occurrence in
 // code or config is a leak: a new app, an allowlist, a copy string, or a config key that
 // reintroduced a dead name.
 //
@@ -14,18 +14,24 @@ import { describe, expect, test } from 'vitest'
 const ROOT = join(import.meta.dirname, '..', '..', '..')
 const SCAN_DIRS = ['apps', 'packages']
 const SCAN_ROOT_FILES = ['turbo.json', 'vitest.config.ts', 'package.json', 'pnpm-workspace.yaml']
-const RETIRED = /(spud|computer\.spud\.|app\.spud\.|app\.frieren\.)/i
+const RETIRED =
+	/(spud|computer\.spud\.|app\.spud\.|app\.frieren\.|app\.justfiles\.frieren\.(?!host\b|ext\.))/i
 const SCAN_EXT = /\.(tsx?|jsx?|mjs|cjs|json|jsonc|swift|sh|css|yaml|yml|plist)$/
 
 // The built-in avatar art, baked to base64 (`pnpm run avatars`): 200 KB of the base64
 // alphabet spells words, and none of them are a name anyone wrote.
 const BAKED_ART = /^packages\/agent\/avatars(\.ts$|\/)/
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.wrangler', 'out'])
+const EXEMPT_FILES = new Set([
+	'apps/shared/migrate-app-ids.ts',
+	'apps/mac/daemon/materialize.ts',
+	'apps/mac/native/Sources/shell/Catalog.swift'
+])
 
 function isScannable(rel: string): boolean {
 	if (!SCAN_EXT.test(rel)) return false
 	if (/\.test\.(tsx?|jsx?)$/.test(rel) || /\.bun\.test\.ts$/.test(rel)) return false
-	return !BAKED_ART.test(rel)
+	return !BAKED_ART.test(rel) && !EXEMPT_FILES.has(rel)
 }
 
 function collect(dir: string, out: string[]): void {

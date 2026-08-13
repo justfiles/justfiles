@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.frieren.crossword',
+						id: 'justfiles.crossword',
 						name: 'Crossword',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'

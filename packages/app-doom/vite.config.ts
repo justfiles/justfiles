@@ -4,7 +4,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
 	plugins: [
 		kernelHost({
-			id: 'app.justfiles.frieren.doom',
+			id: 'justfiles.doom',
 			name: 'Doom',
 			app: 'src/app.ts',
 			gui: 'src/gui.ts'

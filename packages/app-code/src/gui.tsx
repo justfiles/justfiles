@@ -33,9 +33,10 @@ export const gui = defineGUI<CodeApp>({
 
 		const org = () => {
 			try {
-				return localStorage.getItem('app-code.org') || 'com.example'
+				const publisher = localStorage.getItem('app-code.org')
+				return publisher && !publisher.includes('.') ? publisher : 'github-user'
 			} catch {
-				return 'com.example'
+				return 'github-user'
 			}
 		}
 		const rememberOrg = (id: string) => {

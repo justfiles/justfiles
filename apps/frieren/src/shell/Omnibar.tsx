@@ -70,7 +70,7 @@ function oneLine(text: string): string {
 
 // The first-party Settings app — a `settings` route (e.g. accounts → reconnect)
 // opens it, reusing the ordinary `app.open` dispatch.
-const SETTINGS_APP_ID = 'app.justfiles.frieren.settings'
+const SETTINGS_APP_ID = 'justfiles.settings'
 
 // The one-time "bring your local work into this account" offer rides a `system`
 // question on this thread; engaging it opens the migration sheet (handled locally

@@ -166,13 +166,13 @@ describe('volume capability', () => {
 		// that convenience is the bug: an editor autosaving to a note whose folder was
 		// renamed away would rebuild the folder and leave a stale duplicate in it.
 		const { cap, fs } = setup()
-		const appId = 'app.justfiles.frieren.code'
+		const appId = 'justfiles.code'
 		await expect(
 			cap.invoke(
 				call('writeFile', ['/gone/x.txt', enc.encode('edit'), { update: true }], { appId })
 			)
 		).rejects.toThrow(/ENOENT/)
-		expect(await fs.exists('/data/app.justfiles.frieren.code/gone')).toBe(false)
+		expect(await fs.exists('/data/justfiles.code/gone')).toBe(false)
 		// A plain write still creates the folder — the convenience is intact.
 		await cap.invoke(call('writeFile', ['/here/x.txt', enc.encode('new')], { appId }))
 		await cap.invoke(
@@ -185,28 +185,20 @@ describe('volume capability', () => {
 		const { cap } = setup()
 		await cap.invoke(
 			call('writeFile', ['/projects/a/x.txt', enc.encode('hi')], {
-				appId: 'app.justfiles.frieren.code'
+				appId: 'justfiles.code'
 			})
 		)
-		await cap.invoke(
-			call('rename', ['/projects/a', '/projects/b'], { appId: 'app.justfiles.frieren.code' })
-		)
+		await cap.invoke(call('rename', ['/projects/a', '/projects/b'], { appId: 'justfiles.code' }))
 		expect(
-			await cap.invoke(
-				call('exists', ['/projects/a/x.txt'], { appId: 'app.justfiles.frieren.code' })
-			)
+			await cap.invoke(call('exists', ['/projects/a/x.txt'], { appId: 'justfiles.code' }))
 		).toBe(false)
 		expect(
-			await cap.invoke(
-				call('exists', ['/projects/b/x.txt'], { appId: 'app.justfiles.frieren.code' })
-			)
+			await cap.invoke(call('exists', ['/projects/b/x.txt'], { appId: 'justfiles.code' }))
 		).toBe(true)
-		await cap.invoke(
-			call('rm', ['/projects/b', { recursive: true }], { appId: 'app.justfiles.frieren.code' })
+		await cap.invoke(call('rm', ['/projects/b', { recursive: true }], { appId: 'justfiles.code' }))
+		expect(await cap.invoke(call('exists', ['/projects/b'], { appId: 'justfiles.code' }))).toBe(
+			false
 		)
-		expect(
-			await cap.invoke(call('exists', ['/projects/b'], { appId: 'app.justfiles.frieren.code' }))
-		).toBe(false)
 	})
 
 	test('a multi-arg method reused from Volume: cp copies a file', async () => {

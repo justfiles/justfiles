@@ -30,7 +30,7 @@ async function isBuiltin(id: string): Promise<boolean> {
 		const store = await httpAppStore((path) => fetch(path))
 		if (store) return (await store.builtins()).some((app) => app.id === id)
 	} catch {}
-	return id.startsWith('app.justfiles.frieren.')
+	return id.startsWith('justfiles.')
 }
 
 // Restart installs left pending by a closed/crashed tab (the fs markers under

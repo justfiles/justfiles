@@ -3,4 +3,4 @@
 // `SYSTEM_SCOPE_ALLOWLIST` for Files' system volume); slice 6 replaces it
 // with a one-time user-consent grant. `app.test.devkit` is the throwaway used
 // to verify the capability standalone.
-export const DEVKIT_ALLOWLIST = new Set(['app.justfiles.frieren.code', 'app.test.devkit'])
+export const DEVKIT_ALLOWLIST = new Set(['justfiles.code', 'app.test.devkit'])

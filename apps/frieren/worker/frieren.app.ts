@@ -73,7 +73,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		generate: ({ system, prompt }) => deps.text.gen(system, prompt)
 	})
 	const capabilities: Capabilities = capabilityRegistry({
-		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
+		volume: volumeCapability(deps.fs, { systemAllowlist: ['justfiles.files'] }),
 		ai,
 		image: deps.image,
 		email: deps.email,

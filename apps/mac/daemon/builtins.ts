@@ -3,12 +3,12 @@ import { type AppStore, builtinStoreFromFs } from '@justfiles/app/appstore/fs'
 import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [
-	{ id: 'app.justfiles.frieren.code', packageDir: 'app-code' },
-	{ id: 'app.justfiles.frieren.draw', packageDir: 'app-draw' },
-	{ id: 'app.justfiles.frieren.files', packageDir: 'app-files' },
-	{ id: 'app.justfiles.frieren.notes', packageDir: 'app-notes' },
-	{ id: 'app.justfiles.frieren.paint', packageDir: 'app-paint' },
-	{ id: 'app.justfiles.frieren.settings', packageDir: 'app-settings' }
+	{ id: 'justfiles.code', packageDir: 'app-code' },
+	{ id: 'justfiles.draw', packageDir: 'app-draw' },
+	{ id: 'justfiles.files', packageDir: 'app-files' },
+	{ id: 'justfiles.notes', packageDir: 'app-notes' },
+	{ id: 'justfiles.paint', packageDir: 'app-paint' },
+	{ id: 'justfiles.settings', packageDir: 'app-settings' }
 ]
 
 export function builtinStore(): Promise<AppStore> {

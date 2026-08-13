@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.example.counter',
+						id: 'alice.counter',
 						name: 'Counter',
 						description: 'A tiny kernel app.',
 						app: 'src/app.ts',

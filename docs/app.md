@@ -84,7 +84,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.example.foo',
+						id: 'alice.foo',
 						name: 'Foo',
 						description: 'Does one useful thing.',
 						icon: 'icon.png',
@@ -124,7 +124,7 @@ An App Code project lives in Code's private volume:
 
 ```json
 {
-	"id": "com.example.foo",
+	"id": "alice.foo",
 	"name": "Foo",
 	"description": "Optional",
 	"version": "0.1.0",

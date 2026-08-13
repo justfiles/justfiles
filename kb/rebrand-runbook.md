@@ -9,7 +9,7 @@ How to rebrand the public product again — a new name and a new domain — with
 downtime. Written after the Spud → Kodama rebrand, distilled to what still matters.
 
 **A future rebrand is small.** The Spud → Kodama migration was large only because the old
-public brand had leaked into the app bundle IDs (`computer.spud.* → app.justfiles.frieren.*`),
+public brand had leaked into the app bundle IDs (`computer.spud.* → justfiles.*`),
 which forced a one-off per-user data migration. That is fixed permanently: the IDs and every
 internal name are now brand-free. So a rebrand is now just **public copy + the domain (app +
 Clerk)**. No data migration, no id rename, no migrator, no backups.
@@ -19,7 +19,7 @@ Clerk)**. No data migration, no id rename, no migrator, no backups.
 - **Internal names**: `frieren`, the `Frieren` Durable Object class, `frieren-staging`,
   worker names, R2 buckets, DO namespaces, source dirs, schema names, the platform AI
   provider/account id (`frieren`), and the `FRIEREN_*` env vars of the macOS daemon.
-- **App bundle IDs**: `app.justfiles.frieren.*` (permanent, brand-free). Same for the macOS
+- **App bundle IDs**: `justfiles.*` (permanent, brand-free). Same for the macOS
   bundle scheme.
 - **Release tag component**: `frieren` → tags `frieren-v*`, which is the prod deploy trigger.
 - **npm package names** (for example `@justfiles/app-code`): distribution identities, immutable

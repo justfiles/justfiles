@@ -11,7 +11,7 @@ pnpm dev      # develop
 pnpm build    # emit dist/manifest.json, dist/app.js, dist/gui.js
 ```
 
-Bundle id: `app.justfiles.frieren.pixel`.
+Bundle id: `justfiles.pixel`.
 
 ## Agent text I/O
 
@@ -22,21 +22,21 @@ plain text — no JSON coordinate lists.
 the same format `setGrid` accepts:
 
 ```sh
-app run --id app.justfiles.frieren.pixel show
-app run --id app.justfiles.frieren.pixel show ruler=true   # overlay 0-based col/row numbers (read-only view)
+app run --id justfiles.pixel show
+app run --id justfiles.pixel show ruler=true   # overlay 0-based col/row numbers (read-only view)
 ```
 
 `show` prints the `.pixel` text as-is (the `app` command's output is plain text),
 so it pipes straight back into `setGrid` (or into a file):
 
 ```sh
-app run --id app.justfiles.frieren.pixel show | app run --id app.justfiles.frieren.pixel setGrid --stdin grid
+app run --id justfiles.pixel show | app run --id justfiles.pixel setGrid --stdin grid
 ```
 
 **Draw** — pipe a char grid into `setGrid` via `--stdin grid` (heredoc or `|`):
 
 ```sh
-app run --id app.justfiles.frieren.pixel setGrid --stdin grid <<'EOF'
+app run --id justfiles.pixel setGrid --stdin grid <<'EOF'
 ................
 ..666......666..
 .66666....66666.
@@ -51,7 +51,7 @@ redrawing the whole canvas (clipped to the edges; short rows skip their missing
 right-hand cells):
 
 ```sh
-printf '.66.\n.66.' | app run --id app.justfiles.frieren.pixel setGrid x=6 y=8 --stdin grid
+printf '.66.\n.66.' | app run --id justfiles.pixel setGrid x=6 y=8 --stdin grid
 ```
 
 If the piped text is a full `.pixel` document (first line `pixel <version>`) it
