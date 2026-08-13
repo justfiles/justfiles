@@ -253,4 +253,5 @@ internal node persistence or snapshot lifecycle merely to make tests convenient.
   adapter seam.
 - Final server conflict policy.
 - Production v1/v2 cutover.
-- Full non-empty and ignore-policy reconciliation.
+- Concurrent non-empty conflict resolution and ignore-policy transitions; the
+  full-scan fallback only supports authoritative quiescent reconciliation.

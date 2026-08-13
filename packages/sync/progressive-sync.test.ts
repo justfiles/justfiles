@@ -77,6 +77,34 @@ test('content-only storage reconciles scans, deduplicates bytes, and permits ren
 	expect(fetched).toEqual([])
 })
 
+test('full scan preserves symlink metadata without changing its target', async () => {
+	const sourceStorage = withoutSync(nodeMemStorage())
+	const targetStorage = withoutSync(nodeMemStorage())
+	const source = scanningReplica(sourceStorage)
+	const target = scanningReplica(targetStorage)
+	const sourceVolume = volume(sourceStorage)
+	const targetVolume = volume(targetStorage)
+
+	await sourceVolume.writeFile('/target.txt', bytes('target'))
+	await sourceVolume.chmod('/target.txt', 0o640)
+	await sourceVolume.symlink('/target.txt', '/link')
+	const sourceLink = await sourceVolume.lstat('/link')
+	await sourceStorage.setMeta(sourceLink.ino, { mode: 0o701, mtimeNs: 123_456_789n })
+	await sourceStorage.caps?.setXattr?.(sourceLink.ino, 'user.link', bytes('metadata'))
+
+	const snapshot = await source.scan()
+	await target.apply(snapshot.entries, (hash) => snapshot.getBlobByHash(hash))
+	await snapshot.close()
+
+	const targetLink = await targetVolume.lstat('/link')
+	expect(targetLink.mode).toBe(0o701)
+	expect(targetLink.mtimeNs).toBe(123_456_789n)
+	expect(await targetStorage.caps?.getXattr?.(targetLink.ino, 'user.link')).toEqual(
+		bytes('metadata')
+	)
+	expect((await targetVolume.lstat('/target.txt')).mode).toBe(0o640)
+})
+
 test('base storage converges quiescent create, update, rename, and delete through inode blobs', async () => {
 	const sourceCalls = { reads: 0, writes: 0 }
 	const targetCalls = { reads: 0, writes: 0 }

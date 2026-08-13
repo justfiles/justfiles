@@ -129,15 +129,17 @@ export function fullScanReplica(storage: Storage, addressed?: ContentStore): Ful
 					await fs.writeFile(entry.path, await blob(entry.contentHash))
 				}
 
-				if (entry.meta.type === FileType.Symlink) continue
-				await fs.chmod(entry.path, entry.meta.mode)
-				await fs.utimes(entry.path, BigInt(entry.meta.mtimeNs))
+				const ino = (await fs.lstat(entry.path)).ino
+				await storage.setMeta(ino, {
+					mode: entry.meta.mode,
+					mtimeNs: BigInt(entry.meta.mtimeNs)
+				})
 				const { xattrs } = inodeMetaFromSync(entry.meta)
-				for (const name of await fs.listXattr(entry.path))
+				for (const name of (await storage.caps?.listXattrs?.(ino)) ?? [])
 					if (!name.startsWith('trusted.') && xattrs[name] === undefined)
-						await fs.removeXattr(entry.path, name)
+						await storage.caps?.removeXattr?.(ino, name)
 				for (const [name, value] of Object.entries(xattrs))
-					await fs.setXattr(entry.path, name, value)
+					await storage.caps?.setXattr?.(ino, name, value)
 			}
 		}
 	}
