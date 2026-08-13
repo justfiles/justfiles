@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.1...app-v0.4.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **app:** make @justfiles/sync a devDependency ([#477](https://github.com/xiaoxinghu/justfiles/issues/477)) ([9c40eed](https://github.com/xiaoxinghu/justfiles/commit/9c40eed0f87512b105de40feaa065f7c245b0f6f))
+
 ## [0.4.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.0...app-v0.4.1) (2026-08-13)
 
 
