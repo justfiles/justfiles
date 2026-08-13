@@ -41,7 +41,8 @@ async function readTree(
 		const inode = await storage.getMeta(stat.ino)
 		if (!inode) return
 		const xattrs: Record<string, Uint8Array> = {}
-		for (const name of (await storage.caps?.listXattrs?.(stat.ino)) ?? []) {
+		const names = (await storage.caps?.listXattrs?.(stat.ino)) ?? []
+		for (const name of [...names].sort()) {
 			const value = await storage.caps?.getXattr?.(stat.ino, name)
 			if (value) xattrs[name] = value
 		}

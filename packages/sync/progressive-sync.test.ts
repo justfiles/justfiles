@@ -105,6 +105,37 @@ test('full scan preserves symlink metadata without changing its target', async (
 	expect((await targetVolume.lstat('/target.txt')).mode).toBe(0o640)
 })
 
+test('full scan treats xattr enumeration order as insignificant', async () => {
+	const base = withoutSync(nodeMemStorage())
+	const fs = volume(base)
+	await fs.writeFile('/note.txt', bytes('note'))
+	const ino = (await fs.lstat('/note.txt')).ino
+	await base.caps?.setXattr?.(ino, 'user.a', bytes('a'))
+	await base.caps?.setXattr?.(ino, 'user.b', bytes('b'))
+	const baseCaps = base.caps
+	let listings = 0
+	const storage: Storage = {
+		...base,
+		caps: {
+			...baseCaps,
+			async listXattrs(inode) {
+				listings++
+				if (listings > 2) throw new Error('equivalent scans kept retrying')
+				const names = (await baseCaps?.listXattrs?.(inode)) ?? []
+				return listings % 2 === 1 ? names : [...names].reverse()
+			}
+		}
+	}
+
+	const snapshot = await scanningReplica(storage).scan()
+
+	expect(snapshot.entries[0]?.meta.xattrs).toEqual({
+		'user.a': 'YQ==',
+		'user.b': 'Yg=='
+	})
+	await snapshot.close()
+})
+
 test('base storage converges quiescent create, update, rename, and delete through inode blobs', async () => {
 	const sourceCalls = { reads: 0, writes: 0 }
 	const targetCalls = { reads: 0, writes: 0 }

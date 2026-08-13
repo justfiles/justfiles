@@ -498,6 +498,7 @@ export interface NodeReplica {
 /** A local node replica over one filesystem and its discovered sync capability. */
 export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore): NodeReplica {
 	const staged = new Map<string, Uint8Array>()
+	const outgoing = new Map<string, Uint8Array>()
 	const content = addressed
 		? {
 				async prepare(hashes: readonly string[], getBlob: (hash: string) => Promise<Uint8Array>) {
@@ -528,7 +529,7 @@ export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore):
 					return blobs
 				},
 				async get(hash: string) {
-					const pending = staged.get(hash)
+					const pending = staged.get(hash) ?? outgoing.get(hash)
 					if (pending) return pending.slice()
 					return sync.getBlobByHash(hash)
 				},
@@ -552,7 +553,22 @@ export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore):
 		nodeSnapshot: sync.nodeSnapshot,
 		getSnapshotBlob: sync.getSnapshotBlob,
 		closeSnapshot: sync.closeSnapshot,
-		nodeDeltas: sync.nodeDeltas,
+		async nodeDeltas(cursor, opts) {
+			const result = await sync.nodeDeltas(cursor, opts)
+			if (!addressed) {
+				const next = new Map<string, Uint8Array>()
+				for (const mutation of mutationsOf(result.operations)) {
+					if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
+					const hash = mutation.contentHash
+					if (!hash || next.has(hash)) continue
+					const blob = outgoing.get(hash) ?? (await sync.getBlobByHash(hash))
+					next.set(hash, (await verifyBytes(hash, blob)).slice())
+				}
+				outgoing.clear()
+				for (const [hash, blob] of next) outgoing.set(hash, blob)
+			}
+			return result
+		},
 		async applyNodeOperations(operations, getBlobByHash, opts) {
 			const wanted = await sync.wantedContent(operations)
 			const blobs = await content.prepare(wanted, getBlobByHash)

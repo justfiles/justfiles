@@ -410,6 +410,25 @@ test('sync without content capability eagerly materializes retained snapshot byt
 	expect(target.caps.content).toBeUndefined()
 })
 
+test('sync without content keeps returned delta bytes readable across an update', async () => {
+	const source = withoutContent(nodeMemStorage())
+	const target = withoutContent(nodeMemStorage())
+	const sourceReplica = optimizedReplica(source)
+	const targetReplica = optimizedReplica(target)
+	const sourceVolume = volume(source)
+	const targetVolume = volume(target)
+
+	await sourceVolume.writeFile('/note.txt', bytes('old'))
+	const delta = await sourceReplica.nodeDeltas('')
+	await sourceVolume.writeFile('/note.txt', bytes('new'))
+
+	await targetReplica.applyNodeOperations(delta.operations, (hash) =>
+		sourceReplica.getBlobByHash(hash)
+	)
+
+	expect(text(await targetVolume.readFile('/note.txt'))).toBe('old')
+})
+
 test.each([
 	['default', undefined],
 	['injected store', memNodeStore()]
