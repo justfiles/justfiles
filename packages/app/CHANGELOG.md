@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.0...app-v0.4.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **app:** resolve the dev shell platform sheet as a package ([#472](https://github.com/xiaoxinghu/justfiles/issues/472)) ([7f2421f](https://github.com/xiaoxinghu/justfiles/commit/7f2421f3370e2686a3c45813cbcd98d703cf25f1))
+
 ## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.3.0...app-v0.4.0) (2026-08-10)
 
 
