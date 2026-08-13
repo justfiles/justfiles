@@ -51,7 +51,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
         if: steps.npm.outputs.should_publish == 'true'
 
-      - run: pnpm run build
+      # `--if-present`: a package of plain assets (design) ships its sources as
+      # published, with no build step of its own.
+      - run: pnpm run --if-present build
         if: steps.npm.outputs.should_publish == 'true'
         working-directory: ${{ inputs.working_directory }}
 

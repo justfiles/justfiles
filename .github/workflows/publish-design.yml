@@ -1,0 +1,18 @@
+name: publish-design
+
+on:
+  push:
+    tags:
+      - 'design-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      package_name: Design
+      working_directory: packages/design

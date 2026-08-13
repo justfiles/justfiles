@@ -538,6 +538,9 @@ importers:
 
   packages/app:
     dependencies:
+      '@justfiles/design':
+        specifier: workspace:^
+        version: link:../design
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs

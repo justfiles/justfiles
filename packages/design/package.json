@@ -1,10 +1,19 @@
 {
 	"name": "@justfiles/design",
-	"private": true,
+	"version": "0.1.0",
+	"description": "The JustFiles design system: tokens, shell components, and platform sheets.",
 	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
+		"directory": "packages/design"
+	},
 	"exports": {
 		"./design.css": "./design.css",
 		"./mac.css": "./mac.css",
 		"./mac": "./mac.css"
-	}
+	},
+	"files": [
+		"*.css"
+	]
 }
