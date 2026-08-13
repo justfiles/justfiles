@@ -6,7 +6,7 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "tsc -b && vite build",
-		"build-apps": "turbo run build --filter @justfiles/app-notes --filter @justfiles/app-files --filter @justfiles/app-paint --filter @justfiles/app-settings --filter @justfiles/app-dictionary",
+		"build-apps": "turbo run build --filter @justfiles/app-files --filter @justfiles/app-paint --filter @justfiles/app-settings --filter @justfiles/app-dictionary",
 		"lint": "eslint .",
 		"auth:token": "tsx scripts/frieren-auth.ts token",
 		"seed:llm-user": "tsx scripts/frieren-auth.ts seed",
@@ -31,7 +31,6 @@
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-dictionary": "workspace:*",
 		"@justfiles/app-files": "workspace:*",
-		"@justfiles/app-notes": "workspace:*",
 		"@justfiles/app-paint": "workspace:*",
 		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/core": "workspace:*",

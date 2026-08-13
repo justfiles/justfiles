@@ -1,6 +1,6 @@
-// Frieren's two app sources: built-ins co-ship under `/appstore`; public apps
-// are described by Runner at justapps.run and keep their immutable payloads
-// there. Both implement the same small AppStore seam used by install/reconcile.
+// Frieren's two app sources: bundled apps co-ship under `/appstore`; Runner apps
+// keep their immutable payloads at justapps.run. A bounded Runner subset is
+// preinstalled. Both sources use the same AppStore seam for install/reconcile.
 
 import type { AppManifest } from '@justfiles/app'
 import type { AppStore, Catalog, CatalogApp, CatalogFile } from '@justfiles/app/appstore'
@@ -12,6 +12,8 @@ export const RUNNER_STORE_SCHEMA = 'justapps/store/v1'
 export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 export const RUNNER_CACHE_NAME = 'justapps'
 export const RUNNER_CACHE_MAX_ENTRIES = 500
+
+const PREINSTALLED_RUNNER_IDS = ['justfiles.notes']
 
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -136,7 +138,14 @@ export async function runnerAppStore(
 			)
 		},
 		async builtins() {
-			return []
+			return (
+				await Promise.all(
+					PREINSTALLED_RUNNER_IDS.map((id) => {
+						const entry = byId.get(id)
+						return entry ? load(entry) : null
+					})
+				)
+			).filter((app): app is RunnerCatalogApp => app !== null)
 		},
 		async latest(id) {
 			const entry = byId.get(id)
@@ -150,8 +159,8 @@ export async function runnerAppStore(
 	}
 }
 
-// Built-ins remain authoritative; every other installed app resolves against
-// Runner. Both use the browser fetcher so hosted reads pass through the same SW.
+// Bundled apps remain authoritative. Selected Runner apps join the bounded
+// preinstalled set; every other Runner app is installed from the store UI.
 export async function bootAppStore(
 	fetcher: (path: string) => Promise<Response>
 ): Promise<AppStore | null> {
@@ -159,7 +168,11 @@ export async function bootAppStore(
 	if (!builtin) return runner
 	if (!runner) return builtin
 	return {
-		builtins: () => builtin.builtins(),
+		async builtins() {
+			const bundled = await builtin.builtins()
+			const bundledIds = new Set(bundled.map((app) => app.id))
+			return [...bundled, ...(await runner.builtins()).filter((app) => !bundledIds.has(app.id))]
+		},
 		async latest(id) {
 			return (await builtin.latest(id)) ?? (await runner.latest(id))
 		},
