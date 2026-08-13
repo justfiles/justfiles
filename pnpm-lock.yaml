@@ -544,9 +544,6 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../sync
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
@@ -560,6 +557,9 @@ importers:
         specifier: ^5.6.0
         version: 5.6.0
     devDependencies:
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../sync
       '@justfiles/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
