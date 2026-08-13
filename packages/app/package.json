@@ -177,7 +177,7 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "rm -rf dist && tsc && cp dev-server.html dev-server.css dist/",
+		"build": "rm -rf dist && tsc && node scripts/verify-source-maps.ts && cp dev-server.html dev-server.css dist/",
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
