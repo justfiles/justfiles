@@ -9,6 +9,20 @@ import { joinPath } from '@justfiles/fs/storage.shared'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import {
+	applyNodeOperationsOver,
+	compactNodeJournal,
+	createSyncCapability,
+	type NodeJournalRow,
+	NodeOperation,
+	type NodeState,
+	type NodeStore,
+	type NodeSyncModule,
+	nodeSnapshotEntries,
+	nodeSyncObserver,
+	type SyncCapableStorage,
+	withSyncCapability
+} from '@justfiles/sync/node'
+import {
 	applyJournaledOver,
 	buildDeleteChange,
 	buildPutChange,
@@ -268,7 +282,10 @@ function inferText(data: Uint8Array, limit: number): { text: string; mimeType: s
 	return { text, mimeType: 'text/plain; charset=utf-8' }
 }
 
-export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledStorage {
+export function storage(
+	db: DbAdapter,
+	options: StorageOptions = {}
+): JournaledStorage & SyncCapableStorage {
 	const blobStore = options.blobStore
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
@@ -716,6 +733,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 	): Promise<void> {
 		const { tree, sync } = makePathPorts(tx)
 		await pathSyncObserver(sync, localActorId).record(tree, effect, options)
+		await nodeSyncObserver(makeNodeStore(tx)).record(tree, effect, options)
 	}
 
 	// ── Path-sync apply (remote pull; epic slice 4) ──────────────────────────────
@@ -787,15 +805,27 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 		ino: Ino,
 		meta: InodeMeta,
 		contentHash: string | undefined,
-		snapshot: Record<string, Uint8Array>
+		snapshot: Record<string, Uint8Array>,
+		content?: Uint8Array,
+		prepared?: ReadonlyMap<string, { data: Uint8Array; staged: StagedContent }>
 	): Promise<void> {
+		if (contentHash && content) {
+			if ((await sha256Hex(content)) !== contentHash)
+				throw new Error(`hash mismatch: ${contentHash}`)
+			const pending = prepared?.get(contentHash)
+			if (pending) await recordStagedContent(tx, contentHash, pending.data, pending.staged)
+			else await storeContentIfMissing(tx, contentHash, content)
+		}
+		const storedContent = contentHash ? await loadContentRow(tx, contentHash) : null
+		if (contentHash && !storedContent) throw new Error(`missing blob ${contentHash}`)
 		await tx.run(
 			`INSERT INTO fs_inodes(ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(ino) DO UPDATE SET
 			   type = excluded.type, mode = excluded.mode, size = excluded.size,
 			   mtime_ns = excluded.mtime_ns, ctime_ns = excluded.ctime_ns,
-			   content_hash = excluded.content_hash, symlink_target = excluded.symlink_target`,
+			   content_hash = excluded.content_hash, symlink_target = excluded.symlink_target,
+			   mime_type = excluded.mime_type, storage_kind = excluded.storage_kind`,
 			[
 				ino,
 				meta.type,
@@ -805,7 +835,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 				meta.ctimeNs,
 				contentHash ?? null,
 				meta.symlinkTarget ?? null,
-				STORAGE_NONE
+				toStringOrNull(storedContent?.mime_type),
+				storedContent ? toNumber(storedContent.storage_kind) : STORAGE_NONE
 			]
 		)
 		// Replace the whole USER-xattr set with the snapshot; keep trusted.sync.*.
@@ -846,7 +877,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 	// The storage-independent seam the shared apply driver + the mutation observer
 	// sync path operation, bound to one transaction (or `db` for read-only
 	// localChange). `emit` is buffered so a transactional apply can flush AFTER commit.
-	function makePathPorts(tx: DbAdapter): {
+	function makePathPorts(
+		tx: DbAdapter,
+		preparedContent?: ReadonlyMap<string, { data: Uint8Array; staged: StagedContent }>
+	): {
 		tree: TreePort
 		sync: PathSyncStore
 		emits: StorageChange[]
@@ -867,8 +901,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 				if (!row) return null
 				return { meta: metaFromRow(row), xattrs: await listAllXattrs(tx, ino) }
 			},
-			upsertInode: (ino, meta, contentHash, xattrs) =>
-				upsertInode(tx, ino, meta, contentHash, xattrs),
+			upsertInode: (ino, meta, contentHash, xattrs, content) =>
+				upsertInode(tx, ino, meta, contentHash, xattrs, content, preparedContent),
 			setDirent: (dirIno, name, ino, type) => setDirent(tx, dirIno, name, ino, type),
 			async deleteDirent(dirIno, name) {
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
@@ -898,6 +932,205 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 			appendJournalRow: (change, localSource) => appendJournalRow(tx, change, localSource)
 		}
 		return { tree, sync, emits }
+	}
+
+	function nodeStateFromRow(row: {
+		sync_id: unknown
+		local_ino: unknown
+		parent_sync_id: unknown
+		name: unknown
+		type: unknown
+		revision: unknown
+		deleted: unknown
+		meta_json: unknown
+		content_hash: unknown
+	}): NodeState {
+		return {
+			id: String(row.sync_id),
+			localIno: toStringOrNull(row.local_ino),
+			parentId: toStringOrNull(row.parent_sync_id),
+			name: String(row.name),
+			type: toNumber(row.type) as FileType,
+			revision: toNumber(row.revision),
+			deleted: toNumber(row.deleted) === 1,
+			meta: JSON.parse(String(row.meta_json)) as NodeState['meta'],
+			contentHash: toStringOrNull(row.content_hash) ?? undefined
+		}
+	}
+
+	function makeNodeStore(tx: DbAdapter): NodeStore {
+		return {
+			async get(id) {
+				const [row] = await tx.query<{
+					sync_id: unknown
+					local_ino: unknown
+					parent_sync_id: unknown
+					name: unknown
+					type: unknown
+					revision: unknown
+					deleted: unknown
+					meta_json: unknown
+					content_hash: unknown
+				}>('SELECT * FROM fs_sync_nodes WHERE sync_id = ? LIMIT 1', [id])
+				return row ? nodeStateFromRow(row) : null
+			},
+			async idFor(ino) {
+				const [row] = await tx.query<{ sync_id: unknown }>(
+					'SELECT sync_id FROM fs_sync_nodes WHERE local_ino = ? LIMIT 1',
+					[ino]
+				)
+				return row ? String(row.sync_id) : null
+			},
+			async live() {
+				const rows = await tx.query<{
+					sync_id: unknown
+					local_ino: unknown
+					parent_sync_id: unknown
+					name: unknown
+					type: unknown
+					revision: unknown
+					deleted: unknown
+					meta_json: unknown
+					content_hash: unknown
+				}>('SELECT * FROM fs_sync_nodes WHERE deleted = 0')
+				return rows.map(nodeStateFromRow)
+			},
+			async save(state) {
+				await tx.run(
+					`INSERT INTO fs_sync_nodes(
+						sync_id, local_ino, parent_sync_id, name, type, revision, deleted, meta_json, content_hash
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(sync_id) DO UPDATE SET
+						local_ino = excluded.local_ino,
+						parent_sync_id = excluded.parent_sync_id,
+						name = excluded.name,
+						type = excluded.type,
+						revision = excluded.revision,
+						deleted = excluded.deleted,
+						meta_json = excluded.meta_json,
+						content_hash = excluded.content_hash`,
+					[
+						state.id,
+						state.localIno,
+						state.parentId,
+						state.name,
+						state.type,
+						state.revision,
+						state.deleted ? 1 : 0,
+						JSON.stringify(state.meta),
+						state.contentHash ?? null
+					]
+				)
+			},
+			async append(operation, localSource) {
+				const affected = [
+					...new Set(
+						operation.mutations.flatMap((mutation) =>
+							mutation.kind === 'update' || mutation.kind === 'delete' ? [mutation.nodeId] : []
+						)
+					)
+				]
+				if (affected.length > 0) {
+					const references = await tx.query<{ seq: unknown }>(
+						`SELECT DISTINCT seq FROM fs_node_journal_mutations
+						 WHERE node_id IN (${affected.map(() => '?').join(', ')})`,
+						affected
+					)
+					const sequences = references.map((row) => toNumber(row.seq))
+					if (sequences.length > 0) {
+						const stored = await tx.query<{
+							seq: unknown
+							local_source: unknown
+							operation_json: unknown
+						}>(
+							`SELECT seq, local_source, operation_json FROM fs_node_journal
+							 WHERE seq IN (${sequences.map(() => '?').join(', ')}) ORDER BY seq`,
+							sequences
+						)
+						const rows = stored.map(
+							(row): NodeJournalRow => ({
+								seq: toNumber(row.seq),
+								operation: NodeOperation.parse(JSON.parse(String(row.operation_json))),
+								localSource: toStringOrNull(row.local_source) ?? undefined
+							})
+						)
+						const deleted = operation.mutations.flatMap((mutation) =>
+							mutation.kind === 'delete' ? [mutation.nodeId] : []
+						)
+						const directoryTombstones = new Set<string>()
+						if (deleted.length > 0) {
+							const states = await tx.query<{ sync_id: unknown }>(
+								`SELECT sync_id FROM fs_sync_nodes
+								 WHERE type = ? AND sync_id IN (${deleted.map(() => '?').join(', ')})`,
+								[FileType.Directory, ...deleted]
+							)
+							for (const state of states) directoryTombstones.add(String(state.sync_id))
+						}
+						const compacted = new Map(
+							compactNodeJournal(rows, operation, directoryTombstones).map((row) => [row.seq, row])
+						)
+						for (const row of rows) {
+							const next = compacted.get(row.seq)
+							if (next === row) continue
+							await tx.run('DELETE FROM fs_node_journal_mutations WHERE seq = ?', [row.seq])
+							if (!next) {
+								await tx.run('DELETE FROM fs_node_journal WHERE seq = ?', [row.seq])
+								continue
+							}
+							await tx.run('UPDATE fs_node_journal SET operation_json = ? WHERE seq = ?', [
+								JSON.stringify(next.operation),
+								row.seq
+							])
+							for (const mutation of next.operation.mutations)
+								await tx.run(
+									`INSERT OR IGNORE INTO fs_node_journal_mutations(seq, node_id, kind)
+									 VALUES (?, ?, ?)`,
+									[row.seq, mutation.nodeId, mutation.kind]
+								)
+						}
+					}
+				}
+				await tx.run('UPDATE fs_node_clock SET head = head + 1 WHERE id = 1')
+				const [clock] = await tx.query<{ head: unknown }>(
+					'SELECT head FROM fs_node_clock WHERE id = 1 LIMIT 1'
+				)
+				await tx.run(
+					'INSERT INTO fs_node_journal(seq, local_source, operation_json) VALUES (?, ?, ?)',
+					[toNumber(clock?.head ?? 0), localSource ?? null, JSON.stringify(operation)]
+				)
+				const seq = toNumber(clock?.head ?? 0)
+				for (const mutation of operation.mutations)
+					await tx.run(
+						`INSERT OR IGNORE INTO fs_node_journal_mutations(seq, node_id, kind)
+						 VALUES (?, ?, ?)`,
+						[seq, mutation.nodeId, mutation.kind]
+					)
+			},
+			async read(after, limit) {
+				const rows = await tx.query<{
+					seq: unknown
+					local_source: unknown
+					operation_json: unknown
+				}>(
+					`SELECT seq, local_source, operation_json
+					 FROM fs_node_journal WHERE seq > ? ORDER BY seq LIMIT ?`,
+					[after, limit]
+				)
+				return rows.map(
+					(row): NodeJournalRow => ({
+						seq: toNumber(row.seq),
+						operation: NodeOperation.parse(JSON.parse(String(row.operation_json))),
+						localSource: toStringOrNull(row.local_source) ?? undefined
+					})
+				)
+			},
+			async head() {
+				const [row] = await tx.query<{ head: unknown }>(
+					'SELECT head FROM fs_node_clock WHERE id = 1 LIMIT 1'
+				)
+				return toNumber(row?.head ?? 0)
+			}
+		}
 	}
 
 	async function updateInodeContent(
@@ -1524,7 +1757,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 
 	// ── Storage implementation ─────────────────────────────────────────
 
-	return {
+	const filesystem: JournaledStorage = {
 		rootIno: ROOT_INO,
 		caps,
 		sync,
@@ -1704,4 +1937,58 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): JournaledS
 			}
 		}
 	}
+
+	const nodeModule: NodeSyncModule = {
+		nodes: makeNodeStore(db),
+		async apply(operations, opts) {
+			await ensureBootstrapped()
+			const preparedContent = new Map<string, { data: Uint8Array; staged: StagedContent }>()
+			for (const [hash, data] of opts?.content ?? []) {
+				if (await loadContentRow(db, hash)) continue
+				preparedContent.set(hash, { data, staged: await stageContent(hash, data) })
+			}
+			let pendingEmits: StorageChange[] = []
+			await db.transaction(async (tx) => {
+				const bound = makePathPorts(tx, preparedContent)
+				pendingEmits = bound.emits
+				await applyNodeOperationsOver(bound.tree, makeNodeStore(tx), operations, opts)
+			})
+			for (const change of pendingEmits) emit(change)
+		},
+		async openSnapshotView() {
+			await ensureBootstrapped()
+			let entries: ReturnType<typeof nodeSnapshotEntries> = []
+			let syncCursor = '0'
+			const blobs = new Map<string, Uint8Array>()
+			await db.transaction(async (tx) => {
+				const bound = makePathPorts(tx)
+				const nodes = makeNodeStore(tx)
+				await applyNodeOperationsOver(bound.tree, nodes, [])
+				const live = await nodes.live()
+				entries = nodeSnapshotEntries(live)
+				syncCursor = String(await nodes.head())
+				for (const node of live) {
+					if (!node.contentHash || node.localIno === null || blobs.has(node.contentHash)) continue
+					const blob = await readFullContent(tx, node.localIno)
+					if ((await sha256Hex(blob)) !== node.contentHash)
+						throw new Error(`hash mismatch for snapshot blob ${node.contentHash}`)
+					blobs.set(node.contentHash, blob.slice())
+				}
+			})
+			return {
+				entries,
+				syncCursor,
+				async getBlob(hash: string) {
+					const blob = blobs.get(hash)
+					if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
+					return blob.slice()
+				},
+				async close() {
+					blobs.clear()
+				}
+			}
+		}
+	}
+
+	return withSyncCapability(filesystem, createSyncCapability(filesystem, nodeModule))
 }

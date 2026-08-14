@@ -27,6 +27,8 @@ import type { SyncCursor } from './replica'
 import { PAGE } from './replica'
 import { ContentHash, inodeMetaFromSync, SyncMeta, syncMetaFromInode } from './wire'
 
+export { nodeSnapshotEntries } from './node-snapshot'
+
 // ── Identity and wire ────────────────────────────────────────────────────────
 
 /** One logical node, shared by every replica that knows it. */
@@ -81,6 +83,47 @@ export type NodeOperation = z.infer<typeof NodeOperation>
 
 export function mutationsOf(operations: readonly NodeOperation[]): NodeMutation[] {
 	return operations.flatMap((operation) => operation.mutations)
+}
+
+/** Remove journal mutations superseded by one accepted operation. */
+export function compactNodeJournal(
+	rows: readonly NodeJournalRow[],
+	operation: NodeOperation,
+	directoryTombstones: ReadonlySet<SyncNodeId>
+): NodeJournalRow[] {
+	const updates = new Map(
+		operation.mutations
+			.filter((mutation) => mutation.kind === 'update')
+			.map((mutation) => [mutation.nodeId, mutation])
+	)
+	const deleted = new Set(
+		operation.mutations
+			.filter((mutation) => mutation.kind === 'delete')
+			.map((mutation) => mutation.nodeId)
+	)
+
+	return rows.flatMap((row) => {
+		const previous = row.operation.mutations
+		const mutations = previous
+			.filter(
+				(mutation) =>
+					(!deleted.has(mutation.nodeId) || directoryTombstones.has(mutation.nodeId)) &&
+					(mutation.kind !== 'update' || !updates.has(mutation.nodeId))
+			)
+			.map((mutation) => {
+				const update = updates.get(mutation.nodeId)
+				return mutation.kind === 'create' && update
+					? { ...mutation, meta: update.meta, contentHash: update.contentHash }
+					: mutation
+			})
+		if (mutations.length === 0) return []
+		if (
+			mutations.length === previous.length &&
+			mutations.every((mutation, index) => mutation === previous[index])
+		)
+			return [row]
+		return [{ ...row, operation: { mutations } }]
+	})
 }
 
 // ── State and persistence seam ───────────────────────────────────────────────
@@ -220,7 +263,10 @@ export function createSyncCapability(
 }
 
 /** Attach a sync-owned capability while keeping the filesystem type unchanged. */
-export function withSyncCapability(storage: Storage, sync: SyncCapability): SyncCapableStorage {
+export function withSyncCapability<T extends Storage>(
+	storage: T,
+	sync: SyncCapability
+): T & SyncCapableStorage {
 	return Object.assign(storage, { caps: { ...storage.caps, sync } })
 }
 
@@ -448,8 +494,22 @@ async function applyMutation(
 		const state = nextState(mutation, previous, previous.localIno)
 		if (!state) return false
 		await nodes.save(state)
-		await emitDirent(port, previous.localIno, from.localIno, previous.name, opts?.source)
-		await emitDirent(port, previous.localIno, to.localIno, mutation.name, opts?.source)
+		// The inode and parent/name pair are enough to invalidate caches. Do not resolve
+		// either path here: a database backend would need a recursive ancestor query.
+		port.emit({
+			ino: previous.localIno,
+			kind: 'dirent',
+			dirIno: from.localIno,
+			name: previous.name,
+			source: opts?.source
+		})
+		port.emit({
+			ino: previous.localIno,
+			kind: 'dirent',
+			dirIno: to.localIno,
+			name: mutation.name,
+			source: opts?.source
+		})
 		return true
 	}
 	if (mutation.kind === 'delete') {
