@@ -168,7 +168,8 @@ export interface NodeSyncModule {
 	/** Atomically capture journal rows and their content when the adapter requires it. */
 	captureDeltas?(
 		after: number,
-		limit: number
+		limit: number,
+		excludeLocalSource?: string
 	): Promise<{
 		rows: NodeJournalRow[]
 		retainedContent: ReadonlyMap<string, Uint8Array>
@@ -231,7 +232,7 @@ export function createSyncCapability(
 				const from = Number(cursor || '0')
 				const captured =
 					opts?.retainContent && module.captureDeltas
-						? await module.captureDeltas(from, limit)
+						? await module.captureDeltas(from, limit, opts.excludeLocalSource)
 						: undefined
 				const rows = captured?.rows ?? (await module.nodes.read(from, limit))
 				const operations = rows
@@ -420,10 +421,8 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 				return
 			}
 			if (effect.kind === 'move') {
-				const id = await nodes.idFor(effect.ino)
 				const parentId = await nodes.idFor(effect.toDirIno)
-				const previous = id === null ? null : await nodes.get(id)
-				if (id === null || parentId === null || !previous) return
+				if (parentId === null) return
 				const entries: { mutation: NodeMutation; ino: Ino | null }[] = []
 				if (effect.displaced !== null) {
 					const displaced = await deleteMutation(nodes, effect.displaced, {
@@ -431,6 +430,19 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 						name: effect.toName
 					})
 					if (displaced) entries.push({ mutation: displaced, ino: null })
+				}
+				const id = await nodes.idFor(effect.ino)
+				const sourceParentId = await nodes.idFor(effect.fromDirIno)
+				const previous = id === null ? null : await nodes.get(id)
+				if (
+					id === null ||
+					sourceParentId === null ||
+					!previous ||
+					previous.parentId !== sourceParentId ||
+					previous.name !== effect.fromName
+				) {
+					await commit(entries)
+					return
 				}
 				entries.push({
 					mutation: {

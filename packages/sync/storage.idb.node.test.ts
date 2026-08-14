@@ -149,6 +149,24 @@ describe('IndexedDB node sync', () => {
 		storage.destroy()
 	})
 
+	test('ignores a move from an untracked putDirent alias', async () => {
+		const storage = idbStorage(`node-alias-source-${crypto.randomUUID()}`)
+		const storageVolume = volume(storage)
+		const replica = nodeReplica(storage)
+		await storageVolume.writeFile('/source.txt', bytes('source'))
+		const cursor = (await replica.nodeDeltas('', { limit: 10 })).to
+		const source = await storage.getDirent(storage.rootIno, 'source.txt')
+		if (!source) throw new Error('missing source')
+
+		await storage.putDirent(storage.rootIno, 'alias.txt', source)
+		await storageVolume.rename('/alias.txt', '/renamed.txt')
+
+		expect((await replica.nodeDeltas(cursor, { limit: 10 })).operations).toEqual([])
+		expect(text(await storageVolume.readFile('/source.txt'))).toBe('source')
+		expect(text(await storageVolume.readFile('/renamed.txt'))).toBe('source')
+		storage.destroy()
+	})
+
 	test('does not echo pulled moves', async () => {
 		const sourceStorage = nodeMemStorage()
 		const sourceVolume = volume(sourceStorage)
@@ -285,6 +303,44 @@ describe('IndexedDB node sync', () => {
 			await updating
 			storage.destroy()
 		}
+	})
+
+	test('does not capture evicted content from an excluded remote row', async () => {
+		const remoteStorage = nodeMemStorage()
+		const remote = nodeReplica(remoteStorage)
+		await volume(remoteStorage).writeFile('/remote.txt', bytes('remote'))
+		const pulled = await remote.nodeDeltas('', { limit: 10 })
+		const remoteHash = mutationsOf(pulled.operations).find(
+			(mutation) => mutation.kind === 'create'
+		)?.contentHash
+		if (!remoteHash) throw new Error('missing remote content hash')
+
+		const storage = idbStorage(`node-excluded-content-${crypto.randomUUID()}`, {
+			contentCapBytes: 6
+		})
+		const replica = nodeReplica(storage)
+		await replica.applyNodeOperations(pulled.operations, (hash) => remote.getBlobByHash(hash), {
+			source: 'remote'
+		})
+		const content = storage.caps.content
+		if (!content) throw new Error('missing content capability')
+		const localData = bytes('local!')
+		await volume(storage).writeFile('/local.txt', localData)
+		expect(await content.hasByHash(remoteHash)).toBe(false)
+
+		const { content: _content, ...caps } = storage.caps
+		const ordinary = nodeReplica({ ...storage, caps })
+		const delta = await ordinary.nodeDeltas('', {
+			excludeLocalSource: 'remote',
+			limit: 10
+		})
+		const local = mutationsOf(delta.operations)
+		expect(local).toEqual([expect.objectContaining({ kind: 'create', name: 'local.txt' })])
+		const localHash = local[0]?.kind === 'create' ? local[0].contentHash : undefined
+		if (!localHash) throw new Error('missing local content hash')
+		expect(await ordinary.getBlobByHash(localHash)).toEqual(localData)
+		expect(delta.to).not.toBe('')
+		storage.destroy()
 	})
 
 	test('moves 4,000 descendants with one node row and no content read', async () => {
