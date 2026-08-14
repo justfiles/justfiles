@@ -268,6 +268,23 @@ function durableNodeStore(host: IdbStorageExtensionHost): NodeStore {
 	}
 }
 
+async function readBlobs(
+	transaction: unknown,
+	hashes: Iterable<string>,
+	label: string
+): Promise<Map<string, Uint8Array>> {
+	const content = (transaction as SnapshotTx).objectStore('content')
+	const raw = new Map<string, Uint8Array>()
+	for (const hash of hashes) {
+		const record = await content.get(hash)
+		if (!record) throw new Error(`ENOENT: ${label} ${hash}`)
+		raw.set(hash, record.data.slice())
+	}
+	const blobs = new Map<string, Uint8Array>()
+	for (const [hash, blob] of raw) blobs.set(hash, await verifyBytes(hash, blob))
+	return blobs
+}
+
 export type IdbStorage = JournaledStorage &
 	SyncCapableStorage &
 	Pick<FilesystemIdbStorage, 'destroy'>
@@ -374,24 +391,14 @@ export function idbStorage(
 					captureDeltas: (after, limit, include) =>
 						host.run([...NODE_STORES, 'content'], async (transaction) => {
 							const rows = await nodeStore(transaction).read(after, limit)
-							const operations = rows.filter(include).map((row) => row.operation)
-							const hashes = new Set(
-								mutationsOf(operations).flatMap((mutation) =>
-									(mutation.kind === 'create' || mutation.kind === 'update') && mutation.contentHash
-										? [mutation.contentHash]
-										: []
+							const hashes = new Set<string>()
+							for (const mutation of mutationsOf(rows.filter(include).map((row) => row.operation)))
+								if (
+									(mutation.kind === 'create' || mutation.kind === 'update') &&
+									mutation.contentHash
 								)
-							)
-							const content = (transaction as SnapshotTx).objectStore('content')
-							const raw = new Map<string, Uint8Array>()
-							for (const hash of hashes) {
-								const record = await content.get(hash)
-								if (!record) throw new Error(`ENOENT: blob ${hash}`)
-								raw.set(hash, record.data.slice())
-							}
-							const retainedContent = new Map<string, Uint8Array>()
-							for (const [hash, blob] of raw)
-								retainedContent.set(hash, await verifyBytes(hash, blob))
+									hashes.add(mutation.contentHash)
+							const retainedContent = await readBlobs(transaction, hashes, 'blob')
 							return { rows, retainedContent }
 						}),
 					async apply(operations, applyOptions) {
@@ -410,17 +417,11 @@ export function idbStorage(
 							const live = await nodes.live()
 							const entries = nodeSnapshotEntries(live)
 							const syncCursor = String(await nodes.head())
-							const content = (transaction as SnapshotTx).objectStore('content')
-							const raw = new Map<string, Uint8Array>()
-							for (const hash of new Set(
-								live.flatMap((node) => (node.contentHash ? [node.contentHash] : []))
-							)) {
-								const record = await content.get(hash)
-								if (!record) throw new Error(`ENOENT: snapshot blob ${hash}`)
-								raw.set(hash, record.data.slice())
-							}
-							const blobs = new Map<string, Uint8Array>()
-							for (const [hash, blob] of raw) blobs.set(hash, await verifyBytes(hash, blob))
+							const blobs = await readBlobs(
+								transaction,
+								new Set(live.flatMap((node) => (node.contentHash ? [node.contentHash] : []))),
+								'snapshot blob'
+							)
 							return {
 								entries,
 								syncCursor,

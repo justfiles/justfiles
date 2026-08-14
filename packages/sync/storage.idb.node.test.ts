@@ -36,6 +36,12 @@ function nodeReplica(storage: Storage): NodeReplica {
 	return selected.replica
 }
 
+function hideContent(storage: ReturnType<typeof idbStorage>): Storage {
+	const caps = { ...storage.caps }
+	delete caps.content
+	return { ...storage, caps }
+}
+
 describe('IndexedDB node sync', () => {
 	test('keeps created node IDs and local inode bindings across restart', async () => {
 		const name = `node-restart-${crypto.randomUUID()}`
@@ -244,8 +250,7 @@ describe('IndexedDB node sync', () => {
 		const source = nodeReplica(sourceStorage)
 		await volume(sourceStorage).writeFile('/note.txt', bytes('ordinary bytes'))
 		const targetStorage = idbStorage(`node-ordinary-${crypto.randomUUID()}`)
-		const { content: _content, ...caps } = targetStorage.caps
-		const target = nodeReplica({ ...targetStorage, caps })
+		const target = nodeReplica(hideContent(targetStorage))
 		const outgoing = await source.nodeDeltas('', { limit: 10 })
 
 		await target.applyNodeOperations(outgoing.operations, (hash) => source.getBlobByHash(hash))
@@ -265,8 +270,7 @@ describe('IndexedDB node sync', () => {
 		const content = storage.caps.content
 		if (!content) throw new Error('missing content capability')
 		await content.putByHash(newHash, newData)
-		const { content: _content, ...caps } = storage.caps
-		const replica = nodeReplica({ ...storage, caps })
+		const replica = nodeReplica(hideContent(storage))
 
 		const original = IDBObjectStore.prototype.openCursor
 		let armed = true
@@ -328,8 +332,7 @@ describe('IndexedDB node sync', () => {
 		await volume(storage).writeFile('/local.txt', localData)
 		expect(await content.hasByHash(remoteHash)).toBe(false)
 
-		const { content: _content, ...caps } = storage.caps
-		const ordinary = nodeReplica({ ...storage, caps })
+		const ordinary = nodeReplica(hideContent(storage))
 		const delta = await ordinary.nodeDeltas('', {
 			excludeLocalSource: 'remote',
 			limit: 10

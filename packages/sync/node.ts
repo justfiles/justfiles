@@ -165,7 +165,7 @@ export interface NodeStore {
 /** Sync-owned seams attached to one node-addressed filesystem backend. */
 export interface NodeSyncModule {
 	readonly nodes: NodeStore
-	/** Atomically capture selected journal content when the adapter requires it. */
+	/** Read selected rows and their blobs in one adapter transaction. */
 	captureDeltas?(
 		after: number,
 		limit: number,
@@ -377,10 +377,14 @@ async function deleteMutation(
 	if (
 		!previous ||
 		previous.deleted ||
-		(expected && (previous.parentId !== expected.parentId || previous.name !== expected.name))
+		(expected && !atLocation(previous, expected.parentId, expected.name))
 	)
 		return null
 	return { kind: 'delete', nodeId: id, revision: previous.revision + 1 }
+}
+
+function atLocation(node: NodeState, parentId: SyncNodeId, name: string): boolean {
+	return node.parentId === parentId && node.name === name
 }
 
 // ── Local recording ──────────────────────────────────────────────────────────
@@ -401,8 +405,7 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 		async record(port, effect) {
 			await bindRoot(port, nodes)
 			if (effect.kind === 'link') {
-				// A bare putDirent can add another name for an existing inode. Node v2
-				// does not model hard links, so it must not mint a second node identity.
+				// putDirent can add a hard link, but node sync tracks one name per inode.
 				if ((await nodes.idFor(effect.ino)) !== null) return
 				const parentId = await nodes.idFor(effect.dirIno)
 				if (parentId === null) return
@@ -438,8 +441,7 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 					id === null ||
 					sourceParentId === null ||
 					!previous ||
-					previous.parentId !== sourceParentId ||
-					previous.name !== effect.fromName
+					!atLocation(previous, sourceParentId, effect.fromName)
 				) {
 					await commit(entries)
 					return
