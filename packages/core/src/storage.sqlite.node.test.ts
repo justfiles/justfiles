@@ -262,6 +262,33 @@ test('HTTP node authority returns an exact create retry and rejects changed reus
 	server.db.close()
 })
 
+test('HTTP node authority returns a receipt after retry content is collected', async () => {
+	const server = openSqlite(':memory:')
+	const remote = remoteNodeSyncReplica(wireClient(createFsApi(server.storage)), {
+		clientId: 'client-a'
+	})
+	const sourceStorage = nodeMemStorage()
+	const source = memoryNodeReplica(sourceStorage)
+	const sourceVolume = volume(sourceStorage)
+	await sourceVolume.writeFile('/note.txt', bytes('old'))
+	const create = await source.nodeDeltas('', { limit: 10 })
+	const accepted = await remote.applyNodeOperations(create.operations, (hash) =>
+		source.getBlobByHash(hash)
+	)
+
+	await sourceVolume.writeFile('/note.txt', bytes('new'))
+	const update = await source.nodeDeltas(create.to, { limit: 10 })
+	await remote.applyNodeOperations(update.operations, (hash) => source.getBlobByHash(hash))
+	expect((await server.storage.caps?.content?.gcUnreferenced())?.reclaimed).toBe(1)
+
+	await expect(
+		remote.applyNodeOperations(create.operations, () =>
+			Promise.reject(new Error('retry requested collected content'))
+		)
+	).resolves.toEqual(accepted)
+	server.db.close()
+})
+
 test('destructive reset clears accepted node operations before republish', async () => {
 	const server = openSqlite(':memory:')
 	const sourceStorage = nodeMemStorage()

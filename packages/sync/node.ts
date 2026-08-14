@@ -190,18 +190,6 @@ export function mutationsOf(operations: readonly NodeOperation[]): NodeMutation[
 	return operations.flatMap((operation) => operation.mutations)
 }
 
-function authoredContent(operations: readonly NodeOperation[]): string[] {
-	return [
-		...new Set(
-			mutationsOf(operations).flatMap((mutation) =>
-				(mutation.kind === 'create' || mutation.kind === 'update') && mutation.contentHash
-					? [mutation.contentHash]
-					: []
-			)
-		)
-	]
-}
-
 /** Remove journal mutations superseded by one accepted operation. */
 export function compactNodeJournal(
 	rows: readonly NodeJournalRow[],
@@ -309,7 +297,10 @@ export interface SyncCapability {
 		done: boolean
 		retainedContent?: ReadonlyMap<string, Uint8Array>
 	}>
-	wantedContent(operations: readonly NodeOperation[]): Promise<string[]>
+	wantedContent(
+		operations: readonly NodeOperation[],
+		opts?: { authoritative?: boolean }
+	): Promise<string[]>
 	applyNodeOperations(
 		operations: readonly NodeOperation[],
 		opts?: { source?: string; origin?: string; content?: ReadonlyMap<string, Uint8Array> }
@@ -377,14 +368,20 @@ export function createSyncCapability(
 					...(retainedContent ? { retainedContent } : {})
 				}
 			}),
-		async wantedContent(operations) {
+		async wantedContent(operations, opts) {
 			const wanted = new Set<string>()
-			for (const mutation of mutationsOf(operations)) {
-				if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
-				const previous = await module.nodes.get(mutation.nodeId)
-				if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+			for (const operation of operations) {
+				if (opts?.authoritative && (await module.nodes.getOperation(operation.operationId)))
 					continue
-				if (mutation.contentHash) wanted.add(mutation.contentHash)
+				for (const mutation of operation.mutations) {
+					if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
+					if (!opts?.authoritative) {
+						const previous = await module.nodes.get(mutation.nodeId)
+						if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+							continue
+					}
+					if (mutation.contentHash) wanted.add(mutation.contentHash)
+				}
 			}
 			return [...wanted]
 		},
@@ -855,23 +852,27 @@ function createNodeReplica(
 		async applyNodeOperations(operations, getBlobByHash, opts) {
 			let ready = operations
 			const missingByOperation = new Map<NodeOperation, string>()
+			const wantedByOperation = new Map<NodeOperation, string[]>()
 			if (authoritative) {
-				const wanted = authoredContent(operations)
+				for (const operation of operations)
+					wantedByOperation.set(
+						operation,
+						await sync.wantedContent([operation], { authoritative: true })
+					)
+				const wanted = new Set([...wantedByOperation.values()].flat())
 				const missing = new Set<string>()
 				for (const hash of wanted) if (!(await content.has(hash))) missing.add(hash)
 				if (missing.size > 0) {
-					for (const operation of operations) {
-						const hash = operation.mutations.flatMap((mutation) =>
-							'contentHash' in mutation && mutation.contentHash && missing.has(mutation.contentHash)
-								? [mutation.contentHash]
-								: []
-						)[0]
+					for (const [operation, hashes] of wantedByOperation) {
+						const hash = hashes.find((candidate) => missing.has(candidate))
 						if (hash) missingByOperation.set(operation, hash)
 					}
 					ready = operations.filter((operation) => !missingByOperation.has(operation))
 				}
 			}
-			const wanted = authoritative ? authoredContent(ready) : await sync.wantedContent(ready)
+			const wanted = authoritative
+				? [...new Set(ready.flatMap((operation) => wantedByOperation.get(operation) ?? []))]
+				: await sync.wantedContent(ready)
 			const blobs = await content.prepare(wanted, getBlobByHash)
 			try {
 				if (authoritative) {
