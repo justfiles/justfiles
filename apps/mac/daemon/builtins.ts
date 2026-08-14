@@ -4,9 +4,7 @@ import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [
 	{ id: 'justfiles.code', packageDir: 'app-code' },
-	{ id: 'justfiles.draw', packageDir: 'app-draw' },
 	{ id: 'justfiles.files', packageDir: 'app-files' },
-	{ id: 'justfiles.notes', packageDir: 'app-notes' },
 	{ id: 'justfiles.paint', packageDir: 'app-paint' },
 	{ id: 'justfiles.settings', packageDir: 'app-settings' }
 ]

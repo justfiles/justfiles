@@ -10,12 +10,10 @@ Frieren and Kodama for Mac. The best examples are:
 
 - `packages/create-app/template` — minimum app, framework-free GUI
 - `packages/app-pixel` — rich public action surface
-- `packages/app-notes` — scoped files, commands, subscriptions, and procedures
 - `packages/app-crossword` — AI procedure committing one atomic result
 - `packages/app-dictionary` — a framework-free GUI (plain DOM, no React) over an AI procedure
 - `packages/app-paint` — high-frequency GUI-local state
 - `packages/app-files` — recursive file watching and command coalescing
-- `packages/app-draw` — a normal package using a third-party npm library
 - `packages/app-code` — the in-app authoring environment
 
 This is the app-author API. Do not use kernel, sandbox, transport, app-store, or host internals from an
@@ -97,7 +95,7 @@ export default defineConfig(({ mode }) => ({
 ```
 
 A React GUI adds `react()` from `@vitejs/plugin-react`, `resolve: { dedupe: ['react',
-'react-dom'] }`, and a `.tsx` `gui` entry — see `packages/app-notes`.
+'react-dom'] }`, and a `.tsx` `gui` entry — see `packages/app-paint`.
 
 `kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
 host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to
@@ -399,7 +397,8 @@ third-party React libraries, but the whole GUI graph must collapse to ONE React 
 bundle means the renderer sets the hook dispatcher on an instance your components never read, and the
 GUI dies on its first `useState`. Set `resolve: { dedupe: ['react', 'react-dom'] }` in your own Vite
 config (every in-repo React app does); a dependency pinning its own React major is the case to watch.
-If a dependency emits chunks, follow `packages/app-draw` and keep the resulting `gui.js` single-file.
+If a dependency emits chunks, set `build.rollupOptions.output.codeSplitting` to `false` to keep the
+resulting `gui.js` single-file.
 
 
 Here the initial `state` is nullable. `mount` returns `{ update(state), unmount() }`; both methods may
