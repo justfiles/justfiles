@@ -1,11 +1,19 @@
 import { describe, expect, test } from 'vitest'
-import { actingUserId } from './auth.ts'
+import { actingUserId, forwardRequest, requestUserId } from './auth.ts'
 
 // The real ids are in auth.ts (public identifiers of our own OAuth apps); the tests name their
 // own so they assert the RULE, not today's ids.
 const OURS = ['kodama-desktop-prod', 'kodama-desktop-dev']
 
 describe('actingUserId', () => {
+	test('forwarding replaces a caller-supplied user id with the verified user', () => {
+		const request = new Request('https://example.test/fs', {
+			headers: { 'x-user-id': 'forged-user' }
+		})
+
+		expect(requestUserId(forwardRequest(request, 'verified-user'))).toBe('verified-user')
+	})
+
 	test('a browser session token acts as its user', () => {
 		expect(
 			actingUserId({ tokenType: 'session_token', isAuthenticated: true, userId: 'user_1' }, OURS)

@@ -12,6 +12,7 @@ import type { DbAdapter } from './db'
 import { createSqliteAdapter } from './db.sqlite'
 import { createFsApi } from './fs'
 import { createFsClient, remoteNodeSyncReplica } from './fs.client'
+import { readGenerationState, resetVolume } from './reset'
 import { storage as sqliteStorage } from './storage.sqlite'
 
 const migrationsDir = new URL('./migrations/', import.meta.url)
@@ -59,14 +60,14 @@ function openSqlite(
 		},
 		exec: (sql: string) => db.exec(sql)
 	}
+	const adapter = failNodeJournal(
+		createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0]),
+		failure
+	)
 	return {
 		db,
-		storage: sqliteStorage(
-			failNodeJournal(
-				createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0]),
-				failure
-			)
-		)
+		adapter,
+		storage: sqliteStorage(adapter)
 	}
 }
 
@@ -258,6 +259,33 @@ test('HTTP node authority returns an exact create retry and rejects changed reus
 	])
 	expect(delta.operations[0]?.origin).toBe('authenticated-user')
 	expect((await volume(server.storage).readdir('/')).map((entry) => entry.name)).toEqual(['docs'])
+	server.db.close()
+})
+
+test('destructive reset clears accepted node operations before republish', async () => {
+	const server = openSqlite(':memory:')
+	const sourceStorage = nodeMemStorage()
+	const source = memoryNodeReplica(sourceStorage)
+	await volume(sourceStorage).mkdir('/docs')
+	const outgoing = await source.nodeDeltas('', { limit: 10 })
+	const send = () =>
+		remoteNodeSyncReplica(wireClient(createFsApi(server.storage)), {
+			clientId: 'client-a'
+		}).applyNodeOperations(outgoing.operations, (hash) => source.getBlobByHash(hash))
+
+	await send()
+	const { lineageId } = await readGenerationState(server.adapter)
+	await resetVolume(server.adapter, {
+		mode: 'adopt-mine',
+		fromGeneration: 1,
+		operationId: 'reset',
+		resetId: 'reset',
+		lineageId
+	})
+	expect(await volume(server.storage).exists('/docs')).toBe(false)
+
+	await send()
+	expect(await volume(server.storage).exists('/docs')).toBe(true)
 	server.db.close()
 })
 
@@ -519,6 +547,50 @@ test('HTTP node authority rejects an occupied destination without changing eithe
 	)
 	expect(text(await serverVolume.readFile('/target.txt'))).toBe('source')
 	expect(await serverVolume.exists('/source.txt')).toBe(false)
+	server.db.close()
+})
+
+test('HTTP node authority publishes a replacement rename as one operation', async () => {
+	const server = openSqlite(':memory:')
+	const remote = remoteNodeSyncReplica(wireClient(createFsApi(server.storage)), {
+		clientId: 'client-a'
+	})
+	const sourceStorage = nodeMemStorage()
+	const source = memoryNodeReplica(sourceStorage)
+	const sourceVolume = volume(sourceStorage)
+	await sourceVolume.writeFile('/source.txt', bytes('source'))
+	await sourceVolume.writeFile('/target.txt', bytes('target'))
+	let outgoing = await source.nodeDeltas('', { limit: 10 })
+	await remote.applyNodeOperations(outgoing.operations, (hash) => source.getBlobByHash(hash))
+	const sourceCursor = outgoing.to
+	const serverCursor = (await remote.nodeDeltas('', { limit: 10 })).to
+
+	await sourceVolume.rename('/source.txt', '/target.txt')
+	outgoing = await source.nodeDeltas(sourceCursor, { limit: 10 })
+	expect(outgoing.operations).toHaveLength(1)
+	expect(outgoing.operations[0]?.mutations.map((mutation) => mutation.kind)).toEqual([
+		'delete',
+		'move'
+	])
+	const stale = structuredClone(outgoing.operations)
+	const staleMove = stale[0]?.mutations[1]
+	if (staleMove?.kind !== 'move') throw new Error('missing replacement move')
+	staleMove.baseRevision--
+	await expect(
+		remote.applyNodeOperations(stale, (hash) => source.getBlobByHash(hash))
+	).rejects.toMatchObject({ result: { reason: 'stale' } })
+	expect(text(await volume(server.storage).readFile('/source.txt'))).toBe('source')
+	expect(text(await volume(server.storage).readFile('/target.txt'))).toBe('target')
+
+	await remote.applyNodeOperations(outgoing.operations, (hash) => source.getBlobByHash(hash))
+	expect(text(await volume(server.storage).readFile('/target.txt'))).toBe('source')
+	expect(await volume(server.storage).exists('/source.txt')).toBe(false)
+	const accepted = await remote.nodeDeltas(serverCursor, { limit: 10 })
+	expect(accepted.operations).toHaveLength(1)
+	expect(accepted.operations[0]?.mutations.map((mutation) => mutation.kind)).toEqual([
+		'delete',
+		'move'
+	])
 	server.db.close()
 })
 
@@ -1130,6 +1202,39 @@ test('HTTP rejects an update with missing content, then accepts it under the sam
 	if (snapshot.status !== 'ok') throw new Error(snapshot.status)
 	expect(snapshot.operations[0]?.mutations[0]?.nodeId).toBe(createdId)
 	await remote.closeSnapshot(snapshot.session)
+	server.db.close()
+})
+
+test('HTTP authority content preflight ignores the proposed revision', async () => {
+	const server = openSqlite(':memory:')
+	await volume(server.storage).writeFile('/note.txt', bytes('old'))
+	const remote = remoteNodeSyncReplica(wireClient(createFsApi(server.storage)), {
+		clientId: 'client-a'
+	})
+	const sourceStorage = nodeMemStorage()
+	const source = memoryNodeReplica(sourceStorage)
+	const snapshot = await remote.nodeSnapshot(undefined, { limit: 10 })
+	if (snapshot.status !== 'ok') throw new Error(snapshot.status)
+	await source.applyNodeOperations(
+		snapshot.operations,
+		async (hash) => {
+			const blob = await remote.getSnapshotBlob(snapshot.session, hash)
+			if (blob.status !== 'ok') throw new Error(blob.status)
+			return blob.data
+		},
+		{ source: 'server' }
+	)
+	await remote.closeSnapshot(snapshot.session)
+	const cursor = (await source.nodeDeltas('', { limit: 10 })).to
+
+	await volume(sourceStorage).writeFile('/note.txt', bytes('new'))
+	const outgoing = await source.nodeDeltas(cursor, { limit: 10 })
+	const update = outgoing.operations[0]?.mutations[0]
+	if (update?.kind !== 'update') throw new Error('missing update')
+	update.revision = update.baseRevision
+
+	await remote.applyNodeOperations(outgoing.operations, (hash) => source.getBlobByHash(hash))
+	expect(text(await volume(server.storage).readFile('/note.txt'))).toBe('new')
 	server.db.close()
 })
 

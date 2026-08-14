@@ -3,6 +3,7 @@ import { volume } from '@justfiles/fs'
 import type { Storage, StorageCapabilities } from '@justfiles/fs/storage'
 import type { FileType } from '@justfiles/fs/types'
 import {
+	mutationsOf,
 	NodeOperation,
 	type NodeReplica,
 	nodeAuthorityReplica,
@@ -445,7 +446,13 @@ export function createFsApi(
 			.post('/node/content/wanted', zValidator('json', NodeOperationsBody), async (c) => {
 				if (!nodeCapability) throw new Error('backend has no node sync capability')
 				const replica = requireNodeReplica()
-				const wanted = await nodeCapability.wantedContent(c.req.valid('json').operations)
+				const wanted = new Set(
+					mutationsOf(c.req.valid('json').operations).flatMap((mutation) =>
+						(mutation.kind === 'create' || mutation.kind === 'update') && mutation.contentHash
+							? [mutation.contentHash]
+							: []
+					)
+				)
 				const missing: string[] = []
 				for (const hash of wanted) if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
 				return c.json({ missing })

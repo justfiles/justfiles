@@ -20,6 +20,18 @@ export interface RequestAuth {
 
 export const ACCEPTED_TOKENS: ['session_token', 'oauth_token'] = ['session_token', 'oauth_token']
 
+const USER_ID_HEADER = 'x-user-id'
+
+export function forwardRequest(request: Request, userId: string): Request {
+	const headers = new Headers(request.headers)
+	headers.set(USER_ID_HEADER, userId)
+	return new Request(request, { headers })
+}
+
+export function requestUserId(request: Request): string | undefined {
+	return request.headers.get(USER_ID_HEADER) ?? undefined
+}
+
 // Our own desktop OAuth applications, one per Clerk instance (production, then development /
 // staging). Public identifiers, like the publishable key — kept in source rather than in
 // `vars` because wrangler's `vars` win over `.dev.vars`, so a per-environment var would make

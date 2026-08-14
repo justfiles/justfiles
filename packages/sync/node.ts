@@ -190,6 +190,18 @@ export function mutationsOf(operations: readonly NodeOperation[]): NodeMutation[
 	return operations.flatMap((operation) => operation.mutations)
 }
 
+function authoredContent(operations: readonly NodeOperation[]): string[] {
+	return [
+		...new Set(
+			mutationsOf(operations).flatMap((mutation) =>
+				(mutation.kind === 'create' || mutation.kind === 'update') && mutation.contentHash
+					? [mutation.contentHash]
+					: []
+			)
+		)
+	]
+}
+
 /** Remove journal mutations superseded by one accepted operation. */
 export function compactNodeJournal(
 	rows: readonly NodeJournalRow[],
@@ -844,7 +856,7 @@ function createNodeReplica(
 			let ready = operations
 			const missingByOperation = new Map<NodeOperation, string>()
 			if (authoritative) {
-				const wanted = await sync.wantedContent(operations)
+				const wanted = authoredContent(operations)
 				const missing = new Set<string>()
 				for (const hash of wanted) if (!(await content.has(hash))) missing.add(hash)
 				if (missing.size > 0) {
@@ -859,7 +871,7 @@ function createNodeReplica(
 					ready = operations.filter((operation) => !missingByOperation.has(operation))
 				}
 			}
-			const wanted = await sync.wantedContent(ready)
+			const wanted = authoritative ? authoredContent(ready) : await sync.wantedContent(ready)
 			const blobs = await content.prepare(wanted, getBlobByHash)
 			try {
 				if (authoritative) {
