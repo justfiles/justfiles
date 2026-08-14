@@ -22,6 +22,7 @@ import {
 } from '@justfiles/sync/replica'
 import { PathChange } from '@justfiles/sync/wire'
 import { Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
 import type { GenerationState } from './reset'
 
@@ -292,6 +293,8 @@ export function createFsApi(
 		error instanceof Error ? error.message : String(error)
 	const readLineage = async (): Promise<GenerationState | undefined> =>
 		opts?.lineage ? await opts.lineage() : undefined
+	const expiredSubscription = () =>
+		new HTTPException(412, { message: 'ignore_subscription_expired' })
 	const vol = volume(backend)
 	const serverIgnore = normalizeIgnore(opts?.ignore)
 	// The server serves the path endpoints over its own local SyncReplica. Origin
@@ -351,11 +354,11 @@ export function createFsApi(
 	}
 	const requireNodeSubscription = async (request: Request): Promise<NodeSubscription> => {
 		const token = request.headers.get(SUBSCRIPTION_HEADER)
-		if (!token) throw new Error('node subscription required')
+		if (!token) throw expiredSubscription()
 		let subscription = subscriptions.get(token)
 		if (subscription) return subscription
 		const descriptor = decodeSubscriptionToken(token)
-		if (!descriptor) throw new Error('node subscription required')
+		if (!descriptor) throw expiredSubscription()
 		const effective = await ignorePolicy(descriptor.effectiveIgnore)
 		const identityEpoch = (await readLineage())?.lineageId ?? 'node-v2'
 		if (
@@ -363,7 +366,7 @@ export function createFsApi(
 			descriptor.identityEpoch !== identityEpoch ||
 			!serverIgnore.every((root) => effective.ignored(root))
 		)
-			throw new Error('node subscription required')
+			throw expiredSubscription()
 		subscription = makeNodeSubscription({
 			effectiveIgnore: effective.roots,
 			effectiveHash: effective.hash,

@@ -4,6 +4,7 @@ import { ignorePolicy } from '@justfiles/sync'
 import {
 	IgnoreCursorError,
 	IgnoreProtocolError,
+	IgnoreSubscriptionError,
 	type IgnoreSubscriptionPolicy,
 	NodeOperation,
 	NodeOperationRejectedError,
@@ -417,6 +418,14 @@ export function remoteNodeSyncReplica(
 		})()
 		return active
 	}
+	async function subscribed<T extends { status: number }>(
+		request: (token: string) => Promise<T>
+	): Promise<T> {
+		const response = await request((await openSubscription()).token)
+		if (response.status !== 412) return response
+		active = undefined
+		throw new IgnoreSubscriptionError()
+	}
 	const subscriptionHeader = (token: string) => ({ [FS_SUBSCRIPTION_HEADER]: token })
 	const mutationHeaders = (token: string) => {
 		const currentGeneration = generation?.()
@@ -436,17 +445,18 @@ export function remoteNodeSyncReplica(
 			return (await openSubscription()).policy
 		},
 		async nodeDeltas(cursor, opts) {
-			const { token } = await openSubscription()
-			const res = await client.node.changes.$get(
-				{
-					query: {
-						cursor,
-						excludeSource: opts?.excludeLocalSource,
-						limit: opts?.limit === undefined ? undefined : String(opts.limit)
+			const res = await subscribed((token) =>
+				client.node.changes.$get(
+					{
+						query: {
+							cursor,
+							excludeSource: opts?.excludeLocalSource,
+							limit: opts?.limit === undefined ? undefined : String(opts.limit)
+						},
+						header: subscriptionHeader(token)
 					},
-					header: subscriptionHeader(token)
-				},
-				{ init: { cache: 'no-store' } }
+					{ init: { cache: 'no-store' } }
+				)
 			)
 			if (res.status === 410) throw new IgnoreCursorError()
 			if (!res.ok) throw new Error(`nodeDeltas failed: ${res.status}`)
@@ -458,44 +468,49 @@ export function remoteNodeSyncReplica(
 			}
 		},
 		async applyNodeOperations(operations, getBlobByHash) {
-			const { token } = await openSubscription()
-			const missingResponse = await client.node.content.wanted.$post({
-				json: {
-					operations: operations.map((operation) => ({
-						operationId: operation.operationId,
-						mutations: [...operation.mutations],
-						boundary: operation.boundary
-					}))
-				},
-				header: subscriptionHeader(token)
-			})
+			const missingResponse = await subscribed((token) =>
+				client.node.content.wanted.$post({
+					json: {
+						operations: operations.map((operation) => ({
+							operationId: operation.operationId,
+							mutations: [...operation.mutations],
+							boundary: operation.boundary
+						}))
+					},
+					header: subscriptionHeader(token)
+				})
+			)
 			if (!missingResponse.ok)
 				throw new Error(`node missing blobs failed: ${missingResponse.status}`)
 			for (const hash of (await missingResponse.json()).missing) {
 				const data = await getBlobByHash(hash)
-				const upload = await client.node.blob[':hash'].$put(
-					{
-						param: { hash },
-						header: {
-							...mutationHeaders(token),
-							'Content-Type': 'application/octet-stream'
-						}
-					} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
-					{ init: { body: toArrayBuffer(data) } }
+				const upload = await subscribed((token) =>
+					client.node.blob[':hash'].$put(
+						{
+							param: { hash },
+							header: {
+								...mutationHeaders(token),
+								'Content-Type': 'application/octet-stream'
+							}
+						} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
+						{ init: { body: toArrayBuffer(data) } }
+					)
 				)
 				await throwIfStale(upload)
 				if (!upload.ok) throw new Error(`node blob upload failed: ${upload.status}`)
 			}
-			const res = await client.node.operations.$post({
-				json: {
-					operations: operations.map((operation) => ({
-						operationId: operation.operationId,
-						mutations: [...operation.mutations],
-						boundary: operation.boundary
-					}))
-				},
-				header: mutationHeaders(token)
-			} as unknown as Parameters<typeof client.node.operations.$post>[0])
+			const res = await subscribed((token) =>
+				client.node.operations.$post({
+					json: {
+						operations: operations.map((operation) => ({
+							operationId: operation.operationId,
+							mutations: [...operation.mutations],
+							boundary: operation.boundary
+						}))
+					},
+					header: mutationHeaders(token)
+				} as unknown as Parameters<typeof client.node.operations.$post>[0])
+			)
 			await throwIfStale(res)
 			const body = await res.json()
 			if (!('results' in body)) throw new Error(`applyNodeOperations failed: ${res.status}`)
@@ -506,47 +521,51 @@ export function remoteNodeSyncReplica(
 			return results
 		},
 		async getBlobByHash(hash) {
-			const { token } = await openSubscription()
-			const res = await client.node.blob[':hash'].$get({
-				param: { hash },
-				header: subscriptionHeader(token)
-			})
+			const res = await subscribed((token) =>
+				client.node.blob[':hash'].$get({
+					param: { hash },
+					header: subscriptionHeader(token)
+				})
+			)
 			if (!res.ok) throw new Error(`node getBlobByHash failed: ${res.status}`)
 			return new Uint8Array(await res.arrayBuffer())
 		},
 		async hasBlobByHash(hash) {
-			const { token } = await openSubscription()
-			const res = await client.node.blobs.missing.$post({
-				json: { hashes: [hash] },
-				header: subscriptionHeader(token)
-			})
+			const res = await subscribed((token) =>
+				client.node.blobs.missing.$post({
+					json: { hashes: [hash] },
+					header: subscriptionHeader(token)
+				})
+			)
 			if (!res.ok) throw new Error(`node hasBlobByHash failed: ${res.status}`)
 			return !(await res.json()).missing.includes(hash)
 		},
 		async putBlobByHash(hash, data) {
-			const { token } = await openSubscription()
-			const res = await client.node.blob[':hash'].$put(
-				{
-					param: { hash },
-					header: {
-						...mutationHeaders(token),
-						'Content-Type': 'application/octet-stream'
-					}
-				} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
-				{ init: { body: toArrayBuffer(data) } }
+			const res = await subscribed((token) =>
+				client.node.blob[':hash'].$put(
+					{
+						param: { hash },
+						header: {
+							...mutationHeaders(token),
+							'Content-Type': 'application/octet-stream'
+						}
+					} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
+					{ init: { body: toArrayBuffer(data) } }
+				)
 			)
 			await throwIfStale(res)
 			if (!res.ok) throw new Error(`node putBlobByHash failed: ${res.status}`)
 		},
 		async nodeSnapshot(page, opts) {
-			const { token } = await openSubscription()
-			const res = await client.node.snapshot.$get({
-				query: {
-					page,
-					limit: opts?.limit === undefined ? undefined : String(opts.limit)
-				},
-				header: subscriptionHeader(token)
-			})
+			const res = await subscribed((token) =>
+				client.node.snapshot.$get({
+					query: {
+						page,
+						limit: opts?.limit === undefined ? undefined : String(opts.limit)
+					},
+					header: subscriptionHeader(token)
+				})
+			)
 			if (res.status === 410) return { status: 'restart' }
 			if (res.status === 429) return { status: 'busy' }
 			if (!res.ok) throw new Error(`nodeSnapshot failed: ${res.status}`)
@@ -561,21 +580,23 @@ export function remoteNodeSyncReplica(
 			}
 		},
 		async getSnapshotBlob(session, hash) {
-			const { token } = await openSubscription()
-			const res = await client.node.snapshot[':session'].blob[':hash'].$get({
-				param: { session, hash },
-				header: subscriptionHeader(token)
-			})
+			const res = await subscribed((token) =>
+				client.node.snapshot[':session'].blob[':hash'].$get({
+					param: { session, hash },
+					header: subscriptionHeader(token)
+				})
+			)
 			if (res.status === 410) return { status: 'restart' }
 			if (!res.ok) throw new Error(`getSnapshotBlob failed: ${res.status}`)
 			return { status: 'ok', data: new Uint8Array(await res.arrayBuffer()) }
 		},
 		async closeSnapshot(session) {
-			const { token } = await openSubscription()
-			const res = await client.node.snapshot[':session'].$delete({
-				param: { session },
-				header: subscriptionHeader(token)
-			})
+			const res = await subscribed((token) =>
+				client.node.snapshot[':session'].$delete({
+					param: { session },
+					header: subscriptionHeader(token)
+				})
+			)
 			return { status: res.status === 204 ? 'ok' : 'restart' }
 		}
 	}

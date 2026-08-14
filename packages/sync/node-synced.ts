@@ -3,6 +3,7 @@ import type { PersistedState } from '@justfiles/fs/persistedState'
 import type { Storage, StorageCapabilities } from '@justfiles/fs/storage'
 import {
 	IgnoreProtocolError,
+	IgnoreSubscriptionError,
 	type IgnoreSubscriptionPolicy,
 	type NodeReplica,
 	nodeSyncReplica,
@@ -136,7 +137,7 @@ export async function nodeSynced(props: Props): Promise<Volume & SyncLifecycle> 
 		}
 	}
 
-	async function sync(): Promise<void> {
+	async function syncOnce(): Promise<void> {
 		await open()
 		if (!localReplica || !policy) throw new Error('node sync is not open')
 		const local = localReplica
@@ -209,6 +210,17 @@ export async function nodeSynced(props: Props): Promise<Volume & SyncLifecycle> 
 			pullCursor = page.to
 			pullDone = page.done
 			await props.state.patch({ nodePullCursor: pullCursor })
+		}
+	}
+
+	async function sync(): Promise<void> {
+		try {
+			await syncOnce()
+		} catch (error) {
+			if (!(error instanceof IgnoreSubscriptionError)) throw error
+			localReplica = undefined
+			policy = undefined
+			await syncOnce()
 		}
 	}
 

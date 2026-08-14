@@ -216,6 +216,13 @@ export class IgnoreProtocolError extends Error {
 	}
 }
 
+export class IgnoreSubscriptionError extends Error {
+	constructor() {
+		super('ignore_subscription_expired')
+		this.name = 'IgnoreSubscriptionError'
+	}
+}
+
 export class IgnoreCursorError extends Error {
 	constructor() {
 		super('ignore_cursor_mismatch')
@@ -345,6 +352,8 @@ export interface NodeSyncModule {
 	openSnapshotView(): Promise<SnapshotView>
 }
 
+const localIgnoreRoots = new WeakMap<NodeSyncModule, readonly string[]>()
+
 /** Optimized sync behavior attached without extending the filesystem package. */
 export interface SyncCapability {
 	project(ignore: readonly string[]): SyncCapability
@@ -443,10 +452,19 @@ export function createSyncCapability(
 		return current ? `/${names.join('/')}` : null
 	}
 
-	async function visibleOperations(operations: readonly NodeOperation[]): Promise<NodeOperation[]> {
+	async function visibleOperations(
+		operations: readonly NodeOperation[],
+		incoming = false
+	): Promise<NodeOperation[]> {
 		if (roots.length === 0) return [...operations]
 		const visible: NodeOperation[] = []
 		const stagedPaths = new Map<string, string>()
+		// /.state belongs to the sync engine, not to a peer's effective policy.
+		const localRoots = (localIgnoreRoots.get(module) ?? []).filter((root) => root !== '/.state')
+		const projectedRoots = roots.filter((root) => root !== '/.state')
+		const localProjection =
+			localRoots.length === projectedRoots.length &&
+			localRoots.every((root, index) => root === projectedRoots[index])
 		for (const operation of operations) {
 			const mutations: NodeMutation[] = []
 			const authoredMove = operation.mutations.find(
@@ -464,8 +482,13 @@ export function createSyncCapability(
 					? joinPath(authoredFromParentPath, authoredMove.fromName)
 					: null
 			const projected =
-				operation.boundary === true ||
+				(operation.boundary === true && (incoming || localProjection)) ||
 				operation.mutations.some((mutation) => 'projection' in mutation && mutation.projection)
+			const created = new Set(
+				operation.mutations
+					.filter((mutation) => mutation.kind === 'create')
+					.map((mutation) => mutation.nodeId)
+			)
 			for (const mutation of operation.mutations) {
 				if (
 					mutation.kind === 'move' &&
@@ -503,6 +526,7 @@ export function createSyncCapability(
 						path: string
 					}> = []
 					for (const node of await module.nodes.live()) {
+						if (created.has(node.id)) continue
 						const relative = await relativeTo(node, mutation.nodeId)
 						if (relative === null) continue
 						const oldPath = fromPath + relative
@@ -581,7 +605,11 @@ export function createSyncCapability(
 
 	return {
 		project: (nextIgnore) => createSyncCapability(storage, module, exclusive, nextIgnore),
-		setLocalIgnore: (nextIgnore) => module.setLocalIgnore?.(normalizeIgnore(nextIgnore)),
+		setLocalIgnore(nextIgnore) {
+			const roots = normalizeIgnore(nextIgnore)
+			localIgnoreRoots.set(module, roots)
+			module.setLocalIgnore?.(roots)
+		},
 		nodeDeltas: (cursor, opts) =>
 			exclusive(async () => {
 				const limit = opts?.limit ?? PAGE
@@ -614,7 +642,7 @@ export function createSyncCapability(
 			}),
 		async wantedContent(operations, opts) {
 			const wanted = new Set<string>()
-			for (const operation of await visibleOperations(operations)) {
+			for (const operation of await visibleOperations(operations, true)) {
 				if (opts?.authoritative && (await module.nodes.getOperation(operation.operationId)))
 					continue
 				for (const mutation of operation.mutations) {
@@ -634,13 +662,13 @@ export function createSyncCapability(
 			return [...wanted]
 		},
 		applyNodeOperations: async (operations, opts) =>
-			module.apply(await visibleOperations(operations), { ...opts, ignore: roots }),
+			module.apply(await visibleOperations(operations, true), { ...opts, ignore: roots }),
 		reconcileNodeSnapshot: (operations, opts) => module.reconcile(operations, roots, opts),
 		async acceptNodeOperations(operations, opts) {
 			if (roots.length === 0) return module.accept(operations, opts)
 			const results: NodeOperationResult[] = []
 			for (const operation of operations) {
-				const [visible] = await visibleOperations([operation])
+				const [visible] = await visibleOperations([operation], true)
 				if (!visible || visible.mutations.length !== operation.mutations.length) {
 					results.push({
 						status: 'rejected',

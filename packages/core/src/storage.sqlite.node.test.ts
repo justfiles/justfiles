@@ -252,6 +252,50 @@ test('HTTP node subscriptions survive a server instance restart', async () => {
 	server.db.close()
 })
 
+test('active sync reopens its subscription after the server policy changes', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.writeFile('/before.txt', bytes('before'))
+	const lineage = { generation: 1, lineageId: 'volume-a' }
+	let app = createFsApi(server.storage, { lineage: () => lineage })
+	const requests: string[] = []
+	const http = createFsClient({
+		baseUrl: 'http://node-sync.test',
+		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init)
+			requests.push(`${request.method} ${new URL(request.url).pathname}`)
+			return app.request(request)
+		}) as typeof fetch
+	})
+	let remote: NodeReplica | undefined
+	const local = openSqlite(':memory:')
+	const client = await synced({
+		local: local.storage,
+		remote: (context) => (remote ??= remoteNodeSyncReplica(http, context)),
+		ignore: ['/client-private'],
+		interval: 99_999
+	})
+
+	app = createFsApi(server.storage, {
+		ignore: ['/server-private'],
+		lineage: () => lineage
+	})
+	await serverVolume.writeFile('/after.txt', bytes('after'))
+	await client.flush()
+
+	expect(client.status()).toBe('synced')
+	expect(text(await client.readFile('/after.txt'))).toBe('after')
+	if (!remote) throw new Error('missing remote')
+	expect(await remote.subscription()).toMatchObject({
+		effectiveIgnore: ['/client-private', '/server-private'],
+		identityEpoch: 'volume-a'
+	})
+	expect(requests.filter((request) => request === 'POST /node/subscription')).toHaveLength(2)
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
 test('HTTP node subscriptions union ignore roots and fence their cursors', async () => {
 	const server = openSqlite(':memory:')
 	const serverVolume = volume(server.storage)
@@ -809,6 +853,33 @@ test('remote moves detach and reattach across a client ignore boundary', async (
 	await serverVolume.rename('/hidden/tree', '/visible/tree')
 	await client.flush()
 	expect(text(await client.readFile('/visible/tree/file.txt'))).toBe('content')
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test("server boundary moves use each client's effective ignore policy", async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	const app = createFsApi(server.storage, { ignore: ['/a/secret'] })
+	await serverVolume.mkdir('/a/private', { recursive: true })
+	await serverVolume.writeFile('/a/private/local.txt', bytes('private'))
+	await serverVolume.mkdir('/a/secret', { recursive: true })
+	await serverVolume.writeFile('/a/secret/shared.txt', bytes('secret'))
+	const local = openSqlite(':memory:')
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId, ignore }) => remoteNodeSyncReplica(wireClient(app), { clientId, ignore }),
+		ignore: ['/b/private'],
+		interval: 99_999
+	})
+
+	await serverVolume.rename('/a', '/b')
+	await client.flush()
+
+	expect(await client.exists('/a')).toBe(false)
+	expect(await client.exists('/b/private')).toBe(false)
+	expect(text(await client.readFile('/b/secret/shared.txt'))).toBe('secret')
 	client.destroy()
 	local.db.close()
 	server.db.close()
