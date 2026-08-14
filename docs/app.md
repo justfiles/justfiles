@@ -12,7 +12,6 @@ Frieren and Kodama for Mac. The best examples are:
 - `packages/app-pixel` — rich public action surface
 - `packages/app-crossword` — AI procedure committing one atomic result
 - `packages/app-dictionary` — a framework-free GUI (plain DOM, no React) over an AI procedure
-- `packages/app-paint` — high-frequency GUI-local state
 - `packages/app-files` — recursive file watching and command coalescing
 - `packages/app-code` — the in-app authoring environment
 
@@ -95,7 +94,7 @@ export default defineConfig(({ mode }) => ({
 ```
 
 A React GUI adds `react()` from `@vitejs/plugin-react`, `resolve: { dedupe: ['react',
-'react-dom'] }`, and a `.tsx` `gui` entry — see `packages/app-paint`.
+'react-dom'] }`, and a `.tsx` `gui` entry — see `packages/app-settings`.
 
 `kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
 host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to

@@ -98,9 +98,6 @@ importers:
       '@justfiles/app-files':
         specifier: workspace:*
         version: link:../../packages/app-files
-      '@justfiles/app-paint':
-        specifier: workspace:*
-        version: link:../../packages/app-paint
       '@justfiles/app-settings':
         specifier: workspace:*
         version: link:../../packages/app-settings
@@ -234,9 +231,6 @@ importers:
       '@justfiles/app-files':
         specifier: workspace:*
         version: link:../../packages/app-files
-      '@justfiles/app-paint':
-        specifier: workspace:*
-        version: link:../../packages/app-paint
       '@justfiles/app-settings':
         specifier: workspace:*
         version: link:../../packages/app-settings
@@ -708,43 +702,6 @@ importers:
       '@pierre/trees':
         specifier: 1.0.0-beta.4
         version: 1.0.0-beta.4(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      valibot:
-        specifier: ^1.1.0
-        version: 1.4.0(typescript@6.0.3)
-    devDependencies:
-      '@justfiles/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/react':
-        specifier: ^19
-        version: 19.2.7
-      '@types/react-dom':
-        specifier: ^19
-        version: 19.2.3(@types/react@19.2.7)
-      '@vitejs/plugin-react':
-        specifier: ^5
-        version: 5.1.1(vite@8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0))
-      react:
-        specifier: ^19
-        version: 19.2.5
-      react-dom:
-        specifier: ^19
-        version: 19.2.5(react@19.2.5)
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vite:
-        specifier: ^8.0.0-beta.13
-        version: 8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
-
-  packages/app-paint:
-    dependencies:
-      '@justfiles/app':
-        specifier: workspace:*
-        version: link:../app
-      '@justfiles/state':
-        specifier: workspace:*
-        version: link:../state
       valibot:
         specifier: ^1.1.0
         version: 1.4.0(typescript@6.0.3)

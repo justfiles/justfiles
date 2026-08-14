@@ -1,4 +1,4 @@
-// The encoding boundary (mirrors packages/app-paint/src/doc.ts): the pixel grid
+// The encoding boundary mirrors Paint: the pixel grid
 // is stored as one character per pixel so it is both compact in /state and
 // directly legible to an LLM agent (it reads the picture as ASCII art).
 

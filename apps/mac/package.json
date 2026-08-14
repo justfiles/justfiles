@@ -17,7 +17,6 @@
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-code": "workspace:*",
 		"@justfiles/app-files": "workspace:*",
-		"@justfiles/app-paint": "workspace:*",
 		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
