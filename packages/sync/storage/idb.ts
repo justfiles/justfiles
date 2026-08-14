@@ -11,6 +11,7 @@ import {
 	applyNodeOperationsOver,
 	compactNodeJournal,
 	createSyncCapability,
+	mutationsOf,
 	type NodeJournalRow,
 	type NodeOperation,
 	type NodeState,
@@ -370,6 +371,28 @@ export function idbStorage(
 				},
 				node: {
 					nodes,
+					captureDeltas: (after, limit) =>
+						host.run([...NODE_STORES, 'content'], async (transaction) => {
+							const rows = await nodeStore(transaction).read(after, limit)
+							const hashes = new Set(
+								mutationsOf(rows.map((row) => row.operation)).flatMap((mutation) =>
+									(mutation.kind === 'create' || mutation.kind === 'update') && mutation.contentHash
+										? [mutation.contentHash]
+										: []
+								)
+							)
+							const content = (transaction as SnapshotTx).objectStore('content')
+							const raw = new Map<string, Uint8Array>()
+							for (const hash of hashes) {
+								const record = await content.get(hash)
+								if (!record) throw new Error(`ENOENT: blob ${hash}`)
+								raw.set(hash, record.data.slice())
+							}
+							const retainedContent = new Map<string, Uint8Array>()
+							for (const [hash, blob] of raw)
+								retainedContent.set(hash, await verifyBytes(hash, blob))
+							return { rows, retainedContent }
+						}),
 					async apply(operations, applyOptions) {
 						const content = filesystem.caps?.content
 						if (!content) throw new Error('IndexedDB backend exposes no content store')

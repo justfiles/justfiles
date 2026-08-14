@@ -165,6 +165,14 @@ export interface NodeStore {
 /** Sync-owned seams attached to one node-addressed filesystem backend. */
 export interface NodeSyncModule {
 	readonly nodes: NodeStore
+	/** Atomically capture journal rows and their content when the adapter requires it. */
+	captureDeltas?(
+		after: number,
+		limit: number
+	): Promise<{
+		rows: NodeJournalRow[]
+		retainedContent: ReadonlyMap<string, Uint8Array>
+	}>
 	apply(
 		operations: readonly NodeOperation[],
 		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
@@ -221,12 +229,16 @@ export function createSyncCapability(
 			exclusive(async () => {
 				const limit = opts?.limit ?? PAGE
 				const from = Number(cursor || '0')
-				const rows = await module.nodes.read(from, limit)
+				const captured =
+					opts?.retainContent && module.captureDeltas
+						? await module.captureDeltas(from, limit)
+						: undefined
+				const rows = captured?.rows ?? (await module.nodes.read(from, limit))
 				const operations = rows
 					.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
 					.map((row) => row.operation)
-				let retainedContent: Map<string, Uint8Array> | undefined
-				if (opts?.retainContent) {
+				let retainedContent = captured ? new Map(captured.retainedContent) : undefined
+				if (opts?.retainContent && !retainedContent) {
 					retainedContent = new Map()
 					for (const mutation of mutationsOf(operations)) {
 						if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
@@ -414,7 +426,10 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 				if (id === null || parentId === null || !previous) return
 				const entries: { mutation: NodeMutation; ino: Ino | null }[] = []
 				if (effect.displaced !== null) {
-					const displaced = await deleteMutation(nodes, effect.displaced)
+					const displaced = await deleteMutation(nodes, effect.displaced, {
+						parentId,
+						name: effect.toName
+					})
 					if (displaced) entries.push({ mutation: displaced, ino: null })
 				}
 				entries.push({

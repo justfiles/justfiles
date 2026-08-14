@@ -3,6 +3,7 @@ import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
 import { FileType } from '@justfiles/fs/types'
 import { describe, expect, test, vi } from 'vitest'
+import { hashBytes } from './content'
 import { mutationsOf, type NodeReplica, ROOT_NODE_ID } from './node'
 import { idbStorage } from './storage/idb'
 import { nodeMemStorage } from './storage/node-mem'
@@ -127,6 +128,27 @@ describe('IndexedDB node sync', () => {
 		storage.destroy()
 	})
 
+	test('preserves a canonical node when a move replaces its untracked alias', async () => {
+		const storage = idbStorage(`node-alias-move-${crypto.randomUUID()}`)
+		const storageVolume = volume(storage)
+		const replica = nodeReplica(storage)
+		await storageVolume.writeFile('/source.txt', bytes('source'))
+		await storageVolume.writeFile('/moving.txt', bytes('moving'))
+		const cursor = (await replica.nodeDeltas('', { limit: 10 })).to
+		const source = await storage.getDirent(storage.rootIno, 'source.txt')
+		if (!source) throw new Error('missing source')
+
+		await storage.putDirent(storage.rootIno, 'alias.txt', source)
+		await storageVolume.rename('/moving.txt', '/alias.txt')
+
+		expect(mutationsOf((await replica.nodeDeltas(cursor, { limit: 10 })).operations)).toEqual([
+			expect.objectContaining({ kind: 'move', name: 'alias.txt' })
+		])
+		expect(text(await storageVolume.readFile('/source.txt'))).toBe('source')
+		expect(text(await storageVolume.readFile('/alias.txt'))).toBe('moving')
+		storage.destroy()
+	})
+
 	test('does not echo pulled moves', async () => {
 		const sourceStorage = nodeMemStorage()
 		const sourceVolume = volume(sourceStorage)
@@ -212,6 +234,57 @@ describe('IndexedDB node sync', () => {
 
 		expect(text(await volume(targetStorage).readFile('/note.txt'))).toBe('ordinary bytes')
 		targetStorage.destroy()
+	})
+
+	test('captures ordinary delta content in the journal read transaction', async () => {
+		const storage = idbStorage(`node-delta-content-${crypto.randomUUID()}`)
+		const storageVolume = volume(storage)
+		const oldData = bytes('old')
+		const newData = bytes('new')
+		await storageVolume.writeFile('/note.txt', oldData)
+		const ino = (await storageVolume.lstat('/note.txt')).ino
+		const newHash = await hashBytes(newData)
+		const content = storage.caps.content
+		if (!content) throw new Error('missing content capability')
+		await content.putByHash(newHash, newData)
+		const { content: _content, ...caps } = storage.caps
+		const replica = nodeReplica({ ...storage, caps })
+
+		const original = IDBObjectStore.prototype.openCursor
+		let armed = true
+		let updating = Promise.resolve()
+		const interleave = vi
+			.spyOn(IDBObjectStore.prototype, 'openCursor')
+			.mockImplementation(function (
+				this: IDBObjectStore,
+				query?: IDBValidKey | IDBKeyRange | null,
+				direction?: IDBCursorDirection
+			) {
+				const request = original.call(this, query, direction)
+				if (armed && this.name === 'nodeJournal') {
+					armed = false
+					updating = storage.setMeta(ino, {
+						contentHash: newHash,
+						size: BigInt(newData.length)
+					})
+				}
+				return request
+			} as typeof original)
+
+		try {
+			const delta = await replica.nodeDeltas('', { limit: 10 })
+			await updating
+			const oldHash = mutationsOf(delta.operations).find(
+				(mutation) => mutation.kind === 'create'
+			)?.contentHash
+			if (!oldHash) throw new Error('missing old content hash')
+			expect(await replica.getBlobByHash(oldHash)).toEqual(oldData)
+			expect(text(await storageVolume.readFile('/note.txt'))).toBe('new')
+		} finally {
+			interleave.mockRestore()
+			await updating
+			storage.destroy()
+		}
 	})
 
 	test('moves 4,000 descendants with one node row and no content read', async () => {
