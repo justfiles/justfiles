@@ -823,6 +823,9 @@ importers:
       '@types/node':
         specifier: ^26.1.0
         version: 26.1.0
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
 
   packages/create-app: {}
 

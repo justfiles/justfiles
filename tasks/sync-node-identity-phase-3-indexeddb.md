@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 source_issue: 465
 ---
 
@@ -131,23 +131,23 @@ Phase 2 review follow-ups also apply to IndexedDB:
 
 ## Acceptance criteria
 
-- [ ] IndexedDB passes the shared v2 conformance suite.
-- [ ] Upgrade tests preserve all existing file, blob, dirty, v1 sync, and application state.
-- [ ] Offline create survives restart and later syncs with its original client-generated sync ID.
-- [ ] A projection-preserving 4,000-descendant move between visible paths creates one local and one server v2 row, with no content upload.
-- [ ] Pulled changes do not echo.
-- [ ] User-xattr changes update node state and deltas, while `trusted.sync.*`
+- [x] IndexedDB passes the shared v2 conformance suite.
+- [x] Upgrade tests preserve all existing file, blob, dirty, v1 sync, and application state.
+- [x] Offline create survives restart and later syncs with its original client-generated sync ID.
+- [x] A projection-preserving 4,000-descendant move between visible paths creates one local and one server v2 row, with no content upload.
+- [x] Pulled changes do not echo.
+- [x] User-xattr changes update node state and deltas, while `trusted.sync.*`
   changes stay local.
-- [ ] Enabling node observation does not make a valid `putDirent` operation fail.
-- [ ] Tombstones and mappings survive restart.
-- [ ] Failed transactions leave no partial tree or sync state.
-- [ ] Lazy content still hydrates after an ancestor move.
-- [ ] IndexedDB exposes the shared optimized path at `caps.sync` and contains no
+- [x] Enabling node observation does not make a valid `putDirent` operation fail.
+- [x] Tombstones and mappings survive restart.
+- [x] Failed transactions leave no partial tree or sync state.
+- [x] Lazy content still hydrates after an ancestor move.
+- [x] IndexedDB exposes the shared optimized path at `caps.sync` and contains no
   copied sync policy.
-- [ ] With `caps.content` hidden, IndexedDB node sync converges eagerly rather than
+- [x] With `caps.content` hidden, IndexedDB node sync converges eagerly rather than
   throwing a missing-content-capability error.
-- [ ] V1 IndexedDB conformance remains green.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] V1 IndexedDB conformance remains green.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

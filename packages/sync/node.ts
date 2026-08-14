@@ -379,6 +379,9 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 		async record(port, effect) {
 			await bindRoot(port, nodes)
 			if (effect.kind === 'link') {
+				// A bare putDirent can add another name for an existing inode. Node v2
+				// does not model hard links, so it must not mint a second node identity.
+				if ((await nodes.idFor(effect.ino)) !== null) return
 				const parentId = await nodes.idFor(effect.dirIno)
 				if (parentId === null) return
 				const mutation = await createMutation(port, parentId, effect.name, effect.ino)
