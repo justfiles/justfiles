@@ -353,11 +353,20 @@ async function createMutation(
 	}
 }
 
-async function deleteMutation(nodes: NodeStore, ino: Ino): Promise<NodeMutation | null> {
+async function deleteMutation(
+	nodes: NodeStore,
+	ino: Ino,
+	expected?: { parentId: SyncNodeId; name: string }
+): Promise<NodeMutation | null> {
 	const id = await nodes.idFor(ino)
 	if (id === null) return null
 	const previous = await nodes.get(id)
-	if (!previous || previous.deleted) return null
+	if (
+		!previous ||
+		previous.deleted ||
+		(expected && (previous.parentId !== expected.parentId || previous.name !== expected.name))
+	)
+		return null
 	return { kind: 'delete', nodeId: id, revision: previous.revision + 1 }
 }
 
@@ -389,7 +398,12 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 				return
 			}
 			if (effect.kind === 'unlink') {
-				const mutation = await deleteMutation(nodes, effect.ino)
+				const parentId = await nodes.idFor(effect.dirIno)
+				if (parentId === null) return
+				const mutation = await deleteMutation(nodes, effect.ino, {
+					parentId,
+					name: effect.name
+				})
 				if (mutation) await commit([{ mutation, ino: null }])
 				return
 			}

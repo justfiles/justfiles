@@ -110,6 +110,23 @@ describe('IndexedDB node sync', () => {
 		storage.destroy()
 	})
 
+	test('ignores unlink for an untracked putDirent alias', async () => {
+		const storage = idbStorage(`node-alias-${crypto.randomUUID()}`)
+		const storageVolume = volume(storage)
+		const replica = nodeReplica(storage)
+		await storageVolume.writeFile('/source.txt', bytes('source'))
+		const cursor = (await replica.nodeDeltas('', { limit: 10 })).to
+		const source = await storage.getDirent(storage.rootIno, 'source.txt')
+		if (!source) throw new Error('missing source')
+
+		await storage.putDirent(storage.rootIno, 'alias.txt', source)
+		await storage.deleteDirent(storage.rootIno, 'alias.txt')
+
+		expect((await replica.nodeDeltas(cursor, { limit: 10 })).operations).toEqual([])
+		expect(text(await storageVolume.readFile('/source.txt'))).toBe('source')
+		storage.destroy()
+	})
+
 	test('does not echo pulled moves', async () => {
 		const sourceStorage = nodeMemStorage()
 		const sourceVolume = volume(sourceStorage)
