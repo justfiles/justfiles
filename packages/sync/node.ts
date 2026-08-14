@@ -165,11 +165,11 @@ export interface NodeStore {
 /** Sync-owned seams attached to one node-addressed filesystem backend. */
 export interface NodeSyncModule {
 	readonly nodes: NodeStore
-	/** Atomically capture journal rows and their content when the adapter requires it. */
+	/** Atomically capture selected journal content when the adapter requires it. */
 	captureDeltas?(
 		after: number,
 		limit: number,
-		excludeLocalSource?: string
+		include: (row: NodeJournalRow) => boolean
 	): Promise<{
 		rows: NodeJournalRow[]
 		retainedContent: ReadonlyMap<string, Uint8Array>
@@ -230,14 +230,14 @@ export function createSyncCapability(
 			exclusive(async () => {
 				const limit = opts?.limit ?? PAGE
 				const from = Number(cursor || '0')
+				const include = (row: NodeJournalRow) =>
+					!opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource
 				const captured =
 					opts?.retainContent && module.captureDeltas
-						? await module.captureDeltas(from, limit, opts.excludeLocalSource)
+						? await module.captureDeltas(from, limit, include)
 						: undefined
 				const rows = captured?.rows ?? (await module.nodes.read(from, limit))
-				const operations = rows
-					.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
-					.map((row) => row.operation)
+				const operations = rows.filter(include).map((row) => row.operation)
 				let retainedContent = captured ? new Map(captured.retainedContent) : undefined
 				if (opts?.retainContent && !retainedContent) {
 					retainedContent = new Map()

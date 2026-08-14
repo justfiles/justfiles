@@ -371,12 +371,10 @@ export function idbStorage(
 				},
 				node: {
 					nodes,
-					captureDeltas: (after, limit, excludeLocalSource) =>
+					captureDeltas: (after, limit, include) =>
 						host.run([...NODE_STORES, 'content'], async (transaction) => {
 							const rows = await nodeStore(transaction).read(after, limit)
-							const operations = rows
-								.filter((row) => !excludeLocalSource || row.localSource !== excludeLocalSource)
-								.map((row) => row.operation)
+							const operations = rows.filter(include).map((row) => row.operation)
 							const hashes = new Set(
 								mutationsOf(operations).flatMap((mutation) =>
 									(mutation.kind === 'create' || mutation.kind === 'update') && mutation.contentHash
