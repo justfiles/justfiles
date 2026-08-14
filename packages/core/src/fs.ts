@@ -203,6 +203,25 @@ const NodeSubscriptionBody = z.object({
 	hash: ContentHash
 })
 const NodeSubscriptionHeader = z.object({ [SUBSCRIPTION_HEADER]: z.string().min(1) })
+const NodeSubscriptionToken = z.object({
+	effectiveIgnore: z.array(z.string()),
+	effectiveHash: ContentHash,
+	identityEpoch: z.string().min(1),
+	id: z.string().min(1)
+})
+
+// The token carries its policy so a new server instance can rebuild the cache.
+function encodeSubscriptionToken(policy: IgnoreSubscriptionPolicy & { id: string }): string {
+	return encodeURIComponent(JSON.stringify(policy))
+}
+
+function decodeSubscriptionToken(token: string) {
+	try {
+		return NodeSubscriptionToken.parse(JSON.parse(decodeURIComponent(token)))
+	} catch {
+		return undefined
+	}
+}
 
 // The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
 // `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's
@@ -321,10 +340,36 @@ export function createFsApi(
 		replica: NodeReplica
 	}
 	const subscriptions = new Map<string, NodeSubscription>()
-	const requireNodeSubscription = (request: Request): NodeSubscription => {
+	const makeNodeSubscription = (policy: IgnoreSubscriptionPolicy): NodeSubscription => {
+		if (!nodeCapability) throw new Error('backend has no node sync capability')
+		const capability = nodeCapability.project(policy.effectiveIgnore)
+		return {
+			policy,
+			capability,
+			replica: nodeAuthorityReplica(capability, backend.caps?.content)
+		}
+	}
+	const requireNodeSubscription = async (request: Request): Promise<NodeSubscription> => {
 		const token = request.headers.get(SUBSCRIPTION_HEADER)
-		const subscription = token ? subscriptions.get(token) : undefined
-		if (!subscription) throw new Error('node subscription required')
+		if (!token) throw new Error('node subscription required')
+		let subscription = subscriptions.get(token)
+		if (subscription) return subscription
+		const descriptor = decodeSubscriptionToken(token)
+		if (!descriptor) throw new Error('node subscription required')
+		const effective = await ignorePolicy(descriptor.effectiveIgnore)
+		const identityEpoch = (await readLineage())?.lineageId ?? 'node-v2'
+		if (
+			effective.hash !== descriptor.effectiveHash ||
+			descriptor.identityEpoch !== identityEpoch ||
+			!serverIgnore.every((root) => effective.ignored(root))
+		)
+			throw new Error('node subscription required')
+		subscription = makeNodeSubscription({
+			effectiveIgnore: effective.roots,
+			effectiveHash: effective.hash,
+			identityEpoch
+		})
+		subscriptions.set(token, subscription)
 		return subscription
 	}
 	const cursorPrefix = (subscription: NodeSubscription): string =>
@@ -337,8 +382,8 @@ export function createFsApi(
 	}
 	const boundCursor = (subscription: NodeSubscription, cursor: string): string =>
 		`${cursorPrefix(subscription)}${cursor}`
-	const requireNodeReplica = (request: Request): NodeReplica => {
-		return requireNodeSubscription(request).replica
+	const requireNodeReplica = async (request: Request): Promise<NodeReplica> => {
+		return (await requireNodeSubscription(request)).replica
 	}
 	const mutationOptions = (request: Request): { origin?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
@@ -440,14 +485,8 @@ export function createFsApi(
 					effectiveHash: effective.hash,
 					identityEpoch: lineage?.lineageId ?? 'node-v2'
 				}
-				if (!nodeCapability) throw new Error('backend has no node sync capability')
-				const capability = nodeCapability.project(effective.roots)
-				const token = crypto.randomUUID()
-				subscriptions.set(token, {
-					policy,
-					capability,
-					replica: nodeAuthorityReplica(capability, backend.caps?.content)
-				})
+				const token = encodeSubscriptionToken({ ...policy, id: crypto.randomUUID() })
+				subscriptions.set(token, makeNodeSubscription(policy))
 				return c.json({ ...policy, subscription: token })
 			})
 
@@ -457,7 +496,7 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				async (c) => {
 					const { cursor, excludeSource, limit } = c.req.valid('query')
-					const subscription = requireNodeSubscription(c.req.raw)
+					const subscription = await requireNodeSubscription(c.req.raw)
 					let page: Awaited<ReturnType<NodeReplica['nodeDeltas']>>
 					try {
 						page = await subscription.replica.nodeDeltas(rawCursor(subscription, cursor), {
@@ -480,7 +519,7 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				async (c) => {
 					const { page, limit } = c.req.valid('query')
-					const subscription = requireNodeSubscription(c.req.raw)
+					const subscription = await requireNodeSubscription(c.req.raw)
 					const result = await subscription.replica.nodeSnapshot(page, { limit })
 					if (result.status === 'restart') return c.json(result, 410)
 					if (result.status === 'busy') return c.json(result, 429)
@@ -497,7 +536,8 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				async (c) => {
 					const { session, hash } = c.req.valid('param')
-					const result = await requireNodeReplica(c.req.raw).getSnapshotBlob(session, hash)
+					const replica = await requireNodeReplica(c.req.raw)
+					const result = await replica.getSnapshotBlob(session, hash)
 					if (result.status === 'restart') return c.body(null, 410)
 					return new Response(toArrayBuffer(result.data), {
 						headers: { 'Content-Type': 'application/octet-stream' }
@@ -511,7 +551,8 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				async (c) => {
 					const { session } = c.req.valid('param')
-					const result = await requireNodeReplica(c.req.raw).closeSnapshot(session)
+					const replica = await requireNodeReplica(c.req.raw)
+					const result = await replica.closeSnapshot(session)
 					return c.body(null, result.status === 'ok' ? 204 : 410)
 				}
 			)
@@ -522,7 +563,7 @@ export function createFsApi(
 				zValidator('json', NodeOperationsBody),
 				async (c) => {
 					const { operations } = c.req.valid('json')
-					const replica = requireNodeReplica(c.req.raw)
+					const replica = await requireNodeReplica(c.req.raw)
 					try {
 						const results = await replica.applyNodeOperations(
 							operations,
@@ -547,7 +588,7 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				zValidator('json', NodeOperationsBody),
 				async (c) => {
-					const subscription = requireNodeSubscription(c.req.raw)
+					const subscription = await requireNodeSubscription(c.req.raw)
 					const replica = subscription.replica
 					const wanted = await subscription.capability.wantedContent(
 						c.req.valid('json').operations,
@@ -566,7 +607,7 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				zValidator('json', MissingBlobsBody),
 				async (c) => {
-					const replica = requireNodeReplica(c.req.raw)
+					const replica = await requireNodeReplica(c.req.raw)
 					const missing: string[] = []
 					for (const hash of c.req.valid('json').hashes)
 						if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
@@ -582,7 +623,8 @@ export function createFsApi(
 					const { hash } = c.req.valid('param')
 					const data = new Uint8Array(await c.req.arrayBuffer())
 					if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
-					await requireNodeReplica(c.req.raw).putBlobByHash(hash, data)
+					const replica = await requireNodeReplica(c.req.raw)
+					await replica.putBlobByHash(hash, data)
 					return c.body(null, 204)
 				}
 			)
@@ -594,7 +636,7 @@ export function createFsApi(
 				zValidator('header', NodeSubscriptionHeader),
 				async (c) => {
 					const { hash } = c.req.valid('param')
-					const replica = requireNodeReplica(c.req.raw)
+					const replica = await requireNodeReplica(c.req.raw)
 					if (c.req.method === 'HEAD')
 						return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
 					try {

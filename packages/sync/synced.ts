@@ -44,6 +44,7 @@ type RemotePeer =
 			clientId: string
 			generation: () => number | undefined
 			lineageId: () => string | undefined
+			ignore: readonly string[]
 	  }) => SyncReplica | NodeReplica)
 
 type Props = {
@@ -153,7 +154,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			? props.remote({
 					clientId: id,
 					generation: () => knownGeneration,
-					lineageId: () => knownLineage
+					lineageId: () => knownLineage,
+					ignore: localPolicy.roots
 				})
 			: undefined
 	if (remoteCandidate && 'nodeDeltas' in remoteCandidate) {

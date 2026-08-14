@@ -221,6 +221,37 @@ test('HTTP node sync creates on SQLite and bootstraps a new memory client', asyn
 	server.db.close()
 })
 
+test('HTTP node subscriptions survive a server instance restart', async () => {
+	const server = openSqlite(':memory:')
+	await volume(server.storage).writeFile('/shared.txt', bytes('shared'))
+	const options = {
+		ignore: ['/server-private'],
+		lineage: () => ({ generation: 1, lineageId: 'volume-a' })
+	}
+	let app = createFsApi(server.storage, options)
+	const client = createFsClient({
+		baseUrl: 'http://node-sync.test',
+		fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+			app.request(new Request(input, init))) as typeof fetch
+	})
+	const remote = remoteNodeSyncReplica(client, {
+		clientId: 'client-a',
+		ignore: ['/client-private']
+	})
+	const policy = await remote.subscription()
+
+	app = createFsApi(server.storage, options)
+
+	expect(await remote.subscription()).toEqual(policy)
+	const page = await remote.nodeDeltas('', { limit: 100 })
+	expect(page.operations).toEqual([
+		expect.objectContaining({
+			mutations: [expect.objectContaining({ kind: 'create', name: 'shared.txt' })]
+		})
+	])
+	server.db.close()
+})
+
 test('HTTP node subscriptions union ignore roots and fence their cursors', async () => {
 	const server = openSqlite(':memory:')
 	const serverVolume = volume(server.storage)
@@ -341,8 +372,7 @@ test('a new client ignore root keeps offline client and server bytes independent
 	const secondClient = wireClient(createFsApi(server.storage), requests)
 	const second = await synced({
 		local,
-		remote: ({ clientId }) =>
-			remoteNodeSyncReplica(secondClient, { clientId, ignore: ['/private'] }),
+		remote: ({ clientId, ignore }) => remoteNodeSyncReplica(secondClient, { clientId, ignore }),
 		ignore: ['/private'],
 		interval: 99_999
 	})

@@ -72,6 +72,8 @@ import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
 import { commitReset } from './reset-instance.ts'
 
+const FS_IGNORE = ['/private'] as const
+
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
 // in the Worker). No refresh path — the key doesn't rotate.
@@ -257,7 +259,7 @@ export class Frieren extends DurableObject<Env> {
 			.route(
 				'/fs',
 				createFsApi(fs, {
-					ignore: ['/private'],
+					ignore: FS_IGNORE,
 					// Reading the volume's lineage epoch needs the DO's raw store, so it is
 					// injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),
@@ -284,7 +286,7 @@ export class Frieren extends DurableObject<Env> {
 	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
 		return this.ctx.blockConcurrencyWhile(() =>
 			commitReset(request, {
-				reset: (body) => resetVolume(this.db, body),
+				reset: (body) => resetVolume(this.db, body, FS_IGNORE),
 				sync: () => this.ctx.storage.sync(),
 				terminate: (reason) => {
 					this.ctx.abort(reason)

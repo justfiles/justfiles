@@ -18,9 +18,8 @@
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
+import { normalizeIgnore } from '@justfiles/sync'
 import type { DbAdapter } from './db'
-
-const RESET_PRESERVE_PREFIXES = ['/.state', '/private'] as const
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
 // INSERT so a reset recreates an identical root (kept local to keep this module
@@ -47,8 +46,7 @@ const CONTENT_TABLES = ['fs_contents', 'fs_content_fts'] as const
 export type ResetMode = 'adopt-mine' | 'wipe'
 
 /**
- * Every inode of the private roots (`/private`, `/.state`) plus the root itself,
- * resolved through dirents.
+ * Every inode under a kept root plus the root inode, resolved through dirents.
  *
  * An `adopt-mine` truncates the tree so the initiator can republish it — but the
  * initiator CANNOT republish these: they never cross the wire, by design, so
@@ -59,10 +57,10 @@ export type ResetMode = 'adopt-mine' | 'wipe'
  * A plain BFS, not a recursive CTE: the tree is a handful of small JSON files, and
  * this stays portable across the DO and node:sqlite with no JSON1/CTE assumptions.
  */
-async function privateInos(tx: DbAdapter): Promise<string[]> {
+async function keptInos(tx: DbAdapter, ignore: readonly string[]): Promise<string[]> {
 	const keep = new Set<string>()
 	const queue: string[] = []
-	for (const prefix of RESET_PRESERVE_PREFIXES) {
+	for (const prefix of normalizeIgnore(['/.state', ...ignore])) {
 		let ino: string | undefined = ROOT_INO
 		for (const segment of prefix.split('/').filter(Boolean)) {
 			const rows: { ino: unknown }[] = await tx.query<{ ino: unknown }>(
@@ -248,11 +246,14 @@ export async function readResetStatus(db: DbAdapter, operationId: string): Promi
  * Apply a reset in ONE transaction: CAS, truncate the tree + sync tables (+ the
  * content tables for `wipe`, so no client can fetch/search discarded bytes),
  * recreate the root inode, bump the generation, and store the operation acknowledgement
- * plus `resetId`. `adopt-mine`
- * keeps the content tables — lazy blobs the republish reuses — and the private
- * subtrees, which no republish could restore (see `privateInos`).
+ * plus `resetId`. `adopt-mine` keeps the content tables — lazy blobs the
+ * republish reuses — and ignored subtrees, which no republish could restore.
  */
-export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<ResetDecision> {
+export async function resetVolume(
+	db: DbAdapter,
+	req: ResetRequest,
+	ignore: readonly string[] = []
+): Promise<ResetDecision> {
 	let result: ResetDecision | undefined
 	await db.transaction(async (tx) => {
 		const current = await readGenerationState(tx)
@@ -265,7 +266,7 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 			result = decision
 			return
 		}
-		const keep = req.mode === 'adopt-mine' ? await privateInos(tx) : []
+		const keep = req.mode === 'adopt-mine' ? await keptInos(tx, ignore) : []
 		const survives = keep.length > 0 ? ` WHERE ino NOT IN (${keep.map(() => '?').join(',')})` : ''
 		// Child rows first (FK RESTRICT), and the kept closure is complete — every
 		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.
