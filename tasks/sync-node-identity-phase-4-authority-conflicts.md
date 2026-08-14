@@ -77,6 +77,10 @@ A single node revision serializes metadata, content, location, and deletion in v
 - A no-op move to the node's current parent and name is an idempotent accepted result without a new revision or journal row.
 - The root cannot move or delete.
 - Node type is fixed at create. Update cannot change regular file, directory, or symlink type.
+- V2 keeps the existing one-dirent-per-inode rule. Hard links remain unsupported.
+- A raw `Storage.putDirent` insert or replacement is not enough information to infer
+  a v2 create or move. V2 authors must use the atomic create/move path or receive a
+  typed rejection before the filesystem changes.
 
 ### Cycles and directories
 

@@ -277,6 +277,52 @@ test('HTTP rejects an update with missing content, then accepts it under the sam
 	server.db.close()
 })
 
+test('SQLite records user xattr changes in node state', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	const replica = nodeReplica(server.storage)
+	await serverVolume.writeFile('/note.txt', bytes('note'))
+	let cursor = (await replica.nodeDeltas('', { limit: 10 })).to
+
+	await serverVolume.setXattr('/note.txt', 'user.label', bytes('tag'))
+	let delta = await replica.nodeDeltas(cursor, { limit: 10 })
+	let update = delta.operations.flatMap((operation) => operation.mutations)[0]
+	if (update?.kind !== 'update') throw new Error('missing xattr update')
+	expect(update.meta.xattrs).toEqual({ 'user.label': 'dGFn' })
+	cursor = delta.to
+
+	await serverVolume.setXattr('/note.txt', 'trusted.sync.local', bytes('private'))
+	expect((await replica.nodeDeltas(cursor, { limit: 10 })).operations).toEqual([])
+
+	await serverVolume.removeXattr('/note.txt', 'user.label')
+	delta = await replica.nodeDeltas(cursor, { limit: 10 })
+	update = delta.operations.flatMap((operation) => operation.mutations)[0]
+	if (update?.kind !== 'update') throw new Error('missing xattr removal')
+	expect(update.meta.xattrs).toBeUndefined()
+	server.db.close()
+})
+
+test('SQLite putDirent keeps path-v1 insert-or-replace behavior for mapped inodes', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.writeFile('/source.txt', bytes('source'))
+	await serverVolume.writeFile('/destination.txt', bytes('destination'))
+	const source = await server.storage.getDirent(server.storage.rootIno, 'source.txt')
+	if (!source) throw new Error('missing source')
+	const cursor = await server.storage.sync.journal.head()
+
+	await server.storage.putDirent(server.storage.rootIno, 'alias.txt', source)
+	await server.storage.putDirent(server.storage.rootIno, 'destination.txt', source)
+
+	const fresh = volume(server.storage)
+	expect(text(await fresh.readFile('/alias.txt'))).toBe('source')
+	expect(text(await fresh.readFile('/destination.txt'))).toBe('source')
+	expect(
+		(await server.storage.sync.journal.readFrom(cursor, 10)).map((row) => row.change.path).sort()
+	).toEqual(['/alias.txt', '/destination.txt'])
+	server.db.close()
+})
+
 test('SQLite node sync eagerly materializes bytes when caps.content is hidden', async () => {
 	const server = openSqlite(':memory:')
 	const { content: _content, ...caps } = server.storage.caps

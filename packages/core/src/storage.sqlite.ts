@@ -726,13 +726,18 @@ export function storage(
 	 * Announce one tree change to the attached observer, inside the mutation's own
 	 * transaction and after the write (#454).
 	 */
+	async function recordPath(tx: DbAdapter, effect: TreeEffect, options?: MutationOptions) {
+		const { tree, sync } = makePathPorts(tx)
+		await pathSyncObserver(sync, localActorId).record(tree, effect, options)
+		return tree
+	}
+
 	async function record(
 		tx: DbAdapter,
 		effect: TreeEffect,
 		options?: MutationOptions
 	): Promise<void> {
-		const { tree, sync } = makePathPorts(tx)
-		await pathSyncObserver(sync, localActorId).record(tree, effect, options)
+		const tree = await recordPath(tx, effect, options)
 		await nodeSyncObserver(makeNodeStore(tx)).record(tree, effect, options)
 	}
 
@@ -1176,7 +1181,12 @@ export function storage(
 			return toUint8Array(rows[0].value)
 		},
 
-		async setXattr(ino: Ino, name: string, value: Uint8Array): Promise<void> {
+		async setXattr(
+			ino: Ino,
+			name: string,
+			value: Uint8Array,
+			options?: MutationOptions
+		): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
@@ -1186,6 +1196,7 @@ export function storage(
 					 ON CONFLICT(ino, name) DO UPDATE SET value = excluded.value`,
 					[ino, name, value]
 				)
+				if (!name.startsWith('trusted.sync.')) await record(tx, { kind: 'meta', ino }, options)
 			})
 		},
 
@@ -1198,12 +1209,13 @@ export function storage(
 			return rows.map((row) => String(row.name))
 		},
 
-		async removeXattr(ino: Ino, name: string): Promise<void> {
+		async removeXattr(ino: Ino, name: string, options?: MutationOptions): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
 				if (!inode) throw new Error(`ENOENT: ${ino}`)
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ? AND name = ?', [ino, name])
+				if (!name.startsWith('trusted.sync.')) await record(tx, { kind: 'meta', ino }, options)
 			})
 		},
 
@@ -1882,7 +1894,13 @@ export function storage(
 				}
 				const dirPath = await pathOf(tx, dirIno)
 				if (dirPath !== null) path = joinPath(dirPath, name)
-				await record(tx, { kind: 'link', dirIno, name, ino: entry.ino, type: entry.type }, options)
+				// A bare putDirent can add or replace a link. Node v2 does not model that
+				// effect; atomicCreate and atomicMove own its one-dirent-per-inode writes.
+				await recordPath(
+					tx,
+					{ kind: 'link', dirIno, name, ino: entry.ino, type: entry.type },
+					options
+				)
 			})
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, path, source: options?.origin })
 		},
