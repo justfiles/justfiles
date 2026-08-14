@@ -14,7 +14,7 @@ export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 export const RUNNER_CACHE_NAME = 'justapps'
 export const RUNNER_CACHE_MAX_ENTRIES = 500
 
-const TRUSTED_PREINSTALLED_RUNNER_IDS = ['justfiles.notes']
+const TRUSTED_PREINSTALLED_RUNNER_IDS = ['justfiles.notes', 'justfiles.paint']
 
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
