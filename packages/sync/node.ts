@@ -165,6 +165,15 @@ export interface NodeStore {
 /** Sync-owned seams attached to one node-addressed filesystem backend. */
 export interface NodeSyncModule {
 	readonly nodes: NodeStore
+	/** Read selected rows and their blobs in one adapter transaction. */
+	captureDeltas?(
+		after: number,
+		limit: number,
+		include: (row: NodeJournalRow) => boolean
+	): Promise<{
+		rows: NodeJournalRow[]
+		retainedContent: ReadonlyMap<string, Uint8Array>
+	}>
 	apply(
 		operations: readonly NodeOperation[],
 		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
@@ -221,12 +230,16 @@ export function createSyncCapability(
 			exclusive(async () => {
 				const limit = opts?.limit ?? PAGE
 				const from = Number(cursor || '0')
-				const rows = await module.nodes.read(from, limit)
-				const operations = rows
-					.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
-					.map((row) => row.operation)
-				let retainedContent: Map<string, Uint8Array> | undefined
-				if (opts?.retainContent) {
+				const include = (row: NodeJournalRow) =>
+					!opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource
+				const captured =
+					opts?.retainContent && module.captureDeltas
+						? await module.captureDeltas(from, limit, include)
+						: undefined
+				const rows = captured?.rows ?? (await module.nodes.read(from, limit))
+				const operations = rows.filter(include).map((row) => row.operation)
+				let retainedContent = captured ? new Map(captured.retainedContent) : undefined
+				if (opts?.retainContent && !retainedContent) {
 					retainedContent = new Map()
 					for (const mutation of mutationsOf(operations)) {
 						if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
@@ -353,12 +366,25 @@ async function createMutation(
 	}
 }
 
-async function deleteMutation(nodes: NodeStore, ino: Ino): Promise<NodeMutation | null> {
+async function deleteMutation(
+	nodes: NodeStore,
+	ino: Ino,
+	expected?: { parentId: SyncNodeId; name: string }
+): Promise<NodeMutation | null> {
 	const id = await nodes.idFor(ino)
 	if (id === null) return null
 	const previous = await nodes.get(id)
-	if (!previous || previous.deleted) return null
+	if (
+		!previous ||
+		previous.deleted ||
+		(expected && !atLocation(previous, expected.parentId, expected.name))
+	)
+		return null
 	return { kind: 'delete', nodeId: id, revision: previous.revision + 1 }
+}
+
+function atLocation(node: NodeState, parentId: SyncNodeId, name: string): boolean {
+	return node.parentId === parentId && node.name === name
 }
 
 // ── Local recording ──────────────────────────────────────────────────────────
@@ -379,6 +405,8 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 		async record(port, effect) {
 			await bindRoot(port, nodes)
 			if (effect.kind === 'link') {
+				// putDirent can add a hard link, but node sync tracks one name per inode.
+				if ((await nodes.idFor(effect.ino)) !== null) return
 				const parentId = await nodes.idFor(effect.dirIno)
 				if (parentId === null) return
 				const mutation = await createMutation(port, parentId, effect.name, effect.ino)
@@ -386,19 +414,37 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 				return
 			}
 			if (effect.kind === 'unlink') {
-				const mutation = await deleteMutation(nodes, effect.ino)
+				const parentId = await nodes.idFor(effect.dirIno)
+				if (parentId === null) return
+				const mutation = await deleteMutation(nodes, effect.ino, {
+					parentId,
+					name: effect.name
+				})
 				if (mutation) await commit([{ mutation, ino: null }])
 				return
 			}
 			if (effect.kind === 'move') {
-				const id = await nodes.idFor(effect.ino)
 				const parentId = await nodes.idFor(effect.toDirIno)
-				const previous = id === null ? null : await nodes.get(id)
-				if (id === null || parentId === null || !previous) return
+				if (parentId === null) return
 				const entries: { mutation: NodeMutation; ino: Ino | null }[] = []
 				if (effect.displaced !== null) {
-					const displaced = await deleteMutation(nodes, effect.displaced)
+					const displaced = await deleteMutation(nodes, effect.displaced, {
+						parentId,
+						name: effect.toName
+					})
 					if (displaced) entries.push({ mutation: displaced, ino: null })
+				}
+				const id = await nodes.idFor(effect.ino)
+				const sourceParentId = await nodes.idFor(effect.fromDirIno)
+				const previous = id === null ? null : await nodes.get(id)
+				if (
+					id === null ||
+					sourceParentId === null ||
+					!previous ||
+					!atLocation(previous, sourceParentId, effect.fromName)
+				) {
+					await commit(entries)
+					return
 				}
 				entries.push({
 					mutation: {

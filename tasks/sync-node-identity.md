@@ -245,7 +245,7 @@ Complete the tasks in this order:
 - [x] [snapshot handoff](./sync-node-identity-snapshot-handoff.md)
 - [x] [progressive storage capabilities](./sync-progressive-storage-capabilities.md)
 - [x] [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
-- [ ] [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
+- [x] [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
 - [ ] [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md)
 - [ ] [ignore-policy reconciliation](./sync-node-identity-ignore-policy-reconciliation.md)
 - [ ] [phase 5: migration](./sync-node-identity-phase-5-migration.md)

@@ -16,7 +16,8 @@
 	},
 	"devDependencies": {
 		"@justfiles/tsconfig": "workspace:*",
-		"@types/node": "^26.1.0"
+		"@types/node": "^26.1.0",
+		"fake-indexeddb": "^6.2.5"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit"

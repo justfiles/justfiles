@@ -509,7 +509,17 @@ export function idbStorage<Attached extends object>(
 
 	async function record(tx: FullTx, effect: TreeEffect, options?: MutationOptions): Promise<void> {
 		if (!extension) return
-		await extension.record(tx, makeTreePort(tx).tree, effect, options)
+		try {
+			await extension.record(tx, makeTreePort(tx).tree, effect, options)
+		} catch (error) {
+			try {
+				tx.abort()
+			} catch {}
+			try {
+				await tx.done
+			} catch {}
+			throw error
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -523,10 +533,18 @@ export function idbStorage<Attached extends object>(
 			return rec ? rec.value.slice() : null
 		},
 
-		async setXattr(ino, name, value) {
+		async setXattr(ino, name, value, options) {
 			const db = await getDb()
-			const tx = db.transaction(['xattrs'], 'readwrite')
+			const tx = db.transaction(
+				storesFor(['inodes', 'dirs', 'xattrs']) as never,
+				'readwrite'
+			) as unknown as FullTx
+			if (!(await tx.objectStore('inodes').get(ino))) {
+				await tx.done
+				throw new Error(`ENOENT: ${ino}`)
+			}
 			await tx.objectStore('xattrs').put({ ino, name, value: value.slice() })
+			if (!name.startsWith('trusted.sync.')) await record(tx, { kind: 'meta', ino }, options)
 			await tx.done
 		},
 
@@ -536,10 +554,18 @@ export function idbStorage<Attached extends object>(
 			return keys.map((k) => k[1])
 		},
 
-		async removeXattr(ino, name) {
+		async removeXattr(ino, name, options) {
 			const db = await getDb()
-			const tx = db.transaction(['xattrs'], 'readwrite')
+			const tx = db.transaction(
+				storesFor(['inodes', 'dirs', 'xattrs']) as never,
+				'readwrite'
+			) as unknown as FullTx
+			if (!(await tx.objectStore('inodes').get(ino))) {
+				await tx.done
+				throw new Error(`ENOENT: ${ino}`)
+			}
 			await tx.objectStore('xattrs').delete([ino, name])
+			if (!name.startsWith('trusted.sync.')) await record(tx, { kind: 'meta', ino }, options)
 			await tx.done
 		},
 
