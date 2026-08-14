@@ -1,13 +1,16 @@
 import { appId, route as appSite } from './app'
 import { refresh } from './catalog'
+import { seed } from './catalog/seed'
 import { route as rootSite } from './home'
 
 /** `<app>.<root>`: one whole site per app — its page, its worker, its assets. */
 
 export default {
 	// The host picks the site, so app routes exist only on app hosts and vice versa.
-	fetch: (req: Request, env: CloudflareBindings, ctx: ExecutionContext) =>
-		(appId(req, env) ? appSite : rootSite).fetch(req, env, ctx),
+	fetch: async (req: Request, env: CloudflareBindings, ctx: ExecutionContext) => {
+		if (import.meta.env.DEV && import.meta.env.MODE !== 'test') await seed(env.STORE)
+		return (appId(req, env) ? appSite : rootSite).fetch(req, env, ctx)
+	},
 
 	// The reconcile runs on the cron trigger in wrangler.jsonc, hourly — an
 	// interval of an hour or more gets 15 minutes of CPU, where anything shorter
