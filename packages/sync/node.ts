@@ -17,6 +17,8 @@ import type { SyncCursor } from './replica'
 import { PAGE } from './replica'
 import { ContentHash, inodeMetaFromSync, SyncMeta, syncMetaFromInode } from './wire'
 
+export type { NodeSnapshotSessions } from './node-snapshot'
+
 // ── Identity and wire ────────────────────────────────────────────────────────
 
 /** One logical node, shared by every replica that knows it. */
@@ -100,6 +102,8 @@ export type NodeJournalRow = {
 export interface NodeStore {
 	get(id: SyncNodeId): Promise<NodeState | null>
 	idFor(ino: Ino): Promise<SyncNodeId | null>
+	/** Every current live node; snapshot atomicity belongs to the owning adapter. */
+	live(): Promise<NodeState[]>
 	save(state: NodeState): Promise<void>
 	/** Append accepted mutations while removing rows they supersede. */
 	append(operation: NodeOperation, localSource?: string): Promise<void>

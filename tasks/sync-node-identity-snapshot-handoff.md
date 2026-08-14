@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 ---
 
 # sync v2: add an atomic snapshot-to-delta handoff
@@ -84,6 +84,9 @@ Use the smallest lifecycle that is correct:
   session behind a valid cursor;
 - restart and retry never resume from current state under an old token.
 
+The memory reference admits four concurrent sessions and expires each after five
+minutes without a page or blob access.
+
 This task bootstraps an empty replica only. Applying a current-state snapshot over a
 non-empty tree requires topology and absence reconciliation and remains in
 [ignore-policy reconciliation](./sync-node-identity-ignore-policy-reconciliation.md).
@@ -137,16 +140,16 @@ to the phase-1 `NodeSyncModule`.
 
 ## Acceptance criteria
 
-- [ ] An empty replica converges after paged snapshot plus delta replay during concurrent mutation.
-- [ ] Node state, content availability, and delta high-water come from one adapter-owned cut.
-- [ ] Every advertised content hash remains readable until session close or expiry.
-- [ ] Final-page content fetch completes before resources are released.
-- [ ] Unknown, closed, and expired sessions return one typed restart result.
-- [ ] Resource bounds never silently evict a live valid cursor.
-- [ ] Default and injected-store memory adapters pass the same public conformance tests.
-- [ ] No application option or `Volume` interface is added.
-- [ ] SQLite can implement the seam with its own transaction and retention mechanism.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] An empty replica converges after paged snapshot plus delta replay during concurrent mutation.
+- [x] Node state, content availability, and delta high-water come from one adapter-owned cut.
+- [x] Every advertised content hash remains readable until session close or expiry.
+- [x] Final-page content fetch completes before resources are released.
+- [x] Unknown, closed, and expired sessions return one typed restart result.
+- [x] Resource bounds never silently evict a live valid cursor.
+- [x] Default and injected-store memory adapters pass the same public conformance tests.
+- [x] No application option or `Volume` interface is added.
+- [x] SQLite can implement the seam with its own transaction and retention mechanism.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

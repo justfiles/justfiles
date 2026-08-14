@@ -12,8 +12,10 @@ import {
 	type NodeStorage,
 	type NodeStore,
 	type NodeSyncModule,
-	nodeSyncObserver
+	nodeSyncObserver,
+	nodeSyncReplica
 } from '../node'
+import { nodeSnapshotEntries, nodeSnapshotSessions } from '../node-snapshot'
 
 export function memNodeStore(): NodeStore {
 	const states = new Map<string, NodeState>()
@@ -27,6 +29,9 @@ export function memNodeStore(): NodeStore {
 		},
 		async idFor(ino) {
 			return byIno.get(ino) ?? null
+		},
+		async live() {
+			return [...states.values()].filter((state) => !state.deleted)
 		},
 		async save(state) {
 			const previous = states.get(state.id)
@@ -86,21 +91,48 @@ export function memNodeStore(): NodeStore {
 	}
 }
 
-/** Attach node recording and apply behavior to a memory filesystem. */
-export function nodeSyncExtension(
-	nodes: NodeStore
-): MemStorageExtension<{ nodeSync: NodeSyncModule }> {
+type Exclusive = <T>(task: () => Promise<T>) => Promise<T>
+
+function serialise(): Exclusive {
+	let tail = Promise.resolve()
+	return async <T>(task: () => Promise<T>): Promise<T> => {
+		const previous = tail
+		let release!: () => void
+		tail = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		await previous
+		try {
+			return await task()
+		} finally {
+			release()
+		}
+	}
+}
+
+function nodeSyncExtensionOver(nodes: NodeStore, exclusive: Exclusive) {
+	const observer = nodeSyncObserver(nodes)
 	return {
-		observer: nodeSyncObserver(nodes),
+		observer: {
+			record: (port, effect, options) => exclusive(() => observer.record(port, effect, options))
+		},
 		attach(tree) {
 			return {
 				nodeSync: {
 					nodes,
-					apply: (operations, opts) => applyNodeOperationsOver(tree, nodes, operations, opts)
+					apply: (operations, opts) =>
+						exclusive(() => applyNodeOperationsOver(tree, nodes, operations, opts))
 				}
 			}
 		}
-	}
+	} satisfies MemStorageExtension<{ nodeSync: NodeSyncModule }>
+}
+
+/** Attach node recording and apply behavior to a memory filesystem. */
+export function nodeSyncExtension(
+	nodes: NodeStore
+): MemStorageExtension<{ nodeSync: NodeSyncModule }> {
+	return nodeSyncExtensionOver(nodes, (task) => task())
 }
 
 export function nodeMemStorage(opts?: { mintIno?: () => Ino }): NodeStorage {
@@ -108,4 +140,65 @@ export function nodeMemStorage(opts?: { mintIno?: () => Ino }): NodeStorage {
 		mintIno: opts?.mintIno,
 		extension: nodeSyncExtension(memNodeStore())
 	})
+}
+
+/** Construct the snapshot-capable memory node replica through one owned adapter path. */
+export function nodeMemReplica(opts?: { mintIno?: () => Ino; store?: NodeStore }) {
+	const nodes = opts?.store ?? memNodeStore()
+	const exclusive = serialise()
+	const base = filesystemStorage({
+		mintIno: opts?.mintIno,
+		extension: nodeSyncExtensionOver(nodes, exclusive)
+	})
+	const content = base.caps?.content
+	if (!content) throw new Error('memory backend exposes no content store')
+	const storage: NodeStorage = {
+		...base,
+		caps: {
+			...base.caps,
+			content: {
+				...content,
+				gcUnreferenced: () => exclusive(() => content.gcUnreferenced())
+			}
+		}
+	}
+	const snapshots = nodeSnapshotSessions(() =>
+		exclusive(async () => {
+			const syncCursor = String(await nodes.head())
+			const entries = nodeSnapshotEntries(await nodes.live())
+			const blobs = new Map<string, Uint8Array>()
+			for (const hash of new Set(
+				entries.flatMap(({ mutation }) =>
+					mutation.kind === 'create' && mutation.contentHash ? [mutation.contentHash] : []
+				)
+			)) {
+				const blob = await content.getByHash(hash)
+				if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
+				blobs.set(hash, blob)
+			}
+			return {
+				entries,
+				syncCursor,
+				async getBlob(hash: string) {
+					const blob = blobs.get(hash)
+					if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
+					return blob.slice()
+				},
+				async close() {
+					blobs.clear()
+				}
+			}
+		})
+	)
+	const replica = nodeSyncReplica(storage, storage.nodeSync)
+	return {
+		storage,
+		replica: {
+			...replica,
+			nodeSnapshot: (page?: string, snapshotOpts?: { limit?: number }) =>
+				snapshots.page(page, snapshotOpts?.limit ?? 500),
+			getSnapshotBlob: snapshots.getBlob,
+			closeSnapshot: snapshots.close
+		}
+	}
 }
