@@ -8,12 +8,14 @@ import { FileType } from '@justfiles/fs/types'
 import type { DBSchema, IDBPDatabase, IDBPObjectStore, IDBPTransaction, StoreNames } from 'idb'
 import { verifyBytes } from '../content'
 import {
+	acceptNodeOperationsOver,
 	applyNodeOperationsOver,
 	compactNodeJournal,
 	createSyncCapability,
 	mutationsOf,
 	type NodeJournalRow,
 	type NodeOperation,
+	type NodeOperationResult,
 	type NodeState,
 	type NodeStore,
 	type NodeSyncModule,
@@ -50,6 +52,12 @@ interface NodeClockRecord {
 	head: number
 }
 
+interface NodeOperationRecord {
+	operationId: string
+	request: string
+	result: NodeOperationResult
+}
+
 interface ContentRecord {
 	contentHash: string
 	data: Uint8Array
@@ -75,6 +83,7 @@ interface SyncSchema extends DBSchema {
 		indexes: { 'by-node': string }
 	}
 	nodeClock: { key: string; value: NodeClockRecord }
+	nodeOperations: { key: string; value: NodeOperationRecord }
 	content: {
 		key: string
 		value: ContentRecord
@@ -91,22 +100,22 @@ type JournalStoreOf<Mode extends 'readwrite' | 'versionchange'> = IDBPObjectStor
 type SyncTx = IDBPTransaction<SyncSchema, ('journal' | 'pathver')[], 'readwrite'>
 type UpgradeTx = IDBPTransaction<
 	SyncSchema,
-	('journal' | 'pathver' | 'syncNodes' | 'nodeJournal' | 'nodeClock')[],
+	('journal' | 'pathver' | 'syncNodes' | 'nodeJournal' | 'nodeClock' | 'nodeOperations')[],
 	'versionchange'
 >
 type NodeTx = IDBPTransaction<
 	SyncSchema,
-	('syncNodes' | 'nodeJournal' | 'nodeClock')[],
+	('syncNodes' | 'nodeJournal' | 'nodeClock' | 'nodeOperations')[],
 	'readwrite'
 >
 type SnapshotTx = IDBPTransaction<
 	SyncSchema,
-	('syncNodes' | 'nodeJournal' | 'nodeClock' | 'content')[],
+	('syncNodes' | 'nodeJournal' | 'nodeClock' | 'nodeOperations' | 'content')[],
 	'readwrite'
 >
 
-const VERSION = 8
-const NODE_STORES = ['syncNodes', 'nodeJournal', 'nodeClock'] as const
+const VERSION = 9
+const NODE_STORES = ['syncNodes', 'nodeJournal', 'nodeClock', 'nodeOperations'] as const
 const ALL_STORES = [
 	'inodes',
 	'content',
@@ -175,6 +184,13 @@ function nodeStore(transaction: unknown): NodeStore {
 		async idFor(ino) {
 			return (await tx.objectStore('syncNodes').index('by-local-ino').getKey(ino)) ?? null
 		},
+		async at(parentId, name) {
+			return (
+				(await tx.objectStore('syncNodes').getAll()).find(
+					(state) => !state.deleted && state.parentId === parentId && state.name === name
+				) ?? null
+			)
+		},
 		async live() {
 			return (await tx.objectStore('syncNodes').getAll()).filter((state) => !state.deleted)
 		},
@@ -235,6 +251,13 @@ function nodeStore(transaction: unknown): NodeStore {
 			await clock.put({ id: 'clock', head: seq })
 			await journal.put({ seq, operation, localSource, nodeIds: nodeIds(operation) })
 		},
+		async getOperation(operationId) {
+			const record = await tx.objectStore('nodeOperations').get(operationId)
+			return record ? { request: record.request, result: record.result } : null
+		},
+		async saveOperation(operationId, request, result) {
+			await tx.objectStore('nodeOperations').put({ operationId, request, result })
+		},
 		async read(after, limit) {
 			const out: NodeJournalRow[] = []
 			let cursor = await tx.objectStore('nodeJournal').openCursor(IDBKeyRange.lowerBound(after + 1))
@@ -258,10 +281,18 @@ function durableNodeStore(host: IdbStorageExtensionHost): NodeStore {
 	return {
 		get: (id) => host.run(NODE_STORES, (transaction) => nodeStore(transaction).get(id)),
 		idFor: (ino) => host.run(NODE_STORES, (transaction) => nodeStore(transaction).idFor(ino)),
+		at: (parentId, name) =>
+			host.run(NODE_STORES, (transaction) => nodeStore(transaction).at(parentId, name)),
 		live: () => host.run(NODE_STORES, (transaction) => nodeStore(transaction).live()),
 		save: (state) => host.run(NODE_STORES, (transaction) => nodeStore(transaction).save(state)),
 		append: (operation, localSource) =>
 			host.run(NODE_STORES, (transaction) => nodeStore(transaction).append(operation, localSource)),
+		getOperation: (operationId) =>
+			host.run(NODE_STORES, (transaction) => nodeStore(transaction).getOperation(operationId)),
+		saveOperation: (operationId, request, result) =>
+			host.run(NODE_STORES, (transaction) =>
+				nodeStore(transaction).saveOperation(operationId, request, result)
+			),
 		read: (after, limit) =>
 			host.run(NODE_STORES, (transaction) => nodeStore(transaction).read(after, limit)),
 		head: () => host.run(NODE_STORES, (transaction) => nodeStore(transaction).head())
@@ -314,6 +345,8 @@ export function idbStorage(
 			}
 			if (!db.objectStoreNames.contains('nodeClock'))
 				db.createObjectStore('nodeClock', { keyPath: 'id' })
+			if (!db.objectStoreNames.contains('nodeOperations'))
+				db.createObjectStore('nodeOperations', { keyPath: 'operationId' })
 
 			const tx = transaction as UpgradeTx
 			const journal = tx.objectStore('journal')
@@ -408,6 +441,15 @@ export function idbStorage(
 							await content.putByHash(hash, data)
 						await host.run(ALL_STORES, (transaction, tree) =>
 							applyNodeOperationsOver(tree, nodeStore(transaction), operations, applyOptions)
+						)
+					},
+					async accept(operations, applyOptions) {
+						const content = filesystem.caps?.content
+						if (!content) throw new Error('IndexedDB backend exposes no content store')
+						for (const [hash, data] of applyOptions?.content ?? [])
+							await content.putByHash(hash, data)
+						return host.run(ALL_STORES, (transaction, tree) =>
+							acceptNodeOperationsOver(tree, nodeStore(transaction), operations, applyOptions)
 						)
 					},
 					openSnapshotView: () =>

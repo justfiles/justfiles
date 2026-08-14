@@ -36,6 +36,7 @@ const TREE_TABLES = ['fs_dirents', 'fs_xattrs', 'fs_inodes'] as const
 const SYNC_TABLES = [
 	'fs_path_journal',
 	'fs_path_version',
+	'fs_node_operations',
 	'fs_node_journal_mutations',
 	'fs_node_journal',
 	'fs_sync_nodes'

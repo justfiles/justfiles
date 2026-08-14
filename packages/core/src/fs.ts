@@ -5,7 +5,7 @@ import type { FileType } from '@justfiles/fs/types'
 import {
 	NodeOperation,
 	type NodeReplica,
-	nodeSyncReplica,
+	nodeAuthorityReplica,
 	type SyncCapability
 } from '@justfiles/sync/node'
 import {
@@ -244,6 +244,8 @@ export function createFsApi(
 		// stay on the legacy path. Surfaced on the handshake, echoed on every pull/scan
 		// page, and enforced on every mutating write.
 		lineage?: () => GenerationState | Promise<GenerationState>
+		/** Resolve the actor from host authentication. Request body and source headers cannot set it. */
+		actor?: (request: Request) => string | undefined | Promise<string | undefined>
 		// The NON-destructive half of POST /reset: clear the advisory in-progress marker
 		// once the initiator's republish drained. It changes no generation and truncates
 		// nothing, so it is safe to serve from inside this app, alongside live writes.
@@ -288,7 +290,7 @@ export function createFsApi(
 		backend.caps as (StorageCapabilities & { readonly sync?: SyncCapability }) | undefined
 	)?.sync
 	const nodeReplica = nodeCapability
-		? nodeSyncReplica(nodeCapability, backend.caps?.content)
+		? nodeAuthorityReplica(nodeCapability, backend.caps?.content)
 		: undefined
 	const requireNodeReplica = (): NodeReplica => {
 		if (!nodeReplica) throw new Error('backend has no node sync capability')
@@ -423,19 +425,29 @@ export function createFsApi(
 				const { operations } = c.req.valid('json')
 				const replica = requireNodeReplica()
 				try {
-					await replica.applyNodeOperations(operations, (hash) => replica.getBlobByHash(hash), {
-						source: c.req.header(SOURCE_HEADER) ?? undefined
-					})
+					const results = await replica.applyNodeOperations(
+						operations,
+						(hash) => replica.getBlobByHash(hash),
+						{
+							source: c.req.header(SOURCE_HEADER) ?? undefined,
+							origin: await opts?.actor?.(c.req.raw)
+						}
+					)
+					return c.json(
+						{ results },
+						results.some((result) => result.status === 'rejected') ? 409 : 200
+					)
 				} catch (error) {
 					return c.json({ error: errorMessage(error) }, 409)
 				}
-				return c.json({ ok: true })
 			})
 
 			.post('/node/content/wanted', zValidator('json', NodeOperationsBody), async (c) => {
 				if (!nodeCapability) throw new Error('backend has no node sync capability')
 				const replica = requireNodeReplica()
-				const wanted = await nodeCapability.wantedContent(c.req.valid('json').operations)
+				const wanted = await nodeCapability.wantedContent(c.req.valid('json').operations, {
+					authoritative: true
+				})
 				const missing: string[] = []
 				for (const hash of wanted) if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
 				return c.json({ missing })

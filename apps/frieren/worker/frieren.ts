@@ -60,6 +60,7 @@ import { Hono } from 'hono'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { createAiGateway } from './ai-gateway.ts'
+import { requestUserId } from './auth.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
 import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
@@ -259,6 +260,7 @@ export class Frieren extends DurableObject<Env> {
 					// Reading the volume's lineage epoch needs the DO's raw store, so it is
 					// injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),
+					actor: requestUserId,
 					// Only the non-destructive marker clear — the destructive half is not
 					// injectable, by design. A destructive reset is a commit-then-restart
 					// handshake the authenticated Worker drives from OUTSIDE (reset-ack.ts),

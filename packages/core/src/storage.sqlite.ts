@@ -9,11 +9,13 @@ import { joinPath } from '@justfiles/fs/storage.shared'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import {
+	acceptNodeOperationsOver,
 	applyNodeOperationsOver,
 	compactNodeJournal,
 	createSyncCapability,
 	type NodeJournalRow,
 	NodeOperation,
+	NodeOperationResult,
 	type NodeState,
 	type NodeStore,
 	type NodeSyncModule,
@@ -986,6 +988,24 @@ export function storage(
 				)
 				return row ? String(row.sync_id) : null
 			},
+			async at(parentId, name) {
+				const [row] = await tx.query<{
+					sync_id: unknown
+					local_ino: unknown
+					parent_sync_id: unknown
+					name: unknown
+					type: unknown
+					revision: unknown
+					deleted: unknown
+					meta_json: unknown
+					content_hash: unknown
+				}>(
+					`SELECT * FROM fs_sync_nodes
+					 WHERE parent_sync_id = ? AND name = ? AND deleted = 0 LIMIT 1`,
+					[parentId, name]
+				)
+				return row ? nodeStateFromRow(row) : null
+			},
 			async live() {
 				const rows = await tx.query<{
 					sync_id: unknown
@@ -1110,6 +1130,26 @@ export function storage(
 						 VALUES (?, ?, ?)`,
 						[seq, mutation.nodeId, mutation.kind]
 					)
+			},
+			async getOperation(operationId) {
+				const [row] = await tx.query<{ request_json: unknown; result_json: unknown }>(
+					`SELECT request_json, result_json FROM fs_node_operations
+					 WHERE operation_id = ? LIMIT 1`,
+					[operationId]
+				)
+				return row
+					? {
+							request: String(row.request_json),
+							result: NodeOperationResult.parse(JSON.parse(String(row.result_json)))
+						}
+					: null
+			},
+			async saveOperation(operationId, request, result) {
+				await tx.run(
+					`INSERT INTO fs_node_operations(operation_id, request_json, result_json)
+					 VALUES (?, ?, ?)`,
+					[operationId, request, JSON.stringify(result)]
+				)
 			},
 			async read(after, limit) {
 				const rows = await tx.query<{
@@ -1972,6 +2012,23 @@ export function storage(
 				await applyNodeOperationsOver(bound.tree, makeNodeStore(tx), operations, opts)
 			})
 			for (const change of pendingEmits) emit(change)
+		},
+		async accept(operations, opts) {
+			await ensureBootstrapped()
+			const preparedContent = new Map<string, { data: Uint8Array; staged: StagedContent }>()
+			for (const [hash, data] of opts?.content ?? []) {
+				if (await loadContentRow(db, hash)) continue
+				preparedContent.set(hash, { data, staged: await stageContent(hash, data) })
+			}
+			let pendingEmits: StorageChange[] = []
+			let results: NodeOperationResult[] = []
+			await db.transaction(async (tx) => {
+				const bound = makePathPorts(tx, preparedContent)
+				pendingEmits = bound.emits
+				results = await acceptNodeOperationsOver(bound.tree, makeNodeStore(tx), operations, opts)
+			})
+			for (const change of pendingEmits) emit(change)
+			return results
 		},
 		async openSnapshotView() {
 			await ensureBootstrapped()

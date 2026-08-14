@@ -3,7 +3,7 @@ import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { ResetBody } from '@justfiles/core'
 import { type Context, Hono } from 'hono'
 import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
-import { ACCEPTED_TOKENS, actingUserId } from './auth.ts'
+import { ACCEPTED_TOKENS, actingUserId, forwardRequest } from './auth.ts'
 import { Frieren } from './frieren.ts'
 import { type AcknowledgedResetResult, acknowledgeReset } from './reset-ack.ts'
 
@@ -18,7 +18,7 @@ const requireClerkSecret = (env: Env): string => {
 }
 
 const forwardToFrieren = (c: Ctx, userId: string) =>
-	c.env.FRIEREN.get(c.env.FRIEREN.idFromName(userId)).fetch(c.req.raw)
+	c.env.FRIEREN.get(c.env.FRIEREN.idFromName(userId)).fetch(forwardRequest(c.req.raw, userId))
 
 const ownerStub = (c: Ctx, userId: string) => c.env.FRIEREN.get(c.env.FRIEREN.idFromName(userId))
 

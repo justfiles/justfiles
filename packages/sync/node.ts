@@ -14,6 +14,7 @@ import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import { z } from 'zod'
 import { verifyBytes } from './content'
+import { acceptNodeOperations } from './node-authority'
 import {
 	type NodeSnapshotBlob,
 	type NodeSnapshotBusy,
@@ -44,6 +45,7 @@ export function newNodeId(): SyncNodeId {
 
 const nodeId = z.string().min(1)
 const revision = z.number().int().nonnegative()
+const operationId = z.string().min(1)
 
 /** One mutation of one logical node. Local inode IDs never cross this boundary. */
 export const NodeMutation = z.discriminatedUnion('kind', [
@@ -51,7 +53,8 @@ export const NodeMutation = z.discriminatedUnion('kind', [
 		kind: z.literal('create'),
 		nodeId,
 		parentId: nodeId,
-		name: z.string().min(1),
+		name: z.string(),
+		baseRevision: z.literal(0),
 		revision,
 		meta: SyncMeta,
 		contentHash: ContentHash.optional()
@@ -59,6 +62,7 @@ export const NodeMutation = z.discriminatedUnion('kind', [
 	z.object({
 		kind: z.literal('update'),
 		nodeId,
+		baseRevision: revision,
 		revision,
 		meta: SyncMeta,
 		contentHash: ContentHash.optional()
@@ -67,10 +71,11 @@ export const NodeMutation = z.discriminatedUnion('kind', [
 		kind: z.literal('move'),
 		nodeId,
 		parentId: nodeId,
-		name: z.string().min(1),
+		name: z.string(),
+		baseRevision: revision,
 		revision
 	}),
-	z.object({ kind: z.literal('delete'), nodeId, revision })
+	z.object({ kind: z.literal('delete'), nodeId, baseRevision: revision, revision })
 ])
 export type NodeMutation = z.infer<typeof NodeMutation>
 
@@ -78,8 +83,108 @@ export type NodeMutation = z.infer<typeof NodeMutation>
  * Mutations produced by one filesystem effect. Usually this contains one item;
  * replacing a live destination contains its delete followed by the move.
  */
-export const NodeOperation = z.object({ mutations: z.array(NodeMutation).min(1) })
+export const NodeOperation = z.object({
+	operationId,
+	mutations: z.array(NodeMutation).min(1),
+	origin: z.string().min(1).optional()
+})
 export type NodeOperation = z.infer<typeof NodeOperation>
+
+const NodeStateSchema = z.object({
+	id: nodeId,
+	localIno: z.string().nullable(),
+	parentId: nodeId.nullable(),
+	name: z.string(),
+	type: z.union([
+		z.literal(FileType.Regular),
+		z.literal(FileType.Directory),
+		z.literal(FileType.Symlink)
+	]),
+	revision,
+	deleted: z.boolean(),
+	meta: SyncMeta,
+	contentHash: ContentHash.optional()
+})
+export type NodeState = z.infer<typeof NodeStateSchema>
+const SharedNodeState = NodeStateSchema.omit({ localIno: true })
+
+export const NodeOperationResult = z.union([
+	z.object({ status: z.literal('accepted'), operation: NodeOperation }),
+	z.discriminatedUnion('reason', [
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('invalid'),
+			operationId
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('stale'),
+			operationId,
+			current: SharedNodeState
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('collision'),
+			operationId,
+			occupant: SharedNodeState
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('cycle'),
+			operationId
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('invalid_name'),
+			operationId
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('invalid_parent'),
+			operationId,
+			issue: z.enum(['missing', 'deleted', 'not_directory'])
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('not_empty'),
+			operationId
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('deleted'),
+			operationId,
+			current: SharedNodeState
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('not_found'),
+			operationId
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('invalid_content'),
+			operationId
+		}),
+		z.object({
+			status: z.literal('rejected'),
+			reason: z.literal('missing_content'),
+			operationId,
+			hash: ContentHash
+		})
+	])
+])
+export type NodeOperationResult = z.infer<typeof NodeOperationResult>
+
+export class NodeOperationRejectedError extends Error {
+	constructor(readonly result: Extract<NodeOperationResult, { status: 'rejected' }>) {
+		super(result.reason)
+		this.name = 'NodeOperationRejectedError'
+	}
+}
+
+export function newOperationId(): string {
+	return crypto.randomUUID()
+}
 
 export function mutationsOf(operations: readonly NodeOperation[]): NodeMutation[] {
 	return operations.flatMap((operation) => operation.mutations)
@@ -122,25 +227,16 @@ export function compactNodeJournal(
 			mutations.every((mutation, index) => mutation === previous[index])
 		)
 			return [row]
-		return [{ ...row, operation: { mutations } }]
+		return [
+			{
+				...row,
+				operation: { ...row.operation, operationId: newOperationId(), mutations }
+			}
+		]
 	})
 }
 
 // ── State and persistence seam ───────────────────────────────────────────────
-
-/** The last accepted state of one node on this replica. */
-export type NodeState = {
-	id: SyncNodeId
-	/** This replica's inode, or null only after deletion. */
-	localIno: Ino | null
-	parentId: SyncNodeId | null
-	name: string
-	type: FileType
-	revision: number
-	deleted: boolean
-	meta: SyncMeta
-	contentHash?: string
-}
 
 export type NodeJournalRow = {
 	seq: number
@@ -153,11 +249,16 @@ export type NodeJournalRow = {
 export interface NodeStore {
 	get(id: SyncNodeId): Promise<NodeState | null>
 	idFor(ino: Ino): Promise<SyncNodeId | null>
+	at(parentId: SyncNodeId, name: string): Promise<NodeState | null>
 	/** Every current live node; snapshot atomicity belongs to the owning adapter. */
 	live(): Promise<NodeState[]>
 	save(state: NodeState): Promise<void>
 	/** Append accepted mutations while removing rows they supersede. */
 	append(operation: NodeOperation, localSource?: string): Promise<void>
+	getOperation(
+		operationId: string
+	): Promise<{ request: string; result: NodeOperationResult } | null>
+	saveOperation(operationId: string, request: string, result: NodeOperationResult): Promise<void>
 	read(after: number, limit: number): Promise<NodeJournalRow[]>
 	head(): Promise<number>
 }
@@ -176,8 +277,12 @@ export interface NodeSyncModule {
 	}>
 	apply(
 		operations: readonly NodeOperation[],
-		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
+		opts?: { source?: string; origin?: string; content?: ReadonlyMap<string, Uint8Array> }
 	): Promise<void>
+	accept(
+		operations: readonly NodeOperation[],
+		opts?: { source?: string; origin?: string; content?: ReadonlyMap<string, Uint8Array> }
+	): Promise<NodeOperationResult[]>
 	openSnapshotView(): Promise<SnapshotView>
 }
 
@@ -192,11 +297,18 @@ export interface SyncCapability {
 		done: boolean
 		retainedContent?: ReadonlyMap<string, Uint8Array>
 	}>
-	wantedContent(operations: readonly NodeOperation[]): Promise<string[]>
+	wantedContent(
+		operations: readonly NodeOperation[],
+		opts?: { authoritative?: boolean }
+	): Promise<string[]>
 	applyNodeOperations(
 		operations: readonly NodeOperation[],
-		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
+		opts?: { source?: string; origin?: string; content?: ReadonlyMap<string, Uint8Array> }
 	): Promise<void>
+	acceptNodeOperations(
+		operations: readonly NodeOperation[],
+		opts?: { source?: string; origin?: string; content?: ReadonlyMap<string, Uint8Array> }
+	): Promise<NodeOperationResult[]>
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	nodeSnapshot(
 		page?: string,
@@ -256,18 +368,25 @@ export function createSyncCapability(
 					...(retainedContent ? { retainedContent } : {})
 				}
 			}),
-		async wantedContent(operations) {
+		async wantedContent(operations, opts) {
 			const wanted = new Set<string>()
-			for (const mutation of mutationsOf(operations)) {
-				if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
-				const previous = await module.nodes.get(mutation.nodeId)
-				if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+			for (const operation of operations) {
+				if (opts?.authoritative && (await module.nodes.getOperation(operation.operationId)))
 					continue
-				if (mutation.contentHash) wanted.add(mutation.contentHash)
+				for (const mutation of operation.mutations) {
+					if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
+					if (!opts?.authoritative) {
+						const previous = await module.nodes.get(mutation.nodeId)
+						if (previous && (mutation.kind === 'create' || previous.revision >= mutation.revision))
+							continue
+					}
+					if (mutation.contentHash) wanted.add(mutation.contentHash)
+				}
 			}
 			return [...wanted]
 		},
 		applyNodeOperations: (operations, opts) => module.apply(operations, opts),
+		acceptNodeOperations: (operations, opts) => module.accept(operations, opts),
 		getBlobByHash: readLiveBlob,
 		nodeSnapshot: (page, opts) => snapshots.page(page, opts?.limit ?? PAGE),
 		getSnapshotBlob: (session, hash) => snapshots.getBlob(session, hash),
@@ -360,6 +479,7 @@ async function createMutation(
 		nodeId: newNodeId(),
 		parentId,
 		name,
+		baseRevision: 0,
 		revision: 1,
 		meta,
 		...(current.meta.contentHash === undefined ? {} : { contentHash: current.meta.contentHash })
@@ -380,7 +500,12 @@ async function deleteMutation(
 		(expected && !atLocation(previous, expected.parentId, expected.name))
 	)
 		return null
-	return { kind: 'delete', nodeId: id, revision: previous.revision + 1 }
+	return {
+		kind: 'delete',
+		nodeId: id,
+		baseRevision: previous.revision,
+		revision: previous.revision + 1
+	}
 }
 
 function atLocation(node: NodeState, parentId: SyncNodeId, name: string): boolean {
@@ -398,7 +523,10 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 			const state = nextState(mutation, previous, ino)
 			if (state) await nodes.save(state)
 		}
-		await nodes.append({ mutations: entries.map((entry) => entry.mutation) })
+		await nodes.append({
+			operationId: newOperationId(),
+			mutations: entries.map((entry) => entry.mutation)
+		})
 	}
 
 	return {
@@ -452,6 +580,7 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 						nodeId: id,
 						parentId,
 						name: effect.toName,
+						baseRevision: previous.revision,
 						revision: previous.revision + 1
 					},
 					ino: effect.ino
@@ -468,6 +597,7 @@ export function nodeSyncObserver(nodes: NodeStore): MutationObserver {
 			const mutation: NodeMutation = {
 				kind: 'update',
 				nodeId: id,
+				baseRevision: previous.revision,
 				revision: previous.revision + 1,
 				meta: syncMetaFromInode(current.meta, current.xattrs),
 				...(current.meta.contentHash === undefined ? {} : { contentHash: current.meta.contentHash })
@@ -605,10 +735,28 @@ export async function applyNodeOperationsOver(
 		const accepted: NodeMutation[] = []
 		for (const mutation of operation.mutations)
 			if (await applyMutation(port, nodes, mutation, opts)) accepted.push(mutation)
-		if (accepted.length > 0) await nodes.append({ mutations: accepted }, opts?.source)
+		if (accepted.length > 0)
+			await nodes.append({ operationId: operation.operationId, mutations: accepted }, opts?.source)
 	}
 }
 
+/** Apply authored operations under the adapter's transaction. */
+export async function acceptNodeOperationsOver(
+	port: TreePort,
+	nodes: NodeStore,
+	operations: readonly NodeOperation[],
+	opts?: { source?: string; origin?: string; content?: ReadonlyMap<string, Uint8Array> }
+): Promise<NodeOperationResult[]> {
+	await bindRoot(port, nodes)
+	return acceptNodeOperations(
+		port,
+		nodes,
+		operations,
+		ROOT_NODE_ID,
+		(mutation) => applyMutation(port, nodes, mutation, opts),
+		opts
+	)
+}
 // ── Replica ──────────────────────────────────────────────────────────────────
 
 export interface NodeReplica {
@@ -619,8 +767,8 @@ export interface NodeReplica {
 	applyNodeOperations(
 		operations: readonly NodeOperation[],
 		getBlobByHash: (hash: string) => Promise<Uint8Array>,
-		opts?: { source?: string }
-	): Promise<void>
+		opts?: { source?: string; origin?: string }
+	): Promise<NodeOperationResult[]>
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	hasBlobByHash(hash: string): Promise<boolean>
 	putBlobByHash(hash: string, data: Uint8Array): Promise<void>
@@ -629,8 +777,11 @@ export interface NodeReplica {
 	closeSnapshot: SyncCapability['closeSnapshot']
 }
 
-/** A local node replica over one filesystem and its discovered sync capability. */
-export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore): NodeReplica {
+function createNodeReplica(
+	sync: SyncCapability,
+	addressed?: ContentStore,
+	authoritative = false
+): NodeReplica {
 	const staged = new Map<string, Uint8Array>()
 	const outgoing = new Map<string, Uint8Array>()
 	const content = addressed
@@ -699,10 +850,50 @@ export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore):
 			return result
 		},
 		async applyNodeOperations(operations, getBlobByHash, opts) {
-			const wanted = await sync.wantedContent(operations)
+			let ready = operations
+			const missingByOperation = new Map<NodeOperation, string>()
+			const wantedByOperation = new Map<NodeOperation, string[]>()
+			if (authoritative) {
+				for (const operation of operations)
+					wantedByOperation.set(
+						operation,
+						await sync.wantedContent([operation], { authoritative: true })
+					)
+				const wanted = new Set([...wantedByOperation.values()].flat())
+				const missing = new Set<string>()
+				for (const hash of wanted) if (!(await content.has(hash))) missing.add(hash)
+				if (missing.size > 0) {
+					for (const [operation, hashes] of wantedByOperation) {
+						const hash = hashes.find((candidate) => missing.has(candidate))
+						if (hash) missingByOperation.set(operation, hash)
+					}
+					ready = operations.filter((operation) => !missingByOperation.has(operation))
+				}
+			}
+			const wanted = authoritative
+				? [...new Set(ready.flatMap((operation) => wantedByOperation.get(operation) ?? []))]
+				: await sync.wantedContent(ready)
 			const blobs = await content.prepare(wanted, getBlobByHash)
 			try {
-				await sync.applyNodeOperations(operations, { ...opts, content: blobs })
+				if (authoritative) {
+					const accepted = await sync.acceptNodeOperations(ready, { ...opts, content: blobs })
+					let index = 0
+					return operations.map((operation): NodeOperationResult => {
+						const hash = missingByOperation.get(operation)
+						if (hash)
+							return {
+								status: 'rejected',
+								reason: 'missing_content',
+								operationId: operation.operationId,
+								hash
+							}
+						const result = accepted[index++]
+						if (!result) throw new Error('authority result is missing')
+						return result
+					})
+				}
+				await sync.applyNodeOperations(ready, { ...opts, content: blobs })
+				return ready.map((operation) => ({ status: 'accepted' as const, operation }))
 			} finally {
 				content.release(wanted)
 			}
@@ -711,4 +902,14 @@ export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore):
 		hasBlobByHash: (hash) => content.has(hash),
 		putBlobByHash: (hash, data) => content.put(hash, data)
 	}
+}
+
+/** A local follower over one filesystem and its discovered sync capability. */
+export function nodeSyncReplica(sync: SyncCapability, addressed?: ContentStore): NodeReplica {
+	return createNodeReplica(sync, addressed)
+}
+
+/** A server authority that validates authored operations before it applies them. */
+export function nodeAuthorityReplica(sync: SyncCapability, addressed?: ContentStore): NodeReplica {
+	return createNodeReplica(sync, addressed, true)
 }
