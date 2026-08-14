@@ -106,7 +106,7 @@ export function drawRect(grid: Grid, x: number, y: number, w: number, h: number,
 	return fromCells(cells)
 }
 
-// Scanline flood fill (mirrors app-paint's), comparing chars in-place.
+// Scanline flood fill (mirrors Paint's), comparing chars in-place.
 export function floodFill(grid: Grid, x: number, y: number, i: number): Grid {
 	const cells = toCells(grid)
 	const h = cells.length

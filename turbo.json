@@ -55,7 +55,6 @@
 			"dependsOn": [
 				"@justfiles/app-dictionary#build",
 				"@justfiles/app-files#build",
-				"@justfiles/app-paint#build",
 				"@justfiles/app-settings#build",
 				"transit"
 			],

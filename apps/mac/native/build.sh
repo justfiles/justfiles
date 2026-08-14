@@ -135,7 +135,6 @@ copy_builtin() { # resources_dir app_id package_dir
 copy_builtins() { # resources_dir
 	copy_builtin "$1" justfiles.code app-code
 	copy_builtin "$1" justfiles.files app-files
-	copy_builtin "$1" justfiles.paint app-paint
 	copy_builtin "$1" justfiles.settings app-settings
 }
 

@@ -5,7 +5,6 @@ import { BUILTINS_DIR, SHIPPED } from './resources'
 const BUILTINS = [
 	{ id: 'justfiles.code', packageDir: 'app-code' },
 	{ id: 'justfiles.files', packageDir: 'app-files' },
-	{ id: 'justfiles.paint', packageDir: 'app-paint' },
 	{ id: 'justfiles.settings', packageDir: 'app-settings' }
 ]
 

@@ -11,6 +11,8 @@ import {
 
 const manifestUrl = 'https://justfiles-notes.justapps.run/manifest.json'
 const releaseUrl = 'https://justfiles-notes.justapps.run/v/1.2.0/manifest.json'
+const paintManifestUrl = 'https://justfiles-paint.justapps.run/manifest.json'
+const paintReleaseUrl = 'https://justfiles-paint.justapps.run/v/0.1.0/manifest.json'
 const taskManifestUrl = 'https://com-example-tasks.justapps.run/manifest.json'
 const release = {
 	schema: RUNNER_MANIFEST_SCHEMA,
@@ -28,6 +30,15 @@ const release = {
 		{ path: 'gui.js', hash: 'sha256-b', size: 1 }
 	]
 }
+const paintRelease = {
+	...release,
+	id: 'justfiles.paint',
+	name: 'Paint',
+	description: 'Pixel drawing',
+	version: '0.1.0',
+	icon: 'icon.png',
+	hash: 'paint-release-hash'
+}
 const runner = {
 	schema: RUNNER_STORE_SCHEMA,
 	apps: [
@@ -38,6 +49,14 @@ const runner = {
 			iconUrl: 'https://justfiles-notes.justapps.run/v/1.2.0/icon.svg',
 			manifestUrl,
 			repository: 'https://example.com/notes'
+		},
+		{
+			id: paintRelease.id,
+			name: paintRelease.name,
+			version: paintRelease.version,
+			iconUrl: 'https://justfiles-paint.justapps.run/v/0.1.0/icon.png',
+			manifestUrl: paintManifestUrl,
+			repository: 'https://github.com/justfiles/app-paint'
 		},
 		{
 			id: 'com.example.tasks',
@@ -98,10 +117,13 @@ describe('runnerAppStore', () => {
 			seen.push(url)
 			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
 			if (url === manifestUrl) return json(release, releaseUrl)
+			if (url === paintManifestUrl) return json(paintRelease, paintReleaseUrl)
 			return new Response(null, { status: 404 })
 		})
 
-		expect((await store?.builtins())?.map((app) => app.id)).toEqual(['justfiles.notes'])
+		const apps = await store?.builtins()
+		expect(apps?.map((app) => app.id)).toEqual(['justfiles.notes', 'justfiles.paint'])
+		expect(apps?.at(-1)?.baseUrl).toBe('https://justfiles-paint.justapps.run/v/0.1.0/')
 		expect(seen).not.toContain(taskManifestUrl)
 	})
 
@@ -121,12 +143,14 @@ describe('bootAppStore', () => {
 			if (url === CATALOG_PATH) return json(builtin)
 			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
 			if (url === manifestUrl) return json(release, releaseUrl)
+			if (url === paintManifestUrl) return json(paintRelease, paintReleaseUrl)
 			return new Response(null, { status: 404 })
 		}
 		const store = await bootAppStore(request)
 		expect((await store?.builtins())?.map((app) => app.id)).toEqual([
 			'justfiles.files',
-			'justfiles.notes'
+			'justfiles.notes',
+			'justfiles.paint'
 		])
 		expect((await store?.latest('justfiles.files'))?.version).toBe('0.1.0')
 		expect((await store?.latest(release.id))?.version).toBe('1.2.0')
@@ -141,11 +165,12 @@ describe('bootAppStore', () => {
 			if (url === CATALOG_PATH) return json(bundledNotes)
 			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
 			if (url === manifestUrl) return json(release, releaseUrl)
+			if (url === paintManifestUrl) return json(paintRelease, paintReleaseUrl)
 			return new Response(null, { status: 404 })
 		}
 		const store = await bootAppStore(request)
 		const apps = await store?.builtins()
-		expect(apps).toHaveLength(1)
+		expect(apps).toHaveLength(2)
 		expect(apps?.[0]).toMatchObject({ id: release.id, name: 'Bundled Notes' })
 		expect(await store?.latest(release.id)).toMatchObject({ name: 'Bundled Notes' })
 	})
