@@ -277,7 +277,7 @@ describe('GET /path/snapshot', () => {
 		await vol.writeFile('/private/old', bytes('secret'))
 		await vol.rm('/private/old')
 		await vol.writeFile('/public.md', bytes('public'))
-		const app = createFsApi(storage)
+		const app = createFsApi(storage, { ignore: ['/private'] })
 
 		expect(await drain(app, { tombstones: true })).toEqual({
 			puts: ['/public.md'],

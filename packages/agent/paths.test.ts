@@ -1,5 +1,4 @@
 import { GENERATED_IMAGES_DIR } from '@justfiles/app/capabilities/image'
-import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import { describe, expect, test } from 'vitest'
 import * as paths from './paths.ts'
 import FILESYSTEM from './prompts/filesystem.md?raw'
@@ -43,8 +42,8 @@ describe('paths', () => {
 		expect(paths.PICTURES_DIR).toBe(GENERATED_IMAGES_DIR)
 	})
 
-	test('SECRET_PREFIXES derives from the fs private list (no second copy)', () => {
-		expect([...paths.SECRET_PREFIXES]).toEqual(PRIVATE_PREFIXES.filter((p) => p !== '/.state'))
+	test('SECRET_PREFIXES owns the agent product policy', () => {
+		expect([...paths.SECRET_PREFIXES]).toEqual(['/private'])
 	})
 
 	test('a session shard sorts chronologically and names its session and its device', () => {

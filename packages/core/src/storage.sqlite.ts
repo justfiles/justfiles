@@ -21,6 +21,7 @@ import {
 	type NodeSyncModule,
 	nodeSnapshotEntries,
 	nodeSyncObserver,
+	reconcileNodeSnapshotOver,
 	type SyncCapableStorage,
 	withSyncCapability
 } from '@justfiles/sync/node'
@@ -292,6 +293,7 @@ export function storage(
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
 	const localActorId = options.localActorId ?? 'local'
+	let nodeIgnore: readonly string[] = []
 	let bootstrapPromise: Promise<void> | null = null
 
 	// Change feed — the substrate for volume.watch and, critically, cache
@@ -740,7 +742,7 @@ export function storage(
 		options?: MutationOptions
 	): Promise<void> {
 		const tree = await recordPath(tx, effect, options)
-		await nodeSyncObserver(makeNodeStore(tx)).record(tree, effect, options)
+		await nodeSyncObserver(makeNodeStore(tx), () => nodeIgnore).record(tree, effect, options)
 	}
 
 	// ── Path-sync apply (remote pull; epic slice 4) ──────────────────────────────
@@ -951,6 +953,7 @@ export function storage(
 		deleted: unknown
 		meta_json: unknown
 		content_hash: unknown
+		materialization: unknown
 	}): NodeState {
 		return {
 			id: String(row.sync_id),
@@ -961,7 +964,8 @@ export function storage(
 			revision: toNumber(row.revision),
 			deleted: toNumber(row.deleted) === 1,
 			meta: JSON.parse(String(row.meta_json)) as NodeState['meta'],
-			contentHash: toStringOrNull(row.content_hash) ?? undefined
+			contentHash: toStringOrNull(row.content_hash) ?? undefined,
+			materialization: String(row.materialization) as NodeState['materialization']
 		}
 	}
 
@@ -978,6 +982,7 @@ export function storage(
 					deleted: unknown
 					meta_json: unknown
 					content_hash: unknown
+					materialization: unknown
 				}>('SELECT * FROM fs_sync_nodes WHERE sync_id = ? LIMIT 1', [id])
 				return row ? nodeStateFromRow(row) : null
 			},
@@ -999,6 +1004,7 @@ export function storage(
 					deleted: unknown
 					meta_json: unknown
 					content_hash: unknown
+					materialization: unknown
 				}>(
 					`SELECT * FROM fs_sync_nodes
 					 WHERE parent_sync_id = ? AND name = ? AND deleted = 0 LIMIT 1`,
@@ -1017,14 +1023,16 @@ export function storage(
 					deleted: unknown
 					meta_json: unknown
 					content_hash: unknown
+					materialization: unknown
 				}>('SELECT * FROM fs_sync_nodes WHERE deleted = 0')
 				return rows.map(nodeStateFromRow)
 			},
 			async save(state) {
 				await tx.run(
 					`INSERT INTO fs_sync_nodes(
-						sync_id, local_ino, parent_sync_id, name, type, revision, deleted, meta_json, content_hash
-					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+						sync_id, local_ino, parent_sync_id, name, type, revision, deleted, meta_json, content_hash,
+						materialization
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					 ON CONFLICT(sync_id) DO UPDATE SET
 						local_ino = excluded.local_ino,
 						parent_sync_id = excluded.parent_sync_id,
@@ -1033,7 +1041,8 @@ export function storage(
 						revision = excluded.revision,
 						deleted = excluded.deleted,
 						meta_json = excluded.meta_json,
-						content_hash = excluded.content_hash`,
+						content_hash = excluded.content_hash,
+						materialization = excluded.materialization`,
 					[
 						state.id,
 						state.localIno,
@@ -1043,9 +1052,13 @@ export function storage(
 						state.revision,
 						state.deleted ? 1 : 0,
 						JSON.stringify(state.meta),
-						state.contentHash ?? null
+						state.contentHash ?? null,
+						state.materialization ?? (state.localIno === null ? 'absent' : 'attached')
 					]
 				)
+			},
+			async remove(id) {
+				await tx.run('DELETE FROM fs_sync_nodes WHERE sync_id = ?', [id])
 			},
 			async append(operation, localSource) {
 				const affected = [
@@ -1998,6 +2011,9 @@ export function storage(
 
 	const nodeModule: NodeSyncModule = {
 		nodes: makeNodeStore(db),
+		setLocalIgnore(ignore) {
+			nodeIgnore = ignore
+		},
 		async apply(operations, opts) {
 			await ensureBootstrapped()
 			const preparedContent = new Map<string, { data: Uint8Array; staged: StagedContent }>()
@@ -2029,6 +2045,21 @@ export function storage(
 			})
 			for (const change of pendingEmits) emit(change)
 			return results
+		},
+		async reconcile(operations, ignore, opts) {
+			await ensureBootstrapped()
+			const preparedContent = new Map<string, { data: Uint8Array; staged: StagedContent }>()
+			for (const [hash, data] of opts?.content ?? []) {
+				if (await loadContentRow(db, hash)) continue
+				preparedContent.set(hash, { data, staged: await stageContent(hash, data) })
+			}
+			let pendingEmits: StorageChange[] = []
+			await db.transaction(async (tx) => {
+				const bound = makePathPorts(tx, preparedContent)
+				pendingEmits = bound.emits
+				await reconcileNodeSnapshotOver(bound.tree, makeNodeStore(tx), operations, ignore, opts)
+			})
+			for (const change of pendingEmits) emit(change)
 		},
 		async openSnapshotView() {
 			await ensureBootstrapped()

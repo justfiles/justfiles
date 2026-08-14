@@ -2,7 +2,7 @@ import { volume } from '@justfiles/fs'
 import type { ContentStore, Storage } from '@justfiles/fs/storage'
 import { FileType } from '@justfiles/fs/types'
 import { hashBytes, verifyBytes } from './content'
-import { syncIgnore } from './replica'
+import { ignoredPath, normalizeIgnore } from './policy'
 import { inodeMetaFromSync, type SyncMeta, syncMetaFromInode } from './wire'
 
 export type FullScanEntry = {
@@ -28,17 +28,17 @@ export interface FullScanReplica {
 async function readTree(
 	storage: Storage,
 	addressed?: ContentStore,
-	captureBlobs = true
+	captureBlobs = true,
+	ignore: readonly string[] = ['/.state']
 ): Promise<{
 	entries: FullScanEntry[]
 	blobs: Map<string, Uint8Array>
 }> {
 	const fs = volume(storage)
-	const ignored = syncIgnore()
 	const entries: FullScanEntry[] = []
 	const blobs = new Map<string, Uint8Array>()
 	await fs.scan('/', async (path, stat) => {
-		if (path === '/' || ignored(path)) return
+		if (path === '/' || ignoredPath(ignore, path)) return
 		const inode = await storage.getMeta(stat.ino)
 		if (!inode) return
 		const xattrs: Record<string, Uint8Array> = {}
@@ -49,13 +49,14 @@ async function readTree(
 		}
 		const entry: FullScanEntry = { path, meta: syncMetaFromInode(inode, xattrs) }
 		if (inode.type === FileType.Regular) {
-			if (inode.contentHash) entry.contentHash = inode.contentHash
-			if (captureBlobs) {
-				const stored = inode.contentHash ? await addressed?.getByHash(inode.contentHash) : undefined
-				const data = stored ?? (await storage.getBlob(stat.ino))
-				const contentHash = inode.contentHash ?? (await hashBytes(data))
-				await verifyBytes(contentHash, data)
-				entry.contentHash = contentHash
+			const stored = inode.contentHash ? await addressed?.getByHash(inode.contentHash) : undefined
+			const data =
+				stored ?? (!inode.contentHash || captureBlobs ? await storage.getBlob(stat.ino) : undefined)
+			const contentHash = inode.contentHash ?? (data ? await hashBytes(data) : undefined)
+			if (!contentHash) throw new Error(`missing content hash: ${path}`)
+			if (data) await verifyBytes(contentHash, data)
+			entry.contentHash = contentHash
+			if (captureBlobs && data) {
 				entry.meta.size = String(data.length)
 				if (!blobs.has(contentHash)) blobs.set(contentHash, data.slice())
 			}
@@ -71,14 +72,19 @@ function signature(entries: readonly FullScanEntry[]): string {
 }
 
 /** Full reconciliation for a backend that exposes only the filesystem contract. */
-export function fullScanReplica(storage: Storage, addressed?: ContentStore): FullScanReplica {
+export function fullScanReplica(
+	storage: Storage,
+	addressed?: ContentStore,
+	ignore: readonly string[] = []
+): FullScanReplica {
 	const fs = volume(storage)
+	const roots = normalizeIgnore(['/.state', ...ignore])
 	return {
 		async scan() {
 			let frozen: Awaited<ReturnType<typeof readTree>>
 			for (;;) {
-				frozen = await readTree(storage, addressed)
-				const confirmed = await readTree(storage, addressed)
+				frozen = await readTree(storage, addressed, true, roots)
+				const confirmed = await readTree(storage, addressed, true, roots)
 				if (signature(frozen.entries) === signature(confirmed.entries)) break
 			}
 			let open = true
@@ -97,12 +103,17 @@ export function fullScanReplica(storage: Storage, addressed?: ContentStore): Ful
 			}
 		},
 		async apply(entries, getBlobByHash) {
-			const ignored = syncIgnore()
-			const admissible = entries.filter((entry) => !ignored(entry.path))
-			const current = await readTree(storage, addressed, false)
+			const admissible = entries.filter((entry) => !ignoredPath(roots, entry.path))
+			const shields = async (path: string): Promise<boolean> => {
+				for (const root of roots)
+					if (root.startsWith(`${path}/`) && (await fs.exists(root))) return true
+				return false
+			}
+			const current = await readTree(storage, addressed, false, roots)
 			const wanted = new Set(admissible.map((entry) => entry.path))
 			for (const entry of [...current.entries].sort((a, b) => b.path.length - a.path.length))
-				if (!wanted.has(entry.path)) await fs.rm(entry.path, { recursive: true, force: true })
+				if (!wanted.has(entry.path) && !(await shields(entry.path)))
+					await fs.rm(entry.path, { recursive: true, force: true })
 
 			const byPath = new Map(current.entries.map((entry) => [entry.path, entry]))
 			const blobs = new Map<string, Uint8Array>()
@@ -119,6 +130,7 @@ export function fullScanReplica(storage: Storage, addressed?: ContentStore): Ful
 			for (const entry of admissible) {
 				let existing = byPath.get(entry.path)
 				if (existing && existing.meta.type !== entry.meta.type) {
+					if (await shields(entry.path)) continue
 					await fs.rm(entry.path, { recursive: true, force: true })
 					existing = undefined
 				}

@@ -257,6 +257,7 @@ export class Frieren extends DurableObject<Env> {
 			.route(
 				'/fs',
 				createFsApi(fs, {
+					ignore: ['/private'],
 					// Reading the volume's lineage epoch needs the DO's raw store, so it is
 					// injected; createFsApi owns the routes.
 					lineage: () => readGenerationState(this.db),

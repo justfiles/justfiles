@@ -6,8 +6,6 @@
 // Package-internal: it is not re-exported from index.ts. The few paths a host needs are
 // the public names in `@justfiles/agent/defaults`.
 
-import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
-
 export const NOTES_DIR = '/notes'
 export const PICTURES_DIR = '/pictures' // == GENERATED_IMAGES_DIR (image capability); asserted in the test
 
@@ -86,12 +84,6 @@ export function parseSessionShard(name: string): SessionShard | null {
 }
 
 // Prefixes the agent's shell must never read. ENFORCED in volumeFs, not asked for in the
-// prompt — a prompt is not an access-control mechanism. The list is owned by
-// @justfiles/fs (which also refuses to replicate them) so the two can't drift; the agent
-// shell still needs the deny-list because the agent runs INSIDE the host that holds them.
-// `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
-// prompt as host bookkeeping and harmless to `ls`. What remains is `/private` — private
-// in the access-modifier sense: not reachable from outside the host, the agent included.
-// (`/.state/clientid` — the per-install id `device.ts` reads — lives in that same
-// bookkeeping lane; no constant here, it has no reader outside `device.ts` and `synced()`.)
-export const SECRET_PREFIXES = PRIVATE_PREFIXES.filter((p) => p !== '/.state')
+// prompt — a prompt is not an access-control mechanism. The agent owns this access
+// policy. The host supplies the same root to sync as its ignore list.
+export const SECRET_PREFIXES = ['/private'] as const

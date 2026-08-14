@@ -26,6 +26,8 @@ import {
 // Let watch deliveries land. The single-path watch coalesces onto a microtask, the
 // recursive one is rate-bounded (see WATCH_BURST_MS); one wait covers both.
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, WATCH_BURST_MS * 2))
+const privatePath = (path: string) => path === '/private' || path.startsWith('/private/')
+const privatePeers = () => twoPeers({ clientIgnore: privatePath, serverIgnore: privatePath })
 
 describe('path-sync semantics', () => {
 	const cleanups: Array<() => void> = []
@@ -136,7 +138,7 @@ describe('path-sync semantics', () => {
 
 	// Host-private credentials never cross the wire, and the lane is symmetrical
 	test('private paths are never pushed, while /system still syncs', async () => {
-		const { client, server, syncBoth, pushedChanges } = twoPeers()
+		const { client, server, syncBoth, pushedChanges } = privatePeers()
 		await client.writeFile('/private/accounts/a.json', bytes('CLIENT-CRED'))
 		await client.writeFile('/system/user.md', bytes('me'))
 		await client.writeFile('/system/agents/main/sessions/x.jsonl', bytes('{}'))
@@ -150,7 +152,7 @@ describe('path-sync semantics', () => {
 	})
 
 	test('a private path written on the server is never admitted by the client', async () => {
-		const { client, server, syncBoth } = twoPeers()
+		const { client, server, syncBoth } = privatePeers()
 		await server.writeFile('/private/accounts/b.json', bytes('SERVER-CRED'))
 		await server.writeFile('/system/user.md', bytes('you'))
 		await syncBoth()
@@ -160,7 +162,7 @@ describe('path-sync semantics', () => {
 	})
 
 	test('the private lane is inert both ways: each peer keeps its own, deletes stay local', async () => {
-		const { client, server, syncBoth } = twoPeers()
+		const { client, server, syncBoth } = privatePeers()
 		await client.writeFile('/private/accounts/x.json', bytes('C'))
 		await server.writeFile('/private/accounts/x.json', bytes('S'))
 		await client.writeFile('/private/connections/chatgpt/default.json', bytes('C'))

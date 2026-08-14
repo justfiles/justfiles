@@ -2,7 +2,10 @@ import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import type { Storage, StorageCapabilities } from '@justfiles/fs/storage'
 import type { FileType } from '@justfiles/fs/types'
+import { ignoredPath, ignorePolicy, normalizeIgnore } from '@justfiles/sync'
 import {
+	IgnoreCursorError,
+	type IgnoreSubscriptionPolicy,
 	NodeOperation,
 	type NodeReplica,
 	nodeAuthorityReplica,
@@ -112,6 +115,7 @@ const GENERATION_HEADER = 'x-fs-generation'
 // to 1), so a push aimed at a different volume at the same generation is rejected
 // on a `lineageId` mismatch — preventing cross-volume contamination.
 const LINEAGE_HEADER = 'x-fs-lineage'
+const SUBSCRIPTION_HEADER = 'x-sync-subscription'
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
@@ -194,6 +198,11 @@ const NodeSnapshotQuery = z.object({
 })
 const NodeSnapshotBlobParam = z.object({ session: z.string().min(1), hash: ContentHash })
 const NodeSnapshotParam = z.object({ session: z.string().min(1) })
+const NodeSubscriptionBody = z.object({
+	ignore: z.array(z.string()),
+	hash: ContentHash
+})
+const NodeSubscriptionHeader = z.object({ [SUBSCRIPTION_HEADER]: z.string().min(1) })
 
 // The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
 // `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's
@@ -246,6 +255,7 @@ export function createFsApi(
 		lineage?: () => GenerationState | Promise<GenerationState>
 		/** Resolve the actor from host authentication. Request body and source headers cannot set it. */
 		actor?: (request: Request) => string | undefined | Promise<string | undefined>
+		ignore?: readonly string[]
 		// The NON-destructive half of POST /reset: clear the advisory in-progress marker
 		// once the initiator's republish drained. It changes no generation and truncates
 		// nothing, so it is safe to serve from inside this app, alongside live writes.
@@ -264,6 +274,7 @@ export function createFsApi(
 	const readLineage = async (): Promise<GenerationState | undefined> =>
 		opts?.lineage ? await opts.lineage() : undefined
 	const vol = volume(backend)
+	const serverIgnore = normalizeIgnore(opts?.ignore)
 	// The server serves the path endpoints over its own local SyncReplica. Origin
 	// is stamped per-request from SOURCE_HEADER (see POST /path/changes), so the
 	// construction-time localActorId is only a fallback.
@@ -279,7 +290,11 @@ export function createFsApi(
 				backend,
 				sync.pathSnapshot ? treeChangeSource(sync) : journaledChangeSource(sync),
 				sync,
-				{ lazyContent: false, localActorId: 'server' }
+				{
+					lazyContent: false,
+					localActorId: 'server',
+					ignore: (path) => ignoredPath(serverIgnore, path)
+				}
 			)
 		: undefined
 	const requireReplica = (): SyncReplica => {
@@ -289,12 +304,41 @@ export function createFsApi(
 	const nodeCapability = (
 		backend.caps as (StorageCapabilities & { readonly sync?: SyncCapability }) | undefined
 	)?.sync
-	const nodeReplica = nodeCapability
-		? nodeAuthorityReplica(nodeCapability, backend.caps?.content)
-		: undefined
-	const requireNodeReplica = (): NodeReplica => {
-		if (!nodeReplica) throw new Error('backend has no node sync capability')
-		return nodeReplica
+	nodeCapability?.setLocalIgnore(['/.state', ...serverIgnore])
+	let serverProjection: Promise<void> | undefined
+	const reconcileServerProjection = (): Promise<void> =>
+		(serverProjection ??= (async () => {
+			if (!nodeCapability) return
+			const policy = await ignorePolicy(serverIgnore)
+			await nodeCapability.project(serverIgnore).reconcileNodeSnapshot([], {
+				reconcileId: `server:${policy.hash}`,
+				preserveAttached: true
+			})
+		})())
+	type NodeSubscription = {
+		policy: IgnoreSubscriptionPolicy
+		capability: SyncCapability
+		replica: NodeReplica
+	}
+	const subscriptions = new Map<string, NodeSubscription>()
+	const requireNodeSubscription = (request: Request): NodeSubscription => {
+		const token = request.headers.get(SUBSCRIPTION_HEADER)
+		const subscription = token ? subscriptions.get(token) : undefined
+		if (!subscription) throw new Error('node subscription required')
+		return subscription
+	}
+	const cursorPrefix = (subscription: NodeSubscription): string =>
+		`${subscription.policy.effectiveHash}:${subscription.policy.identityEpoch}:`
+	const rawCursor = (subscription: NodeSubscription, cursor: string): string => {
+		if (!cursor) return ''
+		const prefix = cursorPrefix(subscription)
+		if (!cursor.startsWith(prefix)) throw new IgnoreCursorError()
+		return cursor.slice(prefix.length)
+	}
+	const boundCursor = (subscription: NodeSubscription, cursor: string): string =>
+		`${cursorPrefix(subscription)}${cursor}`
+	const requireNodeReplica = (request: Request): NodeReplica => {
+		return requireNodeSubscription(request).replica
 	}
 	const mutationOptions = (request: Request): { origin?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
@@ -384,30 +428,76 @@ export function createFsApi(
 			})
 
 			// Node sync v2: stable identities, ordered mutations, and frozen snapshots.
-			.get('/node/changes', zValidator('query', NodeDeltaQuery), async (c) => {
-				const { cursor, excludeSource, limit } = c.req.valid('query')
-				const page = await requireNodeReplica().nodeDeltas(cursor, {
-					excludeLocalSource: excludeSource,
-					limit
+			.post('/node/subscription', zValidator('json', NodeSubscriptionBody), async (c) => {
+				await reconcileServerProjection()
+				const requested = await ignorePolicy(c.req.valid('json').ignore)
+				if (requested.hash !== c.req.valid('json').hash)
+					return c.json({ error: 'ignore_policy_mismatch' }, 400)
+				const effective = await ignorePolicy([...(opts?.ignore ?? []), ...requested.roots])
+				const lineage = await readLineage()
+				const policy: IgnoreSubscriptionPolicy = {
+					effectiveIgnore: effective.roots,
+					effectiveHash: effective.hash,
+					identityEpoch: lineage?.lineageId ?? 'node-v2'
+				}
+				if (!nodeCapability) throw new Error('backend has no node sync capability')
+				const capability = nodeCapability.project(effective.roots)
+				const token = crypto.randomUUID()
+				subscriptions.set(token, {
+					policy,
+					capability,
+					replica: nodeAuthorityReplica(capability, backend.caps?.content)
 				})
-				c.header('Cache-Control', 'no-store')
-				return c.json(page)
+				return c.json({ ...policy, subscription: token })
 			})
 
-			.get('/node/snapshot', zValidator('query', NodeSnapshotQuery), async (c) => {
-				const { page, limit } = c.req.valid('query')
-				const result = await requireNodeReplica().nodeSnapshot(page, { limit })
-				if (result.status === 'restart') return c.json(result, 410)
-				if (result.status === 'busy') return c.json(result, 429)
-				return c.json(result)
-			})
+			.get(
+				'/node/changes',
+				zValidator('query', NodeDeltaQuery),
+				zValidator('header', NodeSubscriptionHeader),
+				async (c) => {
+					const { cursor, excludeSource, limit } = c.req.valid('query')
+					const subscription = requireNodeSubscription(c.req.raw)
+					let page: Awaited<ReturnType<NodeReplica['nodeDeltas']>>
+					try {
+						page = await subscription.replica.nodeDeltas(rawCursor(subscription, cursor), {
+							excludeLocalSource: excludeSource,
+							limit
+						})
+					} catch (error) {
+						if (error instanceof IgnoreCursorError)
+							return c.json({ error: 'ignore_cursor_mismatch' }, 410)
+						throw error
+					}
+					c.header('Cache-Control', 'no-store')
+					return c.json({ ...page, to: boundCursor(subscription, page.to) })
+				}
+			)
+
+			.get(
+				'/node/snapshot',
+				zValidator('query', NodeSnapshotQuery),
+				zValidator('header', NodeSubscriptionHeader),
+				async (c) => {
+					const { page, limit } = c.req.valid('query')
+					const subscription = requireNodeSubscription(c.req.raw)
+					const result = await subscription.replica.nodeSnapshot(page, { limit })
+					if (result.status === 'restart') return c.json(result, 410)
+					if (result.status === 'busy') return c.json(result, 429)
+					return c.json({
+						...result,
+						syncCursor: boundCursor(subscription, result.syncCursor)
+					})
+				}
+			)
 
 			.get(
 				'/node/snapshot/:session/blob/:hash',
 				zValidator('param', NodeSnapshotBlobParam),
+				zValidator('header', NodeSubscriptionHeader),
 				async (c) => {
 					const { session, hash } = c.req.valid('param')
-					const result = await requireNodeReplica().getSnapshotBlob(session, hash)
+					const result = await requireNodeReplica(c.req.raw).getSnapshotBlob(session, hash)
 					if (result.status === 'restart') return c.body(null, 410)
 					return new Response(toArrayBuffer(result.data), {
 						headers: { 'Content-Type': 'application/octet-stream' }
@@ -415,74 +505,108 @@ export function createFsApi(
 				}
 			)
 
-			.delete('/node/snapshot/:session', zValidator('param', NodeSnapshotParam), async (c) => {
-				const { session } = c.req.valid('param')
-				const result = await requireNodeReplica().closeSnapshot(session)
-				return c.body(null, result.status === 'ok' ? 204 : 410)
-			})
+			.delete(
+				'/node/snapshot/:session',
+				zValidator('param', NodeSnapshotParam),
+				zValidator('header', NodeSubscriptionHeader),
+				async (c) => {
+					const { session } = c.req.valid('param')
+					const result = await requireNodeReplica(c.req.raw).closeSnapshot(session)
+					return c.body(null, result.status === 'ok' ? 204 : 410)
+				}
+			)
 
-			.post('/node/operations', zValidator('json', NodeOperationsBody), async (c) => {
-				const { operations } = c.req.valid('json')
-				const replica = requireNodeReplica()
-				try {
-					const results = await replica.applyNodeOperations(
-						operations,
-						(hash) => replica.getBlobByHash(hash),
+			.post(
+				'/node/operations',
+				zValidator('header', NodeSubscriptionHeader),
+				zValidator('json', NodeOperationsBody),
+				async (c) => {
+					const { operations } = c.req.valid('json')
+					const replica = requireNodeReplica(c.req.raw)
+					try {
+						const results = await replica.applyNodeOperations(
+							operations,
+							(hash) => replica.getBlobByHash(hash),
+							{
+								source: c.req.header(SOURCE_HEADER) ?? undefined,
+								origin: await opts?.actor?.(c.req.raw)
+							}
+						)
+						return c.json(
+							{ results },
+							results.some((result) => result.status === 'rejected') ? 409 : 200
+						)
+					} catch (error) {
+						return c.json({ error: errorMessage(error) }, 409)
+					}
+				}
+			)
+
+			.post(
+				'/node/content/wanted',
+				zValidator('header', NodeSubscriptionHeader),
+				zValidator('json', NodeOperationsBody),
+				async (c) => {
+					const subscription = requireNodeSubscription(c.req.raw)
+					const replica = subscription.replica
+					const wanted = await subscription.capability.wantedContent(
+						c.req.valid('json').operations,
 						{
-							source: c.req.header(SOURCE_HEADER) ?? undefined,
-							origin: await opts?.actor?.(c.req.raw)
+							authoritative: true
 						}
 					)
-					return c.json(
-						{ results },
-						results.some((result) => result.status === 'rejected') ? 409 : 200
-					)
-				} catch (error) {
-					return c.json({ error: errorMessage(error) }, 409)
+					const missing: string[] = []
+					for (const hash of wanted) if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
+					return c.json({ missing })
 				}
-			})
+			)
 
-			.post('/node/content/wanted', zValidator('json', NodeOperationsBody), async (c) => {
-				if (!nodeCapability) throw new Error('backend has no node sync capability')
-				const replica = requireNodeReplica()
-				const wanted = await nodeCapability.wantedContent(c.req.valid('json').operations, {
-					authoritative: true
-				})
-				const missing: string[] = []
-				for (const hash of wanted) if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
-				return c.json({ missing })
-			})
-
-			.post('/node/blobs/missing', zValidator('json', MissingBlobsBody), async (c) => {
-				const replica = requireNodeReplica()
-				const missing: string[] = []
-				for (const hash of c.req.valid('json').hashes)
-					if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
-				return c.json({ missing })
-			})
-
-			.put('/node/blob/:hash', zValidator('param', HashParam), async (c) => {
-				const { hash } = c.req.valid('param')
-				const data = new Uint8Array(await c.req.arrayBuffer())
-				if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
-				await requireNodeReplica().putBlobByHash(hash, data)
-				return c.body(null, 204)
-			})
-
-			.on(['GET', 'HEAD'], '/node/blob/:hash', zValidator('param', HashParam), async (c) => {
-				const { hash } = c.req.valid('param')
-				const replica = requireNodeReplica()
-				if (c.req.method === 'HEAD')
-					return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
-				try {
-					const data = await replica.getBlobByHash(hash)
-					return new Response(toArrayBuffer(data), {
-						headers: { 'Content-Type': 'application/octet-stream' }
-					})
-				} catch {
-					return c.body(null, 404)
+			.post(
+				'/node/blobs/missing',
+				zValidator('header', NodeSubscriptionHeader),
+				zValidator('json', MissingBlobsBody),
+				async (c) => {
+					const replica = requireNodeReplica(c.req.raw)
+					const missing: string[] = []
+					for (const hash of c.req.valid('json').hashes)
+						if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
+					return c.json({ missing })
 				}
-			})
+			)
+
+			.put(
+				'/node/blob/:hash',
+				zValidator('param', HashParam),
+				zValidator('header', NodeSubscriptionHeader),
+				async (c) => {
+					const { hash } = c.req.valid('param')
+					const data = new Uint8Array(await c.req.arrayBuffer())
+					if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
+					await requireNodeReplica(c.req.raw).putBlobByHash(hash, data)
+					return c.body(null, 204)
+				}
+			)
+
+			.on(
+				['GET', 'HEAD'],
+				'/node/blob/:hash',
+				zValidator('param', HashParam),
+				zValidator('header', NodeSubscriptionHeader),
+				async (c) => {
+					const { hash } = c.req.valid('param')
+					const replica = requireNodeReplica(c.req.raw)
+					if (c.req.method === 'HEAD')
+						return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
+					try {
+						const data = await replica.getBlobByHash(hash)
+						return new Response(toArrayBuffer(data), {
+							headers: { 'Content-Type': 'application/octet-stream' }
+						})
+					} catch {
+						return c.body(null, 404)
+					}
+				}
+			)
 
 			// Path sync: PULL (client reads the server's ChangeSource)
 			.get('/path/changes', zValidator('query', DeltaQuery), async (c) => {

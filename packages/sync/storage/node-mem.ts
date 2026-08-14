@@ -19,6 +19,7 @@ import {
 	type NodeSyncModule,
 	nodeSyncObserver,
 	nodeSyncReplica,
+	reconcileNodeSnapshotOver,
 	type SyncCapableStorage,
 	withSyncCapability
 } from '../node'
@@ -54,6 +55,11 @@ export function memNodeStore(): NodeStore {
 				byIno.delete(previous.localIno)
 			states.set(state.id, state)
 			if (state.localIno != null) byIno.set(state.localIno, state.id)
+		},
+		async remove(id) {
+			const previous = states.get(id)
+			if (previous?.localIno != null) byIno.delete(previous.localIno)
+			states.delete(id)
 		},
 		async append(operation, localSource) {
 			const deleted = new Set(
@@ -106,7 +112,8 @@ function nodeSyncExtensionOver(
 	exclusive: Exclusive,
 	mapTree: (tree: TreePort) => TreePort = (tree) => tree
 ) {
-	const observer = nodeSyncObserver(nodes)
+	let localIgnore: readonly string[] = []
+	const observer = nodeSyncObserver(nodes, () => localIgnore)
 	return {
 		observer: {
 			record: (port, effect, options) =>
@@ -116,10 +123,17 @@ function nodeSyncExtensionOver(
 			return {
 				sync: {
 					nodes,
+					setLocalIgnore: (ignore) => {
+						localIgnore = ignore
+					},
 					apply: (operations, opts) =>
 						exclusive(() => applyNodeOperationsOver(mapTree(tree), nodes, operations, opts)),
 					accept: (operations, opts) =>
-						exclusive(() => acceptNodeOperationsOver(mapTree(tree), nodes, operations, opts))
+						exclusive(() => acceptNodeOperationsOver(mapTree(tree), nodes, operations, opts)),
+					reconcile: (operations, ignore, opts) =>
+						exclusive(() =>
+							reconcileNodeSnapshotOver(mapTree(tree), nodes, operations, ignore, opts)
+						)
 				}
 			}
 		}

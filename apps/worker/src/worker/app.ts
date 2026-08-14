@@ -8,6 +8,7 @@ export function createWorkerApiApp(args: { fs: Storage }) {
 	return new Hono().route(
 		'/fs',
 		createFsApi(fs, {
+			ignore: ['/private'],
 			actor: (request) => request.headers.get('x-user-id') ?? undefined
 		})
 	)

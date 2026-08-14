@@ -18,8 +18,9 @@
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
-import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import type { DbAdapter } from './db'
+
+const RESET_PRESERVE_PREFIXES = ['/.state', '/private'] as const
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
 // INSERT so a reset recreates an identical root (kept local to keep this module
@@ -61,7 +62,7 @@ export type ResetMode = 'adopt-mine' | 'wipe'
 async function privateInos(tx: DbAdapter): Promise<string[]> {
 	const keep = new Set<string>()
 	const queue: string[] = []
-	for (const prefix of PRIVATE_PREFIXES) {
+	for (const prefix of RESET_PRESERVE_PREFIXES) {
 		let ino: string | undefined = ROOT_INO
 		for (const segment of prefix.split('/').filter(Boolean)) {
 			const rows: { ino: unknown }[] = await tx.query<{ ino: unknown }>(

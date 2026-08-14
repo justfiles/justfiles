@@ -554,9 +554,7 @@ export function localSyncReplica(
 	}
 	return {
 		async pathDeltas(cursor, opts) {
-			// Hard exclusion (see syncIgnore): local-only state, credentials and this host's
-			// own ignores never cross the wire, enforced here so a second volume(storage)
-			// can't bypass it.
+			// Enforce the engine and caller policy at the replica boundary.
 			const res = await changes.pathDeltas(cursor, opts)
 			return { ...res, changes: res.changes.filter((c) => !isIgnored(c.path)) }
 		},
@@ -565,14 +563,12 @@ export function localSyncReplica(
 			return {
 				...res,
 				changes: res.changes.filter((c) => !isIgnored(c.path)),
-				// A tombstone names a path too, and `/private/**` never crosses the wire in
-				// EITHER direction — not even to say it is gone.
+				// A tombstone names a path too, so apply the same policy.
 				...(res.tombstones ? { tombstones: res.tombstones.filter((c) => !isIgnored(c.path)) } : {})
 			}
 		},
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
-			// Hard exclusion (see syncIgnore): a peer can never inject local-only state or a
-			// credential, enforced here so a second volume(storage) can't bypass it.
+			// A peer cannot inject an engine-owned or caller-ignored path.
 			// An ignored path only survives if its ANCESTORS do, so a change that would
 			// replace or remove a directory holding one is dropped too (see shieldsIgnored).
 			const admissible: PathChange[] = []
@@ -642,6 +638,21 @@ export type PathSyncState = {
  */
 export type SyncState = {
 	schemaVersion: number // 1 for this design; future migrations branch on it
+	localHash?: string
+	effectiveIgnore?: readonly string[]
+	effectiveHash?: string
+	remoteIdentityEpoch?: string
+	nodePushCursor?: SyncCursor
+	nodePullCursor?: SyncCursor
+	scanBaseline?: Array<{ path: string; signature: string }>
+	reconcile?: {
+		operationId: string
+		fromHash?: string
+		toHash: string
+		identityEpoch: string
+		phase: 'snapshot' | 'local' | 'remote' | 'commit'
+		cursor?: SyncCursor
+	}
 	generation?: number // server volume lineage this replica is synced against
 	// The server volume's stable, unique identity this replica synced against. Distinct
 	// from `generation` (an epoch counter seeded to 1 in every volume): when the observed
@@ -664,68 +675,22 @@ export type SyncState = {
 	// PathSyncState records are stored per-path under the same /.state/sync tree.
 }
 
-/**
- * Prefixes that never cross the wire, in EITHER direction:
- *   /.state  — this replica's own sync bookkeeping (engine-private, frozen)
- *   /private — everything this host keeps to ITSELF
- *
- * Named for ACCESSIBILITY, like an access modifier: nobody outside this replica may
- * have it. Ownership follows (the host that acquired a credential is the only one that
- * can read it), but reachability is the rule being enforced.
- *
- * `/private` is the GENERIC local-only lane, not the credential lane — credentials
- * were merely its first occupant. Two reasons a path belongs here, and the layout
- * separates them by subtree rather than by root:
- *
- *   /private/accounts, /private/connections — nobody else MAY have these. Secrets.
- *   /private/cache/**                       — nobody else NEEDS to: reconstructible
- *                                             from an upstream that can re-serve them.
- *                                             Freely evictable. Currently UNOCCUPIED —
- *                                             the browser host caches an app's payload
- *                                             in its own service worker, not the volume.
- *   /private/tmp/**                         — in flight, and about to be renamed away.
- *
- * The split matters for sweeps, not for sync: losing a cache is a refill, losing a
- * credential is a re-auth. It is the same split Apple draws INSIDE an app container
- * with `Library/Caches`, and for the same reason — one never-replicated boundary,
- * subdivided by what may be thrown away.
- *
- * A top-level ROOT, not a subtree of `/system`: a never-sync lane nested under a
- * synced tree dies with any `rm -r` of its ancestor (`clientReset` / `reconcileLocal`),
- * and `/system` is exactly the tree we merge across hosts.
- *
- * Kept as an enumerable LIST, not just a predicate, because three consumers outside
- * sync need to name these paths: the agent shell's deny-list (`paths.SECRET_PREFIXES`),
- * the server reset (which resolves them to inodes in SQL — and only ever walks the
- * SERVER's copy, which holds credentials alone, never a client's cache), and frieren's
- * profile-migration skip list.
- */
-export const PRIVATE_PREFIXES = ['/.state', '/private'] as const
+const ENGINE_PREFIXES = ['/.state'] as const
 
 /**
- * A segment-aware prefix matcher — the primitive the built-in class and a host's own
- * `ignore` both use, so `/privateer` is a sibling of `/private`, not a child. Hand-rolling
- * `startsWith` is the classic way to get this wrong.
+ * A segment-aware prefix matcher.
  */
 export function ignorePrefixes(prefixes: readonly string[]): (path: string) => boolean {
 	return (p) => prefixes.some((d) => p === d || p.startsWith(`${d}/`))
 }
 
-const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
+const isEnginePath = ignorePrefixes(ENGINE_PREFIXES)
 
 /**
- * What a replica ignores: never sent, never accepted, and never swept by a reset —
- * the built-in private class, OR whatever else THIS host declines to replicate
- * (a native daemon's `.DS_Store`, a build cache, …).
- *
- * The built-in class is a FLOOR, not a default: composing by OR means a host's `ignore`
- * can only widen the boundary, so no caller — present or future — can make credentials
- * sync by passing the wrong thing (or by forgetting to include them). And it stays a
- * predicate in CODE rather than a `.syncignore` file, so an app, the agent's shell or a
- * peer's push cannot edit it (see #290 D2).
+ * Combine the engine-owned state root with the caller policy.
  */
 export function syncIgnore(ignore?: (path: string) => boolean): (path: string) => boolean {
-	return ignore === undefined ? isPrivatePath : (p) => isPrivatePath(p) || ignore(p)
+	return ignore === undefined ? isEnginePath : (path) => isEnginePath(path) || ignore(path)
 }
 
 /**

@@ -14,13 +14,7 @@ import { volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
 import type { JournaledStorage, JournalRow, JournalStore } from './replica'
-import {
-	ignorePrefixes,
-	journaledChangeSource,
-	localSyncReplica,
-	PRIVATE_PREFIXES,
-	syncIgnore
-} from './replica'
+import { ignorePrefixes, journaledChangeSource, localSyncReplica, syncIgnore } from './replica'
 import { memStorage } from './storage/mem'
 import { bytes, sha256, text } from './sync-test-harness'
 import { REMOTE_SOURCE } from './synced'
@@ -38,6 +32,9 @@ import {
 	syncMetaFromInode,
 	Version
 } from './wire'
+
+const PRIVATE_PREFIXES = ['/.state', '/private'] as const
+const productIgnore = ignorePrefixes(['/private'])
 
 // ── change builders (all schema-valid) ────────────────────────────────────────
 
@@ -102,7 +99,7 @@ function makeReplica(
 	return localSyncReplica(store, journaledChangeSource(store.sync), store.sync, {
 		lazyContent,
 		localActorId: 'me',
-		ignore
+		ignore: ignore ? (path) => productIgnore(path) || ignore(path) : productIgnore
 	})
 }
 
@@ -239,7 +236,7 @@ describe('the built-in private class', () => {
 // volume namespace inside it.
 describe('the cache lane', () => {
 	it('is never replicated, because /private never is', () => {
-		const p = syncIgnore()
+		const p = syncIgnore(productIgnore)
 		expect(p('/private/cache/applications/notes/gui.js')).toBe(true)
 		expect(p('/private/tmp/app-installs/x')).toBe(true)
 	})
@@ -249,7 +246,7 @@ describe('the cache lane', () => {
 	// uninstall on another device would leave a zombie directory that `list()` ignores
 	// (no manifest) but `has()` calls installed. Nothing under `/applications` is ignored.
 	it('leaves the tree it caches entirely un-ignored', () => {
-		const p = syncIgnore()
+		const p = syncIgnore(productIgnore)
 		expect(p('/applications')).toBe(false)
 		expect(p('/applications/notes')).toBe(false)
 		expect(p('/applications/notes/gui.js')).toBe(false)
@@ -262,21 +259,18 @@ describe('the cache lane', () => {
 describe('syncIgnore', () => {
 	const isPrivatePath = ignorePrefixes(PRIVATE_PREFIXES)
 
-	it('with no ignore is exactly the built-in class', () => {
+	it('with no caller policy covers only engine state', () => {
 		const p = syncIgnore()
-		for (const path of [
-			'/private',
-			'/private/accounts/a.json',
-			'/private/cache/applications/notes/gui.js',
-			'/.state/sync',
-			'/notes/a',
-			'/privateer'
-		])
-			expect(p(path)).toBe(isPrivatePath(path))
+		expect(p('/.state/sync')).toBe(true)
+		expect(p('/private')).toBe(false)
+		expect(p('/notes/a')).toBe(false)
 	})
 
 	it('adds the host’s own paths, keeping the built-in class', () => {
-		const p = syncIgnore((path) => path.startsWith('/state/cache/') || path.endsWith('.DS_Store'))
+		const p = syncIgnore(
+			(path) =>
+				isPrivatePath(path) || path.startsWith('/state/cache/') || path.endsWith('.DS_Store')
+		)
 		expect(p('/state/cache/blobs')).toBe(true)
 		expect(p('/notes/.DS_Store')).toBe(true)
 		expect(p('/private/accounts/a.json')).toBe(true) // built-in, still private
@@ -286,8 +280,8 @@ describe('syncIgnore', () => {
 
 	it('CANNOT be weakened: an ignore that says "nothing is ignored" changes nothing', () => {
 		const p = syncIgnore(() => false)
-		expect(p('/private')).toBe(true)
-		expect(p('/private/accounts/a.json')).toBe(true)
+		expect(p('/private')).toBe(false)
+		expect(p('/private/accounts/a.json')).toBe(false)
 		expect(p('/.state/sync')).toBe(true)
 		expect(p('/notes/a')).toBe(false)
 	})
@@ -298,7 +292,7 @@ describe('syncIgnore', () => {
 			seen.push(path)
 			return false
 		})
-		expect(p('/private/accounts/a.json')).toBe(true)
+		expect(p('/.state/sync')).toBe(true)
 		expect(seen).toEqual([]) // short-circuited by the built-in class
 		expect(p('/notes/a')).toBe(false)
 		expect(seen).toEqual(['/notes/a'])
@@ -308,7 +302,7 @@ describe('syncIgnore', () => {
 		const p = syncIgnore(() => {
 			throw new Error('bad predicate')
 		})
-		expect(p('/private')).toBe(true) // built-in short-circuit, never reaches it
+		expect(p('/.state/sync')).toBe(true) // engine short-circuit, never reaches it
 		expect(() => p('/notes/a')).toThrow('bad predicate')
 	})
 })

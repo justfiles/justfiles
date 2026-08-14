@@ -20,6 +20,7 @@ import {
 	type NodeStore,
 	type NodeSyncModule,
 	nodeSyncObserver,
+	reconcileNodeSnapshotOver,
 	type SyncCapableStorage,
 	withSyncCapability
 } from '../node'
@@ -197,6 +198,9 @@ function nodeStore(transaction: unknown): NodeStore {
 		async save(state) {
 			await tx.objectStore('syncNodes').put(state)
 		},
+		async remove(id) {
+			await tx.objectStore('syncNodes').delete(id)
+		},
 		async append(operation, localSource) {
 			const journal = tx.objectStore('nodeJournal')
 			const affected = [
@@ -285,6 +289,7 @@ function durableNodeStore(host: IdbStorageExtensionHost): NodeStore {
 			host.run(NODE_STORES, (transaction) => nodeStore(transaction).at(parentId, name)),
 		live: () => host.run(NODE_STORES, (transaction) => nodeStore(transaction).live()),
 		save: (state) => host.run(NODE_STORES, (transaction) => nodeStore(transaction).save(state)),
+		remove: (id) => host.run(NODE_STORES, (transaction) => nodeStore(transaction).remove(id)),
 		append: (operation, localSource) =>
 			host.run(NODE_STORES, (transaction) => nodeStore(transaction).append(operation, localSource)),
 		getOperation: (operationId) =>
@@ -325,6 +330,7 @@ export function idbStorage(
 	options?: { contentCapBytes?: number; localActorId?: string }
 ): IdbStorage {
 	const actorId = options?.localActorId ?? 'local'
+	let localIgnore: readonly string[] = []
 	let filesystem!: FilesystemIdbStorage
 	const extension: IdbStorageExtension<{ sync: JournaledSyncModule; node: NodeSyncModule }> = {
 		version: VERSION,
@@ -357,7 +363,11 @@ export function idbStorage(
 		},
 		async record(transaction, tree, effect, mutationOptions) {
 			await pathSyncObserver(syncStore(transaction), actorId).record(tree, effect, mutationOptions)
-			await nodeSyncObserver(nodeStore(transaction)).record(tree, effect, mutationOptions)
+			await nodeSyncObserver(nodeStore(transaction), () => localIgnore).record(
+				tree,
+				effect,
+				mutationOptions
+			)
 		},
 		attach(host) {
 			const nodes = durableNodeStore(host)
@@ -421,6 +431,9 @@ export function idbStorage(
 				},
 				node: {
 					nodes,
+					setLocalIgnore(ignore) {
+						localIgnore = ignore
+					},
 					captureDeltas: (after, limit, include) =>
 						host.run([...NODE_STORES, 'content'], async (transaction) => {
 							const rows = await nodeStore(transaction).read(after, limit)
@@ -450,6 +463,21 @@ export function idbStorage(
 							await content.putByHash(hash, data)
 						return host.run(ALL_STORES, (transaction, tree) =>
 							acceptNodeOperationsOver(tree, nodeStore(transaction), operations, applyOptions)
+						)
+					},
+					async reconcile(operations, ignore, applyOptions) {
+						const content = filesystem.caps?.content
+						if (!content) throw new Error('IndexedDB backend exposes no content store')
+						for (const [hash, data] of applyOptions?.content ?? [])
+							await content.putByHash(hash, data)
+						await host.run(ALL_STORES, (transaction, tree) =>
+							reconcileNodeSnapshotOver(
+								tree,
+								nodeStore(transaction),
+								operations,
+								ignore,
+								applyOptions
+							)
 						)
 					},
 					openSnapshotView: () =>

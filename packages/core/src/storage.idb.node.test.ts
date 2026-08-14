@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
-import { storageSyncReplica } from '@justfiles/sync'
+import { storageSyncReplica, synced } from '@justfiles/sync'
 import { mutationsOf, type NodeReplica } from '@justfiles/sync/node'
 import { idbStorage } from '@justfiles/sync/storage/idb'
 import { expect, test, vi } from 'vitest'
@@ -50,9 +50,61 @@ function server(requests?: string[]) {
 	return {
 		database,
 		storage,
+		client,
 		remote: remoteNodeSyncReplica(client, { clientId: 'idb-client' })
 	}
 }
+
+test('an IndexedDB client reconciles a legacy ignore policy and restarts fast', async () => {
+	const name = `node-policy-${crypto.randomUUID()}`
+	let local = idbStorage(name)
+	let localVolume = volume(local)
+	await localVolume.mkdir('/private')
+	await localVolume.writeFile('/private/local.txt', bytes('local'))
+	await localVolume.writeFile('/private/different.txt', bytes('client'))
+	await localVolume.mkdir('/.state', { recursive: true })
+	await localVolume.writeFile('/.state/sync', bytes(JSON.stringify({ schemaVersion: 1 })))
+	const requests: string[] = []
+	const remoteServer = server(requests)
+	const serverVolume = volume(remoteServer.storage)
+	await serverVolume.mkdir('/private')
+	await serverVolume.writeFile('/private/remote.txt', bytes('remote'))
+	await serverVolume.writeFile('/private/different.txt', bytes('server'))
+
+	const ignored = await synced({
+		local,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(remoteServer.client, { clientId, ignore: ['/private'] }),
+		ignore: ['/private'],
+		interval: 99_999
+	})
+	expect(text(await ignored.readFile('/private/local.txt'))).toBe('local')
+	expect(await ignored.exists('/private/remote.txt')).toBe(false)
+	ignored.destroy()
+	local.destroy()
+
+	local = idbStorage(name)
+	localVolume = volume(local)
+	const visible = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(remoteServer.client, { clientId }),
+		interval: 99_999
+	})
+	expect(text(await visible.readFile('/private/remote.txt'))).toBe('remote')
+	expect(text(await visible.readFile('/private/different.txt'))).toBe('server')
+	expect(text(await serverVolume.readFile('/private/local.txt'))).toBe('local')
+	visible.destroy()
+	const scans = requests.filter((request) => request === 'GET /node/snapshot').length
+	const second = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(remoteServer.client, { clientId }),
+		interval: 99_999
+	})
+	expect(requests.filter((request) => request === 'GET /node/snapshot')).toHaveLength(scans)
+	second.destroy()
+	local.destroy()
+	remoteServer.database.close()
+})
 
 test('an offline IndexedDB create survives restart and syncs through HTTP with its node IDs', async () => {
 	const name = `node-http-${crypto.randomUUID()}`

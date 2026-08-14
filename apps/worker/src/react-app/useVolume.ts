@@ -322,6 +322,7 @@ export async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRun
 		local,
 		remote: ({ clientId, generation, lineageId }) =>
 			remoteSyncReplica(fsClient, { clientId, generation, lineageId }),
+		ignore: ['/private'],
 		lazyContent: true
 	})
 	const remoteVolume = createVolume(remote)

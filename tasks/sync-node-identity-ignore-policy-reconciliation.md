@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 ---
 
 # sync node identity: implement projections and reconcile ignore-list changes
@@ -344,23 +344,23 @@ Do not expose reconciliation methods, policy versions, cursors, or operation IDs
 
 ## Acceptance criteria
 
-- [ ] The only product-supplied concept is one `ignore: readonly string[]` list per replica.
-- [ ] `packages/sync` contains no product-specific ignored path.
-- [ ] The server and client union is enforced before all metadata and blob transport.
-- [ ] The client receives, verifies, persists, and enforces the normalized effective list without exposing server-policy concepts to the application.
-- [ ] An unchanged normalized list starts without a full scan.
-- [ ] A changed list reconciles automatically before normal sync.
-- [ ] Adding an ignore root preserves independent local and server bytes and emits no policy-generated user delete.
-- [ ] Removing an ignore root follows the documented remote-wins best-effort rules.
-- [ ] Existing accounts with no policy state establish a correct baseline.
-- [ ] Cursors cannot cross effective policy hashes or identity epochs.
-- [ ] Crash and restart cannot leak ignored data, lose post-snapshot writes, or duplicate IDs.
-- [ ] Two clients can use different lists without changing each other's server view.
-- [ ] Rolling deployment does not require simultaneous client updates or promise an atomic account-wide policy cutover.
-- [ ] Memory, SQLite, and IndexedDB pass the same public conformance cases.
-- [ ] The non-empty reconciliation planner also works with plain `Storage` and no
+- [x] The only product-supplied concept is one `ignore: readonly string[]` list per replica.
+- [x] `packages/sync` contains no product-specific ignored path.
+- [x] The server and client union is enforced before all metadata and blob transport.
+- [x] The client receives, verifies, persists, and enforces the normalized effective list without exposing server-policy concepts to the application.
+- [x] An unchanged normalized list starts without a full scan.
+- [x] A changed list reconciles automatically before normal sync.
+- [x] Adding an ignore root preserves independent local and server bytes and emits no policy-generated user delete.
+- [x] Removing an ignore root follows the documented remote-wins best-effort rules.
+- [x] Existing accounts with no policy state establish a correct baseline.
+- [x] Cursors cannot cross effective policy hashes or identity epochs.
+- [x] Crash and restart cannot leak ignored data, lose post-snapshot writes, or duplicate IDs.
+- [x] Two clients can use different lists without changing each other's server view.
+- [x] Rolling deployment does not require simultaneous client updates or promise an atomic account-wide policy cutover.
+- [x] Memory, SQLite, and IndexedDB pass the same public conformance cases.
+- [x] The non-empty reconciliation planner also works with plain `Storage` and no
   optional capabilities.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

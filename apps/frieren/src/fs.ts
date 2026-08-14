@@ -196,6 +196,7 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 		local: entry.local,
 		remote: ({ clientId, generation, lineageId }) =>
 			remoteSyncReplica(client, { clientId, generation, lineageId }),
+		ignore: ['/private'],
 		lazyContent: true,
 		localFirst: true
 	})

@@ -1,10 +1,18 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
-import { storageSyncReplica } from '@justfiles/sync'
-import { type NodeMutation, NodeOperationRejectedError, ROOT_NODE_ID } from '@justfiles/sync/node'
+import { storageSyncReplica, synced } from '@justfiles/sync'
+import {
+	IgnoreCursorError,
+	IgnoreProtocolError,
+	type NodeMutation,
+	NodeOperationRejectedError,
+	type NodeReplica,
+	ROOT_NODE_ID
+} from '@justfiles/sync/node'
 import { nodeMemStorage } from '@justfiles/sync/storage/node-mem'
 import { afterEach, describe, expect, test } from 'vitest'
 import { nodeSyncConformanceCases } from '../../sync/node-test-harness'
@@ -71,15 +79,31 @@ function openSqlite(
 	}
 }
 
-function wireClient(app: ReturnType<typeof createFsApi>, requests?: string[]) {
+function wireClient(
+	app: ReturnType<typeof createFsApi>,
+	requests?: string[],
+	transform?: (request: Request, response: Response) => Promise<Response>
+) {
 	return createFsClient({
 		baseUrl: 'http://node-sync.test',
 		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
 			const request = new Request(input, init)
 			requests?.push(`${request.method} ${new URL(request.url).pathname}`)
-			return app.request(request)
+			const response = await app.request(request)
+			return transform ? transform(request, response) : response
 		}) as typeof fetch
 	})
+}
+
+async function nodeSubscriptionHeader(app: ReturnType<typeof createFsApi>) {
+	const hash = createHash('sha256').update('[]').digest('hex')
+	const response = await app.request('/node/subscription', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ignore: [], hash })
+	})
+	const body = (await response.json()) as { subscription: string }
+	return { 'x-sync-subscription': body.subscription }
 }
 
 function nodeReplica(storage: ReturnType<typeof sqliteStorage>) {
@@ -197,12 +221,874 @@ test('HTTP node sync creates on SQLite and bootstraps a new memory client', asyn
 	server.db.close()
 })
 
+test('HTTP node subscriptions union ignore roots and fence their cursors', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/server-private')
+	await serverVolume.writeFile('/server-private/token', bytes('server secret'))
+	await serverVolume.mkdir('/client-private')
+	await serverVolume.writeFile('/client-private/token', bytes('client secret'))
+	await serverVolume.writeFile('/shared.txt', bytes('shared'))
+	const app = createFsApi(server.storage, {
+		ignore: ['/server-private'],
+		lineage: () => ({ generation: 1, lineageId: 'volume-a' })
+	})
+	const remote = remoteNodeSyncReplica(wireClient(app), {
+		clientId: 'client-a',
+		ignore: ['/client-private/']
+	})
+	const policy = await remote.subscription()
+
+	expect(policy).toMatchObject({
+		effectiveIgnore: ['/client-private', '/server-private'],
+		identityEpoch: 'volume-a'
+	})
+	expect(policy.effectiveHash).toMatch(/^[0-9a-f]{64}$/)
+
+	let pageToken: string | undefined
+	let cursor = ''
+	const snapshotMutations: NodeMutation[] = []
+	do {
+		const page = await remote.nodeSnapshot(pageToken, { limit: 1 })
+		if (page.status !== 'ok') throw new Error(page.status)
+		snapshotMutations.push(...page.operations.flatMap((operation) => operation.mutations))
+		cursor = page.syncCursor
+		pageToken = page.next
+		if (!pageToken) await remote.closeSnapshot(page.session)
+	} while (pageToken)
+	expect(snapshotMutations.map((mutation) => mutation.nodeId)).toHaveLength(1)
+	expect(snapshotMutations[0]).toMatchObject({ kind: 'create', name: 'shared.txt' })
+
+	const hiddenHash = (await serverVolume.stat('/server-private/token')).contentHash
+	if (!hiddenHash) throw new Error('missing hidden hash')
+	await expect(remote.getBlobByHash(hiddenHash)).rejects.toThrow('node getBlobByHash failed: 404')
+
+	await serverVolume.writeFile('/later.txt', bytes('later'))
+	await serverVolume.writeFile('/client-private/token', bytes('new client secret'))
+	await serverVolume.rm('/server-private/token')
+	const delta = await remote.nodeDeltas(cursor, { limit: 100 })
+	const deltaMutations = delta.operations.flatMap((operation) => operation.mutations)
+	expect(deltaMutations).toHaveLength(1)
+	expect(deltaMutations[0]).toMatchObject({ kind: 'create', name: 'later.txt' })
+
+	const otherPolicy = remoteNodeSyncReplica(wireClient(app), {
+		clientId: 'client-b',
+		ignore: ['/other']
+	})
+	await expect(otherPolicy.nodeDeltas(cursor, { limit: 100 })).rejects.toBeInstanceOf(
+		IgnoreCursorError
+	)
+	const otherEpoch = remoteNodeSyncReplica(
+		wireClient(
+			createFsApi(server.storage, {
+				ignore: ['/server-private'],
+				lineage: () => ({ generation: 2, lineageId: 'volume-b' })
+			})
+		),
+		{ clientId: 'client-a', ignore: ['/client-private'] }
+	)
+	await expect(otherEpoch.nodeDeltas(cursor, { limit: 100 })).rejects.toBeInstanceOf(
+		IgnoreCursorError
+	)
+	server.db.close()
+})
+
+test.each([
+	'wrong-hash',
+	'missing-client-root'
+] as const)('HTTP node subscriptions reject a %s response before snapshot work', async (failure) => {
+	const server = openSqlite(':memory:')
+	const requests: string[] = []
+	const app = createFsApi(server.storage)
+	const client = wireClient(app, requests, async (request, response) => {
+		if (new URL(request.url).pathname !== '/node/subscription') return response
+		const body = (await response.json()) as Record<string, unknown>
+		if (failure === 'wrong-hash') body.effectiveHash = '0'.repeat(64)
+		else {
+			body.effectiveIgnore = []
+			body.effectiveHash = createHash('sha256').update('[]').digest('hex')
+		}
+		return Response.json(body, { status: response.status })
+	})
+	const remote = remoteNodeSyncReplica(client, {
+		clientId: 'client-a',
+		ignore: ['/client-private']
+	})
+
+	await expect(remote.subscription()).rejects.toBeInstanceOf(IgnoreProtocolError)
+	expect(requests).toEqual(['POST /node/subscription'])
+	server.db.close()
+})
+
+test('a new client ignore root keeps offline client and server bytes independent', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	const local = nodeMemStorage()
+	const client = wireClient(createFsApi(server.storage))
+	const first = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(client, { clientId }),
+		interval: 99_999
+	})
+	await first.mkdir('/private')
+	await first.writeFile('/private/token', bytes('baseline'))
+	await first.flush()
+	first.destroy()
+
+	await volume(local).writeFile('/private/token', bytes('client offline'))
+	await serverVolume.writeFile('/private/token', bytes('server offline'))
+	const requests: string[] = []
+	const secondClient = wireClient(createFsApi(server.storage), requests)
+	const second = await synced({
+		local,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(secondClient, { clientId, ignore: ['/private'] }),
+		ignore: ['/private'],
+		interval: 99_999
+	})
+
+	expect(text(await second.readFile('/private/token'))).toBe('client offline')
+	expect(text(await serverVolume.readFile('/private/token'))).toBe('server offline')
+	await second.writeFile('/private/token', bytes('client later'))
+	await second.writeFile('/private/local-only.txt', bytes('never mapped'))
+	await serverVolume.writeFile('/private/token', bytes('server later'))
+	await second.flush()
+	expect(text(await second.readFile('/private/token'))).toBe('client later')
+	expect(text(await serverVolume.readFile('/private/token'))).toBe('server later')
+	expect(requests.filter((request) => request.includes('/node/blob/'))).toEqual([])
+
+	const localView = local.caps.sync.project(['/.state', '/private'])
+	const localSnapshot = await localView.nodeSnapshot(undefined, { limit: 100 })
+	if (localSnapshot.status !== 'ok') throw new Error(localSnapshot.status)
+	expect(localSnapshot.operations).toEqual([])
+	await localView.closeSnapshot(localSnapshot.session)
+	const rawSnapshot = await local.caps.sync.nodeSnapshot(undefined, { limit: 100 })
+	if (rawSnapshot.status !== 'ok') throw new Error(rawSnapshot.status)
+	expect(
+		rawSnapshot.operations
+			.flatMap((operation) => operation.mutations)
+			.some((mutation) => mutation.kind === 'create' && mutation.name === 'local-only.txt')
+	).toBe(false)
+	await local.caps.sync.closeSnapshot(rawSnapshot.session)
+	second.destroy()
+	server.db.close()
+})
+
+test('removing an ignore root applies remote authority and publishes local-only paths', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	const local = nodeMemStorage()
+	const ignoredClient = wireClient(createFsApi(server.storage))
+	const ignored = await synced({
+		local,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(ignoredClient, { clientId, ignore: ['/private'] }),
+		ignore: ['/private'],
+		interval: 99_999
+	})
+	await ignored.mkdir('/private')
+	await ignored.writeFile('/private/local.txt', bytes('local'))
+	await ignored.writeFile('/private/different.txt', bytes('client'))
+	await ignored.writeFile('/private/equal.txt', bytes('equal'))
+	await ignored.mkdir('/private/kind')
+	await ignored.writeFile('/private/kind/child.txt', bytes('client child'))
+	await ignored.mkdir('/private/folder')
+	await ignored.writeFile('/private/folder/local-child.txt', bytes('local child'))
+	await ignored.writeFile('/private/folder/collision.txt', bytes('client collision'))
+	await ignored.flush()
+	ignored.destroy()
+
+	await serverVolume.mkdir('/private')
+	await serverVolume.writeFile('/private/remote.txt', bytes('remote'))
+	await serverVolume.writeFile('/private/different.txt', bytes('server'))
+	await serverVolume.writeFile('/private/equal.txt', bytes('equal'))
+	await serverVolume.writeFile('/private/kind', bytes('server file'))
+	await serverVolume.mkdir('/private/folder')
+	await serverVolume.writeFile('/private/folder/remote-child.txt', bytes('remote child'))
+	await serverVolume.writeFile('/private/folder/collision.txt', bytes('server collision'))
+
+	const requests: string[] = []
+	const visibleClient = wireClient(createFsApi(server.storage), requests)
+	const visible = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(visibleClient, { clientId }),
+		interval: 99_999
+	})
+	await visible.flush()
+
+	expect(text(await visible.readFile('/private/remote.txt'))).toBe('remote')
+	expect(text(await visible.readFile('/private/different.txt'))).toBe('server')
+	expect(text(await visible.readFile('/private/equal.txt'))).toBe('equal')
+	expect(text(await visible.readFile('/private/kind'))).toBe('server file')
+	expect(text(await visible.readFile('/private/folder/collision.txt'))).toBe('server collision')
+	expect(text(await visible.readFile('/private/folder/remote-child.txt'))).toBe('remote child')
+	expect(text(await visible.readFile('/private/folder/local-child.txt'))).toBe('local child')
+	expect(text(await serverVolume.readFile('/private/local.txt'))).toBe('local')
+	expect(text(await serverVolume.readFile('/private/folder/local-child.txt'))).toBe('local child')
+	const equalHash = (await serverVolume.stat('/private/equal.txt')).contentHash
+	if (!equalHash) throw new Error('missing equal hash')
+	expect(requests.some((request) => request.endsWith(`/blob/${equalHash}`))).toBe(false)
+	visible.destroy()
+	server.db.close()
+})
+
+test('policy reconciliation does not republish a stale remote deletion', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.writeFile('/gone.txt', bytes('gone'))
+	const local = nodeMemStorage()
+	const app = createFsApi(server.storage)
+	const first = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(app), { clientId }),
+		interval: 99_999
+	})
+	first.destroy()
+	await serverVolume.rm('/gone.txt')
+	await volume(local).writeFile('/mine.txt', bytes('mine'))
+
+	const second = await synced({
+		local,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), { clientId, ignore: ['/unused'] }),
+		ignore: ['/unused'],
+		interval: 99_999
+	})
+	await second.flush()
+
+	expect(await second.exists('/gone.txt')).toBe(false)
+	expect(await serverVolume.exists('/gone.txt')).toBe(false)
+	expect(text(await serverVolume.readFile('/mine.txt'))).toBe('mine')
+	second.destroy()
+	server.db.close()
+})
+
+test('a legacy SQLite client establishes one ignore-policy baseline', async () => {
+	const local = openSqlite(':memory:')
+	const localVolume = volume(local.storage)
+	await localVolume.mkdir('/private')
+	await localVolume.writeFile('/private/token', bytes('client secret'))
+	await localVolume.writeFile('/local.txt', bytes('local'))
+	await localVolume.writeFile('/conflict.txt', bytes('client'))
+	await localVolume.mkdir('/.state', { recursive: true })
+	await localVolume.writeFile(
+		'/.state/sync',
+		bytes(JSON.stringify({ schemaVersion: 1, nodePushCursor: 'legacy', nodePullCursor: 'legacy' }))
+	)
+
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/private')
+	await serverVolume.writeFile('/private/token', bytes('server secret'))
+	await serverVolume.writeFile('/remote.txt', bytes('remote'))
+	await serverVolume.writeFile('/conflict.txt', bytes('server'))
+	const requests: string[] = []
+	const client = wireClient(createFsApi(server.storage), requests)
+	const connect = () =>
+		synced({
+			local: local.storage,
+			remote: ({ clientId }) => remoteNodeSyncReplica(client, { clientId, ignore: ['/private'] }),
+			ignore: ['/private'],
+			interval: 99_999
+		})
+
+	const first = await connect()
+	expect(text(await first.readFile('/private/token'))).toBe('client secret')
+	expect(text(await serverVolume.readFile('/private/token'))).toBe('server secret')
+	expect(text(await first.readFile('/conflict.txt'))).toBe('server')
+	expect(text(await first.readFile('/remote.txt'))).toBe('remote')
+	expect(text(await serverVolume.readFile('/local.txt'))).toBe('local')
+	first.destroy()
+	const scans = requests.filter((request) => request === 'GET /node/snapshot').length
+	expect(scans).toBeGreaterThan(0)
+
+	const state = JSON.parse(text(await localVolume.readFile('/.state/sync'))) as Record<
+		string,
+		unknown
+	>
+	expect(state).toMatchObject({
+		effectiveIgnore: ['/private'],
+		effectiveHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+		remoteIdentityEpoch: 'node-v2'
+	})
+	const second = await connect()
+	expect(requests.filter((request) => request === 'GET /node/snapshot')).toHaveLength(scans)
+	second.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test.each([
+	'snapshot',
+	'local',
+	'remote',
+	'before-commit',
+	'after-commit'
+] as const)('ignore reconciliation resumes after a %s crash', async (crashPoint) => {
+	const local = openSqlite(':memory:')
+	const server = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	const connect = (
+		storage: typeof local.storage,
+		wrapRemote: (remote: NodeReplica) => NodeReplica = (remote) => remote
+	) =>
+		synced({
+			local: storage,
+			remote: ({ clientId }) => wrapRemote(remoteNodeSyncReplica(wireClient(app), { clientId })),
+			interval: 99_999
+		})
+
+	const ignored = await synced({
+		local: local.storage,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), { clientId, ignore: ['/private'] }),
+		ignore: ['/private'],
+		interval: 99_999
+	})
+	await ignored.mkdir('/private')
+	await ignored.writeFile('/private/local.txt', bytes('local'))
+	await volume(server.storage).mkdir('/private')
+	await volume(server.storage).writeFile('/private/remote.txt', bytes('remote'))
+	ignored.destroy()
+	const serverReplica = nodeReplica(server.storage)
+	const before = (await serverReplica.nodeDeltas('', { limit: 100 })).to
+	const stateIno = (await volume(local.storage).lstat('/.state/sync')).ino
+	const visibleHash = createHash('sha256').update('[]').digest('hex')
+	let crashed = false
+	const crashState = (state: Record<string, unknown>): boolean => {
+		const reconcile = state.reconcile as { phase?: string } | undefined
+		if (crashPoint === 'local') return reconcile?.phase === 'local'
+		if (crashPoint === 'remote') return reconcile?.phase === 'remote'
+		if (crashPoint === 'before-commit') return reconcile?.phase === 'commit'
+		return (
+			crashPoint === 'after-commit' &&
+			state.effectiveHash === visibleHash &&
+			reconcile === undefined
+		)
+	}
+	const crashingStorage = new Proxy(local.storage, {
+		get(target, property, receiver) {
+			if (property !== 'putBlob' || crashPoint === 'snapshot')
+				return Reflect.get(target, property, receiver)
+			return async (ino: string, data: Uint8Array) => {
+				await target.putBlob(ino, data)
+				if (ino !== stateIno || crashed) return
+				const state = JSON.parse(text(data)) as Record<string, unknown>
+				if (!crashState(state)) return
+				crashed = true
+				throw new Error(`crash:${crashPoint}`)
+			}
+		}
+	}) as typeof local.storage
+	const wrapRemote = (remote: NodeReplica): NodeReplica => {
+		if (crashPoint !== 'snapshot') return remote
+		let pages = 0
+		return {
+			...remote,
+			async nodeSnapshot(page) {
+				if (pages++ === 1) throw new Error('crash:snapshot')
+				return remote.nodeSnapshot(page, { limit: 1 })
+			}
+		}
+	}
+
+	const interrupted = await connect(crashingStorage, wrapRemote)
+	expect(interrupted.status()).toBe('error')
+	interrupted.destroy()
+	const recovered = await connect(local.storage)
+	expect(recovered.status()).toBe('synced')
+	expect(text(await recovered.readFile('/private/remote.txt'))).toBe('remote')
+	expect(text(await volume(server.storage).readFile('/private/local.txt'))).toBe('local')
+	const published = await serverReplica.nodeDeltas(before, { limit: 100 })
+	expect(published.operations.flatMap((operation) => operation.mutations)).toEqual([
+		expect.objectContaining({ kind: 'create', name: 'local.txt' })
+	])
+	recovered.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('local-first writes stay ordered behind ignore reconciliation', async () => {
+	const local = openSqlite(':memory:')
+	const server = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	let snapshotStarted!: () => void
+	let releaseSnapshot!: () => void
+	const started = new Promise<void>((resolve) => {
+		snapshotStarted = resolve
+	})
+	const blocked = new Promise<void>((resolve) => {
+		releaseSnapshot = resolve
+	})
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId }) => {
+			const remote = remoteNodeSyncReplica(wireClient(app), {
+				clientId,
+				ignore: ['/private']
+			})
+			return {
+				...remote,
+				async nodeSnapshot(page, options) {
+					snapshotStarted()
+					await blocked
+					return remote.nodeSnapshot(page, options)
+				}
+			}
+		},
+		ignore: ['/private'],
+		localFirst: true,
+		interval: 99_999
+	})
+	await started
+	await client.writeFile('/during.txt', bytes('visible'))
+	await client.mkdir('/private')
+	await client.writeFile('/private/during.txt', bytes('ignored'))
+	releaseSnapshot()
+	await client.flush()
+	expect(client.status()).toBe('synced')
+	await client.writeFile('/during.txt', bytes('visible later'))
+	await client.flush()
+
+	expect(text(await client.readFile('/during.txt'))).toBe('visible later')
+	expect(text(await client.readFile('/private/during.txt'))).toBe('ignored')
+	expect(text(await volume(server.storage).readFile('/during.txt'))).toBe('visible later')
+	expect(await volume(server.storage).exists('/private')).toBe(false)
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('filesystem moves publish and unpublish at an ignore boundary', async () => {
+	const server = openSqlite(':memory:')
+	const requests: string[] = []
+	const app = createFsApi(server.storage)
+	const local = openSqlite(':memory:')
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app, requests), { clientId, ignore: ['/hidden'] }),
+		ignore: ['/hidden'],
+		interval: 99_999
+	})
+	await client.mkdir('/visible/tree', { recursive: true })
+	await client.writeFile('/visible/tree/file.txt', bytes('content'))
+	await client.mkdir('/hidden')
+	await client.flush()
+	const before = await nodeReplica(server.storage).nodeSnapshot(undefined, { limit: 100 })
+	if (before.status !== 'ok') throw new Error(before.status)
+	const oldTree = before.operations
+		.flatMap((operation) => operation.mutations)
+		.find((mutation) => mutation.kind === 'create' && mutation.name === 'tree')
+	if (!oldTree) throw new Error('missing old tree')
+	await nodeReplica(server.storage).closeSnapshot(before.session)
+
+	await client.rename('/visible/tree', '/hidden/tree')
+	await client.flush()
+	expect(text(await client.readFile('/hidden/tree/file.txt'))).toBe('content')
+	expect(await volume(server.storage).exists('/visible/tree')).toBe(false)
+	expect(await volume(server.storage).exists('/hidden')).toBe(false)
+
+	requests.length = 0
+	await client.rename('/hidden/tree', '/hidden/renamed')
+	await client.flush()
+	expect(requests.filter((request) => request === 'POST /node/operations')).toEqual([])
+
+	await client.rename('/hidden/renamed', '/visible/tree')
+	await client.flush()
+	expect(text(await volume(server.storage).readFile('/visible/tree/file.txt'))).toBe('content')
+	const after = await nodeReplica(server.storage).nodeSnapshot(undefined, { limit: 100 })
+	if (after.status !== 'ok') throw new Error(after.status)
+	const newTree = after.operations
+		.flatMap((operation) => operation.mutations)
+		.find((mutation) => mutation.kind === 'create' && mutation.name === 'tree')
+	if (!newTree) throw new Error('missing new tree')
+	expect(newTree.nodeId).not.toBe(oldTree.nodeId)
+	await nodeReplica(server.storage).closeSnapshot(after.session)
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('a move across nested ignore roots is one projected operation', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	const local = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	const ignore = ['/dst/tree/hide', '/src/tree/secret']
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(app), { clientId, ignore }),
+		ignore,
+		interval: 99_999
+	})
+	await client.mkdir('/src/tree/hide', { recursive: true })
+	await client.mkdir('/src/tree/secret', { recursive: true })
+	await client.mkdir('/dst')
+	await client.writeFile('/src/tree/keep.txt', bytes('keep'))
+	await client.writeFile('/src/tree/hide/old.txt', bytes('old visible'))
+	await client.writeFile('/src/tree/secret/new.txt', bytes('new visible'))
+	await client.flush()
+	const replica = nodeReplica(server.storage)
+	const before = (await replica.nodeDeltas('', { limit: 100 })).to
+
+	await client.rename('/src/tree', '/dst/tree')
+	await client.flush()
+
+	const projected = await replica.nodeDeltas(before, { limit: 100 })
+	expect(projected.operations).toHaveLength(1)
+	expect(projected.operations[0]?.mutations.map((mutation) => mutation.kind)).toEqual([
+		'delete',
+		'delete',
+		'move',
+		'create',
+		'create'
+	])
+	expect(text(await serverVolume.readFile('/dst/tree/keep.txt'))).toBe('keep')
+	expect(text(await serverVolume.readFile('/dst/tree/secret/new.txt'))).toBe('new visible')
+	expect(await serverVolume.exists('/dst/tree/hide')).toBe(false)
+	expect(await serverVolume.exists('/src/tree')).toBe(false)
+	expect(text(await client.readFile('/dst/tree/hide/old.txt'))).toBe('old visible')
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('remote moves detach and reattach across a client ignore boundary', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/visible/tree', { recursive: true })
+	await serverVolume.writeFile('/visible/tree/file.txt', bytes('content'))
+	await serverVolume.mkdir('/hidden')
+	const local = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), { clientId, ignore: ['/hidden'] }),
+		ignore: ['/hidden'],
+		interval: 99_999
+	})
+
+	await serverVolume.rename('/visible/tree', '/hidden/tree')
+	await client.flush()
+	expect(await client.exists('/visible/tree')).toBe(false)
+	expect(await client.exists('/hidden')).toBe(false)
+	expect(text(await serverVolume.readFile('/hidden/tree/file.txt'))).toBe('content')
+
+	await serverVolume.rename('/hidden/tree', '/visible/tree')
+	await client.flush()
+	expect(text(await client.readFile('/visible/tree/file.txt'))).toBe('content')
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('remote ancestor deletion preserves an ignored local descendant', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/shared/private', { recursive: true })
+	await serverVolume.writeFile('/shared/public.txt', bytes('public'))
+	const local = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), {
+				clientId,
+				ignore: ['/shared/private']
+			}),
+		ignore: ['/shared/private'],
+		interval: 99_999
+	})
+	await client.mkdir('/shared/private', { recursive: true })
+	await client.writeFile('/shared/private/local.txt', bytes('local'))
+
+	await serverVolume.rm('/shared', { recursive: true })
+	await client.flush()
+
+	expect(await client.exists('/shared/public.txt')).toBe(false)
+	expect(text(await client.readFile('/shared/private/local.txt'))).toBe('local')
+	expect(await serverVolume.exists('/shared/private/local.txt')).toBe(false)
+
+	await serverVolume.writeFile('/shared', bytes('remote file'))
+	await client.flush()
+	expect(text(await client.readFile('/shared/private/local.txt'))).toBe('local')
+	expect(text(await serverVolume.readFile('/shared'))).toBe('remote file')
+	await serverVolume.writeFile('/shared', bytes('remote file later'))
+	await client.flush()
+	await serverVolume.rm('/shared')
+	await serverVolume.mkdir('/shared')
+	await serverVolume.writeFile('/shared/new-public.txt', bytes('new public'))
+	await client.flush()
+	expect(text(await client.readFile('/shared/private/local.txt'))).toBe('local')
+	expect(text(await client.readFile('/shared/new-public.txt'))).toBe('new public')
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('remote ancestor move leaves an ignored local descendant in place', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/shared/nested', { recursive: true })
+	await serverVolume.writeFile('/shared/public.txt', bytes('public'))
+	const local = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	const client = await synced({
+		local: local.storage,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), {
+				clientId,
+				ignore: ['/shared/nested/private']
+			}),
+		ignore: ['/shared/nested/private'],
+		interval: 99_999
+	})
+	await client.mkdir('/shared/nested/private', { recursive: true })
+	await client.writeFile('/shared/nested/private/local.txt', bytes('local'))
+
+	await serverVolume.rename('/shared', '/moved')
+	await client.flush()
+
+	expect(text(await client.readFile('/moved/public.txt'))).toBe('public')
+	expect(text(await client.readFile('/shared/nested/private/local.txt'))).toBe('local')
+	expect(await client.exists('/moved/nested/private')).toBe(false)
+	expect(await serverVolume.exists('/moved/nested/private/local.txt')).toBe(false)
+	client.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('two clients keep independent ignore subscriptions', async () => {
+	const server = openSqlite(':memory:')
+	const app = createFsApi(server.storage)
+	const oldLocal = openSqlite(':memory:')
+	const newLocal = openSqlite(':memory:')
+	await volume(newLocal.storage).mkdir('/private')
+	await volume(newLocal.storage).writeFile('/private/local.txt', bytes('new client only'))
+	const oldClient = await synced({
+		local: oldLocal.storage,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(app), { clientId }),
+		interval: 99_999
+	})
+	const newClient = await synced({
+		local: newLocal.storage,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), { clientId, ignore: ['/private'] }),
+		ignore: ['/private'],
+		interval: 99_999
+	})
+
+	await oldClient.mkdir('/private')
+	await oldClient.writeFile('/private/server.txt', bytes('old release'))
+	await oldClient.writeFile('/outside.txt', bytes('from old'))
+	await oldClient.flush()
+	await newClient.flush()
+	expect(text(await newClient.readFile('/private/local.txt'))).toBe('new client only')
+	expect(await newClient.exists('/private/server.txt')).toBe(false)
+	expect(text(await newClient.readFile('/outside.txt'))).toBe('from old')
+
+	await newClient.writeFile('/private/local.txt', bytes('new client later'))
+	await newClient.writeFile('/outside.txt', bytes('from new'))
+	await newClient.flush()
+	await oldClient.flush()
+	expect(text(await oldClient.readFile('/private/server.txt'))).toBe('old release')
+	expect(await oldClient.exists('/private/local.txt')).toBe(false)
+	expect(text(await oldClient.readFile('/outside.txt'))).toBe('from new')
+	expect(text(await volume(server.storage).readFile('/outside.txt'))).toBe('from new')
+	expect(await volume(server.storage).exists('/private/local.txt')).toBe(false)
+
+	oldClient.destroy()
+	newClient.destroy()
+	oldLocal.db.close()
+	newLocal.db.close()
+	server.db.close()
+})
+
+test('a server ignore change fences old cursors and reconciles a dormant client', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/private')
+	await serverVolume.writeFile('/private/token', bytes('baseline'))
+	await serverVolume.writeFile('/outside.txt', bytes('baseline'))
+	const firstApp = createFsApi(server.storage)
+	const firstRemote = remoteNodeSyncReplica(wireClient(firstApp), { clientId: 'cursor-reader' })
+	const oldCursor = (await firstRemote.nodeDeltas('', { limit: 100 })).to
+	const local = openSqlite(':memory:')
+	const first = await synced({
+		local: local.storage,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(firstApp), { clientId }),
+		interval: 99_999
+	})
+	first.destroy()
+	await volume(local.storage).writeFile('/private/token', bytes('client offline'))
+	await serverVolume.writeFile('/private/token', bytes('server offline'))
+
+	const secondApp = createFsApi(server.storage, { ignore: ['/private'] })
+	const restricted = remoteNodeSyncReplica(wireClient(secondApp), { clientId: 'restricted' })
+	expect((await restricted.subscription()).effectiveIgnore).toEqual(['/private'])
+	await expect(restricted.nodeDeltas(oldCursor, { limit: 100 })).rejects.toBeInstanceOf(
+		IgnoreCursorError
+	)
+	const hiddenSnapshot = await restricted.nodeSnapshot(undefined, { limit: 100 })
+	if (hiddenSnapshot.status !== 'ok') throw new Error(hiddenSnapshot.status)
+	expect(hiddenSnapshot.operations).toEqual([
+		expect.objectContaining({
+			mutations: [expect.objectContaining({ kind: 'create', name: 'outside.txt' })]
+		})
+	])
+	await restricted.closeSnapshot(hiddenSnapshot.session)
+
+	const second = await synced({
+		local: local.storage,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(secondApp), { clientId }),
+		interval: 99_999
+	})
+	expect(text(await second.readFile('/private/token'))).toBe('client offline')
+	expect(text(await serverVolume.readFile('/private/token'))).toBe('server offline')
+	await second.writeFile('/private/token', bytes('client later'))
+	await serverVolume.writeFile('/private/token', bytes('server later'))
+	await serverVolume.writeFile('/outside.txt', bytes('outside later'))
+	await second.flush()
+	expect(text(await second.readFile('/private/token'))).toBe('client later')
+	expect(text(await serverVolume.readFile('/private/token'))).toBe('server later')
+	expect(text(await second.readFile('/outside.txt'))).toBe('outside later')
+	second.destroy()
+
+	const thirdApp = createFsApi(server.storage)
+	const third = await synced({
+		local: local.storage,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(thirdApp), { clientId }),
+		interval: 99_999
+	})
+	expect(text(await third.readFile('/private/token'))).toBe('server later')
+	expect(text(await serverVolume.readFile('/private/token'))).toBe('server later')
+	third.destroy()
+	local.db.close()
+	server.db.close()
+})
+
+test('plain Storage reconciles a non-empty tree through node HTTP', async () => {
+	const accelerated = nodeMemStorage()
+	const { caps: _caps, ...local } = accelerated
+	const localVolume = volume(local)
+	await localVolume.writeFile('/local.txt', bytes('local'))
+	await localVolume.writeFile('/equal.txt', bytes('equal'))
+	await localVolume.writeFile('/different.txt', bytes('client'))
+	await localVolume.writeFile('/move-old.txt', bytes('move'))
+	await localVolume.writeFile('/delete.txt', bytes('delete'))
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.writeFile('/remote.txt', bytes('remote'))
+	await serverVolume.writeFile('/equal.txt', bytes('equal'))
+	await serverVolume.writeFile('/different.txt', bytes('server'))
+	await serverVolume.writeFile('/move-old.txt', bytes('move'))
+	await serverVolume.writeFile('/delete.txt', bytes('delete'))
+	const app = createFsApi(server.storage)
+	const client = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(app), { clientId }),
+		interval: 99_999
+	})
+
+	expect(text(await client.readFile('/different.txt'))).toBe('server')
+	expect(text(await client.readFile('/remote.txt'))).toBe('remote')
+	expect(text(await serverVolume.readFile('/local.txt'))).toBe('local')
+	await client.writeFile('/local.txt', bytes('local later'))
+	await client.rename('/move-old.txt', '/move-new.txt')
+	await client.rm('/delete.txt')
+	await serverVolume.writeFile('/remote.txt', bytes('remote later'))
+	await client.flush()
+
+	expect(text(await serverVolume.readFile('/local.txt'))).toBe('local later')
+	expect(text(await serverVolume.readFile('/move-new.txt'))).toBe('move')
+	expect(await serverVolume.exists('/move-old.txt')).toBe(false)
+	expect(await serverVolume.exists('/delete.txt')).toBe(false)
+	expect(text(await client.readFile('/remote.txt'))).toBe('remote later')
+	expect(client.status()).toBe('synced')
+	client.destroy()
+	server.db.close()
+})
+
+test('plain Storage preserves an ignored child through remote ancestor changes', async () => {
+	const accelerated = nodeMemStorage()
+	const { caps: _caps, ...local } = accelerated
+	const localVolume = volume(local)
+	await localVolume.mkdir('/shared/private', { recursive: true })
+	await localVolume.writeFile('/shared/private/local.txt', bytes('local'))
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/shared')
+	await serverVolume.writeFile('/shared/public.txt', bytes('public'))
+	const app = createFsApi(server.storage)
+	const client = await synced({
+		local,
+		remote: ({ clientId }) =>
+			remoteNodeSyncReplica(wireClient(app), {
+				clientId,
+				ignore: ['/shared/private']
+			}),
+		ignore: ['/shared/private'],
+		interval: 99_999
+	})
+
+	await serverVolume.rm('/shared', { recursive: true })
+	await client.flush()
+	expect(text(await client.readFile('/shared/private/local.txt'))).toBe('local')
+
+	await serverVolume.writeFile('/shared', bytes('remote file'))
+	await client.flush()
+	expect(text(await client.readFile('/shared/private/local.txt'))).toBe('local')
+	expect(text(await serverVolume.readFile('/shared'))).toBe('remote file')
+	client.destroy()
+	server.db.close()
+})
+
+test('plain Storage restarts a failed remote snapshot page', async () => {
+	const accelerated = nodeMemStorage()
+	const { caps: _caps, ...local } = accelerated
+	const server = openSqlite(':memory:')
+	await volume(server.storage).writeFile('/a.txt', bytes('a'))
+	await volume(server.storage).writeFile('/b.txt', bytes('b'))
+	const app = createFsApi(server.storage)
+	const interrupted = await synced({
+		local,
+		remote: ({ clientId }) => {
+			const remote = remoteNodeSyncReplica(wireClient(app), { clientId })
+			let pages = 0
+			return {
+				...remote,
+				async nodeSnapshot(page) {
+					if (pages++ === 1) throw new Error('page crash')
+					return remote.nodeSnapshot(page, { limit: 1 })
+				}
+			}
+		},
+		interval: 99_999
+	})
+	expect(interrupted.status()).toBe('error')
+	interrupted.destroy()
+
+	const recovered = await synced({
+		local,
+		remote: ({ clientId }) => remoteNodeSyncReplica(wireClient(app), { clientId }),
+		interval: 99_999
+	})
+	expect(text(await recovered.readFile('/a.txt'))).toBe('a')
+	expect(text(await recovered.readFile('/b.txt'))).toBe('b')
+	expect(recovered.status()).toBe('synced')
+	recovered.destroy()
+	server.db.close()
+})
+
 test('HTTP node authority returns an exact create retry and rejects changed reuse', async () => {
 	const directory = mkdtempSync(join(tmpdir(), 'justfiles-node-operation-'))
 	temporaryDirectories.push(directory)
 	const filename = join(directory, 'fs.db')
 	let server = openSqlite(filename)
 	let app = createFsApi(server.storage, { actor: () => 'authenticated-user' })
+	let subscription = await nodeSubscriptionHeader(app)
 	const request = {
 		operations: [
 			{
@@ -225,7 +1111,11 @@ test('HTTP node authority returns an exact create retry and rejects changed reus
 	const send = (body: unknown) =>
 		app.request('/node/operations', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', 'x-fs-source': 'client-a' },
+			headers: {
+				'Content-Type': 'application/json',
+				'x-fs-source': 'client-a',
+				...subscription
+			},
 			body: JSON.stringify(body)
 		})
 
@@ -238,6 +1128,7 @@ test('HTTP node authority returns an exact create retry and rejects changed reus
 	server.db.close()
 	server = openSqlite(filename, false)
 	app = createFsApi(server.storage, { actor: () => 'authenticated-user' })
+	subscription = await nodeSubscriptionHeader(app)
 	const retryRequest = structuredClone(request)
 	retryRequest.operations[0]!.origin = 'another-forged-user'
 	const retry = await send(retryRequest)
@@ -349,9 +1240,21 @@ test('HTTP node authority lets the first concurrent move win', async () => {
 		]
 	})
 
-	await remote.applyNodeOperations([move('move-a', a.nodeId)], () =>
+	const [accepted] = await remote.applyNodeOperations([move('move-a', a.nodeId)], () =>
 		Promise.reject(new Error('move requested content'))
 	)
+	expect(accepted).toMatchObject({
+		status: 'accepted',
+		operation: {
+			mutations: [
+				{
+					kind: 'move',
+					fromParentId: ROOT_NODE_ID,
+					fromName: 'note.txt'
+				}
+			]
+		}
+	})
 	await expect(
 		remote.applyNodeOperations([move('move-b', b.nodeId)], () =>
 			Promise.reject(new Error('move requested content'))
@@ -367,6 +1270,56 @@ test('HTTP node authority lets the first concurrent move win', async () => {
 	expect(text(await serverVolume.readFile('/a/note.txt'))).toBe('note')
 	expect(await serverVolume.exists('/b/note.txt')).toBe(false)
 	expect(await serverVolume.exists('/note.txt')).toBe(false)
+	server.db.close()
+})
+
+test('HTTP node authority rejects a stale unpublish without partial deletion', async () => {
+	const server = openSqlite(':memory:')
+	const serverVolume = volume(server.storage)
+	await serverVolume.mkdir('/tree')
+	await serverVolume.writeFile('/tree/a.txt', bytes('a'))
+	const remote = remoteNodeSyncReplica(wireClient(createFsApi(server.storage)), {
+		clientId: 'client-a'
+	})
+	const snapshot = await remote.nodeSnapshot(undefined, { limit: 10 })
+	if (snapshot.status !== 'ok') throw new Error(snapshot.status)
+	const creates = snapshot.operations.flatMap((operation) => operation.mutations)
+	const tree = creates.find((mutation) => mutation.kind === 'create' && mutation.name === 'tree')
+	const child = creates.find((mutation) => mutation.kind === 'create' && mutation.name === 'a.txt')
+	if (!tree || !child) throw new Error('missing snapshot nodes')
+	await remote.closeSnapshot(snapshot.session)
+	await serverVolume.writeFile('/tree/b.txt', bytes('b'))
+
+	await expect(
+		remote.applyNodeOperations(
+			[
+				{
+					operationId: 'stale-unpublish',
+					boundary: true,
+					mutations: [
+						{
+							kind: 'delete',
+							nodeId: child.nodeId,
+							baseRevision: child.revision,
+							revision: child.revision + 1
+						},
+						{
+							kind: 'delete',
+							nodeId: tree.nodeId,
+							baseRevision: tree.revision,
+							revision: tree.revision + 1
+						}
+					]
+				}
+			],
+			() => Promise.reject(new Error('delete requested content'))
+		)
+	).rejects.toMatchObject({
+		name: NodeOperationRejectedError.name,
+		result: { status: 'rejected', reason: 'not_empty' }
+	})
+	expect(text(await serverVolume.readFile('/tree/a.txt'))).toBe('a')
+	expect(text(await serverVolume.readFile('/tree/b.txt'))).toBe('b')
 	server.db.close()
 })
 
@@ -960,6 +1913,7 @@ test('HTTP node authority rejects bad content and fences before operation identi
 	await serverVolume.writeFile('/note.txt', bytes('old'))
 	const lineage = { generation: 5, lineageId: 'volume-a' }
 	const app = createFsApi(server.storage, { lineage: () => lineage })
+	const subscription = await nodeSubscriptionHeader(app)
 	const client = wireClient(app)
 	const currentRemote = remoteNodeSyncReplica(client, {
 		clientId: 'client-current',
@@ -979,7 +1933,7 @@ test('HTTP node authority rejects bad content and fences before operation identi
 	const send = (operation: unknown, headers?: Record<string, string>) =>
 		app.request('/node/operations', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', ...headers },
+			headers: { 'Content-Type': 'application/json', ...subscription, ...headers },
 			body: JSON.stringify({ operations: [operation] })
 		})
 	const missingContent = {
@@ -1203,6 +2157,7 @@ test('HTTP moves 4,000 descendants with one mutation, one row, and no blob uploa
 test('HTTP rejects an update with missing content, then accepts it under the same node ID', async () => {
 	const server = openSqlite(':memory:')
 	const app = createFsApi(server.storage)
+	const subscription = await nodeSubscriptionHeader(app)
 	const remote = remoteNodeSyncReplica(wireClient(app), { clientId: 'client-a' })
 	const sourceStorage = nodeMemStorage()
 	const source = memoryNodeReplica(sourceStorage)
@@ -1217,7 +2172,11 @@ test('HTTP rejects an update with missing content, then accepts it under the sam
 	outgoing = await source.nodeDeltas(cursor, { limit: 10 })
 	const rejected = await app.request('/node/operations', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'x-fs-source': 'client-a' },
+		headers: {
+			'Content-Type': 'application/json',
+			'x-fs-source': 'client-a',
+			...subscription
+		},
 		body: JSON.stringify({ operations: outgoing.operations })
 	})
 	expect(rejected.status).toBe(409)

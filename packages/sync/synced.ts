@@ -1,8 +1,11 @@
 import { type Volume, volume } from '@justfiles/fs'
 import { persistedState } from '@justfiles/fs/persistedState'
-import type { Storage } from '@justfiles/fs/storage'
+import type { Storage, StorageCapabilities } from '@justfiles/fs/storage'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
+import type { NodeReplica } from './node'
+import { nodeSynced } from './node-synced'
+import { ignorePolicy } from './policy'
 import {
 	type BlobStore,
 	CursorPrunedError,
@@ -16,8 +19,11 @@ import {
 	type SyncState,
 	syncIgnore
 } from './replica'
+import { scanSynced } from './scan-synced'
 import type { PathChange } from './wire'
 import { parseVersion } from './wire'
+
+export { IgnorePolicyError } from './policy'
 
 /**
  * The peer this volume syncs against. Two topologies:
@@ -38,27 +44,19 @@ type RemotePeer =
 			clientId: string
 			generation: () => number | undefined
 			lineageId: () => string | undefined
-	  }) => SyncReplica)
+	  }) => SyncReplica | NodeReplica)
 
 type Props = {
-	local: JournaledStorage
+	local: Storage | JournaledStorage
 	remote: RemotePeer
 	interval?: number
 	lazyContent?: boolean
 	// Local-first boot: return the local volume immediately and run the first
 	// sync in the background, instead of blocking boot until it settles.
 	localFirst?: boolean
-	// Paths THIS host never syncs, on top of the built-in private class (`/private`,
-	// `/.state`) which it cannot weaken — see `syncIgnore`. Threaded to EVERY seam that
-	// cares: the wire filters, and the two destructive ones (`reconcileLocal`,
-	// `clientReset`), so an ignored path is also never deleted for being absent from a
-	// peer that was never allowed to have it.
-	//
-	// CLIENT/DAEMON side only. The server's replica (`createFsApi`) deliberately does
-	// not take this: its reset (`resetVolume`) preserves the built-in class by walking
-	// dirents in SQL, and it cannot evaluate a predicate — so a server-side ignore
-	// would silently not survive a take-mine.
-	ignore?: (path: string) => boolean
+	// Paths this replica does not publish or materialize. Sync excludes its own
+	// `/.state` files without adding that root to the public list.
+	ignore?: readonly string[]
 }
 
 // What the sync loop knows about replication. Network/auth states (offline,
@@ -78,7 +76,7 @@ const SCHEMA_VERSION = 1
 const DEBOUNCE_MS = 3_000
 const MAX_WAIT_MS = 15_000
 
-interface SyncLifecycle {
+export interface SyncLifecycle {
 	flush(): Promise<void>
 	destroy(): void
 	pause(): void
@@ -105,6 +103,7 @@ interface SyncLifecycle {
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
+	const localPolicy = await ignorePolicy(props.ignore)
 	const localVol = volume(props.local)
 	const syncInterval = props.interval ?? 30_000
 	const lazyContent = props.lazyContent ?? false
@@ -147,17 +146,40 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// ONE predicate for every ignore decision in this engine: the wire filters (inside
 	// the replicas) and the two destructive sweeps below. Built-in private class +
 	// this host's own `ignore`; a host can only widen it.
-	const isIgnored = syncIgnore(props.ignore)
+	const isIgnored = syncIgnore(localPolicy.ignored)
+	const clientServer = typeof props.remote === 'function'
+	const remoteCandidate =
+		typeof props.remote === 'function'
+			? props.remote({
+					clientId: id,
+					generation: () => knownGeneration,
+					lineageId: () => knownLineage
+				})
+			: undefined
+	if (remoteCandidate && 'nodeDeltas' in remoteCandidate) {
+		const nodeProps = {
+			local: props.local,
+			remote: remoteCandidate,
+			localPolicy,
+			state: syncState,
+			interval: syncInterval,
+			localFirst: props.localFirst ?? false
+		}
+		const sync = (props.local.caps as (StorageCapabilities & { sync?: unknown }) | undefined)?.sync
+		return sync ? nodeSynced({ ...nodeProps, clientId: id }) : scanSynced(nodeProps)
+	}
+	if (!('sync' in props.local)) throw new Error('path sync requires a journaled backend')
+	const pathLocal = props.local
 
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(
-		props.local,
-		journaledChangeSource(props.local.sync),
-		props.local.sync,
+		pathLocal,
+		journaledChangeSource(pathLocal.sync),
+		pathLocal.sync,
 		{
 			lazyContent,
 			localActorId: id,
-			ignore: props.ignore
+			ignore: localPolicy.ignored
 		}
 	)
 	const localReplicaFor = (storage: Storage): SyncReplica => {
@@ -166,7 +188,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		return localSyncReplica(storage, journaledChangeSource(sync), sync, {
 			lazyContent,
 			localActorId: id,
-			ignore: props.ignore
+			ignore: localPolicy.ignored
 		})
 	}
 
@@ -177,14 +199,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	//     built with the clientId we own so the server-stamped origin matches
 	//     pull's `excludeOrigin`.
 	//   - Storage  => TWO-FOLDER P2P: wrap the local backend in a local replica.
-	const clientServer = typeof props.remote === 'function'
 	const remoteReplica: SyncReplica =
 		typeof props.remote === 'function'
-			? props.remote({
-					clientId: id,
-					generation: () => knownGeneration,
-					lineageId: () => knownLineage
-				})
+			? (remoteCandidate as SyncReplica)
 			: localReplicaFor(props.remote)
 
 	// The client<->server handshake, run ONCE before the first sync. A local peer
@@ -352,14 +369,14 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		}
 		for (const e of await localVol.readdir(path))
 			await rmSynced(`${path === '/' ? '' : path}/${e.name}`)
-		// Only when nothing private survived under it (and never the root itself).
+		// Only when nothing ignored survived under it (and never the root itself).
 		if (path !== '/' && (await localVol.readdir(path)).length === 0)
 			await localVol.rm(path, { recursive: true, force: true })
 	}
 
 	/**
 	 * Delete local paths absent from the remote snapshot (child-before-parent),
-	 * skipping ignored subtrees (`/.state`, `/private`, this host's own ignores).
+	 * skipping the engine state and caller-ignored subtrees.
 	 * Path-keyed (today's ino-based reconcile is replaced).
 	 */
 	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {
@@ -395,7 +412,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// lineage reset the server's versions aren't comparable to ours, so a leftover
 		// tombstone would outrank a re-pulled put and strand that path. Owned backends
 		// only; a P2P/native peer has no such state.
-		await props.local.sync.clearSyncState()
+		await pathLocal.sync.clearSyncState()
 		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
 	}
 
@@ -417,7 +434,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// ordinary push (`excludeLocalSource: REMOTE_SOURCE`) would filter it out and
 		// bootstrap (everPushed=false) never re-stamps a path absent from the new snapshot,
 		// stranding it local-only forever. Adopting makes every preserved path publishable.
-		await props.local.sync.journal.adoptAllAsLocal()
+		await pathLocal.sync.journal.adoptAllAsLocal()
 		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
 	}
 
@@ -474,7 +491,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	async function applyTakeMinePrep(toGeneration: number): Promise<void> {
 		if (!knownPending) return
 		await recordGeneration(toGeneration)
-		await props.local.sync.journal.adoptAllAsLocal({ dropDeletes: true })
+		await pathLocal.sync.journal.adoptAllAsLocal({ dropDeletes: true })
 		knownPending = { ...knownPending, toGeneration }
 		await syncState.patch({ pendingReset: knownPending, pushCursor: '0', pullCursor: '0' })
 	}

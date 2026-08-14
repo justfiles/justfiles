@@ -21,7 +21,7 @@ import {
 	type SyncReplica
 } from './replica'
 import { memStorage } from './storage/mem'
-import { REMOTE_SOURCE, synced } from './synced'
+import { IgnorePolicyError, REMOTE_SOURCE, synced } from './synced'
 import type { PathChange } from './wire'
 
 const enc = new TextEncoder()
@@ -183,6 +183,57 @@ describe('synced (lifecycle)', () => {
 		expect(await volume(remote).exists('/.state')).toBe(false)
 	})
 
+	it('uses one stable ignore policy and rejects invalid roots before sync starts', async () => {
+		const remote = memStorage()
+		const base = localSyncReplica(remote, journaledChangeSource(remote.sync), remote.sync, {
+			lazyContent: false,
+			localActorId: 'server'
+		})
+		let scans = 0
+		const replica: SyncReplica = {
+			...base,
+			async pathScan(page, options) {
+				scans++
+				return base.pathScan(page, options)
+			}
+		}
+		const local = memStorage()
+		const first = await synced({
+			local,
+			remote: () => replica,
+			ignore: ['/tmp/', '/cache', '/tmp'],
+			interval: 99_999
+		})
+		first.destroy()
+		const firstScans = scans
+		const second = track(
+			await synced({
+				local,
+				remote: () => replica,
+				ignore: ['/cache/', '/tmp'],
+				interval: 99_999
+			})
+		)
+
+		expect(scans).toBe(firstScans)
+		expect(await second.exists('/.state/sync')).toBe(true)
+
+		for (const root of ['relative', '/', '/a/../b', '/a\0b']) {
+			let started = false
+			await expect(
+				synced({
+					local: memStorage(),
+					remote: () => {
+						started = true
+						return replica
+					},
+					ignore: [root]
+				})
+			).rejects.toBeInstanceOf(IgnorePolicyError)
+			expect(started).toBe(false)
+		}
+	})
+
 	// ── Adoption ────────────────────────────────────────────────────────────────
 	it('preserves un-pushed local files when first adopting a non-empty remote', async () => {
 		const remote = memStorage()
@@ -302,7 +353,7 @@ describe('synced (lifecycle)', () => {
 		const remote = memStorage()
 		await volume(remote).writeFile('/keep.txt', enc.encode('keep'))
 		const local = memStorage()
-		const ignore = (p: string) => p.startsWith('/state/cache/')
+		const ignore = ['/state/cache']
 
 		const vol1 = await synced({ local, remote, interval: 99_999, ignore })
 		await vol1.flush()
@@ -333,7 +384,7 @@ describe('synced (lifecycle)', () => {
 		await volume(remote).writeFile('/keep.txt', enc.encode('keep'))
 
 		const local = memStorage()
-		const vol1 = await synced({ local, remote, interval: 99_999 })
+		const vol1 = await synced({ local, remote, interval: 99_999, ignore: ['/private'] })
 		await vol1.flush()
 		await vol1.writeFile('/pushed.txt', enc.encode('mine'))
 		await vol1.flush() // everPushed => reconcile runs on re-bootstrap
@@ -350,7 +401,7 @@ describe('synced (lifecycle)', () => {
 		delete state.pullCursor
 		await lv.writeFile('/.state/sync', enc.encode(JSON.stringify(state)))
 
-		const vol2 = track(await synced({ local, remote, interval: 99_999 }))
+		const vol2 = track(await synced({ local, remote, interval: 99_999, ignore: ['/private'] }))
 		await vol2.flush()
 		expect(await vol2.exists('/stray.md')).toBe(false) // reconciled away
 		expect(dec.decode(await vol2.readFile('/private/accounts/cred.json'))).toBe('CRED')
@@ -793,7 +844,7 @@ describe('synced (generation / client-reset)', () => {
 				local,
 				remote: () => server.replica,
 				interval: 99_999,
-				ignore: (p) => p.startsWith('/state/cache/')
+				ignore: ['/state/cache']
 			})
 		)
 		await vol.mkdir('/state/cache', { recursive: true })
@@ -814,7 +865,7 @@ describe('synced (generation / client-reset)', () => {
 				local,
 				remote: () => server.replica,
 				interval: 99_999,
-				ignore: (p) => p.startsWith('/state/cache/')
+				ignore: ['/state/cache']
 			})
 		)
 		await vol.mkdir('/state/cache', { recursive: true })
@@ -829,7 +880,14 @@ describe('synced (generation / client-reset)', () => {
 	it('takeTheirs() keeps the private root', async () => {
 		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
 		const local = memStorage()
-		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		const vol = track(
+			await synced({
+				local,
+				remote: () => server.replica,
+				interval: 99_999,
+				ignore: ['/private']
+			})
+		)
 		await vol.mkdir('/private/accounts', { recursive: true })
 		await vol.mkdir('/private/connections/chatgpt', { recursive: true })
 		await vol.writeFile('/private/accounts/a.json', enc.encode('CRED'))

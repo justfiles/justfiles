@@ -1,6 +1,10 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
 import type { FileType } from '@justfiles/fs/types'
+import { ignorePolicy } from '@justfiles/sync'
 import {
+	IgnoreCursorError,
+	IgnoreProtocolError,
+	type IgnoreSubscriptionPolicy,
 	NodeOperation,
 	NodeOperationRejectedError,
 	NodeOperationResult,
@@ -22,6 +26,7 @@ const FS_GENERATION_HEADER = 'x-fs-generation'
 // the server rejects a write aimed at a DIFFERENT volume that happens to share the
 // same generation epoch (which `x-fs-generation` alone can't distinguish).
 const FS_LINEAGE_HEADER = 'x-fs-lineage'
+const FS_SUBSCRIPTION_HEADER = 'x-sync-subscription'
 
 // Detect the server's push-fence rejection. A mutating write stamped with a stale
 // `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`, and a
@@ -368,6 +373,7 @@ export async function apiStorage(
 
 export interface RemoteSyncReplicaOptions {
 	clientId: string
+	ignore?: readonly string[]
 	// The volume lineage `synced()` last agreed with, stamped as `x-fs-generation`
 	// on push so the server fences a stale write (a `409 generation_stale` surfaces
 	// as `GenerationStaleError`, which `synced()` turns into a client reset).
@@ -384,11 +390,40 @@ export function remoteNodeSyncReplica(
 	options: RemoteSyncReplicaOptions
 ): NodeReplica {
 	const { clientId, generation, lineageId } = options
-	const mutationHeaders = () => {
+	let active: Promise<{ token: string; policy: IgnoreSubscriptionPolicy }> | undefined
+	function openSubscription(): Promise<{ token: string; policy: IgnoreSubscriptionPolicy }> {
+		if (active) return active
+		active = (async () => {
+			const local = await ignorePolicy(options.ignore)
+			const res = await client.node.subscription.$post({
+				json: { ignore: [...local.roots], hash: local.hash }
+			})
+			if (!res.ok) throw new IgnoreProtocolError()
+			const data = await res.json()
+			const effective = await ignorePolicy(data.effectiveIgnore)
+			if (
+				effective.hash !== data.effectiveHash ||
+				!local.roots.every((root) => effective.ignored(root))
+			)
+				throw new IgnoreProtocolError()
+			return {
+				token: data.subscription,
+				policy: {
+					effectiveIgnore: effective.roots,
+					effectiveHash: effective.hash,
+					identityEpoch: data.identityEpoch
+				}
+			}
+		})()
+		return active
+	}
+	const subscriptionHeader = (token: string) => ({ [FS_SUBSCRIPTION_HEADER]: token })
+	const mutationHeaders = (token: string) => {
 		const currentGeneration = generation?.()
 		const currentLineage = lineageId?.()
 		return {
 			[FS_SOURCE_HEADER]: clientId,
+			...subscriptionHeader(token),
 			...(currentGeneration !== undefined
 				? { [FS_GENERATION_HEADER]: String(currentGeneration) }
 				: {}),
@@ -397,17 +432,23 @@ export function remoteNodeSyncReplica(
 	}
 
 	return {
+		async subscription() {
+			return (await openSubscription()).policy
+		},
 		async nodeDeltas(cursor, opts) {
+			const { token } = await openSubscription()
 			const res = await client.node.changes.$get(
 				{
 					query: {
 						cursor,
 						excludeSource: opts?.excludeLocalSource,
 						limit: opts?.limit === undefined ? undefined : String(opts.limit)
-					}
+					},
+					header: subscriptionHeader(token)
 				},
 				{ init: { cache: 'no-store' } }
 			)
+			if (res.status === 410) throw new IgnoreCursorError()
 			if (!res.ok) throw new Error(`nodeDeltas failed: ${res.status}`)
 			const data = await res.json()
 			return {
@@ -417,13 +458,16 @@ export function remoteNodeSyncReplica(
 			}
 		},
 		async applyNodeOperations(operations, getBlobByHash) {
+			const { token } = await openSubscription()
 			const missingResponse = await client.node.content.wanted.$post({
 				json: {
 					operations: operations.map((operation) => ({
 						operationId: operation.operationId,
-						mutations: [...operation.mutations]
+						mutations: [...operation.mutations],
+						boundary: operation.boundary
 					}))
-				}
+				},
+				header: subscriptionHeader(token)
 			})
 			if (!missingResponse.ok)
 				throw new Error(`node missing blobs failed: ${missingResponse.status}`)
@@ -433,7 +477,7 @@ export function remoteNodeSyncReplica(
 					{
 						param: { hash },
 						header: {
-							...mutationHeaders(),
+							...mutationHeaders(token),
 							'Content-Type': 'application/octet-stream'
 						}
 					} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
@@ -446,10 +490,11 @@ export function remoteNodeSyncReplica(
 				json: {
 					operations: operations.map((operation) => ({
 						operationId: operation.operationId,
-						mutations: [...operation.mutations]
+						mutations: [...operation.mutations],
+						boundary: operation.boundary
 					}))
 				},
-				header: mutationHeaders()
+				header: mutationHeaders(token)
 			} as unknown as Parameters<typeof client.node.operations.$post>[0])
 			await throwIfStale(res)
 			const body = await res.json()
@@ -461,21 +506,30 @@ export function remoteNodeSyncReplica(
 			return results
 		},
 		async getBlobByHash(hash) {
-			const res = await client.node.blob[':hash'].$get({ param: { hash } })
+			const { token } = await openSubscription()
+			const res = await client.node.blob[':hash'].$get({
+				param: { hash },
+				header: subscriptionHeader(token)
+			})
 			if (!res.ok) throw new Error(`node getBlobByHash failed: ${res.status}`)
 			return new Uint8Array(await res.arrayBuffer())
 		},
 		async hasBlobByHash(hash) {
-			const res = await client.node.blobs.missing.$post({ json: { hashes: [hash] } })
+			const { token } = await openSubscription()
+			const res = await client.node.blobs.missing.$post({
+				json: { hashes: [hash] },
+				header: subscriptionHeader(token)
+			})
 			if (!res.ok) throw new Error(`node hasBlobByHash failed: ${res.status}`)
 			return !(await res.json()).missing.includes(hash)
 		},
 		async putBlobByHash(hash, data) {
+			const { token } = await openSubscription()
 			const res = await client.node.blob[':hash'].$put(
 				{
 					param: { hash },
 					header: {
-						...mutationHeaders(),
+						...mutationHeaders(token),
 						'Content-Type': 'application/octet-stream'
 					}
 				} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
@@ -485,11 +539,13 @@ export function remoteNodeSyncReplica(
 			if (!res.ok) throw new Error(`node putBlobByHash failed: ${res.status}`)
 		},
 		async nodeSnapshot(page, opts) {
+			const { token } = await openSubscription()
 			const res = await client.node.snapshot.$get({
 				query: {
 					page,
 					limit: opts?.limit === undefined ? undefined : String(opts.limit)
-				}
+				},
+				header: subscriptionHeader(token)
 			})
 			if (res.status === 410) return { status: 'restart' }
 			if (res.status === 429) return { status: 'busy' }
@@ -505,15 +561,21 @@ export function remoteNodeSyncReplica(
 			}
 		},
 		async getSnapshotBlob(session, hash) {
+			const { token } = await openSubscription()
 			const res = await client.node.snapshot[':session'].blob[':hash'].$get({
-				param: { session, hash }
+				param: { session, hash },
+				header: subscriptionHeader(token)
 			})
 			if (res.status === 410) return { status: 'restart' }
 			if (!res.ok) throw new Error(`getSnapshotBlob failed: ${res.status}`)
 			return { status: 'ok', data: new Uint8Array(await res.arrayBuffer()) }
 		},
 		async closeSnapshot(session) {
-			const res = await client.node.snapshot[':session'].$delete({ param: { session } })
+			const { token } = await openSubscription()
+			const res = await client.node.snapshot[':session'].$delete({
+				param: { session },
+				header: subscriptionHeader(token)
+			})
 			return { status: res.status === 204 ? 'ok' : 'restart' }
 		}
 	}
