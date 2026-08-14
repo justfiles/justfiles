@@ -347,7 +347,7 @@ Documented now so v1 doesn't foreclose them; **none of this is v1.**
 
 Frieren apps expose a **typed, described command surface** — an app's `update`
 actions and `procedures` each carry `description`, `examples`, `schema`, and
-`audience` (see `packages/app-notes/src/app.ts`: `open`, `newNote`, `create`, …).
+`audience` metadata.
 That registry is a ready-made command palette, and **it's the same registry the
 agent uses** — so surfacing it costs no new system.
 
