@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing"
+  short_description: "Test and verify repository changes"
+  default_prompt: "Use $testing to test and verify my changes."
