@@ -5,10 +5,12 @@
 	"exports": {
 		".": "./index.ts",
 		"./path": "./path.ts",
+		"./node": "./node.ts",
 		"./replica": "./replica.ts",
 		"./wire": "./wire.ts",
 		"./storage/mem": "./storage/mem.ts",
-		"./storage/idb": "./storage/idb.ts"
+		"./storage/idb": "./storage/idb.ts",
+		"./storage/node-mem": "./storage/node-mem.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -24,6 +26,11 @@
 				"types": "./dist/path.d.ts",
 				"import": "./dist/path.js",
 				"default": "./dist/path.js"
+			},
+			"./node": {
+				"types": "./dist/node.d.ts",
+				"import": "./dist/node.js",
+				"default": "./dist/node.js"
 			},
 			"./replica": {
 				"types": "./dist/replica.d.ts",
@@ -44,6 +51,11 @@
 				"types": "./dist/storage/idb.d.ts",
 				"import": "./dist/storage/idb.js",
 				"default": "./dist/storage/idb.js"
+			},
+			"./storage/node-mem": {
+				"types": "./dist/storage/node-mem.d.ts",
+				"import": "./dist/storage/node-mem.js",
+				"default": "./dist/storage/node-mem.js"
 			}
 		}
 	},

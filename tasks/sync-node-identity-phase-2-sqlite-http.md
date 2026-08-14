@@ -16,11 +16,15 @@ AFK vertical slice through shared sync rules, SQLite persistence, server routes,
 
 ## Blocked by
 
-[phase 1: memory reference](./sync-node-identity-phase-1-memory.md)
+- [phase 1: memory reference](./sync-node-identity-phase-1-memory.md)
+- [snapshot handoff](./sync-node-identity-snapshot-handoff.md)
 
 ## Context for a fresh agent
 
-Phase 1 defines the v2 node mutation contract, memory reference adapter, and conformance behavior. Use it as the executable specification. Do not redesign the identity model in this task.
+Phase 1 defines the v2 node mutation contract, memory reference adapter, and delta
+conformance behavior. The snapshot handoff task defines the internal current-state
+bootstrap contract. Use both as executable specifications. Do not redesign either
+contract in this task.
 
 Read:
 
@@ -41,7 +45,8 @@ Add migration-owned tables for:
 
 - sync node state and bidirectional local-inode lookup;
 - accepted node mutation journal with a monotonic cursor;
-- any minimal singleton state required for snapshot cursors or revision allocation.
+- snapshot-session state required by the internal handoff contract;
+- any minimal singleton state required for revision allocation.
 
 Suggested logical constraints:
 
@@ -79,32 +84,6 @@ A fresh SQLite server and a memory client must be able to create, update, move, 
 - v1 path synchronization remains functional and uses a separate cursor namespace.
 
 This phase can use the deterministic revision rules from phase 1. Complete conflict policy lands in phase 4.
-
-## Visibility boundary requirements
-
-The SQLite and HTTP slice must enforce the visibility contract from the memory reference as a security boundary.
-
-- Add an ignore-list subscription to the v2 handshake. The client sends its normalized list and hash. The server calculates the effective connection list as the union of its normalized list and the client's normalized list, then returns the normalized effective list, its hash, and the identity epoch.
-- Before it accepts the subscription, the client normalizes the returned list, recalculates its hash, and verifies that it contains every client root. A mismatch is a typed protocol error and no cursor or projection state advances.
-- Exclude effective ignored data from node snapshots, deltas, tombstones, and blob routes before serialization.
-- The server independently reconstructs ancestry and rejects create, move, or publish operations under the effective connection list. A client cannot weaken the server list.
-- `publishTree` can use resumable staging, but it validates every node and blob before one atomic filesystem, mapping, revision, and journal commit. Staged nodes are not visible.
-- `unpublishTree` atomically verifies an exact descendant ID/revision manifest, removes the shared projection, and records tombstones. The client keeps its ignored local bytes without live mappings to old IDs.
-- A visible root move that intersects a nested ignore root commits the top-level move and affected publish or unpublish manifests in one SQLite transaction.
-- Server-local ignored nodes stay independent from same-path ignored nodes on clients.
-
-### Additional RED/GREEN cycle: HTTP boundary security
-
-**RED:** Give the server and client different ignore roots. Assert that the handshake returns the normalized union and a matching hash. Reject a response with a wrong hash or a missing client root before cursor advancement. Through HTTP, run all four root transitions and a visible-root move that crosses a nested ignore boundary. Inspect metadata and blob calls. Assert that the connection uses the union, no ignored destination or content crosses HTTP, each compound operation is all-or-nothing, unpublication removes the visible remote nodes, and retry is idempotent. Send a crafted mutation into either ignored root and assert rejection before blob fetch.
-
-**GREEN:** Reuse the phase-1 planner. Add server validation, staged publication, transactional commit, and filtered transport.
-
-### Added acceptance criteria
-
-- [ ] A direct HTTP caller cannot weaken the server ignore list or bypass its own declared connection list.
-- [ ] A client rejects an effective list whose hash is invalid or which omits one of its declared roots.
-- [ ] Failed publication exposes no partial tree or ignored blob.
-- [ ] Publish and unpublish survive SQLite restart and safe retry.
 
 ## RED/GREEN TDD specification
 
@@ -148,7 +127,7 @@ The SQLite and HTTP slice must enforce the visibility contract from the memory r
 
 **RED:** Start a paged snapshot, mutate the server between pages, finish the snapshot, and resume deltas from its frozen cursor. Assert no missing or duplicated logical mutation after idempotent apply.
 
-**GREEN:** Persist and return the correct snapshot high-water and cursor tokens.
+**GREEN:** Implement the internal snapshot-session contract with a SQLite-consistent state/content cut and return its high-water and opaque cursor tokens.
 
 ### Refactor only after GREEN
 
@@ -173,4 +152,5 @@ After all cycles pass, remove repeated encode/decode or transaction wiring. Do n
 - IndexedDB.
 - Native filesystem.
 - Final conflict and cycle policy.
+- Ignore-list projection and boundary transitions; the dedicated reconciliation task owns them.
 - Removal of v1 tables or routes.

@@ -3,7 +3,7 @@ project: packages/sync
 status: planned
 ---
 
-# sync node identity: reconcile ignore-list changes on launch
+# sync node identity: implement projections and reconcile ignore-list changes
 
 ## Parent
 
@@ -15,8 +15,9 @@ AFK vertical slice through the shared sync contract, memory reference, SQLite se
 
 ## Blocked by
 
-- [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for node identity and fixed-policy projection behavior.
-- [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for server persistence and filtered transport.
+- [phase 1: memory reference](./sync-node-identity-phase-1-memory.md) for node identity and constant-cost moves over a complete tree.
+- [snapshot handoff](./sync-node-identity-snapshot-handoff.md) for atomic current-state bootstrap sessions.
+- [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md) for server persistence and HTTP transport.
 - [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md) for durable browser state.
 - [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md) for remote-authoritative conflict rules and idempotent operations.
 
@@ -24,7 +25,11 @@ AFK vertical slice through the shared sync contract, memory reference, SQLite se
 
 The current path engine accepts an opaque `ignore?: (path: string) => boolean` when `synced()` starts. It filters journal rows after reading them and can advance the cursor past a filtered change. It does not persist the policy, detect a policy change, remove newly visible gaps, or republish nodes that become visible.
 
-Protocol v2 already requires path-aware filtering around a node-addressed tree. This task adds the missing lifecycle when that filter changes between application releases or volume launches.
+Phase 1 deliberately synchronizes the complete node tree. This task introduces the
+projection model itself as well as the lifecycle when its policy changes. Do not add
+projection filtering incrementally to the phase-1 journal or applier: the fixed-policy
+and policy-change cases share the same state model, cursor fencing, and reconciliation
+rules and must land together.
 
 Read:
 
@@ -35,6 +40,70 @@ Read:
 - The node contract and adapters from the blocking tasks.
 
 Keep the public surface small. The application supplies paths. Sync owns policy identity, subscription filtering, reconciliation, persistence, recovery, and best-effort conflict handling.
+
+## Findings from the phase-1 prototype
+
+An earlier prototype put fixed-policy projection handling directly in the memory
+node recorder, applier, snapshot, relay, and blob planner. Repeated review findings
+showed that projection is not a row filter around node sync; it is a separate
+materialization state machine. Preserve these lessons in the implementation:
+
+- Separate authoritative logical node state from local materialization and from
+  local-only filesystem entries. A nullable inode cannot safely encode tombstoned,
+  hidden, blocked-by-local-data, and absent-with-an-unmaterialized-parent states.
+- Model leaving a projection separately from logical deletion. A `delete` tombstones
+  the shared ID and cannot express a node that is merely detached from one
+  subscription and may later return with the same identity.
+- Treat a snapshot as current state, not as a stream of historical `create`
+  mutations when reconciling a non-empty replica. Reconciliation must explicitly
+  remove stale materializations, relocate known IDs, and preserve protected local
+  entries while still accepting newer authoritative state.
+- Never relay an already-filtered local journal as an authoritative stream for a
+  third replica. The server must produce policy-bound snapshots and deltas for the
+  subscription; filtering a move by its current path loses the withdrawal, while
+  forwarding it can disclose the hidden destination.
+- Apply the same transition planner to local authorship, remote apply, snapshot
+  recovery, delta recovery, blob planning, and ancestor moves. Implementing those
+  paths independently produced mirrored enter/leave and root/descendant bugs.
+- Bind every cursor and frozen snapshot to the effective policy hash. A presence-only
+  bootstrap cannot repair previously materialized nodes that disappeared from the
+  new projection without a reconciliation phase.
+- Accept authoritative node state even when a local tree write is deliberately
+  refused to preserve local-only data. The materialization result and cursor advance
+  must not leave the logical node at a stale location.
+- Make compound attach/detach/move work transactional before claiming atomic
+  projection changes. The memory adapter needs an explicit staged transaction if it
+  remains the reference for this behavior; primitive-by-primitive apply is not
+  sufficient.
+- Current-state snapshots only bootstrap unknown IDs until this task lands. Accepting
+  a higher-revision snapshot create for a known node turns non-empty rebootstrap into
+  topology reconciliation:
+  relaying a partial page can place a replacement directory after retained children
+  or before its new parent. Add that behavior only with the later reconciliation
+  planner, which can re-emit the affected subtree in parent-first order.
+- A frozen snapshot must own one atomic state/content cut and keep every referenced
+  blob readable until the receiver closes or expires the session. Freezing node
+  metadata and pinning blobs afterward has a race with mutation and content GC.
+  Keeping a bounded page cache is also insufficient: eviction can invalidate a live
+  cursor, and content for the final page is fetched after that page is returned. The
+  [snapshot handoff task](./sync-node-identity-snapshot-handoff.md) owns explicit
+  session lifetime, release, and expiry without adding application-facing surface.
+- Compact content-bearing mutation history before content GC can expose an obsolete
+  hash on a page by itself. A file delete supersedes its earlier mutations, while a
+  deleted directory's history may still be replay scaffolding for a surviving child
+  that moved out before first sync. Retained bootstrap history must stay referentially
+  closed until snapshot handoff permits pruning. A newer update supersedes older
+  updates but must refresh a retained create for cursors that predate the node.
+  Journal only accepted mutations, or a stale retry can replace the retained current
+  state.
+- Normalize policy paths consistently, but do not assume one normalized spelling
+  identifies one filesystem entry. Filesystems can contain multiple siblings whose
+  names normalize alike, so every matching entry must be classified. Authority-side
+  node names should be validated independently.
+
+The implementation should introduce explicit vocabulary for at least logical state,
+materialization state, and projection attach/detach. The exact stored shape remains
+an adapter decision; avoid growing `NodeState.localIno` into another implicit union.
 
 ## Public behavior
 

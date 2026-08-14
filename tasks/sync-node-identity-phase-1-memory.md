@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 source_issue: 463
 ---
 
@@ -41,7 +41,7 @@ Define these domain concepts in sync vocabulary:
 - `SyncNodeId`: shared logical node identity.
 - `NodeMutation`: `create`, `update`, `move`, and `delete` mutations addressed by sync ID.
 - `NodeState`: the last accepted local sync state for a node.
-- A minimal persistence interface that supports bidirectional `SyncNodeId <-> local Ino` lookup, live state, tombstones, an ordered journal, and a consistent snapshot.
+- A minimal persistence interface that supports bidirectional `SyncNodeId <-> local Ino` lookup, live state, tombstones, and an ordered journal.
 
 Build an in-memory adapter and a node-aware mutation observer. The adapter is the reference behavior for later SQLite and IndexedDB implementations.
 
@@ -49,7 +49,7 @@ A node create must bind a generated sync ID to the local inode in the same logic
 
 Add a memory-to-memory v2 replica path that can:
 
-1. bootstrap an empty replica from a node snapshot;
+1. bootstrap an empty replica by replaying the retained node journal;
 2. push ordered node mutations;
 3. apply them to another memory filesystem;
 4. retain the same sync IDs while each replica uses its own local inodes;
@@ -69,50 +69,28 @@ It is acceptable to add a separate experimental constructor such as `nodeSynced`
 - Repeating an accepted mutation is idempotent.
 - Delete removes the local inode binding but retains a tombstone for the sync ID.
 - Recreating the same path creates a new sync ID.
-- Snapshot order is parent before child. Recursive delete order is child before parent.
+- Journal replay creates parents before children. Recursive delete order is child before parent.
 - Hard links stay unsupported.
 
 For this phase, use deterministic single-writer revisions in the in-memory reference. Full server-authoritative stale-write and collision rules are phase 4.
 
-## Visibility boundary requirements
+## Deliberate phase boundary
 
-Phase 1 defines visibility in the shared v2 contract. Read `syncIgnore` and `shieldsIgnored` in `packages/sync/replica.ts` first.
+This tracer bullet synchronizes the complete tree. Ignore lists, filtered subscriptions,
+local-only overlays, projection crossings, and policy-change reconciliation belong to
+[the dedicated projection task](./sync-node-identity-ignore-policy-reconciliation.md),
+after the transactional adapters and authoritative server rules exist.
 
-- Add one minimal serializable `ignore: readonly string[]` list per replica. Normalize canonical absolute paths, remove duplicates, sort them, and use segment-aware prefix matching. A listed directory hides its complete subtree.
-- Do not put `/private` or another product path in `packages/sync`. The engine excludes only its own persisted state without caller configuration.
-- The node store is the synchronized projection. Purely ignored local nodes have no sync-ID mapping.
-- A live server-known node that this host does not materialize can have `localIno: null`. It is not a tombstone and must not bind to same-path local ignored content.
-- Add logical `publishTree` and `unpublishTree`. Publication assigns fresh IDs and is parent-first. Unpublication sends the exact expected descendant ID/revision manifest, tombstones old shared IDs, and preserves local bytes.
-- Resolve both effective paths from the moved inode and parent chains before classification. Do not decide visibility from `parentId + name` alone.
-- Scan normalized ignore roots below both move locations. If descendant visibility changes, plan one atomic top-level move plus the minimum affected publish and unpublish subtrees. Do not enumerate unrelated descendants.
-- Apply visibility before snapshots, deltas, tombstones, blobs, and incoming tree changes.
+Phase 1 therefore gives `localIno: null` one meaning only: a tombstone. It does not
+model a live-but-hidden node or make a memory relay filter another replica's accepted
+journal. Keeping those states out of the reference adapter makes the node identity and
+constant-cost move invariant independently testable.
 
-### Cycle 8: ignored data is absent from the wire
-
-**RED:** Give both replicas caller-provided `/private` ignores. Create, update, and delete independent files there. Assert that snapshots, deltas, tombstones, mutations, and blob calls never contain them. Assert that each replica keeps its own bytes. Repeat for the engine's state without listing it.
-
-**GREEN:** Add projection filtering at node snapshot, delta, apply, and blob boundaries.
-
-### Cycle 9: all four local move transitions
-
-**RED:** Test visible -> visible, ignored -> ignored, ignored -> visible, and visible -> ignored with a nested subtree. Also move a visible root between paths where a nested ignore root makes one descendant subtree enter or leave the projection. Assert one move, zero operations, one complete publication, one logical unpublication, and one atomic compound projection move. Assert fresh IDs after republish and local-byte survival after unpublish.
-
-**GREEN:** Add path reconstruction and the minimal projection planner. Enumerate descendants only for publish and unpublish.
-
-### Cycle 10: receiving projection and ancestor shielding
-
-**RED:** Give replica B a nested ignore. Move a remote subtree across B's boundary in both directions. Assert subtree fetch or local removal without echo. Send a remote ancestor delete and file replacement. Assert that B preserves its ignored child and skips the unsafe apply.
-
-**GREEN:** Persist non-materialized remote state as needed, fetch on ignored -> visible receive, and port `shieldsIgnored` to node mutations.
-
-### Added acceptance criteria
-
-- [ ] Memory v2 applies one caller-provided ignore list symmetrically in both directions.
-- [ ] Replica A and replica B can keep different bytes at the same ignored path.
-- [ ] Ignored nodes do not acquire sync IDs and ignored hashes never reach the blob protocol.
-- [ ] IDs are not reused after unpublish and later republish.
-- [ ] Only projection-preserving visible -> visible moves have the no-enumeration guarantee.
-- [ ] Nested ignore intersections enumerate only affected publish or unpublish subtrees.
+Phase 1 retains enough journal state to initialize an empty memory replica. A bounded,
+current-state bootstrap needs an atomic handoff between node state, content retention,
+and the delta high-water; that belongs to the
+[snapshot handoff task](./sync-node-identity-snapshot-handoff.md). Non-empty
+rebootstrap remains topology reconciliation and belongs to the later projection task.
 
 ## RED/GREEN TDD specification
 
@@ -122,7 +100,7 @@ Complete one cycle before starting the next.
 
 **RED:** Add a public integration test that creates `/docs/note.md` on replica A, syncs to empty replica B, and asserts through the node-sync interface that both replicas use the same node IDs for `/docs` and `/docs/note.md` while their local inode IDs can differ.
 
-**GREEN:** Add `SyncNodeId`, the minimal identity/state store, root binding, create recording, snapshot, and receive-side create materialization needed for this test only.
+**GREEN:** Add `SyncNodeId`, the minimal identity/state store, root binding, create recording, journal replay, and receive-side create materialization needed for this test only.
 
 ### Cycle 2: one move mutation
 
@@ -154,11 +132,11 @@ Complete one cycle before starting the next.
 
 **GREEN:** Add mutation identity or accepted-revision checks sufficient to make retry safe.
 
-### Cycle 7: ordered bootstrap
+### Cycle 7: retained-journal bootstrap
 
-**RED:** Bootstrap a deep tree into an empty replica with a small page size. Assert that every parent mapping exists before a child is applied and that deltas after the frozen snapshot cursor are not lost.
+**RED:** Make several offline creates, updates, and moves, then sync into an empty replica with a one-operation page size. Assert final paths, bytes, and shared IDs converge without orphaned inodes.
 
-**GREEN:** Add consistent node snapshot paging and delta resume behavior equivalent to the current path snapshot guarantee.
+**GREEN:** Retain and compact the ordered journal so replay from the initial cursor remains parent-first and references only current content. Leave bounded current-state snapshots to the next task.
 
 ### Refactor only after GREEN
 
@@ -166,15 +144,17 @@ Remove duplication and deepen the node-sync module only after all cycles pass. K
 
 ## Acceptance criteria
 
-- [ ] Protocol v1 tests remain unchanged and green.
-- [ ] A public memory v2 conformance suite covers create, bootstrap, update, move, delete, retry, and path reuse.
-- [ ] A projection-preserving 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
-- [ ] The projection-preserving visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
-- [ ] Each replica owns only its `sync ID <-> local inode` mapping.
-- [ ] No test depends on local inode and sync ID values being equal.
-- [ ] Tombstones retain identity after the local inode is removed.
-- [ ] `packages/fs` gains no sync imports or sync concepts.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] Protocol v1 tests remain unchanged and green.
+- [x] A public memory v2 conformance suite covers create, retained-journal bootstrap, update, move, delete, retry, and path reuse.
+- [x] A projection-preserving 4,000-descendant rename between visible paths produces one v2 move row and zero content uploads.
+- [x] The projection-preserving visible-to-visible v2 move recorder and applier never call `TreePort.enumerateSubtree`.
+- [x] Each replica owns only its `sync ID <-> local inode` mapping.
+- [x] No test depends on local inode and sync ID values being equal.
+- [x] Tombstones retain identity after the local inode is removed.
+- [x] Retained journal pages never reference content superseded before delivery.
+- [x] Retained journal replay stays referentially closed when a moved node's old directory is later deleted.
+- [x] `packages/fs` gains no sync imports or sync concepts.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

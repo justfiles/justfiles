@@ -27,6 +27,7 @@ Read:
 - `packages/sync/storage/idb.ts` for current path journal persistence.
 - `packages/sync/storage/idb.journal.test.ts` and `sync-conformance.test.ts` for fake-IndexedDB test patterns.
 - The v2 memory conformance suite from [phase 1: memory reference](./sync-node-identity-phase-1-memory.md).
+- The internal current-state bootstrap contract from [snapshot handoff](./sync-node-identity-snapshot-handoff.md).
 - The v2 HTTP transport from [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md).
 
 IndexedDB can atomically update several object stores in one transaction. Use this to commit the local tree change, sync-ID mapping, node state, and node journal together. Do not store sync fields on inode or directory-entry records.
@@ -40,7 +41,7 @@ Add versioned object stores or indexes for:
 - node state keyed by sync ID;
 - unique local-inode-to-sync-ID lookup;
 - ordered node mutation journal;
-- snapshot and cursor state if the shared interface requires it.
+- snapshot-session and cursor state required by the internal handoff contract.
 
 Upgrade existing databases without losing files, content hashes, dirty-content state, path-v1 state, or application data.
 
@@ -59,22 +60,6 @@ Wire an IndexedDB-backed browser replica to the v2 HTTP server from [phase 2: SQ
 - Restart preserves mapping, tombstone, cursor, and pending local mutations.
 - Existing lazy-content and dirty-content guarantees remain intact.
 - Path protocol v1 object stores remain usable during compatibility.
-
-## Visibility boundary requirements
-
-IndexedDB must pass the same visibility conformance behavior as memory and SQLite.
-
-### Additional RED/GREEN cycle: offline boundary transition
-
-**RED:** Create a nested ignored subtree offline, move it to a visible path, and restart before and after upload. Assert one complete publication with fresh IDs and no duplicate blobs. Move it back to the ignored root, restart, and assert complete remote removal while local bytes survive. Also assert that inbound ignored mutations and an unsafe ancestor replacement are not applied.
-
-**GREEN:** Store pending publish/unpublish operations and stable operation IDs in the same IndexedDB transaction as projection state. Resume them through the shared planner.
-
-### Added acceptance criteria
-
-- [ ] IndexedDB metadata and blob access never expose engine state or caller-ignored local content.
-- [ ] An aborted transaction leaves no partial mapping or partial publication.
-- [ ] A formerly shared subtree gets fresh IDs after it leaves and re-enters the projection.
 
 ## RED/GREEN TDD specification
 
@@ -144,4 +129,5 @@ IndexedDB must pass the same visibility conformance behavior as memory and SQLit
 - Production backfill and protocol default selection.
 - Native filesystem.
 - Final conflict policy.
+- Ignore-list projection and boundary transitions; the dedicated reconciliation task owns them.
 - Removing v1 object stores.
