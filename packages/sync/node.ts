@@ -119,6 +119,16 @@ export interface NodeStore {
 	head(): Promise<number>
 }
 
+/** Sync-owned seams attached to one node-addressed filesystem backend. */
+export interface NodeSyncModule {
+	readonly nodes: NodeStore
+	apply(
+		operations: readonly NodeOperation[],
+		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
+	): Promise<void>
+	openSnapshotView(): Promise<SnapshotView>
+}
+
 /** Optimized sync behavior attached without extending the filesystem package. */
 export interface SyncCapability {
 	nodeDeltas(
@@ -144,66 +154,52 @@ export interface SyncCapability {
 	closeSnapshot(session: string): Promise<NodeSnapshotClose>
 }
 
-/** Sync-owned seams attached to one node-addressed filesystem backend. */
-export interface NodeSyncModule {
-	readonly nodes: NodeStore
-	nodeDeltas: SyncCapability['nodeDeltas']
-	apply(
-		operations: readonly NodeOperation[],
-		opts?: { source?: string; content?: ReadonlyMap<string, Uint8Array> }
-	): Promise<void>
-	openSnapshotView(): Promise<SnapshotView>
-}
-
-async function readLiveBlob(storage: Storage, nodes: NodeStore, hash: string): Promise<Uint8Array> {
-	for (const node of await nodes.live()) {
-		if (node.contentHash !== hash || node.localIno === null) continue
-		const blob = storage.caps?.content
-			? await storage.caps.content.getByHash(hash)
-			: await storage.getBlob(node.localIno)
-		if (!blob) throw new Error(`ENOENT: blob ${hash}`)
-		return verifyBytes(hash, blob)
-	}
-	throw new Error(`ENOENT: blob ${hash}`)
-}
-
-/** Read one journal/content cut within an extension module's transaction boundary. */
-export async function nodeDeltasOver(
-	storage: Storage,
-	nodes: NodeStore,
-	cursor: SyncCursor,
-	opts?: { excludeLocalSource?: string; limit?: number; retainContent?: boolean }
-) {
-	const limit = opts?.limit ?? PAGE
-	const from = Number(cursor || '0')
-	const rows = await nodes.read(from, limit)
-	const operations = rows
-		.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
-		.map((row) => row.operation)
-	let retainedContent: Map<string, Uint8Array> | undefined
-	if (opts?.retainContent) {
-		retainedContent = new Map()
-		for (const mutation of mutationsOf(operations)) {
-			if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
-			const hash = mutation.contentHash
-			if (!hash || retainedContent.has(hash)) continue
-			retainedContent.set(hash, (await readLiveBlob(storage, nodes, hash)).slice())
-		}
-	}
-	return {
-		operations,
-		to: String(rows.at(-1)?.seq ?? from),
-		done: rows.length < limit,
-		...(retainedContent ? { retainedContent } : {})
-	}
-}
-
 /** Assemble the shared capability surface over one filesystem extension module. */
-export function createSyncCapability(storage: Storage, module: NodeSyncModule): SyncCapability {
+export function createSyncCapability(
+	storage: Storage,
+	module: NodeSyncModule,
+	exclusive: <T>(task: () => Promise<T>) => Promise<T> = (task) => task()
+): SyncCapability {
 	const snapshots = nodeSnapshotSessions(() => module.openSnapshotView())
+	const content = storage.caps?.content
+
+	async function readLiveBlob(hash: string): Promise<Uint8Array> {
+		for (const node of await module.nodes.live()) {
+			if (node.contentHash !== hash || node.localIno === null) continue
+			const blob = content ? await content.getByHash(hash) : await storage.getBlob(node.localIno)
+			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
+			return verifyBytes(hash, blob)
+		}
+		throw new Error(`ENOENT: blob ${hash}`)
+	}
 
 	return {
-		nodeDeltas: module.nodeDeltas,
+		nodeDeltas: (cursor, opts) =>
+			exclusive(async () => {
+				const limit = opts?.limit ?? PAGE
+				const from = Number(cursor || '0')
+				const rows = await module.nodes.read(from, limit)
+				const operations = rows
+					.filter((row) => !opts?.excludeLocalSource || row.localSource !== opts.excludeLocalSource)
+					.map((row) => row.operation)
+				let retainedContent: Map<string, Uint8Array> | undefined
+				if (opts?.retainContent) {
+					retainedContent = new Map()
+					for (const mutation of mutationsOf(operations)) {
+						if (mutation.kind !== 'create' && mutation.kind !== 'update') continue
+						const hash = mutation.contentHash
+						if (!hash || retainedContent.has(hash)) continue
+						const blob = await readLiveBlob(hash)
+						retainedContent.set(hash, blob.slice())
+					}
+				}
+				return {
+					operations,
+					to: String(rows.at(-1)?.seq ?? from),
+					done: rows.length < limit,
+					...(retainedContent ? { retainedContent } : {})
+				}
+			}),
 		async wantedContent(operations) {
 			const wanted = new Set<string>()
 			for (const mutation of mutationsOf(operations)) {
@@ -216,7 +212,7 @@ export function createSyncCapability(storage: Storage, module: NodeSyncModule): 
 			return [...wanted]
 		},
 		applyNodeOperations: (operations, opts) => module.apply(operations, opts),
-		getBlobByHash: (hash) => readLiveBlob(storage, module.nodes, hash),
+		getBlobByHash: readLiveBlob,
 		nodeSnapshot: (page, opts) => snapshots.page(page, opts?.limit ?? PAGE),
 		getSnapshotBlob: (session, hash) => snapshots.getBlob(session, hash),
 		closeSnapshot: (session) => snapshots.close(session)

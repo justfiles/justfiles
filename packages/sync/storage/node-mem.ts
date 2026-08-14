@@ -14,7 +14,6 @@ import {
 	type NodeState,
 	type NodeStore,
 	type NodeSyncModule,
-	nodeDeltasOver,
 	nodeSyncObserver,
 	nodeSyncReplica,
 	type SyncCapableStorage,
@@ -135,9 +134,7 @@ function nodeSyncExtensionOver(
 				}
 			}
 		}
-	} satisfies MemStorageExtension<{
-		sync: Omit<NodeSyncModule, 'nodeDeltas' | 'openSnapshotView'>
-	}>
+	} satisfies MemStorageExtension<{ sync: Omit<NodeSyncModule, 'openSnapshotView'> }>
 }
 
 export function nodeMemStorage(opts?: {
@@ -156,7 +153,6 @@ export function nodeMemStorage(opts?: {
 	if (!content) throw new Error('memory backend exposes no content store')
 	const sync: NodeSyncModule = {
 		...module,
-		nodeDeltas: (cursor, opts) => exclusive(() => nodeDeltasOver(filesystem, nodes, cursor, opts)),
 		openSnapshotView: () =>
 			exclusive(async () => {
 				const syncCursor = String(await nodes.head())
@@ -196,7 +192,7 @@ export function nodeMemStorage(opts?: {
 				}
 			}
 		},
-		createSyncCapability(filesystem, sync)
+		createSyncCapability(filesystem, sync, exclusive)
 	)
 }
 
