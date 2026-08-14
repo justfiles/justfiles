@@ -28,13 +28,18 @@ const ROOT_INO = '1'
 const TYPE_DIRECTORY = 1 // FileType.Directory
 const STORAGE_NONE = 0
 
-// Tables a reset always clears. Tree = the inode graph; sync = the path journal +
-// version generator (its tombstone_version would otherwise fail a republished
-// put's LWW check). Content is mode-specific (see `resetVolume`). Child rows
+// Tables a reset always clears. Tree = the inode graph; sync = path and node
+// identity/journal state. Content is mode-specific (see `resetVolume`). Child rows
 // first: fs_dirents/fs_xattrs FK-reference fs_inodes (ON DELETE RESTRICT), so the
 // inodes can only be deleted once nothing points at them.
 const TREE_TABLES = ['fs_dirents', 'fs_xattrs', 'fs_inodes'] as const
-const SYNC_TABLES = ['fs_path_journal', 'fs_path_version'] as const
+const SYNC_TABLES = [
+	'fs_path_journal',
+	'fs_path_version',
+	'fs_node_journal_mutations',
+	'fs_node_journal',
+	'fs_sync_nodes'
+] as const
 const CONTENT_TABLES = ['fs_contents', 'fs_content_fts'] as const
 
 export type ResetMode = 'adopt-mine' | 'wipe'
@@ -264,6 +269,7 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.
 		for (const table of TREE_TABLES) await tx.run(`DELETE FROM ${table}${survives}`, keep)
 		for (const table of SYNC_TABLES) await tx.run(`DELETE FROM ${table}`)
+		await tx.run('UPDATE fs_node_clock SET head = 0 WHERE id = 1')
 		if (req.mode === 'wipe')
 			for (const table of CONTENT_TABLES) await tx.run(`DELETE FROM ${table}`)
 		// Recreate root ino=1 so the volume has a root immediately (the storage's

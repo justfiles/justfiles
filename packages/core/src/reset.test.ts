@@ -136,6 +136,17 @@ describe('reset — transaction body', () => {
 		expect(Number((journal[0] as { n: unknown }).n)).toBeGreaterThan(0)
 	})
 
+	it('recreates the same path after a destructive reset', async () => {
+		const { db, storage } = makeDb()
+		await volume(storage).writeFile('/same.txt', enc.encode('before'))
+
+		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
+
+		const fresh = volume(storage)
+		await fresh.writeFile('/same.txt', enc.encode('after'))
+		expect(new TextDecoder().decode(await fresh.readFile('/same.txt'))).toBe('after')
+	})
+
 	it('wipe drops content + FTS; the blobs become unfetchable and unsearchable', async () => {
 		const { db, storage } = makeDb()
 		const vol = volume(storage)
