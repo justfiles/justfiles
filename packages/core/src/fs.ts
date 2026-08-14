@@ -130,7 +130,6 @@ const SCHEMA_VERSION = 1
 const Handshake = z.object({
 	rootIno: z.string(),
 	protocolVersion: z.number().int(),
-	protocolVersions: z.array(z.number().int()).optional(),
 	schemaVersion: z.number().int(),
 	generation: z.number().int().optional(),
 	resetId: z.string().optional(),
@@ -373,7 +372,6 @@ export function createFsApi(
 					Handshake.parse({
 						rootIno: backend.rootIno,
 						protocolVersion: PROTOCOL_VERSION,
-						protocolVersions: nodeReplica ? [1, 2] : [1],
 						schemaVersion: SCHEMA_VERSION,
 						generation: lineage?.generation,
 						resetId: lineage?.resetId,
