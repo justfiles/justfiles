@@ -9,6 +9,7 @@ import { FileType, type Ino } from '@justfiles/fs/types'
 import { verifyBytes } from '../content'
 import {
 	applyNodeOperationsOver,
+	compactNodeJournal,
 	createSyncCapability,
 	type NodeJournalRow,
 	type NodeState,
@@ -45,11 +46,6 @@ export function memNodeStore(): NodeStore {
 			if (state.localIno != null) byIno.set(state.localIno, state.id)
 		},
 		async append(operation, localSource) {
-			const updates = new Map(
-				operation.mutations
-					.filter((mutation) => mutation.kind === 'update')
-					.map((mutation) => [mutation.nodeId, mutation])
-			)
 			const deleted = new Set(
 				operation.mutations
 					.filter((mutation) => mutation.kind === 'delete')
@@ -58,32 +54,7 @@ export function memNodeStore(): NodeStore {
 			const scaffold = new Set(
 				[...deleted].filter((id) => states.get(id)?.type === FileType.Directory)
 			)
-			// Directory history remains replay scaffolding for surviving moved children.
-			// Other deleted history must go so no retained page references stale content.
-			for (let index = rows.length - 1; index >= 0; index--) {
-				const row = rows[index]
-				if (!row) continue
-				const previous = row.operation.mutations
-				const mutations = previous
-					.filter(
-						(mutation) =>
-							(!deleted.has(mutation.nodeId) || scaffold.has(mutation.nodeId)) &&
-							(mutation.kind !== 'update' || !updates.has(mutation.nodeId))
-					)
-					.map((mutation) => {
-						const update = updates.get(mutation.nodeId)
-						return mutation.kind === 'create' && update
-							? { ...mutation, meta: update.meta, contentHash: update.contentHash }
-							: mutation
-					})
-				if (
-					mutations.length === previous.length &&
-					mutations.every((mutation, mutationIndex) => mutation === previous[mutationIndex])
-				)
-					continue
-				if (mutations.length === 0) rows.splice(index, 1)
-				else rows[index] = { ...row, operation: { mutations } }
-			}
+			rows.splice(0, rows.length, ...compactNodeJournal(rows, operation, scaffold))
 			rows.push({ seq: ++seq, operation, localSource })
 		},
 		async read(after, limit) {

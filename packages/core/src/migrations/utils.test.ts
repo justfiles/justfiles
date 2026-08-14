@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { migrateSync, parseSqlStatements, type SyncMigrator } from './utils'
@@ -91,5 +92,31 @@ describe('migrateSync', () => {
 		migrateSync(db, [{ version: 1, sql: 'CREATE TABLE t (id INTEGER)' }])
 		const versions = db.query('SELECT version FROM schema_migrations').map((r) => Number(r.version))
 		expect(versions).toEqual([1])
+	})
+
+	it('adds node sync tables from a fresh schema and every prior migration level', () => {
+		const directory = new URL('./', import.meta.url)
+		const migrations = readdirSync(directory)
+			.filter((file) => /^\d+.*\.sql$/.test(file))
+			.sort()
+			.map((file, index) => ({
+				version: index + 1,
+				sql: readFileSync(new URL(file, directory), 'utf8')
+			}))
+		for (let applied = 0; applied < migrations.length; applied++) {
+			const db = makeSyncMigrator()
+			migrateSync(db, migrations.slice(0, applied))
+			migrateSync(db, migrations)
+			const tables = new Set(
+				db
+					.query("SELECT name FROM sqlite_master WHERE type = 'table'")
+					.map((row) => String(row.name))
+			)
+			expect(tables.has('fs_sync_nodes')).toBe(true)
+			expect(tables.has('fs_node_journal')).toBe(true)
+			expect(tables.has('fs_node_journal_mutations')).toBe(true)
+			expect(tables.has('fs_node_clock')).toBe(true)
+			db.raw.close()
+		}
 	})
 })

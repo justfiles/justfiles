@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 source_issue: 464
 ---
 
@@ -151,20 +151,20 @@ After all cycles pass, remove repeated encode/decode or transaction wiring. Do n
 
 ## Acceptance criteria
 
-- [ ] SQLite passes the shared v2 conformance suite.
-- [ ] The HTTP client/server path passes create, bootstrap, update, move, delete, retry, restart, and snapshot/delta tests.
-- [ ] A projection-preserving 4,000-descendant move between visible paths creates one source mutation and one server journal row.
-- [ ] The SQLite projection-preserving visible-to-visible v2 move path performs no recursive CTE or descendant enumeration.
-- [ ] A pure move uploads no blobs.
-- [ ] Mapping, node state, journal, and filesystem writes share one transaction.
-- [ ] SQLite uses the shared capability construction and exposes it only as
+- [x] SQLite passes the shared v2 conformance suite.
+- [x] The HTTP client/server path passes create, bootstrap, update, move, delete, retry, restart, and snapshot/delta tests.
+- [x] A projection-preserving 4,000-descendant move between visible paths creates one source mutation and one server journal row.
+- [x] The SQLite projection-preserving visible-to-visible v2 move path performs no recursive CTE or descendant enumeration.
+- [x] A pure move uploads no blobs.
+- [x] Mapping, node state, journal, and filesystem writes share one transaction.
+- [x] SQLite uses the shared capability construction and exposes it only as
   `caps.sync` from `packages/sync`'s structural refinement.
-- [ ] Hiding `caps.content` selects eager ordinary-blob transfer without disabling
+- [x] Hiding `caps.content` selects eager ordinary-blob transfer without disabling
   SQLite node sync.
-- [ ] The server never stores client-local inode IDs.
-- [ ] V1 endpoints and conformance tests remain green.
-- [ ] New migration tests work from both a fresh schema and every existing migration level.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] The server never stores client-local inode IDs.
+- [x] V1 endpoints and conformance tests remain green.
+- [x] New migration tests work from both a fresh schema and every existing migration level.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

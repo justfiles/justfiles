@@ -1,5 +1,6 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
 import type { FileType } from '@justfiles/fs/types'
+import { NodeOperation, type NodeReplica } from '@justfiles/sync/node'
 import {
 	CursorPrunedError,
 	GenerationStaleError,
@@ -370,6 +371,135 @@ export interface RemoteSyncReplicaOptions {
 	// push so the server rejects a write aimed at a different volume at the same
 	// generation (see FS_LINEAGE_HEADER). Also surfaces as `GenerationStaleError`.
 	lineageId?: () => string | undefined
+}
+
+/** Node-addressed protocol v2 over the typed HTTP filesystem client. */
+export function remoteNodeSyncReplica(
+	client: FsClient,
+	options: RemoteSyncReplicaOptions
+): NodeReplica {
+	const { clientId, generation, lineageId } = options
+	const mutationHeaders = () => {
+		const currentGeneration = generation?.()
+		const currentLineage = lineageId?.()
+		return {
+			[FS_SOURCE_HEADER]: clientId,
+			...(currentGeneration !== undefined
+				? { [FS_GENERATION_HEADER]: String(currentGeneration) }
+				: {}),
+			...(currentLineage !== undefined ? { [FS_LINEAGE_HEADER]: currentLineage } : {})
+		}
+	}
+
+	return {
+		async nodeDeltas(cursor, opts) {
+			const res = await client.node.changes.$get(
+				{
+					query: {
+						cursor,
+						excludeSource: opts?.excludeLocalSource,
+						limit: opts?.limit === undefined ? undefined : String(opts.limit)
+					}
+				},
+				{ init: { cache: 'no-store' } }
+			)
+			if (!res.ok) throw new Error(`nodeDeltas failed: ${res.status}`)
+			const data = await res.json()
+			return {
+				operations: data.operations.map((operation) => NodeOperation.parse(operation)),
+				to: data.to,
+				done: data.done
+			}
+		},
+		async applyNodeOperations(operations, getBlobByHash) {
+			const missingResponse = await client.node.content.wanted.$post({
+				json: {
+					operations: operations.map((operation) => ({ mutations: [...operation.mutations] }))
+				}
+			})
+			if (!missingResponse.ok)
+				throw new Error(`node missing blobs failed: ${missingResponse.status}`)
+			for (const hash of (await missingResponse.json()).missing) {
+				const data = await getBlobByHash(hash)
+				const upload = await client.node.blob[':hash'].$put(
+					{
+						param: { hash },
+						header: {
+							...mutationHeaders(),
+							'Content-Type': 'application/octet-stream'
+						}
+					} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
+					{ init: { body: toArrayBuffer(data) } }
+				)
+				await throwIfStale(upload)
+				if (!upload.ok) throw new Error(`node blob upload failed: ${upload.status}`)
+			}
+			const res = await client.node.operations.$post({
+				json: {
+					operations: operations.map((operation) => ({ mutations: [...operation.mutations] }))
+				},
+				header: mutationHeaders()
+			} as unknown as Parameters<typeof client.node.operations.$post>[0])
+			await throwIfStale(res)
+			if (!res.ok) throw new Error(`applyNodeOperations failed: ${res.status}`)
+		},
+		async getBlobByHash(hash) {
+			const res = await client.node.blob[':hash'].$get({ param: { hash } })
+			if (!res.ok) throw new Error(`node getBlobByHash failed: ${res.status}`)
+			return new Uint8Array(await res.arrayBuffer())
+		},
+		async hasBlobByHash(hash) {
+			const res = await client.node.blobs.missing.$post({ json: { hashes: [hash] } })
+			if (!res.ok) throw new Error(`node hasBlobByHash failed: ${res.status}`)
+			return !(await res.json()).missing.includes(hash)
+		},
+		async putBlobByHash(hash, data) {
+			const res = await client.node.blob[':hash'].$put(
+				{
+					param: { hash },
+					header: {
+						...mutationHeaders(),
+						'Content-Type': 'application/octet-stream'
+					}
+				} as Parameters<(typeof client.node.blob)[':hash']['$put']>[0],
+				{ init: { body: toArrayBuffer(data) } }
+			)
+			await throwIfStale(res)
+			if (!res.ok) throw new Error(`node putBlobByHash failed: ${res.status}`)
+		},
+		async nodeSnapshot(page, opts) {
+			const res = await client.node.snapshot.$get({
+				query: {
+					page,
+					limit: opts?.limit === undefined ? undefined : String(opts.limit)
+				}
+			})
+			if (res.status === 410) return { status: 'restart' }
+			if (res.status === 429) return { status: 'busy' }
+			if (!res.ok) throw new Error(`nodeSnapshot failed: ${res.status}`)
+			const data = await res.json()
+			return {
+				status: 'ok',
+				session: data.session,
+				operations: data.operations.map((operation) => NodeOperation.parse(operation)),
+				next: data.next,
+				syncCursor: data.syncCursor,
+				done: data.done
+			}
+		},
+		async getSnapshotBlob(session, hash) {
+			const res = await client.node.snapshot[':session'].blob[':hash'].$get({
+				param: { session, hash }
+			})
+			if (res.status === 410) return { status: 'restart' }
+			if (!res.ok) throw new Error(`getSnapshotBlob failed: ${res.status}`)
+			return { status: 'ok', data: new Uint8Array(await res.arrayBuffer()) }
+		},
+		async closeSnapshot(session) {
+			const res = await client.node.snapshot[':session'].$delete({ param: { session } })
+			return { status: res.status === 204 ? 'ok' : 'restart' }
+		}
+	}
 }
 
 export function remoteSyncReplica(

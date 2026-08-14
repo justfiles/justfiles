@@ -34,6 +34,19 @@ Read:
 
 This task owns migration of existing deployed data. Do not remove v1 here.
 
+## Deferred phase 2 review gates
+
+Phase 2 intentionally leaves v2 unadvertised. Before this task advertises or selects
+v2:
+
+- Replace SQLite snapshot startup's eager copy of every blob with bounded admission
+  or persisted/on-demand blob retention. A large snapshot must not load the full
+  volume into process memory while its transaction is open.
+- Backfill node identities after a destructive reset has cleared node state. Preserve
+  ignored private bytes without assigning them shared identities.
+- Complete the v1/v2 compatibility bridge below. Do not rely on page refresh to
+  repair a client whose selected protocol missed a mutation.
+
 ## What to build
 
 Add:

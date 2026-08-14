@@ -56,6 +56,13 @@ Upgrade existing databases without losing files, content hashes, dirty-content s
 
 Wire an IndexedDB-backed browser replica to the v2 HTTP server from [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md). Do not switch the production `synced()` default yet; expose explicit v2 selection for tests and later rollout.
 
+Phase 2 review follow-ups also apply to IndexedDB:
+
+- Record user-xattr set and remove operations in node state and the node journal in
+  the same transaction. Keep `trusted.sync.*` local-only.
+- Preserve the base `Storage.putDirent` insert-or-replace contract. Do not treat a
+  bare link of an already mapped inode as a second node create.
+
 ## Required behavior
 
 - Root binding uses the common root sync ID and the IndexedDB filesystem's own `rootIno`.
@@ -129,6 +136,9 @@ Wire an IndexedDB-backed browser replica to the v2 HTTP server from [phase 2: SQ
 - [ ] Offline create survives restart and later syncs with its original client-generated sync ID.
 - [ ] A projection-preserving 4,000-descendant move between visible paths creates one local and one server v2 row, with no content upload.
 - [ ] Pulled changes do not echo.
+- [ ] User-xattr changes update node state and deltas, while `trusted.sync.*`
+  changes stay local.
+- [ ] Enabling node observation does not make a valid `putDirent` operation fail.
 - [ ] Tombstones and mappings survive restart.
 - [ ] Failed transactions leave no partial tree or sync state.
 - [ ] Lazy content still hydrates after an ancestor move.

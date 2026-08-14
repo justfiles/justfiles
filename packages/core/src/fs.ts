@@ -1,7 +1,13 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
-import type { Storage } from '@justfiles/fs/storage'
+import type { Storage, StorageCapabilities } from '@justfiles/fs/storage'
 import type { FileType } from '@justfiles/fs/types'
+import {
+	NodeOperation,
+	type NodeReplica,
+	nodeSyncReplica,
+	type SyncCapability
+} from '@justfiles/sync/node'
 import {
 	CursorPrunedError,
 	type JournaledStorage,
@@ -69,6 +75,12 @@ function decodeBytes(b64: string): Uint8Array {
 	const arr = new Uint8Array(binary.length)
 	for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
 	return arr
+}
+
+function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+	const body = new ArrayBuffer(data.byteLength)
+	new Uint8Array(body).set(data)
+	return body
 }
 
 function inferContentType(filename: string): string {
@@ -170,6 +182,18 @@ const SnapshotQuery = z.object({
 const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
 const HashParam = z.object({ hash: ContentHash })
 const MissingBlobsBody = z.object({ hashes: z.array(ContentHash).max(PAGE) })
+const NodeOperationsBody = z.object({ operations: z.array(NodeOperation) })
+const NodeDeltaQuery = z.object({
+	cursor: z.string().default(''),
+	excludeSource: z.string().optional(),
+	limit: z.coerce.number().int().positive().optional()
+})
+const NodeSnapshotQuery = z.object({
+	page: z.string().optional(),
+	limit: z.coerce.number().int().positive().optional()
+})
+const NodeSnapshotBlobParam = z.object({ session: z.string().min(1), hash: ContentHash })
+const NodeSnapshotParam = z.object({ session: z.string().min(1) })
 
 // The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
 // `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's
@@ -260,6 +284,16 @@ export function createFsApi(
 		if (!replica) throw new Error('backend has no sync module')
 		return replica
 	}
+	const nodeCapability = (
+		backend.caps as (StorageCapabilities & { readonly sync?: SyncCapability }) | undefined
+	)?.sync
+	const nodeReplica = nodeCapability
+		? nodeSyncReplica(nodeCapability, backend.caps?.content)
+		: undefined
+	const requireNodeReplica = (): NodeReplica => {
+		if (!nodeReplica) throw new Error('backend has no node sync capability')
+		return nodeReplica
+	}
 	const mutationOptions = (request: Request): { origin?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
 		return source ? { origin: source } : {}
@@ -345,6 +379,97 @@ export function createFsApi(
 						contentStore: backend.caps?.content !== undefined
 					})
 				)
+			})
+
+			// Node sync v2: stable identities, ordered mutations, and frozen snapshots.
+			.get('/node/changes', zValidator('query', NodeDeltaQuery), async (c) => {
+				const { cursor, excludeSource, limit } = c.req.valid('query')
+				const page = await requireNodeReplica().nodeDeltas(cursor, {
+					excludeLocalSource: excludeSource,
+					limit
+				})
+				c.header('Cache-Control', 'no-store')
+				return c.json(page)
+			})
+
+			.get('/node/snapshot', zValidator('query', NodeSnapshotQuery), async (c) => {
+				const { page, limit } = c.req.valid('query')
+				const result = await requireNodeReplica().nodeSnapshot(page, { limit })
+				if (result.status === 'restart') return c.json(result, 410)
+				if (result.status === 'busy') return c.json(result, 429)
+				return c.json(result)
+			})
+
+			.get(
+				'/node/snapshot/:session/blob/:hash',
+				zValidator('param', NodeSnapshotBlobParam),
+				async (c) => {
+					const { session, hash } = c.req.valid('param')
+					const result = await requireNodeReplica().getSnapshotBlob(session, hash)
+					if (result.status === 'restart') return c.body(null, 410)
+					return new Response(toArrayBuffer(result.data), {
+						headers: { 'Content-Type': 'application/octet-stream' }
+					})
+				}
+			)
+
+			.delete('/node/snapshot/:session', zValidator('param', NodeSnapshotParam), async (c) => {
+				const { session } = c.req.valid('param')
+				const result = await requireNodeReplica().closeSnapshot(session)
+				return c.body(null, result.status === 'ok' ? 204 : 410)
+			})
+
+			.post('/node/operations', zValidator('json', NodeOperationsBody), async (c) => {
+				const { operations } = c.req.valid('json')
+				const replica = requireNodeReplica()
+				try {
+					await replica.applyNodeOperations(operations, (hash) => replica.getBlobByHash(hash), {
+						source: c.req.header(SOURCE_HEADER) ?? undefined
+					})
+				} catch (error) {
+					return c.json({ error: errorMessage(error) }, 409)
+				}
+				return c.json({ ok: true })
+			})
+
+			.post('/node/content/wanted', zValidator('json', NodeOperationsBody), async (c) => {
+				if (!nodeCapability) throw new Error('backend has no node sync capability')
+				const replica = requireNodeReplica()
+				const wanted = await nodeCapability.wantedContent(c.req.valid('json').operations)
+				const missing: string[] = []
+				for (const hash of wanted) if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
+				return c.json({ missing })
+			})
+
+			.post('/node/blobs/missing', zValidator('json', MissingBlobsBody), async (c) => {
+				const replica = requireNodeReplica()
+				const missing: string[] = []
+				for (const hash of c.req.valid('json').hashes)
+					if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
+				return c.json({ missing })
+			})
+
+			.put('/node/blob/:hash', zValidator('param', HashParam), async (c) => {
+				const { hash } = c.req.valid('param')
+				const data = new Uint8Array(await c.req.arrayBuffer())
+				if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
+				await requireNodeReplica().putBlobByHash(hash, data)
+				return c.body(null, 204)
+			})
+
+			.on(['GET', 'HEAD'], '/node/blob/:hash', zValidator('param', HashParam), async (c) => {
+				const { hash } = c.req.valid('param')
+				const replica = requireNodeReplica()
+				if (c.req.method === 'HEAD')
+					return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
+				try {
+					const data = await replica.getBlobByHash(hash)
+					return new Response(toArrayBuffer(data), {
+						headers: { 'Content-Type': 'application/octet-stream' }
+					})
+				} catch {
+					return c.body(null, 404)
+				}
 			})
 
 			// Path sync: PULL (client reads the server's ChangeSource)
