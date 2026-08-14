@@ -20,7 +20,8 @@ option and no `Volume` interface.
 
 ## Blocks
 
-[phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
+[progressive storage capabilities](./sync-progressive-storage-capabilities.md), which
+then blocks [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md).
 
 ## Context for a fresh agent
 
@@ -137,6 +138,11 @@ assert a live token is never silently evicted.
 Keep session construction, paging, blob reads, and release behind one internal
 module interface. Do not add snapshot methods to `Volume` or optional snapshot hooks
 to the phase-1 `NodeSyncModule`.
+
+The later
+[progressive storage capabilities](./sync-progressive-storage-capabilities.md) task
+may wrap this completed internal owner behind `caps.sync`. It must not split the
+state/content/high-water cut or make snapshot lifecycle a backend-author concern.
 
 ## Acceptance criteria
 

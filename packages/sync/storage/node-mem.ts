@@ -4,18 +4,22 @@ import {
 	memStorage as filesystemStorage,
 	type MemStorageExtension
 } from '@justfiles/fs/storage/mem'
+import type { TreePort } from '@justfiles/fs/storage.shared'
 import { FileType, type Ino } from '@justfiles/fs/types'
+import { verifyBytes } from '../content'
 import {
 	applyNodeOperationsOver,
+	createSyncCapability,
 	type NodeJournalRow,
 	type NodeState,
-	type NodeStorage,
 	type NodeStore,
 	type NodeSyncModule,
 	nodeSyncObserver,
-	nodeSyncReplica
+	nodeSyncReplica,
+	type SyncCapableStorage,
+	withSyncCapability
 } from '../node'
-import { nodeSnapshotEntries, nodeSnapshotSessions } from '../node-snapshot'
+import { nodeSnapshotEntries } from '../node-snapshot'
 
 export function memNodeStore(): NodeStore {
 	const states = new Map<string, NodeState>()
@@ -110,95 +114,91 @@ function serialise(): Exclusive {
 	}
 }
 
-function nodeSyncExtensionOver(nodes: NodeStore, exclusive: Exclusive) {
+function nodeSyncExtensionOver(
+	nodes: NodeStore,
+	exclusive: Exclusive,
+	mapTree: (tree: TreePort) => TreePort = (tree) => tree
+) {
 	const observer = nodeSyncObserver(nodes)
 	return {
 		observer: {
-			record: (port, effect, options) => exclusive(() => observer.record(port, effect, options))
+			record: (port, effect, options) =>
+				exclusive(() => observer.record(mapTree(port), effect, options))
 		},
 		attach(tree) {
 			return {
-				nodeSync: {
+				sync: {
 					nodes,
 					apply: (operations, opts) =>
-						exclusive(() => applyNodeOperationsOver(tree, nodes, operations, opts))
+						exclusive(() => applyNodeOperationsOver(mapTree(tree), nodes, operations, opts))
 				}
 			}
 		}
-	} satisfies MemStorageExtension<{ nodeSync: NodeSyncModule }>
+	} satisfies MemStorageExtension<{ sync: Omit<NodeSyncModule, 'openSnapshotView'> }>
 }
 
-/** Attach node recording and apply behavior to a memory filesystem. */
-export function nodeSyncExtension(
-	nodes: NodeStore
-): MemStorageExtension<{ nodeSync: NodeSyncModule }> {
-	return nodeSyncExtensionOver(nodes, (task) => task())
-}
-
-export function nodeMemStorage(opts?: { mintIno?: () => Ino }): NodeStorage {
-	return filesystemStorage({
+export function nodeMemStorage(opts?: {
+	mintIno?: () => Ino
+	store?: NodeStore
+	mapTree?: (tree: TreePort) => TreePort
+}): SyncCapableStorage {
+	const nodes = opts?.store ?? memNodeStore()
+	const exclusive = serialise()
+	const attached = filesystemStorage({
 		mintIno: opts?.mintIno,
-		extension: nodeSyncExtension(memNodeStore())
+		extension: nodeSyncExtensionOver(nodes, exclusive, opts?.mapTree)
 	})
+	const { sync: module, ...filesystem } = attached
+	const content = filesystem.caps?.content
+	if (!content) throw new Error('memory backend exposes no content store')
+	const sync: NodeSyncModule = {
+		...module,
+		openSnapshotView: () =>
+			exclusive(async () => {
+				const syncCursor = String(await nodes.head())
+				const entries = nodeSnapshotEntries(await nodes.live())
+				const blobs = new Map<string, Uint8Array>()
+				for (const hash of new Set(
+					entries.flatMap(({ mutation }) =>
+						mutation.kind === 'create' && mutation.contentHash ? [mutation.contentHash] : []
+					)
+				)) {
+					const blob = await content.getByHash(hash)
+					if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
+					blobs.set(hash, await verifyBytes(hash, blob))
+				}
+				return {
+					entries,
+					syncCursor,
+					async getBlob(hash: string) {
+						const blob = blobs.get(hash)
+						if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
+						return blob.slice()
+					},
+					async close() {
+						blobs.clear()
+					}
+				}
+			})
+	}
+	return withSyncCapability(
+		{
+			...filesystem,
+			caps: {
+				...filesystem.caps,
+				content: {
+					...content,
+					gcUnreferenced: () => exclusive(() => content.gcUnreferenced())
+				}
+			}
+		},
+		createSyncCapability(filesystem, sync, exclusive)
+	)
 }
 
 /** Construct the snapshot-capable memory node replica through one owned adapter path. */
 export function nodeMemReplica(opts?: { mintIno?: () => Ino; store?: NodeStore }) {
-	const nodes = opts?.store ?? memNodeStore()
-	const exclusive = serialise()
-	const base = filesystemStorage({
-		mintIno: opts?.mintIno,
-		extension: nodeSyncExtensionOver(nodes, exclusive)
-	})
-	const content = base.caps?.content
-	if (!content) throw new Error('memory backend exposes no content store')
-	const storage: NodeStorage = {
-		...base,
-		caps: {
-			...base.caps,
-			content: {
-				...content,
-				gcUnreferenced: () => exclusive(() => content.gcUnreferenced())
-			}
-		}
-	}
-	const snapshots = nodeSnapshotSessions(() =>
-		exclusive(async () => {
-			const syncCursor = String(await nodes.head())
-			const entries = nodeSnapshotEntries(await nodes.live())
-			const blobs = new Map<string, Uint8Array>()
-			for (const hash of new Set(
-				entries.flatMap(({ mutation }) =>
-					mutation.kind === 'create' && mutation.contentHash ? [mutation.contentHash] : []
-				)
-			)) {
-				const blob = await content.getByHash(hash)
-				if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
-				blobs.set(hash, blob)
-			}
-			return {
-				entries,
-				syncCursor,
-				async getBlob(hash: string) {
-					const blob = blobs.get(hash)
-					if (!blob) throw new Error(`ENOENT: snapshot blob ${hash}`)
-					return blob.slice()
-				},
-				async close() {
-					blobs.clear()
-				}
-			}
-		})
-	)
-	const replica = nodeSyncReplica(storage, storage.nodeSync)
-	return {
-		storage,
-		replica: {
-			...replica,
-			nodeSnapshot: (page?: string, snapshotOpts?: { limit?: number }) =>
-				snapshots.page(page, snapshotOpts?.limit ?? 500),
-			getSnapshotBlob: snapshots.getBlob,
-			closeSnapshot: snapshots.close
-		}
-	}
+	const storage = nodeMemStorage(opts)
+	const replica = nodeSyncReplica(storage.caps.sync, storage.caps.content)
+	return { storage, replica }
 }

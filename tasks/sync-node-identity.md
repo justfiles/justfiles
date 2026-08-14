@@ -170,7 +170,38 @@ Conflict product behavior must be deterministic. The first implementation can re
 
 ## Adapter seam
 
-`packages/sync` defines a small node-sync persistence interface and the shared rules. It has adapters or integration implementations for:
+`Storage` is the only required filesystem interface. Sync progressively selects the
+best available strategy:
+
+| `caps.sync` | `caps.content` | Strategy |
+| --- | --- | --- |
+| absent | absent | full-tree reconciliation over ordinary inode blobs |
+| absent | present | full-tree reconciliation with hash lookup and deduplication |
+| present | absent | stable node identity and incremental deltas with eager ordinary-blob transfer |
+| present | present | stable node identity, incremental deltas, direct hash transfer, and efficient snapshots |
+
+Every capability is optional. Absence degrades performance or consistency, not
+viability. With only `Storage`, sync guarantees convergence through full
+reconciliation when writes eventually quiesce; it does not promise atomic snapshots,
+stable rename identity, incremental cursors, or O(1) moves.
+
+The runtime extension is named `storage.caps.sync`, but its type is owned entirely by
+`packages/sync` as a structural refinement of `StorageCapabilities`. Do not declare
+`sync` or import `SyncCapability` in `packages/fs`. This preserves the dependency
+direction (`sync` depends on `fs`) without a generic registry or module augmentation.
+
+`caps.sync` and `caps.content` are independent. Content hashes remain on the wire,
+but a replica without `caps.content` reads and verifies bytes through ordinary inode
+blob operations and materializes them eagerly. A snapshot must retain those bytes
+until close or fail before returning its token.
+
+`packages/sync` defines the shared node rules and a small internal adapter seam. A
+backend supplies transaction-scoped tree access, node state/journal persistence,
+mutation observation, and an owned snapshot cut; shared code constructs the
+`SyncCapability`. Backend authors do not reimplement mutation folding, apply
+ordering, snapshot paging, or delta handoff.
+
+The adapter has integration implementations for:
 
 - memory, as the reference and conformance adapter;
 - SQLite, used by the server and database-backed hosts;
@@ -178,6 +209,9 @@ Conflict product behavior must be deterministic. The first implementation can re
 - native filesystem, using a persisted sidecar index and reconciliation because POSIX cannot join a sidecar transaction.
 
 SQLite and IndexedDB must commit the filesystem mutation, identity mapping, accepted node state, and journal row atomically. Native filesystem support documents and tests its weaker crash model and repairs by reconciliation.
+
+The detailed boundary and fallback behavior is implemented before durable adapters
+in [progressive storage capabilities](./sync-progressive-storage-capabilities.md).
 
 ## Compatibility
 
@@ -209,6 +243,7 @@ Complete the tasks in this order:
 
 - [x] [phase 1: memory reference](./sync-node-identity-phase-1-memory.md)
 - [x] [snapshot handoff](./sync-node-identity-snapshot-handoff.md)
+- [ ] [progressive storage capabilities](./sync-progressive-storage-capabilities.md)
 - [ ] [phase 2: SQLite and HTTP](./sync-node-identity-phase-2-sqlite-http.md)
 - [ ] [phase 3: IndexedDB](./sync-node-identity-phase-3-indexeddb.md)
 - [ ] [phase 4: authority and conflicts](./sync-node-identity-phase-4-authority-conflicts.md)
@@ -228,6 +263,8 @@ Complete the tasks in this order:
 - [ ] One generic per-replica ignore list is reconciled automatically when it changes, including existing accounts with no saved policy hash.
 - [ ] A deleted path followed by a new create has two distinct sync IDs.
 - [ ] Native filesystem restart and crash reconciliation restore a correct mapping and change stream.
+- [ ] Every combination of absent/present `caps.sync` and `caps.content` remains syncable and selects the documented strategy.
+- [ ] A plain `Storage` converges through the full-scan fallback without implementing sync-owned interfaces.
 - [ ] Protocol v1 is removed only after compatibility and migration tests pass.
-- [ ] `packages/fs` contains no sync ID, revision, node journal, or protocol concepts.
+- [ ] `packages/fs` contains no sync capability declaration, sync ID, revision, node journal, snapshot-session, or protocol concepts.
 - [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass after every phase.

@@ -25,14 +25,15 @@ export type NodeSnapshotBlob = { status: 'ok'; data: Uint8Array } | NodeSnapshot
 
 export type NodeSnapshotClose = { status: 'ok' } | NodeSnapshotRestart
 
-type SnapshotView = {
+/** One adapter-owned frozen state/content/high-water cut. */
+export type SnapshotView = {
 	entries: SnapshotEntry[]
 	syncCursor: SyncCursor
 	getBlob(hash: string): Promise<Uint8Array>
 	close(): Promise<void>
 }
 
-/** Internal snapshot lifecycle seam implemented by node-sync storage adapters. */
+/** Shared snapshot lifecycle assembled over an adapter-owned frozen view. */
 export interface NodeSnapshotSessions {
 	page(
 		page: string | undefined,

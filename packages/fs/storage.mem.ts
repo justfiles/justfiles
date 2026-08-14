@@ -146,7 +146,9 @@ export function memStorage<Attached extends object = Record<never, never>>(opts?
 			const meta = metas.get(ino)
 			return meta ? { meta, xattrs: xattrRecord(ino) } : null
 		},
-		async upsertInode(ino, meta, contentHash, snapshot) {
+		async upsertInode(ino, meta, contentHash, snapshot, content) {
+			if (contentHash !== undefined && content !== undefined)
+				hashBlobs.set(contentHash, content.slice())
 			metas.set(ino, { ...meta, contentHash })
 			// Replace user xattrs with the snapshot. Keep backend-owned attributes.
 			const existing = xattrs.get(ino)
