@@ -209,12 +209,14 @@ describe('IndexedDB node sync', () => {
 		const first = idbStorage(name)
 		const firstReplica = nodeReplica(first)
 		const create = {
+			operationId: 'create-old-note',
 			mutations: [
 				{
 					kind: 'create' as const,
 					nodeId: 'old-note',
 					parentId: ROOT_NODE_ID,
 					name: 'note.txt',
+					baseRevision: 0 as const,
 					revision: 1,
 					meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '0', size: '3' },
 					contentHash: '7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed'
@@ -223,7 +225,12 @@ describe('IndexedDB node sync', () => {
 		}
 		await firstReplica.applyNodeOperations([create], async () => bytes('one'), { source: 'remote' })
 		await firstReplica.applyNodeOperations(
-			[{ mutations: [{ kind: 'delete', nodeId: 'old-note', revision: 2 }] }],
+			[
+				{
+					operationId: 'delete-old-note',
+					mutations: [{ kind: 'delete', nodeId: 'old-note', baseRevision: 1, revision: 2 }]
+				}
+			],
 			() => Promise.reject(new Error('delete requested content')),
 			{ source: 'remote' }
 		)

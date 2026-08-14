@@ -8,10 +8,12 @@ import type { TreePort } from '@justfiles/fs/storage.shared'
 import { FileType, type Ino } from '@justfiles/fs/types'
 import { verifyBytes } from '../content'
 import {
+	acceptNodeOperationsOver,
 	applyNodeOperationsOver,
 	compactNodeJournal,
 	createSyncCapability,
 	type NodeJournalRow,
+	type NodeOperationResult,
 	type NodeState,
 	type NodeStore,
 	type NodeSyncModule,
@@ -26,6 +28,7 @@ export function memNodeStore(): NodeStore {
 	const states = new Map<string, NodeState>()
 	const byIno = new Map<Ino, string>()
 	const rows: NodeJournalRow[] = []
+	const accepted = new Map<string, { request: string; result: NodeOperationResult }>()
 	let seq = 0
 
 	return {
@@ -34,6 +37,13 @@ export function memNodeStore(): NodeStore {
 		},
 		async idFor(ino) {
 			return byIno.get(ino) ?? null
+		},
+		async at(parentId, name) {
+			return (
+				[...states.values()].find(
+					(state) => !state.deleted && state.parentId === parentId && state.name === name
+				) ?? null
+			)
 		},
 		async live() {
 			return [...states.values()].filter((state) => !state.deleted)
@@ -56,6 +66,12 @@ export function memNodeStore(): NodeStore {
 			)
 			rows.splice(0, rows.length, ...compactNodeJournal(rows, operation, scaffold))
 			rows.push({ seq: ++seq, operation, localSource })
+		},
+		async getOperation(operationId) {
+			return accepted.get(operationId) ?? null
+		},
+		async saveOperation(operationId, request, result) {
+			accepted.set(operationId, { request, result })
 		},
 		async read(after, limit) {
 			return rows.filter((row) => row.seq > after).slice(0, limit)
@@ -101,7 +117,9 @@ function nodeSyncExtensionOver(
 				sync: {
 					nodes,
 					apply: (operations, opts) =>
-						exclusive(() => applyNodeOperationsOver(mapTree(tree), nodes, operations, opts))
+						exclusive(() => applyNodeOperationsOver(mapTree(tree), nodes, operations, opts)),
+					accept: (operations, opts) =>
+						exclusive(() => acceptNodeOperationsOver(mapTree(tree), nodes, operations, opts))
 				}
 			}
 		}

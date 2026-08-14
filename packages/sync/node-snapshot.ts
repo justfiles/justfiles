@@ -1,6 +1,6 @@
 import { joinPath } from '@justfiles/fs/storage.shared'
 import type { NodeMutation, NodeOperation, NodeState, SyncNodeId } from './node'
-import { ROOT_NODE_ID } from './node'
+import { newOperationId, ROOT_NODE_ID } from './node'
 import type { SyncCursor } from './replica'
 
 type SnapshotEntry = { path: string; mutation: NodeMutation }
@@ -72,6 +72,7 @@ export function nodeSnapshotEntries(nodes: readonly NodeState[]): SnapshotEntry[
 				nodeId: node.id,
 				parentId: node.parentId,
 				name: node.name,
+				baseRevision: 0,
 				revision: node.revision,
 				meta: node.meta,
 				...(node.contentHash === undefined ? {} : { contentHash: node.contentHash })
@@ -163,7 +164,14 @@ export function nodeSnapshotSessions(open: () => Promise<SnapshotView>): NodeSna
 				status: 'ok',
 				session,
 				operations:
-					entries.length === 0 ? [] : [{ mutations: entries.map((entry) => entry.mutation) }],
+					entries.length === 0
+						? []
+						: [
+								{
+									operationId: newOperationId(),
+									mutations: entries.map((entry) => entry.mutation)
+								}
+							],
 				...(done || last === undefined ? {} : { next: `${session}:${encodeURIComponent(last)}` }),
 				syncCursor: view.syncCursor,
 				done

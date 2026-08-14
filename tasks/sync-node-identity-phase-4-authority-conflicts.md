@@ -1,6 +1,6 @@
 ---
 project: packages/sync
-status: planned
+status: done
 source_issue: 466
 ---
 
@@ -174,15 +174,15 @@ Centralize acceptance rules only after the complete behavior passes on SQLite. R
 
 ## Acceptance criteria
 
-- [ ] Every behavior above has a public integration test.
-- [ ] Retry, stale mutation, collision, cycle, and deleted-node results use typed errors.
-- [ ] Rejections have no filesystem or sync persistence side effects.
-- [ ] The accepted operation and its returned result survive restart.
-- [ ] Memory, SQLite, and IndexedDB implement the same acceptance semantics where they act as an authority.
-- [ ] A stale local mutation remains pending until the caller explicitly replans; no intent is silently dropped.
-- [ ] No conflict path enumerates or rewrites descendants for a valid move.
-- [ ] Existing v1 behavior stays green.
-- [ ] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
+- [x] Every behavior above has a public integration test.
+- [x] Retry, stale mutation, collision, cycle, and deleted-node results use typed errors.
+- [x] Rejections have no filesystem or sync persistence side effects.
+- [x] The accepted operation and its returned result survive restart.
+- [x] Memory, SQLite, and IndexedDB implement the same acceptance semantics where they act as an authority.
+- [x] A stale local mutation remains pending until the caller explicitly replans; no intent is silently dropped.
+- [x] No conflict path enumerates or rewrites descendants for a valid move.
+- [x] Existing v1 behavior stays green.
+- [x] `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test` pass.
 
 ## Out of scope
 

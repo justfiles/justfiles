@@ -1,6 +1,11 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
 import type { FileType } from '@justfiles/fs/types'
-import { NodeOperation, type NodeReplica } from '@justfiles/sync/node'
+import {
+	NodeOperation,
+	NodeOperationRejectedError,
+	NodeOperationResult,
+	type NodeReplica
+} from '@justfiles/sync/node'
 import {
 	CursorPrunedError,
 	GenerationStaleError,
@@ -414,7 +419,10 @@ export function remoteNodeSyncReplica(
 		async applyNodeOperations(operations, getBlobByHash) {
 			const missingResponse = await client.node.content.wanted.$post({
 				json: {
-					operations: operations.map((operation) => ({ mutations: [...operation.mutations] }))
+					operations: operations.map((operation) => ({
+						operationId: operation.operationId,
+						mutations: [...operation.mutations]
+					}))
 				}
 			})
 			if (!missingResponse.ok)
@@ -436,12 +444,21 @@ export function remoteNodeSyncReplica(
 			}
 			const res = await client.node.operations.$post({
 				json: {
-					operations: operations.map((operation) => ({ mutations: [...operation.mutations] }))
+					operations: operations.map((operation) => ({
+						operationId: operation.operationId,
+						mutations: [...operation.mutations]
+					}))
 				},
 				header: mutationHeaders()
 			} as unknown as Parameters<typeof client.node.operations.$post>[0])
 			await throwIfStale(res)
+			const body = await res.json()
+			if (!('results' in body)) throw new Error(`applyNodeOperations failed: ${res.status}`)
+			const results = body.results.map((result) => NodeOperationResult.parse(result))
+			const rejected = results.find((result) => result.status === 'rejected')
+			if (rejected) throw new NodeOperationRejectedError(rejected)
 			if (!res.ok) throw new Error(`applyNodeOperations failed: ${res.status}`)
+			return results
 		},
 		async getBlobByHash(hash) {
 			const res = await client.node.blob[':hash'].$get({ param: { hash } })
