@@ -53,7 +53,7 @@ async function feed(store: Store, from?: Cursor): Promise<{ nodes: Node[]; curso
 	throw new Error('since never caught up')
 }
 
-/** 300 sibling files — more than one page on any store that pages at all. */
+/** 300 sibling files — enough that a store with a modest page size must page. */
 const many = (): Node[] =>
 	Array.from({ length: 300 }, (_, i) => node({ id: `n${i}`, name: `f${i}.txt` }))
 
@@ -248,17 +248,11 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			expect(await store.child(ROOT, 'gone.txt')).toEqual(reuse)
 		})
 
-		test('since from the empty cursor pages out every live row and every tombstone (rule 4)', async () => {
+		test('since from the empty cursor scans every live row and every tombstone (rule 4)', async () => {
 			const store = await open()
 			const rows = many()
 			await store.commit(rows)
 			await store.commit([node({ id: 'n7', name: 'f7.txt', version: '2', deleted: true })])
-
-			// The feed is the wire, so even a bootstrap scan comes back in pages: no
-			// call ever has to carry the whole table.
-			const first = await store.since()
-			expect(first.nodes.length).toBeGreaterThan(0)
-			expect(first.nodes.length).toBeLessThan(rows.length)
 
 			const { nodes } = await feed(store)
 			// Root travels like any other row: the feed is an index over the one
@@ -267,6 +261,15 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			expect(nodes.length).toBe(rows.length + 1)
 			// A tombstone is a row, so a deletion travels like any other change.
 			expect(nodes.find((n) => n.id === 'n7')?.deleted).toBe(true)
+
+			// Each store picks its own page size — the contract fixes none — so what
+			// has to hold is that the pages compose: a page's cursor resumes exactly
+			// where that page stopped, and the pages are the scan.
+			const first = await store.since()
+			expect(first.nodes.length).toBeGreaterThan(0)
+			if (!first.next) throw new Error('since must always hand a cursor back')
+			const rest = await feed(store, first.next)
+			expect([...first.nodes, ...rest.nodes]).toEqual(nodes)
 		})
 
 		test('a node appears once per scan, at its latest state: the feed self-compacts (rule 4)', async () => {
