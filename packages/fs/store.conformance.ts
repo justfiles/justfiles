@@ -492,8 +492,16 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			await expect(blobs.put(HELLO, bytes('goodbye'))).rejects.toThrow()
 			expect(await store.blobs.has(HELLO)).toBe(false)
 
-			// An honest put passes straight through to the store underneath.
-			await blobs.put(HELLO, bytes('hello'))
+			// An accepted put passes straight through to the store underneath — and
+			// what lands is the bytes that were hashed. `crypto.subtle.digest`
+			// snapshots its input when it is called, so a caller that edits the
+			// array while the digest is in flight would otherwise get content past
+			// a hash that no longer describes it: verified on one array, stored
+			// from another.
+			const data = bytes('hello')
+			const put = blobs.put(HELLO, data)
+			data.fill(0)
+			await put
 			expect(await blobs.has(HELLO)).toBe(true)
 			expect(await blobs.get(HELLO)).toEqual(bytes('hello'))
 			expect(await store.blobs.get(HELLO)).toEqual(bytes('hello'))

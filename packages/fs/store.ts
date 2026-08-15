@@ -85,8 +85,12 @@ export const verifiedBlobs = (blobs: Store['blobs']): Store['blobs'] => ({
 	has: (hash) => blobs.has(hash),
 	get: (hash) => blobs.get(hash),
 	async put(hash, data) {
-		if ((await sha256Hex(data)) !== hash) throw new Error(`blob bytes do not hash to ${hash}`)
-		await blobs.put(hash, data)
+		// One snapshot, hashed and then stored. The caller still owns `data` and
+		// may edit it while the digest is in flight, and what is verified has to
+		// be what lands — or the check proves nothing about the stored bytes.
+		const held = new Uint8Array(data)
+		if ((await sha256Hex(held)) !== hash) throw new Error(`blob bytes do not hash to ${hash}`)
+		await blobs.put(hash, held)
 	}
 })
 
