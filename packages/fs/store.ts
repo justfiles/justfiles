@@ -40,7 +40,8 @@ export interface Store {
 	child(parent: NodeId, name: string): Promise<Node | null>
 	children(parent: NodeId, cursor?: Cursor): Promise<Page>
 
-	// The one ordering.
+	// The one ordering. Always hands a cursor back — an empty page means caught
+	// up — and rejects a cursor from another lineage with `ForeignCursorError`.
 	since(cursor?: Cursor): Promise<Page>
 
 	// The one write.
@@ -60,3 +61,16 @@ export interface Store {
 
 /** The root directory id (contract rule 6). The same constant on every replica. */
 export const ROOT: NodeId = '00000000-0000-0000-0000-000000000000'
+
+/**
+ * A cursor was minted by another lineage (contract rule 11), so no position in
+ * this store answers to it. A reset or replaced store starts a new lineage;
+ * this is how it fences a replica that outlived it. The caller restarts from
+ * the empty cursor and converges.
+ */
+export class ForeignCursorError extends Error {
+	constructor() {
+		super('cursor belongs to another store lineage; scan again from the empty cursor')
+		this.name = 'ForeignCursorError'
+	}
+}
