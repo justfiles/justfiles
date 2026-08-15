@@ -1,6 +1,6 @@
 # T3 — Blobs
 
-**Status:** todo
+**Status:** done
 **Phase:** A — the seam
 **Depends on:** [T1](t01-store-types-and-memstore.md)
 **Context:** [overview](README.md) · [design #3, contract rules 7 and 10](../../kb/fs/fable-design.md)

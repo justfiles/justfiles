@@ -49,10 +49,8 @@ const same = (a: Node, b: Node): boolean =>
 
 /**
  * The reference `Store`: two maps (by id, by `(parent, name)`) plus the local
- * order. Everything else in the design is derived from these.
- *
- * `blobs` is the minimum the interface needs; its contract rules (7, 10) belong
- * to T3.
+ * order, and a third map for content. Everything else in the design is derived
+ * from these.
  */
 export function memStore(): Store {
 	const byId = new Map<NodeId, Node>()
@@ -196,15 +194,20 @@ export function memStore(): Store {
 			}
 		},
 
+		// Rule 7: content-keyed and immutable, so a hash the map already holds is
+		// already the answer and the second put is nothing. The copies are what a
+		// durable or wire-backed store does anyway: neither side can reach into
+		// stored content through an array it kept.
 		blobs: {
 			async has(hash) {
 				return content.has(hash)
 			},
 			async get(hash) {
-				return content.get(hash) ?? null
+				const data = content.get(hash)
+				return data === undefined ? null : new Uint8Array(data)
 			},
 			async put(hash, data) {
-				content.set(hash, data)
+				if (!content.has(hash)) content.set(hash, new Uint8Array(data))
 			}
 		}
 	}
