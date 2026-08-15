@@ -13,6 +13,7 @@ import { describe, expect, test } from 'vitest'
 import {
 	type Cursor,
 	ForeignCursorError,
+	type Guard,
 	type Node,
 	type NodeId,
 	ROOT,
@@ -244,6 +245,27 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			await store.commit([edit], [{ version: { id: 'v', is: 'v1' } }])
 			expect(await store.get('v')).toEqual(edit)
 			expect((await store.since(mark)).nodes.map((n) => n.id)).toEqual(['v'])
+		})
+
+		test('a commit takes its batch at the call, not at its first await (rule 3)', async () => {
+			const store = await open()
+			const row = node({ id: 's', name: 'kept.txt', version: 'v1' })
+			const guard: Guard = { version: { id: 's', is: null } }
+
+			// Not awaited: the caller gets control back while the store may still be
+			// opening a database or a socket, and edits what it just handed over. A
+			// store that reads the caller's objects after its first `await` commits a
+			// batch nobody asked for — and disagrees with a store that never awaits,
+			// which is the whole reason this is a contract rule and not a note.
+			const commit = store.commit([row], [guard])
+			row.name = 'tampered.txt'
+			row.version = 'tampered'
+			guard.version.is = 'tampered' // read late, this guard would fail the commit
+			await commit
+
+			expect(await store.get('s')).toEqual(node({ id: 's', name: 'kept.txt', version: 'v1' }))
+			expect(await store.child(ROOT, 'kept.txt')).not.toBeNull()
+			expect(await store.child(ROOT, 'tampered.txt')).toBeNull()
 		})
 
 		test('a tombstone frees the name and vanishes from child and children (rule 3)', async () => {

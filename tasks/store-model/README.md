@@ -90,7 +90,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | T1 | [Store types, memStore, conformance suite](t01-store-types-and-memstore.md) | — | done |
 | T2 | [The change feed: `since` + cursor lineage](t02-change-feed-and-lineage.md) | T1 | done |
 | T3 | [Blobs](t03-blobs.md) | T1 | done |
-| T4 | [IndexedDB Store — the kill criterion](t04-indexeddb-store.md) | T1–T3 | todo |
+| T4 | [IndexedDB Store — the kill criterion](t04-indexeddb-store.md) | T1–T3 | done |
 
 ### Phase B — the two consumers
 
@@ -197,4 +197,6 @@ They are spread across the tasks; do not let them slip:
 
 Plus the kill criterion in **T4**: if guarded batch commits cannot be atomic on
 IndexedDB within its transaction lifetime rules, STOP and report — the seam,
-not the engine, must change, and the design is wrong.
+not the engine, must change, and the design is wrong. **Settled in T4: they
+can, with no workaround.** The seam stands; the rest of the story may build on
+it.

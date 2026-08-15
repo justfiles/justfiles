@@ -76,6 +76,40 @@ export class ForeignCursorError extends Error {
 }
 
 /**
+ * Contract rule 3: does the store already hold this row? Whole rows, so every
+ * field counts — the id matches by lookup. Every backend needs the same answer,
+ * or a retry that is a no-op on one store manufactures change-feed traffic on
+ * another.
+ */
+export const same = (a: Node, b: Node): boolean =>
+	a.parent === b.parent &&
+	a.name === b.name &&
+	a.type === b.type &&
+	a.mode === b.mode &&
+	a.mtimeNs === b.mtimeNs &&
+	a.size === b.size &&
+	a.content === b.content &&
+	a.link === b.link &&
+	a.version === b.version &&
+	a.deleted === b.deleted &&
+	sameXattrs(a.xattrs, b.xattrs)
+
+const sameXattrs = (a: Node['xattrs'], b: Node['xattrs']): boolean => {
+	const keys = Object.keys(a ?? {})
+	if (keys.length !== Object.keys(b ?? {}).length) return false
+	return keys.every((k) => {
+		const x = a?.[k]
+		const y = b?.[k]
+		return (
+			x !== undefined &&
+			y !== undefined &&
+			x.length === y.length &&
+			x.every((byte, i) => byte === y[i])
+		)
+	})
+}
+
+/**
  * The untrusting half of contract rule 7: reject a `put` whose bytes do not
  * hash to its key. A local caller is trusted, so it skips this; a store that
  * takes writes from a peer wraps its own blob map in it. Admit one lie here
