@@ -1,6 +1,15 @@
-import { type Guard, type Hash, type Node, type NodeId, ROOT, type Store } from './store'
+import {
+	type Cursor,
+	ForeignCursorError,
+	type Guard,
+	type Hash,
+	type Node,
+	type NodeId,
+	ROOT,
+	type Store
+} from './store'
 
-/** Entries per `children` page. Big enough to be one page for a normal directory. */
+/** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128
 
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
@@ -42,14 +51,20 @@ const same = (a: Node, b: Node): boolean =>
  * The reference `Store`: two maps (by id, by `(parent, name)`) plus the local
  * order. Everything else in the design is derived from these.
  *
- * `since` and `blobs` are the minimum the interface needs; their contract rules
- * (4, 5, 11 and 7, 10) belong to T2 and T3.
+ * `blobs` is the minimum the interface needs; its contract rules (7, 10) belong
+ * to T3.
  */
 export function memStore(): Store {
 	const byId = new Map<NodeId, Node>()
 	const byName = new Map<string, Set<NodeId>>() // live rows only
-	const order = new Map<NodeId, number>() // id -> its latest position in the local order
+	// The feed, and no journal behind it: one entry per row, holding its latest
+	// position. A Map iterates in insertion order, so re-inserting a row on every
+	// write both moves it to the end of the order and keeps the scan in order.
+	const order = new Map<NodeId, number>()
 	const content = new Map<Hash, Uint8Array>()
+	const listeners = new Set<(writes: Node[]) => void>()
+	/** Rule 11: cursors mean nothing outside the store instance that minted them. */
+	const lineage = crypto.randomUUID()
 	let next = 0
 
 	byId.set(ROOT, {
@@ -62,6 +77,7 @@ export function memStore(): Store {
 		size: 0n,
 		version: '0'
 	})
+	order.set(ROOT, next++) // the feed is an index over the one table: no row is exempt
 
 	/** Contract rule 1: two live rows for one name resolve to the lowest id. */
 	const lookup = (parent: NodeId, name: string): Node | null => {
@@ -78,9 +94,10 @@ export function memStore(): Store {
 		return (byId.get(guard.version.id)?.version ?? null) === guard.version.is
 	}
 
-	const put = (row: Node): void => {
+	/** The written row, or null when there was nothing to write. */
+	const put = (row: Node): Node | null => {
 		const old = byId.get(row.id)
-		if (old && same(old, row)) return // rule 3: a row the store already holds is a no-op
+		if (old && same(old, row)) return null // rule 3: a row the store already holds is a no-op
 		const held = copy(row)
 		if (old) byName.get(dirKey(old.parent, old.name))?.delete(old.id)
 		byId.set(held.id, held)
@@ -90,7 +107,17 @@ export function memStore(): Store {
 			byName.set(key, bucket)
 			bucket.add(held.id)
 		}
+		order.delete(held.id) // rule 4: re-inserting moves the row to the end of the order
 		order.set(held.id, next++)
+		return held
+	}
+
+	const mark = (at: number): Cursor => lineage + SEP + at
+
+	const position = (cursor?: Cursor): number => {
+		if (cursor === undefined) return 0
+		if (!cursor.startsWith(lineage + SEP)) throw new ForeignCursorError()
+		return Number(cursor.slice(lineage.length + SEP.length))
 	}
 
 	return {
@@ -126,21 +153,38 @@ export function memStore(): Store {
 			return more && last !== undefined ? { nodes, next: last } : { nodes }
 		},
 
+		/**
+		 * Rule 4: each row once per scan, at its latest state, tombstones included.
+		 * A row written mid-scan moves past the cursor, so it comes round again
+		 * instead of being missed — the reason the feed needs no journal to be
+		 * resumable.
+		 */
 		async since(cursor) {
-			const from = cursor ? Number(cursor) : 0
+			const from = position(cursor)
 			const nodes: Node[] = []
-			for (const [id, at] of [...order].sort((a, b) => a[1] - b[1])) {
-				const n = byId.get(id)
-				if (at >= from && n) nodes.push(copy(n))
+			for (const [id, at] of order) {
+				if (at < from) continue
+				if (nodes.length === PAGE) return { nodes, next: mark(at) }
+				const row = byId.get(id)
+				if (row) nodes.push(copy(row))
 			}
-			return { nodes, next: String(next) }
+			return { nodes, next: mark(next) }
 		},
 
 		/** Rule 2: every guard is checked before any write, so a failure writes nothing. */
 		async commit(writes, guards) {
 			for (const guard of guards ?? [])
 				if (!pass(guard)) throw new Error(`commit rejected: guard ${JSON.stringify(guard)} failed`)
-			for (const row of writes) put(row)
+			const written = writes.map(put).filter((row) => row !== null)
+			// Rule 8: after the commit, and only for what it changed.
+			if (written.length > 0) for (const listener of listeners) listener(written.map(copy))
+		},
+
+		subscribe(listener) {
+			listeners.add(listener)
+			return () => {
+				listeners.delete(listener)
+			}
 		},
 
 		blobs: {
