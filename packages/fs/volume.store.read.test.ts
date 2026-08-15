@@ -110,6 +110,24 @@ describe('resolution', () => {
 		await expect(vol.stat('/nope/deeper')).rejects.toThrow('ENOENT: /nope/deeper')
 	})
 
+	it('refuses to walk through a file, and keeps ENOENT when nothing is there (rule 9)', async () => {
+		const store = memStore()
+		const kyoto = await mkfile(store, ROOT, 'kyoto.md', 'go')
+		// Rule 9 leaves "every parent a live directory" to the authority, so a
+		// replica may hold a row parented on a file. Reachability from the root is
+		// what makes a row visible, and POSIX cannot walk through a file — so this
+		// row is not reachable, and the walk must say so rather than hand it back.
+		await store.commit([row({ parent: kyoto, name: 'sub', type: 'file', size: 7n })])
+		const vol = storeVolume(store)
+
+		await expect(vol.stat('/kyoto.md/sub')).rejects.toThrow('ENOTDIR: /kyoto.md/sub')
+		await expect(vol.readFile('/kyoto.md/sub')).rejects.toThrow('ENOTDIR: /kyoto.md/sub')
+		expect(await vol.exists('/kyoto.md/sub')).toBe(false)
+		// A name no row holds stays ENOENT, which is what the old volume answers
+		// here: a consistent store must not be able to tell the two volumes apart.
+		await expect(vol.stat('/kyoto.md/nope')).rejects.toThrow('ENOENT: /kyoto.md/nope')
+	})
+
 	it('lands on the target when a path goes through a symlinked directory', async () => {
 		const store = memStore()
 		const notes = await mkdir(store, ROOT, 'notes')

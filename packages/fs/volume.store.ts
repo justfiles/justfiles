@@ -71,6 +71,12 @@ export function storeVolume(store: Store): Volume {
 
 			const found = await store.child(node?.id ?? ROOT, name)
 			if (found === null) throw new Error(`ENOENT: ${path}`)
+			// Rule 9 again: "every parent a live directory" is the authority's to
+			// keep, so a replica may hold a row parented on a file. Reachability
+			// from the root is what makes a row visible, and POSIX cannot walk
+			// through a file — so this one is not reachable. The test comes after
+			// the lookup, not before it, to leave a name no row holds as ENOENT.
+			if (node && node.type !== 'dir' && node.type !== 'mount') throw new Error(`ENOTDIR: ${path}`)
 
 			const isLast = i === queue.length - 1
 			if (found.type === 'symlink' && (!isLast || followLast)) {
