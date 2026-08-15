@@ -172,6 +172,22 @@ describe('stat', () => {
 		expect(lstat.type).toBe(FileType.Symlink)
 	})
 
+	it('reports permission bits only, whatever the row carries', async () => {
+		const store = memStore()
+		// The row carries the type in `type`, so type bits in `mode` say nothing
+		// the stat does not already say. A peer may still send them — the stores
+		// mint the root as `0o040755` — and the old volume reports `0o755` there.
+		// just-bash prints this number: `stat /` must not start reading `40755`.
+		await store.commit([row({ parent: ROOT, name: 'kyoto.md', type: 'file', mode: 0o100644 })])
+		const vol = storeVolume(store)
+
+		expect((await vol.stat('/')).mode).toBe(0o755)
+		expect((await vol.stat('/kyoto.md')).mode).toBe(0o644)
+		// setuid, setgid and sticky are permission bits, so they survive the mask.
+		await store.commit([row({ parent: ROOT, name: 'run', type: 'file', mode: 0o104755 })])
+		expect((await vol.stat('/run')).mode).toBe(0o4755)
+	})
+
 	it('never reads content — size is on the row', async () => {
 		const store = memStore()
 		await mkfile(store, ROOT, 'kyoto.md', 'go')

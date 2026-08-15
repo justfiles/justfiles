@@ -33,7 +33,11 @@ const statOf = (node: Node): Stat => ({
 	ino: node.id,
 	type: TYPE[node.type],
 	size: node.size,
-	mode: node.mode,
+	// Permission bits only, as the old volume reports. `type` above already says
+	// what this is, so type bits in `mode` are a second, redundant answer — and
+	// the stores mint the root row with them (`0o040755`). A row off the wire may
+	// carry anything; the mask is what keeps `stat /` printing `0755`.
+	mode: node.mode & 0o7777,
 	mtimeNs: node.mtimeNs,
 	// The model has no ctime (design #2, deliberate omissions): report mtime.
 	ctimeNs: node.mtimeNs,
