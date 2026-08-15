@@ -74,3 +74,32 @@ export class ForeignCursorError extends Error {
 		this.name = 'ForeignCursorError'
 	}
 }
+
+/**
+ * The untrusting half of contract rule 7: reject a `put` whose bytes do not
+ * hash to its key. A local caller is trusted, so it skips this; a store that
+ * takes writes from a peer wraps its own blob map in it. Admit one lie here
+ * and the hash stops meaning the content everywhere.
+ */
+export const verifiedBlobs = (blobs: Store['blobs']): Store['blobs'] => ({
+	has: (hash) => blobs.has(hash),
+	get: (hash) => blobs.get(hash),
+	async put(hash, data) {
+		// One snapshot, hashed and then stored. The caller still owns `data` and
+		// may edit it while the digest is in flight, and what is verified has to
+		// be what lands — or the check proves nothing about the stored bytes.
+		const held = new Uint8Array(data)
+		if ((await sha256Hex(held)) !== hash) throw new Error(`blob bytes do not hash to ${hash}`)
+		await blobs.put(hash, held)
+	}
+})
+
+const sha256Hex = async (data: Uint8Array): Promise<Hash> => {
+	// The cast: `BufferSource` names a `Uint8Array` over a plain `ArrayBuffer`,
+	// and a plain `Uint8Array` is over `ArrayBufferLike` — the shared-memory case
+	// `digest` never sees here.
+	const digest = await crypto.subtle.digest('SHA-256', data as BufferSource)
+	return Array.from(new Uint8Array(digest))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('')
+}
