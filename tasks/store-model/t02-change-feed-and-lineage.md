@@ -1,6 +1,6 @@
 # T2 — The change feed: `since` + cursor lineage
 
-**Status:** todo
+**Status:** done
 **Phase:** A — the seam
 **Depends on:** [T1](t01-store-types-and-memstore.md)
 **Context:** [overview](README.md) · [design #3, contract rules 4, 5, 11](../../kb/fs/fable-design.md)
