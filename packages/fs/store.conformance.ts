@@ -291,7 +291,9 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			const a = node({ id: 'a', name: 'a.txt', version: '1' })
 			await store.commit([a, node({ id: 'b', name: 'b.txt' })])
 			const caught = await feed(store)
-			expect(caught.nodes.map((n) => n.id)).toEqual([ROOT, 'a', 'b'])
+			// `a` and `b` land in one commit, and the contract does not order a
+			// commit inside itself, so only the set is fixed here.
+			expect(new Set(caught.nodes.map((n) => n.id))).toEqual(new Set([ROOT, 'a', 'b']))
 
 			const edited = { ...a, name: 'a2.txt', version: '2' }
 			await store.commit([edited])
@@ -311,11 +313,12 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 
 			const first = await store.since()
 			if (!first.next) throw new Error('since must always hand a cursor back')
-			// A row the first page already handed out changes mid-scan. The scanner
-			// has no way to know, so the feed must bring it round again.
-			const early = first.nodes.find((n) => n.id !== ROOT)
+			// The first row of the page is the one row any page size has already
+			// handed out. It changes while the scan is still running, and the
+			// scanner has no way to know, so the feed must bring it round again.
+			const [early] = first.nodes
 			if (!early) throw new Error('the first page carried no rows')
-			const edited = { ...early, version: '2', size: 9n }
+			const edited = { ...early, version: '2', mtimeNs: 42n }
 			await store.commit([edited])
 
 			const rest = await feed(store, first.next)
@@ -355,8 +358,10 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			const a = node({ id: 'a', name: 'a.txt', version: '1' })
 			const b = node({ id: 'b', name: 'b.txt' })
 			await store.commit([a, b])
-			expect(fired.map((rows) => rows.map((n) => n.id))).toEqual([['a', 'b']])
-			expect(await Promise.all(reads)).toEqual([a, b])
+			// One event carrying both rows — the grouping is the contract, the order
+			// inside the batch is not.
+			expect(fired.map((rows) => new Set(rows.map((n) => n.id)))).toEqual([new Set(['a', 'b'])])
+			expect(await Promise.all(reads)).toEqual(expect.arrayContaining([a, b]))
 
 			// A rejected commit wrote nothing, so it tells no one (rule 2).
 			await expect(
