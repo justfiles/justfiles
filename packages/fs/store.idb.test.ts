@@ -146,6 +146,32 @@ describe('idbStore: guarded atomic batches inside IDB transaction rules', () => 
 		})
 	}
 
+	test('a write that throws instead of failing a request rolls the whole batch back', async () => {
+		const name = `t04-${crypto.randomUUID()}`
+		const store = idbStore(name)
+		await store.commit([node({ id: 'held', name: 'taken.txt' })])
+
+		// A `put` can THROW rather than fail a request — an uncloneable value in a
+		// row, a key the store cannot extract. IDB has no request to fail then, so
+		// it does not abort the transaction on its own: the writes before this one
+		// would commit while the caller is told the batch failed.
+		const original = IDBObjectStore.prototype.put
+		let puts = 0
+		IDBObjectStore.prototype.put = function (this: IDBObjectStore, value, key) {
+			if (++puts === 50) throw new DOMException('cannot clone', 'DataCloneError')
+			return original.call(this, value, key)
+		}
+		const rows = batch()
+		try {
+			await expect(store.commit(rows, fresh100(rows))).rejects.toThrow()
+		} finally {
+			IDBObjectStore.prototype.put = original
+		}
+
+		const reopened = idbStore(name)
+		expect((await reopened.since()).nodes.map((n) => n.id).sort()).toEqual([ROOT, 'held'].sort())
+	})
+
 	test('overlapping commits serialize: one free guard wins, the loser writes nothing', async () => {
 		const store = fresh()
 		const a = node({ id: 'a', name: 'race.txt' })

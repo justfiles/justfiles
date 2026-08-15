@@ -74,6 +74,10 @@ What the rules cost, and where it is paid:
   conformance suite** — it stays green — and fails all three IDB-specific
   atomicity tests. A backend can therefore pass the contract and still be
   racy, which is what those three tests are for.
+- **A `put` that THROWS is not a failed request, and IDB will not abort for
+  it.** An uncloneable value or a key the store cannot extract leaves no request
+  to fail, so the writes before it would commit while the call reports failure.
+  Every failure path therefore aborts, from one place.
 - **A commit must resolve on the transaction, not on its last request.** A
   transaction taken away after its last write LANDED (storage pressure, a
   closed tab) rolls the batch back, and only `await tx.done` reports it. Both

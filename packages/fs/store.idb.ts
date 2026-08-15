@@ -177,21 +177,25 @@ export function idbStore(name: string): Store {
 		 * transaction the writes do not share is a race, not a guard.
 		 */
 		async commit(writes, guards) {
+			// Taken before the first `await`, which is where the caller gets control
+			// back and may edit a row it just handed over. What the guards see and
+			// what lands has to be the batch as it stood at the call — `memStore`
+			// never awaits at all, so anything else makes the two backends disagree.
+			const batch = structuredClone(writes)
+			const checks = structuredClone(guards)
+
 			const { db } = await open()
 			const tx = db.transaction('nodes', 'readwrite')
 			const nodes = tx.objectStore('nodes')
 			try {
 				// Rule 2: every guard before any write, so a failure writes nothing.
-				for (const guard of guards ?? []) {
+				for (const guard of checks ?? []) {
 					const pass =
 						'free' in guard
 							? (await nodes.index('live').getKey([guard.free.parent, guard.free.name])) ===
 								undefined
 							: ((await nodes.get(guard.version.id))?.version ?? null) === guard.version.is
-					if (!pass) {
-						tx.abort()
-						throw new Error(`commit rejected: guard ${JSON.stringify(guard)} failed`)
-					}
+					if (!pass) throw new Error(`commit rejected: guard ${JSON.stringify(guard)} failed`)
 				}
 
 				// The next position, read here rather than counted in memory: another
@@ -200,7 +204,7 @@ export function idbStore(name: string): Store {
 				const end = await nodes.index('seq').openCursor(null, 'prev')
 				let seq = (end ? end.key : -1) + 1
 
-				for (const write of writes) {
+				for (const write of batch) {
 					const old = await nodes.get(write.id)
 					if (old && same(old, write)) continue // rule 3: a row the store already holds is a no-op
 					await nodes.put(encode(write, seq++))
@@ -210,8 +214,18 @@ export function idbStore(name: string): Store {
 				// closed tab — and a caller told the batch landed would never retry it.
 				await tx.done
 			} catch (error) {
-				// The transaction is over either way, and its rejection is this same
-				// failure. Claim it, or it surfaces a second time as an unhandled one.
+				// Abort, and from the ONE place every failure passes through. A failed
+				// guard is a deliberate one, but a `put` that THROWS instead of failing
+				// a request — an uncloneable value, a key the store cannot extract —
+				// leaves IDB with no request to fail, so it would commit the writes
+				// before it while this call reports failure.
+				try {
+					tx.abort()
+				} catch {
+					// Already finished or already aborting: this failure is that one.
+				}
+				// The transaction's own rejection is this same failure. Claim it, or it
+				// surfaces a second time as an unhandled one.
 				await tx.done.catch(() => {})
 				throw error
 			}
