@@ -20,6 +20,10 @@ Every mutating Volume operation expressed as guarded commits.
   mechanism, not cosmetics.
 - Contract rule 10: content durable (`blobs.put` resolved) BEFORE the row that
   references the hash is committed.
+- `Node.mode` holds permission and special bits only (`0o7777`) — `type` is the
+  one place that says what a node is. T5 masks on read, because a peer may send
+  anything; every row this task writes must already hold to it. `chmod` takes
+  the caller's number, so mask it there too.
 - Version format: the engine owns it ([T8](t08-engine-core.md) defines
   author-tagged versions). Until then stamp `local:<counter>`, and take a
   `mintVersion` function so the engine can inject its own later.

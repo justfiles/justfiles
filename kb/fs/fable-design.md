@@ -100,7 +100,7 @@ type Node = {
 	parent: NodeId
 	name: string
 	type: 'file' | 'dir' | 'symlink' | 'mount'  // mount: a junction to another store
-	mode: number
+	mode: number                       // permission + special bits only (0o7777)
 	mtimeNs: bigint
 	size: bigint                       // denormalized so stat never touches content
 	xattrs?: Record<string, Uint8Array> // small values only; big data belongs in content
@@ -114,6 +114,11 @@ type Node = {
 - **Content**: immutable bytes keyed by `Hash`. A move or copy never moves
   bytes. A missing blob for a referenced hash is a lazy stub; an orphan blob
   is garbage.
+- **Mode**: permission and special bits only. `type` is the one place that
+  says what a node is, and a `mount` has no POSIX type value to be encoded
+  as, so POSIX type bits in `mode` would be a second answer to that question
+  — free to contradict the first, and unable to spell a junction. A peer may
+  send them anyway, so the POSIX view masks with `0o7777` on read.
 - **Mount**: a junction node. It claims its name through the normal guard,
   syncs like any row, and can never have children, because only a directory
   can be a parent. Which store backs it is per-replica local configuration,

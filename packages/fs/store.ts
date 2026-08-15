@@ -18,6 +18,10 @@ export type Node = {
 	parent: NodeId
 	name: string
 	type: 'file' | 'dir' | 'symlink' | 'mount' // mount: a junction to another store
+	// Permission and special bits only (`0o7777`). `type` above is the one place
+	// that says what a node IS — POSIX type bits here would be a second answer to
+	// that question, free to contradict the first. A peer may still send them, so
+	// the POSIX view masks on read; this is what our own writes must hold to.
 	mode: number
 	mtimeNs: bigint
 	size: bigint // denormalized so stat never touches content

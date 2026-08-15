@@ -65,7 +65,7 @@ const ROOT_ROW: Node = {
 	parent: ROOT, // root is its own parent; upward walks stop here
 	name: '',
 	type: 'dir',
-	mode: 0o040755,
+	mode: 0o755,
 	mtimeNs: 0n,
 	size: 0n,
 	version: '0'
