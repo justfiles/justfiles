@@ -76,7 +76,6 @@ type Opened = { db: IDBPDatabase<Schema>; lineage: string }
 /** The browser `Store`. One database per name; reopening one is not a reset. */
 export function idbStore(name: string): Store {
 	let opening: Promise<Opened> | null = null
-	const listeners = new Set<(writes: Node[]) => void>()
 
 	const start = async (): Promise<Opened> => {
 		const db = await openDB<Schema>(name, DB_VERSION, {
@@ -181,7 +180,6 @@ export function idbStore(name: string): Store {
 			const { db } = await open()
 			const tx = db.transaction('nodes', 'readwrite')
 			const nodes = tx.objectStore('nodes')
-			const written: Row[] = []
 			try {
 				// Rule 2: every guard before any write, so a failure writes nothing.
 				for (const guard of guards ?? []) {
@@ -205,9 +203,7 @@ export function idbStore(name: string): Store {
 				for (const write of writes) {
 					const old = await nodes.get(write.id)
 					if (old && same(old, write)) continue // rule 3: a row the store already holds is a no-op
-					const row = encode(write, seq++)
-					await nodes.put(row)
-					written.push(row)
+					await nodes.put(encode(write, seq++))
 				}
 				// The commit resolves on the TRANSACTION, not on its last request: a
 				// browser may still take the transaction away — storage pressure, a
@@ -219,26 +215,17 @@ export function idbStore(name: string): Store {
 				await tx.done.catch(() => {})
 				throw error
 			}
-
-			// Rule 8: after the commit, and only for what it changed. A listener is
-			// a notification, never a step in the commit, so its failure stays its
-			// own.
-			if (written.length === 0) return
-			const rows = written.map(decode)
-			for (const listener of listeners)
-				try {
-					listener(rows)
-				} catch {
-					// The listener owns its errors.
-				}
 		},
 
-		subscribe(listener) {
-			listeners.add(listener)
-			return () => {
-				listeners.delete(listener)
-			}
-		},
+		// No `subscribe`. Rule 8 makes it optional — a latency optimization over
+		// polling `since` — and a consumer takes it INSTEAD of polling whenever a
+		// store offers one. This backend cannot honour that: the DATABASE is the
+		// store, not the connection (a cursor one connection mints still means what
+		// it meant to the next), so a wake held in one connection's closure would
+		// never fire for a second tab's commit and a watcher would go permanently
+		// stale rather than merely late. Polling `since` sees every connection's
+		// commits. A real cross-tab wake is additive — a `BroadcastChannel` beside
+		// the commit — and belongs where its latency is measured, not here.
 
 		// Rule 7: content-keyed and immutable, so a hash the map already holds is
 		// already the answer and the second put is nothing. IDB hands every reader

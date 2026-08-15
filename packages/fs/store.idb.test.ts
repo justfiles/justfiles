@@ -182,6 +182,25 @@ describe('idbStore: guarded atomic batches inside IDB transaction rules', () => 
 		expect((await store.get('v'))?.version).toBe('v3')
 	})
 
+	test('no wake is advertised, because a connection-local one would go stale', async () => {
+		const name = `t04-${crypto.randomUUID()}`
+		const one = idbStore(name)
+		const two = idbStore(name)
+
+		// The DATABASE is the store, not the connection — the reopen below proves
+		// it, since a cursor one connection mints still means what it meant to the
+		// next. A `subscribe` held in one connection's closure would never fire for
+		// a second tab's commit, and T7 takes `subscribe` INSTEAD of polling
+		// whenever a store offers one: the watcher would go permanently stale
+		// rather than merely late. So this backend offers none.
+		expect(one.subscribe).toBeUndefined()
+
+		// And the fallback it leaves behind is the whole truth: `since` sees the
+		// other connection's commits.
+		await two.commit([node({ id: 'a', name: 'a.txt' })])
+		expect((await one.since()).nodes.map((n) => n.id)).toContain('a')
+	})
+
 	test('the feed survives a reopen: rows, order and cursor outlive the connection', async () => {
 		const name = `t04-${crypto.randomUUID()}`
 		const store = idbStore(name)

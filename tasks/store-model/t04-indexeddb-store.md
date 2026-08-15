@@ -79,6 +79,16 @@ What the rules cost, and where it is paid:
   closed tab) rolls the batch back, and only `await tx.done` reports it. Both
   abort moments are pinned by tests.
 
+**This backend advertises no `subscribe`, and T7 must poll `since` on it.** The
+database is the store, not the connection: a cursor one connection mints still
+means what it meant to the next, so two `idbStore(name)` instances — two tabs —
+are one store. A wake held in one connection's closure never fires for the
+other's commit, and [T7](t07-watch.md) takes `subscribe` INSTEAD of polling
+whenever a store offers one, so a watcher would go permanently stale rather than
+merely late. Polling sees every connection's commits. A real cross-tab wake is
+additive — a `BroadcastChannel` beside the commit — and belongs in T7, where its
+latency can be measured, not here.
+
 The schema is the model with nothing added: one object store for nodes with the
 two indexes, one for blobs, and one durable value — the lineage, which is not a
 node. Both indexes are derived from the row (`live` is absent on a tombstone, so
