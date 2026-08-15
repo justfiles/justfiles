@@ -81,7 +81,7 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			}
 		})
 
-		test('child with two live rows for one (parent, name) returns the lowest id (rule 1)', async () => {
+		test('two live rows for one (parent, name) resolve to the lowest id (rule 1)', async () => {
 			const low = node({ id: 'aaa', name: 'dup.txt' })
 			const high = node({ id: 'zzz', name: 'dup.txt' })
 			// The id decides the winner, not the arrival order — so every replica agrees.
@@ -94,6 +94,11 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			await early.commit([low])
 			await early.commit([high])
 			expect(await early.child(ROOT, 'dup.txt')).toEqual(low)
+
+			// `children` lists the same winner `child` resolves: one entry per name, so a
+			// listing can never disagree with a path lookup or hand out a duplicate name.
+			expect(await drain(late, ROOT)).toEqual([low])
+			expect(await drain(early, ROOT)).toEqual([low])
 		})
 
 		test('commit is atomic: a failed guard commits nothing, even as the last guard (rule 2)', async () => {
@@ -151,10 +156,14 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 				size: 4n
 			})
 			await store.commit([rich])
+			const mark = (await store.since()).next
 			await store.commit([rich])
-			// The feed-level no-op is proven in T2; here the table must be unchanged.
 			expect(await store.get('r')).toEqual(rich)
 			expect(names(await drain(store, ROOT))).toEqual(['r.txt'])
+			// A row the store already holds adds nothing to the order, so a retry or a
+			// lost-cursor recovery cannot manufacture change-feed traffic. `since` is only
+			// the instrument here; its own rules (4, 5, 11) belong to T2.
+			expect((await store.since(mark)).nodes).toEqual([])
 
 			// Whole-row replace: the fields the new row omits are gone, not merged.
 			const plain = node({ id: 'r', name: 'moved.txt', version: '2' })
@@ -162,6 +171,41 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			expect(await store.get('r')).toEqual(plain)
 			expect(await store.child(ROOT, 'r.txt')).toBeNull()
 			expect(await store.child(ROOT, 'moved.txt')).toEqual(plain)
+		})
+
+		test('rows cross the boundary by value, never by reference (rule 3)', async () => {
+			const store = await open()
+			const held = () =>
+				node({ id: 'v', name: 'v.txt', version: 'v1', xattrs: { tag: bytes('keep') } })
+
+			// Mutating a row after committing it must not reach into the table.
+			const written = held()
+			await store.commit([written])
+			written.name = 'tampered.txt'
+			written.version = 'tampered'
+			written.xattrs = { tag: bytes('tampered') }
+			expect(await store.get('v')).toEqual(held())
+			expect(await store.child(ROOT, 'v.txt')).toEqual(held())
+
+			// Nor may mutating a row the store handed back.
+			const read = await store.get('v')
+			expect(read).not.toBeNull()
+			if (read) {
+				read.version = 'tampered'
+				read.xattrs = { tag: bytes('tampered') }
+			}
+			expect(await store.get('v')).toEqual(held())
+
+			// So read-modify-write stays a real write: the guard still sees the old
+			// version, and the edit is not mistaken for the identical row it came from.
+			const edit = await store.get('v')
+			if (!edit) throw new Error('the row went missing')
+			edit.size = 9n
+			edit.version = 'v2'
+			const mark = (await store.since()).next
+			await store.commit([edit], [{ version: { id: 'v', is: 'v1' } }])
+			expect(await store.get('v')).toEqual(edit)
+			expect((await store.since(mark)).nodes.map((n) => n.id)).toEqual(['v'])
 		})
 
 		test('a tombstone frees the name and vanishes from child and children (rule 3)', async () => {

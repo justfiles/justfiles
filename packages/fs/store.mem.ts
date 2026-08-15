@@ -8,8 +8,35 @@ const SEP = String.fromCharCode(0)
 
 const dirKey = (parent: NodeId, name: string): string => parent + SEP + name
 
-/** The listing order, and the `children` cursor: name first, id to break a tie. */
-const listKey = (n: Node): string => n.name + SEP + n.id
+/** Rows cross the boundary by value, exactly as a durable or wire-backed store does. */
+const copy = (n: Node): Node => structuredClone(n)
+
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean =>
+	a.length === b.length && a.every((byte, i) => byte === b[i])
+
+const sameXattrs = (a: Node['xattrs'], b: Node['xattrs']): boolean => {
+	const keys = Object.keys(a ?? {})
+	if (keys.length !== Object.keys(b ?? {}).length) return false
+	return keys.every((k) => {
+		const x = a?.[k]
+		const y = b?.[k]
+		return x !== undefined && y !== undefined && sameBytes(x, y)
+	})
+}
+
+/** Rule 3: idempotent by content. Whole rows, so every field counts. Ids match by lookup. */
+const same = (a: Node, b: Node): boolean =>
+	a.parent === b.parent &&
+	a.name === b.name &&
+	a.type === b.type &&
+	a.mode === b.mode &&
+	a.mtimeNs === b.mtimeNs &&
+	a.size === b.size &&
+	a.content === b.content &&
+	a.link === b.link &&
+	a.version === b.version &&
+	a.deleted === b.deleted &&
+	sameXattrs(a.xattrs, b.xattrs)
 
 /**
  * The reference `Store`: two maps (by id, by `(parent, name)`) plus the local
@@ -53,36 +80,50 @@ export function memStore(): Store {
 
 	const put = (row: Node): void => {
 		const old = byId.get(row.id)
+		if (old && same(old, row)) return // rule 3: a row the store already holds is a no-op
+		const held = copy(row)
 		if (old) byName.get(dirKey(old.parent, old.name))?.delete(old.id)
-		byId.set(row.id, row)
-		if (!row.deleted) {
-			const key = dirKey(row.parent, row.name)
+		byId.set(held.id, held)
+		if (!held.deleted) {
+			const key = dirKey(held.parent, held.name)
 			const bucket = byName.get(key) ?? new Set<NodeId>()
 			byName.set(key, bucket)
-			bucket.add(row.id)
+			bucket.add(held.id)
 		}
-		order.set(row.id, next++)
+		order.set(held.id, next++)
 	}
 
 	return {
 		async get(id) {
-			return byId.get(id) ?? null
+			const n = byId.get(id)
+			return n ? copy(n) : null
 		},
 
 		async child(parent, name) {
-			return lookup(parent, name)
+			const n = lookup(parent, name)
+			return n ? copy(n) : null
 		},
 
 		async children(parent, cursor) {
-			const live = [...byId.values()]
+			const sorted = [...byId.values()]
 				.filter((n) => n.parent === parent && !n.deleted && n.id !== ROOT)
-				.sort((a, b) => (listKey(a) < listKey(b) ? -1 : 1))
-			const from = cursor ? live.findIndex((n) => listKey(n) > cursor) : 0
-			if (from < 0) return { nodes: [] } // the cursor sits past the last entry
-			const nodes = live.slice(from, from + PAGE)
-			const last = nodes[nodes.length - 1]
-			if (last && from + nodes.length < live.length) return { nodes, next: listKey(last) }
-			return { nodes }
+				.sort((a, b) => (a.name === b.name ? (a.id < b.id ? -1 : 1) : a.name < b.name ? -1 : 1))
+			// One row per name: a duplicate sorts next to its winner, so skipping every row
+			// whose name is not past the last one emitted drops the losers and resumes a
+			// paged listing in the same step. That makes the cursor just a name.
+			const nodes: Node[] = []
+			let last = cursor
+			let more = false
+			for (const n of sorted) {
+				if (last !== undefined && n.name <= last) continue
+				if (nodes.length === PAGE) {
+					more = true
+					break
+				}
+				nodes.push(copy(n))
+				last = n.name
+			}
+			return more && last !== undefined ? { nodes, next: last } : { nodes }
 		},
 
 		async since(cursor) {
@@ -90,7 +131,7 @@ export function memStore(): Store {
 			const nodes: Node[] = []
 			for (const [id, at] of [...order].sort((a, b) => a[1] - b[1])) {
 				const n = byId.get(id)
-				if (at >= from && n) nodes.push(n)
+				if (at >= from && n) nodes.push(copy(n))
 			}
 			return { nodes, next: String(next) }
 		},
