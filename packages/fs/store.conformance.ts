@@ -3,11 +3,22 @@
  * there is no capability negotiation: the contract is the contract.
  *
  * Rule numbers cite `kb/fs/fable-design.md` #3 "Contract". This file covers
- * rules 1 to 6, 8 and 11. Blobs (rules 7, 10) are added by a later task.
+ * rules 1 to 8 and 11. Rule 10 is a rule for the CALLER — a store cannot see
+ * the order its writer chose — so only its aftermath is checked here: a lazy
+ * stub and an orphan blob. The ordering itself is tested at the two writers,
+ * in T6 and T9.
  */
 
 import { describe, expect, test } from 'vitest'
-import { type Cursor, ForeignCursorError, type Node, type NodeId, ROOT, type Store } from './store'
+import {
+	type Cursor,
+	ForeignCursorError,
+	type Node,
+	type NodeId,
+	ROOT,
+	type Store,
+	verifiedBlobs
+} from './store'
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 
@@ -52,6 +63,13 @@ async function feed(store: Store, from?: Cursor): Promise<{ nodes: Node[]; curso
 	}
 	throw new Error('since never caught up')
 }
+
+/**
+ * SHA-256 of "hello", hex. Written out rather than computed, so the suite holds
+ * the store to the digest the rest of the world means by SHA-256 — not to
+ * whatever the code under test happens to compute.
+ */
+const HELLO = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
 
 /** 300 sibling files — enough that a store with a modest page size must page. */
 const many = (): Node[] =>
@@ -390,6 +408,95 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			})
 			await store.commit([node({ id: 'e', name: 'e.txt' })])
 			expect(quiet.map((rows) => rows.map((n) => n.id))).toEqual([['e']])
+		})
+
+		test('blobs round-trip by hash, and the bytes cross by value (rule 7)', async () => {
+			const store = await open()
+			const key = 'a'.repeat(64)
+			expect(await store.blobs.has(key)).toBe(false)
+			expect(await store.blobs.get(key)).toBeNull()
+
+			const data = bytes('hello')
+			await store.blobs.put(key, data)
+			// `has` answers the question a sync engine asks — is this content
+			// here? — without moving the bytes.
+			expect(await store.blobs.has(key)).toBe(true)
+			expect(await store.blobs.get(key)).toEqual(bytes('hello'))
+
+			// Content is immutable, so neither side may reach into it afterwards:
+			// not the writer, through the array it handed over ...
+			data.fill(0)
+			expect(await store.blobs.get(key)).toEqual(bytes('hello'))
+			// ... nor a reader, through the array it was handed.
+			const read = await store.blobs.get(key)
+			read?.fill(0)
+			expect(await store.blobs.get(key)).toEqual(bytes('hello'))
+		})
+
+		test('a second put under the same hash is a no-op (rule 7)', async () => {
+			const store = await open()
+			const key = 'b'.repeat(64)
+			await store.blobs.put(key, bytes('first'))
+			// Only a lying caller can show the rule at all — an honest one writes
+			// the same bytes twice. Durable content stays what it was, so a slow
+			// retry can never replace bytes a reader already holds open.
+			await store.blobs.put(key, bytes('second, and longer'))
+			expect(await store.blobs.get(key)).toEqual(bytes('first'))
+		})
+
+		test('a row may reference a hash the store does not hold: a lazy stub (rules 7, 10)', async () => {
+			const store = await open()
+			const absent = 'c'.repeat(64)
+			const stub = node({ id: 's', name: 's.txt', content: absent, size: 12n })
+			await store.commit([stub])
+
+			// Selective content: the row is whole, the bytes were never fetched. No
+			// store checks that a referenced hash is present, so the row reads back
+			// as usual and the missing content is an ordinary miss.
+			expect(await store.get('s')).toEqual(stub)
+			expect(await store.blobs.has(absent)).toBe(false)
+			expect(await store.blobs.get(absent)).toBeNull()
+
+			// The content fills in later without the row moving at all.
+			await store.blobs.put(absent, bytes('hello world!'))
+			expect(await store.blobs.get(absent)).toEqual(bytes('hello world!'))
+			expect(await store.get('s')).toEqual(stub)
+		})
+
+		test('an orphan blob is allowed: content no row references (rule 10)', async () => {
+			const store = await open()
+			const key = 'd'.repeat(64)
+			await store.blobs.put(key, bytes('orphan'))
+			// What a crash between `blobs.put` and `commit` leaves behind: wasted
+			// space for `gc` to find, never corruption. Nothing objects to it, and
+			// the retried commit adopts it as it stands.
+			expect(await store.blobs.has(key)).toBe(true)
+			expect(names(await drain(store, ROOT))).toEqual([])
+
+			await store.commit([node({ id: 'o', name: 'o.txt', content: key, size: 6n })])
+			expect(await store.blobs.get(key)).toEqual(bytes('orphan'))
+		})
+
+		test('verifiedBlobs rejects a put whose bytes do not hash to the key (rule 7)', async () => {
+			const store = await open()
+			// Every peer-facing store wraps itself in this: a local caller is
+			// trusted on `put`, a caller across a wire is not.
+			const blobs = verifiedBlobs(store.blobs)
+
+			const wrong = 'e'.repeat(64)
+			await expect(blobs.put(wrong, bytes('hello'))).rejects.toThrow()
+			// A rejected put stores nothing — else the wrong bytes sit durable
+			// under a name no one can look them up by, and the hash stops meaning
+			// the content.
+			expect(await store.blobs.has(wrong)).toBe(false)
+			await expect(blobs.put(HELLO, bytes('goodbye'))).rejects.toThrow()
+			expect(await store.blobs.has(HELLO)).toBe(false)
+
+			// An honest put passes straight through to the store underneath.
+			await blobs.put(HELLO, bytes('hello'))
+			expect(await blobs.has(HELLO)).toBe(true)
+			expect(await blobs.get(HELLO)).toEqual(bytes('hello'))
+			expect(await store.blobs.get(HELLO)).toEqual(bytes('hello'))
 		})
 	})
 }
