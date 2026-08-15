@@ -3,12 +3,11 @@
  * there is no capability negotiation: the contract is the contract.
  *
  * Rule numbers cite `kb/fs/fable-design.md` #3 "Contract". This file covers
- * rules 1, 2, 3 and 6. The feed (rules 4, 5, 11) and blobs (rules 7, 10) are
- * added by later tasks.
+ * rules 1 to 6, 8 and 11. Blobs (rules 7, 10) are added by a later task.
  */
 
 import { describe, expect, test } from 'vitest'
-import { type Cursor, type Node, type NodeId, ROOT, type Store } from './store'
+import { type Cursor, ForeignCursorError, type Node, type NodeId, ROOT, type Store } from './store'
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 
@@ -36,6 +35,27 @@ async function drain(store: Store, parent: NodeId, cursor?: Cursor): Promise<Nod
 }
 
 const names = (nodes: Node[]): string[] => nodes.map((n) => n.name)
+
+/**
+ * Scan the feed to its end. `since` always hands a cursor back, so the scan is
+ * over when a page carries no nodes — that cursor is the one to resume from.
+ */
+async function feed(store: Store, from?: Cursor): Promise<{ nodes: Node[]; cursor: Cursor }> {
+	const nodes: Node[] = []
+	let cursor = from
+	for (let page = 0; page < 1000; page++) {
+		const got = await store.since(cursor)
+		if (got.next === undefined) throw new Error('since must always hand a cursor back')
+		cursor = got.next
+		if (got.nodes.length === 0) return { nodes, cursor }
+		nodes.push(...got.nodes)
+	}
+	throw new Error('since never caught up')
+}
+
+/** 300 sibling files — enough that a store with a modest page size must page. */
+const many = (): Node[] =>
+	Array.from({ length: 300 }, (_, i) => node({ id: `n${i}`, name: `f${i}.txt` }))
 
 export function storeConformance(name: string, open: () => Promise<Store>): void {
 	describe(`Store conformance: ${name}`, () => {
@@ -162,7 +182,7 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			expect(names(await drain(store, ROOT))).toEqual(['r.txt'])
 			// A row the store already holds adds nothing to the order, so a retry or a
 			// lost-cursor recovery cannot manufacture change-feed traffic. `since` is only
-			// the instrument here; its own rules (4, 5, 11) belong to T2.
+			// the instrument here; its own rules (4, 5, 11) are tested below.
 			expect((await store.since(mark)).nodes).toEqual([])
 
 			// Whole-row replace: the fields the new row omits are gone, not merged.
@@ -226,6 +246,150 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			const reuse = node({ id: 'y', name: 'gone.txt' })
 			await store.commit([reuse], [{ free: { parent: ROOT, name: 'gone.txt' } }])
 			expect(await store.child(ROOT, 'gone.txt')).toEqual(reuse)
+		})
+
+		test('since from the empty cursor scans every live row and every tombstone (rule 4)', async () => {
+			const store = await open()
+			const rows = many()
+			await store.commit(rows)
+			await store.commit([node({ id: 'n7', name: 'f7.txt', version: '2', deleted: true })])
+
+			const { nodes } = await feed(store)
+			// Root travels like any other row: the feed is an index over the one
+			// table, and no row is exempt from it.
+			expect(new Set(nodes.map((n) => n.id))).toEqual(new Set([ROOT, ...rows.map((r) => r.id)]))
+			expect(nodes.length).toBe(rows.length + 1)
+			// A tombstone is a row, so a deletion travels like any other change.
+			expect(nodes.find((n) => n.id === 'n7')?.deleted).toBe(true)
+
+			// Each store picks its own page size — the contract fixes none — so what
+			// has to hold is that the pages compose: a page's cursor resumes exactly
+			// where that page stopped, and the pages are the scan.
+			const first = await store.since()
+			expect(first.nodes.length).toBeGreaterThan(0)
+			if (!first.next) throw new Error('since must always hand a cursor back')
+			const rest = await feed(store, first.next)
+			expect([...first.nodes, ...rest.nodes]).toEqual(nodes)
+		})
+
+		test('a node appears once per scan, at its latest state: the feed self-compacts (rule 4)', async () => {
+			const store = await open()
+			const one = node({ id: 'a', name: 'a.txt', version: '1' })
+			await store.commit([one])
+			await store.commit([{ ...one, version: '2', size: 9n }])
+			const latest = { ...one, name: 'moved.txt', version: '3', size: 12n }
+			await store.commit([latest])
+
+			// Three commits, one row in the feed. Nothing grows behind it.
+			const { nodes } = await feed(store)
+			expect(nodes.map((n) => n.id)).toEqual([ROOT, 'a'])
+			expect(nodes.filter((n) => n.id === 'a')).toEqual([latest])
+		})
+
+		test('an update moves a node to the end, so a resumed cursor sees it again (rule 4)', async () => {
+			const store = await open()
+			const a = node({ id: 'a', name: 'a.txt', version: '1' })
+			await store.commit([a, node({ id: 'b', name: 'b.txt' })])
+			const caught = await feed(store)
+			// `a` and `b` land in one commit, and the contract does not order a
+			// commit inside itself, so only the set is fixed here.
+			expect(new Set(caught.nodes.map((n) => n.id))).toEqual(new Set([ROOT, 'a', 'b']))
+
+			const edited = { ...a, name: 'a2.txt', version: '2' }
+			await store.commit([edited])
+			// The resumed cursor sees `a` a second time, with its newer state — the
+			// price of never permanently missing a node.
+			const again = await feed(store, caught.cursor)
+			expect(again.nodes).toEqual([edited])
+
+			// And only while there is news: a caught-up cursor stays quiet.
+			expect((await feed(store, again.cursor)).nodes).toEqual([])
+		})
+
+		test('a commit during a paged scan comes back later in the same scan (rule 4)', async () => {
+			const store = await open()
+			const rows = many()
+			await store.commit(rows)
+
+			const first = await store.since()
+			if (!first.next) throw new Error('since must always hand a cursor back')
+			// The first row of the page is the one row any page size has already
+			// handed out. It changes while the scan is still running, and the
+			// scanner has no way to know, so the feed must bring it round again.
+			const [early] = first.nodes
+			if (!early) throw new Error('the first page carried no rows')
+			const edited = { ...early, version: '2', mtimeNs: 42n }
+			await store.commit([edited])
+
+			const rest = await feed(store, first.next)
+			const seen = new Map([...first.nodes, ...rest.nodes].map((n) => [n.id, n]))
+			expect(seen.size).toBe(rows.length + 1)
+			expect(seen.get(edited.id)).toEqual(edited)
+		})
+
+		test('a cursor is private to its store: a foreign lineage is rejected (rules 5, 11)', async () => {
+			const one = await open()
+			const two = await open()
+			await one.commit([node({ id: 'a', name: 'a.txt' })])
+			const { cursor } = await feed(one)
+			await two.commit([node({ id: 'b', name: 'b.txt' })])
+
+			// A reset or replaced store starts a new lineage, which fences the stale
+			// replica instead of silently handing it a position it never reached.
+			await expect(two.since(cursor)).rejects.toThrow(ForeignCursorError)
+			// The caller restarts from the empty cursor and converges.
+			expect((await feed(two)).nodes.map((n) => n.id)).toEqual([ROOT, 'b'])
+			// The cursor still means what it always meant to the store that minted it.
+			expect((await feed(one, cursor)).nodes).toEqual([])
+		})
+
+		test('subscribe fires once per commit, after it, with the rows it wrote (rule 8)', async () => {
+			const store = await open()
+			if (!store.subscribe) return // optional: everything works by polling `since`
+
+			const fired: Node[][] = []
+			const reads: Promise<Node | null>[] = []
+			const stop = store.subscribe((rows) => {
+				fired.push(rows)
+				// The writes already landed, so these reads see them.
+				reads.push(...rows.map((row) => store.get(row.id)))
+			})
+
+			const a = node({ id: 'a', name: 'a.txt', version: '1' })
+			const b = node({ id: 'b', name: 'b.txt' })
+			await store.commit([a, b])
+			// One event carrying both rows — the grouping is the contract, the order
+			// inside the batch is not.
+			expect(fired.map((rows) => new Set(rows.map((n) => n.id)))).toEqual([new Set(['a', 'b'])])
+			expect(await Promise.all(reads)).toEqual(expect.arrayContaining([a, b]))
+
+			// A rejected commit wrote nothing, so it tells no one (rule 2).
+			await expect(
+				store.commit(
+					[node({ id: 'c', name: 'c.txt' })],
+					[{ free: { parent: ROOT, name: 'a.txt' } }]
+				)
+			).rejects.toThrow()
+			// Nor does a row the store already holds — that is no change (rule 3).
+			await store.commit([a])
+			expect(fired.length).toBe(1)
+
+			stop()
+			await store.commit([node({ id: 'd', name: 'd.txt' })])
+			expect(fired.length).toBe(1)
+
+			// A listener is a notification, never a step in the commit: one that
+			// throws must not fail a write that already landed — the caller would
+			// retry a commit that succeeded — nor starve the listener behind it.
+			const quiet: Node[][] = []
+			store.subscribe(() => {
+				throw new Error('this listener is broken')
+			})
+			store.subscribe((rows) => {
+				quiet.push(rows)
+			})
+			await store.commit([node({ id: 'e', name: 'e.txt' })])
+			expect(quiet.map((rows) => rows.map((n) => n.id))).toEqual([['e']])
 		})
 	})
 }
