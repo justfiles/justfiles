@@ -1,6 +1,6 @@
 # T1 — Store types, memStore, conformance suite
 
-**Status:** todo
+**Status:** done
 **Phase:** A — the seam
 **Depends on:** nothing
 **Context:** [overview](README.md) · [design #2 and #3](../../kb/fs/fable-design.md)
