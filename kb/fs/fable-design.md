@@ -2,7 +2,8 @@
 
 Response to [research.md](./research.md). Three deliverables: the access
 patterns (#1), the minimal data structures (#2), the minimal implementation
-seam (#3). Then a compression review and prior art.
+seam (#3). Then a requirements check, a compression review, prior art, and
+the comparisons with the two sibling designs.
 
 Revised after reading two sibling designs from other agents:
 [sol-design.md](./sol-design.md) and [opus-design.md](./opus-design.md). The
@@ -60,9 +61,9 @@ These are the accesses a real disk FS cannot serve well. This is the
 | --- | --- | --- |
 | pull delta | ordered scan "all node rows changed since cursor" | paged, resumable |
 | bootstrap | the same scan, from the empty cursor | no separate snapshot mechanism |
-| push delta | the same scan on the local store, filtered by projection | |
-| apply remote batch | atomic multi-node write, with version guards, plus cursor row in the same write | all-or-nothing |
-| detect echo / retry | version comparison on the row | idempotent apply replaces origin tags |
+| push delta | the same scan on the local store, filtered to rows this replica authored | the author tag lives inside `version` |
+| apply remote batch | atomic multi-node write, with version guards | all-or-nothing; the cursor advances after the commit |
+| detect echo / retry | author tag filters the push; version comparison absorbs retries | no origin tags anywhere |
 | content transfer | `has` / `get` / `put` by hash | dedupe before upload; no upload on move |
 | effective path of a node | walk `parent` links upward | pure reads; cacheable; needed for watch scoping and event paths |
 | tombstones | deleted rows stay in the table and appear in the feed | no separate tombstone store |
@@ -193,7 +194,8 @@ interface Store {
    transient mid-sync state holds two live rows for one `(parent, name)`,
    resolution picks the lowest `id` — the same rule on every replica, so
    replicas agree on the visible winner even while converging (taken from
-   opus-design).
+   opus-design). `children` returns its pages in one stable name order, so
+   a resumed listing never skips or repeats an entry.
 2. `commit` is atomic. All writes and all guards evaluate in one
    transaction. Any failed guard commits nothing.
 3. Writes replace whole rows. There is no partial patch. Idempotent by
@@ -211,8 +213,8 @@ interface Store {
 8. `subscribe` is a latency optimization over polling `since`. `gc` must not
    race an open commit.
 9. Tree invariants (no cycles, no duplicate names, every parent a live
-   directory) are
-   enforced by the **authority's** commit via guards — not by every store.
+   directory) are enforced by the **authority's** commit via guards — not
+   by every store.
    A replica may transiently hold detached or even cyclic rows mid-sync.
    That is safe because visibility is reachability from root: a detached or
    cyclic cluster is simply invisible until later rows reattach it. Upward
@@ -257,7 +259,8 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   exposed that "idempotent apply" alone would re-send every pulled row
   once; it solves this with a per-row `base` field, which we decline (see
   the comparison).
-- **Resumable**: the cursor row commits atomically with the applied batch.
+- **Resumable**: the cursor advances only after its batch commits. It may
+  lag, never lead, so a crash costs a re-apply of rows that no-op.
 - **Authoritative**: the server is a `Store` whose `commit` enforces the
   guards plus tree invariants and serializes accepted writes into its feed.
   A rejection is a failed commit; the engine pulls and replans.
@@ -272,6 +275,13 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   is `sync(a, b)` both ways. The seam does not know the topology; only the
   meaning of `Version` (single authority counter vs. version vector) changes,
   and `Version` is opaque to every store.
+- **Engine state**: the peer cursor lives in a host-local slot outside the
+  replicated table. It may only lag the applied rows; idempotent apply makes
+  a lost or stale cursor cost a re-scan, never corruption. Nothing
+  engine-owned ever enters the user namespace or any feed.
+
+#### The namespace: local data without ignore rules
+
 - **Local-only data — mounts, not ignore lists** (taken from sol-design,
   then hardened): data that must not sync lives in a separate store, joined
   to the tree by a `mount` node committed in the synced store. There is no
@@ -330,10 +340,8 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   that does not want the bytes never calls `blobs.get` — a lazy stub. This
   is a materialization choice, never an identity or visibility choice, so
   it needs no protocol support at all.
-- **Engine state**: the peer cursor lives in a host-local slot outside the
-  replicated table. It may only lag the applied rows; idempotent apply makes
-  a lost or stale cursor cost a re-scan, never corruption. Nothing
-  engine-owned ever enters the user namespace or any feed.
+#### What falls out for free
+
 - **O(1) move**: a rename writes one row, which occupies one feed position,
   which is one wire row, which is one commit on each replica. The 4,000-file
   rename that motivated the node-identity epic costs the same as touching
@@ -356,6 +364,31 @@ There is no capability negotiation: the contract is the contract.
 
 ---
 
+## Requirements check
+
+[research.md](./research.md) set three requirements. Where each one lands:
+
+1. **"Expose fs APIs; plug into just-bash; implement in any tech; run
+   anywhere."** `Volume` keeps its exact POSIX surface (table A), so agents
+   and `just-bash` cannot tell it from a real filesystem. A backend is one
+   table, two indexes, one ordering, and one blob map — implementable on
+   memory, SQLite, IndexedDB, Postgres, or a native directory with a
+   sidecar. Nothing in the seam names a platform.
+2. **"Sync seamlessly; the user never knows; rock solid."** A synced volume
+   is `volume(store)` with an engine running beside it — the same surface,
+   the Dropbox-folder experience. "Rock solid" comes from small guarantees
+   that compose: atomic guarded commits, an idempotent self-compacting
+   feed, blob-before-row ordering, lineage-fenced cursors,
+   invisible-until-reachable application, and one convergence target —
+   replica-identical rows.
+3. **"Composable sync: P2P and central authority."** The engine connects
+   any two `Store`s. Topology is a policy choice — the meaning of `Version`
+   and the conflict rule — never a structural one. Central authority ships
+   first; P2P changes engine policy modules and no row, seam, or wire
+   shape.
+
+---
+
 ## Review: compress until nothing can move
 
 Attempt to remove every member. Result of each attempt:
@@ -375,7 +408,7 @@ Attempt to remove every member. Result of each attempt:
 | separate xattr ops (4 methods today) | yes | folded into the row |
 | separate journal store | yes | folded into the order index |
 | snapshot sessions | yes | folded into `since(ø)` |
-| origin / observed / MutationOptions | yes | idempotence replaces echo suppression |
+| origin / observed / MutationOptions | yes | author-tagged versions filter the push; idempotence absorbs the rest |
 | ino↔nodeId mapping | yes | there is only one identity |
 | capability matrix (4 strategies) | yes | one required contract |
 | parent-before-child wire ordering | yes | invisible-until-reachable replaces it |
@@ -386,6 +419,7 @@ Attempt to remove every member. Result of each attempt:
 
 Final form: **one table, two lookups, one order, one guarded atomic write,
 one hash-keyed blob map. The same seam is the storage API and the wire.**
+Mounts are the only composition mechanism: whole stores, joined at a node.
 Nothing else survived.
 
 ### What stays hard — and where it lives
@@ -407,6 +441,28 @@ now a pure module behind the seam, not a seam:
 The test for the future: a PR-494-sized feature must change engine modules
 and zero seam signatures. If a feature demands a new seam member, the design
 review starts with "why can this not be rows?"
+
+### Future expansion is additive
+
+The proof of the shape is what happens to the next ten features. Each lands
+in exactly one place; none changes a seam signature or the meaning of a
+stored fact:
+
+| Future feature | Where it lands | What changes |
+| --- | --- | --- |
+| large files | `content` names a chunk manifest | blob encoding only |
+| block-level / delta transfer | `blobs` implementation | backend optimization |
+| P2P topology | `Version` meaning + merge policy | engine modules |
+| field-level three-way merge | base cache in the engine | engine module |
+| search index, backup, audit trail | new subscribers of `since` | nothing — the feed is already the integration point |
+| a new backend (Postgres, R2, …) | one `Store` implementation | the conformance suite proves it |
+| signed rows for untrusted peers | an optional signature field on the row | additive field; verification in the engine |
+| tombstone pruning | a maintenance walk, once a horizon protocol exists | optional method beside `gc` |
+| `uid`/`gid`, ACLs, birth time | optional row fields or xattrs, when a product need defines them | additive fields |
+
+One risk on this list is legitimately structural, and the kill criterion at
+the end of this document names it: IndexedDB atomicity for guarded batch
+commits. Everything else has a place already waiting for it.
 
 ---
 
