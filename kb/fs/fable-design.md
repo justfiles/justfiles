@@ -4,9 +4,10 @@ Response to [research.md](./research.md). Three deliverables: the access
 patterns (#1), the minimal data structures (#2), the minimal implementation
 seam (#3). Then a compression review and prior art.
 
-Revised after reading [sol-design.md](./sol-design.md), a sibling design from
-another agent. The ideas taken and rejected from it are recorded in the
-[comparison section](#comparison-with-sol-designmd) near the end.
+Revised after reading two sibling designs from other agents:
+[sol-design.md](./sol-design.md) and [opus-design.md](./opus-design.md). The
+ideas taken and rejected from each are recorded in the comparison sections
+near the end.
 
 ## Diagnosis, in one paragraph
 
@@ -188,7 +189,11 @@ interface Store {
 ### Contract
 
 1. One logical table, two lookups: by `id`, and by `(parent, name)` over
-   live nodes. `child` is the hot path and must be a point lookup.
+   live nodes. `child` is the hot path and must be a point lookup. If a
+   transient mid-sync state holds two live rows for one `(parent, name)`,
+   resolution picks the lowest `id` — the same rule on every replica, so
+   replicas agree on the visible winner even while converging (taken from
+   opus-design).
 2. `commit` is atomic. All writes and all guards evaluate in one
    transaction. Any failed guard commits nothing.
 3. Writes replace whole rows. There is no partial patch. Idempotent by
@@ -227,7 +232,13 @@ interface Store {
 **`volume(store): Volume`** — the POSIX adapter, written once. Every row of
 table A maps to seam calls mechanically. Users and agents see only `Volume`;
 a synced volume and a local volume are indistinguishable, like a Dropbox
-folder.
+folder. One POSIX behavior doubles as a concurrency guard (a gap
+opus-design exposed): the volume stamps the parent directory's `mtime` on
+every create, delete, and rename inside it — real filesystems do the same —
+so every structural change bumps the parent row's version. A batch that
+enumerated a directory (`rm -r`) guards the parent's version and cannot
+race a concurrent create it did not see. A rename therefore touches three
+rows (the moved node, both parents) — still independent of subtree size.
 
 **`sync(local: Store, remote: Store)`** — the engine. Its whole loop:
 
@@ -239,6 +250,13 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
 
 - **Idempotent**: version-guarded upserts make retries and echo loops
   harmless. No origin tags, no echo suppression machinery.
+- **Push filter — no echo in the steady state** (sharpened by opus-design):
+  `Version` carries its author replica id. Push sends only rows this
+  replica authored since the push cursor, so pulled rows are never pushed
+  back — idempotence is the safety net, not the steady state. opus-design
+  exposed that "idempotent apply" alone would re-send every pulled row
+  once; it solves this with a per-row `base` field, which we decline (see
+  the comparison).
 - **Resumable**: the cursor row commits atomically with the applied batch.
 - **Authoritative**: the server is a `Store` whose `commit` enforces the
   guards plus tree invariants and serializes accepted writes into its feed.
@@ -408,6 +426,12 @@ review starts with "why can this not be rows?"
   create from a delete; a common base is required. In the feed model the
   base travels as tombstones and versions; a base *cache* appears only if
   three-way field merges become a product need.
+- **Google Drive / Microsoft Graph delta APIs** — taken as confirmation:
+  their delta feeds return full item state, not diffs, tombstones included
+  — the industrial file-sync precedent closest to contract rule 4.
+  (opus-design cites them for the same reason.)
+- **Perkeep (permanodes)** — taken: one stable id per logical object,
+  minted by its creator, never reused, independent of its content.
 - **git / IPFS** — taken: content addressing, dedupe, "a move uploads
   nothing". Rejected: whole-tree Merkle snapshots as the sync unit; agents
   need per-file incremental sync, not commits.
@@ -480,6 +504,73 @@ Their content-addressed everything buys whole-tree verification and cheap
 history; we verify blobs only and trust the authority for rows — the right
 trade for a live filesystem, revisitable if P2P ever needs signed rows.
 
+## Comparison with opus-design.md
+
+[opus-design.md](./opus-design.md) converged, independently, on nearly the
+same core as this design: one row type, path derived from the parent chain,
+a `seq` column as the change feed, `since(0)` as the snapshot, blobs by
+hash, POSIX as a view, sync as an idempotent loop. Where sol-design took
+the git road, opus-design and this design took the same road. Three
+independent designs, two arriving at one model, is strong evidence for it.
+The remaining differences are small and instructive.
+
+Its diagnosis (§1) is the best-evidenced statement of the disease across
+all three documents: three identities for one object, three shapes for one
+change, three shapes for one state, and a measured 60-method backend
+surface — with file-and-line receipts. Read it as the canonical "why".
+
+**Taken from opus-design** (folded in above):
+
+- The deterministic duplicate-name rule — lowest `id` wins, so all replicas
+  agree on the visible winner even mid-convergence (contract rule 1).
+- The push-filter problem. opus exposed that "idempotent apply" alone
+  re-sends every pulled row once; the steady state must not lean on the
+  safety net. We answer with author-tagged versions rather than its `base`
+  field (see rejections).
+- The enumerate-then-delete race. Its `tx` closure closes it structurally;
+  our guarded batch needed the POSIX dir-`mtime` rule to close the same
+  race. The gap was real.
+- The migration observation that every syncing backend already mints `Ino`
+  as a UUID, so `id` can be the existing ino. Verified against the code.
+- Prior-art citations: Drive/Graph delta feeds as the industrial precedent
+  for full-state rows with tombstones; Perkeep permanodes for
+  creator-minted ids.
+
+**Rejected, with reasons:**
+
+- *`base` and `seq` inside the replicated row.* `base` is per-peer state
+  ("what one peer confirmed") and `seq` is local commit order. Placing them
+  in `Node` breaks the invariant that converged replicas hold identical
+  rows, makes "the row is the wire shape" quietly false — both fields must
+  be stripped before sending — and hard-codes a single peer: a second peer
+  needs a second `base`. Per-replica state stays outside the row.
+- *Ignore as a `Project` predicate.* opus keeps path-pattern visibility and
+  inherits the whole class: a visible→ignored move must push tombstones for
+  data that still exists locally, a policy change is an O(N) re-read of
+  both sides, and pulled rows with unresolved parent chains need a
+  quarantine list (its §8.3) precisely because an ignored ancestor may
+  arrive later. Mounts delete the predicate, the quarantine, and the lying
+  tombstones in one move: nothing ignored can exist in the synced store at
+  all.
+- *The `tx(fn)` closure seam.* Strictly more expressive than
+  `commit(writes, guards)` — and exactly the shape IndexedDB punishes: any
+  `await` of non-IDB work inside the closure auto-commits the transaction.
+  Precomputed writes plus guards is the IDB-safe projection of the same
+  atomicity. The closure also costs the wire symmetry: opus needs a
+  separate `Peer` interface because a network hop cannot hold a `tx` open,
+  while our `Store` *is* the wire.
+- *No lineage fencing, no stated home for cursors.* A replaced server store
+  silently invalidates every cursor; opus does not address it (contract
+  rule 11 here, taken from sol-design), and its push/pull cursors have no
+  named durable location.
+
+**Equivalences worth naming:** its ten methods are our eight plus blobs;
+its blob-before-row order (§4.3) is our contract rule 10; its
+swap-the-`Merge` topology table is our opaque `Version`; its `watch(seq)`
+and our `subscribe(rows)` are the same optional wake, dressed differently;
+its "a row that breaks an invariant is invisible, not corrupt" (§3.3) is
+our contract rule 9.
+
 ## Relation to the current code
 
 - `Volume` survives with its exact surface. No consumer notices anything.
@@ -489,6 +580,10 @@ trade for a live filesystem, revisitable if P2P ever needs signed rows.
 - The migration path is the same seed-from-production runner that exists
   today: build `memStore` + conformance suite first, then SQLite, then point
   `volume()` at it, then retire the twin vocabulary.
+- Every syncing backend already mints `Ino` with `crypto.randomUUID()`
+  (verified: `storage.mem.ts:64`, `storage.idb.ts:405`), so `id` can simply
+  *be* the existing ino — the data migration is one pass that joins each
+  inode with its dirent and writes one row (taken from opus-design).
 - First proof lives in one small isolated package. It must show: a rename of
   a directory with 4,000 children is one row in the feed; a crash between
   `blobs.put` and `commit` leaves only an orphan blob; a deleted cursor
