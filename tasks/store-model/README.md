@@ -87,7 +87,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
-| T1 | [Store types, memStore, conformance suite](t01-store-types-and-memstore.md) | — | todo |
+| T1 | [Store types, memStore, conformance suite](t01-store-types-and-memstore.md) | — | done |
 | T2 | [The change feed: `since` + cursor lineage](t02-change-feed-and-lineage.md) | T1 | todo |
 | T3 | [Blobs](t03-blobs.md) | T1 | todo |
 | T4 | [IndexedDB Store — the kill criterion](t04-indexeddb-store.md) | T1–T3 | todo |
