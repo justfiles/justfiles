@@ -6,7 +6,8 @@ import {
 	type Node,
 	type NodeId,
 	ROOT,
-	type Store
+	type Store,
+	same
 } from './store'
 
 /** Rows per page. Big enough to list a normal directory in one page. */
@@ -19,33 +20,6 @@ const dirKey = (parent: NodeId, name: string): string => parent + SEP + name
 
 /** Rows cross the boundary by value, exactly as a durable or wire-backed store does. */
 const copy = (n: Node): Node => structuredClone(n)
-
-const sameBytes = (a: Uint8Array, b: Uint8Array): boolean =>
-	a.length === b.length && a.every((byte, i) => byte === b[i])
-
-const sameXattrs = (a: Node['xattrs'], b: Node['xattrs']): boolean => {
-	const keys = Object.keys(a ?? {})
-	if (keys.length !== Object.keys(b ?? {}).length) return false
-	return keys.every((k) => {
-		const x = a?.[k]
-		const y = b?.[k]
-		return x !== undefined && y !== undefined && sameBytes(x, y)
-	})
-}
-
-/** Rule 3: idempotent by content. Whole rows, so every field counts. Ids match by lookup. */
-const same = (a: Node, b: Node): boolean =>
-	a.parent === b.parent &&
-	a.name === b.name &&
-	a.type === b.type &&
-	a.mode === b.mode &&
-	a.mtimeNs === b.mtimeNs &&
-	a.size === b.size &&
-	a.content === b.content &&
-	a.link === b.link &&
-	a.version === b.version &&
-	a.deleted === b.deleted &&
-	sameXattrs(a.xattrs, b.xattrs)
 
 /**
  * The reference `Store`: two maps (by id, by `(parent, name)`) plus the local
