@@ -369,6 +369,19 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			stop()
 			await store.commit([node({ id: 'd', name: 'd.txt' })])
 			expect(fired.length).toBe(1)
+
+			// A listener is a notification, never a step in the commit: one that
+			// throws must not fail a write that already landed — the caller would
+			// retry a commit that succeeded — nor starve the listener behind it.
+			const quiet: Node[][] = []
+			store.subscribe(() => {
+				throw new Error('this listener is broken')
+			})
+			store.subscribe((rows) => {
+				quiet.push(rows)
+			})
+			await store.commit([node({ id: 'e', name: 'e.txt' })])
+			expect(quiet.map((rows) => rows.map((n) => n.id))).toEqual([['e']])
 		})
 	})
 }

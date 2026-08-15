@@ -176,8 +176,17 @@ export function memStore(): Store {
 			for (const guard of guards ?? [])
 				if (!pass(guard)) throw new Error(`commit rejected: guard ${JSON.stringify(guard)} failed`)
 			const written = writes.map(put).filter((row) => row !== null)
-			// Rule 8: after the commit, and only for what it changed.
-			if (written.length > 0) for (const listener of listeners) listener(written.map(copy))
+			// Rule 8: after the commit, and only for what it changed. A listener is
+			// a notification, never a step in the commit, so its failure stays its
+			// own: it can neither fail a write that already landed nor starve the
+			// listener behind it.
+			if (written.length === 0) return
+			for (const listener of listeners)
+				try {
+					listener(written.map(copy))
+				} catch {
+					// The listener owns its errors.
+				}
 		},
 
 		subscribe(listener) {
