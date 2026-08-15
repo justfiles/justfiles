@@ -4,6 +4,10 @@ Response to [research.md](./research.md). Three deliverables: the access
 patterns (#1), the minimal data structures (#2), the minimal implementation
 seam (#3). Then a compression review and prior art.
 
+Revised after reading [sol-design.md](./sol-design.md), a sibling design from
+another agent. The ideas taken and rejected from it are recorded in the
+[comparison section](#comparison-with-sol-designmd) near the end.
+
 ## Diagnosis, in one paragraph
 
 The current system keeps two models of the same data. `packages/fs` speaks
@@ -29,6 +33,7 @@ data pattern.
 | Operation | Access pattern | Notes |
 | --- | --- | --- |
 | resolve path | point lookup `(parent, name)` per segment | hottest read; must be indexed and cacheable |
+| cross a mount | resolution reaches a `mount` node and continues in the bound store | cross-store rename returns `EXDEV` |
 | `stat` / `lstat` / `exists` | point lookup by id | needs `size` without touching content |
 | `readdir` | ordered scan of children of one node | paged |
 | `readFile` | point lookup by id, then content fetch by hash | large value read |
@@ -58,9 +63,9 @@ These are the accesses a real disk FS cannot serve well. This is the
 | apply remote batch | atomic multi-node write, with version guards, plus cursor row in the same write | all-or-nothing |
 | detect echo / retry | version comparison on the row | idempotent apply replaces origin tags |
 | content transfer | `has` / `get` / `put` by hash | dedupe before upload; no upload on move |
-| effective path of a node | walk `parent` links upward | pure reads; cacheable; needed by ignore filter |
+| effective path of a node | walk `parent` links upward | pure reads; cacheable; needed for watch scoping and event paths |
 | tombstones | deleted rows stay in the table and appear in the feed | no separate tombstone store |
-| engine state (cursors, policy hash) | ordinary node rows under a reserved system subtree | atomic with applied batches for free; never enters a feed |
+| engine state (peer cursors) | host-local durable slot, outside the replicated table | may only lag the applied rows; idempotent apply makes a stale cursor harmless |
 | conflict detect / authority accept | version guard + name-free guard at commit | rejection is a commit failure |
 
 ### C. Maintenance
@@ -92,7 +97,7 @@ type Node = {
 	id: NodeId
 	parent: NodeId
 	name: string
-	type: 'file' | 'dir' | 'symlink'
+	type: 'file' | 'dir' | 'symlink' | 'mount'  // mount: a junction to another store
 	mode: number
 	mtimeNs: bigint
 	size: bigint                       // denormalized so stat never touches content
@@ -107,6 +112,10 @@ type Node = {
 - **Content**: immutable bytes keyed by `Hash`. A move or copy never moves
   bytes. A missing blob for a referenced hash is a lazy stub; an orphan blob
   is garbage.
+- **Mount**: a junction node. It claims its name through the normal guard,
+  syncs like any row, and can never have children, because only a directory
+  can be a parent. Which store backs it is per-replica local configuration,
+  like fstab. The mount *point* is shared data; the *binding* is local.
 - **Order**: each committed write gets a position in the replica's local
   order. This is storage-assigned, local, and invisible to peers.
 
@@ -132,6 +141,9 @@ equal. Nothing more.
 - range-write as a primitive — the view layer does read-modify-write. If big
   files ever matter, `content` becomes a manifest hash (list of chunk
   hashes). The seam does not change.
+- per-path sync filters — local-only data is a separate mounted store, not a
+  filtered path (see mounts below). The replicated table has no invisible
+  regions.
 
 ---
 
@@ -193,12 +205,22 @@ interface Store {
    store that accepts writes from a peer must verify the hash.
 8. `subscribe` is a latency optimization over polling `since`. `gc` must not
    race an open commit.
-9. Tree invariants (no cycles, no duplicate names, live parents) are
+9. Tree invariants (no cycles, no duplicate names, every parent a live
+   directory) are
    enforced by the **authority's** commit via guards — not by every store.
    A replica may transiently hold detached or even cyclic rows mid-sync.
    That is safe because visibility is reachability from root: a detached or
    cyclic cluster is simply invisible until later rows reattach it. Upward
    walks bound themselves with a visited set.
+10. Write ordering (taken from sol-design): a writer makes content durable
+   (`blobs.put` resolved) before it commits a row that references the hash.
+   A crash can then leave only an orphan blob — never a committed row whose
+   bytes were lost. A row whose blob is absent by *choice* is a lazy stub
+   (selective content), not corruption.
+11. Lineage (taken from sol-design): a `Cursor` is bound to the store's
+   lineage. A reset or replaced store starts a new lineage and rejects
+   foreign cursors; the caller restarts from the empty cursor. This fences
+   a stale replica after a server reset.
 
 ### The two consumers, on top of the seam
 
@@ -210,9 +232,9 @@ folder.
 **`sync(local: Store, remote: Store)`** — the engine. Its whole loop:
 
 ```text
-pull: remote.since(cursor) → project → local.commit(rows + cursor-row)
-push: local.since(cursor)  → project → remote.commit(rows, guards)
-blobs: for each new content hash — has? skip : transfer
+pull: remote.since(cursor) → local.commit(rows) → advance cursor
+push: local.since(cursor)  → remote.commit(rows, guards) → advance cursor
+blobs: for each new content hash — has? skip : transfer (lazy where allowed)
 ```
 
 - **Idempotent**: version-guarded upserts make retries and echo loops
@@ -221,16 +243,79 @@ blobs: for each new content hash — has? skip : transfer
 - **Authoritative**: the server is a `Store` whose `commit` enforces the
   guards plus tree invariants and serializes accepted writes into its feed.
   A rejection is a failed commit; the engine pulls and replans.
+- **Conflicts**: v1 rejects and replans through guards. Tombstones and
+  versions on the wire already separate a create on one side from a delete
+  on the other — the distinction Unison proves needs a common base — at the
+  cost of keeping tombstones as long as the longest-offline replica may
+  return. If the product later needs field-level merges (one side moves,
+  the other edits), the engine keeps a base cache of last-synced rows and
+  applies three-way rules per node. Engine module; zero seam change.
 - **Composable**: client–server is a star of `sync(local, hub)` loops. P2P
   is `sync(a, b)` both ways. The seam does not know the topology; only the
   meaning of `Version` (single authority counter vs. version vector) changes,
   and `Version` is opaque to every store.
-- **Projection (ignore lists)**: a pure filter between `since` and `commit`.
-  It computes effective paths by parent walks with a cache. All the
-  visible↔ignored transition rules from
-  [sync-node-identity.md](../../tasks/sync-node-identity.md) live inside this
-  one engine module. The seam gains **zero** methods for it. Engine state
-  (effective list hash, reconcile cursor) is system node rows.
+- **Local-only data — mounts, not ignore lists** (taken from sol-design,
+  then hardened): data that must not sync lives in a separate store, joined
+  to the tree by a `mount` node committed in the synced store. There is no
+  path router and no prefix configuration. The volume is
+  `volume(store, bindings?: Map<NodeId, Store>)`; path resolution switches
+  stores when it walks through a mount node, the way a kernel crosses a
+  vfsmount. The boundary is enforced by the data, not by policy code: the
+  mount node claims its name through the ordinary `free` guard, so nothing
+  else can occupy `/private`; and since only a directory can be a parent,
+  the mount node can never have children — a `/private` subtree cannot
+  exist in the synced store at all, on any replica, buggy or not. An
+  unbound mount reads as an empty read-only directory. A rename that
+  resolves across two stores returns `EXDEV`; the volume emulates
+  copy-then-remove, like `mv` across real filesystems. A sync engine
+  receives one store and nothing else, so no delta, tombstone, or blob
+  request can even name local data. This deletes the projection filter, the
+  visible↔ignored transition rules, the effective-list hashing, and the
+  reconciliation flow of
+  [sync-node-identity.md](../../tasks/sync-node-identity.md) — the whole
+  PR-494 problem class. Creating or removing a mount is one ordinary
+  guarded row write that syncs everywhere; who may commit mount rows is
+  authority policy.
+- **Silent mounts — invisible local folders**: an announced mount reserves
+  a name everywhere, but it also discloses that the name exists. When even
+  the existence must stay private (`/.special`), the replica adds a
+  *silent* binding: a view-layer overlay entry `(parentId, name) → store`,
+  checked during resolution before the synced-row lookup. Nothing about it
+  is ever written to the synced store, so no peer can learn of it. The
+  classic conundrum — another client creates the same name and the server
+  pushes it down — dissolves here: those rows land in the synced *table*
+  and stay shadowed at read time, exactly like a kernel mount over a
+  non-empty directory. Sync needs no special treatment, shadowed blobs are
+  never fetched (selective content), and removing the binding reveals the
+  shared data intact. The cost is deliberate, kernel-precedented
+  divergence: this replica sees its local folder where others see the
+  shared one. Rule of thumb: announce when disclosure is acceptable —
+  collision becomes impossible; go silent when privacy demands it — and
+  accept shadowing.
+- **Per-replica file content**: a synced symlink whose target resolves into
+  a local mount gives every replica its own bytes behind one shared path —
+  the Unix `/etc` convention. This is the clean shape for `.env`-style
+  secrets: the tree shape syncs; the content never does.
+- **Ignored files (globs)**: no glob ignore exists in the core, and none is
+  needed, because the real cases decompose. (1) OS and tool junk
+  (`.DS_Store`, `*.swp`) appears only where a real directory exists, so it
+  is an import filter private to the native bridge: the bridge never
+  commits matching observations, and a list change needs no reconciliation
+  because ignored files were never in any store. (2) Secrets by convention
+  use the symlink-into-mount pattern above. (3) Regenerable trees
+  (`node_modules`) are first simply tolerated — rows are tiny and content
+  is lazy — and, if measurement ever demands more, become silent bindings
+  applied by name convention: micro-mounts at the view layer with the same
+  shadowing semantics. Patterns never enter the protocol, so the PR-494
+  machinery stays deleted.
+- **Selective content**: rows always sync; blobs fetch on demand. A replica
+  that does not want the bytes never calls `blobs.get` — a lazy stub. This
+  is a materialization choice, never an identity or visibility choice, so
+  it needs no protocol support at all.
+- **Engine state**: the peer cursor lives in a host-local slot outside the
+  replicated table. It may only lag the applied rows; idempotent apply makes
+  a lost or stale cursor cost a re-scan, never corruption. Nothing
+  engine-owned ever enters the user namespace or any feed.
 - **O(1) move**: a rename writes one row, which occupies one feed position,
   which is one wire row, which is one commit on each replica. The 4,000-file
   rename that motivated the node-identity epic costs the same as touching
@@ -278,6 +363,8 @@ Attempt to remove every member. Result of each attempt:
 | parent-before-child wire ordering | yes | invisible-until-reachable replaces it |
 | `size` on the row | no — stat must not fetch content | keep |
 | `ctime`, `uid`, `gid` | yes | dropped |
+| ignore projection module | yes | replaced by mounts — local data is a separate mounted store |
+| engine-state system subtree | yes | engine state moved outside the replicated table entirely |
 
 Final form: **one table, two lookups, one order, one guarded atomic write,
 one hash-keyed blob map. The same seam is the storage API and the wire.**
@@ -288,10 +375,14 @@ Nothing else survived.
 The design contains complexity; it does not delete it. But each hard part is
 now a pure module behind the seam, not a seam:
 
-- Ignore projection transitions (publish/unpublish subtrees) — engine module,
-  pure function of the row set plus the list.
-- Conflict policy (reject-and-replan first; merge later) — engine module,
-  pure function of two versions.
+- Mount crossing — path resolution switches stores at a mount node or a
+  silent binding; a small, contained piece of `volume()`. The price of
+  deleting the projection machinery is `EXDEV` at mount boundaries and
+  kernel-style shadowing under silent mounts, which UX must explain.
+- Conflict policy (reject-and-replan first; three-way merge later) — engine
+  module, pure function of versions and an optional base cache.
+- Tombstone retention — tombstones must outlive the longest-offline replica;
+  pruning needs a horizon every peer has passed.
 - Native FS reconciliation — one adapter's private problem.
 - Blob GC vs. in-flight commits — one backend method's private problem.
 
@@ -313,6 +404,10 @@ review starts with "why can this not be rows?"
   resumability, any-topology composition. This is the backbone of the sync
   loop. Adapted: we add tree guards at the authority because we have a
   namespace and CouchDB does not.
+- **Unison** — taken: the proof that two current trees cannot distinguish a
+  create from a delete; a common base is required. In the feed model the
+  base travels as tombstones and versions; a base *cache* appears only if
+  three-way field merges become a product need.
 - **git / IPFS** — taken: content addressing, dedupe, "a move uploads
   nothing". Rejected: whole-tree Merkle snapshots as the sync unit; agents
   need per-file incremental sync, not commits.
@@ -320,6 +415,70 @@ review starts with "why can this not be rows?"
   `Version`. The seam already permits it because `Version` is opaque.
 - **Kleppmann's replicated tree move** — reserved: the concurrent-move CRDT
   if we ever drop the central authority. Engine-only change.
+
+## Comparison with sol-design.md
+
+Both designs reached the same first principles independently, which is good
+evidence for them: stable node identity; `(parent, name)` as location; paths
+as derived data; content-addressed bytes; delete-then-create mints a new id;
+two indexes over one logical node set; "the sync model is the filesystem,
+POSIX is a view"; engine state out of the user tree; O(1) moves by
+construction.
+
+**Taken from sol-design** (folded in above):
+
+- Mounts instead of ignore lists — its best idea. It deletes our hardest
+  engine module instead of containing it. We harden it one step: sol
+  reserves mount paths by out-of-band product configuration; we make the
+  mount point a node in the shared tree, so the name claim and the
+  empty-subtree invariant come from the existing guards and parent rules,
+  and only the store binding stays local. Both flavors survive: an
+  announced mount node when reservation matters, and sol's configuration
+  style as a silent binding when even existence must stay private.
+- Lineage fencing after a reset (contract rule 11) — a gap in our draft.
+- The blob-durable-before-row rule (contract rule 10) — our "lazy stub"
+  wording could have hidden local data loss.
+- Engine state strictly outside the user namespace — our "system subtree"
+  was a mistake: it reintroduced a mini-ignore filter for our own rows.
+- The Unison base argument, now answered explicitly by tombstones and
+  versions in the feed.
+- Its experiment discipline: prove the model in a small isolated package,
+  with named kill criteria, before any migration.
+
+**Rejected, with reasons:**
+
+- *Whole-tree immutable snapshots published by one head CAS.* Every write —
+  a `chmod`, one appended line — rewrites O(log N) Merkle-map blocks and
+  contends on one global reference. Writers serialize through replay loops;
+  the object store churns garbage at write rate; GC must trace reachability
+  from every ref. sol-design itself names write amplification and head
+  contention as its kill criteria. Our commit writes only the rows it
+  touches, and guards contend per node, not per tree — neither risk exists.
+- *The four-method seam.* It is smaller than ours because a storage engine
+  moved into shared core: canonical encoding, hashing, a hand-rolled
+  persistent ordered Merkle map, structural diff. That map re-implements, on
+  top of a dumb KV, the b-tree that SQLite and IndexedDB already have — and
+  every path lookup then pays block decode and cache walks. Our eight
+  methods let the backend's native index do its job. The smallest interface
+  is not the smallest system.
+- *Three-way state merge as the sync core.* Strictly more powerful for
+  symmetric merge, but it needs snapshot retention, a base ref per peer, and
+  graph-walking transfer negotiation ("which objects are you missing?") that
+  is chatty over HTTP. One paged `since` feed with idempotent apply does
+  central-authority sync in one round trip per page. Three-way rules stay
+  available as a future engine module over a base cache.
+- *Snapshot-consistent reads* (stable scans, stat from one immutable
+  snapshot). Real POSIX gives no such guarantee, agents do not ask for it,
+  and sync does not need it (contract rule 4 covers concurrent writers). We
+  do not pay for a guarantee no consumer uses.
+
+**Equivalences worth naming:** their `compareAndSwapRef` is our `Guard` —
+the same atomicity, placed per node instead of per tree, which is why we
+have no global contention point. Their refs are our cursor plus guards.
+Their "wake, then diff" watch is our optional `subscribe` over `since`.
+Their content-addressed everything buys whole-tree verification and cheap
+history; we verify blobs only and trust the authority for rows — the right
+trade for a live filesystem, revisitable if P2P ever needs signed rows.
 
 ## Relation to the current code
 
@@ -330,3 +489,11 @@ review starts with "why can this not be rows?"
 - The migration path is the same seed-from-production runner that exists
   today: build `memStore` + conformance suite first, then SQLite, then point
   `volume()` at it, then retire the twin vocabulary.
+- First proof lives in one small isolated package. It must show: a rename of
+  a directory with 4,000 children is one row in the feed; a crash between
+  `blobs.put` and `commit` leaves only an orphan blob; a deleted cursor
+  re-applies a page into pure no-ops; a foreign-lineage cursor is rejected
+  and bootstrap from the empty cursor converges. Kill criterion: if guarded
+  batch commits cannot be made atomic on IndexedDB within its transaction
+  lifetime rules, the seam — not the engine — must change, and this design
+  is wrong.
