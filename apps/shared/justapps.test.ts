@@ -5,7 +5,6 @@ import {
 	RUNNER_MANIFEST_SCHEMA,
 	RUNNER_STORE_SCHEMA,
 	RUNNER_STORE_URL,
-	type RunnerAppStore,
 	type RunnerCatalogApp,
 	runnerAppStore
 } from './justapps.ts'
@@ -175,7 +174,7 @@ describe('mergeAppStores', () => {
 		hash: 'hosted'
 	}
 
-	function stores(): { primary: AppStore; hosted: RunnerAppStore } {
+	function stores(): { primary: AppStore; hosted: AppStore } {
 		return {
 			primary: {
 				async builtins() {
@@ -189,9 +188,6 @@ describe('mergeAppStores', () => {
 				}
 			},
 			hosted: {
-				async catalog() {
-					return [hostedApp]
-				},
 				async builtins() {
 					return [hostedApp]
 				},

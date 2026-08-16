@@ -10,6 +10,7 @@ export async function appAssets(
 	fs: Volume,
 	request: (url: string) => Promise<Response> = (url) => fetch(url)
 ): Promise<FetchAsset> {
+	// Cache faults must not block a network read.
 	await startCache(fs).catch((error) => console.warn('app asset: cache start failed', error))
 	const pending = new Map<string, Promise<Uint8Array>>()
 
@@ -54,9 +55,10 @@ async function startCache(fs: Volume): Promise<void> {
 			mtimeNs: (await fs.stat(`${CACHE_ROOT}/${name}`)).mtimeNs
 		}))
 	)
-	cached.sort((a, b) =>
-		a.mtimeNs === b.mtimeNs ? b.name.localeCompare(a.name) : a.mtimeNs > b.mtimeNs ? -1 : 1
-	)
+	cached.sort((a, b) => {
+		if (a.mtimeNs === b.mtimeNs) return b.name.localeCompare(a.name)
+		return a.mtimeNs > b.mtimeNs ? -1 : 1
+	})
 	await Promise.all(
 		cached
 			.slice(MAX_FILES)

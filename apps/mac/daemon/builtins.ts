@@ -9,11 +9,12 @@ const BUILTINS = [
 	{ id: 'justfiles.settings', packageDir: 'app-settings' }
 ]
 
-export function builtinStore(): Promise<AppStore> {
-	return Promise.all([
+export async function builtinStore(): Promise<AppStore> {
+	const [builtin, runner] = await Promise.all([
 		builtinStoreFromFs(BUILTINS.map((app) => rootFor(app))),
 		runnerAppStore()
-	]).then(([builtin, runner]) => (runner ? mergeAppStores(builtin, runner) : builtin))
+	])
+	return runner ? mergeAppStores(builtin, runner) : builtin
 }
 
 function rootFor(app: (typeof BUILTINS)[number]): string {

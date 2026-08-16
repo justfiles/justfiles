@@ -6,9 +6,9 @@ export const RUNNER_STORE_SCHEMA = 'justapps/store/v1'
 export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-const TRUSTED_PREINSTALLED_RUNNER_IDS = ['justfiles.notes', 'justfiles.paint']
+const BUILTIN_IDS = ['justfiles.notes', 'justfiles.paint']
 
-interface RunnerStoreEntry {
+interface StoreEntry {
 	id: string
 	name: string
 	description?: string
@@ -18,12 +18,12 @@ interface RunnerStoreEntry {
 	repository?: string
 }
 
-interface RunnerStoreIndex {
+interface StoreIndex {
 	schema: string
-	apps: RunnerStoreEntry[]
+	apps: StoreEntry[]
 }
 
-interface RunnerManifest extends Omit<AppManifest, 'files'> {
+interface Release extends Omit<AppManifest, 'files'> {
 	schema: string
 	version: string
 	hash: string
@@ -39,18 +39,17 @@ export interface RunnerCatalogApp extends CatalogApp {
 	hash: string
 }
 
-export interface RunnerAppStore extends AppStore {
+interface RunnerAppStore extends AppStore {
 	catalog(): Promise<RunnerCatalogApp[]>
 }
 
-// Packaged apps stay authoritative. JustApps adds only IDs that this host does not
-// already own, and the catalog object's manifestUrl routes its immutable file reads.
-export function mergeAppStores(primary: AppStore, runner: RunnerAppStore): AppStore {
+// Packaged apps win when IDs match. manifestUrl sends hosted reads to JustApps.
+export function mergeAppStores(primary: AppStore, runner: AppStore): AppStore {
 	return {
 		async builtins() {
-			const primaryApps = await primary.builtins()
-			const primaryIds = new Set(primaryApps.map((app) => app.id))
-			return [...primaryApps, ...(await runner.builtins()).filter((app) => !primaryIds.has(app.id))]
+			const apps = await primary.builtins()
+			const ids = new Set(apps.map((app) => app.id))
+			return [...apps, ...(await runner.builtins()).filter((app) => !ids.has(app.id))]
 		},
 		async latest(id) {
 			return (await primary.latest(id)) ?? (await runner.latest(id))
@@ -59,17 +58,16 @@ export function mergeAppStores(primary: AppStore, runner: RunnerAppStore): AppSt
 	}
 }
 
-// Fetch the small index up front, then each mutable manifest pointer at most once
-// and only when its id is needed. Reconcile asks for installed ids; browsing calls
-// catalog() and deliberately hydrates every entry.
+// Load the index first. Load each app manifest once and only when needed.
+// catalog() loads all manifests because the store UI lists every app.
 export async function runnerAppStore(
 	request: (url: string) => Promise<Response> = (url) => fetch(url)
 ): Promise<RunnerAppStore | null> {
-	let index: RunnerStoreIndex
+	let index: StoreIndex
 	try {
 		const response = await request(RUNNER_STORE_URL)
 		if (!response.ok) return null
-		index = (await response.json()) as RunnerStoreIndex
+		index = (await response.json()) as StoreIndex
 	} catch {
 		return null
 	}
@@ -77,39 +75,11 @@ export async function runnerAppStore(
 
 	const byId = new Map(index.apps.map((entry) => [entry.id, entry]))
 	const loaded = new Map<string, Promise<RunnerCatalogApp | null>>()
-	const load = (entry: RunnerStoreEntry): Promise<RunnerCatalogApp | null> => {
-		let app = loaded.get(entry.id)
-		if (!app) {
-			app = (async () => {
-				try {
-					const response = await request(entry.manifestUrl)
-					if (!response.ok) return null
-					const release = (await response.json()) as RunnerManifest
-					if (
-						release.schema !== RUNNER_MANIFEST_SCHEMA ||
-						release.id !== entry.id ||
-						!Array.isArray(release.files)
-					)
-						return null
-					const { schema: _schema, files, hash, ...manifest } = release
-					return {
-						...entry,
-						name: release.name,
-						description: release.description,
-						version: release.version,
-						icon: release.icon,
-						capabilities: release.capabilities,
-						files,
-						hash,
-						manifest,
-						baseUrl: new URL('.', response.url).href
-					}
-				} catch {
-					return null
-				}
-			})()
-			loaded.set(entry.id, app)
-		}
+	const load = (entry: StoreEntry): Promise<RunnerCatalogApp | null> => {
+		const found = loaded.get(entry.id)
+		if (found) return found
+		const app = loadApp(entry, request)
+		loaded.set(entry.id, app)
 		return app
 	}
 	return {
@@ -121,7 +91,7 @@ export async function runnerAppStore(
 		async builtins() {
 			return (
 				await Promise.all(
-					TRUSTED_PREINSTALLED_RUNNER_IDS.map((id) => {
+					BUILTIN_IDS.map((id) => {
 						const entry = byId.get(id)
 						return entry ? load(entry) : null
 					})
@@ -137,5 +107,37 @@ export async function runnerAppStore(
 			if (!file.ok) throw new Error(`runner: ${app.id}/${path} ${file.status}`)
 			return new Uint8Array(await file.arrayBuffer())
 		}
+	}
+}
+
+async function loadApp(
+	entry: StoreEntry,
+	request: (url: string) => Promise<Response>
+): Promise<RunnerCatalogApp | null> {
+	try {
+		const response = await request(entry.manifestUrl)
+		if (!response.ok) return null
+		const release = (await response.json()) as Release
+		if (
+			release.schema !== RUNNER_MANIFEST_SCHEMA ||
+			release.id !== entry.id ||
+			!Array.isArray(release.files)
+		)
+			return null
+		const { schema: _schema, files, hash, ...manifest } = release
+		return {
+			...entry,
+			name: release.name,
+			description: release.description,
+			version: release.version,
+			icon: release.icon,
+			capabilities: release.capabilities,
+			files,
+			hash,
+			manifest,
+			baseUrl: new URL('.', response.url).href
+		}
+	} catch {
+		return null
 	}
 }

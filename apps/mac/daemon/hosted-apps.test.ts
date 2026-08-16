@@ -64,7 +64,6 @@ async function hostedWorld() {
 		fs,
 		app,
 		appKernel,
-		baseUrl,
 		requests: () => requests,
 		goOffline: () => {
 			online = false
@@ -91,7 +90,7 @@ test('a hosted install keeps only its record and reducer, then runs offline', as
 test('a bad cached asset is rejected, evicted, and fetched again', async () => {
 	const world = await hostedWorld()
 	const installed = await world.appKernel.app(world.app.id)
-	const guiUrl = `${world.baseUrl}gui.js`
+	const guiUrl = `${world.app.baseUrl}gui.js`
 	const guiCache = `/private/cache/apps/${digest(guiUrl)}`
 	await world.fs.writeFile(guiCache, bytes('BAD'))
 	const requestsBeforeRead = world.requests()
