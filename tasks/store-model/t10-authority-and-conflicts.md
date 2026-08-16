@@ -45,6 +45,16 @@ a future engine module over a base cache; it changes no seam signature.
     fails against a tombstone; the engine recreates the file under a NEW id
     with the local bytes. Tombstones + versions are what distinguish this from
     a plain create — the Unison argument in the design.
+- **A local edit that lands mid-cycle is not lost.** Handed over by
+  [T8](t08-engine-core.md), which cannot close it: the pull there applies rows
+  blind, so a write committed after the push drain reached its tail and before
+  the pull commits its page is overwritten, and the next push skips the row
+  because what it finds there is the peer's. Push-first narrowed this to the
+  cycle's own duration; it does not remove it. The fix belongs with the machinery
+  this task already needs for edit/edit — read the row being replaced, guard the
+  pull's commit on it, and let a rejection replan — so write the test first:
+  commit a local edit between the push drain's tail and the pull's commit, and
+  assert it survives and reaches the authority.
 
 **Policy note.** These three outcomes are v1 POLICY, not seam contract. If
 review changes an outcome, only `engine.ts` and its tests change. Assert in the
