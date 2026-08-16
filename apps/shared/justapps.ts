@@ -18,11 +18,6 @@ interface StoreEntry {
 	repository?: string
 }
 
-interface StoreIndex {
-	schema: string
-	apps: StoreEntry[]
-}
-
 interface Release extends Omit<AppManifest, 'files'> {
 	schema: string
 	version: string
@@ -63,17 +58,19 @@ export function mergeAppStores(primary: AppStore, runner: AppStore): AppStore {
 export async function runnerAppStore(
 	request: (url: string) => Promise<Response> = (url) => fetch(url)
 ): Promise<RunnerAppStore | null> {
-	let index: StoreIndex
+	let entries: StoreEntry[]
 	try {
 		const response = await request(RUNNER_STORE_URL)
 		if (!response.ok) return null
-		index = (await response.json()) as StoreIndex
+		const index: unknown = await response.json()
+		if (!isRecord(index) || index.schema !== RUNNER_STORE_SCHEMA || !Array.isArray(index.apps))
+			return null
+		entries = index.apps.filter(isStoreEntry)
 	} catch {
 		return null
 	}
-	if (index.schema !== RUNNER_STORE_SCHEMA || !Array.isArray(index.apps)) return null
 
-	const byId = new Map(index.apps.map((entry) => [entry.id, entry]))
+	const byId = new Map(entries.map((entry) => [entry.id, entry]))
 	const loaded = new Map<string, Promise<RunnerCatalogApp | null>>()
 	const load = (entry: StoreEntry): Promise<RunnerCatalogApp | null> => {
 		const found = loaded.get(entry.id)
@@ -84,7 +81,7 @@ export async function runnerAppStore(
 	}
 	return {
 		async catalog() {
-			return (await Promise.all(index.apps.map(load))).filter(
+			return (await Promise.all(entries.map(load))).filter(
 				(app): app is RunnerCatalogApp => app !== null
 			)
 		},
@@ -108,6 +105,23 @@ export async function runnerAppStore(
 			return new Uint8Array(await file.arrayBuffer())
 		}
 	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStoreEntry(value: unknown): value is StoreEntry {
+	return (
+		isRecord(value) &&
+		typeof value.id === 'string' &&
+		typeof value.name === 'string' &&
+		typeof value.version === 'string' &&
+		typeof value.manifestUrl === 'string' &&
+		(value.description === undefined || typeof value.description === 'string') &&
+		(value.iconUrl === undefined || typeof value.iconUrl === 'string') &&
+		(value.repository === undefined || typeof value.repository === 'string')
+	)
 }
 
 async function loadApp(

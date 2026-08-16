@@ -88,6 +88,12 @@ describe('runnerAppStore', () => {
 		expect(store).toBeNull()
 	})
 
+	test('a null registry value does not provide a store', async () => {
+		const store = await runnerAppStore(async () => json(null))
+
+		expect(store).toBeNull()
+	})
+
 	test('an unknown registry schema does not provide a store', async () => {
 		const store = await runnerAppStore(async () => json({ schema: 'old', apps: [] }))
 
@@ -143,6 +149,17 @@ describe('runnerAppStore', () => {
 				: new Response(null, { status: 404 })
 		)
 		expect(await store?.catalog()).toEqual([])
+	})
+
+	test('omits bad index entries without losing valid apps', async () => {
+		const index = { ...runner, apps: [null, runner.apps[0]] }
+		const store = await runnerAppStore(async (url) => {
+			if (url === RUNNER_STORE_URL) return json(index, RUNNER_STORE_URL)
+			if (url === manifestUrl) return json(release, releaseUrl)
+			return new Response(null, { status: 404 })
+		})
+
+		expect((await store?.catalog())?.map((app) => app.id)).toEqual([release.id])
 	})
 
 	test('rejects a file response that is not successful', async () => {
