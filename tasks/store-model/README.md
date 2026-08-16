@@ -98,7 +98,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | --- | --- | --- | --- |
 | T5 | [`storeVolume` — read side](t05-volume-read.md) | T1–T3 | done |
 | T6 | [`storeVolume` — write side](t06-volume-write.md) | T5 | done |
-| T7 | [`watch` from the feed](t07-watch.md) | T6 | todo |
+| T7 | [`watch` from the feed](t07-watch.md) | T6 | done |
 | T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | todo |
 | T9 | [Engine: blob transfer + lazy content](t09-engine-blobs.md) | T8 | todo |
 | T10 | [Authority + conflict policy](t10-authority-and-conflicts.md) | T8 | todo |
