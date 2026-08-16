@@ -57,6 +57,10 @@ test('local development can run, stop, and install a draft', async () => {
 	expect(await fetch(new URL('_state', preview)).then((response) => response.json())).toEqual({
 		count: 2
 	})
+	await invoke('run', { reset: true })
+	expect(await fetch(new URL('_state', preview)).then((response) => response.json())).toEqual({
+		count: 0
+	})
 
 	await invoke('stop', {})
 	expect((await fetch(preview)).status).toBe(404)
