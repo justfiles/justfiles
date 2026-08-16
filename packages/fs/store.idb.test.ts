@@ -25,7 +25,7 @@ const fresh = () => idbStore(`t04-${crypto.randomUUID()}`)
 const node = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 	parent: ROOT,
 	type: 'file',
-	mode: 0o644,
+	mode: 0o100644,
 	mtimeNs: 0n,
 	size: 0n,
 	version: '1',

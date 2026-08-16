@@ -174,10 +174,10 @@ describe('stat', () => {
 
 	it('reports permission bits only, whatever the row carries', async () => {
 		const store = memStore()
-		// `Node.mode` holds permission bits only, because `type` already says what
-		// a node is. Our own stores hold to that, but a peer may send POSIX type
-		// bits anyway, and just-bash prints this number straight out of `stat` —
-		// so the view masks rather than trust the row.
+		// Rows hold whole POSIX modes — the stores mint the root as `0o040755` —
+		// but `Stat` carries the kind in `type` and the old volume reports
+		// permission bits here. just-bash prints this number straight out of
+		// `stat`, so `/` must keep reading `0755` and not `40755`.
 		await store.commit([row({ parent: ROOT, name: 'kyoto.md', type: 'file', mode: 0o100644 })])
 		const vol = storeVolume(store)
 

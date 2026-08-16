@@ -27,9 +27,7 @@ const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 const node = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 	parent: ROOT,
 	type: 'file',
-	// Setuid and sticky are permission bits, so a store that keeps `mode` opaque
-	// hands this number back whole. Type bits would not be a legal row (see `Node`).
-	mode: 0o4644,
+	mode: 0o100644,
 	mtimeNs: 0n,
 	size: 0n,
 	version: '1',
@@ -91,7 +89,7 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 		test('get, child and children are two indexes over one table (rule 1)', async () => {
 			const store = await open()
 			const file = node({ id: 'f', name: 'a.txt' })
-			const dir = node({ id: 'd', name: 'sub', type: 'dir', mode: 0o755 })
+			const dir = node({ id: 'd', name: 'sub', type: 'dir', mode: 0o040755 })
 			const inner = node({ id: 'i', name: 'deep.txt', parent: 'd' })
 			await store.commit([file, dir, inner])
 

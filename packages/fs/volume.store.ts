@@ -33,10 +33,10 @@ const statOf = (node: Node): Stat => ({
 	ino: node.id,
 	type: TYPE[node.type],
 	size: node.size,
-	// Permission bits only, as the old volume reports and as `Node.mode` is
-	// defined: `type` above already says what this is. Our own writers hold to
-	// that, but a row off the wire may carry POSIX type bits anyway, and
-	// just-bash prints this number — `stat /` must not start reading `40755`.
+	// The ROW holds a whole POSIX mode; `Stat` does not. `type` above carries the
+	// kind, and the old volume reports permission bits here — the stores mint the
+	// root as `0o040755`, and just-bash prints this number straight out of `stat`,
+	// so an unmasked view would have agents reading `40755` for `/`.
 	mode: node.mode & 0o7777,
 	mtimeNs: node.mtimeNs,
 	// The model has no ctime (design #2, deliberate omissions): report mtime.
