@@ -1,6 +1,6 @@
 # T6 — `storeVolume`: write side
 
-**Status:** todo
+**Status:** done
 **Phase:** B — the two consumers
 **Depends on:** [T5](t05-volume-read.md)
 **Context:** [overview](README.md) · [design #1 table A + "the two consumers"](../../kb/fs/fable-design.md)
