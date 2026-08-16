@@ -1,6 +1,6 @@
 ---
 project: apps/mac
-status: planned
+status: done
 ---
 
 # mac: host JustApps assets through the daemon cache
