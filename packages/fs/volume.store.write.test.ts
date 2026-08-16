@@ -329,6 +329,31 @@ describe('the parent stamp', () => {
 		expect((await store.get(notes.id))?.deleted).toBe(true)
 	})
 
+	it('replans a claim when its parent moved before the commit', async () => {
+		const store = memStore()
+		const other = storeVolume(store)
+		await other.mkdir('/d')
+		const dir = await rowAt(store, '/d')
+		let raced = false
+		const racy: Store = {
+			...store,
+			async commit(writes, guards) {
+				if (!raced && writes.some((row) => row.parent === dir.id && row.name === 'x')) {
+					raced = true
+					await other.rename('/d', '/e')
+					await other.writeFile('/e/x', enc.encode('other'), { exclusive: true })
+				}
+				return store.commit(writes, guards)
+			}
+		}
+
+		await expect(
+			storeVolume(racy).writeFile('/d/x', enc.encode('mine'), { exclusive: true })
+		).rejects.toThrow(/^ENOENT/)
+		expect(raced).toBe(true)
+		expect(await read(other, '/e/x')).toBe('other')
+	})
+
 	it('lets two creates in one directory both land', async () => {
 		// The price of guarding the parent: creates in one directory replan instead
 		// of blocking, the way a real filesystem takes that directory's lock. What
@@ -839,20 +864,20 @@ describe('cp', () => {
 		expect((await vol.readdir('/a')).map((e) => e.name)).toEqual(['note.md'])
 	})
 
-	it('bounds a copy that lands inside its source through a link', async () => {
-		// The path check cannot see through a symlink, so the LISTING is what bounds
-		// the walk: the children are read once, before the destination exists. A
-		// live listing would find the copy it just made and never stop.
-		const vol = storeVolume(memStore())
-		await vol.mkdir('/a')
-		await vol.writeFile('/a/note.md', enc.encode('go'))
-		await vol.symlink('/a', '/link')
+	it('refuses an aliased destination inside the source before it writes', async () => {
+		for (const target of ['/a/existing', '/a']) {
+			const store = memStore()
+			const vol = storeVolume(store)
+			await vol.mkdir('/a/existing', { recursive: true })
+			await vol.writeFile('/a/note.md', enc.encode('go'))
+			await vol.symlink(target, '/link')
+			const commit = vi.spyOn(store, 'commit')
+			commit.mockClear()
+			commit.mockRejectedValue(new Error('copy wrote before it checked the destination'))
 
-		await vol.cp('/a', '/link/b', { recursive: true })
-
-		expect((await vol.readdir('/a')).map((e) => e.name)).toEqual(['b', 'note.md'])
-		expect((await vol.readdir('/a/b')).map((e) => e.name)).toEqual(['note.md'])
-		expect(await read(vol, '/a/b/note.md')).toBe('go')
+			await expect(vol.cp('/a', '/link/b', { recursive: true })).rejects.toThrow(/^EINVAL/)
+			expect(commit).not.toHaveBeenCalled()
+		}
 	})
 
 	it('overwrites a file at the destination and merges into a directory', async () => {

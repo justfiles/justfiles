@@ -276,6 +276,9 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			// reported success.
 			const holder = await store.child(dir.id, name)
 			if (holder === null) throw e
+			// An id-local holder does not prove that the path still reaches this
+			// parent. It may have moved before another writer took the name.
+			if ((await find(path, false)) === null) throw e
 			// The name is taken. That IS the answer to a claim; a plain
 			// create-or-overwrite replans onto the winner instead — unless the holder
 			// is one the path cannot resolve through (a dangling symlink), which will
@@ -557,18 +560,21 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			}
 
 			if (!opts?.recursive) throw new Error(`EISDIR: ${src}`)
-			// A directory cannot be copied into itself: the copy would land inside
-			// what is still being listed, and the walk would follow it down forever.
-			// `cp` refuses for the same reason.
-			if (dest === src || dest.startsWith(src === '/' ? '/' : `${src}/`))
-				throw new Error(`EINVAL: cannot copy ${src} into itself`)
-			// Listed BEFORE the destination is created, so a destination that still
-			// lands inside the source — through a link this path check cannot see —
-			// copies the children that were there instead of finding its own copy.
+			// Paths lie about ancestry when they cross a link. Walk ids so a copy
+			// cannot find its own output and run without bound.
+			const there = await find(dest)
+			let at: Node | null = there ?? (await parentOf(dest)).dir
+			const seen = new Set<NodeId>()
+			while (at !== null && !seen.has(at.id)) {
+				if (at.id === node.id) throw new Error(`EINVAL: cannot copy ${src} into itself`)
+				if (at.id === ROOT) break
+				seen.add(at.id)
+				at = await store.get(at.parent)
+			}
+
 			const kids: Node[] = []
 			for await (const child of childrenOf(node.id)) kids.push(child)
 
-			const there = await find(dest)
 			if (there === null) await vol.mkdir(dest, { mode: node.mode & 0o7777 })
 			else if (!isDir(there)) throw new Error(`ENOTDIR: ${dest}`)
 			for (const child of kids) await vol.cp(join(src, child.name), join(dest, child.name), opts)
