@@ -51,6 +51,13 @@ type Context = { type: 'system' } | { type: 'agent' } | { type: 'app'; id: strin
 
 const failure = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
+// A failed store request: the response carries the message the tile shows, the log carries
+// the fault itself — a launcher status line is no place to debug an install from.
+const storeFault = (error: unknown): Response => {
+	console.error('store:', error)
+	return new Response(failure(error), { status: 502 })
+}
+
 // Typed send helpers — routing every frame through a union keeps the wire protocol
 // compile-checked. `/system` speaks `ServerMessage`; `/agent` its own `AgentEvent`.
 const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
@@ -124,7 +131,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				try {
 					return Response.json({ apps: await storeCatalog() })
 				} catch (error) {
-					return new Response(failure(error), { status: 502 })
+					return storeFault(error)
 				}
 			},
 			'/store/:id': {
@@ -133,7 +140,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 						await installStoreApp(await getKernel(), req.params.id)
 						return new Response(null, { status: 204 })
 					} catch (error) {
-						return new Response(failure(error), { status: 502 })
+						return storeFault(error)
 					}
 				}
 			},

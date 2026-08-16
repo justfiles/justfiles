@@ -1,4 +1,8 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { expect, test } from 'vitest'
 import { type AppBundle, type AppManifest, appBundleFromMemory } from './app.ts'
 import { apps } from './kernel.app.ts'
@@ -140,6 +144,30 @@ test('a failed re-install leaves the previous bundle intact', async () => {
 	if (!installed) throw new Error('expected v1 still installed')
 	expect(installed.manifest.name).toBe('App')
 	expect(decode(await installed.read('app.js'))).toBe('CODE_V1')
+})
+
+test("a bundle that vanished behind the volume's back does not wedge later installs", async () => {
+	// A second writer over the same directory — two daemons, or a daemon and a CLI — has
+	// its own dirent cache, so a bundle it trashes stays cached HERE. Installing again must
+	// still land: asking `exists` first and renaming what it claimed used to fail with
+	// ENOENT on the vanished path, and fail that way for good.
+	const root = await mkdtemp(join(tmpdir(), 'kernel-app-'))
+	try {
+		const s = apps(volume(await nativeStorage(root)))
+		const id = await s.install(
+			appBundleFromMemory({ id: 'com.example.app', name: 'App', app: 'CODE_V1' })
+		)
+		await s.list() // the catalog read every host does — it caches each bundle's dirent
+		await rm(join(root, 'applications', id), { recursive: true, force: true })
+
+		await s.install(appBundleFromMemory({ id, name: 'App v2', app: 'CODE_V2' }))
+
+		const installed = await s.get(id)
+		if (!installed) throw new Error('expected the reinstall to land')
+		expect(decode(await installed.read(installed.manifest.app))).toBe('CODE_V2')
+	} finally {
+		await rm(root, { recursive: true, force: true })
+	}
 })
 
 // ── hosted apps: the manifest is the app, the payload is a mount ──────────────
