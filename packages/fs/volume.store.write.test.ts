@@ -101,6 +101,19 @@ describe('writeFile: a create claims a name', () => {
 		expect(await read(vol, '/kyoto.md')).toBe('hello')
 	})
 
+	it('keeps the size when the caller transfers the input buffer', async () => {
+		const vol = storeVolume(memStore())
+		const data = enc.encode('hello')
+
+		const write = vol.writeFile('/kyoto.md', data)
+		structuredClone(data.buffer, { transfer: [data.buffer] })
+		await write
+
+		expect(data.length).toBe(0)
+		expect((await vol.stat('/kyoto.md')).size).toBe(5n)
+		expect(await read(vol, '/kyoto.md')).toBe('hello')
+	})
+
 	it('claims the name with a free guard, and holds the parent it stamps', async () => {
 		const store = memStore()
 		const root = await store.get(ROOT)
