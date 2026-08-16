@@ -141,6 +141,14 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	let rewind = false
 	let failures = 0
 	let replans = 0
+	/**
+	 * A buried id, and the id its content carries on under. It outlives one page
+	 * because a subtree wide enough to need several of them meets the same buried
+	 * directory on each, and a mapping per page would stand up a second copy of it
+	 * beside the first — the peer cannot be asked, since the first copy is still
+	 * only local when the next page is refused.
+	 */
+	const revived = new Map<NodeId, NodeId>()
 	// The two directions differ only in where the bytes go, and rule 10 is why they
 	// are not symmetric. Pushing, this replica may hold the only copy, so the peer
 	// takes the bytes BEFORE the row that names them — a crash then leaves an orphan
@@ -157,7 +165,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			// What the refusal MEANT is decided here, where the rows still are: the
 			// error cannot carry them, since a peer refuses a whole batch and for
 			// reasons — a taken name, a dead id — that no `Guard` states.
-			if (err instanceof GuardError) await settle(local, remote, rows, opts.replica)
+			if (err instanceof GuardError) await settle(local, remote, rows, opts.replica, revived)
 			throw err
 		}
 	}
@@ -298,13 +306,17 @@ async function bases(store: Store, rows: Node[]): Promise<Guard[]> {
  * reason none of these covers writes nothing, is offered again unchanged, and
  * after `REPLANS` of that becomes the caller's error.
  */
-async function settle(local: Store, remote: Store, rows: Node[], replica: string): Promise<void> {
+async function settle(
+	local: Store,
+	remote: Store,
+	rows: Node[],
+	replica: string,
+	revived: Map<NodeId, NodeId>
+): Promise<void> {
 	// A minter per refusal, which is a minter this replica hardly ever draws. Two
 	// minters for one replica are the supported case, and each draws its own nonce.
 	const mint = versions(replica)
 	const fixes: Node[] = []
-	/** A buried id, and the id its content carries on under. */
-	const revived = new Map<NodeId, NodeId>()
 
 	/**
 	 * Where a row can actually live: its own id, if the peer still has it —
@@ -326,14 +338,12 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 		const mine = await local.get(id)
 		if (!mine) return id // nothing here to carry over
 		seen.add(id)
-		const parent = await living(mine.parent, seen)
-		// An earlier page may have stood something here already — this replica, on
-		// a previous cycle. Take that, or a second one lands beside it and the two
-		// conflict over the name.
-		const standing = await remote.child(parent, mine.name)
-		const replacement = standing?.id ?? crypto.randomUUID()
+		// Minted before the walk goes up, so `revived` answers for this id while its
+		// own ancestors are still being stood up.
+		const replacement = crypto.randomUUID()
 		revived.set(id, replacement)
-		if (!standing) fixes.push({ ...mine, id: replacement, parent, version: mint() })
+		const parent = await living(mine.parent, seen)
+		fixes.push({ ...mine, id: replacement, parent, version: mint() })
 		return replacement
 	}
 

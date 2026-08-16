@@ -190,6 +190,61 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('keeps an offline edit when the peer replaced the very file it edited', async () => {
+		// Delete and re-create of one name at the peer, both before the edit is
+		// offered. The buried id's content has to go somewhere, and the name it
+		// wants is occupied by a node that has nothing to do with it — so this is
+		// edit-vs-delete and create-vs-create at once, and taking the standing row
+		// as the edit's new home would drop the edit entirely.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.writeFile('/note.txt', enc.encode('one'))
+		await sync(a.store, hub, a.opts)
+		await sync(b.store, hub, b.opts)
+
+		await a.vol.rm('/note.txt')
+		await a.vol.writeFile('/note.txt', enc.encode('from a'))
+		await sync(a.store, hub, a.opts)
+		// b edits the id it still knows about, which is the buried one.
+		await b.vol.writeFile('/note.txt', enc.encode('from b'))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await read(store, '/note.txt')).toBe('from a')
+			expect(await read(store, '/note.txt (conflict b)')).toBe('from b')
+		}
+	})
+
+	it('stands one directory back up for a subtree too wide for a single page', async () => {
+		// Each refused page meets the same buried directory, and each would stand up
+		// its own copy of it if the mapping did not outlive the page — leaving the
+		// rescued rows split across a `docs` and a `docs (conflict b)`. Nothing is
+		// lost either way; this is about not fragmenting what the user had. The peer
+		// cannot settle it, because the first copy is still only local when the next
+		// page is refused.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.mkdir('/docs')
+		await sync(a.store, hub, a.opts)
+		await sync(b.store, hub, b.opts)
+
+		await a.vol.rm('/docs', { recursive: true })
+		await sync(a.store, hub, a.opts)
+		for (let i = 0; i < 200; i++) await b.vol.writeFile(`/docs/f${i}.txt`, enc.encode(`${i}`))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await names(storeVolume(store))).toEqual(['docs'])
+			expect((await storeVolume(store).readdir('/docs')).length).toBe(200)
+		}
+	})
+
 	it('takes the loser of an edit/edit race as the last writer, on the base it lost to', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')

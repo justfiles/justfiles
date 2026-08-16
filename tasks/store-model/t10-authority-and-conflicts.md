@@ -143,6 +143,16 @@ would never converge. Who gets rescued needs no rule of its own — only rows
 this replica AUTHORED reach `settle`, because the push filter is what built
 the page, so the delete keeps everything else.
 
+A revival mints a NEW id and never moves into whatever already stands at the
+name. The tempting shortcut is to reuse it — it would merge a subtree split
+across pages — but the row standing there may have nothing to do with this
+one: a peer that deleted a file and created another under the same name would
+have the edit silently adopted into it and lost. The split it was meant to
+solve is solved instead by the id mapping outliving the page, inside the one
+`sync` call. That is also the only place it CAN be solved: the peer cannot be
+asked, because the first revival is still only local when the next page is
+refused.
+
 **`settle` writes locally and lets the ordinary push carry it.** A rename of
 the loser, a recreate under a new id, or nothing at all — each is a local
 commit, and a written row moves to the end of the local feed (rule 4), so the
