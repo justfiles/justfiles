@@ -109,8 +109,9 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	 * id is a constant, so a path that never lands on it costs no `get` on the
 	 * hottest read in the system. `up` holds the ancestors, so `..` is a pop, and
 	 * popping past the top leaves the root, which is what `/..` means.
+	 * `walked`, when given, keeps each row read so a later commit can guard the path.
 	 */
-	async function resolve(path: string, followLast: boolean): Promise<Node> {
+	async function resolve(path: string, followLast: boolean, walked?: Node[]): Promise<Node> {
 		const queue = path.split('/').filter((s) => s !== '')
 		const up: (Node | null)[] = []
 		let node: Node | null = null
@@ -126,6 +127,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 
 			const found = await store.child(node?.id ?? ROOT, name)
 			if (found === null) throw new Error(`ENOENT: ${path}`)
+			walked?.push(found)
 			// Rule 9 again: "every parent a live directory" is the authority's to
 			// keep, so a replica may hold a row parented on a file. Reachability
 			// from the root is what makes a row visible, and POSIX cannot walk
@@ -155,6 +157,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		if (node) return node
 		const root = await store.get(ROOT)
 		if (!root) throw new Error(`ENOENT: ${path}`) // rule 6: unreachable on a live store
+		walked?.push(root)
 		return root
 	}
 
@@ -169,12 +172,12 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	}
 
 	/** The directory a path is created in, and the name it takes there. */
-	async function parentOf(path: string): Promise<{ dir: Node; name: string }> {
+	async function parentOf(path: string, walked?: Node[]): Promise<{ dir: Node; name: string }> {
 		const full = path.replace(/\/+$/, '')
 		const cut = full.lastIndexOf('/')
 		const name = full.slice(cut + 1)
 		if (name === '' || name === '.' || name === '..') throw new Error(`EINVAL: ${path}`)
-		const dir = await resolve(cut <= 0 ? '/' : full.slice(0, cut), true)
+		const dir = await resolve(cut <= 0 ? '/' : full.slice(0, cut), true, walked)
 		if (!isDir(dir)) throw new Error(`ENOTDIR: ${path}`)
 		return { dir, name }
 	}
@@ -518,11 +521,12 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 
 		async rename(oldPath, newPath) {
 			await retry(async () => {
-				const from = await parentOf(oldPath)
+				const walked: Node[] = []
+				const from = await parentOf(oldPath, walked)
 				// Not followed, again: `mv` moves the link itself.
 				const node = await store.child(from.dir.id, from.name)
 				if (node === null) throw new Error(`ENOENT: ${oldPath}`)
-				const to = await parentOf(newPath)
+				const to = await parentOf(newPath, walked)
 				// Moving a row below itself makes a detached cycle.
 				const checked = await within(to.dir, node.id)
 				if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
@@ -534,6 +538,8 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				const writes: Node[] = [{ ...node, parent: to.dir.id, name: to.name, version: mint() }]
 				const guards: Guard[] = [
 					unchanged(node),
+					// Keep repeat ids: two versions mean the path changed between walks.
+					...walked.map(unchanged),
 					// `to.dir` is guarded below. The other guards keep this check valid.
 					...checked.rows
 						.slice(1)

@@ -719,6 +719,37 @@ describe('rename', () => {
 		expect(await other.exists('/right/x')).toBe(false)
 	})
 
+	it('retries when a shared link changes between endpoint walks', async () => {
+		const store = memStore()
+		const other = storeVolume(store)
+		await other.mkdir('/a')
+		await other.mkdir('/b')
+		await other.writeFile('/a/old', enc.encode('old'))
+		await other.writeFile('/b/new', enc.encode('keep'))
+		await other.symlink('/a', '/link')
+		await other.symlink('/b', '/retarget')
+		const old = await rowAt(store, '/a/old')
+		let raced = false
+		const racy: Store = {
+			...store,
+			async child(parent, name) {
+				const node = await store.child(parent, name)
+				if (!raced && node?.id === old.id) {
+					raced = true
+					await other.cp('/retarget', '/link')
+				}
+				return node
+			}
+		}
+
+		await expect(storeVolume(racy).rename('/link/old', '/link/new')).rejects.toThrow(/^ENOENT/)
+
+		expect(raced).toBe(true)
+		expect(await other.readlink('/link')).toBe('/b')
+		expect(await read(other, '/a/old')).toBe('old')
+		expect(await read(other, '/b/new')).toBe('keep')
+	})
+
 	it('moves the link, not what it points at', async () => {
 		const vol = storeVolume(memStore())
 		await vol.writeFile('/target.txt', enc.encode('original'))
