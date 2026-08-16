@@ -2,6 +2,7 @@ import {
 	type Cursor,
 	ForeignCursorError,
 	type Guard,
+	GuardError,
 	type Hash,
 	type Node,
 	type NodeId,
@@ -145,8 +146,7 @@ export function memStore(): Store {
 
 		/** Rule 2: every guard is checked before any write, so a failure writes nothing. */
 		async commit(writes, guards) {
-			for (const guard of guards ?? [])
-				if (!pass(guard)) throw new Error(`commit rejected: guard ${JSON.stringify(guard)} failed`)
+			for (const guard of guards ?? []) if (!pass(guard)) throw new GuardError(guard)
 			const written = writes.map(put).filter((row) => row !== null)
 			// Rule 8: after the commit, and only for what it changed. A listener is
 			// a notification, never a step in the commit, so its failure stays its

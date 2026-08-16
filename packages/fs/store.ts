@@ -80,6 +80,20 @@ export class ForeignCursorError extends Error {
 }
 
 /**
+ * A guard did not hold, so the commit wrote nothing (contract rule 2). Its own
+ * type because a caller has to tell it from a store that is broken: a rejection
+ * means "read again and replan" — which is how a write claims a name, how a
+ * read-modify-write stays one, and how an authority refuses a conflict — while a
+ * failure means the write may never land at all. Every backend throws this one.
+ */
+export class GuardError extends Error {
+	constructor(guard: Guard) {
+		super(`commit rejected: guard ${JSON.stringify(guard)} failed`)
+		this.name = 'GuardError'
+	}
+}
+
+/**
  * Contract rule 3: does the store already hold this row? Whole rows, so every
  * field counts — the id matches by lookup. Every backend needs the same answer,
  * or a retry that is a no-op on one store manufactures change-feed traffic on
@@ -132,7 +146,8 @@ export const verifiedBlobs = (blobs: Store['blobs']): Store['blobs'] => ({
 	}
 })
 
-const sha256Hex = async (data: Uint8Array): Promise<Hash> => {
+/** The one definition of what a `Hash` is: SHA-256 of the bytes, hex. */
+export const sha256Hex = async (data: Uint8Array): Promise<Hash> => {
 	// The cast: `BufferSource` names a `Uint8Array` over a plain `ArrayBuffer`,
 	// and a plain `Uint8Array` is over `ArrayBufferLike` — the shared-memory case
 	// `digest` never sees here.
