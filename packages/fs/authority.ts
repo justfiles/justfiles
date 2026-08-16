@@ -41,9 +41,15 @@ export function authority(store: Store): Store {
 		// push transfers unverified for exactly this reason.
 		blobs: verifiedBlobs(store.blobs),
 		commit(writes, guards) {
+			// One snapshot, checked and then committed. The queue puts `run` on a
+			// later microtask and `check` reads these rows before the store stores
+			// them, so an array the caller still owns could be edited in between and
+			// the authority would pass one thing and write another. Same reasoning as
+			// `verifiedBlobs`: a check that can be raced past is not a check.
+			const rows = structuredClone(writes)
 			const run = async (): Promise<void> => {
-				await check(store, writes)
-				await store.commit(writes, guards)
+				await check(store, rows)
+				await store.commit(rows, guards)
 			}
 			const next = queue.then(run)
 			// What the NEXT commit waits on is this one having finished, not having
@@ -68,8 +74,15 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 	const claimed = new Map<string, NodeId>()
 
 	for (const row of writes) {
-		// A tombstone takes no name, keeps no parent and holds no children: rule 8
-		// leaves only its id, its version and the fact that it is gone.
+		// A tombstone takes no name and keeps no parent: rule 8 leaves only its id,
+		// its version and the fact that it is gone. It is not held to having emptied
+		// itself first, either. A recursive delete is ONE commit locally and writes
+		// the directory's tombstone ahead of its descendants', so a push splits the
+		// two across pages — refusing a directory whose children have not caught up
+		// would break `rm -r` of anything larger than a page, and would need the
+		// wire ordering this model exists to delete. It is the same answer as a
+		// parent that has not arrived, for the same reason (rule 9), and here the
+		// children being unreachable is what the delete MEANT.
 		if (row.deleted) continue
 		const held = await store.get(row.id)
 

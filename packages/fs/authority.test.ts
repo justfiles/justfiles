@@ -14,11 +14,23 @@
 
 import { describe, expect, it } from 'vitest'
 import { authority } from './authority'
-import { GuardError, type Node, ROOT } from './store'
+import { type CursorSlot, sync, versions } from './engine'
+import { type Cursor, GuardError, type Node, ROOT } from './store'
 import { memStore } from './store.mem'
 import { storeVolume } from './volume.store'
 
 const enc = new TextEncoder()
+
+/** The host-local cursor slot. A variable is the whole contract (see T8). */
+function cursor(): CursorSlot {
+	let at: Cursor | undefined
+	return {
+		load: async () => at,
+		save: async (saved) => {
+			at = saved
+		}
+	}
+}
 
 /** A plain file row under root. Only what a case cares about is spelled out. */
 const file = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
@@ -129,6 +141,43 @@ describe('authority: the tree invariants', () => {
 		).resolves.toBeUndefined()
 	})
 
+	it('takes a tombstone for a directory whose children have not caught up', async () => {
+		// The mirror of the case above, and the same answer. `rm -r` is ONE commit
+		// locally and writes the directory's tombstone ahead of its descendants', so
+		// a push splits the two across pages: refusing here would break the recursive
+		// delete of any directory larger than a page. Nothing is stranded that the
+		// delete did not mean to strand — the children are unreachable, which is what
+		// was asked for, and the page behind this one buries them.
+		const { store, server, seed } = hub()
+		const docs = dir({ id: 'docs', name: 'docs' })
+		await seed(docs, file({ id: 'inside', name: 'note.txt', parent: 'docs' }))
+
+		await expect(server.commit([{ ...docs, deleted: true, version: '2' }])).resolves.toBeUndefined()
+
+		expect(await storeVolume(store).readdir('/')).toEqual([])
+	})
+
+	it('takes a recursive delete that does not fit in one page', async () => {
+		// The same decision, end to end, and the reason it is not negotiable: the
+		// tombstones are one local commit and several pushed pages, so an authority
+		// that demanded an emptied directory would refuse the first page of every
+		// `rm -r` past the page size — and no replan can mend that, since the rows
+		// it needs are in a page it has not been allowed to send yet.
+		const server = authority(memStore())
+		const store = memStore()
+		const opts = { replica: 'a', pull: cursor(), push: cursor() }
+		const vol = storeVolume(store, { mintVersion: versions('a') })
+		await vol.mkdir('/docs')
+		for (let i = 0; i < 200; i++) await vol.writeFile(`/docs/f${i}.txt`, enc.encode(`${i}`))
+		await sync(store, server, opts)
+		expect((await storeVolume(server).readdir('/docs')).length).toBe(200)
+
+		await vol.rm('/docs', { recursive: true })
+		await sync(store, server, opts)
+
+		expect(await storeVolume(server).readdir('/')).toEqual([])
+	})
+
 	it('refuses a move that puts a directory under its own descendant', async () => {
 		const { seed, refused } = hub()
 		await seed(dir({ id: 'top', name: 'top' }), dir({ id: 'inner', name: 'inner', parent: 'top' }))
@@ -192,6 +241,21 @@ describe('authority: what it leaves alone', () => {
 		await expect(
 			server.commit([{ ...note, size: 9n, version: '2' }], [{ version: { id: 'note', is: '1' } }])
 		).resolves.toBeUndefined()
+	})
+
+	it('checks the rows it was handed, not the ones the caller edits behind it', async () => {
+		// The queue runs a commit on a later microtask, and the checks read the rows
+		// before the store stores them — so without a snapshot the authority could
+		// pass one batch and write another.
+		const { store, server } = hub()
+		const row = file({ id: 'note', name: 'note.txt' })
+
+		const landing = server.commit([row])
+		row.name = 'somewhere-else.txt'
+		await landing
+
+		expect(await store.child(ROOT, 'note.txt')).toMatchObject({ id: 'note' })
+		expect(await store.child(ROOT, 'somewhere-else.txt')).toBeNull()
 	})
 
 	it('verifies bytes against the hash that named them', async () => {
