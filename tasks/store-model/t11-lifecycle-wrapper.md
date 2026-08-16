@@ -46,6 +46,12 @@ Against memStores:
 Implement as a thin layer: volume + engine + status. No sync-state file in the
 tree — cursors use the injected slot from [T8](t08-engine-core.md).
 
+From [T9](t09-engine-blobs.md): Frieren's `lazyContent: true` is two things
+together, and one without the other is a broken replica. Pass `lazyContent` to
+`sync` so the pull takes rows only, and give the volume
+`hydratingBlobs(local, remote)` so a read of a stub fetches its bytes. A test
+should read a file the pull never materialized.
+
 ## Done when
 
 All green, and the exported surface is a strict match for what
