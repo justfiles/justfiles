@@ -100,7 +100,7 @@ type Node = {
 	parent: NodeId
 	name: string
 	type: 'file' | 'dir' | 'symlink' | 'mount'  // mount: a junction to another store
-	mode: number
+	mode: number                       // full POSIX mode (S_IFMT bits + permissions)
 	mtimeNs: bigint
 	size: bigint                       // denormalized so stat never touches content
 	xattrs?: Record<string, Uint8Array> // small values only; big data belongs in content

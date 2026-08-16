@@ -1,6 +1,6 @@
 # T5 — `storeVolume(store)`: read side
 
-**Status:** todo
+**Status:** done
 **Phase:** B — the two consumers
 **Depends on:** [T1](t01-store-types-and-memstore.md), [T2](t02-change-feed-and-lineage.md), [T3](t03-blobs.md)
 **Context:** [overview](README.md) · [design #1 table A + "the two consumers"](../../kb/fs/fable-design.md)
