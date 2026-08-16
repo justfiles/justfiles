@@ -1,4 +1,4 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import { type AppBundle, type AppManifest, appBundleFromMemory } from './app.ts'
 import { apps } from './kernel.app.ts'
@@ -59,6 +59,35 @@ function origin(served: Record<string, string>) {
 		return enc(body)
 	}
 	return { fetchAsset, requested }
+}
+
+function pauseTrash(base: Volume): {
+	vol: Volume
+	renaming: Promise<void>
+	resume: () => void
+} {
+	let startRename: () => void = () => {}
+	let resumeRename: () => void = () => {}
+	const renaming = new Promise<void>((resolve) => {
+		startRename = resolve
+	})
+	const resume = new Promise<void>((resolve) => {
+		resumeRename = resolve
+	})
+	return {
+		vol: {
+			...base,
+			async rename(from, to) {
+				if (from === '/applications/com.example.app' && to.startsWith('/trash/')) {
+					startRename()
+					await resume
+				}
+				await base.rename(from, to)
+			}
+		},
+		renaming,
+		resume: resumeRename
+	}
 }
 
 test('install lays out the bundle and get/has/list reflect it', async () => {
@@ -351,25 +380,7 @@ test('uninstall evicts the hosted payload from the host cache', async () => {
 })
 
 test('uninstall evicts a hosted read started before the bundle is trashed', async () => {
-	const base = volume(memStorage())
-	let startRename: () => void = () => {}
-	let resumeRename: () => void = () => {}
-	const renaming = new Promise<void>((resolve) => {
-		startRename = resolve
-	})
-	const resume = new Promise<void>((resolve) => {
-		resumeRename = resolve
-	})
-	const vol: typeof base = {
-		...base,
-		async rename(from, to) {
-			if (from === '/applications/com.example.app' && to.startsWith('/trash/')) {
-				startRename()
-				await resume
-			}
-			await base.rename(from, to)
-		}
-	}
+	const { vol, renaming, resume } = pauseTrash(volume(memStorage()))
 	const calls: string[] = []
 	const fetchAsset = Object.assign(
 		async () => {
@@ -390,10 +401,35 @@ test('uninstall evicts a hosted read started before the bundle is trashed', asyn
 	const installed = await s.get(id)
 	if (!installed) throw new Error('expected app before trash rename')
 	expect(decode(await installed.read('gui.js'))).toBe('GUI')
-	resumeRename()
+	resume()
 	await uninstall
 
 	expect(calls).toEqual(['read', 'evict'])
+})
+
+test('uninstall evicts the release it moves when install overlaps', async () => {
+	const { vol, renaming, resume } = pauseTrash(volume(memStorage()))
+	const evicted: string[] = []
+	const fetchAsset = Object.assign(async () => enc('GUI'), {
+		evict: async (url: string) => {
+			evicted.push(url)
+		}
+	})
+	const s = apps(vol, fetchAsset)
+	const id = await s.install(
+		await hostedBundle({ app: 'REDUCER_A', gui: 'GUI' }, { baseUrl: 'https://apps.example.com/v1' })
+	)
+	const uninstall = s.uninstall(id)
+	await renaming
+
+	await s.install(
+		await hostedBundle({ app: 'REDUCER_B', gui: 'GUI' }, { baseUrl: 'https://apps.example.com/v2' })
+	)
+	evicted.length = 0
+	resume()
+	await uninstall
+
+	expect(evicted).toEqual(['https://apps.example.com/v2/gui.js'])
 })
 
 test('an eviction that fails does not fail the uninstall', async () => {

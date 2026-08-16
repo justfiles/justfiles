@@ -284,8 +284,8 @@ Do this only after the new root is live. Do not evict the current app before a
 successful commit. This removes old immutable release URLs after an update. The cache
 limit remains the repair rule for crash leftovers and unreferenced files.
 
-On uninstall, snapshot the mounted URLs, move the app to trash, then evict them. The
-move prevents a new read from finding the installed record after eviction finishes.
+On uninstall, move the app to trash, then read that moved bundle's mounted URLs and
+evict them. The atomic move ties eviction to the exact release that uninstall removed.
 
 ### 4. Compose the Mac app store
 

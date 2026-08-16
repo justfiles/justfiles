@@ -41,6 +41,32 @@ test('a downloaded asset is available after restart without the network', async 
 	expect(requests).toBe(1)
 })
 
+test('a failed cache read falls back to the network', async () => {
+	const base = volume(memStorage())
+	let failRead = false
+	const fs: Volume = {
+		...base,
+		async readFile(path) {
+			if (failRead && path.startsWith('/private/cache/apps/')) {
+				failRead = false
+				throw new Error('cache unavailable')
+			}
+			return base.readFile(path)
+		}
+	}
+	let requests = 0
+	const cache = await appAssets(fs, async () => {
+		requests++
+		return new Response(bytes(requests === 1 ? 'CACHED' : 'FRESH'))
+	})
+	const url = 'https://notes.justapps.run/v/1/gui.js'
+	await cache(url)
+	failRead = true
+
+	expect(text(await cache(url))).toBe('FRESH')
+	expect(requests).toBe(2)
+})
+
 test('concurrent reads of one uncached URL share one request', async () => {
 	const fs = volume(memStorage())
 	let requests = 0

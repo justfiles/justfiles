@@ -23,7 +23,10 @@ export async function appAssets(
 			const keep = !evictions.has(url)
 			read = (async () => {
 				const path = cachePath(url)
-				if (await fs.exists(path)) return fs.readFile(path)
+				if (await fs.exists(path)) {
+					const cached = await fs.readFile(path).catch(() => undefined)
+					if (cached) return cached
+				}
 
 				const response = await request(url)
 				if (!response.ok) throw new Error(`app asset: ${url} ${response.status}`)

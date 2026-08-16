@@ -151,22 +151,20 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return
-		const evict = fetchAsset?.evict
-		const urls = evict ? await mountedUrls(root).catch(() => []) : []
 		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
 		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
 		// reconcile, fired by the volume's structural watch — never sees a half-deleted
 		// bundle it would try to "repair"/resurrect. The bytes survive under /trash until
 		// the retention sweep drops that day (see trash.ts).
-		await trashBundle(fs, root, appId)
-		if (evict) await Promise.all(urls.map(evict)).catch(() => {})
+		const trashed = await trashBundle(fs, root, appId)
+		await evictMounted(trashed).catch(() => {})
 	}
 
 	// A hosted app's payload is in the HOST's cache, not the volume, so trashing the
 	// bundle leaves those bytes behind — per ORIGIN, which every profile then pays for
-	// and none can name. Snapshot the URLs before trashing, then evict once no new read
-	// can find the installed record.
+	// and none can name. Read the URLs from the root that was moved so a racing install
+	// cannot switch the bundle between the snapshot and the rename.
 	//
 	// Best-effort, like the mount-time call: a host with no browser cache passes no
 	// `evict`, and a cache that refuses must not fail the uninstall. Reinstall is

@@ -19,11 +19,14 @@ function dayKey(atMs: number): string {
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/
 
-// Move an installed bundle into today's trash folder with one atomic rename.
-export async function trashBundle(fs: Volume, from: string, appId: string): Promise<void> {
+// Move a bundle in one atomic rename and return its new path so cleanup reads the
+// exact bundle that moved.
+export async function trashBundle(fs: Volume, from: string, appId: string): Promise<string> {
 	const dir = `${TRASH_ROOT}/${dayKey(Date.now())}`
+	const to = `${dir}/${appId}-${crypto.randomUUID()}`
 	await fs.mkdir(dir, { recursive: true })
-	await fs.rename(from, `${dir}/${appId}-${crypto.randomUUID()}`)
+	await fs.rename(from, to)
+	return to
 }
 
 // Drop every trashed day folder older than `retentionMs`. Idempotent and cheap,
