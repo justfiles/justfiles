@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.3...app-v0.5.0) (2026-08-16)
+
+
+### Features
+
+* **mac:** cache hosted JustApps assets ([#504](https://github.com/xiaoxinghu/justfiles/issues/504)) ([fb47d9e](https://github.com/xiaoxinghu/justfiles/commit/fb47d9e3ad281988769fb882d58f277b969b319b))
+
+
+### Bug Fixes
+
+* **app-code:** restore devkit hosts and publish the SDK sysroot ([#511](https://github.com/xiaoxinghu/justfiles/issues/511)) ([62bad1f](https://github.com/xiaoxinghu/justfiles/commit/62bad1f6d7673ac1ca393b66e00af3eb75f7a78b))
+
 ## [0.4.3](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.2...app-v0.4.3) (2026-08-13)
 
 
