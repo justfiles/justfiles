@@ -100,7 +100,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | T6 | [`storeVolume` — write side](t06-volume-write.md) | T5 | done |
 | T7 | [`watch` from the feed](t07-watch.md) | T6 | done |
 | T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | done |
-| T9 | [Engine: blob transfer + lazy content](t09-engine-blobs.md) | T8 | todo |
+| T9 | [Engine: blob transfer + lazy content](t09-engine-blobs.md) | T8 | done |
 | T10 | [Authority + conflict policy](t10-authority-and-conflicts.md) | T8 | todo |
 | T11 | [Lifecycle wrapper — the `synced()` surface](t11-lifecycle-wrapper.md) | T8–T10 | todo |
 
@@ -194,6 +194,11 @@ They are spread across the tasks; do not let them slip:
    **Shown in T6:** three rows, and only three — the moved node and the two
    parents whose mtime it stamped. The children never move.
 2. A crash between `blobs.put` and `commit` leaves only an orphan blob — **T9**.
+   **Shown in T9:** on the push, where it matters — the peer holds the bytes and
+   not the row, the cursor never moved, and the re-run transfers nothing. On the
+   pull the order is reversed on purpose: the peer still holds the bytes, so a
+   row may land ahead of them and a gap is one fetch away, which is what lazy
+   content is.
 3. A deleted cursor re-applies a page into pure no-ops — **T8**.
    **Shown in T8:** both stores stay silent through the whole re-scan — no row
    written, no feed position taken — so a lost cursor costs a scan and nothing
