@@ -14,6 +14,7 @@ import {
 	type Cursor,
 	ForeignCursorError,
 	type Guard,
+	GuardError,
 	type Node,
 	type NodeId,
 	ROOT,
@@ -155,7 +156,7 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 						{ free: { parent: ROOT, name: 'taken.txt' } } // fails, and it is last
 					]
 				)
-			).rejects.toThrow()
+			).rejects.toThrow(GuardError)
 
 			expect(await store.get('a')).toBeNull()
 			expect(await store.get('b')).toBeNull()
@@ -165,18 +166,23 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 		test('free guards reject a held name; version guards are a CAS (rule 2)', async () => {
 			const store = await open()
 			const one = node({ id: 'one', name: 'one.txt', version: 'v1' })
-			// `is: null` means "must not exist".
+			// `is: null` means "must not exist". A rejection is a `GuardError` on every
+			// backend: a caller replans on one and gives up on any other failure.
 			await store.commit([one], [{ version: { id: 'one', is: null } }])
-			await expect(store.commit([one], [{ version: { id: 'one', is: null } }])).rejects.toThrow()
+			await expect(store.commit([one], [{ version: { id: 'one', is: null } }])).rejects.toThrow(
+				GuardError
+			)
 
 			const other = node({ id: 'other', name: 'one.txt' })
 			await expect(
 				store.commit([other], [{ free: { parent: ROOT, name: 'one.txt' } }])
-			).rejects.toThrow()
+			).rejects.toThrow(GuardError)
 			expect(await store.get('other')).toBeNull()
 
 			const two: Node = { ...one, version: 'v2', size: 9n }
-			await expect(store.commit([two], [{ version: { id: 'one', is: 'stale' } }])).rejects.toThrow()
+			await expect(store.commit([two], [{ version: { id: 'one', is: 'stale' } }])).rejects.toThrow(
+				GuardError
+			)
 			await store.commit([two], [{ version: { id: 'one', is: 'v1' } }])
 			expect(await store.get('one')).toEqual(two)
 
