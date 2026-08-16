@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as esbuild from 'esbuild'
 import * as ts from 'typescript'
 import { beforeAll, describe, expect, test } from 'vitest'
@@ -40,8 +43,9 @@ const project = (files: Record<string, string>, gui?: string): ProjectInput => (
 
 describe('typescriptToolchain', () => {
 	let toolchain: ReturnType<typeof typescriptToolchain>
+	let runtime: Record<string, string>
 	beforeAll(async () => {
-		const runtime = await buildRuntime()
+		runtime = await buildRuntime()
 		toolchain = typescriptToolchain({
 			compile: (input) => esbuildCompile(input, esbuild.build, runtime),
 			ts
@@ -60,6 +64,27 @@ describe('typescriptToolchain', () => {
 		expect(appJs).not.toContain('justfiles-sdk:')
 		expect(guiJs).not.toMatch(/from\s*["']@justfiles\/app/)
 		expect(guiJs).not.toContain('justfiles-sdk:')
+	})
+
+	test('a virtual entry wins over a matching file in the host working directory', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'devkit-entry-'))
+		try {
+			await mkdir(join(root, 'src'))
+			await writeFile(join(root, 'src/app.ts'), '')
+			const input: ProjectInput = {
+				files: { 'src/app.ts': APP },
+				entries: { app: 'src/app.ts' },
+				tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts' })
+			}
+			const result = await esbuildCompile(
+				input,
+				(options) => esbuild.build({ ...options, absWorkingDir: root }),
+				runtime
+			)
+			expect(result.outputs.find((output) => output.path === 'app.js')?.text).toContain('export {')
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
 	})
 
 	test('CSS: a draft import folds into gui.js (no sidecar)', async () => {

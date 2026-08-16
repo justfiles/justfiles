@@ -60,17 +60,15 @@ export async function projectName(vol: VolumeApi, slug: string): Promise<string>
 
 // The only seeder. The folder IS the bundle id, so uniqueness is the id's job —
 // one `exists` check, no de-dup dance. Checks the project ROOT (not `src/`) so a
-// corrupt/partial folder still counts as taken. `template` defaults to 'react'
-// (today's starter); the seed fork for 'vanilla' is a deferred follow-up.
+// corrupt/partial folder still counts as taken.
 export async function createProject(
 	vol: VolumeApi,
 	name: string,
-	id: string,
-	template: 'react' | 'vanilla' = 'react'
+	id: string
 ): Promise<{ slug: string }> {
 	v.parse(bundleIdSchema, id)
 	if (await vol.exists(`/projects/${id}`)) throw new Error(`project id already exists: ${id}`)
-	await seed(vol, id, name, template)
+	await seed(vol, id, name)
 	return { slug: id }
 }
 
@@ -84,14 +82,8 @@ export function slugifyName(name: string): string {
 	return s || 'app'
 }
 
-// Write a project's starter files + `project.json`. v1 seeds React only; the
-// `template` fork (Vanilla) is a deferred follow-up, kept a pure addition here.
-export async function seed(
-	vol: VolumeApi,
-	id: string,
-	name: string,
-	_template: 'react' | 'vanilla' = 'react'
-): Promise<void> {
+// Write the framework-free starter files and `project.json`.
+export async function seed(vol: VolumeApi, id: string, name: string): Promise<void> {
 	await vol.writeFile(SRC(id, '/app.ts'), encoder.encode(starterApp))
 	await vol.writeFile(SRC(id, '/gui.ts'), encoder.encode(starterGui))
 	await writeProjectManifest(vol, id, name)

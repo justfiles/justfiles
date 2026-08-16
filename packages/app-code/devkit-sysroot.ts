@@ -2,23 +2,23 @@ import { join } from 'node:path'
 import { writeSysroot } from '@justfiles/app/devkit-runtime'
 import type { Plugin, ResolvedConfig } from 'vite'
 
-// App-code owns the devkit sysroot — the fixed SDK a draft compiles and typechecks
-// against. At build time this plugin bakes SDK + React `.d.ts` and SDK runtime JS into
-// content-addressed `dist/devkit/store/**` blobs and writes `dist/devkit/index.json`
-// (schema + content hash + the logical-path → blob-id maps). `manifest.json`'s
-// `include: ['devkit/**']` (vite.config.ts) carries it into the seeded bundle, and the
-// host loads it from the calling app's installed bytes.
+// App Code owns the fixed SDK that a draft compiles and checks against. Build and
+// local development write it to `dist/devkit`; `include: ['devkit/**']` puts it in
+// the installed Code bundle.
 
 export function devkitSysroot(): Plugin {
 	let config: ResolvedConfig
+	const write = () => writeSysroot(join(config.root, config.build.outDir, 'devkit'))
 	return {
 		name: 'app-code:devkit-sysroot',
-		apply: 'build',
 		configResolved(resolved) {
 			config = resolved
 		},
+		async configureServer() {
+			await write()
+		},
 		async closeBundle() {
-			await writeSysroot(join(config.root, config.build.outDir, 'devkit'))
+			if (config.command === 'build') await write()
 		}
 	}
 }
