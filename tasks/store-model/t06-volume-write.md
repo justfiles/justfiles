@@ -1,6 +1,6 @@
 # T6 — `storeVolume`: write side
 
-**Status:** todo
+**Status:** done
 **Phase:** B — the two consumers
 **Depends on:** [T5](t05-volume-read.md)
 **Context:** [overview](README.md) · [design #1 table A + "the two consumers"](../../kb/fs/fable-design.md)
@@ -18,12 +18,17 @@ Every mutating Volume operation expressed as guarded commits.
   version, which is what lets a batch that enumerated a directory (`rm -r`)
   guard against a concurrent create it did not see. This is a correctness
   mechanism, not cosmetics.
+- Guard every row and free name that decides a commit. If a guard fails, rerun
+  the full read-and-write attempt.
 - Contract rule 10: content durable (`blobs.put` resolved) BEFORE the row that
   references the hash is committed.
+- Read caller-owned values before the first `await`. Copy byte arrays, read
+  option fields into local values, and reuse those values on every retry.
 - `Node.mode` is a whole POSIX mode, so a row this task writes carries its
   `S_IFMT` bits: `0o100644` for a file, `0o040755` for a directory, `0o120777`
-  for a symlink. `chmod` takes permission bits from the caller and must keep the
-  type bits: `(row.mode & 0o170000) | (mode & 0o7777)`. `Stat.mode` stays
+  for a symlink. Mask a caller-supplied mode with `0o7777` before adding type
+  bits. `chmod` takes permission bits from the caller and must keep the type
+  bits: `(row.mode & 0o170000) | (mode & 0o7777)`. `Stat.mode` stays
   permission-only — T5 masks on read, because `Stat` has its own `type`.
 - Version format: the engine owns it ([T8](t08-engine-core.md) defines
   author-tagged versions). Until then stamp `local:<counter>`, and take a
