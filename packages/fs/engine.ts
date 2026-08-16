@@ -22,11 +22,23 @@
  *   batch commits, it lives in a slot the caller injects, and it never enters
  *   the replicated table or the user's tree.
  *
+ * Content moves separately from the rows and is keyed by hash: `transfer` copies
+ * only the bytes the other side lacks, and `lazyContent` with `hydratingBlobs`
+ * lets a replica take every row and fetch bytes only when a read asks for them.
+ *
  * Conflicts are not here. v1 rejects and replans through guards at the
- * authority (T10), and content moves separately from rows (T9).
+ * authority (T10).
  */
 
-import { type Cursor, ForeignCursorError, type Node, type Store, type Version } from './store'
+import {
+	type Cursor,
+	ForeignCursorError,
+	type Hash,
+	type Node,
+	type Store,
+	type Version,
+	verifiedBlobs
+} from './store'
 
 /** How many extra attempts a cycle gets before the failure becomes the caller's. */
 const RETRIES = 3
@@ -54,6 +66,13 @@ export type SyncOptions = {
 	push: CursorSlot
 	retries?: number
 	backoffMs?: number
+	/**
+	 * Take the peer's rows without its bytes: every file arrives as a stub, and
+	 * `hydratingBlobs` fetches the content a read actually asks for. A pure
+	 * materialization choice — the rows are identical either way, so it needs no
+	 * agreement with the peer and no protocol support.
+	 */
+	lazyContent?: boolean
 }
 
 /**
@@ -87,10 +106,26 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	const backoff = opts.backoffMs ?? BACKOFF_MS
 	let rewind = false
 	let failures = 0
+	// The two directions differ only in where the bytes go, and rule 10 is why they
+	// are not symmetric. Pushing, this replica may hold the only copy, so the peer
+	// takes the bytes BEFORE the row that names them — a crash then leaves an orphan
+	// blob instead of a row whose content was never stored. Pulling, the peer still
+	// holds them, so a row may land ahead of its content and a gap is a fetch away,
+	// which is what lets a lazy replica skip the fetch entirely.
+	const push = async (rows: Node[]): Promise<void> => {
+		await transfer(rows, local.blobs, remote.blobs)
+		await remote.commit(rows)
+	}
+	const pull = async (rows: Node[]): Promise<void> => {
+		await local.commit(rows)
+		// Rule 7: bytes from a peer are checked against the hash that named them
+		// before they land. The peer's own store verifies what this replica pushes.
+		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs))
+	}
 	for (;;) {
 		try {
-			await drain(local, remote, opts.push, rewind, mine)
-			await drain(remote, local, opts.pull, rewind)
+			await drain(local, push, opts.push, rewind, mine)
+			await drain(remote, pull, opts.pull, rewind)
 			return
 		} catch (err) {
 			// Rule 11 fences the PAIR, not the cursor that threw. The two cursors are
@@ -129,7 +164,7 @@ export function versions(replica: string): () => Version {
 }
 
 /**
- * Move one feed into one store: commit a page, THEN advance past it. The cursor
+ * Move one feed into one replica: apply a page, THEN advance past it. The cursor
  * may lag its rows and may never lead them, which is the whole of the crash
  * story — a re-run re-applies rows the store already holds and writes nothing.
  *
@@ -140,7 +175,7 @@ export function versions(replica: string): () => Version {
  */
 async function drain(
 	from: Store,
-	into: Store,
+	apply: (rows: Node[]) => Promise<void>,
 	slot: CursorSlot,
 	rewind: boolean,
 	mine?: (row: Node) => boolean
@@ -151,7 +186,7 @@ async function drain(
 		const rows = mine ? page.nodes.filter(mine) : page.nodes
 		// Nothing to send is the steady state, and an empty commit is still a round
 		// trip to a peer that may be a network away.
-		if (rows.length > 0) await into.commit(rows)
+		if (rows.length > 0) await apply(rows)
 		// A store that hands no cursor back has broken rule 4: there is nothing to
 		// resume from, so this scan is as far as the drain goes.
 		if (page.next === undefined) return
@@ -159,6 +194,60 @@ async function drain(
 		await slot.save(cursor)
 		// An empty page means caught up, and the saved cursor is where to start next.
 		if (page.nodes.length === 0) return
+	}
+}
+
+/**
+ * Copy the bytes these rows name, and only the ones the target lacks. The `has`
+ * check is what makes a rename, a copy, and a re-push after a crash cost nothing:
+ * content is keyed by hash, so identical bytes are one blob wherever they appear.
+ *
+ * A hash the source cannot produce is skipped, not fatal. The source is lazy, or
+ * swept, and the row still belongs at the target: a row naming absent content is
+ * a stub, which the seam allows and `hydratingBlobs` resolves.
+ */
+async function transfer(rows: Node[], from: Store['blobs'], into: Store['blobs']): Promise<void> {
+	const hashes = new Set<Hash>()
+	for (const row of rows) {
+		// A tombstone keeps whatever fields it had, and none of them mean anything any
+		// more (rule 8) — moving bytes for a dead row is pure waste.
+		if (row.content !== undefined && !row.deleted) hashes.add(row.content)
+	}
+	for (const hash of hashes) {
+		if (await into.has(hash)) continue
+		const data = await from.get(hash)
+		if (data !== null) await into.put(hash, data)
+	}
+}
+
+/**
+ * A store whose content map falls through to a peer: the lazy half of selective
+ * content. `sync` with `lazyContent` takes the rows only, so a file reads as a
+ * row naming bytes this replica does not hold — and a read through this wrapper
+ * fetches those bytes once, verifies them, and keeps them.
+ *
+ * `has` stays a local question. It answers "do I hold these bytes", which is what
+ * decides a transfer; a wrapper that answered for the peer too would talk this
+ * replica out of fetching anything.
+ */
+export function hydratingBlobs(local: Store, remote: Store): Store {
+	const verified = verifiedBlobs(local.blobs)
+	return {
+		...local,
+		blobs: {
+			has: (hash) => local.blobs.has(hash),
+			put: (hash, data) => local.blobs.put(hash, data),
+			async get(hash) {
+				const held = await local.blobs.get(hash)
+				if (held !== null) return held
+				const fetched = await remote.blobs.get(hash)
+				// Absent on both sides is the honest answer, and the seam's: a row may
+				// name content nobody holds, and a reader is told rather than guessed at.
+				if (fetched === null) return null
+				await verified.put(hash, fetched)
+				return fetched
+			}
+		}
 	}
 }
 
