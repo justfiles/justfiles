@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import type { AppStore, CatalogApp } from '../../packages/app/appstore.ts'
 import {
 	mergeAppStores,
@@ -74,6 +74,23 @@ function json(data: unknown, url = ''): Response {
 }
 
 describe('runnerAppStore', () => {
+	test('the default request has a deadline', async () => {
+		const signal = new AbortController().signal
+		const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(signal)
+		const request = vi
+			.spyOn(globalThis, 'fetch')
+			.mockResolvedValue(json({ schema: RUNNER_STORE_SCHEMA, apps: [] }, RUNNER_STORE_URL))
+
+		try {
+			await runnerAppStore()
+			expect(timeout).toHaveBeenCalledWith(10_000)
+			expect(request).toHaveBeenCalledWith(RUNNER_STORE_URL, { signal })
+		} finally {
+			request.mockRestore()
+			timeout.mockRestore()
+		}
+	})
+
 	test('an unavailable registry does not provide a store', async () => {
 		const store = await runnerAppStore(async () => {
 			throw new Error('offline')

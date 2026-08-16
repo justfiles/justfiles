@@ -5,10 +5,12 @@ import type { FetchAsset } from '../../../packages/app/kernel.app'
 const CACHE_ROOT = '/private/cache/apps'
 const TMP_ROOT = '/private/tmp/app-assets'
 const MAX_FILES = 500
+const REQUEST_TIMEOUT_MS = 10_000
 
 export async function appAssets(
 	fs: Volume,
-	request: (url: string) => Promise<Response> = (url) => fetch(url)
+	request: (url: string) => Promise<Response> = (url) =>
+		fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
 ): Promise<FetchAsset> {
 	// Cache faults must not block a network read.
 	await startCache(fs).catch((error) => console.warn('app asset: cache start failed', error))
@@ -38,7 +40,10 @@ export async function appAssets(
 		}
 		return download
 	}
-	load.evict = async (url: string) => fs.rm(cachePath(url), { force: true })
+	load.evict = async (url: string) => {
+		await pending.get(url)?.catch(() => {})
+		await fs.rm(cachePath(url), { force: true })
+	}
 	return load
 }
 

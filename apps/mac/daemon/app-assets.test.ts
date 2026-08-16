@@ -5,6 +5,24 @@ import { appAssets } from './app-assets'
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 const text = (value: Uint8Array): string => new TextDecoder().decode(value)
 
+test('the default request has a deadline', async () => {
+	const fs = volume(memStorage())
+	const signal = new AbortController().signal
+	const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(signal)
+	const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(bytes('GUI')))
+	const url = 'https://notes.justapps.run/v/1/gui.js'
+
+	try {
+		const cache = await appAssets(fs)
+		await cache(url)
+		expect(timeout).toHaveBeenCalledWith(10_000)
+		expect(request).toHaveBeenCalledWith(url, { signal })
+	} finally {
+		request.mockRestore()
+		timeout.mockRestore()
+	}
+})
+
 test('a downloaded asset is available after restart without the network', async () => {
 	const fs = volume(memStorage())
 	let online = true
@@ -90,6 +108,35 @@ test('eviction removes only the named URL', async () => {
 
 	await expect(cache(first)).rejects.toThrow('offline')
 	expect(text(await cache(second))).toBe(second)
+})
+
+test('eviction waits for an in-flight cache write', async () => {
+	const fs = volume(memStorage())
+	let online = true
+	let start: () => void = () => {}
+	let release: () => void = () => {}
+	const started = new Promise<void>((resolve) => {
+		start = resolve
+	})
+	const pending = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	const cache = await appAssets(fs, async () => {
+		if (!online) throw new Error('offline')
+		start()
+		await pending
+		return new Response(bytes('GUI'))
+	})
+	const url = 'https://notes.justapps.run/v/1/gui.js'
+	const read = cache(url)
+	await started
+	const eviction = cache.evict!(url)
+	online = false
+	release()
+
+	expect(text(await read)).toBe('GUI')
+	await eviction
+	await expect(cache(url)).rejects.toThrow('offline')
 })
 
 test('the cache uses a flat path-safe URL hash', async () => {

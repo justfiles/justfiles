@@ -7,6 +7,7 @@ export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 const BUILTIN_IDS = ['justfiles.notes', 'justfiles.paint']
+const REQUEST_TIMEOUT_MS = 10_000
 
 interface StoreEntry {
 	id: string
@@ -56,7 +57,8 @@ export function mergeAppStores(primary: AppStore, runner: AppStore): AppStore {
 // Load the index first. Load each app manifest once and only when needed.
 // catalog() loads all manifests because the store UI lists every app.
 export async function runnerAppStore(
-	request: (url: string) => Promise<Response> = (url) => fetch(url)
+	request: (url: string) => Promise<Response> = (url) =>
+		fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
 ): Promise<RunnerAppStore | null> {
 	let entries: StoreEntry[]
 	try {
