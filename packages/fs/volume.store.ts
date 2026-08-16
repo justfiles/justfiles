@@ -367,6 +367,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		return out
 	}
 
+	// Read caller-owned inputs before the first await. Reuse them on every retry.
 	const vol: Volume = {
 		async stat(path) {
 			return statOf(await resolve(path, true))
@@ -449,9 +450,10 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		},
 
 		async mkdir(path, opts) {
-			const mode = IFDIR | (opts?.mode ?? 0o755)
+			const recursive = opts?.recursive ?? false
+			const mode = IFDIR | ((opts?.mode ?? 0o755) & 0o7777)
 			const dir: Payload = { type: 'dir', mode, size: 0n }
-			if (!opts?.recursive) {
+			if (!recursive) {
 				await retry(() => place(path, dir, { exclusive: true }))
 				return
 			}
@@ -490,12 +492,14 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		},
 
 		async rm(path, opts) {
+			const recursive = opts?.recursive ?? false
+			const force = opts?.force ?? false
 			await retry(async () => {
 				// The final component is not followed: `rm` removes the link, never
 				// what it points at.
 				const node = await find(path, false)
 				if (node === null) {
-					if (opts?.force) return
+					if (force) return
 					throw new Error(`ENOENT: ${path}`)
 				}
 				if (node.id === ROOT) throw new Error(`EINVAL: ${path}`)
@@ -505,7 +509,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 
 				const dead = [node]
 				if (isDir(node)) {
-					if (opts?.recursive) dead.push(...(await descendants(node.id)))
+					if (recursive) dead.push(...(await descendants(node.id)))
 					else if ((await store.children(node.id)).nodes.length > 0)
 						throw new Error(`ENOTEMPTY: ${path}`)
 				}
@@ -576,6 +580,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		},
 
 		async cp(src, dest, opts) {
+			const recursive = opts?.recursive ?? false
 			// Rows, not bytes: a copy names the content its source already stored
 			// (design table A — "no byte copy; hash reuse"), which is also why a
 			// symlink copies as a symlink instead of dereferencing into a fresh file.
@@ -592,7 +597,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				return
 			}
 
-			if (!opts?.recursive) throw new Error(`EISDIR: ${src}`)
+			if (!recursive) throw new Error(`EISDIR: ${src}`)
 			// Paths lie about ancestry when they cross a link. Walk ids so a copy
 			// cannot find its own output and run without bound.
 			const there = await find(dest)
@@ -604,7 +609,8 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 
 			if (there === null) await vol.mkdir(dest, { mode: node.mode & 0o7777 })
 			else if (!isDir(there)) throw new Error(`ENOTDIR: ${dest}`)
-			for (const child of kids) await vol.cp(join(src, child.name), join(dest, child.name), opts)
+			for (const child of kids)
+				await vol.cp(join(src, child.name), join(dest, child.name), { recursive })
 		},
 
 		async symlink(target, path) {

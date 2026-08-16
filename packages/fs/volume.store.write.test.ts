@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { type Cursor, type Node, ROOT, type Store } from './store'
+import { type Cursor, GuardError, type Node, ROOT, type Store } from './store'
 import { memStore } from './store.mem'
 import { FileType } from './types'
 import type { Volume } from './volume'
@@ -439,6 +439,12 @@ describe('mkdir', () => {
 	it('takes a mode, and keeps the directory type bits', async () => {
 		const store = memStore()
 		await storeVolume(store).mkdir('/trips', { mode: 0o700 })
+		expect((await rowAt(store, '/trips')).mode).toBe(0o040700)
+	})
+
+	it('drops caller-supplied type bits from mode', async () => {
+		const store = memStore()
+		await storeVolume(store).mkdir('/trips', { mode: 0o100700 })
 		expect((await rowAt(store, '/trips')).mode).toBe(0o040700)
 	})
 
@@ -894,6 +900,54 @@ describe('rm', () => {
 		expect(await vol.exists('/trips')).toBe(false)
 	})
 
+	it('keeps recursive false when the caller changes its options', async () => {
+		const vol = storeVolume(memStore())
+		await vol.mkdir('/trips')
+		await vol.writeFile('/trips/kyoto.md', enc.encode('go'))
+		const opts = { recursive: false }
+
+		const remove = vol.rm('/trips', opts)
+		opts.recursive = true
+
+		await expect(remove).rejects.toThrow(/^ENOTEMPTY/)
+		expect(await read(vol, '/trips/kyoto.md')).toBe('go')
+	})
+
+	it('keeps force true when the caller changes its options', async () => {
+		const vol = storeVolume(memStore())
+		const opts = { force: true }
+
+		const remove = vol.rm('/missing', opts)
+		opts.force = false
+
+		await expect(remove).resolves.toBeUndefined()
+	})
+
+	it('keeps recursive through retries', async () => {
+		const store = memStore()
+		const source = storeVolume(store)
+		await source.mkdir('/trips')
+		await source.writeFile('/trips/kyoto.md', enc.encode('go'))
+		const opts = { recursive: true }
+		let rejected = false
+		const racy: Store = {
+			...store,
+			async commit(writes, guards) {
+				if (!rejected && writes.some((row) => row.deleted)) {
+					rejected = true
+					opts.recursive = false
+					throw new GuardError({ version: { id: ROOT, is: 'stale' } })
+				}
+				return store.commit(writes, guards)
+			}
+		}
+
+		await storeVolume(racy).rm('/trips', opts)
+
+		expect(rejected).toBe(true)
+		expect(await source.exists('/trips')).toBe(false)
+	})
+
 	it('removes a subtree in one guarded batch', async () => {
 		const store = memStore()
 		const vol = storeVolume(store)
@@ -1048,6 +1102,43 @@ describe('cp', () => {
 		expect(await vol.readlink('/archive/latest')).toBe('/trips/index.md')
 		// The source is untouched.
 		expect(await read(vol, '/trips/kyoto/note.md')).toBe('go')
+	})
+
+	it('keeps recursive when the caller changes its options', async () => {
+		const vol = storeVolume(memStore())
+		await vol.mkdir('/trips/kyoto', { recursive: true })
+		await vol.writeFile('/trips/kyoto/note.md', enc.encode('go'))
+		const opts = { recursive: true }
+
+		const copy = vol.cp('/trips', '/archive', opts)
+		opts.recursive = false
+
+		await copy
+		expect(await read(vol, '/archive/kyoto/note.md')).toBe('go')
+	})
+
+	it('keeps recursive for every child copy', async () => {
+		const store = memStore()
+		const source = storeVolume(store)
+		await source.mkdir('/trips/kyoto', { recursive: true })
+		await source.writeFile('/trips/kyoto/note.md', enc.encode('go'))
+		const opts = { recursive: true }
+		let changed = false
+		const changing: Store = {
+			...store,
+			async commit(writes, guards) {
+				await store.commit(writes, guards)
+				if (!changed && writes.some((row) => row.parent === ROOT && row.name === 'archive')) {
+					changed = true
+					opts.recursive = false
+				}
+			}
+		}
+
+		await storeVolume(changing).cp('/trips', '/archive', opts)
+
+		expect(changed).toBe(true)
+		expect(await read(source, '/archive/kyoto/note.md')).toBe('go')
 	})
 
 	it('needs recursive for a directory, and refuses to write a file over one', async () => {
