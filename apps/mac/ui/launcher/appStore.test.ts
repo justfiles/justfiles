@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { storeRows } from './store'
+import { storeRows } from './appStore'
 
 const tasks = { id: 'com.example.tasks', name: 'Tasks', version: '1.0.0' }
 const notes = {

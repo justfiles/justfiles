@@ -90,6 +90,9 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 			'/': () => serveClient('launcher/index.html'),
 			// Chat-only surface the native launcher embeds in a transparent WKWebView.
 			'/launcher/chat': () => serveClient('launcher/chat.html'),
+			// The App Store, likewise — the native launcher has its own AppKit grid, so the store
+			// reaches it as a page rather than as part of the web launcher.
+			'/launcher/store': () => serveClient('launcher/store.html'),
 			'/app/:id': () => serveClient('app/shell.html'),
 			'/app/:id/gui.js': async (req) => {
 				try {

@@ -19,6 +19,12 @@ func miniAppBundleId(_ appId: String) -> String {
 	return appId.hasPrefix(appNamespace) ? appId : bundleNamespace + "ext." + appId
 }
 
+// The App Store's springboard tile. It is not an installed app — no catalog entry, no `.app`
+// bundle — so it carries a reserved id the grid's pick handler routes on, and an SF Symbol
+// instead of bundle icon pixels.
+let storeTileId = "__store"
+let storeTile = CatalogApp(id: storeTileId, name: "App Store")
+
 // One slash command for the composer's `/` menu — matches the daemon's CommandMeta
 // ({name, description, kind}); `kind` is ignored natively (the daemon dispatches it).
 struct CatalogCommand: Decodable {

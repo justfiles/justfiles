@@ -1,27 +1,11 @@
 import '@justfiles/design/design.css'
 import '@justfiles/design/mac.css'
 import { Transcript } from '@justfiles/ui/Transcript'
-import { StrictMode, useEffect, useMemo, useState } from 'react'
+import { StrictMode, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useAgentChat } from './agentChat'
-import { type Capabilities, type StoreApp, StoreSurface } from './store'
-
-type App = {
-	id: string
-	name: string
-	description?: string
-	icon?: string
-	// Version + declared access: what the App Store compares a published entry against.
-	version?: string
-	capabilities?: Capabilities
-}
-
-type SystemMessage =
-	| { type: 'apps'; apps: App[] }
-	| { type: 'error'; message: string }
-	| { type: 'hello'; message: string; time: string; uptime: number }
-
-type Connection = 'connecting' | 'ready' | 'disconnected'
+import { StoreSurface } from './appStore'
+import { type App, useSystemApps } from './system'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root')
@@ -39,9 +23,6 @@ export function Launcher() {
 	const [chatOpen, setChatOpen] = useState(false)
 	// The store is transient like the chat: Escape or Done leaves it.
 	const [storeOpen, setStoreOpen] = useState(false)
-	// Installs run in the daemon; this is just the tile/row feedback while one lands.
-	const [installing, setInstalling] = useState<StoreApp[]>([])
-	const [installError, setInstallError] = useState<string | null>(null)
 	const filtered = useMemo(() => filterApps(apps, query), [apps, query])
 	const text = query.trim()
 	const noAppMatch = text !== '' && filtered.length === 0
@@ -49,24 +30,8 @@ export function Launcher() {
 	const showStore = storeOpen && !showChat && text === ''
 	const status =
 		error ??
-		installError ??
 		(showChat ? chat.error : null) ??
 		(connection === 'disconnected' ? 'Reconnecting…' : '')
-
-	// Fire-and-forget: the daemon downloads, and the app appears in the grid when its
-	// `app.installed` push updates the catalog.
-	const install = async (app: StoreApp) => {
-		setInstallError(null)
-		setInstalling((list) => [...list, app])
-		try {
-			const res = await fetch(`/store/${encodeURIComponent(app.id)}`, { method: 'POST' })
-			if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`)
-		} catch (e) {
-			setInstallError(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
-		} finally {
-			setInstalling((list) => list.filter((pending) => pending.id !== app.id))
-		}
-	}
 
 	const submit = (event: React.FormEvent) => {
 		event.preventDefault()
@@ -89,12 +54,7 @@ export function Launcher() {
 					{showChat ? (
 						<ChatSurface chat={chat} />
 					) : showStore ? (
-						<StoreSurface
-							installed={apps}
-							installing={installing}
-							onInstall={(app) => void install(app)}
-							onClose={() => setStoreOpen(false)}
-						/>
+						<StoreSurface installed={apps} onClose={() => setStoreOpen(false)} />
 					) : connection === 'ready' || filtered.length > 0 ? (
 						<div className="app-grid">
 							{filtered.map((app) => (
@@ -103,23 +63,6 @@ export function Launcher() {
 									<span className="app-name">{app.name}</span>
 								</a>
 							))}
-							{installing
-								.filter((app) => !apps.some((installed) => installed.id === app.id))
-								.map((app) => (
-									<span
-										className="app-cell"
-										data-installing
-										key={app.id}
-										title={`Installing ${app.name}…`}
-									>
-										{app.iconUrl ? (
-											<img alt="" className="app-icon" src={app.iconUrl} />
-										) : (
-											<span className="app-icon app-glyph">{glyph(app)}</span>
-										)}
-										<span className="app-name">Installing…</span>
-									</span>
-								))}
 							{/* The way in to everything not installed yet — the store is a tile, not a
 							    separate app. Hidden while searching, where the grid is a result list. */}
 							{text === '' ? (
@@ -184,53 +127,6 @@ function ChatSurface({ chat }: { chat: ReturnType<typeof useAgentChat> }) {
 			/>
 		</div>
 	)
-}
-
-function useSystemApps() {
-	const [apps, setApps] = useState<App[]>([])
-	const [connection, setConnection] = useState<Connection>('connecting')
-	const [error, setError] = useState<string | null>(null)
-
-	useEffect(() => {
-		let stopped = false
-		let retry: ReturnType<typeof setTimeout> | undefined
-		let socket: WebSocket | undefined
-
-		const connect = () => {
-			setConnection('connecting')
-			socket = new WebSocket(
-				`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/system`
-			)
-			socket.onopen = () => {
-				setError(null)
-			}
-			socket.onmessage = (event) => {
-				const message = JSON.parse(String(event.data)) as SystemMessage
-				if (message.type === 'apps') {
-					setApps(message.apps)
-					setConnection('ready')
-					setError(null)
-				} else if (message.type === 'error') {
-					setError(message.message)
-				}
-			}
-			socket.onerror = () => socket?.close()
-			socket.onclose = () => {
-				if (stopped) return
-				setConnection('disconnected')
-				retry = setTimeout(connect, 1000)
-			}
-		}
-
-		connect()
-		return () => {
-			stopped = true
-			clearTimeout(retry)
-			socket?.close()
-		}
-	}, [])
-
-	return { apps, connection, error }
 }
 
 function filterApps(apps: App[], query: string): App[] {
@@ -370,10 +266,6 @@ body {
 .app-cell:hover,
 .app-cell:focus-visible {
 	background: rgba(255, 255, 255, 0.1);
-}
-
-.app-cell[data-installing] {
-	opacity: 0.5;
 }
 
 button.app-cell {

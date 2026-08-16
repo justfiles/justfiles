@@ -92,6 +92,11 @@ consent first, showing the access the published manifest declares. An install fi
 `app.installed`, which pushes a fresh catalog to every launcher, so the new app appears in the grid
 and its row leaves the list.
 
+One surface, two shells. The web launcher renders it inline; the native launcher has an AppKit
+springboard, so its store tile reveals `/launcher/store` — the same React surface in a WKWebView,
+the way it already embeds the chat. Done posts back over the `store` message handler (Escape works
+too); the page is loaded on first open, because it fetches the published catalog on mount.
+
 The list also carries a **held update**: a published version that asks for more access than the
 installed one, which `reconcile` skips rather than applying. Accepting the row is the re-consent,
 and this list is the only place on this Mac where one surfaces.
