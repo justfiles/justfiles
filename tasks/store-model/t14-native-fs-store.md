@@ -20,6 +20,10 @@ retirement.
   `memStorage`).
 - Node imports are allowed in this one file, mirroring the existing
   `packages/fs/storage.fs.ts` precedent.
+- `Node.mode` is a whole POSIX mode, which is exactly what `node:fs` hands back:
+  store `stat().mode` as it comes. Do NOT copy the `& 0o7777` at
+  `storage.fs.ts:150` — that mask belongs to the old model, whose `InodeMeta`
+  held permission bits beside a separate `type`.
 
 **Keep it minimal.** An in-memory index rebuilt by a scan on open, plus a JSON
 sidecar for ids and versions, is enough. Do not build inotify integration.
