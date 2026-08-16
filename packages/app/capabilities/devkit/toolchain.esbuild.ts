@@ -20,6 +20,10 @@ import {
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
+// Keep a draft entry out of esbuild's real-file resolver. The host can have a
+// file with the same path, such as App Code's own `src/app.ts`.
+const ENTRY = 'devkit-entry:'
+
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
 // caller injects the esbuild toolchain + the runtime map. The shared `compileVfs`
 // orchestrates the entries; this only supplies the esbuild pass (one bad entry's
@@ -32,7 +36,7 @@ export function esbuildCompile(
 	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
 		try {
 			const result = await build({
-				entryPoints: [entry],
+				entryPoints: [`${ENTRY}${entry}`],
 				bundle: true,
 				write: false,
 				format: 'esm',
@@ -54,7 +58,10 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 		name: 'devkit-vfs',
 		setup(build) {
 			build.onResolve({ filter: /.*/ }, (args) => {
-				if (args.kind === 'entry-point') return { path: args.path, namespace: VFS }
+				if (args.kind === 'entry-point') {
+					const path = args.path.startsWith(ENTRY) ? args.path.slice(ENTRY.length) : args.path
+					return { path, namespace: VFS }
+				}
 				if (args.path.startsWith('.')) {
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined

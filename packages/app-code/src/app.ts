@@ -226,10 +226,9 @@ export const app = defineApp({
 			description: 'Create a new project by name and bundle id.',
 			schema: v.object({
 				name: v.pipe(v.string(), v.trim(), v.minLength(1)),
-				id: bundleIdSchema,
-				template: v.optional(v.picklist(['react', 'vanilla']), 'react')
+				id: bundleIdSchema
 			}),
-			run: ({ name, id, template }, app) => createProject(volumeApi(app), name, id, template)
+			run: ({ name, id }, app) => createProject(volumeApi(app), name, id)
 		}),
 		// Load (not build) an existing project: read its name, scan files, compute
 		// the hash, and commit the opened snapshot with `build: null`. It does NOT

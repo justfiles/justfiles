@@ -60,17 +60,15 @@ export async function projectName(vol: VolumeApi, slug: string): Promise<string>
 
 // The only seeder. The folder IS the bundle id, so uniqueness is the id's job —
 // one `exists` check, no de-dup dance. Checks the project ROOT (not `src/`) so a
-// corrupt/partial folder still counts as taken. `template` defaults to 'react'
-// (today's starter); the seed fork for 'vanilla' is a deferred follow-up.
+// corrupt/partial folder still counts as taken.
 export async function createProject(
 	vol: VolumeApi,
 	name: string,
-	id: string,
-	template: 'react' | 'vanilla' = 'react'
+	id: string
 ): Promise<{ slug: string }> {
 	v.parse(bundleIdSchema, id)
 	if (await vol.exists(`/projects/${id}`)) throw new Error(`project id already exists: ${id}`)
-	await seed(vol, id, name, template)
+	await seed(vol, id, name)
 	return { slug: id }
 }
 
@@ -84,14 +82,8 @@ export function slugifyName(name: string): string {
 	return s || 'app'
 }
 
-// Write a project's starter files + `project.json`. v1 seeds React only; the
-// `template` fork (Vanilla) is a deferred follow-up, kept a pure addition here.
-export async function seed(
-	vol: VolumeApi,
-	id: string,
-	name: string,
-	_template: 'react' | 'vanilla' = 'react'
-): Promise<void> {
+// Write the framework-free starter files and `project.json`.
+export async function seed(vol: VolumeApi, id: string, name: string): Promise<void> {
 	await vol.writeFile(SRC(id, '/app.ts'), encoder.encode(starterApp))
 	await vol.writeFile(SRC(id, '/gui.ts'), encoder.encode(starterGui))
 	await writeProjectManifest(vol, id, name)
@@ -167,25 +159,21 @@ export const app = defineApp({
 })
 `
 
-const starterGui = `// A framework-free GUI: plain DOM through \`defineGUI\`. App Code ships the
-// platform SDK and nothing else, so there is no framework to import here.
-//
-// Build the chrome ONCE in \`mount\` and mutate it on each state push. Rebuilding
-// the subtree instead would drop focus, caret, and selection.
-import { defineGUI } from '@justfiles/app/browser'
+const starterGui = `import { defineGUI } from '@justfiles/app/browser'
 import type { app } from './app'
+
+// Change this color, then save the file to update the preview.
+const buttonColor = '#007aff'
 
 export const gui = defineGUI<typeof app>({
 	mount(root, state, { client }) {
-		// A bare \`<button>\`: the host injects the platform stylesheet, so it is
-		// already styled and already follows the OS light/dark theme. Your own
-		// layout CSS goes through \`injectStyle\` from the same module.
 		const button = document.createElement('button')
 		button.type = 'button'
+		button.style.backgroundColor = buttonColor
+		button.style.color = 'white'
 		button.onclick = () => void client.increment({ amount: 1 })
 		root.append(button)
 
-		// Null until the kernel has state for this app — mount on the app's init.
 		const render = (next: { count: number } | null) => {
 			button.textContent = \`Count: \${next?.count ?? 0}\`
 		}

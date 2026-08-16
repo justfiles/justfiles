@@ -98,8 +98,7 @@ export function NewProjectScreen(props: {
 		try {
 			const created = await props.client.create({
 				name: projectName,
-				id: projectId,
-				template: 'react'
+				id: projectId
 			})
 			props.rememberOrg(projectId)
 			await props.onCreated(created.slug)

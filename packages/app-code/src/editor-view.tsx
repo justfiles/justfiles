@@ -40,9 +40,10 @@ export function createEditorView(
 	let fileTreeOpen = true
 	let previewSrc: string | null = null
 	let previewSeq = 0
-	// Whether the live preview is currently running. The Run/Stop button toggles
-	// it; only while running does saving a file hot-rebuild the preview.
+	// Run mode rebuilds on save. A failed rebuild keeps the last good mount, but a
+	// failed first build returns the button to Run.
 	let launched = false
+	let mounted = false
 	// Type-check diagnostics, refreshed after each build and rendered inline in the
 	// editor (filtered to the open file). Empty where the host has no checker
 	// (typecheck → CAPABILITY_UNAVAILABLE).
@@ -158,16 +159,24 @@ export function createEditorView(
 		event.preventDefault()
 		const rect = els.content?.getBoundingClientRect()
 		if (!rect) return
+		const handle = event.currentTarget
+		const pointerId = event.pointerId
 		const onMove = (move: PointerEvent) => {
+			if (move.pointerId !== pointerId) return
 			split = Math.min(0.85, Math.max(0.15, (move.clientX - rect.left) / rect.width))
 			if (els.sourceView) els.sourceView.style.width = `${split * 100}%`
 		}
-		const onUp = () => {
-			window.removeEventListener('pointermove', onMove)
-			window.removeEventListener('pointerup', onUp)
+		const stop = () => {
+			handle.removeEventListener('pointermove', onMove)
+			handle.removeEventListener('pointerup', stop)
+			handle.removeEventListener('pointercancel', stop)
+			handle.removeEventListener('lostpointercapture', stop)
 		}
-		window.addEventListener('pointermove', onMove)
-		window.addEventListener('pointerup', onUp)
+		handle.addEventListener('pointermove', onMove)
+		handle.addEventListener('pointerup', stop)
+		handle.addEventListener('pointercancel', stop)
+		handle.addEventListener('lostpointercapture', stop)
+		handle.setPointerCapture(pointerId)
 	}
 
 	const selectPath = (path: string) => {
@@ -187,15 +196,19 @@ export function createEditorView(
 		run.active = (async () => {
 			try {
 				const result = await client.run({})
+				if (launched && result.preview) mounted = true
 				// A late run that resolves after Stop must not resurrect the preview.
 				if (launched && result.preview?.kind === 'url') {
 					const version = `${result.state.build?.hash ?? 'run'}-${++previewSeq}`
 					previewSrc = versionedPreviewSrc(result.preview, version)
 					patch()
 				}
+				if (!mounted) launched = false
 				// `kind: 'window'` needs nothing here — the host opened the preview in its
 				// own window, so app-code stays a plain editor.
-			} catch {
+			} catch (error) {
+				if (!mounted) launched = false
+				alert(messageOf(error))
 			} finally {
 				run.running = false
 				if (run.rerun && !run.blocked) {
@@ -222,12 +235,13 @@ export function createEditorView(
 	const stopPreview = () => {
 		if (!launched) return
 		launched = false
+		mounted = false
 		previewSrc = null
 		run.rerun = false
 		patch()
 		void (async () => {
 			if (run.active) await run.active.catch(() => {})
-			await client.stop({}).catch(() => {})
+			await client.stop({}).catch((error) => alert(messageOf(error)))
 		})()
 	}
 
@@ -357,6 +371,7 @@ export function createEditorView(
 		slug: () => view.slug,
 		async leave() {
 			launched = false
+			mounted = false
 			run.blocked = true
 			if (run.active) await run.active.catch(() => {})
 			await writer.drain()

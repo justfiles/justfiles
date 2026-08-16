@@ -53,6 +53,7 @@
 			// ENOENT on a fresh checkout otherwise. Keep in step with that list and with
 			// frieren's `build-apps` script.
 			"dependsOn": [
+				"@justfiles/app-code#build",
 				"@justfiles/app-dictionary#build",
 				"@justfiles/app-files#build",
 				"@justfiles/app-settings#build",

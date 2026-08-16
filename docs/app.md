@@ -468,8 +468,10 @@ Availability differs by host and user configuration:
 | Host settings (accounts, plan usage, current user) | `capabilities/settings`: `settings` | First-party Settings only | First-party Settings only | Importable, but not granted to drafts |
 | App compiler/installer | `capabilities/devkit`: `devkit` | First-party Code only | Yes | Yes; Frieren denies authored apps at runtime |
 
-The standalone Vite development host implements only `volume`. Test other capabilities inside Frieren
-or Kodama for Mac, or unit-test the pure logic behind them.
+The standalone Vite development host always implements `volume`. It also implements `devkit` when
+the app declares it and ships its sysroot through `include`. This gives App Code native esbuild,
+TypeScript checking, a Node worker for generated reducers, and a local URL preview. Test other
+capabilities inside Frieren or Kodama for Mac, or unit-test the pure logic behind them.
 
 ### `volume`
 

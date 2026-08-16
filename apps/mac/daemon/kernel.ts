@@ -182,7 +182,10 @@ function makeRunner(fs: Volume, kernel: Kernel): Runner {
 	return {
 		mount: async (draft, { previewId, reset }) => {
 			// ⟳ Run/Restart: wipe persisted draft state for a clean boot.
-			if (reset) await fs.rm(`/state/${previewId}.json`, { force: true })
+			if (reset) {
+				await fs.rm(`/state/${previewId}.json`, { force: true })
+				await kernel.reload(previewId)
+			}
 			await kernel.install(
 				appBundleFromMemory({
 					id: previewId,

@@ -1,5 +1,5 @@
-import { resolveConfig } from 'vite'
-import { expect, test } from 'vitest'
+import { type Plugin, resolveConfig, type ViteDevServer } from 'vite'
+import { expect, test, vi } from 'vitest'
 import { kernelHost } from './vite.ts'
 
 test('dev scans the GUI hidden behind the generated page', async () => {
@@ -17,4 +17,29 @@ test('dev scans the GUI hidden behind the generated page', async () => {
 	)
 
 	expect(config.optimizeDeps.entries).toEqual(['src/gui.tsx'])
+})
+
+test('dev closes its host through the Vite lifecycle', async () => {
+	const close = vi.fn()
+	const middleware = Object.assign(vi.fn(), { close })
+	const use = vi.fn()
+	const plugin = (
+		kernelHost({
+			id: 'app.test',
+			name: 'Test',
+			app: 'src/app.ts',
+			gui: 'src/gui.ts'
+		}) as Plugin[]
+	).find(({ name }) => name === 'kernel-host-dev')
+	if (!plugin) throw new Error('missing kernel-host-dev plugin')
+	const configure = plugin.configureServer as (server: ViteDevServer) => () => Promise<void>
+	const after = configure({
+		middlewares: { use },
+		ssrLoadModule: async () => ({ createDevServer: async () => middleware })
+	} as unknown as ViteDevServer)
+
+	await after()
+	expect(use).toHaveBeenCalledWith(middleware)
+	await (plugin.closeBundle as () => Promise<void>)()
+	expect(close).toHaveBeenCalledOnce()
 })

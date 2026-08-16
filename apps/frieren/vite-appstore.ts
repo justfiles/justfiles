@@ -12,7 +12,7 @@ import { CATALOG_SCHEMA } from './shared/appstore.ts'
 // entries must stay in step with it or a fresh checkout has no `dist` to read —
 // `frieren#dev`'s `dependsOn` in `turbo.json` (dev) and the `build-apps` script
 // in `package.json` (CI/prod).
-const BUILTIN_DIRS = ['app-files', 'app-settings', 'app-dictionary']
+const BUILTIN_DIRS = ['app-code', 'app-files', 'app-settings', 'app-dictionary']
 
 // Dev-only sideload: extra `packages/<dir>` apps to fold into the LOCAL catalog
 // so you can launch an in-repo app that isn't a shipped built-in. Driven by the
