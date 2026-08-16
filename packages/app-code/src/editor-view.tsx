@@ -159,16 +159,24 @@ export function createEditorView(
 		event.preventDefault()
 		const rect = els.content?.getBoundingClientRect()
 		if (!rect) return
+		const handle = event.currentTarget
+		const pointerId = event.pointerId
 		const onMove = (move: PointerEvent) => {
+			if (move.pointerId !== pointerId) return
 			split = Math.min(0.85, Math.max(0.15, (move.clientX - rect.left) / rect.width))
 			if (els.sourceView) els.sourceView.style.width = `${split * 100}%`
 		}
-		const onUp = () => {
-			window.removeEventListener('pointermove', onMove)
-			window.removeEventListener('pointerup', onUp)
+		const stop = () => {
+			handle.removeEventListener('pointermove', onMove)
+			handle.removeEventListener('pointerup', stop)
+			handle.removeEventListener('pointercancel', stop)
+			handle.removeEventListener('lostpointercapture', stop)
 		}
-		window.addEventListener('pointermove', onMove)
-		window.addEventListener('pointerup', onUp)
+		handle.addEventListener('pointermove', onMove)
+		handle.addEventListener('pointerup', stop)
+		handle.addEventListener('pointercancel', stop)
+		handle.addEventListener('lostpointercapture', stop)
+		handle.setPointerCapture(pointerId)
 	}
 
 	const selectPath = (path: string) => {
