@@ -28,9 +28,15 @@ const enc = new TextEncoder()
 const settle = (): Promise<void> =>
 	new Promise((resolve) => setTimeout(resolve, WATCH_BURST_MS * 4))
 
-/** For what must arrive: how fast it arrives is the feed's business, not the spec's. */
+/**
+ * For what must arrive: how fast it arrives is the feed's business, not the
+ * spec's. The deadline is loose on purpose — a delivery costs a poll tick and a
+ * window, and this suite runs beside 180 other files on a machine that may stall
+ * either of them. Nothing here asserts latency, so waiting longer weakens no
+ * claim; the rate BOUND has its own test, which does not go through this.
+ */
 async function waitFor(assertion: () => void): Promise<void> {
-	const deadline = Date.now() + WATCH_BURST_MS * 20
+	const deadline = Date.now() + WATCH_BURST_MS * 40
 	let last: unknown
 	for (;;) {
 		try {
@@ -216,6 +222,39 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 	})
 })
 
+describe('volume.watch over a store that changes lineage', () => {
+	// Only the polled feed carries a cursor, so only it can be fenced by one.
+	it('starts again from the empty cursor and converges', async () => {
+		const before = memStore()
+		const after = memStore() // a second lineage: it rejects the first one's cursors
+		let reset = false
+		const at = (): Store => (reset ? after : before)
+		const replaced: Store = {
+			get: (id) => at().get(id),
+			child: (parent, name) => at().child(parent, name),
+			children: (parent, cursor) => at().children(parent, cursor),
+			since: (cursor) => at().since(cursor),
+			commit: (writes, guards) => at().commit(writes, guards),
+			blobs: before.blobs
+		}
+		const vol = storeVolume(replaced)
+		await vol.mkdir('/notes')
+
+		let fired = 0
+		await vol.watch('/notes', () => fired++, { recursive: true })
+
+		// The store is replaced under the live watch — the case rule 11 exists for.
+		// Its cursor now names a position in a lineage that is gone, so every read
+		// from it fails for good; the watch has to start over rather than retry.
+		reset = true
+
+		// Nothing is written, and that IS the point: the tree the watch was
+		// showing has been replaced wholesale, so all of it is news.
+		await waitFor(() => expect(fired).toBe(1))
+		expect(await vol.exists('/notes')).toBe(false)
+	})
+})
+
 describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	it('follows a symlinked root to where the events actually land', async () => {
 		const vol = storeVolume(newStore())
@@ -279,10 +318,9 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 
 		let fired = 0
 		await storeVolume(racing).watch('/applications', () => fired++, { recursive: true })
-		await settle()
 		// Held while binding, then replayed against the bound state: the root came
 		// into being, which is a wake.
-		expect(fired).toBe(1)
+		await waitFor(() => expect(fired).toBe(1))
 
 		// The one that matters: the watch found the root it never saw created.
 		await writer.writeFile('/applications/app.js', enc.encode('x'))

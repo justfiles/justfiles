@@ -19,6 +19,7 @@
 
 import {
 	type Cursor,
+	ForeignCursorError,
 	type Guard,
 	GuardError,
 	type Hash,
@@ -456,8 +457,15 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 					cursor = at
 					if (rows.length > 0) listener(rows)
 				})
-				// A poll that failed is retried by the next tick, from the same cursor.
-				.catch(() => {})
+				.catch((e: unknown) => {
+					// Rule 11: the store was reset or replaced under this watch, so the
+					// cursor names a position in a lineage that is gone and no later
+					// read from it can ever succeed. The contract's answer is to start
+					// again from the empty cursor — which for a watch is also the right
+					// event, since everything the new store holds is news to it.
+					if (e instanceof ForeignCursorError) cursor = undefined
+					// Any other failure is retried by the next tick, from the same cursor.
+				})
 				.finally(() => {
 					reading = false
 				})
