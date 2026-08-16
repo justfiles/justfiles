@@ -96,7 +96,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
-| T5 | [`storeVolume` — read side](t05-volume-read.md) | T1–T3 | todo |
+| T5 | [`storeVolume` — read side](t05-volume-read.md) | T1–T3 | done |
 | T6 | [`storeVolume` — write side](t06-volume-write.md) | T5 | todo |
 | T7 | [`watch` from the feed](t07-watch.md) | T6 | todo |
 | T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | todo |

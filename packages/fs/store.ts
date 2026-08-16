@@ -17,8 +17,12 @@ export type Node = {
 	id: NodeId
 	parent: NodeId
 	name: string
+	// `type` and `mode` both state the kind of node, and `mount` is the one value
+	// with no POSIX encoding. Which of the two should be derived from the other is
+	// open — parked deliberately, not overlooked. Until it is settled, `mode` is a
+	// whole POSIX mode and consumers take the kind from `type`.
 	type: 'file' | 'dir' | 'symlink' | 'mount' // mount: a junction to another store
-	mode: number
+	mode: number // full POSIX mode: S_IFMT type bits and permission bits
 	mtimeNs: bigint
 	size: bigint // denormalized so stat never touches content
 	xattrs?: Record<string, Uint8Array> // small values only; big data belongs in content
