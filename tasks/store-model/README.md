@@ -99,7 +99,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | T5 | [`storeVolume` — read side](t05-volume-read.md) | T1–T3 | done |
 | T6 | [`storeVolume` — write side](t06-volume-write.md) | T5 | done |
 | T7 | [`watch` from the feed](t07-watch.md) | T6 | done |
-| T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | todo |
+| T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | done |
 | T9 | [Engine: blob transfer + lazy content](t09-engine-blobs.md) | T8 | todo |
 | T10 | [Authority + conflict policy](t10-authority-and-conflicts.md) | T8 | todo |
 | T11 | [Lifecycle wrapper — the `synced()` surface](t11-lifecycle-wrapper.md) | T8–T10 | todo |
@@ -195,7 +195,12 @@ They are spread across the tasks; do not let them slip:
    parents whose mtime it stamped. The children never move.
 2. A crash between `blobs.put` and `commit` leaves only an orphan blob — **T9**.
 3. A deleted cursor re-applies a page into pure no-ops — **T8**.
+   **Shown in T8:** both stores stay silent through the whole re-scan — no row
+   written, no feed position taken — so a lost cursor costs a scan and nothing
+   else. The same mechanism carries the crash between a commit and its save.
 4. A foreign-lineage cursor is rejected and bootstrap converges — **T8**.
+   **Shown in T8:** on both sides. A fenced cursor is not retried — no position
+   answers to it, ever — so the engine bootstraps and saves a live cursor.
 
 Plus the kill criterion in **T4**: if guarded batch commits cannot be atomic on
 IndexedDB within its transaction lifetime rules, STOP and report — the seam,

@@ -1,6 +1,6 @@
 # T8 — Engine core: pull, push, cursors
 
-**Status:** todo
+**Status:** done
 **Phase:** B — the two consumers
 **Depends on:** [T1](t01-store-types-and-memstore.md), [T2](t02-change-feed-and-lineage.md), [T3](t03-blobs.md) — NOT the volume
 **Context:** [overview](README.md) · [design #3, sync engine](../../kb/fs/fable-design.md)
@@ -55,3 +55,80 @@ Implement the loop. Retries with backoff live here; keep them dumb.
 ## Done when
 
 All green, with fake timers where the loop schedules itself.
+
+## Settled here
+
+**Push runs before pull, and the order is load-bearing.** The design lists the
+two halves pull-first, and this task's Goal copies that listing; neither states
+an order, and the engine takes the other one. A pull applies rows blind — it has
+no base to compare against, and the design declines to keep one — so a page
+replayed from a rewound cursor carries a row's OLDER state and overwrites a
+local edit that has not been sent yet. The push behind it then skips that row,
+because what it finds there is now the peer's, and the edit is gone from both
+stores with nothing to report it. Offering local work before accepting any
+closes that window, and it is the order a guarded push wants anyway:
+[T10](t10-authority-and-conflicts.md) replans on a rejection, which is a pull
+followed by a re-push. The cost is that in a genuinely concurrent edit the local
+replica wins the last-writer race more often — which is T10's to arbitrate with
+guards, not something this order decides.
+
+**What the order does NOT close, and who closes it.** Push-first protects local
+work that exists when a cycle STARTS. A write that lands mid-cycle — after the
+push drain reached its tail, before the pull commits its page — is still
+overwritten by that page, and the next push skips the row because what it finds
+there is now the peer's. Reproduced, and a second cycle does not recover it.
+
+Closing it means the pull stops applying blind: it would read each row it is
+about to replace and guard the commit on what it read, so a racing local write
+rejects the batch and the retry re-runs the cycle with the edit still local. That
+is conflict machinery, and this engine states it has none — it is
+[T10](t10-authority-and-conflicts.md)'s, whose edit/edit scenario already needs
+exactly this ("the engine pulls, then re-pushes the local edit on the new base"),
+with an authority in the picture to say which side wins. T10 carries it as a
+required test; do not let it slip.
+
+**Two slots, not one.** The engine reads two feeds — the peer's and its own —
+so it holds two positions: `{ replica, pull, push }`, where `pull` is where this
+replica stands in the peer's feed and `push` where it stands in its own. One
+slot each, because a `Cursor` is one opaque string and nothing in the engine
+wants to parse a pair out of it. Both are host-local; neither ever reaches a
+store other than the one that minted it.
+
+**`Version` is `<replica>:<nonce>-<counter>`, and the nonce is what makes it
+unique.** A replica id is deliberately stable — the push filter is built on it —
+so two minters can carry the same one: a restart, or a second volume over the
+same store. A bare counter would then name two different states of one row with
+one string, and a version guard captured against the first would pass against
+the second, losing the concurrent update it existed to catch. Seeding the
+counter from the clock does not settle it either (two minters in a millisecond
+collide; a clock that steps back re-mints a whole run), so each minter draws a
+nonce once and the counter starts at zero. Nothing reads the counter — versions
+are compared for equality and for their author, never ordered — so qualifying it
+costs nothing. The author tag has two readers now — this push filter and
+[T7](t07-watch.md)'s `source` — so the format is a contract between minters, and
+`versions(replica)` is the minter [T11](t11-lifecycle-wrapper.md) hands to
+`storeVolume`. Until it does, `volume.store.ts` keeps minting its own; T8 does
+not depend on the volume, so it does not reach into it.
+
+**A replica restores what it authored, not what it holds.** The push filter is
+the author tag in a bootstrap exactly as in the steady state, so a peer that was
+reset gets this replica's own work back and nothing else — a row authored by
+some third replica stays behind until that replica reconnects. The alternative,
+having every fenced replica push everything it had ever seen, would let one
+stale replica decide alone and silently whose view of the tree a fresh authority
+ends up with. Re-seeding wholesale is a decision, and it already has a home:
+[T11](t11-lifecycle-wrapper.md)'s `takeMine` re-authors every local row first,
+which makes them this replica's and so carries them through this same filter.
+
+**Push sends no guards yet.** The loop's shape is `remote.commit(rows, guards)`,
+but a guard needs a base to state, and the design declines a per-row `base`
+field. What the engine can state comes from the authority's own invariants, so
+the guards and the replan they trigger arrive with
+[T10](t10-authority-and-conflicts.md). Until then a push is a plain commit.
+
+**Why the retries can be this dumb.** They wrap the whole cycle, not a call. A
+cursor advances only after its batch commits, so an attempt that died halfway
+left nothing to unwind — re-running is both the recovery and the retry. The one
+error that is NOT retried is a fenced cursor: no position in that store will
+ever answer to it, so retrying is the wrong shape entirely, and the drain
+bootstraps instead.
