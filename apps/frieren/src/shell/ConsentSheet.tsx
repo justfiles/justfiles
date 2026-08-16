@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { RunnerCatalogApp } from '../../shared/appstore'
+import type { RunnerCatalogApp } from '../../../shared/justapps'
 
 function isFirstParty(id: string): boolean {
 	return id.startsWith('justfiles.')

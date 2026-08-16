@@ -1,13 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import {
-	bootAppStore,
-	CATALOG_PATH,
-	CATALOG_SCHEMA,
 	RUNNER_MANIFEST_SCHEMA,
 	RUNNER_STORE_SCHEMA,
-	RUNNER_STORE_URL,
-	runnerAppStore
-} from './appstore.ts'
+	RUNNER_STORE_URL
+} from '../../shared/justapps.ts'
+import { bootAppStore, CATALOG_PATH, CATALOG_SCHEMA } from './appstore.ts'
 
 const manifestUrl = 'https://justfiles-notes.justapps.run/manifest.json'
 const releaseUrl = 'https://justfiles-notes.justapps.run/v/1.2.0/manifest.json'
@@ -83,59 +80,6 @@ function json(data: unknown, url = ''): Response {
 	Object.defineProperty(response, 'url', { value: url })
 	return response
 }
-
-describe('runnerAppStore', () => {
-	test('follows the manifest pointer and reads from its final immutable release URL', async () => {
-		const seen: string[] = []
-		const request = async (url: string): Promise<Response> => {
-			seen.push(url)
-			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
-			if (url === manifestUrl) return json(release, releaseUrl)
-			if (url.endsWith('/app.js')) return new Response(new Uint8Array([1, 2, 3]))
-			return new Response(null, { status: 404 })
-		}
-
-		const store = await runnerAppStore(request)
-		expect(seen).toEqual([RUNNER_STORE_URL])
-		const app = await store?.latest(release.id)
-		expect(app).toMatchObject({
-			id: release.id,
-			version: '1.2.0',
-			baseUrl: 'https://justfiles-notes.justapps.run/v/1.2.0/',
-			hash: 'release-hash',
-			manifest: { app: 'app.js', gui: 'gui.js' }
-		})
-		await store?.latest(release.id)
-		expect(seen.filter((url) => url === manifestUrl)).toHaveLength(1)
-		expect([...(await store!.read(app!, 'app.js'))]).toEqual([1, 2, 3])
-		expect(seen.at(-1)).toBe('https://justfiles-notes.justapps.run/v/1.2.0/app.js')
-	})
-
-	test('trusts only host-allowlisted Runner apps as built-ins', async () => {
-		const seen: string[] = []
-		const store = await runnerAppStore(async (url) => {
-			seen.push(url)
-			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
-			if (url === manifestUrl) return json(release, releaseUrl)
-			if (url === paintManifestUrl) return json(paintRelease, paintReleaseUrl)
-			return new Response(null, { status: 404 })
-		})
-
-		const apps = await store?.builtins()
-		expect(apps?.map((app) => app.id)).toEqual(['justfiles.notes', 'justfiles.paint'])
-		expect(apps?.at(-1)?.baseUrl).toBe('https://justfiles-paint.justapps.run/v/0.1.0/')
-		expect(seen).not.toContain(taskManifestUrl)
-	})
-
-	test('omits an app whose canonical manifest cannot be loaded', async () => {
-		const store = await runnerAppStore(async (url) =>
-			url === RUNNER_STORE_URL
-				? json(runner, RUNNER_STORE_URL)
-				: new Response(null, { status: 404 })
-		)
-		expect(await store?.catalog()).toEqual([])
-	})
-})
 
 describe('bootAppStore', () => {
 	test('merges bundled and preinstalled Runner apps', async () => {

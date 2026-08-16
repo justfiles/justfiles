@@ -1,7 +1,7 @@
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
+import { UPDATE_CHECK_INTERVAL_MS } from '../../../shared/justapps'
 import { migrateFirstPartyAppIds } from '../../../shared/migrate-app-ids'
-import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'

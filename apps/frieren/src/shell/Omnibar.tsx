@@ -14,7 +14,7 @@ import {
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { RunnerCatalogApp } from '../../shared/appstore'
+import type { RunnerCatalogApp } from '../../../shared/justapps'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { resolveTranscriptImage } from '../agent/images'

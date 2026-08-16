@@ -1,7 +1,8 @@
 import { bundleFromZip, type Kernel } from '@justfiles/app'
 import { installApp } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
-import { httpAppStore, runnerAppStore } from '../../shared/appstore'
+import { runnerAppStore } from '../../../shared/justapps'
+import { httpAppStore } from '../../shared/appstore'
 import { endInstall, readInstallMarkers, seedInstalling } from './installing'
 
 export async function installZipApp(kernel: Kernel, zip: Uint8Array): Promise<string> {

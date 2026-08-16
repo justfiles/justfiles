@@ -3,7 +3,7 @@ import {
 	type RunnerCatalogApp,
 	runnerAppStore,
 	UPDATE_CHECK_INTERVAL_MS
-} from '../../shared/appstore'
+} from '../../../shared/justapps'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
 import {
 	beginInstall,
