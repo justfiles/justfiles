@@ -386,6 +386,40 @@ describe('sync: retries', () => {
 		}
 	})
 
+	it('spends no part of the retry budget on a lineage rewind', async () => {
+		vi.useFakeTimers()
+		try {
+			const local = memStore()
+			const remote = memStore()
+			await remote.commit([file(versions('b'), { id: 'theirs', name: 'theirs.txt' })])
+			// Fenced first, then one transient failure. A rewind is not a failure, so
+			// the replacement peer is owed the same attempts as the one it replaced.
+			const alien = (await memStore().since()).next
+			let offline = 1
+			const flaky: Store = {
+				...remote,
+				since: (cursor) =>
+					cursor === undefined && offline-- > 0
+						? Promise.reject(new Error('offline'))
+						: remote.since(cursor)
+			}
+
+			const done = sync(local, flaky, {
+				replica: 'a',
+				pull: slot(alien),
+				push: slot(),
+				retries: 1,
+				backoffMs: 10
+			})
+			await vi.runAllTimersAsync()
+			await done
+
+			expect(await rowsOf(local)).toEqual(await rowsOf(remote))
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it('gives up after its retries and reports what failed', async () => {
 		vi.useFakeTimers()
 		try {

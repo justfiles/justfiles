@@ -78,7 +78,8 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
 	let rewind = false
-	for (let attempt = 0; ; attempt++) {
+	let failures = 0
+	for (;;) {
 		try {
 			await drain(local, remote, opts.push, rewind, mine)
 			await drain(remote, local, opts.pull, rewind)
@@ -92,15 +93,17 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			// leaves the other one asserting a history the replacement never had.
 			//
 			// This is not a failure to retry, either: no position in that store will
-			// ever answer to that cursor. It restarts, at most once — an empty cursor
-			// cannot itself be foreign, so a second fencing is a broken store and
-			// belongs to the caller.
+			// ever answer to that cursor. So it costs no part of the retry budget —
+			// the replacement peer is owed the same attempts as the one it replaced —
+			// and it happens at most once, since an empty cursor cannot itself be
+			// foreign and a second fencing is a broken store the caller should hear
+			// about rather than watch the engine spin on.
 			if (err instanceof ForeignCursorError && !rewind) {
 				rewind = true
 				continue
 			}
-			if (attempt >= retries) throw err
-			await sleep(backoff * 2 ** attempt)
+			if (failures >= retries) throw err
+			await sleep(backoff * 2 ** failures++)
 		}
 	}
 }
