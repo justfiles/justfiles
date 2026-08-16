@@ -2,8 +2,8 @@
  * The sync engine. It is the seam's second consumer, beside the POSIX volume,
  * and its whole loop is two scans of the same feed in opposite directions:
  *
- *     push: local.since(cursor)  → remote.commit(rows) → advance cursor
- *     pull: remote.since(cursor) → local.commit(rows)  → advance cursor
+ *     push: local.since(cursor)  → remote.commit(rows, bases) → advance cursor
+ *     pull: remote.since(cursor) → local.commit(rows, bases)  → advance cursor
  *
  * There is no journal, no snapshot session, no handoff, and no wire ordering:
  * a peer is just another `Store`, a bootstrap is `since()` from the empty
@@ -26,13 +26,19 @@
  * only the bytes the other side lacks, and `lazyContent` with `hydratingBlobs`
  * lets a replica take every row and fetch bytes only when a read asks for them.
  *
- * Conflicts are not here. v1 rejects and replans through guards at the
- * authority (T10).
+ * Conflicts are v1's policy and nothing more: reject, then replan. Every commit
+ * names the base it is replacing, so a conflict arrives as a refusal rather than
+ * a silent overwrite, and `settle` turns each refusal into a local write the
+ * next push carries — a renamed loser, a recreated file, or nothing at all.
+ * `authority.ts` is what refuses; the three-way field merge the design parks for
+ * later is another module over a base cache, and it changes no seam signature.
  */
 
 import {
 	type Cursor,
 	ForeignCursorError,
+	type Guard,
+	GuardError,
 	type Hash,
 	type Node,
 	type Store,
@@ -45,6 +51,25 @@ const RETRIES = 3
 
 /** The first backoff. Each further attempt doubles it. */
 const BACKOFF_MS = 1000
+
+/**
+ * How many times one cycle may replan around a rejection before it gives up. A
+ * rejection means somebody else made progress, so this is a livelock stop rather
+ * than a concurrency limit — the same reasoning as `MAX_ATTEMPTS` in the volume.
+ */
+const REPLANS = 8
+
+/**
+ * Start the cycle over. Not a failure and never seen by a caller: something
+ * landed locally that the peer has to be offered before the page in hand may be
+ * applied over it.
+ */
+class Restart extends Error {
+	constructor() {
+		super('sync restarted: local work landed mid-cycle')
+		this.name = 'Restart'
+	}
+}
 
 /**
  * Where a replica keeps its position in a feed. The caller owns the storage —
@@ -82,17 +107,17 @@ export type SyncOptions = {
 /**
  * One cycle: offer this replica's own rows to the peer, then take the peer's.
  *
- * Push runs FIRST, and the order is load-bearing. A pull applies rows blind —
- * there is no base to compare against, by design — so a page carrying a row's
- * older state overwrites a local edit that has not been sent yet, and the push
- * behind it skips that row because what it finds there is now the peer's.
- * Offering local work before accepting any is what keeps it. It is also the
- * order a guarded push wants: T10 replans on a rejection, which is a pull and
- * then a re-push.
+ * Push runs FIRST, and the order is load-bearing. A page carrying a row's older
+ * state would overwrite a local edit that has not been sent yet, and the push
+ * behind it would skip that row because what it finds there is now the peer's.
+ * Offering local work before accepting any is what keeps it.
  *
- * What the order does NOT cover is a write that lands mid-cycle, after the push
- * drain reaches its tail. Closing that means a pull that stops applying blind,
- * which is conflict machinery — T10's, along with the rest of it.
+ * Neither direction applies a page blind. Both read the rows they are about to
+ * replace and guard the commit on them, so a commit that lands in between takes
+ * the row and this one is refused — and a refusal is not a failure here, it is
+ * the signal to read again and replan. That is the whole of v1's conflict
+ * policy: reject and replan, no merges, and `settle` below is where the three
+ * outcomes live.
  *
  * The retries are deliberately dumb. A cursor only ever lags, so an attempt that
  * died halfway left nothing to unwind: re-running the cycle is both the recovery
@@ -110,6 +135,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	const backoff = opts.backoffMs ?? BACKOFF_MS
 	let rewind = false
 	let failures = 0
+	let replans = 0
 	// The two directions differ only in where the bytes go, and rule 10 is why they
 	// are not symmetric. Pushing, this replica may hold the only copy, so the peer
 	// takes the bytes BEFORE the row that names them — a crash then leaves an orphan
@@ -118,10 +144,28 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	// which is what lets a lazy replica skip the fetch entirely.
 	const push = async (rows: Node[]): Promise<void> => {
 		await transfer(rows, local.blobs, remote.blobs)
-		await remote.commit(rows)
+		const guards = await bases(remote, rows)
+		try {
+			await remote.commit(rows, guards)
+		} catch (err) {
+			// What the refusal MEANT is decided here, where the rows still are: the
+			// error cannot carry them, since a peer refuses a whole batch and for
+			// reasons — a taken name, a dead id — that no `Guard` states.
+			if (err instanceof GuardError) await settle(local, remote, rows, opts.replica)
+			throw err
+		}
 	}
 	const pull = async (rows: Node[]): Promise<void> => {
-		await local.commit(rows)
+		// The base first: a local write landing after this read fails the guard
+		// below, and the cycle starts again with the push, which carries it.
+		const guards = await bases(local, rows)
+		// One that landed BEFORE it is work the peer has never been offered — the
+		// page in hand was read before that write existed, so applying it would
+		// overwrite the write, and the next push would skip the row because what it
+		// found there is the peer's. Hand it over, and start again on a page that
+		// has it. Empty in the steady state: one local `since` that returns nothing.
+		if (await drain(local, push, opts.push, false, mine)) throw new Restart()
+		await local.commit(rows, guards)
 		// Rule 7: bytes from a peer are checked against the hash that named them
 		// before they land. The peer's own store verifies what this replica pushes.
 		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs))
@@ -143,6 +187,11 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 				rewind = true
 				continue
 			}
+			// A refused commit is somebody else making progress, not a peer that is
+			// down, so it costs no retry and no backoff — it costs a replan. `settle`
+			// has already written whatever the refusal called for, and running the
+			// cycle again is what offers it.
+			if ((err instanceof GuardError || err instanceof Restart) && replans++ < REPLANS) continue
 			if (failures >= retries) throw err
 			await sleep(backoff * 2 ** failures++)
 		}
@@ -176,6 +225,9 @@ export function versions(replica: string): () => Version {
  * bootstrap and a fenced relationship are the same code path. `mine` is the push
  * filter: without it every pulled row would be sent back once, which idempotence
  * would absorb and the network would still pay for.
+ *
+ * Returns how many rows it moved, which is how the pull tells "nothing to offer"
+ * from "this replica wrote something the peer has not seen".
  */
 async function drain(
 	from: Store,
@@ -183,22 +235,89 @@ async function drain(
 	slot: CursorSlot,
 	rewind: boolean,
 	mine?: (row: Node) => boolean
-): Promise<void> {
+): Promise<number> {
 	let cursor = rewind ? undefined : await slot.load()
+	let moved = 0
 	for (;;) {
 		const page = await from.since(cursor)
 		const rows = mine ? page.nodes.filter(mine) : page.nodes
 		// Nothing to send is the steady state, and an empty commit is still a round
 		// trip to a peer that may be a network away.
-		if (rows.length > 0) await apply(rows)
+		if (rows.length > 0) {
+			await apply(rows)
+			moved += rows.length
+		}
 		// A store that hands no cursor back has broken rule 4: there is nothing to
 		// resume from, so this scan is as far as the drain goes.
-		if (page.next === undefined) return
+		if (page.next === undefined) return moved
 		cursor = page.next
 		await slot.save(cursor)
 		// An empty page means caught up, and the saved cursor is where to start next.
-		if (page.nodes.length === 0) return
+		if (page.nodes.length === 0) return moved
 	}
+}
+
+/**
+ * The versions the target store holds for these rows: the base this page is
+ * about to replace. A commit guarded on it is a read-modify-write — it lands
+ * only if the rows are still what was read — which is what turns a conflict into
+ * a rejection the engine can replan instead of a silent overwrite. `null` is
+ * "not there", so a create is guarded too.
+ *
+ * One `get` per row. On the push that is a read at the peer, and the push filter
+ * leaves the steady state with no rows at all, so the steady state still costs
+ * nothing.
+ */
+async function bases(store: Store, rows: Node[]): Promise<Guard[]> {
+	const guards: Guard[] = []
+	for (const row of rows)
+		guards.push({ version: { id: row.id, is: (await store.get(row.id))?.version ?? null } })
+	return guards
+}
+
+/**
+ * What a refused push MEANT, and what this replica does about it. v1 policy,
+ * three outcomes, no merges — a field-level merge needs a base cache of
+ * last-synced rows, which stays a future engine module and changes no seam type.
+ *
+ * The peer is the arbiter, so the peer is what gets read: asking the local store
+ * would ask a replica holding two live rows for one name (rule 1) which of them
+ * won, and the answer has to be the one every replica will converge on.
+ *
+ * Each outcome is a LOCAL write, and the push behind it needs no special path —
+ * a written row moves to the end of the local feed (rule 4), so the re-scan
+ * offers the fix and no longer offers what was refused. A page refused for a
+ * reason none of these covers writes nothing, is offered again unchanged, and
+ * after `REPLANS` of that becomes the caller's error.
+ */
+async function settle(local: Store, remote: Store, rows: Node[], replica: string): Promise<void> {
+	// A minter per refusal, which is a minter this replica hardly ever draws. Two
+	// minters for one replica are the supported case, and each draws its own nonce.
+	const mint = versions(replica)
+	const fixes: Node[] = []
+	for (const row of rows) {
+		if (row.deleted) continue // a tombstone the peer refused has nothing to save
+		const theirs = await remote.get(row.id)
+		if (theirs?.deleted) {
+			// EDIT vs DELETE. The id is gone for good, so the bytes go on under a new
+			// one — this is the case a plain create cannot express, and tombstones plus
+			// versions are what tell the two apart. The peer's tombstone is adopted in
+			// the same commit, or the next push offers the edit again and is refused
+			// again.
+			fixes.push({ ...row, id: crypto.randomUUID(), version: mint() }, theirs)
+			continue
+		}
+		const holder = await remote.child(row.parent, row.name)
+		// CREATE vs CREATE. Another node already holds the name at the peer, so this
+		// one takes a name derived from the replica that lost — deterministic, so the
+		// same conflict never needs a second round, and both files survive everywhere.
+		if (holder && holder.id !== row.id)
+			fixes.push({ ...row, name: `${row.name} (conflict ${replica})`, version: mint() })
+		// EDIT vs EDIT needs no fix. The row is still this row at the peer; what moved
+		// is the base under it, and the re-push reads the new one. Last writer wins,
+		// and this replica is now the last writer.
+	}
+	if (fixes.length > 0) await local.commit(fixes)
 }
 
 /**

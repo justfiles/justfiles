@@ -85,10 +85,19 @@ export class ForeignCursorError extends Error {
  * means "read again and replan" — which is how a write claims a name, how a
  * read-modify-write stays one, and how an authority refuses a conflict — while a
  * failure means the write may never land at all. Every backend throws this one.
+ *
+ * A reason stands in for the guard where an authority refuses a commit no
+ * `Guard` could have stated — rule 9's tree invariants, in `authority.ts`. The
+ * same type on purpose: to a caller it is the same event, and it is this one
+ * type the engine's replan turns on.
  */
 export class GuardError extends Error {
-	constructor(guard: Guard) {
-		super(`commit rejected: guard ${JSON.stringify(guard)} failed`)
+	constructor(reason: Guard | string) {
+		super(
+			typeof reason === 'string'
+				? `commit rejected: ${reason}`
+				: `commit rejected: guard ${JSON.stringify(reason)} failed`
+		)
 		this.name = 'GuardError'
 	}
 }
