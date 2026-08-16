@@ -350,6 +350,52 @@ test('uninstall evicts the hosted payload from the host cache', async () => {
 	expect(await s.has(id)).toBe(false)
 })
 
+test('uninstall evicts a hosted read started before the bundle is trashed', async () => {
+	const base = volume(memStorage())
+	let startRename: () => void = () => {}
+	let resumeRename: () => void = () => {}
+	const renaming = new Promise<void>((resolve) => {
+		startRename = resolve
+	})
+	const resume = new Promise<void>((resolve) => {
+		resumeRename = resolve
+	})
+	const vol: typeof base = {
+		...base,
+		async rename(from, to) {
+			if (from === '/applications/com.example.app' && to.startsWith('/trash/')) {
+				startRename()
+				await resume
+			}
+			await base.rename(from, to)
+		}
+	}
+	const calls: string[] = []
+	const fetchAsset = Object.assign(
+		async () => {
+			calls.push('read')
+			return enc('GUI')
+		},
+		{
+			evict: async () => {
+				calls.push('evict')
+			}
+		}
+	)
+	const s = apps(vol, fetchAsset)
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	const uninstall = s.uninstall(id)
+	await renaming
+
+	const installed = await s.get(id)
+	if (!installed) throw new Error('expected app before trash rename')
+	expect(decode(await installed.read('gui.js'))).toBe('GUI')
+	resumeRename()
+	await uninstall
+
+	expect(calls).toEqual(['read', 'evict'])
+})
+
 test('an eviction that fails does not fail the uninstall', async () => {
 	const vol = volume(memStorage())
 	const o = origin({ 'gui.js': 'GUI' })

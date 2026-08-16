@@ -151,7 +151,8 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return
-		await evictMounted(root).catch(() => {})
+		const evict = fetchAsset?.evict
+		const urls = evict ? await mountedUrls(root).catch(() => []) : []
 		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
 		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
@@ -159,12 +160,13 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 		// bundle it would try to "repair"/resurrect. The bytes survive under /trash until
 		// the retention sweep drops that day (see trash.ts).
 		await trashBundle(fs, root, appId)
+		if (evict) await Promise.all(urls.map(evict)).catch(() => {})
 	}
 
 	// A hosted app's payload is in the HOST's cache, not the volume, so trashing the
 	// bundle leaves those bytes behind — per ORIGIN, which every profile then pays for
-	// and none can name. The record pins each mounted path and is still readable here,
-	// which makes this the last point where the URLs are derivable at all.
+	// and none can name. Snapshot the URLs before trashing, then evict once no new read
+	// can find the installed record.
 	//
 	// Best-effort, like the mount-time call: a host with no browser cache passes no
 	// `evict`, and a cache that refuses must not fail the uninstall. Reinstall is
@@ -172,12 +174,14 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function evictMounted(root: string): Promise<void> {
 		const evict = fetchAsset?.evict
 		if (!evict) return
+		await Promise.all((await mountedUrls(root)).map(evict))
+	}
+
+	async function mountedUrls(root: string): Promise<string[]> {
 		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
-		await Promise.all(
-			Object.keys(manifest.files ?? {})
-				.filter((path) => isMountedFile(manifest, path))
-				.map((path) => evict(assetUrl(manifest, path)))
-		)
+		return Object.keys(manifest.files ?? {})
+			.filter((path) => isMountedFile(manifest, path))
+			.map((path) => assetUrl(manifest, path))
 	}
 
 	async function has(appId: AppId): Promise<boolean> {
