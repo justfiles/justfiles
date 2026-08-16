@@ -405,13 +405,44 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	}
 
 	/**
-	 * The change feed, whichever way this store offers it: the push `subscribe`,
-	 * or a poll of `since` for a store that has none. Both hand over whole
-	 * committed rows, so nothing above can tell them apart beyond latency —
-	 * which is what lets the seam leave `subscribe` optional at all.
+	 * Take a watch's position on the change feed, then let it `bind` to the tree
+	 * it is watching, holding back whatever commits in between.
+	 *
+	 * The order is the whole point. A watch has to be ON the feed before it reads
+	 * the tree, or a commit that lands between the read and the subscription is
+	 * neither in what it read nor in what it will be told — and for a subtree that
+	 * is not one missed event but a watch that can never wake at all: the create
+	 * it missed is the one that would have bound its root, and every later write
+	 * inside that root stamps a directory the watch has never heard of. Held rows
+	 * are then replayed against the bound state, so a commit the bind DID see is
+	 * assessed twice — one wake too many, which a re-scan absorbs, rather than
+	 * none, which nothing does.
 	 */
-	async function changes(listener: (rows: Node[]) => void): Promise<() => void> {
-		if (store.subscribe) return store.subscribe(listener)
+	async function changes(
+		bind: () => Promise<void>,
+		listener: (rows: Node[]) => void
+	): Promise<() => void> {
+		let holding = true
+		let held: Node[] = []
+		const take = (rows: Node[]): void => {
+			if (holding) held.push(...rows)
+			else listener(rows)
+		}
+		const off = store.subscribe ? store.subscribe(take) : await poll(take)
+		await bind()
+		holding = false
+		const missed = held
+		held = []
+		if (missed.length > 0) listener(missed)
+		return off
+	}
+
+	/**
+	 * The feed a store without `subscribe` still has: `since`, read on a timer.
+	 * Nothing above can tell the two apart beyond latency — which is what lets
+	 * the seam leave `subscribe` optional at all.
+	 */
+	async function poll(listener: (rows: Node[]) => void): Promise<() => void> {
 		// Start at the tip: a watch reports what happens after it, never the
 		// history the feed was already holding.
 		let cursor = await drain()
@@ -472,7 +503,6 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			dir = parent?.dir.id ?? null
 			name = parent?.name ?? ''
 		}
-		await bind()
 
 		let scheduled = false
 		let rebind = false
@@ -480,10 +510,14 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		let remote = false
 		let stopped = false
 
-		const off = await changes((rows) => {
+		const off = await changes(bind, (rows) => {
 			for (const row of rows) {
 				const hitsNode = row.id === node
-				const hitsName = dir !== null && row.parent === dir && row.name === name && !row.deleted
+				// A tombstone counts, and must: when the watched path IS a symlink,
+				// `node` is what it resolved THROUGH to, so unlinking the link itself
+				// hits nothing else — and a watch that missed it would go on reporting
+				// edits to a target the path no longer names.
+				const hitsName = dir !== null && row.parent === dir && row.name === name
 				// With no parent directory yet there is no name to compare against, so
 				// any directory row is a candidate: re-resolve, and fire only if it
 				// turned out to bind the path.
@@ -556,7 +590,6 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			root = (await resolve(path, true, walked).catch(() => null))?.id ?? null
 			chain = new Set([ROOT, ...walked.map((row) => row.id)])
 		}
-		await bind()
 
 		/** Is `id` the root or under it? Bounded by a visited set (rule 9). */
 		async function under(id: NodeId, memo: Map<NodeId, boolean>): Promise<boolean> {
@@ -636,7 +669,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			}, WATCH_BURST_MS)
 		}
 
-		const off = await changes((rows) => {
+		const off = await changes(bind, (rows) => {
 			queued.push(...rows)
 			arm()
 		})

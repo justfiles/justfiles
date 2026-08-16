@@ -167,6 +167,28 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 		expect(fired).toBe(settled + 1)
 	})
 
+	it('rebinds when the watched path is a symlink that is unlinked', async () => {
+		const vol = storeVolume(newStore())
+		await vol.writeFile('/target.json', enc.encode('1'))
+		await vol.symlink('/target.json', '/link.json')
+
+		let fired = 0
+		await vol.watch('/link.json', () => {
+			fired++
+		})
+
+		// The path resolves THROUGH the link, so the row being watched is the
+		// target's — and unlinking the link touches neither it nor any other row
+		// but the tombstone standing at the watched name.
+		await vol.rm('/link.json')
+		await waitFor(() => expect(fired).toBe(1))
+
+		// The path is gone, so what it used to point at is no longer its business.
+		await vol.writeFile('/target.json', enc.encode('2'))
+		await settle()
+		expect(fired).toBe(1)
+	})
+
 	it('binds a path whose parent directory does not exist yet', async () => {
 		const vol = storeVolume(newStore())
 
@@ -233,6 +255,38 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
 		await settle()
 		expect(fired).toBe(2)
+	})
+
+	it('does not miss the create that binds its root while it is still binding', async () => {
+		const store = newStore()
+		const writer = storeVolume(store)
+
+		// Slip the create in AFTER the watch has read the tree and BEFORE it could
+		// be told anything. It is the one window that costs more than an event: the
+		// create it misses is the one that would have bound its root, and every
+		// later write inside that root stamps a directory the watch never heard of,
+		// so it would stay silent for good rather than for a moment.
+		let raced: Promise<void> | undefined
+		const racing: Store = {
+			...store,
+			async child(parent, name) {
+				const found = await store.child(parent, name)
+				raced ??= writer.mkdir('/applications')
+				await raced
+				return found
+			}
+		}
+
+		let fired = 0
+		await storeVolume(racing).watch('/applications', () => fired++, { recursive: true })
+		await settle()
+		// Held while binding, then replayed against the bound state: the root came
+		// into being, which is a wake.
+		expect(fired).toBe(1)
+
+		// The one that matters: the watch found the root it never saw created.
+		await writer.writeFile('/applications/app.js', enc.encode('x'))
+		await waitFor(() => expect(fired).toBe(2))
 	})
 
 	it('wakes when an ancestor moves, taking the subtree with it', async () => {
