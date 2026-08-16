@@ -113,7 +113,7 @@ function includedAssets(root: string, patterns: string[] = []): Record<string, U
 export async function createDevServer(
 	server: ViteDevServer,
 	opts: DevServerOptions
-): Promise<Connect.NextHandleFunction> {
+): Promise<Connect.NextHandleFunction & { close(): void }> {
 	const root = server.config.root
 	const appEntry = resolve(root, opts.app)
 	const appUrl = `/${relative(root, appEntry).split('\\').join('/')}`
@@ -165,7 +165,7 @@ export async function createDevServer(
 		reload = reload.then(() => k.install(bundle)).catch(() => {})
 	})
 
-	return async (req, res, next) => {
+	const handle: Connect.NextHandleFunction = async (req, res, next) => {
 		try {
 			const path = new URL(req.url ?? '/', 'http://localhost').pathname
 			if (await devkit.handle(req, res, path)) return
@@ -184,4 +184,5 @@ export async function createDevServer(
 			next(err)
 		}
 	}
+	return Object.assign(handle, { close: devkit.close })
 }

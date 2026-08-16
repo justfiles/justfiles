@@ -100,12 +100,11 @@ export async function buildDraft(data: Volume, slug: string, tc: Toolchain): Pro
 
 // Compile + promote the project to the REAL `/applications` via the host's
 // `kernel`. By default install only ever creates — re-shipping an existing id is
-// rejected (guarded check-first on the live catalog). `opts.overwrite` lifts the
-// guard so a re-install updates the live app in place (the store backs up and
-// atomically replaces the bundle; the kernel re-warms its streams). The
-// project's icon, if any, is bundled. Identity comes from the project file, so
-// the installed id is the author's. Any post-install host work (re-list a
-// catalog, re-materialise an OS bundle) is sequenced by the caller after this
+// rejected (guarded check-first on the live catalog). `opts.overwrite` lets a
+// re-install update another app in place, but the caller can never replace
+// itself. The project's icon, if any, is bundled. Identity comes from the project
+// file, so the installed id is the author's. Any post-install host work (re-list
+// a catalog, re-materialise an OS bundle) is sequenced by the caller after this
 // resolves — it's privileged host code, off the guest's call path.
 export async function installDraft(
 	fs: Volume,
@@ -118,6 +117,7 @@ export async function installDraft(
 	const { manifest, app, gui, icon } = assertBuilt(
 		await buildDraft(chroot(fs, `/data/${appId}`), slug, tc)
 	)
+	if (manifest.id === appId) throw new Error(`cannot install over calling app: ${appId}`)
 	if (!opts?.overwrite && (await kernel.list()).some((installed) => installed.id === manifest.id)) {
 		throw new Error(`app id already exists: ${manifest.id}`)
 	}

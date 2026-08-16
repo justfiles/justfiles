@@ -142,6 +142,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const guiEntry = resolve(root, opts.gui)
 	const guiPath = relative(root, guiEntry).split('\\').join('/')
 	let emitted = false
+	let closeDevServer: (() => void) | undefined
 	return [
 		{
 			name: 'kernel-host',
@@ -204,14 +205,6 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				}
 				return null
 			},
-			configureServer(server) {
-				return async () => {
-					const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
-						createDevServer: typeof createDevServer
-					}
-					server.middlewares.use(await mod.createDevServer(server, opts))
-				}
-			},
 			async closeBundle() {
 				if (emitted) return
 				emitted = true
@@ -233,6 +226,24 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					capabilities: await readManifestCapabilities(appJs)
 				}
 				writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(manifest, null, '\t'))
+			}
+		},
+		{
+			name: 'kernel-host-dev',
+			apply: 'serve',
+			configureServer(server) {
+				return async () => {
+					const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
+						createDevServer: typeof createDevServer
+					}
+					const middleware = await mod.createDevServer(server, opts)
+					closeDevServer = middleware.close
+					server.middlewares.use(middleware)
+				}
+			},
+			closeBundle() {
+				closeDevServer?.()
+				closeDevServer = undefined
 			}
 		},
 		{

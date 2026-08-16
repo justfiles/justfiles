@@ -2,6 +2,7 @@ import { chroot, memStorage, volume } from '@justfiles/fs'
 import * as esbuild from 'esbuild'
 import { unzipSync } from 'fflate'
 import { beforeAll, describe, expect, test } from 'vitest'
+import { appBundleFromMemory } from '../../app.ts'
 import { type GetSandbox, kernel } from '../../kernel.ts'
 import { buildDraft, installDraft, packDraft } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
@@ -17,12 +18,12 @@ const enc = new TextEncoder()
 const APP_ID = 'app.author'
 const SLUG = 'draft'
 
-const PROJECT = JSON.stringify({
+const PROJECT = {
 	id: 'app.example.drafted',
 	name: 'Drafted',
 	app: 'app.ts',
 	gui: 'gui.ts'
-})
+}
 const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
 export const app = defineApp({
@@ -34,11 +35,11 @@ export const gui = defineGUI({ mount(el) { return { update() {}, unmount() {} } 
 
 const stubSandbox: GetSandbox = async () => ({ run: async () => ({ result: null }) })
 
-async function seedProject(): Promise<ReturnType<typeof volume>> {
+async function seedProject(id = PROJECT.id): Promise<ReturnType<typeof volume>> {
 	const fs = volume(memStorage())
 	const root = `/data/${APP_ID}/projects/${SLUG}`
 	await fs.mkdir(root, { recursive: true })
-	await fs.writeFile(`${root}/project.json`, enc.encode(PROJECT))
+	await fs.writeFile(`${root}/project.json`, enc.encode(JSON.stringify({ ...PROJECT, id })))
 	await fs.writeFile(`${root}/app.ts`, enc.encode(APP))
 	await fs.writeFile(`${root}/gui.ts`, enc.encode(GUI))
 	return fs
@@ -84,5 +85,16 @@ describe('devkit draft pipeline', () => {
 			{ id: 'app.example.drafted' }
 		)
 		expect((await k.list()).filter((m) => m.id === 'app.example.drafted')).toHaveLength(1)
+	})
+
+	test('installDraft never overwrites the calling app', async () => {
+		const fs = await seedProject(APP_ID)
+		const k = kernel({ fs, sandbox: stubSandbox, clock: {} })
+		await k.install(appBundleFromMemory({ id: APP_ID, name: 'Author', app: 'export {}' }))
+
+		await expect(installDraft(fs, APP_ID, SLUG, k, tc, { overwrite: true })).rejects.toThrow(
+			/calling app/
+		)
+		expect((await k.app(APP_ID)).manifest.name).toBe('Author')
 	})
 })
