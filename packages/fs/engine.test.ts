@@ -108,6 +108,30 @@ function written(store: Store): Node[] {
 	return rows
 }
 
+describe('versions', () => {
+	it('mints a string no other minter for the same replica can mint', () => {
+		// Two minters for one replica is a restart, or a second volume over the same
+		// store. A version is compared by equality — a guard states the one it read
+		// (`volume.store.ts`) and rule 3 calls a row it matches a no-op — so a
+		// repeat lets a stale guard pass against a row it never saw, and the
+		// concurrent update it was there to catch is lost.
+		const one = versions('a')
+		const two = versions('a')
+
+		const minted = Array.from({ length: 100 }, () => [one(), two()]).flat()
+
+		expect(new Set(minted).size).toBe(minted.length)
+	})
+
+	it('names the replica as the author, whatever it puts after it', () => {
+		// The push filter and T7's `source` both read the author out of a version:
+		// everything before the last `:`. It is the one part of the encoding that is
+		// not the engine's own business.
+		expect(versions('a')().lastIndexOf(':')).toBe(1)
+		expect(versions('agent-7')().slice(0, 'agent-7:'.length)).toBe('agent-7:')
+	})
+})
+
 describe('sync: bootstrap', () => {
 	it('converges an empty replica from the empty cursor', async () => {
 		const { local, remote, opts } = pair()

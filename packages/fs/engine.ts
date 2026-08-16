@@ -91,13 +91,19 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
  * string a store may never parse. Everything above storage reads exactly one
  * field out of it, the author, and that field is what keeps push echo-free.
  *
- * The counter starts at the clock rather than at zero, so a restarted replica
- * cannot mint a string it already used: a version guard captured before the
- * restart would otherwise pass against a row it never saw.
+ * The counter is qualified by a nonce this minter draws once, because a replica
+ * id is deliberately STABLE — the push filter is built on it — so two minters
+ * can carry the same one: a restart, or a second volume over the same store.
+ * Were their counters to line up, a version string would name two different
+ * states of a row, and a version guard captured against the first would pass
+ * against the second — losing exactly the concurrent update it was there to
+ * catch. A clock seed does not settle this: two minters in one millisecond
+ * still collide, and a clock that steps backwards re-mints a whole run.
  */
 export function versions(replica: string): () => Version {
-	let counter = Date.now()
-	return () => `${replica}:${++counter}`
+	const nonce = crypto.randomUUID().slice(0, 8)
+	let counter = 0
+	return () => `${replica}:${nonce}-${++counter}`
 }
 
 /**

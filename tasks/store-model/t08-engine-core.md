@@ -65,10 +65,17 @@ slot each, because a `Cursor` is one opaque string and nothing in the engine
 wants to parse a pair out of it. Both are host-local; neither ever reaches a
 store other than the one that minted it.
 
-**`Version` is `<replica>:<counter>`, and the counter starts at the clock.**
-Zero would be wrong: a restarted replica would re-mint strings it had already
-used, and a version guard captured before the restart could then pass against a
-row it never saw. The author tag has two readers now — this push filter and
+**`Version` is `<replica>:<nonce>-<counter>`, and the nonce is what makes it
+unique.** A replica id is deliberately stable — the push filter is built on it —
+so two minters can carry the same one: a restart, or a second volume over the
+same store. A bare counter would then name two different states of one row with
+one string, and a version guard captured against the first would pass against
+the second, losing the concurrent update it existed to catch. Seeding the
+counter from the clock does not settle it either (two minters in a millisecond
+collide; a clock that steps back re-mints a whole run), so each minter draws a
+nonce once and the counter starts at zero. Nothing reads the counter — versions
+are compared for equality and for their author, never ordered — so qualifying it
+costs nothing. The author tag has two readers now — this push filter and
 [T7](t07-watch.md)'s `source` — so the format is a contract between minters, and
 `versions(replica)` is the minter [T11](t11-lifecycle-wrapper.md) hands to
 `storeVolume`. Until it does, `volume.store.ts` keeps minting its own; T8 does
