@@ -153,6 +153,14 @@ solve is solved instead by the id mapping outliving the page, inside the one
 asked, because the first revival is still only local when the next page is
 refused.
 
+That mapping records only revivals that LANDED. A settlement whose guarded
+commit is refused wrote nothing, so an id it had picked names a row that does
+not exist — and carrying it across the replan is worse than forgetting it: the
+next settlement reads the id as already dealt with, writes no row for it, and
+goes on to adopt the peer's tombstone over the content it was called to save.
+Two safe changes that are unsafe together, which is the whole reason the
+settlement's own commit is the last thing that shares anything.
+
 **Every commit in the engine names the base it replaces — the settlement's
 included.** The rows a settlement rewrites came off the feed BEFORE the push,
 and deciding what to do with them takes reads at the peer. A local write in

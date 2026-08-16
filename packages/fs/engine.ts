@@ -142,11 +142,12 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	let failures = 0
 	let replans = 0
 	/**
-	 * A buried id, and the id its content carries on under. It outlives one page
-	 * because a subtree wide enough to need several of them meets the same buried
-	 * directory on each, and a mapping per page would stand up a second copy of it
-	 * beside the first — the peer cannot be asked, since the first copy is still
-	 * only local when the next page is refused.
+	 * A buried id, and the id its content carries on under — only for revivals
+	 * that actually landed. It outlives one page because a subtree wide enough to
+	 * need several of them meets the same buried directory on each, and a mapping
+	 * per page would stand up a second copy of it beside the first. The peer cannot
+	 * be asked instead: the first copy is still only local when the next page is
+	 * refused.
 	 */
 	const revived = new Map<NodeId, NodeId>()
 	// The two directions differ only in where the bytes go, and rule 10 is why they
@@ -318,6 +319,15 @@ async function settle(
 	const mint = versions(replica)
 	const fixes: Node[] = []
 	const guards: Guard[] = []
+	/**
+	 * What THIS settlement revived, held apart until its commit lands. A refused
+	 * commit wrote nothing, so an id it had picked names a row that does not
+	 * exist — and carrying that across the replan is worse than forgetting it: the
+	 * next settlement would read the id as already dealt with, write no row for it,
+	 * and go on to adopt the peer's tombstone over the content it was called to
+	 * save.
+	 */
+	const minted = new Map<NodeId, NodeId>()
 
 	/**
 	 * Write `next`, but only while `seen` is still what the local store holds.
@@ -351,16 +361,16 @@ async function settle(
 	const living = async (id: NodeId, seen = new Set<NodeId>()): Promise<NodeId> => {
 		// Rule 9 lets a replica hold a cycle mid-sync, so the walk bounds itself.
 		if (id === ROOT || seen.has(id)) return id
-		const already = revived.get(id)
+		const already = revived.get(id) ?? minted.get(id)
 		if (already !== undefined) return already
 		if (!(await remote.get(id))?.deleted) return id
 		const mine = await local.get(id)
 		if (!mine) return id // nothing here to carry over
 		seen.add(id)
-		// Minted before the walk goes up, so `revived` answers for this id while its
-		// own ancestors are still being stood up.
+		// Recorded before the walk goes up, so the id answers for itself while its own
+		// ancestors are still being stood up.
 		const replacement = crypto.randomUUID()
-		revived.set(id, replacement)
+		minted.set(id, replacement)
 		const parent = await living(mine.parent, seen)
 		fix(mine, { ...mine, id: replacement, parent, version: mint() })
 		return replacement
@@ -396,7 +406,10 @@ async function settle(
 		// is the base under it, and the re-push reads the new one. Last writer wins,
 		// and this replica is now the last writer.
 	}
-	if (fixes.length > 0) await local.commit(fixes, guards)
+	if (fixes.length === 0) return
+	await local.commit(fixes, guards)
+	// Landed, so these ids name real rows now and a later page may build on them.
+	for (const [id, replacement] of minted) revived.set(id, replacement)
 }
 
 /**

@@ -281,6 +281,46 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('re-mints a revival whose commit was refused, instead of trusting the first one', async () => {
+		// A settlement that is refused wrote nothing, so the id it had picked for the
+		// rescued content stands for a row that does not exist. Remembering it across
+		// the replan is worse than forgetting: the next settlement sees the id as
+		// already handled, emits no row for it, and goes on to adopt the peer's
+		// tombstone — burying the content it was called to save.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.writeFile('/note.txt', enc.encode('one'))
+		await sync(a.store, hub, a.opts)
+		await sync(b.store, hub, b.opts)
+
+		await a.vol.rm('/note.txt')
+		await sync(a.store, hub, a.opts)
+		await b.vol.writeFile('/note.txt', enc.encode('from b'))
+
+		// A write lands after the settlement reads the row it is about to copy, so
+		// its guarded commit is refused and the whole cycle replans.
+		let landed = false
+		const busy: Store = {
+			...b.store,
+			async get(id) {
+				const row = await b.store.get(id)
+				if (!landed && row && !row.deleted) {
+					landed = true
+					await b.vol.writeFile('/note.txt', enc.encode('newest from b'))
+				}
+				return row
+			}
+		}
+
+		await sync(busy, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		expect(landed).toBe(true)
+		for (const store of [hub, a.store, b.store])
+			expect(await read(store, '/note.txt')).toBe('newest from b')
+	})
+
 	it('takes the loser of an edit/edit race as the last writer, on the base it lost to', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')
