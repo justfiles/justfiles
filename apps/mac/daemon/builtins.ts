@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { type AppStore, builtinStoreFromFs } from '@justfiles/app/appstore/fs'
+import { mergeAppStores, runnerAppStore } from '../../shared/justapps'
 import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [
@@ -9,7 +10,10 @@ const BUILTINS = [
 ]
 
 export function builtinStore(): Promise<AppStore> {
-	return builtinStoreFromFs(BUILTINS.map((app) => rootFor(app)))
+	return Promise.all([
+		builtinStoreFromFs(BUILTINS.map((app) => rootFor(app))),
+		runnerAppStore()
+	]).then(([builtin, runner]) => (runner ? mergeAppStores(builtin, runner) : builtin))
 }
 
 function rootFor(app: (typeof BUILTINS)[number]): string {
