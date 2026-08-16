@@ -793,6 +793,40 @@ describe('rm', () => {
 		expect(await read(vol, '/target.txt')).toBe('original')
 	})
 
+	it('stamps the parent that held a removed child when a link changes', async () => {
+		const store = memStore()
+		const other = storeVolume(store)
+		await other.mkdir('/a')
+		await other.mkdir('/b')
+		await other.writeFile('/a/file', enc.encode('a'))
+		await other.writeFile('/b/file', enc.encode('b'))
+		await other.symlink('/a', '/link')
+		const a = await rowAt(store, '/a')
+		const b = await rowAt(store, '/b')
+		const file = await rowAt(store, '/a/file')
+		let raced = false
+		const racy: Store = {
+			...store,
+			async child(parent, name) {
+				const node = await store.child(parent, name)
+				if (!raced && node?.id === file.id) {
+					raced = true
+					await other.rm('/link')
+					await other.symlink('/b', '/link')
+				}
+				return node
+			}
+		}
+
+		await storeVolume(racy).rm('/link/file')
+
+		expect(raced).toBe(true)
+		expect(await store.child(a.id, 'file')).toBe(null)
+		expect(await read(other, '/b/file')).toBe('b')
+		expect((await store.get(a.id))?.version).not.toBe(a.version)
+		expect((await store.get(b.id))?.version).toBe(b.version)
+	})
+
 	it('refuses a non-empty directory without recursive, and forgives a missing path with force', async () => {
 		const vol = storeVolume(memStore())
 		await vol.mkdir('/trips')
@@ -1049,5 +1083,17 @@ describe('the feed', () => {
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 
 		expect((await rowAt(store, '/kyoto.md')).version).toMatch(/^alice:\d+$/)
+	})
+
+	it('keeps the full UUID in fallback versions', async () => {
+		const store = memStore()
+		const author = '12345678-1234-1234-1234-123456789abc'
+		const random = vi.spyOn(crypto, 'randomUUID').mockReturnValue(author)
+		const vol = storeVolume(store)
+		random.mockRestore()
+
+		await vol.writeFile('/kyoto.md', enc.encode('go'))
+
+		expect((await rowAt(store, '/kyoto.md')).version).toBe(`local:${author}:1`)
 	})
 })

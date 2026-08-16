@@ -87,7 +87,7 @@ const join = (dir: string, name: string): string => (dir === '/' ? `/${name}` : 
  * guard passes and a lost update goes unseen.
  */
 function localVersions(): () => Version {
-	const author = crypto.randomUUID().slice(0, 8)
+	const author = crypto.randomUUID()
 	let n = 0
 	return () => `local:${author}:${++n}`
 }
@@ -494,7 +494,10 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 					if (opts?.force) return
 					throw new Error(`ENOENT: ${path}`)
 				}
-				const { dir } = await parentOf(path)
+				if (node.id === ROOT) throw new Error(`EINVAL: ${path}`)
+				const dir = await store.get(node.parent)
+				if (dir === null || dir.deleted) throw new Error(`ENOENT: ${path}`)
+				if (!isDir(dir)) throw new Error(`ENOTDIR: ${path}`)
 
 				const dead = [node]
 				if (isDir(node)) {
