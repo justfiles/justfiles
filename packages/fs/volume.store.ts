@@ -311,8 +311,10 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	 * content was never stored, which is lost data.
 	 */
 	const durable = async (data: Uint8Array): Promise<Hash> => {
-		const content = await sha256Hex(data)
-		await store.blobs.put(content, data)
+		// The caller can change its array while the digest runs. Hash and store one copy.
+		const held = new Uint8Array(data)
+		const content = await sha256Hex(held)
+		await store.blobs.put(content, held)
 		return content
 	}
 

@@ -90,6 +90,17 @@ describe('writeFile: a create claims a name', () => {
 		expect((await rowAt(store, '/kyoto.md')).content).toBe(await hash(enc.encode('go')))
 	})
 
+	it('stores the bytes passed when the write starts', async () => {
+		const vol = storeVolume(memStore())
+		const data = enc.encode('hello')
+
+		const write = vol.writeFile('/kyoto.md', data)
+		data.fill(0)
+		await write
+
+		expect(await read(vol, '/kyoto.md')).toBe('hello')
+	})
+
 	it('claims the name with a free guard, and holds the parent it stamps', async () => {
 		const store = memStore()
 		const root = await store.get(ROOT)
