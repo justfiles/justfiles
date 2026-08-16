@@ -15,10 +15,12 @@ export async function appAssets(
 	// Cache faults must not block a network read.
 	await startCache(fs).catch((error) => console.warn('app asset: cache start failed', error))
 	const pending = new Map<string, Promise<Uint8Array>>()
+	const evictions = new Map<string, Promise<void>>()
 
 	const load = (url: string): Promise<Uint8Array> => {
 		let read = pending.get(url)
 		if (!read) {
+			const keep = !evictions.has(url)
 			read = (async () => {
 				const path = cachePath(url)
 				if (await fs.exists(path)) return fs.readFile(path)
@@ -26,6 +28,7 @@ export async function appAssets(
 				const response = await request(url)
 				if (!response.ok) throw new Error(`app asset: ${url} ${response.status}`)
 				const data = new Uint8Array(await response.arrayBuffer())
+				if (!keep) return data
 				const tmp = `${TMP_ROOT}/${randomUUID()}`
 				try {
 					await fs.writeFile(tmp, data)
@@ -40,9 +43,16 @@ export async function appAssets(
 		}
 		return read
 	}
-	load.evict = async (url: string) => {
-		await pending.get(url)?.catch(() => {})
-		await fs.rm(cachePath(url), { force: true })
+	load.evict = (url: string) => {
+		let eviction = evictions.get(url)
+		if (!eviction) {
+			eviction = (async () => {
+				await pending.get(url)?.catch(() => {})
+				await fs.rm(cachePath(url), { force: true })
+			})().finally(() => evictions.delete(url))
+			evictions.set(url, eviction)
+		}
+		return eviction
 	}
 	return load
 }
