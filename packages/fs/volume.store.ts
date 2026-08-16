@@ -624,12 +624,18 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			let probe = false
 			let remote = false
 			for (const row of rows) {
-				const structural = isDir(row) || row.deleted === true
-				const inside =
-					structural && root !== null && (row.id === root || (await under(row.parent, memo)))
+				// Scope first, attribute second, and only then ask what wakes. A window
+				// holds several commits, and the polled feed carries each row once at
+				// its LATEST state — so a remote create's parent stamp may already have
+				// been overwritten by a local write to the same directory, leaving the
+				// remote row itself as the only evidence that somebody else changed
+				// this subtree. Reading authorship off the rows that wake us would
+				// report that window as local, and a consumer that answers only remote
+				// changes would skip the re-scan it exists for.
+				const inside = root !== null && (row.id === root || (await under(row.parent, memo)))
 				const way = chain.has(row.id)
 				if (!inside && !way) continue
-				if (inside) wake = true
+				if (inside && (isDir(row) || row.deleted === true)) wake = true
 				if (way) probe = true
 				if (foreign(row)) remote = true
 			}
@@ -638,9 +644,6 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				await bind()
 				if (root !== was) wake = true
 			}
-			// A window that carried anyone else's row is reported as remote: a
-			// consumer that answers only remote changes must not miss one because a
-			// local write shared its window.
 			return { wake, source: remote ? REMOTE : undefined }
 		}
 

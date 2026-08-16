@@ -400,6 +400,62 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 		await waitFor(() => expect(fired).toBeGreaterThan(settled))
 	})
 
+	it('reports a remote change whose parent stamp a local write overwrote', async () => {
+		const store = newStore()
+		let n = 0
+		// A known author, so the test can commit a row this volume will read as its own.
+		const vol = storeVolume(store, { mintVersion: () => `me:${++n}` })
+		await vol.mkdir('/notes')
+		const dir = await rowAt(store, '/notes')
+
+		let fired = 0
+		let lastSource: string | undefined = 'sentinel'
+		await vol.watch(
+			'/notes',
+			(e) => {
+				fired++
+				lastSource = e.source
+			},
+			{ recursive: true }
+		)
+
+		// Both commits in one turn, so no timer can run between them: they arrive as
+		// ONE window however the feed is read. What a pull commits — a foreign row
+		// and the parent stamp that says the listing changed…
+		await store.commit([
+			{
+				id: crypto.randomUUID(),
+				parent: dir.id,
+				name: 'kyoto.md',
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 2n,
+				size: 2n,
+				version: 'agent-7:1'
+			},
+			{ ...dir, mtimeNs: 2n, version: 'agent-7:2' }
+		])
+		// …and then a local create in the SAME directory, which rewrites that stamp.
+		// A feed that carries each row once at its latest state hands the window over
+		// with the remote stamp gone — the remote row is what is left to read.
+		await store.commit([
+			{
+				id: crypto.randomUUID(),
+				parent: dir.id,
+				name: 'local.md',
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 3n,
+				size: 1n,
+				version: 'me:99'
+			},
+			{ ...dir, mtimeNs: 3n, version: 'me:100' }
+		])
+
+		await waitFor(() => expect(fired).toBe(1))
+		expect(lastSource).toBe('remote')
+	})
+
 	it('thins a burst of writes into a bounded number of wakes, ending on a trailing one', async () => {
 		const vol = storeVolume(newStore())
 		const N = 300
