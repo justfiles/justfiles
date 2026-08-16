@@ -48,18 +48,16 @@ Three forces shape the design:
 - **One trusted host.** The kernel, the app **reducers** (sandboxed), the **capabilities**, and the
   **agent** all run in the Node daemon. **Nothing trusted runs inside Safari.** The webview only renders
   `gui.js` and forwards user intents over an RPC session.
-- **Apps live in the Volume, projected to the OS.** The canonical install set is the kernel's
-  `/applications` **in the Volume** — the same syncable substrate frieren keeps. Each `.app` in
-  `~/Applications/Quay Apps/` is a per-device **projection** of that catalog, materialised locally for OS
-  identity and never synced. Today the Volume is local (`nativeStorage`); because apps stay *in* it,
-  swapping frieren's synced backend in later makes the whole catalog sync — an app built on `quay` shows
-  up on frieren and vice-versa — with no change to where apps live, and the portable core (Volume +
-  kernel) stays identical across web and native. (The alternative — making each `.app` the store — is
-  faithful to "real apps" but is fundamentally incompatible with whole-Volume sync, so it's rejected.)
+- **App records live in the Volume and project to the OS.** The canonical install set is the kernel's
+  `/applications` tree. A hosted app keeps its manifest and reducer there; the daemon mounts its GUI,
+  icon, and other assets through `/private/cache/apps`. A local app with no download source keeps its
+  full bundle in `/applications`. Each `.app` under `~/Applications/Quay Apps/` is a per-device
+  **projection** of that catalog and never syncs. A later synced Volume can move installed records and
+  complete local bundles between hosts without moving reconstructible hosted assets.
 
-`quay` is, in the DESIGN.md §2 sense, just **another host**: it supplies the three seams — a **Volume**
-(native FS), a **`GetSandbox`** (`worker_threads`), and a **`Capabilities`** registry — exactly like
-frieren-server does. The platform layer is already extracted into shared packages
+`quay` is, in the DESIGN.md §2 sense, just **another host**: it supplies four seams — a **Volume**
+(native FS), a **`GetSandbox`** (`worker_threads`), a **`Capabilities`** registry, and a cached
+**`FetchAsset`** for hosted files. The platform layer is already extracted into shared packages
 (`@justfiles/app`, `@justfiles/agent`, `capnweb`), so `quay` is mostly assembly.
 
 <a id="process"></a>
@@ -81,6 +79,7 @@ frieren-server does. The platform layer is already extracted into shared package
 │   • pi agent  (@justfiles/agent)                                  │
 │   • http: serves gui.js · icons · shared-React importmap          │
 │   • Volume → nativeStorage(~/Library/Application Support/quay)    │
+│   • hosted assets → /private/cache/apps                           │
 └───────────────────────────────▲──────────────────────────────────┘
               ws (Cap'n Web) +   │   http (assets)
         ┌──────────────────────┼──────────────────────┐
@@ -115,8 +114,9 @@ One Node process is the entire trusted host. It is the **single writer** of the 
 const root = `${os.homedir()}/Library/Application Support/quay/volume`
 const fs = volume(await nativeStorage(root))                 // real macOS folder
 const capabilities = capabilityRegistry({ volume: volumeCapability(fs, { systemAllowlist }), /* ai, devkit */ })
-const kernel = createKernel({ fs, sandbox: nodeSandbox(), capabilities })
-await reconcileBuiltins(kernel, fs, catalog, readPackagedBytes) // seed app-code + others on first run
+const fetchAsset = await appAssets(fs)                         // cache-first hosted files
+const kernel = createKernel({ fs, sandbox: nodeSandbox(), capabilities, fetchAsset })
+await refreshApps(kernel, fs, true)                            // packaged + JustApps
 const agent = await createAgentRuntime({ volume: fs, llm, appController })  // @justfiles/agent
 serve({ kernel, agent })                                     // localhost http (assets) + ws (Cap'n Web)
 ```
@@ -127,14 +127,15 @@ What lives here and why it must be singular:
   procedures, and capability-fed subscriptions. Emits `app.update`.
 - **Volume** — `nativeStorage` over `~/Library/Application Support/quay/volume`. Everything frieren
   keeps in a synced volume is now a real folder you can open in Finder (`/applications`, `/state`,
-  `/data/<id>`, `/system` for the agent's memory).
+  `/data/<id>`, `/system` for the agent's memory). `/private/cache/apps` is local derived data and is
+  outside sync.
 - **Sandboxes** — `nodeSandbox()` runs each app's `app.js` reducer in a `worker_thread`, keyed by code
   SHA. Lazy + evictable (§10). Reducer code never runs on the daemon's main thread, and never in a webview.
 - **Capabilities** — the whole registry is local Node (§7). No Cap'n Web proxy for capabilities.
 - **Agent** — `@justfiles/agent` runtime + tools + bash, with a `quay` `AppController` that opens/closes
   real app bundles (§8).
-- **Server** — localhost `http` (serves `gui.js`, icons, the shared-React importmap) + a `ws` endpoint
-  speaking Cap'n Web (§6).
+- **Server** — localhost `http` reads app files through the kernel, so local bundles and hosted cache
+  entries use one route. The `ws` endpoint speaks Cap'n Web (§6).
 
 **Discovery & lifecycle.** `quayd` writes `~/Library/Application Support/quay/runtime.json`
 (`{ port, token, pid }`) on boot. Any client (launcher or booter) reads it; if it is absent or stale,
@@ -182,27 +183,26 @@ anything but its app.
 Two notions of "installed" — a **canonical, syncable** one and a **local projection** — kept in lock-step
 by a **one-way** reconcile:
 
-- **Source of truth = the Volume.** `kernel.list()` (the Volume's `/applications`) is canonical, and
-  always includes the **built-ins** (seeded by `reconcileBuiltins` on first run — `app-code` + `app-files`).
-  `quay`'s own launcher lists from here. Apps stay **in the Volume** — not in the `.app`s — precisely so
-  the install set rides the same syncable substrate frieren does: swap `nativeStorage` for frieren's
-  synced backend later and the catalog syncs across devices with no change to where apps live.
+- **Source of truth = the Volume.** `kernel.list()` reads canonical installed records from
+  `/applications`. A hosted record contains its manifest, reducer, immutable source URL, and file
+  hashes. Its mounted files stay in the local `/private/cache/apps` lane. A local app contains its full
+  bundle. The launcher lists both shapes through the same kernel API.
 - **OS bundles = a local projection.** So *other* launchers (Spotlight, Raycast, Launchpad, Alfred) can
   find and launch apps, `quayd` materialises a **thin** `.app` per installed app into
   `~/Applications/Quay Apps/` — Chrome's PWA-shim pattern. Each bundle is the shared booter binary + a
-  per-app `Info.plist` + the app icon — **no app code** (the bytes stay in the Volume; `quayd` serves
-  them over http, §6). Ad-hoc signed (`codesign -s -`; locally created ⟹ no quarantine ⟹ Gatekeeper-clean)
-  and registered with `lsregister`. The projection is **derived, never a second source of truth**, and is
-  regenerated per device — so it never needs to sync.
+  per-app `Info.plist` + the app icon — **no app code** (the daemon reads local bundle bytes or verified
+  hosted cache bytes and serves them over http, §6). Ad-hoc signed (`codesign -s -`; locally created ⟹
+  no quarantine ⟹ Gatekeeper-clean) and registered with `lsregister`. The projection is **derived,
+  never a second source of truth**, and is regenerated per device — so it never needs to sync.
 
 A **one-way** reconcile (Volume → OS) keeps `~/Applications/Quay Apps/` in lock-step with `kernel.list()`:
 install (local *or* synced-in) → write bundle; uninstall → remove; update → refresh icon/name. This is the
 desktop analogue of frieren's `catalog:changed`. Because it is one-directional, there is no two-store
 coherence problem — the Volume always wins.
 
-> A fresh device's Volume has *no* third-party apps yet — only the seeded built-ins (plus, once synced,
-> whatever your account already carries). `app-code` is the bootstrap: the built-in you use to build and
-> install everything else.
+> A fresh device starts with packaged Code, Files, and Settings plus trusted hosted JustApps entries.
+> Code remains the bootstrap for local apps. A local Code app keeps its full bundle because it has no
+> immutable source URL.
 
 <a id="transport"></a>
 
@@ -223,8 +223,10 @@ interface Berth {
 
 - **Assets over localhost http.** The booter loads `http://127.0.0.1:PORT/app/<id>/`. `127.0.0.1` is a
   *secure context*, so `localStorage`/`IndexedDB`/ES-modules/importmap all work — dodging WebKit's
-  opaque-origin storage quirk. `quayd` serves `gui.js` + icons; the bundle is self-contained, so there
-  is no framework to inject alongside it. The booter writes **no** asset code.
+  opaque-origin storage quirk. `quayd` reads `gui.js` and icons through `kernel.app(id).read(path)`.
+  Hosted reads use the cache-first `FetchAsset`; local reads use the complete Volume bundle. The
+  localhost response can stay `no-store` because WebKit cache state is not the durability layer. The
+  booter writes **no** asset code.
 - **The `defineGUI` mount reused verbatim.** frieren mounts a GUI with a `Transport = { invoke, subscribe }`; here
   `invoke`→`berth.dispatch`, `subscribe`→`berth.subscribe`. Only the transport changes.
 - **Token scoping.** `quayd` passes each booter a one-time token + app id as launch arguments; the
@@ -300,7 +302,8 @@ the `devkit` capability: read a project's `src/*` off the Volume, compile `app.t
 esbuild, and either install a finished bundle into `/applications` or mount a live preview.
 
 - **Compile + install + pack** are pure data transforms over the Volume + injected esbuild — reused from
-  `@justfiles/app/devkit`. `install` writes `/applications/<id>` to real disk, fires `onInstalled` →
+  `@justfiles/app/devkit`. `install` writes the complete local bundle to `/applications/<id>` because
+  the draft has no immutable download source. It fires `onInstalled` →
   `quayd` **materialises the `.app` bundle** (§5) and re-lists. No change to app-code's reducer.
 - **Live preview** (`devkit.run`) is the one bespoke, deferred seam: frieren mounts the draft into its
   own DOM, which has no in-process home here (kernel in `quayd`, code app in a separate webview). Ship
@@ -319,7 +322,8 @@ Memory stays bounded without keeping every app's code resident:
   N minutes; re-spawn on next dispatch. State is durable on disk (`/state/<id>.json`), so eviction is
   transparent. (Apps that must tick headlessly opt out.)
 - **GUIs are per-window.** `gui.js` is fetched on demand and lives only in the open webview; closing the
-  window frees it and quits the booter process.
+  window frees it and quits the booter process. Hosted GUI bytes remain in the daemon's bounded local
+  cache for offline launch.
 
 A nice consequence: a mini-app's **state outlives its window**. Close the window → the booter exits and
 the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
@@ -344,6 +348,7 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 - **OS-bundle materialisation** — generate/sign/register **thin** `.app` shims (no app code) in `~/Applications/Quay Apps/`, reconciled one-way to `kernel.list()`.
 - The desktop `AppController` (open/close real bundles) + a Cap'n Web `SocketLike` for the agent UI.
 - Root selection + first-run built-in seed from packaged resources.
+- A cache-first `FetchAsset` under `/private/cache/apps` for hosted GUI, icon, and asset files.
 - *Later:* the `WKWebView` live-preview for app-code.
 
 <a id="open"></a>
