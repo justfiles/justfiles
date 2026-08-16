@@ -18,7 +18,7 @@
 import { describe, expect, it } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
-import { type Cursor, type Node, ROOT, type Store } from './store'
+import { type Cursor, GuardError, type Node, ROOT, type Store } from './store'
 import { memStore } from './store.mem'
 import type { Volume } from './volume'
 import { storeVolume } from './volume.store'
@@ -74,6 +74,34 @@ describe('sync: conflicts', () => {
 			expect(await names(storeVolume(store))).toEqual(['note.txt', 'note.txt (conflict b)'])
 			expect(await read(store, '/note.txt')).toBe('from a')
 			expect(await read(store, '/note.txt (conflict b)')).toBe('from b')
+		}
+	})
+
+	it('keeps conflicting a second time on the same name, under a longer one', async () => {
+		// The conflict name is not assumed free — it is derived from the row the
+		// AUTHORITY refused, and that row already carries the last rename. So a
+		// replica that loses the same name twice suffixes what it was renamed to,
+		// rather than proposing an occupied name for ever. Each replan strictly
+		// lengthens the name, so there is no fixpoint to spin on.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		// The name b would ask for is already somebody else's before it asks.
+		await a.vol.writeFile('/note.txt', enc.encode('from a'))
+		await a.vol.writeFile('/note.txt (conflict b)', enc.encode('also from a'))
+		await sync(a.store, hub, a.opts)
+		await b.vol.writeFile('/note.txt', enc.encode('from b'))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await names(storeVolume(store))).toEqual([
+				'note.txt',
+				'note.txt (conflict b)',
+				'note.txt (conflict b) (conflict b)'
+			])
+			expect(await read(store, '/note.txt (conflict b) (conflict b)')).toBe('from b')
 		}
 	})
 
@@ -174,6 +202,48 @@ describe('sync: conflicts', () => {
 
 		expect(await read(b.store, '/note.txt')).toBe('from b')
 		expect(await read(hub, '/note.txt')).toBe('from b')
+	})
+})
+
+describe('sync: the replan budget', () => {
+	it('is spent only on replans that land nothing', async () => {
+		// A wide sync can meet a rejection on more pages than the budget has
+		// entries, resolve every one of them, and still be cut off — if the budget
+		// counts rejections rather than stalls. It is a livelock stop: a page that
+		// lands says the last rejection is behind us, whatever it was.
+		const hub = authority(memStore())
+		const b = replica('b')
+		const mint = versions('b')
+		const rows = Array.from({ length: 12 * 128 }, (_, i) => ({
+			id: `n${i}`,
+			parent: ROOT,
+			name: `f${i}.txt`,
+			type: 'file' as const,
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: 0n,
+			version: mint()
+		}))
+		await b.store.commit(rows)
+
+		// One refusal per page, then it takes the same page on the replan.
+		const seen = new Set<string>()
+		const grudging: Store = {
+			...hub,
+			async commit(writes, guards) {
+				const page = writes[0]?.id
+				if (page !== undefined && !seen.has(page)) {
+					seen.add(page)
+					throw new GuardError('not this page, not yet')
+				}
+				return hub.commit(writes, guards)
+			}
+		}
+
+		await sync(b.store, grudging, b.opts)
+
+		expect(seen.size).toBeGreaterThan(8)
+		expect((await storeVolume(hub).readdir('/')).length).toBe(rows.length)
 	})
 })
 

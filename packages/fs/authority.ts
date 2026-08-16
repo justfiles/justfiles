@@ -78,6 +78,13 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 	const claimed = new Map<string, NodeId>()
 
 	for (const row of writes) {
+		// Rule 6: the root is a fixed constant, and `get(ROOT)` always returns a live
+		// directory. It is the one row with no parent to vouch for it, so nothing
+		// below would catch its loss — and losing it loses the whole tree at once,
+		// since visibility is reachability from root.
+		if (row.id === ROOT && (row.deleted || !isDir(row)))
+			throw new GuardError('the root must stay a live directory')
+
 		// A tombstone takes no name and keeps no parent: rule 8 leaves only its id,
 		// its version and the fact that it is gone. It is not held to having emptied
 		// itself first, either. A recursive delete is ONE commit locally and writes

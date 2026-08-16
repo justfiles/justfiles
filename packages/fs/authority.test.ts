@@ -157,6 +157,18 @@ describe('authority: the tree invariants', () => {
 		expect(await storeVolume(store).readdir('/')).toEqual([])
 	})
 
+	it('refuses to bury or re-type the root', async () => {
+		// Rule 6. The root is the one row nothing else vouches for — it is its own
+		// parent — so every other check here passes it through, and losing it loses
+		// the whole tree at once: reachability from root is what visibility means.
+		const { seed, refused } = hub()
+		await seed(file({ id: 'note', name: 'note.txt' }))
+		const root = dir({ id: ROOT, name: '', parent: ROOT, version: '2' })
+
+		expect((await refused([{ ...root, deleted: true }])).message).toMatch(/root/)
+		expect((await refused([file({ id: ROOT, name: '', parent: ROOT })])).message).toMatch(/root/)
+	})
+
 	it('refuses a directory that still holds children turning into a file', async () => {
 		// The parent check, from the other end. The end state is the one it already
 		// refuses — a live row whose parent is a live non-directory — and the two

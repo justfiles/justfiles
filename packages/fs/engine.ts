@@ -53,9 +53,12 @@ const RETRIES = 3
 const BACKOFF_MS = 1000
 
 /**
- * How many times one cycle may replan around a rejection before it gives up. A
- * rejection means somebody else made progress, so this is a livelock stop rather
- * than a concurrency limit — the same reasoning as `MAX_ATTEMPTS` in the volume.
+ * How many times a cycle may replan WITHOUT anything landing before it gives up.
+ * A rejection means somebody else made progress, so this is a livelock stop
+ * rather than a concurrency limit — the same reasoning as `MAX_ATTEMPTS` in the
+ * volume. Counting rejections outright would be a limit: a sync wide enough to
+ * meet a conflict on nine separate pages resolves every one of them and would
+ * still be cut off on the ninth, so a page that lands puts the budget back.
  */
 const REPLANS = 8
 
@@ -147,6 +150,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 		const guards = await bases(remote, rows)
 		try {
 			await remote.commit(rows, guards)
+			replans = 0 // a page landed: whatever the last rejection was, it is behind us
 		} catch (err) {
 			// What the refusal MEANT is decided here, where the rows still are: the
 			// error cannot carry them, since a peer refuses a whole batch and for
@@ -166,6 +170,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 		// has it. Empty in the steady state: one local `since` that returns nothing.
 		if (await drain(local, push, opts.push, false, mine)) throw new Restart()
 		await local.commit(rows, guards)
+		replans = 0
 		// Rule 7: bytes from a peer are checked against the hash that named them
 		// before they land. The peer's own store verifies what this replica pushes.
 		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs))
@@ -190,7 +195,8 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			// A refused commit is somebody else making progress, not a peer that is
 			// down, so it costs no retry and no backoff — it costs a replan. `settle`
 			// has already written whatever the refusal called for, and running the
-			// cycle again is what offers it.
+			// cycle again is what offers it. The budget is spent only on replans that
+			// land nothing, since it is there to stop a livelock, not a wide sync.
 			if ((err instanceof GuardError || err instanceof Restart) && replans++ < REPLANS) continue
 			if (failures >= retries) throw err
 			await sleep(backoff * 2 ** failures++)
