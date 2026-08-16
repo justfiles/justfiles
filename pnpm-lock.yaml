@@ -92,6 +92,9 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
+      '@justfiles/app-code':
+        specifier: workspace:*
+        version: link:../../packages/app-code
       '@justfiles/app-dictionary':
         specifier: workspace:*
         version: link:../../packages/app-dictionary
