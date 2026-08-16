@@ -419,6 +419,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		},
 
 		async appendFile(path, data) {
+			const held = new Uint8Array(data)
 			await retry(async () => {
 				const node = await find(path)
 				if (node !== null && isDir(node)) throw new Error(`EISDIR: ${path}`)
@@ -429,9 +430,9 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				const before =
 					node?.content === undefined ? new Uint8Array() : await store.blobs.get(node.content)
 				if (before === null) throw new Error(`ENOENT: content ${node?.content} of ${path}`)
-				const merged = new Uint8Array(before.length + data.length)
+				const merged = new Uint8Array(before.length + held.length)
 				merged.set(before)
-				merged.set(data, before.length)
+				merged.set(held, before.length)
 				const payload = file(merged.length, await durable(merged))
 				// Appending to nothing is a create, and the name and the bytes still
 				// commit as one fact.

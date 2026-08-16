@@ -444,10 +444,33 @@ describe('appendFile', () => {
 		expect(await read(vol, '/log.md')).toBe('start')
 	})
 
+	it('stores the bytes passed when a create starts', async () => {
+		const vol = storeVolume(memStore())
+		const data = enc.encode('start')
+
+		const append = vol.appendFile('/log.md', data)
+		data.fill(0)
+		await append
+
+		expect(await read(vol, '/log.md')).toBe('start')
+	})
+
 	it('reads, merges and writes the whole row', async () => {
 		const vol = storeVolume(memStore())
 		await vol.writeFile('/log.md', enc.encode('start'))
 		await vol.appendFile('/log.md', enc.encode('-more'))
+		expect(await read(vol, '/log.md')).toBe('start-more')
+	})
+
+	it('stores the bytes passed when an append starts', async () => {
+		const vol = storeVolume(memStore())
+		await vol.writeFile('/log.md', enc.encode('start'))
+		const data = enc.encode('-more')
+
+		const append = vol.appendFile('/log.md', data)
+		data.fill(0)
+		await append
+
 		expect(await read(vol, '/log.md')).toBe('start-more')
 	})
 
