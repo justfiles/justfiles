@@ -554,6 +554,18 @@ describe('chmod, utimes and xattrs', () => {
 		expect(Object.keys((await rowAt(store, '/kyoto.md')).xattrs ?? {})).toEqual(['user.mood'])
 	})
 
+	it('stores the xattr bytes passed when the write starts', async () => {
+		const vol = storeVolume(memStore())
+		await vol.writeFile('/kyoto.md', enc.encode('go'))
+		const value = enc.encode('trip')
+
+		const write = vol.setXattr('/kyoto.md', 'user.tag', value)
+		value.fill(0)
+		await write
+
+		expect(await vol.getXattr('/kyoto.md', 'user.tag')).toEqual(enc.encode('trip'))
+	})
+
 	it('throws ENOENT on a missing path', async () => {
 		const vol = storeVolume(memStore())
 		await expect(vol.chmod('/nope', 0o600)).rejects.toThrow(/^ENOENT/)
@@ -666,6 +678,32 @@ describe('rename', () => {
 
 		expect(await vol.exists('/a/b')).toBe(true)
 		expect(await vol.exists('/a/b/c')).toBe(false)
+	})
+
+	it('rechecks the destination ancestry when an ancestor moves', async () => {
+		const store = memStore()
+		const other = storeVolume(store)
+		await other.mkdir('/left/a/b', { recursive: true })
+		await other.mkdir('/right/x/y', { recursive: true })
+		const a = await rowAt(store, '/left/a')
+		const y = await rowAt(store, '/right/x/y')
+		let raced = false
+		const racy: Store = {
+			...store,
+			async commit(writes, guards) {
+				if (!raced && writes.some((row) => row.id === a.id && row.parent === y.id)) {
+					raced = true
+					await other.rename('/right/x', '/left/a/b/x')
+				}
+				return store.commit(writes, guards)
+			}
+		}
+
+		await expect(storeVolume(racy).rename('/left/a', '/right/x/y/a')).rejects.toThrow(/^ENOENT/)
+
+		expect(raced).toBe(true)
+		expect(await other.exists('/left/a/b/x/y')).toBe(true)
+		expect(await other.exists('/right/x')).toBe(false)
 	})
 
 	it('moves the link, not what it points at', async () => {

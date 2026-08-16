@@ -334,17 +334,19 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			await store.commit([{ ...change(node), version: mint() }], [unchanged(node)])
 		})
 
-	/** Whether `node` is `ancestor` or below it. Rule 9 requires a bounded parent walk. */
-	async function within(node: Node, ancestor: NodeId): Promise<boolean> {
+	/** Walk from `node` to root. Return whether it reaches `ancestor` and each row read. */
+	async function within(node: Node, ancestor: NodeId): Promise<{ inside: boolean; rows: Node[] }> {
 		const seen = new Set<NodeId>()
+		const rows: Node[] = []
 		let at: Node | null = node
 		while (at !== null && !seen.has(at.id)) {
-			if (at.id === ancestor) return true
-			if (at.id === ROOT) return false
+			rows.push(at)
+			if (at.id === ancestor) return { inside: true, rows }
+			if (at.id === ROOT) return { inside: false, rows }
 			seen.add(at.id)
 			at = await store.get(at.parent)
 		}
-		return false
+		return { inside: false, rows }
 	}
 
 	/** Every row under a directory. Bounded by a visited set (rule 9). */
@@ -387,7 +389,8 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		},
 
 		async setXattr(path, name, value) {
-			await edit(path, (row) => ({ ...row, xattrs: { ...row.xattrs, [name]: value } }))
+			const held = new Uint8Array(value)
+			await edit(path, (row) => ({ ...row, xattrs: { ...row.xattrs, [name]: held } }))
 		},
 
 		async listXattr(path) {
@@ -517,15 +520,22 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				if (node === null) throw new Error(`ENOENT: ${oldPath}`)
 				const to = await parentOf(newPath)
 				// Moving a row below itself makes a detached cycle.
-				if (await within(to.dir, node.id))
-					throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
+				const checked = await within(to.dir, node.id)
+				if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
 				const target = await store.child(to.dir.id, to.name)
 				if (target?.id === node.id) return // the same row, in the same place
 
 				// ONE row moves, whatever hangs below it: a child's location is
 				// `(parent, name)`, and neither field changed. This is the O(1) move.
 				const writes: Node[] = [{ ...node, parent: to.dir.id, name: to.name, version: mint() }]
-				const guards: Guard[] = [unchanged(node)]
+				const guards: Guard[] = [
+					unchanged(node),
+					// `to.dir` is guarded below. The other guards keep this check valid.
+					...checked.rows
+						.slice(1)
+						.filter((row) => row.id !== ROOT)
+						.map(unchanged)
+				]
 				if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
 				else {
 					// POSIX rename replaces, but only like for like. A directory is never
@@ -575,7 +585,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			// Paths lie about ancestry when they cross a link. Walk ids so a copy
 			// cannot find its own output and run without bound.
 			const there = await find(dest)
-			if (await within(there ?? (await parentOf(dest)).dir, node.id))
+			if ((await within(there ?? (await parentOf(dest)).dir, node.id)).inside)
 				throw new Error(`EINVAL: cannot copy ${src} into itself`)
 
 			const kids: Node[] = []
