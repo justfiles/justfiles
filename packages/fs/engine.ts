@@ -59,21 +59,29 @@ export type SyncOptions = {
 /**
  * One cycle: offer this replica's own rows to the peer, then take the peer's.
  *
- * Push runs FIRST, and that ordering is load-bearing. A pull applies rows
- * blind — it has no base to compare against, and the design declines to keep one
- * — so a page replayed from a rewound cursor carries a row's older state and
- * overwrites a local edit that has not been sent yet. The push behind it would
- * then skip that row, since what it finds there is the peer's, and the edit is
- * gone from both stores with nothing to report it. Offering local work before
- * accepting anything closes that window, and it is the order a guarded push
- * wants anyway: T10 replans on a rejection, which is a pull followed by a
- * re-push.
+ * Push runs FIRST, and the order is load-bearing. A pull applies rows blind —
+ * there is no base to compare against, by design — so a page carrying a row's
+ * older state overwrites a local edit that has not been sent yet, and the push
+ * behind it skips that row because what it finds there is now the peer's.
+ * Offering local work before accepting any is what keeps it. It is also the
+ * order a guarded push wants: T10 replans on a rejection, which is a pull and
+ * then a re-push.
+ *
+ * What the order does NOT cover is a write that lands mid-cycle, after the push
+ * drain reaches its tail. Closing that means a pull that stops applying blind,
+ * which is conflict machinery — T10's, along with the rest of it.
  *
  * The retries are deliberately dumb. A cursor only ever lags, so an attempt that
- * died halfway left nothing to unwind — re-running the whole cycle is both the
- * recovery and the retry, and there is no partial state to reason about.
+ * died halfway left nothing to unwind: re-running the cycle is both the recovery
+ * and the retry.
  */
 export async function sync(local: Store, remote: Store, opts: SyncOptions): Promise<void> {
+	// The push filter, in a bootstrap exactly as in the steady state: to a reset
+	// peer this replica restores its own work and not the rows it merely holds,
+	// since a replica that re-seeded an authority with everything it had seen
+	// would decide, alone and silently, whose view of the tree survives. Doing it
+	// wholesale is T11's `takeMine`, which re-authors the rows first — and that
+	// makes them this replica's, so this same filter carries them.
 	const mine = (row: Node): boolean => authorOf(row.version) === opts.replica
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
@@ -85,19 +93,13 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			await drain(remote, local, opts.pull, rewind)
 			return
 		} catch (err) {
-			// Rule 11, and it fences the PAIR rather than the cursor that threw. The
-			// two cursors describe ONE relationship — where this replica stands in the
-			// peer's feed, and what it has already handed the peer — and a store that
-			// was replaced voids both halves: a new peer has been sent nothing, and a
-			// new local store has received nothing. Rewinding only the fenced half
-			// leaves the other one asserting a history the replacement never had.
-			//
-			// This is not a failure to retry, either: no position in that store will
-			// ever answer to that cursor. So it costs no part of the retry budget —
-			// the replacement peer is owed the same attempts as the one it replaced —
-			// and it happens at most once, since an empty cursor cannot itself be
-			// foreign and a second fencing is a broken store the caller should hear
-			// about rather than watch the engine spin on.
+			// Rule 11 fences the PAIR, not the cursor that threw. The two cursors are
+			// one relationship — where this replica stands in the peer's feed, and what
+			// it has already handed that peer — so a replaced store voids both halves,
+			// and rewinding one leaves the other asserting a history the replacement
+			// never had. It is not a failure to retry either, since no position in that
+			// store will ever answer to that cursor: it spends no retry budget, and it
+			// happens at most once, an empty cursor being one no store can fence.
 			if (err instanceof ForeignCursorError && !rewind) {
 				rewind = true
 				continue
@@ -110,21 +112,15 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 
 /**
  * The design's `Version` — `{author, counter}` — encoded as the one opaque
- * string a store may never parse. Everything above storage reads exactly one
- * field out of it, the author, and that field is what keeps push echo-free.
+ * string a store may never parse. One field of it is read above storage, the
+ * author, and that field is what keeps push echo-free.
  *
- * The counter is qualified by a nonce this minter draws once, because a replica
- * id is deliberately STABLE — the push filter is built on it — so two minters
- * can carry the same one: a restart, or a second volume over the same store.
- * Were their counters to line up, a version string would name two different
- * states of a row, and a version guard captured against the first would pass
- * against the second — losing exactly the concurrent update it was there to
- * catch. A clock seed does not settle this: two minters in one millisecond
- * still collide, and a clock that steps backwards re-mints a whole run.
- *
- * Chance is all that separates two minters, so the nonce keeps a whole uuid.
- * Trimming it to save bytes on a row that already carries two of them buys
- * nothing and hands the birthday bound the collision back.
+ * A replica id is deliberately STABLE, so two minters can carry the same one: a
+ * restart, or a second volume over the same store. Versions are compared by
+ * equality and never ordered, so if their counters lined up, one string would
+ * name two states of a row and a guard captured against the first would pass
+ * against the second — losing the update it was there to catch. Hence a whole
+ * uuid per minter, drawn once: neither a clock nor a short draw separates them.
  */
 export function versions(replica: string): () => Version {
 	const nonce = crypto.randomUUID()

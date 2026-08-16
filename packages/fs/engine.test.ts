@@ -303,13 +303,15 @@ describe('sync: lineage', () => {
 		await expect(local.since(resumed.push)).resolves.toBeDefined()
 	})
 
-	it('sends its whole history to a peer that was replaced', async () => {
+	it('restores what it authored to a peer that was replaced', async () => {
 		const local = memStore()
+		const first = memStore()
 		const pull = slot()
 		const push = slot()
 		const opts = { replica: 'a', pull, push }
 		await local.commit([file(versions('a'), { id: 'mine', name: 'mine.txt' })])
-		await sync(local, memStore(), opts)
+		await first.commit([file(versions('b'), { id: 'theirs', name: 'theirs.txt' })])
+		await sync(local, first, opts)
 
 		// The peer is reset: a new store, a new lineage, and not one row of ours.
 		// Only the PULL cursor is fenced — the push cursor names a position in the
@@ -318,7 +320,14 @@ describe('sync: lineage', () => {
 		const replacement = memStore()
 		await sync(local, replacement, opts)
 
-		expect(await rowsOf(replacement)).toEqual(await rowsOf(local))
+		expect(await replacement.child(ROOT, 'mine.txt')).toMatchObject({ id: 'mine' })
+		// And the row it merely HOLDS stays behind. The push filter is the author
+		// tag, in a bootstrap exactly as in the steady state: a replica restores its
+		// own work to a reset peer, and is not a silent backup of everyone else's —
+		// which would let one stale replica re-seed a fresh authority with a view
+		// nobody chose. Re-seeding wholesale is a decision, and it has a name:
+		// T11's `takeMine`, which re-authors every local row first.
+		expect(await replacement.child(ROOT, 'theirs.txt')).toBeNull()
 	})
 
 	it('takes the whole peer history when its own store was replaced', async () => {

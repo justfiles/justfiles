@@ -110,6 +110,16 @@ costs nothing. The author tag has two readers now — this push filter and
 `storeVolume`. Until it does, `volume.store.ts` keeps minting its own; T8 does
 not depend on the volume, so it does not reach into it.
 
+**A replica restores what it authored, not what it holds.** The push filter is
+the author tag in a bootstrap exactly as in the steady state, so a peer that was
+reset gets this replica's own work back and nothing else — a row authored by
+some third replica stays behind until that replica reconnects. The alternative,
+having every fenced replica push everything it had ever seen, would let one
+stale replica decide alone and silently whose view of the tree a fresh authority
+ends up with. Re-seeding wholesale is a decision, and it already has a home:
+[T11](t11-lifecycle-wrapper.md)'s `takeMine` re-authors every local row first,
+which makes them this replica's and so carries them through this same filter.
+
 **Push sends no guards yet.** The loop's shape is `remote.commit(rows, guards)`,
 but a guard needs a base to state, and the design declines a per-row `base`
 field. What the engine can state comes from the authority's own invariants, so
