@@ -41,15 +41,19 @@ export function authority(store: Store): Store {
 		// push transfers unverified for exactly this reason.
 		blobs: verifiedBlobs(store.blobs),
 		commit(writes, guards) {
-			// One snapshot, checked and then committed. The queue puts `run` on a
-			// later microtask and `check` reads these rows before the store stores
+			// One snapshot of the whole commit, checked and then written. The queue
+			// puts `run` on a later microtask — behind however long every commit
+			// ahead of it takes — and `check` reads the rows before the store stores
 			// them, so an array the caller still owns could be edited in between and
-			// the authority would pass one thing and write another. Same reasoning as
-			// `verifiedBlobs`: a check that can be raced past is not a check.
-			const rows = structuredClone(writes)
+			// the authority would pass one batch and write another. The guards travel
+			// with the rows: the wrapper never reads them, but it does DELAY them, and
+			// a guard edited inside that delay enforces a condition nobody stated.
+			// Same reasoning as `verifiedBlobs`: a check that can be raced past is not
+			// a check.
+			const commit = structuredClone({ rows: writes, guards })
 			const run = async (): Promise<void> => {
-				await check(store, rows)
-				await store.commit(rows, guards)
+				await check(store, commit.rows)
+				await store.commit(commit.rows, commit.guards)
 			}
 			const next = queue.then(run)
 			// What the NEXT commit waits on is this one having finished, not having
@@ -101,6 +105,17 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 		const parent = row.id === ROOT ? null : (batch.get(row.parent) ?? (await store.get(row.parent)))
 		if (parent && (parent.deleted || !isDir(parent)))
 			throw new GuardError(`parent ${row.parent} of ${row.id} is not a live directory`)
+
+		// The same invariant from the other end, and the only other way to break it:
+		// a live directory that turns into a file leaves every row beneath it
+		// parented on a non-directory. Unlike a tombstoned parent — whose children
+		// the next page buries — nothing repairs this, since no writer produces a row
+		// that types it back. That is also why the batch is not consulted: a volume
+		// empties a directory and removes it, and a new node takes the name under a
+		// new id, so nothing legitimate re-types one at all. Only a peer's raw rows
+		// reach here, which is what the authority is for.
+		if (held && isDir(held) && !isDir(row) && (await store.children(row.id)).nodes.length > 0)
+			throw new GuardError(`${row.id} still holds children and cannot become a ${row.type}`)
 
 		// One live row per name — within the batch, and against what is already here.
 		const key = row.parent + SEP + row.name

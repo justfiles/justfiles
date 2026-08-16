@@ -157,6 +157,31 @@ describe('authority: the tree invariants', () => {
 		expect(await storeVolume(store).readdir('/')).toEqual([])
 	})
 
+	it('refuses a directory that still holds children turning into a file', async () => {
+		// The parent check, from the other end. The end state is the one it already
+		// refuses — a live row whose parent is a live non-directory — and the two
+		// have to agree, or the same malformation lands depending on which row a
+		// peer happens to write.
+		const { seed, refused } = hub()
+		const docs = dir({ id: 'docs', name: 'docs' })
+		await seed(docs, file({ id: 'inside', name: 'note.txt', parent: 'docs' }))
+
+		const error = await refused([file({ id: 'docs', name: 'docs', version: '2' })])
+
+		expect(error.message).toMatch(/children/)
+	})
+
+	it('takes the same type change once the directory is empty', async () => {
+		// The rule is about what would be stranded, not about the type change: an
+		// empty directory strands nobody.
+		const { server, seed } = hub()
+		await seed(dir({ id: 'docs', name: 'docs' }))
+
+		await expect(
+			server.commit([file({ id: 'docs', name: 'docs', version: '2' })])
+		).resolves.toBeUndefined()
+	})
+
 	it('takes a recursive delete that does not fit in one page', async () => {
 		// The same decision, end to end, and the reason it is not negotiable: the
 		// tombstones are one local commit and several pushed pages, so an authority
@@ -256,6 +281,22 @@ describe('authority: what it leaves alone', () => {
 
 		expect(await store.child(ROOT, 'note.txt')).toMatchObject({ id: 'note' })
 		expect(await store.child(ROOT, 'somewhere-else.txt')).toBeNull()
+	})
+
+	it('enforces the guards it was handed, not the ones the caller edits behind it', async () => {
+		// The wrapper never reads a guard, but it does delay one — behind every
+		// commit queued ahead of it — and a guard edited inside that delay would
+		// have the store enforce a condition nobody stated.
+		const { store, server, seed } = hub()
+		const note = file({ id: 'note', name: 'note.txt' })
+		await seed(note)
+		const guard = { version: { id: 'note', is: 'stale' } }
+
+		const landing = server.commit([{ ...note, size: 9n, version: '2' }], [guard])
+		guard.version.is = '1' // the version the store actually holds
+
+		await expect(landing).rejects.toBeInstanceOf(GuardError)
+		expect(await store.get('note')).toMatchObject({ size: 0n })
 	})
 
 	it('verifies bytes against the hash that named them', async () => {
