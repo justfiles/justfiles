@@ -283,6 +283,9 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
+      '@justfiles/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs

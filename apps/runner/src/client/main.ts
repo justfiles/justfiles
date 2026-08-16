@@ -2,6 +2,7 @@ import { appBundleFromMemory, kernel, type Message } from '@justfiles/app'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { sandboxClient } from '@justfiles/app/sandbox'
+import '@justfiles/design/mac.css'
 import { volume } from '@justfiles/fs'
 import { idbStorage, persistStorage } from '@justfiles/fs/storage/idb'
 
