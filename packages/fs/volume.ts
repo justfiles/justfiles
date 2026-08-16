@@ -18,7 +18,10 @@ import { FileType } from './types'
  * 1000/WATCH_BURST_MS per second instead of one per entry.
  *
  * Exported for tests only — a coalescing watch has no other honest way to say
- * "settled". Deliberately NOT re-exported from the package index.
+ * "settled". Deliberately NOT re-exported from the package index. `storeVolume`
+ * reads it as the same window, and as the rate of its `since` poll when a store
+ * offers no push feed: both answer the same question, "how often may a consumer
+ * be told to re-scan".
  */
 export const WATCH_BURST_MS = 50
 
@@ -277,8 +280,10 @@ export interface Volume {
 	 * per `WATCH_BURST_MS` with a guaranteed trailing one. A bulk operation therefore
 	 * wakes a consumer a bounded number of times, not once per entry.
 	 *
-	 * Requires `Storage.caps.subscribe`; without it the watch is inert and the
-	 * returned unsubscribe is a no-op. Returns a promise of the unsubscribe.
+	 * Needs a change feed underneath: this volume requires `Storage.caps.subscribe`
+	 * and is inert without it, returning a no-op unsubscribe. (`storeVolume` polls
+	 * the store's `since` instead, so there it always delivers.) Returns a promise
+	 * of the unsubscribe.
 	 */
 	watch(
 		path: string,
@@ -289,7 +294,13 @@ export interface Volume {
 
 /** Payload delivered to a `volume.watch` listener. */
 export interface WatchEvent {
-	/** The `MutationOptions.origin` the triggering write was tagged with. */
+	/**
+	 * Who wrote it, when that was not this replica: `'remote'`. This volume takes
+	 * it from the write's `MutationOptions.origin`; `storeVolume` has no origin
+	 * tags to take it from and reads the author out of the committed row's
+	 * `version` instead. Either way it is what lets a consumer that watches a
+	 * file it also writes react only to the writes it did not make.
+	 */
 	source?: string
 }
 

@@ -14,7 +14,7 @@
  * so a writer that loses reads again instead of waiting. Concurrency is settled
  * by the store, in one place, for every backend.
  *
- * T7 adds `watch` and T18 renames this to `volume`.
+ * T18 renames this to `volume`.
  */
 
 import {
@@ -30,7 +30,7 @@ import {
 	type Version
 } from './store'
 import { type Dirent, FileType, type Stat } from './types'
-import type { Volume } from './volume'
+import { type Volume, WATCH_BURST_MS, type WatchEvent } from './volume'
 
 /** Hops, not depth: what bounds a symlink cycle. Same limit as Linux. */
 const MAX_SYMLINK_HOPS = 40
@@ -92,10 +92,24 @@ function localVersions(): () => Version {
 	return () => `local:${author}:${++n}`
 }
 
-/** T7. Declared so this is a whole `Volume` — `chroot` wraps one, not a half. */
-const later = async (): Promise<never> => {
-	throw new Error('ENOSYS: not implemented yet')
+/**
+ * The author tag inside a `Version`: everything before its last `:`. Storage
+ * treats a version as opaque, and this is the one thing anything above it reads
+ * out of one — the same tag the engine filters its push on (design, push-filter
+ * bullet), so the format is a standing contract between minters, not a detail
+ * of `watch`.
+ *
+ * A version with no `:` names no author, so it reads as somebody else's: a
+ * consumer that answers only remote changes then answers one time too many,
+ * which is recoverable, rather than never, which is not.
+ */
+const authorOf = (version: Version): string => {
+	const cut = version.lastIndexOf(':')
+	return cut === -1 ? version : version.slice(0, cut)
 }
+
+/** The only `source` this model can report: some other replica wrote the row. */
+const REMOTE = 'remote'
 
 export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }): Volume {
 	const mint = opts?.mintVersion ?? localVersions()
@@ -365,6 +379,275 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				if (isDir(child)) queue.push(child.id)
 			}
 		return out
+	}
+
+	/**
+	 * Was this row written somewhere else? The old model answered by threading a
+	 * `MutationOptions.origin` through every write, which the sync engine tagged
+	 * `'remote'`; this model deletes origin tags outright, and the row answers
+	 * for itself, because its `Version` carries its author.
+	 *
+	 * That is what keeps `WatchEvent.source` worth having: a consumer watches a
+	 * file it also writes, and must react only to the writes it did not make —
+	 * frieren re-reads an app's state on a remote change and would loop on its
+	 * own. Nothing in the types can recover this; it is why `source` outlived
+	 * the origins it used to carry.
+	 *
+	 * `me` is sampled from the mint rather than configured, because the caller
+	 * may mint versions itself (the engine will). One burned version is cheaper
+	 * than a second option that has to agree with the first: versions are opaque
+	 * and only ever compared for equality, so a gap in the counter costs nothing.
+	 */
+	let me: string | undefined
+	const foreign = (row: Node): boolean => {
+		me ??= authorOf(mint())
+		return authorOf(row.version) !== me
+	}
+
+	/**
+	 * The change feed, whichever way this store offers it: the push `subscribe`,
+	 * or a poll of `since` for a store that has none. Both hand over whole
+	 * committed rows, so nothing above can tell them apart beyond latency —
+	 * which is what lets the seam leave `subscribe` optional at all.
+	 */
+	async function changes(listener: (rows: Node[]) => void): Promise<() => void> {
+		if (store.subscribe) return store.subscribe(listener)
+		// Start at the tip: a watch reports what happens after it, never the
+		// history the feed was already holding.
+		let cursor = await drain()
+		let reading = false
+		const tick = setInterval(() => {
+			if (reading) return // a slow read is not a reason to start another
+			reading = true
+			const rows: Node[] = []
+			drain(cursor, rows)
+				.then((at) => {
+					cursor = at
+					if (rows.length > 0) listener(rows)
+				})
+				// A poll that failed is retried by the next tick, from the same cursor.
+				.catch(() => {})
+				.finally(() => {
+					reading = false
+				})
+		}, WATCH_BURST_MS)
+		return () => clearInterval(tick)
+	}
+
+	/** Read the feed to its end from `cursor`, collecting the rows if asked. */
+	async function drain(cursor?: Cursor, into?: Node[]): Promise<Cursor | undefined> {
+		for (;;) {
+			const page = await store.since(cursor)
+			into?.push(...page.nodes)
+			// The contract has `since` always hand a cursor back; a store that does
+			// not gives no next position, so this read is the last one.
+			if (page.next === undefined) return cursor
+			cursor = page.next
+			if (page.nodes.length === 0) return cursor
+		}
+	}
+
+	/**
+	 * One path, watched the way inotify watches one: the resolved row (its own
+	 * edits) AND the `(directory, name)` that binds the path (a rebind). Either
+	 * may be missing — a watch on a path that does not exist yet binds as soon
+	 * as something takes the name.
+	 *
+	 * Delivery coalesces onto a microtask, not the window `watchTree` uses: this
+	 * watches ONE row, so a burst is already bounded by how often that row is
+	 * written, and an event here carries a change rather than asking for a re-scan.
+	 */
+	async function watchPath(
+		path: string,
+		listener: (event: WatchEvent) => void
+	): Promise<() => void> {
+		let node: NodeId | null = null
+		let dir: NodeId | null = null
+		let name = ''
+		async function bind(): Promise<void> {
+			// Every way of not being there — missing, unwalkable, looping — is the
+			// same answer to a watch: unbound.
+			node = (await resolve(path, true).catch(() => null))?.id ?? null
+			const parent = await parentOf(path).catch(() => null)
+			dir = parent?.dir.id ?? null
+			name = parent?.name ?? ''
+		}
+		await bind()
+
+		let scheduled = false
+		let rebind = false
+		let fire = false
+		let remote = false
+		let stopped = false
+
+		const off = await changes((rows) => {
+			for (const row of rows) {
+				const hitsNode = row.id === node
+				const hitsName = dir !== null && row.parent === dir && row.name === name && !row.deleted
+				// With no parent directory yet there is no name to compare against, so
+				// any directory row is a candidate: re-resolve, and fire only if it
+				// turned out to bind the path.
+				const mayBind = dir === null && isDir(row)
+				if (!hitsNode && !hitsName && !mayBind) continue
+				if (hitsNode || hitsName) fire = true
+				// The row left the path (deleted, or moved elsewhere), or something
+				// else moved onto it: either way the path resolves somewhere new.
+				const moved = row.deleted === true || row.parent !== dir || row.name !== name
+				if (hitsName || mayBind || (hitsNode && moved)) rebind = true
+				if (foreign(row)) remote = true
+			}
+			if (!fire && !rebind) return
+			// Coalesce the commits of one turn into one event.
+			if (scheduled) return
+			scheduled = true
+			queueMicrotask(async () => {
+				scheduled = false
+				const definite = fire
+				const unbound = node === null
+				const source = remote ? REMOTE : undefined
+				fire = false
+				remote = false
+				if (rebind) {
+					rebind = false
+					await bind()
+				}
+				// A speculative re-resolve that bound nothing is not an event.
+				if (!stopped && (definite || (unbound && node !== null))) listener({ source })
+			})
+		})
+
+		return () => {
+			stopped = true // a scheduled delivery must not outlive the watch
+			off()
+		}
+	}
+
+	/**
+	 * A subtree, watched as a WAKE: "the listing you are showing is stale". Two
+	 * things can make it stale, and this is the whole of it.
+	 *
+	 * - A directory row at or under the root was committed. Every create, delete
+	 *   and rename stamps the directory it happened in, in the SAME commit (the
+	 *   parent-mtime rule above), so a committed directory row IS a listing that
+	 *   changed — while a content edit writes one file row and no directory,
+	 *   which is exactly why editing a file does not wake a tree watcher. A
+	 *   tombstone counts too: it always removes an entry from somewhere.
+	 * - A row the resolution walked through was committed. That is the way in,
+	 *   and a rename of an ancestor empties the subtree without touching one row
+	 *   inside it — a child's location is `(parent, name)`, and neither field
+	 *   changed. Those rows are re-resolved instead of read, and the wake is the
+	 *   root having moved. A root that does not exist yet holds the rows its
+	 *   walk did reach, which is precisely what the create that binds it stamps.
+	 *
+	 * Re-resolving the way in also means a re-pointed symlink re-targets the
+	 * watch, where `inotify_add_watch` would have pinned it at add time. Nothing
+	 * here can hold a resolution still: every read on this volume follows the
+	 * link, so a watch that did not would report on a subtree its owner has
+	 * stopped reading.
+	 */
+	async function watchTree(
+		path: string,
+		listener: (event: WatchEvent) => void
+	): Promise<() => void> {
+		let root: NodeId | null = null
+		let chain = new Set<NodeId>([ROOT])
+		async function bind(): Promise<void> {
+			const walked: Node[] = []
+			root = (await resolve(path, true, walked).catch(() => null))?.id ?? null
+			chain = new Set([ROOT, ...walked.map((row) => row.id)])
+		}
+		await bind()
+
+		/** Is `id` the root or under it? Bounded by a visited set (rule 9). */
+		async function under(id: NodeId, memo: Map<NodeId, boolean>): Promise<boolean> {
+			const climbed: NodeId[] = []
+			const seen = new Set<NodeId>()
+			let at: NodeId | undefined = id
+			let answer = false
+			while (at !== undefined && !seen.has(at)) {
+				const known = memo.get(at)
+				if (known !== undefined) {
+					answer = known
+					break
+				}
+				if (at === root) {
+					answer = true
+					break
+				}
+				if (at === ROOT) break
+				seen.add(at)
+				climbed.push(at)
+				at = (await store.get(at))?.parent
+			}
+			// Whatever the answer, it holds for every id on the way up: they all
+			// reach the root through the same rows.
+			for (const step of climbed) memo.set(step, answer)
+			return answer
+		}
+
+		async function assess(rows: Node[]): Promise<{ wake: boolean; source?: string }> {
+			const memo = new Map<NodeId, boolean>()
+			let wake = false
+			let probe = false
+			let remote = false
+			for (const row of rows) {
+				const structural = isDir(row) || row.deleted === true
+				const inside =
+					structural && root !== null && (row.id === root || (await under(row.parent, memo)))
+				const way = chain.has(row.id)
+				if (!inside && !way) continue
+				if (inside) wake = true
+				if (way) probe = true
+				if (foreign(row)) remote = true
+			}
+			if (probe) {
+				const was = root
+				await bind()
+				if (root !== was) wake = true
+			}
+			// A window that carried anyone else's row is reported as remote: a
+			// consumer that answers only remote changes must not miss one because a
+			// local write shared its window.
+			return { wake, source: remote ? REMOTE : undefined }
+		}
+
+		let queued: Node[] = []
+		let timer: ReturnType<typeof setTimeout> | undefined
+		let stopped = false
+		// At most one delivery per window, always with a trailing one. Arming only
+		// while something is queued keeps an idle watch timer-free; re-arming after
+		// a delivery is what bounds the RATE — the next change waits out a fresh
+		// window instead of firing at once.
+		const arm = (): void => {
+			if (timer !== undefined || stopped) return
+			timer = setTimeout(async () => {
+				timer = undefined
+				if (queued.length === 0) return
+				const rows = queued
+				queued = []
+				// A read that failed may have hidden a change: wake rather than miss it.
+				const { wake, source } = await assess(rows).catch(() => ({
+					wake: true,
+					source: undefined
+				}))
+				if (!wake || stopped) return
+				arm()
+				listener({ source })
+			}, WATCH_BURST_MS)
+		}
+
+		const off = await changes((rows) => {
+			queued.push(...rows)
+			arm()
+		})
+
+		return () => {
+			stopped = true
+			queued = []
+			if (timer !== undefined) clearTimeout(timer)
+			timer = undefined
+			off()
+		}
 	}
 
 	// Read caller-owned inputs before the first await. Reuse them on every retry.
@@ -660,7 +943,9 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			await walk(node.id, path)
 		},
 
-		watch: later
+		async watch(path, listener, opts) {
+			return opts?.recursive ? watchTree(path, listener) : watchPath(path, listener)
+		}
 	}
 
 	return vol
