@@ -71,6 +71,10 @@ export type SyncOptions = {
 	 * `hydratingBlobs` fetches the content a read actually asks for. A pure
 	 * materialization choice — the rows are identical either way, so it needs no
 	 * agreement with the peer and no protocol support.
+	 *
+	 * Eager is the other policy, and it is a prefetch, not a promise: it moves the
+	 * bytes the peer can produce WHEN the page lands. `hydratingBlobs` is what
+	 * answers for the rest, at either setting.
 	 */
 	lazyContent?: boolean
 }
@@ -202,9 +206,18 @@ async function drain(
  * check is what makes a rename, a copy, and a re-push after a crash cost nothing:
  * content is keyed by hash, so identical bytes are one blob wherever they appear.
  *
- * A hash the source cannot produce is skipped, not fatal. The source is lazy, or
- * swept, and the row still belongs at the target: a row naming absent content is
- * a stub, which the seam allows and `hydratingBlobs` resolves.
+ * A hash the source cannot produce is skipped, not fatal, and the row travels
+ * anyway: the source is lazy, or its blob was swept, and a row naming absent
+ * content is a stub the seam allows. Failing instead would let one unfetchable
+ * blob stop every later page from converging, for good.
+ *
+ * That skip is final as far as the feed is concerned. A blob write takes no feed
+ * position, so a source that hydrates the hash later produces no row, and no
+ * scan brings the engine back to it. Missing content is therefore recovered on
+ * demand, by a read through `hydratingBlobs` — which is why an eager replica may
+ * want that wrapper too. A replica that needs the bytes present whether or not
+ * anything reads them wants a sweep of its own rows (`content` set, `has` false),
+ * derivable from the table at any time and no business of the cycle.
  */
 async function transfer(rows: Node[], from: Store['blobs'], into: Store['blobs']): Promise<void> {
 	const hashes = new Set<Hash>()
@@ -221,10 +234,14 @@ async function transfer(rows: Node[], from: Store['blobs'], into: Store['blobs']
 }
 
 /**
- * A store whose content map falls through to a peer: the lazy half of selective
+ * A store whose content map falls through to a peer: the demand side of selective
  * content. `sync` with `lazyContent` takes the rows only, so a file reads as a
  * row naming bytes this replica does not hold — and a read through this wrapper
  * fetches those bytes once, verifies them, and keeps them.
+ *
+ * It is the answer for any hash this replica lacks, not only a lazy pull: an
+ * eager pull moves what the peer could produce at the time, and a peer that was
+ * itself a stub then will answer for it now.
  *
  * `has` stays a local question. It answers "do I hold these bytes", which is what
  * decides a transfer; a wrapper that answered for the peer too would talk this

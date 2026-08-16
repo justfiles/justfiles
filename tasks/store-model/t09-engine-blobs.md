@@ -68,6 +68,32 @@ converging, for good. Wrong bytes are a different fact — nothing in the system
 true if a hash stops naming its content — so `verifiedBlobs` throws, the cycle
 fails, and the caller hears about it.
 
+**A skipped hash never comes back through the feed, and the demand side is what
+answers for it.** A blob write takes no feed position, so a source that hydrates
+that hash later produces no row, and no scan returns the engine to it: the cycle
+has passed it for good (raised by @codex on #510, confirmed). The recovery is a
+read through `hydratingBlobs`, which is why an eager replica may want the wrapper
+too — eager is a prefetch of what the peer could produce when the page landed,
+not a promise about the bytes. Pinned by a test: a peer that holds the row and
+not the bytes, a second cycle that fetches nothing, and a read that succeeds once
+the peer can answer.
+
+What this deliberately does NOT add is retry tracking. A set of wanted hashes
+would have to outlive a restart — nothing in the feed can rebuild it — so it means
+another durable slot and another thing that can drift: engine machinery of the
+kind this model exists to delete. And it is not the only way: a replica that
+needs bytes present whether or not anything reads them can sweep its own rows
+(`content` set, `has` false) and fetch what it finds — derivable from the table at
+any time, needing no state and no cycle involvement. That belongs to whoever
+ships offline materialization, and it also covers the cases a retry list would
+miss (a store restored from rows alone, a half-finished download).
+
+The one place an unbacked row could travel far is a push, and the reset semantics
+already cover it: `adopt-mine` in `packages/core/src/reset.ts` truncates the tree
+and sync tables but keeps the content tables, so a lazy replica's `takeMine`
+([T11](t11-lifecycle-wrapper.md)) re-authors stubs the authority can still back.
+A `wipe` drops content and rows together, so there is nothing to re-author.
+
 **Only bytes coming FROM a peer are verified.** The pull wraps `local.blobs` in
 `verifiedBlobs`, and so does `hydratingBlobs`. The push does not: bytes leaving
 this replica are its own, and rule 7 puts the check on the store that accepts a

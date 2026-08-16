@@ -192,6 +192,32 @@ describe('sync: content on the pull', () => {
 		expect(await local.blobs.has(hash)).toBe(false)
 		expect(await local.child(ROOT, 'notes.txt')).toMatchObject({ content: hash })
 	})
+
+	it('takes a row whose bytes the peer cannot produce, and reads it when the peer can', async () => {
+		const { local, remote, there, opts } = pair()
+		await there.writeFile('/notes.txt', enc.encode('hello'))
+		const hash = await hashOf('hello')
+		// A peer holding the row and not the bytes: itself a lazy replica, or a blob
+		// still on its way. The rows have to converge regardless, so a fetch that finds
+		// nothing is skipped rather than fatal — one unfetchable blob must not stop
+		// every later page.
+		const stub: Store = {
+			...remote,
+			blobs: { ...remote.blobs, has: async () => false, get: async () => null }
+		}
+
+		await sync(local, stub, opts)
+
+		expect(await local.child(ROOT, 'notes.txt')).toMatchObject({ content: hash })
+		expect(await local.blobs.has(hash)).toBe(false)
+
+		// And no later cycle comes back to that hash: a blob write takes no feed
+		// position, so the peer hydrating it produces no row for a scan to find.
+		await sync(local, remote, opts)
+		expect(await local.blobs.has(hash)).toBe(false)
+		// The demand side is what closes it, and closing it there is enough.
+		expect(await read(storeVolume(hydratingBlobs(local, remote)), '/notes.txt')).toBe('hello')
+	})
 })
 
 describe('sync: lazy content', () => {
