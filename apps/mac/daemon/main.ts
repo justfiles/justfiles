@@ -130,7 +130,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 			'/store/:id': {
 				POST: async (req) => {
 					try {
-						await installStoreApp(req.params.id)
+						await installStoreApp(await getKernel(), req.params.id)
 						return new Response(null, { status: 204 })
 					} catch (error) {
 						return new Response(failure(error), { status: 502 })

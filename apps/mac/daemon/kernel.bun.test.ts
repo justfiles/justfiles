@@ -57,7 +57,9 @@ test('seeds the builtin catalog into the fresh Volume', async () => {
 	const ids = (await kernel.list()).map((app) => app.id)
 	// reconcile ran during buildKernel — the launcher's catalog is populated.
 	expect(ids).toContain(FILES)
-	expect(ids).toContain('justfiles.code')
+	expect(ids).toContain(SETTINGS)
+	// Code is NOT seeded (see builtins.ts): it installs from the App Store tile.
+	expect(ids).not.toContain('justfiles.code')
 })
 
 test('Files reads the real volume through the system-scoped volume capability', async () => {

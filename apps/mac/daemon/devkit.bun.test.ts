@@ -5,7 +5,8 @@
 // install — and assert the freshly-built app lands in the SAME catalog the launcher lists,
 // then that `run` installs a hidden, servable preview that `stop` tears down. Bun-only
 // (`bun test`): the reducer sandbox uses blob-URL Workers and the toolchain worker compiles
-// with `Bun.build`.
+// with `Bun.build`. Needs the network: Code is not seeded, so the run installs it from
+// JustApps first, exactly as the App Store tile does.
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -16,6 +17,7 @@ import { volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
+import { installStoreApp } from './store.ts'
 
 const CODE = 'justfiles.code'
 const NEW_APP = 'demo.widget'
@@ -26,6 +28,7 @@ beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), 'daemon-devkit-'))
 	const fs = volume(await nativeStorage(root))
 	kernel = await buildKernel(fs, daemonAccounts(fs))
+	await installStoreApp(kernel, CODE)
 })
 afterAll(async () => {
 	await rm(root, { recursive: true, force: true })

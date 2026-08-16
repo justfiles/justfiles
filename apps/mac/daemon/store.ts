@@ -1,7 +1,6 @@
 import { installApp } from '@justfiles/app/appstore'
-import type { CapabilityDecl } from '@justfiles/app/runtime'
+import type { CapabilityDecl, Kernel } from '@justfiles/app/runtime'
 import { runnerAppStore } from '../../shared/justapps'
-import { getKernel } from './kernel'
 
 // The App Store seam for the launcher. The daemon browses and installs — not the
 // webview — because the kernel and the Volume live here; the tile only renders what
@@ -41,10 +40,10 @@ export async function storeCatalog(): Promise<StoreApp[]> {
 
 // Install (or re-install, for a held capability-escalating update) one published app.
 // Resolves the store's current pointer rather than trusting the version the tile saw.
-export async function installStoreApp(id: string): Promise<void> {
+export async function installStoreApp(kernel: Kernel, id: string): Promise<void> {
 	const store = await runnerAppStore()
 	if (!store) throw new Error('app store unavailable')
 	const app = await store.latest(id)
 	if (!app) throw new Error(`not in the app store: ${id}`)
-	await installApp(await getKernel(), store, app)
+	await installApp(kernel, store, app)
 }
