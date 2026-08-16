@@ -1,29 +1,19 @@
 {
 	"name": "@justfiles/app-code",
 	"version": "0.2.7",
+	"private": true,
 	"description": "Build and run apps directly in Kodama.",
 	"type": "module",
 	"main": "./dist/manifest.json",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
-		"directory": "packages/app-code"
-	},
-	"keywords": [
-		"kodama-app"
-	],
-	"files": [
-		"dist"
-	],
-	"publishConfig": {
-		"access": "public"
+		"url": "git+https://github.com/justfiles/app-code.git"
 	},
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
 		"preview": "vite preview",
-		"typecheck": "tsc --noEmit",
-		"prepublishOnly": "pnpm build"
+		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@codemirror/lang-javascript": "^6.2.0",

@@ -6,7 +6,10 @@ export const RUNNER_STORE_SCHEMA = 'justapps/store/v1'
 export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-const BUILTIN_IDS = ['justfiles.notes', 'justfiles.paint']
+// Hosted apps this release seeds. `justfiles.code` is here rather than packaged
+// because its bundle carries the devkit sysroot — 238 files — and mounting them
+// from an immutable release keeps them out of every host's own artifact.
+const BUILTIN_IDS = ['justfiles.code', 'justfiles.notes', 'justfiles.paint']
 const REQUEST_TIMEOUT_MS = 10_000
 
 interface StoreEntry {

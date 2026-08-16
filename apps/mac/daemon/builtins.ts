@@ -4,7 +4,6 @@ import { mergeAppStores, runnerAppStore } from '../../shared/justapps'
 import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [
-	{ id: 'justfiles.code', packageDir: 'app-code' },
 	{ id: 'justfiles.files', packageDir: 'app-files' },
 	{ id: 'justfiles.settings', packageDir: 'app-settings' }
 ]
