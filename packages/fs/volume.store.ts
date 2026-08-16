@@ -279,26 +279,25 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			// An id-local holder does not prove that the path still reaches this
 			// parent. It may have moved before another writer took the name.
 			if ((await find(path, false)) === null) throw e
-			// The name is taken. That IS the answer to a claim; a plain
-			// create-or-overwrite replans onto the winner instead — unless the holder
-			// is one the path cannot resolve through (a dangling symlink), which will
-			// never resolve, so replanning would spin.
-			if (exclusive || (await find(path)) === null) throw new Error(`EEXIST: ${path}`)
+			// A write through a dangling link can never resolve, so the name is
+			// taken. A symlink payload replaces the link itself and replans instead.
+			if (exclusive || (payload.type !== 'symlink' && (await find(path)) === null))
+				throw new Error(`EEXIST: ${path}`)
 			throw e
 		}
 	}
 
 	/**
 	 * Create the row a path names, or replace the one already there — one commit
-	 * either way. `exclusive` refuses a taken name (a claim, decided by the store);
-	 * `update` refuses a free one (an edit, so a stale path cannot rebuild a tree).
+	 * either way. A symlink payload replaces the final link; other payloads follow
+	 * it. `exclusive` refuses a taken name; `update` refuses a free one.
 	 */
 	async function place(
 		path: string,
 		payload: Payload,
 		opts?: { exclusive?: boolean; update?: boolean }
 	): Promise<void> {
-		const there = await find(path)
+		const there = await find(path, payload.type !== 'symlink')
 		if (there !== null) {
 			if (opts?.exclusive) throw new Error(`EEXIST: ${path}`)
 			if (isDir(there)) throw new Error(`EISDIR: ${path}`)

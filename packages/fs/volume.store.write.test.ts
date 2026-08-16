@@ -820,6 +820,40 @@ describe('cp', () => {
 		expect(await read(vol, '/copy.md')).toBe('go')
 	})
 
+	it('replaces a destination link without changing its target', async () => {
+		const vol = storeVolume(memStore())
+		await vol.writeFile('/target.txt', enc.encode('keep'))
+		await vol.symlink('/source-target', '/source')
+		await vol.symlink('/target.txt', '/dest')
+
+		await vol.cp('/source', '/dest')
+
+		expect(await vol.readlink('/dest')).toBe('/source-target')
+		expect(await read(vol, '/target.txt')).toBe('keep')
+	})
+
+	it('retries when a dangling destination link wins the name', async () => {
+		const store = memStore()
+		const other = storeVolume(store)
+		await other.symlink('/source-target', '/source')
+		let raced = false
+		const racy: Store = {
+			...store,
+			async commit(writes, guards) {
+				if (!raced && writes.some((row) => row.parent === ROOT && row.name === 'dest')) {
+					raced = true
+					await other.symlink('/missing', '/dest')
+				}
+				return store.commit(writes, guards)
+			}
+		}
+
+		await storeVolume(racy).cp('/source', '/dest')
+
+		expect(raced).toBe(true)
+		expect(await other.readlink('/dest')).toBe('/source-target')
+	})
+
 	it('copies a subtree with new ids and reused hashes', async () => {
 		const store = memStore()
 		const vol = storeVolume(store)
