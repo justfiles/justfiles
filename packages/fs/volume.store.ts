@@ -214,8 +214,11 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	 * does — and with it the row's version. That version is what `rm -r` guards
 	 * on after enumerating, so a create it never saw cannot slip in behind it.
 	 *
-	 * Deliberately NOT guarded: two creates in one directory must both land, and
-	 * neither depends on what the other wrote.
+	 * Every caller guards what it stamps. This is a whole-row write, so a stamp
+	 * built from a stale read would put a removed or moved directory back exactly
+	 * as it was. The cost is that two writers in one directory replan instead of
+	 * running side by side — which is what a real filesystem does too, by taking
+	 * that directory's lock.
 	 */
 	const stamp = (dir: Node): Node => ({ ...dir, mtimeNs: now(), version: mint() })
 
@@ -252,7 +255,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		)
 
 	/** Claim a free name for a new row, and stamp the directory that gained it. */
-	async function create(path: string, payload: Payload): Promise<void> {
+	async function create(path: string, payload: Payload, exclusive?: boolean): Promise<void> {
 		const { dir, name } = await parentOf(path)
 		const row: Node = {
 			id: crypto.randomUUID(), // minted once, never rebound
@@ -263,15 +266,21 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			...payload
 		}
 		try {
-			await store.commit([row, stamp(dir)], [{ free: { parent: dir.id, name } }])
+			await store.commit([row, stamp(dir)], [{ free: { parent: dir.id, name } }, unchanged(dir)])
 		} catch (e) {
 			if (!(e instanceof GuardError)) throw e
-			// The name went to someone else. Usually that is an ordinary race and the
-			// caller replans onto the winner — but a holder the path does not resolve
-			// THROUGH (a dangling symlink) will never resolve, so replanning would
-			// spin. The name is taken, which is what EEXIST says.
-			if ((await find(path)) === null && (await store.child(dir.id, name)) !== null)
-				throw new Error(`EEXIST: ${path}`)
+			// WHICH guard failed decides what this is. A name still free means the
+			// PARENT moved under this attempt, so the caller replans — the stamp
+			// writes the whole directory row back, and a row read before a concurrent
+			// `rm -r` would bring that directory back to life after the removal
+			// reported success.
+			const holder = await store.child(dir.id, name)
+			if (holder === null) throw e
+			// The name is taken. That IS the answer to a claim; a plain
+			// create-or-overwrite replans onto the winner instead — unless the holder
+			// is one the path cannot resolve through (a dangling symlink), which will
+			// never resolve, so replanning would spin.
+			if (exclusive || (await find(path)) === null) throw new Error(`EEXIST: ${path}`)
 			throw e
 		}
 	}
@@ -293,14 +302,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			return swap(there, payload)
 		}
 		if (opts?.update) throw new Error(`ENOENT: ${path}`)
-		try {
-			await create(path, payload)
-		} catch (e) {
-			// Losing the name IS the answer to a claim. A plain write promised
-			// create-OR-overwrite and never a claim, so it replans onto the winner.
-			if (opts?.exclusive && e instanceof GuardError) throw new Error(`EEXIST: ${path}`)
-			throw e
-		}
+		await create(path, payload, opts?.exclusive)
 	}
 
 	/**
@@ -478,10 +480,14 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 					else if ((await store.children(node.id)).nodes.length > 0)
 						throw new Error(`ENOTEMPTY: ${path}`)
 				}
-				// One batch, one guard per row it replaces. A directory's version moves
-				// on every create inside it, so an entry this walk never saw fails the
-				// commit, and the attempt enumerates again.
-				await store.commit([...dead.map(tomb), stamp(dir)], dead.map(unchanged))
+				// One batch, one guard per row it replaces — the parent it stamps
+				// included. A directory's version moves on every create inside it, so an
+				// entry this walk never saw fails the commit, and the attempt enumerates
+				// again.
+				await store.commit(
+					[...dead.map(tomb), stamp(dir)],
+					[...dead.map(unchanged), unchanged(dir)]
+				)
 			})
 		},
 
@@ -505,14 +511,28 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				const guards: Guard[] = [unchanged(node)]
 				if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
 				else {
-					// POSIX rename replaces. The displaced row is tombstoned in the SAME
-					// commit, so no reader ever sees the name twice or not at all.
+					// POSIX rename replaces, but only like for like. A directory is never
+					// replaced by a file, a file never by a directory, and a directory
+					// that still holds entries is never replaced at all: its children
+					// would be left parented on a tombstone, which loses them.
+					if (isDir(target) !== isDir(node))
+						throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${newPath}`)
+					// Safe to read and then act on: the guard below fails if anything is
+					// created inside the target after this listing (the stamp rule).
+					if (isDir(target) && (await store.children(target.id)).nodes.length > 0)
+						throw new Error(`ENOTEMPTY: ${newPath}`)
+					// The displaced row is tombstoned in the SAME commit, so no reader
+					// ever sees the name twice or not at all.
 					writes.push(tomb(target))
 					guards.push(unchanged(target))
 				}
 				// Both directories changed shape — one stamp when they are one directory.
 				writes.push(stamp(from.dir))
-				if (to.dir.id !== from.dir.id) writes.push(stamp(to.dir))
+				guards.push(unchanged(from.dir))
+				if (to.dir.id !== from.dir.id) {
+					writes.push(stamp(to.dir))
+					guards.push(unchanged(to.dir))
+				}
 				await store.commit(writes, guards)
 			})
 		},
@@ -535,11 +555,21 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			}
 
 			if (!opts?.recursive) throw new Error(`EISDIR: ${src}`)
+			// A directory cannot be copied into itself: the copy would land inside
+			// what is still being listed, and the walk would follow it down forever.
+			// `cp` refuses for the same reason.
+			if (dest === src || dest.startsWith(src === '/' ? '/' : `${src}/`))
+				throw new Error(`EINVAL: cannot copy ${src} into itself`)
+			// Listed BEFORE the destination is created, so a destination that still
+			// lands inside the source — through a link this path check cannot see —
+			// copies the children that were there instead of finding its own copy.
+			const kids: Node[] = []
+			for await (const child of childrenOf(node.id)) kids.push(child)
+
 			const there = await find(dest)
 			if (there === null) await vol.mkdir(dest, { mode: node.mode & 0o7777 })
 			else if (!isDir(there)) throw new Error(`ENOTDIR: ${dest}`)
-			for await (const child of childrenOf(node.id))
-				await vol.cp(join(src, child.name), join(dest, child.name), opts)
+			for (const child of kids) await vol.cp(join(src, child.name), join(dest, child.name), opts)
 		},
 
 		async symlink(target, path) {

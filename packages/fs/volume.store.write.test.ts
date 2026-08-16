@@ -90,13 +90,17 @@ describe('writeFile: a create claims a name', () => {
 		expect((await rowAt(store, '/kyoto.md')).content).toBe(await hash(enc.encode('go')))
 	})
 
-	it('claims the name with a free guard', async () => {
+	it('claims the name with a free guard, and holds the parent it stamps', async () => {
 		const store = memStore()
+		const root = await store.get(ROOT)
 		const commit = vi.spyOn(store, 'commit')
 
 		await storeVolume(store).writeFile('/kyoto.md', enc.encode('go'))
 
-		expect(commit.mock.calls[0]?.[1]).toEqual([{ free: { parent: ROOT, name: 'kyoto.md' } }])
+		expect(commit.mock.calls[0]?.[1]).toEqual([
+			{ free: { parent: ROOT, name: 'kyoto.md' } },
+			{ version: { id: ROOT, is: root?.version } }
+		])
 	})
 
 	it('gives the name to exactly one of N concurrent claimants', async () => {
@@ -281,6 +285,54 @@ describe('the parent stamp', () => {
 		expect(parent?.version).not.toBe(before.version)
 		expect(parent?.mtimeNs).toBeGreaterThanOrEqual(before.mtimeNs)
 		expect((await rowAt(store, '/notes')).version).toBe(parent?.version)
+	})
+
+	it('never brings back a directory that was removed under a create', async () => {
+		// A stamp writes the WHOLE parent row back, so a row read before a removal
+		// would restore a directory that `rm -r` already reported gone. The parent
+		// is guarded for that reason, not only stamped.
+		const store = memStore()
+		const vol = storeVolume(store)
+		const other = storeVolume(store)
+		await vol.mkdir('/notes')
+		const notes = await rowAt(store, '/notes')
+
+		let raced = false
+		const racy: Store = {
+			...store,
+			async commit(writes, guards) {
+				// The create resolved `/notes`; the removal lands before it commits.
+				if (!raced && writes.some((w) => w.parent === notes.id && !w.deleted)) {
+					raced = true
+					await other.rm('/notes', { recursive: true })
+				}
+				return store.commit(writes, guards)
+			}
+		}
+
+		await expect(storeVolume(racy).writeFile('/notes/kyoto.md', enc.encode('go'))).rejects.toThrow(
+			/^ENOENT/
+		)
+		expect(raced).toBe(true)
+		expect(await vol.exists('/notes')).toBe(false)
+		expect((await store.get(notes.id))?.deleted).toBe(true)
+	})
+
+	it('lets two creates in one directory both land', async () => {
+		// The price of guarding the parent: creates in one directory replan instead
+		// of blocking, the way a real filesystem takes that directory's lock. What
+		// they must never do is report EEXIST at each other — the name was free.
+		const vol = storeVolume(memStore())
+		await vol.mkdir('/notes')
+
+		await Promise.all([
+			vol.writeFile('/notes/a.md', enc.encode('a')),
+			vol.writeFile('/notes/b.md', enc.encode('b')),
+			vol.mkdir('/notes/c'),
+			vol.symlink('/notes/a.md', '/notes/d')
+		])
+
+		expect((await vol.readdir('/notes')).map((e) => e.name)).toEqual(['a.md', 'b.md', 'c', 'd'])
 	})
 
 	it('rides in the same commit as a delete and as a rename', async () => {
@@ -514,6 +566,28 @@ describe('rename', () => {
 		expect((await vol.readdir('/trips')).map((e) => e.name)).toEqual([])
 	})
 
+	it('replaces like for like, and never a directory that still holds entries', async () => {
+		// A tombstoned directory leaves its children parented on a tombstone —
+		// unreachable, which is the same as losing them. POSIX refuses the whole
+		// class, so this does too.
+		const vol = storeVolume(memStore())
+		await vol.writeFile('/incoming.txt', enc.encode('mine'))
+		await vol.mkdir('/archive')
+		await vol.writeFile('/archive/kyoto.md', enc.encode('go'))
+		await vol.mkdir('/trips')
+
+		await expect(vol.rename('/incoming.txt', '/archive')).rejects.toThrow(/^EISDIR/)
+		await expect(vol.rename('/trips', '/incoming.txt')).rejects.toThrow(/^ENOTDIR/)
+		await expect(vol.rename('/trips', '/archive')).rejects.toThrow(/^ENOTEMPTY/)
+		expect(await read(vol, '/archive/kyoto.md')).toBe('go')
+
+		// An EMPTY directory is replaced, as POSIX has it.
+		await vol.mkdir('/empty')
+		await vol.rename('/trips', '/empty')
+		expect(await vol.exists('/trips')).toBe(false)
+		expect((await vol.stat('/empty')).type).toBe(FileType.Directory)
+	})
+
 	it('moves a folder with everything under it', async () => {
 		const vol = storeVolume(memStore())
 		await vol.mkdir('/trips')
@@ -624,10 +698,11 @@ describe('rm', () => {
 
 		expect(commit).toHaveBeenCalledTimes(1)
 		const [writes, guards] = commit.mock.calls[0] ?? []
-		// Four tombstones (the tree) plus the root's stamp; a guard per replaced row.
+		// Five tombstones (the tree) plus the root's stamp, and one guard per row
+		// the batch replaces — the stamped root included.
 		expect(writes?.filter((w) => w.deleted)).toHaveLength(5)
 		expect(writes).toHaveLength(6)
-		expect(guards).toHaveLength(5)
+		expect(guards).toHaveLength(6)
 		expect(await vol.exists('/trips')).toBe(false)
 	})
 
@@ -740,6 +815,33 @@ describe('cp', () => {
 
 		await expect(vol.cp('/trips', '/archive')).rejects.toThrow(/^EISDIR/)
 		await expect(vol.cp('/kyoto.md', '/trips')).rejects.toThrow(/^EISDIR/)
+	})
+
+	it('refuses to copy a directory into itself', async () => {
+		const vol = storeVolume(memStore())
+		await vol.mkdir('/a')
+		await vol.writeFile('/a/note.md', enc.encode('go'))
+
+		await expect(vol.cp('/a', '/a/b', { recursive: true })).rejects.toThrow(/^EINVAL/)
+		await expect(vol.cp('/a', '/a', { recursive: true })).rejects.toThrow(/^EINVAL/)
+		await expect(vol.cp('/', '/a/root', { recursive: true })).rejects.toThrow(/^EINVAL/)
+		expect((await vol.readdir('/a')).map((e) => e.name)).toEqual(['note.md'])
+	})
+
+	it('bounds a copy that lands inside its source through a link', async () => {
+		// The path check cannot see through a symlink, so the LISTING is what bounds
+		// the walk: the children are read once, before the destination exists. A
+		// live listing would find the copy it just made and never stop.
+		const vol = storeVolume(memStore())
+		await vol.mkdir('/a')
+		await vol.writeFile('/a/note.md', enc.encode('go'))
+		await vol.symlink('/a', '/link')
+
+		await vol.cp('/a', '/link/b', { recursive: true })
+
+		expect((await vol.readdir('/a')).map((e) => e.name)).toEqual(['b', 'note.md'])
+		expect((await vol.readdir('/a/b')).map((e) => e.name)).toEqual(['note.md'])
+		expect(await read(vol, '/a/b/note.md')).toBe('go')
 	})
 
 	it('overwrites a file at the destination and merges into a directory', async () => {
