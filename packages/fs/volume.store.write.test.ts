@@ -635,6 +635,16 @@ describe('rename', () => {
 		expect(await vol.exists('/trips')).toBe(false)
 	})
 
+	it('refuses to move a directory below any of its descendants', async () => {
+		const vol = storeVolume(memStore())
+		await vol.mkdir('/a/b', { recursive: true })
+
+		await expect(vol.rename('/a', '/a/b/c')).rejects.toThrow(/^EINVAL/)
+
+		expect(await vol.exists('/a/b')).toBe(true)
+		expect(await vol.exists('/a/b/c')).toBe(false)
+	})
+
 	it('moves the link, not what it points at', async () => {
 		const vol = storeVolume(memStore())
 		await vol.writeFile('/target.txt', enc.encode('original'))

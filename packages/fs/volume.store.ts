@@ -334,6 +334,19 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			await store.commit([{ ...change(node), version: mint() }], [unchanged(node)])
 		})
 
+	/** Whether `node` is `ancestor` or below it. Rule 9 requires a bounded parent walk. */
+	async function within(node: Node, ancestor: NodeId): Promise<boolean> {
+		const seen = new Set<NodeId>()
+		let at: Node | null = node
+		while (at !== null && !seen.has(at.id)) {
+			if (at.id === ancestor) return true
+			if (at.id === ROOT) return false
+			seen.add(at.id)
+			at = await store.get(at.parent)
+		}
+		return false
+	}
+
 	/** Every row under a directory. Bounded by a visited set (rule 9). */
 	async function descendants(id: NodeId): Promise<Node[]> {
 		const out: Node[] = []
@@ -502,10 +515,9 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 				const node = await store.child(from.dir.id, from.name)
 				if (node === null) throw new Error(`ENOENT: ${oldPath}`)
 				const to = await parentOf(newPath)
-				// A directory cannot take itself as its own parent — the commit would
-				// hold two rows for one id. A move onto a DEEPER descendant is the same
-				// mistake, and rule 9 leaves that one to the authority's guards.
-				if (to.dir.id === node.id) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
+				// Moving a row below itself makes a detached cycle.
+				if (await within(to.dir, node.id))
+					throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
 				const target = await store.child(to.dir.id, to.name)
 				if (target?.id === node.id) return // the same row, in the same place
 
@@ -562,14 +574,8 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			// Paths lie about ancestry when they cross a link. Walk ids so a copy
 			// cannot find its own output and run without bound.
 			const there = await find(dest)
-			let at: Node | null = there ?? (await parentOf(dest)).dir
-			const seen = new Set<NodeId>()
-			while (at !== null && !seen.has(at.id)) {
-				if (at.id === node.id) throw new Error(`EINVAL: cannot copy ${src} into itself`)
-				if (at.id === ROOT) break
-				seen.add(at.id)
-				at = await store.get(at.parent)
-			}
+			if (await within(there ?? (await parentOf(dest)).dir, node.id))
+				throw new Error(`EINVAL: cannot copy ${src} into itself`)
 
 			const kids: Node[] = []
 			for await (const child of childrenOf(node.id)) kids.push(child)
