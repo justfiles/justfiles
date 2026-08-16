@@ -41,6 +41,8 @@ import {
 	GuardError,
 	type Hash,
 	type Node,
+	type NodeId,
+	ROOT,
 	type Store,
 	type Version,
 	verifiedBlobs
@@ -301,16 +303,58 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 	// minters for one replica are the supported case, and each draws its own nonce.
 	const mint = versions(replica)
 	const fixes: Node[] = []
+	/** A buried id, and the id its content carries on under. */
+	const revived = new Map<NodeId, NodeId>()
+
+	/**
+	 * Where a row can actually live: its own id, if the peer still has it —
+	 * otherwise a new one, standing under a new one for its parent, and so on up.
+	 * The walk is what a single replacement misses: a row parented on a tombstone
+	 * is refused for ever, so reviving a node without reviving the chain it hangs
+	 * from just moves the refusal one level up. ROOT is never buried, so it ends.
+	 *
+	 * Only what this replica AUTHORED gets here, because the push filter is what
+	 * built the page. That is the whole of who rescues what: this replica keeps
+	 * its own work, and the peer's delete takes everything else with it.
+	 */
+	const living = async (id: NodeId, seen = new Set<NodeId>()): Promise<NodeId> => {
+		// Rule 9 lets a replica hold a cycle mid-sync, so the walk bounds itself.
+		if (id === ROOT || seen.has(id)) return id
+		const already = revived.get(id)
+		if (already !== undefined) return already
+		if (!(await remote.get(id))?.deleted) return id
+		const mine = await local.get(id)
+		if (!mine) return id // nothing here to carry over
+		seen.add(id)
+		const parent = await living(mine.parent, seen)
+		// An earlier page may have stood something here already — this replica, on
+		// a previous cycle. Take that, or a second one lands beside it and the two
+		// conflict over the name.
+		const standing = await remote.child(parent, mine.name)
+		const replacement = standing?.id ?? crypto.randomUUID()
+		revived.set(id, replacement)
+		if (!standing) fixes.push({ ...mine, id: replacement, parent, version: mint() })
+		return replacement
+	}
+
 	for (const row of rows) {
 		if (row.deleted) continue // a tombstone the peer refused has nothing to save
 		const theirs = await remote.get(row.id)
 		if (theirs?.deleted) {
-			// EDIT vs DELETE. The id is gone for good, so the bytes go on under a new
-			// one — this is the case a plain create cannot express, and tombstones plus
-			// versions are what tell the two apart. The peer's tombstone is adopted in
-			// the same commit, or the next push offers the edit again and is refused
+			// EDIT vs DELETE. The id is gone for good, so the content carries on under
+			// a new one — this is the case a plain create cannot express, and tombstones
+			// plus versions are what tell the two apart. The peer's tombstone is adopted
+			// in the same commit, or the next push offers the edit again and is refused
 			// again.
-			fixes.push({ ...row, id: crypto.randomUUID(), version: mint() }, theirs)
+			await living(row.id)
+			fixes.push(theirs)
+			continue
+		}
+		// The same conflict, one level out: what the peer buried is the DIRECTORY
+		// this row sits in. The row itself is untouched and still perfectly good —
+		// it just has nowhere to be until its container is standing again.
+		if ((await remote.get(row.parent))?.deleted) {
+			fixes.push({ ...row, parent: await living(row.parent), version: mint() })
 			continue
 		}
 		const holder = await remote.child(row.parent, row.name)

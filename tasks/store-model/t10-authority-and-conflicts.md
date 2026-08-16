@@ -130,6 +130,19 @@ has never been offered: it re-drains the push first, and starts the cycle over
 if that drain sent anything. One local `since` that returns nothing, in the
 steady state. Both halves are pinned by their own test.
 
+**Edit-vs-delete has a second half: the buried CONTAINER.** Recreating the
+edited file under a new id is only the leaf case. When what the other replica
+deleted is the directory this replica was working inside, the work still names
+the buried id, and a row parented on a tombstone is refused for ever — taking
+every row that shares its page down with it, so the sync never converges at
+all. `settle` therefore walks up to the first ancestor the peer still has,
+standing each buried directory back up under a new id. It walks rather than
+steps because a stamped directory's own parent is usually buried too: level by
+level it would cost a replan a level, and a path deeper than the replan budget
+would never converge. Who gets rescued needs no rule of its own — only rows
+this replica AUTHORED reach `settle`, because the push filter is what built
+the page, so the delete keeps everything else.
+
 **`settle` writes locally and lets the ordinary push carry it.** A rename of
 the loser, a recreate under a new id, or nothing at all — each is a local
 commit, and a written row moves to the end of the local feed (rule 4), so the

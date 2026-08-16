@@ -130,6 +130,66 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('rescues what one replica put inside a directory another replica deleted', async () => {
+		// The same conflict as edit-vs-delete, one level up: the node that was
+		// buried is the CONTAINER of this replica's work. Recreating it alone is not
+		// enough — the work inside it still names the buried id, and a row whose
+		// parent is a tombstone is refused for ever, taking every row sharing its
+		// page down with it.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.mkdir('/docs')
+		await a.vol.writeFile('/docs/old.txt', enc.encode('from a'))
+		await sync(a.store, hub, a.opts)
+		await sync(b.store, hub, b.opts)
+
+		await a.vol.rm('/docs', { recursive: true })
+		await sync(a.store, hub, a.opts)
+		await b.vol.writeFile('/docs/new.txt', enc.encode('from b'))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await read(store, '/docs/new.txt')).toBe('from b')
+			// And the delete still won everything it actually covered: rescuing the
+			// container must not drag the buried subtree back with it.
+			expect(await storeVolume(store).exists('/docs/old.txt')).toBe(false)
+		}
+	})
+
+	it('stands up the whole buried path in one go, however deep it was', async () => {
+		// The nested case, and the reason the rescue walks rather than steps.
+		// Writing a file deep inside stamps only its OWN directory, so that is the
+		// single row the refused page names — and standing that back up alone leaves
+		// it parented on the tombstone of ITS parent, moving the refusal one level
+		// up. Level by level it would converge, at a replan a level, and a path
+		// deeper than the replan budget would never converge at all. So the walk
+		// goes straight to the first ancestor the peer still has.
+		const deep = Array.from({ length: 12 }, (_, i) => `d${i}`) // deeper than the replan budget
+		const path = `/${deep.join('/')}`
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		for (let i = 1; i <= deep.length; i++) await a.vol.mkdir(`/${deep.slice(0, i).join('/')}`)
+		await a.vol.writeFile(`${path}/old.txt`, enc.encode('from a'))
+		await sync(a.store, hub, a.opts)
+		await sync(b.store, hub, b.opts)
+
+		await a.vol.rm(`/${deep[0]}`, { recursive: true })
+		await sync(a.store, hub, a.opts)
+		await b.vol.writeFile(`${path}/new.txt`, enc.encode('from b'))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await read(store, `${path}/new.txt`)).toBe('from b')
+			expect(await storeVolume(store).exists(`${path}/old.txt`)).toBe(false)
+		}
+	})
+
 	it('takes the loser of an edit/edit race as the last writer, on the base it lost to', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')
