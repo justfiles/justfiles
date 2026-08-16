@@ -418,10 +418,16 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	 * are then replayed against the bound state, so a commit the bind DID see is
 	 * assessed twice — one wake too many, which a re-scan absorbs, rather than
 	 * none, which nothing does.
+	 *
+	 * `restarted` is called when the feed had to start over because the store was
+	 * reset or replaced (rule 11). Only a watch whose bindings are ids from the
+	 * lineage that is gone needs telling: `watchTree` finds out by itself, because
+	 * ROOT is on its way in and every row is in the feed, so the replay probes it.
 	 */
 	async function changes(
 		bind: () => Promise<void>,
-		listener: (rows: Node[]) => void
+		listener: (rows: Node[]) => void,
+		restarted?: () => void
 	): Promise<() => void> {
 		let holding = true
 		let held: Node[] = []
@@ -429,7 +435,7 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			if (holding) held.push(...rows)
 			else listener(rows)
 		}
-		const off = store.subscribe ? store.subscribe(take) : await poll(take)
+		const off = store.subscribe ? store.subscribe(take) : await poll(take, restarted)
 		await bind()
 		holding = false
 		const missed = held
@@ -443,7 +449,10 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 	 * Nothing above can tell the two apart beyond latency — which is what lets
 	 * the seam leave `subscribe` optional at all.
 	 */
-	async function poll(listener: (rows: Node[]) => void): Promise<() => void> {
+	async function poll(
+		listener: (rows: Node[]) => void,
+		restarted?: () => void
+	): Promise<() => void> {
 		// Start at the tip: a watch reports what happens after it, never the
 		// history the feed was already holding.
 		let cursor = await drain()
@@ -463,7 +472,10 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 					// read from it can ever succeed. The contract's answer is to start
 					// again from the empty cursor — which for a watch is also the right
 					// event, since everything the new store holds is news to it.
-					if (e instanceof ForeignCursorError) cursor = undefined
+					if (e instanceof ForeignCursorError) {
+						cursor = undefined
+						restarted?.()
+					}
 					// Any other failure is retried by the next tick, from the same cursor.
 				})
 				.finally(() => {
@@ -518,34 +530,14 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		let remote = false
 		let stopped = false
 
-		const off = await changes(bind, (rows) => {
-			for (const row of rows) {
-				const hitsNode = row.id === node
-				// A tombstone counts, and must: when the watched path IS a symlink,
-				// `node` is what it resolved THROUGH to, so unlinking the link itself
-				// hits nothing else — and a watch that missed it would go on reporting
-				// edits to a target the path no longer names.
-				const hitsName = dir !== null && row.parent === dir && row.name === name
-				// With no parent directory yet there is no name to compare against, so
-				// any directory row is a candidate: re-resolve, and fire only if it
-				// turned out to bind the path.
-				const mayBind = dir === null && isDir(row)
-				if (!hitsNode && !hitsName && !mayBind) continue
-				if (hitsNode || hitsName) fire = true
-				// The row left the path (deleted, or moved elsewhere), or something
-				// else moved onto it: either way the path resolves somewhere new.
-				const moved = row.deleted === true || row.parent !== dir || row.name !== name
-				if (hitsName || mayBind || (hitsNode && moved)) rebind = true
-				if (foreign(row)) remote = true
-			}
-			if (!fire && !rebind) return
-			// Coalesce the commits of one turn into one event.
+		/** Coalesce the commits of one turn into one event. */
+		const schedule = (): void => {
 			if (scheduled) return
 			scheduled = true
 			queueMicrotask(async () => {
 				scheduled = false
 				const definite = fire
-				const unbound = node === null
+				const before = node
 				const source = remote ? REMOTE : undefined
 				fire = false
 				remote = false
@@ -553,10 +545,49 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 					rebind = false
 					await bind()
 				}
-				// A speculative re-resolve that bound nothing is not an event.
-				if (!stopped && (definite || (unbound && node !== null))) listener({ source })
+				// A re-resolve that landed somewhere new IS the event, whether the path
+				// gained a row, lost one, or was rebound to another. A speculative one
+				// that changed nothing is not.
+				if (!stopped && (definite || node !== before)) listener({ source })
 			})
-		})
+		}
+
+		const off = await changes(
+			bind,
+			(rows) => {
+				for (const row of rows) {
+					const hitsNode = row.id === node
+					// A tombstone counts, and must: when the watched path IS a symlink,
+					// `node` is what it resolved THROUGH to, so unlinking the link itself
+					// hits nothing else — and a watch that missed it would go on reporting
+					// edits to a target the path no longer names.
+					const hitsName = dir !== null && row.parent === dir && row.name === name
+					// With no parent directory yet there is no name to compare against, so
+					// any directory row is a candidate: re-resolve, and fire only if it
+					// turned out to bind the path.
+					const mayBind = dir === null && isDir(row)
+					if (!hitsNode && !hitsName && !mayBind) continue
+					if (hitsNode || hitsName) fire = true
+					// The row left the path (deleted, or moved elsewhere), or something
+					// else moved onto it: either way the path resolves somewhere new.
+					const moved = row.deleted === true || row.parent !== dir || row.name !== name
+					if (hitsName || mayBind || (hitsNode && moved)) rebind = true
+					if (foreign(row)) remote = true
+				}
+				if (fire || rebind) schedule()
+			},
+			() => {
+				// The store was replaced under this watch, so `node` and `dir` are ids
+				// from a lineage that no longer answers: nothing in the new store can
+				// match them, and no replayed row would ever wake this watch again.
+				// Re-resolve, and report if the path landed somewhere else — which it
+				// did if the replacement does not hold it. Whoever swapped the store
+				// out, it was not this replica writing a row, so it reads as remote.
+				rebind = true
+				remote = true
+				schedule()
+			}
+		)
 
 		return () => {
 			stopped = true // a scheduled delivery must not outlive the watch
@@ -630,22 +661,22 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 			const memo = new Map<NodeId, boolean>()
 			let wake = false
 			let probe = false
-			let remote = false
+			// Attribution is a question about the WINDOW, not about the rows that wake
+			// us — because the rows that would answer it precisely are the ones the
+			// feed destroys. A window holds several commits, and a polled feed carries
+			// each row once at its LATEST state: a remote create's parent stamp is
+			// overwritten by the next local write to that directory, and a remote
+			// rename OUT of the subtree leaves its moved row pointing somewhere else
+			// entirely. Every way of scoping the question re-opens one of those holes,
+			// so it is not scoped. This over-reports when unrelated remote traffic
+			// shares a window with a local change — a re-scan absorbs that, while a
+			// missed remote change is the thing `source` exists to prevent.
+			const remote = rows.some(foreign)
 			for (const row of rows) {
-				// Scope first, attribute second, and only then ask what wakes. A window
-				// holds several commits, and the polled feed carries each row once at
-				// its LATEST state — so a remote create's parent stamp may already have
-				// been overwritten by a local write to the same directory, leaving the
-				// remote row itself as the only evidence that somebody else changed
-				// this subtree. Reading authorship off the rows that wake us would
-				// report that window as local, and a consumer that answers only remote
-				// changes would skip the re-scan it exists for.
-				const inside = root !== null && (row.id === root || (await under(row.parent, memo)))
-				const way = chain.has(row.id)
-				if (!inside && !way) continue
-				if (inside && (isDir(row) || row.deleted === true)) wake = true
-				if (way) probe = true
-				if (foreign(row)) remote = true
+				const structural = isDir(row) || row.deleted === true
+				if (structural && root !== null && (row.id === root || (await under(row.parent, memo))))
+					wake = true
+				if (chain.has(row.id)) probe = true
 			}
 			if (probe) {
 				const was = root

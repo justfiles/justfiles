@@ -223,35 +223,66 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 })
 
 describe('volume.watch over a store that changes lineage', () => {
-	// Only the polled feed carries a cursor, so only it can be fenced by one.
-	it('starts again from the empty cursor and converges', async () => {
+	// Only the polled feed carries a cursor, so only it can be fenced by one. The
+	// store is replaced under a LIVE watch — the case rule 11 exists for: its
+	// cursor names a position in a lineage that is gone, so every read from it
+	// fails for good and the watch has to start over rather than retry.
+	function replaceable(): { store: Store; replace: () => void } {
 		const before = memStore()
 		const after = memStore() // a second lineage: it rejects the first one's cursors
 		let reset = false
 		const at = (): Store => (reset ? after : before)
-		const replaced: Store = {
-			get: (id) => at().get(id),
-			child: (parent, name) => at().child(parent, name),
-			children: (parent, cursor) => at().children(parent, cursor),
-			since: (cursor) => at().since(cursor),
-			commit: (writes, guards) => at().commit(writes, guards),
-			blobs: before.blobs
+		return {
+			store: {
+				get: (id) => at().get(id),
+				child: (parent, name) => at().child(parent, name),
+				children: (parent, cursor) => at().children(parent, cursor),
+				since: (cursor) => at().since(cursor),
+				commit: (writes, guards) => at().commit(writes, guards),
+				blobs: before.blobs
+			},
+			replace: () => {
+				reset = true
+			}
 		}
-		const vol = storeVolume(replaced)
+	}
+
+	it('starts again from the empty cursor and converges', async () => {
+		const { store, replace } = replaceable()
+		const vol = storeVolume(store)
 		await vol.mkdir('/notes')
 
 		let fired = 0
 		await vol.watch('/notes', () => fired++, { recursive: true })
-
-		// The store is replaced under the live watch — the case rule 11 exists for.
-		// Its cursor now names a position in a lineage that is gone, so every read
-		// from it fails for good; the watch has to start over rather than retry.
-		reset = true
+		replace()
 
 		// Nothing is written, and that IS the point: the tree the watch was
 		// showing has been replaced wholesale, so all of it is news.
 		await waitFor(() => expect(fired).toBe(1))
 		expect(await vol.exists('/notes')).toBe(false)
+	})
+
+	it('rebinds a single-path watch, which no replayed row could reach', async () => {
+		const { store, replace } = replaceable()
+		const vol = storeVolume(store)
+		await vol.writeFile('/state.json', enc.encode('1'))
+
+		let fired = 0
+		let lastSource: string | undefined = 'sentinel'
+		await vol.watch('/state.json', (e) => {
+			fired++
+			lastSource = e.source
+		})
+		replace()
+
+		// A subtree watch converges on its own, because ROOT is on its way in and
+		// every store's feed carries it. This one is bound to ids from the lineage
+		// that is gone, and the replacement's rows can never match them — so being
+		// told the feed restarted is the only way it can learn its file is gone.
+		await waitFor(() => expect(fired).toBe(1))
+		expect(await vol.exists('/state.json')).toBe(false)
+		// Nothing this replica wrote took the file away.
+		expect(lastSource).toBe('remote')
 	})
 })
 
@@ -488,6 +519,57 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 				version: 'me:99'
 			},
 			{ ...dir, mtimeNs: 3n, version: 'me:100' }
+		])
+
+		await waitFor(() => expect(fired).toBe(1))
+		expect(lastSource).toBe('remote')
+	})
+
+	it('reports a remote entry that left the subtree, whose stamp a local write overwrote', async () => {
+		const store = newStore()
+		let n = 0
+		const vol = storeVolume(store, { mintVersion: () => `me:${++n}` })
+		await vol.mkdir('/notes')
+		await vol.mkdir('/elsewhere')
+		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
+		const dir = await rowAt(store, '/notes')
+		const away = await rowAt(store, '/elsewhere')
+		const moving = await rowAt(store, '/notes/kyoto.md')
+
+		let fired = 0
+		let lastSource: string | undefined = 'sentinel'
+		await vol.watch(
+			'/notes',
+			(e) => {
+				fired++
+				lastSource = e.source
+			},
+			{ recursive: true }
+		)
+
+		// A remote rename OUT of the watched subtree: the moved row now points at a
+		// parent outside it, so the row that says the listing lost an entry is the
+		// source directory's stamp…
+		await store.commit([
+			{ ...moving, parent: away.id, mtimeNs: 4n, version: 'agent-7:1' },
+			{ ...dir, mtimeNs: 4n, version: 'agent-7:2' },
+			{ ...away, mtimeNs: 4n, version: 'agent-7:3' }
+		])
+		// …which a local create in that same directory then overwrites, in the same
+		// turn so both land in one window. Nothing foreign is left standing inside
+		// the subtree at all — and the wake is still somebody else's doing.
+		await store.commit([
+			{
+				id: crypto.randomUUID(),
+				parent: dir.id,
+				name: 'local.md',
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 5n,
+				size: 1n,
+				version: 'me:99'
+			},
+			{ ...dir, mtimeNs: 5n, version: 'me:100' }
 		])
 
 		await waitFor(() => expect(fired).toBe(1))
