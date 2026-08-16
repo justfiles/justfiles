@@ -153,6 +153,16 @@ solve is solved instead by the id mapping outliving the page, inside the one
 asked, because the first revival is still only local when the next page is
 refused.
 
+**Every commit in the engine names the base it replaces — the settlement's
+included.** The rows a settlement rewrites came off the feed BEFORE the push,
+and deciding what to do with them takes reads at the peer. A local write in
+that window makes them stale, and writing the rewrite blind puts the old
+content back under the new name, with sync reporting success. So each fix is
+guarded on the row it was derived from — which is not always the row being
+written: a revival writes a new id, and what has to have held still is the row
+it was copied from. A failed guard is one more refusal, which is a replan,
+which re-reads and settles again on what is there now.
+
 **`settle` writes locally and lets the ordinary push carry it.** A rename of
 the loser, a recreate under a new id, or nothing at all — each is a local
 commit, and a written row moves to the end of the local feed (rule 4), so the

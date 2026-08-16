@@ -317,6 +317,25 @@ async function settle(
 	// minters for one replica are the supported case, and each draws its own nonce.
 	const mint = versions(replica)
 	const fixes: Node[] = []
+	const guards: Guard[] = []
+
+	/**
+	 * Write `next`, but only while `seen` is still what the local store holds.
+	 *
+	 * Every row a settlement rewrites came off the feed BEFORE the push, and
+	 * deciding what to do with it takes reads at the peer. A local write in that
+	 * window makes it stale, and writing the rewrite blind would put the old
+	 * content back under the new name — sync reporting success while the user's
+	 * newest edit disappears. The guard turns that into one more refusal, which is
+	 * a replan, which re-reads the row and settles it again on what is there now.
+	 *
+	 * `seen` is not always the row being written: a revival writes a NEW id, and
+	 * what has to have held still is the row it was copied from.
+	 */
+	const fix = (seen: Node, next: Node): void => {
+		fixes.push(next)
+		guards.push({ version: { id: seen.id, is: seen.version } })
+	}
 
 	/**
 	 * Where a row can actually live: its own id, if the peer still has it —
@@ -343,7 +362,7 @@ async function settle(
 		const replacement = crypto.randomUUID()
 		revived.set(id, replacement)
 		const parent = await living(mine.parent, seen)
-		fixes.push({ ...mine, id: replacement, parent, version: mint() })
+		fix(mine, { ...mine, id: replacement, parent, version: mint() })
 		return replacement
 	}
 
@@ -357,14 +376,14 @@ async function settle(
 			// in the same commit, or the next push offers the edit again and is refused
 			// again.
 			await living(row.id)
-			fixes.push(theirs)
+			fix(row, theirs)
 			continue
 		}
 		// The same conflict, one level out: what the peer buried is the DIRECTORY
 		// this row sits in. The row itself is untouched and still perfectly good —
 		// it just has nowhere to be until its container is standing again.
 		if ((await remote.get(row.parent))?.deleted) {
-			fixes.push({ ...row, parent: await living(row.parent), version: mint() })
+			fix(row, { ...row, parent: await living(row.parent), version: mint() })
 			continue
 		}
 		const holder = await remote.child(row.parent, row.name)
@@ -372,12 +391,12 @@ async function settle(
 		// one takes a name derived from the replica that lost — deterministic, so the
 		// same conflict never needs a second round, and both files survive everywhere.
 		if (holder && holder.id !== row.id)
-			fixes.push({ ...row, name: `${row.name} (conflict ${replica})`, version: mint() })
+			fix(row, { ...row, name: `${row.name} (conflict ${replica})`, version: mint() })
 		// EDIT vs EDIT needs no fix. The row is still this row at the peer; what moved
 		// is the base under it, and the re-push reads the new one. Last writer wins,
 		// and this replica is now the last writer.
 	}
-	if (fixes.length > 0) await local.commit(fixes)
+	if (fixes.length > 0) await local.commit(fixes, guards)
 }
 
 /**

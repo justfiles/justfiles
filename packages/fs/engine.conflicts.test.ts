@@ -245,6 +245,42 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('does not settle over a local write that lands while it is deciding', async () => {
+		// The rows a settlement rewrites came off the feed before the push, and
+		// deciding what to do with them takes reads at the peer. A local write in
+		// that window makes them stale, and writing the rewrite blind would put the
+		// old content back under the new name — sync reporting success while the
+		// user's newest edit disappears.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.writeFile('/note.txt', enc.encode('from a'))
+		await sync(a.store, hub, a.opts)
+		await b.vol.writeFile('/note.txt', enc.encode('from b'))
+
+		let landed = false
+		const slow: Store = {
+			...hub,
+			async child(parent, name) {
+				const found = await hub.child(parent, name)
+				if (!landed) {
+					landed = true
+					await b.vol.writeFile('/note.txt', enc.encode('newer from b'))
+				}
+				return found
+			}
+		}
+
+		await sync(b.store, slow, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		expect(landed).toBe(true)
+		for (const store of [hub, a.store, b.store]) {
+			expect(await read(store, '/note.txt')).toBe('from a')
+			expect(await read(store, '/note.txt (conflict b)')).toBe('newer from b')
+		}
+	})
+
 	it('takes the loser of an edit/edit race as the last writer, on the base it lost to', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')
