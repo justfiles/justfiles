@@ -279,6 +279,41 @@ describe('sync: lineage', () => {
 		await expect(remote.since(resumed.pull)).resolves.toBeDefined()
 		await expect(local.since(resumed.push)).resolves.toBeDefined()
 	})
+
+	it('sends its whole history to a peer that was replaced', async () => {
+		const local = memStore()
+		const pull = slot()
+		const push = slot()
+		const opts = { replica: 'a', pull, push }
+		await local.commit([file(versions('a'), { id: 'mine', name: 'mine.txt' })])
+		await sync(local, memStore(), opts)
+
+		// The peer is reset: a new store, a new lineage, and not one row of ours.
+		// Only the PULL cursor is fenced — the push cursor names a position in the
+		// local feed, which is untouched, and it says "already sent" about rows this
+		// peer has never seen.
+		const replacement = memStore()
+		await sync(local, replacement, opts)
+
+		expect(await rowsOf(replacement)).toEqual(await rowsOf(local))
+	})
+
+	it('takes the whole peer history when its own store was replaced', async () => {
+		const remote = memStore()
+		const pull = slot()
+		const push = slot()
+		const opts = { replica: 'a', pull, push }
+		await remote.commit([file(versions('b'), { id: 'theirs', name: 'theirs.txt' })])
+		await sync(memStore(), remote, opts)
+
+		// The mirror image, which is `takeTheirs` in T11: this replica is the one
+		// replaced. Now the PUSH cursor is the fenced one, and the pull cursor is
+		// still good — it claims rows the new store has never held.
+		const replacement = memStore()
+		await sync(replacement, remote, opts)
+
+		expect(await rowsOf(replacement)).toEqual(await rowsOf(remote))
+	})
 })
 
 describe('sync: topology', () => {

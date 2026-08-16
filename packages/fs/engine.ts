@@ -26,14 +26,7 @@
  * authority (T10), and content moves separately from rows (T9).
  */
 
-import {
-	type Cursor,
-	ForeignCursorError,
-	type Node,
-	type Page,
-	type Store,
-	type Version
-} from './store'
+import { type Cursor, ForeignCursorError, type Node, type Store, type Version } from './store'
 
 /** How many extra attempts a cycle gets before the failure becomes the caller's. */
 const RETRIES = 3
@@ -74,12 +67,28 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	const mine = (row: Node): boolean => authorOf(row.version) === opts.replica
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
+	let rewind = false
 	for (let attempt = 0; ; attempt++) {
 		try {
-			await drain(remote, local, opts.pull)
-			await drain(local, remote, opts.push, mine)
+			await drain(remote, local, opts.pull, rewind)
+			await drain(local, remote, opts.push, rewind, mine)
 			return
 		} catch (err) {
+			// Rule 11, and it fences the PAIR rather than the cursor that threw. The
+			// two cursors describe ONE relationship — where this replica stands in the
+			// peer's feed, and what it has already handed the peer — and a store that
+			// was replaced voids both halves: a new peer has been sent nothing, and a
+			// new local store has received nothing. Rewinding only the fenced half
+			// leaves the other one asserting a history the replacement never had.
+			//
+			// This is not a failure to retry, either: no position in that store will
+			// ever answer to that cursor. It restarts, at most once — an empty cursor
+			// cannot itself be foreign, so a second fencing is a broken store and
+			// belongs to the caller.
+			if (err instanceof ForeignCursorError && !rewind) {
+				rewind = true
+				continue
+			}
 			if (attempt >= retries) throw err
 			await sleep(backoff * 2 ** attempt)
 		}
@@ -115,18 +124,21 @@ export function versions(replica: string): () => Version {
  * may lag its rows and may never lead them, which is the whole of the crash
  * story — a re-run re-applies rows the store already holds and writes nothing.
  *
- * `mine` is the push filter. Without it every pulled row would be sent back once,
- * which idempotence would absorb and the network would still pay for.
+ * `rewind` starts from the empty cursor and ignores the slot, which is how a
+ * bootstrap and a fenced relationship are the same code path. `mine` is the push
+ * filter: without it every pulled row would be sent back once, which idempotence
+ * would absorb and the network would still pay for.
  */
 async function drain(
 	from: Store,
 	into: Store,
 	slot: CursorSlot,
+	rewind: boolean,
 	mine?: (row: Node) => boolean
 ): Promise<void> {
-	let cursor = await slot.load()
+	let cursor = rewind ? undefined : await slot.load()
 	for (;;) {
-		const page = await scan(from, cursor)
+		const page = await from.since(cursor)
 		const rows = mine ? page.nodes.filter(mine) : page.nodes
 		// Nothing to send is the steady state, and an empty commit is still a round
 		// trip to a peer that may be a network away.
@@ -138,21 +150,6 @@ async function drain(
 		await slot.save(cursor)
 		// An empty page means caught up, and the saved cursor is where to start next.
 		if (page.nodes.length === 0) return
-	}
-}
-
-/**
- * One page of a feed. A cursor from a dead lineage (rule 11) is not a failure to
- * retry — no position in this store answers to it, and none ever will — so the
- * only way forward is the bootstrap scan, which converges precisely because the
- * rows it re-applies are no-ops.
- */
-async function scan(from: Store, cursor?: Cursor): Promise<Page> {
-	try {
-		return await from.since(cursor)
-	} catch (err) {
-		if (!(err instanceof ForeignCursorError)) throw err
-		return await from.since()
 	}
 }
 
