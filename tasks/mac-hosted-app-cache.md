@@ -276,9 +276,10 @@ Update `packages/app/kernel.app.ts` in the existing atomic install path.
 When install replaced an old root and the new root is committed:
 
 1. Read the old manifest from the backup root.
-2. Call the existing mounted-file eviction logic for that backup root.
-3. Ignore eviction errors.
-4. Remove the backup root as it does now.
+2. Keep mounted URLs still named by the new manifest.
+3. Evict the remaining mounted URLs from the backup root.
+4. Ignore eviction errors.
+5. Remove the backup root as it does now.
 
 Do this only after the new root is live. Do not evict the current app before a
 successful commit. This removes old immutable release URLs after an update. The cache

@@ -272,6 +272,26 @@ test('replacing a hosted app evicts the previous release after commit', async ()
 	expect(evicted).toEqual(['https://app.justapps.run/v/1/gui.js'])
 })
 
+test('reinstalling the same hosted release keeps its mounted cache', async () => {
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	const release = { baseUrl: 'https://app.justapps.run/v/1' }
+	await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }, release))
+
+	await s.install(await hostedBundle({ app: 'REPAIRED_REDUCER', gui: 'GUI' }, release))
+
+	expect(evicted).toEqual([])
+})
+
 test('a failed hosted replacement keeps the previous release cache', async () => {
 	const vol = volume(memStorage())
 	const evicted: string[] = []

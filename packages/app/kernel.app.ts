@@ -124,7 +124,7 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			throw e
 		}
 		if (backedUp) {
-			await evictMounted(backup).catch(() => {})
+			await evictMounted(backup, manifest).catch(() => {})
 			await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
 		}
 		return appId
@@ -164,19 +164,25 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	// A hosted app's payload is in the HOST's cache, not the volume, so trashing the
 	// bundle leaves those bytes behind — per ORIGIN, which every profile then pays for
 	// and none can name. Read the URLs from the root that was moved so a racing install
-	// cannot switch the bundle between the snapshot and the rename.
+	// cannot switch the bundle between the snapshot and the rename. A replacement keeps
+	// URLs named by the committed manifest; uninstall drops them all.
 	//
 	// Best-effort, like the mount-time call: a host with no browser cache passes no
 	// `evict`, and a cache that refuses must not fail the uninstall. Reinstall is
 	// unaffected — a release is immutable, so a re-fetch returns the same verified bytes.
-	async function evictMounted(root: string): Promise<void> {
+	async function evictMounted(root: string, current?: AppManifest): Promise<void> {
 		const evict = fetchAsset?.evict
 		if (!evict) return
-		await Promise.all((await mountedUrls(root)).map(evict))
+		const keep = new Set(current ? mountedUrls(current) : [])
+		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
+		await Promise.all(
+			mountedUrls(manifest)
+				.filter((url) => !keep.has(url))
+				.map(evict)
+		)
 	}
 
-	async function mountedUrls(root: string): Promise<string[]> {
-		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
+	function mountedUrls(manifest: AppManifest): string[] {
 		return Object.keys(manifest.files ?? {})
 			.filter((path) => isMountedFile(manifest, path))
 			.map((path) => assetUrl(manifest, path))
