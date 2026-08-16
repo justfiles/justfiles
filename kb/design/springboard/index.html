@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Five springboards</title>
+<link rel="stylesheet" href="springboard.css">
+<style>
+:root {
+	--ground: #f3f4f7; --surface: #fff; --ink: #14171c; --dim: #6a7280; --line: #e1e4ea;
+	--acc: #2c6b5b; --bezel: #d7dae1; --bezel-in: #b9bec9;
+	--sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+	--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+	--ground: #0c0e11; --surface: #14171b; --ink: #e9ecf1; --dim: #8f97a4; --line: #232830;
+	--acc: #6fb9a2; --bezel: #262b33; --bezel-in: #12151a;
+} }
+:root[data-theme="dark"] {
+	--ground: #0c0e11; --surface: #14171b; --ink: #e9ecf1; --dim: #8f97a4; --line: #232830;
+	--acc: #6fb9a2; --bezel: #262b33; --bezel-in: #12151a;
+}
+body { background: var(--ground); color: var(--ink); font-family: var(--sans); line-height: 1.55; margin: 0; }
+.wrap { margin: 0 auto; max-width: 1180px; padding: 56px 28px 90px; }
+.eyebrow { color: var(--acc); font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em; margin: 0 0 14px; text-transform: uppercase; }
+h1 { font-family: var(--mono); font-size: clamp(28px, 4.4vw, 42px); font-weight: 600; letter-spacing: -.03em; margin: 0; text-wrap: balance; }
+.lede { color: var(--dim); font-size: 16.5px; margin: 14px 0 0; max-width: 60ch; }
+.lede a, .notes a { color: var(--acc); }
+.notes { border-top: 1px solid var(--line); display: grid; gap: 8px 34px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	margin-top: 30px; padding-top: 18px; }
+.notes p { color: var(--dim); font-size: 13.5px; margin: 0; }
+.notes b { color: var(--ink); font-weight: 600; }
+code { font-family: var(--mono); font-size: .92em; }
+
+.index { border-top: 1px solid var(--line); margin-top: 34px; }
+.index a { align-items: baseline; border-bottom: 1px solid var(--line); color: inherit; display: flex; gap: 16px;
+	padding: 11px 2px; text-decoration: none; }
+.index a:hover { color: var(--acc); }
+.index .id { color: var(--dim); font-family: var(--mono); font-size: 12px; width: 24px; }
+.index .nm { font-weight: 600; width: 92px; }
+.index .wh { color: var(--dim); font-size: 13.5px; }
+
+.study { border-top: 1px solid var(--line); margin-top: 64px; padding-top: 30px; scroll-margin-top: 20px; }
+.study h2 { align-items: baseline; display: flex; font-size: 25px; font-weight: 600; gap: 12px; letter-spacing: -.02em; margin: 0; }
+.study h2 .id { background: color-mix(in srgb, var(--acc) 16%, transparent); border-radius: 5px; color: var(--acc);
+	font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; padding: 3px 7px; }
+.study h2 .shipped { background: var(--acc); border-radius: 5px; color: var(--surface); font-family: var(--mono);
+	font-size: 10.5px; letter-spacing: .08em; padding: 3px 7px; text-transform: uppercase; }
+.study .thesis { font-size: 16px; margin: 10px 0 0; max-width: 62ch; }
+.study .where { color: var(--dim); font-size: 14px; margin: 6px 0 0; max-width: 62ch; }
+.study .where b { color: var(--ink); font-weight: 600; }
+.study .open { color: var(--acc); font-family: var(--mono); font-size: 12.5px; }
+
+.frames { align-items: start; display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) 390px; margin-top: 26px; }
+.desk { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 18px 40px -28px rgba(10,14,25,.5);
+	overflow: hidden; }
+.desk .bar { align-items: center; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); border-bottom: 1px solid var(--line);
+	display: flex; gap: 8px; padding: 9px 13px; }
+.desk .bar i { background: var(--bezel-in); border-radius: 50%; height: 8px; opacity: .55; width: 8px; }
+.desk .bar span { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-left: 8px; }
+.phone { background: var(--bezel); border-radius: 48px; box-shadow: 0 22px 50px -30px rgba(10,14,25,.65); padding: 9px; position: relative; }
+.phone .screen { border-radius: 40px; overflow: hidden; position: relative; }
+.phone .notch { background: var(--bezel-in); border-radius: 999px; height: 6px; left: 50%; opacity: .8; position: absolute;
+	top: 15px; transform: translateX(-50%); width: 68px; z-index: 5; }
+.cap { color: var(--dim); font-family: var(--mono); font-size: 11px; letter-spacing: .1em; margin: 10px 0 0; text-align: center;
+	text-transform: uppercase; }
+@media (max-width: 1000px) {
+	.frames { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+	.desk { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+	<p class="eyebrow">justapps.run &middot; index page</p>
+	<h1>Five springboards</h1>
+	<p class="lede">Five directions for the runner's landing page, all built on the same idea: a grid of apps you
+		can scan in one look, and a search box that never makes you hunt for it. Same grid on a 27-inch display and
+		on a phone &mdash; only the column count and the search placement change.
+		<strong>v1 Daylight</strong> is the one that shipped; the rest are kept for the ideas in them.
+		Written up in <a href="../springboard.md">springboard.md</a>.</p>
+	<div class="notes">
+		<p><b>Everything here is live.</b> Type in any search box &mdash; each frame filters on its own.</p>
+		<p><b>The phone is not a screenshot.</b> It is the same markup in a 390&thinsp;px container, laid out by container queries.</p>
+		<p><b>Draw, Notes and Paint are real</b>, straight from <code>store.json</code>. The other nine are stand-ins, so the grid has something to show.</p>
+	</div>
+	<nav class="index">
+		<a href="#v1"><span class="id">v1</span><span class="nm">Daylight</span><span class="wh">A pill at the top, always in view.</span></a>
+		<a href="#v2"><span class="id">v2</span><span class="nm">Spotlight</span><span class="wh">The hero field — and on a phone it drops to the bottom, under your thumb.</span></a>
+		<a href="#v3"><span class="id">v3</span><span class="nm">Catalog</span><span class="wh">Inline with the masthead, an underlined field — a filter, not a feature.</span></a>
+		<a href="#v4"><span class="id">v4</span><span class="nm">Board</span><span class="wh">A tile in the grid itself — same radius, same edge, spanning the top row.</span></a>
+		<a href="#v5"><span class="id">v5</span><span class="nm">Home</span><span class="wh">In the dock, beside the favorites — where your hand already is.</span></a>
+	</nav>
+	
+<section class="study" id="v1">
+	<h2><span class="id">v1</span> Daylight <span class="shipped">shipped</span></h2>
+	<p class="thesis">The plain reading of the brief: one calm field of icons, nothing else on the page.</p>
+	<p class="where"><b>Search:</b> A pill at the top, always in view. &nbsp;<a class="open" href="daylight.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>justapps.run</span></div>
+				<div class="stage v1" data-variant="v1" style="--stage-h: 560px">
+<div class="scroll"><div class="sheet">
+	<label class="find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search apps" aria-label="Search apps"></label>
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div></div>
+			</div>
+			<p class="cap">Desktop &mdash; fluid grid</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage v1" data-variant="v1" style="--stage-h: 716px">
+<div class="scroll"><div class="sheet">
+	<label class="find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search apps" aria-label="Search apps"></label>
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div></div></div></div>
+			<p class="cap">390&thinsp;px &mdash; phone springboard</p>
+		</div>
+	</div>
+</section>
+
+
+<section class="study" id="v2">
+	<h2><span class="id">v2</span> Spotlight</h2>
+	<p class="thesis">Search is the page. The grid is just what you have not filtered out yet.</p>
+	<p class="where"><b>Search:</b> The hero field — and on a phone it drops to the bottom, under your thumb. &nbsp;<a class="open" href="spotlight.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>justapps.run</span></div>
+				<div class="stage v2" data-variant="v2" style="--stage-h: 560px">
+<div class="pane">
+	<label class="query"><span class="caret" aria-hidden="true">&rsaquo;</span>
+		<input type="search" placeholder="Type to filter" aria-label="Search apps">
+		<span class="count" data-count></span></label>
+	<div class="scroll">
+		<div class="grid" data-grid></div>
+		<p class="empty" data-empty hidden></p>
+	</div>
+</div></div>
+			</div>
+			<p class="cap">Desktop &mdash; fluid grid</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage v2" data-variant="v2" style="--stage-h: 716px">
+<div class="pane">
+	<label class="query"><span class="caret" aria-hidden="true">&rsaquo;</span>
+		<input type="search" placeholder="Type to filter" aria-label="Search apps">
+		<span class="count" data-count></span></label>
+	<div class="scroll">
+		<div class="grid" data-grid></div>
+		<p class="empty" data-empty hidden></p>
+	</div>
+</div></div></div></div>
+			<p class="cap">390&thinsp;px &mdash; phone springboard</p>
+		</div>
+	</div>
+</section>
+
+
+<section class="study" id="v3">
+	<h2><span class="id">v3</span> Catalog</h2>
+	<p class="thesis">A reading surface, not a device screen: hairlines, a serif masthead, room for what each app is.</p>
+	<p class="where"><b>Search:</b> Inline with the masthead, an underlined field — a filter, not a feature. &nbsp;<a class="open" href="catalog.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>justapps.run</span></div>
+				<div class="stage v3" data-variant="v3" style="--stage-h: 560px">
+<div class="scroll"><div class="page">
+	<header class="mast"><h2>Apps</h2>
+		<label class="find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search" aria-label="Search apps"></label>
+	</header>
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div></div>
+			</div>
+			<p class="cap">Desktop &mdash; fluid grid</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage v3" data-variant="v3" style="--stage-h: 716px">
+<div class="scroll"><div class="page">
+	<header class="mast"><h2>Apps</h2>
+		<label class="find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search" aria-label="Search apps"></label>
+	</header>
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div></div></div></div>
+			<p class="cap">390&thinsp;px &mdash; phone springboard</p>
+		</div>
+	</div>
+</section>
+
+
+<section class="study" id="v4">
+	<h2><span class="id">v4</span> Board</h2>
+	<p class="thesis">Color does the sorting. Square tiles, flat and full-bleed, each app its own block.</p>
+	<p class="where"><b>Search:</b> A tile in the grid itself — same radius, same edge, spanning the top row. &nbsp;<a class="open" href="board.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>justapps.run</span></div>
+				<div class="stage v4" data-variant="v4" style="--stage-h: 560px">
+<div class="scroll"><div class="sheet">
+	<label class="find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search apps" aria-label="Search apps"></label>
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div></div>
+			</div>
+			<p class="cap">Desktop &mdash; fluid grid</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage v4" data-variant="v4" style="--stage-h: 716px">
+<div class="scroll"><div class="sheet">
+	<label class="find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search apps" aria-label="Search apps"></label>
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div></div></div></div>
+			<p class="cap">390&thinsp;px &mdash; phone springboard</p>
+		</div>
+	</div>
+</section>
+
+
+<section class="study" id="v5">
+	<h2><span class="id">v5</span> Home</h2>
+	<p class="thesis">The device reading: wallpaper, big icons, a dock of favorites pinned to the bottom edge.</p>
+	<p class="where"><b>Search:</b> In the dock, beside the favorites — where your hand already is. &nbsp;<a class="open" href="home.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>justapps.run</span></div>
+				<div class="stage v5" data-variant="v5" style="--stage-h: 560px">
+<div class="wall"></div>
+<div class="scroll"><div class="sheet">
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div>
+<div class="dots" aria-hidden="true"><i class="on"></i><i></i></div>
+<div class="bar">
+	<label class="dock find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search" aria-label="Search apps"></label>
+	<div class="dock favs" data-dock></div>
+</div></div>
+			</div>
+			<p class="cap">Desktop &mdash; fluid grid</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage v5" data-variant="v5" style="--stage-h: 716px">
+<div class="wall"></div>
+<div class="scroll"><div class="sheet">
+	<div class="grid" data-grid></div>
+	<p class="empty" data-empty hidden></p>
+</div></div>
+<div class="dots" aria-hidden="true"><i class="on"></i><i></i></div>
+<div class="bar">
+	<label class="dock find"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" placeholder="Search" aria-label="Search apps"></label>
+	<div class="dock favs" data-dock></div>
+</div></div></div></div>
+			<p class="cap">390&thinsp;px &mdash; phone springboard</p>
+		</div>
+	</div>
+</section>
+
+</div>
+<script src="springboard.js"></script>
+</body>
+</html>

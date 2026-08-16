@@ -111,6 +111,14 @@ test('the index lists what the projection holds, linking to each app origin', as
 	expect(page).toContain('src="https://alice-notes.example.com/v/1.2.0/icon.png"')
 })
 
+// Search filters the document the page already carries, so the key it matches on
+// is rendered onto each entry. It is the one thing the inline script needs from
+// the server, and nothing else would notice if it went missing.
+test('each entry carries the key the search box matches on', async () => {
+	const page = await (await get('https://example.com/', envWith(published))).text()
+	expect(page).toContain('data-key="notes alice.notes"')
+})
+
 test('the projection is public, and readable by any origin', async () => {
 	const res = await get('https://example.com/store.json', envWith(published))
 	expect(res.headers.get('access-control-allow-origin')).toBe('*')
