@@ -143,6 +143,18 @@ describe('writeFile: a create claims a name', () => {
 			if (result.status === 'rejected') expect(result.reason.message).toMatch(/^EEXIST/)
 	})
 
+	it('keeps exclusive when the caller changes its options', async () => {
+		const vol = storeVolume(memStore())
+		await vol.writeFile('/kyoto.md', enc.encode('old'))
+		const opts = { exclusive: true }
+
+		const write = vol.writeFile('/kyoto.md', enc.encode('new'), opts)
+		opts.exclusive = false
+
+		await expect(write).rejects.toThrow(/^EEXIST/)
+		expect(await read(vol, '/kyoto.md')).toBe('old')
+	})
+
 	it('lets the loser of a claim read the winner back at once, never a prefix', async () => {
 		// The loser's catch fires the instant ITS write rejects, which is independent
 		// of whether the winner's write has finished. Awaiting both first would never
@@ -207,6 +219,17 @@ describe('writeFile: a create claims a name', () => {
 			vol.writeFile('/trips/kyoto.md', enc.encode('edited'), { update: true })
 		).rejects.toThrow(/^ENOENT/)
 		expect(await vol.exists('/trips')).toBe(false)
+	})
+
+	it('keeps update when the caller changes its options', async () => {
+		const vol = storeVolume(memStore())
+		const opts = { update: true }
+
+		const write = vol.writeFile('/kyoto.md', enc.encode('new'), opts)
+		opts.update = false
+
+		await expect(write).rejects.toThrow(/^ENOENT/)
+		expect(await vol.exists('/kyoto.md')).toBe(false)
 	})
 
 	it('throws ENOENT when a parent directory is missing', async () => {

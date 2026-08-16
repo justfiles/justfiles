@@ -420,9 +420,10 @@ export function storeVolume(store: Store, opts?: { mintVersion?: () => Version }
 		},
 
 		async writeFile(path, data, opts) {
+			const options = opts && { ...opts }
 			const size = data.length
 			const content = await durable(data)
-			await retry(() => place(path, file(size, content), opts))
+			await retry(() => place(path, file(size, content), options))
 		},
 
 		async appendFile(path, data) {
