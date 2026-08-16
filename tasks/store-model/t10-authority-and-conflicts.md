@@ -91,6 +91,23 @@ ordering this whole model exists to delete. Rule 9's own text is the licence:
 a detached cluster is invisible until later rows reattach it. So the authority
 refuses only what no later row can repair.
 
+**"Every parent a live directory" means a real directory, and that is what
+keeps a mount's subtree out of the synced store.** The design rests its whole
+local-data story on one line — "only a directory can be a parent, so the mount
+node can never have children ... on any replica, buggy or not" — and the place
+that sentence becomes true is this check. So `authority.ts` has `holdsRows`
+(`dir` only) where `volume.store.ts` has `isDir` (`dir` or `mount`), and the
+two must not be merged: a junction stands where a directory would for
+resolution and `stat`, and holds nothing in THIS store. [T15](t15-mounts.md)
+inherits the enforcement rather than adding it.
+
+**The root needs its own line, three times over.** It is the one row with no
+parent to vouch for it, so every other check passes it through: a tombstone
+for it, a re-type of it, and a reparent of it were all accepted. The last is
+the subtle one — the root being its own parent is where an upward walk stops,
+so a root parented on its own descendant is a cycle every walk below steps
+over rather than finds.
+
 **Tombstones are terminal.** Nothing brings a dead id back. That is the rule
 that makes edit-vs-delete a different answer from a plain create — the
 distinction Unison needs a common base for — and it is what turns the editor's

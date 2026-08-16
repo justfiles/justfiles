@@ -2,7 +2,8 @@
  * The authority: the one `Store` whose `commit` decides what the tree is.
  *
  * Contract rule 9 puts the tree invariants here and nowhere else — no cycles, no
- * duplicate names, every parent a live directory. A replica may hold rows that
+ * duplicate names, every parent a live directory — a real one, since `holdsRows`
+ * is what keeps a mount's subtree out of this store. A replica may hold rows that
  * break all three mid-sync, and that is safe because visibility is reachability
  * from root: a detached or cyclic cluster is simply invisible until later rows
  * reattach it. What must not happen is every replica CONVERGING on such a tree,
@@ -26,7 +27,19 @@
 
 import { GuardError, type Node, type NodeId, ROOT, type Store, verifiedBlobs } from './store'
 
-const isDir = (row: Node): boolean => row.type === 'dir' || row.type === 'mount'
+/**
+ * Can rows in THIS store sit beneath this one? Only a directory can, and the
+ * `mount` a junction stands for is the reason this is not `volume.store.ts`'s
+ * `isDir`, which counts one — a junction stands where a directory would, so
+ * that is what it resolves and stats as.
+ *
+ * Here it must not. The design leans its whole local-data story on this: a
+ * mount's children live in the store it is bound to, so "only a directory can
+ * be a parent" is what makes a `/private` subtree impossible in the synced
+ * store "on any replica, buggy or not". That boundary is enforced by the data
+ * rather than by policy code, and this predicate is where the data enforces it.
+ */
+const holdsRows = (row: Node): boolean => row.type === 'dir'
 
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
@@ -82,8 +95,13 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 		// directory. It is the one row with no parent to vouch for it, so nothing
 		// below would catch its loss — and losing it loses the whole tree at once,
 		// since visibility is reachability from root.
-		if (row.id === ROOT && (row.deleted || !isDir(row)))
-			throw new GuardError('the root must stay a live directory')
+		//
+		// Its parent is checked HERE for the same reason, and the cycle walk depends
+		// on it: the root is its own parent, which is where an upward walk stops, so
+		// a root parented on one of its own descendants is a cycle that every walk
+		// below would step over rather than find.
+		if (row.id === ROOT && (row.deleted || !holdsRows(row) || row.parent !== ROOT))
+			throw new GuardError('the root must stay a live directory, and its own parent')
 
 		// A tombstone takes no name and keeps no parent: rule 8 leaves only its id,
 		// its version and the fact that it is gone. It is not held to having emptied
@@ -110,7 +128,7 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 		// exists to delete. A parent that IS here and is not a live directory is the
 		// malformation, and no later row makes it anything else.
 		const parent = row.id === ROOT ? null : (batch.get(row.parent) ?? (await store.get(row.parent)))
-		if (parent && (parent.deleted || !isDir(parent)))
+		if (parent && (parent.deleted || !holdsRows(parent)))
 			throw new GuardError(`parent ${row.parent} of ${row.id} is not a live directory`)
 
 		// The same invariant from the other end, and the only other way to break it:
@@ -121,7 +139,12 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 		// empties a directory and removes it, and a new node takes the name under a
 		// new id, so nothing legitimate re-types one at all. Only a peer's raw rows
 		// reach here, which is what the authority is for.
-		if (held && isDir(held) && !isDir(row) && (await store.children(row.id)).nodes.length > 0)
+		if (
+			held &&
+			holdsRows(held) &&
+			!holdsRows(row) &&
+			(await store.children(row.id)).nodes.length > 0
+		)
 			throw new GuardError(`${row.id} still holds children and cannot become a ${row.type}`)
 
 		// One live row per name — within the batch, and against what is already here.

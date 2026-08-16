@@ -157,16 +157,36 @@ describe('authority: the tree invariants', () => {
 		expect(await storeVolume(store).readdir('/')).toEqual([])
 	})
 
-	it('refuses to bury or re-type the root', async () => {
+	it('refuses to bury, re-type or reparent the root', async () => {
 		// Rule 6. The root is the one row nothing else vouches for — it is its own
 		// parent — so every other check here passes it through, and losing it loses
 		// the whole tree at once: reachability from root is what visibility means.
 		const { seed, refused } = hub()
-		await seed(file({ id: 'note', name: 'note.txt' }))
+		await seed(dir({ id: 'docs', name: 'docs' }))
 		const root = dir({ id: ROOT, name: '', parent: ROOT, version: '2' })
 
 		expect((await refused([{ ...root, deleted: true }])).message).toMatch(/root/)
-		expect((await refused([file({ id: ROOT, name: '', parent: ROOT })])).message).toMatch(/root/)
+		expect((await refused([{ ...root, type: 'file' }])).message).toMatch(/root/)
+		// And reparenting it is the cycle no walk below would find, since being its
+		// own parent is exactly where an upward walk stops.
+		expect((await refused([{ ...root, parent: 'docs' }])).message).toMatch(/root/)
+	})
+
+	it('refuses a row parented on a mount', async () => {
+		// A junction's children live in the store it is BOUND to. That is what makes
+		// a local-only subtree impossible in the synced store on any replica, buggy
+		// or not — the design puts its whole local-data story on this one line, and
+		// the boundary is meant to be enforced by the data rather than by policy
+		// code. This check is where the data enforces it.
+		const { seed, refused } = hub()
+		await seed(file({ id: 'private', name: 'private', type: 'mount', mode: 0o040755 }))
+
+		const error = await refused([file({ id: 'leaked', name: 'secret.env', parent: 'private' })])
+
+		expect(error.message).toMatch(/live directory/)
+		// And the root itself is never a junction, which would hide the whole tree
+		// behind an unbound mount that reads as empty.
+		await refused([dir({ id: ROOT, name: '', parent: ROOT, type: 'mount', version: '2' })])
 	})
 
 	it('refuses a directory that still holds children turning into a file', async () => {
