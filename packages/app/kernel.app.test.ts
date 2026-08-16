@@ -214,6 +214,70 @@ test('reinstalling a copied app as hosted removes its bytes from the volume', as
 	expect(decode(await vol.readFile(`/applications/${id}/app.js`))).toBe('REDUCER')
 })
 
+test('replacing a hosted app evicts the previous release after commit', async () => {
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	await s.install(
+		await hostedBundle(
+			{ app: 'REDUCER_V1', gui: 'GUI' },
+			{ baseUrl: 'https://app.justapps.run/v/1' }
+		)
+	)
+
+	await s.install(
+		await hostedBundle(
+			{ app: 'REDUCER_V2', gui: 'GUI' },
+			{ baseUrl: 'https://app.justapps.run/v/2' }
+		)
+	)
+
+	expect(evicted).toEqual(['https://app.justapps.run/v/1/gui.js'])
+})
+
+test('a failed hosted replacement keeps the previous release cache', async () => {
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	await s.install(
+		await hostedBundle(
+			{ app: 'REDUCER_V1', gui: 'GUI' },
+			{ baseUrl: 'https://app.justapps.run/v/1' }
+		)
+	)
+	const next = await hostedBundle(
+		{ app: 'REDUCER_V2', gui: 'GUI' },
+		{ baseUrl: 'https://app.justapps.run/v/2' }
+	)
+	const broken: AppBundle = {
+		...next,
+		async read() {
+			throw new Error('download failed')
+		}
+	}
+
+	await expect(s.install(broken)).rejects.toThrow('download failed')
+
+	expect(evicted).toEqual([])
+	expect((await s.get('com.example.app'))?.manifest.baseUrl).toBe('https://app.justapps.run/v/1')
+})
+
 // ── staging ──────────────────────────────────────────────────────────────────
 
 test('every staged byte is written under /private, never a synced path', async () => {

@@ -123,7 +123,10 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			if (backedUp && !(await fs.exists(root))) await fs.rename(backup, root).catch(() => {})
 			throw e
 		}
-		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
+		if (backedUp) {
+			await evictMounted(backup).catch(() => {})
+			await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
+		}
 		return appId
 	}
 
