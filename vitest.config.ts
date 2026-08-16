@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
 	test: {
 		include: [
+			'apps/shared/**/*.test.ts',
 			'apps/frieren/worker/**/*.test.ts',
 			'apps/frieren/shared/**/*.test.ts',
 			'apps/frieren/src/os/**/*.test.ts',

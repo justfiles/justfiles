@@ -1,5 +1,5 @@
 import type { Volume } from '@justfiles/fs'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import {
 	type AppStore,
 	type CatalogApp,
@@ -191,6 +191,40 @@ describe('materialise', () => {
 			enc.encode(path === 'app.js' ? '// tampered' : (FILES[path] ?? ''))
 		await expect(materialise(kernel, store)).rejects.toThrow(/hash/)
 		expect(installs).toEqual([])
+	})
+
+	test('a failed hosted built-in does not stop the others', async () => {
+		const first = await catalogApp('app.x', FILES)
+		first.manifest = { id: first.id, name: first.name, app: 'app.js' }
+		const second = {
+			...first,
+			id: 'app.y',
+			baseUrl: '/appstore/apps/app.y/1.0.0',
+			manifest: { id: 'app.y', name: 'app.y', app: 'app.js' }
+		}
+		const store: AppStore = {
+			async builtins() {
+				return [first, second]
+			},
+			async latest() {
+				return null
+			},
+			async read(app, path) {
+				if (app.id === first.id) throw new Error('offline')
+				return enc.encode(FILES[path] ?? '')
+			}
+		}
+		const { kernel, installs } = fakeWorld()
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+		try {
+			await materialise(kernel, store)
+			expect(warn).toHaveBeenCalledWith('appstore: install failed for app.x', expect.any(Error))
+		} finally {
+			warn.mockRestore()
+		}
+
+		expect(installs).toEqual(['app.y'])
 	})
 })
 

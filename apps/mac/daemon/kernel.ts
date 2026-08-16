@@ -16,9 +16,12 @@ import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
+import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/justapps'
 import { migrateFirstPartyAppIds } from '../../shared/migrate-app-ids'
+import { appAssets } from './app-assets'
 import { builtinStore } from './builtins'
 import { chatgptProvider, codexBackend } from './chatgpt'
+import { coalesce } from './coalesce'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { identity } from './identity'
@@ -70,9 +73,16 @@ export function getAccounts(): Promise<HostAccounts> {
 }
 
 export function getKernel(): Promise<Kernel> {
-	kernelOnce ??= Promise.all([getVolume(), getAccounts()]).then(([fs, accounts]) =>
-		buildKernel(fs, accounts)
-	)
+	kernelOnce ??= Promise.all([getVolume(), getAccounts()]).then(async ([fs, accounts]) => {
+		const k = await buildKernel(fs, accounts)
+		const check = coalesce(() =>
+			refreshApps(k, fs, false).catch((error) =>
+				console.warn('appstore: update check failed', error)
+			)
+		)
+		setInterval(check, UPDATE_CHECK_INTERVAL_MS).unref()
+		return k
+	})
 	return kernelOnce
 }
 
@@ -83,6 +93,7 @@ export function getKernel(): Promise<Kernel> {
 // the daemon's singleton).
 export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
 	await migrateFirstPartyAppIds(fs)
+	const fetchAsset = await appAssets(fs)
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
 	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
@@ -98,6 +109,7 @@ export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<K
 
 	const k = kernel({
 		fs,
+		fetchAsset,
 		sandbox: sandboxes.get,
 		capabilities: capabilityRegistry({
 			volume: volumeCapability(fs, { systemAllowlist }),
@@ -156,11 +168,14 @@ export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<K
 		}),
 		clock: {}
 	})
-	const builtins = await builtinStore()
-	// Install any missing built-in (first run), then update whatever is installed.
-	await materialise(k, builtins)
-	await reconcile(k, fs, builtins)
+	await refreshApps(k, fs, true)
 	return k
+}
+
+async function refreshApps(k: Kernel, fs: Volume, installMissing: boolean): Promise<void> {
+	const store = await builtinStore()
+	if (installMissing) await materialise(k, store)
+	await reconcile(k, fs, store)
 }
 
 function makeRunner(fs: Volume, kernel: Kernel): Runner {

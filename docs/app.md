@@ -105,6 +105,17 @@ The host imports `gui.js` as one blob module. Avoid emitted chunks and URL-loade
 apps: inline dynamic imports and import small assets so the GUI bundle is self-contained. The icon is
 the supported separate launcher asset.
 
+### Install storage is a host concern
+
+Apps do not select their storage shape. A store with an immutable download source adds `baseUrl` to
+the canonical installed manifest. The Volume then keeps the manifest and reducer, while the host
+mounts the GUI, icon, and other files through `FetchAsset` and checks their pinned hashes. Frieren uses
+its service-worker cache. Kodama uses the Bun daemon cache under `/private/cache/apps`.
+
+A local bundle has no `baseUrl`, so the Volume keeps every file. This is the required shape for App
+Code installs and ZIP imports because no server can restore their missing files. Do not add or trust a
+bundle-authored `baseUrl`; the host store owns that fact.
+
 ### App Code draft
 
 An App Code project lives in Code's private volume:

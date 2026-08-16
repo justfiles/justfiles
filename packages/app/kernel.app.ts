@@ -123,7 +123,10 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			if (backedUp && !(await fs.exists(root))) await fs.rename(backup, root).catch(() => {})
 			throw e
 		}
-		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
+		if (backedUp) {
+			await evictMounted(backup, manifest).catch(() => {})
+			await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
+		}
 		return appId
 	}
 
@@ -148,33 +151,41 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return
-		await evictMounted(root).catch(() => {})
 		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
 		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
 		// reconcile, fired by the volume's structural watch — never sees a half-deleted
 		// bundle it would try to "repair"/resurrect. The bytes survive under /trash until
 		// the retention sweep drops that day (see trash.ts).
-		await trashBundle(fs, root, appId)
+		const trashed = await trashBundle(fs, root, appId)
+		await evictMounted(trashed).catch(() => {})
 	}
 
 	// A hosted app's payload is in the HOST's cache, not the volume, so trashing the
 	// bundle leaves those bytes behind — per ORIGIN, which every profile then pays for
-	// and none can name. The record pins each mounted path and is still readable here,
-	// which makes this the last point where the URLs are derivable at all.
+	// and none can name. Read the URLs from the root that was moved so a racing install
+	// cannot switch the bundle between the snapshot and the rename. A replacement keeps
+	// URLs named by the committed manifest; uninstall drops them all.
 	//
 	// Best-effort, like the mount-time call: a host with no browser cache passes no
 	// `evict`, and a cache that refuses must not fail the uninstall. Reinstall is
 	// unaffected — a release is immutable, so a re-fetch returns the same verified bytes.
-	async function evictMounted(root: string): Promise<void> {
+	async function evictMounted(root: string, current?: AppManifest): Promise<void> {
 		const evict = fetchAsset?.evict
 		if (!evict) return
+		const keep = new Set(current ? mountedUrls(current) : [])
 		const manifest: AppManifest = JSON.parse(text(await fs.readFile(`${root}/manifest.json`)))
 		await Promise.all(
-			Object.keys(manifest.files ?? {})
-				.filter((path) => isMountedFile(manifest, path))
-				.map((path) => evict(assetUrl(manifest, path)))
+			mountedUrls(manifest)
+				.filter((url) => !keep.has(url))
+				.map(evict)
 		)
+	}
+
+	function mountedUrls(manifest: AppManifest): string[] {
+		return Object.keys(manifest.files ?? {})
+			.filter((path) => isMountedFile(manifest, path))
+			.map((path) => assetUrl(manifest, path))
 	}
 
 	async function has(appId: AppId): Promise<boolean> {

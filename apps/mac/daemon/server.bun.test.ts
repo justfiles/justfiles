@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from './main.ts'
 
-const NOTES = 'justfiles.notes'
 const FILES = 'justfiles.files'
 let root: string
 let server: ReturnType<typeof createServer>
@@ -48,7 +47,12 @@ interface Frame {
 	entries?: unknown[]
 	value?: boolean
 	message?: string
-	state?: { count?: number; openPath?: string | null; revision?: number; error?: string | null }
+	state?: {
+		count?: number
+		currentViewing?: string | null
+		revision?: number
+		error?: string | null
+	}
 }
 
 interface Client {
@@ -168,17 +172,16 @@ test('/agent snapshots history + busy on connect, and a prompt runs a turn', asy
 })
 
 test('/app socket pushes initial state and round-trips a dispatch', async () => {
-	const client = await connect(`/app/${NOTES}/connect`)
+	const client = await connect(`/app/${FILES}/connect`)
 	const initial = await client.waitFor((m) => m.state !== undefined)
-	// What's under test is the socket pushing Notes' initial state, not Notes' state
-	// shape — match the fields this test means, so a Notes feature doesn't fail it.
-	expect(initial.state).toMatchObject({ openPath: null, revision: 0 })
+	// What's under test is the socket pushing Files' initial state, not Files' full state.
+	expect(initial.state).toMatchObject({ currentViewing: null, revision: 0 })
 
-	client.send({ id: 'r1', type: 'open', params: { path: '/hello.txt' } })
+	client.send({ id: 'r1', type: 'setView', params: { path: '/hello.txt' } })
 	const reply = await client.waitFor((m) => m.id === 'r1')
 	expect(reply.ok).toBe(true)
 	// The mutation fans back out on the app's topic as a fresh state push.
-	const pushed = await client.waitFor((m) => m.state?.openPath === '/hello.txt')
-	expect(pushed.state).toMatchObject({ openPath: '/hello.txt' })
+	const pushed = await client.waitFor((m) => m.state?.currentViewing === '/hello.txt')
+	expect(pushed.state).toMatchObject({ currentViewing: '/hello.txt' })
 	client.close()
 })

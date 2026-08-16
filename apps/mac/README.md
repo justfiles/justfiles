@@ -55,8 +55,27 @@ the launcher's `Info.plist` to spawn the daemon from source under **bun** (`bun
 daemon/main.ts`). The daemon is Bun-only (`Bun.serve` / pub-sub / `Bun.file`), so there is no
 node escape hatch here. `Daemon.spawn()` (Launcher.swift) execs the stamped `DaemonRuntime` /
 `DaemonArgs` / `DaemonScript` verbatim — the runtime choice lives in the plist, never in Swift.
-The daemon re-seeds the built-in apps from their freshly built `dist` files on every boot, so
-a relaunch always shows current code; editing only `daemon/*` needs just the relaunch.
+The daemon reconciles the packaged apps from their freshly built `dist` files on every boot, so a
+relaunch always shows current Code, Files, and Settings code. It also reconciles trusted hosted apps
+from JustApps. Editing only `daemon/*` needs just the relaunch.
+
+## App storage
+
+The Volume's `/applications` tree is the installed-app source of truth. An app has one of two storage
+shapes:
+
+- A JustApps manifest has an immutable `baseUrl`. The Volume keeps `manifest.json` and the reducer
+  (`app.js`). The daemon downloads the GUI, icon, and other mounted files into
+  `/private/cache/apps/<sha256-of-url>` and checks their manifest hashes before use.
+- A local app has no `baseUrl`. The Volume keeps its full bundle because there is no server from which
+  the daemon can restore missing files. App Code installs use this shape.
+
+The shared install and reconcile paths prefetch hosted files. A hosted app therefore works offline
+after the prefetch succeeds. The cache is local, derived data under `/private`, so it does not sync.
+The thin bundles in `~/Applications/Kodama Apps/` are also derived data. They contain no app code.
+
+Code, Files, and Settings remain packaged fallbacks until immutable JustApps releases exist for them.
+The packaged store is authoritative when it and JustApps contain the same app ID.
 
 ### Production build & install
 
@@ -77,7 +96,7 @@ node/bun and no repo. It assembles:
   `Bun.build` is in-process, install-time devkit compiles need no external toolchain.
 - **`Contents/Resources/client/`** — the Vite-built browser surfaces (launcher / chat / app
   shell + hashed `/assets/*` + the shared React `/vendor/*` bundles), served via `CLIENT_DIR`.
-- **`Contents/Resources/builtins/`** — the built-in app bundle roots the daemon seeds.
+- **`Contents/Resources/builtins/`** — the packaged Code, Files, and Settings fallback roots.
 - **`Contents/Resources/build/`** — the shared booter binary + icon tool that the daemon copies
   per app when projecting `.app`s.
 

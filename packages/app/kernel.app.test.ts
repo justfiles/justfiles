@@ -1,4 +1,4 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import { type AppBundle, type AppManifest, appBundleFromMemory } from './app.ts'
 import { apps } from './kernel.app.ts'
@@ -59,6 +59,35 @@ function origin(served: Record<string, string>) {
 		return enc(body)
 	}
 	return { fetchAsset, requested }
+}
+
+function pauseTrash(base: Volume): {
+	vol: Volume
+	renaming: Promise<void>
+	resume: () => void
+} {
+	let startRename: () => void = () => {}
+	let resumeRename: () => void = () => {}
+	const renaming = new Promise<void>((resolve) => {
+		startRename = resolve
+	})
+	const resume = new Promise<void>((resolve) => {
+		resumeRename = resolve
+	})
+	return {
+		vol: {
+			...base,
+			async rename(from, to) {
+				if (from === '/applications/com.example.app' && to.startsWith('/trash/')) {
+					startRename()
+					await resume
+				}
+				await base.rename(from, to)
+			}
+		},
+		renaming,
+		resume: resumeRename
+	}
 }
 
 test('install lays out the bundle and get/has/list reflect it', async () => {
@@ -214,6 +243,90 @@ test('reinstalling a copied app as hosted removes its bytes from the volume', as
 	expect(decode(await vol.readFile(`/applications/${id}/app.js`))).toBe('REDUCER')
 })
 
+test('replacing a hosted app evicts the previous release after commit', async () => {
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	await s.install(
+		await hostedBundle(
+			{ app: 'REDUCER_V1', gui: 'GUI' },
+			{ baseUrl: 'https://app.justapps.run/v/1' }
+		)
+	)
+
+	await s.install(
+		await hostedBundle(
+			{ app: 'REDUCER_V2', gui: 'GUI' },
+			{ baseUrl: 'https://app.justapps.run/v/2' }
+		)
+	)
+
+	expect(evicted).toEqual(['https://app.justapps.run/v/1/gui.js'])
+})
+
+test('reinstalling the same hosted release keeps its mounted cache', async () => {
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	const release = { baseUrl: 'https://app.justapps.run/v/1' }
+	await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }, release))
+
+	await s.install(await hostedBundle({ app: 'REPAIRED_REDUCER', gui: 'GUI' }, release))
+
+	expect(evicted).toEqual([])
+})
+
+test('a failed hosted replacement keeps the previous release cache', async () => {
+	const vol = volume(memStorage())
+	const evicted: string[] = []
+	const o = origin({ 'gui.js': 'GUI' })
+	const s = apps(
+		vol,
+		Object.assign(o.fetchAsset, {
+			evict: async (url: string) => {
+				evicted.push(url)
+			}
+		})
+	)
+	await s.install(
+		await hostedBundle(
+			{ app: 'REDUCER_V1', gui: 'GUI' },
+			{ baseUrl: 'https://app.justapps.run/v/1' }
+		)
+	)
+	const next = await hostedBundle(
+		{ app: 'REDUCER_V2', gui: 'GUI' },
+		{ baseUrl: 'https://app.justapps.run/v/2' }
+	)
+	const broken: AppBundle = {
+		...next,
+		async read() {
+			throw new Error('download failed')
+		}
+	}
+
+	await expect(s.install(broken)).rejects.toThrow('download failed')
+
+	expect(evicted).toEqual([])
+	expect((await s.get('com.example.app'))?.manifest.baseUrl).toBe('https://app.justapps.run/v/1')
+})
+
 // ── staging ──────────────────────────────────────────────────────────────────
 
 test('every staged byte is written under /private, never a synced path', async () => {
@@ -284,6 +397,59 @@ test('uninstall evicts the hosted payload from the host cache', async () => {
 	// never fetched, so it has no cache entry.
 	expect(evicted).toEqual(['/appstore/apps/com.example.app/1.0.0/gui.js'])
 	expect(await s.has(id)).toBe(false)
+})
+
+test('uninstall evicts a hosted read started before the bundle is trashed', async () => {
+	const { vol, renaming, resume } = pauseTrash(volume(memStorage()))
+	const calls: string[] = []
+	const fetchAsset = Object.assign(
+		async () => {
+			calls.push('read')
+			return enc('GUI')
+		},
+		{
+			evict: async () => {
+				calls.push('evict')
+			}
+		}
+	)
+	const s = apps(vol, fetchAsset)
+	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
+	const uninstall = s.uninstall(id)
+	await renaming
+
+	const installed = await s.get(id)
+	if (!installed) throw new Error('expected app before trash rename')
+	expect(decode(await installed.read('gui.js'))).toBe('GUI')
+	resume()
+	await uninstall
+
+	expect(calls).toEqual(['read', 'evict'])
+})
+
+test('uninstall evicts the release it moves when install overlaps', async () => {
+	const { vol, renaming, resume } = pauseTrash(volume(memStorage()))
+	const evicted: string[] = []
+	const fetchAsset = Object.assign(async () => enc('GUI'), {
+		evict: async (url: string) => {
+			evicted.push(url)
+		}
+	})
+	const s = apps(vol, fetchAsset)
+	const id = await s.install(
+		await hostedBundle({ app: 'REDUCER_A', gui: 'GUI' }, { baseUrl: 'https://apps.example.com/v1' })
+	)
+	const uninstall = s.uninstall(id)
+	await renaming
+
+	await s.install(
+		await hostedBundle({ app: 'REDUCER_B', gui: 'GUI' }, { baseUrl: 'https://apps.example.com/v2' })
+	)
+	evicted.length = 0
+	resume()
+	await uninstall
+
+	expect(evicted).toEqual(['https://apps.example.com/v2/gui.js'])
 })
 
 test('an eviction that fails does not fail the uninstall', async () => {

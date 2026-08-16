@@ -74,7 +74,14 @@ export interface AppStore {
 export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of await store.builtins()) {
-		if (!installed.has(app.id)) await installApp(kernel, store, app)
+		if (installed.has(app.id)) continue
+		try {
+			await installApp(kernel, store, app)
+		} catch (error) {
+			// One hosted app must not stop the host or the other built-ins.
+			if (!app.baseUrl) throw error
+			console.warn(`appstore: install failed for ${app.id}`, error)
+		}
 	}
 }
 
