@@ -97,7 +97,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
 | T5 | [`storeVolume` — read side](t05-volume-read.md) | T1–T3 | done |
-| T6 | [`storeVolume` — write side](t06-volume-write.md) | T5 | todo |
+| T6 | [`storeVolume` — write side](t06-volume-write.md) | T5 | done |
 | T7 | [`watch` from the feed](t07-watch.md) | T6 | todo |
 | T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | todo |
 | T9 | [Engine: blob transfer + lazy content](t09-engine-blobs.md) | T8 | todo |
@@ -191,6 +191,8 @@ The design names four proofs the model must show (end of fable-design.md).
 They are spread across the tasks; do not let them slip:
 
 1. A rename of a directory with 4,000 children is one row in the feed — **T6**.
+   **Shown in T6:** three rows, and only three — the moved node and the two
+   parents whose mtime it stamped. The children never move.
 2. A crash between `blobs.put` and `commit` leaves only an orphan blob — **T9**.
 3. A deleted cursor re-applies a page into pure no-ops — **T8**.
 4. A foreign-lineage cursor is rejected and bootstrap converges — **T8**.

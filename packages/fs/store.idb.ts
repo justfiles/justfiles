@@ -17,6 +17,7 @@ import { type DBSchema, type IDBPDatabase, openDB } from 'idb'
 import {
 	type Cursor,
 	ForeignCursorError,
+	GuardError,
 	type Hash,
 	type Node,
 	type NodeId,
@@ -195,7 +196,7 @@ export function idbStore(name: string): Store {
 							? (await nodes.index('live').getKey([guard.free.parent, guard.free.name])) ===
 								undefined
 							: ((await nodes.get(guard.version.id))?.version ?? null) === guard.version.is
-					if (!pass) throw new Error(`commit rejected: guard ${JSON.stringify(guard)} failed`)
+					if (!pass) throw new GuardError(guard)
 				}
 
 				// The next position, read here rather than counted in memory: another
