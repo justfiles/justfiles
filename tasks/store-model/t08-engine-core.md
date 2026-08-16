@@ -58,6 +58,20 @@ All green, with fake timers where the loop schedules itself.
 
 ## Settled here
 
+**Push runs before pull, and the order is load-bearing.** The design lists the
+two halves pull-first, and this task's Goal copies that listing; neither states
+an order, and the engine takes the other one. A pull applies rows blind — it has
+no base to compare against, and the design declines to keep one — so a page
+replayed from a rewound cursor carries a row's OLDER state and overwrites a
+local edit that has not been sent yet. The push behind it then skips that row,
+because what it finds there is now the peer's, and the edit is gone from both
+stores with nothing to report it. Offering local work before accepting any
+closes that window, and it is the order a guarded push wants anyway:
+[T10](t10-authority-and-conflicts.md) replans on a rejection, which is a pull
+followed by a re-push. The cost is that in a genuinely concurrent edit the local
+replica wins the last-writer race more often — which is T10's to arbitrate with
+guards, not something this order decides.
+
 **Two slots, not one.** The engine reads two feeds — the peer's and its own —
 so it holds two positions: `{ replica, pull, push }`, where `pull` is where this
 replica stands in the peer's feed and `push` where it stands in its own. One

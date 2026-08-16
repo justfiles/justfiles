@@ -257,6 +257,29 @@ describe('sync: idempotence', () => {
 	})
 })
 
+describe('sync: local work in flight', () => {
+	it('keeps an unpushed local edit that the peer still holds in an older state', async () => {
+		const { local, remote, pull, opts } = pair()
+		const base = file(versions('b'), { id: 'x', name: 'x.txt', size: 1n })
+		await remote.commit([base])
+		await sync(local, remote, opts)
+
+		// An edit this replica has not pushed yet, and a pull cursor that is gone —
+		// a crash, a cleared slot, a fenced lineage. The peer's replayed page then
+		// carries the row's OLDER state, so a pull that ran first would overwrite
+		// the edit, and the push behind it would skip the row it found there,
+		// because that row is now the peer's. The edit would be gone from both
+		// stores, with nothing to report it. Offering it first is what closes that.
+		await local.commit([{ ...base, size: 99n, version: versions('a')() }])
+		pull.clear()
+
+		await sync(local, remote, opts)
+
+		expect(await local.get('x')).toMatchObject({ size: 99n })
+		expect(await remote.get('x')).toMatchObject({ size: 99n })
+	})
+})
+
 describe('sync: lineage', () => {
 	it('starts again from the empty cursor when a peer fences it', async () => {
 		const gone = memStore() // another lineage: its cursors mean nothing anywhere else

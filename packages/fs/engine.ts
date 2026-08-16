@@ -2,8 +2,8 @@
  * The sync engine. It is the seam's second consumer, beside the POSIX volume,
  * and its whole loop is two scans of the same feed in opposite directions:
  *
- *     pull: remote.since(cursor) → local.commit(rows)  → advance cursor
  *     push: local.since(cursor)  → remote.commit(rows) → advance cursor
+ *     pull: remote.since(cursor) → local.commit(rows)  → advance cursor
  *
  * There is no journal, no snapshot session, no handoff, and no wire ordering:
  * a peer is just another `Store`, a bootstrap is `since()` from the empty
@@ -57,7 +57,17 @@ export type SyncOptions = {
 }
 
 /**
- * One cycle: pull the peer's feed in, then push this replica's own rows out.
+ * One cycle: offer this replica's own rows to the peer, then take the peer's.
+ *
+ * Push runs FIRST, and that ordering is load-bearing. A pull applies rows
+ * blind — it has no base to compare against, and the design declines to keep one
+ * — so a page replayed from a rewound cursor carries a row's older state and
+ * overwrites a local edit that has not been sent yet. The push behind it would
+ * then skip that row, since what it finds there is the peer's, and the edit is
+ * gone from both stores with nothing to report it. Offering local work before
+ * accepting anything closes that window, and it is the order a guarded push
+ * wants anyway: T10 replans on a rejection, which is a pull followed by a
+ * re-push.
  *
  * The retries are deliberately dumb. A cursor only ever lags, so an attempt that
  * died halfway left nothing to unwind — re-running the whole cycle is both the
@@ -70,8 +80,8 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	let rewind = false
 	for (let attempt = 0; ; attempt++) {
 		try {
-			await drain(remote, local, opts.pull, rewind)
 			await drain(local, remote, opts.push, rewind, mine)
+			await drain(remote, local, opts.pull, rewind)
 			return
 		} catch (err) {
 			// Rule 11, and it fences the PAIR rather than the cursor that threw. The
