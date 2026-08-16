@@ -139,6 +139,45 @@ test('eviction waits for an in-flight cache write', async () => {
 	await expect(cache(url)).rejects.toThrow('offline')
 })
 
+test('eviction waits for an in-flight cache probe', async () => {
+	const base = volume(memStorage())
+	let startProbe: () => void = () => {}
+	let resumeProbe: () => void = () => {}
+	const probing = new Promise<void>((resolve) => {
+		startProbe = resolve
+	})
+	const resume = new Promise<void>((resolve) => {
+		resumeProbe = resolve
+	})
+	let block = true
+	const fs: Volume = {
+		...base,
+		async exists(path) {
+			if (block && path.startsWith('/private/cache/apps/')) {
+				block = false
+				startProbe()
+				await resume
+			}
+			return base.exists(path)
+		}
+	}
+	let requests = 0
+	const cache = await appAssets(fs, async () => {
+		requests++
+		if (requests > 1) throw new Error('offline')
+		return new Response(bytes('GUI'))
+	})
+	const url = 'https://notes.justapps.run/v/1/gui.js'
+	const read = cache(url)
+	await probing
+	const eviction = cache.evict!(url)
+	resumeProbe()
+
+	expect(text(await read)).toBe('GUI')
+	await eviction
+	await expect(cache(url)).rejects.toThrow('offline')
+})
+
 test('the cache uses a flat path-safe URL hash', async () => {
 	const fs = volume(memStorage())
 	const cache = await appAssets(fs, async () => new Response(bytes('GUI')))

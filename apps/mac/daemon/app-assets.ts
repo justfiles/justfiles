@@ -16,13 +16,13 @@ export async function appAssets(
 	await startCache(fs).catch((error) => console.warn('app asset: cache start failed', error))
 	const pending = new Map<string, Promise<Uint8Array>>()
 
-	const load = async (url: string): Promise<Uint8Array> => {
-		const path = cachePath(url)
-		if (await fs.exists(path)) return fs.readFile(path)
+	const load = (url: string): Promise<Uint8Array> => {
+		let read = pending.get(url)
+		if (!read) {
+			read = (async () => {
+				const path = cachePath(url)
+				if (await fs.exists(path)) return fs.readFile(path)
 
-		let download = pending.get(url)
-		if (!download) {
-			download = (async () => {
 				const response = await request(url)
 				if (!response.ok) throw new Error(`app asset: ${url} ${response.status}`)
 				const data = new Uint8Array(await response.arrayBuffer())
@@ -36,9 +36,9 @@ export async function appAssets(
 				}
 				return data
 			})().finally(() => pending.delete(url))
-			pending.set(url, download)
+			pending.set(url, read)
 		}
-		return download
+		return read
 	}
 	load.evict = async (url: string) => {
 		await pending.get(url)?.catch(() => {})
