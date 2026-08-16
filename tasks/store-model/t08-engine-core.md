@@ -72,6 +72,21 @@ followed by a re-push. The cost is that in a genuinely concurrent edit the local
 replica wins the last-writer race more often — which is T10's to arbitrate with
 guards, not something this order decides.
 
+**What the order does NOT close, and who closes it.** Push-first protects local
+work that exists when a cycle STARTS. A write that lands mid-cycle — after the
+push drain reached its tail, before the pull commits its page — is still
+overwritten by that page, and the next push skips the row because what it finds
+there is now the peer's. Reproduced, and a second cycle does not recover it.
+
+Closing it means the pull stops applying blind: it would read each row it is
+about to replace and guard the commit on what it read, so a racing local write
+rejects the batch and the retry re-runs the cycle with the edit still local. That
+is conflict machinery, and this engine states it has none — it is
+[T10](t10-authority-and-conflicts.md)'s, whose edit/edit scenario already needs
+exactly this ("the engine pulls, then re-pushes the local edit on the new base"),
+with an authority in the picture to say which side wins. T10 carries it as a
+required test; do not let it slip.
+
 **Two slots, not one.** The engine reads two feeds — the peer's and its own —
 so it holds two positions: `{ replica, pull, push }`, where `pull` is where this
 replica stands in the peer's feed and `push` where it stands in its own. One
