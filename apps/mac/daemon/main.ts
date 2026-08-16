@@ -17,6 +17,7 @@ import { setNotificationChannel } from './notify'
 import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './protocol'
 import { SHIPPED } from './resources'
 import { sandboxes } from './sandbox'
+import { installStoreApp, storeCatalog } from './store'
 
 // The browser surfaces (launcher, chat, app shell, assets) are Vite-built
 // into ui/dist/client and served verbatim. Shipped: beside the exe under Resources/client
@@ -47,6 +48,8 @@ function imageContentType(path: string, bytes: Uint8Array): string {
 }
 
 type Context = { type: 'system' } | { type: 'agent' } | { type: 'app'; id: string }
+
+const failure = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 // Typed send helpers — routing every frame through a union keeps the wire protocol
 // compile-checked. `/system` speaks `ServerMessage`; `/agent` its own `AgentEvent`.
@@ -114,6 +117,26 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				if (server.upgrade(req, { data: { type: 'app', id: req.params.id } })) return undefined
 				return new Response('Expected WebSocket upgrade', { status: 426 })
 			},
+			// The App Store tile: browse what JustApps publishes, then install one by id. An
+			// install needs no reply beyond ok/failed — landing it fires `app.installed`, which
+			// pushes a fresh catalog to every launcher, and the tile's row drops out there.
+			'/store': async () => {
+				try {
+					return Response.json({ apps: await storeCatalog() })
+				} catch (error) {
+					return new Response(failure(error), { status: 502 })
+				}
+			},
+			'/store/:id': {
+				POST: async (req) => {
+					try {
+						await installStoreApp(req.params.id)
+						return new Response(null, { status: 204 })
+					} catch (error) {
+						return new Response(failure(error), { status: 502 })
+					}
+				}
+			},
 			'/system': (req, server) => {
 				if (server.upgrade(req, { data: { type: 'system' } })) return undefined
 				return new Response('Expected WebSocket upgrade', { status: 426 })
@@ -177,8 +200,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 						const value = await kernel.dispatch(ws.data.id, { type, params })
 						ws.send(JSON.stringify({ id, ok: true, value }))
 					} catch (err) {
-						const error = err instanceof Error ? err.message : String(err)
-						ws.send(JSON.stringify({ id, ok: false, error }))
+						ws.send(JSON.stringify({ id, ok: false, error: failure(err) }))
 					}
 					return
 				}

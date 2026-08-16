@@ -2,16 +2,25 @@
 // `createServer` (the Bun.serve routing + the three sockets); this stands one up over a
 // throwaway temp Volume (FRIEREN_SUPPORT_DIR) with a no-op `projectApps` so the run never
 // touches ~/Applications. It exercises the HTTP routes (per-app gui.js/icon + their 404s +
-// the serveClient guard) and the wire protocol on all three sockets: `/system` (catalog +
-// command dispatch), `/agent` (live transcript + a prompt turn), and `/app/:id` (initial
-// state + a dispatch round-trip). Offline-safe: with no ai account the agent can't build, so
-// history is empty and a prompt turn surfaces a classified error — both observable here.
+// the serveClient guard, the App Store's `/store` browse + install over a faked JustApps
+// registry) and the wire protocol on all three sockets: `/system` (catalog + command
+// dispatch), `/agent` (live transcript + a prompt turn), and `/app/:id` (initial state + a
+// dispatch round-trip). Offline-safe: with no ai account the agent can't build, so history is
+// empty and a prompt turn surfaces a classified error — both observable here. One server per
+// process, because the daemon's kernel/Volume are module singletons.
 // Bun-only (`bun test`): Bun.serve + pub/sub + blob-URL reducer workers.
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import {
+	RUNNER_MANIFEST_SCHEMA,
+	RUNNER_STORE_SCHEMA,
+	RUNNER_STORE_URL
+} from '../../shared/justapps.ts'
+import { getKernel } from './kernel.ts'
 import { createServer } from './main.ts'
 
 const FILES = 'justfiles.files'
@@ -184,4 +193,105 @@ test('/app socket pushes initial state and round-trips a dispatch', async () => 
 	const pushed = await client.waitFor((m) => m.state?.currentViewing === '/hello.txt')
 	expect(pushed.state).toMatchObject({ currentViewing: '/hello.txt' })
 	client.close()
+})
+
+// A fake JustApps registry: one published app, served from an immutable release URL. The
+// daemon reads the registry through the global `fetch`, so `withRegistry` patches it for
+// the duration of a test and passes everything else (this test's own requests to the
+// server) through to the real one.
+const TASKS = 'com.example.tasks'
+const RELEASE = 'https://com-example-tasks.justapps.run/v/1.0.0/'
+const POINTER = 'https://com-example-tasks.justapps.run/manifest.json'
+const files: Record<string, string> = { 'app.js': 'REDUCER', 'gui.js': 'GUI' }
+const index = {
+	schema: RUNNER_STORE_SCHEMA,
+	apps: [
+		{
+			id: TASKS,
+			name: 'Tasks',
+			description: 'Track things',
+			version: '1.0.0',
+			manifestUrl: POINTER,
+			repository: 'https://example.com/tasks'
+		}
+	]
+}
+const release = {
+	schema: RUNNER_MANIFEST_SCHEMA,
+	id: TASKS,
+	name: 'Tasks',
+	description: 'Track things',
+	version: '1.0.0',
+	app: 'app.js',
+	gui: 'gui.js',
+	capabilities: { volume: { id: 'volume', scopes: ['read'] } },
+	hash: 'release-hash',
+	files: Object.entries(files).map(([path, body]) => ({
+		path,
+		hash: `sha256-${createHash('sha256').update(body).digest('hex')}`,
+		size: body.length
+	}))
+}
+
+async function withRegistry<T>(run: () => Promise<T>): Promise<T> {
+	const real = globalThis.fetch
+	const json = (data: unknown, url: string): Response => {
+		const response = new Response(JSON.stringify(data))
+		// `runnerAppStore` pins an app's baseUrl to the URL its manifest came back from.
+		Object.defineProperty(response, 'url', { value: url })
+		return response
+	}
+	globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+		if (url === RUNNER_STORE_URL) return Promise.resolve(json(index, RUNNER_STORE_URL))
+		if (url === POINTER) return Promise.resolve(json(release, `${RELEASE}manifest.json`))
+		if (url.startsWith(RELEASE)) {
+			const body = files[url.slice(RELEASE.length)]
+			return Promise.resolve(
+				body === undefined ? new Response(null, { status: 404 }) : new Response(body)
+			)
+		}
+		return real(input, init)
+	}) as typeof fetch
+	try {
+		return await run()
+	} finally {
+		globalThis.fetch = real
+	}
+}
+
+test('/store lists what JustApps publishes, without the file manifests', async () => {
+	const apps = await withRegistry(async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/store`)
+		expect(res.status).toBe(200)
+		return ((await res.json()) as { apps: Record<string, unknown>[] }).apps
+	})
+
+	expect(apps).toEqual([
+		{
+			id: TASKS,
+			name: 'Tasks',
+			description: 'Track things',
+			version: '1.0.0',
+			repository: 'https://example.com/tasks',
+			capabilities: release.capabilities
+		}
+	])
+})
+
+test('POST /store/:id installs a published app, and 502s an unknown one', async () => {
+	await withRegistry(async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/store/${TASKS}`, { method: 'POST' })
+		expect(res.status).toBe(204)
+
+		const kernel = await getKernel()
+		expect((await kernel.list()).map((app) => app.id)).toContain(TASKS)
+		// Hosted: the record and the reducer land in the Volume, the GUI stays mounted.
+		const installed = await kernel.app(TASKS)
+		expect(installed.manifest.baseUrl).toBe(RELEASE)
+		expect(new TextDecoder().decode(await installed.read('gui.js'))).toBe('GUI')
+
+		const missing = await fetch(`http://127.0.0.1:${port}/store/no.such.app`, { method: 'POST' })
+		expect(missing.status).toBe(502)
+	})
 })

@@ -4,12 +4,16 @@ import { Transcript } from '@justfiles/ui/Transcript'
 import { StrictMode, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useAgentChat } from './agentChat'
+import { type Capabilities, type StoreApp, StoreSurface } from './store'
 
 type App = {
 	id: string
 	name: string
 	description?: string
 	icon?: string
+	// Version + declared access: what the App Store compares a published entry against.
+	version?: string
+	capabilities?: Capabilities
 }
 
 type SystemMessage =
@@ -33,14 +37,36 @@ export function Launcher() {
 	const chat = useAgentChat()
 	const [query, setQuery] = useState('')
 	const [chatOpen, setChatOpen] = useState(false)
+	// The store is transient like the chat: Escape or Done leaves it.
+	const [storeOpen, setStoreOpen] = useState(false)
+	// Installs run in the daemon; this is just the tile/row feedback while one lands.
+	const [installing, setInstalling] = useState<StoreApp[]>([])
+	const [installError, setInstallError] = useState<string | null>(null)
 	const filtered = useMemo(() => filterApps(apps, query), [apps, query])
 	const text = query.trim()
 	const noAppMatch = text !== '' && filtered.length === 0
 	const showChat = noAppMatch || (chatOpen && text === '')
+	const showStore = storeOpen && !showChat && text === ''
 	const status =
 		error ??
+		installError ??
 		(showChat ? chat.error : null) ??
 		(connection === 'disconnected' ? 'Reconnecting…' : '')
+
+	// Fire-and-forget: the daemon downloads, and the app appears in the grid when its
+	// `app.installed` push updates the catalog.
+	const install = async (app: StoreApp) => {
+		setInstallError(null)
+		setInstalling((list) => [...list, app])
+		try {
+			const res = await fetch(`/store/${encodeURIComponent(app.id)}`, { method: 'POST' })
+			if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`)
+		} catch (e) {
+			setInstallError(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
+		} finally {
+			setInstalling((list) => list.filter((pending) => pending.id !== app.id))
+		}
+	}
 
 	const submit = (event: React.FormEvent) => {
 		event.preventDefault()
@@ -62,7 +88,14 @@ export function Launcher() {
 				<div className="app-surface">
 					{showChat ? (
 						<ChatSurface chat={chat} />
-					) : filtered.length > 0 ? (
+					) : showStore ? (
+						<StoreSurface
+							installed={apps}
+							installing={installing}
+							onInstall={(app) => void install(app)}
+							onClose={() => setStoreOpen(false)}
+						/>
+					) : connection === 'ready' || filtered.length > 0 ? (
 						<div className="app-grid">
 							{filtered.map((app) => (
 								<a className="app-cell" href={appUrl(app.id)} key={app.id} title={app.name}>
@@ -70,11 +103,41 @@ export function Launcher() {
 									<span className="app-name">{app.name}</span>
 								</a>
 							))}
+							{installing
+								.filter((app) => !apps.some((installed) => installed.id === app.id))
+								.map((app) => (
+									<span
+										className="app-cell"
+										data-installing
+										key={app.id}
+										title={`Installing ${app.name}…`}
+									>
+										{app.iconUrl ? (
+											<img alt="" className="app-icon" src={app.iconUrl} />
+										) : (
+											<span className="app-icon app-glyph">{glyph(app)}</span>
+										)}
+										<span className="app-name">Installing…</span>
+									</span>
+								))}
+							{/* The way in to everything not installed yet — the store is a tile, not a
+							    separate app. Hidden while searching, where the grid is a result list. */}
+							{text === '' ? (
+								<button
+									className="app-cell"
+									onClick={() => setStoreOpen(true)}
+									title="Browse the App Store"
+									type="button"
+								>
+									<span className="app-icon app-glyph">
+										<StoreGlyph />
+									</span>
+									<span className="app-name">App Store</span>
+								</button>
+							) : null}
 						</div>
 					) : (
-						<div className="empty-state">
-							{connection === 'ready' ? 'No apps found' : 'Connecting to Kodama…'}
-						</div>
+						<div className="empty-state">Connecting to Kodama…</div>
 					)}
 				</div>
 				<form className="composer" onSubmit={submit}>
@@ -87,6 +150,7 @@ export function Launcher() {
 						onKeyDown={(event) => {
 							if (event.key === 'Escape') {
 								setChatOpen(false)
+								setStoreOpen(false)
 								setQuery('')
 							}
 						}}
@@ -193,6 +257,25 @@ function AppIcon({ app }: { app: App }) {
 	return <span className="app-icon app-glyph">{glyph(app)}</span>
 }
 
+function StoreGlyph() {
+	return (
+		<svg
+			aria-hidden="true"
+			fill="none"
+			height="34"
+			stroke="currentColor"
+			strokeLinecap="round"
+			strokeWidth="1.6"
+			viewBox="0 0 24 24"
+			width="34"
+		>
+			<path d="M3 9.5 5.5 4h13L21 9.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0Z" />
+			<path d="M4.8 11.4v8.6h14.4v-8.6" />
+			<path d="M9.8 20v-5.4h4.4V20" />
+		</svg>
+	)
+}
+
 function glyph(app: App): string {
 	return (app.name.trim() || app.id).slice(0, 1).toUpperCase()
 }
@@ -287,6 +370,17 @@ body {
 .app-cell:hover,
 .app-cell:focus-visible {
 	background: rgba(255, 255, 255, 0.1);
+}
+
+.app-cell[data-installing] {
+	opacity: 0.5;
+}
+
+button.app-cell {
+	border: 0;
+	padding: 12px 0 0;
+	background: transparent;
+	font: inherit;
 }
 
 .app-cell:focus-visible .app-icon {

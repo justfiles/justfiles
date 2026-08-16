@@ -77,6 +77,19 @@ The thin bundles in `~/Applications/Kodama Apps/` are also derived data. They co
 Code, Files, and Settings remain packaged fallbacks until immutable JustApps releases exist for them.
 The packaged store is authoritative when it and JustApps contain the same app ID.
 
+### The App Store tile
+
+The launcher's last grid tile browses everything JustApps publishes. The daemon owns both ends —
+`GET /store` lists the catalog (index plus each published manifest, no file lists), and
+`POST /store/<id>` installs one app — so no app bytes pass through the webview. A row asks for
+consent first, showing the access the published manifest declares. An install fires
+`app.installed`, which pushes a fresh catalog to every launcher, so the new app appears in the grid
+and its row leaves the list.
+
+The list also carries a **held update**: a published version that asks for more access than the
+installed one, which `reconcile` skips rather than applying. Accepting the row is the re-consent,
+and this list is the only place on this Mac where one surfaces.
+
 ### Production build & install
 
 ```sh
