@@ -152,7 +152,6 @@ export async function createDevServer(
 	})
 	const appId = await k.install(bundle)
 	const installed = await k.app(appId)
-	server.httpServer?.once('close', devkit.close)
 
 	// Headless-app HMR. Vite re-evaluates the module on the next sandbox load, but
 	// the kernel memoizes the procedure set + declared capabilities per install —
