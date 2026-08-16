@@ -121,6 +121,11 @@ describe('versions', () => {
 		const minted = Array.from({ length: 100 }, () => [one(), two()]).flat()
 
 		expect(new Set(minted).size).toBe(minted.length)
+		// Chance is the only thing separating two minters, so the nonce keeps a
+		// WHOLE uuid. Trim it and the birthday bound does the rest: at 32 bits, one
+		// replica in a hundred that reaches 10,000 minters has two of them counting
+		// from 1 over the same strings — which is the lost update above, restored.
+		expect(one()).toMatch(/^a:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}-\d+$/)
 	})
 
 	it('names the replica as the author, whatever it puts after it', () => {

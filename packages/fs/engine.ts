@@ -99,9 +99,13 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
  * against the second — losing exactly the concurrent update it was there to
  * catch. A clock seed does not settle this: two minters in one millisecond
  * still collide, and a clock that steps backwards re-mints a whole run.
+ *
+ * Chance is all that separates two minters, so the nonce keeps a whole uuid.
+ * Trimming it to save bytes on a row that already carries two of them buys
+ * nothing and hands the birthday bound the collision back.
  */
 export function versions(replica: string): () => Version {
-	const nonce = crypto.randomUUID().slice(0, 8)
+	const nonce = crypto.randomUUID()
 	let counter = 0
 	return () => `${replica}:${nonce}-${++counter}`
 }
