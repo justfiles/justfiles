@@ -25,7 +25,15 @@
  * loser, recreate under a new id — out of the server entirely.
  */
 
-import { GuardError, type Node, type NodeId, ROOT, type Store, verifiedBlobs } from './store'
+import {
+	type Cursor,
+	GuardError,
+	type Node,
+	type NodeId,
+	ROOT,
+	type Store,
+	verifiedBlobs
+} from './store'
 
 /**
  * Can rows in THIS store sit beneath this one? Only a directory can, and the
@@ -135,16 +143,15 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 		// a live directory that turns into a file leaves every row beneath it
 		// parented on a non-directory. Unlike a tombstoned parent — whose children
 		// the next page buries — nothing repairs this, since no writer produces a row
-		// that types it back. That is also why the batch is not consulted: a volume
-		// empties a directory and removes it, and a new node takes the name under a
-		// new id, so nothing legitimate re-types one at all. Only a peer's raw rows
-		// reach here, which is what the authority is for.
-		if (
-			held &&
-			holdsRows(held) &&
-			!holdsRows(row) &&
-			(await store.children(row.id)).nodes.length > 0
-		)
+		// that types it back. Only a peer's raw rows reach here, which is what the
+		// authority is for.
+		//
+		// What the batch clears is not stranded, on the same reading as the two
+		// checks above: a commit that empties the directory as it re-types it is
+		// whole on its own, and refusing it would refuse something no later row needs
+		// to repair — which `settle` has no answer for, so the page would come back
+		// unchanged until the budget ran out.
+		if (held && holdsRows(held) && !holdsRows(row) && (await stranded(store, batch, row.id)))
 			throw new GuardError(`${row.id} still holds children and cannot become a ${row.type}`)
 
 		// One live row per name — within the batch, and against what is already here.
@@ -162,6 +169,27 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 		// is what finds it. Everything else stays a read of nothing.
 		if (!held || held.parent !== row.parent) await refuseCycle(store, batch, row)
 	}
+}
+
+/**
+ * Is any live row still sitting under `id` once this batch lands?
+ *
+ * A child written back into the same directory counts, and the parent check
+ * above refuses that batch anyway — the two overlap, which is how it should be:
+ * this reads as the question its name asks, rather than as half an answer that
+ * needs the other check to be safe.
+ */
+async function stranded(store: Store, batch: Map<NodeId, Node>, id: NodeId): Promise<boolean> {
+	let cursor: Cursor | undefined
+	do {
+		const page = await store.children(id, cursor)
+		for (const kid of page.nodes) {
+			const write = batch.get(kid.id)
+			if (write === undefined || (write.deleted !== true && write.parent === id)) return true
+		}
+		cursor = page.next
+	} while (cursor !== undefined)
+	return false
 }
 
 /** Does this batch move `holder` off the name it holds, or bury it? */

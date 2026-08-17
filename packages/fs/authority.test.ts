@@ -203,6 +203,40 @@ describe('authority: the tree invariants', () => {
 		expect(error.message).toMatch(/children/)
 	})
 
+	it('takes a re-type whose batch empties the directory in the same commit', async () => {
+		// The commit is whole on its own: nothing is left beneath the retyped row
+		// when it lands. Refusing it would refuse something no later row needs to
+		// repair, and `settle` has no answer for a page refused that way, so it
+		// would be offered unchanged until the budget ran out.
+		const { server, seed } = hub()
+		const docs = dir({ id: 'docs', name: 'docs' })
+		const inside = file({ id: 'inside', name: 'note.txt', parent: 'docs' })
+		await seed(docs, inside)
+
+		await expect(
+			server.commit([
+				{ ...inside, deleted: true, version: '2' },
+				file({ id: 'docs', name: 'docs', version: '2' })
+			])
+		).resolves.toBeUndefined()
+	})
+
+	it('refuses a re-type whose batch only renames the children it strands', async () => {
+		// Moving a child WITHIN the directory clears nothing: it still sits under the
+		// row that is about to stop being a directory. Only leaving or being buried
+		// counts, and the two checks agree on that from either end — this batch has
+		// a live row parented on a file whichever way it is read.
+		const { seed, refused } = hub()
+		const docs = dir({ id: 'docs', name: 'docs' })
+		const inside = file({ id: 'inside', name: 'note.txt', parent: 'docs' })
+		await seed(docs, inside)
+
+		await refused([
+			file({ id: 'inside', name: 'renamed.txt', parent: 'docs', version: '2' }),
+			file({ id: 'docs', name: 'docs', version: '2' })
+		])
+	})
+
 	it('takes the same type change once the directory is empty', async () => {
 		// The rule is about what would be stranded, not about the type change: an
 		// empty directory strands nobody.

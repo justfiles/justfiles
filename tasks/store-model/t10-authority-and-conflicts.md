@@ -108,6 +108,17 @@ the subtle one — the root being its own parent is where an upward walk stops,
 so a root parented on its own descendant is a cycle every walk below steps
 over rather than finds.
 
+**Every check reads the batch, including the one that nearly did not.** A
+commit is atomic, so what it does to a row counts as already done for the rest
+of it: a rename that gives a name away and takes it back is one commit, and so
+is a re-type that empties the directory as it goes. The re-type check was
+written against the pre-commit children alone on the grounds that no writer
+produces such a batch — true, and the wrong test. The rule this file states is
+"refuse only what no later row can repair", and a batch that clears the
+children repairs it in the same commit, with no later row needed at all.
+Refusing it would also have no way out: `settle` has no answer for a page
+refused that way, so it comes back unchanged until the budget runs out.
+
 **Tombstones are terminal.** Nothing brings a dead id back. That is the rule
 that makes edit-vs-delete a different answer from a plain create — the
 distinction Unison needs a common base for — and it is what turns the editor's
