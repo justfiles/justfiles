@@ -129,13 +129,33 @@ rule 11, echo suppression is the author tag, "what does the peer no longer
 have" is the feed, and local-only data is a mount ([T15](t15-mounts.md)).
 385 lines against the old 937.
 
-**A reset refuses while the loop is stopped, and rewrites in passes.** Both
-came out of review. A reset is destroy-then-converge, and only the loop runs
-the second half — so with it paused or destroyed, `flush` returns at once and
-`takeTheirs` would resolve reporting success over a tombstoned volume, or
+**A reset is destroy-then-converge, so it refuses whenever the loop cannot run
+the second half.** With the loop paused or destroyed, `flush` returns at once,
+and `takeTheirs` would resolve reporting success over a tombstoned volume — or
 `takeMine` over an authority truncated of everything and given nothing back.
 Refusing before anything is destroyed is the honest answer; the caller resumes
-and asks again. And stopping the loop does not stop the APP: a row committed
+and asks again. The state is checked twice, and the second check is the one
+that is easy to miss: waiting for the cycle in flight is a window the app can
+tear the replica down in (frieren does, on a profile switch), and a reset that
+went ahead then would leave the store rewritten with nothing to converge it.
+
+**A reset stands the loop off with its own flag, not the app's `paused`.**
+Overloading `paused` meant a reset both read and wrote a decision that belongs
+to the app — restoring it would clobber a pause that arrived mid-reset. So
+`resetting` is the wrapper's own, and one predicate (`mayRun`) collects every
+way the loop must not act.
+
+**A discard that cannot record its cutoff stops the loop for good.** The window
+between the tombstone commit and the saved cursor is the one state this replica
+must never sync in: the tombstones are rows it authored, sitting past a cursor
+that has not moved, so a single cycle turns "take theirs" into "delete
+everywhere" on every replica. Ordering cannot fix it — a cutoff taken before
+the rewrite leaves the tombstones after it, which is the same bug pointing the
+other way — so the window gets a flag, and a failed save leaves it set. That is
+not a dead end: another `takeTheirs` finds nothing left to tombstone and saves
+the cutoff the first run could not.
+
+**Stopping the loop does not stop the APP.** A row committed
 while the last batch was landing escaped the reset entirely — never published
 by `takeMine`, and for `takeTheirs` left alive but past the cutoff, which
 strands it on that device for good. So the rewrite repeats until a scan finds

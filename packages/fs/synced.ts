@@ -166,15 +166,30 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	let paused = false
 	let destroyed = false
 	let failures = 0
+	/** A reset owns the store: it is rewriting rows the loop must not offer yet. */
+	let resetting = false
+	/**
+	 * A discard's tombstones are here and the cutoff that keeps them local is not
+	 * — the window between `rewrite` committing and `push.save` returning. One
+	 * cycle in it offers those tombstones to the authority and turns "take
+	 * theirs" into "delete everywhere", so a cutoff that fails to save leaves
+	 * this set and the loop stopped for good. Only another `takeTheirs` clears
+	 * it, which is also the recovery: the second run finds nothing left to
+	 * tombstone and saves the cutoff its first run could not.
+	 */
+	let unfenced = false
+
+	/** May the loop act? Every way it must not, in one place. */
+	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfenced
 
 	function schedule(): void {
-		if (paused || destroyed) return
+		if (!mayRun()) return
 		const backoff = RETRY_MS[Math.min(failures - 1, RETRY_MS.length - 1)]
 		timer = setTimeout(run, failures > 0 && backoff !== undefined ? backoff : interval)
 	}
 
 	function run(): void {
-		if (running || paused || destroyed) return
+		if (running || !mayRun()) return
 		cancelPush()
 		setStatus('syncing')
 		running = sync(local, remote, opts)
@@ -242,7 +257,7 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 
 	/** Fold a burst of local writes into one push behind it. */
 	function armPush(): void {
-		if (paused || destroyed) return
+		if (!mayRun()) return
 		const now = Date.now()
 		armed ??= now
 		clearTimeout(pushTimer)
@@ -256,25 +271,36 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	}
 
 	/**
-	 * Run this with the loop stopped, and start it again afterwards.
+	 * Run a reset with the loop standing off, and start it again afterwards.
 	 *
 	 * A reset writes rows and THEN moves the cursors that decide what is offered
 	 * from them, and a cycle running between the two would push exactly what the
-	 * user asked to throw away. Nothing here locks a store: it stops this
-	 * wrapper's own loop, which is the only thing this wrapper starts.
+	 * user asked to throw away. `resetting` is this wrapper's own flag rather
+	 * than the app's `paused`, so a reset neither reads nor writes a decision the
+	 * app made — nothing here locks a store.
+	 *
+	 * The state is checked TWICE, and the second time is the one that is easy to
+	 * miss: waiting for the cycle in flight is a window in which the app can
+	 * pause or tear this replica down, and a reset that went ahead anyway would
+	 * tombstone the tree — or truncate the authority — with no loop left to
+	 * converge it. A reset is destroy-then-converge, so with the loop stopped it
+	 * must not start.
 	 */
-	async function alone<T>(body: () => Promise<T>): Promise<T> {
-		const was = paused
-		pause()
+	async function alone<T>(what: string, body: () => Promise<T>): Promise<T> {
+		if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
+		resetting = true
+		clearTimeout(timer)
+		timer = undefined
 		try {
 			await running // an in-flight cycle finishes; it never rejects
+			if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
 			return await body()
 		} finally {
-			paused = was
-			// The stop took the timer with it, and a reset that THREW never reaches
-			// the flush that would put one back — so a volume the user only tried to
-			// publish would quietly stop syncing.
-			if (!paused) schedule()
+			resetting = false
+			// A reset that THREW never reaches the flush that would put a timer back,
+			// so a volume the user only tried to publish would quietly stop syncing.
+			// `schedule` still answers for the ways it must NOT come back.
+			schedule()
 		}
 	}
 
@@ -334,28 +360,24 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 		}
 	}
 
-	/**
-	 * A reset is destroy-then-converge, and only the loop runs the second half:
-	 * with it stopped, `flush` returns at once and this would resolve reporting
-	 * success over a tombstoned volume — or an authority truncated of everything
-	 * and given nothing back. So refuse before anything is destroyed.
-	 */
-	function needsLoop(what: string): void {
-		if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
-	}
-
 	async function takeTheirs(): Promise<void> {
-		needsLoop('take theirs')
-		await alone(async () => {
+		await alone('take theirs', async () => {
 			// The tree the user asked to discard, gone from the volume first — and
 			// then never offered. These tombstones are this replica's own rows, so an
 			// ordinary push would carry them to the peer and take the volume down on
 			// every other replica; moving the push cursor past them is what makes
 			// this "discard mine" instead of "delete everywhere". It takes whatever
 			// else was waiting to be pushed with it, which is the same decision.
+			//
+			// The two are one step or they are nothing, and only the flag can say so:
+			// a cutoff that fails to save leaves the tombstones here and the old
+			// cursor before them, which is the one state this loop must never run in.
+			unfenced = true
 			await props.push.save(await rewrite((row) => ({ ...row, deleted: true, version: mint() })))
+			unfenced = false
 			// The peer's feed from the top: its rows land back over the tombstones,
-			// and what only ever existed here stays dead.
+			// and what only ever existed here stays dead. A failure here strands
+			// nothing — the discard is fenced, and the next run pulls.
 			await props.pull.save(undefined)
 		})
 		await flush()
@@ -369,10 +391,9 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	 * what the reset truncated is exactly what this replica still holds.
 	 */
 	async function takeMine(): Promise<void> {
-		needsLoop('take mine')
 		const reset = props.reset
 		if (!reset) throw new Error('take mine needs a peer that can start a new lineage')
-		await alone(async () => {
+		await alone('take mine', async () => {
 			epoch = await reset()
 			// A replica pushes what it AUTHORED, not what it holds, so without this
 			// the emptied authority would get back only the part of the volume this

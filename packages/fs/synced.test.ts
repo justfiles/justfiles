@@ -410,6 +410,73 @@ describe('syncedVolume: take theirs', () => {
 		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs', '/mine.txt': 'mine' })
 	})
 
+	// Waiting for the cycle in flight is a window the app can act in — frieren
+	// tears a profile down on user switch — and a reset that went ahead anyway
+	// would tombstone the tree with no loop left to converge it.
+	it('refuses when the loop is stopped while it waits for the cycle in flight', async () => {
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		let release = (): void => {}
+		const parked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let hold = false
+		const slow: Store = {
+			...remote,
+			since: async (cursor) => {
+				if (hold) await parked
+				return remote.since(cursor)
+			}
+		}
+		const { vol } = await replica(slow)
+		await vol.writeFile('/mine.txt', enc.encode('mine'))
+
+		hold = true
+		const cycle = vol.flush()
+		const reset = vol.takeTheirs()
+		vol.destroy()
+		release()
+		await cycle
+
+		await expect(reset).rejects.toThrow(/running sync loop/)
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs', '/mine.txt': 'mine' })
+	})
+
+	// The one state this loop must never run in: the tombstones are here and the
+	// cursor that keeps them local is not, so one push would carry them to the
+	// authority and every other replica would lose the volume.
+	it('stops syncing when it cannot record the cutoff, and recovers on a retry', async () => {
+		vi.useFakeTimers()
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		let broken = false
+		const push = slot()
+		const flaky: CursorSlot = {
+			load: () => push.load(),
+			save: (cursor) => (broken ? Promise.reject(new Error('the slot is full')) : push.save(cursor))
+		}
+		const { vol } = await replica(remote, { push: flaky })
+		await vol.writeFile('/mine.txt', enc.encode('mine'))
+
+		broken = true
+		await expect(vol.takeTheirs()).rejects.toThrow('the slot is full')
+
+		await vi.advanceTimersByTimeAsync(200_000)
+		await vol.flush()
+
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+
+		// And it is not a dead end: the retry finds nothing left to tombstone and
+		// saves the cutoff the first run could not.
+		broken = false
+		await vol.takeTheirs()
+
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs' })
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
 	it('leaves a replica that keeps syncing afterwards', async () => {
 		const remote = memStore()
 		const there = peerVolume(remote)
