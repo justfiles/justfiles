@@ -905,6 +905,41 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await store.since(cursor)).nodes).toEqual([])
 	})
 
+	test('bytes arriving for a stub do not land on an edit made outside', async () => {
+		const root = await temp()
+		const store = open(root)
+		const data = bytes('the bytes that were in flight')
+		const hash = await sha256Hex(data)
+		const stub: Node = {
+			id: 's',
+			parent: ROOT,
+			name: 'later.md',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([stub])
+		await feed(store)
+		expect(await readFile(join(root, 'later.md'), 'utf8')).toBe('') // the placeholder
+
+		// A local tool writes into the placeholder while the content is still on its way.
+		// Nobody has published that edit, so the file is the only copy of it there is —
+		// and a fetch that lands on top of it is the one thing this store must not do.
+		await writeFile(join(root, 'later.md'), 'the local tool wrote this')
+		await store.blobs.put(hash, data)
+
+		expect(await readFile(join(root, 'later.md'), 'utf8')).toBe('the local tool wrote this')
+		// The edit is a row now, and the bytes that arrived are still here for whoever
+		// names them: content nobody references is allowed (rule 10).
+		expect((await store.get('s'))?.content).toBe(
+			await sha256Hex(bytes('the local tool wrote this'))
+		)
+		expect(read(await store.blobs.get(hash))).toBe('the bytes that were in flight')
+	})
+
 	test('bytes arriving for a stub do not cost the row its mode or its stamp', async () => {
 		const root = await temp()
 		const store = open(root)

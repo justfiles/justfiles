@@ -1129,6 +1129,16 @@ export function fsStore(root: string): Store {
 			if (row.deleted || row.content !== hash) continue
 			const at = seen.get(row.id)
 			if (!at || at.hash === hash) continue
+			// Only over the file this store last saw. A local tool can write into the
+			// placeholder while the content is still on its way, and that edit is the only
+			// copy of itself there is — so the name is looked at again instead, which makes
+			// what the file holds a row, and a row naming other content is no stub waiting
+			// for these bytes.
+			const s = await lstat(abs(at.path))
+			if (s === null || !unchanged(at, s)) {
+				await settle([[row.parent, row.name]])
+				continue
+			}
 			await publish(abs(at.path), (tmp) => writeFile(tmp, data))
 			await meta(abs(at.path), row)
 			placed.push({ id: row.id, path: at.path, hash })
