@@ -503,6 +503,68 @@ describe('syncedVolume: take theirs', () => {
 		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
 	})
 
+	// The other half of the same step. Nothing here would be DELETED, but the
+	// peer's rows are all behind the cursor this replaces, so a loop left running
+	// would never bring one back and would look healthy over an empty tree.
+	it('stops syncing when it cannot rewind the pull, and recovers on a retry', async () => {
+		vi.useFakeTimers()
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		let broken = true
+		const pull = slot()
+		const flaky: CursorSlot = {
+			load: () => pull.load(),
+			save: (cursor) =>
+				broken && cursor === undefined
+					? Promise.reject(new Error('the slot is full'))
+					: pull.save(cursor)
+		}
+		const { vol } = await replica(remote, { pull: flaky })
+		const ran = cycles(vol)
+
+		await expect(vol.takeTheirs()).rejects.toThrow('the slot is full')
+
+		await vi.advanceTimersByTimeAsync(200_000)
+
+		expect(ran()).toBe(0)
+
+		broken = false
+		await vol.takeTheirs()
+
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
+	// Two menu clicks, and the volume would be gone from both sides: the tree
+	// here is already tombstoned, so `reset()` would truncate the authority and
+	// then have nothing to publish to it.
+	it('refuses take mine while a discard is half done', async () => {
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		let broken = false
+		const push = slot()
+		const flaky: CursorSlot = {
+			load: () => push.load(),
+			save: (cursor) => (broken ? Promise.reject(new Error('the slot is full')) : push.save(cursor))
+		}
+		let reset = 0
+		const { vol } = await replica(remote, {
+			push: flaky,
+			reset: async () => {
+				reset++
+				return 2
+			}
+		})
+
+		broken = true
+		await expect(vol.takeTheirs()).rejects.toThrow('the slot is full')
+
+		await expect(vol.takeMine()).rejects.toThrow(/discard did not finish/)
+		expect(reset).toBe(0)
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
 	it('leaves a replica that keeps syncing afterwards', async () => {
 		const remote = memStore()
 		const there = peerVolume(remote)
@@ -628,6 +690,51 @@ describe('syncedVolume: take mine', () => {
 		const first = vol.takeMine()
 
 		await expect(vol.takeTheirs()).rejects.toThrow(/already running/)
+		await first
+
+		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })
+	})
+
+	// The first reset owns the wrapper until it has converged, not just until it
+	// has stopped writing: a second one taking the flag mid-converge would make
+	// the first report a failure that was only the hand-over.
+	it('refuses a second reset while the first is still converging', async () => {
+		const hub = authorityPeer()
+		let hold = false
+		let reached = (): void => {}
+		let release = (): void => {}
+		const parked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const entered = new Promise<void>((resolve) => {
+			reached = resolve
+		})
+		const peer: Store = {
+			...hub.store,
+			since: async (cursor) => {
+				if (hold) {
+					hold = false // the converge cycle, and only it
+					reached()
+					await parked
+				}
+				return hub.store.since(cursor)
+			}
+		}
+		const { vol } = await replica(peer, {
+			reset: async () => {
+				hold = true
+				return hub.reset()
+			}
+		})
+		await vol.writeFile('/a.txt', enc.encode('from a'))
+		await vol.flush()
+
+		const first = vol.takeMine()
+		await entered
+
+		await expect(vol.takeTheirs()).rejects.toThrow(/already running/)
+
+		release()
 		await first
 
 		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })

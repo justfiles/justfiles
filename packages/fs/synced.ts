@@ -162,23 +162,33 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	let paused = false
 	let destroyed = false
 	let failures = 0
-	/** What the last cycle failed with, for the one caller a failure belongs to. */
-	let failure: unknown
-	/** A reset owns the store: it is rewriting rows the loop must not offer yet. */
+	/**
+	 * A reset owns this wrapper: no other reset may start, and the loop may not
+	 * act. Held from the entry guard through the converge cycle, so a reset is
+	 * over — one way or the other — before the next one is allowed to begin.
+	 */
 	let resetting = false
 	/**
-	 * A discard's tombstones are here and the cutoff that keeps them local is not
-	 * — the window between `rewrite` committing and `push.save` returning. One
-	 * cycle in it offers those tombstones to the authority and turns "take
-	 * theirs" into "delete everywhere", so a cutoff that fails to save leaves
-	 * this set and the loop stopped for good. Only another `takeTheirs` clears
-	 * it, which is also the recovery: the second run finds nothing left to
-	 * tombstone and saves the cutoff its first run could not.
+	 * A DISCARD stopped half-done, and nothing but another discard can finish it.
+	 * The loop must not act in either half:
+	 *
+	 * - before the cutoff is saved, the tombstones sit past a push cursor that
+	 *   has not moved, so one cycle offers them to the authority and turns "take
+	 *   theirs" into "delete everywhere";
+	 * - before the pull is rewound, the volume is empty and the peer's rows are
+	 *   all behind the saved cursor, so no cycle brings them back and a running
+	 *   loop would just look healthy over an empty tree.
+	 *
+	 * A failure therefore leaves this set and the loop stopped. Another
+	 * `takeTheirs` is the recovery — it finds nothing left to tombstone and
+	 * finishes the cursors its first run could not — which is why `takeMine` must
+	 * refuse to start here: it would truncate the authority and then be unable to
+	 * publish anything to it.
 	 */
-	let unfenced = false
+	let unfinished = false
 
 	/** May the loop act? Every way it must not, in one place. */
-	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfenced
+	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfinished
 
 	/** What a thrown thing says, for an error that carries another one's words. */
 	const message = (thrown: unknown): string =>
@@ -190,25 +200,32 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 		timer = setTimeout(run, failures > 0 && backoff !== undefined ? backoff : interval)
 	}
 
-	function run(): void {
-		if (running || !mayRun()) return
+	/**
+	 * One cycle, and the status it reports. Its failure is thrown, and who
+	 * catches it is the whole difference between the two callers: the loop's own
+	 * cycles have nobody waiting on them, so `status` is the report and the next
+	 * timer is the retry; a reset's converge cycle has a caller who is about to
+	 * act on the answer, so it gets the error.
+	 */
+	async function cycle(): Promise<void> {
 		cancelPush()
 		setStatus('syncing')
-		running = sync(local, remote, opts)
-			.then(() => {
-				failures = 0
-				failure = undefined
-				setStatus('synced')
-			})
-			.catch((error: unknown) => {
-				// The status says a cycle failed; only this says what failed, and a
-				// background loop has nowhere else to say it. `failure` is what carries
-				// it to a reset, whose converge cycle is nobody else's to report.
-				console.error(error)
-				failure = error
-				failures++
-				setStatus('error')
-			})
+		try {
+			await sync(local, remote, opts)
+			failures = 0
+			setStatus('synced')
+		} catch (error) {
+			console.error(error)
+			failures++
+			setStatus('error')
+			throw error
+		}
+	}
+
+	function run(): void {
+		if (running || !mayRun()) return
+		running = cycle()
+			.catch(() => undefined) // said by `status`; there is nobody else to tell
 			.finally(() => {
 				running = null
 				schedule()
@@ -301,11 +318,28 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 		resetting = true
 		clearTimeout(timer)
 		timer = undefined
-		let done: T
 		try {
 			await running // an in-flight cycle finishes; it never rejects
 			if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
-			done = await body()
+			const done = await body()
+			// Nothing here can hold a teardown off — the app tears the STORE down
+			// behind us — so a reset the loop was stopped under says so rather than
+			// resolving. It still recovers: a pause converges on `resume`, a destroy
+			// on the next replica over this store, since the cursors are saved by now.
+			if (paused || destroyed)
+				throw new Error(`${what} did not converge: the sync loop stopped while it ran`)
+			// The converge half. It is the reset's OWN cycle rather than the loop's,
+			// which settles two things at once: a reset is done when its work has
+			// reached the peer, so this failure belongs to the caller and not to
+			// `status`; and ownership can be held right through it, so a second reset
+			// cannot slip in while this one is still converging and leave it reporting
+			// a failure that was only the other one taking the flag.
+			try {
+				await cycle()
+			} catch (error) {
+				throw new Error(`${what} did not converge: ${message(error)}`, { cause: error })
+			}
+			return done
 		} finally {
 			resetting = false
 			// A reset that THREW never reaches the cycle that would put a timer back,
@@ -313,21 +347,6 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// `schedule` still answers for the ways it must NOT come back.
 			schedule()
 		}
-		// The converge half, and the reason it is here rather than in the callers: a
-		// reset is done when its work has REACHED the peer, so this is the one cycle
-		// whose failure belongs to the caller. The loop's own cycles report through
-		// `status`, and a scheduled retry is no answer to a caller that will tear
-		// this replica down the moment it hears success.
-		failure = undefined
-		await flush()
-		if (failure !== undefined)
-			throw new Error(`${what} did not converge: ${message(failure)}`, { cause: failure })
-		// Nothing here can hold a teardown off — the app tears the STORE down behind
-		// us — so a reset the loop was stopped under says so rather than resolving.
-		// It still recovers: a pause converges on `resume`, a destroy on the next
-		// replica over this store, since both cursors are saved by now.
-		if (!mayRun()) throw new Error(`${what} did not converge: the sync loop stopped while it ran`)
-		return done
 	}
 
 	/** The guard that says "nobody wrote this row after I read it". */
@@ -375,10 +394,11 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// this "discard mine" instead of "delete everywhere". It takes whatever
 			// else was waiting to be pushed with it, which is the same decision.
 			//
-			// The two are one step or they are nothing, and only the flag can say so:
-			// a cutoff that fails to save leaves the tombstones here and the old
-			// cursor before them, which is the one state this loop must never run in.
-			unfenced = true
+			// The tombstones and the two cursors are one step or they are nothing, and
+			// only the flag can say so: a discard that stops in between leaves either
+			// a tree the next cycle would delete everywhere, or an empty one no cycle
+			// would refill.
+			unfinished = true
 			// Tombstone until nothing live is left, and take the cutoff from the scan
 			// that PROVES it. Two things make the passes necessary, and each leaves a
 			// row that would sit past the cutoff — alive, never offered, and
@@ -403,11 +423,13 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 					if (!(e instanceof GuardError)) throw e
 				}
 			}
-			unfenced = false
 			// The peer's feed from the top: its rows land back over the tombstones,
-			// and what only ever existed here stays dead. A failure here strands
-			// nothing — the discard is fenced, and the next run pulls.
+			// and what only ever existed here stays dead. This is inside the flag
+			// too — the peer's rows are all BEHIND the cursor this replaces, so a
+			// loop left running over a store that lost this step would never bring
+			// one of them back, and would look perfectly healthy doing it.
 			await props.pull.save(undefined)
+			unfinished = false
 		})
 	}
 
@@ -421,6 +443,11 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	async function takeMine(): Promise<void> {
 		const reset = props.reset
 		if (!reset) throw new Error('take mine needs a peer that can start a new lineage')
+		// A half-done discard is the one state this must not start from: the tree
+		// here is tombstoned, so the authority would be truncated and then handed
+		// nothing — the volume gone from both sides, on two menu clicks.
+		if (unfinished)
+			throw new Error('take mine cannot start: a discard did not finish, so run take theirs again')
 		await alone('take mine', async () => {
 			epoch = await reset()
 			// A replica pushes what it AUTHORED, not what it holds, so the emptied

@@ -165,6 +165,24 @@ to the app — restoring it would clobber a pause that arrived mid-reset. So
 `resetting` is the wrapper's own, and one predicate (`mayRun`) collects every
 way the loop must not act.
 
+**A half-done discard is a state, and it forbids more than the loop.** The two
+cursor saves and the tombstones are one step or they are nothing: before the
+cutoff, a cycle would delete the volume everywhere; before the pull rewind, the
+tree is empty and every peer row sits behind the saved cursor, so no cycle
+brings one back and the loop just looks healthy over nothing. Both halves carry
+the same flag, and `takeMine` refuses while it is set — otherwise two menu
+clicks (a discard that failed, then "keep this device") truncate the authority
+and hand it a tombstoned tree, losing the volume on both sides.
+
+**Ownership is held through the converge cycle, and the cycle is the reset's
+own.** Clearing it at the end of the destructive body let a second reset take
+the flag while the first was still converging, which made the first report a
+failure that was only the hand-over. Holding it needs the converge cycle to be
+called directly rather than through the loop's `flush` — which is what it
+should have been anyway: a reset's cycle is the one whose failure has a caller.
+`cycle()` is now that one function, and the difference between its two callers
+is just who catches: the loop reports through `status`, a reset throws.
+
 **A discard that cannot record its cutoff stops the loop for good.** The window
 between the tombstone commit and the saved cursor is the one state this replica
 must never sync in: the tombstones are rows it authored, sitting past a cursor
