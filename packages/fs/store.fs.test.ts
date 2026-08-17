@@ -1129,6 +1129,29 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(root)).mode & 0o777).toBe(0o400)
 	})
 
+	test('a mode set outside while the store was closed survives the reopen', async () => {
+		const root = await temp()
+		const store = open(root)
+		const before = await store.get(ROOT)
+		if (!before) throw new Error('the store has no root row')
+		await store.commit([{ ...before, mode: 0o040400, version: 'v2' }])
+		const { cursor } = await feed(store)
+		await store.close?.()
+
+		// A local tool sets another mode this store cannot write through. The reopen has
+		// to let itself in past it — and has to put back what it FOUND, not what the
+		// sidecar remembered, or opening the store quietly reverts somebody's chmod and
+		// then records the revert as the truth.
+		await chmod(root, 0o500)
+		const two = open(root)
+		const rows = (await feed(two, cursor)).nodes
+
+		expect((await stat(root)).mode & 0o777).toBe(0o500)
+		expect(rows.map((n) => n.id)).toEqual([ROOT])
+		const now = await two.get(ROOT)
+		expect(now === null ? null : now.mode & 0o7777).toBe(0o500)
+	}, 30_000)
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)

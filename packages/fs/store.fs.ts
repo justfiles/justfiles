@@ -1364,15 +1364,13 @@ export function fsStore(root: string): Store {
 			write(seed)
 			mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
 		}
-		// And closed again before anything looks, or the scan below would read the way in
-		// as a change somebody made and publish it. Its state goes down after that, since
-		// both chmods moved a ctime the sidecar's copy knows nothing about.
-		const held = byId.get(ROOT)
-		if (shut && held) {
-			await chmod(root, held.mode & 0o7777)
-			const now = await lstat(root)
-			if (now !== null) mark(ROOT, { path: '', ino: String(now.ino), state: stateOf(now) })
-		}
+		// And closed again before anything looks — to what was FOUND, not to what the
+		// sidecar remembered. A local tool may have set a mode while this store was not
+		// running, and putting the remembered one back would revert somebody's chmod and
+		// then record the revert as the truth. What was found is left for the scan below
+		// to reconcile like any other change made outside, which is also what publishes
+		// it. The scan looking at root once is the price of the way in.
+		if (shut) await chmod(root, Number(s.mode) & 0o7777)
 		// The watcher is not armed here: the first `since` does that, so a consumer
 		// that only reads and writes never asks the OS for one at all — and a CLI that
 		// never closes the store has nothing to leak.
