@@ -302,11 +302,16 @@ export function fsStore(root: string): Store {
 
 	/**
 	 * Where a row belongs in the tree, or null when it has no place on the disk —
-	 * because nothing can reach it from root (a row that is detached, cyclic, or under
-	 * something that is not a directory, rule 9), or because the name it asks for is
-	 * the sidecar's. Either way its file goes to the
+	 * because nothing can reach it from root (a row that is detached, cyclic, under
+	 * something that is not a directory, or under a name that is not its own, rule 9),
+	 * or because the name it asks for is the sidecar's. Either way its file goes to the
 	 * holding area instead: a row called `.jfs` must not be able to write over the
 	 * index that knows what every row is.
+	 *
+	 * It is the one answer to "whose path is this", which is why the walk asks rule 1
+	 * at every step rather than only of the row: a name belongs to the lowest id that
+	 * claims it, and everything under a duplicate that lost is as unreachable as the
+	 * duplicate itself — exactly what a volume resolving name by name finds.
 	 */
 	const pathOf = (row: Node): string | null => {
 		const parts: string[] = []
@@ -316,6 +321,11 @@ export function fsStore(root: string): Store {
 			if (walked.has(at.id) || unsafe(at.name)) return null
 			walked.add(at.id)
 			parts.unshift(at.name)
+			// The name has to be this row's to have. Two live rows for one name is a state
+			// the contract allows (rule 1), and only the lowest id has a path — otherwise
+			// two rows in ONE batch would write over each other's file, and the second
+			// `rename` onto what the first left fails and wedges the page for good.
+			if (lookup(at.parent, at.name)?.id !== at.id) return null
 			const up = byId.get(at.parent)
 			// Missing, buried, or not a directory at all: a page may re-type a file into
 			// the directory this row belongs to and arrive AFTER the rows that fill it,
@@ -549,21 +559,13 @@ export function fsStore(root: string): Store {
 		// a row that was parked, or one whose write failed halfway, comes back.
 		if (seen.get(row.parent)?.path !== parentOf(path)) await mkdir(dirname(os), { recursive: true })
 
-		// Another row's file is at this path already. One path holds one file, so the
-		// disk follows the same winner the rows do — the lowest id (rule 1) — and the
-		// loser keeps its bytes in the holding area rather than being renamed over: a
-		// `rename` onto a live file replaces it, and its file is the only copy there is.
+		// Another row's file is at this path already: a duplicate that used to hold the
+		// name, or a row this same batch moves elsewhere and has not placed yet. This
+		// row has the path — `pathOf` said so — but the file there is the only copy of
+		// the other row's bytes, so it is parked rather than renamed over, and comes
+		// back when its own turn or its own name comes.
 		const taken = owner.get(path)
 		if (taken !== undefined && taken !== row.id) {
-			const rival = byId.get(taken)
-			// A rival that still resolves HERE is a duplicate name and the ids decide it.
-			// One that does not is a row this same batch moves elsewhere and has not
-			// placed yet — the path is this row's whatever the ids say, and the file it
-			// left behind waits in the holding area until its own turn comes.
-			if (rival && !rival.deleted && rival.id < row.id && pathOf(rival) === path) {
-				if (at) await park(row.id, at)
-				return null
-			}
 			const held = seen.get(taken)
 			if (held) {
 				await park(taken, held)
@@ -658,6 +660,18 @@ export function fsStore(root: string): Store {
 	 * what the next scan would do if it found a state no one had taken down.
 	 */
 	const observe = async (placed: Landed[], dirs: Set<NodeId>): Promise<void> => {
+		// A directory's own stamp is the last word on it: adding, renaming or removing an
+		// entry moves its mtime AFTER the placement that stated it, so a directory this
+		// pass put is stated again now that everything going inside it has landed. One
+		// path, one owner here too — a later placement may have taken the path an
+		// earlier one landed at. A directory nobody wrote keeps the mtime the disk gave
+		// it: this store claimed nothing about it.
+		const held = new Map<string, NodeId>(placed.map((landed) => [landed.path, landed.id]))
+		for (const landed of placed) {
+			if (held.get(landed.path) !== landed.id) continue
+			const row = byId.get(landed.id)
+			if (row && !row.deleted && isDir(row)) await meta(abs(landed.path), row)
+		}
 		const where = new Map<NodeId, Landed>(placed.map((landed) => [landed.id, landed]))
 		for (const id of dirs) {
 			const at = seen.get(id)

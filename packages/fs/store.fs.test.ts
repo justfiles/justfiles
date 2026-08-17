@@ -775,6 +775,44 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await store.child(sub.id, 'note.md')).toBeNull()
 	}, 30_000)
 
+	test('two rows claiming one name in ONE batch: the lowest id lands, the other waits', async () => {
+		const root = await temp()
+		const store = open(root)
+		const loser = { ...dir({ id: 'zzz', name: 'dup' }), version: 'v1' }
+		const winner = { ...(await file(store, 'aaa', 'dup', 'the low id')), version: 'v1' }
+
+		// One page can carry both, and a replica may hold both (rule 1). Only one file
+		// can have the name, so the batch must not try to give it to two rows: the
+		// second `rename` onto what the first left fails, and a page that cannot be
+		// applied is a replica that never advances.
+		await store.commit([loser, winner])
+
+		expect(await readFile(join(root, 'dup'), 'utf8')).toBe('the low id')
+		expect((await store.child(ROOT, 'dup'))?.id).toBe('aaa')
+		// Both rows are live, and the one without the name is a row and nothing else.
+		expect(await store.get('zzz')).toEqual(loser)
+		expect((await feed(store)).nodes.filter((n) => n.deleted)).toEqual([])
+	})
+
+	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
+		const root = await temp()
+		const store = open(root)
+		const when = 1_700_000_000_000_000_000n
+		const sub = { ...dir({ id: 'd', name: 'sub' }), mtimeNs: when }
+		const inside = { ...(await file(store, 'c', 'c.txt', 'hello')), parent: 'd', mtimeNs: when }
+
+		// One batch: a directory and the entry that goes in it. Creating the entry moves
+		// the directory's own mtime, after the placement that stated it — so the row has
+		// to get the last word, which is the whole point of a volume stamping a parent.
+		await store.commit([sub, inside])
+		expect((await stat(join(root, 'sub'), { bigint: true })).mtimeNs).toBe(when)
+		expect((await stat(join(root, 'sub/c.txt'), { bigint: true })).mtimeNs).toBe(when)
+
+		// And the store took that down rather than reporting it: no churn on the feed.
+		const { cursor } = await feed(store)
+		expect((await store.since(cursor)).nodes).toEqual([])
+	})
+
 	test('bytes arriving for a stub do not cost the row its mode or its stamp', async () => {
 		const root = await temp()
 		const store = open(root)
