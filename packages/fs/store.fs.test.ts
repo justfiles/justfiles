@@ -1046,6 +1046,28 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readFile(join(root, 'outer/inner/f.txt'), 'utf8')).toBe('kept')
 	})
 
+	test('a root nobody can search still saves its sidecar, and reopens', async () => {
+		const root = await temp()
+		const store = open(root)
+		const before = await store.get(ROOT)
+		if (!before) throw new Error('the store has no root row')
+		const row = await place(store, 'a.txt', 'hello')
+
+		// `chmod('/', 0400)`. This store's own index lives inside the directory it
+		// describes, so a root nobody can search is a store that cannot write its sidecar
+		// — and cannot read it back on the next open either, which loses every id.
+		await store.commit([{ ...before, mode: 0o040400, version: 'v2' }])
+		expect((await stat(root)).mode & 0o777).toBe(0o400)
+
+		// It saved: a second store over the same directory finds the same ids and the same
+		// lineage, rather than minting a new one and fencing every cursor.
+		const two = open(root)
+		expect((await two.child(ROOT, 'a.txt'))?.id).toBe(row.id)
+		const seen = await two.get(ROOT)
+		expect(seen === null ? null : seen.mode & 0o7777).toBe(0o400)
+		expect((await stat(root)).mode & 0o777).toBe(0o400)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)

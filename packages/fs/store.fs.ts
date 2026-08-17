@@ -482,7 +482,16 @@ export function fsStore(root: string): Store {
 			if (node) entries.push({ node: encodeNode(node), at, seen: seen.get(id) })
 		}
 		const sidecar: Sidecar = { lineage, seq: next, entries }
-		await publish(join(root, INDEX), (tmp) => writeFile(tmp, JSON.stringify(sidecar)))
+		// The index lives INSIDE the tree it describes, so writing it needs a way in like
+		// anything else: root's own row may state a mode that shuts this store out of its
+		// own bookkeeping. Every caller reaches here with nothing else held open, so this
+		// window is its own.
+		await unlockFor(SIDECAR)
+		try {
+			await publish(join(root, INDEX), (tmp) => writeFile(tmp, JSON.stringify(sidecar)))
+		} finally {
+			await relock()
+		}
 	}
 
 	// ── The disk ─────────────────────────────────────────────────────────────────
@@ -1298,19 +1307,30 @@ export function fsStore(root: string): Store {
 	// ── Opening ──────────────────────────────────────────────────────────────────
 
 	const start = async (): Promise<void> => {
+		// What the directory is before this store touches it. Its own mode decides whether
+		// the sidecar inside it can be written or read at all, so a root that shuts this
+		// store out is opened for the open — and the row seeded below states what was
+		// there, never the way in that had to be made for it.
+		const s = await lstat(root)
+		if (s === null) throw new Error(`fsStore: cannot read ${root}`)
+		const shut = (Number(s.mode) & (WRITE | SEARCH)) !== (WRITE | SEARCH)
+		if (shut) await chmod(root, (Number(s.mode) & 0o7777) | WRITE | SEARCH)
 		// Creates the tree itself when it is not there — and BEFORE root's state is
 		// taken down, so the sidecar's own arrival is not a change to it.
 		await mkdir(join(root, SPILL), { recursive: true })
 		const loaded = await load()
 		if (!loaded) {
 			lineage = crypto.randomUUID() // rule 11: a fresh sidecar is a fresh lineage
-			const s = await lstat(root)
-			const seed = s === null ? null : await derive('', s, { id: ROOT, parent: ROOT, name: '' })
+			const seed = await derive('', s, { id: ROOT, parent: ROOT, name: '' })
 			// Rule 6: the root row, and the one row whose id is not minted here.
-			if (s === null || seed === null) throw new Error(`fsStore: cannot read ${root}`)
+			if (seed === null) throw new Error(`fsStore: cannot read ${root}`)
 			write(seed)
 			mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
 		}
+		// And closed again before anything looks, or the scan below would read the way in
+		// as a change somebody made and publish it.
+		const held = byId.get(ROOT)
+		if (shut && held) await chmod(root, held.mode & 0o7777)
 		// The watcher is not armed here: the first `since` does that, so a consumer
 		// that only reads and writes never asks the OS for one at all — and a CLI that
 		// never closes the store has nothing to leak.
@@ -1457,13 +1477,16 @@ export function fsStore(root: string): Store {
 					dirs.add(row.parent)
 					if (old) dirs.add(old.parent)
 				}
-				await observe(placed, dirs)
 				// The bytes live in their file now, so the copy that carried them there
 				// goes: content is the file itself here, never a second store beside it.
+				// Before `observe`, because that is the end of the window in which the way
+				// through a restrictive directory — including root, which the spill is
+				// inside — is still open.
 				for (const landed of placed) {
 					const waiting = landed.hash === undefined ? null : spill(landed.hash)
 					if (waiting !== null) await rm(waiting, { force: true })
 				}
+				await observe(placed, dirs)
 				await save()
 			})
 		},
