@@ -20,7 +20,8 @@
  *   does not know becomes a row, what it no longer lists becomes a tombstone, and
  *   what changed underneath becomes a new version. Reads answer from the index,
  *   so a change made outside reaches a consumer through the feed it already
- *   polls.
+ *   polls. A junction is where the walk stops: a mount holds no rows of this
+ *   store, on the disk as at the seam (`holdsRows`).
  * - **A weaker crash model.** POSIX has no transaction. Guards are all checked
  *   before anything is touched, so a REJECTED commit still writes nothing (rule
  *   2), but a commit that FAILS halfway leaves the batch half applied and the
@@ -171,6 +172,15 @@ const kindOf = (s: BigIntStats): Node['type'] =>
 /** Does this row hold entries on the disk? A mount stands where a directory would. */
 const isDir = (row: Node): boolean => row.type === 'dir' || row.type === 'mount'
 
+/**
+ * Can rows of THIS store live under it? Only a directory can. A mount's children
+ * live in the store it is bound to, which is the boundary `authority.ts` refuses a
+ * commit over — and this is the same rule on the disk: nothing of this store's is
+ * placed inside a junction, and nothing found inside one is adopted. The design
+ * leans its whole local-data story on it, so both halves have to hold.
+ */
+const holdsRows = (row: Node): boolean => row.type === 'dir'
+
 /** A name that is not a name: it would resolve somewhere other than one entry. */
 const unsafe = (name: string): boolean =>
 	name === '' || name === '.' || name === '..' || name.includes('/')
@@ -292,7 +302,7 @@ export function fsStore(root: string): Store {
 			// the directory this row belongs to and arrive AFTER the rows that fill it,
 			// and nothing is reachable through a file. Writing under one would fail with
 			// ENOTDIR and wedge the replica on that page for good.
-			if (!up || up.deleted || !isDir(up)) return null
+			if (!up || up.deleted || !holdsRows(up)) return null
 			at = up
 		}
 		return parts[0] === SIDECAR ? null : parts.join('/')
@@ -606,7 +616,7 @@ export function fsStore(root: string): Store {
 
 	/** Every name a directory holds, put where the tree now says it goes. */
 	const adopt = async (row: Node): Promise<Landed[]> => {
-		if (!isDir(row)) return []
+		if (!holdsRows(row)) return []
 		const out: Landed[] = []
 		for (const name of [...(tree.get(row.id)?.keys() ?? [])])
 			out.push(...(await promote(row.id, name)))
@@ -641,11 +651,18 @@ export function fsStore(root: string): Store {
 
 	/** The row a file states it is. Everything POSIX knows about it, and nothing else. */
 	const derive = async (path: string, s: BigIntStats, base: NewNode): Promise<Node | null> => {
+		const kind = kindOf(s)
 		const row: Node = {
 			id: base.id,
 			parent: base.parent,
 			name: base.name,
-			type: kindOf(s),
+			// `mount` is the one type POSIX cannot state: on the disk a junction is the
+			// directory standing in for the store it is bound to, so `kindOf` can only
+			// ever call it a directory, and the sidecar is the only thing that knows
+			// better. A stat that re-typed it would publish a change nobody made to
+			// every replica, and open the junction to rows from this store. It stops
+			// being one when it stops being directory-shaped at all.
+			type: base.type === 'mount' && kind === 'dir' ? 'mount' : kind,
 			// The whole POSIX mode, exactly as node:fs hands it back.
 			mode: Number(s.mode),
 			mtimeNs: s.mtimeNs,
@@ -692,7 +709,7 @@ export function fsStore(root: string): Store {
 		if (row && isDir(row) && !isDir(derived)) buryUnder(path)
 		// And the other way: a name that has become a directory is a place for rows
 		// that had none, whose own pages are long behind the engine's cursor.
-		if (isDir(derived) && !(row && isDir(row))) stale.add(derived.id)
+		if (holdsRows(derived) && !(row && isDir(row))) stale.add(derived.id)
 		changed = true
 		return derived
 	}
@@ -712,7 +729,7 @@ export function fsStore(root: string): Store {
 		for (const name of names) {
 			if (path === '' && name === SIDECAR) continue
 			const row = await syncPath(id, name, path === '' ? name : `${path}/${name}`)
-			if (row && isDir(row))
+			if (row && holdsRows(row))
 				under.push({ id: row.id, path: path === '' ? name : `${path}/${name}` })
 		}
 		// A name this directory used to hold and no longer does. Only a row whose file
@@ -832,7 +849,7 @@ export function fsStore(root: string): Store {
 		await syncRoot()
 		for (const [id, at] of [...seen]) {
 			const row = byId.get(id)
-			if (!row || row.deleted || !isDir(row)) continue
+			if (!row || row.deleted || !holdsRows(row)) continue
 			const s = await lstat(abs(at.path))
 			if (s === null || unchanged(at, s)) continue // gone is the parent's listing to notice
 			if (id !== ROOT) await syncPath(row.parent, row.name, at.path) // the directory's own row
@@ -864,7 +881,7 @@ export function fsStore(root: string): Store {
 		const dir = up === '' ? ROOT : owner.get(up)
 		const parent = dir === undefined ? null : byId.get(dir)
 		if (dir === undefined || !parent || parent.deleted) return
-		if (!isDir(parent)) return
+		if (!holdsRows(parent)) return
 		const name = up === '' ? path : path.slice(up.length + 1)
 		if (up === '' && name === SIDECAR) return // this store's own bookkeeping
 
@@ -873,7 +890,7 @@ export function fsStore(root: string): Store {
 			return
 		}
 		const row = await syncPath(dir, name, path)
-		if (!row || !isDir(row)) return
+		if (!row || !holdsRows(row)) return
 		const queue: Landed[] = [{ id: row.id, path }]
 		for (let at = queue.pop(); at !== undefined; at = queue.pop())
 			queue.push(...(await syncDir(at.id, at.path)))

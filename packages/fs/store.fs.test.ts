@@ -7,6 +7,7 @@
  */
 
 import {
+	chmod,
 	mkdir,
 	mkdtemp,
 	readdir,
@@ -740,6 +741,84 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		const two = open(root)
 		expect((await two.since(cursor)).nodes).toEqual([])
 	})
+})
+
+/**
+ * A mount is the one type POSIX cannot state: on the disk it is an empty directory
+ * standing in for the store it is bound to. Two things follow, and both are the
+ * boundary `authority.ts` puts the whole local-data story on — a mount holds no
+ * rows of THIS store, so a `/private` subtree is impossible in the synced one.
+ */
+describe('fsStore: a junction is not a directory', () => {
+	const junction: Node = {
+		id: 'm',
+		parent: ROOT,
+		name: 'private',
+		type: 'mount',
+		mode: 0o040755,
+		mtimeNs: 0n,
+		size: 0n,
+		version: 'v1'
+	}
+
+	/** A file row with the id the case chooses, and its bytes made durable first. */
+	const file = async (store: Store, id: string, name: string, content: string): Promise<Node> => {
+		const data = bytes(content)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		return {
+			id,
+			parent: ROOT,
+			name,
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+	}
+
+	test('a row under a mount is held, and nothing inside one becomes a row', async () => {
+		const root = await temp()
+		const store = open(root)
+		await store.commit([junction])
+		const inside = { ...(await file(store, 'x', 'secret.env', 'outer data')), parent: 'm' }
+
+		// The authority refuses this row, but a replica may hold one between pages —
+		// a directory re-typed to a mount before the page that moves its children out.
+		// The disk must not be where that boundary leaks.
+		await store.commit([inside])
+		expect(await store.get('x')).toEqual(inside)
+		expect(await readdir(join(root, 'private'))).toEqual([])
+
+		// And the other direction: what a local tool puts inside a junction belongs to
+		// the store bound there, so this one does not adopt it.
+		await store.close?.() // no watcher: the walk is the only thing that reports
+		await writeFile(join(root, 'private/leaked.txt'), 'not yours')
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS))
+		await store.since()
+		expect(await store.child('m', 'leaked.txt')).toBeNull()
+		expect((await feed(store)).nodes.some((n) => n.name === 'leaked.txt')).toBe(false)
+	}, 30_000)
+
+	test('a mount stays a mount when the scan looks at its placeholder', async () => {
+		const root = await temp()
+		const store = open(root)
+		await store.commit([junction])
+		const { cursor } = await feed(store)
+
+		// To POSIX this is a directory whose mode changed, and `mount` is the type it
+		// cannot say — the sidecar is the only thing that knows. A re-type nobody made
+		// would travel to every replica and open the junction to rows from this store.
+		await chmod(join(root, 'private'), 0o700)
+		await settled(store, async () => ((await store.get('m'))?.mode ?? 0) === 0o040700)
+
+		expect((await store.get('m'))?.type).toBe('mount')
+		expect(
+			(await feed(store, cursor)).nodes.filter((n) => n.id === 'm' && n.type !== 'mount')
+		).toEqual([])
+	}, 30_000)
 })
 
 describe('fsStore: the sidecar is the store, not the tree', () => {
