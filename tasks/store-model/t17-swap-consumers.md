@@ -36,6 +36,17 @@ slot beside the two cursors, or an app-level marker like frieren's existing
 `pendingFactoryReset` that re-runs `takeTheirs` before the loop starts. Decide
 it here, with the app that owns durable identity in front of you.
 
+A third thing the swap must decide: [T12](t12-sqlite-store.md)'s store commits
+through `DbAdapter.transaction`, which on the Durable Object is
+`await fn(adapter)` with no rollback. A rejected commit is still safe — guards
+all run before any write — but a write that fails mid-batch leaves the rows
+before it written, which rule 2 forbids. `storage.transactionSync` is the only
+genuinely atomic transaction there and it needs a synchronous body; the
+migration runner's `SyncMigrator` (`packages/core/src/migrations/utils.ts`) is
+the shape that already solves this in this repo. Decide it here, where the
+store first reaches a Durable Object, and decide it for `storage.sqlite.ts` at
+the same time — it has the same hole in production today.
+
 One thing the swap must decide rather than inherit: frieren's app-level factory
 reset CASes against a `fromGeneration`, and [T11](t11-lifecycle-wrapper.md)'s
 `generation()` only ever reports what its injected `reset()` returned — nothing
