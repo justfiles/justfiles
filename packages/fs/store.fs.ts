@@ -70,23 +70,18 @@
  */
 
 import type { BigIntStats } from 'node:fs'
-import { type FSWatcher, watch } from 'node:fs'
 import {
-	chmod,
-	lstat as lstatOf,
-	lutimes,
-	mkdir,
-	open as openPath,
-	readdir,
-	readFile,
-	readlink,
-	rename,
-	rm,
-	rmdir,
-	symlink,
-	writeFile
-} from 'node:fs/promises'
-import { dirname, join, sep } from 'node:path'
+	type Disk,
+	fsDisk,
+	READ,
+	SEARCH,
+	type Seen,
+	type Spot,
+	type Step,
+	stateOf,
+	unchanged,
+	WRITE
+} from './disk'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -110,12 +105,17 @@ const PAGE = 128
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
 
-/** The sidecar: one directory, so a local tool sees one thing it must leave alone. */
+/**
+ * The sidecar: one directory, so a local tool sees one thing it must leave alone.
+ * Names rather than paths — every one of them reaches the disk through `under`,
+ * like any other name, so this store's own bookkeeping is inside the tree by the
+ * same rule everything else is.
+ */
 const SIDECAR = '.jfs'
-const INDEX = `${SIDECAR}/index.json`
-const SPILL = `${SIDECAR}/blobs`
+const INDEX = 'index.json'
+const SPILL = 'blobs'
 /** Where the file of a row the tree cannot reach waits for a place in it. */
-const HOLD = `${SIDECAR}/detached`
+const HOLD = 'detached'
 
 /** What a `Hash` is: 64 hex characters. A name for content, never a path. */
 const HASH = /^[0-9a-f]{64}$/
@@ -147,56 +147,14 @@ const DEEP_MS = 5_000
 
 const EMPTY = new Uint8Array()
 
-/** The bits of a directory's own mode a pass needs of it: to list, to enter, to fill. */
-const READ = 0o400
-const WRITE = 0o200
-const SEARCH = 0o100
-
-/**
- * What the disk held at a row's path the last time this store looked. `ino` is the
- * file's identity and `state` is everything a write to it moves (`stateOf`), so a
- * replace that kept the size and put the stamp back is still a change. `hash` is the
- * content the FILE holds, which is not always what the ROW names: a row that arrived
- * ahead of its bytes is a stub over an empty placeholder.
- */
-type Seen = { path: string; ino: string; state: string; hash?: Hash }
-
 /** Where a row was just put, for the observation pass at the end of a batch. */
-type Landed = { id: NodeId; path: string; hash?: Hash }
+type Landed = { id: NodeId; path: Spot; hash?: Hash }
 
 /** All a node needs before the disk says what it is: an id and a place in the tree. */
 type NewNode = Pick<Node, 'id' | 'parent' | 'name'> & Partial<Node>
 
 type Entry = { node: WireNode; at: number; seen?: Seen }
 type Sidecar = { lineage: string; seq: number; entries: Entry[] }
-
-const lstat = (path: string): Promise<BigIntStats | null> =>
-	lstatOf(path, { bigint: true }).catch(() => null)
-
-/**
- * Is there nothing at this path — as opposed to nothing this store can SEE? Only "no
- * such entry" is gone. Anything else the OS says is this store not knowing: no search
- * bit on the way, a device that stopped answering. A row is never buried on not
- * knowing, because a tombstone for a file that is still there loses it for every
- * replica, and the walk that would find it again cannot look either.
- */
-const absent = async (path: string): Promise<boolean> => {
-	const gone = await lstatOf(path).then(
-		() => null,
-		(e: NodeJS.ErrnoException) => e.code
-	)
-	return gone === 'ENOENT' || gone === 'ENOTDIR'
-}
-
-/**
- * Everything about a file that a write to it changes — and `ctimeNs`, which is the
- * only one no writer can put back. A metadata-preserving sync can restore the mtime
- * over content of the same length, and then mode, mtime and size all still match the
- * file this store recorded while the bytes underneath are somebody else's. The ctime
- * moves on any change to the inode and userland cannot set it, so it is what makes
- * "unchanged" mean unchanged. A look it wakes costs one hash of one file.
- */
-const stateOf = (s: BigIntStats): string => `${s.mode}:${s.mtimeNs}:${s.size}:${s.ctimeNs}`
 
 /**
  * The same row again, whatever version a fresh look would mint for it. What the disk
@@ -206,27 +164,17 @@ const stateOf = (s: BigIntStats): string => `${s.mode}:${s.mtimeNs}:${s.size}:${
  */
 const restated = (was: Node, now: Node): boolean => same(was, { ...now, version: was.version })
 
-/** Is this still the file the row was observed at, in the state it was in? */
-const unchanged = (was: Seen, s: BigIntStats): boolean =>
-	was.ino === String(s.ino) && was.state === stateOf(s)
-
 /**
- * What a row states about its object, on the object: the two fields POSIX keeps for
- * it. Every path that creates or replaces a file ends here, because a file that
- * arrives with `writeFile`'s mode and this moment's stamp is not the one the row
- * describes — and this backend's whole premise is that a local tool sees the row.
- *
- * `lutimes`, so a symlink gets its own stamp rather than its target's, and
- * milliseconds, because that is what a `Date` carries — the same trade
- * `storage.fs.ts` already makes for the same field. The row keeps every nanosecond
- * it was given; the disk takes what POSIX takes.
+ * What a row states about its object, for the disk to put on it. Every path that
+ * creates or replaces a file ends here, because a file that arrives with
+ * `writeFile`'s mode and this moment's stamp is not the one the row describes —
+ * and this backend's whole premise is that a local tool sees the row.
  */
-const meta = async (os: string, row: Node): Promise<void> => {
-	// A symlink's own mode is not settable on every platform, and nothing reads it.
-	if (row.type !== 'symlink') await chmod(os, row.mode & 0o7777)
-	const at = new Date(Number(row.mtimeNs / 1_000_000n))
-	await lutimes(os, at, at)
-}
+const stampOf = (row: Node) => ({
+	mode: row.mode,
+	mtimeNs: row.mtimeNs,
+	symlink: row.type === 'symlink'
+})
 
 /**
  * Is what the disk holds this backend's own rounding of the stamp a row states? A
@@ -257,43 +205,14 @@ const isDir = (row: Node): boolean => row.type === 'dir' || row.type === 'mount'
 const holdsRows = (row: Node): boolean => row.type === 'dir'
 
 /**
- * A name that is not a name: it would resolve somewhere other than one entry, or
- * nowhere at all. Three kinds, and a row from a peer is reason enough to check all
- * of them before its name reaches `join`:
- *
- * - It names a place instead of an entry. `/` always, and `sep` because a platform
- *   may separate on something else too: on Windows `..\victim` resolves clean out of
- *   the store root, and `.jfs\index.json` reaches the index while reading as one
- *   name to the sidecar check. Asking the PLATFORM's separator is what keeps a
- *   backslash a legal filename where it is one.
- * - It names no entry at all: the empty name, `.`, `..`.
- * - `SEP`, the bluntest — a NUL is the one byte a name cannot hold, which is why
- *   every backend composes keys with it, and `node:fs` refuses a path containing one
- *   outright. A page carrying such a row must not be a page this replica can never
- *   apply.
- */
-const unsafe = (name: string): boolean =>
-	name === '' ||
-	name === '.' ||
-	name === '..' ||
-	name.includes('/') ||
-	name.includes(sep) ||
-	name.includes(SEP)
-
-/**
  * An id as ONE path component. `encodeURIComponent` takes the separators out, and the
  * prefix is what makes the result total: no encoding of any id is `.` or `..`, which
- * are the two names that would still mean "somewhere else" on their own. The same
- * discipline `spill` applies to a hash before it names a file (`HASH`).
+ * are the two names that would still mean "somewhere else" on their own. `under`
+ * checks it again regardless — this only makes the check pass.
  */
 const own = (id: NodeId): string => `id-${encodeURIComponent(id)}`
 
-const parentOf = (path: string): string => {
-	const cut = path.lastIndexOf('/')
-	return cut === -1 ? '' : path.slice(0, cut)
-}
-
-export function fsStore(root: string): Store {
+export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	const byId = new Map<NodeId, Node>()
 	/**
 	 * parent → name → ids, live rows only. One index for both jobs the tree has:
@@ -307,7 +226,7 @@ export function fsStore(root: string): Store {
 	/** id → where its file is, and what that file held when this store last looked. */
 	const seen = new Map<NodeId, Seen>()
 	/** path → the row whose file sits there. One path, one owner. */
-	const owner = new Map<string, NodeId>()
+	const owner = new Map<Spot, NodeId>()
 	/** hash → the rows whose file holds those bytes: the content map, read backwards. */
 	const holders = new Map<Hash, Set<NodeId>>()
 	let lineage = ''
@@ -317,7 +236,19 @@ export function fsStore(root: string): Store {
 	let counter = 0
 	const mint = (): Version => `${author}:${++counter}`
 
-	const abs = (path: string): string => (path === '' ? root : join(root, path))
+	/**
+	 * This store's own corner of the tree. Built through `under` like every other
+	 * name, and non-null by construction — `.jfs`, `index.json`, `blobs` and
+	 * `detached` are ordinary names — so the check is stated once, here, rather
+	 * than carried as a `!` at each use.
+	 */
+	const side = disk.under(disk.root, SIDECAR)
+	if (side === null) throw new Error('fsStore: the sidecar has no name')
+	const index = disk.under(side, INDEX)
+	const spilled = disk.under(side, SPILL)
+	const held = disk.under(side, HOLD)
+	if (index === null || spilled === null || held === null)
+		throw new Error('fsStore: the sidecar has no name')
 
 	/**
 	 * One thing at a time. A scan and a commit both walk the disk against the
@@ -409,14 +340,14 @@ export function fsStore(root: string): Store {
 	 * claims it, and everything under a duplicate that lost is as unreachable as the
 	 * duplicate itself — exactly what a volume resolving name by name finds.
 	 */
-	const pathOf = (row: Node): string | null => {
-		const parts: string[] = []
+	const pathOf = (row: Node): Spot | null => {
+		const names: string[] = []
 		const walked = new Set<NodeId>()
 		let at = row
 		while (at.id !== ROOT) {
-			if (walked.has(at.id) || unsafe(at.name)) return null
+			if (walked.has(at.id)) return null
 			walked.add(at.id)
-			parts.unshift(at.name)
+			names.unshift(at.name)
 			// The name has to be this row's to have. Two live rows for one name is a state
 			// the contract allows (rule 1), and only the lowest id has a path — otherwise
 			// two rows in ONE batch would write over each other's file, and the second
@@ -430,7 +361,18 @@ export function fsStore(root: string): Store {
 			if (!up || up.deleted || !holdsRows(up)) return null
 			at = up
 		}
-		return parts[0] === SIDECAR ? null : parts.join('/')
+		if (names[0] === SIDECAR) return null
+		// Down from root, ONE name at a time. A name that is not a name makes no spot,
+		// so a row from a peer carrying `..`, a separator or a NUL simply has nowhere
+		// to be — the check that used to be `unsafe` at the top of this walk, now the
+		// only way a path can be built at all.
+		let spot = disk.root
+		for (const name of names) {
+			const down = disk.under(spot, name)
+			if (down === null) return null
+			spot = down
+		}
+		return spot
 	}
 
 	/**
@@ -438,13 +380,12 @@ export function fsStore(root: string): Store {
 	 * a row, asked of a name no row may hold yet. Null when the parent has no path of
 	 * its own, which is when nothing under it can be reached either.
 	 */
-	const pathUnder = (parent: NodeId, name: string): string | null => {
-		if (unsafe(name)) return null
-		if (parent === ROOT) return name === SIDECAR ? null : name
+	const pathUnder = (parent: NodeId, name: string): Spot | null => {
+		if (parent === ROOT) return name === SIDECAR ? null : disk.under(disk.root, name)
 		const up = byId.get(parent)
 		if (!up || up.deleted || !holdsRows(up)) return null
 		const dir = pathOf(up)
-		return dir === null ? null : `${dir}/${name}`
+		return dir === null ? null : disk.under(dir, name)
 	}
 
 	// ── What the disk holds: `seen`, and the two indexes over it ─────────────────
@@ -479,19 +420,24 @@ export function fsStore(root: string): Store {
 	 * directory can hold anything, and asking is a walk of everything this store has
 	 * seen.
 	 */
-	const holdsFiles = (path: string, was: Node | null = null): boolean => {
+	const holdsFiles = (path: Spot, was: Node | null = null): boolean => {
 		if (was && !isDir(was)) return false
 		const under = `${path}/`
 		for (const at of seen.values()) if (at.path.startsWith(under)) return true
 		return false
 	}
 
-	/** A directory moved, so every path under it moved with it. */
-	const moveSeen = (from: string, to: string): void => {
+	/**
+	 * A directory moved, so every path under it moved with it. The tails are the
+	 * spots' own — already checked, and unchanged by the move — so they are carried
+	 * over rather than walked again: what moved is the front of the path.
+	 */
+	const moveSeen = (from: Spot, to: Spot): void => {
 		const under = `${from}/`
 		for (const [id, at] of [...seen]) {
 			if (at.path === from) mark(id, { ...at, path: to })
-			else if (at.path.startsWith(under)) mark(id, { ...at, path: to + at.path.slice(from.length) })
+			else if (at.path.startsWith(under))
+				mark(id, { ...at, path: (to + at.path.slice(from.length)) as Spot })
 		}
 	}
 
@@ -504,12 +450,9 @@ export function fsStore(root: string): Store {
 		// lineage, rebinds every id the tree already had, and then `save` renames the new
 		// index over the one that could not be read. An open that fails is recoverable;
 		// that is not.
-		const text = await readFile(join(root, INDEX), 'utf8').catch((e: NodeJS.ErrnoException) => {
-			if (e.code === 'ENOENT') return null
-			throw e
-		})
-		if (text === null) return false
-		const sidecar = JSON.parse(text) as Sidecar
+		const raw = await disk.bytes(index, true)
+		if (raw === null) return false
+		const sidecar = JSON.parse(new TextDecoder().decode(raw)) as Sidecar
 		lineage = sidecar.lineage
 		next = sidecar.seq
 		// Written in feed order, so the order Map is rebuilt by reading it through.
@@ -518,7 +461,13 @@ export function fsStore(root: string): Store {
 			byId.set(row.id, row)
 			if (!row.deleted) link(row)
 			order.set(row.id, entry.at)
-			if (entry.seen) mark(row.id, entry.seen)
+			// A path out of a FILE, checked again on the way back in. Everything else here
+			// was minted by this store; this was last a string in a document any local tool
+			// can edit, and it is what `rename` and `rm` are aimed at. An entry that no
+			// longer names somewhere inside the tree is dropped rather than trusted: the
+			// row stays, and the next scan finds its file the way it finds any other.
+			const at = entry.seen === undefined ? null : disk.spot(entry.seen.path)
+			if (entry.seen && at !== null) mark(row.id, { ...entry.seen, path: at })
 		}
 		return true
 	}
@@ -540,41 +489,15 @@ export function fsStore(root: string): Store {
 		// anything else: root's own row may state a mode that shuts this store out of its
 		// own bookkeeping. Every caller reaches here with nothing else held open, so this
 		// window is its own.
-		await unlockFor(SIDECAR)
+		await unlockFor(side)
 		try {
-			await publish(join(root, INDEX), (tmp) => writeFile(tmp, JSON.stringify(sidecar)))
+			await disk.write(index, new TextEncoder().encode(JSON.stringify(sidecar)))
 		} finally {
 			await relock()
 		}
 	}
 
 	// ── The disk ─────────────────────────────────────────────────────────────────
-
-	/**
-	 * Take a name in ONE operation: build the payload under a private sibling and
-	 * rename it over the target. POSIX has no atomic content write, so a reader
-	 * that resolves the name while `write` is still looping reads a prefix of it.
-	 * A SIBLING, because `rename` cannot cross a filesystem and a tree can have
-	 * another mount underneath it.
-	 */
-	const publish = async (os: string, build: (tmp: string) => Promise<void>): Promise<void> => {
-		const tmp = `${os}.jfs-${crypto.randomUUID()}`
-		try {
-			await build(tmp)
-			await rename(tmp, os)
-		} finally {
-			// Covers the whole lifecycle, not just the rename: a write that failed
-			// halfway would otherwise strand its temp file, and repeated failures
-			// would quietly consume the disk.
-			await rm(tmp, { force: true })
-		}
-	}
-
-	/** Does the disk still hold the file this row named? Identity is the inode. */
-	const mine = async (at: Seen): Promise<boolean> => {
-		const s = await lstat(abs(at.path))
-		return s !== null && String(s.ino) === at.ino
-	}
 
 	/**
 	 * Remove what a row named — but only while the disk still holds THAT file. A
@@ -594,18 +517,10 @@ export function fsStore(root: string): Store {
 	 * the name in the window, against a rename on every delete in the tree.
 	 */
 	const remove = async (at: Seen, was: Node | null): Promise<void> => {
-		if (!(await mine(at))) return
-		if (was && !isDir(was)) await rm(abs(at.path), { force: true })
-		else await quarantine(at)
+		await disk.drop(at, held, !(was && !isDir(was)))
 		// An empty container in the holding area is nobody's row, so it goes too.
-		for (let up = parentOf(at.path); up.startsWith(HOLD); up = parentOf(up))
-			if (
-				!(await rmdir(abs(up)).then(
-					() => true,
-					() => false
-				))
-			)
-				return
+		for (let up = disk.up(at.path); up.startsWith(held); up = disk.up(up))
+			if (!(await disk.prune(up))) return
 	}
 
 	/**
@@ -615,147 +530,63 @@ export function fsStore(root: string): Store {
 	 */
 	const locked = (dir: Node, need: number): boolean => isDir(dir) && (dir.mode & need) !== need
 
-	/** Directories opened for a write, closed again by the pass that opened them. */
-	const opened = new Set<NodeId>()
-
-	/**
-	 * A mode set on the directory this store MEANT, and not on whatever answers to its
-	 * name by the time the call lands. Opened, identified and changed through the one
-	 * descriptor, so a rename arriving in between moves the name and not what this acts
-	 * on.
-	 *
-	 * Only where the mode still allows opening it: POSIX wants read permission on a
-	 * directory to open it, which `0300`, `0100` and `0000` do not give even to their
-	 * owner (measured), and there is no `fchmodat` to ask with here. Those fall back to
-	 * the name — identity checked first, and raced at worst, which is what this was
-	 * before. Says whether it acted, because a caller that records state afterwards must
-	 * not record it for somebody else's directory.
-	 */
-	const setMode = async (path: string, ino: string, mode: number): Promise<BigIntStats | null> => {
-		const handle = await openPath(abs(path)).catch(() => null)
-		if (handle === null) {
-			const s = await lstat(abs(path))
-			if (s === null || String(s.ino) !== ino) return null
-			await chmod(abs(path), mode)
-			// The name is all this fallback has, so it asks again rather than assume: at
-			// worst it reports nothing, and never somebody else's inode.
-			const now = await lstat(abs(path))
-			return now !== null && String(now.ino) === ino ? now : null
-		}
-		try {
-			const s = await handle.stat({ bigint: true })
-			if (String(s.ino) !== ino) return null
-			await handle.chmod(mode)
-			// Taken through the same descriptor, so what comes back is the state of the
-			// inode this changed — not of whatever holds the name by now.
-			return await handle.stat({ bigint: true })
-		} finally {
-			await handle.close()
-		}
-	}
-
 	/**
 	 * A directory whose stated mode shuts this store out, with an entry of its own about
 	 * to land or leave: POSIX wants write and search on the PARENT, and a page carrying
-	 * only the child grants neither. So it is opened for as long as the pass takes, and
-	 * `relock` puts the stated mode back as that pass's last act.
+	 * only the child grants neither. So every directory the index knows on the way is
+	 * handed to the disk to open, and `relock` puts the stated modes back as the pass's
+	 * last act.
+	 *
+	 * OUTSIDE in, because a mode without search stops a walk where it stands and an
+	 * ancestor has to be open before anything inside it can be reached — including the
+	 * `chmod` that opens the next one down. Only the last of them is written IN, so only
+	 * the last needs write.
 	 *
 	 * For that window the disk holds a mode no row states. It is the same kind of
 	 * transient as a `publish` temp file, and the alternative is worse by a long way: a
 	 * page this replica could never apply, retried for ever.
 	 */
-	const unlock = async (dir: Node, path: string, need: number, ino?: string): Promise<void> => {
-		opened.add(dir.id)
-		const mode = (dir.mode & 0o7777) | need
-		// No `ino` from the observation pass: that directory is one this store has just
-		// put there itself, and the marking that would record its identity comes after.
-		if (ino === undefined) await chmod(abs(path), mode)
-		else await setMode(path, ino, mode)
-	}
-
-	/**
-	 * The way in to a directory this pass is about to write in: every directory the
-	 * index knows on the way to it, opened from the OUTSIDE in. A mode without search
-	 * stops a walk where it stands, so an ancestor has to be open before anything inside
-	 * it can be reached — including the `chmod` that opens the next one down. Only the
-	 * last of them is written IN, so only the last needs write.
-	 */
-	const unlockFor = async (path: string, needs = WRITE | SEARCH): Promise<void> => {
-		const steps = ['']
-		for (let at = path; at !== ''; at = parentOf(at)) steps.splice(1, 0, at)
-		for (const step of steps) {
+	const unlockFor = async (path: Spot, needs = WRITE | SEARCH): Promise<void> => {
+		const walk: Spot[] = [disk.root]
+		for (let at = path; at !== disk.root; at = disk.up(at)) walk.splice(1, 0, at)
+		const steps: Step[] = []
+		for (const step of walk) {
 			const id = owner.get(step)
 			const dir = id === undefined ? undefined : byId.get(id)
 			const at = id === undefined ? undefined : seen.get(id)
 			const need = step === path ? needs : SEARCH
 			// Identity is the inode here as everywhere else: another process may have put a
 			// different directory at this name, and that one is not this store's to open.
-			if (!dir || dir.deleted || !at || !locked(dir, need)) continue
-			await unlock(dir, step, need, at.ino)
+			if (id === undefined || !dir || dir.deleted || !at || !locked(dir, need)) continue
+			steps.push({ id, spot: step, mode: dir.mode, ino: at.ino, need })
 		}
+		await disk.unlock(steps)
 	}
+
+	/** One directory this store just placed, whose identity it does not know yet. */
+	const unlockNew = (row: Node, path: Spot, need: number): Promise<void> =>
+		disk.unlock([{ id: row.id, spot: path, mode: row.mode, need }])
 
 	/**
-	 * The stated mode, back on every directory this pass opened — INNERMOST first, the
-	 * reverse of the way in: closing an ancestor first would take away the search the
-	 * `chmod` below it needs.
+	 * The stated mode back on every directory this pass opened, and their states taken
+	 * down: the chmod moved the mode and the ctime AFTER the observation pass looked, so
+	 * without this the next walk reads the way this store let itself in as a change
+	 * somebody made, and publishes a version of a directory nobody touched.
+	 *
+	 * Where each one is NOW is answered here rather than remembered from the way in — the
+	 * pass may have renamed it — and `mark` is only ever reached with the identity the
+	 * disk confirmed it acted on.
 	 */
 	const relock = async (): Promise<void> => {
-		for (const id of [...opened].reverse()) {
+		const back = await disk.relock((id) => {
 			const dir = byId.get(id)
 			const at = seen.get(id)
-			if (!dir || dir.deleted || !at) continue
-			// One at a time, and never throwing: this runs on the way out of a pass that
-			// may itself be leaving by way of an error, and the error a caller has to see
-			// is that one. A directory that cannot be closed — removed, or shut by somebody
-			// else — is the world having moved, which the next look reconciles.
-			try {
-				// The same inode this pass opened, or nothing at all: another process may
-				// have renamed it away and left a different directory at the name, and
-				// restricting THAT one would be this store changing something it never
-				// touched. What was moved keeps the mode it was granted until a walk finds
-				// it and states what it finds — the grant recorded, rather than hidden.
-				//
-				// The state comes back from the same descriptor, and the identity is the one
-				// already held. A path asked again here could answer for a directory that
-				// took the name in between, and this store would write that inode down as
-				// the row's — which is what `mine` consults before it renames or removes
-				// anything. `observe` may LEARN an identity from a path; this knew it.
-				const s = await setMode(at.path, at.ino, dir.mode & 0o7777)
-				// Its state goes down because the chmod moved the mode and the ctime AFTER
-				// the observation pass looked. Otherwise the next walk reads the way this
-				// store let itself in as a change somebody made, and publishes a version of
-				// a directory nobody touched. Ancestors are still open, so the look works —
-				// the other half of why this goes innermost first.
-				if (s !== null) mark(id, { ...at, state: stateOf(s) })
-			} catch {}
+			return !dir || dir.deleted || !at ? null : { spot: at.path, ino: at.ino, mode: dir.mode }
+		})
+		for (const { id, state } of back) {
+			const at = seen.get(id)
+			if (at) mark(id, { ...at, state })
 		}
-		opened.clear()
-	}
-
-	/** Take a directory aside, make sure it is the row's, and only then remove it. */
-	const quarantine = async (at: Seen): Promise<void> => {
-		const aside = `${HOLD}/going-${crypto.randomUUID()}`
-		await mkdir(join(root, HOLD), { recursive: true })
-		const moved = await rename(abs(at.path), abs(aside)).then(
-			() => true,
-			() => false
-		)
-		// A rename that cannot happen — another filesystem mounted under this tree — is
-		// left with the checked removal, which is what this was before.
-		if (!moved) {
-			await rm(abs(at.path), { recursive: true, force: true })
-			return
-		}
-		const s = await lstat(abs(aside))
-		if (s !== null && String(s.ino) === at.ino) {
-			await rm(abs(aside), { recursive: true, force: true })
-			return
-		}
-		// Not the row's after all. Back where it came from if the name is still free, and
-		// held where it is if it is not — displaced, which is recoverable, rather than
-		// deleted, which is not.
-		await rename(abs(aside), abs(at.path)).catch(() => {})
 	}
 
 	/**
@@ -773,23 +604,28 @@ export function fsStore(root: string): Store {
 		// files this store still tracks are under the first — a subtree an earlier park
 		// left behind, which is not this one's to delete. Anything else at the name is
 		// a leftover: a crash between the rename and the save that recorded it.
-		const its = `${HOLD}/${own(id)}`
+		const its = disk.under(held, own(id))
+		if (its === null) return
 		if (at.path === its || at.path.startsWith(`${its}-`)) return // already in its place
-		if (!(await mine(at))) {
+		if (!(await disk.mine(at))) {
 			unmark(id)
 			return
 		}
-		const to = holdsFiles(its) ? `${its}-${crypto.randomUUID()}` : its
-		await mkdir(join(root, HOLD), { recursive: true })
-		await rm(abs(to), { recursive: true, force: true })
-		await rename(abs(at.path), abs(to))
+		const to = holdsFiles(its) ? disk.under(held, `${own(id)}-${crypto.randomUUID()}`) : its
+		if (to === null) return
+		await disk.dir(held)
+		await disk.clear(to)
+		if (!(await disk.move(at, to))) {
+			unmark(id)
+			return
+		}
 		moveSeen(at.path, to)
 		// A rename moves the ctime of the thing renamed, and nothing observes a parked
 		// file afterwards — no commit placed it and no scan looks in there. So its state
 		// is taken down here, or `blobs` stops recognising the file it holds for the row.
 		// What was UNDER a renamed directory keeps its own, which no rename touched.
 		const moved = seen.get(id)
-		const s = await lstat(abs(to))
+		const s = await disk.stat(to)
 		if (moved && s !== null) mark(id, { ...moved, ino: String(s.ino), state: stateOf(s) })
 	}
 
@@ -801,7 +637,7 @@ export function fsStore(root: string): Store {
 	 * fills in when it arrives, without the row moving at all.
 	 */
 	const fill = async (
-		os: string,
+		os: Spot,
 		row: Node,
 		old: Node | null,
 		at: Seen | undefined
@@ -809,22 +645,22 @@ export function fsStore(root: string): Store {
 		if (row.content === undefined) {
 			// No content is a claim too, so a row that dropped its hash empties its file.
 			if (at && old?.content === undefined) return undefined
-			await publish(os, (tmp) => writeFile(tmp, EMPTY))
+			await disk.write(os, EMPTY)
 			return undefined
 		}
 		if (at?.hash === row.content) return at.hash
 		const data = await readBlob(row.content)
 		if (data !== null) {
-			await publish(os, (tmp) => writeFile(tmp, data))
+			await disk.write(os, data)
 			return row.content
 		}
 		if (at) return at.hash // the row is a stub over whatever the file holds
-		await publish(os, (tmp) => writeFile(tmp, EMPTY))
+		await disk.write(os, EMPTY)
 		return undefined
 	}
 
 	/** Put one row on the disk, at the path the tree gives it. Null when there is nothing to put. */
-	const put = async (row: Node, old: Node | null, path: string | null): Promise<Landed | null> => {
+	const put = async (row: Node, old: Node | null, path: Spot | null): Promise<Landed | null> => {
 		let at = seen.get(row.id)
 		// The directory this store IS. There is nothing to create, move or remove: rule
 		// 6 says root is never buried, and a replica that holds a tombstone for it
@@ -833,12 +669,12 @@ export function fsStore(root: string): Store {
 		// volume that chmods `/` means the directory a local tool sees.
 		if (row.id === ROOT) {
 			if (row.deleted) return null
-			await meta(root, row)
-			return { id: ROOT, path: '' }
+			await disk.stamp(disk.root, stampOf(row))
+			return { id: ROOT, path: disk.root }
 		}
 		if (row.deleted) {
 			if (at) {
-				await unlockFor(parentOf(at.path))
+				await unlockFor(disk.up(at.path))
 				// A batch may tombstone a directory a page before the rows inside it, so
 				// what is under it decides: nothing of this store's underneath, and the
 				// subtree goes; anything still tracked there, and it is parked with its
@@ -852,19 +688,18 @@ export function fsStore(root: string): Store {
 		}
 		if (path === null) {
 			if (at) {
-				await unlockFor(parentOf(at.path))
+				await unlockFor(disk.up(at.path))
 				await park(row.id, at)
 			}
 			return null
 		}
-		const os = abs(path)
 
-		await unlockFor(parentOf(path))
+		await unlockFor(disk.up(path))
 
 		// The directory this row goes in, when the index does not already have it
 		// THERE: a row whose parent is not on the disk at all still lands, which is how
 		// a row that was parked, or one whose write failed halfway, comes back.
-		if (seen.get(row.parent)?.path !== parentOf(path)) await mkdir(dirname(os), { recursive: true })
+		if (seen.get(row.parent)?.path !== disk.up(path)) await disk.dir(disk.up(path))
 
 		// Another row's file is at this path already: a duplicate that used to hold the
 		// name, or a row this same batch moves elsewhere and has not placed yet. This
@@ -873,9 +708,9 @@ export function fsStore(root: string): Store {
 		// back when its own turn or its own name comes.
 		const taken = owner.get(path)
 		if (taken !== undefined && taken !== row.id) {
-			const held = seen.get(taken)
-			if (held) {
-				await park(taken, held)
+			const was = seen.get(taken)
+			if (was) {
+				await park(taken, was)
 				at = seen.get(row.id) // parking a directory moved whatever was under it
 			}
 		}
@@ -883,9 +718,8 @@ export function fsStore(root: string): Store {
 		// The row names a path other than the one its file sits at: ONE rename,
 		// whatever the subtree under it holds. A parked file comes back the same way.
 		if (at && at.path !== path) {
-			await unlockFor(parentOf(at.path))
-			if (await mine(at)) {
-				await rename(abs(at.path), os)
+			await unlockFor(disk.up(at.path))
+			if (await disk.move(at, path)) {
 				moveSeen(at.path, path)
 				at = seen.get(row.id)
 			} else {
@@ -906,13 +740,13 @@ export function fsStore(root: string): Store {
 
 		let hash = at?.hash
 		if (row.type === 'symlink') {
-			await publish(os, (tmp) => symlink(row.link ?? '', tmp))
+			await disk.link(path, row.link ?? '')
 		} else if (row.type === 'file') {
-			hash = await fill(os, row, old, at)
+			hash = await fill(path, row, old, at)
 		} else {
 			// A mount is a junction into another store, which reads as a directory to
 			// anything local — and as an empty one until that store is bound.
-			await mkdir(os, { recursive: true })
+			await disk.dir(path)
 		}
 		// A DIRECTORY's metadata waits for the observation pass, which is after everything
 		// going inside it has landed. Its stamp has to wait anyway — an entry appearing
@@ -928,8 +762,8 @@ export function fsStore(root: string): Store {
 		// Write and SEARCH is the whole requirement — read is for listing a directory,
 		// which no placement does — so `0300` is as workable as `0700`. A scan cannot
 		// list it afterwards, and says so by leaving it alone rather than burying it.
-		if (!isDir(row)) await meta(os, row)
-		else if ((row.mode & 0o300) === 0o300) await chmod(os, row.mode & 0o7777)
+		if (!isDir(row)) await disk.stamp(path, stampOf(row))
+		else if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
 		return { id: row.id, path, hash }
 	}
 
@@ -945,7 +779,7 @@ export function fsStore(root: string): Store {
 	 *   rows were waiting for. A page routinely carries a child before its parent
 	 *   (rule 9), and a row nothing could reach has no file.
 	 */
-	const place = async (row: Node, old: Node | null, path: string | null): Promise<Landed[]> => {
+	const place = async (row: Node, old: Node | null, path: Spot | null): Promise<Landed[]> => {
 		const was = seen.get(row.id)?.path
 		const landed = await put(row, old, path)
 		const out = landed ? [landed] : []
@@ -994,10 +828,10 @@ export function fsStore(root: string): Store {
 			if (held.get(landed.path) !== landed.id) continue
 			const row = byId.get(landed.id)
 			if (!row || row.deleted || !isDir(row)) continue
-			await meta(abs(landed.path), row)
+			await disk.stamp(landed.path, stampOf(row))
 			// Stated, and then held open if what it states shuts this store out: the
 			// marking below has to look inside it, and `relock` is this pass's last act.
-			if (locked(row, SEARCH)) await unlock(row, landed.path, SEARCH)
+			if (locked(row, SEARCH)) await unlockNew(row, landed.path, SEARCH)
 		}
 		const where = new Map<NodeId, Landed>(placed.map((landed) => [landed.id, landed]))
 		for (const id of dirs) {
@@ -1005,7 +839,7 @@ export function fsStore(root: string): Store {
 			if (at && !where.has(id)) where.set(id, { id, path: at.path, hash: at.hash })
 		}
 		for (const [id, landed] of where) {
-			const s = await lstat(abs(landed.path))
+			const s = await disk.stat(landed.path)
 			if (s === null) unmark(id)
 			else mark(id, { path: landed.path, ino: String(s.ino), state: stateOf(s), hash: landed.hash })
 		}
@@ -1015,13 +849,13 @@ export function fsStore(root: string): Store {
 
 	// ── The scan: where a change nobody announced becomes a row ──────────────────
 
-	const hashOf = async (os: string): Promise<Hash | null> => {
-		const data = await readFile(os).catch(() => null)
+	const hashOf = async (os: Spot): Promise<Hash | null> => {
+		const data = await disk.bytes(os)
 		return data === null ? null : sha256Hex(data)
 	}
 
 	/** The row a file states it is. Everything POSIX knows about it, and nothing else. */
-	const derive = async (path: string, s: BigIntStats, base: NewNode): Promise<Node | null> => {
+	const derive = async (path: Spot, s: BigIntStats, base: NewNode): Promise<Node | null> => {
 		const kind = kindOf(s)
 		const row: Node = {
 			id: base.id,
@@ -1051,12 +885,12 @@ export function fsStore(root: string): Store {
 		// that changed keeps the ones its row already had.
 		if (base.xattrs) row.xattrs = base.xattrs
 		if (row.type === 'symlink') {
-			const target = await readlink(abs(path)).catch(() => null)
+			const target = await disk.target(path)
 			if (target === null) return null
 			row.link = target
 		}
 		if (row.type === 'file') {
-			const hash = await hashOf(abs(path))
+			const hash = await hashOf(path)
 			if (hash === null) return null // unreadable: leave the row alone, and try again next scan
 			row.content = hash
 		}
@@ -1069,11 +903,11 @@ export function fsStore(root: string): Store {
 	 * that name — which is what keeps a scan from adopting one file twice under two
 	 * ids. A name no row holds is a node this store has never seen, and gets an id.
 	 */
-	const syncPath = async (dir: NodeId, name: string, path: string): Promise<Node | null> => {
-		const s = await lstat(abs(path))
+	const syncPath = async (dir: NodeId, name: string, path: Spot): Promise<Node | null> => {
+		const s = await disk.stat(path)
 		if (s === null) return null // it vanished between the listing and the look
-		const held = owner.get(path)
-		const row = (held === undefined ? null : byId.get(held)) ?? lookup(dir, name)
+		const has = owner.get(path)
+		const row = (has === undefined ? null : byId.get(has)) ?? lookup(dir, name)
 		const at = row ? seen.get(row.id) : undefined
 		if (row && at && at.path === path && unchanged(at, s)) return row
 		const base: NewNode = row ?? { id: crypto.randomUUID(), parent: dir, name }
@@ -1101,7 +935,7 @@ export function fsStore(root: string): Store {
 	 *
 	 * Returns the directories underneath, for a caller that wants to walk on.
 	 */
-	const syncDir = async (id: NodeId, path: string): Promise<Landed[]> => {
+	const syncDir = async (id: NodeId, path: Spot): Promise<Landed[]> => {
 		// A look needs a way in exactly as a write does. The mode that shuts this store
 		// out of a directory is one its own rows state, and a directory it never reads is
 		// one whose contents never reach the feed — which is the one thing this backend
@@ -1109,15 +943,19 @@ export function fsStore(root: string): Store {
 		// every other way in. A directory it cannot read for any other reason is left
 		// alone, as before.
 		await unlockFor(path, READ | SEARCH)
-		const names = await readdir(abs(path)).catch(() => null)
+		const names = await disk.list(path)
 		if (names === null) return []
 		const found = new Set(names)
 		const under: Landed[] = []
 		for (const name of names) {
-			if (path === '' && name === SIDECAR) continue
-			const row = await syncPath(id, name, path === '' ? name : `${path}/${name}`)
-			if (row && holdsRows(row))
-				under.push({ id: row.id, path: path === '' ? name : `${path}/${name}` })
+			if (path === disk.root && name === SIDECAR) continue
+			// A name the OS lists that this store could never address — a normalization
+			// it does not use, or a byte no name may hold. Not adopted, and not a reason
+			// to stop: the rest of the directory is still this store's to reconcile.
+			const at = disk.under(path, name)
+			if (at === null) continue
+			const row = await syncPath(id, name, at)
+			if (row && holdsRows(row)) under.push({ id: row.id, path: at })
 		}
 		// A name this directory used to hold and no longer does. Only a row whose file
 		// WAS here counts: one that was never materialized, or whose file is parked in
@@ -1133,8 +971,8 @@ export function fsStore(root: string): Store {
 	 * vanished took its whole materialized subtree with it. One pass, whatever the
 	 * size of the deletion.
 	 */
-	const bury = (path: string, gone: Set<string>): void => {
-		const under = path === '' ? '' : `${path}/`
+	const bury = (path: Spot, gone: Set<string>): void => {
+		const under = path === disk.root ? '' : `${path}/`
 		for (const [id, at] of [...seen]) {
 			if (!at.path.startsWith(under)) continue
 			const [step] = at.path.slice(under.length).split('/')
@@ -1144,7 +982,7 @@ export function fsStore(root: string): Store {
 	}
 
 	/** Everything materialized UNDER a path — the row AT it left alone. */
-	const buryUnder = (path: string): void => {
+	const buryUnder = (path: Spot): void => {
 		const under = `${path}/`
 		for (const [id, at] of [...seen]) if (at.path.startsWith(under)) entomb(id)
 	}
@@ -1194,16 +1032,16 @@ export function fsStore(root: string): Store {
 
 	/** The one row no directory lists: root's own state. */
 	const syncRoot = async (): Promise<void> => {
-		const s = await lstat(root)
-		const held = byId.get(ROOT)
-		if (s === null || !held) return
+		const s = await disk.stat(disk.root)
+		const was = byId.get(ROOT)
+		if (s === null || !was) return
 		const at = seen.get(ROOT)
 		if (at && unchanged(at, s)) return
-		const derived = await derive('', s, held)
+		const derived = await derive(disk.root, s, was)
 		if (!derived) return
-		mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
+		mark(ROOT, { path: disk.root, ino: String(s.ino), state: stateOf(s) })
 		changed = true
-		if (restated(held, derived)) return
+		if (restated(was, derived)) return
 		write(derived)
 	}
 
@@ -1217,7 +1055,7 @@ export function fsStore(root: string): Store {
 		changed = false
 		await syncRoot()
 		if (!byId.has(ROOT)) return
-		const queue: Landed[] = [{ id: ROOT, path: '' }]
+		const queue: Landed[] = [{ id: ROOT, path: disk.root }]
 		for (let dir = queue.pop(); dir !== undefined; dir = queue.pop())
 			queue.push(...(await syncDir(dir.id, dir.path)))
 		swept = Date.now()
@@ -1239,7 +1077,7 @@ export function fsStore(root: string): Store {
 		for (const [id, at] of [...seen]) {
 			const row = byId.get(id)
 			if (!row || row.deleted || !holdsRows(row)) continue
-			const s = await lstat(abs(at.path))
+			const s = await disk.stat(at.path)
 			if (s === null || unchanged(at, s)) continue // gone is the parent's listing to notice
 			if (id !== ROOT) await syncPath(row.parent, row.name, at.path) // the directory's own row
 			await syncDir(id, at.path) // and what it lists now
@@ -1256,26 +1094,26 @@ export function fsStore(root: string): Store {
 	 * gone, and a name it holds is reconciled on its own. A directory is then walked,
 	 * because one event can stand for a whole subtree that arrived at once.
 	 */
-	const syncAt = async (path: string): Promise<void> => {
-		if (path === '') return syncRoot()
+	const syncAt = async (path: Spot): Promise<void> => {
+		if (path === disk.root) return syncRoot()
 		// The nearest ancestor this index knows. An event may name a path several
 		// levels below anything the store has heard of — a subtree copied in at once —
 		// and it may spell a name in a normalization the rows do not use, in which case
 		// the ancestor's own listing is what gets it right.
-		let up = parentOf(path)
-		for (let step = 0; up !== '' && owner.get(up) === undefined; step++) {
+		let up = disk.up(path)
+		for (let step = 0; up !== disk.root && owner.get(up) === undefined; step++) {
 			if (step > 64) return
 			path = up
-			up = parentOf(up)
+			up = disk.up(up)
 		}
-		const dir = up === '' ? ROOT : owner.get(up)
+		const dir = up === disk.root ? ROOT : owner.get(up)
 		const parent = dir === undefined ? null : byId.get(dir)
 		if (dir === undefined || !parent || parent.deleted) return
 		if (!holdsRows(parent)) return
-		const name = up === '' ? path : path.slice(up.length + 1)
-		if (up === '' && name === SIDECAR) return // this store's own bookkeeping
+		const name = up === disk.root ? path : path.slice(up.length + 1)
+		if (up === disk.root && name === SIDECAR) return // this store's own bookkeeping
 
-		if (await absent(abs(path))) {
+		if (await disk.absent(path)) {
 			bury(up, new Set([name]))
 			return
 		}
@@ -1335,15 +1173,15 @@ export function fsStore(root: string): Store {
 		for (const row of chain) {
 			const path = pathUnder(row.parent, row.name)
 			if (path === null) return
-			await unlockFor(parentOf(path), SEARCH)
+			await unlockFor(disk.up(path), SEARCH)
 			// Gone is the other way a directory stops being one, and it needs saying here
 			// too: a stale row for a directory a local tool removed leaves this store
 			// believing the way down is there. It skips the `mkdir` it would otherwise do —
 			// the old `seen` entry says the parent is already in place — and the write goes
 			// to a path with nothing above it. Buried, everything under it loses its path
 			// and the page lands instead of failing for ever.
-			if (await absent(abs(path))) {
-				bury(parentOf(path), new Set([row.name]))
+			if (await disk.absent(path)) {
+				bury(disk.up(path), new Set([row.name]))
 				return
 			}
 			await syncPath(row.parent, row.name, path)
@@ -1368,11 +1206,11 @@ export function fsStore(root: string): Store {
 			if (path === null) continue
 			// The way in, for a look rather than a write: a guard answered about a path
 			// this store could not reach is answered about nothing.
-			await unlockFor(parentOf(path), SEARCH)
+			await unlockFor(disk.up(path), SEARCH)
 			// Gone is a change too, and the one a stale read-modify-write must not miss: a
 			// name whose file a local tool deleted or renamed away is a tombstone, so the
 			// version guard over it fails instead of quietly writing the file back.
-			if (await absent(abs(path))) bury(parentOf(path), new Set([name]))
+			if (await disk.absent(path)) bury(disk.up(path), new Set([name]))
 			else await syncPath(parent, name, path)
 		}
 		// Closed before the save below opens a way of its own: one window at a time.
@@ -1385,10 +1223,10 @@ export function fsStore(root: string): Store {
 		// A directory before what is inside it, so a subtree that arrived at once is
 		// adopted from the top; and the parent of every path, because adding or
 		// removing an entry is a change to the DIRECTORY's own row as well.
-		const paths = new Set<string>()
+		const paths = new Set<Spot>()
 		for (const path of dirty) {
 			paths.add(path)
-			paths.add(parentOf(path))
+			paths.add(disk.up(path))
 		}
 		dirty.clear()
 		changed = false
@@ -1401,8 +1239,8 @@ export function fsStore(root: string): Store {
 	// ── The watcher: the OS says where to look ───────────────────────────────────
 
 	/** Paths the OS says may have changed. Drained by `since`, never trusted. */
-	const dirty = new Set<string>()
-	let watcher: FSWatcher | null = null
+	const dirty = new Set<Spot>()
+	let watcher: (() => void) | null = null
 	/** Has a watcher been asked for yet? Only the first `since` asks. */
 	let armed = false
 	/** Is one listening? False means the walk is the only thing that reports. */
@@ -1422,22 +1260,8 @@ export function fsStore(root: string): Store {
 	 * delivering while the process has other work.
 	 */
 	const arm = (): void => {
-		try {
-			const held = watch(root, { recursive: true, persistent: false }, (_type, name) => {
-				if (name === null) {
-					lost()
-					return
-				}
-				dirty.add(String(name).split(sep).join('/'))
-			})
-			held.on('error', lost)
-			watcher = held
-			watching = true
-		} catch {
-			// No watcher on this platform, this filesystem, or past this many watches
-			// (Linux counts them per directory). The tree gets walked instead.
-			watching = false
-		}
+		watcher = disk.watch((spot) => void dirty.add(spot), lost)
+		watching = watcher !== null
 	}
 
 	/**
@@ -1446,7 +1270,7 @@ export function fsStore(root: string): Store {
 	 * cheap floor, since nothing else will report an in-place write.
 	 */
 	const lost = (): void => {
-		watcher?.close()
+		watcher?.()
 		watcher = null
 		watching = false
 		dirty.clear()
@@ -1456,34 +1280,29 @@ export function fsStore(root: string): Store {
 	// ── Content: the files themselves ────────────────────────────────────────────
 
 	/** Where bytes wait while no row names them yet. Null for a key that is no hash. */
-	const spill = (hash: Hash): string | null => (HASH.test(hash) ? join(root, SPILL, hash) : null)
+	const spill = (hash: Hash): Spot | null => (HASH.test(hash) ? disk.under(spilled, hash) : null)
 
 	/**
 	 * The file that holds these bytes: a row that names the hash, while the disk
 	 * still holds what this store last observed there.
 	 */
-	const fileFor = async (hash: Hash): Promise<string | null> => {
+	const fileFor = async (hash: Hash): Promise<Spot | null> => {
 		for (const id of holders.get(hash) ?? []) {
 			const at = seen.get(id)
 			if (!at) continue
-			const s = await lstat(abs(at.path))
-			if (s !== null && unchanged(at, s)) return abs(at.path)
+			const s = await disk.stat(at.path)
+			if (s !== null && unchanged(at, s)) return at.path
 		}
 		return null
 	}
 
 	/** The bytes a hash names: the spill, or else the file of a row that names it. */
-	const readBlob = async (hash: Hash): Promise<Uint8Array | null> => {
-		const found = (await readAt(spill(hash))) ?? (await readAt(await fileFor(hash)))
-		// Not the `Buffer` node hands back: the seam says `Uint8Array`, and a caller
-		// that compares what it read against what it wrote must find the same thing.
-		// Each read is its own buffer anyway, so nothing can reach into stored content.
-		return found === null ? null : new Uint8Array(found)
-	}
+	const readBlob = async (hash: Hash): Promise<Uint8Array | null> =>
+		(await readAt(spill(hash))) ?? (await readAt(await fileFor(hash)))
 
 	/** A whole file, or null: the path may be nothing, gone, or unreadable. */
-	const readAt = async (os: string | null): Promise<Uint8Array | null> =>
-		os === null ? null : readFile(os).catch(() => null)
+	const readAt = async (os: Spot | null): Promise<Uint8Array | null> =>
+		os === null ? null : disk.bytes(os)
 
 	/**
 	 * Bytes for a hash a row already names but whose file does not hold yet — a
@@ -1505,14 +1324,14 @@ export function fsStore(root: string): Store {
 			// copy of itself there is — so the name is looked at again instead, which makes
 			// what the file holds a row, and a row naming other content is no stub waiting
 			// for these bytes.
-			const s = await lstat(abs(at.path))
+			const s = await disk.stat(at.path)
 			if (s === null || !unchanged(at, s)) {
 				await settle([[row.parent, row.name]])
 				continue
 			}
-			await unlockFor(parentOf(at.path))
-			await publish(abs(at.path), (tmp) => writeFile(tmp, data))
-			await meta(abs(at.path), row)
+			await unlockFor(disk.up(at.path))
+			await disk.write(at.path, data)
+			await disk.stamp(at.path, stampOf(row))
 			placed.push({ id: row.id, path: at.path, hash })
 			dirs.add(row.parent)
 		}
@@ -1530,21 +1349,21 @@ export function fsStore(root: string): Store {
 		// the sidecar inside it can be written or read at all, so a root that shuts this
 		// store out is opened for the open — and the row seeded below states what was
 		// there, never the way in that had to be made for it.
-		const s = await lstat(root)
-		if (s === null) throw new Error(`fsStore: cannot read ${root}`)
+		const s = await disk.stat(disk.root)
+		if (s === null) throw new Error(`fsStore: cannot read ${disk.where(disk.root)}`)
 		const shut = (Number(s.mode) & (WRITE | SEARCH)) !== (WRITE | SEARCH)
-		if (shut) await chmod(root, (Number(s.mode) & 0o7777) | WRITE | SEARCH)
+		if (shut) await disk.stamp(disk.root, { mode: (Number(s.mode) & 0o7777) | WRITE | SEARCH })
 		// Creates the tree itself when it is not there — and BEFORE root's state is
 		// taken down, so the sidecar's own arrival is not a change to it.
-		await mkdir(join(root, SPILL), { recursive: true })
+		await disk.dir(spilled)
 		const loaded = await load()
 		if (!loaded) {
 			lineage = crypto.randomUUID() // rule 11: a fresh sidecar is a fresh lineage
-			const seed = await derive('', s, { id: ROOT, parent: ROOT, name: '' })
+			const seed = await derive(disk.root, s, { id: ROOT, parent: ROOT, name: '' })
 			// Rule 6: the root row, and the one row whose id is not minted here.
-			if (seed === null) throw new Error(`fsStore: cannot read ${root}`)
+			if (seed === null) throw new Error(`fsStore: cannot read ${disk.where(disk.root)}`)
 			write(seed)
-			mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
+			mark(ROOT, { path: disk.root, ino: String(s.ino), state: stateOf(s) })
 		}
 		// And closed again before anything looks — to what was FOUND, not to what the
 		// sidecar remembered. A local tool may have set a mode while this store was not
@@ -1552,7 +1371,7 @@ export function fsStore(root: string): Store {
 		// then record the revert as the truth. What was found is left for the scan below
 		// to reconcile like any other change made outside, which is also what publishes
 		// it. The scan looking at root once is the price of the way in.
-		if (shut) await chmod(root, Number(s.mode) & 0o7777)
+		if (shut) await disk.stamp(disk.root, { mode: Number(s.mode) & 0o7777 })
 		// The watcher is not armed here: the first `since` does that, so a consumer
 		// that only reads and writes never asks the OS for one at all — and a CLI that
 		// never closes the store has nothing to leak.
@@ -1711,7 +1530,7 @@ export function fsStore(root: string): Store {
 				// inside — is still open.
 				for (const landed of placed) {
 					const waiting = landed.hash === undefined ? null : spill(landed.hash)
-					if (waiting !== null) await rm(waiting, { force: true })
+					if (waiting !== null) await disk.clear(waiting)
 				}
 				await observe(placed, dirs)
 				await save()
@@ -1738,7 +1557,7 @@ export function fsStore(root: string): Store {
 			async has(hash) {
 				await open()
 				const waiting = spill(hash)
-				if (waiting !== null && (await lstat(waiting)) !== null) return true
+				if (waiting !== null && (await disk.stat(waiting)) !== null) return true
 				return (await fileFor(hash)) !== null
 			},
 
@@ -1754,7 +1573,7 @@ export function fsStore(root: string): Store {
 			 * returns to it.
 			 */
 			async put(hash, data) {
-				const held = new Uint8Array(data)
+				const bytes = new Uint8Array(data)
 				await open()
 				const waiting = spill(hash)
 				// A key that is not a digest names no file here, and nothing could ever
@@ -1763,10 +1582,10 @@ export function fsStore(root: string): Store {
 				return serial(async () => {
 					// A row that was waiting for these bytes takes them into its own file,
 					// which is where content lives here. Then the spill has nothing to keep.
-					const filled = await hydrate(hash, held)
+					const filled = await hydrate(hash, bytes)
 					if (filled) return save()
-					if ((await lstat(waiting)) === null && (await fileFor(hash)) === null)
-						await publish(waiting, (tmp) => writeFile(tmp, held))
+					if ((await disk.stat(waiting)) === null && (await fileFor(hash)) === null)
+						await disk.write(waiting, bytes)
 				})
 			}
 		}

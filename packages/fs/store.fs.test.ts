@@ -1647,3 +1647,51 @@ describe('fsStore: told, or else looked for', () => {
 		)
 	}, 30_000)
 })
+
+describe('fsStore: the sidecar is a file, and a file is not a promise', () => {
+	test('a path in the index that leaves the tree addresses nothing', async () => {
+		// `.jfs/index.json` is the one input to this store that is neither a row from a
+		// peer nor something it observed itself: it is a document on the disk, and
+		// anything that can write in the tree can put a path in it. Every id, name and
+		// version in there was minted by this store; `seen.path` was last a plain string,
+		// and it is what `rename` and `rm` are aimed at.
+		//
+		// Identity does not answer this on its own. `mine` asks whether the inode at the
+		// path is the one recorded — but the recording is in the same file, so an index
+		// that lies about the path lies about the inode beside it. What has to hold is
+		// that the path names somewhere inside the tree at all.
+		const root = await temp()
+		const outside = await temp()
+		const victim = join(outside, 'victim.txt')
+		await writeFile(victim, 'not this store to touch')
+
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		await feed(store)
+		await store.close?.()
+		// The name gone from the tree, so the look a commit takes first finds nothing to
+		// re-state and the index keeps the path it was given.
+		await rm(join(root, 'a.txt'))
+
+		const s = await stat(victim, { bigint: true })
+		const index = join(root, '.jfs/index.json')
+		const sidecar = JSON.parse(await readFile(index, 'utf8'))
+		for (const entry of sidecar.entries) {
+			if (entry.seen?.path !== 'a.txt') continue
+			// Relative, and out: `join` resolves it, and the store is the one holding the
+			// root it is resolved against.
+			entry.seen.path = `${'../'.repeat(24)}${victim.replace(/^\//, '')}`
+			entry.seen.ino = String(s.ino)
+			entry.seen.state = `${s.mode}:${s.mtimeNs}:${s.size}:${s.ctimeNs}`
+		}
+		await writeFile(index, JSON.stringify(sidecar))
+
+		const reopened = open(root)
+		// A row the tree cannot reach — its parent is nobody — has no path, and a row with
+		// no path keeps its bytes: the store moves its file to the holding area. Which
+		// file that is, is the whole question.
+		await reopened.commit([{ ...row, parent: crypto.randomUUID(), version: 'v2' }])
+
+		expect(await readFile(victim, 'utf8')).toBe('not this store to touch')
+	}, 30_000)
+})
