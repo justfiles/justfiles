@@ -1094,6 +1094,25 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readFile(join(root, 'outer/f.txt'), 'utf8')).toBe('rewritten')
 	})
 
+	test('the way in and out of a locked directory is not news', async () => {
+		const root = await temp()
+		const store = open(root)
+		const locked = { ...dir({ id: 'd', name: 'locked' }), mode: 0o040500 }
+		await store.commit([locked])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+		const { cursor } = await feed(store)
+
+		// The child needs the directory opened and closed again. Neither the opening nor
+		// the closing is a change anybody made, so a walk must not report one: this store
+		// takes down what it did to the disk, the same as it does for a directory whose
+		// mtime its own write moved.
+		await store.commit([inside])
+		// Long enough that both the watcher and the cheap floor have had their say.
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS))
+
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual(['c'])
+	}, 30_000)
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)

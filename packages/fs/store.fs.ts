@@ -608,7 +608,15 @@ export function fsStore(root: string): Store {
 		for (const id of [...opened].reverse()) {
 			const dir = byId.get(id)
 			const at = seen.get(id)
-			if (dir && !dir.deleted && at) await chmod(abs(at.path), dir.mode & 0o7777)
+			if (!dir || dir.deleted || !at) continue
+			await chmod(abs(at.path), dir.mode & 0o7777)
+			// And its state taken down again, because this chmod moved the mode and the
+			// ctime AFTER the observation pass looked. Otherwise the next walk reads the
+			// way this store let itself in as a change somebody made, and publishes a
+			// version of a directory nobody touched. Its ancestors are still open, so the
+			// look works — which is the other half of why this goes innermost first.
+			const s = await lstat(abs(at.path))
+			if (s !== null) mark(id, { ...at, ino: String(s.ino), state: stateOf(s) })
 		}
 		opened.clear()
 	}
