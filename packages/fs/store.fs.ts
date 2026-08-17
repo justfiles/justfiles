@@ -993,7 +993,12 @@ export function fsStore(root: string): Store {
 		changed = false
 		for (const [parent, name] of touched) {
 			const path = pathUnder(parent, name)
-			if (path !== null) await syncPath(parent, name, path)
+			if (path === null) continue
+			// Gone is a change too, and the one a stale read-modify-write must not miss: a
+			// name whose file a local tool deleted or renamed away is a tombstone, so the
+			// version guard over it fails instead of quietly writing the file back.
+			if ((await lstat(abs(path))) === null) bury(parentOf(path), new Set([name]))
+			else await syncPath(parent, name, path)
 		}
 		if (changed) await save()
 	}

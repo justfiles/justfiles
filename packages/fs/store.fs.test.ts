@@ -798,6 +798,33 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		)
 	})
 
+	test('a version guard fails when a local tool has deleted the row it names', async () => {
+		const root = await temp()
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		await feed(store)
+
+		// The other direction of the same question: gone is a change too. A local tool
+		// removes the file between two polls, and the app commits a read-modify-write
+		// against the version it last read — which must be refused, not quietly recreate
+		// what somebody deleted.
+		await rm(join(root, 'a.txt'))
+		const data = bytes('rewritten from a stale read')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+
+		await expect(
+			store.commit(
+				[{ ...row, content: hash, size: BigInt(data.length), version: 'v2' }],
+				[{ version: { id: row.id, is: row.version } }]
+			)
+		).rejects.toThrow(GuardError)
+
+		// The deletion is what the store says now, and the rejected commit wrote nothing.
+		expect((await store.get(row.id))?.deleted).toBe(true)
+		expect(await readdir(root)).toEqual(['.jfs'])
+	})
+
 	test('a commit with no guard keeps the bytes of the file whose name it takes', async () => {
 		const root = await temp()
 		const store = open(root)
