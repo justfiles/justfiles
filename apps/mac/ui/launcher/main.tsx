@@ -1,23 +1,11 @@
 import '@justfiles/design/design.css'
 import '@justfiles/design/mac.css'
 import { Transcript } from '@justfiles/ui/Transcript'
-import { StrictMode, useEffect, useMemo, useState } from 'react'
+import { StrictMode, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useAgentChat } from './agentChat'
-
-type App = {
-	id: string
-	name: string
-	description?: string
-	icon?: string
-}
-
-type SystemMessage =
-	| { type: 'apps'; apps: App[] }
-	| { type: 'error'; message: string }
-	| { type: 'hello'; message: string; time: string; uptime: number }
-
-type Connection = 'connecting' | 'ready' | 'disconnected'
+import { StoreSurface } from './appStore'
+import { type App, useSystemApps } from './system'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root')
@@ -33,10 +21,13 @@ export function Launcher() {
 	const chat = useAgentChat()
 	const [query, setQuery] = useState('')
 	const [chatOpen, setChatOpen] = useState(false)
+	// The store is transient like the chat: Escape or Done leaves it.
+	const [storeOpen, setStoreOpen] = useState(false)
 	const filtered = useMemo(() => filterApps(apps, query), [apps, query])
 	const text = query.trim()
 	const noAppMatch = text !== '' && filtered.length === 0
 	const showChat = noAppMatch || (chatOpen && text === '')
+	const showStore = storeOpen && !showChat && text === ''
 	const status =
 		error ??
 		(showChat ? chat.error : null) ??
@@ -62,7 +53,9 @@ export function Launcher() {
 				<div className="app-surface">
 					{showChat ? (
 						<ChatSurface chat={chat} />
-					) : filtered.length > 0 ? (
+					) : showStore ? (
+						<StoreSurface installed={apps} onClose={() => setStoreOpen(false)} />
+					) : connection === 'ready' || filtered.length > 0 ? (
 						<div className="app-grid">
 							{filtered.map((app) => (
 								<a className="app-cell" href={appUrl(app.id)} key={app.id} title={app.name}>
@@ -70,11 +63,24 @@ export function Launcher() {
 									<span className="app-name">{app.name}</span>
 								</a>
 							))}
+							{/* The way in to everything not installed yet — the store is a tile, not a
+							    separate app. Hidden while searching, where the grid is a result list. */}
+							{text === '' ? (
+								<button
+									className="app-cell"
+									onClick={() => setStoreOpen(true)}
+									title="Browse the App Store"
+									type="button"
+								>
+									<span className="app-icon app-glyph">
+										<StoreGlyph />
+									</span>
+									<span className="app-name">App Store</span>
+								</button>
+							) : null}
 						</div>
 					) : (
-						<div className="empty-state">
-							{connection === 'ready' ? 'No apps found' : 'Connecting to Kodama…'}
-						</div>
+						<div className="empty-state">Connecting to Kodama…</div>
 					)}
 				</div>
 				<form className="composer" onSubmit={submit}>
@@ -87,6 +93,7 @@ export function Launcher() {
 						onKeyDown={(event) => {
 							if (event.key === 'Escape') {
 								setChatOpen(false)
+								setStoreOpen(false)
 								setQuery('')
 							}
 						}}
@@ -122,53 +129,6 @@ function ChatSurface({ chat }: { chat: ReturnType<typeof useAgentChat> }) {
 	)
 }
 
-function useSystemApps() {
-	const [apps, setApps] = useState<App[]>([])
-	const [connection, setConnection] = useState<Connection>('connecting')
-	const [error, setError] = useState<string | null>(null)
-
-	useEffect(() => {
-		let stopped = false
-		let retry: ReturnType<typeof setTimeout> | undefined
-		let socket: WebSocket | undefined
-
-		const connect = () => {
-			setConnection('connecting')
-			socket = new WebSocket(
-				`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/system`
-			)
-			socket.onopen = () => {
-				setError(null)
-			}
-			socket.onmessage = (event) => {
-				const message = JSON.parse(String(event.data)) as SystemMessage
-				if (message.type === 'apps') {
-					setApps(message.apps)
-					setConnection('ready')
-					setError(null)
-				} else if (message.type === 'error') {
-					setError(message.message)
-				}
-			}
-			socket.onerror = () => socket?.close()
-			socket.onclose = () => {
-				if (stopped) return
-				setConnection('disconnected')
-				retry = setTimeout(connect, 1000)
-			}
-		}
-
-		connect()
-		return () => {
-			stopped = true
-			clearTimeout(retry)
-			socket?.close()
-		}
-	}, [])
-
-	return { apps, connection, error }
-}
-
 function filterApps(apps: App[], query: string): App[] {
 	const needle = query.trim().toLowerCase()
 	if (!needle) return apps
@@ -191,6 +151,25 @@ function AppIcon({ app }: { app: App }) {
 		)
 	}
 	return <span className="app-icon app-glyph">{glyph(app)}</span>
+}
+
+function StoreGlyph() {
+	return (
+		<svg
+			aria-hidden="true"
+			fill="none"
+			height="34"
+			stroke="currentColor"
+			strokeLinecap="round"
+			strokeWidth="1.6"
+			viewBox="0 0 24 24"
+			width="34"
+		>
+			<path d="M3 9.5 5.5 4h13L21 9.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0Z" />
+			<path d="M4.8 11.4v8.6h14.4v-8.6" />
+			<path d="M9.8 20v-5.4h4.4V20" />
+		</svg>
+	)
 }
 
 function glyph(app: App): string {
@@ -287,6 +266,13 @@ body {
 .app-cell:hover,
 .app-cell:focus-visible {
 	background: rgba(255, 255, 255, 0.1);
+}
+
+button.app-cell {
+	border: 0;
+	padding: 12px 0 0;
+	background: transparent;
+	font: inherit;
 }
 
 .app-cell:focus-visible .app-icon {

@@ -56,7 +56,7 @@ daemon/main.ts`). The daemon is Bun-only (`Bun.serve` / pub-sub / `Bun.file`), s
 node escape hatch here. `Daemon.spawn()` (Launcher.swift) execs the stamped `DaemonRuntime` /
 `DaemonArgs` / `DaemonScript` verbatim — the runtime choice lives in the plist, never in Swift.
 The daemon reconciles the packaged apps from their freshly built `dist` files on every boot, so a
-relaunch always shows current Code, Files, and Settings code. It also reconciles trusted hosted apps
+relaunch always shows current Files and Settings code. It also reconciles the hosted apps it seeds
 from JustApps. Editing only `daemon/*` needs just the relaunch.
 
 ## App storage
@@ -74,8 +74,42 @@ The shared install and reconcile paths prefetch hosted files. A hosted app there
 after the prefetch succeeds. The cache is local, derived data under `/private`, so it does not sync.
 The thin bundles in `~/Applications/Kodama Apps/` are also derived data. They contain no app code.
 
-Code, Files, and Settings remain packaged fallbacks until immutable JustApps releases exist for them.
-The packaged store is authoritative when it and JustApps contain the same app ID.
+### What a fresh Volume starts with
+
+Two packaged apps — **Files** and **Settings** — plus the hosted apps `daemon/builtins.ts` names in
+`SEEDED`: **Notes** and **Paint**. The packaged store wins when it and JustApps carry the same app ID.
+
+Everything else JustApps publishes, **Code** and **Draw** included, installs from the App Store tile.
+A seeded app is also a trusted one (`reconcile` updates it without asking), so the seed list stays the
+smallest set this Mac wants on day one.
+
+### The App Store tile
+
+The launcher's last grid tile browses everything JustApps publishes, minus the packaged apps —
+those are authoritative, so a published entry under one of their IDs is never offered. The daemon
+owns both ends — `GET /store` lists the catalog (index plus each published manifest, no file
+lists), and `POST /store/<id>?version=<v>` installs one app — so no app bytes pass through the
+webview. A row asks for consent first, showing the access the published manifest declares, and the
+install lands the release that listing resolved rather than re-resolving the registry: a publisher
+who moves the pointer after the sheet renders — even to a different release under the same version
+— cannot slip past the consent it showed. A cross-origin `POST` is rejected, because loopback is
+reachable from any browser on this Mac. That is not authorization, though: an installed app's
+`gui.js` runs in a daemon-origin document, so any app page is same-origin with the launcher and can
+install (as it can drive every other daemon socket). One gate for the whole surface needs app
+documents off this origin — see `tasks/mac-daemon-loopback-auth.md`. An install fires
+`app.installed`, which pushes a fresh catalog to every launcher, so the new app appears in the grid
+and its row leaves the list.
+
+One surface, two shells. The web launcher renders it inline; the native launcher has an AppKit
+springboard, so its store tile reveals `/launcher/store` — the same React surface in a WKWebView,
+the way it already embeds the chat. Done posts back over the `store` message handler (Escape works
+too); the page reloads on every open, because it fetches the published catalog on mount and a
+second visit must not show the first visit's snapshot.
+
+The list also carries a **held update**: a published release that asks for more access than the
+installed one — a version bump or a release replaced in place — which `reconcile` skips rather than
+applying. Accepting the row is the re-consent,
+and this list is the only place on this Mac where one surfaces.
 
 ### Production build & install
 

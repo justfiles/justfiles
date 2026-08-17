@@ -31,11 +31,15 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// springboard — every app on summon, filtered as you type); when a query matches no app
 	// we switch straight to `chat`. ⌘K also enters chat. A leading `/` opens the `commands`
 	// menu over whatever mode we were in.
-	private enum Content { case grid, chat, commands }
+	private enum Content { case grid, chat, commands, store }
 
 	private var panel: NSPanel!
 	private var container: NSView! // holds the active content view, sized per mode
 	private var webView: WKWebView! // the transcript, kept warm (loaded at startup)
+	// The App Store, loaded on every open: its page fetches the published catalog on mount, so a
+	// reload is what makes a second visit show newly published apps rather than a stale snapshot.
+	private var storeView: WKWebView!
+	private var storeOpen = false
 	private let composer = Composer()
 	private let results = Results() // the `/` command menu
 	private let grid = AppGrid() // the app springboard
@@ -49,7 +53,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private var chatting = false
 	private var content: Content = .grid
 	private var visibleContent: NSView?
-	private var chatRuntime: (port: Int, token: String)?
+	// Where the daemon is, for both webview URLs (the transcript and the store page).
+	private var runtime: (port: Int, token: String)?
 
 	func applicationDidFinishLaunching(_: Notification) {
 		buildPanel()
@@ -121,21 +126,35 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		webView.setValue(false, forKey: "drawsBackground")
 		if #available(macOS 13.3, *) { webView.isInspectable = true } // dev only
 
+		// The App Store webview: the same store surface the web launcher shows, since this
+		// shell's springboard is AppKit. Its Done button rides the `store` handler back here.
+		let storeCfg = WKWebViewConfiguration()
+		storeCfg.userContentController.add(self, name: "store")
+		storeView = WKWebView(frame: .zero, configuration: storeCfg)
+		storeView.uiDelegate = self
+		storeView.setValue(false, forKey: "drawsBackground")
+		if #available(macOS 13.3, *) { storeView.isInspectable = true } // dev only
+
 		// One content container above the composer; its single visible child swaps per mode.
 		container = NSView()
 		results.autoresizingMask = [.width, .height]
 		grid.autoresizingMask = [.width, .height]
 		webView.autoresizingMask = [.width, .height]
+		storeView.autoresizingMask = [.width, .height]
 		results.onPick = { [weak self] in self?.runCommand($0) }
-		grid.onPick = { [weak self] in self?.launch($0) }
+		// The springboard's last tile is the store, not an app (see storeTile).
+		grid.onPick = { [weak self] id in
+			id == storeTileId ? self?.openStore() : self?.launch(id)
+		}
 		container.addSubview(results)
 		container.addSubview(grid)
 		container.addSubview(webView)
+		container.addSubview(storeView)
 		blur.addSubview(container)
 
 		composer.onChange = { [weak self] in self?.render() }
 		composer.onSubmit = { [weak self] in self?.submit() }
-		composer.onEscape = { [weak self] in self?.hide() }
+		composer.onEscape = { [weak self] in self?.escape() }
 		composer.onToggleChat = { [weak self] in self?.toggleChat() }
 		// Arrows browse the active surface: the grid in 2-D, the `/` menu vertically.
 		composer.onArrow = { [weak self] dx, dy in
@@ -165,7 +184,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	private func contentHeight() -> CGFloat {
 		switch content {
-		case .grid, .chat: return Self.surfaceHeight
+		case .grid, .chat, .store: return Self.surfaceHeight
 		case .commands: return min(results.contentHeight, Results.cap)
 		}
 	}
@@ -225,7 +244,10 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 			composer.string.hasPrefix("/")
 			? "" : composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
 		if query.isEmpty {
-			grid.setItems(apps, selectFirst: false)
+			if storeOpen { return present(.store) }
+			// The store rides along as the springboard's last tile — the way in to every app
+			// that is not installed yet. Not while filtering, where the grid is a result list.
+			grid.setItems(apps + [storeTile], selectFirst: false)
 			return present(.grid)
 		}
 		let matches = filtered(query)
@@ -243,8 +265,13 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		grid.isHidden = content != .grid
 		results.isHidden = content != .commands
 		webView.isHidden = content != .chat
-		visibleContent =
-			content == .grid ? grid : content == .commands ? results : content == .chat ? webView : nil
+		storeView.isHidden = content != .store
+		switch content {
+		case .grid: visibleContent = grid
+		case .commands: visibleContent = results
+		case .chat: visibleContent = webView
+		case .store: visibleContent = storeView
+		}
 		// Arrows drive selection only when a pickable surface (grid or `/` menu) is up.
 		composer.navActive = content == .grid || content == .commands
 		sizePanel()
@@ -346,6 +373,32 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		openMiniApp(id)
 	}
 
+	// Reveal the App Store over the springboard. Reloaded on every open, so each visit browses a
+	// fresh catalog — the panel stays up, so an install lands in the catalog the grid behind it
+	// is already subscribed to.
+	private func openStore() {
+		storeOpen = true
+		loadStore()
+		render()
+		composer.focus()
+	}
+
+	private func closeStore() {
+		storeOpen = false
+		render()
+		composer.focus()
+	}
+
+	// Escape: leave the store first (it is a surface, not the panel), else dismiss.
+	private func escape() {
+		if storeOpen { closeStore() } else { hide() }
+	}
+
+	private func loadStore() {
+		guard let r = runtime else { return }
+		storeView.load(URLRequest(url: launcherURL("/launcher/store", port: r.port, token: r.token)))
+	}
+
 	// ⌘K: explicit switch between app-search and the conversation.
 	private func toggleChat() {
 		chatting.toggle()
@@ -378,17 +431,20 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// transcript webview at the live runtime. Reloading only on a real change keeps the
 	// webview warm in steady state and heals it across a daemon restart (new port/token).
 	private func useRuntime(_ port: Int, _ token: String) {
-		if let r = chatRuntime, r.port == port, r.token == token { return }
-		chatRuntime = (port, token)
-		webView.load(URLRequest(url: chatURL(port: port, token: token)))
+		if let r = runtime, r.port == port, r.token == token { return }
+		runtime = (port, token)
+		webView.load(URLRequest(url: launcherURL("/launcher/chat", port: port, token: token)))
+		// The store page is loaded per open, so a daemon that moved needs nothing here — unless
+		// the store is on screen right now, which would otherwise leave a dead surface up.
+		if storeOpen { loadStore() }
 	}
 
-	private func chatURL(port: Int, token: String) -> URL {
+	private func launcherURL(_ path: String, port: Int, token: String) -> URL {
 		var c = URLComponents()
 		c.scheme = "http"
 		c.host = "127.0.0.1"
 		c.port = port
-		c.path = "/launcher/chat"
+		c.path = path
 		c.queryItems = [URLQueryItem(name: "token", value: token)]
 		return c.url!
 	}
@@ -424,6 +480,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// the transcript runtime refresh even if daemon was killed while we were hidden.
 		composer.string = ""
 		chatting = false
+		storeOpen = false
 		catalog.connect()
 		render()
 		composer.focus()
@@ -434,9 +491,11 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// Spotlight-style: dismiss when focus leaves the panel.
 	func windowDidResignKey(_: Notification) { hide() }
 
-	// MARK: bridge — the transcript webview's status (web → native).
+	// MARK: bridge — the webviews talk back (web → native).
 
 	func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
+		// The store page's Done button: leave the surface (native owns the panel).
+		if message.name == "store" { return closeStore() }
 		guard message.name == "status", let body = message.body as? [String: Any] else { return }
 		let streaming = body["isStreaming"] as? Bool ?? false
 		stopButton.isHidden = !streaming

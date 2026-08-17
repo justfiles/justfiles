@@ -17,6 +17,7 @@ import { setNotificationChannel } from './notify'
 import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './protocol'
 import { SHIPPED } from './resources'
 import { sandboxes } from './sandbox'
+import { installStoreApp, storeCatalog } from './store'
 
 // The browser surfaces (launcher, chat, app shell, assets) are Vite-built
 // into ui/dist/client and served verbatim. Shipped: beside the exe under Resources/client
@@ -47,6 +48,23 @@ function imageContentType(path: string, bytes: Uint8Array): string {
 }
 
 type Context = { type: 'system' } | { type: 'agent' } | { type: 'app'; id: string }
+
+const failure = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+// A failed store request: the response carries the message the tile shows, the log carries
+// the fault itself — a launcher status line is no place to debug an install from.
+const storeFault = (error: unknown): Response => {
+	console.error('store:', error)
+	return new Response(failure(error), { status: 502 })
+}
+
+// Loopback is reachable from any page in any browser on this Mac, and a bodyless POST needs
+// no CORS preflight — so a route that mutates the Volume has to reject a cross-origin caller
+// itself. Browsers always send `Origin` on a POST; a caller that sends none is not a page.
+const crossOrigin = (req: Request): boolean => {
+	const origin = req.headers.get('origin')
+	return origin !== null && origin !== new URL(req.url).origin
+}
 
 // Typed send helpers — routing every frame through a union keeps the wire protocol
 // compile-checked. `/system` speaks `ServerMessage`; `/agent` its own `AgentEvent`.
@@ -80,6 +98,9 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 			'/': () => serveClient('launcher/index.html'),
 			// Chat-only surface the native launcher embeds in a transparent WKWebView.
 			'/launcher/chat': () => serveClient('launcher/chat.html'),
+			// The App Store, likewise — the native launcher has its own AppKit grid, so the store
+			// reaches it as a page rather than as part of the web launcher.
+			'/launcher/store': () => serveClient('launcher/store.html'),
 			'/app/:id': () => serveClient('app/shell.html'),
 			'/app/:id/gui.js': async (req) => {
 				try {
@@ -113,6 +134,31 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 			'/app/:id/connect': (req) => {
 				if (server.upgrade(req, { data: { type: 'app', id: req.params.id } })) return undefined
 				return new Response('Expected WebSocket upgrade', { status: 426 })
+			},
+			// The App Store tile: browse what JustApps publishes, then install one by id at the
+			// version the consent sheet showed. An install needs no reply beyond ok/failed —
+			// landing it fires `app.installed`, which pushes a fresh catalog to every launcher,
+			// and the tile's row drops out there.
+			'/store': async () => {
+				try {
+					return Response.json({ apps: await storeCatalog() })
+				} catch (error) {
+					return storeFault(error)
+				}
+			},
+			'/store/:id': {
+				POST: async (req) => {
+					if (crossOrigin(req)) return new Response('Forbidden', { status: 403 })
+					// The version is the consent record: which release the sheet showed.
+					const version = new URL(req.url).searchParams.get('version')
+					if (!version) return new Response('version required', { status: 400 })
+					try {
+						await installStoreApp(await getKernel(), req.params.id, version)
+						return new Response(null, { status: 204 })
+					} catch (error) {
+						return storeFault(error)
+					}
+				}
 			},
 			'/system': (req, server) => {
 				if (server.upgrade(req, { data: { type: 'system' } })) return undefined
@@ -177,8 +223,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 						const value = await kernel.dispatch(ws.data.id, { type, params })
 						ws.send(JSON.stringify({ id, ok: true, value }))
 					} catch (err) {
-						const error = err instanceof Error ? err.message : String(err)
-						ws.send(JSON.stringify({ id, ok: false, error }))
+						ws.send(JSON.stringify({ id, ok: false, error: failure(err) }))
 					}
 					return
 				}

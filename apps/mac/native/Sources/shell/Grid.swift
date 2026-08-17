@@ -197,6 +197,11 @@ final class GridCell: NSView {
 
 private func nativeAppIcon(_ app: CatalogApp) -> NSImage? {
 	let ws = NSWorkspace.shared
+	// The store tile has no bundle to take pixels from — draw the system's shopping glyph.
+	if app.id == storeTileId {
+		return NSImage(systemSymbolName: "bag", accessibilityDescription: "App Store")?
+			.withSymbolConfiguration(.init(pointSize: AppGrid.iconSize * 0.7, weight: .regular))
+	}
 	if let url = ws.urlForApplication(withBundleIdentifier: miniAppBundleId(app.id)), hasAppIcon(url) {
 		return ws.icon(forFile: url.path)
 	}

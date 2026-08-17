@@ -43,6 +43,11 @@ const INSTALL_TMP = '/private/tmp/app-installs'
 
 const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/')
 
+// Did this fail because the path is not there? The volume reports a missing path the way
+// POSIX does, whichever storage is under it.
+const missing = (error: unknown): boolean =>
+	error instanceof Error && error.message.includes('ENOENT')
+
 // Where the origin serves one mounted file. Shared by the reader and by uninstall's
 // eviction, so the two can never address the same byte differently.
 const assetUrl = (manifest: AppManifest, path: string): string =>
@@ -113,9 +118,16 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 			await fs.writeFile(`${tmp}/manifest.json`, bytes(JSON.stringify(manifest)))
 
 			await fs.mkdir(parentOf(root), { recursive: true })
-			if (await fs.exists(root)) {
+			// Park the previous bundle, if one is there. The rename IS the test: `exists` reads
+			// a cached dirent, which outlives a bundle removed behind this volume's back — a
+			// second host process over the same store, or a crash between these two renames —
+			// and asking first would then walk into a rename of a path that is already gone,
+			// failing every later install of that app the same way.
+			try {
 				await fs.rename(root, backup)
 				backedUp = true
+			} catch (e) {
+				if (!missing(e)) throw e
 			}
 			await fs.rename(tmp, root)
 		} catch (e) {
@@ -150,14 +162,20 @@ export function apps(fs: Volume, fetchAsset?: FetchAsset): Apps {
 
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
-		if (!(await fs.exists(root))) return
 		// Move the app into a dated /trash folder with one atomic rename rather than a
 		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
 		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
 		// reconcile, fired by the volume's structural watch — never sees a half-deleted
 		// bundle it would try to "repair"/resurrect. The bytes survive under /trash until
-		// the retention sweep drops that day (see trash.ts).
-		const trashed = await trashBundle(fs, root, appId)
+		// the retention sweep drops that day (see trash.ts). A bundle that is already gone
+		// is nothing to trash — see the note on install's backup rename.
+		let trashed: string
+		try {
+			trashed = await trashBundle(fs, root, appId)
+		} catch (e) {
+			if (missing(e)) return
+			throw e
+		}
 		await evictMounted(trashed).catch(() => {})
 	}
 

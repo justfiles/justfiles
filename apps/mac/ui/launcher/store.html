@@ -1,0 +1,26 @@
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="light dark" />
+		<!-- Transparent over the launcher's native vibrancy, like the chat page: override
+		     mac.css's :where() --window-bg fill (zero specificity). -->
+		<style>
+			html,
+			body,
+			#root {
+				background: transparent;
+			}
+			#root {
+				display: flex;
+				flex-direction: column;
+				height: 100vh;
+				color: #ebebf0;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="./store.tsx"></script>
+	</body>
+</html>
