@@ -20,7 +20,7 @@ Verified against the repo's imports:
 | `apps/frieren/src/apps/host.ts:295` | `REMOTE_SOURCE` import replaced by the [T7](t07-watch.md) event-source rule — export a `REMOTE_SOURCE` constant from `packages/fs` so the diff stays small |
 | `apps/worker/src/react-app/useVolume.ts` | same swap; its `apiStorage` remote becomes `httpStore` |
 | `apps/cli/src/volumes.ts:100` | `volume(await apiStorage(client))` → `storeVolume(httpStore(...))` |
-| `packages/core/src/fs.ts` | mount `store.api.ts`; keep only the convenience routes with consumers outside the sync stack (`/file/*`, `/inodes/:ino/content/:filename`), reimplemented over the new volume; delete the rest behind the swap |
+| `packages/core/src/fs.ts` | mount `store.api.ts`; keep only the convenience routes with consumers outside the sync stack (`/file/*`, `/inodes/:ino/content/:filename`), reimplemented over the new volume; delete the rest behind the swap. The host needs `storeApi` ([T13](t13-http-wire.md)) and `sqliteStore` ([T12](t12-sqlite-store.md)) re-exported from `packages/core`'s index — both were left unexported on purpose, since half a server surface is no use to anyone and this is where the first consumer arrives |
 | `packages/app/dev-server.ts`, `apps/frieren/scripts/frieren-auth.ts` | `fsStorage` / `memStorage` → [T14](t14-native-fs-store.md) / [T1](t01-store-types-and-memstore.md) stores |
 | `packages/core/src/*.test.ts` | the files importing `@justfiles/sync` |
 
