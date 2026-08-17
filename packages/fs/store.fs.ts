@@ -618,19 +618,24 @@ export function fsStore(root: string): Store {
 	 * before. Says whether it acted, because a caller that records state afterwards must
 	 * not record it for somebody else's directory.
 	 */
-	const setMode = async (path: string, ino: string, mode: number): Promise<boolean> => {
+	const setMode = async (path: string, ino: string, mode: number): Promise<BigIntStats | null> => {
 		const handle = await openPath(abs(path)).catch(() => null)
 		if (handle === null) {
 			const s = await lstat(abs(path))
-			if (s === null || String(s.ino) !== ino) return false
+			if (s === null || String(s.ino) !== ino) return null
 			await chmod(abs(path), mode)
-			return true
+			// The name is all this fallback has, so it asks again rather than assume: at
+			// worst it reports nothing, and never somebody else's inode.
+			const now = await lstat(abs(path))
+			return now !== null && String(now.ino) === ino ? now : null
 		}
 		try {
 			const s = await handle.stat({ bigint: true })
-			if (String(s.ino) !== ino) return false
+			if (String(s.ino) !== ino) return null
 			await handle.chmod(mode)
-			return true
+			// Taken through the same descriptor, so what comes back is the state of the
+			// inode this changed — not of whatever holds the name by now.
+			return await handle.stat({ bigint: true })
 		} finally {
 			await handle.close()
 		}
@@ -697,14 +702,19 @@ export function fsStore(root: string): Store {
 				// restricting THAT one would be this store changing something it never
 				// touched. What was moved keeps the mode it was granted until a walk finds
 				// it and states what it finds — the grant recorded, rather than hidden.
-				if (!(await setMode(at.path, at.ino, dir.mode & 0o7777))) continue
-				// And its state taken down again, because this chmod moved the mode and the
-				// ctime AFTER the observation pass looked. Otherwise the next walk reads the
-				// way this store let itself in as a change somebody made, and publishes a
-				// version of a directory nobody touched. Its ancestors are still open, so
-				// the look works — the other half of why this goes innermost first.
-				const s = await lstat(abs(at.path))
-				if (s !== null) mark(id, { ...at, ino: String(s.ino), state: stateOf(s) })
+				//
+				// The state comes back from the same descriptor, and the identity is the one
+				// already held. A path asked again here could answer for a directory that
+				// took the name in between, and this store would write that inode down as
+				// the row's — which is what `mine` consults before it renames or removes
+				// anything. `observe` may LEARN an identity from a path; this knew it.
+				const s = await setMode(at.path, at.ino, dir.mode & 0o7777)
+				// Its state goes down because the chmod moved the mode and the ctime AFTER
+				// the observation pass looked. Otherwise the next walk reads the way this
+				// store let itself in as a change somebody made, and publishes a version of
+				// a directory nobody touched. Ancestors are still open, so the look works —
+				// the other half of why this goes innermost first.
+				if (s !== null) mark(id, { ...at, state: stateOf(s) })
 			} catch {}
 		}
 		opened.clear()
