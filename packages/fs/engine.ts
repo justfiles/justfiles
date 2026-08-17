@@ -87,7 +87,14 @@ class Restart extends Error {
  */
 export type CursorSlot = {
 	load(): Promise<Cursor | undefined>
-	save(cursor: Cursor): Promise<void>
+	/**
+	 * `undefined` is a position too — the empty cursor, where every scan starts
+	 * and where a `load` that has nothing yet already answers. Saving one is how
+	 * a caller says "take that feed from the top again": `takeTheirs` in
+	 * `synced.ts` is the one that does, having thrown away the rows its position
+	 * in the peer's feed was about.
+	 */
+	save(cursor: Cursor | undefined): Promise<void>
 }
 
 export type SyncOptions = {
@@ -526,8 +533,15 @@ export function hydratingBlobs(local: Store, remote: Store): Store {
 	}
 }
 
-/** The author tag: everything before the last `:`, so a replica id may hold one. */
-const authorOf = (version: Version): string => {
+/**
+ * The author tag: everything before the last `:`, so a replica id may hold one.
+ *
+ * Exported because the push filter is not its only reader. `synced.ts` asks the
+ * same question of a committed row — "did I write this?" — to decide whether a
+ * local write should arm a push, and answering it any other way would be a
+ * second reading of the one encoding this module owns.
+ */
+export const authorOf = (version: Version): string => {
 	const cut = version.lastIndexOf(':')
 	return cut === -1 ? version : version.slice(0, cut)
 }

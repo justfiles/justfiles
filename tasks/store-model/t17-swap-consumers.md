@@ -27,6 +27,14 @@ Verified against the repo's imports:
 Each row is independently landable, because the old code stays in place until
 [T18](t18-retire.md). Split this task per row if two agents work in parallel.
 
+One thing the swap must decide rather than inherit: frieren's app-level factory
+reset CASes against a `fromGeneration`, and [T11](t11-lifecycle-wrapper.md)'s
+`generation()` only ever reports what its injected `reset()` returned — nothing
+in the seam carries an epoch, because rule 11 replaced that job. So the wipe
+route reads the authority's current generation itself (the same handshake the
+`reset()` closure needs), or the route stops CASing on one. Do not paper over it
+with a default of `1`.
+
 ## RED
 
 Each consumer's own existing test suite is the red bar. Point the consumer at
