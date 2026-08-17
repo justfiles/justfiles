@@ -90,9 +90,13 @@ those are authoritative, so a published entry under one of their IDs is never of
 owns both ends — `GET /store` lists the catalog (index plus each published manifest, no file
 lists), and `POST /store/<id>?version=<v>` installs one app — so no app bytes pass through the
 webview. A row asks for consent first, showing the access the published manifest declares, and the
-`version` pins the install to the release that was consented to: the daemon refuses one the
-publisher has moved on from since. Only the launcher's own page may install — a cross-origin `POST`
-is rejected, because loopback is reachable from any browser on this Mac. An install fires
+install lands the release that listing resolved rather than re-resolving the registry: a publisher
+who moves the pointer after the sheet renders — even to a different release under the same version
+— cannot slip past the consent it showed. A cross-origin `POST` is rejected, because loopback is
+reachable from any browser on this Mac. That is not authorization, though: an installed app's
+`gui.js` runs in a daemon-origin document, so any app page is same-origin with the launcher and can
+install (as it can drive every other daemon socket). One gate for the whole surface needs app
+documents off this origin — see `tasks/mac-daemon-loopback-auth.md`. An install fires
 `app.installed`, which pushes a fresh catalog to every launcher, so the new app appears in the grid
 and its row leaves the list.
 
