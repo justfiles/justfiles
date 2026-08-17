@@ -27,6 +27,15 @@ Verified against the repo's imports:
 Each row is independently landable, because the old code stays in place until
 [T18](t18-retire.md). Split this task per row if two agents work in parallel.
 
+A second thing the swap must decide: `takeTheirs` fences its tombstones behind
+an in-memory flag ([T11](t11-lifecycle-wrapper.md)), so a crash between the
+tombstone commit and the saved cutoff leaves the next replica over that store
+unable to tell a discard from offline deletions — and it pushes them, deleting
+the volume everywhere. Closing it needs durable host state: a third injected
+slot beside the two cursors, or an app-level marker like frieren's existing
+`pendingFactoryReset` that re-runs `takeTheirs` before the loop starts. Decide
+it here, with the app that owns durable identity in front of you.
+
 One thing the swap must decide rather than inherit: frieren's app-level factory
 reset CASes against a `fromGeneration`, and [T11](t11-lifecycle-wrapper.md)'s
 `generation()` only ever reports what its injected `reset()` returned — nothing

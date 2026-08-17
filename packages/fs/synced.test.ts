@@ -443,6 +443,31 @@ describe('syncedVolume: take theirs', () => {
 		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs', '/mine.txt': 'mine' })
 	})
 
+	// Only a writer that reaches the store directly can do this: the volume
+	// resolves paths, a tombstoned row has none, and every volume write that
+	// reuses an id guards on the version it read. But rule 9 puts "a tombstone is
+	// final" at the AUTHORITY, so a replica's own store will take one back — and a
+	// row that returned after its pass would sit past the cutoff.
+	it('catches a row that comes back after its tombstone', async () => {
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		const local = racing(memStore())
+		const { vol } = await replica(remote, { local })
+		await vol.writeFile('/mine.txt', enc.encode('mine'))
+		const row = await local.child(ROOT, 'mine.txt')
+		if (!row) throw new Error('the row this test is about is not there')
+		local.armWith([{ ...row, size: 99n, version: 'a:revived-1' }])
+
+		await vol.takeTheirs()
+
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs' })
+
+		await vol.flush()
+
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
 	// The one state this loop must never run in: the tombstones are here and the
 	// cursor that keeps them local is not, so one push would carry them to the
 	// authority and every other replica would lose the volume.
@@ -564,6 +589,25 @@ describe('syncedVolume: take mine', () => {
 	it('refuses when the peer has no way to start a new lineage', async () => {
 		const { vol } = await replica(memStore())
 		await expect(vol.takeMine()).rejects.toThrow(/lineage/)
+	})
+
+	// Nothing here can hold a teardown off — the app tears the STORE down behind
+	// this wrapper — so a reset the loop was stopped under must at least say it
+	// did not converge, rather than resolving as though it had.
+	it('reports a reset the loop was torn down under', async () => {
+		const hub = authorityPeer()
+		let torn: (() => void) | undefined
+		const { vol } = await replica(hub.store, {
+			reset: async () => {
+				torn?.()
+				return hub.reset()
+			}
+		})
+		torn = () => vol.destroy()
+		await vol.writeFile('/a.txt', enc.encode('from a'))
+		await vol.flush()
+
+		await expect(vol.takeMine()).rejects.toThrow(/did not converge/)
 	})
 
 	// A reset stops the loop while it rewrites the store. One that fails has to

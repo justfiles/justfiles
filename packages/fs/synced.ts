@@ -26,15 +26,7 @@
  */
 
 import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
-import {
-	type Cursor,
-	type Guard,
-	GuardError,
-	type Node,
-	type NodeId,
-	ROOT,
-	type Store
-} from './store'
+import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
 import type { Volume } from './volume'
 import { storeVolume } from './volume.store'
 
@@ -294,7 +286,16 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 		try {
 			await running // an in-flight cycle finishes; it never rejects
 			if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
-			return await body()
+			const done = await body()
+			// The body has landed, and the loop was stopped while it ran: the flush
+			// below it will do nothing, so this reset did not converge. Nothing here
+			// can hold a teardown off — the app tears the STORE down behind us — so
+			// the honest thing left is to say so rather than resolve. A pause
+			// converges on `resume`; a destroy converges on the next replica over
+			// this store, since both cursors are saved by then.
+			if (paused || destroyed)
+				throw new Error(`${what} did not converge: the sync loop stopped while it ran`)
+			return done
 		} finally {
 			resetting = false
 			// A reset that THREW never reaches the flush that would put a timer back,
@@ -321,44 +322,24 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	}
 
 	/**
-	 * Rewrite every live row this replica holds — and then every one that landed
-	 * while it was doing so — handing back where the feed ended.
-	 *
-	 * One guarded commit per pass. Guarded, because the scan and the commit are
-	 * two steps and a write between them would otherwise be overwritten by the
-	 * state the scan happened to read; and a refusal is not a failure here, it is
-	 * the signal to read the row again. Tombstones and the root are left out: the
-	 * root is a constant on every store (rule 6) and so is news to nobody, and a
-	 * tombstone says nothing an authority that never held the row could use.
-	 *
-	 * The PASSES are what make a reset whole. `alone` stops this wrapper's loop,
-	 * not the app — so a row committed while the last batch was landing would
-	 * otherwise escape the reset entirely: never published by `takeMine`, and for
-	 * `takeTheirs` left alive but PAST the cutoff its caller takes from the tip
-	 * here, which strands it on this device for good. `done` is what ends the
-	 * walk, since re-authoring leaves a row as live as it found it.
-	 *
-	 * An untouched volume is one commit and a second scan that finds nothing. One
-	 * commit is also one batch, and a volume large enough to strain a backend's
-	 * transaction would have to page it — a trade that waits for a measurement,
-	 * since neither reset is on any hot path.
+	 * What a reset touches. Tombstones and the root are left out: the root is a
+	 * constant on every store (rule 6) and so is news to nobody, and a tombstone
+	 * says nothing an authority that never held the row could use.
 	 */
-	async function rewrite(next: (row: Node) => Node): Promise<Cursor | undefined> {
-		const done = new Set<NodeId>()
-		for (let left = MAX_ATTEMPTS; ; left--) {
-			const scan = await feed()
-			const rows = scan.rows.filter((row) => !row.deleted && row.id !== ROOT && !done.has(row.id))
-			if (rows.length === 0) return scan.tip
-			if (left === 0) throw new Error('a reset cannot keep up with the writes under it')
-			try {
-				await local.commit(rows.map(next), rows.map(unchanged))
-				for (const row of rows) done.add(row.id)
-			} catch (e) {
-				// Somebody wrote one of these rows in between: read them again.
-				if (!(e instanceof GuardError)) throw e
-			}
-		}
-	}
+	const living = (rows: Node[]): Node[] => rows.filter((row) => !row.deleted && row.id !== ROOT)
+
+	/**
+	 * Whole-row rewrite of what a scan read, guarded on the state it read.
+	 *
+	 * Guarded, because the scan and the commit are two steps and a write between
+	 * them would otherwise be overwritten by the state the scan happened to find;
+	 * a refusal is not a failure here, it is the signal to read the rows again.
+	 * One commit is also one batch, and a volume large enough to strain a
+	 * backend's transaction would have to page it — a trade that waits for a
+	 * measurement, since neither reset is on a hot path.
+	 */
+	const rewrite = (rows: Node[], next: (row: Node) => Node): Promise<void> =>
+		local.commit(rows.map(next), rows.map(unchanged))
 
 	async function takeTheirs(): Promise<void> {
 		await alone('take theirs', async () => {
@@ -373,7 +354,30 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// a cutoff that fails to save leaves the tombstones here and the old
 			// cursor before them, which is the one state this loop must never run in.
 			unfenced = true
-			await props.push.save(await rewrite((row) => ({ ...row, deleted: true, version: mint() })))
+			// Tombstone until nothing live is left, and take the cutoff from the scan
+			// that PROVES it. Two things make the passes necessary, and each leaves a
+			// row that would sit past the cutoff — alive, never offered, and
+			// device-only for good. One is arrival: `alone` stops this wrapper's loop,
+			// not the app, so a row can land while a batch is committing. The other is
+			// return: only the authority refuses to resurrect a tombstone (rule 9), so
+			// a writer that reaches this store directly can put one back. Asking the
+			// rows what they ARE, rather than remembering which ones were handled,
+			// answers both.
+			for (let left = MAX_ATTEMPTS; ; left--) {
+				const scan = await feed()
+				const live = living(scan.rows)
+				if (live.length === 0) {
+					await props.push.save(scan.tip)
+					break
+				}
+				if (left === 0) throw new Error('take theirs cannot keep up with the writes under it')
+				try {
+					await rewrite(live, (row) => ({ ...row, deleted: true, version: mint() }))
+				} catch (e) {
+					// Somebody wrote one of these rows in between: read them again.
+					if (!(e instanceof GuardError)) throw e
+				}
+			}
 			unfenced = false
 			// The peer's feed from the top: its rows land back over the tombstones,
 			// and what only ever existed here stays dead. A failure here strands
@@ -402,7 +406,20 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// tree this replica's to publish, and it is why the ordinary push carries
 			// the republish: a written row moves to the end of the local feed
 			// (rule 4), so the next scan finds all of it.
-			await rewrite((row) => ({ ...row, version: mint() }))
+			//
+			// One pass, where the discard needs several: a row that lands after this
+			// one is authored by THIS replica, so the push filter carries it without
+			// being asked. Only a refusal brings the scan back, which is a row that
+			// moved under it.
+			for (let left = MAX_ATTEMPTS; ; left--) {
+				const live = living((await feed()).rows)
+				if (live.length === 0) return
+				try {
+					return await rewrite(live, (row) => ({ ...row, version: mint() }))
+				} catch (e) {
+					if (left === 0 || !(e instanceof GuardError)) throw e
+				}
+			}
 		})
 		await flush()
 	}

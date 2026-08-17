@@ -155,6 +155,18 @@ other way — so the window gets a flag, and a failed save leaves it set. That i
 not a dead end: another `takeTheirs` finds nothing left to tombstone and saves
 the cutoff the first run could not.
 
+**The fence is in memory, and a crash inside its window is a KNOWN GAP.**
+`unfenced` protects the live process, which is what a failing slot write needs.
+It does not survive a crash or a teardown: the next replica over that store
+starts with the flag clear, finds tombstones past a stale push cursor, and
+cannot tell them from deletions the user made offline — which it SHOULD push.
+Closing it needs durable host state (a third slot, or an app-level marker like
+frieren's `pendingFactoryReset`), which is an interface decision this task
+should not take alone. Raise it in [T17](t17-swap-consumers.md), where the app
+that owns durable identity is wired up; until then a discard interrupted by a
+crash between its tombstones and its cutoff can delete the volume everywhere,
+and that is the one failure in this file that no test can pin.
+
 **Stopping the loop does not stop the APP.** A row committed
 while the last batch was landing escaped the reset entirely — never published
 by `takeMine`, and for `takeTheirs` left alive but past the cutoff, which
