@@ -16,6 +16,7 @@ import {
 	rename,
 	rm,
 	stat,
+	utimes,
 	writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -195,6 +196,27 @@ describe('fsStore: a real directory, reconciled', () => {
 		// And a second look finds nothing: an observed file is not news twice.
 		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual([row.id])
 		expect((await feed(store)).nodes.filter((n) => n.id === row.id).length).toBe(1)
+	}, 30_000)
+
+	test('an in-place edit that puts the stamp back still reaches the feed', async () => {
+		const root = await temp()
+		const store = open(root)
+		// The row states its stamp and the file carries it, so it can be put back to the
+		// nanosecond — which is what makes this case constructible at all.
+		const row = await place(store, 'a.txt', 'hello')
+		const { cursor } = await feed(store)
+		const at = join(root, 'a.txt')
+
+		// Same length, same mode, same stamp: what a metadata-preserving sync leaves
+		// behind. Only the ctime moves, and nothing else tells this from the file the
+		// store recorded — while the row's hash names bytes the file no longer holds.
+		await writeFile(at, 'HELLO')
+		await utimes(at, new Date(0), new Date(0))
+		const hash = await sha256Hex(bytes('HELLO'))
+		await settled(store, async () => (await store.get(row.id))?.content === hash)
+
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual([row.id])
+		expect(read(await store.blobs.get(hash))).toBe('HELLO')
 	}, 30_000)
 
 	test('an out-of-band create, delete and subtree removal reach the feed', async () => {

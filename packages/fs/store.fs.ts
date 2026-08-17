@@ -140,11 +140,11 @@ const DEEP_MS = 5_000
 const EMPTY = new Uint8Array()
 
 /**
- * What the disk held at a row's path the last time this store looked. `ino` is
- * the file's identity and `state` is its mode, mtime and size, so a replace that
- * kept the size and the mtime is still a change. `hash` is the content the FILE
- * holds, which is not always what the ROW names: a row that arrived ahead of its
- * bytes is a stub over an empty placeholder.
+ * What the disk held at a row's path the last time this store looked. `ino` is the
+ * file's identity and `state` is everything a write to it moves (`stateOf`), so a
+ * replace that kept the size and put the stamp back is still a change. `hash` is the
+ * content the FILE holds, which is not always what the ROW names: a row that arrived
+ * ahead of its bytes is a stub over an empty placeholder.
  */
 type Seen = { path: string; ino: string; state: string; hash?: Hash }
 
@@ -160,8 +160,23 @@ type Sidecar = { lineage: string; seq: number; entries: Entry[] }
 const lstat = (path: string): Promise<BigIntStats | null> =>
 	lstatOf(path, { bigint: true }).catch(() => null)
 
-/** Mode, mtime and size: everything about a file that a write to it changes. */
-const stateOf = (s: BigIntStats): string => `${s.mode}:${s.mtimeNs}:${s.size}`
+/**
+ * Everything about a file that a write to it changes — and `ctimeNs`, which is the
+ * only one no writer can put back. A metadata-preserving sync can restore the mtime
+ * over content of the same length, and then mode, mtime and size all still match the
+ * file this store recorded while the bytes underneath are somebody else's. The ctime
+ * moves on any change to the inode and userland cannot set it, so it is what makes
+ * "unchanged" mean unchanged. A look it wakes costs one hash of one file.
+ */
+const stateOf = (s: BigIntStats): string => `${s.mode}:${s.mtimeNs}:${s.size}:${s.ctimeNs}`
+
+/**
+ * The same row again, whatever version a fresh look would mint for it. What the disk
+ * says moved but nothing the seam carries did — an ownership change, a stamp put
+ * back — so the state is taken down and the row is left alone: a new version for an
+ * identical row is change-feed traffic nobody can act on.
+ */
+const restated = (was: Node, now: Node): boolean => same(was, { ...now, version: was.version })
 
 /** Is this still the file the row was observed at, in the state it was in? */
 const unchanged = (was: Seen, s: BigIntStats): boolean =>
@@ -510,6 +525,13 @@ export function fsStore(root: string): Store {
 		await rm(abs(to), { recursive: true, force: true })
 		await rename(abs(at.path), abs(to))
 		moveSeen(at.path, to)
+		// A rename moves the ctime of the thing renamed, and nothing observes a parked
+		// file afterwards — no commit placed it and no scan looks in there. So its state
+		// is taken down here, or `blobs` stops recognising the file it holds for the row.
+		// What was UNDER a renamed directory keeps its own, which no rename touched.
+		const moved = seen.get(id)
+		const s = await lstat(abs(to))
+		if (moved && s !== null) mark(id, { ...moved, ino: String(s.ino), state: stateOf(s) })
 	}
 
 	/**
@@ -763,8 +785,11 @@ export function fsStore(root: string): Store {
 		const base: NewNode = row ?? { id: crypto.randomUUID(), parent: dir, name }
 		const derived = await derive(path, s, base)
 		if (derived === null) return row // unreadable: leave the row alone, and try again next scan
-		write(derived)
 		mark(derived.id, { path, ino: String(s.ino), state: stateOf(s), hash: derived.content })
+		changed = true
+		// The look woke on a state that moved, and found the row it already had.
+		if (row && restated(row, derived)) return row
+		write(derived)
 		// A directory replaced out of band by a file or a symlink. Nothing lists its
 		// entries any more, and no walk goes through a row that is not a directory, so
 		// what it held is buried here or nowhere.
@@ -772,7 +797,6 @@ export function fsStore(root: string): Store {
 		// And the other way: a name that has become a directory is a place for rows
 		// that had none, whose own pages are long behind the engine's cursor.
 		if (holdsRows(derived) && !(row && isDir(row))) stale.add(derived.id)
-		changed = true
 		return derived
 	}
 
@@ -876,9 +900,10 @@ export function fsStore(root: string): Store {
 		if (at && unchanged(at, s)) return
 		const derived = await derive('', s, held)
 		if (!derived) return
-		write(derived)
 		mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
 		changed = true
+		if (restated(held, derived)) return
+		write(derived)
 	}
 
 	/**
