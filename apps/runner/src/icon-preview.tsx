@@ -105,6 +105,10 @@ section { margin-bottom: 34px }
 	radial-gradient(110% 70% at 50% -8%, var(--wash), transparent 62%),
 	linear-gradient(180deg, var(--bg1), var(--bg2)); color: var(--sb-ink) }
 .ground[data-ground="os"] { background: linear-gradient(160deg, #5b4b8a, #2b6ea8 60%, #1f8a8a) }
+/* The launcher paints its own page, and it is dark whatever the theme. */
+.ground[data-ground="mac"] { background:
+	radial-gradient(circle at 50% 0%, rgba(120,140,255,.18), transparent 60%),
+	linear-gradient(135deg, #17181d, #07080b 70%) }
 .cap { color: var(--dim); font-size: 12.5px; margin-top: 8px }
 
 /* ── 1 · Frieren omnibar — apps/frieren/src/app.css ──────────────────────── */
@@ -136,21 +140,44 @@ section { margin-bottom: 34px }
 .frn-face { background: color-mix(in srgb, var(--text) 18%, transparent); border-radius: 50%;
 	flex: none; height: 32px; opacity: .8; width: 32px }
 
-/* ── 2 · This store's omnibar — the search pill from home.tsx, with the
-      result row a query resolves to ─────────────────────────────────────── */
-.sb-find { align-items: center; backdrop-filter: blur(20px) saturate(1.4); background: var(--pill);
-	border: 1px solid var(--sb-edge); border-radius: 999px; box-shadow: 0 1px 2px var(--cast);
-	display: flex; gap: 9px; padding: 10px 16px; width: min(340px, 100%) }
-.sb-find span { font-size: 14.5px; opacity: .75 }
-.sb-hits { backdrop-filter: blur(20px) saturate(1.4); background: var(--pill);
-	border: 1px solid var(--sb-edge); border-radius: 16px; box-shadow: 0 8px 18px -6px var(--cast);
-	display: grid; gap: 2px; padding: 8px; width: min(340px, 100%) }
-.sb-hit { align-items: center; display: flex; gap: 10px; padding: 6px 8px }
-.sb-hit-icon { align-items: center; background: color-mix(in srgb, var(--sb-ink) 12%, transparent);
-	border-radius: 9px; display: flex; flex: none; font-size: 15px; font-weight: 600; height: 34px;
-	justify-content: center; overflow: hidden; width: 34px }
-.sb-hit-icon img { height: 100%; object-fit: cover; width: 100% }
-.sb-hit-name { font-size: 13.5px }
+/* The install sheet — apps/frieren/src/shell/ConsentSheet.tsx, whose icon is an
+   inline 28px, 6px radius, next to the title. */
+.sheet { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+	color: var(--text); display: flex; flex-direction: column; font-size: 13px; gap: 16px;
+	padding: 16px; width: min(420px, 100%) }
+.sheet-badge { font-size: 10px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase }
+.sheet-title { align-items: center; display: flex; font-size: 15px; font-weight: 600; gap: 10px }
+.sheet-icon { align-items: center; background: color-mix(in srgb, var(--text) 12%, transparent);
+	border-radius: 6px; display: flex; flex: none; font-size: 14px; height: 28px;
+	justify-content: center; overflow: hidden; width: 28px }
+.sheet-icon img { height: 100%; object-fit: cover; width: 100% }
+.sheet-desc { font-size: 12px; opacity: .65 }
+
+/* ── 2 · The Mac launcher — apps/mac/ui/launcher ──────────────────────────── */
+.mac { backdrop-filter: blur(28px) saturate(1.25); background: rgba(18,18,22,.72);
+	border: 1px solid rgba(255,255,255,.12); border-radius: 16px; color: #fff; font-size: 13px;
+	overflow: hidden; padding: 12px; width: min(560px, 100%) }
+.mac-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); row-gap: 4px }
+.mac-cell { align-items: center; border-radius: 20px; display: flex; flex-direction: column;
+	gap: 6px; padding: 12px 0 }
+.mac-icon { align-items: center;
+	background: linear-gradient(145deg, rgba(255,255,255,.28), rgba(255,255,255,.08));
+	border-radius: 14px; box-shadow: 0 10px 28px rgba(0,0,0,.24); display: flex; font-size: 30px;
+	font-weight: 650; height: 64px; justify-content: center; overflow: hidden; width: 64px }
+.mac-icon img { height: 100%; object-fit: cover; width: 100% }
+.mac-name { font-size: 12px; max-width: 100%; overflow: hidden; padding: 0 4px;
+	text-overflow: ellipsis; white-space: nowrap }
+.mac-bar { border: 1px solid rgba(255,255,255,.12); border-radius: 10px; margin-top: 8px;
+	opacity: .55; padding: 8px 12px }
+.mac-head { color: rgba(255,255,255,.55); font-size: 12px; letter-spacing: .04em;
+	padding: 2px 4px 10px; text-transform: uppercase }
+.mac-row { align-items: center; border-radius: 12px; display: flex; gap: 12px; padding: 10px }
+.mac-row-icon { align-items: center; background: rgba(255,255,255,.16); border-radius: 10px;
+	display: flex; flex: none; font-size: 20px; height: 40px; justify-content: center;
+	overflow: hidden; width: 40px }
+.mac-row-icon img { height: 100%; object-fit: cover; width: 100% }
+.mac-row-desc { font-size: 12px; opacity: .6 }
+.mac-row-action { font-size: 12px; margin-left: auto; opacity: .7 }
 
 /* ── 3 · The installed icon — one image, three masks ─────────────────────── */
 .os { display: flex; flex-wrap: wrap; gap: 30px; justify-content: center; text-align: center }
@@ -284,8 +311,8 @@ export const iconPreview: Handler<Env> = async (c) => {
 
 				<section>
 					<div class="head">
-						<h2>1 · Frieren omnibar</h2>
-						<p>52px tile, 26px row · 12px and 7px radius</p>
+						<h2>1 · Frieren</h2>
+						<p>omnibar 52px tile and 26px row, install sheet 28px · 12px, 7px, 6px radius</p>
 					</div>
 					<div class="ground" data-ground="desktop">
 						<div class="frn">
@@ -326,6 +353,21 @@ export const iconPreview: Handler<Env> = async (c) => {
 								<span>your app</span>
 							</div>
 						</div>
+						{/* The one place an icon has to carry the app's identity on its own: the
+						    sheet that asks whether to trust it. */}
+						<div class="sheet">
+							<span class="sheet-badge">Verified by justapps.run</span>
+							<span class="sheet-title">
+								<Icon cls="sheet-icon" />
+								<span>
+									{'Install '}
+									<Name />?
+								</span>
+							</span>
+							<span class="sheet-desc">
+								Community app — not reviewed by Kodama. It runs with the access it declares below.
+							</span>
+						</div>
 					</div>
 					<p class="cap">
 						The shell rounds and crops for you: the well clips to its own radius and the image is
@@ -335,41 +377,41 @@ export const iconPreview: Handler<Env> = async (c) => {
 
 				<section>
 					<div class="head">
-						<h2>2 · {c.env.ROOT_DOMAIN} omnibar</h2>
-						<p>34px hit · 9px radius</p>
+						<h2>2 · Mac launcher</h2>
+						<p>64px cell, 40px store row · 14px and 10px radius</p>
 					</div>
-					<div class="ground" data-ground="springboard">
-						<div class="sb-find">
-							<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-								<circle
-									cx="7"
-									cy="7"
-									r="4.5"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="1.6"
-								/>
-								<path
-									d="M10.5 10.5 14 14"
-									stroke="currentColor"
-									stroke-width="1.6"
-									stroke-linecap="round"
-								/>
-							</svg>
-							<span data-name="true">Your App</span>
+					<div class="ground" data-ground="mac">
+						<div class="mac">
+							<div class="mac-grid">
+								{apps.map((app) => (
+									<span class="mac-cell">
+										<Icon cls="mac-icon" app={app} />
+										<Name cls="mac-name" app={app} />
+									</span>
+								))}
+							</div>
+							<div class="mac-bar">Search apps or message agent…</div>
 						</div>
-						<div class="sb-hits">
+						<div class="mac">
+							<div class="mac-head">App Store · {c.env.ROOT_DOMAIN}</div>
 							{apps.map((app) => (
-								<div class="sb-hit">
-									<Icon cls="sb-hit-icon" app={app} />
-									<Name cls="sb-hit-name" app={app} />
+								<div class="mac-row">
+									<Icon cls="mac-row-icon" app={app} />
+									<span>
+										<Name app={app} />
+										<span class="mac-row-desc">
+											{' · '}
+											{app?.description ?? 'what the publisher wrote'}
+										</span>
+									</span>
+									<span class="mac-row-action">Install</span>
 								</div>
 							))}
 						</div>
 					</div>
 					<p class="cap">
-						The smallest the icon ever gets on this origin — whatever is left of the artwork here is
-						all a search result carries.
+						The launcher is dark whatever the system theme is, and the largest tile of the three
+						shells — a soft or pale icon shows here first.
 					</p>
 				</section>
 
