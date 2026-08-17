@@ -218,13 +218,15 @@ describe('sync: conflicts', () => {
 		}
 	})
 
-	it('stands one directory back up for a subtree too wide for a single page', async () => {
-		// Each refused page meets the same buried directory, and each would stand up
-		// its own copy of it if the mapping did not outlive the page — leaving the
-		// rescued rows split across a `docs` and a `docs (conflict b)`. Nothing is
-		// lost either way; this is about not fragmenting what the user had. The peer
-		// cannot settle it, because the first copy is still only local when the next
-		// page is refused.
+	it('splits a rescue too wide for one page, and loses none of it', async () => {
+		// Each refused page settles on its own, so each stands up its own copy of the
+		// directory they share and the second copy takes a conflict name. The rescue
+		// is therefore split, and that is the deliberate answer: carrying the id
+		// between settlements is what would join them, and a settlement that is
+		// refused wrote nothing — so the id it picked names a row that does not
+		// exist, and the settlement after it reads that id as already dealt with and
+		// buries the content instead. A split is legible and loses nothing; the
+		// alternative lost files silently.
 		const hub = authority(memStore())
 		const a = replica('a')
 		const b = replica('b')
@@ -240,8 +242,15 @@ describe('sync: conflicts', () => {
 		await sync(a.store, hub, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			expect(await names(storeVolume(store))).toEqual(['docs'])
-			expect((await storeVolume(store).readdir('/docs')).length).toBe(200)
+			const vol = storeVolume(store)
+			const dirs = await names(vol)
+			expect(dirs).toEqual(['docs', 'docs (conflict b)'])
+			// Split, but whole: every file is somewhere, and each still reads back.
+			const found = new Set<string>()
+			for (const dir of dirs)
+				for (const entry of await vol.readdir(`/${dir}`)) found.add(entry.name)
+			expect(found.size).toBe(200)
+			expect(await read(store, '/docs/f0.txt')).toBe('0')
 		}
 	})
 

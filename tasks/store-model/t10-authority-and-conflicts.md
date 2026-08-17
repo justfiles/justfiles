@@ -144,32 +144,22 @@ this replica AUTHORED reach `settle`, because the push filter is what built
 the page, so the delete keeps everything else.
 
 A revival mints a NEW id and never moves into whatever already stands at the
-name. The tempting shortcut is to reuse it — it would merge a subtree split
-across pages — but the row standing there may have nothing to do with this
-one: a peer that deleted a file and created another under the same name would
-have the edit silently adopted into it and lost. The split it was meant to
-solve is solved instead by the id mapping outliving the page, inside the one
-`sync` call. That is also the only place it CAN be solved: the peer cannot be
-asked, because the first revival is still only local when the next page is
-refused.
+name, and it remembers what it minted only for the settlement that minted it.
+Both limits were paid for. Reusing the standing row merges a subtree split
+across pages — and silently swallows an edit when the peer deleted a file and
+created another under the same name. Carrying the id between settlements joins
+the split properly — and silently buries content when a settlement is refused,
+because the id it picked then names a row that was never written and the next
+settlement reads it as already dealt with. Two attempts at the same nicety, two
+ways to lose data.
 
-That mapping records only revivals that LANDED. A settlement whose guarded
-commit is refused wrote nothing, so an id it had picked names a row that does
-not exist — and carrying it across the replan is worse than forgetting it: the
-next settlement reads the id as already dealt with, writes no row for it, and
-goes on to adopt the peer's tombstone over the content it was called to save.
-Two safe changes that are unsafe together, which is the whole reason the
-settlement's own commit is the last thing that shares anything.
-
-**Every commit in the engine names the base it replaces — the settlement's
-included.** The rows a settlement rewrites came off the feed BEFORE the push,
-and deciding what to do with them takes reads at the peer. A local write in
-that window makes them stale, and writing the rewrite blind puts the old
-content back under the new name, with sync reporting success. So each fix is
-guarded on the row it was derived from — which is not always the row being
-written: a revival writes a new id, and what has to have held still is the row
-it was copied from. A failed guard is one more refusal, which is a replan,
-which re-reads and settles again on what is there now.
+So the nicety is dropped. A rescue too wide for one page lands as `docs` and
+`docs (conflict b)`: split, legible, and whole. That is the same shape v1
+already ships for a name conflict, and it is the honest failure mode — the
+alternative was files disappearing while sync reported success. What remains is
+a memo inside one settlement, which is not the same feature: rows share
+containers, so without it a page of a hundred rows stands up a hundred copies
+of the one directory they all sit in.
 
 **`settle` writes locally and lets the ordinary push carry it.** A rename of
 the loser, a recreate under a new id, or nothing at all — each is a local
