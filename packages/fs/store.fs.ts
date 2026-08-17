@@ -223,6 +223,19 @@ const meta = async (os: string, row: Node): Promise<void> => {
 	await lutimes(os, at, at)
 }
 
+/**
+ * Is what the disk holds this backend's own rounding of the stamp a row states? A
+ * `Date` carries milliseconds, so that is what `stamp` can write — and a filesystem
+ * may store even that a few nanoseconds off, which is why this asks how FAR apart
+ * they are rather than which millisecond each falls in: a stamp written as `…395000000`
+ * comes back as `…394999980`, one millisecond away by bucket and twenty nanoseconds
+ * away in fact.
+ */
+const rounded = (disk: bigint, stated: bigint): boolean => {
+	const written = (stated / 1_000_000n) * 1_000_000n
+	return (disk > written ? disk - written : written - disk) < 1_000_000n
+}
+
 const kindOf = (s: BigIntStats): Node['type'] =>
 	s.isDirectory() ? 'dir' : s.isSymbolicLink() ? 'symlink' : 'file'
 
@@ -915,9 +928,7 @@ export function fsStore(root: string): Store {
 			// stamp set outside with finer precision than `stamp` can write is a change
 			// this backend does not report; it could not have made it either.
 			mtimeNs:
-				base.mtimeNs !== undefined && s.mtimeNs / 1_000_000n === base.mtimeNs / 1_000_000n
-					? base.mtimeNs
-					: s.mtimeNs,
+				base.mtimeNs !== undefined && rounded(s.mtimeNs, base.mtimeNs) ? base.mtimeNs : s.mtimeNs,
 			size: s.size,
 			version: mint()
 		}
@@ -1182,8 +1193,32 @@ export function fsStore(root: string): Store {
 	 * or written over, so a guard answers about the tree that is there and bytes nobody
 	 * published are never renamed away.
 	 */
+	/**
+	 * The way TO a name, looked at before the name is. `lstat` does not follow the last
+	 * component of a path but it follows every one before it, so a directory a local
+	 * tool replaced with a symlink still answers for everything under it — and a row
+	 * placed through it would be written at the far end of the link, outside this store
+	 * altogether. Reconciled from the top, and stopping where the tree stops: once an
+	 * ancestor is not a directory, nothing below it has a path to be looked at.
+	 */
+	const settleUp = async (id: NodeId, looked: Set<NodeId>): Promise<void> => {
+		const chain: Node[] = []
+		for (let at = byId.get(id); at && at.id !== ROOT; at = byId.get(at.parent)) {
+			if (at.deleted || looked.has(at.id)) break
+			looked.add(at.id)
+			chain.unshift(at)
+		}
+		for (const row of chain) {
+			const path = pathUnder(row.parent, row.name)
+			if (path === null) return
+			await unlockFor(parentOf(path), SEARCH)
+			await syncPath(row.parent, row.name, path)
+		}
+	}
+
 	const settle = async (touched: Iterable<[NodeId, string]>): Promise<void> => {
 		changed = false
+		const looked = new Set<NodeId>()
 		for (const [parent, name] of touched) {
 			// Root has no name to look up and no parent that lists it, so its own state is
 			// the one thing only `syncRoot` can answer for — and a guard over root's row is
@@ -1192,6 +1227,9 @@ export function fsStore(root: string): Store {
 				await syncRoot()
 				continue
 			}
+			// Every directory on the way first: what this store is about to write through
+			// has to be what it thinks it is.
+			await settleUp(parent, looked)
 			const path = pathUnder(parent, name)
 			if (path === null) continue
 			// The way in, for a look rather than a write: a guard answered about a path

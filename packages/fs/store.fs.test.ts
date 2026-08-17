@@ -16,6 +16,7 @@ import {
 	rename,
 	rm,
 	stat,
+	symlink,
 	utimes,
 	writeFile
 } from 'node:fs/promises'
@@ -1151,6 +1152,31 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		const now = await two.get(ROOT)
 		expect(now === null ? null : now.mode & 0o7777).toBe(0o500)
 	}, 30_000)
+
+	test('an ancestor replaced by a symlink is not a way out of the store', async () => {
+		const root = await temp()
+		// Beside the store, so anything that arrives there arrived from outside it.
+		const outside = join(root, '..', `elsewhere-${crypto.randomUUID()}`)
+		await mkdir(outside)
+		const store = open(root)
+		await store.commit([dir({ id: 'd', name: 'sub' })])
+		await feed(store)
+
+		// A local tool swaps the directory for a link. The rows still say `sub` is a
+		// directory of this store's, and a child placed through it would be written at
+		// the far end of the link — `lstat` follows an ancestor even when it does not
+		// follow the name itself, so nothing about the child alone can notice.
+		await rm(join(root, 'sub'), { recursive: true })
+		await symlink(outside, join(root, 'sub'))
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+		await store.commit([inside])
+
+		expect(await readdir(outside)).toEqual([])
+		// The row is live and held, like any row with no place in the tree.
+		expect(await store.get('c')).toEqual(inside)
+		expect((await store.get('d'))?.type).toBe('symlink')
+		await rm(outside, { recursive: true, force: true })
+	})
 
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
