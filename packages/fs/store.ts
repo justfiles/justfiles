@@ -92,6 +92,13 @@ export class ForeignCursorError extends Error {
  * type the engine's replan turns on.
  */
 export class GuardError extends Error {
+	/**
+	 * Which guard did not hold, kept beside the message because a wire has to
+	 * carry it: a 409 that only says "refused" would reach the other side as a
+	 * message to parse rather than as the guard the caller stated.
+	 */
+	readonly reason: Guard | string
+
 	constructor(reason: Guard | string) {
 		super(
 			typeof reason === 'string'
@@ -99,6 +106,7 @@ export class GuardError extends Error {
 				: `commit rejected: guard ${JSON.stringify(reason)} failed`
 		)
 		this.name = 'GuardError'
+		this.reason = reason
 	}
 }
 
@@ -137,6 +145,19 @@ const sameXattrs = (a: Node['xattrs'], b: Node['xattrs']): boolean => {
 }
 
 /**
+ * Bytes that do not hash to the key they were offered under (rule 7). Its own
+ * type for the wire: the request contradicts itself, which is the CALLER's
+ * mistake, and a peer told so as a client error can tell it from a store that
+ * failed.
+ */
+export class HashMismatchError extends Error {
+	constructor(hash: Hash) {
+		super(`blob bytes do not hash to ${hash}`)
+		this.name = 'HashMismatchError'
+	}
+}
+
+/**
  * The untrusting half of contract rule 7: reject a `put` whose bytes do not
  * hash to its key. A local caller is trusted, so it skips this; a store that
  * takes writes from a peer wraps its own blob map in it. Admit one lie here
@@ -150,7 +171,7 @@ export const verifiedBlobs = (blobs: Store['blobs']): Store['blobs'] => ({
 		// may edit it while the digest is in flight, and what is verified has to
 		// be what lands — or the check proves nothing about the stored bytes.
 		const held = new Uint8Array(data)
-		if ((await sha256Hex(held)) !== hash) throw new Error(`blob bytes do not hash to ${hash}`)
+		if ((await sha256Hex(held)) !== hash) throw new HashMismatchError(hash)
 		await blobs.put(hash, held)
 	}
 })
