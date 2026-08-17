@@ -1,6 +1,6 @@
 # T11 — Lifecycle wrapper: the `synced()` replacement surface
 
-**Status:** todo
+**Status:** done
 **Phase:** B — the two consumers
 **Depends on:** [T8](t08-engine-core.md), [T9](t09-engine-blobs.md), [T10](t10-authority-and-conflicts.md)
 **Context:** [overview](README.md) · [design #3, sync engine](../../kb/fs/fable-design.md)
@@ -57,3 +57,178 @@ should read a file the pull never materialized.
 All green, and the exported surface is a strict match for what
 `apps/frieren/src/fs.ts` consumes. Read that file and list the members in the
 test, so a later drift fails loudly.
+
+## Settled here
+
+**The two resets are asymmetric, because the two stores are.** This replica's
+own store is its to rewrite, so `takeTheirs` is expressed entirely in the
+model's own terms: every live row becomes a tombstone, the push cursor moves
+past them, and the pull takes the peer's feed from the top. The authority is
+somebody else's, so `takeMine` cannot do the same to it and asks instead — the
+injected `reset()`, which in the app is the existing `adopt-mine` CAS in
+`packages/core/src/reset.ts`. That asymmetry is the whole reason there is one
+injected capability and not two: a `discard()` for the local side would be a
+capability no `Store` offers, for something the seam can already say.
+
+**Moving the push cursor is what makes "take theirs" not "delete everywhere".**
+The tombstones a discard writes are this replica's OWN rows, so an ordinary
+push would carry them to the authority and take the volume down on every other
+replica. Saving the local feed's tip is what stops that, and it takes whatever
+else was waiting to be pushed with it — which is the same decision the user
+just made. Pinned by a test that asserts the peer's tree is untouched.
+
+**`CursorSlot.save` now takes `undefined`.** The empty cursor is a position —
+it is where every scan starts, and what `load` already answers before there is
+one — so a slot that could not hold it could not say "take that feed from the
+top again". `takeTheirs` is the only caller, and the alternative was a
+`clear()` beside a `save()` that both mean the same thing.
+
+**No `pendingReset` marker, and nothing to resume.** The old engine persisted
+the take-mine intent before its CAS so a crash could not lose the snapshot it
+meant to publish. Here the window is empty: an interrupted `takeMine` leaves an
+authority that was truncated of exactly what this replica still holds, so
+running it again is both the retry and the recovery. Pinned by a test that runs
+it twice.
+
+**`generation()` reports what `reset` returned, and nothing else ever reports
+one.** No part of the seam carries an epoch: a lineage lives in the cursors and
+rule 11 is what fences a replica that outlived one, which is the whole job the
+`generation`/`lineageId` handshake used to do. The member survives because the
+app's factory reset CASes against an epoch over a route that belongs to the
+server rather than to this seam — so [T17](t17-swap-consumers.md) is where that
+call gets its number, and this wrapper is not the place to invent one.
+
+**The volume always reads through `hydratingBlobs`, lazy or not.** A row naming
+content this replica does not hold is the same row either way: an eager pull
+moves what the peer could produce WHEN the page landed, and a peer that was
+itself a stub then can answer for it now ([T9](t09-engine-blobs.md) settled
+this). Making it conditional would buy a second way to fail, not a second
+behaviour — so `lazyContent` is only ever passed to `sync`.
+
+**The push trigger reads the row's author, and there is nothing else to filter
+out.** The old one skipped `REMOTE_SOURCE` writes and the inos of two
+`/.state` files, or every cursor advance fed itself another push. Here a
+version carries its author and a cursor lives in the host's slot, so one
+predicate replaces both — and the self-feeding loop cannot be written.
+
+**`replica` is a prop, like the cursors.** The old wrapper kept its client id
+in `/.state/clientid`, inside the tree it was syncing. Durable identity is the
+host's problem, and the host already solved it for the two cursor slots.
+
+**`localFirst` starts the first cycle from a timer**, rather than calling it
+outright, so `connecting` is a state a caller can actually observe: the volume
+is handed over, the app reads its local replica immediately, and the first
+status change it hears is `syncing`.
+
+**What is deliberately gone**, and why it needed no replacement: `negotiate`,
+`handshake`, `reconcileLineage`, `resumeAction`, `checkMidSessionReset`,
+`rebootstrapKeepingLocal`, `reconcileLocal`, `rmSynced`, `clearSyncState`,
+`adoptAllAsLocal`, the `SyncState` file, the ino-keyed change filter, and
+`ignore`. Each was an answer to a problem the seam does not have — lineage is
+rule 11, echo suppression is the author tag, "what does the peer no longer
+have" is the feed, and local-only data is a mount ([T15](t15-mounts.md)).
+385 lines against the old 937.
+
+**A reset is destroy-then-converge, so it refuses whenever the loop cannot run
+the second half.** With the loop paused or destroyed, `flush` returns at once,
+and `takeTheirs` would resolve reporting success over a tombstoned volume — or
+`takeMine` over an authority truncated of everything and given nothing back.
+Refusing before anything is destroyed is the honest answer; the caller resumes
+and asks again. The state is checked twice, and the second check is the one
+that is easy to miss: waiting for the cycle in flight is a window the app can
+tear the replica down in (frieren does, on a profile switch), and a reset that
+went ahead then would leave the store rewritten with nothing to converge it.
+
+**One reset at a time, and its final cycle is the caller's to hear about.** Two
+destructive bodies over one store interleave their passes and their flags —
+whichever finished first would clear the fence and start syncing while the
+other was still tombstoning — and the app offers both from a menu with no
+in-flight gate, so the wrapper rejects the second. And a reset is done when its
+work has REACHED the peer: the loop's own cycles report failure through
+`status`, but the cycle that makes a reset real is the one whose failure
+belongs to the caller, or `takeMine` resolves "published" over an authority it
+truncated and could not reach. A scheduled retry is no answer there, because
+the caller tears the replica down on hearing success.
+
+**`takeMine` re-authors what it did not write, and rewinds the push cursor.**
+Re-authoring everything and letting rule 4 carry it (a written row moves to the
+feed's tail) conflated two jobs, and only one of them is re-authoring: the push
+filter needs the rows to be THIS replica's, and the cursor needs to offer the
+whole feed rather than what changed since the last push. Splitting them lets
+the loop end on a question about the rows — "is anything here still somebody
+else's?" — which is what makes it safe against a row that lands late, the same
+way the discard is.
+
+**A reset stands the loop off with its own flag, not the app's `paused`.**
+Overloading `paused` meant a reset both read and wrote a decision that belongs
+to the app — restoring it would clobber a pause that arrived mid-reset. So
+`resetting` is the wrapper's own, and one predicate (`mayRun`) collects every
+way the loop must not act.
+
+**A half-done discard is a state, and it forbids more than the loop.** The two
+cursor saves and the tombstones are one step or they are nothing: before the
+cutoff, a cycle would delete the volume everywhere; before the pull rewind, the
+tree is empty and every peer row sits behind the saved cursor, so no cycle
+brings one back and the loop just looks healthy over nothing. Both halves carry
+the same flag, and `takeMine` refuses while it is set — otherwise two menu
+clicks (a discard that failed, then "keep this device") truncate the authority
+and hand it a tombstoned tree, losing the volume on both sides.
+
+**Ownership is held through the converge cycle, and the cycle is the reset's
+own.** Clearing it at the end of the destructive body let a second reset take
+the flag while the first was still converging, which made the first report a
+failure that was only the hand-over. Holding it needs the converge cycle to be
+called directly rather than through the loop's `flush` — which is what it
+should have been anyway: a reset's cycle is the one whose failure has a caller.
+`cycle()` is now that one function, and the difference between its two callers
+is just who catches: the loop reports through `status`, a reset throws.
+
+**A discard that cannot record its cutoff stops the loop for good.** The window
+between the tombstone commit and the saved cursor is the one state this replica
+must never sync in: the tombstones are rows it authored, sitting past a cursor
+that has not moved, so a single cycle turns "take theirs" into "delete
+everywhere" on every replica. Ordering cannot fix it — a cutoff taken before
+the rewrite leaves the tombstones after it, which is the same bug pointing the
+other way — so the window gets a flag, and a failed save leaves it set. That is
+not a dead end: another `takeTheirs` finds nothing left to tombstone and saves
+the cutoff the first run could not.
+
+**The fence is in memory, and a crash inside its window is a KNOWN GAP.**
+`unfenced` protects the live process, which is what a failing slot write needs.
+It does not survive a crash or a teardown: the next replica over that store
+starts with the flag clear, finds tombstones past a stale push cursor, and
+cannot tell them from deletions the user made offline — which it SHOULD push.
+Closing it needs durable host state (a third slot, or an app-level marker like
+frieren's `pendingFactoryReset`), which is an interface decision this task
+should not take alone. Raise it in [T17](t17-swap-consumers.md), where the app
+that owns durable identity is wired up; until then a discard interrupted by a
+crash between its tombstones and its cutoff can delete the volume everywhere,
+and that is the one failure in this file that no test can pin.
+
+**Stopping the loop does not stop the APP.** A row committed
+while the last batch was landing escaped the reset entirely — never published
+by `takeMine`, and for `takeTheirs` left alive but past the cutoff, which
+strands it on that device for good. So the rewrite repeats until a scan finds
+nothing left to do, and the scan that proves it is the one that fixes the
+cutoff. An untouched volume is still one commit and a second scan that finds
+nothing.
+
+**Both resets end on a scan, and the instant after it belongs to the standing
+rules.** A row that lands after a reset's last scan is not covered by it: for
+`takeMine` it is a row this replica did not author, which [T8](t08-engine-core.md)
+says is not its to publish; for `takeTheirs` the cutoff has been taken, so a new
+row simply sits after it and the next push carries it, which is right — it is
+work the user did after asking for the discard. Neither window can be closed,
+only moved: the cursors live in host slots, outside the store, so nothing can
+make "the scan found nothing" and "the cursor is saved" one step, and a further
+pass just shrinks the gap. The cost is bounded and self-healing — the row stays
+visible on this device, and the first write that touches it re-authors it into
+the next push.
+
+**Two limits, stated rather than hidden.** A replica that did NOT initiate the
+`takeMine` keeps its own authored rows and restores them to the fresh authority
+— that is [T8](t08-engine-core.md)'s rule, and converging such a replica onto
+the baseline exactly is what `takeTheirs` is for. And a pass is one commit, so
+a volume large enough to strain a backend's transaction would have to page it,
+at the cost of a replan per page. Neither reset is on a hot path, so that trade
+waits for a measurement.
