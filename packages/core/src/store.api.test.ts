@@ -139,6 +139,26 @@ describe('storeApi: what the wire answers', () => {
 		}
 	})
 
+	it('carries a pre-epoch mtime, and still refuses a negative size', async () => {
+		const store = memStore()
+		const { ask, client } = served(store)
+
+		// A time before 1970 is an ordinary POSIX time: `utimes` puts the caller's
+		// bigint straight into the row, and every other backend keeps it. A wire that
+		// refused one would be the only store with a narrower contract than the seam.
+		const old = node({ id: 'old', name: 'old.txt', mtimeNs: -1_000_000_000n })
+		await client.commit([old])
+		expect(await client.get('old')).toEqual(old)
+		expect(await store.get('old')).toEqual(old)
+
+		// A size cannot be negative, and a store is better off saying so.
+		const res = await post(ask, {
+			writes: [{ ...wire(node({ id: 'x', name: 'x.txt' })).writes[0], size: '-1' }]
+		})
+		expect(res.status).toBe(400)
+		expect(await store.get('x')).toBeNull()
+	})
+
 	it('answers bytes that do not hash to their key with a 400, and stores nothing', async () => {
 		// A peer-facing store verifies its own content (rule 7) — `authority` is
 		// where that wrapper goes — and the wire answers that refusal as the client

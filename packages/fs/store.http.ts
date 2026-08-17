@@ -61,8 +61,8 @@ export const decodeNode = (value: unknown): Node => {
 		name: text(row.name, 'name'),
 		type: kind(row.type),
 		mode: whole(row.mode, 'mode'),
-		mtimeNs: digits(row.mtimeNs, 'mtimeNs'),
-		size: digits(row.size, 'size'),
+		mtimeNs: digits(row.mtimeNs, 'mtimeNs', SIGNED),
+		size: digits(row.size, 'size', UNSIGNED),
 		version: text(row.version, 'version')
 	}
 	if (row.xattrs !== undefined)
@@ -247,8 +247,19 @@ const text = (value: unknown, what: string): string =>
 const whole = (value: unknown, what: string): number =>
 	typeof value === 'number' && Number.isInteger(value) ? value : bad(what)
 
-const digits = (value: unknown, what: string): bigint =>
-	typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value) : bad(what)
+/**
+ * A 64-bit count, as the decimal digits JSON can carry.
+ *
+ * A time is SIGNED: a pre-epoch stamp is an ordinary POSIX time, `utimes` passes
+ * the caller's bigint straight into the row, and every other backend keeps it —
+ * so a wire that refused one would be the only store with a narrower contract
+ * than the seam. A size cannot be negative, and a store is better off saying so.
+ */
+const digits = (value: unknown, what: string, pattern: RegExp): bigint =>
+	typeof value === 'string' && pattern.test(value) ? BigInt(value) : bad(what)
+
+const SIGNED = /^-?\d+$/
+const UNSIGNED = /^\d+$/
 
 const kind = (value: unknown): Node['type'] =>
 	value === 'file' || value === 'dir' || value === 'symlink' || value === 'mount'
