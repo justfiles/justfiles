@@ -169,6 +169,21 @@ const lstat = (path: string): Promise<BigIntStats | null> =>
 	lstatOf(path, { bigint: true }).catch(() => null)
 
 /**
+ * Is there nothing at this path — as opposed to nothing this store can SEE? Only "no
+ * such entry" is gone. Anything else the OS says is this store not knowing: no search
+ * bit on the way, a device that stopped answering. A row is never buried on not
+ * knowing, because a tombstone for a file that is still there loses it for every
+ * replica, and the walk that would find it again cannot look either.
+ */
+const absent = async (path: string): Promise<boolean> => {
+	const gone = await lstatOf(path).then(
+		() => null,
+		(e: NodeJS.ErrnoException) => e.code
+	)
+	return gone === 'ENOENT' || gone === 'ENOTDIR'
+}
+
+/**
  * Everything about a file that a write to it changes — and `ctimeNs`, which is the
  * only one no writer can put back. A metadata-preserving sync can restore the mtime
  * over content of the same length, and then mode, mtime and size all still match the
@@ -573,13 +588,13 @@ export function fsStore(root: string): Store {
 	 * it can be reached — including the `chmod` that opens the next one down. Only the
 	 * last of them is written IN, so only the last needs write.
 	 */
-	const unlockFor = async (path: string): Promise<void> => {
+	const unlockFor = async (path: string, needs = WRITE | SEARCH): Promise<void> => {
 		const steps = ['']
 		for (let at = path; at !== ''; at = parentOf(at)) steps.splice(1, 0, at)
 		for (const step of steps) {
 			const id = owner.get(step)
 			const dir = id === undefined ? undefined : byId.get(id)
-			const need = step === path ? WRITE | SEARCH : SEARCH
+			const need = step === path ? needs : SEARCH
 			if (dir && !dir.deleted && locked(dir, need)) await unlock(dir, step, need)
 		}
 	}
@@ -1099,7 +1114,7 @@ export function fsStore(root: string): Store {
 		const name = up === '' ? path : path.slice(up.length + 1)
 		if (up === '' && name === SIDECAR) return // this store's own bookkeeping
 
-		if ((await lstat(abs(path))) === null) {
+		if (await absent(abs(path))) {
 			bury(up, new Set([name]))
 			return
 		}
@@ -1153,12 +1168,17 @@ export function fsStore(root: string): Store {
 			}
 			const path = pathUnder(parent, name)
 			if (path === null) continue
+			// The way in, for a look rather than a write: a guard answered about a path
+			// this store could not reach is answered about nothing.
+			await unlockFor(parentOf(path), SEARCH)
 			// Gone is a change too, and the one a stale read-modify-write must not miss: a
 			// name whose file a local tool deleted or renamed away is a tombstone, so the
 			// version guard over it fails instead of quietly writing the file back.
-			if ((await lstat(abs(path))) === null) bury(parentOf(path), new Set([name]))
+			if (await absent(abs(path))) bury(parentOf(path), new Set([name]))
 			else await syncPath(parent, name, path)
 		}
+		// Closed before the save below opens a way of its own: one window at a time.
+		await relock()
 		if (changed) await save()
 	}
 

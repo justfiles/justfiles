@@ -1068,6 +1068,32 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(root)).mode & 0o777).toBe(0o400)
 	})
 
+	test('a row this store cannot look at is not a row that is gone', async () => {
+		const root = await temp()
+		const store = open(root)
+		const outer = dir({ id: 'o', name: 'outer' })
+		await store.commit([outer])
+		const leaf = { ...(await file(store, 'c', 'f.txt', 'kept')), parent: 'o' }
+		await store.commit([leaf])
+		await store.commit([{ ...outer, mode: 0o040400, version: 'v2' }])
+		await feed(store)
+
+		// The look a commit takes before its guards cannot reach inside a directory with
+		// no search bit — and "I cannot look" is not "it is gone". Burying on that would
+		// tombstone a live row, save the tombstone, and then fail the guard against it.
+		const data = bytes('rewritten')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		await store.commit(
+			[{ ...leaf, content: hash, size: BigInt(data.length), version: 'v2' }],
+			[{ version: { id: 'c', is: leaf.version } }]
+		)
+
+		expect((await store.get('c'))?.deleted).toBeUndefined()
+		await chmod(join(root, 'outer'), 0o700)
+		expect(await readFile(join(root, 'outer/f.txt'), 'utf8')).toBe('rewritten')
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
