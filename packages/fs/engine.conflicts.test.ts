@@ -222,6 +222,46 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('leaves a name with the row the peer already gave it to', async () => {
+		// The page's own tie-break is the answer only where the peer has none. When
+		// the peer HOLDS the name, it has already decided, and the page must not
+		// overrule it — applying both rules at once renames the peer's row for
+		// losing the page and the other for losing to the peer, and the name ends up
+		// belonging to nobody.
+		const hub = authority(memStore())
+		const store = memStore()
+		const mint = versions('b')
+		const twin = (id: string): Node => ({
+			id,
+			parent: ROOT,
+			name: 'note.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: 0n,
+			version: mint()
+		})
+		let at: Cursor | undefined
+		const push = {
+			load: async () => at,
+			save: async (cursor: Cursor) => {
+				at = cursor
+			}
+		}
+		const opts = { replica: 'b', pull: slot(), push }
+		await store.commit([twin('b2')])
+		await sync(store, hub, opts)
+		// A duplicate turns up locally with a LOWER id, and the push cursor is gone —
+		// a crash, a cleared slot — so both rows come round again in one page.
+		await store.commit([twin('b1')])
+		at = undefined
+
+		await sync(store, hub, opts)
+
+		expect((await hub.child(ROOT, 'note.txt'))?.id).toBe('b2')
+		expect((await hub.child(ROOT, 'note.txt (conflict b)'))?.id).toBe('b1')
+	})
+
 	it('recreates the edited file under a new id when the delete committed first', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')

@@ -199,6 +199,11 @@ Asking only what the PEER holds answers "nobody" for both rows of a duplicate
 it has no part in, fixes neither, and leaves the page refused for its own
 duplicate for ever.
 
+The two rules are ORDERED, not combined. The peer decides wherever it has an
+opinion; the page's tie-break answers only where it has none. Combining them
+with an `or` renames the peer's own holder for losing the page and the other
+row for losing to the peer, and the name ends up belonging to nobody.
+
 The probe asks THREE places: the peer, the local store, and the names this
 settlement has already given out. Rule 1 says which of two live rows for one
 name is visible — not that two cannot exist — so one refused page may carry two

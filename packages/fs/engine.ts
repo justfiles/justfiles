@@ -441,13 +441,17 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 			fix(row, { ...row, parent: await living(row.parent), version: mint() })
 			continue
 		}
-		// CREATE vs CREATE. Another node holds the name — at the peer, or in this
-		// very page — so this one takes a name derived from the replica that lost.
-		// Deterministic either way, so two replicas conflicting over one name never
-		// pick the same answer, and every file survives everywhere.
+		// CREATE vs CREATE. Another node holds the name, and WHO says so is ordered,
+		// not combined: the peer decides wherever it has an opinion, and the page's
+		// own tie-break answers only where the peer has none. Both at once would
+		// rename the peer's own holder for losing the page and the other row for
+		// losing to the peer, leaving the name to nobody.
 		const holder = await remote.child(row.parent, row.name)
-		if ((holder && holder.id !== row.id) || keeps.get(row.parent + SEP + row.name) !== row.id)
-			fix(row, { ...row, name: await free(row), version: mint() })
+		const lost = holder ? holder.id !== row.id : keeps.get(row.parent + SEP + row.name) !== row.id
+		// The loser takes a name derived from the replica it belongs to — so two
+		// replicas conflicting over one name never pick the same answer, and every
+		// file survives everywhere.
+		if (lost) fix(row, { ...row, name: await free(row), version: mint() })
 		// EDIT vs EDIT needs no fix. The row is still this row at the peer; what moved
 		// is the base under it, and the re-push reads the new one. Last writer wins,
 		// and this replica is now the last writer.
