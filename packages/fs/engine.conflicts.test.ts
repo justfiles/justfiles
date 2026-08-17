@@ -77,12 +77,10 @@ describe('sync: conflicts', () => {
 		}
 	})
 
-	it('keeps conflicting a second time on the same name, under a longer one', async () => {
-		// The conflict name is not assumed free — it is derived from the row the
-		// AUTHORITY refused, and that row already carries the last rename. So a
-		// replica that loses the same name twice suffixes what it was renamed to,
-		// rather than proposing an occupied name for ever. Each replan strictly
-		// lengthens the name, so there is no fixpoint to spin on.
+	it('numbers the conflict name when the first one is already taken', async () => {
+		// The conflict name is never assumed free: it is probed against the authority
+		// until it is, and numbered rather than re-suffixed so the answer stays a
+		// name a person can read however many times this replica has lost.
 		const hub = authority(memStore())
 		const a = replica('a')
 		const b = replica('b')
@@ -98,10 +96,36 @@ describe('sync: conflicts', () => {
 		for (const store of [hub, a.store, b.store]) {
 			expect(await names(storeVolume(store))).toEqual([
 				'note.txt',
-				'note.txt (conflict b)',
-				'note.txt (conflict b) (conflict b)'
+				'note.txt (conflict b 2)',
+				'note.txt (conflict b)'
 			])
-			expect(await read(store, '/note.txt (conflict b) (conflict b)')).toBe('from b')
+			expect(await read(store, '/note.txt (conflict b 2)')).toBe('from b')
+		}
+	})
+
+	it('finds a free conflict name in one settlement, however many are taken', async () => {
+		// A whole chain of conflict names already at the authority. Advancing one
+		// suffix per refusal would spend a replan on each, so a chain longer than the
+		// budget never lands at all — and the budget is not restored by a local
+		// rename, only by a page that reaches the peer.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		let taken = 'note.txt'
+		await a.vol.writeFile(`/${taken}`, enc.encode('from a'))
+		for (let i = 0; i < 12; i++) {
+			taken = `${taken} (conflict b)`
+			await a.vol.writeFile(`/${taken}`, enc.encode('from a'))
+		}
+		await sync(a.store, hub, a.opts)
+		await b.vol.writeFile('/note.txt', enc.encode('from b'))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await read(store, '/note.txt')).toBe('from a')
+			expect(await read(store, '/note.txt (conflict b 2)')).toBe('from b')
 		}
 	})
 

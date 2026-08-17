@@ -161,6 +161,16 @@ a memo inside one settlement, which is not the same feature: rows share
 containers, so without it a page of a hundred rows stands up a hundred copies
 of the one directory they all sit in.
 
+**A conflict name is probed until it is free, not proposed and re-proposed.**
+`name (conflict <replicaId>)` is the first candidate, and the settlement asks
+the authority whether it is taken; if it is, the name is numbered
+(`name (conflict b 2)`) until one is free. Advancing a suffix and waiting for
+the next refusal costs a replan per name already taken — and a local rename
+does not restore the budget, only a page that reaches the peer — so a chain of
+occupied names longer than the budget never lands at all. Numbering rather than
+re-suffixing also keeps the answer readable: a name that grew a suffix per
+collision replicates everywhere at that length.
+
 **`settle` writes locally and lets the ordinary push carry it.** A rename of
 the loser, a recreate under a new id, or nothing at all — each is a local
 commit, and a written row moves to the end of the local feed (rule 4), so the
