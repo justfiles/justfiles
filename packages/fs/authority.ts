@@ -140,19 +140,29 @@ async function check(store: Store, writes: Node[]): Promise<void> {
 			throw new GuardError(`parent ${row.parent} of ${row.id} is not a live directory`)
 
 		// The same invariant from the other end, and the only other way to break it:
-		// a live directory that turns into a file leaves every row beneath it
-		// parented on a non-directory. Unlike a tombstoned parent — whose children
-		// the next page buries — nothing repairs this, since no writer produces a row
-		// that types it back. Only a peer's raw rows reach here, which is what the
-		// authority is for.
+		// anything that is not a directory must have no live rows beneath it. Nothing
+		// repairs a breach of this — no writer produces a row that types a directory
+		// back — and only a peer's raw rows reach here, which is what the authority
+		// is for.
+		//
+		// It asks about the row's TYPE, not about a change of type. A row that binds
+		// children which arrived before it is new to this store, so there is no
+		// previous type to have changed, and it is the last chance anything gets to
+		// look: the children are unchanged, so no later commit carries them past.
+		// A row already here as a non-directory is skipped, since the parent check
+		// is what stopped children gathering under it in the first place.
 		//
 		// What the batch clears is not stranded, on the same reading as the two
 		// checks above: a commit that empties the directory as it re-types it is
 		// whole on its own, and refusing it would refuse something no later row needs
 		// to repair — which `settle` has no answer for, so the page would come back
 		// unchanged until the budget ran out.
-		if (held && holdsRows(held) && !holdsRows(row) && (await stranded(store, batch, row.id)))
-			throw new GuardError(`${row.id} still holds children and cannot become a ${row.type}`)
+		if (
+			!holdsRows(row) &&
+			(held === null || holdsRows(held)) &&
+			(await stranded(store, batch, row.id))
+		)
+			throw new GuardError(`${row.id} holds children and cannot be a ${row.type}`)
 
 		// One live row per name — within the batch, and against what is already here.
 		const key = row.parent + SEP + row.name

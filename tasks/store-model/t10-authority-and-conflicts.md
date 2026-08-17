@@ -108,6 +108,16 @@ the subtle one — the root being its own parent is where an upward walk stops,
 so a root parented on its own descendant is a cycle every walk below steps
 over rather than finds.
 
+**"Every parent a live directory" took four passes to state once.** It was
+written three times as a condition on a CHANGE — a child gaining a bad parent,
+a directory being re-typed, a re-type that strands children — and each reading
+left a way in. The invariant does not mention change at all: anything that is
+not a directory has no live rows beneath it, whatever it was before and whether
+or not this store ever saw it. That last clause is the one the leniency for
+detached rows demands: children may arrive before their parent, so the row that
+finally binds them is the last chance anything gets to ask what they are being
+bound to — nothing carries them past it, because nothing changes them again.
+
 **Every check reads the batch, including the one that nearly did not.** A
 commit is atomic, so what it does to a row counts as already done for the rest
 of it: a rename that gives a name away and takes it back is one commit, and so

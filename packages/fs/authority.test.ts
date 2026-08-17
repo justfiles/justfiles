@@ -237,6 +237,19 @@ describe('authority: the tree invariants', () => {
 		])
 	})
 
+	it('refuses a parent that turns up as a file after its children did', async () => {
+		// The children arrive first and detached, which the paging leniency allows —
+		// so the row that finally binds them is the LAST chance to ask what they are
+		// being bound to. Nothing looks at them again: they are unchanged, so no
+		// later commit carries them past this check.
+		const { seed, refused } = hub()
+		await seed(file({ id: 'child', name: 'note.txt', parent: 'later' }))
+
+		const error = await refused([file({ id: 'later', name: 'later' })])
+
+		expect(error.message).toMatch(/children/)
+	})
+
 	it('takes the same type change once the directory is empty', async () => {
 		// The rule is about what would be stranded, not about the type change: an
 		// empty directory strands nobody.
