@@ -1,6 +1,6 @@
 # T12 — SQLite Store (server)
 
-**Status:** todo
+**Status:** done
 **Phase:** C — backends and wire
 **Depends on:** [T1](t01-store-types-and-memstore.md), [T2](t02-change-feed-and-lineage.md), [T3](t03-blobs.md) — independent of Phase B
 **Context:** [overview](README.md) · [design #3, backends table](../../kb/fs/fable-design.md)
