@@ -129,10 +129,24 @@ rule 11, echo suppression is the author tag, "what does the peer no longer
 have" is the feed, and local-only data is a mount ([T15](t15-mounts.md)).
 385 lines against the old 937.
 
+**A reset refuses while the loop is stopped, and rewrites in passes.** Both
+came out of review. A reset is destroy-then-converge, and only the loop runs
+the second half — so with it paused or destroyed, `flush` returns at once and
+`takeTheirs` would resolve reporting success over a tombstoned volume, or
+`takeMine` over an authority truncated of everything and given nothing back.
+Refusing before anything is destroyed is the honest answer; the caller resumes
+and asks again. And stopping the loop does not stop the APP: a row committed
+while the last batch was landing escaped the reset entirely — never published
+by `takeMine`, and for `takeTheirs` left alive but past the cutoff, which
+strands it on that device for good. So the rewrite repeats until a scan finds
+nothing left to do, and the scan that proves it is the one that fixes the
+cutoff. An untouched volume is still one commit and a second scan that finds
+nothing.
+
 **Two limits, stated rather than hidden.** A replica that did NOT initiate the
 `takeMine` keeps its own authored rows and restores them to the fresh authority
 — that is [T8](t08-engine-core.md)'s rule, and converging such a replica onto
-the baseline exactly is what `takeTheirs` is for. And a reset rewrites the
-whole store in ONE commit: atomic, so a publish is whole, at the cost of a
-batch that a volume large enough could make a backend page. Neither reset is on
-a hot path, so that trade waits for a measurement.
+the baseline exactly is what `takeTheirs` is for. And a pass is one commit, so
+a volume large enough to strain a backend's transaction would have to page it,
+at the cost of a replan per page. Neither reset is on a hot path, so that trade
+waits for a measurement.

@@ -26,7 +26,15 @@
  */
 
 import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
-import { type Cursor, GuardError, type Node, ROOT, type Store } from './store'
+import {
+	type Cursor,
+	type Guard,
+	GuardError,
+	type Node,
+	type NodeId,
+	ROOT,
+	type Store
+} from './store'
 import type { Volume } from './volume'
 import { storeVolume } from './volume.store'
 
@@ -270,6 +278,9 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 		}
 	}
 
+	/** The guard that says "nobody wrote this row after I read it". */
+	const unchanged = (row: Node): Guard => ({ version: { id: row.id, is: row.version } })
+
 	/** One scan of this replica's own feed: every row it holds, and where it ends. */
 	async function feed(): Promise<{ rows: Node[]; tip: Cursor | undefined }> {
 		const rows: Node[] = []
@@ -284,48 +295,65 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	}
 
 	/**
-	 * Rewrite every live row this replica holds, in ONE commit guarded on what
-	 * the scan read.
+	 * Rewrite every live row this replica holds — and then every one that landed
+	 * while it was doing so — handing back where the feed ended.
 	 *
-	 * Atomic, because half a reset is worse than none: `takeMine` publishes a
-	 * whole volume or no part of it. Guarded, because the scan and the commit are
-	 * two steps and a local write between them would otherwise be overwritten by
-	 * the state the scan happened to read — so a write that lands mid-rewrite
-	 * rejects it, and it is read again rather than lost. Tombstones and the root
-	 * are left out: the root is a constant on every store (rule 6) and so is news
-	 * to nobody, and a tombstone says nothing an authority that never held the
-	 * row could use.
+	 * One guarded commit per pass. Guarded, because the scan and the commit are
+	 * two steps and a write between them would otherwise be overwritten by the
+	 * state the scan happened to read; and a refusal is not a failure here, it is
+	 * the signal to read the row again. Tombstones and the root are left out: the
+	 * root is a constant on every store (rule 6) and so is news to nobody, and a
+	 * tombstone says nothing an authority that never held the row could use.
 	 *
-	 * One commit means one batch, and a volume large enough to strain a backend's
-	 * transaction would have to page it — at the cost of the atomicity above, and
-	 * of a replan per page. Neither reset is on any hot path, so that trade waits
-	 * for a measurement rather than an anticipation.
+	 * The PASSES are what make a reset whole. `alone` stops this wrapper's loop,
+	 * not the app — so a row committed while the last batch was landing would
+	 * otherwise escape the reset entirely: never published by `takeMine`, and for
+	 * `takeTheirs` left alive but PAST the cutoff its caller takes from the tip
+	 * here, which strands it on this device for good. `done` is what ends the
+	 * walk, since re-authoring leaves a row as live as it found it.
+	 *
+	 * An untouched volume is one commit and a second scan that finds nothing. One
+	 * commit is also one batch, and a volume large enough to strain a backend's
+	 * transaction would have to page it — a trade that waits for a measurement,
+	 * since neither reset is on any hot path.
 	 */
-	async function rewrite(next: (row: Node) => Node): Promise<void> {
+	async function rewrite(next: (row: Node) => Node): Promise<Cursor | undefined> {
+		const done = new Set<NodeId>()
 		for (let left = MAX_ATTEMPTS; ; left--) {
-			const rows = (await feed()).rows.filter((row) => !row.deleted && row.id !== ROOT)
-			if (rows.length === 0) return
+			const scan = await feed()
+			const rows = scan.rows.filter((row) => !row.deleted && row.id !== ROOT && !done.has(row.id))
+			if (rows.length === 0) return scan.tip
+			if (left === 0) throw new Error('a reset cannot keep up with the writes under it')
 			try {
-				return await local.commit(
-					rows.map(next),
-					rows.map((row) => ({ version: { id: row.id, is: row.version } }))
-				)
+				await local.commit(rows.map(next), rows.map(unchanged))
+				for (const row of rows) done.add(row.id)
 			} catch (e) {
-				if (left === 0 || !(e instanceof GuardError)) throw e
+				// Somebody wrote one of these rows in between: read them again.
+				if (!(e instanceof GuardError)) throw e
 			}
 		}
 	}
 
+	/**
+	 * A reset is destroy-then-converge, and only the loop runs the second half:
+	 * with it stopped, `flush` returns at once and this would resolve reporting
+	 * success over a tombstoned volume — or an authority truncated of everything
+	 * and given nothing back. So refuse before anything is destroyed.
+	 */
+	function needsLoop(what: string): void {
+		if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
+	}
+
 	async function takeTheirs(): Promise<void> {
+		needsLoop('take theirs')
 		await alone(async () => {
-			// The tree the user asked to discard, gone from the volume first.
-			await rewrite((row) => ({ ...row, deleted: true, version: mint() }))
-			// ...and never offered. These tombstones are this replica's own rows, so
-			// an ordinary push would carry them to the peer and take the volume down
-			// on every other replica — moving the push cursor past them is what makes
+			// The tree the user asked to discard, gone from the volume first — and
+			// then never offered. These tombstones are this replica's own rows, so an
+			// ordinary push would carry them to the peer and take the volume down on
+			// every other replica; moving the push cursor past them is what makes
 			// this "discard mine" instead of "delete everywhere". It takes whatever
 			// else was waiting to be pushed with it, which is the same decision.
-			await props.push.save((await feed()).tip)
+			await props.push.save(await rewrite((row) => ({ ...row, deleted: true, version: mint() })))
 			// The peer's feed from the top: its rows land back over the tombstones,
 			// and what only ever existed here stays dead.
 			await props.pull.save(undefined)
@@ -341,6 +369,7 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	 * what the reset truncated is exactly what this replica still holds.
 	 */
 	async function takeMine(): Promise<void> {
+		needsLoop('take mine')
 		const reset = props.reset
 		if (!reset) throw new Error('take mine needs a peer that can start a new lineage')
 		await alone(async () => {

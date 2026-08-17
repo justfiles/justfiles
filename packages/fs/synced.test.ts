@@ -16,7 +16,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type CursorSlot, versions } from './engine'
-import { type Cursor, ROOT, type Store } from './store'
+import { type Cursor, type Node, ROOT, type Store } from './store'
 import { memStore } from './store.mem'
 import { type SyncedProps, type SyncStatus, syncedVolume } from './synced'
 import { FileType } from './types'
@@ -323,6 +323,26 @@ describe('syncedVolume: the debounced push', () => {
 	})
 })
 
+/**
+ * A store that lets one write land immediately after the next commit: the app
+ * writing between a reset's passes, which stopping the loop does not prevent.
+ */
+function racing(store: Store): Store & { armWith: (rows: Node[]) => void } {
+	let pending: Node[] | null = null
+	return {
+		...store,
+		armWith(rows) {
+			pending = rows
+		},
+		async commit(writes, guards) {
+			await store.commit(writes, guards)
+			const landing = pending
+			pending = null
+			if (landing) await store.commit(landing)
+		}
+	}
+}
+
 describe('syncedVolume: take theirs', () => {
 	it('throws this replica’s work away and takes the peer’s tree', async () => {
 		const remote = memStore()
@@ -341,6 +361,53 @@ describe('syncedVolume: take theirs', () => {
 		// replica's own, so an ordinary push would carry them — taking the volume
 		// down with them on every other replica.
 		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
+	// Stopping the loop does not stop the app, so a row can land between the
+	// tombstones and the cutoff. One that escaped would be alive here and PAST
+	// the cursor that decides what is ever offered — device-only for good.
+	it('catches a write that lands while it is discarding', async () => {
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		const local = racing(memStore())
+		const { vol } = await replica(remote, { local })
+		await vol.writeFile('/mine.txt', enc.encode('mine'))
+		local.armWith([
+			{
+				id: 'stray',
+				parent: ROOT,
+				name: 'stray.txt',
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 0n,
+				size: 0n,
+				version: 'a:stray-1'
+			}
+		])
+
+		await vol.takeTheirs()
+
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs' })
+
+		await vol.flush()
+
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
+	it('refuses while the loop is stopped, before anything is discarded', async () => {
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+		const { vol } = await replica(remote)
+		await vol.writeFile('/mine.txt', enc.encode('mine'))
+
+		// A reset is destroy-then-converge, and a stopped loop cannot run the
+		// second half: it would resolve reporting success over an emptied volume.
+		vol.pause()
+
+		await expect(vol.takeTheirs()).rejects.toThrow(/running sync loop/)
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs', '/mine.txt': 'mine' })
 	})
 
 	it('leaves a replica that keeps syncing afterwards', async () => {
@@ -410,6 +477,21 @@ describe('syncedVolume: take mine', () => {
 
 		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })
 		expect(a.vol.generation()).toBe(3)
+	})
+
+	it('refuses while the loop is stopped, before the authority is truncated', async () => {
+		const hub = authorityPeer()
+		let reset = 0
+		const { vol } = await replica(hub.store, {
+			reset: () => {
+				reset++
+				return hub.reset()
+			}
+		})
+		vol.pause()
+
+		await expect(vol.takeMine()).rejects.toThrow(/running sync loop/)
+		expect(reset).toBe(0)
 	})
 
 	it('refuses when the peer has no way to start a new lineage', async () => {
