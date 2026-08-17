@@ -899,7 +899,16 @@ export function fsStore(root: string): Store {
 			type: base.type === 'mount' && kind === 'dir' ? 'mount' : kind,
 			// The whole POSIX mode, exactly as node:fs hands it back.
 			mode: Number(s.mode),
-			mtimeNs: s.mtimeNs,
+			// The stamp the row was given, while the disk does not contradict it: a `Date`
+			// carries milliseconds and so does everything this store can write with one, so
+			// a difference below that is this backend's own rounding coming back — not
+			// somebody's change, and not a version anybody can act on. It also means a
+			// stamp set outside with finer precision than `stamp` can write is a change
+			// this backend does not report; it could not have made it either.
+			mtimeNs:
+				base.mtimeNs !== undefined && s.mtimeNs / 1_000_000n === base.mtimeNs / 1_000_000n
+					? base.mtimeNs
+					: s.mtimeNs,
 			size: s.size,
 			version: mint()
 		}
@@ -1356,9 +1365,14 @@ export function fsStore(root: string): Store {
 			mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
 		}
 		// And closed again before anything looks, or the scan below would read the way in
-		// as a change somebody made and publish it.
+		// as a change somebody made and publish it. Its state goes down after that, since
+		// both chmods moved a ctime the sidecar's copy knows nothing about.
 		const held = byId.get(ROOT)
-		if (shut && held) await chmod(root, held.mode & 0o7777)
+		if (shut && held) {
+			await chmod(root, held.mode & 0o7777)
+			const now = await lstat(root)
+			if (now !== null) mark(ROOT, { path: '', ino: String(now.ino), state: stateOf(now) })
+		}
 		// The watcher is not armed here: the first `since` does that, so a consumer
 		// that only reads and writes never asks the OS for one at all — and a CLI that
 		// never closes the store has nothing to leak.

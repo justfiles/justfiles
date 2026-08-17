@@ -1113,6 +1113,22 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual(['c'])
 	}, 30_000)
 
+	test('reopening a store whose root is locked reports nothing', async () => {
+		const root = await temp()
+		const store = open(root)
+		const before = await store.get(ROOT)
+		if (!before) throw new Error('the store has no root row')
+		await store.commit([{ ...before, mode: 0o040400, version: 'v2' }])
+		const { cursor } = await feed(store)
+
+		// The open has to let itself in to read the index at all, and letting itself in
+		// moves root's ctime. That is this store's own doing, so the walk that follows
+		// must not report it: a restart is not news, locked root or not.
+		const two = open(root)
+		expect((await two.since(cursor)).nodes).toEqual([])
+		expect((await stat(root)).mode & 0o777).toBe(0o400)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
