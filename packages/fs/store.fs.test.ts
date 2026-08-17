@@ -825,6 +825,31 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readdir(root)).toEqual(['.jfs'])
 	})
 
+	test('a version guard on root sees a chmod made outside', async () => {
+		const root = await temp()
+		const store = open(root)
+		const before = await store.get(ROOT)
+		if (!before) throw new Error('the store has no root row')
+		await feed(store)
+
+		// A local tool changes the mode of the directory this store IS, and the app
+		// commits a read-modify-write of root's own row. Root has no name to look up and
+		// no parent that lists it, so only `syncRoot` can answer for its state — and it
+		// has to answer before a guard is judged, or the commit reapplies the mode the
+		// caller last read and the change made outside is gone.
+		await chmod(root, 0o750)
+		await expect(
+			store.commit(
+				[{ ...before, mtimeNs: 1_700_000_000_000_000_000n, version: 'v2' }],
+				[{ version: { id: ROOT, is: before.version } }]
+			)
+		).rejects.toThrow(GuardError)
+
+		const now = await store.get(ROOT)
+		expect(now?.mode === undefined ? null : now.mode & 0o7777).toBe(0o750)
+		expect((await stat(root)).mode & 0o777).toBe(0o750)
+	})
+
 	test('a commit with no guard keeps the bytes of the file whose name it takes', async () => {
 		const root = await temp()
 		const store = open(root)

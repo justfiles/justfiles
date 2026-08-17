@@ -992,6 +992,13 @@ export function fsStore(root: string): Store {
 	const settle = async (touched: Iterable<[NodeId, string]>): Promise<void> => {
 		changed = false
 		for (const [parent, name] of touched) {
+			// Root has no name to look up and no parent that lists it, so its own state is
+			// the one thing only `syncRoot` can answer for — and a guard over root's row is
+			// answered from it.
+			if (parent === ROOT && name === '') {
+				await syncRoot()
+				continue
+			}
 			const path = pathUnder(parent, name)
 			if (path === null) continue
 			// Gone is a change too, and the one a stale read-modify-write must not miss: a
