@@ -6,13 +6,37 @@
  * file that already has one.
  */
 
-import { mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises'
+import {
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	readlink,
+	rename,
+	rm,
+	stat,
+	writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
 import { storeConformance } from './store.conformance'
-import { fsStore } from './store.fs'
+import { fsStore, SWEEP_MS } from './store.fs'
+
+/**
+ * Every store this file builds, closed when the case ends. A `Store` is closed by
+ * whoever constructed it and by nobody else, so here that is the test.
+ */
+const built: Store[] = []
+const open = (root: string): Store => {
+	const store = fsStore(root)
+	built.push(store)
+	return store
+}
+afterEach(async () => {
+	for (const store of built.splice(0)) await store.close?.()
+})
 
 const temp = (): Promise<string> => mkdtemp(join(tmpdir(), 'jfs-t14-'))
 
@@ -32,6 +56,22 @@ async function feed(store: Store, from?: Cursor): Promise<{ nodes: Node[]; curso
 		nodes.push(...got.nodes)
 	}
 	throw new Error('since never caught up')
+}
+
+/**
+ * Give the OS its moment. A watcher-driven store hears about a change made
+ * outside it when the platform says so, not when a test is ready — so a case
+ * that waits for one polls the feed, exactly as a consumer does.
+ */
+async function settled(store: Store, ready: () => Promise<boolean>): Promise<void> {
+	// Long enough to outlast the deep floor: a watcher that dropped the event costs
+	// this case a wait, never an answer (see `DEEP_MS`).
+	for (let tries = 0; tries < 800; tries++) {
+		await store.since()
+		if (await ready()) return
+		await new Promise((resolve) => setTimeout(resolve, 10))
+	}
+	throw new Error('the change never reached the store')
 }
 
 const named = (nodes: Node[], name: string): Node => {
@@ -62,12 +102,12 @@ async function place(store: Store, name: string, content: string): Promise<Node>
 
 // Every `open()` is its own directory, so two of them are two stores — and two
 // lineages, which is what the cursor case in the suite asks for.
-storeConformance('fsStore', async () => fsStore(await temp()))
+storeConformance('fsStore', async () => open(await temp()))
 
 describe('fsStore: a real directory, reconciled', () => {
 	test('a commit lands as real files a local tool can read', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const dir: Node = {
 			id: 'd',
 			parent: ROOT,
@@ -106,7 +146,7 @@ describe('fsStore: a real directory, reconciled', () => {
 
 	test('content is the file itself: the blob store keeps no second copy', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const row = await place(store, 'a.txt', 'hello')
 		if (row.content === undefined) throw new Error('the row lost its content hash')
 
@@ -120,27 +160,28 @@ describe('fsStore: a real directory, reconciled', () => {
 	test('a reopen is not a reset: minted ids and cursors survive in the sidecar', async () => {
 		const root = await temp()
 		await writeFile(join(root, 'note.md'), 'hello')
-		const one = fsStore(root)
+		const one = open(root)
 		const first = await feed(one)
 		const minted = named(first.nodes, 'note.md')
 		expect(minted.size).toBe(5n)
 
 		// A second store over the same directory finds the sidecar, so the file it
 		// scans is the node it already was — an id is minted once, never rebound.
-		const two = fsStore(root)
+		const two = open(root)
 		expect(await two.child(ROOT, 'note.md')).toEqual(minted)
 		expect((await two.get(minted.id))?.name).toBe('note.md')
 		// Same lineage, and nothing to report: a restart is not news.
 		expect((await two.since(first.cursor)).nodes).toEqual([])
 	})
 
-	test('an out-of-band edit appears in since after the next scan', async () => {
+	test('an out-of-band edit appears in since', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const row = await place(store, 'a.txt', 'hello')
 		const { cursor } = await feed(store)
 
 		await writeFile(join(root, 'a.txt'), 'edited by somebody else')
+		await settled(store, async () => (await store.get(row.id))?.size === 23n)
 		const changed = (await feed(store, cursor)).nodes
 		expect(changed.map((n) => n.id)).toEqual([row.id])
 		const [edited] = changed
@@ -150,20 +191,25 @@ describe('fsStore: a real directory, reconciled', () => {
 		expect(edited.version).not.toBe(row.version)
 		// The row and the bytes agree: the content hash answers from the file.
 		expect(read(await store.blobs.get(edited.content ?? ''))).toBe('edited by somebody else')
-		// And a second scan finds nothing: an observed file is not news twice.
+		// And a second look finds nothing: an observed file is not news twice.
 		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual([row.id])
 		expect((await feed(store)).nodes.filter((n) => n.id === row.id).length).toBe(1)
-	})
+	}, 30_000)
 
 	test('an out-of-band create, delete and subtree removal reach the feed', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const gone = await place(store, 'gone.txt', 'bye')
 		const { cursor } = await feed(store)
 
 		await mkdir(join(root, 'sub/deep'), { recursive: true })
 		await writeFile(join(root, 'sub/deep/new.txt'), 'fresh')
 		await rm(join(root, 'gone.txt'))
+		await settled(
+			store,
+			async () =>
+				(await store.child(ROOT, 'gone.txt')) === null && (await store.child(ROOT, 'sub')) !== null
+		)
 
 		const caught = await feed(store, cursor)
 		const rows = caught.nodes
@@ -181,6 +227,7 @@ describe('fsStore: a real directory, reconciled', () => {
 		const deep = named(rows, 'deep')
 		const inner = named(rows, 'new.txt')
 		await rm(join(root, 'sub'), { recursive: true })
+		await settled(store, async () => (await store.get(inner.id))?.deleted === true)
 		const after = (await feed(store, caught.cursor)).nodes
 		expect(
 			after
@@ -188,13 +235,13 @@ describe('fsStore: a real directory, reconciled', () => {
 				.map((n) => n.id)
 				.sort()
 		).toEqual([named(rows, 'sub').id, deep.id, inner.id].sort())
-	})
+	}, 30_000)
 
 	test('a directory rename moves the subtree on disk and keeps every id', async () => {
 		const root = await temp()
 		await mkdir(join(root, 'old/deep'), { recursive: true })
 		await writeFile(join(root, 'old/deep/note.md'), 'kept')
-		const store = fsStore(root)
+		const store = open(root)
 		const before = (await feed(store)).nodes
 		const dir = named(before, 'old')
 		const deep = named(before, 'deep')
@@ -216,7 +263,7 @@ describe('fsStore: a real directory, reconciled', () => {
 
 	test('a batch that names a child before its parent still lands', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const dir: Node = {
 			id: 'd',
 			parent: ROOT,
@@ -252,7 +299,7 @@ describe('fsStore: a real directory, reconciled', () => {
 
 	test('a lazy stub keeps the name, and the bytes fill it in when they arrive', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const data = bytes('arrived late')
 		const hash = await sha256Hex(data)
 		const stub: Node = {
@@ -284,7 +331,7 @@ describe('fsStore: a real directory, reconciled', () => {
 
 	test('a row with no place in the tree is held, and lands when one is given', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const dir: Node = {
 			id: 'd',
 			parent: ROOT,
@@ -333,7 +380,7 @@ describe('fsStore: a real directory, reconciled', () => {
 		const root = await temp()
 		await mkdir(join(root, 'a/b'), { recursive: true })
 		await writeFile(join(root, 'a/b/c.txt'), 'deep')
-		const store = fsStore(root)
+		const store = open(root)
 
 		// No `since` first: the index is rebuilt by the scan on open, so a path
 		// resolves the moment the store is there.
@@ -366,7 +413,7 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 
 	test('a tombstone on a directory alone keeps what its live children hold', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const sub = dir({ id: 'd', name: 'sub' })
 		await store.commit([sub])
 		const data = bytes('keep me')
@@ -400,7 +447,7 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 
 	test('a row the tree cannot reach leaves the namespace, keeps its bytes, and mints no ghost', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const row = await place(store, 'a.txt', 'hello')
 		const { cursor } = await feed(store)
 
@@ -421,7 +468,7 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 
 	test('a batch that renames a parent after touching its child still lands', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const old = dir({ id: 'd', name: 'old' })
 		await store.commit([old])
 		const data = bytes('kept')
@@ -453,7 +500,7 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 
 	test('bytes arriving for a stub fill the file the row already has', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const data = bytes('arrived late')
 		const hash = await sha256Hex(data)
 		const stub: Node = {
@@ -482,13 +529,13 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 
 	test('an empty directory saves its sidecar, so a reopen is not a reset', async () => {
 		const root = await temp()
-		const one = fsStore(root)
+		const one = open(root)
 		const { cursor } = await feed(one)
 
 		// Nothing changed on the first scan, but the lineage and the root row were
 		// minted — and a lineage only this instance knows fences every cursor it
 		// ever handed out (rule 11).
-		const two = fsStore(root)
+		const two = open(root)
 		expect((await two.since(cursor)).nodes).toEqual([])
 	})
 })
@@ -496,7 +543,7 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 describe('fsStore: the sidecar is the store, not the tree', () => {
 	test('a row that asks for the sidecar name never writes over it', async () => {
 		const root = await temp()
-		const store = fsStore(root)
+		const store = open(root)
 		const row = await place(store, 'kept.md', 'still here')
 
 		// `.jfs` is this store's own bookkeeping. A row that claims the name is held
@@ -522,6 +569,76 @@ describe('fsStore: the sidecar is the store, not the tree', () => {
 		expect(await readFile(join(root, '.jfs/index.json'), 'utf8')).toContain('"lineage"')
 		expect(read(await store.blobs.get(row.content ?? ''))).toBe('still here')
 		// And it survives the round trip the index makes on a reopen.
-		expect((await fsStore(root).child(ROOT, 'kept.md'))?.id).toBe(row.id)
+		expect((await open(root).child(ROOT, 'kept.md'))?.id).toBe(row.id)
 	})
+})
+
+/**
+ * The watcher, and the walk behind it. The store hears about a change the OS
+ * announces in milliseconds, and finds one it does not on a floor — because a
+ * recursive watch drops events, so it can be the latency but never the truth.
+ */
+describe('fsStore: told, or else looked for', () => {
+	const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+	test('a watcher makes a change visible well inside the floor', async () => {
+		const root = await temp()
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		// The walk that just ran resets the floor, so nothing below can be a walk:
+		// what arrives, arrives because the OS said so.
+		const { cursor } = await feed(store)
+
+		await writeFile(join(root, 'a.txt'), 'edited by somebody else')
+		const at = Date.now()
+		let seen = false
+		while (!seen && Date.now() - at < SWEEP_MS - 100) {
+			await store.since()
+			seen = (await store.get(row.id))?.size === 23n
+			if (!seen) await sleep(10)
+		}
+		if (!seen) throw new Error('the watcher never delivered inside the floor')
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual([row.id])
+	})
+
+	test('with the watcher closed the walk carries it, on the floor', async () => {
+		const root = await temp()
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		await feed(store)
+
+		// The host that built this store is done with the watcher. Everything still
+		// works — by looking, instead of being told.
+		await store.close?.()
+		await store.close?.() // idempotent: a shutdown path may run twice
+		await writeFile(join(root, 'a.txt'), 'edited by somebody else')
+		await settled(store, async () => (await store.get(row.id))?.size === 23n)
+		const { cursor } = await feed(store)
+
+		// A second change, and nothing to announce it: inside the floor the store
+		// has not looked yet, so it says nothing rather than looking on every call.
+		await writeFile(join(root, 'a.txt'), 'edited again, and longer still')
+		expect((await store.since(cursor)).nodes).toEqual([])
+		await sleep(SWEEP_MS)
+		await settled(store, async () => (await store.get(row.id))?.size === 30n)
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual([row.id])
+	}, 30_000)
+
+	test('an atomic save is a directory change, so the cheap look finds it', async () => {
+		const root = await temp()
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		await feed(store)
+		await store.close?.() // no watcher: only the walk can find this
+
+		// What every editor does: write beside the file, then take its name. It moves
+		// the DIRECTORY's mtime, which is what the cheap look reads.
+		await writeFile(join(root, 'tmp'), 'saved by an editor')
+		await rename(join(root, 'tmp'), join(root, 'a.txt'))
+		await sleep(SWEEP_MS)
+		await settled(store, async () => (await store.get(row.id))?.size === 18n)
+		expect(read(await store.blobs.get((await store.get(row.id))?.content ?? ''))).toBe(
+			'saved by an editor'
+		)
+	}, 30_000)
 })

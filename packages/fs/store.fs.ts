@@ -14,11 +14,13 @@
  * the seam:
  *
  * - **Reconciliation.** Nobody announces a change to a real tree, so `since`
- *   begins by looking. One directory at a time: what it lists that the index
- *   does not know becomes a row, what it no longer lists becomes a tombstone,
- *   and what changed underneath becomes a new version. Reads answer from the
- *   index, so an out-of-band change reaches a consumer through the feed it
- *   already polls.
+ *   begins by looking. Three tiers, because a watcher is fast and a walk is the
+ *   truth: the paths the OS named, every call; every directory, on the cheap
+ *   floor; every file, on the deep one. What a directory lists that the index
+ *   does not know becomes a row, what it no longer lists becomes a tombstone, and
+ *   what changed underneath becomes a new version. Reads answer from the index,
+ *   so a change made outside reaches a consumer through the feed it already
+ *   polls.
  * - **A weaker crash model.** POSIX has no transaction. Guards are all checked
  *   before anything is touched, so a REJECTED commit still writes nothing (rule
  *   2), but a commit that FAILS halfway leaves the batch half applied and the
@@ -44,14 +46,17 @@
  *   never looks and `blobs` still can; a later commit that gives the row a place
  *   renames it back, which is the same rename any move is.
  *
- * The costs are deliberate. Every `since` walks the tree, the sidecar is
- * rewritten whole on every change, and a scan reads every changed file to hash
- * it — this serves a working tree, not a warehouse. An out-of-band rename reads
- * as a delete plus a create, because `readdir` and `lstat` are all the store
- * gets and a new name is a new node to them.
+ * The costs are deliberate. The sidecar is rewritten whole on every change, and a
+ * scan reads every changed file to hash it — this serves a working tree, not a
+ * warehouse. `DEEP_MS` is the knob a large tree turns: at thirty thousand files a
+ * deep look is ~700ms, so a consumer polling a tree that size pays a few percent
+ * of a core for the backstop, and everything else is milliseconds. An out-of-band
+ * rename reads as a delete plus a create, because `readdir` and `lstat` are all
+ * the store gets and a new name is a new node to them.
  */
 
 import type { BigIntStats } from 'node:fs'
+import { type FSWatcher, watch } from 'node:fs'
 import {
 	chmod,
 	lstat as lstatOf,
@@ -65,7 +70,7 @@ import {
 	symlink,
 	writeFile
 } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -98,6 +103,31 @@ const HOLD = `${SIDECAR}/detached`
 
 /** What a `Hash` is: 64 hex characters. A name for content, never a path. */
 const HASH = /^[0-9a-f]{64}$/
+
+/**
+ * How long between looks. Cheap ones: one `lstat` per DIRECTORY, whose mtime
+ * moves when an entry is added, removed or renamed in it — every structural
+ * change, for about one percent of a walk. A store with no watcher walks
+ * everything on this same floor instead, since nothing else will ever tell it.
+ *
+ * Without a floor at all, a consumer polling `since` every few tens of
+ * milliseconds (`WATCH_BURST_MS`) would have a tree of any size walked back to
+ * back. Exported for tests only — a store that answers on a timer has no other
+ * honest way to say "not yet".
+ */
+export const SWEEP_MS = 1_000
+
+/**
+ * How long between the deep looks: one `lstat` per FILE, which is the only thing
+ * that finds an in-place write nobody announced.
+ *
+ * It stays rare because a watcher usually reports those in milliseconds — and it
+ * stays, because a watcher is not a source of truth. A recursive `fs.watch` DROPS
+ * events: measured on macOS, a process holding a few dozen watchers loses them
+ * outright. So the walk is the guarantee and the watcher is the latency, which is
+ * how the seam already frames `subscribe`.
+ */
+const DEEP_MS = 5_000
 
 const EMPTY = new Uint8Array()
 
@@ -608,31 +638,188 @@ export function fsStore(root: string): Store {
 	/** Did the last reconcile write anything? The sidecar is saved only if it did. */
 	let changed = false
 
-	/**
-	 * The whole tree, one directory at a time. This is `since`'s first act, because
-	 * on a real filesystem the feed cannot be a record of commits: anything may
-	 * have written, created or removed a file, and looking is the only way to know.
-	 */
-	const scanAll = async (): Promise<void> => {
-		changed = false
-		// Root has no parent to notice that it changed, so its own state is checked
-		// here.
+	/** The one row no directory lists: root's own state. */
+	const syncRoot = async (): Promise<void> => {
 		const s = await lstat(root)
 		const held = byId.get(ROOT)
 		if (s === null || !held) return
 		const at = seen.get(ROOT)
-		if (!at || !unchanged(at, s)) {
-			const derived = await derive('', s, held)
-			if (derived) {
-				write(derived)
-				mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
-				changed = true
-			}
-		}
+		if (at && unchanged(at, s)) return
+		const derived = await derive('', s, held)
+		if (!derived) return
+		write(derived)
+		mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
+		changed = true
+	}
+
+	/**
+	 * The whole tree, one directory at a time, and every file in it. What a store
+	 * with no watcher does, what every store does on open and if its watcher is ever
+	 * lost, and what the deep pass is: anything may have written, created or removed
+	 * a file, and looking is the only way to know.
+	 */
+	const scanAll = async (): Promise<void> => {
+		changed = false
+		await syncRoot()
+		if (!byId.has(ROOT)) return
 		const queue: Landed[] = [{ id: ROOT, path: '' }]
 		for (let dir = queue.pop(); dir !== undefined; dir = queue.pop())
 			queue.push(...(await syncDir(dir.id, dir.path)))
+		swept = Date.now()
+		deepened = swept
 		if (changed) await save()
+	}
+
+	/**
+	 * The cheap look: stat the DIRECTORIES, and read only the ones whose own state
+	 * moved. Every create, delete and rename shows up here — including an editor's
+	 * atomic save, which is a rename — for about one percent of a walk. An in-place
+	 * write moves no directory, so only the deep pass finds one the watcher dropped.
+	 */
+	const sweep = async (): Promise<void> => {
+		changed = false
+		await syncRoot()
+		for (const [id, at] of [...seen]) {
+			const row = byId.get(id)
+			if (!row || row.deleted || (row.type !== 'dir' && row.type !== 'mount')) continue
+			const s = await lstat(abs(at.path))
+			if (s === null || unchanged(at, s)) continue // gone is the parent's listing to notice
+			if (id !== ROOT) await syncPath(row.parent, row.name, at.path) // the directory's own row
+			await syncDir(id, at.path) // and what it lists now
+		}
+		swept = Date.now()
+		if (changed) await save()
+	}
+
+	/**
+	 * One path the OS says may have moved, and nothing else. The parent's listing is
+	 * what decides existence, so the entry is looked up there: gone from it means
+	 * gone, and a name it holds is reconciled on its own. A directory is then walked,
+	 * because one event can stand for a whole subtree that arrived at once.
+	 */
+	const syncAt = async (path: string): Promise<void> => {
+		if (path === '') return syncRoot()
+		// The nearest ancestor this index knows. An event may name a path several
+		// levels below anything the store has heard of — a subtree copied in at once —
+		// and it may spell a name in a normalization the rows do not use, in which case
+		// the ancestor's own listing is what gets it right.
+		let up = parentOf(path)
+		for (let step = 0; up !== '' && owner.get(up) === undefined; step++) {
+			if (step > 64) return
+			path = up
+			up = parentOf(up)
+		}
+		const dir = up === '' ? ROOT : owner.get(up)
+		const parent = dir === undefined ? null : byId.get(dir)
+		if (dir === undefined || !parent || parent.deleted) return
+		if (parent.type !== 'dir' && parent.type !== 'mount') return
+		const name = up === '' ? path : path.slice(up.length + 1)
+		if (up === '' && name === SIDECAR) return // this store's own bookkeeping
+
+		if ((await lstat(abs(path))) === null) {
+			bury(up, new Set([name]))
+			return
+		}
+		const row = await syncPath(dir, name, path)
+		if (!row || (row.type !== 'dir' && row.type !== 'mount')) return
+		const queue: Landed[] = [{ id: row.id, path }]
+		for (let at = queue.pop(); at !== undefined; at = queue.pop())
+			queue.push(...(await syncDir(at.id, at.path)))
+	}
+
+	/**
+	 * Look where there is reason to, in three tiers: the paths the watcher named, on
+	 * every call; the directories, on the cheap floor; every file, on the deep one.
+	 * This is `since`'s first act, because on a real filesystem the feed cannot be a
+	 * record of commits.
+	 */
+	const reconcile = async (): Promise<void> => {
+		if (!armed) {
+			armed = true
+			// The first `since` is where a watcher starts earning its keep: nothing
+			// else polls. Armed BEFORE the walk that follows, or a change that lands
+			// while the walk runs is in neither what it read nor what it will be told.
+			arm()
+			if (watching) return scanAll()
+		}
+		if (dirty.size > 0) await drain()
+		const now = Date.now()
+		// No watcher, so the walk is the only thing that ever reports: it runs on the
+		// cheap floor rather than the deep one.
+		if (!watching) return now - swept < SWEEP_MS ? undefined : scanAll()
+		if (now - deepened >= DEEP_MS) return scanAll()
+		if (now - swept >= SWEEP_MS) return sweep()
+	}
+
+	/** The paths the watcher named. O(what changed), which is the point of having one. */
+	const drain = async (): Promise<void> => {
+		// A directory before what is inside it, so a subtree that arrived at once is
+		// adopted from the top; and the parent of every path, because adding or
+		// removing an entry is a change to the DIRECTORY's own row as well.
+		const paths = new Set<string>()
+		for (const path of dirty) {
+			paths.add(path)
+			paths.add(parentOf(path))
+		}
+		dirty.clear()
+		changed = false
+		for (const path of [...paths].sort()) await syncAt(path)
+		if (changed) await save()
+	}
+
+	// ── The watcher: the OS says where to look ───────────────────────────────────
+
+	/** Paths the OS says may have changed. Drained by `since`, never trusted. */
+	const dirty = new Set<string>()
+	let watcher: FSWatcher | null = null
+	/** Has a watcher been asked for yet? Only the first `since` asks. */
+	let armed = false
+	/** Is one listening? False means the walk is the only thing that reports. */
+	let watching = false
+	/** When the last cheap look and the last deep one finished. */
+	let swept = 0
+	let deepened = 0
+
+	/**
+	 * Arm the OS. An event is a HINT and nothing more: macOS calls an in-place write
+	 * a rename and names ancestors beside the leaf, and any platform may coalesce or
+	 * drop under load. So the type is ignored, the name only says where to look, and
+	 * losing the watcher costs a walk rather than correctness.
+	 *
+	 * `persistent: false` on purpose: a CLI that never closes the store still exits,
+	 * because a watcher nothing is waiting on does not hold the loop open. It keeps
+	 * delivering while the process has other work.
+	 */
+	const arm = (): void => {
+		try {
+			const held = watch(root, { recursive: true, persistent: false }, (_type, name) => {
+				if (name === null) {
+					lost()
+					return
+				}
+				dirty.add(String(name).split(sep).join('/'))
+			})
+			held.on('error', lost)
+			watcher = held
+			watching = true
+		} catch {
+			// No watcher on this platform, this filesystem, or past this many watches
+			// (Linux counts them per directory). The tree gets walked instead.
+			watching = false
+		}
+	}
+
+	/**
+	 * The watcher is gone or said something it could not name. Whatever it missed is
+	 * only findable by looking, so from here on the walk carries it alone — on the
+	 * cheap floor, since nothing else will report an in-place write.
+	 */
+	const lost = (): void => {
+		watcher?.close()
+		watcher = null
+		watching = false
+		dirty.clear()
+		swept = 0
 	}
 
 	// ── Content: the files themselves ────────────────────────────────────────────
@@ -709,6 +896,9 @@ export function fsStore(root: string): Store {
 			write(seed)
 			mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
 		}
+		// The watcher is not armed here: the first `since` does that, so a consumer
+		// that only reads and writes never asks the OS for one at all — and a CLI that
+		// never closes the store has nothing to leak.
 		// The index is rebuilt against the tree on open, so a path resolves the
 		// moment the store is there — a consumer does not have to poll first.
 		await scanAll()
@@ -762,7 +952,7 @@ export function fsStore(root: string): Store {
 		async since(cursor) {
 			await open()
 			const from = position(cursor) // rule 11, before any work: a fenced cursor buys no scan
-			await serial(scanAll)
+			await serial(reconcile)
 			const nodes: Node[] = []
 			for (const [id, at] of order) {
 				if (at < from) continue
@@ -840,7 +1030,18 @@ export function fsStore(root: string): Store {
 		// No `subscribe`. Rule 8 makes it optional, and a consumer takes it INSTEAD
 		// of polling `since` whenever a store offers one — which would blind it to
 		// the very changes this backend exists for: an edit made outside the store
-		// tells no one, and only a scan finds it. Polling `since` scans.
+		// tells no one, and only a look finds it. Polling `since` looks.
+
+		/**
+		 * The watcher, and nothing else: every commit and every reconcile saves the
+		 * sidecar before it returns, so there is no state here that outlives this
+		 * call. The store keeps answering afterwards, by walking the tree instead of
+		 * being told about it — but a caller that meant to be done should behave as
+		 * though it is.
+		 */
+		async close() {
+			lost()
+		},
 
 		blobs: {
 			async has(hash) {

@@ -9,7 +9,7 @@
  * in T6 and T9.
  */
 
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -77,8 +77,20 @@ const HELLO = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
 const many = (): Node[] =>
 	Array.from({ length: 300 }, (_, i) => node({ id: `n${i}`, name: `f${i}.txt` }))
 
-export function storeConformance(name: string, open: () => Promise<Store>): void {
+export function storeConformance(name: string, make: () => Promise<Store>): void {
 	describe(`Store conformance: ${name}`, () => {
+		// The suite is the host here, so it owns what it builds: a store may hold a
+		// watcher or a connection, and `close` is the constructor's to call (rule 8).
+		const built: Store[] = []
+		const open = async (): Promise<Store> => {
+			const store = await make()
+			built.push(store)
+			return store
+		}
+		afterEach(async () => {
+			for (const store of built.splice(0)) await store.close?.()
+		})
+
 		test('get(ROOT) returns a live directory (rule 6)', async () => {
 			const store = await open()
 			const root = await store.get(ROOT)
@@ -436,6 +448,18 @@ export function storeConformance(name: string, open: () => Promise<Store>): void
 			})
 			await store.commit([node({ id: 'e', name: 'e.txt' })])
 			expect(quiet.map((rows) => rows.map((n) => n.id))).toEqual([['e']])
+		})
+
+		test('close is idempotent, and a store that owns nothing has none (rule 8)', async () => {
+			const store = await open()
+			if (!store.close) return // optional: most stores own nothing to release
+
+			await store.commit([node({ id: 'a', name: 'a.txt' })])
+			// Whoever built the store calls this, and may call it twice — a shutdown path
+			// that runs once per owner, or twice on the way out of an error, must not turn
+			// releasing a resource into a failure.
+			await store.close()
+			await store.close()
 		})
 
 		test('blobs round-trip by hash, and the bytes cross by value (rule 7)', async () => {

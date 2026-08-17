@@ -31,7 +31,10 @@ sidecar for ids and versions, is enough. Do not build inotify integration.
 ## Files
 
 - `packages/fs/store.fs.ts`
-- tests beside it
+- `packages/fs/store.ts` — `close?()`, the seam's one lifecycle member
+- `packages/fs/store.conformance.ts` — the suite owns what it opens, and `close`
+  is idempotent on every backend that has one
+- tests beside them
 
 ## RED
 
@@ -52,6 +55,14 @@ Conformance green, and the two consumers can be pointed at it in
 unchanged against a temp directory, and `storeVolume` needs nothing this store
 does not have — so T17 is a swap of the constructor and nothing else.
 
+**One deliberate deviation from "do not build inotify integration".** The first
+cut obeyed it: `since` walked the whole tree, every call. Measured, that cannot
+stand at any size — a walk is one `lstat` per file (~700ms at thirty thousand
+files) and a consumer polls `since` every 50ms (`WATCH_BURST_MS`), so the store
+saturated a core from about five thousand files up. A floor alone only trades
+that for staleness. So the watcher went in, and the walk stayed as the truth
+behind it; the numbers are in the note below.
+
 Four notes for the tasks after this one:
 
 - **The sidecar holds whole rows**, not just ids and versions. It has to: no
@@ -70,5 +81,23 @@ Four notes for the tasks after this one:
   twice — and an out-of-band overwrite loses the old bytes, exactly as it does
   on any filesystem.
 - **No `subscribe`, on purpose.** A consumer takes it INSTEAD of polling `since`
-  (`volume.store.ts`), and only a scan finds an out-of-band edit. Offering one
-  here would blind a watcher to the very changes this backend exists for.
+  (`volume.store.ts`), and only a look finds a change made outside the store.
+  Offering one here would blind a watcher to the very changes this backend exists
+  for.
+- **The watcher is the latency; the walk is the truth.** `since` drains the paths
+  a recursive `fs.watch` named, then falls back to two floors: every directory
+  each second (`SWEEP_MS` — one `lstat` per directory catches every create,
+  delete and rename, including an editor's atomic save), and every file every few
+  seconds (`DEEP_MS`, the only thing that finds an in-place write). The tiers are
+  not belt and braces: a recursive watch DROPS events — measured, on macOS, in a
+  process holding a few dozen watchers — so a store that trusted it would go
+  quietly stale. Measured at thirty thousand files: forty polls over two seconds
+  cost 41ms in total (they cost ~29 SECONDS when every one walked the tree), and
+  an out-of-band edit reached the feed in 84ms.
+- **`close?()` is the seam's one lifecycle member, and it is the constructor's to
+  call.** The store owns an OS watcher; nothing above it does, so nothing above it
+  grows a `close`. A `Store` is composable — two volumes at different scopes, an
+  engine and a wire adapter may hold the same one — so a wrapper owns nothing,
+  implements none and forwards none. The watcher is armed on the first `since`
+  (a consumer that only reads and writes never asks for one) and is not
+  persistent, so a CLI that never closes the store still exits.

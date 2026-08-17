@@ -61,6 +61,23 @@ export interface Store {
 	// Optional. Everything works without these.
 	subscribe?(listener: (writes: Node[]) => void): () => void
 	gc?(): Promise<{ reclaimed: number; done: boolean }>
+
+	/**
+	 * Release what THIS store owns — a watcher, a connection, a handle. Optional,
+	 * because most stores own nothing: memory, a wire, a database somebody else
+	 * opened.
+	 *
+	 * Called by whoever CONSTRUCTED the store, and by nobody else. A store is
+	 * composable: two volumes at different scopes, an engine, an authority and a
+	 * wire adapter may all hold the same one, and none of them may end it — which
+	 * is why nothing above the seam grows a `close` of its own, and why a wrapper
+	 * (`authority`, `hydratingBlobs`, `verifiedBlobs`) owns nothing, implements
+	 * none, and forwards none. Call it on what you built.
+	 *
+	 * Idempotent. After it, a caller is done with the store: whether the store can
+	 * still answer is its own business, and no caller may rely on either answer.
+	 */
+	close?(): Promise<void>
 }
 
 /** The root directory id (contract rule 6). The same constant on every replica. */
