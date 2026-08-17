@@ -675,10 +675,16 @@ export function fsStore(root: string): Store {
 		}
 		// A DIRECTORY's metadata waits for the observation pass, which is after everything
 		// going inside it has landed. Its stamp has to wait anyway — an entry appearing
-		// moves it — and its mode must, because a row may state a directory this store
-		// cannot write into: `0555` applied here and the child of the same batch fails
-		// with EACCES, which fails the page, which stalls the replica for good.
+		// moves it — and its mode must when the mode LOCKS this store out: `0555` applied
+		// here and the child of the same batch fails with EACCES, which fails the page,
+		// which stalls the replica for good.
+		//
+		// A mode that leaves the owner rwx goes on now, because the batch that unlocks a
+		// directory is usually the batch that fills it, and holding the grant back would
+		// make that page the one page this store could never apply. Early is not early
+		// either: it is the mode the row states, reached sooner.
 		if (!isDir(row)) await meta(os, row)
+		else if ((row.mode & 0o700) === 0o700) await chmod(os, row.mode & 0o7777)
 		return { id: row.id, path, hash }
 	}
 

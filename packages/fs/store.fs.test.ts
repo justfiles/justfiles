@@ -970,6 +970,23 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
 	})
 
+	test('a batch that unlocks a directory and fills it in one page lands', async () => {
+		const root = await temp()
+		const store = open(root)
+		const locked = { ...dir({ id: 'd', name: 'locked' }), mode: 0o040500 }
+		await store.commit([locked])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+
+		// The page that unlocks the directory carries the child as well. Waiting for the
+		// observation pass to state EVERY directory mode would hold the grant back past
+		// the write that needs it, so the page that unlocks the parent is the one page
+		// this replica could never apply.
+		await store.commit([{ ...locked, mode: 0o040700, version: 'v2' }, inside])
+
+		expect(await readFile(join(root, 'locked/c.txt'), 'utf8')).toBe('kept')
+		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o700)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
