@@ -53,13 +53,21 @@ const SCHEMA = [
 		name TEXT NOT NULL COLLATE BINARY,
 		type TEXT NOT NULL,
 		mode INTEGER NOT NULL,
-		mtime_ns INTEGER NOT NULL,
-		size INTEGER NOT NULL,
+		-- The two 64-bit fields, as decimal TEXT rather than INTEGER. The Durable
+		-- Object hands every column back as ArrayBuffer, string, number or null --
+		-- SqlStorageValue has no bigint -- and an epoch nanosecond stamp is far
+		-- past 2^53, so an INTEGER column would come back rounded: get would stop
+		-- returning the row that was committed, and rule 3 would read every
+		-- re-commit of it as a change. Nothing sorts or compares on either one.
+		mtime_ns TEXT NOT NULL,
+		size TEXT NOT NULL,
 		xattrs TEXT,
 		content TEXT,
 		link TEXT,
 		version TEXT NOT NULL,
 		deleted INTEGER NOT NULL DEFAULT 0,
+		-- INTEGER, because this one IS compared and taken the MAX of in SQL. It
+		-- counts row writes, so it stays a JS number for the life of the store.
 		seq INTEGER NOT NULL
 	)`,
 	// Live rows only, so a tombstone leaves the lookup by being written — no
@@ -325,8 +333,11 @@ const bind = (node: Node, seq: number): SqlValue[] => [
 	node.name,
 	node.type,
 	node.mode,
-	node.mtimeNs,
-	node.size,
+	// Written as digits, never as a bigint binding: the DO's adapter would
+	// stringify it anyway, and a TEXT column must hold the same characters on
+	// every backend for the row to read back the same.
+	String(node.mtimeNs),
+	String(node.size),
 	node.xattrs === undefined ? null : encodeXattrs(node.xattrs),
 	node.content ?? null,
 	node.link ?? null,

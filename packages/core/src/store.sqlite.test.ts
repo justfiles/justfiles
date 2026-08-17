@@ -41,6 +41,29 @@ const adapter = (db: DatabaseSync): DbAdapter => {
 /** A fresh in-memory database per store, so two `open()` calls are two lineages. */
 const fresh = () => sqliteStore(adapter(new DatabaseSync(':memory:')))
 
+/**
+ * The PRODUCTION adapter's value handling, which the one above does not share:
+ * `createDOSqliteAdapter` binds a bigint as a decimal string, and the Durable
+ * Object hands every column back as `ArrayBuffer | string | number | null` —
+ * `SqlStorageValue` has no bigint. Reading integers as numbers (no
+ * `setReadBigInts`) is what reproduces that half here.
+ */
+const likeDurableObject = (db: DatabaseSync): DbAdapter => {
+	const digits = (args: unknown[]) =>
+		args.map((arg) => (typeof arg === 'bigint' ? arg.toString() : arg))
+	const asDO = {
+		prepare(sql: string) {
+			const statement = db.prepare(sql)
+			return {
+				all: (...args: unknown[]) => statement.all(...(digits(args) as [])),
+				run: (...args: unknown[]) => statement.run(...(digits(args) as []))
+			}
+		},
+		exec: (sql: string) => db.exec(sql)
+	}
+	return createSqliteAdapter(asDO as unknown as Parameters<typeof createSqliteAdapter>[0])
+}
+
 const dir = mkdtempSync(join(tmpdir(), 't12-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -131,6 +154,32 @@ describe('sqliteStore: the guard and its writes are one transaction', () => {
 		await store.commit(rows, allNew(rows))
 		expect(count()).toBe(102)
 		expect((await store.get('n99'))?.name).toBe('f99.txt')
+	})
+})
+
+describe('sqliteStore: the production adapter reads every column as a number', () => {
+	test('a nanosecond mtime and a 64-bit size survive the round trip intact', async () => {
+		const store = sqliteStore(likeDurableObject(new DatabaseSync(':memory:')))
+		// Both are past 2^53, where a JS number stops counting in ones: an epoch
+		// nanosecond stamp is the ordinary case, not a corner one.
+		const row = node({
+			id: 'a',
+			name: 'a.txt',
+			mtimeNs: 1_755_000_000_123_456_789n,
+			size: 9_007_199_254_740_993n
+		})
+		await store.commit([row])
+
+		// A row that reads back rounded is a row the store cannot recognise as the
+		// one it holds …
+		expect(await store.get('a')).toEqual(row)
+		expect(await store.child(ROOT, 'a.txt')).toEqual(row)
+
+		// … so rule 3's no-op is what actually breaks: every re-commit would land
+		// again and take a new feed position, for as long as the row exists.
+		const mark = (await store.since()).next
+		await store.commit([row])
+		expect((await store.since(mark)).nodes).toEqual([])
 	})
 })
 
