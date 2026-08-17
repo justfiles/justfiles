@@ -42,8 +42,8 @@
  *   allows (rule 1) — the disk holds the one the rows resolve to, the lowest id,
  *   because a local tool reading that path must see what the store answers.
  * - **A live row with no path keeps its bytes.** Visibility is reachability (rule
- *   9), so a row whose parent is missing, cyclic or tombstoned has no path — and
- *   neither has one that lost a contested name — but it is still live, and on this
+ *   9), so a row whose parent is missing, buried, cyclic or not a directory has no
+ *   path — and neither has one that lost a contested name — but it is still live, and on this
  *   backend its file is the only copy of its content. Its file moves to a holding
  *   area inside the sidecar, where the scan never looks and `blobs` still can; a
  *   later commit that gives the row a place renames it back, which is the same
@@ -272,8 +272,9 @@ export function fsStore(root: string): Store {
 
 	/**
 	 * Where a row belongs in the tree, or null when it has no place on the disk —
-	 * because nothing can reach it from root (a detached or cyclic row, rule 9), or
-	 * because the name it asks for is the sidecar's. Either way its file goes to the
+	 * because nothing can reach it from root (a row that is detached, cyclic, or under
+	 * something that is not a directory, rule 9), or because the name it asks for is
+	 * the sidecar's. Either way its file goes to the
 	 * holding area instead: a row called `.jfs` must not be able to write over the
 	 * index that knows what every row is.
 	 */
@@ -286,7 +287,11 @@ export function fsStore(root: string): Store {
 			walked.add(at.id)
 			parts.unshift(at.name)
 			const up = byId.get(at.parent)
-			if (!up || up.deleted) return null
+			// Missing, buried, or not a directory at all: a page may re-type a file into
+			// the directory this row belongs to and arrive AFTER the rows that fill it,
+			// and nothing is reachable through a file. Writing under one would fail with
+			// ENOTDIR and wedge the replica on that page for good.
+			if (!up || up.deleted || !isDir(up)) return null
 			at = up
 		}
 		return parts[0] === SIDECAR ? null : parts.join('/')
@@ -566,18 +571,27 @@ export function fsStore(root: string): Store {
 	}
 
 	/**
-	 * A row on the disk, and the one other row that may have to move because of it:
-	 * a name this row LEFT — by being tombstoned, by moving, or by losing its place
-	 * in the tree — may still be claimed by a live row waiting in the holding area,
-	 * and that row is the winner now. Nothing else would ever bring it back, because
-	 * the scan does not look in there.
+	 * A row on the disk, and the rows that may have to move because of it. Neither is
+	 * in the batch, and neither ever will be: the engine's cursor is past the page
+	 * that carried them, so this commit is the only chance their files get.
+	 *
+	 * - A name this row LEFT — by being tombstoned, by moving, or by losing its place
+	 *   in the tree — may still be claimed by a live row waiting in the holding area,
+	 *   and that row is the winner now.
+	 * - A DIRECTORY that has just arrived, moved, or stopped being a file is the place
+	 *   rows were waiting for. A page routinely carries a child before its parent
+	 *   (rule 9), and a row nothing could reach has no file.
 	 */
 	const place = async (row: Node, old: Node | null, path: string | null): Promise<Landed[]> => {
+		const was = seen.get(row.id)?.path
 		const landed = await put(row, old, path)
-		const left =
-			old && !old.deleted && (row.deleted || old.parent !== row.parent || old.name !== row.name)
-		const after = left ? await promote(old.parent, old.name) : []
-		return landed ? [landed, ...after] : after
+		const out = landed ? [landed] : []
+		if (old && !old.deleted && (row.deleted || old.parent !== row.parent || old.name !== row.name))
+			out.push(...(await promote(old.parent, old.name)))
+		// Not when the row was already a directory at this very path: that is every
+		// ordinary write, and its children are where they belong.
+		if (landed && !(old && isDir(old) && was === landed.path)) out.push(...(await adopt(row)))
+		return out
 	}
 
 	/** Put the live row that claims this name where the tree says it goes, if it is not there. */
@@ -587,6 +601,15 @@ export function fsStore(root: string): Store {
 		const path = pathOf(winner)
 		if (path === null || seen.get(winner.id)?.path === path) return []
 		return place(winner, winner, path)
+	}
+
+	/** Every name a directory holds, put where the tree now says it goes. */
+	const adopt = async (row: Node): Promise<Landed[]> => {
+		if (!isDir(row)) return []
+		const out: Landed[] = []
+		for (const name of [...(tree.get(row.id)?.keys() ?? [])])
+			out.push(...(await promote(row.id, name)))
+		return out
 	}
 
 	/**

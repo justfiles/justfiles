@@ -364,9 +364,9 @@ describe('fsStore: a real directory, reconciled', () => {
 		const caught = await feed(store)
 		expect(caught.nodes.find((n) => n.id === 'c')?.deleted).toBeUndefined()
 
-		// The parent arrives, and the same row committed again is placed rather than
-		// skipped as the no-op it otherwise is (rule 3) — which is also how a retry
-		// after a write that failed halfway heals.
+		// The parent arrives, and the row it makes reachable lands with it. Committing
+		// that row again is then a no-op — unless the disk never got it, which is how a
+		// retry after a write that failed halfway heals (rule 3).
 		await store.commit([dir])
 		await store.commit([child])
 		expect(await readdir(join(root, 'sub'))).toEqual(['c.txt'])
@@ -601,6 +601,46 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		const rows = (await feed(store)).nodes
 		expect(rows.filter((n) => n.deleted).map((n) => n.id)).toEqual(['aaa'])
 		expect(await store.child(ROOT, 'dup.txt')).toEqual(high)
+	})
+
+	test('a child that arrived before its parent lands when the parent does', async () => {
+		const root = await temp()
+		const store = open(root)
+		const child = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+
+		// The page carrying a child routinely arrives before the one carrying its
+		// parent — the feed puts a directory after the child whose creation stamped it
+		// (rule 9). The engine's cursor is past that page for good, so the commit that
+		// makes the row reachable is the only chance its file gets.
+		await store.commit([child])
+		await store.commit([dir({ id: 'd', name: 'sub' })])
+
+		expect(await readFile(join(root, 'sub/c.txt'), 'utf8')).toBe('kept')
+		expect(await store.get('c')).toEqual(child)
+		// And what the disk holds is what the store said all along: no news, no ghost.
+		const rows = (await feed(store)).nodes
+		expect(rows.filter((n) => n.name === 'c.txt').map((n) => n.id)).toEqual(['c'])
+	})
+
+	test('a child whose parent is still a file waits for the page that makes it a directory', async () => {
+		const root = await temp()
+		const store = open(root)
+		const parent = await file(store, 'd', 'sub', 'a file for now')
+		await store.commit([parent])
+		const child = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+
+		// A batch that re-types a file as a directory and fills it can page the
+		// children first. Until the page that re-types it lands, the parent is a file
+		// and nothing is reachable through it — writing under it would fail with
+		// ENOTDIR and wedge the replica on that page forever.
+		await store.commit([child])
+		expect(await store.get('c')).toEqual(child)
+		expect(await readFile(join(root, 'sub'), 'utf8')).toBe('a file for now')
+
+		await store.commit([
+			{ ...parent, type: 'dir', mode: 0o040755, content: undefined, version: 'v2' }
+		])
+		expect(await readFile(join(root, 'sub/c.txt'), 'utf8')).toBe('kept')
 	})
 
 	test('a directory that becomes a file keeps what was inside it, bytes and all', async () => {
