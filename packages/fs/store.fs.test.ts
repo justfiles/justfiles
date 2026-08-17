@@ -820,6 +820,52 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		)
 	})
 
+	test('a move looks at the file it is moving, not only where it is going', async () => {
+		const root = await temp()
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		await feed(store)
+
+		// Edited out of band, then moved by the app before any poll — with no guard, so
+		// nothing refuses the move. A rename carries the file as it is NOW, so the look
+		// has to cover the name the row is AT and not only the name it is going to.
+		await writeFile(join(root, 'a.txt'), 'edited by somebody else')
+		const edited = await sha256Hex(bytes('edited by somebody else'))
+		await store.commit([{ ...row, name: 'moved.txt', version: 'v2' }])
+
+		expect(await readFile(join(root, 'moved.txt'), 'utf8')).toBe('edited by somebody else')
+		// The one thing content-addressing cannot survive: a hash that answers with bytes
+		// which do not hash to it. The bytes on the disk answer under their own.
+		expect(await store.blobs.get(row.content ?? '')).toBeNull()
+		expect(read(await store.blobs.get(edited))).toBe('edited by somebody else')
+		// The unguarded move landed, so the row the app wrote is the row — naming content
+		// this replica does not hold, which is the stub state rule 7 has a place for.
+		expect((await store.child(ROOT, 'moved.txt'))?.content).toBe(row.content)
+	})
+
+	test('a guarded move of a file edited outside is refused', async () => {
+		const root = await temp()
+		const store = open(root)
+		const row = await place(store, 'a.txt', 'hello')
+		await feed(store)
+
+		// The same situation with the guard an app that cares would send: the base moved
+		// under the read, so the move is refused and nothing on the disk is touched.
+		await writeFile(join(root, 'a.txt'), 'edited by somebody else')
+		await expect(
+			store.commit(
+				[{ ...row, name: 'moved.txt', version: 'v2' }],
+				[{ version: { id: row.id, is: row.version } }]
+			)
+		).rejects.toThrow(GuardError)
+
+		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('edited by somebody else')
+		expect(await store.child(ROOT, 'moved.txt')).toBeNull()
+		expect((await store.child(ROOT, 'a.txt'))?.content).toBe(
+			await sha256Hex(bytes('edited by somebody else'))
+		)
+	})
+
 	test('a version guard fails when a local tool has deleted the row it names', async () => {
 		const root = await temp()
 		const store = open(root)

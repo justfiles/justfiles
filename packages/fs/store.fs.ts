@@ -1281,7 +1281,14 @@ export function fsStore(root: string): Store {
 				const touched = new Map<string, [NodeId, string]>()
 				const touch = (parent: NodeId, name: string): void =>
 					void touched.set(parent + SEP + name, [parent, name])
-				for (const row of batch) if (!row.deleted) touch(row.parent, row.name)
+				for (const row of batch) {
+					// Where it is going, and where it is now: a move renames the file as it IS,
+					// so a look at the destination alone would carry bytes this store has not
+					// seen under a hash that does not name them.
+					if (!row.deleted) touch(row.parent, row.name)
+					const held = byId.get(row.id)
+					if (held && !held.deleted) touch(held.parent, held.name)
+				}
 				for (const guard of checks ?? []) {
 					if ('free' in guard) touch(guard.free.parent, guard.free.name)
 					else {
