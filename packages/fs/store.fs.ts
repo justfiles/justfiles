@@ -76,6 +76,7 @@ import {
 	lstat as lstatOf,
 	lutimes,
 	mkdir,
+	open as openPath,
 	readdir,
 	readFile,
 	readlink,
@@ -605,6 +606,37 @@ export function fsStore(root: string): Store {
 	const opened = new Set<NodeId>()
 
 	/**
+	 * A mode set on the directory this store MEANT, and not on whatever answers to its
+	 * name by the time the call lands. Opened, identified and changed through the one
+	 * descriptor, so a rename arriving in between moves the name and not what this acts
+	 * on.
+	 *
+	 * Only where the mode still allows opening it: POSIX wants read permission on a
+	 * directory to open it, which `0300`, `0100` and `0000` do not give even to their
+	 * owner (measured), and there is no `fchmodat` to ask with here. Those fall back to
+	 * the name — identity checked first, and raced at worst, which is what this was
+	 * before. Says whether it acted, because a caller that records state afterwards must
+	 * not record it for somebody else's directory.
+	 */
+	const setMode = async (path: string, ino: string, mode: number): Promise<boolean> => {
+		const handle = await openPath(abs(path)).catch(() => null)
+		if (handle === null) {
+			const s = await lstat(abs(path))
+			if (s === null || String(s.ino) !== ino) return false
+			await chmod(abs(path), mode)
+			return true
+		}
+		try {
+			const s = await handle.stat({ bigint: true })
+			if (String(s.ino) !== ino) return false
+			await handle.chmod(mode)
+			return true
+		} finally {
+			await handle.close()
+		}
+	}
+
+	/**
 	 * A directory whose stated mode shuts this store out, with an entry of its own about
 	 * to land or leave: POSIX wants write and search on the PARENT, and a page carrying
 	 * only the child grants neither. So it is opened for as long as the pass takes, and
@@ -614,9 +646,13 @@ export function fsStore(root: string): Store {
 	 * transient as a `publish` temp file, and the alternative is worse by a long way: a
 	 * page this replica could never apply, retried for ever.
 	 */
-	const unlock = async (dir: Node, path: string, need: number): Promise<void> => {
+	const unlock = async (dir: Node, path: string, need: number, ino?: string): Promise<void> => {
 		opened.add(dir.id)
-		await chmod(abs(path), (dir.mode & 0o7777) | need)
+		const mode = (dir.mode & 0o7777) | need
+		// No `ino` from the observation pass: that directory is one this store has just
+		// put there itself, and the marking that would record its identity comes after.
+		if (ino === undefined) await chmod(abs(path), mode)
+		else await setMode(path, ino, mode)
 	}
 
 	/**
@@ -637,7 +673,7 @@ export function fsStore(root: string): Store {
 			// Identity is the inode here as everywhere else: another process may have put a
 			// different directory at this name, and that one is not this store's to open.
 			if (!dir || dir.deleted || !at || !locked(dir, need)) continue
-			if (await mine(at)) await unlock(dir, step, need)
+			await unlock(dir, step, need, at.ino)
 		}
 	}
 
@@ -661,8 +697,7 @@ export function fsStore(root: string): Store {
 				// restricting THAT one would be this store changing something it never
 				// touched. What was moved keeps the mode it was granted until a walk finds
 				// it and states what it finds — the grant recorded, rather than hidden.
-				if (!(await mine(at))) continue
-				await chmod(abs(at.path), dir.mode & 0o7777)
+				if (!(await setMode(at.path, at.ino, dir.mode & 0o7777))) continue
 				// And its state taken down again, because this chmod moved the mode and the
 				// ctime AFTER the observation pass looked. Otherwise the next walk reads the
 				// way this store let itself in as a change somebody made, and publishes a
