@@ -132,6 +132,14 @@ test('the index links to *.localhost in local dev', async () => {
 	expect(page).toContain('src="http://alice-notes.localhost:8787/v/1.2.0/icon.png"')
 })
 
+// The icon preview is a client-side design tool, but the apps it stands a
+// candidate beside are the published ones — so it reads the same projection the
+// index does, and lives on the root site with it.
+test('the icon preview draws the candidate beside the store', async () => {
+	const page = await (await get('https://example.com/icon-preview', envWith(published))).text()
+	expect(page).toContain('src="https://alice-notes.example.com/v/1.2.0/icon.png"')
+})
+
 test('a recorded release serves its bytes, frozen for a year', async () => {
 	const res = await get('https://alice-notes.example.com/v/1.2.0/gui.js', envWith(published))
 	expect(res.status).toBe(200)
