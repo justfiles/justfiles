@@ -110,7 +110,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | --- | --- | --- | --- |
 | T12 | [SQLite Store (server)](t12-sqlite-store.md) | T1–T3 | done |
 | T13 | [HTTP wire: `storeApi` + `httpStore`](t13-http-wire.md) | T1–T3, T10 | done |
-| T14 | [Native FS Store](t14-native-fs-store.md) | T1–T3 | todo |
+| T14 | [Native FS Store](t14-native-fs-store.md) | T1–T3 | done |
 
 ### Phase D — namespace, migration, swap, retire
 

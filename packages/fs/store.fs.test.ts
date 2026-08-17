@@ -1,0 +1,348 @@
+/**
+ * The `Store` over a real directory. The conformance suite runs against a temp
+ * dir like every other backend, and the cases below are the ones only this
+ * backend has to answer for: the files ARE the data, so a change nobody
+ * announced has to become a row, and a reopen must not mint a second id for a
+ * file that already has one.
+ */
+
+import { mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, test } from 'vitest'
+import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
+import { storeConformance } from './store.conformance'
+import { fsStore } from './store.fs'
+
+const temp = (): Promise<string> => mkdtemp(join(tmpdir(), 'jfs-t14-'))
+
+const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
+const read = (data: Uint8Array | null): string | null =>
+	data === null ? null : new TextDecoder().decode(data)
+
+/** Scan the feed to its end, as the conformance suite does. */
+async function feed(store: Store, from?: Cursor): Promise<{ nodes: Node[]; cursor: Cursor }> {
+	const nodes: Node[] = []
+	let cursor = from
+	for (let page = 0; page < 100; page++) {
+		const got = await store.since(cursor)
+		if (got.next === undefined) throw new Error('since must always hand a cursor back')
+		cursor = got.next
+		if (got.nodes.length === 0) return { nodes, cursor }
+		nodes.push(...got.nodes)
+	}
+	throw new Error('since never caught up')
+}
+
+const named = (nodes: Node[], name: string): Node => {
+	const row = nodes.find((n) => n.name === name)
+	if (!row) throw new Error(`no row named ${name} in [${nodes.map((n) => n.name).join(', ')}]`)
+	return row
+}
+
+/** A file row under root, with the bytes made durable first (rule 10). */
+async function place(store: Store, name: string, content: string): Promise<Node> {
+	const data = bytes(content)
+	const hash = await sha256Hex(data)
+	await store.blobs.put(hash, data)
+	const row: Node = {
+		id: crypto.randomUUID(),
+		parent: ROOT,
+		name,
+		type: 'file',
+		mode: 0o100644,
+		mtimeNs: 0n,
+		size: BigInt(data.length),
+		content: hash,
+		version: 'v1'
+	}
+	await store.commit([row])
+	return row
+}
+
+// Every `open()` is its own directory, so two of them are two stores — and two
+// lineages, which is what the cursor case in the suite asks for.
+storeConformance('fsStore', async () => fsStore(await temp()))
+
+describe('fsStore: a real directory, reconciled', () => {
+	test('a commit lands as real files a local tool can read', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const dir: Node = {
+			id: 'd',
+			parent: ROOT,
+			name: 'notes',
+			type: 'dir',
+			mode: 0o040755,
+			mtimeNs: 0n,
+			size: 0n,
+			version: 'v1'
+		}
+		await store.commit([dir])
+		const data = bytes('# hello\n')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		await store.commit([
+			{
+				id: 'f',
+				parent: 'd',
+				name: 'a.md',
+				type: 'file',
+				mode: 0o100755,
+				mtimeNs: 0n,
+				size: BigInt(data.length),
+				content: hash,
+				version: 'v1'
+			}
+		])
+
+		// The whole point of this backend: `cat` works, and so does everything else
+		// that only knows about paths.
+		expect(await readFile(join(root, 'notes/a.md'), 'utf8')).toBe('# hello\n')
+		expect(await readdir(join(root, 'notes'))).toEqual(['a.md'])
+		// The mode reaches the file, so an executable row is executable on disk.
+		expect((await stat(join(root, 'notes/a.md'))).mode & 0o777).toBe(0o755)
+	})
+
+	test('content is the file itself: the blob store keeps no second copy', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const row = await place(store, 'a.txt', 'hello')
+		if (row.content === undefined) throw new Error('the row lost its content hash')
+
+		// The bytes were handed over before the row, and once the row named them
+		// the file is where they live — the sidecar holds nothing but the index.
+		expect(await readdir(join(root, '.jfs/blobs'))).toEqual([])
+		expect(read(await store.blobs.get(row.content))).toBe('hello')
+		expect(await store.blobs.has(row.content)).toBe(true)
+	})
+
+	test('a reopen is not a reset: minted ids and cursors survive in the sidecar', async () => {
+		const root = await temp()
+		await writeFile(join(root, 'note.md'), 'hello')
+		const one = fsStore(root)
+		const first = await feed(one)
+		const minted = named(first.nodes, 'note.md')
+		expect(minted.size).toBe(5n)
+
+		// A second store over the same directory finds the sidecar, so the file it
+		// scans is the node it already was — an id is minted once, never rebound.
+		const two = fsStore(root)
+		expect(await two.child(ROOT, 'note.md')).toEqual(minted)
+		expect((await two.get(minted.id))?.name).toBe('note.md')
+		// Same lineage, and nothing to report: a restart is not news.
+		expect((await two.since(first.cursor)).nodes).toEqual([])
+	})
+
+	test('an out-of-band edit appears in since after the next scan', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const row = await place(store, 'a.txt', 'hello')
+		const { cursor } = await feed(store)
+
+		await writeFile(join(root, 'a.txt'), 'edited by somebody else')
+		const changed = (await feed(store, cursor)).nodes
+		expect(changed.map((n) => n.id)).toEqual([row.id])
+		const [edited] = changed
+		if (!edited) throw new Error('the edit never reached the feed')
+		expect(edited.size).toBe(23n)
+		expect(edited.content).toBe(await sha256Hex(bytes('edited by somebody else')))
+		expect(edited.version).not.toBe(row.version)
+		// The row and the bytes agree: the content hash answers from the file.
+		expect(read(await store.blobs.get(edited.content ?? ''))).toBe('edited by somebody else')
+		// And a second scan finds nothing: an observed file is not news twice.
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toEqual([row.id])
+		expect((await feed(store)).nodes.filter((n) => n.id === row.id).length).toBe(1)
+	})
+
+	test('an out-of-band create, delete and subtree removal reach the feed', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const gone = await place(store, 'gone.txt', 'bye')
+		const { cursor } = await feed(store)
+
+		await mkdir(join(root, 'sub/deep'), { recursive: true })
+		await writeFile(join(root, 'sub/deep/new.txt'), 'fresh')
+		await rm(join(root, 'gone.txt'))
+
+		const caught = await feed(store, cursor)
+		const rows = caught.nodes
+		// The new tree arrives as rows, root included: adding an entry bumped the
+		// directory's own mtime, and that is a change like any other.
+		expect(named(rows, 'sub').type).toBe('dir')
+		expect(named(rows, 'deep').parent).toBe(named(rows, 'sub').id)
+		expect(named(rows, 'new.txt').content).toBe(await sha256Hex(bytes('fresh')))
+		expect(rows.some((n) => n.id === ROOT)).toBe(true)
+		// A file that is not there any more is a tombstone.
+		expect(rows.find((n) => n.id === gone.id)?.deleted).toBe(true)
+		expect(await store.child(ROOT, 'gone.txt')).toBeNull()
+
+		// A whole subtree removed out of band tombstones every row under it.
+		const deep = named(rows, 'deep')
+		const inner = named(rows, 'new.txt')
+		await rm(join(root, 'sub'), { recursive: true })
+		const after = (await feed(store, caught.cursor)).nodes
+		expect(
+			after
+				.filter((n) => n.deleted)
+				.map((n) => n.id)
+				.sort()
+		).toEqual([named(rows, 'sub').id, deep.id, inner.id].sort())
+	})
+
+	test('a directory rename moves the subtree on disk and keeps every id', async () => {
+		const root = await temp()
+		await mkdir(join(root, 'old/deep'), { recursive: true })
+		await writeFile(join(root, 'old/deep/note.md'), 'kept')
+		const store = fsStore(root)
+		const before = (await feed(store)).nodes
+		const dir = named(before, 'old')
+		const deep = named(before, 'deep')
+		const note = named(before, 'note.md')
+
+		// One row moves — the design's O(1) move — and on a real filesystem that is
+		// one `rename`, whatever the subtree under it holds.
+		await store.commit([{ ...dir, name: 'new', version: 'v2' }])
+		expect(await readFile(join(root, 'new/deep/note.md'), 'utf8')).toBe('kept')
+		expect((await readdir(root)).sort()).toEqual(['.jfs', 'new'])
+		// The children never moved: same ids, same rows, and the paths the store
+		// tracks for them followed the parent.
+		expect((await store.get(deep.id))?.name).toBe('deep')
+		expect(await store.child(deep.id, 'note.md')).toEqual(note)
+		expect(read(await store.blobs.get(note.content ?? ''))).toBe('kept')
+		// And the scan agrees: nothing was lost or found by the move.
+		expect((await feed(store)).nodes.filter((n) => n.deleted)).toEqual([])
+	})
+
+	test('a batch that names a child before its parent still lands', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const dir: Node = {
+			id: 'd',
+			parent: ROOT,
+			name: 'sub',
+			type: 'dir',
+			mode: 0o040755,
+			mtimeNs: 0n,
+			size: 0n,
+			version: 'v1'
+		}
+		const link: Node = {
+			id: 'l',
+			parent: 'd',
+			name: 'link',
+			type: 'symlink',
+			mode: 0o120777,
+			mtimeNs: 0n,
+			size: 12n,
+			link: '../elsewhere',
+			version: 'v1'
+		}
+		// A commit is not ordered inside itself, so a store cannot ask for parents
+		// first — the engine applies whatever order the feed handed it.
+		await store.commit([link, dir])
+
+		expect(await readdir(join(root, 'sub'))).toEqual(['link'])
+		expect(await readlink(join(root, 'sub/link'))).toBe('../elsewhere')
+		// And the disk says back what the rows said: the scan finds no news.
+		const caught = await feed(store)
+		expect(caught.nodes.map((n) => n.id).sort()).toEqual([ROOT, 'd', 'l'].sort())
+		expect((await feed(store, caught.cursor)).nodes).toEqual([])
+	})
+
+	test('a lazy stub keeps the name, and the bytes fill it in when they arrive', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const data = bytes('arrived late')
+		const hash = await sha256Hex(data)
+		const stub: Node = {
+			id: 's',
+			parent: ROOT,
+			name: 'later.md',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([stub])
+		// The row is whole and the bytes were never fetched (rules 7, 10): the name
+		// is there, empty, and the row still states the content it waits for.
+		expect(await readFile(join(root, 'later.md'), 'utf8')).toBe('')
+		expect(await store.get('s')).toEqual(stub)
+		expect(await store.blobs.has(hash)).toBe(false)
+		// A scan does not mistake the placeholder for an out-of-band truncation.
+		const caught = await feed(store)
+		expect((await feed(store, caught.cursor)).nodes).toEqual([])
+
+		await store.blobs.put(hash, data)
+		await store.commit([{ ...stub, version: 'v2' }])
+		expect(await readFile(join(root, 'later.md'), 'utf8')).toBe('arrived late')
+		expect(read(await store.blobs.get(hash))).toBe('arrived late')
+	})
+
+	test('a row with no place in the tree is held, and lands when one is given', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const dir: Node = {
+			id: 'd',
+			parent: ROOT,
+			name: 'sub',
+			type: 'dir',
+			mode: 0o040755,
+			mtimeNs: 0n,
+			size: 0n,
+			version: 'v1'
+		}
+		const child: Node = {
+			id: 'c',
+			parent: 'd',
+			name: 'c.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: 0n,
+			version: 'v1'
+		}
+
+		// Rule 9: a replica may hold a row whose parent has not arrived. It has no
+		// path on a filesystem, so it is a row and nothing else — which is exactly
+		// what "invisible until reachable" means here.
+		await store.commit([child])
+		expect(await store.get('c')).toEqual(child)
+		expect(await readdir(root)).toEqual(['.jfs'])
+		// And the scan does not bury it: a row the disk never held cannot be missing
+		// from it.
+		const caught = await feed(store)
+		expect(caught.nodes.find((n) => n.id === 'c')?.deleted).toBeUndefined()
+
+		// The parent arrives, and the same row committed again is placed rather than
+		// skipped as the no-op it otherwise is (rule 3) — which is also how a retry
+		// after a write that failed halfway heals.
+		await store.commit([dir])
+		await store.commit([child])
+		expect(await readdir(join(root, 'sub'))).toEqual(['c.txt'])
+		// Only the directory row is news: the store made this change itself, so root's
+		// bumped mtime is not a change to report — a volume stamps a parent by
+		// committing it, and nothing else may.
+		expect((await feed(store, caught.cursor)).nodes.map((n) => n.id)).toEqual(['d'])
+	})
+
+	test('a scan on open adopts a tree the store has never seen', async () => {
+		const root = await temp()
+		await mkdir(join(root, 'a/b'), { recursive: true })
+		await writeFile(join(root, 'a/b/c.txt'), 'deep')
+		const store = fsStore(root)
+
+		// No `since` first: the index is rebuilt by the scan on open, so a path
+		// resolves the moment the store is there.
+		const a = await store.child(ROOT, 'a')
+		if (!a) throw new Error('the scan on open missed a/')
+		const b = await store.child(a.id, 'b')
+		if (!b) throw new Error('the scan on open missed a/b/')
+		const c = await store.child(b.id, 'c.txt')
+		expect(c?.size).toBe(4n)
+		expect(read(await store.blobs.get(c?.content ?? ''))).toBe('deep')
+	})
+})
