@@ -632,8 +632,12 @@ export function fsStore(root: string): Store {
 		for (const step of steps) {
 			const id = owner.get(step)
 			const dir = id === undefined ? undefined : byId.get(id)
+			const at = id === undefined ? undefined : seen.get(id)
 			const need = step === path ? needs : SEARCH
-			if (dir && !dir.deleted && locked(dir, need)) await unlock(dir, step, need)
+			// Identity is the inode here as everywhere else: another process may have put a
+			// different directory at this name, and that one is not this store's to open.
+			if (!dir || dir.deleted || !at || !locked(dir, need)) continue
+			if (await mine(at)) await unlock(dir, step, need)
 		}
 	}
 
@@ -652,6 +656,12 @@ export function fsStore(root: string): Store {
 			// is that one. A directory that cannot be closed — removed, or shut by somebody
 			// else — is the world having moved, which the next look reconciles.
 			try {
+				// The same inode this pass opened, or nothing at all: another process may
+				// have renamed it away and left a different directory at the name, and
+				// restricting THAT one would be this store changing something it never
+				// touched. What was moved keeps the mode it was granted until a walk finds
+				// it and states what it finds — the grant recorded, rather than hidden.
+				if (!(await mine(at))) continue
 				await chmod(abs(at.path), dir.mode & 0o7777)
 				// And its state taken down again, because this chmod moved the mode and the
 				// ctime AFTER the observation pass looked. Otherwise the next walk reads the
