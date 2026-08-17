@@ -121,6 +121,15 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | T17 | [Swap the consumers](t17-swap-consumers.md) | T11, T13, T15, T16 | todo |
 | T18 | [Retire the twin vocabulary](t18-retire.md) | T17 | todo |
 
+### Optional — take it or leave it
+
+Not on the critical path. Nothing above waits for these, and the story ships
+without them.
+
+| # | Task | Depends on | Status |
+| --- | --- | --- | --- |
+| T19 | [The sidecar stops being one file](t19-sidecar-write-amplification.md) | T14 | optional |
+
 ## Dependency map
 
 ```

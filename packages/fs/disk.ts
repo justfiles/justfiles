@@ -125,6 +125,36 @@ export type Stamp = {
 	symlink?: boolean
 }
 
+/** The root: the one spot that needs no name to reach. */
+export const AT_ROOT = '' as Spot
+
+/**
+ * One name deeper, or null when the name is not a name. Shared by every `Disk`,
+ * because two implementations that disagreed about what a location IS would make
+ * a test against one prove nothing about the other.
+ */
+export const under = (parent: Spot, name: string): Spot | null =>
+	unsafe(name) ? null : ((parent === AT_ROOT ? name : `${parent}/${name}`) as Spot)
+
+/** One name shallower. Root is its own parent, and the walk stops there. */
+export const up = (at: Spot): Spot => {
+	const cut = at.lastIndexOf('/')
+	return (cut === -1 ? '' : at.slice(0, cut)) as Spot
+}
+
+/**
+ * Text that claims to be a spot — from the sidecar, which is a file anybody can
+ * edit. Re-validated name by name, because a `Spot` that was only ever a string
+ * on disk has had no check applied to it at all.
+ */
+export const spot = (text: string): Spot | null => {
+	if (text === '') return AT_ROOT
+	// Name by name, so one bad component anywhere makes the whole thing no spot at
+	// all. An index that says `../../etc` describes nothing this store owns.
+	for (const name of text.split('/')) if (unsafe(name)) return null
+	return text as Spot
+}
+
 export interface Disk {
 	/** The root of the store: the one `Spot` that needs no name to reach. */
 	readonly root: Spot
@@ -235,11 +265,10 @@ export interface Disk {
 }
 
 export function fsDisk(rootPath: string): Disk {
-	const ROOT = '' as Spot
-	const abs = (spot: Spot): string => (spot === ROOT ? rootPath : join(rootPath, spot))
+	const abs = (at: Spot): string => (at === AT_ROOT ? rootPath : join(rootPath, at))
 
-	const lstat = (spot: Spot): Promise<BigIntStats | null> =>
-		lstatOf(abs(spot), { bigint: true }).catch(() => null)
+	const lstat = (at: Spot): Promise<BigIntStats | null> =>
+		lstatOf(abs(at), { bigint: true }).catch(() => null)
 
 	/**
 	 * Take a name in ONE operation: build the payload under a private sibling and
@@ -304,26 +333,11 @@ export function fsDisk(rootPath: string): Disk {
 		return s !== null && String(s.ino) === at.ino
 	}
 
-	const under = (parent: Spot, name: string): Spot | null =>
-		unsafe(name) ? null : ((parent === ROOT ? name : `${parent}/${name}`) as Spot)
-
 	return {
-		root: ROOT,
-
+		root: AT_ROOT,
 		under,
-
-		up(spot) {
-			const cut = spot.lastIndexOf('/')
-			return (cut === -1 ? '' : spot.slice(0, cut)) as Spot
-		},
-
-		spot(text) {
-			if (text === '') return ROOT
-			// Name by name, so one bad component anywhere makes the whole thing no spot
-			// at all. An index that says `../../etc` describes nothing this store owns.
-			for (const name of text.split('/')) if (unsafe(name)) return null
-			return text as Spot
-		},
+		up,
+		spot,
 
 		stat: lstat,
 
@@ -474,9 +488,8 @@ export function fsDisk(rootPath: string): Disk {
 					// The OS spells a path in the platform's separator, and a name it names
 					// may be one this store would never make. Through the checked constructor
 					// like everything else: an event nobody can address is an event to drop.
-					const text = String(name).split(sep).join('/')
-					const at = text === '' ? ROOT : text.split('/').every((n) => !unsafe(n)) ? text : null
-					if (at !== null) onPath(at as Spot)
+					const at = spot(String(name).split(sep).join('/'))
+					if (at !== null) onPath(at)
 				})
 				held.on('error', onLost)
 				return () => held.close()
