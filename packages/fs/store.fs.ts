@@ -143,6 +143,10 @@ const DEEP_MS = 5_000
 
 const EMPTY = new Uint8Array()
 
+/** The two bits of a directory's own mode that a pass writing through it needs. */
+const WRITE = 0o200
+const SEARCH = 0o100
+
 /**
  * What the disk held at a row's path the last time this store looked. `ino` is the
  * file's identity and `state` is everything a write to it moves (`stateOf`), so a
@@ -528,8 +532,12 @@ export function fsStore(root: string): Store {
 				return
 	}
 
-	/** Can this store put an entry through a directory in this mode? Write and search. */
-	const locked = (dir: Node): boolean => isDir(dir) && (dir.mode & 0o300) !== 0o300
+	/**
+	 * Does this directory's mode withhold what a pass needs of it? `WRITE` to put an
+	 * entry in one, `SEARCH` to reach anything underneath — and search is the one every
+	 * ancestor on the way has to grant, or the path stops there.
+	 */
+	const locked = (dir: Node, need: number): boolean => isDir(dir) && (dir.mode & need) !== need
 
 	/** Directories opened for a write, closed again by the pass that opened them. */
 	const opened = new Set<NodeId>()
@@ -544,22 +552,36 @@ export function fsStore(root: string): Store {
 	 * transient as a `publish` temp file, and the alternative is worse by a long way: a
 	 * page this replica could never apply, retried for ever.
 	 */
-	const unlock = async (dir: Node, path: string): Promise<void> => {
+	const unlock = async (dir: Node, path: string, need: number): Promise<void> => {
 		opened.add(dir.id)
-		await chmod(abs(path), (dir.mode & 0o7777) | 0o300)
+		await chmod(abs(path), (dir.mode & 0o7777) | need)
 	}
 
-	/** The same, for whatever directory the index says is at this path. */
+	/**
+	 * The way in to a directory this pass is about to write in: every directory the
+	 * index knows on the way to it, opened from the OUTSIDE in. A mode without search
+	 * stops a walk where it stands, so an ancestor has to be open before anything inside
+	 * it can be reached — including the `chmod` that opens the next one down. Only the
+	 * last of them is written IN, so only the last needs write.
+	 */
 	const unlockFor = async (path: string): Promise<void> => {
-		const id = owner.get(path)
-		const dir = id === undefined ? undefined : byId.get(id)
-		if (!dir || dir.deleted || !locked(dir)) return
-		await unlock(dir, path)
+		const steps = ['']
+		for (let at = path; at !== ''; at = parentOf(at)) steps.splice(1, 0, at)
+		for (const step of steps) {
+			const id = owner.get(step)
+			const dir = id === undefined ? undefined : byId.get(id)
+			const need = step === path ? WRITE | SEARCH : SEARCH
+			if (dir && !dir.deleted && locked(dir, need)) await unlock(dir, step, need)
+		}
 	}
 
-	/** The stated mode, back on every directory this pass opened. */
+	/**
+	 * The stated mode, back on every directory this pass opened — INNERMOST first, the
+	 * reverse of the way in: closing an ancestor first would take away the search the
+	 * `chmod` below it needs.
+	 */
 	const relock = async (): Promise<void> => {
-		for (const id of opened) {
+		for (const id of [...opened].reverse()) {
 			const dir = byId.get(id)
 			const at = seen.get(id)
 			if (dir && !dir.deleted && at) await chmod(abs(at.path), dir.mode & 0o7777)
@@ -806,7 +828,7 @@ export function fsStore(root: string): Store {
 			await meta(abs(landed.path), row)
 			// Stated, and then held open if what it states shuts this store out: the
 			// marking below has to look inside it, and `relock` is this pass's last act.
-			if (locked(row)) await unlock(row, landed.path)
+			if (locked(row, SEARCH)) await unlock(row, landed.path, SEARCH)
 		}
 		const where = new Map<NodeId, Landed>(placed.map((landed) => [landed.id, landed]))
 		for (const id of dirs) {

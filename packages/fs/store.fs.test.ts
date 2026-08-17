@@ -1025,6 +1025,27 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
 	})
 
+	test('a child lands under an ancestor that cannot be searched', async () => {
+		const root = await temp()
+		const store = open(root)
+		const outer = { ...dir({ id: 'o', name: 'outer' }), mode: 0o040400 }
+		const inner = dir({ id: 'i', name: 'inner', parent: 'o' })
+		await store.commit([outer, inner])
+		const leaf = { ...(await file(store, 'c', 'f.txt', 'kept')), parent: 'i' }
+
+		// `outer` has no search bit, so nothing under it can be reached at all — not the
+		// write, and not the chmod that would allow the write. The way in is from the
+		// outside in, one directory at a time, and the way out is the reverse.
+		await store.commit([leaf])
+
+		// Closed again before anything else looks — and closed so thoroughly that this
+		// case cannot see past it either until it opens the way itself.
+		expect((await stat(join(root, 'outer'))).mode & 0o777).toBe(0o400)
+		await chmod(join(root, 'outer'), 0o700)
+		expect((await stat(join(root, 'outer/inner'))).mode & 0o777).toBe(0o755)
+		expect(await readFile(join(root, 'outer/inner/f.txt'), 'utf8')).toBe('kept')
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
