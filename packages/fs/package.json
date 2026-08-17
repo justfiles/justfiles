@@ -7,6 +7,7 @@
 		"./storage": "./storage.ts",
 		"./storage.shared": "./storage.shared.ts",
 		"./persistedState": "./persistedState.ts",
+		"./store": "./store.ts",
 		"./storage/mem": "./storage.mem.ts",
 		"./storage/idb": "./storage.idb.ts",
 		"./storage/fs": "./storage.fs.ts",
@@ -37,6 +38,11 @@
 				"types": "./dist/persistedState.d.ts",
 				"import": "./dist/persistedState.js",
 				"default": "./dist/persistedState.js"
+			},
+			"./store": {
+				"types": "./dist/store.d.ts",
+				"import": "./dist/store.js",
+				"default": "./dist/store.js"
 			},
 			"./storage/mem": {
 				"types": "./dist/storage.mem.d.ts",
