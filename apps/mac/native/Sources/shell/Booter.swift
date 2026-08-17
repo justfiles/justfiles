@@ -14,6 +14,9 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 	private var window: NSWindow!
 	private var webView: WKWebView!
 	private var titleObservation: NSKeyValueObservation?
+	// The window's downloads sink (also its navigation delegate). WKDownload holds
+	// its delegate weakly, so this must live as long as the window.
+	private let downloads = Downloads()
 
 	init(appId: String, name: String, target: URL?) {
 		self.appId = appId
@@ -59,6 +62,9 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 
 		webView = WKWebView(frame: rect, configuration: WKWebViewConfiguration())
 		webView.autoresizingMask = [.width, .height]
+		// An app that hands the user a file (Draw's "Export image") needs the host to
+		// accept the download; without a navigation delegate WebKit drops it silently.
+		webView.navigationDelegate = downloads
 		// Transparent until the page paints, so the themed window backing shows through
 		// the load instead of WebKit's default opaque white.
 		webView.setValue(false, forKey: "drawsBackground")

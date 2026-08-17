@@ -155,9 +155,12 @@ function createStage(id: string): Stage {
 	// and cannot read the token. Its only authority is the port handed off at boot.
 	// `allow-forms` lets an app use plain `<form>`s (app-code's project/settings
 	// forms) — it permits submission only, never same-origin, so isolation holds.
+	// `allow-downloads` lets an app hand a file to the user (app-draw's "Export
+	// image" — an `<a download>` on a blob URL); without it the browser drops the
+	// download silently. It grants no read access, so isolation holds.
 	const frame = document.createElement('iframe')
 	frame.className = 'frn-stage-frame'
-	frame.setAttribute('sandbox', 'allow-scripts allow-forms')
+	frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-downloads')
 	frame.srcdoc = FRAME_SRCDOC
 	wrapper.appendChild(frame)
 
