@@ -43,13 +43,14 @@
  *   because a local tool reading that path must see what the store answers.
  * - **A live row with no path keeps its bytes.** Visibility is reachability (rule
  *   9), so a row whose parent is missing, buried, cyclic or not a directory has no
- *   path — and neither has one that lost a contested name — but it is still live, and on this
- *   backend its file is the only copy of its content. Its file moves to a holding
- *   area inside the sidecar, where the scan never looks and `blobs` still can; a
- *   later commit that gives the row a place renames it back, which is the same
- *   rename any move is. That commit need not name the row: the one that takes a
- *   contested name AWAY from whoever held it makes the row waiting the winner, and
- *   nothing else would ever go and look for it in there.
+ *   path — and neither has one that lost a contested name — but it is still live,
+ *   and on this backend its file is the only copy of its content. Its file moves to
+ *   a holding area inside the sidecar, where the scan never looks and `blobs` still
+ *   can; a later commit that gives the row a place renames it back, which is the
+ *   same rename any move is. Nothing needs to name the row for that: whatever makes
+ *   it reachable — a commit, or a scan that finds a name freed or a directory where
+ *   a file was — is what puts it on the disk, because nothing else ever looks in
+ *   there for it.
  *
  * The costs are deliberate. The sidecar is rewritten whole on every change, and a
  * scan reads every changed file to hash it — this serves a working tree, not a
@@ -689,6 +690,9 @@ export function fsStore(root: string): Store {
 		// entries any more, and no walk goes through a row that is not a directory, so
 		// what it held is buried here or nowhere.
 		if (row && isDir(row) && !isDir(derived)) buryUnder(path)
+		// And the other way: a name that has become a directory is a place for rows
+		// that had none, whose own pages are long behind the engine's cursor.
+		if (isDir(derived) && !(row && isDir(row))) stale.add(derived.id)
 		changed = true
 		return derived
 	}
@@ -747,6 +751,37 @@ export function fsStore(root: string): Store {
 		const row = byId.get(id)
 		if (!row || row.deleted) return
 		write({ ...row, deleted: true, version: mint() })
+		// The name it held is free, and a live row may have been waiting for it.
+		stale.add(row.parent)
+		changed = true
+	}
+
+	/**
+	 * Directories the scan changed the answer for: a name was freed by a deletion
+	 * made outside, or a name became a directory that was not one. The rows waiting on
+	 * that answer have no other event coming — no page will offer them again — so the
+	 * pass that found it is the pass that puts them on the disk.
+	 */
+	const stale = new Set<NodeId>()
+
+	const rescue = async (): Promise<void> => {
+		if (stale.size === 0) return
+		const again = [...stale]
+		stale.clear()
+		const placed: Landed[] = []
+		for (const id of again) {
+			const row = byId.get(id)
+			if (row && !row.deleted) placed.push(...(await adopt(row)))
+		}
+		if (placed.length === 0) return
+		// The store made this change itself, so what it moved is taken down rather than
+		// reported: the file, and the directory a rename into it bumped.
+		const dirs = new Set<NodeId>()
+		for (const landed of placed) {
+			const row = byId.get(landed.id)
+			if (row) dirs.add(row.parent)
+		}
+		await observe(placed, dirs)
 		changed = true
 	}
 
@@ -782,6 +817,7 @@ export function fsStore(root: string): Store {
 			queue.push(...(await syncDir(dir.id, dir.path)))
 		swept = Date.now()
 		deepened = swept
+		await rescue()
 		if (changed) await save()
 	}
 
@@ -803,6 +839,7 @@ export function fsStore(root: string): Store {
 			await syncDir(id, at.path) // and what it lists now
 		}
 		swept = Date.now()
+		await rescue()
 		if (changed) await save()
 	}
 
@@ -879,6 +916,7 @@ export function fsStore(root: string): Store {
 		dirty.clear()
 		changed = false
 		for (const path of [...paths].sort()) await syncAt(path)
+		await rescue()
 		if (changed) await save()
 	}
 

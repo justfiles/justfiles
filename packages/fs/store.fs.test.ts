@@ -665,6 +665,49 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readFile(join(root, 'moved.txt'), 'utf8')).toBe('keep me')
 	})
 
+	test('a name deleted outside goes to the row that was waiting for it', async () => {
+		const root = await temp()
+		const store = open(root)
+		const low = await file(store, 'aaa', 'dup.txt', 'the low id')
+		const high = await file(store, 'zzz', 'dup.txt', 'the high id')
+		await store.commit([low])
+		await store.commit([high]) // parked: the lowest id holds the name
+		await feed(store)
+
+		// A local tool takes the name away. That is a tombstone for the row that held
+		// it, like any file deleted outside — and it makes the row that was waiting the
+		// winner, exactly as a commit burying the holder would.
+		await rm(join(root, 'dup.txt'))
+		await settled(store, async () => (await store.get('aaa'))?.deleted === true)
+
+		expect(await readFile(join(root, 'dup.txt'), 'utf8')).toBe('the high id')
+		expect(await store.child(ROOT, 'dup.txt')).toEqual(high)
+		// And what the scan put there is not news, and not a second node.
+		const rows = (await feed(store)).nodes
+		expect(rows.filter((n) => n.name === 'dup.txt' && !n.deleted).map((n) => n.id)).toEqual(['zzz'])
+	}, 30_000)
+
+	test('a directory that appears out of band takes in the rows that were waiting', async () => {
+		const root = await temp()
+		const store = open(root)
+		const parent = await file(store, 'd', 'sub', 'a file for now')
+		await store.commit([parent])
+		const child = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+		await store.commit([child]) // held: nothing is reachable through a file
+		await feed(store)
+
+		// The name becomes a directory before the page that re-types it arrives. The
+		// scan is the only thing that will ever notice, so it is the only thing that
+		// can put the rows waiting on it where they now belong — and the page, when it
+		// comes, finds a directory already there and asks nothing.
+		await rm(join(root, 'sub'))
+		await mkdir(join(root, 'sub'))
+		await settled(store, async () => (await store.get('d'))?.type === 'dir')
+
+		expect(await readFile(join(root, 'sub/c.txt'), 'utf8')).toBe('kept')
+		expect(await store.child('d', 'c.txt')).toEqual(child)
+	}, 30_000)
+
 	test('a directory replaced out of band by a file buries what it held', async () => {
 		const root = await temp()
 		await mkdir(join(root, 'sub'), { recursive: true })
