@@ -679,12 +679,16 @@ export function fsStore(root: string): Store {
 		// here and the child of the same batch fails with EACCES, which fails the page,
 		// which stalls the replica for good.
 		//
-		// A mode that leaves the owner rwx goes on now, because the batch that unlocks a
-		// directory is usually the batch that fills it, and holding the grant back would
-		// make that page the one page this store could never apply. Early is not early
-		// either: it is the mode the row states, reached sooner.
+		// A mode this store can still put an entry through goes on now, because the batch
+		// that unlocks a directory is usually the batch that fills it, and holding the
+		// grant back would make that page the one page this store could never apply.
+		// Early is not early either: it is the mode the row states, reached sooner.
+		//
+		// Write and SEARCH is the whole requirement — read is for listing a directory,
+		// which no placement does — so `0300` is as workable as `0700`. A scan cannot
+		// list it afterwards, and says so by leaving it alone rather than burying it.
 		if (!isDir(row)) await meta(os, row)
-		else if ((row.mode & 0o700) === 0o700) await chmod(os, row.mode & 0o7777)
+		else if ((row.mode & 0o300) === 0o300) await chmod(os, row.mode & 0o7777)
 		return { id: row.id, path, hash }
 	}
 

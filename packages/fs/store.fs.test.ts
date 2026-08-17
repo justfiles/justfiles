@@ -987,6 +987,22 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o700)
 	})
 
+	test('a batch that grants write and search, and fills the directory, lands', async () => {
+		const root = await temp()
+		const store = open(root)
+		const shut = { ...dir({ id: 'd', name: 'shut' }), mode: 0o040100 }
+		await store.commit([shut])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+
+		// Putting an entry in a directory needs write and SEARCH, and not read. `0300`
+		// is a mode this store can write into, so it is one to state before the child —
+		// even though a scan could not list that directory afterwards.
+		await store.commit([{ ...shut, mode: 0o040300, version: 'v2' }, inside])
+
+		expect(await readFile(join(root, 'shut/c.txt'), 'utf8')).toBe('kept')
+		expect((await stat(join(root, 'shut'))).mode & 0o777).toBe(0o300)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
