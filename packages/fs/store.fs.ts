@@ -14,9 +14,9 @@
  * the seam:
  *
  * - **Reconciliation.** Nobody announces a change to a real tree, so `since`
- *   begins by looking: one walk, comparing what each file is now against what
- *   the sidecar last saw. What changed becomes a row, what vanished becomes a
- *   tombstone, and what is new gets an id minted for it. Reads answer from the
+ *   begins by looking. One directory at a time: what it lists that the index
+ *   does not know becomes a row, what it no longer lists becomes a tombstone,
+ *   and what changed underneath becomes a new version. Reads answer from the
  *   index, so an out-of-band change reaches a consumer through the feed it
  *   already polls.
  * - **A weaker crash model.** POSIX has no transaction. Guards are all checked
@@ -29,7 +29,20 @@
  *   hash is answered by the file of a row that names it, while the disk still
  *   holds what this store last observed there. Only bytes no row has adopted yet
  *   need a home of their own (`.jfs/blobs`), and they leave it the moment a
- *   commit publishes them into a file.
+ *   commit — or a `put` for a row that was waiting — publishes them into a file.
+ *
+ * Two rules carry the weight, and every case below is one of them:
+ *
+ * - **One path, one owner.** `seen` says where a row's file is; `owner` says
+ *   whose file a path is. A scan asks `owner` before it asks the tree, so a file
+ *   is never adopted twice under two ids, and nothing removes a file it does not
+ *   own.
+ * - **A row the tree cannot reach keeps its bytes.** Visibility is reachability
+ *   (rule 9), so a row whose parent is missing, cyclic or tombstoned has no path
+ *   — but it is still live, and on this backend its file is the only copy of its
+ *   content. Its file moves to a holding area inside the sidecar, where the scan
+ *   never looks and `blobs` still can; a later commit that gives the row a place
+ *   renames it back, which is the same rename any move is.
  *
  * The costs are deliberate. Every `since` walks the tree, the sidecar is
  * rewritten whole on every change, and a scan reads every changed file to hash
@@ -48,6 +61,7 @@ import {
 	readlink,
 	rename,
 	rm,
+	rmdir,
 	symlink,
 	writeFile
 } from 'node:fs/promises'
@@ -79,6 +93,8 @@ const SEP = String.fromCharCode(0)
 const SIDECAR = '.jfs'
 const INDEX = `${SIDECAR}/index.json`
 const SPILL = `${SIDECAR}/blobs`
+/** Where the file of a row the tree cannot reach waits for a place in it. */
+const HOLD = `${SIDECAR}/detached`
 
 /** What a `Hash` is: 64 hex characters. A name for content, never a path. */
 const HASH = /^[0-9a-f]{64}$/
@@ -120,13 +136,28 @@ const kindOf = (s: BigIntStats): Node['type'] =>
 const unsafe = (name: string): boolean =>
 	name === '' || name === '.' || name === '..' || name.includes('/')
 
+const parentOf = (path: string): string => {
+	const cut = path.lastIndexOf('/')
+	return cut === -1 ? '' : path.slice(0, cut)
+}
+
 export function fsStore(root: string): Store {
 	const byId = new Map<NodeId, Node>()
-	const byName = new Map<string, Set<NodeId>>() // live rows only
+	/**
+	 * parent → name → ids, live rows only. One index for both jobs the tree has:
+	 * the `(parent, name)` lookup, and the listing of a directory — which is also
+	 * what a scan needs to know what a directory used to hold.
+	 */
+	const tree = new Map<NodeId, Map<string, Set<NodeId>>>()
 	// The feed, and no journal behind it: a Map iterates in insertion order, so
 	// re-inserting a row on every write moves it to the end of the order.
 	const order = new Map<NodeId, number>()
+	/** id → where its file is, and what that file held when this store last looked. */
 	const seen = new Map<NodeId, Seen>()
+	/** path → the row whose file sits there. One path, one owner. */
+	const owner = new Map<string, NodeId>()
+	/** hash → the rows whose file holds those bytes: the content map, read backwards. */
+	const holders = new Map<Hash, Set<NodeId>>()
 	let lineage = ''
 	let next = 0
 	/** The author tag of every version the scan mints — nothing else writes one. */
@@ -148,36 +179,47 @@ export function fsStore(root: string): Store {
 		return run
 	}
 
-	// ── The index: two lookups over one table, exactly as `memStore` holds them ──
+	// ── The rows ─────────────────────────────────────────────────────────────────
 
-	const dirKey = (parent: NodeId, name: string): string => parent + SEP + name
+	const link = (row: Node): void => {
+		const names = tree.get(row.parent) ?? new Map<string, Set<NodeId>>()
+		tree.set(row.parent, names)
+		const ids = names.get(row.name) ?? new Set<NodeId>()
+		names.set(row.name, ids)
+		ids.add(row.id)
+	}
+
+	const unlink = (row: Node): void => {
+		const names = tree.get(row.parent)
+		const ids = names?.get(row.name)
+		if (!names || !ids) return
+		ids.delete(row.id)
+		if (ids.size === 0) names.delete(row.name)
+		if (names.size === 0) tree.delete(row.parent)
+	}
+
+	const write = (row: Node): void => {
+		const old = byId.get(row.id)
+		if (old && !old.deleted) unlink(old)
+		byId.set(row.id, row)
+		if (!row.deleted) link(row)
+		order.delete(row.id) // rule 4: re-inserting moves the row to the end of the order
+		order.set(row.id, next++)
+	}
 
 	/** Contract rule 1: two live rows for one name resolve to the lowest id. */
 	const lookup = (parent: NodeId, name: string): Node | null => {
 		let best: Node | null = null
-		for (const id of byName.get(dirKey(parent, name)) ?? []) {
+		for (const id of tree.get(parent)?.get(name) ?? []) {
 			const n = byId.get(id)
 			if (n && (!best || n.id < best.id)) best = n
 		}
 		return best
 	}
 
-	/** The (parent, name) index — live rows only, so a tombstone leaves it by being written. */
-	const link = (row: Node): void => {
-		const key = dirKey(row.parent, row.name)
-		const bucket = byName.get(key) ?? new Set<NodeId>()
-		byName.set(key, bucket)
-		bucket.add(row.id)
-	}
-
-	const write = (row: Node): void => {
-		const old = byId.get(row.id)
-		if (old) byName.get(dirKey(old.parent, old.name))?.delete(old.id)
-		byId.set(row.id, row)
-		if (!row.deleted) link(row)
-		order.delete(row.id) // rule 4: re-inserting moves the row to the end of the order
-		order.set(row.id, next++)
-	}
+	/** Live children of a directory, in name order. Root is nobody's child. */
+	const namesIn = (parent: NodeId): string[] =>
+		[...(tree.get(parent)?.keys() ?? [])].filter((name) => name !== '' || parent !== ROOT).sort()
 
 	const passes = (guard: Guard): boolean => {
 		if ('free' in guard) return lookup(guard.free.parent, guard.free.name) === null
@@ -191,9 +233,11 @@ export function fsStore(root: string): Store {
 	}
 
 	/**
-	 * Where a row belongs in the tree, or null when it is not reachable from root
-	 * — a detached or cyclic row (rule 9) has no path on a filesystem, so it stays
-	 * a row and nothing else, which is what "invisible until reachable" means here.
+	 * Where a row belongs in the tree, or null when it has no place on the disk —
+	 * because nothing can reach it from root (a detached or cyclic row, rule 9), or
+	 * because the name it asks for is the sidecar's. Either way its file goes to the
+	 * holding area instead: a row called `.jfs` must not be able to write over the
+	 * index that knows what every row is.
 	 */
 	const pathOf = (row: Node): string | null => {
 		const parts: string[] = []
@@ -207,7 +251,40 @@ export function fsStore(root: string): Store {
 			if (!up || up.deleted) return null
 			at = up
 		}
-		return parts.join('/')
+		return parts[0] === SIDECAR ? null : parts.join('/')
+	}
+
+	// ── What the disk holds: `seen`, and the two indexes over it ─────────────────
+
+	const mark = (id: NodeId, at: Seen): void => {
+		unmark(id)
+		// One path, one owner: whoever held this path before does not have a file
+		// there any more, whether we replaced it or renamed over it.
+		const held = owner.get(at.path)
+		if (held !== undefined) unmark(held)
+		seen.set(id, at)
+		owner.set(at.path, id)
+		if (at.hash !== undefined) holders.set(at.hash, (holders.get(at.hash) ?? new Set()).add(id))
+	}
+
+	const unmark = (id: NodeId): void => {
+		const was = seen.get(id)
+		if (!was) return
+		seen.delete(id)
+		if (owner.get(was.path) === id) owner.delete(was.path)
+		if (was.hash === undefined) return
+		const bucket = holders.get(was.hash)
+		bucket?.delete(id)
+		if (bucket?.size === 0) holders.delete(was.hash)
+	}
+
+	/** A directory moved, so every path under it moved with it. */
+	const moveSeen = (from: string, to: string): void => {
+		const under = `${from}/`
+		for (const [id, at] of [...seen]) {
+			if (at.path === from) mark(id, { ...at, path: to })
+			else if (at.path.startsWith(under)) mark(id, { ...at, path: to + at.path.slice(from.length) })
+		}
 	}
 
 	// ── The sidecar ──────────────────────────────────────────────────────────────
@@ -224,7 +301,7 @@ export function fsStore(root: string): Store {
 			byId.set(row.id, row)
 			if (!row.deleted) link(row)
 			order.set(row.id, entry.at)
-			if (entry.seen) seen.set(row.id, entry.seen)
+			if (entry.seen) mark(row.id, entry.seen)
 		}
 		return true
 	}
@@ -268,9 +345,9 @@ export function fsStore(root: string): Store {
 	}
 
 	/** Does the disk still hold the file this row named? Identity is the inode. */
-	const mine = async (was: Seen): Promise<boolean> => {
-		const s = await lstat(abs(was.path))
-		return s !== null && String(s.ino) === was.ino
+	const mine = async (at: Seen): Promise<boolean> => {
+		const s = await lstat(abs(at.path))
+		return s !== null && String(s.ino) === at.ino
 	}
 
 	/**
@@ -278,18 +355,37 @@ export function fsStore(root: string): Store {
 	 * rename inside the same batch may have put another row's file at the path,
 	 * and a commit does not get to say which of its writes goes first.
 	 */
-	const remove = async (was: Seen): Promise<void> => {
-		if (await mine(was)) await rm(abs(was.path), { recursive: true, force: true })
+	const remove = async (at: Seen): Promise<void> => {
+		if (!(await mine(at))) return
+		await rm(abs(at.path), { recursive: true, force: true })
+		// An empty container in the holding area is nobody's row, so it goes too.
+		for (let up = parentOf(at.path); up.startsWith(HOLD); up = parentOf(up))
+			if (
+				!(await rmdir(abs(up)).then(
+					() => true,
+					() => false
+				))
+			)
+				return
 	}
 
-	/** A directory moved, so every path under it moved with it. */
-	const moveSeen = (from: string, to: string): void => {
-		const under = `${from}/`
-		for (const [id, was] of seen) {
-			if (was.path === from) seen.set(id, { ...was, path: to })
-			else if (was.path.startsWith(under))
-				seen.set(id, { ...was, path: to + was.path.slice(from.length) })
+	/**
+	 * A live row nothing can reach still owns bytes, and on this backend they are
+	 * the only copy. Its file leaves the namespace for the holding area, where the
+	 * scan never looks and `blobs` still finds it. ONE rename, whatever the subtree
+	 * under it holds.
+	 */
+	const park = async (id: NodeId, at: Seen): Promise<void> => {
+		const to = `${HOLD}/${id}`
+		if (at.path === to) return
+		if (!(await mine(at))) {
+			unmark(id)
+			return
 		}
+		await mkdir(join(root, HOLD), { recursive: true })
+		await rm(abs(to), { recursive: true, force: true })
+		await rename(abs(at.path), abs(to))
+		moveSeen(at.path, to)
 	}
 
 	/**
@@ -303,58 +399,71 @@ export function fsStore(root: string): Store {
 		os: string,
 		row: Node,
 		old: Node | null,
-		there: Seen | undefined
+		at: Seen | undefined
 	): Promise<Hash | undefined> => {
 		if (row.content === undefined) {
 			// No content is a claim too, so a row that dropped its hash empties its file.
-			if (there && old?.content === undefined) return undefined
+			if (at && old?.content === undefined) return undefined
 			await publish(os, (tmp) => writeFile(tmp, EMPTY))
 			return undefined
 		}
-		if (there?.hash === row.content) return there.hash
+		if (at?.hash === row.content) return at.hash
 		const data = await readBlob(row.content)
 		if (data !== null) {
 			await publish(os, (tmp) => writeFile(tmp, data))
 			return row.content
 		}
-		if (there) return there.hash // the row is a stub over whatever the file holds
+		if (at) return at.hash // the row is a stub over whatever the file holds
 		await publish(os, (tmp) => writeFile(tmp, EMPTY))
 		return undefined
 	}
 
-	/** Put one row on the disk. Null when there is nothing on the disk to put. */
-	const place = async (row: Node, old: Node | null): Promise<Landed | null> => {
+	/** Put one row on the disk, at the path the tree gives it. Null when there is nothing to put. */
+	const place = async (
+		row: Node,
+		old: Node | null,
+		path: string | null
+	): Promise<Landed | null> => {
 		let at = seen.get(row.id)
 		if (row.deleted) {
-			if (at) await remove(at)
-			seen.delete(row.id)
+			if (at) {
+				// A batch may tombstone a directory a page before the rows inside it, so
+				// what is under it decides: nothing live, and the subtree goes; anything
+				// live, and it is parked with its bytes intact.
+				if ((tree.get(row.id)?.size ?? 0) > 0) await park(row.id, at)
+				else await remove(at)
+			}
+			unmark(row.id)
 			return null
 		}
 		if (row.id === ROOT) return null // the directory this store IS
-		const path = pathOf(row)
-		if (path === null) return null
+		if (path === null) {
+			if (at) await park(row.id, at)
+			return null
+		}
 		const os = abs(path)
-		// Only when the parent is not already there — the ancestors of a row this
-		// batch also creates may not have been placed yet, and a commit does not get
-		// to say which of its writes goes first.
-		if (!seen.has(row.parent)) await mkdir(dirname(os), { recursive: true })
+
+		// The directory this row goes in, when the index does not already have it
+		// THERE: a row whose parent is not on the disk at all still lands, which is how
+		// a row that was parked, or one whose write failed halfway, comes back.
+		if (seen.get(row.parent)?.path !== parentOf(path)) await mkdir(dirname(os), { recursive: true })
 
 		// The row names a path other than the one its file sits at: ONE rename,
-		// whatever the subtree under it holds.
+		// whatever the subtree under it holds. A parked file comes back the same way.
 		if (at && at.path !== path) {
 			if (await mine(at)) {
 				await rename(abs(at.path), os)
 				moveSeen(at.path, path)
-				at = { ...at, path }
+				at = seen.get(row.id)
 			} else {
-				seen.delete(row.id) // that file is gone, or is another row's now
+				unmark(row.id) // that file is gone, or is another row's now
 				at = undefined
 			}
 		}
 		// A file where a directory was, or the other way round: the old one goes.
 		if (at && old && old.type !== row.type) {
 			await remove(at)
-			seen.delete(row.id)
+			unmark(row.id)
 			at = undefined
 		}
 
@@ -382,19 +491,13 @@ export function fsStore(root: string): Store {
 	const observe = async (placed: Landed[], dirs: Set<NodeId>): Promise<void> => {
 		const where = new Map<NodeId, Landed>(placed.map((landed) => [landed.id, landed]))
 		for (const id of dirs) {
-			const was = seen.get(id)
-			if (was && !where.has(id)) where.set(id, { id, path: was.path, hash: was.hash })
+			const at = seen.get(id)
+			if (at && !where.has(id)) where.set(id, { id, path: at.path, hash: at.hash })
 		}
 		for (const [id, landed] of where) {
 			const s = await lstat(abs(landed.path))
-			if (s === null) seen.delete(id)
-			else
-				seen.set(id, {
-					path: landed.path,
-					ino: String(s.ino),
-					state: stateOf(s),
-					hash: landed.hash
-				})
+			if (s === null) unmark(id)
+			else mark(id, { path: landed.path, ino: String(s.ino), state: stateOf(s), hash: landed.hash })
 		}
 	}
 
@@ -435,81 +538,100 @@ export function fsStore(root: string): Store {
 	}
 
 	/**
-	 * Was this path removed from the tree? Gone means a directory the scan DID
-	 * read failed to list the step below it — so an unreadable directory never
-	 * spells the loss of the subtree under it, and a directory that vanished takes
-	 * its whole subtree with it.
+	 * Reconcile ONE entry against the row that owns it. `owner` answers first: a
+	 * file belongs to the row it was materialized for, whatever the tree says about
+	 * that name — which is what keeps a scan from adopting one file twice under two
+	 * ids. A name no row holds is a node this store has never seen, and gets an id.
 	 */
-	const missing = (path: string, read: Set<string>, found: Set<string>): boolean => {
-		let at = ''
-		for (const part of path.split('/')) {
-			const below = at === '' ? part : `${at}/${part}`
-			if (read.has(at) && !found.has(below)) return true
-			at = below
-		}
-		return false
+	const syncPath = async (dir: NodeId, name: string, path: string): Promise<Node | null> => {
+		const s = await lstat(abs(path))
+		if (s === null) return null // it vanished between the listing and the look
+		const held = owner.get(path)
+		const row = (held === undefined ? null : byId.get(held)) ?? lookup(dir, name)
+		const at = row ? seen.get(row.id) : undefined
+		if (row && at && at.path === path && unchanged(at, s)) return row
+		const base: NewNode = row ?? { id: crypto.randomUUID(), parent: dir, name }
+		const derived = await derive(path, s, base)
+		if (derived === null) return row // unreadable: leave the row alone, and try again next scan
+		write(derived)
+		mark(derived.id, { path, ino: String(s.ino), state: stateOf(s), hash: derived.content })
+		changed = true
+		return derived
 	}
 
 	/**
-	 * Reconcile the index against the tree. This is `since`'s first act, because
-	 * on a real filesystem the feed cannot be a record of commits: anything may
-	 * have written, created or removed a file, and looking is the only way to know.
+	 * Reconcile ONE directory: every entry it lists, and every live row that claims
+	 * a name it no longer lists. Local by construction — a directory it cannot read
+	 * is left alone rather than buried, and nothing outside it is judged.
+	 *
+	 * Returns the directories underneath, for a caller that wants to walk on.
 	 */
-	const scan = async (): Promise<void> => {
-		const found = new Set<string>() // paths the walk saw
-		const read = new Set<string>() // directories the walk could list
-		let changed = false
-
-		/** Take the disk's word for what is at `path`: the row it becomes, or null when it cannot be read. */
-		const adopt = async (path: string, s: BigIntStats, base: NewNode): Promise<Node | null> => {
-			const derived = await derive(path, s, base)
-			if (derived === null) return null
-			write(derived)
-			seen.set(derived.id, { path, ino: String(s.ino), state: stateOf(s), hash: derived.content })
-			changed = true
-			return derived
+	const syncDir = async (id: NodeId, path: string): Promise<Landed[]> => {
+		const names = await readdir(abs(path)).catch(() => null)
+		if (names === null) return []
+		const found = new Set(names)
+		const under: Landed[] = []
+		for (const name of names) {
+			if (path === '' && name === SIDECAR) continue
+			const row = await syncPath(id, name, path === '' ? name : `${path}/${name}`)
+			if (row && (row.type === 'dir' || row.type === 'mount'))
+				under.push({ id: row.id, path: path === '' ? name : `${path}/${name}` })
 		}
+		// A name this directory used to hold and no longer does. Only a row whose file
+		// WAS here counts: one that was never materialized, or whose file is parked in
+		// the holding area, was never this directory's to lose.
+		const gone = new Set(namesIn(id).filter((name) => !found.has(name)))
+		if (gone.size > 0) bury(path, gone)
+		return under
+	}
 
-		const visit = async (dir: NodeId, path: string): Promise<void> => {
-			const names = await readdir(abs(path)).catch(() => null)
-			if (names === null) return // unreadable: not a reason to bury what is under it
-			read.add(path)
-			for (const name of names) {
-				if (path === '' && name === SIDECAR) continue
-				const below = path === '' ? name : `${path}/${name}`
-				const s = await lstat(abs(below))
-				if (s === null) continue // it vanished between the listing and the look
-				found.add(below)
-				const row = lookup(dir, name)
-				const was = row ? seen.get(row.id) : undefined
-				// A name the index does not hold, or holds at another state, is news. An id
-				// is minted here only for a node this store has never seen.
-				const here =
-					row && was && was.path === below && unchanged(was, s)
-						? row
-						: await adopt(below, s, row ?? { id: crypto.randomUUID(), parent: dir, name })
-				if (here && (here.type === 'dir' || here.type === 'mount')) await visit(here.id, below)
-			}
-		}
-
-		// Root has no parent to notice that it changed, so its own state is checked
-		// here.
-		const s = await lstat(root)
-		const rootRow = byId.get(ROOT)
-		if (s === null || !rootRow) return
-		const was = seen.get(ROOT)
-		if (!was || !unchanged(was, s)) await adopt('', s, rootRow)
-		await visit(ROOT, '')
-
-		// What the walk did not find is gone.
+	/**
+	 * Names a directory no longer lists, and everything that was under them: a
+	 * directory cannot be removed while its entries are there, so a name that
+	 * vanished took its whole materialized subtree with it. One pass, whatever the
+	 * size of the deletion.
+	 */
+	const bury = (path: string, gone: Set<string>): void => {
+		const under = path === '' ? '' : `${path}/`
 		for (const [id, at] of [...seen]) {
-			if (at.path === '' || !missing(at.path, read, found)) continue
-			seen.delete(id)
+			if (!at.path.startsWith(under)) continue
+			const [step] = at.path.slice(under.length).split('/')
+			if (step === undefined || !gone.has(step)) continue
+			unmark(id)
 			const row = byId.get(id)
 			if (!row || row.deleted) continue
 			write({ ...row, deleted: true, version: mint() })
 			changed = true
 		}
+	}
+
+	/** Did the last reconcile write anything? The sidecar is saved only if it did. */
+	let changed = false
+
+	/**
+	 * The whole tree, one directory at a time. This is `since`'s first act, because
+	 * on a real filesystem the feed cannot be a record of commits: anything may
+	 * have written, created or removed a file, and looking is the only way to know.
+	 */
+	const scanAll = async (): Promise<void> => {
+		changed = false
+		// Root has no parent to notice that it changed, so its own state is checked
+		// here.
+		const s = await lstat(root)
+		const held = byId.get(ROOT)
+		if (s === null || !held) return
+		const at = seen.get(ROOT)
+		if (!at || !unchanged(at, s)) {
+			const derived = await derive('', s, held)
+			if (derived) {
+				write(derived)
+				mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
+				changed = true
+			}
+		}
+		const queue: Landed[] = [{ id: ROOT, path: '' }]
+		for (let dir = queue.pop(); dir !== undefined; dir = queue.pop())
+			queue.push(...(await syncDir(dir.id, dir.path)))
 		if (changed) await save()
 	}
 
@@ -519,13 +641,13 @@ export function fsStore(root: string): Store {
 	const spill = (hash: Hash): string | null => (HASH.test(hash) ? join(root, SPILL, hash) : null)
 
 	/**
-	 * The file that holds these bytes: the row that names the hash, while the disk
-	 * still holds what this store last observed there. A walk and not an index,
-	 * because the index that matters is on the row.
+	 * The file that holds these bytes: a row that names the hash, while the disk
+	 * still holds what this store last observed there.
 	 */
 	const fileFor = async (hash: Hash): Promise<string | null> => {
-		for (const at of seen.values()) {
-			if (at.hash !== hash) continue
+		for (const id of holders.get(hash) ?? []) {
+			const at = seen.get(id)
+			if (!at) continue
 			const s = await lstat(abs(at.path))
 			if (s !== null && unchanged(at, s)) return abs(at.path)
 		}
@@ -545,24 +667,55 @@ export function fsStore(root: string): Store {
 	const readAt = async (os: string | null): Promise<Uint8Array | null> =>
 		os === null ? null : readFile(os).catch(() => null)
 
+	/**
+	 * Bytes for a hash a row already names but whose file does not hold yet — a
+	 * stub materialized before its content arrived. The file IS the data here, so
+	 * a `put` is the only chance it gets: `hydratingBlobs` puts and never commits,
+	 * and without this a store read would answer while `cat` kept showing an empty
+	 * file. A walk of the rows, because a stub is rare and an index for one would
+	 * be a fourth thing to keep in step.
+	 */
+	const hydrate = async (hash: Hash, data: Uint8Array): Promise<boolean> => {
+		const placed: Landed[] = []
+		const dirs = new Set<NodeId>()
+		for (const row of [...byId.values()]) {
+			if (row.deleted || row.content !== hash) continue
+			const at = seen.get(row.id)
+			if (!at || at.hash === hash) continue
+			await publish(abs(at.path), (tmp) => writeFile(tmp, data))
+			placed.push({ id: row.id, path: at.path, hash })
+			dirs.add(row.parent)
+		}
+		if (placed.length === 0) return false
+		// The row said this all along, so nothing about it changed: only what the disk
+		// holds did — the file, and the directory a publish renames into.
+		await observe(placed, dirs)
+		return true
+	}
+
 	// ── Opening ──────────────────────────────────────────────────────────────────
 
 	const start = async (): Promise<void> => {
 		// Creates the tree itself when it is not there — and BEFORE root's state is
 		// taken down, so the sidecar's own arrival is not a change to it.
 		await mkdir(join(root, SPILL), { recursive: true })
-		if (!(await load())) {
+		const loaded = await load()
+		if (!loaded) {
 			lineage = crypto.randomUUID() // rule 11: a fresh sidecar is a fresh lineage
 			const s = await lstat(root)
 			const seed = s === null ? null : await derive('', s, { id: ROOT, parent: ROOT, name: '' })
 			// Rule 6: the root row, and the one row whose id is not minted here.
 			if (s === null || seed === null) throw new Error(`fsStore: cannot read ${root}`)
 			write(seed)
-			seen.set(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
+			mark(ROOT, { path: '', ino: String(s.ino), state: stateOf(s) })
 		}
 		// The index is rebuilt against the tree on open, so a path resolves the
 		// moment the store is there — a consumer does not have to poll first.
-		await scan()
+		await scanAll()
+		// A lineage nobody else can read is a lineage that fences every cursor this
+		// instance hands out, so a fresh sidecar is saved even when the tree it
+		// describes is empty and the scan found nothing to say.
+		if (!loaded && !changed) await save()
 	}
 
 	let opening: Promise<void> | null = null
@@ -587,23 +740,21 @@ export function fsStore(root: string): Store {
 
 		async children(parent, cursor) {
 			await open()
-			const sorted = [...byId.values()]
-				.filter((n) => n.parent === parent && !n.deleted && n.id !== ROOT)
-				.sort((a, b) => (a.name === b.name ? (a.id < b.id ? -1 : 1) : a.name < b.name ? -1 : 1))
-			// One row per name: a duplicate sorts next to its winner, so skipping every
-			// row whose name is not past the last one emitted drops the losers and
-			// resumes a paged listing in one step. That makes the cursor just a name.
+			// One row per name, in one stable name order, and only the names of THIS
+			// directory: the cursor is the last name emitted, so a duplicate resolves
+			// to its winner and a resumed listing neither skips nor repeats.
 			const nodes: Node[] = []
 			let last = cursor
 			let more = false
-			for (const n of sorted) {
-				if (last !== undefined && n.name <= last) continue
+			for (const name of namesIn(parent)) {
+				if (last !== undefined && name <= last) continue
 				if (nodes.length === PAGE) {
 					more = true
 					break
 				}
-				nodes.push(copy(n))
-				last = n.name
+				const row = lookup(parent, name)
+				if (row) nodes.push(copy(row))
+				last = name
 			}
 			return more && last !== undefined ? { nodes, next: last } : { nodes }
 		},
@@ -611,7 +762,7 @@ export function fsStore(root: string): Store {
 		async since(cursor) {
 			await open()
 			const from = position(cursor) // rule 11, before any work: a fenced cursor buys no scan
-			await serial(scan)
+			await serial(scanAll)
 			const nodes: Node[] = []
 			for (const [id, at] of order) {
 				if (at < from) continue
@@ -649,10 +800,28 @@ export function fsStore(root: string): Store {
 				// The rows first, so a path resolves through rows this same batch adds:
 				// a new directory and a file inside it, in either order.
 				for (const { row, fresh } of todo) if (fresh) write(row)
+
+				// Then ONE order for the disk, because the disk has one: a directory has
+				// to be at its new name before a child goes into it, and empty before it
+				// goes itself. Depth does both — what lands, shallowest first; what goes,
+				// deepest first — and the contract does not order a commit inside itself,
+				// so the store is free to choose.
+				const steps = todo.map(({ row, old, fresh }) => ({
+					row,
+					old,
+					fresh,
+					path: row.deleted ? (seen.get(row.id)?.path ?? null) : pathOf(row)
+				}))
+				const deep = (a: { path: string | null }): number => a.path?.split('/').length ?? 0
+				const ordered = [
+					...steps.filter((step) => step.row.deleted).sort((a, b) => deep(b) - deep(a)),
+					...steps.filter((step) => !step.row.deleted).sort((a, b) => deep(a) - deep(b))
+				]
+
 				const placed: Landed[] = []
 				const dirs = new Set<NodeId>()
-				for (const { row, old } of todo) {
-					const landed = await place(row, old)
+				for (const { row, old, path } of ordered) {
+					const landed = await place(row, old, path)
 					if (landed) placed.push(landed)
 					dirs.add(row.parent)
 					if (old) dirs.add(old.parent)
@@ -699,9 +868,14 @@ export function fsStore(root: string): Store {
 				// A key that is not a digest names no file here, and nothing could ever
 				// hash to it: the bytes contradict the name they were offered under.
 				if (waiting === null) throw new HashMismatchError(hash)
-				if ((await lstat(waiting)) !== null) return
-				if ((await fileFor(hash)) !== null) return
-				await publish(waiting, (tmp) => writeFile(tmp, held))
+				return serial(async () => {
+					// A row that was waiting for these bytes takes them into its own file,
+					// which is where content lives here. Then the spill has nothing to keep.
+					const filled = await hydrate(hash, held)
+					if (filled) return save()
+					if ((await lstat(waiting)) === null && (await fileFor(hash)) === null)
+						await publish(waiting, (tmp) => writeFile(tmp, held))
+				})
 			}
 		}
 	}

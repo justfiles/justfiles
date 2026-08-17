@@ -346,3 +346,182 @@ describe('fsStore: a real directory, reconciled', () => {
 		expect(read(await store.blobs.get(c?.content ?? ''))).toBe('deep')
 	})
 })
+
+/**
+ * The five findings from the review of #521, each as the case that shows it.
+ * Every one of them is about the same two questions the first cut never asked:
+ * WHO owns a path on disk, and where does a row live when the tree cannot
+ * reach it.
+ */
+describe('fsStore: what a row owns, and what happens when nothing can reach it', () => {
+	const dir = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
+		parent: ROOT,
+		type: 'dir',
+		mode: 0o040755,
+		mtimeNs: 0n,
+		size: 0n,
+		version: 'v1',
+		...over
+	})
+
+	test('a tombstone on a directory alone keeps what its live children hold', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const sub = dir({ id: 'd', name: 'sub' })
+		await store.commit([sub])
+		const data = bytes('keep me')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		const child: Node = {
+			id: 'c',
+			parent: 'd',
+			name: 'c.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([child])
+		const { cursor } = await feed(store)
+
+		// Only the directory is tombstoned. Its children stay live rows — mid-sync
+		// that is an ordinary page boundary (rule 9), not a deletion.
+		await store.commit([{ ...sub, deleted: true, version: 'v2' }])
+
+		expect(await store.get('c')).toEqual(child)
+		// The row still names its content, so the content must still be here.
+		expect(read(await store.blobs.get(hash))).toBe('keep me')
+		// And the next scan must not turn a row nobody deleted into a tombstone.
+		const rows = (await feed(store, cursor)).nodes
+		expect(rows.filter((n) => n.deleted).map((n) => n.id)).toEqual(['d'])
+	})
+
+	test('a row the tree cannot reach leaves the namespace, keeps its bytes, and mints no ghost', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const row = await place(store, 'a.txt', 'hello')
+		const { cursor } = await feed(store)
+
+		// A parent that does not exist: the row is live and invisible (rule 9), so
+		// its file must leave the tree — otherwise the next scan finds an unclaimed
+		// file and mints a second node for the same content.
+		await store.commit([{ ...row, parent: 'nowhere', version: 'v2' }])
+		expect((await readdir(root)).sort()).toEqual(['.jfs'])
+		expect(await store.child(ROOT, 'a.txt')).toBeNull()
+		const rows = (await feed(store, cursor)).nodes
+		expect(rows.filter((n) => n.name === 'a.txt' && n.id !== row.id)).toEqual([])
+		expect(read(await store.blobs.get(row.content ?? ''))).toBe('hello')
+
+		// And when a commit gives it a place again, the bytes come back with it.
+		await store.commit([{ ...row, version: 'v3' }])
+		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello')
+	})
+
+	test('a batch that renames a parent after touching its child still lands', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const old = dir({ id: 'd', name: 'old' })
+		await store.commit([old])
+		const data = bytes('kept')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		const child: Node = {
+			id: 'c',
+			parent: 'd',
+			name: 'c.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([child])
+
+		// The child comes first and resolves under the parent's NEW name, which is
+		// only in the row the batch has not placed yet. A commit is not ordered
+		// inside itself, so this order has to work.
+		await store.commit([
+			{ ...child, mode: 0o100600, version: 'v2' },
+			{ ...old, name: 'new', version: 'v2' }
+		])
+		expect(await readFile(join(root, 'new/c.txt'), 'utf8')).toBe('kept')
+		expect((await readdir(root)).sort()).toEqual(['.jfs', 'new'])
+	})
+
+	test('bytes arriving for a stub fill the file the row already has', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const data = bytes('arrived late')
+		const hash = await sha256Hex(data)
+		const stub: Node = {
+			id: 's',
+			parent: ROOT,
+			name: 'later.md',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([stub])
+		const { cursor } = await feed(store)
+
+		// `hydratingBlobs` puts and does not commit, so a put is the only chance the
+		// file gets. A store whose whole point is that the files ARE the data cannot
+		// leave `cat` reading an empty one.
+		await store.blobs.put(hash, data)
+		expect(await readFile(join(root, 'later.md'), 'utf8')).toBe('arrived late')
+		// The row said this all along, so nothing changed: no feed traffic.
+		expect(await store.get('s')).toEqual(stub)
+		expect((await feed(store, cursor)).nodes).toEqual([])
+	})
+
+	test('an empty directory saves its sidecar, so a reopen is not a reset', async () => {
+		const root = await temp()
+		const one = fsStore(root)
+		const { cursor } = await feed(one)
+
+		// Nothing changed on the first scan, but the lineage and the root row were
+		// minted — and a lineage only this instance knows fences every cursor it
+		// ever handed out (rule 11).
+		const two = fsStore(root)
+		expect((await two.since(cursor)).nodes).toEqual([])
+	})
+})
+
+describe('fsStore: the sidecar is the store, not the tree', () => {
+	test('a row that asks for the sidecar name never writes over it', async () => {
+		const root = await temp()
+		const store = fsStore(root)
+		const row = await place(store, 'kept.md', 'still here')
+
+		// `.jfs` is this store's own bookkeeping. A row that claims the name is held
+		// like any row the tree cannot place: readable, invisible on disk, and unable
+		// to touch the index that knows what every row is.
+		const bytes2 = bytes('a row where the index lives')
+		const hash = await sha256Hex(bytes2)
+		await store.blobs.put(hash, bytes2)
+		await store.commit([
+			{
+				id: 'x',
+				parent: ROOT,
+				name: '.jfs',
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 0n,
+				size: BigInt(bytes2.length),
+				content: hash,
+				version: 'v1'
+			}
+		])
+		expect((await store.get('x'))?.name).toBe('.jfs')
+		expect(await readFile(join(root, '.jfs/index.json'), 'utf8')).toContain('"lineage"')
+		expect(read(await store.blobs.get(row.content ?? ''))).toBe('still here')
+		// And it survives the round trip the index makes on a reopen.
+		expect((await fsStore(root).child(ROOT, 'kept.md'))?.id).toBe(row.id)
+	})
+})
