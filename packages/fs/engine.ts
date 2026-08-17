@@ -48,6 +48,9 @@ import {
 	verifiedBlobs
 } from './store'
 
+/** NUL — the one byte a name can never hold, so composed keys never collide. */
+const SEP = String.fromCharCode(0)
+
 /** How many extra attempts a cycle gets before the failure becomes the caller's. */
 const RETRIES = 3
 
@@ -337,6 +340,9 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 		guards.push({ version: { id: seen.id, is: seen.version } })
 	}
 
+	/** Names this settlement has already given out, and nothing else can see yet. */
+	const handed = new Set<string>()
+
 	/**
 	 * A name for this row that nobody holds, found in ONE settlement.
 	 *
@@ -355,12 +361,19 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 	 */
 	const free = async (row: Node): Promise<string> => {
 		const taken = async (name: string): Promise<boolean> => {
+			// Handed to an earlier row of this same settlement, whose rename is still
+			// only in `fixes` and so invisible to both stores. Rule 1 lets a replica
+			// hold two live rows for one name — it says which one is VISIBLE, not that
+			// it cannot happen — so one page can carry two rows losing the same name,
+			// and answering both with the same new one claims it twice in one batch.
+			if (handed.has(row.parent + SEP + name)) return true
 			if (await remote.child(row.parent, name)) return true
 			const here = await local.child(row.parent, name)
 			return here !== null && here.id !== row.id
 		}
 		let name = `${row.name} (conflict ${replica})`
 		for (let n = 2; await taken(name); n++) name = `${row.name} (conflict ${replica} ${n})`
+		handed.add(row.parent + SEP + name)
 		return name
 	}
 

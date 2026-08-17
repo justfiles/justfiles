@@ -192,7 +192,14 @@ occupied names longer than the budget never lands at all. Numbering rather than
 re-suffixing also keeps the answer readable: a name that grew a suffix per
 collision replicates everywhere at that length.
 
-The probe asks BOTH sides. The peer is the arbiter, but it cannot see what has
+The probe asks THREE places: the peer, the local store, and the names this
+settlement has already given out. Rule 1 says which of two live rows for one
+name is visible — not that two cannot exist — so one refused page may carry two
+rows losing the same name, and answering both by the same rule answers them the
+same way. The third place is the one nothing else can see: a rename still
+sitting in `fixes` is in neither store yet.
+
+The probe asks BOTH stores. The peer is the arbiter, but it cannot see what has
 not reached it, and a name free there and held by an unpushed row here is the
 one name the rename must not pick — the next push would claim it twice in one
 batch, which the authority refuses as a whole, and no settlement could say why,

@@ -154,6 +154,43 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('gives two rows losing one name two different names', async () => {
+		// Rule 1 lets a replica hold two live rows for one `(parent, name)` — it says
+		// which one is visible, not that it cannot happen — so a refused page may
+		// carry both. Renaming them by the same rule gives them the same answer, and
+		// the next push claims that name twice in one batch.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.writeFile('/note.txt', enc.encode('from a'))
+		await sync(a.store, hub, a.opts)
+
+		const mint = versions('b')
+		const twin = (id: string): Node => ({
+			id,
+			parent: ROOT,
+			name: 'note.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: 0n,
+			version: mint()
+		})
+		await b.store.commit([twin('b1'), twin('b2')])
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await names(storeVolume(store))).toEqual([
+				'note.txt',
+				'note.txt (conflict b 2)',
+				'note.txt (conflict b)'
+			])
+			expect((await store.child(ROOT, 'note.txt'))?.id).not.toBe('b1')
+		}
+	})
+
 	it('recreates the edited file under a new id when the delete committed first', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')
