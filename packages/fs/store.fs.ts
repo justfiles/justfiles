@@ -67,6 +67,7 @@ import { type FSWatcher, watch } from 'node:fs'
 import {
 	chmod,
 	lstat as lstatOf,
+	lutimes,
 	mkdir,
 	readdir,
 	readFile,
@@ -165,6 +166,17 @@ const stateOf = (s: BigIntStats): string => `${s.mode}:${s.mtimeNs}:${s.size}`
 /** Is this still the file the row was observed at, in the state it was in? */
 const unchanged = (was: Seen, s: BigIntStats): boolean =>
 	was.ino === String(s.ino) && was.state === stateOf(s)
+
+/**
+ * The mtime a row states, on the object itself. `lutimes`, so a symlink gets its
+ * own stamp rather than its target's, and milliseconds, because that is what a
+ * `Date` carries — the same trade `storage.fs.ts` already makes for the same field.
+ * The row keeps every nanosecond it was given; the disk takes what POSIX takes.
+ */
+const stamp = async (os: string, mtimeNs: bigint): Promise<void> => {
+	const at = new Date(Number(mtimeNs / 1_000_000n))
+	await lutimes(os, at, at)
+}
 
 const kindOf = (s: BigIntStats): Node['type'] =>
 	s.isDirectory() ? 'dir' : s.isSymbolicLink() ? 'symlink' : 'file'
@@ -496,6 +508,17 @@ export function fsStore(root: string): Store {
 	/** Put one row on the disk, at the path the tree gives it. Null when there is nothing to put. */
 	const put = async (row: Node, old: Node | null, path: string | null): Promise<Landed | null> => {
 		let at = seen.get(row.id)
+		// The directory this store IS. There is nothing to create, move or remove: rule
+		// 6 says root is never buried, and a replica that holds a tombstone for it
+		// anyway must not act on one — the one path this store may not touch is its own
+		// root. Its mode and its stamp are as real as any other row's, though, and a
+		// volume that chmods `/` means the directory a local tool sees.
+		if (row.id === ROOT) {
+			if (row.deleted) return null
+			await chmod(root, row.mode & 0o7777)
+			await stamp(root, row.mtimeNs)
+			return { id: ROOT, path: '' }
+		}
 		if (row.deleted) {
 			if (at) {
 				// A batch may tombstone a directory a page before the rows inside it, so
@@ -509,7 +532,6 @@ export function fsStore(root: string): Store {
 			unmark(row.id)
 			return null
 		}
-		if (row.id === ROOT) return null // the directory this store IS
 		if (path === null) {
 			if (at) await park(row.id, at)
 			return null
@@ -578,6 +600,7 @@ export function fsStore(root: string): Store {
 		}
 		// A symlink's own mode is not settable on every platform, and nothing reads it.
 		if (row.type !== 'symlink') await chmod(os, row.mode & 0o7777)
+		await stamp(os, row.mtimeNs)
 		return { id: row.id, path, hash }
 	}
 
@@ -599,9 +622,10 @@ export function fsStore(root: string): Store {
 		const out = landed ? [landed] : []
 		if (old && !old.deleted && (row.deleted || old.parent !== row.parent || old.name !== row.name))
 			out.push(...(await promote(old.parent, old.name)))
-		// Not when the row was already a directory at this very path: that is every
-		// ordinary write, and its children are where they belong.
-		if (landed && !(old && isDir(old) && was === landed.path)) out.push(...(await adopt(row)))
+		// Not when the row already HELD ROWS at this very path: that is every ordinary
+		// write, and its children are where they belong. A junction does not count — it
+		// held none, so whatever was waiting under it has been waiting all along.
+		if (landed && !(old && holdsRows(old) && was === landed.path)) out.push(...(await adopt(row)))
 		return out
 	}
 

@@ -666,6 +666,51 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readFile(join(root, 'moved.txt'), 'utf8')).toBe('keep me')
 	})
 
+	test('a mount that becomes a directory takes back what it was holding', async () => {
+		const root = await temp()
+		const store = open(root)
+		const sub = dir({ id: 'd', name: 'sub' })
+		await store.commit([sub])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'keep me')), parent: 'd' }
+		await store.commit([inside])
+		expect(await readFile(join(root, 'sub/c.txt'), 'utf8')).toBe('keep me')
+
+		// A page re-types the directory as a junction. What was inside is not this
+		// store's to hold there any more, so it is parked with its bytes.
+		await store.commit([{ ...sub, type: 'mount', version: 'v2' }])
+		expect(await readdir(join(root, 'sub'))).toEqual([])
+		expect(read(await store.blobs.get(inside.content ?? ''))).toBe('keep me')
+
+		// And the page that makes it a directory again: the rows are reachable, so the
+		// files go back where the tree says. A junction is not the directory that
+		// suppresses this — only a directory that was already one here is.
+		await store.commit([{ ...sub, version: 'v3' }])
+		expect(await readFile(join(root, 'sub/c.txt'), 'utf8')).toBe('keep me')
+		expect(await store.get('c')).toEqual(inside)
+	})
+
+	test('the mode and the stamp a row states reach the disk, root included', async () => {
+		const root = await temp()
+		const store = open(root)
+		// A whole number of milliseconds, which is all a POSIX stamp takes here.
+		const when = 1_700_000_000_000_000_000n
+		await store.commit([{ ...(await file(store, 'f', 'a.txt', 'hello')), mtimeNs: when }])
+		expect((await stat(join(root, 'a.txt'), { bigint: true })).mtimeNs).toBe(when)
+
+		const before = await store.get(ROOT)
+		if (!before) throw new Error('the store has no root row')
+		// Root is the one row with nothing to create, move or remove — but its mode and
+		// its stamp are as real as any other row's, and this backend's whole premise is
+		// that a local tool sees what the store says.
+		await store.commit([{ ...before, mode: 0o040750, mtimeNs: when, version: 'v2' }])
+		expect((await stat(root)).mode & 0o777).toBe(0o750)
+		expect((await stat(root, { bigint: true })).mtimeNs).toBe(when)
+
+		// And the store does not report its own change back to itself.
+		const { cursor } = await feed(store)
+		expect((await store.since(cursor)).nodes).toEqual([])
+	})
+
 	test('a name deleted outside goes to the row that was waiting for it', async () => {
 		const root = await temp()
 		const store = open(root)
