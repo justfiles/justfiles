@@ -72,12 +72,23 @@ export interface Store {
 	 * wire adapter may all hold the same one, and none of them may end it — which
 	 * is why nothing above the seam grows a `close` of its own, and why a wrapper
 	 * (`authority`, `hydratingBlobs`, `verifiedBlobs`) owns nothing, implements
-	 * none, and forwards none. Call it on what you built.
+	 * none, and forwards none — see `forwarded`. Call it on what you built.
 	 *
 	 * Idempotent. After it, a caller is done with the store: whether the store can
 	 * still answer is its own business, and no caller may rely on either answer.
 	 */
 	close?(): Promise<void>
+}
+
+/**
+ * What a wrapper forwards: the seam, minus the one member it must not. Spreading
+ * a whole store copies `close` like any other method, which would hand a caller
+ * of the WRAPPER a way to end a store the wrapper never built — so every wrapper
+ * spreads this instead.
+ */
+export const forwarded = (store: Store): Omit<Store, 'close'> => {
+	const { close, ...rest } = store
+	return rest
 }
 
 /** The root directory id (contract rule 6). The same constant on every replica. */

@@ -37,14 +37,17 @@
  *
  * - **One path, one owner.** `seen` says where a row's file is; `owner` says
  *   whose file a path is. A scan asks `owner` before it asks the tree, so a file
- *   is never adopted twice under two ids, and nothing removes a file it does not
- *   own.
- * - **A row the tree cannot reach keeps its bytes.** Visibility is reachability
- *   (rule 9), so a row whose parent is missing, cyclic or tombstoned has no path
- *   — but it is still live, and on this backend its file is the only copy of its
- *   content. Its file moves to a holding area inside the sidecar, where the scan
- *   never looks and `blobs` still can; a later commit that gives the row a place
- *   renames it back, which is the same rename any move is.
+ *   is never adopted twice under two ids, and nothing removes or renames over a
+ *   file it does not own. When two live rows claim one name — a state the contract
+ *   allows (rule 1) — the disk holds the one the rows resolve to, the lowest id,
+ *   because a local tool reading that path must see what the store answers.
+ * - **A live row with no path keeps its bytes.** Visibility is reachability (rule
+ *   9), so a row whose parent is missing, cyclic or tombstoned has no path — and
+ *   neither has one that lost a contested name — but it is still live, and on this
+ *   backend its file is the only copy of its content. Its file moves to a holding
+ *   area inside the sidecar, where the scan never looks and `blobs` still can; a
+ *   later commit that gives the row a place renames it back, which is the same
+ *   rename any move is.
  *
  * The costs are deliberate. The sidecar is rewritten whole on every change, and a
  * scan reads every changed file to hash it — this serves a working tree, not a
@@ -161,6 +164,9 @@ const unchanged = (was: Seen, s: BigIntStats): boolean =>
 
 const kindOf = (s: BigIntStats): Node['type'] =>
 	s.isDirectory() ? 'dir' : s.isSymbolicLink() ? 'symlink' : 'file'
+
+/** Does this row hold entries on the disk? A mount stands where a directory would. */
+const isDir = (row: Node): boolean => row.type === 'dir' || row.type === 'mount'
 
 /** A name that is not a name: it would resolve somewhere other than one entry. */
 const unsafe = (name: string): boolean =>
@@ -400,10 +406,11 @@ export function fsStore(root: string): Store {
 	}
 
 	/**
-	 * A live row nothing can reach still owns bytes, and on this backend they are
-	 * the only copy. Its file leaves the namespace for the holding area, where the
-	 * scan never looks and `blobs` still finds it. ONE rename, whatever the subtree
-	 * under it holds.
+	 * A live row with no path of its own still owns bytes, and on this backend they
+	 * are the only copy — whether nothing can reach it, or another row holds the name
+	 * it asks for. Its file leaves the namespace for the holding area, where the scan
+	 * never looks and `blobs` still finds it. ONE rename, whatever the subtree under
+	 * it holds.
 	 */
 	const park = async (id: NodeId, at: Seen): Promise<void> => {
 		const to = `${HOLD}/${id}`
@@ -477,6 +484,28 @@ export function fsStore(root: string): Store {
 		// THERE: a row whose parent is not on the disk at all still lands, which is how
 		// a row that was parked, or one whose write failed halfway, comes back.
 		if (seen.get(row.parent)?.path !== parentOf(path)) await mkdir(dirname(os), { recursive: true })
+
+		// Another row's file is at this path already. One path holds one file, so the
+		// disk follows the same winner the rows do — the lowest id (rule 1) — and the
+		// loser keeps its bytes in the holding area rather than being renamed over: a
+		// `rename` onto a live file replaces it, and its file is the only copy there is.
+		const taken = owner.get(path)
+		if (taken !== undefined && taken !== row.id) {
+			const rival = byId.get(taken)
+			// A rival that still resolves HERE is a duplicate name and the ids decide it.
+			// One that does not is a row this same batch moves elsewhere and has not
+			// placed yet — the path is this row's whatever the ids say, and the file it
+			// left behind waits in the holding area until its own turn comes.
+			if (rival && !rival.deleted && rival.id < row.id && pathOf(rival) === path) {
+				if (at) await park(row.id, at)
+				return null
+			}
+			const held = seen.get(taken)
+			if (held) {
+				await park(taken, held)
+				at = seen.get(row.id) // parking a directory moved whatever was under it
+			}
+		}
 
 		// The row names a path other than the one its file sits at: ONE rename,
 		// whatever the subtree under it holds. A parked file comes back the same way.
@@ -585,6 +614,10 @@ export function fsStore(root: string): Store {
 		if (derived === null) return row // unreadable: leave the row alone, and try again next scan
 		write(derived)
 		mark(derived.id, { path, ino: String(s.ino), state: stateOf(s), hash: derived.content })
+		// A directory replaced out of band by a file or a symlink. Nothing lists its
+		// entries any more, and no walk goes through a row that is not a directory, so
+		// what it held is buried here or nowhere.
+		if (row && isDir(row) && !isDir(derived)) buryUnder(path)
 		changed = true
 		return derived
 	}
@@ -604,7 +637,7 @@ export function fsStore(root: string): Store {
 		for (const name of names) {
 			if (path === '' && name === SIDECAR) continue
 			const row = await syncPath(id, name, path === '' ? name : `${path}/${name}`)
-			if (row && (row.type === 'dir' || row.type === 'mount'))
+			if (row && isDir(row))
 				under.push({ id: row.id, path: path === '' ? name : `${path}/${name}` })
 		}
 		// A name this directory used to hold and no longer does. Only a row whose file
@@ -627,12 +660,23 @@ export function fsStore(root: string): Store {
 			if (!at.path.startsWith(under)) continue
 			const [step] = at.path.slice(under.length).split('/')
 			if (step === undefined || !gone.has(step)) continue
-			unmark(id)
-			const row = byId.get(id)
-			if (!row || row.deleted) continue
-			write({ ...row, deleted: true, version: mint() })
-			changed = true
+			entomb(id)
 		}
+	}
+
+	/** Everything materialized UNDER a path — the row AT it left alone. */
+	const buryUnder = (path: string): void => {
+		const under = `${path}/`
+		for (const [id, at] of [...seen]) if (at.path.startsWith(under)) entomb(id)
+	}
+
+	/** One row the disk no longer holds: not ours to track any more, and not alive. */
+	const entomb = (id: NodeId): void => {
+		unmark(id)
+		const row = byId.get(id)
+		if (!row || row.deleted) return
+		write({ ...row, deleted: true, version: mint() })
+		changed = true
 	}
 
 	/** Did the last reconcile write anything? The sidecar is saved only if it did. */
@@ -681,7 +725,7 @@ export function fsStore(root: string): Store {
 		await syncRoot()
 		for (const [id, at] of [...seen]) {
 			const row = byId.get(id)
-			if (!row || row.deleted || (row.type !== 'dir' && row.type !== 'mount')) continue
+			if (!row || row.deleted || !isDir(row)) continue
 			const s = await lstat(abs(at.path))
 			if (s === null || unchanged(at, s)) continue // gone is the parent's listing to notice
 			if (id !== ROOT) await syncPath(row.parent, row.name, at.path) // the directory's own row
@@ -712,7 +756,7 @@ export function fsStore(root: string): Store {
 		const dir = up === '' ? ROOT : owner.get(up)
 		const parent = dir === undefined ? null : byId.get(dir)
 		if (dir === undefined || !parent || parent.deleted) return
-		if (parent.type !== 'dir' && parent.type !== 'mount') return
+		if (!isDir(parent)) return
 		const name = up === '' ? path : path.slice(up.length + 1)
 		if (up === '' && name === SIDECAR) return // this store's own bookkeeping
 
@@ -721,7 +765,7 @@ export function fsStore(root: string): Store {
 			return
 		}
 		const row = await syncPath(dir, name, path)
-		if (!row || (row.type !== 'dir' && row.type !== 'mount')) return
+		if (!row || !isDir(row)) return
 		const queue: Landed[] = [{ id: row.id, path }]
 		for (let at = queue.pop(); at !== undefined; at = queue.pop())
 			queue.push(...(await syncDir(at.id, at.path)))

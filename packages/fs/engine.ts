@@ -37,6 +37,7 @@
 import {
 	type Cursor,
 	ForeignCursorError,
+	forwarded,
 	type Guard,
 	GuardError,
 	type Hash,
@@ -515,7 +516,7 @@ async function transfer(rows: Node[], from: Store['blobs'], into: Store['blobs']
 export function hydratingBlobs(local: Store, remote: Store): Store {
 	const verified = verifiedBlobs(local.blobs)
 	return {
-		...local,
+		...forwarded(local),
 		blobs: {
 			has: (hash) => local.blobs.has(hash),
 			put: (hash, data) => local.blobs.put(hash, data),

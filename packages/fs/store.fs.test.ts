@@ -395,10 +395,9 @@ describe('fsStore: a real directory, reconciled', () => {
 })
 
 /**
- * The five findings from the review of #521, each as the case that shows it.
- * Every one of them is about the same two questions the first cut never asked:
- * WHO owns a path on disk, and where does a row live when the tree cannot
- * reach it.
+ * The findings from the reviews of #521, each as the case that shows it. Every one
+ * of them is about the same two questions the first cut never asked: WHO owns a
+ * path on disk, and where does a row live when it cannot have one.
  */
 describe('fsStore: what a row owns, and what happens when nothing can reach it', () => {
 	const dir = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
@@ -526,6 +525,82 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await store.get('s')).toEqual(stub)
 		expect((await feed(store, cursor)).nodes).toEqual([])
 	})
+
+	/** A file row with the id the case chooses, and its bytes made durable first. */
+	const file = async (store: Store, id: string, name: string, content: string): Promise<Node> => {
+		const data = bytes(content)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		return {
+			id,
+			parent: ROOT,
+			name,
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+	}
+
+	test('two live rows for one name: the lowest id holds the file, the other keeps its bytes', async () => {
+		// Both arrival orders, because the answer may not depend on which came first.
+		for (const order of [
+			['aaa', 'zzz'],
+			['zzz', 'aaa']
+		] as const) {
+			const root = await temp()
+			const store = open(root)
+			const rows = {
+				aaa: await file(store, 'aaa', 'dup.txt', 'the low id'),
+				zzz: await file(store, 'zzz', 'dup.txt', 'the high id')
+			}
+			for (const id of order) await store.commit([rows[id]])
+
+			// Two live rows for one name is a state the contract allows (rule 1), and only
+			// one file can hold that name — so the disk holds the row `child` resolves.
+			// Anything else and a local tool disagrees with the store about the same path.
+			expect(await readFile(join(root, 'dup.txt'), 'utf8')).toBe('the low id')
+			expect((await store.child(ROOT, 'dup.txt'))?.id).toBe('aaa')
+			// The row that lost the name is still live, so its bytes are still here: on
+			// this backend its file is the only copy there is.
+			expect(await store.get('zzz')).toEqual(rows.zzz)
+			expect(read(await store.blobs.get(rows.zzz.content ?? ''))).toBe('the high id')
+			expect(read(await store.blobs.get(rows.aaa.content ?? ''))).toBe('the low id')
+			// And the scan neither buries a row nobody deleted nor mints a ghost for a
+			// file it finds: one name, two rows, no news.
+			const scanned = (await feed(store)).nodes
+			expect(scanned.filter((n) => n.deleted)).toEqual([])
+			expect(
+				scanned
+					.filter((n) => n.name === 'dup.txt')
+					.map((n) => n.id)
+					.sort()
+			).toEqual(['aaa', 'zzz'])
+		}
+	})
+
+	test('a directory replaced out of band by a file buries what it held', async () => {
+		const root = await temp()
+		await mkdir(join(root, 'sub'), { recursive: true })
+		await writeFile(join(root, 'sub/note.md'), 'inside')
+		const store = open(root)
+		const before = (await feed(store)).nodes
+		const sub = named(before, 'sub')
+		const note = named(before, 'note.md')
+
+		// The name survives, its kind does not. No directory will ever list those
+		// entries again, so they are buried here or nowhere — and a live row nothing
+		// can reach would go on holding the name at the authority.
+		await rm(join(root, 'sub'), { recursive: true })
+		await writeFile(join(root, 'sub'), 'a file now')
+		await settled(store, async () => (await store.get(note.id))?.deleted === true)
+
+		expect((await store.get(sub.id))?.type).toBe('file')
+		expect((await store.get(note.id))?.deleted).toBe(true)
+		expect(await store.child(sub.id, 'note.md')).toBeNull()
+	}, 30_000)
 
 	test('an empty directory saves its sidecar, so a reopen is not a reset', async () => {
 		const root = await temp()
