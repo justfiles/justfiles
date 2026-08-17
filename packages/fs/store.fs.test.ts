@@ -1178,6 +1178,24 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		await rm(outside, { recursive: true, force: true })
 	})
 
+	test('an ancestor deleted outside is buried, and the page still lands', async () => {
+		const root = await temp()
+		const store = open(root)
+		await store.commit([dir({ id: 'd', name: 'sub' })])
+		await feed(store)
+
+		// A local tool removes the directory. The rows still say it is there, so a child
+		// placed through it goes into a directory that is not — and the page carrying
+		// that child could never be applied, however many times it is retried.
+		await rm(join(root, 'sub'), { recursive: true })
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+		await store.commit([inside])
+
+		expect((await store.get('d'))?.deleted).toBe(true)
+		expect(await store.get('c')).toEqual(inside)
+		expect(await readdir(root)).toEqual(['.jfs'])
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)

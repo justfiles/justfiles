@@ -1212,6 +1212,16 @@ export function fsStore(root: string): Store {
 			const path = pathUnder(row.parent, row.name)
 			if (path === null) return
 			await unlockFor(parentOf(path), SEARCH)
+			// Gone is the other way a directory stops being one, and it needs saying here
+			// too: a stale row for a directory a local tool removed leaves this store
+			// believing the way down is there. It skips the `mkdir` it would otherwise do —
+			// the old `seen` entry says the parent is already in place — and the write goes
+			// to a path with nothing above it. Buried, everything under it loses its path
+			// and the page lands instead of failing for ever.
+			if (await absent(abs(path))) {
+				bury(parentOf(path), new Set([row.name]))
+				return
+			}
 			await syncPath(row.parent, row.name, path)
 		}
 	}
