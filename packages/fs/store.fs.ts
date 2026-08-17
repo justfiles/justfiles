@@ -325,7 +325,19 @@ export function fsStore(root: string): Store {
 	 */
 	let tail: Promise<unknown> = Promise.resolve()
 	const serial = <T>(work: () => Promise<T>): Promise<T> => {
-		const run = tail.then(work)
+		// And what a turn opened, the turn closes. Every pass that touches the disk takes
+		// one of these, so this is the one place that can promise it — including for a
+		// pass leaving by way of a throw, whose directories would otherwise stay open
+		// until some later pass ran, and there may not be one. The passes still relock
+		// where they need the ORDER (before saving the sidecar, which opens its own way
+		// in); this is what catches the way out.
+		const run = tail.then(async () => {
+			try {
+				return await work()
+			} finally {
+				await relock()
+			}
+		})
 		tail = run.catch(() => {})
 		return run
 	}
@@ -635,14 +647,20 @@ export function fsStore(root: string): Store {
 			const dir = byId.get(id)
 			const at = seen.get(id)
 			if (!dir || dir.deleted || !at) continue
-			await chmod(abs(at.path), dir.mode & 0o7777)
-			// And its state taken down again, because this chmod moved the mode and the
-			// ctime AFTER the observation pass looked. Otherwise the next walk reads the
-			// way this store let itself in as a change somebody made, and publishes a
-			// version of a directory nobody touched. Its ancestors are still open, so the
-			// look works — which is the other half of why this goes innermost first.
-			const s = await lstat(abs(at.path))
-			if (s !== null) mark(id, { ...at, ino: String(s.ino), state: stateOf(s) })
+			// One at a time, and never throwing: this runs on the way out of a pass that
+			// may itself be leaving by way of an error, and the error a caller has to see
+			// is that one. A directory that cannot be closed — removed, or shut by somebody
+			// else — is the world having moved, which the next look reconciles.
+			try {
+				await chmod(abs(at.path), dir.mode & 0o7777)
+				// And its state taken down again, because this chmod moved the mode and the
+				// ctime AFTER the observation pass looked. Otherwise the next walk reads the
+				// way this store let itself in as a change somebody made, and publishes a
+				// version of a directory nobody touched. Its ancestors are still open, so
+				// the look works — the other half of why this goes innermost first.
+				const s = await lstat(abs(at.path))
+				if (s !== null) mark(id, { ...at, ino: String(s.ino), state: stateOf(s) })
+			} catch {}
 		}
 		opened.clear()
 	}
@@ -1447,7 +1465,12 @@ export function fsStore(root: string): Store {
 		// never closes the store has nothing to leak.
 		// The index is rebuilt against the tree on open, so a path resolves the
 		// moment the store is there — a consumer does not have to poll first.
-		await scanAll()
+		// The one pass that does not take a turn of its own, so it closes its own way in.
+		try {
+			await scanAll()
+		} finally {
+			await relock()
+		}
 		// A lineage nobody else can read is a lineage that fences every cursor this
 		// instance hands out, so a fresh sidecar is saved even when the tree it
 		// describes is empty and the scan found nothing to say.

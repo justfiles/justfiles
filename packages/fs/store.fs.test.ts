@@ -1219,6 +1219,23 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(join(root, 'shut'))).mode & 0o777).toBe(0o000)
 	}, 30_000)
 
+	test('a pass that throws still closes what it opened', async () => {
+		const root = await temp()
+		const store = open(root)
+		const locked = { ...dir({ id: 'd', name: 'locked' }), mode: 0o040500 }
+		await store.commit([locked])
+		await feed(store)
+
+		// A name longer than the filesystem takes: the directory is opened for the write,
+		// and the write then fails. A pass that leaves by way of a throw has to close what
+		// it opened just the same — otherwise a directory nobody can write into stays open
+		// until some later pass happens to run, and there may not be one.
+		const long = { ...(await file(store, 'c', 'x'.repeat(300), 'nope')), parent: 'd' }
+		await expect(store.commit([long])).rejects.toThrow()
+
+		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
