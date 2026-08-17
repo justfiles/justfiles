@@ -168,13 +168,20 @@ const unchanged = (was: Seen, s: BigIntStats): boolean =>
 	was.ino === String(s.ino) && was.state === stateOf(s)
 
 /**
- * The mtime a row states, on the object itself. `lutimes`, so a symlink gets its
- * own stamp rather than its target's, and milliseconds, because that is what a
- * `Date` carries — the same trade `storage.fs.ts` already makes for the same field.
- * The row keeps every nanosecond it was given; the disk takes what POSIX takes.
+ * What a row states about its object, on the object: the two fields POSIX keeps for
+ * it. Every path that creates or replaces a file ends here, because a file that
+ * arrives with `writeFile`'s mode and this moment's stamp is not the one the row
+ * describes — and this backend's whole premise is that a local tool sees the row.
+ *
+ * `lutimes`, so a symlink gets its own stamp rather than its target's, and
+ * milliseconds, because that is what a `Date` carries — the same trade
+ * `storage.fs.ts` already makes for the same field. The row keeps every nanosecond
+ * it was given; the disk takes what POSIX takes.
  */
-const stamp = async (os: string, mtimeNs: bigint): Promise<void> => {
-	const at = new Date(Number(mtimeNs / 1_000_000n))
+const meta = async (os: string, row: Node): Promise<void> => {
+	// A symlink's own mode is not settable on every platform, and nothing reads it.
+	if (row.type !== 'symlink') await chmod(os, row.mode & 0o7777)
+	const at = new Date(Number(row.mtimeNs / 1_000_000n))
 	await lutimes(os, at, at)
 }
 
@@ -515,8 +522,7 @@ export function fsStore(root: string): Store {
 		// volume that chmods `/` means the directory a local tool sees.
 		if (row.id === ROOT) {
 			if (row.deleted) return null
-			await chmod(root, row.mode & 0o7777)
-			await stamp(root, row.mtimeNs)
+			await meta(root, row)
 			return { id: ROOT, path: '' }
 		}
 		if (row.deleted) {
@@ -598,9 +604,7 @@ export function fsStore(root: string): Store {
 			// anything local — and as an empty one until that store is bound.
 			await mkdir(os, { recursive: true })
 		}
-		// A symlink's own mode is not settable on every platform, and nothing reads it.
-		if (row.type !== 'symlink') await chmod(os, row.mode & 0o7777)
-		await stamp(os, row.mtimeNs)
+		await meta(os, row)
 		return { id: row.id, path, hash }
 	}
 
@@ -1064,6 +1068,7 @@ export function fsStore(root: string): Store {
 			const at = seen.get(row.id)
 			if (!at || at.hash === hash) continue
 			await publish(abs(at.path), (tmp) => writeFile(tmp, data))
+			await meta(abs(at.path), row)
 			placed.push({ id: row.id, path: at.path, hash })
 			dirs.add(row.parent)
 		}

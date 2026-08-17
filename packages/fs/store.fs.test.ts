@@ -775,6 +775,39 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await store.child(sub.id, 'note.md')).toBeNull()
 	}, 30_000)
 
+	test('bytes arriving for a stub do not cost the row its mode or its stamp', async () => {
+		const root = await temp()
+		const store = open(root)
+		const data = bytes('#!/bin/sh\necho hi\n')
+		const hash = await sha256Hex(data)
+		const when = 1_700_000_000_000_000_000n
+		const stub: Node = {
+			id: 's',
+			parent: ROOT,
+			name: 'run.sh',
+			type: 'file',
+			mode: 0o100755,
+			mtimeNs: when,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([stub])
+		const { cursor } = await feed(store)
+
+		// The file is REPLACED when the bytes land — one atomic rename over the name, so
+		// what arrives is a new file with `writeFile`'s mode and this moment's stamp. An
+		// executable that loses its execute bit the instant its content shows up is not
+		// what the row says, and the row is what a local tool has to see.
+		await store.blobs.put(hash, data)
+		expect(await readFile(join(root, 'run.sh'), 'utf8')).toBe('#!/bin/sh\necho hi\n')
+		expect((await stat(join(root, 'run.sh'))).mode & 0o777).toBe(0o755)
+		expect((await stat(join(root, 'run.sh'), { bigint: true })).mtimeNs).toBe(when)
+		// The row stated all of it already, so none of it is news.
+		expect(await store.get('s')).toEqual(stub)
+		expect((await feed(store, cursor)).nodes).toEqual([])
+	})
+
 	test('an empty directory saves its sidecar, so a reopen is not a reset', async () => {
 		const root = await temp()
 		const one = open(root)
