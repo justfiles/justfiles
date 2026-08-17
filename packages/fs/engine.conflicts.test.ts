@@ -191,6 +191,37 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('settles two rows claiming one name even when the peer holds neither', async () => {
+		// The same duplicate as above with nobody at the peer to lose to. Asking only
+		// what the peer holds answers "nothing" for both rows and fixes neither, so
+		// the page is refused for its own duplicate for ever. The tie-break is rule
+		// 1's, applied to the page: the lowest id keeps the name.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		const mint = versions('b')
+		const twin = (id: string): Node => ({
+			id,
+			parent: ROOT,
+			name: 'note.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: 0n,
+			version: mint()
+		})
+		await b.store.commit([twin('b1'), twin('b2')])
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await names(storeVolume(store))).toEqual(['note.txt', 'note.txt (conflict b)'])
+			expect((await store.child(ROOT, 'note.txt'))?.id).toBe('b1')
+			expect((await store.child(ROOT, 'note.txt (conflict b)'))?.id).toBe('b2')
+		}
+	})
+
 	it('recreates the edited file under a new id when the delete committed first', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')
@@ -332,11 +363,17 @@ describe('sync: conflicts', () => {
 			const dirs = await names(vol)
 			expect(dirs).toEqual(['docs', 'docs (conflict b)'])
 			// Split, but whole: every file is somewhere, and each still reads back.
-			const found = new Set<string>()
+			// WHICH side any one of them lands on is a page boundary, not a promise.
+			const found = new Map<string, string>()
 			for (const dir of dirs)
-				for (const entry of await vol.readdir(`/${dir}`)) found.add(entry.name)
+				for (const entry of await vol.readdir(`/${dir}`))
+					found.set(entry.name, `/${dir}/${entry.name}`)
 			expect(found.size).toBe(200)
-			expect(await read(store, '/docs/f0.txt')).toBe('0')
+			for (const i of [0, 99, 199]) {
+				const path = found.get(`f${i}.txt`)
+				expect(path).toBeDefined()
+				expect(await read(store, path ?? '')).toBe(`${i}`)
+			}
 		}
 	})
 

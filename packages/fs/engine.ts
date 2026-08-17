@@ -344,6 +344,21 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 	const handed = new Set<string>()
 
 	/**
+	 * Rule 1's tie-break, applied to the PAGE: of two live rows claiming one
+	 * `(parent, name)`, the lowest id keeps it. The rule is the stores' own, so
+	 * every replica settling this page would keep the same one — and it has to be
+	 * settled here, because a duplicate the peer has no part in is one the peer
+	 * cannot be asked about: it answers "nobody holds that name" for both rows.
+	 */
+	const keeps = new Map<string, NodeId>()
+	for (const row of rows) {
+		if (row.deleted) continue
+		const key = row.parent + SEP + row.name
+		const best = keeps.get(key)
+		if (best === undefined || row.id < best) keeps.set(key, row.id)
+	}
+
+	/**
 	 * A name for this row that nobody holds, found in ONE settlement.
 	 *
 	 * Probing matters as much as the name does. Adding a suffix and letting the
@@ -426,12 +441,13 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 			fix(row, { ...row, parent: await living(row.parent), version: mint() })
 			continue
 		}
+		// CREATE vs CREATE. Another node holds the name — at the peer, or in this
+		// very page — so this one takes a name derived from the replica that lost.
+		// Deterministic either way, so two replicas conflicting over one name never
+		// pick the same answer, and every file survives everywhere.
 		const holder = await remote.child(row.parent, row.name)
-		// CREATE vs CREATE. Another node already holds the name at the peer, so this
-		// one takes a name derived from the replica that lost — deterministic, so two
-		// replicas conflicting over one name never pick the same answer, and both
-		// files survive everywhere.
-		if (holder && holder.id !== row.id) fix(row, { ...row, name: await free(row), version: mint() })
+		if ((holder && holder.id !== row.id) || keeps.get(row.parent + SEP + row.name) !== row.id)
+			fix(row, { ...row, name: await free(row), version: mint() })
 		// EDIT vs EDIT needs no fix. The row is still this row at the peer; what moved
 		// is the base under it, and the re-push reads the new one. Last writer wins,
 		// and this replica is now the last writer.

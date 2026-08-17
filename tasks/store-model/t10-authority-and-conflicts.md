@@ -192,6 +192,13 @@ occupied names longer than the budget never lands at all. Numbering rather than
 re-suffixing also keeps the answer readable: a name that grew a suffix per
 collision replicates everywhere at that length.
 
+A duplicate is settled whether or not the peer is part of it. Rule 1's own
+tie-break decides which row keeps the name — the lowest id — applied to the
+page itself, so every replica settling that page would keep the same one.
+Asking only what the PEER holds answers "nobody" for both rows of a duplicate
+it has no part in, fixes neither, and leaves the page refused for its own
+duplicate for ever.
+
 The probe asks THREE places: the peer, the local store, and the names this
 settlement has already given out. Rule 1 says which of two live rows for one
 name is visible — not that two cannot exist — so one refused page may carry two
