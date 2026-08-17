@@ -673,7 +673,12 @@ export function fsStore(root: string): Store {
 			// anything local — and as an empty one until that store is bound.
 			await mkdir(os, { recursive: true })
 		}
-		await meta(os, row)
+		// A DIRECTORY's metadata waits for the observation pass, which is after everything
+		// going inside it has landed. Its stamp has to wait anyway — an entry appearing
+		// moves it — and its mode must, because a row may state a directory this store
+		// cannot write into: `0555` applied here and the child of the same batch fails
+		// with EACCES, which fails the page, which stalls the replica for good.
+		if (!isDir(row)) await meta(os, row)
 		return { id: row.id, path, hash }
 	}
 

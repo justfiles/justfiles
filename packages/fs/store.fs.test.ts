@@ -954,6 +954,22 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await feed(store)).nodes.filter((n) => n.deleted)).toEqual([])
 	})
 
+	test('a directory whose mode forbids writing still gets the children of its batch', async () => {
+		const root = await temp()
+		const store = open(root)
+		const locked = { ...dir({ id: 'd', name: 'locked' }), mode: 0o040500 }
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+
+		// One batch: a read-only directory and a file inside it. The mode the row states
+		// is the mode a local tool has to see — but stating it before the child lands
+		// locks this store out of its own write, and a page it cannot apply is a replica
+		// that never advances.
+		await store.commit([locked, inside])
+
+		expect(await readFile(join(root, 'locked/c.txt'), 'utf8')).toBe('kept')
+		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
