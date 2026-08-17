@@ -25,6 +25,11 @@ export interface StoreApp {
 // re-resolving the registry: the pointer can move between the consent sheet rendering and the
 // user confirming it, and a fresh resolve would land capabilities nobody reviewed. Nothing here
 // is trusted from the caller — not even a fingerprint, which the publisher would author too.
+//
+// One cache for the whole daemon, replaced per listing — so a SECOND listing (another launcher,
+// or this one reopened) between a sheet rendering and its confirm can still swap a same-version
+// release under it. Binding each sheet to its own retained offer is the fix, and it needs a
+// handle in the route: tasks/mac-store-consent-binding.md.
 let offered = new Map<string, RunnerCatalogApp>()
 
 // Every app JustApps publishes, minus the ones this Mac packages itself — a packaged app is

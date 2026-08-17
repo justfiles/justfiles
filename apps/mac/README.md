@@ -106,8 +106,9 @@ the way it already embeds the chat. Done posts back over the `store` message han
 too); the page reloads on every open, because it fetches the published catalog on mount and a
 second visit must not show the first visit's snapshot.
 
-The list also carries a **held update**: a published version that asks for more access than the
-installed one, which `reconcile` skips rather than applying. Accepting the row is the re-consent,
+The list also carries a **held update**: a published release that asks for more access than the
+installed one — a version bump or a release replaced in place — which `reconcile` skips rather than
+applying. Accepting the row is the re-consent,
 and this list is the only place on this Mac where one surfaces.
 
 ### Production build & install

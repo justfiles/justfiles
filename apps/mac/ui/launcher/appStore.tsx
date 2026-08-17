@@ -44,10 +44,11 @@ export function storeRows(catalog: StoreApp[], installed: Installed[]): Row[] {
 			continue
 		}
 		// The direction matters: accepting a row installs the published entry outright, so
-		// an older catalog than what's installed must never be offered as an "update".
+		// an older catalog than what's installed must never be offered as an "update". An equal
+		// version can be one, though — a publisher may replace a release in place, and
+		// `escalatesCapabilities` is what says this one asks for more than was consented to.
 		const version = have.version ?? '0.0.0'
 		if (
-			app.version !== version &&
 			semverGte(app.version, version) &&
 			escalatesCapabilities(have.capabilities, app.capabilities)
 		) {

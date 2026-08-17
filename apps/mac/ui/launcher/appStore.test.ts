@@ -23,6 +23,21 @@ test('offers a held update — a newer version asking for more access — and le
 		{ app: tasks, kind: 'install' }
 	])
 
+	// A release replaced in place asks for more under the SAME version: reconcile holds that
+	// too, and this list is the only place to grant it.
+	expect(
+		storeRows(
+			[notes],
+			[
+				{
+					id: notes.id,
+					version: notes.version,
+					capabilities: { volume: { id: 'volume', scopes: ['read'] } }
+				}
+			]
+		)
+	).toEqual([{ app: notes, kind: 'update' }])
+
 	// Same access, or a version the store has rolled BACK from: nothing to consent to.
 	expect(
 		storeRows([notes], [{ id: notes.id, version: '1.0.0', capabilities: notes.capabilities }])
