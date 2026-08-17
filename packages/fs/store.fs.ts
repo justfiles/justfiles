@@ -27,7 +27,11 @@
  *   2), but a commit that FAILS halfway leaves the batch half applied and the
  *   sidecar unsaved. The next scan reconciles what it can see, and a retry of
  *   the same batch heals the rest: a row the index holds but the disk never got
- *   is placed again rather than skipped as a no-op.
+ *   is placed again rather than skipped as a no-op. A directory whose stated mode
+ *   shuts this store out is the same shape: it is opened while a pass writes
+ *   through it and closed at the end (`unlock`, `relock`), so a crash inside that
+ *   window leaves it open and the next scan reports the mode it finds — which is
+ *   the price of a page that can be applied at all.
  * - **Content is the file.** `blobs` is not a second store beside the tree: a
  *   hash is answered by the file of a row that names it, while the disk still
  *   holds what this store last observed there. Only bytes no row has adopted yet
@@ -524,6 +528,45 @@ export function fsStore(root: string): Store {
 				return
 	}
 
+	/** Can this store put an entry through a directory in this mode? Write and search. */
+	const locked = (dir: Node): boolean => isDir(dir) && (dir.mode & 0o300) !== 0o300
+
+	/** Directories opened for a write, closed again by the pass that opened them. */
+	const opened = new Set<NodeId>()
+
+	/**
+	 * A directory whose stated mode shuts this store out, with an entry of its own about
+	 * to land or leave: POSIX wants write and search on the PARENT, and a page carrying
+	 * only the child grants neither. So it is opened for as long as the pass takes, and
+	 * `relock` puts the stated mode back as that pass's last act.
+	 *
+	 * For that window the disk holds a mode no row states. It is the same kind of
+	 * transient as a `publish` temp file, and the alternative is worse by a long way: a
+	 * page this replica could never apply, retried for ever.
+	 */
+	const unlock = async (dir: Node, path: string): Promise<void> => {
+		opened.add(dir.id)
+		await chmod(abs(path), (dir.mode & 0o7777) | 0o300)
+	}
+
+	/** The same, for whatever directory the index says is at this path. */
+	const unlockFor = async (path: string): Promise<void> => {
+		const id = owner.get(path)
+		const dir = id === undefined ? undefined : byId.get(id)
+		if (!dir || dir.deleted || !locked(dir)) return
+		await unlock(dir, path)
+	}
+
+	/** The stated mode, back on every directory this pass opened. */
+	const relock = async (): Promise<void> => {
+		for (const id of opened) {
+			const dir = byId.get(id)
+			const at = seen.get(id)
+			if (dir && !dir.deleted && at) await chmod(abs(at.path), dir.mode & 0o7777)
+		}
+		opened.clear()
+	}
+
 	/**
 	 * A live row with no path of its own still owns bytes, and on this backend they
 	 * are the only copy — whether nothing can reach it, or another row holds the name
@@ -604,6 +647,7 @@ export function fsStore(root: string): Store {
 		}
 		if (row.deleted) {
 			if (at) {
+				await unlockFor(parentOf(at.path))
 				// A batch may tombstone a directory a page before the rows inside it, so
 				// what is under it decides: nothing of this store's underneath, and the
 				// subtree goes; anything still tracked there, and it is parked with its
@@ -616,10 +660,15 @@ export function fsStore(root: string): Store {
 			return null
 		}
 		if (path === null) {
-			if (at) await park(row.id, at)
+			if (at) {
+				await unlockFor(parentOf(at.path))
+				await park(row.id, at)
+			}
 			return null
 		}
 		const os = abs(path)
+
+		await unlockFor(parentOf(path))
 
 		// The directory this row goes in, when the index does not already have it
 		// THERE: a row whose parent is not on the disk at all still lands, which is how
@@ -643,6 +692,7 @@ export function fsStore(root: string): Store {
 		// The row names a path other than the one its file sits at: ONE rename,
 		// whatever the subtree under it holds. A parked file comes back the same way.
 		if (at && at.path !== path) {
+			await unlockFor(parentOf(at.path))
 			if (await mine(at)) {
 				await rename(abs(at.path), os)
 				moveSeen(at.path, path)
@@ -752,7 +802,11 @@ export function fsStore(root: string): Store {
 		for (const landed of placed) {
 			if (held.get(landed.path) !== landed.id) continue
 			const row = byId.get(landed.id)
-			if (row && !row.deleted && isDir(row)) await meta(abs(landed.path), row)
+			if (!row || row.deleted || !isDir(row)) continue
+			await meta(abs(landed.path), row)
+			// Stated, and then held open if what it states shuts this store out: the
+			// marking below has to look inside it, and `relock` is this pass's last act.
+			if (locked(row)) await unlock(row, landed.path)
 		}
 		const where = new Map<NodeId, Landed>(placed.map((landed) => [landed.id, landed]))
 		for (const id of dirs) {
@@ -764,6 +818,8 @@ export function fsStore(root: string): Store {
 			if (s === null) unmark(id)
 			else mark(id, { path: landed.path, ino: String(s.ino), state: stateOf(s), hash: landed.hash })
 		}
+		// Last, because everything above had to be able to write and look through them.
+		await relock()
 	}
 
 	// ── The scan: where a change nobody announced becomes a row ──────────────────
@@ -1204,6 +1260,7 @@ export function fsStore(root: string): Store {
 				await settle([[row.parent, row.name]])
 				continue
 			}
+			await unlockFor(parentOf(at.path))
 			await publish(abs(at.path), (tmp) => writeFile(tmp, data))
 			await meta(abs(at.path), row)
 			placed.push({ id: row.id, path: at.path, hash })

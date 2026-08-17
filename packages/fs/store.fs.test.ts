@@ -1003,6 +1003,28 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(join(root, 'shut'))).mode & 0o777).toBe(0o300)
 	})
 
+	test('a child from a later page lands in a directory whose mode forbids the write', async () => {
+		const root = await temp()
+		const store = open(root)
+		const locked = { ...dir({ id: 'd', name: 'locked' }), mode: 0o040500 }
+		await store.commit([locked])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'kept')), parent: 'd' }
+
+		// The page that fills the directory does not carry the directory, so nothing in it
+		// grants the write POSIX wants on a parent — and a page that cannot be applied is
+		// a replica that never advances. The directory is opened for the batch instead,
+		// and closed again before it returns.
+		await store.commit([inside])
+
+		expect(await readFile(join(root, 'locked/c.txt'), 'utf8')).toBe('kept')
+		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
+
+		// And out again: taking an entry away wants the same write.
+		await store.commit([{ ...inside, deleted: true, version: 'v3' }])
+		expect(await readdir(join(root, 'locked'))).toEqual([])
+		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
