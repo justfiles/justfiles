@@ -581,6 +581,50 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		}
 	})
 
+	test('when the row holding a contested name goes, the one that claimed it takes the file', async () => {
+		const root = await temp()
+		const store = open(root)
+		const low = await file(store, 'aaa', 'dup.txt', 'the low id')
+		const high = await file(store, 'zzz', 'dup.txt', 'the high id')
+		await store.commit([low])
+		await store.commit([high]) // parked: the lowest id holds the name
+
+		// The row that held the name is buried, so the row that was waiting for it is
+		// the winner now — and this is its only chance, because nothing looks inside
+		// the holding area: not the scan, and not a commit that never names it.
+		await store.commit([{ ...low, deleted: true, version: 'v2' }])
+
+		expect(await store.child(ROOT, 'dup.txt')).toEqual(high)
+		expect(await readFile(join(root, 'dup.txt'), 'utf8')).toBe('the high id')
+		// The row never changed, only what the disk holds: the promotion is not news,
+		// and the scan finds the file already accounted for.
+		const rows = (await feed(store)).nodes
+		expect(rows.filter((n) => n.deleted).map((n) => n.id)).toEqual(['aaa'])
+		expect(await store.child(ROOT, 'dup.txt')).toEqual(high)
+	})
+
+	test('a directory that becomes a file keeps what was inside it, bytes and all', async () => {
+		const root = await temp()
+		const store = open(root)
+		await store.commit([dir({ id: 'd', name: 'sub' })])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'keep me')), parent: 'd' }
+		await store.commit([inside])
+
+		// A page that re-types the directory can land before the page that moves its
+		// children out — rule 9 lets a replica hold exactly that, and the authority
+		// takes the batch whose later pages empty it. The name has to become a file
+		// here, but what was under it is still live rows nobody deleted.
+		const retyped = { ...(await file(store, 'd', 'sub', 'now a file')), version: 'v2' }
+		await store.commit([retyped])
+		expect(await readFile(join(root, 'sub'), 'utf8')).toBe('now a file')
+		expect(await store.get('c')).toEqual(inside)
+		expect(read(await store.blobs.get(inside.content ?? ''))).toBe('keep me')
+
+		// And the page that moves the child arrives: its bytes come back with it.
+		await store.commit([{ ...inside, parent: ROOT, name: 'moved.txt', version: 'v2' }])
+		expect(await readFile(join(root, 'moved.txt'), 'utf8')).toBe('keep me')
+	})
+
 	test('a directory replaced out of band by a file buries what it held', async () => {
 		const root = await temp()
 		await mkdir(join(root, 'sub'), { recursive: true })

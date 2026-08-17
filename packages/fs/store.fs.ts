@@ -47,7 +47,9 @@
  *   backend its file is the only copy of its content. Its file moves to a holding
  *   area inside the sidecar, where the scan never looks and `blobs` still can; a
  *   later commit that gives the row a place renames it back, which is the same
- *   rename any move is.
+ *   rename any move is. That commit need not name the row: the one that takes a
+ *   contested name AWAY from whoever held it makes the row waiting the winner, and
+ *   nothing else would ever go and look for it in there.
  *
  * The costs are deliberate. The sidecar is rewritten whole on every change, and a
  * scan reads every changed file to hash it — this serves a working tree, not a
@@ -314,6 +316,21 @@ export function fsStore(root: string): Store {
 		if (bucket?.size === 0) holders.delete(was.hash)
 	}
 
+	/**
+	 * Would a recursive `rm` at this path take a file this store still tracks? The
+	 * question that has to be asked before one runs: what is under a directory may
+	 * belong to rows nobody deleted, and their files are the only copy of their bytes
+	 * there is. `was` is what the disk holds there, when the caller knows — only a
+	 * directory can hold anything, and asking is a walk of everything this store has
+	 * seen.
+	 */
+	const holdsFiles = (path: string, was: Node | null = null): boolean => {
+		if (was && !isDir(was)) return false
+		const under = `${path}/`
+		for (const at of seen.values()) if (at.path.startsWith(under)) return true
+		return false
+	}
+
 	/** A directory moved, so every path under it moved with it. */
 	const moveSeen = (from: string, to: string): void => {
 		const under = `${from}/`
@@ -413,12 +430,17 @@ export function fsStore(root: string): Store {
 	 * it holds.
 	 */
 	const park = async (id: NodeId, at: Seen): Promise<void> => {
-		const to = `${HOLD}/${id}`
-		if (at.path === to) return
+		// The id names its place in there. A second name for it is only needed when
+		// files this store still tracks are under the first — a subtree an earlier park
+		// left behind, which is not this one's to delete. Anything else at the name is
+		// a leftover: a crash between the rename and the save that recorded it.
+		const its = `${HOLD}/${id}`
+		if (at.path === its || at.path.startsWith(`${its}-`)) return // already in its place
 		if (!(await mine(at))) {
 			unmark(id)
 			return
 		}
+		const to = holdsFiles(its) ? `${its}-${crypto.randomUUID()}` : its
 		await mkdir(join(root, HOLD), { recursive: true })
 		await rm(abs(to), { recursive: true, force: true })
 		await rename(abs(at.path), abs(to))
@@ -456,18 +478,16 @@ export function fsStore(root: string): Store {
 	}
 
 	/** Put one row on the disk, at the path the tree gives it. Null when there is nothing to put. */
-	const place = async (
-		row: Node,
-		old: Node | null,
-		path: string | null
-	): Promise<Landed | null> => {
+	const put = async (row: Node, old: Node | null, path: string | null): Promise<Landed | null> => {
 		let at = seen.get(row.id)
 		if (row.deleted) {
 			if (at) {
 				// A batch may tombstone a directory a page before the rows inside it, so
-				// what is under it decides: nothing live, and the subtree goes; anything
-				// live, and it is parked with its bytes intact.
-				if ((tree.get(row.id)?.size ?? 0) > 0) await park(row.id, at)
+				// what is under it decides: nothing of this store's underneath, and the
+				// subtree goes; anything still tracked there, and it is parked with its
+				// bytes intact — a recursive `rm` does not get to take a file it is not
+				// deleting.
+				if (holdsFiles(at.path, old)) await park(row.id, at)
 				else await remove(at)
 			}
 			unmark(row.id)
@@ -519,9 +539,13 @@ export function fsStore(root: string): Store {
 				at = undefined
 			}
 		}
-		// A file where a directory was, or the other way round: the old one goes.
+		// A file where a directory was, or the other way round: the old one goes — and
+		// goes the same way a tombstoned directory does, because what was inside it may
+		// be live rows whose own pages have not arrived yet. The name has to be free
+		// either way, so the subtree is parked rather than removed.
 		if (at && old && old.type !== row.type) {
-			await remove(at)
+			if (holdsFiles(at.path, old)) await park(row.id, at)
+			else await remove(at)
 			unmark(row.id)
 			at = undefined
 		}
@@ -539,6 +563,30 @@ export function fsStore(root: string): Store {
 		// A symlink's own mode is not settable on every platform, and nothing reads it.
 		if (row.type !== 'symlink') await chmod(os, row.mode & 0o7777)
 		return { id: row.id, path, hash }
+	}
+
+	/**
+	 * A row on the disk, and the one other row that may have to move because of it:
+	 * a name this row LEFT — by being tombstoned, by moving, or by losing its place
+	 * in the tree — may still be claimed by a live row waiting in the holding area,
+	 * and that row is the winner now. Nothing else would ever bring it back, because
+	 * the scan does not look in there.
+	 */
+	const place = async (row: Node, old: Node | null, path: string | null): Promise<Landed[]> => {
+		const landed = await put(row, old, path)
+		const left =
+			old && !old.deleted && (row.deleted || old.parent !== row.parent || old.name !== row.name)
+		const after = left ? await promote(old.parent, old.name) : []
+		return landed ? [landed, ...after] : after
+	}
+
+	/** Put the live row that claims this name where the tree says it goes, if it is not there. */
+	const promote = async (parent: NodeId, name: string): Promise<Landed[]> => {
+		const winner = lookup(parent, name)
+		if (!winner) return []
+		const path = pathOf(winner)
+		if (path === null || seen.get(winner.id)?.path === path) return []
+		return place(winner, winner, path)
 	}
 
 	/**
@@ -1055,8 +1103,7 @@ export function fsStore(root: string): Store {
 				const placed: Landed[] = []
 				const dirs = new Set<NodeId>()
 				for (const { row, old, path } of ordered) {
-					const landed = await place(row, old, path)
-					if (landed) placed.push(landed)
+					placed.push(...(await place(row, old, path)))
 					dirs.add(row.parent)
 					if (old) dirs.add(old.parent)
 				}
