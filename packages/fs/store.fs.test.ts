@@ -21,7 +21,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
+import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
 import { storeConformance } from './store.conformance'
 import { fsStore, SWEEP_MS } from './store.fs'
 
@@ -774,6 +774,46 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await store.get(note.id))?.deleted).toBe(true)
 		expect(await store.child(sub.id, 'note.md')).toBeNull()
 	}, 30_000)
+
+	test('a free guard answers about the disk, not about the last time it looked', async () => {
+		const root = await temp()
+		const store = open(root)
+		await feed(store) // the store has looked; the file arrives after
+
+		// A local tool takes the name between two polls, and the app claims it with the
+		// guard that means "no live node holds this" (rule 2). The answer has to come
+		// from the disk: a guard checked against an index that has not looked since
+		// passes, and the write then renames over bytes nobody ever published.
+		await writeFile(join(root, 'a.txt'), 'the local tool wrote this')
+		const row = await file(store, 'f', 'a.txt', 'and the app wrote this')
+
+		await expect(store.commit([row], [{ free: { parent: ROOT, name: 'a.txt' } }])).rejects.toThrow(
+			GuardError
+		)
+
+		// Nothing was lost, and the file is a row now — the create it always was.
+		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('the local tool wrote this')
+		expect((await store.child(ROOT, 'a.txt'))?.content).toBe(
+			await sha256Hex(bytes('the local tool wrote this'))
+		)
+	})
+
+	test('a commit with no guard keeps the bytes of the file whose name it takes', async () => {
+		const root = await temp()
+		const store = open(root)
+		await feed(store)
+		await writeFile(join(root, 'a.txt'), 'the local tool wrote this')
+		const local = await sha256Hex(bytes('the local tool wrote this'))
+		const row = await file(store, 'aaa', 'a.txt', 'and the app wrote this')
+
+		// No guard, so nothing refuses this write — but the file it takes the name from
+		// was never published, and its bytes are the only copy there is. It becomes a row
+		// first, and rule 1 then settles which of the two has the name; whichever loses
+		// keeps its content either way.
+		await store.commit([row])
+		expect(read(await store.blobs.get(local))).toBe('the local tool wrote this')
+		expect(read(await store.blobs.get(row.content ?? ''))).toBe('and the app wrote this')
+	})
 
 	test('two rows claiming one name in ONE batch: the lowest id lands, the other waits', async () => {
 		const root = await temp()

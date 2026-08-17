@@ -343,6 +343,20 @@ export function fsStore(root: string): Store {
 		return parts[0] === SIDECAR ? null : parts.join('/')
 	}
 
+	/**
+	 * The path a `(parent, name)` would resolve to — the question `pathOf` answers for
+	 * a row, asked of a name no row may hold yet. Null when the parent has no path of
+	 * its own, which is when nothing under it can be reached either.
+	 */
+	const pathUnder = (parent: NodeId, name: string): string | null => {
+		if (unsafe(name)) return null
+		if (parent === ROOT) return name === SIDECAR ? null : name
+		const up = byId.get(parent)
+		if (!up || up.deleted || !holdsRows(up)) return null
+		const dir = pathOf(up)
+		return dir === null ? null : `${dir}/${name}`
+	}
+
 	// ── What the disk holds: `seen`, and the two indexes over it ─────────────────
 
 	const mark = (id: NodeId, at: Seen): void => {
@@ -968,6 +982,22 @@ export function fsStore(root: string): Store {
 		if (now - swept >= SWEEP_MS) return sweep()
 	}
 
+	/**
+	 * A few names, reconciled against the disk on their own. What a commit does before
+	 * it checks a guard: whatever a local tool has done to those names is a row of this
+	 * store's — a create with its own id, or a new version — BEFORE anything is judged
+	 * or written over, so a guard answers about the tree that is there and bytes nobody
+	 * published are never renamed away.
+	 */
+	const settle = async (touched: Iterable<[NodeId, string]>): Promise<void> => {
+		changed = false
+		for (const [parent, name] of touched) {
+			const path = pathUnder(parent, name)
+			if (path !== null) await syncPath(parent, name, path)
+		}
+		if (changed) await save()
+	}
+
 	/** The paths the watcher named. O(what changed), which is the point of having one. */
 	const drain = async (): Promise<void> => {
 		// A directory before what is inside it, so a subtree that arrived at once is
@@ -1194,6 +1224,26 @@ export function fsStore(root: string): Store {
 			const checks = structuredClone(guards)
 			await open()
 			return serial(async () => {
+				// What this batch is about to touch, looked at on the DISK first: the names
+				// it takes, and the names its guards ask about. A guard answered from an
+				// index that has not looked since the last poll is answered about a tree
+				// that may no longer exist — a `free` name a local tool has taken passes,
+				// and the placement then renames over bytes nobody ever published. Only
+				// these paths, because a commit is not a scan: one `lstat` each, and a name
+				// this store already accounts for costs nothing more.
+				const touched = new Map<string, [NodeId, string]>()
+				const touch = (parent: NodeId, name: string): void =>
+					void touched.set(parent + SEP + name, [parent, name])
+				for (const row of batch) if (!row.deleted) touch(row.parent, row.name)
+				for (const guard of checks ?? []) {
+					if ('free' in guard) touch(guard.free.parent, guard.free.name)
+					else {
+						const held = byId.get(guard.version.id)
+						if (held && !held.deleted) touch(held.parent, held.name)
+					}
+				}
+				await settle(touched.values())
+
 				for (const guard of checks ?? []) if (!passes(guard)) throw new GuardError(guard)
 
 				const todo: { row: Node; old: Node | null; fresh: boolean }[] = []
