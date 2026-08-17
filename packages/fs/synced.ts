@@ -431,9 +431,17 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			//
 			// Until a scan finds nothing foreign, for the reason the discard loops:
 			// this wrapper's loop is stood off, the app's writers are not, and a row
-			// that arrived after the last pass would be filtered out of every push
-			// from here on — visible locally, absent from the authority for good.
-			// A row already ours needs no rewrite, which is what ends the walk.
+			// that arrived after the last pass is filtered out of every push from here
+			// on. A row already ours needs no rewrite, which is what ends the walk.
+			//
+			// The last scan is the last word this reset has, and a row landing after
+			// it is not this replica's to publish — T8's standing rule, which the
+			// reset hands back to at SOME instant. No choice of instant makes it
+			// never: the cursor lives in a host slot, outside the store, so nothing
+			// can make "nothing foreign here" and "cursor rewound" one step, and
+			// another pass would only move the window. It costs such a row a wait
+			// rather than its life — it stays visible here, and the first write that
+			// touches it re-authors it into the next push.
 			for (let left = MAX_ATTEMPTS; ; left--) {
 				const theirs = living((await feed()).rows).filter(
 					(row) => authorOf(row.version) !== replica

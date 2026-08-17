@@ -195,6 +195,18 @@ nothing left to do, and the scan that proves it is the one that fixes the
 cutoff. An untouched volume is still one commit and a second scan that finds
 nothing.
 
+**Both resets end on a scan, and the instant after it belongs to the standing
+rules.** A row that lands after a reset's last scan is not covered by it: for
+`takeMine` it is a row this replica did not author, which [T8](t08-engine-core.md)
+says is not its to publish; for `takeTheirs` the cutoff has been taken, so a new
+row simply sits after it and the next push carries it, which is right — it is
+work the user did after asking for the discard. Neither window can be closed,
+only moved: the cursors live in host slots, outside the store, so nothing can
+make "the scan found nothing" and "the cursor is saved" one step, and a further
+pass just shrinks the gap. The cost is bounded and self-healing — the row stays
+visible on this device, and the first write that touches it re-authors it into
+the next push.
+
 **Two limits, stated rather than hidden.** A replica that did NOT initiate the
 `takeMine` keeps its own authored rows and restores them to the fresh authority
 — that is [T8](t08-engine-core.md)'s rule, and converging such a replica onto
