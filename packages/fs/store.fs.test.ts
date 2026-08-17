@@ -20,7 +20,7 @@ import {
 	writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
 import { storeConformance } from './store.conformance'
@@ -1133,6 +1133,33 @@ describe('fsStore: a junction is not a directory', () => {
 })
 
 describe('fsStore: the sidecar is the store, not the tree', () => {
+	test('a name holding the path separator has no place on the disk', async () => {
+		const root = await temp()
+		const store = open(root)
+		const data = bytes('nope')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		// `sep`, so this asks what the PLATFORM asks. On Windows a backslash separates
+		// too, and a row from a peer named `..\victim` would resolve clean out of the
+		// store root, while `.jfs\index.json` would reach the index reading as one name.
+		const row: Node = {
+			id: 'x',
+			parent: ROOT,
+			name: `..${sep}victim`,
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+
+		await store.commit([row])
+		expect(await store.get('x')).toEqual(row)
+		expect(await readdir(root)).toEqual(['.jfs'])
+		expect(await readdir(join(root, '..')).then((names) => names.includes('victim'))).toBe(false)
+	})
+
 	test('a name holding NUL is a row and nothing else, and wedges no page', async () => {
 		const root = await temp()
 		const store = open(root)

@@ -217,13 +217,27 @@ const holdsRows = (row: Node): boolean => row.type === 'dir'
 
 /**
  * A name that is not a name: it would resolve somewhere other than one entry, or
- * nowhere at all. `SEP` is the last of those and the bluntest — a NUL is the one
- * byte a name cannot hold, which is why every backend composes keys with it, and
- * `node:fs` refuses a path containing one outright. A page carrying such a row must
- * not be a page this replica can never apply.
+ * nowhere at all. Three kinds, and a row from a peer is reason enough to check all
+ * of them before its name reaches `join`:
+ *
+ * - It names a place instead of an entry. `/` always, and `sep` because a platform
+ *   may separate on something else too: on Windows `..\victim` resolves clean out of
+ *   the store root, and `.jfs\index.json` reaches the index while reading as one
+ *   name to the sidecar check. Asking the PLATFORM's separator is what keeps a
+ *   backslash a legal filename where it is one.
+ * - It names no entry at all: the empty name, `.`, `..`.
+ * - `SEP`, the bluntest — a NUL is the one byte a name cannot hold, which is why
+ *   every backend composes keys with it, and `node:fs` refuses a path containing one
+ *   outright. A page carrying such a row must not be a page this replica can never
+ *   apply.
  */
 const unsafe = (name: string): boolean =>
-	name === '' || name === '.' || name === '..' || name.includes('/') || name.includes(SEP)
+	name === '' ||
+	name === '.' ||
+	name === '..' ||
+	name.includes('/') ||
+	name.includes(sep) ||
+	name.includes(SEP)
 
 const parentOf = (path: string): string => {
 	const cut = path.lastIndexOf('/')
