@@ -21,7 +21,11 @@ The key structural facts:
   `free` guard, and since only a directory can be a parent, it can never have
   children — so a `/private` subtree cannot exist in the synced store at all,
   on any replica, buggy or not. The boundary is enforced by the DATA, not by
-  policy code.
+  policy code. **Already landed in [T10](t10-authority-and-conflicts.md):**
+  `authority.ts` refuses a row whose parent is a mount, and refuses a root that
+  is one. Note its `holdsRows` is deliberately NOT `volume.store.ts`'s `isDir`,
+  which counts a mount — a junction stands where a directory would for
+  resolution and `stat`, and holds nothing in THIS store. Do not merge the two.
 - The mount POINT is shared data; the BINDING is local, like fstab.
 - A sync engine receives one store and nothing else, so no delta, tombstone, or
   blob request can even name local data.
