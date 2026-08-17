@@ -468,7 +468,16 @@ export function fsStore(root: string): Store {
 	// ── The sidecar ──────────────────────────────────────────────────────────────
 
 	const load = async (): Promise<boolean> => {
-		const text = await readFile(join(root, INDEX), 'utf8').catch(() => null)
+		// "It is not there" is the only answer that means a directory with no history.
+		// Anything else — no permission, a device that stopped answering — is this store
+		// not knowing, and it must never be taken for a fresh tree: that mints a new
+		// lineage, rebinds every id the tree already had, and then `save` renames the new
+		// index over the one that could not be read. An open that fails is recoverable;
+		// that is not.
+		const text = await readFile(join(root, INDEX), 'utf8').catch((e: NodeJS.ErrnoException) => {
+			if (e.code === 'ENOENT') return null
+			throw e
+		})
 		if (text === null) return false
 		const sidecar = JSON.parse(text) as Sidecar
 		lineage = sidecar.lineage

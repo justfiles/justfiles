@@ -1424,6 +1424,24 @@ describe('fsStore: the sidecar is the store, not the tree', () => {
 		expect((await feed(store)).nodes.filter((n) => n.deleted)).toEqual([])
 	})
 
+	test('an index this store cannot read is not a store with no history', async () => {
+		const root = await temp()
+		const one = open(root)
+		const row = await place(one, 'a.txt', 'hello')
+		await feed(one)
+		await one.close?.()
+
+		// The index is there, and unreadable. Taking that for "no sidecar" mints a fresh
+		// lineage, rebinds every id the tree already had, and then writes the new index
+		// over the one it could not read — so it has to fail loudly instead.
+		await chmod(join(root, '.jfs/index.json'), 0o000)
+		await expect(open(root).get(ROOT)).rejects.toThrow()
+
+		// And the index is still there, untouched, for whoever can read it.
+		await chmod(join(root, '.jfs/index.json'), 0o600)
+		expect((await open(root).child(ROOT, 'a.txt'))?.id).toBe(row.id)
+	})
+
 	test('a row that asks for the sidecar name never writes over it', async () => {
 		const root = await temp()
 		const store = open(root)
