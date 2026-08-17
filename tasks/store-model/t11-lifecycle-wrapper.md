@@ -139,6 +139,26 @@ that is easy to miss: waiting for the cycle in flight is a window the app can
 tear the replica down in (frieren does, on a profile switch), and a reset that
 went ahead then would leave the store rewritten with nothing to converge it.
 
+**One reset at a time, and its final cycle is the caller's to hear about.** Two
+destructive bodies over one store interleave their passes and their flags —
+whichever finished first would clear the fence and start syncing while the
+other was still tombstoning — and the app offers both from a menu with no
+in-flight gate, so the wrapper rejects the second. And a reset is done when its
+work has REACHED the peer: the loop's own cycles report failure through
+`status`, but the cycle that makes a reset real is the one whose failure
+belongs to the caller, or `takeMine` resolves "published" over an authority it
+truncated and could not reach. A scheduled retry is no answer there, because
+the caller tears the replica down on hearing success.
+
+**`takeMine` re-authors what it did not write, and rewinds the push cursor.**
+Re-authoring everything and letting rule 4 carry it (a written row moves to the
+feed's tail) conflated two jobs, and only one of them is re-authoring: the push
+filter needs the rows to be THIS replica's, and the cursor needs to offer the
+whole feed rather than what changed since the last push. Splitting them lets
+the loop end on a question about the rows — "is anything here still somebody
+else's?" — which is what makes it safe against a row that lands late, the same
+way the discard is.
+
 **A reset stands the loop off with its own flag, not the app's `paused`.**
 Overloading `paused` meant a reset both read and wrote a decision that belongs
 to the app — restoring it would clobber a pause that arrived mid-reset. So

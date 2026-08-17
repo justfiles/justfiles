@@ -323,6 +323,18 @@ describe('syncedVolume: the debounced push', () => {
 	})
 })
 
+/** A bare file row, for a write that has to reach the store directly. */
+const row = (id: string, name: string, version: string): Node => ({
+	id,
+	parent: ROOT,
+	name,
+	type: 'file',
+	mode: 0o100644,
+	mtimeNs: 0n,
+	size: 0n,
+	version
+})
+
 /**
  * A store that lets one write land immediately after the next commit: the app
  * writing between a reset's passes, which stopping the loop does not prevent.
@@ -373,18 +385,7 @@ describe('syncedVolume: take theirs', () => {
 		const local = racing(memStore())
 		const { vol } = await replica(remote, { local })
 		await vol.writeFile('/mine.txt', enc.encode('mine'))
-		local.armWith([
-			{
-				id: 'stray',
-				parent: ROOT,
-				name: 'stray.txt',
-				type: 'file',
-				mode: 0o100644,
-				mtimeNs: 0n,
-				size: 0n,
-				version: 'a:stray-1'
-			}
-		])
+		local.armWith([row('stray', 'stray.txt', 'a:stray-1')])
 
 		await vol.takeTheirs()
 
@@ -555,6 +556,30 @@ describe('syncedVolume: take mine', () => {
 		expect(await tree(b.vol)).toEqual({ '/a.txt': 'from a', '/b.txt': 'from b' })
 	})
 
+	// The mirror of the discard's late arrival: a row this replica did NOT author,
+	// landing after the pass that would have re-authored it, is filtered out of
+	// every push from here on — visible locally, absent from the authority.
+	it('publishes a foreign row that lands while it is re-authoring', async () => {
+		const hub = authorityPeer()
+		const local = racing(memStore())
+		const { vol } = await replica(hub.store, { local, reset: hub.reset })
+		await vol.writeFile('/a.txt', enc.encode('from a'))
+		await vol.flush()
+		// A row this replica holds but did not write, as a pull would leave it: it
+		// is what the first pass re-authors, and so what the second one races.
+		await local.commit([row('first', 'first.txt', 'b:first-1')])
+		local.armWith([row('theirs', 'theirs.txt', 'b:landed-1')])
+
+		await vol.takeMine()
+
+		expect(await tree(storeVolume(hub.store))).toEqual({
+			'/a.txt': 'from a',
+			'/first.txt': '',
+			'/theirs.txt': ''
+		})
+		expect(await authors(hub.store)).toEqual(['a'])
+	})
+
 	// What makes the crash story cost nothing: interrupted anywhere, running it
 	// again is both the retry and the recovery, so there is no durable
 	// "publishing" marker to keep and nothing to resume.
@@ -589,6 +614,49 @@ describe('syncedVolume: take mine', () => {
 	it('refuses when the peer has no way to start a new lineage', async () => {
 		const { vol } = await replica(memStore())
 		await expect(vol.takeMine()).rejects.toThrow(/lineage/)
+	})
+
+	// Both destructive bodies over one store would interleave their passes and
+	// their flags, and the app offers them from a menu with no in-flight gate
+	// (`apps/frieren/src/shell/DesktopShell.tsx`).
+	it('refuses a second reset while one is running', async () => {
+		const hub = authorityPeer()
+		const { vol } = await replica(hub.store, { reset: hub.reset })
+		await vol.writeFile('/a.txt', enc.encode('from a'))
+		await vol.flush()
+
+		const first = vol.takeMine()
+
+		await expect(vol.takeTheirs()).rejects.toThrow(/already running/)
+		await first
+
+		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })
+	})
+
+	// A reset that says "done" is the app's cue to move on — frieren's menu
+	// alerts on a rejection and otherwise says nothing — so the cycle that makes
+	// the reset real is the one cycle whose failure belongs to the caller.
+	it('reports a final cycle the peer would not take', async () => {
+		vi.useFakeTimers()
+		const hub = authorityPeer()
+		let down = false
+		const peer: Store = {
+			...hub.store,
+			since: (cursor) => (down ? Promise.reject(new Error('offline')) : hub.store.since(cursor))
+		}
+		const { vol } = await replica(peer, {
+			reset: async () => {
+				down = true // the authority is truncated, and now unreachable
+				return hub.reset()
+			}
+		})
+		await vol.writeFile('/a.txt', enc.encode('from a'))
+		await vol.flush()
+
+		const done = vol.takeMine().catch((e: unknown) => e)
+		await vi.advanceTimersByTimeAsync(8_000)
+
+		expect(await done).toMatchObject({ message: expect.stringContaining('did not converge') })
 	})
 
 	// Nothing here can hold a teardown off — the app tears the STORE down behind

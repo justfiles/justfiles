@@ -18,9 +18,13 @@
  *   they are asymmetric because the stores are: this replica's own is its to
  *   rewrite row by row, so `takeTheirs` tombstones it and moves the cursors that
  *   decide what is offered from it; the authority is somebody else's, so
- *   `takeMine` asks it to start a new lineage (the injected `reset`) and then
- *   re-authors every local row, which is what makes the whole tree this
- *   replica's to publish.
+ *   `takeMine` asks it to start a new lineage (the injected `reset`), re-authors
+ *   what this replica did not write — which is what makes the whole tree its to
+ *   publish — and offers the feed again from the top.
+ *
+ *   Both then loop until a scan finds nothing left to do, because standing the
+ *   loop off does not stand the app off: a row that lands after the last pass
+ *   would be stranded on this device by the very cursor the reset saves.
  *
  * T18 renames this to `synced`.
  */
@@ -158,6 +162,8 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	let paused = false
 	let destroyed = false
 	let failures = 0
+	/** What the last cycle failed with, for the one caller a failure belongs to. */
+	let failure: unknown
 	/** A reset owns the store: it is rewriting rows the loop must not offer yet. */
 	let resetting = false
 	/**
@@ -174,6 +180,10 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	/** May the loop act? Every way it must not, in one place. */
 	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfenced
 
+	/** What a thrown thing says, for an error that carries another one's words. */
+	const message = (thrown: unknown): string =>
+		thrown instanceof Error ? thrown.message : String(thrown)
+
 	function schedule(): void {
 		if (!mayRun()) return
 		const backoff = RETRY_MS[Math.min(failures - 1, RETRY_MS.length - 1)]
@@ -187,12 +197,15 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 		running = sync(local, remote, opts)
 			.then(() => {
 				failures = 0
+				failure = undefined
 				setStatus('synced')
 			})
 			.catch((error: unknown) => {
 				// The status says a cycle failed; only this says what failed, and a
-				// background loop has nowhere else to say it.
+				// background loop has nowhere else to say it. `failure` is what carries
+				// it to a reset, whose converge cycle is nobody else's to report.
 				console.error(error)
+				failure = error
 				failures++
 				setStatus('error')
 			})
@@ -279,30 +292,42 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	 * must not start.
 	 */
 	async function alone<T>(what: string, body: () => Promise<T>): Promise<T> {
+		// One at a time. Two destructive bodies running over one store interleave
+		// their passes and their flags — whichever finished first would clear the
+		// fence and start syncing while the other was still tombstoning — and the
+		// app that offers both offers them from a menu with no in-flight gate.
+		if (resetting) throw new Error(`${what} cannot start: a reset is already running`)
 		if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
 		resetting = true
 		clearTimeout(timer)
 		timer = undefined
+		let done: T
 		try {
 			await running // an in-flight cycle finishes; it never rejects
 			if (paused || destroyed) throw new Error(`${what} needs a running sync loop`)
-			const done = await body()
-			// The body has landed, and the loop was stopped while it ran: the flush
-			// below it will do nothing, so this reset did not converge. Nothing here
-			// can hold a teardown off — the app tears the STORE down behind us — so
-			// the honest thing left is to say so rather than resolve. A pause
-			// converges on `resume`; a destroy converges on the next replica over
-			// this store, since both cursors are saved by then.
-			if (paused || destroyed)
-				throw new Error(`${what} did not converge: the sync loop stopped while it ran`)
-			return done
+			done = await body()
 		} finally {
 			resetting = false
-			// A reset that THREW never reaches the flush that would put a timer back,
+			// A reset that THREW never reaches the cycle that would put a timer back,
 			// so a volume the user only tried to publish would quietly stop syncing.
 			// `schedule` still answers for the ways it must NOT come back.
 			schedule()
 		}
+		// The converge half, and the reason it is here rather than in the callers: a
+		// reset is done when its work has REACHED the peer, so this is the one cycle
+		// whose failure belongs to the caller. The loop's own cycles report through
+		// `status`, and a scheduled retry is no answer to a caller that will tear
+		// this replica down the moment it hears success.
+		failure = undefined
+		await flush()
+		if (failure !== undefined)
+			throw new Error(`${what} did not converge: ${message(failure)}`, { cause: failure })
+		// Nothing here can hold a teardown off — the app tears the STORE down behind
+		// us — so a reset the loop was stopped under says so rather than resolving.
+		// It still recovers: a pause converges on `resume`, a destroy on the next
+		// replica over this store, since both cursors are saved by now.
+		if (!mayRun()) throw new Error(`${what} did not converge: the sync loop stopped while it ran`)
+		return done
 	}
 
 	/** The guard that says "nobody wrote this row after I read it". */
@@ -384,44 +409,52 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// nothing — the discard is fenced, and the next run pulls.
 			await props.pull.save(undefined)
 		})
-		await flush()
 	}
 
 	/**
-	 * Interrupted between the reset and the re-author, this leaves an empty
-	 * authority and a volume that is still whole here — so running it again is
-	 * both the retry and the recovery, and it needs no durable "publishing"
-	 * marker of the kind the old engine kept. Nothing is lost in that window:
-	 * what the reset truncated is exactly what this replica still holds.
+	 * Interrupted anywhere, this leaves an emptied authority and a volume that is
+	 * still whole here — so running it again is both the retry and the recovery,
+	 * and it needs no durable "publishing" marker of the kind the old engine kept.
+	 * Nothing is lost in that window: what the reset truncated is exactly what
+	 * this replica still holds.
 	 */
 	async function takeMine(): Promise<void> {
 		const reset = props.reset
 		if (!reset) throw new Error('take mine needs a peer that can start a new lineage')
 		await alone('take mine', async () => {
 			epoch = await reset()
-			// A replica pushes what it AUTHORED, not what it holds, so without this
-			// the emptied authority would get back only the part of the volume this
+			// A replica pushes what it AUTHORED, not what it holds, so the emptied
+			// authority would otherwise get back only the part of the volume this
 			// replica happened to write — and the rest would sit here for ever, held
-			// by a replica that never offers it. Re-authoring is what makes the whole
-			// tree this replica's to publish, and it is why the ordinary push carries
-			// the republish: a written row moves to the end of the local feed
-			// (rule 4), so the next scan finds all of it.
+			// by a replica that never offers it. Re-authoring what came from
+			// elsewhere is what makes the whole tree this replica's to publish.
 			//
-			// One pass, where the discard needs several: a row that lands after this
-			// one is authored by THIS replica, so the push filter carries it without
-			// being asked. Only a refusal brings the scan back, which is a row that
-			// moved under it.
+			// Until a scan finds nothing foreign, for the reason the discard loops:
+			// this wrapper's loop is stood off, the app's writers are not, and a row
+			// that arrived after the last pass would be filtered out of every push
+			// from here on — visible locally, absent from the authority for good.
+			// A row already ours needs no rewrite, which is what ends the walk.
 			for (let left = MAX_ATTEMPTS; ; left--) {
-				const live = living((await feed()).rows)
-				if (live.length === 0) return
+				const theirs = living((await feed()).rows).filter(
+					(row) => authorOf(row.version) !== replica
+				)
+				if (theirs.length === 0) break
+				if (left === 0) throw new Error('take mine cannot keep up with the writes under it')
 				try {
-					return await rewrite(live, (row) => ({ ...row, version: mint() }))
+					await rewrite(theirs, (row) => ({ ...row, version: mint() }))
 				} catch (e) {
-					if (left === 0 || !(e instanceof GuardError)) throw e
+					// Somebody wrote one of these rows in between: read them again.
+					if (!(e instanceof GuardError)) throw e
 				}
 			}
+			// Offer the whole feed again, not just what changed since the last push.
+			// The authority is empty, so "already sent" is true of nothing — and a
+			// reset keeps the store's lineage (`packages/core/src/reset.ts`), so
+			// nothing fences this cursor into rewinding by itself. A failure here
+			// costs a partial republish that another `takeMine` completes; it cannot
+			// delete anything, which is why this one needs no fence.
+			await props.push.save(undefined)
 		})
-		await flush()
 	}
 
 	// A committed local write arms that push. Only this replica's own writes:
