@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { raw } from 'hono/html'
 import { readStore, refresh } from './catalog'
+import { iconPreview } from './icon-preview'
 import { encodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
@@ -115,6 +116,13 @@ route.get('/store.json', async (c) =>
 		'cache-control': 'public, max-age=60'
 	})
 )
+
+/**
+ * The icon proving ground: a candidate icon, drawn in every surface that will
+ * ever show it. It lives on the root site because that is where the grid it has
+ * to sit in lives — see `./icon-preview`.
+ */
+route.get('/icon-preview', iconPreview)
 
 /** The index: every app we host, each linking to the origin that serves it. */
 route.get('/', async (c) => {
