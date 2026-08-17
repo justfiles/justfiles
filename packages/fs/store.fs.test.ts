@@ -938,6 +938,35 @@ describe('fsStore: a junction is not a directory', () => {
 })
 
 describe('fsStore: the sidecar is the store, not the tree', () => {
+	test('a name holding NUL is a row and nothing else, and wedges no page', async () => {
+		const root = await temp()
+		const store = open(root)
+		const data = bytes('nope')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		const row: Node = {
+			id: 'n',
+			parent: ROOT,
+			name: 'bad\u0000name.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+
+		// NUL is the one byte a name cannot hold — every backend's composed keys say so
+		// — and `node:fs` refuses a path that contains one. A page carrying such a row
+		// must not be a page this replica can never apply, so the row is held exactly
+		// like any other name this store cannot place.
+		await store.commit([row])
+		expect(await store.get('n')).toEqual(row)
+		expect(await readdir(root)).toEqual(['.jfs'])
+		// And the scan neither buries it nor mints a ghost: the disk never held it.
+		expect((await feed(store)).nodes.filter((n) => n.deleted)).toEqual([])
+	})
+
 	test('a row that asks for the sidecar name never writes over it', async () => {
 		const root = await temp()
 		const store = open(root)

@@ -200,9 +200,15 @@ const isDir = (row: Node): boolean => row.type === 'dir' || row.type === 'mount'
  */
 const holdsRows = (row: Node): boolean => row.type === 'dir'
 
-/** A name that is not a name: it would resolve somewhere other than one entry. */
+/**
+ * A name that is not a name: it would resolve somewhere other than one entry, or
+ * nowhere at all. `SEP` is the last of those and the bluntest — a NUL is the one
+ * byte a name cannot hold, which is why every backend composes keys with it, and
+ * `node:fs` refuses a path containing one outright. A page carrying such a row must
+ * not be a page this replica can never apply.
+ */
 const unsafe = (name: string): boolean =>
-	name === '' || name === '.' || name === '..' || name.includes('/')
+	name === '' || name === '.' || name === '..' || name.includes('/') || name.includes(SEP)
 
 const parentOf = (path: string): string => {
 	const cut = path.lastIndexOf('/')
