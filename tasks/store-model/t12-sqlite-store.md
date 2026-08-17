@@ -45,3 +45,19 @@ Implement.
 
 Conformance green in the core package's SQLite test environment, and
 `pnpm typecheck` green.
+
+## Left open, on purpose
+
+Rule 2 is not fully atomic on the Durable Object, and cannot be from here. Its
+`DbAdapter.transaction` is `await fn(adapter)` with no rollback
+(`apps/frieren/worker/db.do.ts` says so itself), so a REJECTED commit still
+writes nothing — every guard runs before any write — but a write that FAILS
+mid-batch leaves the rows before it written. `storage.transactionSync` is the
+only genuinely atomic transaction on that platform and it needs a synchronous
+body, which is why the migration runner already has a synchronous seam
+(`packages/core/src/migrations/utils.ts`).
+
+Deliberately not fixed here: nothing runs this store on a Durable Object until
+[T17](t17-swap-consumers.md) wires it, the legacy `storage.sqlite.ts` has the
+same hole in production today, and closing it changes the seam both stores
+speak. T17 owns it.

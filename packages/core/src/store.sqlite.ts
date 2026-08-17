@@ -7,9 +7,15 @@
  * under vitest and on the Durable Object's SQLite in production. The whole of
  * `commit` — every guard and every write — is one `db.transaction`: a guard
  * evaluated in a transaction the writes do not share is a race, not a guard.
- * Every guard runs before any write, so a rejection has written nothing to roll
- * back — which is how rule 2 also holds on the Durable Object, whose
- * `transaction` is a bare wrapper with no rollback of its own.
+ * Every guard runs before any write, so a REJECTED commit has written nothing
+ * to roll back — which is how that half of rule 2 holds even on the Durable
+ * Object, whose `transaction` is a bare wrapper with no rollback of its own.
+ * The other half does not hold there: a write that FAILS mid-batch — a quota,
+ * a row limit — leaves the rows before it written, because `transactionSync`
+ * is the only genuinely atomic transaction on that platform and it needs a
+ * synchronous body. Nothing runs this store on a Durable Object yet; T17 wires
+ * it, and closes this with the synchronous seam the migration runner already
+ * uses (`migrations/utils.ts`).
  *
  * It lives in `packages/core` because it is server code; `packages/fs` stays
  * dependency-free.
