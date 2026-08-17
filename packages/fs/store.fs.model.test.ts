@@ -28,6 +28,7 @@
 
 import fc from 'fast-check'
 import { expect, test } from 'vitest'
+import { AT_ROOT, type Spot, spot, up } from './disk'
 import { memDisk } from './disk.mem'
 import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
 import { fsStore } from './store.fs'
@@ -104,12 +105,12 @@ async function asRows(store: Store): Promise<Map<string, string>> {
 async function asDisk(disk: ReturnType<typeof memDisk>): Promise<Map<string, string>> {
 	const out = new Map<string, string>()
 	const walk = async (at: string): Promise<void> => {
-		const spot = disk.spot(at)
-		if (spot === null) return
-		for (const name of (await disk.list(spot)) ?? []) {
+		const here = spot(at)
+		if (here === null) return
+		for (const name of (await disk.list(here)) ?? []) {
 			if (at === '' && name === '.jfs') continue
 			const here = at === '' ? name : `${at}/${name}`
-			const down = disk.spot(here)
+			const down = spot(here)
 			if (down === null) continue
 			const s = await disk.stat(down)
 			if (s === null) continue
@@ -138,15 +139,15 @@ async function apply(disk: ReturnType<typeof memDisk>, what: Op): Promise<void> 
 }
 
 async function outside(disk: ReturnType<typeof memDisk>, what: Op): Promise<void> {
-	const spotOf = (names: string[]): ReturnType<typeof disk.spot> => disk.spot(names.join('/'))
+	const spotOf = (names: string[]): Spot | null => spot(names.join('/'))
 	if ('from' in what) {
 		const from = spotOf(what.from)
 		const to = spotOf(what.to)
 		if (from === null || to === null || from === to) return
 		const s = await disk.stat(from)
 		if (s === null) return
-		const up = disk.up(to)
-		if (up !== disk.root) await disk.dir(up)
+		const into = up(to)
+		if (into !== AT_ROOT) await disk.dir(into)
 		// A move a local tool makes: no identity check, because a local tool has none.
 		await disk.move({ path: from, ino: String(s.ino), state: '' }, to)
 		return
@@ -161,8 +162,8 @@ async function outside(disk: ReturnType<typeof memDisk>, what: Op): Promise<void
 		await disk.clear(at)
 		return
 	}
-	const up = disk.up(at)
-	if (up !== disk.root) await disk.dir(up)
+	const into = up(at)
+	if (into !== AT_ROOT) await disk.dir(into)
 	// Only over a file, so the generator cannot ask for a file on top of a directory
 	// and get an answer neither side agrees about.
 	const s = await disk.stat(at)
@@ -197,8 +198,8 @@ async function asBound(
 			const page = await store.children(id, cursor)
 			for (const row of page.nodes) {
 				const here = at === '' ? row.name : `${at}/${row.name}`
-				const spot = disk.spot(here)
-				const s = spot === null ? null : await disk.stat(spot)
+				const down = spot(here)
+				const s = down === null ? null : await disk.stat(down)
 				if (s !== null) out.set(String(s.ino), row.id)
 				if (row.type === 'dir') await walk(row.id, here)
 			}

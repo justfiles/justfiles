@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
+import { AT_ROOT, under } from './disk'
 import { memDisk } from './disk.mem'
 import { ROOT, type Store } from './store'
 import { storeConformance } from './store.conformance'
@@ -36,10 +37,10 @@ describe('memDisk: the rules that made the findings', () => {
 		// null, and null is not the empty array — a store that confused the two would
 		// tombstone every row under a directory somebody chmod'd.
 		const disk = memDisk()
-		const dir = disk.under(disk.root, 'shut')
+		const dir = under(AT_ROOT, 'shut')
 		if (dir === null) throw new Error('unreachable')
 		await disk.dir(dir)
-		const file = disk.under(dir, 'a.txt')
+		const file = under(dir, 'a.txt')
 		if (file === null) throw new Error('unreachable')
 		await disk.write(file, bytes('hello'))
 
@@ -58,8 +59,8 @@ describe('memDisk: the rules that made the findings', () => {
 		// real one: a test that let a rewritten file keep its inode would never
 		// exercise the checks that exist because it does not.
 		const disk = memDisk()
-		const a = disk.under(disk.root, 'a.txt')
-		const b = disk.under(disk.root, 'b.txt')
+		const a = under(AT_ROOT, 'a.txt')
+		const b = under(AT_ROOT, 'b.txt')
 		if (a === null || b === null) throw new Error('unreachable')
 
 		await disk.write(a, bytes('one'))
@@ -81,7 +82,7 @@ describe('memDisk: the rules that made the findings', () => {
 		// the difference (`rounded`). If the fake stored the nanoseconds it was given,
 		// that forgiveness would never be exercised and the case would rot.
 		const disk = memDisk()
-		const a = disk.under(disk.root, 'a.txt')
+		const a = under(AT_ROOT, 'a.txt')
 		if (a === null) throw new Error('unreachable')
 		await disk.write(a, bytes('hello'))
 

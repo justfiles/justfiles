@@ -1196,7 +1196,7 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readdir(root)).toEqual(['.jfs'])
 	})
 
-	test('a directory this store cannot read is still reconciled', async () => {
+	test('a directory this store cannot read is left alone, and comes back', async () => {
 		const root = await temp()
 		const store = open(root)
 		const shut = dir({ id: 'd', name: 'shut' })
@@ -1206,17 +1206,44 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		const { cursor } = await feed(store)
 
 		// The owner opens it, edits inside, and closes it again before the store looks.
-		// The mode is this store's own to state, so a look it can grant itself is a look
-		// it has to take — otherwise what is in there never reaches the feed at all, and
-		// this backend's whole reason for scanning stops at that directory.
 		await chmod(join(root, 'shut'), 0o700)
 		await writeFile(join(root, 'shut/c.txt'), 'second by hand')
 		await chmod(join(root, 'shut'), 0o000)
 
+		// A mode is the owner's to set, and this store does not widen one to satisfy its
+		// own curiosity — not once, and certainly not on every deep pass for as long as
+		// somebody polls. So the edit does not reach the feed, the row keeps the last
+		// state this store actually saw, and the directory is exactly as it was left.
+		// Every chance to notice: past the deep floor, and polled through it.
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS * 6))
+		for (let poll = 0; poll < 5; poll++) await store.since(cursor)
+		expect((await store.get('c'))?.size).toBe(5n)
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).not.toContain('c')
+		expect((await stat(join(root, 'shut'))).mode & 0o777).toBe(0o000)
+
+		// And nothing is lost by waiting: the mode coming back is what brings the
+		// contents back, on the next look, with no page in between that anyone missed.
+		await chmod(join(root, 'shut'), 0o700)
 		await settled(store, async () => (await store.get('c'))?.size === 14n)
 		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toContain('c')
-		// And closed again after: what it grants itself, it takes back.
-		expect((await stat(join(root, 'shut'))).mode & 0o777).toBe(0o000)
+	}, 30_000)
+
+	test('a write still opens its way in, because a page it cannot apply never lands', async () => {
+		const root = await temp()
+		const store = open(root)
+		// The other half of the same decision. A LOOK waits for the owner; a WRITE
+		// cannot, because the page carrying it would be retried for ever and the
+		// replica would stall on it — so a commit opens the directory it must write
+		// through, and closes it again as its last act.
+		const locked = { ...dir({ id: 'd', name: 'locked' }), mode: 0o040500 }
+		await store.commit([locked])
+		await feed(store)
+
+		await store.commit([{ ...(await file(store, 'c', 'f.txt', 'landed')), parent: 'd' }])
+
+		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
+		await chmod(join(root, 'locked'), 0o700)
+		expect(await readFile(join(root, 'locked/f.txt'), 'utf8')).toBe('landed')
 	}, 30_000)
 
 	test('a pass that throws still closes what it opened', async () => {

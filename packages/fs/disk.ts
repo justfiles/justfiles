@@ -155,23 +155,13 @@ export const spot = (text: string): Spot | null => {
 	return text as Spot
 }
 
+/**
+ * Somewhere to read and write. Naming is NOT here — `AT_ROOT`, `under`, `up` and
+ * `spot` above are the same for every disk, and a second implementation that could
+ * answer differently would make a test against one prove nothing about the other.
+ * What is left is the I/O, which is the only part a fake has any business faking.
+ */
 export interface Disk {
-	/** The root of the store: the one `Spot` that needs no name to reach. */
-	readonly root: Spot
-
-	/** One name deeper, or null when the name is not a name. The ONLY way down. */
-	under(parent: Spot, name: string): Spot | null
-
-	/** One name shallower. Root is its own parent, and the walk stops there. */
-	up(spot: Spot): Spot
-
-	/**
-	 * Text that claims to be a spot — from the sidecar, which is a file anybody can
-	 * edit. Re-validated name by name, because a `Spot` that was only ever a string
-	 * on disk has had no check applied to it at all.
-	 */
-	spot(text: string): Spot | null
-
 	// ── Looking ────────────────────────────────────────────────────────────────
 	stat(spot: Spot): Promise<BigIntStats | null>
 	/** Is there NOTHING here — as opposed to nothing this store can see? */
@@ -248,9 +238,6 @@ export interface Disk {
 		resolve: (id: NodeId) => { spot: Spot; ino: string; mode: number } | null
 	): Promise<Relocked[]>
 
-	/** Is anything still held open? */
-	readonly held: boolean
-
 	/**
 	 * Ask the OS to say where to look. An event is a HINT and nothing more, so the
 	 * type is dropped and only the spot is passed on; `lost` means the watcher is
@@ -259,9 +246,6 @@ export interface Disk {
 	 * is not a failure, only a tree that gets walked instead.
 	 */
 	watch(onPath: (spot: Spot) => void, onLost: () => void): (() => void) | null
-
-	/** The absolute path of a spot. For an error message, and for nothing else. */
-	where(spot: Spot): string
 }
 
 export function fsDisk(rootPath: string): Disk {
@@ -334,11 +318,6 @@ export function fsDisk(rootPath: string): Disk {
 	}
 
 	return {
-		root: AT_ROOT,
-		under,
-		up,
-		spot,
-
 		stat: lstat,
 
 		async absent(spot) {
@@ -471,10 +450,6 @@ export function fsDisk(rootPath: string): Disk {
 			return out
 		},
 
-		get held() {
-			return opened.size > 0
-		},
-
 		watch(onPath, onLost) {
 			try {
 				// `persistent: false` on purpose: a CLI that never closes the store still
@@ -498,8 +473,6 @@ export function fsDisk(rootPath: string): Disk {
 				// (Linux counts them per directory). The tree gets walked instead.
 				return null
 			}
-		},
-
-		where: abs
+		}
 	}
 }

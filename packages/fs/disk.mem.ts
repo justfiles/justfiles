@@ -219,11 +219,6 @@ export function memDisk(fault: Fault = () => null): Disk {
 	}
 
 	return {
-		root: AT_ROOT,
-		under,
-		up,
-		spot,
-
 		stat: (at) =>
 			quiet(() => {
 				check('stat', at)
@@ -333,38 +328,15 @@ export function memDisk(fault: Fault = () => null): Disk {
 			return true
 		},
 
-		async drop(was, holding, directory) {
+		async drop(was, _holding, _directory) {
 			check('drop', was.path)
+			// No two-step. The real one takes a directory aside under a private name and
+			// identifies it THERE, because between a look and a removal another process
+			// can put something else at the path — and nothing here has another process.
+			// What that dance buys is unobservable without one, so faking it would be
+			// faking the implementation rather than the behaviour.
 			if (!(await mine(was))) return
-			if (!directory) {
-				take(was.path)
-				return
-			}
-			// Taken aside under a name nobody else knows, identified there, and only then
-			// removed — the same two-step the real one does, for the same reason.
-			const aside = under(holding, `going-${inos++}`)
-			if (aside === null) return
-			makeDir(holding)
-			const moved = await quiet(() => {
-				const obj = take(was.path)
-				if (obj === null) return false
-				put(aside, () => obj)
-				return true
-			}, false)
-			if (!moved) {
-				await quiet(() => take(was.path), null)
-				return
-			}
-			const s = await quiet(() => statOf(must(aside)), null)
-			if (s !== null && String(s.ino) === was.ino) {
-				await quiet(() => take(aside), null)
-				return
-			}
-			await quiet(() => {
-				const obj = take(aside)
-				if (obj !== null) put(was.path, () => obj)
-				return null
-			}, null)
+			await quiet(() => take(was.path), null)
 		},
 
 		prune: (at) =>
@@ -406,17 +378,11 @@ export function memDisk(fault: Fault = () => null): Disk {
 			return out
 		},
 
-		get held() {
-			return opened.size > 0
-		},
-
 		watch(onPath) {
 			listener = onPath
 			return () => {
 				listener = null
 			}
-		},
-
-		where: (at) => `mem:/${at}`
+		}
 	}
 }
