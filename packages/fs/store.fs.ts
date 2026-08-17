@@ -239,6 +239,14 @@ const unsafe = (name: string): boolean =>
 	name.includes(sep) ||
 	name.includes(SEP)
 
+/**
+ * An id as ONE path component. `encodeURIComponent` takes the separators out, and the
+ * prefix is what makes the result total: no encoding of any id is `.` or `..`, which
+ * are the two names that would still mean "somewhere else" on their own. The same
+ * discipline `spill` applies to a hash before it names a file (`HASH`).
+ */
+const own = (id: NodeId): string => `id-${encodeURIComponent(id)}`
+
 const parentOf = (path: string): string => {
 	const cut = path.lastIndexOf('/')
 	return cut === -1 ? '' : path.slice(0, cut)
@@ -524,11 +532,14 @@ export function fsStore(root: string): Store {
 	 * it holds.
 	 */
 	const park = async (id: NodeId, at: Seen): Promise<void> => {
-		// The id names its place in there. A second name for it is only needed when
+		// The id names its place in there — ENCODED, because an id is a peer's string and
+		// this is the one place it becomes a path: `..` and a separator are ordinary
+		// characters in an id and a way out of the store in a path, and what follows
+		// removes whatever is at the target. A second name for it is only needed when
 		// files this store still tracks are under the first — a subtree an earlier park
 		// left behind, which is not this one's to delete. Anything else at the name is
 		// a leftover: a crash between the rename and the save that recorded it.
-		const its = `${HOLD}/${id}`
+		const its = `${HOLD}/${own(id)}`
 		if (at.path === its || at.path.startsWith(`${its}-`)) return // already in its place
 		if (!(await mine(at))) {
 			unmark(id)

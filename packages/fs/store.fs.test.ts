@@ -1133,6 +1133,43 @@ describe('fsStore: a junction is not a directory', () => {
 })
 
 describe('fsStore: the sidecar is the store, not the tree', () => {
+	test('an id is not a path: parking a row cannot reach outside the store', async () => {
+		const root = await temp()
+		// Beside the store, not in it: the only way to show that nothing reached it.
+		const name = `victim-${crypto.randomUUID()}`
+		const outside = join(root, '..', name)
+		await writeFile(outside, 'not yours')
+		const store = open(root)
+		const data = bytes('hello')
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		// An id is a peer's string. `..` is an ordinary character in one and a way out of
+		// the store in a path — and the holding area is reached by interpolating the id,
+		// after `park` removes whatever is at its target.
+		const row: Node = {
+			id: `../../../${name}`,
+			parent: ROOT,
+			name: 'a.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'v1'
+		}
+		await store.commit([row])
+		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello')
+
+		// Made unreachable, which is what sends a row's file to the holding area.
+		await store.commit([{ ...row, parent: 'nowhere', version: 'v2' }])
+
+		expect(await readFile(outside, 'utf8')).toBe('not yours')
+		expect((await readdir(join(root, '..'))).includes(name)).toBe(true)
+		// And the row still kept its bytes, wherever they were put.
+		expect(read(await store.blobs.get(hash))).toBe('hello')
+		await rm(outside, { force: true })
+	})
+
 	test('a name holding the path separator has no place on the disk', async () => {
 		const root = await temp()
 		const store = open(root)
