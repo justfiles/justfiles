@@ -101,7 +101,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | T7 | [`watch` from the feed](t07-watch.md) | T6 | done |
 | T8 | [Engine core: pull, push, cursors](t08-engine-core.md) | T1–T3 | done |
 | T9 | [Engine: blob transfer + lazy content](t09-engine-blobs.md) | T8 | done |
-| T10 | [Authority + conflict policy](t10-authority-and-conflicts.md) | T8 | todo |
+| T10 | [Authority + conflict policy](t10-authority-and-conflicts.md) | T8 | done |
 | T11 | [Lifecycle wrapper — the `synced()` surface](t11-lifecycle-wrapper.md) | T8–T10 | todo |
 
 ### Phase C — backends and wire
