@@ -85,17 +85,22 @@ smallest set this Mac wants on day one.
 
 ### The App Store tile
 
-The launcher's last grid tile browses everything JustApps publishes. The daemon owns both ends —
-`GET /store` lists the catalog (index plus each published manifest, no file lists), and
-`POST /store/<id>` installs one app — so no app bytes pass through the webview. A row asks for
-consent first, showing the access the published manifest declares. An install fires
+The launcher's last grid tile browses everything JustApps publishes, minus the packaged apps —
+those are authoritative, so a published entry under one of their IDs is never offered. The daemon
+owns both ends — `GET /store` lists the catalog (index plus each published manifest, no file
+lists), and `POST /store/<id>?version=<v>` installs one app — so no app bytes pass through the
+webview. A row asks for consent first, showing the access the published manifest declares, and the
+`version` pins the install to the release that was consented to: the daemon refuses one the
+publisher has moved on from since. Only the launcher's own page may install — a cross-origin `POST`
+is rejected, because loopback is reachable from any browser on this Mac. An install fires
 `app.installed`, which pushes a fresh catalog to every launcher, so the new app appears in the grid
 and its row leaves the list.
 
 One surface, two shells. The web launcher renders it inline; the native launcher has an AppKit
 springboard, so its store tile reveals `/launcher/store` — the same React surface in a WKWebView,
 the way it already embeds the chat. Done posts back over the `store` message handler (Escape works
-too); the page is loaded on first open, because it fetches the published catalog on mount.
+too); the page reloads on every open, because it fetches the published catalog on mount and a
+second visit must not show the first visit's snapshot.
 
 The list also carries a **held update**: a published version that asks for more access than the
 installed one, which `reconcile` skips rather than applying. Accepting the row is the re-consent,

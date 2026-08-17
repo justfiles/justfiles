@@ -8,6 +8,10 @@ const BUILTINS = [
 	{ id: 'justfiles.settings', packageDir: 'app-settings' }
 ]
 
+// The packaged apps, by id. Authoritative: the packaged store wins an id clash (see
+// `mergeAppStores`), so the App Store must neither offer nor install one from JustApps.
+export const PACKAGED_IDS = BUILTINS.map((app) => app.id)
+
 // The hosted apps this Mac seeds on a fresh Volume. Code and Draw are deliberately absent:
 // you install them from the App Store tile, like any other published app. A seeded app is
 // also a TRUSTED one — `reconcile` updates it without asking — so this list is the smallest

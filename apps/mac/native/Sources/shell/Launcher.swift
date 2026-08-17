@@ -36,10 +36,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private var panel: NSPanel!
 	private var container: NSView! // holds the active content view, sized per mode
 	private var webView: WKWebView! // the transcript, kept warm (loaded at startup)
-	// The App Store, loaded on first open: its page fetches the published catalog on mount,
-	// which is not worth a network round trip on every launcher start.
+	// The App Store, loaded on every open: its page fetches the published catalog on mount, so a
+	// reload is what makes a second visit show newly published apps rather than a stale snapshot.
 	private var storeView: WKWebView!
-	private var storeLoaded = false
 	private var storeOpen = false
 	private let composer = Composer()
 	private let results = Results() // the `/` command menu
@@ -374,12 +373,12 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		openMiniApp(id)
 	}
 
-	// Reveal the App Store over the springboard. Loaded on first open (and again after the
-	// daemon moves, see useRuntime) — the panel stays up, so an install lands in the catalog
-	// the grid behind it is already subscribed to.
+	// Reveal the App Store over the springboard. Reloaded on every open, so each visit browses a
+	// fresh catalog — the panel stays up, so an install lands in the catalog the grid behind it
+	// is already subscribed to.
 	private func openStore() {
 		storeOpen = true
-		loadStoreIfNeeded()
+		loadStore()
 		render()
 		composer.focus()
 	}
@@ -395,10 +394,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		if storeOpen { closeStore() } else { hide() }
 	}
 
-	private func loadStoreIfNeeded() {
-		guard !storeLoaded, let r = runtime else { return }
+	private func loadStore() {
+		guard let r = runtime else { return }
 		storeView.load(URLRequest(url: launcherURL("/launcher/store", port: r.port, token: r.token)))
-		storeLoaded = true
 	}
 
 	// ⌘K: explicit switch between app-search and the conversation.
@@ -436,10 +434,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		if let r = runtime, r.port == port, r.token == token { return }
 		runtime = (port, token)
 		webView.load(URLRequest(url: launcherURL("/launcher/chat", port: port, token: token)))
-		// The store page is lazy, so a daemon that moved just marks it stale — unless it is on
-		// screen right now, which would otherwise leave a dead surface up.
-		storeLoaded = false
-		if storeOpen { loadStoreIfNeeded() }
+		// The store page is loaded per open, so a daemon that moved needs nothing here — unless
+		// the store is on screen right now, which would otherwise leave a dead surface up.
+		if storeOpen { loadStore() }
 	}
 
 	private func launcherURL(_ path: String, port: Int, token: String) -> URL {

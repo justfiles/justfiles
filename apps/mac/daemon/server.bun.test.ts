@@ -202,6 +202,9 @@ test('/app socket pushes initial state and round-trips a dispatch', async () => 
 const TASKS = 'com.example.tasks'
 const RELEASE = 'https://com-example-tasks.justapps.run/v/1.0.0/'
 const POINTER = 'https://com-example-tasks.justapps.run/manifest.json'
+// JustApps also publishing an id this Mac packages itself (Files) — the packaged app wins, so
+// the store neither lists nor installs this one.
+const CLASH_POINTER = 'https://justfiles-files.justapps.run/manifest.json'
 const files: Record<string, string> = { 'app.js': 'REDUCER', 'gui.js': 'GUI' }
 const index = {
 	schema: RUNNER_STORE_SCHEMA,
@@ -213,7 +216,8 @@ const index = {
 			version: '1.0.0',
 			manifestUrl: POINTER,
 			repository: 'https://example.com/tasks'
-		}
+		},
+		{ id: FILES, name: 'Files', version: '9.9.9', manifestUrl: CLASH_POINTER }
 	]
 }
 const release = {
@@ -245,6 +249,10 @@ async function withRegistry<T>(run: () => Promise<T>): Promise<T> {
 		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
 		if (url === RUNNER_STORE_URL) return Promise.resolve(json(index, RUNNER_STORE_URL))
 		if (url === POINTER) return Promise.resolve(json(release, `${RELEASE}manifest.json`))
+		if (url === CLASH_POINTER)
+			return Promise.resolve(
+				json({ ...release, id: FILES, name: 'Files', version: '9.9.9' }, CLASH_POINTER)
+			)
 		if (url.startsWith(RELEASE)) {
 			const body = files[url.slice(RELEASE.length)]
 			return Promise.resolve(
@@ -260,7 +268,7 @@ async function withRegistry<T>(run: () => Promise<T>): Promise<T> {
 	}
 }
 
-test('/store lists what JustApps publishes, without the file manifests', async () => {
+test('/store lists what JustApps publishes, without the file manifests or a packaged id', async () => {
 	const apps = await withRegistry(async () => {
 		const res = await fetch(`http://127.0.0.1:${port}/store`)
 		expect(res.status).toBe(200)
@@ -279,9 +287,40 @@ test('/store lists what JustApps publishes, without the file manifests', async (
 	])
 })
 
+const install = (path: string, init?: RequestInit): Promise<Response> =>
+	fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', ...init })
+
+// Order matters: this runs before the install test below, so a refused install is observable
+// as Tasks still being absent from the kernel's catalog.
+test('POST /store/:id refuses a foreign origin, a moved pointer, and a packaged app', async () => {
+	await withRegistry(async () => {
+		// Loopback is reachable from any page in any browser here; only ours may install.
+		const foreign = await install(`/store/${TASKS}?version=1.0.0`, {
+			headers: { origin: 'https://evil.example' }
+		})
+		expect(foreign.status).toBe(403)
+
+		// No version is no consent record.
+		expect((await install(`/store/${TASKS}`)).status).toBe(400)
+
+		// The version the consent sheet showed is not where the pointer is now.
+		const moved = await install(`/store/${TASKS}?version=0.9.0`)
+		expect(moved.status).toBe(502)
+		expect(await moved.text()).toContain('moved on')
+
+		// A published entry may not replace the app this Mac packages.
+		const packaged = await install(`/store/${FILES}?version=9.9.9`)
+		expect(packaged.status).toBe(502)
+		expect(await packaged.text()).toContain('packaged')
+
+		const kernel = await getKernel()
+		expect((await kernel.list()).map((app) => app.id)).not.toContain(TASKS)
+	})
+})
+
 test('POST /store/:id installs a published app, and 502s an unknown one', async () => {
 	await withRegistry(async () => {
-		const res = await fetch(`http://127.0.0.1:${port}/store/${TASKS}`, { method: 'POST' })
+		const res = await install(`/store/${TASKS}?version=1.0.0`)
 		expect(res.status).toBe(204)
 
 		const kernel = await getKernel()
@@ -291,7 +330,7 @@ test('POST /store/:id installs a published app, and 502s an unknown one', async 
 		expect(installed.manifest.baseUrl).toBe(RELEASE)
 		expect(new TextDecoder().decode(await installed.read('gui.js'))).toBe('GUI')
 
-		const missing = await fetch(`http://127.0.0.1:${port}/store/no.such.app`, { method: 'POST' })
+		const missing = await install('/store/no.such.app?version=1.0.0')
 		expect(missing.status).toBe(502)
 	})
 })

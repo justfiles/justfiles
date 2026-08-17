@@ -58,6 +58,14 @@ const storeFault = (error: unknown): Response => {
 	return new Response(failure(error), { status: 502 })
 }
 
+// Loopback is reachable from any page in any browser on this Mac, and a bodyless POST needs
+// no CORS preflight — so a route that mutates the Volume has to reject a cross-origin caller
+// itself. Browsers always send `Origin` on a POST; a caller that sends none is not a page.
+const crossOrigin = (req: Request): boolean => {
+	const origin = req.headers.get('origin')
+	return origin !== null && origin !== new URL(req.url).origin
+}
+
 // Typed send helpers — routing every frame through a union keeps the wire protocol
 // compile-checked. `/system` speaks `ServerMessage`; `/agent` its own `AgentEvent`.
 const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
@@ -127,9 +135,10 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				if (server.upgrade(req, { data: { type: 'app', id: req.params.id } })) return undefined
 				return new Response('Expected WebSocket upgrade', { status: 426 })
 			},
-			// The App Store tile: browse what JustApps publishes, then install one by id. An
-			// install needs no reply beyond ok/failed — landing it fires `app.installed`, which
-			// pushes a fresh catalog to every launcher, and the tile's row drops out there.
+			// The App Store tile: browse what JustApps publishes, then install one by id at the
+			// version the consent sheet showed. An install needs no reply beyond ok/failed —
+			// landing it fires `app.installed`, which pushes a fresh catalog to every launcher,
+			// and the tile's row drops out there.
 			'/store': async () => {
 				try {
 					return Response.json({ apps: await storeCatalog() })
@@ -139,8 +148,12 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 			},
 			'/store/:id': {
 				POST: async (req) => {
+					if (crossOrigin(req)) return new Response('Forbidden', { status: 403 })
+					// The version is the consent record: which release the sheet showed.
+					const version = new URL(req.url).searchParams.get('version')
+					if (!version) return new Response('version required', { status: 400 })
 					try {
-						await installStoreApp(await getKernel(), req.params.id)
+						await installStoreApp(await getKernel(), req.params.id, version)
 						return new Response(null, { status: 204 })
 					} catch (error) {
 						return storeFault(error)

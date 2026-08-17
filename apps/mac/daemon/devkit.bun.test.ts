@@ -17,7 +17,7 @@ import { volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
-import { installStoreApp } from './store.ts'
+import { installStoreApp, storeCatalog } from './store.ts'
 
 const CODE = 'justfiles.code'
 const NEW_APP = 'demo.widget'
@@ -28,7 +28,10 @@ beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), 'daemon-devkit-'))
 	const fs = volume(await nativeStorage(root))
 	kernel = await buildKernel(fs, daemonAccounts(fs))
-	await installStoreApp(kernel, CODE)
+	// Install Code the way the store tile does: browse, then install the exact version listed.
+	const code = (await storeCatalog()).find((app) => app.id === CODE)
+	if (!code) throw new Error('justfiles.code is not published')
+	await installStoreApp(kernel, CODE, code.version)
 })
 afterAll(async () => {
 	await rm(root, { recursive: true, force: true })

@@ -106,7 +106,12 @@ export function StoreSurface({
 		setFailed(null)
 		setPending((ids) => [...ids, app.id])
 		try {
-			const res = await fetch(`/store/${encodeURIComponent(app.id)}`, { method: 'POST' })
+			// The version pins the install to the release this row consented to: the daemon
+			// refuses one the publisher has moved on from since.
+			const res = await fetch(
+				`/store/${encodeURIComponent(app.id)}?version=${encodeURIComponent(app.version)}`,
+				{ method: 'POST' }
+			)
 			if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`)
 		} catch (e) {
 			setFailed(`${app.name} failed to install: ${e instanceof Error ? e.message : String(e)}`)
