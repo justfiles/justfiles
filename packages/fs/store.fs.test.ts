@@ -1196,6 +1196,29 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect(await readdir(root)).toEqual(['.jfs'])
 	})
 
+	test('a directory this store cannot read is still reconciled', async () => {
+		const root = await temp()
+		const store = open(root)
+		const shut = dir({ id: 'd', name: 'shut' })
+		await store.commit([shut])
+		await store.commit([{ ...(await file(store, 'c', 'c.txt', 'first')), parent: 'd' }])
+		await store.commit([{ ...shut, mode: 0o040000, version: 'v2' }])
+		const { cursor } = await feed(store)
+
+		// The owner opens it, edits inside, and closes it again before the store looks.
+		// The mode is this store's own to state, so a look it can grant itself is a look
+		// it has to take — otherwise what is in there never reaches the feed at all, and
+		// this backend's whole reason for scanning stops at that directory.
+		await chmod(join(root, 'shut'), 0o700)
+		await writeFile(join(root, 'shut/c.txt'), 'second by hand')
+		await chmod(join(root, 'shut'), 0o000)
+
+		await settled(store, async () => (await store.get('c'))?.size === 14n)
+		expect((await feed(store, cursor)).nodes.map((n) => n.id)).toContain('c')
+		// And closed again after: what it grants itself, it takes back.
+		expect((await stat(join(root, 'shut'))).mode & 0o777).toBe(0o000)
+	}, 30_000)
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)

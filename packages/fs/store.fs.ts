@@ -29,9 +29,12 @@
  *   the same batch heals the rest: a row the index holds but the disk never got
  *   is placed again rather than skipped as a no-op. A directory whose stated mode
  *   shuts this store out is the same shape: it is opened while a pass writes
- *   through it and closed at the end (`unlock`, `relock`), so a crash inside that
- *   window leaves it open and the next scan reports the mode it finds — which is
- *   the price of a page that can be applied at all.
+ *   through it or LOOKS through it, and closed at the end (`unlock`, `relock`), so
+ *   a crash inside that window leaves it open and the next scan reports the mode it
+ *   finds. The price is stated rather than hidden: a directory nobody can read is
+ *   briefly readable whenever this store reconciles it — every deep pass while a
+ *   consumer polls — because a directory it never reads is one whose contents never
+ *   reach the feed, and the mode is this store's own row to state either way.
  * - **Content is the file.** `blobs` is not a second store beside the tree: a
  *   hash is answered by the file of a row that names it, while the disk still
  *   holds what this store last observed there. Only bytes no row has adopted yet
@@ -143,7 +146,8 @@ const DEEP_MS = 5_000
 
 const EMPTY = new Uint8Array()
 
-/** The two bits of a directory's own mode that a pass writing through it needs. */
+/** The bits of a directory's own mode a pass needs of it: to list, to enter, to fill. */
+const READ = 0o400
 const WRITE = 0o200
 const SEARCH = 0o100
 
@@ -987,6 +991,13 @@ export function fsStore(root: string): Store {
 	 * Returns the directories underneath, for a caller that wants to walk on.
 	 */
 	const syncDir = async (id: NodeId, path: string): Promise<Landed[]> => {
+		// A look needs a way in exactly as a write does. The mode that shuts this store
+		// out of a directory is one its own rows state, and a directory it never reads is
+		// one whose contents never reach the feed — which is the one thing this backend
+		// exists to do. So it lets itself in and `relock` closes the pass, the same as
+		// every other way in. A directory it cannot read for any other reason is left
+		// alone, as before.
+		await unlockFor(path, READ | SEARCH)
 		const names = await readdir(abs(path)).catch(() => null)
 		if (names === null) return []
 		const found = new Set(names)
@@ -1101,6 +1112,7 @@ export function fsStore(root: string): Store {
 		swept = Date.now()
 		deepened = swept
 		await rescue()
+		await relock()
 		if (changed) await save()
 	}
 
@@ -1123,6 +1135,7 @@ export function fsStore(root: string): Store {
 		}
 		swept = Date.now()
 		await rescue()
+		await relock()
 		if (changed) await save()
 	}
 
@@ -1270,6 +1283,7 @@ export function fsStore(root: string): Store {
 		changed = false
 		for (const path of [...paths].sort()) await syncAt(path)
 		await rescue()
+		await relock()
 		if (changed) await save()
 	}
 
