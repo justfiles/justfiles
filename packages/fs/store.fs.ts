@@ -580,10 +580,23 @@ export function fsStore(root: string): Store {
 	 * Remove what a row named — but only while the disk still holds THAT file. A
 	 * rename inside the same batch may have put another row's file at the path,
 	 * and a commit does not get to say which of its writes goes first.
+	 *
+	 * A DIRECTORY is taken aside before it goes. Looking and then removing are two
+	 * calls, and a name can change hands between them: a recursive `rm` aimed at what
+	 * arrived in that moment would take a subtree this store never had, which is the
+	 * one mistake it cannot take back. So it is renamed to a name nobody else knows —
+	 * one call, whatever holds the name at that instant — and identified there, where
+	 * nothing can be swapped under it. If it turns out not to be the row's, it goes
+	 * back where it came from: a thing moved is a thing still there.
+	 *
+	 * A file is unlinked after the same check and not taken aside. The race is the
+	 * same, and so is the answer to why not: what it can cost is one file that took
+	 * the name in the window, against a rename on every delete in the tree.
 	 */
-	const remove = async (at: Seen): Promise<void> => {
+	const remove = async (at: Seen, was: Node | null): Promise<void> => {
 		if (!(await mine(at))) return
-		await rm(abs(at.path), { recursive: true, force: true })
+		if (was && !isDir(was)) await rm(abs(at.path), { force: true })
+		else await quarantine(at)
 		// An empty container in the holding area is nobody's row, so it goes too.
 		for (let up = parentOf(at.path); up.startsWith(HOLD); up = parentOf(up))
 			if (
@@ -720,6 +733,31 @@ export function fsStore(root: string): Store {
 		opened.clear()
 	}
 
+	/** Take a directory aside, make sure it is the row's, and only then remove it. */
+	const quarantine = async (at: Seen): Promise<void> => {
+		const aside = `${HOLD}/going-${crypto.randomUUID()}`
+		await mkdir(join(root, HOLD), { recursive: true })
+		const moved = await rename(abs(at.path), abs(aside)).then(
+			() => true,
+			() => false
+		)
+		// A rename that cannot happen — another filesystem mounted under this tree — is
+		// left with the checked removal, which is what this was before.
+		if (!moved) {
+			await rm(abs(at.path), { recursive: true, force: true })
+			return
+		}
+		const s = await lstat(abs(aside))
+		if (s !== null && String(s.ino) === at.ino) {
+			await rm(abs(aside), { recursive: true, force: true })
+			return
+		}
+		// Not the row's after all. Back where it came from if the name is still free, and
+		// held where it is if it is not — displaced, which is recoverable, rather than
+		// deleted, which is not.
+		await rename(abs(aside), abs(at.path)).catch(() => {})
+	}
+
 	/**
 	 * A live row with no path of its own still owns bytes, and on this backend they
 	 * are the only copy — whether nothing can reach it, or another row holds the name
@@ -807,7 +845,7 @@ export function fsStore(root: string): Store {
 				// bytes intact — a recursive `rm` does not get to take a file it is not
 				// deleting.
 				if (holdsFiles(at.path, old)) await park(row.id, at)
-				else await remove(at)
+				else await remove(at, old)
 			}
 			unmark(row.id)
 			return null
@@ -861,7 +899,7 @@ export function fsStore(root: string): Store {
 		// either way, so the subtree is parked rather than removed.
 		if (at && old && old.type !== row.type) {
 			if (holdsFiles(at.path, old)) await park(row.id, at)
-			else await remove(at)
+			else await remove(at, old)
 			unmark(row.id)
 			at = undefined
 		}

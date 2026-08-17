@@ -1236,6 +1236,26 @@ describe('fsStore: what a row owns, and what happens when nothing can reach it',
 		expect((await stat(join(root, 'locked'))).mode & 0o777).toBe(0o500)
 	})
 
+	test('a directory a commit removes leaves nothing behind in the sidecar', async () => {
+		const root = await temp()
+		const store = open(root)
+		const sub = dir({ id: 'd', name: 'sub' })
+		await store.commit([sub])
+		const inside = { ...(await file(store, 'c', 'c.txt', 'bye')), parent: 'd' }
+		await store.commit([inside])
+
+		// A directory is taken aside before it goes, so that what is removed cannot be
+		// swapped while it is being removed. What that leaves behind has to be nothing:
+		// neither the subtree nor the private name it went under.
+		await store.commit([
+			{ ...inside, deleted: true, version: 'v2' },
+			{ ...sub, deleted: true, version: 'v2' }
+		])
+
+		expect(await readdir(root)).toEqual(['.jfs'])
+		expect(await readdir(join(root, '.jfs/detached')).catch(() => [])).toEqual([])
+	})
+
 	test('a directory keeps the stamp its row states after an entry lands in it', async () => {
 		const root = await temp()
 		const store = open(root)
