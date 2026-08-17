@@ -129,6 +129,31 @@ describe('sync: conflicts', () => {
 		}
 	})
 
+	it('skips a conflict name this replica holds but has not pushed yet', async () => {
+		// The peer is the arbiter, but it cannot see what has not reached it. A name
+		// free at the authority and taken locally is the one name the rename must
+		// not pick: the next push would claim it twice in one batch, which the
+		// authority refuses as a whole — and neither name is taken remotely, so no
+		// settlement can tell why.
+		const hub = authority(memStore())
+		const a = replica('a')
+		const b = replica('b')
+		await a.vol.writeFile('/note.txt', enc.encode('from a'))
+		await sync(a.store, hub, a.opts)
+		// b has never synced, so both of these are its own and neither has been sent.
+		await b.vol.writeFile('/note.txt', enc.encode('from b'))
+		await b.vol.writeFile('/note.txt (conflict b)', enc.encode('older from b'))
+
+		await sync(b.store, hub, b.opts)
+		await sync(a.store, hub, a.opts)
+
+		for (const store of [hub, a.store, b.store]) {
+			expect(await read(store, '/note.txt')).toBe('from a')
+			expect(await read(store, '/note.txt (conflict b)')).toBe('older from b')
+			expect(await read(store, '/note.txt (conflict b 2)')).toBe('from b')
+		}
+	})
+
 	it('recreates the edited file under a new id when the delete committed first', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')

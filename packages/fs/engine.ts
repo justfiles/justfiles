@@ -338,19 +338,29 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 	}
 
 	/**
-	 * A name for this row that nothing at the peer holds, found in ONE settlement.
+	 * A name for this row that nobody holds, found in ONE settlement.
 	 *
 	 * Probing matters as much as the name does. Adding a suffix and letting the
 	 * refusal come back would spend a replan on every name already taken, and the
 	 * budget is not restored by a local rename — only by a page that reaches the
-	 * peer — so a chain of them never lands at all. The peer holds finitely many
+	 * peer — so a chain of them never lands at all. Both sides hold finitely many
 	 * rows, so the search ends; the counter keeps the answer short, since a name
 	 * that grew a suffix per collision would replicate everywhere at that length.
+	 *
+	 * BOTH sides, because the peer is the arbiter but cannot see what has not
+	 * reached it. A name free there and taken by an unpushed row here is the one
+	 * name this rename must not pick: the next push would claim it twice in one
+	 * batch, the authority refuses a batch that does, and no settlement could say
+	 * why — neither name is taken where it looks.
 	 */
 	const free = async (row: Node): Promise<string> => {
+		const taken = async (name: string): Promise<boolean> => {
+			if (await remote.child(row.parent, name)) return true
+			const here = await local.child(row.parent, name)
+			return here !== null && here.id !== row.id
+		}
 		let name = `${row.name} (conflict ${replica})`
-		for (let n = 2; await remote.child(row.parent, name); n++)
-			name = `${row.name} (conflict ${replica} ${n})`
+		for (let n = 2; await taken(name); n++) name = `${row.name} (conflict ${replica} ${n})`
 		return name
 	}
 

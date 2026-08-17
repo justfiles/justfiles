@@ -171,6 +171,12 @@ occupied names longer than the budget never lands at all. Numbering rather than
 re-suffixing also keeps the answer readable: a name that grew a suffix per
 collision replicates everywhere at that length.
 
+The probe asks BOTH sides. The peer is the arbiter, but it cannot see what has
+not reached it, and a name free there and held by an unpushed row here is the
+one name the rename must not pick — the next push would claim it twice in one
+batch, which the authority refuses as a whole, and no settlement could say why,
+since neither name is taken where it looks.
+
 **`settle` writes locally and lets the ordinary push carry it.** A rename of
 the loser, a recreate under a new id, or nothing at all — each is a local
 commit, and a written row moves to the end of the local feed (rule 4), so the
