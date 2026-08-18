@@ -167,6 +167,17 @@ export function storeVolume(
 	/** Where a walk stands. `node` is `null` at the root of `store`. */
 	type Step = { store: Store; node: Node | null }
 
+	/** One row a feed delivered, with the store it came from. */
+	type Seen = { from: Store; row: Node }
+
+	/** The same row in the same store — never the id alone, which two stores share. */
+	const is = (a: At | null, row: Node, from: Store): boolean =>
+		a !== null && a.store === from && a.node.id === row.id
+
+	/** The same again, between two resolutions: has this path landed somewhere new? */
+	const sameAt = (a: At | null, b: At | null): boolean =>
+		a === null || b === null ? a === b : is(a, b.node, b.store)
+
 	/**
 	 * Walk from the root, one `child` per segment. `followLast` decides whether a
 	 * final symlink is followed (`stat` vs `lstat`).
@@ -339,10 +350,9 @@ export function storeVolume(
 	const tomb = (node: Node): Node => ({ ...node, deleted: true, version: mint() })
 
 	/**
-	 * What a row is made of, apart from where it lives. `mtimeNs` and `xattrs` are
-	 * left out by everything that WRITES — a write is a new edit, and the name
-	 * keeps its own attributes — and given only by a rename that crosses a store,
-	 * which cannot move its row and so must re-create it whole.
+	 * What a WRITE states about a row: its kind and its bytes. Not its mtime, which
+	 * a write always moves to now, and not its xattrs, which belong to the name.
+	 * A MOVE states none of it — see `moveAcross`, which carries whole rows.
 	 */
 	type Payload = {
 		type: Node['type']
@@ -350,8 +360,6 @@ export function storeVolume(
 		size: bigint
 		content?: Hash
 		link?: string
-		xattrs?: Record<string, Uint8Array>
-		mtimeNs?: bigint
 	}
 
 	/** The bytes a payload names: the caller's array, or the store that has them. */
@@ -364,19 +372,19 @@ export function storeVolume(
 	 * which is lost data — and a hash is nothing but a promise to a store that does
 	 * not hold the bytes, so crossing a mount is where that promise gets kept.
 	 */
-	async function durable(st: Store, payload: Payload, bytes?: Bytes): Promise<void> {
-		if (payload.content === undefined || bytes === undefined) return
-		if (bytes instanceof Uint8Array) return st.blobs.put(payload.content, bytes)
+	async function durable(st: Store, content?: Hash, bytes?: Bytes): Promise<void> {
+		if (content === undefined || bytes === undefined) return
+		if (bytes instanceof Uint8Array) return st.blobs.put(content, bytes)
 		// Ask before hauling: a transfer usually has nothing to transfer.
-		if (bytes === st || (await st.blobs.has(payload.content))) return
-		const data = await bytes.blobs.get(payload.content)
-		if (data === null) throw new Error(`ENOENT: content ${payload.content}`)
-		await st.blobs.put(payload.content, data)
+		if (bytes === st || (await st.blobs.has(content))) return
+		const data = await bytes.blobs.get(content)
+		if (data === null) throw new Error(`ENOENT: content ${content}`)
+		await st.blobs.put(content, data)
 	}
 
 	/** Whole-row replace (rule 3: no partial patch), guarded on what we read. */
 	const swap = async (st: Store, node: Node, payload: Payload, bytes?: Bytes): Promise<void> => {
-		await durable(st, payload, bytes)
+		await durable(st, payload.content, bytes)
 		await st.commit(
 			[
 				{
@@ -384,13 +392,11 @@ export function storeVolume(
 					type: payload.type,
 					// The NAME keeps its permissions and its xattrs; the payload brings
 					// the type bits, so a row that changes kind still says which it is.
-					// A payload that carries them anyway is replacing the row outright.
 					mode: (payload.mode & IFMT) | (node.mode & 0o7777),
 					size: payload.size,
 					content: payload.content,
 					link: payload.link,
-					xattrs: payload.xattrs ?? node.xattrs,
-					mtimeNs: payload.mtimeNs ?? now(),
+					mtimeNs: now(),
 					version: mint()
 				}
 			],
@@ -414,7 +420,7 @@ export function storeVolume(
 			version: mint(),
 			...payload
 		}
-		await durable(st, payload, bytes)
+		await durable(st, payload.content, bytes)
 		try {
 			await st.commit([row, stamp(dir)], [{ free: { parent: dir.id, name } }, unchanged(dir)])
 		} catch (e) {
@@ -517,19 +523,18 @@ export function storeVolume(
 	 * copy that crosses a mount is the one exception, and only for the bytes:
 	 * `place` carries them, because a hash names nothing in a store that lacks it.
 	 *
-	 * `whole` carries the ROW — its xattrs and its mtime — which is what a rename
-	 * across a store owes and what `cp` must not give: POSIX `cp` needs `-a` before
-	 * it preserves either, and this volume's `cp` is the plain one.
+	 * It carries what a copy carries and no more: POSIX `cp` needs `-a` before it
+	 * preserves xattrs or times either. A MOVE owes more than this, which is why
+	 * `moveAcross` does not go through it.
 	 */
-	async function copy(src: string, dest: string, recursive: boolean, whole = false): Promise<void> {
+	async function copy(src: string, dest: string, recursive: boolean): Promise<void> {
 		const at = await resolve(src, false)
 		const payload: Payload = {
 			type: at.node.type,
 			mode: at.node.mode,
 			size: at.node.size,
 			content: at.node.content,
-			link: at.node.link,
-			...(whole && { xattrs: at.node.xattrs, mtimeNs: at.node.mtimeNs })
+			link: at.node.link
 		}
 		if (!isDir(at.node)) {
 			await retry(() => place(dest, payload, undefined, at.store))
@@ -556,7 +561,82 @@ export function storeVolume(
 
 		if (there === null) await retry(() => place(dest, payload, { exclusive: true }))
 		else if (!isDir(there.node)) throw new Error(`ENOTDIR: ${dest}`)
-		for (const name of names) await copy(join(src, name), join(dest, name), recursive, whole)
+		for (const name of names) await copy(join(src, name), join(dest, name), recursive)
+	}
+
+	/**
+	 * `mv` across a store, which is what `EXDEV` leaves behind. It moves ROWS, and
+	 * that is the whole of why it is not `copy` then `rm`.
+	 *
+	 * A copy is a different operation, and every difference is a way for a rename
+	 * built out of one to quietly mean something else. It chooses what to carry
+	 * (POSIX `cp` needs `-a` before it takes xattrs or times); it writes THROUGH a
+	 * symlink standing on the destination, overwriting a file nobody named; and it
+	 * MERGES into a directory instead of taking its place. A move states its rule
+	 * once instead, and the rule is the whole row:
+	 *
+	 *     { ...row, id: <fresh>, parent, name, version }
+	 *
+	 * Nothing is enumerated, so nothing can be left out — mode, xattrs, times, and
+	 * whatever a later field on `Node` adds, all travel by construction. The id is
+	 * the one thing that cannot travel: it belongs to the store that minted it.
+	 *
+	 * Not atomic, and it cannot be: two stores are two commits. That IS `EXDEV`.
+	 */
+	async function moveAcross(oldPath: string, newPath: string): Promise<void> {
+		// Neither end is followed. `mv` moves the link itself, and replaces the NAME
+		// it lands on rather than whatever that name points at.
+		const src = await resolve(oldPath, false)
+		const dest = await find(newPath, false)
+		if (dest !== null) {
+			await replaces(dest.store, dest.node, src.node, newPath)
+			await vol.rm(newPath)
+		}
+		// The moved row and the directory that gains it commit together — the
+		// parent-mtime rule, exactly as a create does — and replan together.
+		const top = await retry(async () => {
+			const to = await parentOf(newPath)
+			const row = reparent(src.node, to.dir.id, to.name)
+			await durable(to.store, row.content, src.store)
+			await to.store.commit(
+				[row, stamp(to.dir)],
+				[{ free: { parent: to.dir.id, name: to.name } }, unchanged(to.dir)]
+			)
+			return { store: to.store, node: row }
+		})
+		// Below the top row nothing is contended: every name is claimed inside a
+		// directory this move has just made.
+		if (isDir(src.node)) await graft(src, top, new Set([src.node.id]))
+		await vol.rm(oldPath, { recursive: true })
+	}
+
+	/** One row, placed somewhere else. The whole rule of a move. */
+	const reparent = (row: Node, parent: NodeId, name: string): Node => ({
+		...row,
+		id: crypto.randomUUID(),
+		parent,
+		name,
+		version: mint()
+	})
+
+	/**
+	 * Everything under `from`, written into `into`. A mount is not crossed: its row
+	 * moves like any other and its binding stays where it was pointed, which is
+	 * what the one-store rename does too. Crossing would write another store's rows
+	 * into this one, which is the whole thing a mount exists to prevent.
+	 *
+	 * Bounded by a visited set, like every other walk here (rule 9).
+	 */
+	async function graft(from: At, into: At, seen: Set<NodeId>): Promise<void> {
+		for await (const child of childrenOf(from.store, from.node.id)) {
+			if (seen.has(child.id)) continue
+			seen.add(child.id)
+			const row = reparent(child, into.node.id, child.name)
+			await durable(into.store, row.content, from.store)
+			await into.store.commit([row], [{ free: { parent: row.parent, name: row.name } }])
+			if (isDir(child))
+				await graft({ store: from.store, node: child }, { store: into.store, node: row }, seen)
+		}
 	}
 
 	/**
@@ -781,24 +861,19 @@ export function storeVolume(
 		path: string,
 		listener: (event: WatchEvent) => void
 	): Promise<() => void> {
-		// A watch listens to ONE store: the one the path resolves into, or the one a
-		// create would put it in. A mount is therefore a watch boundary in both
-		// directions — a watch inside one is not told that the mount point itself was
-		// renamed away, and one above it is not told what happens inside. Both cost a
-		// re-scan a caller can ask for; neither is silent corruption.
-		let feed: Store = store
-		let node: NodeId | null = null
-		let dir: NodeId | null = null
-		let name = ''
+		// What a watch remembers, it remembers WITH its store. Every feed is listened
+		// to (see `changes`) and every row arrives with the store it came from, so
+		// nothing here has to decide up front which store the path lives in — a
+		// question only a read of the tree answers, and a watch is armed before it may
+		// read one. A path whose parent does not exist yet has no answer at all.
+		let node: At | null = null
+		let dir: (At & { name: string }) | null = null
 		async function bind(): Promise<void> {
 			// Every way of not being there — missing, unwalkable, looping — is the
 			// same answer to a watch: unbound.
-			const at = await resolve(path, true).catch(() => null)
+			node = await resolve(path, true).catch(() => null)
 			const parent = await parentOf(path).catch(() => null)
-			feed = at?.store ?? parent?.store ?? store
-			node = at?.node.id ?? null
-			dir = parent?.dir.id ?? null
-			name = parent?.name ?? ''
+			dir = parent === null ? null : { store: parent.store, node: parent.dir, name: parent.name }
 		}
 
 		let scheduled = false
@@ -825,30 +900,33 @@ export function storeVolume(
 				// A re-resolve that landed somewhere new IS the event, whether the path
 				// gained a row, lost one, or was rebound to another. A speculative one
 				// that changed nothing is not.
-				if (!stopped && (definite || node !== before)) listener({ source })
+				if (!stopped && (definite || !sameAt(node, before))) listener({ source })
 			})
 		}
 
 		const off = await changes(
 			bind,
 			(from, rows) => {
-				if (from !== feed) return
 				for (const row of rows) {
-					const hitsNode = row.id === node
+					const hitsNode = is(node, row, from)
 					// A tombstone counts, and must: when the watched path IS a symlink,
 					// `node` is what it resolved THROUGH to, so unlinking the link itself
 					// hits nothing else — and a watch that missed it would go on reporting
 					// edits to a target the path no longer names.
-					const hitsName = dir !== null && row.parent === dir && row.name === name
+					const hitsName =
+						dir !== null &&
+						from === dir.store &&
+						row.parent === dir.node.id &&
+						row.name === dir.name
 					// With no parent directory yet there is no name to compare against, so
-					// any directory row is a candidate: re-resolve, and fire only if it
-					// turned out to bind the path.
+					// any directory row in any store is a candidate: re-resolve, and fire
+					// only if it turned out to bind the path.
 					const mayBind = dir === null && isDir(row)
 					if (!hitsNode && !hitsName && !mayBind) continue
 					if (hitsNode || hitsName) fire = true
 					// The row left the path (deleted, or moved elsewhere), or something
 					// else moved onto it: either way the path resolves somewhere new.
-					const moved = row.deleted === true || row.parent !== dir || row.name !== name
+					const moved = row.deleted === true || !hitsName
 					if (hitsName || mayBind || (hitsNode && moved)) rebind = true
 					if (foreign(row)) remote = true
 				}
@@ -900,25 +978,28 @@ export function storeVolume(
 		path: string,
 		listener: (event: WatchEvent) => void
 	): Promise<() => void> {
-		// One store, as `watchPath` above.
-		let feed: Store = store
-		let root: NodeId | null = null
-		let chain = new Set<NodeId>([ROOT])
+		// Rows come from every feed, each with its store, exactly as in `watchPath`.
+		let root: At | null = null
+		let chain: At[] = []
 		async function bind(): Promise<void> {
 			const walked: At[] = []
-			const at = await resolve(path, true, walked).catch(() => null)
-			feed = at?.store ?? (await parentOf(path).catch(() => null))?.store ?? store
-			root = at?.node.id ?? null
-			// Only the rows this watch's feed carries: a walk that crossed a mount read
-			// some in a store nothing here will ever hear from.
-			chain = new Set([
-				ROOT,
-				...walked.filter((step) => step.store === feed).map((step) => step.node.id)
-			])
+			root = await resolve(path, true, walked).catch(() => null)
+			chain = walked
 		}
 
-		/** Is `id` the root or under it? Bounded by a visited set (rule 9). */
-		async function under(id: NodeId, memo: Map<NodeId, boolean>): Promise<boolean> {
+		/**
+		 * Is this row on the way in? A store's root always is — it is where every walk
+		 * starts, and it is what the create that first binds an unbound path stamps.
+		 */
+		const onChain = (from: Store, row: Node): boolean =>
+			row.id === ROOT || chain.some((step) => is(step, row, from))
+
+		/**
+		 * Is `id` the root or under it? Bounded by a visited set (rule 9), and it
+		 * climbs within ONE store: a mount is where the walk stops, so a recursive
+		 * watch above one is not told what happens inside it.
+		 */
+		async function under(from: Store, id: NodeId, memo: Map<NodeId, boolean>): Promise<boolean> {
 			const climbed: NodeId[] = []
 			const seen = new Set<NodeId>()
 			let at: NodeId | undefined = id
@@ -929,14 +1010,14 @@ export function storeVolume(
 					answer = known
 					break
 				}
-				if (at === root) {
+				if (root !== null && from === root.store && at === root.node.id) {
 					answer = true
 					break
 				}
 				if (at === ROOT) break
 				seen.add(at)
 				climbed.push(at)
-				at = (await feed.get(at))?.parent
+				at = (await from.get(at))?.parent
 			}
 			// Whatever the answer, it holds for every id on the way up: they all
 			// reach the root through the same rows.
@@ -944,8 +1025,14 @@ export function storeVolume(
 			return answer
 		}
 
-		async function assess(rows: Node[]): Promise<{ wake: boolean; source?: string }> {
-			const memo = new Map<NodeId, boolean>()
+		async function assess(batch: Seen[]): Promise<{ wake: boolean; source?: string }> {
+			// One memo per store: an id answers for a climb in the store that minted it.
+			const memos = new Map<Store, Map<NodeId, boolean>>()
+			const memo = (from: Store): Map<NodeId, boolean> => {
+				const held = memos.get(from) ?? new Map<NodeId, boolean>()
+				memos.set(from, held)
+				return held
+			}
 			let wake = false
 			let probe = false
 			// Attribution is a question about the WINDOW, not about the rows that wake
@@ -958,22 +1045,22 @@ export function storeVolume(
 			// so it is not scoped. This over-reports when unrelated remote traffic
 			// shares a window with a local change — a re-scan absorbs that, while a
 			// missed remote change is the thing `source` exists to prevent.
-			const remote = rows.some(foreign)
-			for (const row of rows) {
+			const remote = batch.some(({ row }) => foreign(row))
+			for (const { from, row } of batch) {
 				const structural = isDir(row) || row.deleted === true
-				if (structural && root !== null && (row.id === root || (await under(row.parent, memo))))
+				if (structural && (is(root, row, from) || (await under(from, row.parent, memo(from)))))
 					wake = true
-				if (chain.has(row.id)) probe = true
+				if (onChain(from, row)) probe = true
 			}
 			if (probe) {
 				const was = root
 				await bind()
-				if (root !== was) wake = true
+				if (!sameAt(root, was)) wake = true
 			}
 			return { wake, source: remote ? REMOTE : undefined }
 		}
 
-		let queued: Node[] = []
+		let queued: Seen[] = []
 		let timer: ReturnType<typeof setTimeout> | undefined
 		let stopped = false
 		// At most one delivery per window, always with a trailing one. Arming only
@@ -985,10 +1072,10 @@ export function storeVolume(
 			timer = setTimeout(async () => {
 				timer = undefined
 				if (queued.length === 0) return
-				const rows = queued
+				const batch = queued
 				queued = []
 				// A read that failed may have hidden a change: wake rather than miss it.
-				const { wake, source } = await assess(rows).catch(() => ({
+				const { wake, source } = await assess(batch).catch(() => ({
 					wake: true,
 					source: undefined
 				}))
@@ -999,8 +1086,7 @@ export function storeVolume(
 		}
 
 		const off = await changes(bind, (from, rows) => {
-			if (from !== feed) return
-			queued.push(...rows)
+			for (const row of rows) queued.push({ from, row })
 			arm()
 		})
 
@@ -1189,21 +1275,7 @@ export function storeVolume(
 				await moveRow(oldPath, newPath)
 			} catch (e) {
 				if (!(e instanceof Error) || !e.message.startsWith('EXDEV')) throw e
-				// What `mv` does with an EXDEV: copy, then remove. Not atomic, and the
-				// rows land under new ids — which is what crossing a store means, since
-				// an id belongs to the store that minted it.
-				const src = await resolve(oldPath, false)
-				const dest = await find(newPath, false)
-				if (dest !== null) {
-					await replaces(dest.store, dest.node, src.node, newPath)
-					// A rename REPLACES, and letting the copy land on what is there is not
-					// the same thing: `place` writes THROUGH a symlink, overwriting a file
-					// nobody named, and merges into a directory rather than taking its
-					// place. So the destination goes first.
-					await vol.rm(newPath)
-				}
-				await copy(oldPath, newPath, true, true)
-				await vol.rm(oldPath, { recursive: true })
+				await moveAcross(oldPath, newPath)
 			}
 		},
 

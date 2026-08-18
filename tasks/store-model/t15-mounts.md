@@ -78,17 +78,25 @@ Three things the RED list did not spell out, decided here:
   same name, so a listing can never contradict what resolving that name gives.
   `descendants` deliberately does NOT cross: it is the list of rows a delete is
   about to tombstone in one store.
-- **A watch stays on one store**, the one its path resolves into, and a mount is
-  a watch boundary in both directions. To keep it, `changes` now subscribes to
-  every feed the volume can reach BEFORE binding, and tags each batch with the
-  store it came from — asking which store the path is in first would put a read
-  of the tree in front of the subscription, which is the one order that loses an
-  event (`volume.store.watch.test.ts` has the case).
+- **A watch listens to every feed**, and keeps each id it remembers WITH the
+  store that minted it. `changes` subscribes to all of them before binding — a
+  watch is armed before it may read the tree, so it cannot ask which store the
+  path is in first — and tags each batch with its store. A recursive watch still
+  does not climb out of a mount, so one above a mount is not told what happens
+  inside it.
 - **Ids are unique within a store and nowhere else.** `ROOT` is the same
   constant in every store, so bindings are only read in the store the volume was
   built over, `scan` starts a fresh visited set at every crossing, and a crossed
   `readdir` entry reports the bound root's id — unique per store, the way a POSIX
   inode number is unique per device, and this model has no `st_dev`.
+
+A rename that crosses a mount does not go through `cp`. `cp` is a different
+operation — it chooses what to carry, writes THROUGH a destination symlink, and
+merges into a directory instead of taking its place — so a rename built out of
+one diverges silently, once per field and once per rule. `moveAcross` moves ROWS
+instead, stating the rule once (`{ ...row, id: fresh, parent, name, version }`),
+and `volume.store.mounts.test.ts` pins the two renames to each other over a
+PRODUCT of source kinds and destination kinds rather than a list of cases.
 
 `rm` of a BOUND mount point resolves to the bound store's root and is refused —
 `EBUSY` by another name; unbind first. An unbound one is an ordinary row and goes

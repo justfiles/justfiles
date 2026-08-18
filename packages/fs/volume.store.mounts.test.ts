@@ -23,6 +23,7 @@ import { type CursorSlot, sync, versions } from './engine'
 import { type Cursor, GuardError, type Node, type NodeId, ROOT, type Store } from './store'
 import { memStore } from './store.mem'
 import { FileType } from './types'
+import { type Volume, WATCH_BURST_MS } from './volume'
 import { type Bindings, storeVolume } from './volume.store'
 
 const enc = new TextEncoder()
@@ -77,6 +78,21 @@ async function rows(store: Store): Promise<Node[]> {
 		out.push(...page.nodes)
 		if (page.next === undefined || page.nodes.length === 0) return out
 		cursor = page.next
+	}
+}
+
+/** For what must arrive. The deadline is loose: nothing here asserts latency. */
+async function waitFor(assertion: () => void): Promise<void> {
+	const deadline = Date.now() + WATCH_BURST_MS * 40
+	let last: unknown
+	for (;;) {
+		try {
+			return assertion()
+		} catch (e) {
+			last = e
+			if (Date.now() > deadline) throw last
+			await new Promise((resolve) => setTimeout(resolve, WATCH_BURST_MS / 5))
+		}
 	}
 }
 
@@ -249,81 +265,6 @@ describe('crossing', () => {
 		expect(dec.decode(await vol.readFile('/private/notes/kyoto.md'))).toBe('go')
 	})
 
-	it('refuses a cross-store rename onto a directory that still holds entries', async () => {
-		const outer = memStore()
-		const priv = memStore()
-		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
-		await vol.mkdir('/notes')
-		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
-		await vol.mkdir('/private/notes')
-		await vol.writeFile('/private/notes/other.md', enc.encode('keep'))
-
-		// Crossing a mount does not change what a rename MEANS. The primitive raises
-		// EXDEV before it ever reads the destination, so `mv` asks the same questions
-		// itself — or a copy would merge into a directory the same rename inside one
-		// store refuses, and then remove the source.
-		await expect(vol.rename('/notes', '/private/notes')).rejects.toThrow(/^ENOTEMPTY/)
-
-		expect(dec.decode(await vol.readFile('/notes/kyoto.md'))).toBe('go')
-		expect(await vol.exists('/private/notes/kyoto.md')).toBe(false)
-		expect(dec.decode(await vol.readFile('/private/notes/other.md'))).toBe('keep')
-	})
-
-	it('refuses a cross-store rename that would replace a directory with a file', async () => {
-		const outer = memStore()
-		const priv = memStore()
-		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
-		await vol.writeFile('/kyoto.md', enc.encode('go'))
-		await vol.mkdir('/private/kyoto.md')
-
-		await expect(vol.rename('/kyoto.md', '/private/kyoto.md')).rejects.toThrow(/^EISDIR/)
-
-		expect(dec.decode(await vol.readFile('/kyoto.md'))).toBe('go')
-		expect((await vol.stat('/private/kyoto.md')).type).toBe(FileType.Directory)
-	})
-
-	it('replaces a destination symlink instead of writing through it', async () => {
-		const outer = memStore()
-		const priv = memStore()
-		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
-		await vol.writeFile('/kyoto.md', enc.encode('go'))
-		await vol.writeFile('/private/target.md', enc.encode('keep'))
-		await vol.symlink('target.md', '/private/link')
-
-		await vol.rename('/kyoto.md', '/private/link')
-
-		// A rename replaces the LINK. `cp` would have written through it, leaving the
-		// link in place and overwriting a file nobody named.
-		expect((await vol.lstat('/private/link')).type).toBe(FileType.Regular)
-		expect(dec.decode(await vol.readFile('/private/link'))).toBe('go')
-		expect(dec.decode(await vol.readFile('/private/target.md'))).toBe('keep')
-		expect(await vol.exists('/kyoto.md')).toBe(false)
-	})
-
-	it('carries xattrs and mtime across a rename that crosses a mount', async () => {
-		const outer = memStore()
-		const priv = memStore()
-		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
-		await vol.mkdir('/notes')
-		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
-		await vol.setXattr('/notes', 'user.tag', enc.encode('folder'))
-		await vol.setXattr('/notes/kyoto.md', 'user.tag', enc.encode('trip'))
-		await vol.utimes('/notes/kyoto.md', 4_000n)
-
-		await vol.rename('/notes', '/private/notes')
-
-		// A rename moves the row. Crossing a store cannot, so it re-creates it — and
-		// what it owes is the ROW, not just the bytes. (`cp` carries less on purpose:
-		// POSIX `cp` needs `-a` before it preserves xattrs either.)
-		expect(await vol.getXattr('/private/notes', 'user.tag')).toEqual(enc.encode('folder'))
-		expect(await vol.getXattr('/private/notes/kyoto.md', 'user.tag')).toEqual(enc.encode('trip'))
-		expect((await vol.stat('/private/notes/kyoto.md')).mtimeNs).toBe(4_000n)
-	})
-
 	it('keeps the guards of both endpoint walks inside one mount', async () => {
 		const outer = memStore()
 		const priv = memStore()
@@ -366,6 +307,253 @@ describe('crossing', () => {
 	})
 })
 
+/**
+ * `mv` means one thing, and a mount must not change what it means.
+ *
+ * A rename inside one store MOVES a row. A rename that crosses one cannot, and
+ * has to re-create it — so the two are different code, and every field the second
+ * forgets, and every rule about the destination it reads differently, is a bug.
+ * They can disagree in more ways than a list of cases would ever cover, and each
+ * one found by hand is one more patch. So this does not list them: it runs the
+ * SAME story through both and compares what each leaves behind, field for field.
+ */
+describe('a rename across a mount is still a rename', () => {
+	/**
+	 * A subtree with something of everything a row can carry, seeded as ROWS so
+	 * every field is exact. Built through the volume it would take its times from
+	 * the clock, and the comparison would then be of two runs rather than of two
+	 * renames.
+	 */
+	async function seed(store: Store, parent: NodeId, name: string): Promise<void> {
+		const src = row({
+			parent,
+			name,
+			type: 'dir',
+			mode: 0o040755,
+			mtimeNs: 1_000n,
+			xattrs: { 'user.tag': enc.encode('root') }
+		})
+		const deep = row({
+			parent: src.id,
+			name: 'deep',
+			type: 'dir',
+			mode: 0o040750,
+			mtimeNs: 2_000n,
+			xattrs: { 'user.tag': enc.encode('folder') }
+		})
+		const data = enc.encode('go')
+		const content = await hash(data)
+		await store.blobs.put(content, data)
+		const kyoto = row({
+			parent: deep.id,
+			name: 'kyoto.md',
+			type: 'file',
+			mode: 0o100600,
+			mtimeNs: 3_000n,
+			size: BigInt(data.length),
+			content,
+			xattrs: { 'user.tag': enc.encode('trip') }
+		})
+		const empty = row({
+			parent: src.id,
+			name: 'empty',
+			type: 'dir',
+			mode: 0o040700,
+			mtimeNs: 4_000n
+		})
+		const link = row({
+			parent: src.id,
+			name: 'link',
+			type: 'symlink',
+			mode: 0o120777,
+			mtimeNs: 5_000n,
+			size: BigInt('deep/kyoto.md'.length),
+			link: 'deep/kyoto.md'
+		})
+		await store.commit([src, deep, kyoto, empty, link])
+	}
+
+	/** Everything a volume can say about a subtree, apart from the ids. */
+	async function tree(vol: Volume, root: string): Promise<Record<string, unknown>> {
+		const out: Record<string, unknown> = {}
+		await vol.scan(root, async (path, stat) => {
+			const xattrs: Record<string, string> = {}
+			for (const name of await vol.listXattr(path).catch(() => []))
+				xattrs[name] = dec.decode((await vol.getXattr(path, name)) ?? new Uint8Array())
+			out[path.slice(root.length) || '/'] = {
+				type: stat.type,
+				mode: stat.mode,
+				size: stat.size,
+				mtimeNs: stat.mtimeNs,
+				content: stat.contentHash,
+				link: stat.type === FileType.Symlink ? await vol.readlink(path) : undefined,
+				xattrs
+			}
+		})
+		return out
+	}
+
+	/** What else is standing in the destination's directory, and still is. */
+	const beside = async (vol: Volume, path: string): Promise<string[]> =>
+		(await vol.readdir(path)).map((entry) => `${entry.name}:${entry.type}`).sort()
+
+	/** Everything the rename did: what it refused with, and the state it left. */
+	async function outcome(vol: Volume, from: string, dest: string, box: string): Promise<unknown> {
+		let refused: string | undefined
+		try {
+			await vol.rename(from, dest)
+		} catch (e) {
+			refused = (e as Error).message.split(':')[0]
+		}
+		return {
+			refused,
+			moved: await tree(vol, dest).catch(() => null),
+			beside: await beside(vol, box),
+			source: await tree(vol, from).catch(() => null)
+		}
+	}
+
+	/** One story, run inside a single store and then across a mount. */
+	async function both(
+		from: string,
+		set?: (vol: Volume, dest: string) => Promise<void>
+	): Promise<{ here: unknown; across: unknown }> {
+		const one = memStore()
+		const here = storeVolume(one)
+		await here.mkdir('/box')
+		await seed(one, ROOT, 'src')
+
+		const outer = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const across = storeVolume(outer, { bindings: binding(ROOT, 'private', memStore()) })
+		await across.mkdir('/private/box')
+		await seed(outer, ROOT, 'src')
+
+		await set?.(here, '/box/dest')
+		await set?.(across, '/private/box/dest')
+
+		return {
+			here: await outcome(here, from, '/box/dest', '/box'),
+			across: await outcome(across, from, '/private/box/dest', '/private/box')
+		}
+	}
+
+	/** Times set by hand for the same reason `seed` does it: the clock is not a fixture. */
+	const stamped = (vol: Volume, path: string, at: bigint): Promise<void> => vol.utimes(path, at)
+
+	/**
+	 * Every kind of thing that can be moved, against every kind of thing it can be
+	 * moved onto. A PRODUCT, not a list: the ways these two paths can disagree are
+	 * combinations, and a list only ever holds the ones somebody already found.
+	 */
+	const sources = [
+		{ kind: 'a directory', from: '/src' },
+		{ kind: 'a file', from: '/src/deep/kyoto.md' },
+		{ kind: 'a symlink', from: '/src/link' }
+	]
+
+	const destinations: { kind: string; set?: (vol: Volume, dest: string) => Promise<void> }[] = [
+		{ kind: 'a free name' },
+		{
+			kind: 'a file',
+			set: async (vol, dest) => {
+				await vol.writeFile(dest, enc.encode('gone'))
+				await stamped(vol, dest, 9_000n)
+			}
+		},
+		{
+			kind: 'a symlink',
+			set: async (vol, dest) => {
+				await vol.writeFile(`${dest}.target`, enc.encode('keep'))
+				await stamped(vol, `${dest}.target`, 9_000n)
+				await vol.symlink('dest.target', dest)
+			}
+		},
+		{
+			kind: 'an empty directory',
+			set: async (vol, dest) => {
+				await vol.mkdir(dest)
+				await stamped(vol, dest, 9_000n)
+			}
+		},
+		{
+			kind: 'a directory that still holds entries',
+			set: async (vol, dest) => {
+				await vol.mkdir(dest)
+				await vol.writeFile(`${dest}/other.md`, enc.encode('keep'))
+				await stamped(vol, `${dest}/other.md`, 9_000n)
+				await stamped(vol, dest, 9_000n)
+			}
+		}
+	]
+
+	for (const source of sources)
+		for (const dest of destinations)
+			it(`moves ${source.kind} onto ${dest.kind}`, async () => {
+				const { here, across } = await both(source.from, dest.set)
+				expect(across).toEqual(here)
+			})
+
+	// The differential above pins the two to each other; this pins them to
+	// something, so they cannot agree by both being empty.
+	it('carries the whole row, not a list of its fields', async () => {
+		const outer = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', memStore()) })
+		await seed(outer, ROOT, 'src')
+
+		await vol.rename('/src', '/private/dest')
+
+		expect(await tree(vol, '/private/dest')).toEqual({
+			'/': {
+				type: FileType.Directory,
+				mode: 0o755,
+				size: 0n,
+				mtimeNs: 1_000n,
+				content: undefined,
+				link: undefined,
+				xattrs: { 'user.tag': 'root' }
+			},
+			'/deep': {
+				type: FileType.Directory,
+				mode: 0o750,
+				size: 0n,
+				mtimeNs: 2_000n,
+				content: undefined,
+				link: undefined,
+				xattrs: { 'user.tag': 'folder' }
+			},
+			'/deep/kyoto.md': {
+				type: FileType.Regular,
+				mode: 0o600,
+				size: 2n,
+				mtimeNs: 3_000n,
+				content: await hash(enc.encode('go')),
+				link: undefined,
+				xattrs: { 'user.tag': 'trip' }
+			},
+			'/empty': {
+				type: FileType.Directory,
+				mode: 0o700,
+				size: 0n,
+				mtimeNs: 4_000n,
+				content: undefined,
+				link: undefined,
+				xattrs: {}
+			},
+			'/link': {
+				type: FileType.Symlink,
+				mode: 0o777,
+				size: 13n,
+				mtimeNs: 5_000n,
+				content: undefined,
+				link: 'deep/kyoto.md',
+				xattrs: { 'user.tag': 'trip' }
+			}
+		})
+	})
+})
+
 describe('silent bindings', () => {
 	it('shadows the synced rows under the name, and gives them back intact', async () => {
 		const outer = memStore()
@@ -396,6 +584,73 @@ describe('silent bindings', () => {
 		// Removing the binding reveals the shared data, intact.
 		bindings.get(ROOT)?.delete('.special')
 		expect(dec.decode(await vol.readFile('/.special/shared.md'))).toBe('everyone')
+	})
+})
+
+/**
+ * A watch matches rows by id, and an id means nothing outside the store that
+ * minted it — so every id a watch remembers is kept with its store. What it must
+ * NOT do is pick one store up front and drop everything else: which store a path
+ * lives in is a question only a read of the tree answers, and a watch is armed
+ * before it may read one.
+ */
+describe('watching across a mount', () => {
+	it('binds a path inside a mount that does not exist yet', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+
+		// Neither the path nor its parent resolves, so nothing about the tree can say
+		// which store this will live in. Only the mount point does.
+		let fired = 0
+		const off = await vol.watch('/private/state/app.json', () => fired++)
+
+		await vol.mkdir('/private/state')
+		await vol.writeFile('/private/state/app.json', enc.encode('{}'))
+
+		await waitFor(() => expect(fired).toBeGreaterThan(0))
+		off()
+	})
+
+	it('wakes a recursive watch inside a mount that does not exist yet', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+
+		// Deep enough that the parent does not resolve either — with `/private/state`
+		// already there, the parent walk alone would have found the store.
+		let fired = 0
+		const off = await vol.watch('/private/state/apps', () => fired++, { recursive: true })
+
+		await vol.mkdir('/private/state/apps', { recursive: true })
+		await vol.writeFile('/private/state/apps/one.json', enc.encode('{}'))
+
+		await waitFor(() => expect(fired).toBeGreaterThan(0))
+		off()
+	})
+
+	it("does not wake for the same name under another store's root", async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+
+		// The watched path's parent IS the bound store's root, and every store spells
+		// its root `ROOT` — so a row at the same name under the OUTER root carries the
+		// very same `(parent, name)`. Only the store tells them apart.
+		let fired = 0
+		const off = await vol.watch('/private/app.json', () => fired++)
+
+		await vol.writeFile('/app.json', enc.encode('{}'))
+		await new Promise((resolve) => setTimeout(resolve, WATCH_BURST_MS * 4))
+		expect(fired).toBe(0)
+
+		// ...and the real one still wakes it.
+		await vol.writeFile('/private/app.json', enc.encode('{}'))
+		await waitFor(() => expect(fired).toBe(1))
+		off()
 	})
 })
 
