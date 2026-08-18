@@ -456,6 +456,8 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// anything else: root's own row may state a mode that shuts this store out.
 		await unlockFor(side)
 		try {
+			// Nothing records the sidecar, so its answer is dropped: a refused publish is the
+			// same loss as the crash above, and the next scan mints ids again.
 			await disk.write(index, new TextEncoder().encode(JSON.stringify(sidecar)))
 		} finally {
 			await relock()
@@ -552,17 +554,17 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		if (to === null) return
 		await disk.dir(held)
 		await disk.clear(to)
-		if (!(await disk.move(at, to))) {
+		// A rename moves the ctime, and nothing observes a parked file afterwards — so the
+		// state `blobs` will recognise the file by is the one the move itself hands back.
+		// What was UNDER a renamed directory keeps its own.
+		const now = await disk.move(at, to)
+		if (now === null) {
 			unmark(id)
 			return
 		}
 		moveSeen(at.path, to)
-		// A rename moves the ctime, and nothing observes a parked file afterwards, so its state
-		// is taken down here or `blobs` stops recognising the file it holds for the row. What
-		// was UNDER a renamed directory keeps its own.
 		const moved = seen.get(id)
-		const s = await disk.stat(to)
-		if (moved && s !== null) mark(id, { ...moved, ino: String(s.ino), state: stateOf(s) })
+		if (moved) mark(id, { ...moved, ...now })
 	}
 
 	/**
@@ -576,7 +578,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		row: Node,
 		old: Node | null,
 		at: Seen | undefined
-	): Promise<{ hash?: Hash } | null> => {
+	): Promise<{ at: Seen; hash?: Hash } | null> => {
 		const on = stampOf(row)
 		/**
 		 * Nothing to publish — a metadata-only change, or a file that already holds what
@@ -588,38 +590,27 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		 * its state would read as reconciled, and the scan would skip those bytes for ever
 		 * while `blobs` answered them under a key that does not name them.
 		 */
-		const keep = async (hash: Hash | undefined): Promise<{ hash?: Hash } | null> => {
-			if (at === undefined) {
-				await disk.stamp(os, on)
-				return { hash }
-			}
-			const was = await disk.stat(os)
-			if (was === null || !unchanged(at, was)) return null
-			await disk.stamp(os, on)
-			// And asked again on the other side of it. A check BEFORE an act only ever buys
-			// a narrower window, and this one is asked after: the stamp moves mode, mtime
-			// and ctime, so nothing else may have moved — another inode is somebody's
-			// replacement, another size is somebody's write. What that still lets through is
-			// an edit of exactly the same length, landing inside three syscalls.
-			const now = await disk.stat(os)
-			if (now === null || String(now.ino) !== at.ino || now.size !== was.size) return null
-			return { hash }
+		const keep = async (hash: Hash | undefined): Promise<{ at: Seen; hash?: Hash } | null> => {
+			const now = await disk.stamp(os, on, at)
+			return now === null ? null : { at: now, hash }
+		}
+		const publish = async (
+			data: Uint8Array,
+			hash?: Hash
+		): Promise<{ at: Seen; hash?: Hash } | null> => {
+			const now = await disk.write(os, data, on)
+			return now === null ? null : { at: now, hash }
 		}
 		if (row.content === undefined) {
 			// No content is a claim too, so a row that dropped its hash empties its file.
 			if (at && old?.content === undefined) return keep(undefined)
-			await disk.write(os, EMPTY, on)
-			return {}
+			return publish(EMPTY)
 		}
 		if (at?.hash === row.content) return keep(at.hash)
 		const data = await readBlob(row.content)
-		if (data !== null) {
-			await disk.write(os, data, on)
-			return { hash: row.content }
-		}
+		if (data !== null) return publish(data, row.content)
 		if (at) return keep(at.hash) // the row is a stub over whatever the file holds
-		await disk.write(os, EMPTY, on)
-		return {}
+		return publish(EMPTY)
 	}
 
 	/** Put one row on the disk, at the path the tree gives it. Null when there is nothing to put. */
@@ -677,18 +668,18 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// whatever the subtree under it holds. A parked file comes back the same way.
 		if (at && at.path !== path) {
 			await unlockFor(up(at.path))
-			if (await disk.move(at, path)) {
-				moveSeen(at.path, path)
-				// A rename moves the ctime of what it moved, so the state carried over is
-				// already out of date — and a later check would read this store's own rename
-				// as somebody else's change. Taken down again here, the way `park` does it.
-				const moved = seen.get(row.id)
-				const now = moved === undefined ? undefined : await stateAt(path)
-				if (moved !== undefined && now !== undefined) mark(row.id, { ...moved, ...now })
-				at = seen.get(row.id)
-			} else {
+			// A rename moves the ctime of what it moved, so the state carried over is already
+			// out of date — and a later check would read this store's own rename as somebody
+			// else's change. The move hands back the state it left, the way `park` takes it.
+			const now = await disk.move(at, path)
+			if (now === null) {
 				unmark(row.id) // that file is gone, or is another row's now
 				at = undefined
+			} else {
+				moveSeen(at.path, path)
+				const moved = seen.get(row.id)
+				if (moved !== undefined) mark(row.id, { ...moved, ...now })
+				at = seen.get(row.id)
 			}
 		}
 		// A file where a directory was, or the other way round: the old one goes, and goes the
@@ -703,21 +694,25 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		}
 
 		let hash = at?.hash
+		// What the placement left, observed by the one thing that made it — never looked up
+		// again afterwards, which would describe whatever answers to the name by then.
+		let now: Seen | null
 		if (row.type === 'symlink') {
-			await disk.link(path, row.link ?? '', stampOf(row))
+			now = await disk.link(path, row.link ?? '', stampOf(row))
 		} else if (row.type === 'file') {
 			const filled = await fill(path, row, old, at)
-			// Somebody else's file is at the name. Nothing is claimed about it, and the
-			// stale observation goes, so the next scan derives what is really there.
-			if (filled === null) {
-				unmark(row.id)
-				return null
-			}
-			hash = filled.hash
+			now = filled === null ? null : filled.at
+			if (filled !== null) hash = filled.hash
 		} else {
 			// A mount is a junction into another store, which reads as a directory to
 			// anything local — and as an empty one until that store is bound.
-			await disk.dir(path)
+			now = await disk.dir(path)
+		}
+		// Nothing landed, or somebody else's file is at the name. Nothing is claimed about
+		// it, and the stale observation goes, so the next scan derives what is really there.
+		if (now === null) {
+			unmark(row.id)
+			return null
 		}
 		// A DIRECTORY's metadata waits for the observation pass, after everything going inside
 		// it has landed: an entry appearing moves its mtime anyway, and a mode that LOCKS this
@@ -725,23 +720,19 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// good. A mode it can still write through goes on now — write and SEARCH is the whole
 		// requirement, so `0300` is as workable as `0700`.
 		if (isDir(row)) {
-			// Its identity, taken before the stamp and before anything lands inside it. What
+			// Its identity, from before the stamp and before anything lands inside it. What
 			// this store does next moves its state on purpose and its inode never — so what
-			// it was already observed to be is the better baseline, and a fresh look is only
-			// for the directory this pass has just made.
-			const was = at ?? (await stateAt(path))
+			// it was already observed to be is the better baseline, and what `dir` just made
+			// is the baseline for a directory this pass created.
+			const was = at ?? now
+			// The mode is stated last and its answer dropped: this is best effort, and the
+			// observation pass has the last word on a directory either way.
 			if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
 			return { id: row.id, path, hash, was }
 		}
 		// Already stamped, by whatever put it there: a file rides in wearing what the row
 		// states, so there is no moment between arriving and being described.
-		return { id: row.id, path, hash, was: await stateAt(path) }
-	}
-
-	/** What is at a name, as an observation to hold somebody to. */
-	const stateAt = async (path: Spot): Promise<Seen | undefined> => {
-		const s = await disk.stat(path)
-		return s === null ? undefined : { path, ino: String(s.ino), state: stateOf(s) }
+		return { id: row.id, path, hash, was: now }
 	}
 
 	/**
@@ -1298,11 +1289,12 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			// name that moved under it is looked at again instead, which makes what the file
 			// holds a row, and a row naming other content is no stub waiting for these bytes.
 			await unlockFor(up(at.path))
-			if (!(await disk.write(at.path, data, stampOf(row), at))) {
+			const now = await disk.write(at.path, data, stampOf(row), at)
+			if (now === null) {
 				await settle([[row.parent, row.name]])
 				continue
 			}
-			placed.push({ id: row.id, path: at.path, hash, was: await stateAt(at.path) })
+			placed.push({ id: row.id, path: at.path, hash, was: now })
 			dirs.add(row.parent)
 		}
 		if (placed.length === 0) return false

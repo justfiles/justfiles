@@ -1736,13 +1736,14 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 		const racy: Disk = {
 			...real,
 			async dir(spot) {
-				await real.dir(spot)
-				// Placed; the batch has not stamped or observed it yet.
+				const made = await real.dir(spot)
+				// Placed and observed; the batch has not stamped it yet.
 				if (spot === meddle) {
 					meddle = null
 					await rm(join(root, spot), { recursive: true, force: true })
 					await symlink(victim, join(root, spot))
 				}
+				return made
 			}
 		}
 		const store = fsStore(root, racy)
@@ -1810,5 +1811,63 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 		await store.commit([row({ id: 'v', name: 'victim.txt', parent: 'd', mode: 0o100700 })])
 
 		expect(((await stat(victim)).mode & 0o7777).toString(8)).toBe('644')
+	})
+
+	test('a refused write claims nothing, so an outside file is never a row\u2019s bytes', async () => {
+		// The refusal is only half of it. A placement that goes ahead and records what it
+		// MEANT to write describes the file the name resolves to instead \u2014 and then `blobs`
+		// answers a stranger's bytes under a key that does not name them, for ever.
+		const root = await temp()
+		const outside = await temp()
+		await writeFile(join(outside, 'f.txt'), "not the store's")
+
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async write(spot, data, at, was) {
+				// Between the look that found the ancestor sound and the write it guarded.
+				if (spot === meddle) {
+					meddle = null
+					await rm(join(root, 'dir'), { recursive: true, force: true })
+					await symlink(outside, join(root, 'dir'))
+				}
+				return real.write(spot, data, at, was)
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const key = await sha256Hex(bytes('mine'))
+		await store.blobs.put(key, bytes('mine'))
+		await store.commit([
+			{
+				id: 'd',
+				parent: ROOT,
+				name: 'dir',
+				type: 'dir',
+				mode: 0o040755,
+				size: 0n,
+				mtimeNs: 0n,
+				version: 'v1'
+			}
+		])
+
+		meddle = 'dir/f.txt' as Spot
+		await store.commit([
+			{
+				id: 'f',
+				parent: 'd',
+				name: 'f.txt',
+				type: 'file',
+				mode: 0o100644,
+				size: 4n,
+				mtimeNs: 0n,
+				content: key,
+				version: 'v1'
+			}
+		])
+
+		// Nothing was placed, so the copy that was waiting to be placed is still the answer.
+		expect(await store.blobs.get(key)).toEqual(bytes('mine'))
 	})
 })

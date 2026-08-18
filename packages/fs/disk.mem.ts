@@ -180,6 +180,13 @@ export function memDisk(fault: Fault = () => null): Disk {
 		return s !== null && String(s.ino) === was.ino
 	}
 
+	/** What a change left at a name, and null while the name holds something else. */
+	const seenAt = async (at: Spot, ino?: bigint): Promise<Seen | null> => {
+		const s = await look(at)
+		if (s === null || (ino !== undefined && s.ino !== ino)) return null
+		return { path: at, ino: String(s.ino), state: stateOf(s) }
+	}
+
 	const stampOn = (obj: Obj, how: Stamp): void => {
 		// A symlink's own mode is not settable on every platform, and nothing reads it —
 		// the same carve-out the real one makes.
@@ -285,7 +292,8 @@ export function memDisk(fault: Fault = () => null): Disk {
 			// The same condition the real one applies, and at the same moment: what the
 			// caller observed is still what the name holds, or these bytes are not its
 			// write to make.
-			if (was !== undefined && !(await still(was))) return false
+			if (was !== undefined && !(await still(was))) return null
+			let ino = 0n
 			put(at, () => {
 				// A publish takes the name with a rename, so what lands is a NEW object — a
 				// new inode, and the mode a fresh file gets. A test that reused the old inode
@@ -301,13 +309,15 @@ export function memDisk(fault: Fault = () => null): Disk {
 				// Stamped before it has a name, like the real one: what arrives is already
 				// the object the row describes.
 				if (on !== undefined) stampOn(made, on)
+				ino = made.ino
 				return made
 			})
-			return true
+			return seenAt(at, ino)
 		},
 
 		async link(at, target, on) {
 			check('link', at)
+			let ino = 0n
 			put(at, () => {
 				const made: Obj = {
 					ino: inos++,
@@ -318,29 +328,38 @@ export function memDisk(fault: Fault = () => null): Disk {
 					link: target
 				}
 				if (on !== undefined) stampOn(made, on)
+				ino = made.ino
 				return made
 			})
+			return seenAt(at, ino)
 		},
 
 		async dir(at) {
 			check('dir', at)
 			makeDir(at)
+			return seenAt(at)
 		},
 
-		async stamp(at, how) {
+		async stamp(at, how, was) {
 			check('stamp', at)
+			if (was !== undefined && !(await still(was))) return null
+			const size = statOf(must(at)).size
 			stampOn(must(at), how)
+			// The same second look the real one takes: the stamp moves the object's own
+			// fields, so anything else having moved is somebody else.
+			const after = await seenAt(at, was === undefined ? undefined : BigInt(was.ino))
+			return after !== null && statOf(must(at)).size === size ? after : null
 		},
 
 		async move(was, to) {
 			check('move', to)
-			if (!(await mine(was))) return false
+			if (!(await mine(was))) return null
 			const obj = take(was.path)
-			if (obj === null) return false
+			if (obj === null) return null
 			put(to, () => obj)
 			// A rename moves the ctime of the thing renamed, and nothing else about it.
 			obj.ctimeNs = now()
-			return true
+			return seenAt(to, obj.ino)
 		},
 
 		async drop(was, _holding, _directory) {

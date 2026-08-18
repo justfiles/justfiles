@@ -142,6 +142,12 @@ export interface Disk {
 	mine(at: Seen): Promise<boolean>
 
 	// ── Changing ───────────────────────────────────────────────────────────────
+	// Every call that LEAVES something hands back what it left, and null when it left
+	// nothing: refused as outside the tree, or the name was somebody else's by the time it
+	// landed. The observation is taken here, beside the act — a caller that looked
+	// afterwards would be describing whatever answered by then, and there is no way for it
+	// to record a belief this module did not give it. A removal has nothing to hand back.
+
 	/**
 	 * Bytes into a name in ONE operation: built beside it, then renamed over it.
 	 *
@@ -150,25 +156,26 @@ export interface Disk {
 	 * `writeFile`'s mode, and nothing to stamp afterwards on whatever answers by then.
 	 *
 	 * `was` makes it conditional — the bytes land only while the disk still holds what
-	 * the caller observed there, and false is somebody else's having arrived instead.
-	 * The whole state and not just the inode: `echo x > f` truncates in place, so a
-	 * check that only asked whose inode it was would miss the commonest edit there is.
-	 * Asked immediately before the rename, so the window is two adjacent calls rather
-	 * than however long the payload took to write.
+	 * the caller observed there. The whole state and not just the inode: `echo x > f`
+	 * truncates in place, so a check that only asked whose inode it was would miss the
+	 * commonest edit there is. Asked immediately before the rename, so the window is two
+	 * adjacent calls rather than however long the payload took to write.
 	 */
-	write(spot: Spot, data: Uint8Array, at?: Stamp, was?: Seen): Promise<boolean>
+	write(spot: Spot, data: Uint8Array, at?: Stamp, was?: Seen): Promise<Seen | null>
 	/** A symlink into a name, the same way. */
-	link(spot: Spot, target: string, at?: Stamp): Promise<void>
+	link(spot: Spot, target: string, at?: Stamp): Promise<Seen | null>
 	/** This directory and every one above it. */
-	dir(spot: Spot): Promise<void>
-	/** What a row states about its object, on the object. */
-	stamp(spot: Spot, at: Stamp): Promise<void>
-
+	dir(spot: Spot): Promise<Seen | null>
 	/**
-	 * Rename, but only while the disk still holds the caller's inode. False is the file
-	 * having become somebody else's, never an error.
+	 * What a row states about its object, on the object. `was` makes it conditional the
+	 * way `write`'s does, and the stamp is its own second look: it moves mode, mtime and
+	 * ctime, so nothing else about the thing may have — another inode is somebody's
+	 * replacement, another size is somebody's write.
 	 */
-	move(at: Seen, to: Spot): Promise<boolean>
+	stamp(spot: Spot, at: Stamp, was?: Seen): Promise<Seen | null>
+
+	/** Rename, but only while the disk still holds the caller's inode. */
+	move(at: Seen, to: Spot): Promise<Seen | null>
 
 	/**
 	 * Remove what a row named, while the disk still holds THAT file. A directory is
@@ -248,6 +255,21 @@ export function fsDisk(rootPath: string): Disk {
 	const lstat = (at: Spot): Promise<BigIntStats | null> =>
 		lstatOf(abs(at), { bigint: true }).catch(() => null)
 
+	const seenAt = async (spot: Spot): Promise<Seen | null> => {
+		const s = await lstat(spot)
+		return s === null ? null : { path: spot, ino: String(s.ino), state: stateOf(s) }
+	}
+
+	/**
+	 * The same, but only while the spot still holds the inode this call put there. What
+	 * arrived and what is at the name a syscall later are two different questions, and
+	 * handing back somebody else's state under this call's name is the whole failure.
+	 */
+	const held = async (spot: Spot, ino: bigint): Promise<Seen | null> => {
+		const at = await seenAt(spot)
+		return at !== null && at.ino === String(ino) ? at : null
+	}
+
 	/**
 	 * Take a name in one operation: build the payload under a private sibling, then rename
 	 * it over the target. POSIX has no atomic content write, so a reader that resolves the
@@ -259,19 +281,23 @@ export function fsDisk(rootPath: string): Disk {
 		build: (tmp: string) => Promise<void>,
 		at?: Stamp,
 		was?: Seen
-	): Promise<boolean> => {
+	): Promise<Seen | null> => {
 		const os = abs(spot)
-		if (!(await inside(os))) return false
+		if (!(await inside(os))) return null
 		const tmp = `${os}.jfs-${crypto.randomUUID()}`
 		try {
 			await build(tmp)
-			if (at !== undefined) await stampAt(tmp, at)
+			if (at !== undefined && !(await stampAt(tmp, at))) return null
+			// The payload's own inode, learned while its name is still one nobody else has.
+			// `rename` carries it to the target, so this is what the caller was given.
+			const made = await lstatOf(tmp, { bigint: true }).catch(() => null)
+			if (made === null) return null
 			if (was !== undefined) {
 				const s = await lstat(spot)
-				if (s === null || !unchanged(was, s)) return false
+				if (s === null || !unchanged(was, s)) return null
 			}
 			await rename(tmp, os)
-			return true
+			return held(spot, made.ino)
 		} finally {
 			// The whole lifecycle, not just the rename: a write that failed halfway would
 			// otherwise strand its temp file.
@@ -319,30 +345,32 @@ export function fsDisk(rootPath: string): Disk {
 	 * shuts this store out (`0300`, `0100`, `0000`). It asks the name what it is first, and
 	 * a link is left alone — raced at worst, where before it was followed at leisure.
 	 */
-	const modeAt = async (os: string, mode: number): Promise<void> => {
-		if (!(await inside(os))) return
+	const modeAt = async (os: string, mode: number): Promise<boolean> => {
+		if (!(await inside(os))) return false
 		const handle = await openPath(os, O_RDONLY | NOFOLLOW).catch(() => null)
 		if (handle === null) {
 			const s = await lstatOf(os).catch(() => null)
-			if (s === null || s.isSymbolicLink()) return
+			if (s === null || s.isSymbolicLink()) return false
 			await chmod(os, mode)
-			return
+			return true
 		}
 		try {
 			await handle.chmod(mode)
+			return true
 		} finally {
 			await handle.close()
 		}
 	}
 
-	const stampAt = async (os: string, at: Stamp): Promise<void> => {
+	const stampAt = async (os: string, at: Stamp): Promise<boolean> => {
 		// A symlink's own mode is not settable on every platform, and nothing reads it.
-		if (!at.symlink) await modeAt(os, at.mode & 0o7777)
-		if (at.mtimeNs === undefined) return
+		if (!at.symlink && !(await modeAt(os, at.mode & 0o7777))) return false
+		if (at.mtimeNs === undefined) return true
 		// `lutimes` does not follow the last component, and follows every one before it.
-		if (!(await inside(os))) return
+		if (!(await inside(os))) return false
 		const when = new Date(Number(at.mtimeNs / 1_000_000n))
 		await lutimes(os, when, when)
+		return true
 	}
 
 	/** Directories opened for a pass, closed again by the pass that opened them. */
@@ -383,22 +411,40 @@ export function fsDisk(rootPath: string): Disk {
 
 		write: (spot, data, at, was) => publish(spot, (tmp) => writeFile(tmp, data), at, was),
 
-		link: async (spot, target, at) => void (await publish(spot, (tmp) => symlink(target, tmp), at)),
+		link: (spot, target, at) => publish(spot, (tmp) => symlink(target, tmp), at),
 
 		async dir(spot) {
-			if (!(await inside(abs(spot)))) return
+			if (!(await inside(abs(spot)))) return null
 			await mkdir(abs(spot), { recursive: true })
+			// A fresh look: `mkdir` says nothing about what it made, and succeeds on a
+			// directory that was already there.
+			return seenAt(spot)
 		},
 
-		stamp: (spot, at) => stampAt(abs(spot), at),
+		async stamp(spot, at, was) {
+			let before: BigIntStats | null = null
+			if (was !== undefined) {
+				before = await lstat(spot)
+				if (before === null || !unchanged(was, before)) return null
+			}
+			if (!(await stampAt(abs(spot), at))) return null
+			const now = await lstat(spot)
+			if (now === null) return null
+			// Asked again on the other side of the act. A check BEFORE one only ever buys a
+			// narrower window: the stamp moves mode, mtime and ctime, so nothing else may
+			// have moved. What that still lets through is an edit of exactly the same
+			// length, landing inside three syscalls.
+			if (before !== null && (String(now.ino) !== was?.ino || now.size !== before.size)) return null
+			return { path: spot, ino: String(now.ino), state: stateOf(now) }
+		},
 
 		async move(at, to) {
 			// Both ends: a rename out of the tree loses the file, and one in from outside
 			// adopts something this store was never given.
-			if (!(await inside(abs(at.path))) || !(await inside(abs(to)))) return false
-			if (!(await mine(at))) return false
+			if (!(await inside(abs(at.path))) || !(await inside(abs(to)))) return null
+			if (!(await mine(at))) return null
 			await rename(abs(at.path), abs(to))
-			return true
+			return held(to, BigInt(at.ino))
 		},
 
 		async drop(at, holding, directory) {

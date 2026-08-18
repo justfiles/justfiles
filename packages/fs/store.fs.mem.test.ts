@@ -68,7 +68,8 @@ describe('memDisk: the rules that made the findings', () => {
 		expect(second?.ino).not.toBe(first.ino)
 
 		const at = { path: a, ino: String(second?.ino), state: '' }
-		expect(await disk.move(at, b)).toBe(true)
+		// And the move hands back the inode it carried, not merely that it happened.
+		expect((await disk.move(at, b))?.ino).toBe(String(second?.ino))
 		expect((await disk.stat(b))?.ino).toBe(second?.ino)
 		expect(await disk.stat(a)).toBeNull()
 	})
@@ -109,9 +110,11 @@ test('a write that carries an observation lands only while it holds', async () =
 	if (s === null) throw new Error('unreachable')
 	const was = { path: at, ino: String(s.ino), state: stateOf(s) }
 
-	expect(await disk.write(at, bytes('again'), undefined, was)).toBe(true)
+	const landed = await disk.write(at, bytes('again'), undefined, was)
+	// What comes back is the file this write left, which is what makes it safe to record.
+	expect(landed?.ino).toBe(String((await disk.stat(at))?.ino))
 	// And now the observation is stale, because that write moved it.
-	expect(await disk.write(at, bytes('third'), undefined, was)).toBe(false)
+	expect(await disk.write(at, bytes('third'), undefined, was)).toBeNull()
 	expect(await disk.bytes(at)).toEqual(bytes('again'))
 })
 
@@ -427,12 +430,12 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 		let meddle: Spot | null = null
 		const racy: Disk = {
 			...disk,
-			async stamp(spot, on) {
+			async stamp(spot, on, was) {
 				if (spot === meddle) {
 					meddle = null
 					await disk.write(spot, bytes('typed by a local tool'))
 				}
-				return disk.stamp(spot, on)
+				return disk.stamp(spot, on, was)
 			}
 		}
 		const store = fsStore('mem', racy)
