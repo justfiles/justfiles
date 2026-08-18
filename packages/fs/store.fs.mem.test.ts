@@ -523,4 +523,59 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 			content: await sha256Hex(bytes('a file now'))
 		})
 	}, 30_000)
+
+	test('a commit does not rename over bytes it never saw', async () => {
+		// The ordinary case, and the one with the most to lose: a page changes the content of
+		// a file this store already tracks. The commit looked at the name before it began, but
+		// fetching the payload and building it beside the name take time a local tool can type
+		// into — and those bytes are the only copy of themselves there is. So the placement
+		// carries the observation too, and a stale one lands nothing at all.
+		const disk = memDisk()
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...disk,
+			async write(spot, data, on, was) {
+				// After the commit looked, before the payload takes the name.
+				if (spot === meddle) {
+					meddle = null
+					await disk.write(spot, bytes('typed by a local tool'))
+				}
+				return disk.write(spot, data, on, was)
+			}
+		}
+		const store = fsStore('mem', racy)
+		built.push(store)
+		const at = under(AT_ROOT, 'a.txt')
+		if (at === null) throw new Error('unreachable')
+
+		const first = 'a'.repeat(64)
+		const second = 'b'.repeat(64)
+		const row = (content: string, version: string): Node => ({
+			id: 'a',
+			parent: ROOT,
+			name: 'a.txt',
+			type: 'file',
+			mode: 0o100644,
+			size: 5n,
+			mtimeNs: 0n,
+			content,
+			version
+		})
+		await store.blobs.put(first, bytes('hello'))
+		await store.blobs.put(second, bytes('goodbye'))
+		await store.commit([row(first, 'v1')])
+		await store.since()
+		expect(await disk.bytes(at)).toEqual(bytes('hello'))
+
+		meddle = at
+		await store.commit([row(second, 'v2')])
+		meddle = null
+
+		// The local edit is still there — the page's bytes did not take the name from it.
+		expect(await disk.bytes(at)).toEqual(bytes('typed by a local tool'))
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS * 6))
+		await store.since()
+		// And the scan makes the edit the row's own content, which is what puts it on the feed.
+		expect((await store.get('a'))?.content).toEqual(await sha256Hex(bytes('typed by a local tool')))
+	}, 30_000)
 })

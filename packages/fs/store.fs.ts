@@ -581,14 +581,16 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	): Promise<{ at: Seen; hash?: Hash } | null> => {
 		const on = stampOf(row)
 		/**
-		 * Nothing to publish — a metadata-only change, or a file that already holds what
-		 * the row names — so the stamp goes on the NAME, and a name can change hands. The
-		 * observation is checked next to the act, because everything else here rides in
-		 * with the payload and cannot be given to somebody else's file by mistake.
+		 * Both ways in carry what this store last saw at the name, and land only while the
+		 * disk still holds it. The commit looked at these names before it began, but a local
+		 * tool writes on its own clock: between that look and this act it may have edited the
+		 * file, and its bytes are the only copy of themselves there is.
 		 *
-		 * Null when it has: stamping a stranger and then recording the row's hash beside
-		 * its state would read as reconciled, and the scan would skip those bytes for ever
-		 * while `blobs` answered them under a key that does not name them.
+		 * Null when it has, rather than a lost write recorded as a placement: the row's hash
+		 * beside a stranger's state would read as reconciled, and the scan would skip those
+		 * bytes for ever while `blobs` answered them under a key that does not name them. The
+		 * row keeps no observation instead, and the next scan adopts what is really there —
+		 * which is what puts the edit on the feed.
 		 */
 		const keep = async (hash: Hash | undefined): Promise<{ at: Seen; hash?: Hash } | null> => {
 			const now = await disk.stamp(os, on, at)
@@ -598,7 +600,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			data: Uint8Array,
 			hash?: Hash
 		): Promise<{ at: Seen; hash?: Hash } | null> => {
-			const now = await disk.write(os, data, on)
+			const now = await disk.write(os, data, on, at)
 			return now === null ? null : { at: now, hash }
 		}
 		if (row.content === undefined) {
