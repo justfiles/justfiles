@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.5.0...app-v0.6.0) (2026-08-18)
+
+
+### Features
+
+* **mac:** install apps from JustApps through an App Store tile ([#516](https://github.com/xiaoxinghu/justfiles/issues/516)) ([92b5196](https://github.com/xiaoxinghu/justfiles/commit/92b51964b3f5a5d1a24d50d5f96ae54e7ef5117b))
+
 ## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.4.3...app-v0.5.0) (2026-08-16)
 
 
