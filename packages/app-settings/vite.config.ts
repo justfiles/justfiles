@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
 						id: 'justfiles.settings',
 						name: 'Settings',
 						description: 'Connect accounts and choose what they power',
-						icon: 'icon.png',
+						icon: 'icon.svg',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})
