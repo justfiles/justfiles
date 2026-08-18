@@ -1173,16 +1173,15 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			const at = seen.get(row.id)
 			if (!at || at.hash === hash) continue
 			// Only over the file this store last saw. A local tool can write into the placeholder
-			// while the content is still on its way, and that edit is the only copy of itself there
-			// is — so the name is looked at again instead, and a row naming other content is no stub
-			// waiting for these bytes.
-			const s = await disk.stat(at.path)
-			if (s === null || !unchanged(at, s)) {
+			// while the content is still on its way, and that edit is the only copy of itself
+			// there is — so the write carries the observation and lands only while it holds. A
+			// name that moved under it is looked at again instead, which makes what the file
+			// holds a row, and a row naming other content is no stub waiting for these bytes.
+			await unlockFor(up(at.path))
+			if (!(await disk.write(at.path, data, at))) {
 				await settle([[row.parent, row.name]])
 				continue
 			}
-			await unlockFor(up(at.path))
-			await disk.write(at.path, data)
 			await disk.stamp(at.path, stampOf(row))
 			placed.push({ id: row.id, path: at.path, hash })
 			dirs.add(row.parent)

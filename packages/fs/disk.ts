@@ -137,8 +137,17 @@ export interface Disk {
 	mine(at: Seen): Promise<boolean>
 
 	// ── Changing ───────────────────────────────────────────────────────────────
-	/** Bytes into a name in ONE operation: built beside it, then renamed over it. */
-	write(spot: Spot, data: Uint8Array): Promise<void>
+	/**
+	 * Bytes into a name in ONE operation: built beside it, then renamed over it.
+	 *
+	 * `was` makes it conditional — the bytes land only while the disk still holds what
+	 * the caller observed there, and false is somebody else's having arrived instead.
+	 * The whole state and not just the inode: `echo x > f` truncates in place, so a
+	 * check that only asked whose inode it was would miss the commonest edit there is.
+	 * Asked immediately before the rename, so the window is two adjacent calls rather
+	 * than however long the payload took to write.
+	 */
+	write(spot: Spot, data: Uint8Array, was?: Seen): Promise<boolean>
 	/** A symlink into a name, the same way. */
 	link(spot: Spot, target: string): Promise<void>
 	/** This directory and every one above it. */
@@ -207,12 +216,21 @@ export function fsDisk(rootPath: string): Disk {
 	 * name mid-`write` reads a prefix of it. A SIBLING, because `rename` cannot cross a
 	 * filesystem and a tree can have another mount underneath it.
 	 */
-	const publish = async (spot: Spot, build: (tmp: string) => Promise<void>): Promise<void> => {
+	const publish = async (
+		spot: Spot,
+		build: (tmp: string) => Promise<void>,
+		was?: Seen
+	): Promise<boolean> => {
 		const os = abs(spot)
 		const tmp = `${os}.jfs-${crypto.randomUUID()}`
 		try {
 			await build(tmp)
+			if (was !== undefined) {
+				const s = await lstat(spot)
+				if (s === null || !unchanged(was, s)) return false
+			}
 			await rename(tmp, os)
+			return true
 		} finally {
 			// The whole lifecycle, not just the rename: a write that failed halfway would
 			// otherwise strand its temp file.
@@ -284,9 +302,9 @@ export function fsDisk(rootPath: string): Disk {
 
 		mine,
 
-		write: (spot, data) => publish(spot, (tmp) => writeFile(tmp, data)),
+		write: (spot, data, was) => publish(spot, (tmp) => writeFile(tmp, data), was),
 
-		link: (spot, target) => publish(spot, (tmp) => symlink(target, tmp)),
+		link: async (spot, target) => void (await publish(spot, (tmp) => symlink(target, tmp))),
 
 		async dir(spot) {
 			await mkdir(abs(spot), { recursive: true })

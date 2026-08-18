@@ -22,7 +22,17 @@
  */
 
 import type { BigIntStats } from 'node:fs'
-import { AT_ROOT, type Disk, READ, SEARCH, type Seen, type Spot, stateOf, WRITE } from './disk'
+import {
+	AT_ROOT,
+	type Disk,
+	READ,
+	SEARCH,
+	type Seen,
+	type Spot,
+	stateOf,
+	unchanged,
+	WRITE
+} from './disk'
 import type { NodeId } from './store'
 
 type Kind = 'file' | 'dir' | 'symlink'
@@ -162,9 +172,17 @@ export function memDisk(fault: Fault = () => null): Disk {
 		}
 	}
 
+	const look = (at: Spot): Promise<BigIntStats | null> => quiet(() => statOf(must(at)), null)
+
 	const mine = async (was: Seen): Promise<boolean> => {
-		const s = await quiet(() => statOf(must(was.path)), null)
+		const s = await look(was.path)
 		return s !== null && String(s.ino) === was.ino
+	}
+
+	/** Is the name still holding what the caller observed there? */
+	const still = async (was: Seen): Promise<boolean> => {
+		const s = await look(was.path)
+		return s !== null && unchanged(was, s)
 	}
 
 	/** Directories a pass opened, closed again by the pass that opened them. */
@@ -246,8 +264,12 @@ export function memDisk(fault: Fault = () => null): Disk {
 
 		mine,
 
-		async write(at, data) {
+		async write(at, data, was) {
 			check('write', at)
+			// The same condition the real one applies, and at the same moment: what the
+			// caller observed is still what the name holds, or these bytes are not its
+			// write to make.
+			if (was !== undefined && !(await still(was))) return false
 			put(at, () => ({
 				// A publish takes the name with a rename, so what lands is a NEW object —
 				// a new inode, and the mode a fresh file gets. That is the whole reason a
@@ -260,6 +282,7 @@ export function memDisk(fault: Fault = () => null): Disk {
 				ctimeNs: now(),
 				data: new Uint8Array(data)
 			}))
+			return true
 		},
 
 		async link(at, target) {

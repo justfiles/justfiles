@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { AT_ROOT, type Disk, type Spot, under } from './disk'
+import { AT_ROOT, type Disk, type Spot, stateOf, under } from './disk'
 import { memDisk } from './disk.mem'
 import { ROOT, type Store } from './store'
 import { storeConformance } from './store.conformance'
@@ -98,6 +98,23 @@ describe('fsStore over memDisk: a fault is not a lie', () => {
 	})
 })
 
+test('a write that carries an observation lands only while it holds', async () => {
+	// The whole state and not just the inode: `echo x > f` truncates in place and keeps
+	// it, so a check that only asked whose inode it was would miss the commonest edit.
+	const disk = memDisk()
+	const at = under(AT_ROOT, 'a.txt')
+	if (at === null) throw new Error('unreachable')
+	await disk.write(at, bytes('hello'))
+	const s = await disk.stat(at)
+	if (s === null) throw new Error('unreachable')
+	const was = { path: at, ino: String(s.ino), state: stateOf(s) }
+
+	expect(await disk.write(at, bytes('again'), was)).toBe(true)
+	// And now the observation is stale, because that write moved it.
+	expect(await disk.write(at, bytes('third'), was)).toBe(false)
+	expect(await disk.bytes(at)).toEqual(bytes('again'))
+})
+
 describe('fsStore: a file is not a blob store', () => {
 	test('bytes that moved under their key are no answer (rule 7)', async () => {
 		// `fileFor` picks a file by looking at it, and the read comes after — two calls,
@@ -143,5 +160,37 @@ describe('fsStore: a file is not a blob store', () => {
 		if (at === null) throw new Error('unreachable')
 		meddle = at
 		expect(await store.blobs.get(hash)).toBeNull()
+	})
+
+	test('a stub a local tool wrote into is not overwritten when its content lands', async () => {
+		// `hydrate` fills a placeholder whose content arrived late. If somebody typed into
+		// that placeholder first, those bytes are the only copy of themselves there is —
+		// the row is looked at again instead, and what the file holds becomes its content.
+		const disk = memDisk()
+		const store = fsStore('mem', disk)
+		built.push(store)
+
+		const hash = 'd'.repeat(64)
+		await store.commit([
+			{
+				id: 'a',
+				parent: ROOT,
+				name: 'a.txt',
+				type: 'file',
+				mode: 0o100644,
+				size: 0n,
+				mtimeNs: 0n,
+				content: hash,
+				version: 'v1'
+			}
+		])
+		const at = under(AT_ROOT, 'a.txt')
+		if (at === null) throw new Error('unreachable')
+		expect(await disk.bytes(at)).toEqual(bytes(''))
+
+		await disk.write(at, bytes('mine, typed while waiting'))
+		await store.blobs.put(hash, bytes('the content, late'))
+
+		expect(await disk.bytes(at)).toEqual(bytes('mine, typed while waiting'))
 	})
 })
