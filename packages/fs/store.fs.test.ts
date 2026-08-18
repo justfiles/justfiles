@@ -1966,3 +1966,178 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello')
 	})
 })
+
+/**
+ * The window every act in this backend has: the commit looks at the names it is about to
+ * touch before it touches any of them, and a local tool goes on working through the gap.
+ * What each act is held to is what decides whether the work in that gap survives — and
+ * these two turn on what a real filesystem does, which is why they are here and not over
+ * the fake. A `Disk` cannot express an in-place write at all: every publish it offers
+ * renames a new inode over the name.
+ */
+describe('fsStore: an act carries what the commit saw, or it does not act', () => {
+	test('a symlink a local tool retargeted is not published over', async () => {
+		// A target is content — the only content a symlink has. So the same rule the bytes of
+		// a file get: the replacement lands while the disk still holds what was observed, and
+		// otherwise nothing lands and the scan says what is really there.
+		const root = await temp()
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async link(spot, target, at, was) {
+				// Between the look this commit took and the rename that takes the name.
+				if (spot === meddle) {
+					meddle = null
+					await rm(join(root, spot), { force: true })
+					await symlink('somewhere-a-local-tool-chose', join(root, spot))
+				}
+				return real.link(spot, target, at, was)
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const pointing = (target: string, version: string): Node => ({
+			id: 'l',
+			parent: ROOT,
+			name: 'a.link',
+			type: 'symlink',
+			mode: 0o120777,
+			size: 3n,
+			mtimeNs: 0n,
+			link: target,
+			version
+		})
+		await store.commit([pointing('one', 'v1')])
+		await store.since()
+		expect(await readlink(join(root, 'a.link'))).toBe('one')
+
+		meddle = 'a.link' as Spot
+		await store.commit([pointing('two', 'v2')])
+
+		// The local target is still there — the page's did not take the name from it.
+		expect(await readlink(join(root, 'a.link'))).toBe('somewhere-a-local-tool-chose')
+		// And the scan makes it the row's own, which is what puts it on the feed.
+		await settled(
+			store,
+			async () => (await store.get('l'))?.link === 'somewhere-a-local-tool-chose'
+		)
+	})
+
+	test('a tombstone does not take a file a local tool wrote into', async () => {
+		// The removal is the act with the least to give back: there is no version of it that
+		// can be undone. An in-place write KEEPS the inode — `echo x > f` truncates through the
+		// same one — so a removal that asked only whose inode it was would unlink the writer's
+		// only copy and tell nobody.
+		const root = await temp()
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async drop(at, holding, directory) {
+				// Between the look this commit took and the unlink.
+				if (at.path === meddle) {
+					meddle = null
+					await writeFile(join(root, at.path), 'typed by a local tool')
+				}
+				return real.drop(at, holding, directory)
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const key = await sha256Hex(bytes('hello'))
+		const row: Node = {
+			id: 'a',
+			parent: ROOT,
+			name: 'a.txt',
+			type: 'file',
+			mode: 0o100644,
+			size: 5n,
+			mtimeNs: 0n,
+			content: key,
+			version: 'v1'
+		}
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([row])
+		await store.since()
+		const before = await stat(join(root, 'a.txt'))
+
+		meddle = 'a.txt' as Spot
+		await store.commit([{ ...row, deleted: true, version: 'v2' }])
+
+		// The bytes are there, in the very inode the tombstone was aimed at.
+		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('typed by a local tool')
+		expect((await stat(join(root, 'a.txt'))).ino).toBe(before.ino)
+		// The row IS deleted — the page said so and this replica agrees. What the scan finds
+		// at the name is a node nobody has seen before, and it gets an id and reaches the feed.
+		expect((await store.get('a'))?.deleted).toBe(true)
+		await settled(
+			store,
+			async () =>
+				(await store.child(ROOT, 'a.txt'))?.content ===
+				(await sha256Hex(bytes('typed by a local tool')))
+		)
+	})
+
+	test('a row that changes type does not land on what the removal refused to take', async () => {
+		// The other side of the removal above. A page that re-types a row takes the old object
+		// off the disk and puts a new one at the name — so a removal that refused leaves the
+		// placement standing over a file it must not have. `mkdir` would throw on it and wedge
+		// the page for good; a symlink or a write would take the name and lose the bytes
+		// quietly. Neither: the row simply does not land this pass.
+		const root = await temp()
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async drop(at, holding, directory) {
+				if (at.path === meddle) {
+					meddle = null
+					await writeFile(join(root, at.path), 'typed by a local tool')
+				}
+				return real.drop(at, holding, directory)
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const key = await sha256Hex(bytes('hello'))
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([
+			{
+				id: 't',
+				parent: ROOT,
+				name: 'thing',
+				type: 'file',
+				mode: 0o100644,
+				size: 5n,
+				mtimeNs: 0n,
+				content: key,
+				version: 'v1'
+			}
+		])
+		await store.since()
+
+		meddle = 'thing' as Spot
+		// The same id, a directory now. The commit must not throw over this.
+		await store.commit([
+			{
+				id: 't',
+				parent: ROOT,
+				name: 'thing',
+				type: 'dir',
+				mode: 0o040755,
+				size: 0n,
+				mtimeNs: 0n,
+				version: 'v2'
+			}
+		])
+
+		expect(await readFile(join(root, 'thing'), 'utf8')).toBe('typed by a local tool')
+		// And the scan has the last word on what the name holds.
+		await settled(
+			store,
+			async () =>
+				(await store.get('t'))?.content === (await sha256Hex(bytes('typed by a local tool')))
+		)
+	})
+})

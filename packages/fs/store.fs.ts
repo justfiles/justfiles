@@ -701,6 +701,12 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			if (await keepsAnything(at.path, old)) await park(row.id, at)
 			else await remove(at, old)
 			unmark(row.id)
+			// Both of those refuse an object that is not what this store last saw — a local
+			// tool edited it since the commit looked, and those bytes are the only copy of
+			// themselves. Nothing is placed over one: what the row wants here is a different
+			// TYPE, so the placement would not even hold the observation that stopped the
+			// removal. The next scan makes what is really there a row instead.
+			if (!(await disk.absent(at.path))) return null
 			at = undefined
 		}
 
@@ -709,7 +715,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// again afterwards, which would describe whatever answers to the name by then.
 		let now: Seen | null
 		if (row.type === 'symlink') {
-			now = await disk.link(path, row.link ?? '', stampOf(row))
+			now = await disk.link(path, row.link ?? '', stampOf(row), at)
 		} else if (row.type === 'file') {
 			const filled = await fill(path, row, old, at)
 			now = filled === null ? null : filled.at

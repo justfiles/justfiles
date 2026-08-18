@@ -163,8 +163,8 @@ export interface Disk {
 	 * adjacent calls rather than however long the payload took to write.
 	 */
 	write(spot: Spot, data: Uint8Array, at?: Stamp, was?: Seen): Promise<Seen | null>
-	/** A symlink into a name, the same way. */
-	link(spot: Spot, target: string, at?: Stamp): Promise<Seen | null>
+	/** A symlink into a name, the same way — `was` and all: a target is content too. */
+	link(spot: Spot, target: string, at?: Stamp, was?: Seen): Promise<Seen | null>
 	/** This directory and every one above it. */
 	dir(spot: Spot): Promise<Seen | null>
 	/**
@@ -184,8 +184,12 @@ export interface Disk {
 	move(at: Seen, to: Spot): Promise<Seen | null>
 
 	/**
-	 * Remove what a row named, while the disk still holds THAT file. A directory is
-	 * taken aside first and identified where nothing can be swapped under it.
+	 * Remove what a row named, while the disk still holds it as the caller saw it. A FILE
+	 * is held to its whole state, the way every other conditional act holds one: an
+	 * in-place write keeps the inode, so identity alone would `rm` the writer's only copy.
+	 * A DIRECTORY is held to its identity, because removing what was inside it moved its
+	 * mtime and that is this same batch working. It is taken aside first and identified
+	 * where nothing can be swapped under it.
 	 */
 	drop(at: Seen, holding: Spot, directory: boolean): Promise<void>
 
@@ -426,7 +430,7 @@ export function fsDisk(rootPath: string): Disk {
 
 		write: (spot, data, at, was) => publish(spot, (tmp) => writeFile(tmp, data), at, was),
 
-		link: (spot, target, at) => publish(spot, (tmp) => symlink(target, tmp), at),
+		link: (spot, target, at, was) => publish(spot, (tmp) => symlink(target, tmp), at, was),
 
 		async dir(spot) {
 			if (!(await inside(abs(spot)))) return null
@@ -474,7 +478,10 @@ export function fsDisk(rootPath: string): Disk {
 
 		async drop(at, holding, directory) {
 			if (!(await inside(abs(at.path)))) return
-			if (!(await mine(at))) return
+			const here = await lstat(at.path)
+			if (here === null) return
+			// A file to the whole of what was observed, a directory to its identity alone.
+			if (directory ? String(here.ino) !== at.ino : !unchanged(at, here)) return
 			if (!directory) {
 				await rm(abs(at.path), { force: true })
 				return

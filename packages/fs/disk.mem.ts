@@ -315,8 +315,10 @@ export function memDisk(fault: Fault = () => null): Disk {
 			return seenAt(at, ino)
 		},
 
-		async link(at, target, on) {
+		async link(at, target, on, was) {
 			check('link', at)
+			// A target is content, so it is published under the same condition bytes are.
+			if (was !== undefined && !(await still(was))) return null
 			let ino = 0n
 			put(at, () => {
 				const made: Obj = {
@@ -366,12 +368,14 @@ export function memDisk(fault: Fault = () => null): Disk {
 			return seenAt(to, obj.ino)
 		},
 
-		async drop(was, _holding, _directory) {
+		async drop(was, _holding, directory) {
 			check('drop', was.path)
 			// No two-step: the real one takes a directory aside because another process can put
 			// something else at the path between a look and a removal, and nothing here has
 			// another process. Faking it would fake the implementation, not the behaviour.
-			if (!(await mine(was))) return
+			// The condition IS behaviour, though, so it is the real one's: a file held to its
+			// whole state, a directory to its identity.
+			if (!(await (directory ? mine(was) : still(was)))) return
 			await quiet(() => take(was.path), null)
 		},
 
