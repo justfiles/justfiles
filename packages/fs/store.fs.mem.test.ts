@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { AT_ROOT, under } from './disk'
+import { AT_ROOT, type Disk, type Spot, under } from './disk'
 import { memDisk } from './disk.mem'
 import { ROOT, type Store } from './store'
 import { storeConformance } from './store.conformance'
@@ -95,5 +95,53 @@ describe('fsStore over memDisk: a fault is not a lie', () => {
 		const disk = memDisk((op, at) => (op === 'read' && at.endsWith('index.json') ? 'EACCES' : null))
 		const store = fsStore('mem', disk)
 		await expect(store.get(ROOT)).rejects.toThrow(/EACCES/)
+	})
+})
+
+describe('fsStore: a file is not a blob store', () => {
+	test('bytes that moved under their key are no answer (rule 7)', async () => {
+		// `fileFor` picks a file by looking at it, and the read comes after — two calls,
+		// and a local tool can rewrite the file in between. What came back would go out
+		// under a key that no longer names it: into another row's file as its content, or
+		// to a peer.
+		const disk = memDisk()
+		// Armed with the one path whose read is to be raced — not the first read of any
+		// path, which would land before `fileFor` looks and prove nothing.
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...disk,
+			async bytes(spot, strict) {
+				if (spot === meddle) {
+					meddle = null
+					await disk.write(spot, bytes('goodbye'))
+				}
+				return disk.bytes(spot, strict)
+			}
+		}
+		const store = fsStore('mem', racy)
+		built.push(store)
+
+		const hash = 'a'.repeat(64)
+		await store.blobs.put(hash, bytes('hello'))
+		await store.commit([
+			{
+				id: 'a',
+				parent: ROOT,
+				name: 'a.txt',
+				type: 'file',
+				mode: 0o100644,
+				size: 5n,
+				mtimeNs: 0n,
+				content: hash,
+				version: 'v1'
+			}
+		])
+		expect(await store.blobs.get(hash)).toEqual(bytes('hello'))
+
+		// The rewrite lands after the look that chose the file and before the read.
+		const at = under(AT_ROOT, 'a.txt')
+		if (at === null) throw new Error('unreachable')
+		meddle = at
+		expect(await store.blobs.get(hash)).toBeNull()
 	})
 })

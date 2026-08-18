@@ -1124,23 +1124,39 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	 * The file that holds these bytes: a row that names the hash, while the disk
 	 * still holds what this store last observed there.
 	 */
-	const fileFor = async (hash: Hash): Promise<Spot | null> => {
+	const fileFor = async (hash: Hash): Promise<Seen | null> => {
 		for (const id of holders.get(hash) ?? []) {
 			const at = seen.get(id)
 			if (!at) continue
 			const s = await disk.stat(at.path)
-			if (s !== null && unchanged(at, s)) return at.path
+			if (s !== null && unchanged(at, s)) return at
 		}
 		return null
 	}
 
-	/** The bytes a hash names: the spill, or else the file of a row that names it. */
-	const readBlob = async (hash: Hash): Promise<Uint8Array | null> =>
-		(await readAt(spill(hash))) ?? (await readAt(await fileFor(hash)))
-
-	/** A whole file, or null: the path may be nothing, gone, or unreadable. */
-	const readAt = async (os: Spot | null): Promise<Uint8Array | null> =>
-		os === null ? null : disk.bytes(os)
+	/**
+	 * The bytes a hash names: the spill, or else the file of a row that names it. A file
+	 * is not a blob store — a local tool can rewrite it between the look that chose it
+	 * and the read that returns it, and those bytes would go out under a key that no
+	 * longer names them: into another row's file as its content, or to a peer. So the
+	 * read is bracketed by the state, and bytes that moved under it are no answer.
+	 *
+	 * The state and not the digest, because a key here need not BE the digest of its
+	 * bytes — `verifiedBlobs` is where that is required, and only of a `put`. `ctimeNs`
+	 * is what makes the bracket hold: it moves on any change to the inode, and userland
+	 * cannot set it back.
+	 */
+	const readBlob = async (hash: Hash): Promise<Uint8Array | null> => {
+		const waiting = spill(hash)
+		const held = waiting === null ? null : await disk.bytes(waiting)
+		if (held !== null) return held
+		const at = await fileFor(hash)
+		if (at === null) return null
+		const data = await disk.bytes(at.path)
+		if (data === null) return null
+		const s = await disk.stat(at.path)
+		return s !== null && unchanged(at, s) ? data : null
+	}
 
 	/**
 	 * Bytes for a hash a row already names but whose file does not hold them yet — a stub
