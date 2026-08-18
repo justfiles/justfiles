@@ -2034,13 +2034,13 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 		let meddle: Spot | null = null
 		const racy: Disk = {
 			...real,
-			async drop(at, holding, directory) {
+			async drop(at, directory) {
 				// Between the look this commit took and the unlink.
 				if (at.path === meddle) {
 					meddle = null
 					await writeFile(join(root, at.path), 'typed by a local tool')
 				}
-				return real.drop(at, holding, directory)
+				return real.drop(at, directory)
 			}
 		}
 		const store = fsStore(root, racy)
@@ -2090,12 +2090,12 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 		let meddle: Spot | null = null
 		const racy: Disk = {
 			...real,
-			async drop(at, holding, directory) {
+			async drop(at, directory) {
 				if (at.path === meddle) {
 					meddle = null
 					await writeFile(join(root, at.path), 'typed by a local tool')
 				}
-				return real.drop(at, holding, directory)
+				return real.drop(at, directory)
 			}
 		}
 		const store = fsStore(root, racy)
@@ -2139,5 +2139,57 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 			async () =>
 				(await store.get('t'))?.content === (await sha256Hex(bytes('typed by a local tool')))
 		)
+	})
+
+	test('a directory goes by rmdir, so what arrived in the window keeps it', async () => {
+		// The removal of a directory used to be: look, decide it is empty, `rm -rf`. Every
+		// check in front of that only ever narrowed the window — a child created after the
+		// last look still went. `rmdir` has no window: POSIX refuses it on a directory holding
+		// anything, so the answer comes from the same call that does the work.
+		const root = await temp()
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async list(spot) {
+				const names = await real.list(spot)
+				// Right after the store has looked inside and found nothing of its own.
+				if (spot === meddle) {
+					meddle = null
+					await writeFile(join(root, spot, 'late.txt'), 'made while the batch was deciding')
+				}
+				return names
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const box: Node = {
+			id: 'b',
+			parent: ROOT,
+			name: 'box',
+			type: 'dir',
+			mode: 0o040755,
+			size: 0n,
+			mtimeNs: 0n,
+			version: 'v1'
+		}
+		await store.commit([box])
+		await store.since()
+
+		meddle = 'box' as Spot
+		await store.commit([{ ...box, deleted: true, version: 'v2' }])
+
+		// The child is the only copy of itself there is, and nothing has ever seen it.
+		expect(await readFile(join(root, 'box', 'late.txt'), 'utf8')).toBe(
+			'made while the batch was deciding'
+		)
+		// The tombstone stands — the page said so. What is on the disk is somebody else's
+		// now, and the scan gives it an id of its own.
+		expect((await store.get('b'))?.deleted).toBe(true)
+		await settled(store, async () => {
+			const found = await store.child(ROOT, 'box')
+			if (!found || found.deleted) return false
+			return (await store.child(found.id, 'late.txt')) !== null
+		})
 	})
 })

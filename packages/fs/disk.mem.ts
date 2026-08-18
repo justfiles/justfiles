@@ -292,7 +292,7 @@ export function memDisk(fault: Fault = () => null): Disk {
 			// The same condition the real one applies, and at the same moment: what the
 			// caller observed is still what the name holds, or these bytes are not its
 			// write to make.
-			if (was !== undefined && !(await still(was))) return null
+			if (was !== 'unseen' && !(await still(was))) return null
 			let ino = 0n
 			put(at, () => {
 				// A publish takes the name with a rename, so what lands is a NEW object — a
@@ -318,7 +318,7 @@ export function memDisk(fault: Fault = () => null): Disk {
 		async link(at, target, on, was) {
 			check('link', at)
 			// A target is content, so it is published under the same condition bytes are.
-			if (was !== undefined && !(await still(was))) return null
+			if (was !== 'unseen' && !(await still(was))) return null
 			let ino = 0n
 			put(at, () => {
 				const made: Obj = {
@@ -344,12 +344,12 @@ export function memDisk(fault: Fault = () => null): Disk {
 
 		async stamp(at, how, was) {
 			check('stamp', at)
-			if (was !== undefined && !(await still(was))) return null
+			if (was !== 'unseen' && !(await still(was))) return null
 			const size = statOf(must(at)).size
 			stampOn(must(at), how)
 			// The same second look the real one takes: the stamp moves the object's own
 			// fields, so anything else having moved is somebody else.
-			const after = await seenAt(at, was === undefined ? undefined : BigInt(was.ino))
+			const after = await seenAt(at, was === 'unseen' ? undefined : BigInt(was.ino))
 			return after !== null && statOf(must(at)).size === size ? after : null
 		},
 
@@ -368,14 +368,15 @@ export function memDisk(fault: Fault = () => null): Disk {
 			return seenAt(to, obj.ino)
 		},
 
-		async drop(was, _holding, directory) {
+		async drop(was, directory) {
 			check('drop', was.path)
-			// No two-step: the real one takes a directory aside because another process can put
-			// something else at the path between a look and a removal, and nothing here has
-			// another process. Faking it would fake the implementation, not the behaviour.
-			// The condition IS behaviour, though, so it is the real one's: a file held to its
-			// whole state, a directory to its identity.
+			// The real one's conditions, which ARE behaviour: a file held to its whole state, a
+			// directory to its identity — and a directory taken by `rmdir`, which refuses one
+			// holding anything. Nothing here recurses either, because nothing there does.
 			if (!(await (directory ? mine(was) : still(was)))) return
+			const obj = await quiet(() => must(was.path), null)
+			if (obj === null) return
+			if (directory && (obj.kids?.size ?? 0) > 0) return
 			await quiet(() => take(was.path), null)
 		},
 

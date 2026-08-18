@@ -456,9 +456,16 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// anything else: root's own row may state a mode that shuts this store out.
 		await unlockFor(side)
 		try {
-			// Nothing records the sidecar, so its answer is dropped: a refused publish is the
-			// same loss as the crash above, and the next scan mints ids again.
-			await disk.write(index, new TextEncoder().encode(JSON.stringify(sidecar)))
+			// `unseen`, and it is the plainest case of one: no row names the sidecar, so there
+			// is nothing this store could have observed there. Nothing records it either, so
+			// its answer is dropped — a refused publish is the same loss as the crash above,
+			// and the next scan mints ids again.
+			await disk.write(
+				index,
+				new TextEncoder().encode(JSON.stringify(sidecar)),
+				undefined,
+				'unseen'
+			)
 		} finally {
 			await relock()
 		}
@@ -468,12 +475,13 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 
 	/**
 	 * Remove what a row named, while the disk still holds THAT file — a rename inside the
-	 * same batch may have put another row’s file at the path. A directory goes the careful
-	 * way (`disk.drop`); a file is unlinked after the same check and not taken aside, since
-	 * the race there costs one file against a rename on every delete in the tree.
+	 * same batch may have put another row’s file at the path. A directory goes by `rmdir`,
+	 * which refuses one holding anything; a file is unlinked while its whole state still
+	 * matches. Only ever aimed at a directory this store believes empty: one with rows under
+	 * it is parked, so nothing here recurses.
 	 */
 	const remove = async (at: Seen, was: Node | null): Promise<void> => {
-		await disk.drop(at, held, !(was && !isDir(was)))
+		await disk.drop(at, !(was && !isDir(was)))
 		// An empty container in the holding area is nobody's row, so it goes too.
 		for (let box = up(at.path); box.startsWith(held); box = up(box))
 			if (!(await disk.prune(box))) return
@@ -593,14 +601,14 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		 * which is what puts the edit on the feed.
 		 */
 		const keep = async (hash: Hash | undefined): Promise<{ at: Seen; hash?: Hash } | null> => {
-			const now = await disk.stamp(os, on, at)
+			const now = await disk.stamp(os, on, at ?? 'unseen')
 			return now === null ? null : { at: now, hash }
 		}
 		const publish = async (
 			data: Uint8Array,
 			hash?: Hash
 		): Promise<{ at: Seen; hash?: Hash } | null> => {
-			const now = await disk.write(os, data, on, at)
+			const now = await disk.write(os, data, on, at ?? 'unseen')
 			return now === null ? null : { at: now, hash }
 		}
 		if (row.content === undefined) {
@@ -623,7 +631,11 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// Its mode and its stamp are as real as any other row’s.
 		if (row.id === ROOT) {
 			if (row.deleted) return null
-			await disk.stamp(AT_ROOT, stampOf(row))
+			// `unseen`, and a DIRECTORY's stamp always is: anything this batch puts at the top
+			// level moves root's mtime, so holding this to what was observed before the batch
+			// would refuse it every time somebody added a file. The observation pass has the
+			// last word on what root ends up recorded as.
+			await disk.stamp(AT_ROOT, stampOf(row), 'unseen')
 			return { id: ROOT, path: AT_ROOT }
 		}
 		if (row.deleted) {
@@ -715,7 +727,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// again afterwards, which would describe whatever answers to the name by then.
 		let now: Seen | null
 		if (row.type === 'symlink') {
-			now = await disk.link(path, row.link ?? '', stampOf(row), at)
+			now = await disk.link(path, row.link ?? '', stampOf(row), at ?? 'unseen')
 		} else if (row.type === 'file') {
 			const filled = await fill(path, row, old, at)
 			now = filled === null ? null : filled.at
@@ -742,9 +754,10 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			// it was already observed to be is the better baseline, and what `dir` just made
 			// is the baseline for a directory this pass created.
 			const was = at ?? now
-			// The mode is stated last and its answer dropped: this is best effort, and the
-			// observation pass has the last word on a directory either way.
-			if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
+			// The mode is stated last, `unseen`, and its answer dropped: entries of this same
+			// batch are landing inside it, so its state has moved on purpose and there is
+			// nothing to hold it to. Best effort — the observation pass has the last word.
+			if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode }, 'unseen')
 			return { id: row.id, path, hash, was }
 		}
 		// Already stamped, by whatever put it there: a file rides in wearing what the row
@@ -822,7 +835,10 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			if (held.get(landed.path) !== landed.id) continue
 			const row = byId.get(landed.id)
 			if (!row || row.deleted || !isDir(row)) continue
-			await disk.stamp(landed.path, stampOf(row))
+			// `unseen` for the same reason this waits until now: an entry landing inside moved
+			// the mtime, so what was observed before is no baseline. `ours` below decides
+			// whether what answered is still the directory this pass placed.
+			await disk.stamp(landed.path, stampOf(row), 'unseen')
 			// Stated, and then held open if what it states shuts this store out: the
 			// marking below has to look inside it, and `relock` is this pass's last act.
 			if (locked(row, SEARCH)) await unlockNew(row, landed.path, SEARCH)
@@ -1330,7 +1346,10 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		const s = await disk.stat(AT_ROOT)
 		if (s === null) throw new Error(`fsStore: cannot read ${root}`)
 		const shut = (Number(s.mode) & (WRITE | SEARCH)) !== (WRITE | SEARCH)
-		if (shut) await disk.stamp(AT_ROOT, { mode: (Number(s.mode) & 0o7777) | WRITE | SEARCH })
+		// `unseen` both ways: this is the open, so nothing has been observed yet, and by the
+		// time it is put back this store's own chmod has moved what `s` describes.
+		if (shut)
+			await disk.stamp(AT_ROOT, { mode: (Number(s.mode) & 0o7777) | WRITE | SEARCH }, 'unseen')
 		// Creates the tree itself when it is not there — and BEFORE root's state is
 		// taken down, so the sidecar's own arrival is not a change to it.
 		await disk.dir(spilled)
@@ -1347,7 +1366,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// remembered: a local tool may have set a mode while this store was not running, and
 		// putting the remembered one back would revert somebody's chmod and then record the
 		// revert as the truth. What was found is left for the scan below, which publishes it.
-		if (shut) await disk.stamp(AT_ROOT, { mode: Number(s.mode) & 0o7777 })
+		if (shut) await disk.stamp(AT_ROOT, { mode: Number(s.mode) & 0o7777 }, 'unseen')
 		// The watcher is not armed here: the first `since` does that, so a consumer that only
 		// reads and writes never asks the OS for one at all. The index is rebuilt against the
 		// tree on open, so a path resolves the moment the store is there. And this is the one
@@ -1546,8 +1565,10 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 					// which is where content lives here. Then the spill has nothing to keep.
 					const filled = await hydrate(hash, bytes)
 					if (filled) return save()
+					// `unseen`: the spill is this store's own corner, no row names it, and the
+					// line above is what establishes there is nothing there to hold this to.
 					if ((await disk.stat(waiting)) === null && (await fileFor(hash)) === null)
-						await disk.write(waiting, bytes)
+						await disk.write(waiting, bytes, undefined, 'unseen')
 				})
 			}
 		}

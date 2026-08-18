@@ -38,15 +38,15 @@ describe('memDisk: the rules that made the findings', () => {
 		await disk.dir(dir)
 		const file = under(dir, 'a.txt')
 		if (file === null) throw new Error('unreachable')
-		await disk.write(file, bytes('hello'))
+		await disk.write(file, bytes('hello'), undefined, 'unseen')
 
 		expect(await disk.list(dir)).toEqual(['a.txt'])
-		await disk.stamp(dir, { mode: 0o300 }) // write and search, but no read
+		await disk.stamp(dir, { mode: 0o300 }, 'unseen') // write and search, but no read
 		expect(await disk.list(dir)).toBeNull()
 		// And what is under it is still reachable, because search is still granted.
 		expect(await disk.stat(file)).not.toBeNull()
 
-		await disk.stamp(dir, { mode: 0o600 }) // read and write, but no search
+		await disk.stamp(dir, { mode: 0o600 }, 'unseen') // read and write, but no search
 		expect(await disk.stat(file)).toBeNull()
 	})
 
@@ -59,11 +59,11 @@ describe('memDisk: the rules that made the findings', () => {
 		const b = under(AT_ROOT, 'b.txt')
 		if (a === null || b === null) throw new Error('unreachable')
 
-		await disk.write(a, bytes('one'))
+		await disk.write(a, bytes('one'), undefined, 'unseen')
 		const first = await disk.stat(a)
 		if (first === null) throw new Error('unreachable')
 
-		await disk.write(a, bytes('two'))
+		await disk.write(a, bytes('two'), undefined, 'unseen')
 		const second = await disk.stat(a)
 		expect(second?.ino).not.toBe(first.ino)
 
@@ -82,9 +82,9 @@ describe('memDisk: the rules that made the findings', () => {
 		const disk = memDisk()
 		const a = under(AT_ROOT, 'a.txt')
 		if (a === null) throw new Error('unreachable')
-		await disk.write(a, bytes('hello'))
+		await disk.write(a, bytes('hello'), undefined, 'unseen')
 
-		await disk.stamp(a, { mode: 0o644, mtimeNs: 1_234_567_891_234_567n })
+		await disk.stamp(a, { mode: 0o644, mtimeNs: 1_234_567_891_234_567n }, 'unseen')
 		expect((await disk.stat(a))?.mtimeNs).toBe(1_234_567_891_000_000n)
 	})
 })
@@ -106,7 +106,7 @@ test('a write that carries an observation lands only while it holds', async () =
 	const disk = memDisk()
 	const at = under(AT_ROOT, 'a.txt')
 	if (at === null) throw new Error('unreachable')
-	await disk.write(at, bytes('hello'))
+	await disk.write(at, bytes('hello'), undefined, 'unseen')
 	const s = await disk.stat(at)
 	if (s === null) throw new Error('unreachable')
 	const was = { path: at, ino: String(s.ino), state: stateOf(s) }
@@ -134,7 +134,7 @@ describe('fsStore: a file is not a blob store', () => {
 			async bytes(spot, strict) {
 				if (spot === meddle) {
 					meddle = null
-					await disk.write(spot, bytes('goodbye'))
+					await disk.write(spot, bytes('goodbye'), undefined, 'unseen')
 				}
 				return disk.bytes(spot, strict)
 			}
@@ -192,7 +192,7 @@ describe('fsStore: a file is not a blob store', () => {
 		if (at === null) throw new Error('unreachable')
 		expect(await disk.bytes(at)).toEqual(bytes(''))
 
-		await disk.write(at, bytes('mine, typed while waiting'))
+		await disk.write(at, bytes('mine, typed while waiting'), undefined, 'unseen')
 		await store.blobs.put(hash, bytes('the content, late'))
 
 		expect(await disk.bytes(at)).toEqual(bytes('mine, typed while waiting'))
@@ -216,7 +216,8 @@ describe('fsStore: what a placement may claim about the file it left', () => {
 				const s = await disk.stat(spot)
 				// The placement's own last act is to look at what it left, so firing straight
 				// after that puts the edit in the window: placed, not yet observed.
-				if (spot === meddle && ++looks === 1) await disk.write(spot, bytes('typed by a local tool'))
+				if (spot === meddle && ++looks === 1)
+					await disk.write(spot, bytes('typed by a local tool'), undefined, 'unseen')
 				return s
 			}
 		}
@@ -282,7 +283,7 @@ describe('fsStore: what a commit may take off the disk', () => {
 		if (at === null) throw new Error('unreachable')
 		const child = under(at, 'local.txt')
 		if (child === null) throw new Error('unreachable')
-		await disk.write(child, bytes('the only copy of this'))
+		await disk.write(child, bytes('the only copy of this'), undefined, 'unseen')
 
 		await store.commit([folder(true)])
 
@@ -313,8 +314,8 @@ describe('fsStore: what a commit may take off the disk', () => {
 		if (at === null) throw new Error('unreachable')
 		const child = under(at, 'local.txt')
 		if (child === null) throw new Error('unreachable')
-		await disk.write(child, bytes('behind a shut door'))
-		await disk.stamp(at, { mode: 0o000 }) // no read, no search
+		await disk.write(child, bytes('behind a shut door'), undefined, 'unseen')
+		await disk.stamp(at, { mode: 0o000 }, 'unseen') // no read, no search
 
 		await store.commit([folder(true)])
 
@@ -378,7 +379,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 				if (meddle !== null) {
 					const spot = meddle
 					meddle = null
-					await disk.write(spot, bytes('typed by a local tool'))
+					await disk.write(spot, bytes('typed by a local tool'), undefined, 'unseen')
 				}
 				return disk.unlock(steps)
 			}
@@ -434,7 +435,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 			async stamp(spot, on, was) {
 				if (spot === meddle) {
 					meddle = null
-					await disk.write(spot, bytes('typed by a local tool'))
+					await disk.write(spot, bytes('typed by a local tool'), undefined, 'unseen')
 				}
 				return disk.stamp(spot, on, was)
 			}
@@ -484,12 +485,12 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 		const racy: Disk = {
 			...disk,
 			async stamp(spot, on) {
-				const done = await disk.stamp(spot, on)
+				const done = await disk.stamp(spot, on, 'unseen')
 				// Placed and stamped; the batch has not observed it yet.
 				if (spot === meddle) {
 					meddle = null
 					await disk.clear(spot)
-					await disk.write(spot, bytes('a file now'))
+					await disk.write(spot, bytes('a file now'), undefined, 'unseen')
 				}
 				return done
 			}
@@ -538,7 +539,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 				// After the commit looked, before the payload takes the name.
 				if (spot === meddle) {
 					meddle = null
-					await disk.write(spot, bytes('typed by a local tool'))
+					await disk.write(spot, bytes('typed by a local tool'), undefined, 'unseen')
 				}
 				return disk.write(spot, data, on, was)
 			}

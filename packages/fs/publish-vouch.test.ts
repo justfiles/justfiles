@@ -47,7 +47,7 @@ test('a publish claims nothing about a file edited in place under it', async () 
 		landedIno = statSync(os, { bigint: true }).ino
 		writeFileSync(os, 'typed by a local tool')
 	}
-	const seen = await disk.write(at, new TextEncoder().encode('mine'))
+	const seen = await disk.write(at, new TextEncoder().encode('mine'), undefined, 'unseen')
 
 	expect(seen).toBeNull()
 	// And the inode really did survive the edit, so an inode check alone would have

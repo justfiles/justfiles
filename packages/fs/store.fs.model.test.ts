@@ -158,7 +158,7 @@ async function outside(disk: ReturnType<typeof memDisk>, what: Op): Promise<void
 	// and get an answer neither side agrees about.
 	const s = await disk.stat(at)
 	if (s?.isDirectory()) return
-	await disk.write(at, enc.encode(what.write))
+	await disk.write(at, enc.encode(what.write), undefined, 'unseen')
 }
 
 /**

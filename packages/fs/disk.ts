@@ -52,6 +52,15 @@ export type Spot = string & { readonly [Inside]: true }
 /** What the caller last saw at a spot, and how it will know the thing again. */
 export type Seen = { path: Spot; ino: string; state: string; hash?: string }
 
+/**
+ * What the caller last saw at the name it is about to take — or `unseen`, which it has to
+ * say out loud. Every act that takes a name asks for one, and none of them defaults: an
+ * unconditional write is a claim written in the code, not an argument somebody left off.
+ * That is the whole of the difference. The rule was always this; making it a parameter
+ * with no default is what stops a call site quietly opting out of it.
+ */
+export type Held = Seen | 'unseen'
+
 /** A directory on the way in, and what it must grant before the pass can pass. */
 export type Step = { id: NodeId; spot: Spot; mode: number; ino?: string; need: number }
 
@@ -148,6 +157,10 @@ export interface Disk {
 	// landed. The observation is taken here, beside the act — a caller that looked
 	// afterwards would be describing whatever answered by then, and there is no way for it
 	// to record a belief this module did not give it. A removal has nothing to hand back.
+	//
+	// And every one of them takes a `Held`, required: what the caller saw at the name, or
+	// `unseen`. There is no third option and no default, so no act can go in unconditional
+	// by omission — only by saying so.
 
 	/**
 	 * Bytes into a name in ONE operation: built beside it, then renamed over it.
@@ -162,9 +175,9 @@ export interface Disk {
 	 * commonest edit there is. Asked immediately before the rename, so the window is two
 	 * adjacent calls rather than however long the payload took to write.
 	 */
-	write(spot: Spot, data: Uint8Array, at?: Stamp, was?: Seen): Promise<Seen | null>
+	write(spot: Spot, data: Uint8Array, at: Stamp | undefined, was: Held): Promise<Seen | null>
 	/** A symlink into a name, the same way — `was` and all: a target is content too. */
-	link(spot: Spot, target: string, at?: Stamp, was?: Seen): Promise<Seen | null>
+	link(spot: Spot, target: string, at: Stamp | undefined, was: Held): Promise<Seen | null>
 	/** This directory and every one above it. */
 	dir(spot: Spot): Promise<Seen | null>
 	/**
@@ -173,7 +186,7 @@ export interface Disk {
 	 * ctime, so nothing else about the thing may have — another inode is somebody's
 	 * replacement, another size is somebody's write.
 	 */
-	stamp(spot: Spot, at: Stamp, was?: Seen): Promise<Seen | null>
+	stamp(spot: Spot, at: Stamp, was: Held): Promise<Seen | null>
 
 	/**
 	 * Rename, but only while the disk still holds what the caller observed — the whole of
@@ -187,11 +200,16 @@ export interface Disk {
 	 * Remove what a row named, while the disk still holds it as the caller saw it. A FILE
 	 * is held to its whole state, the way every other conditional act holds one: an
 	 * in-place write keeps the inode, so identity alone would `rm` the writer's only copy.
-	 * A DIRECTORY is held to its identity, because removing what was inside it moved its
-	 * mtime and that is this same batch working. It is taken aside first and identified
-	 * where nothing can be swapped under it.
+	 *
+	 * A DIRECTORY goes by `rmdir`, which is the one removal here with no window at all:
+	 * POSIX refuses it on a directory holding anything, so whatever arrived since the
+	 * caller looked keeps the directory standing instead of going with it. The caller only
+	 * ever aims this at one it believes empty — a subtree with rows in it is parked, not
+	 * removed — so nothing here needs to recurse, and nothing recursive can be aimed
+	 * wrong. Its identity is checked first all the same: an empty directory somebody else
+	 * put at the name is not this store's to take.
 	 */
-	drop(at: Seen, holding: Spot, directory: boolean): Promise<void>
+	drop(at: Seen, directory: boolean): Promise<void>
 
 	/** Remove this directory if it is empty. Says whether it went. */
 	prune(spot: Spot): Promise<boolean>
@@ -298,8 +316,8 @@ export function fsDisk(rootPath: string): Disk {
 	const publish = async (
 		spot: Spot,
 		build: (tmp: string) => Promise<void>,
-		at?: Stamp,
-		was?: Seen
+		at: Stamp | undefined,
+		was: Held
 	): Promise<Seen | null> => {
 		const os = abs(spot)
 		if (!(await inside(os))) return null
@@ -311,7 +329,7 @@ export function fsDisk(rootPath: string): Disk {
 			// `rename` carries it to the target, so this is what the caller was given.
 			const made = await lstatOf(tmp, { bigint: true }).catch(() => null)
 			if (made === null) return null
-			if (was !== undefined) {
+			if (was !== 'unseen') {
 				const s = await lstat(spot)
 				if (s === null || !unchanged(was, s)) return null
 			}
@@ -442,7 +460,7 @@ export function fsDisk(rootPath: string): Disk {
 
 		async stamp(spot, at, was) {
 			let before: BigIntStats | null = null
-			if (was !== undefined) {
+			if (was !== 'unseen') {
 				before = await lstat(spot)
 				if (before === null || !unchanged(was, before)) return null
 			}
@@ -453,7 +471,12 @@ export function fsDisk(rootPath: string): Disk {
 			// narrower window: the stamp moves mode, mtime and ctime, so nothing else may
 			// have moved. What that still lets through is an edit of exactly the same
 			// length, landing inside three syscalls.
-			if (before !== null && (String(now.ino) !== was?.ino || now.size !== before.size)) return null
+			if (
+				was !== 'unseen' &&
+				before !== null &&
+				(String(now.ino) !== was.ino || now.size !== before.size)
+			)
+				return null
 			return { path: spot, ino: String(now.ino), state: stateOf(now) }
 		},
 
@@ -476,38 +499,22 @@ export function fsDisk(rootPath: string): Disk {
 			return held(to, was)
 		},
 
-		async drop(at, holding, directory) {
+		async drop(at, directory) {
 			if (!(await inside(abs(at.path)))) return
 			const here = await lstat(at.path)
 			if (here === null) return
-			// A file to the whole of what was observed, a directory to its identity alone.
+			// A file to the whole of what was observed, a directory to its identity alone —
+			// removing what was inside it is this same batch, and that moved its mtime.
 			if (directory ? String(here.ino) !== at.ino : !unchanged(at, here)) return
 			if (!directory) {
 				await rm(abs(at.path), { force: true })
 				return
 			}
-			// Looking and removing are two calls, and a name can change hands between them: a
-			// recursive `rm` aimed at whatever arrived in that window would take a subtree this
-			// store never had. So it moves to a name nobody else knows — one call — and is
-			// identified there. Not the row’s, and it goes back.
-			const aside = under(holding, `going-${crypto.randomUUID()}`)
-			if (aside === null) return
-			await mkdir(abs(holding), { recursive: true })
-			const moved = await rename(abs(at.path), abs(aside)).then(
-				() => true,
-				() => false
-			)
-			// A rename that cannot happen — another filesystem mounted under this tree.
-			if (!moved) {
-				await rm(abs(at.path), { recursive: true, force: true })
-				return
-			}
-			const s = await lstat(aside)
-			if (s !== null && String(s.ino) === at.ino) {
-				await rm(abs(aside), { recursive: true, force: true })
-				return
-			}
-			await rename(abs(aside), abs(at.path)).catch(() => {})
+			// `rmdir` and not a recursive `rm`: it refuses a directory with anything in it, so
+			// the check above needs to buy no window here. Anything that arrived since — a
+			// local tool's file, a name this store could never address — simply keeps the
+			// directory, and the scan makes what is really there a row.
+			await rmdir(abs(at.path)).catch(() => {})
 		},
 
 		async prune(spot) {
