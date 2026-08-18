@@ -7,8 +7,9 @@
  *   (one validated name at a time) or `spot` (re-validating text out of the sidecar). A
  *   row from a peer, an id used as a path, or a tampered index cannot address anything
  *   outside the tree, because there is no second path into `join`.
- * - **Identity is the inode.** Every call that changes or removes takes the `Seen` the
- *   caller believes in, and does nothing if the disk no longer holds that inode.
+ * - **Identity is the inode**, and the whole observation wherever a call has to vouch for
+ *   what it left: every call that changes or removes takes the `Seen` the caller believes
+ *   in, and does nothing once the disk has stopped holding it.
  * - **A way in is granted and taken back by the same pass.** A directory whose mode
  *   shuts this store out is opened for as long as the pass needs it (`unlock`) and put
  *   back as the pass's last act (`relock`).
@@ -174,7 +175,10 @@ export interface Disk {
 	 */
 	stamp(spot: Spot, at: Stamp, was?: Seen): Promise<Seen | null>
 
-	/** Rename, but only while the disk still holds the caller's inode. */
+	/**
+	 * Rename, but only while the disk still holds what the caller observed — the whole of
+	 * it, because the state it left with is the baseline the far end is held to.
+	 */
 	move(at: Seen, to: Spot): Promise<Seen | null>
 
 	/**
@@ -451,9 +455,11 @@ export function fsDisk(rootPath: string): Disk {
 			// Both ends: a rename out of the tree loses the file, and one in from outside
 			// adopts something this store was never given.
 			if (!(await inside(abs(at.path))) || !(await inside(abs(to)))) return null
-			// Kept, so what lands at the far end can be held to what left this one.
+			// Kept, so what lands at the far end can be held to what left this one — and the
+			// whole observation, not just the inode: an in-place edit keeps the inode, and
+			// taking THAT as the baseline hands the writer's bytes on as this move's own.
 			const was = await lstat(at.path)
-			if (was === null || String(was.ino) !== at.ino) return null
+			if (was === null || !unchanged(at, was)) return null
 			await rename(abs(at.path), abs(to))
 			return held(to, was)
 		},

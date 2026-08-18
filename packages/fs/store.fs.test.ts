@@ -1870,4 +1870,51 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 		// Nothing was placed, so the copy that was waiting to be placed is still the answer.
 		expect(await store.blobs.get(key)).toEqual(bytes('mine'))
 	})
+
+	test('a rename claims nothing about a file edited in place before it', async () => {
+		// A rename carries a file's state across untouched, so the state it LEFT with is what
+		// the far end gets held to. Take that baseline after a local writer has already been
+		// in and the check is against the writer's own file \u2014 `echo x > f` truncates in place
+		// and keeps the inode, so the edited bytes arrive at the new name wearing the row's
+		// hash. Only the real thing can show it: a publish on `memDisk` mints a new inode, so
+		// nothing there can edit a file without also replacing it.
+		const root = await temp()
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async move(at, to) {
+				// Between the store's last look at the file and the move that trusts it.
+				if (at.path === meddle) {
+					meddle = null
+					await writeFile(join(root, at.path), 'typed by a local tool')
+				}
+				return real.move(at, to)
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const key = await sha256Hex(bytes('hello'))
+		const named = (name: string, version: string): Node => ({
+			id: 'a',
+			parent: ROOT,
+			name,
+			type: 'file',
+			mode: 0o100644,
+			size: 5n,
+			mtimeNs: 0n,
+			content: key,
+			version
+		})
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([named('a.txt', 'v1')])
+		await store.since()
+
+		meddle = 'a.txt' as Spot
+		await store.commit([named('b.txt', 'v2')])
+
+		// Rule 7 stated flatly: whatever is offered under a key has to hash to it.
+		const got = await store.blobs.get(key)
+		expect(got === null || (await sha256Hex(got)) === key).toBe(true)
+	})
 })

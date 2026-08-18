@@ -353,7 +353,8 @@ export function memDisk(fault: Fault = () => null): Disk {
 
 		async move(was, to) {
 			check('move', to)
-			if (!(await mine(was))) return null
+			// The whole observation, like the real one: an in-place edit keeps the inode.
+			if (!(await still(was))) return null
 			const obj = take(was.path)
 			if (obj === null) return null
 			put(to, () => obj)

@@ -67,7 +67,8 @@ describe('memDisk: the rules that made the findings', () => {
 		const second = await disk.stat(a)
 		expect(second?.ino).not.toBe(first.ino)
 
-		const at = { path: a, ino: String(second?.ino), state: '' }
+		if (second === null) throw new Error('unreachable')
+		const at = { path: a, ino: String(second.ino), state: stateOf(second) }
 		// And the move hands back the inode it carried, not merely that it happened.
 		expect((await disk.move(at, b))?.ino).toBe(String(second?.ino))
 		expect((await disk.stat(b))?.ino).toBe(second?.ino)
