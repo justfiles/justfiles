@@ -399,6 +399,22 @@ describe('authority: what it leaves alone', () => {
 		expect((await server.children(ROOT)).nodes).toHaveLength(1)
 		expect((await server.since()).nodes).toHaveLength(2)
 	})
+
+	it('does not forward close: the wrapper built nothing, so it ends nothing', async () => {
+		let closed = false
+		const store = {
+			...memStore(),
+			close: async (): Promise<void> => {
+				closed = true
+			}
+		}
+
+		// `close` is the CONSTRUCTOR's alone. A wrapper that handed it on would let
+		// whoever holds the wrapper end a store the engine, a volume and a wire adapter
+		// may all still be reading.
+		expect(authority(store).close).toBeUndefined()
+		expect(closed).toBe(false)
+	})
 })
 
 describe('a detached cluster on a replica', () => {
