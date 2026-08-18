@@ -1,16 +1,12 @@
 /**
- * `fsStore` over a disk that is not a disk.
+ * `fsStore` over a disk that is not a disk: the same store and the same contract suite,
+ * with no temp directories, no timestamp granularity to work around and no OS
+ * scheduling. That is what makes the conformance suite run in milliseconds against the
+ * native backend, and the property tests in `store.fs.model.test.ts` possible at all.
  *
- * The same store, the same contract suite, and none of the cost: no temp
- * directories, no timestamp granularity to work around, no OS scheduling. What
- * that buys is the two things this file is really for — the conformance suite
- * running against the native backend in milliseconds, and the property tests in
- * `store.fs.model.test.ts` being possible at all.
- *
- * It is not a replacement for `store.fs.test.ts`. A fake disk proves the store's
- * reasoning, never the platform's behaviour, and the cases that turn on what a
- * real filesystem does — a symlinked ancestor, `lutimes` precision, an
- * unopenable directory — live over there and stay there.
+ * Not a replacement for `store.fs.test.ts`. A fake disk proves the store’s reasoning,
+ * never the platform’s behaviour, so the cases that turn on what a real filesystem does
+ * — a symlinked ancestor, `lutimes` precision, an unopenable directory — live there.
  */
 
 import { describe, expect, test } from 'vitest'

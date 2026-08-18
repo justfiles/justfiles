@@ -1,49 +1,28 @@
 /**
- * A `Disk` that is not a disk. The same tree, the same inodes, the same
- * permission rules, in memory — so `fsStore` can be run thousands of times a
- * second, deterministically, with faults injected wherever a test wants one.
- *
- * It exists for the oracle. A property test that has to make real files can do a
- * few hundred cases before it is too slow to run in CI, and every one of them is
- * at the mercy of the host's timestamp granularity and the OS's own scheduling;
- * this does tens of thousands and does them the same way every time. `memStore`
- * already gives the answers to compare against, so what was missing was a disk
- * that could be driven — and driven off a seed.
+ * A `Disk` that is not a disk. The same tree, the same inodes, the same permission
+ * rules, in memory — so `fsStore` can be run thousands of times a second,
+ * deterministically, with faults injected wherever a test wants one. It exists for the
+ * oracle in `store.fs.model.test.ts`: a property test that has to make real files does a
+ * few hundred cases before CI notices, and every one is at the mercy of the host’s
+ * timestamp granularity.
  *
  * The rules it keeps, because they are the ones the findings were about:
  *
- * - **Permissions.** SEARCH to walk through a directory, READ to list one, WRITE
- *   and SEARCH to add or remove an entry in one. A denial is `EACCES`, not
- *   "nothing there" — the distinction a scan has to make and used to lose.
+ * - **Permissions.** SEARCH to walk through a directory, READ to list one, WRITE and
+ *   SEARCH to add or remove an entry. A denial is `EACCES`, not "nothing there".
  * - **Identity.** Every object has an inode, minted once, and a rename carries it.
- *   Two files with the same name at different times are not the same file.
- * - **Time.** A counter, not a clock, so runs are identical. `ctime` moves on
- *   every change to an object and cannot be set; `stamp` writes an mtime rounded
- *   to the millisecond, which is what a `Date` carries and therefore all the real
- *   backend can write either.
+ * - **Time.** A counter, not a clock. `ctime` moves on every change and cannot be set;
+ *   `stamp` writes an mtime rounded to the millisecond, which is all a `Date` carries
+ *   and therefore all the real backend can write either.
  *
- * Where it differs, it differs on the strict side. A symlink in the MIDDLE of a
- * path is not followed here — a real `lstat` follows every component but the last
- * — so a path through one fails instead of resolving. There is no outside for it
- * to resolve to, which is the honest reason: the escape that matters about a
- * symlinked ancestor can only be shown against a real filesystem, and it is
- * (`store.fs.test.ts`).
+ * Where it differs, it differs on the strict side: a symlink in the MIDDLE of a path is
+ * not followed here, so a path through one fails instead of resolving. There is no
+ * outside for it to resolve to — the escape that matters about a symlinked ancestor can
+ * only be shown against a real filesystem, and is (`store.fs.test.ts`).
  */
 
 import type { BigIntStats } from 'node:fs'
-import {
-	AT_ROOT,
-	type Disk,
-	READ,
-	SEARCH,
-	type Seen,
-	type Spot,
-	spot,
-	stateOf,
-	under,
-	up,
-	WRITE
-} from './disk'
+import { AT_ROOT, type Disk, READ, SEARCH, type Seen, type Spot, stateOf, WRITE } from './disk'
 import type { NodeId } from './store'
 
 type Kind = 'file' | 'dir' | 'symlink'
@@ -330,11 +309,9 @@ export function memDisk(fault: Fault = () => null): Disk {
 
 		async drop(was, _holding, _directory) {
 			check('drop', was.path)
-			// No two-step. The real one takes a directory aside under a private name and
-			// identifies it THERE, because between a look and a removal another process
-			// can put something else at the path — and nothing here has another process.
-			// What that dance buys is unobservable without one, so faking it would be
-			// faking the implementation rather than the behaviour.
+			// No two-step: the real one takes a directory aside because another process can put
+			// something else at the path between a look and a removal, and nothing here has
+			// another process. Faking it would fake the implementation, not the behaviour.
 			if (!(await mine(was))) return
 			await quiet(() => take(was.path), null)
 		},

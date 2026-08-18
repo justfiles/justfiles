@@ -455,9 +455,8 @@ export function storeConformance(name: string, make: () => Promise<Store>): void
 			if (!store.close) return // optional: most stores own nothing to release
 
 			await store.commit([node({ id: 'a', name: 'a.txt' })])
-			// Whoever built the store calls this, and may call it twice — a shutdown path
-			// that runs once per owner, or twice on the way out of an error, must not turn
-			// releasing a resource into a failure.
+			// Whoever built the store calls this, and may call it twice — once per owner, or
+			// again on the way out of an error. Releasing a resource must not become a failure.
 			await store.close()
 			await store.close()
 		})

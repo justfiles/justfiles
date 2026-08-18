@@ -419,9 +419,8 @@ describe('fsStore: a real directory, reconciled', () => {
 })
 
 /**
- * The findings from the reviews of #521, each as the case that shows it. Every one
- * of them is about the same two questions the first cut never asked: WHO owns a
- * path on disk, and where does a row live when it cannot have one.
+ * Who owns a path on disk, and where a row lives when it cannot have one. Every case
+ * here is one of those two questions, which the first cut of this store never asked.
  */
 describe('fsStore: what a row owns, and what happens when nothing can reach it', () => {
 	const dir = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
@@ -1677,16 +1676,12 @@ describe('fsStore: told, or else looked for', () => {
 
 describe('fsStore: the sidecar is a file, and a file is not a promise', () => {
 	test('a path in the index that leaves the tree addresses nothing', async () => {
-		// `.jfs/index.json` is the one input to this store that is neither a row from a
-		// peer nor something it observed itself: it is a document on the disk, and
-		// anything that can write in the tree can put a path in it. Every id, name and
-		// version in there was minted by this store; `seen.path` was last a plain string,
-		// and it is what `rename` and `rm` are aimed at.
-		//
-		// Identity does not answer this on its own. `mine` asks whether the inode at the
-		// path is the one recorded — but the recording is in the same file, so an index
-		// that lies about the path lies about the inode beside it. What has to hold is
-		// that the path names somewhere inside the tree at all.
+		// `.jfs/index.json` is the one input to this store that is neither a row from a peer
+		// nor something it observed itself: it is a document on the disk, and anything that
+		// can write in the tree can put a path in it. Identity does not answer this on its
+		// own — `mine` asks whether the inode at the path is the one recorded, but the
+		// recording is in the same file. What has to hold is that the path names somewhere
+		// inside the tree at all.
 		const root = await temp()
 		const outside = await temp()
 		const victim = join(outside, 'victim.txt')

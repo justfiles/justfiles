@@ -1,29 +1,21 @@
 /**
- * The oracle. Random work against `fsStore`, checked against something that
- * knows the answer — thousands of times, off a seed, in the time one temp-dir
- * case takes.
+ * The oracle. Random work against `fsStore`, checked against something that knows the
+ * answer — thousands of cases, off a seed, in the time one temp-dir case takes. Every
+ * failure prints its seed; re-run with `--seed` to replay it exactly.
  *
- * Two properties, and they are the two halves of what this backend claims:
+ * Two properties, the two halves of what this backend claims:
  *
- * - **What the tree holds is what the rows say.** After any sequence of changes
- *   made OUTSIDE the store, the paths the store resolves and the bytes it reads
- *   must be exactly what a walk of the disk finds. This is the claim the whole
- *   reconciler exists for, and the one the hand-written cases each prove a single
- *   instance of.
+ * - **What the tree holds is what the rows say.** After any sequence of changes made
+ *   OUTSIDE the store, the paths it resolves and the bytes it reads must be exactly what
+ *   a walk of the disk finds. The hand-written cases each prove one instance of this.
  * - **A commit means the same thing here as anywhere.** The same batches against
- *   `memStore` and against this must leave the same tree. Where they are ALLOWED
- *   to differ is stated below and nowhere else.
+ *   `memStore` and against this must leave the same tree. Where they are ALLOWED to
+ *   differ is stated below and nowhere else.
  *
- * Every failure prints its seed; re-run with `--seed` to replay it exactly. This
- * is the part that keeps finding cases after nobody is looking for them any more:
- * the hand-written suite proves the cells somebody thought of, and this walks the
- * grid.
- *
- * What it deliberately does NOT generate: directory modes that shut the store out.
- * The expected answer here is a walk of the same disk, and a walk that cannot read
- * where the store let itself in has no answer to compare with — the oracle would
- * be arguing with itself. That family has its own cases, over a real filesystem,
- * in `store.fs.test.ts`.
+ * What it deliberately does NOT generate: directory modes that shut the store out. The
+ * expected answer is a walk of the same disk, and a walk that cannot read where the
+ * store let itself in has no answer to compare with. That family has its own cases, over
+ * a real filesystem, in `store.fs.test.ts`.
  */
 
 import fc from 'fast-check'
@@ -35,9 +27,8 @@ import { fsStore } from './store.fs'
 import { memStore } from './store.mem'
 
 /**
- * How many cases per property. Cheap enough that the default is a real search
- * rather than a token one — sixty thousand cases run in about twelve seconds —
- * and `JFS_RUNS` turns it up for a hunt.
+ * How many cases per property. Cheap enough that the default is a real search — sixty
+ * thousand cases run in about twelve seconds — and `JFS_RUNS` turns it up for a hunt.
  */
 const RUNS = Number(process.env.JFS_RUNS ?? 300)
 
@@ -129,10 +120,9 @@ async function asDisk(disk: ReturnType<typeof memDisk>): Promise<Map<string, str
 }
 
 /**
- * One change made outside the store, the way a local tool would make it — and
- * like a local tool, it simply fails where the filesystem says no. A generator
- * that asked for a file inside a file gets what `echo > b/a` gets: nothing
- * happens, and the tree is exactly as it was.
+ * One change made outside the store, the way a local tool would make it — and like a
+ * local tool, it simply fails where the filesystem says no. A generator that asks for a
+ * file inside a file gets what `echo > b/a` gets: nothing happens.
  */
 async function apply(disk: ReturnType<typeof memDisk>, what: Op): Promise<void> {
 	await outside(disk, what).catch(() => {})
@@ -172,21 +162,16 @@ async function outside(disk: ReturnType<typeof memDisk>, what: Op): Promise<void
 }
 
 /**
- * Which row holds which file, by inode.
+ * Which row holds which file, by inode. What is asked of it is ONE FILE, ONE ROW: no two
+ * live rows ever name the same inode. That is what `owner` is for, and a scan that asked
+ * the tree instead would adopt one file twice while leaving the shape of the tree — and
+ * so a shape comparison — untouched.
  *
- * What is asked of it is ONE FILE, ONE ROW: no two live rows ever name the same
- * inode. That is what `owner` is for, and a scan that asked the tree instead of
- * asking it would adopt one file twice while leaving the shape of the tree — and
- * so a shape comparison — completely untouched.
- *
- * What is NOT asked of it is that an id survive a rename made outside. `readdir`
- * and `lstat` are all this backend gets, so a name that vanished is a tombstone
- * and a name that appeared is a new node, even where the same inode is underneath
- * both; the module header states that as a cost. Two renames back to the same name
- * mint two ids for one unmoved inode, and that is the design rather than a defect —
- * an invariant that forbade it would be asking for a promise nobody made. What can
- * still be asked, and is below, is that a pass which found NOTHING new rebinds
- * nothing: the store must be quiet when the disk is.
+ * What is NOT asked of it is that an id survive a rename made outside. `readdir` and
+ * `lstat` are all this backend gets, so a name that vanished is a tombstone and a name
+ * that appeared is a new node, even where the same inode is under both. What can still
+ * be asked, and is below, is that a pass which found NOTHING new rebinds nothing: the
+ * store must be quiet when the disk is.
  */
 async function asBound(
 	store: Store,
@@ -332,12 +317,9 @@ test('a commit leaves the same tree here as it leaves in memory', async () => {
 }, 120_000)
 
 test('a commit and a local tool, taking turns on the same names', async () => {
-	// Where `settle` earns its keep. A commit looks at the disk before it judges a
-	// guard or writes a row, because the tree it is about to write through may not be
-	// the one the index remembers — and the two sides here are racing for the same
-	// three names on purpose.
-	//
-	// The claim is not that the store wins, or that the tool does. It is that
+	// Where `settle` earns its keep: a commit looks at the disk before it judges a guard,
+	// because the tree it is about to write through may not be the one the index
+	// remembers. The claim is not that the store wins, or that the tool does — it is that
 	// afterwards the rows and the tree say the SAME thing, whoever got there last.
 	await fc.assert(
 		fc.asyncProperty(

@@ -63,28 +63,22 @@ export interface Store {
 	gc?(): Promise<{ reclaimed: number; done: boolean }>
 
 	/**
-	 * Release what THIS store owns — a watcher, a connection, a handle. Optional,
-	 * because most stores own nothing: memory, a wire, a database somebody else
-	 * opened.
+	 * Release what THIS store owns — a watcher, a connection, a handle. Optional, because
+	 * most stores own nothing: memory, a wire, a database somebody else opened.
 	 *
-	 * Called by whoever CONSTRUCTED the store, and by nobody else. A store is
-	 * composable: two volumes at different scopes, an engine, an authority and a
-	 * wire adapter may all hold the same one, and none of them may end it — which
-	 * is why nothing above the seam grows a `close` of its own, and why a wrapper
-	 * (`authority`, `hydratingBlobs`, `verifiedBlobs`) owns nothing, implements
-	 * none, and forwards none — see `forwarded`. Call it on what you built.
-	 *
-	 * Idempotent. After it, a caller is done with the store: whether the store can
-	 * still answer is its own business, and no caller may rely on either answer.
+	 * Called by whoever CONSTRUCTED the store, and by nobody else. A store is composable —
+	 * two volumes at different scopes, an engine, an authority and a wire adapter may all
+	 * hold the same one — and none of them may end it, which is why a wrapper owns none and
+	 * forwards none (see `forwarded`). Idempotent: after it a caller is done with the store,
+	 * and may not rely on whether it still answers.
 	 */
 	close?(): Promise<void>
 }
 
 /**
- * What a wrapper forwards: the seam, minus the one member it must not. Spreading
- * a whole store copies `close` like any other method, which would hand a caller
- * of the WRAPPER a way to end a store the wrapper never built — so every wrapper
- * spreads this instead.
+ * What a wrapper forwards: the seam, minus the one member it must not. Spreading a whole
+ * store copies `close` like any other method, which would hand a caller of the WRAPPER a
+ * way to end a store the wrapper never built.
  */
 export const forwarded = (store: Store): Omit<Store, 'close'> => {
 	const { close, ...rest } = store
