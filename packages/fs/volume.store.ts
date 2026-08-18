@@ -176,22 +176,14 @@ export function storeVolume(
 	 * it costs no `get` on the hottest read in the system. `up` holds the ancestors,
 	 * so `..` is a pop, and popping past the top leaves the root, which is what
 	 * `/..` means. `walked`, when given, keeps each row read so a later commit can
-	 * guard the path.
+	 * guard the path — each with the store it was read in, since a walk that
+	 * crosses a mount reads rows no one commit can guard together.
 	 */
-	async function resolve(path: string, followLast: boolean, walked?: Node[]): Promise<At> {
+	async function resolve(path: string, followLast: boolean, walked?: At[]): Promise<At> {
 		const queue = path.split('/').filter((s) => s !== '')
 		const up: Step[] = []
 		let at: Step = { store, node: null }
 		let hops = 0
-
-		/**
-		 * Step into another store, dropping the path walked so far: those rows are
-		 * guards for a commit that is no longer going where they were read.
-		 */
-		const jump = (into: Store): Step => {
-			if (walked && into !== at.store) walked.length = 0
-			return { store: into, node: null }
-		}
 
 		for (let i = 0; i < queue.length; i++) {
 			const name = queue[i]
@@ -210,13 +202,13 @@ export function storeVolume(
 			if (into !== undefined) {
 				if (at.node && !isDir(at.node)) throw new Error(`ENOTDIR: ${path}`)
 				up.push(at)
-				at = jump(into)
+				at = { store: into, node: null }
 				continue
 			}
 
 			const found = await at.store.child(at.node?.id ?? ROOT, name)
 			if (found === null) throw new Error(`ENOENT: ${path}`)
-			walked?.push(found)
+			walked?.push({ store: at.store, node: found })
 			// Rule 9 again: "every parent a live directory" is the authority's to
 			// keep, so a replica may hold a row parented on a file. Reachability
 			// from the root is what makes a row visible, and POSIX cannot walk
@@ -233,7 +225,7 @@ export function storeVolume(
 					// An absolute target starts at the GLOBAL root, whichever store the
 					// link itself lives in. That is what makes one synced symlink into a
 					// local mount resolve to different bytes on every replica.
-					at = jump(store)
+					at = { store, node: null }
 				}
 				// Splice the target in where the link was, so the rest of the path
 				// carries on behind it and a target of its own gets the same treatment.
@@ -249,7 +241,7 @@ export function storeVolume(
 		if (at.node) return { store: at.store, node: at.node }
 		const root = await at.store.get(ROOT)
 		if (!root) throw new Error(`ENOENT: ${path}`) // rule 6: unreachable on a live store
-		walked?.push(root)
+		walked?.push({ store: at.store, node: root })
 		return { store: at.store, node: root }
 	}
 
@@ -266,7 +258,7 @@ export function storeVolume(
 	/** The directory a path is created in, the store that holds it, and the name it takes there. */
 	async function parentOf(
 		path: string,
-		walked?: Node[]
+		walked?: At[]
 	): Promise<{ store: Store; dir: Node; name: string }> {
 		const full = path.replace(/\/+$/, '')
 		const cut = full.lastIndexOf('/')
@@ -510,13 +502,32 @@ export function storeVolume(
 	}
 
 	/**
+	 * POSIX rename replaces, but only like for like: a directory is never replaced
+	 * by a file, a file never by a directory, and a directory that still holds
+	 * entries is never replaced at all — its children would be left parented on a
+	 * tombstone, which loses them.
+	 *
+	 * Both ways of renaming ask it. `moveRow` asks inside the commit it guards, and
+	 * safely reads then acts, since the guard it adds fails if anything is created
+	 * inside the target afterwards (the stamp rule). `vol.rename`'s copy-then-remove
+	 * has to ask BEFORE it copies: `EXDEV` is raised before the primitive ever reads
+	 * the destination, and `cp` merges into a directory rather than refusing it.
+	 */
+	async function replaces(st: Store, target: Node, node: Node, path: string): Promise<void> {
+		if (isDir(target) !== isDir(node))
+			throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${path}`)
+		if (isDir(target) && (await st.children(target.id)).nodes.length > 0)
+			throw new Error(`ENOTEMPTY: ${path}`)
+	}
+
+	/**
 	 * A rename, as ONE guarded commit — and one commit belongs to one store, so a
 	 * path that resolves into another is `EXDEV`, exactly as it is on a real
 	 * filesystem. `vol.rename` is the `mv` that answers it.
 	 */
 	const moveRow = (oldPath: string, newPath: string): Promise<void> =>
 		retry(async () => {
-			const walked: Node[] = []
+			const walked: At[] = []
 			const from = await parentOf(oldPath, walked)
 			// Not followed, again: `mv` moves the link itself.
 			const node = await from.store.child(from.dir.id, from.name)
@@ -534,8 +545,12 @@ export function storeVolume(
 			const writes: Node[] = [{ ...node, parent: to.dir.id, name: to.name, version: mint() }]
 			const guards: Guard[] = [
 				unchanged(node),
-				// Keep repeat ids: two versions mean the path changed between walks.
-				...walked.map(unchanged),
+				// Keep repeat ids: two versions mean the path changed between walks. Both
+				// walks are here, and both are needed — a path that reaches into a mount
+				// crosses on EVERY walk, so keeping only the last one would drop what the
+				// first read and let a moved ancestor through. What is dropped instead is
+				// what this commit could never guard: rows another store minted.
+				...walked.filter((step) => step.store === from.store).map((step) => unchanged(step.node)),
 				// `to.dir` is guarded below. The other guards keep this check valid.
 				...checked.rows
 					.slice(1)
@@ -544,16 +559,7 @@ export function storeVolume(
 			]
 			if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
 			else {
-				// POSIX rename replaces, but only like for like. A directory is never
-				// replaced by a file, a file never by a directory, and a directory
-				// that still holds entries is never replaced at all: its children
-				// would be left parented on a tombstone, which loses them.
-				if (isDir(target) !== isDir(node))
-					throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${newPath}`)
-				// Safe to read and then act on: the guard below fails if anything is
-				// created inside the target after this listing (the stamp rule).
-				if (isDir(target) && (await from.store.children(target.id)).nodes.length > 0)
-					throw new Error(`ENOTEMPTY: ${newPath}`)
+				await replaces(from.store, target, node, newPath)
 				// The displaced row is tombstoned in the SAME commit, so no reader
 				// ever sees the name twice or not at all.
 				writes.push(tomb(target))
@@ -841,11 +847,16 @@ export function storeVolume(
 		let root: NodeId | null = null
 		let chain = new Set<NodeId>([ROOT])
 		async function bind(): Promise<void> {
-			const walked: Node[] = []
+			const walked: At[] = []
 			const at = await resolve(path, true, walked).catch(() => null)
 			feed = at?.store ?? (await parentOf(path).catch(() => null))?.store ?? store
 			root = at?.node.id ?? null
-			chain = new Set([ROOT, ...walked.map((row) => row.id)])
+			// Only the rows this watch's feed carries: a walk that crossed a mount read
+			// some in a store nothing here will ever hear from.
+			chain = new Set([
+				ROOT,
+				...walked.filter((step) => step.store === feed).map((step) => step.node.id)
+			])
 		}
 
 		/** Is `id` the root or under it? Bounded by a visited set (rule 9). */
@@ -1123,6 +1134,9 @@ export function storeVolume(
 				// What `mv` does with an EXDEV: copy, then remove. Not atomic, and the
 				// rows land under new ids — which is what crossing a store means, since
 				// an id belongs to the store that minted it.
+				const src = await resolve(oldPath, false)
+				const dest = await find(newPath, false)
+				if (dest !== null) await replaces(dest.store, dest.node, src.node, newPath)
 				await vol.cp(oldPath, newPath, { recursive: true })
 				await vol.rm(oldPath, { recursive: true })
 			}

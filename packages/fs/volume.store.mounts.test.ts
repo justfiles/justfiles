@@ -248,6 +248,82 @@ describe('crossing', () => {
 		expect(await priv.blobs.has(await hash(enc.encode('go')))).toBe(true)
 		expect(dec.decode(await vol.readFile('/private/notes/kyoto.md'))).toBe('go')
 	})
+
+	it('refuses a cross-store rename onto a directory that still holds entries', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.mkdir('/notes')
+		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
+		await vol.mkdir('/private/notes')
+		await vol.writeFile('/private/notes/other.md', enc.encode('keep'))
+
+		// Crossing a mount does not change what a rename MEANS. The primitive raises
+		// EXDEV before it ever reads the destination, so `mv` asks the same questions
+		// itself — or a copy would merge into a directory the same rename inside one
+		// store refuses, and then remove the source.
+		await expect(vol.rename('/notes', '/private/notes')).rejects.toThrow(/^ENOTEMPTY/)
+
+		expect(dec.decode(await vol.readFile('/notes/kyoto.md'))).toBe('go')
+		expect(await vol.exists('/private/notes/kyoto.md')).toBe(false)
+		expect(dec.decode(await vol.readFile('/private/notes/other.md'))).toBe('keep')
+	})
+
+	it('refuses a cross-store rename that would replace a directory with a file', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.writeFile('/kyoto.md', enc.encode('go'))
+		await vol.mkdir('/private/kyoto.md')
+
+		await expect(vol.rename('/kyoto.md', '/private/kyoto.md')).rejects.toThrow(/^EISDIR/)
+
+		expect(dec.decode(await vol.readFile('/kyoto.md'))).toBe('go')
+		expect((await vol.stat('/private/kyoto.md')).type).toBe(FileType.Directory)
+	})
+
+	it('keeps the guards of both endpoint walks inside one mount', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.mkdir('/private/a')
+		await vol.mkdir('/private/b')
+		await vol.writeFile('/private/a/old', enc.encode('old'))
+		await vol.writeFile('/private/b/new', enc.encode('keep'))
+		// Relative, so the walk stays inside the mount: an absolute target would
+		// start again at the global root, whichever store the link lives in.
+		await vol.symlink('a', '/private/link')
+		await vol.symlink('b', '/private/retarget')
+		const old = await priv.child((await priv.child(ROOT, 'a'))?.id ?? ROOT, 'old')
+		let raced = false
+
+		// Re-point the shared link between the two endpoint walks. The rows the FIRST
+		// walk read are what catches it, and both walks re-enter the same bound store
+		// — so a crossing that dropped the path walked so far would lose them and
+		// commit a move the path no longer names.
+		const racing: Store = {
+			...priv,
+			async child(parent, name) {
+				const node = await priv.child(parent, name)
+				if (!raced && node?.id === old?.id) {
+					raced = true
+					await vol.cp('/private/retarget', '/private/link')
+				}
+				return node
+			}
+		}
+		const racy = storeVolume(outer, { bindings: binding(ROOT, 'private', racing) })
+
+		await expect(racy.rename('/private/link/old', '/private/link/new')).rejects.toThrow(/^ENOENT/)
+
+		expect(raced).toBe(true)
+		expect(await vol.readlink('/private/link')).toBe('b')
+		expect(dec.decode(await vol.readFile('/private/a/old'))).toBe('old')
+		expect(dec.decode(await vol.readFile('/private/b/new'))).toBe('keep')
+	})
 })
 
 describe('silent bindings', () => {
