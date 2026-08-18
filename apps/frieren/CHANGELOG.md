@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.14.0...frieren-v0.14.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* let an app hand a file to the user ([#524](https://github.com/xiaoxinghu/justfiles/issues/524)) ([6f03da7](https://github.com/xiaoxinghu/justfiles/commit/6f03da721daff7441433c002cc75ba6b8f87facc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.6.0
+
 ## [0.14.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.13.4...frieren-v0.14.0) (2026-08-16)
 
 
