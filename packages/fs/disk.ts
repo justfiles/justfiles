@@ -261,13 +261,22 @@ export function fsDisk(rootPath: string): Disk {
 	}
 
 	/**
-	 * The same, but only while the spot still holds the inode this call put there. What
-	 * arrived and what is at the name a syscall later are two different questions, and
-	 * handing back somebody else's state under this call's name is the whole failure.
+	 * What a rename carries over unchanged. The ctime is the one field it moves itself, so
+	 * it is the one field that says nothing about whether anybody else got in.
 	 */
-	const held = async (spot: Spot, ino: bigint): Promise<Seen | null> => {
-		const at = await seenAt(spot)
-		return at !== null && at.ino === String(ino) ? at : null
+	const carried = (s: BigIntStats): string => `${s.mode}:${s.mtimeNs}:${s.size}`
+
+	/**
+	 * The state at a spot, but only while it still holds the very thing this call put
+	 * there. What arrived and what is at the name a syscall later are two different
+	 * questions, and handing back somebody else's state under this call's name is the
+	 * whole failure. The inode alone is not enough: `echo x > f` truncates in place and
+	 * keeps it, so the payload is held to everything the rename carried as well.
+	 */
+	const held = async (spot: Spot, made: BigIntStats): Promise<Seen | null> => {
+		const s = await lstat(spot)
+		if (s === null || s.ino !== made.ino || carried(s) !== carried(made)) return null
+		return { path: spot, ino: String(s.ino), state: stateOf(s) }
 	}
 
 	/**
@@ -297,7 +306,7 @@ export function fsDisk(rootPath: string): Disk {
 				if (s === null || !unchanged(was, s)) return null
 			}
 			await rename(tmp, os)
-			return held(spot, made.ino)
+			return held(spot, made)
 		} finally {
 			// The whole lifecycle, not just the rename: a write that failed halfway would
 			// otherwise strand its temp file.
@@ -442,9 +451,11 @@ export function fsDisk(rootPath: string): Disk {
 			// Both ends: a rename out of the tree loses the file, and one in from outside
 			// adopts something this store was never given.
 			if (!(await inside(abs(at.path))) || !(await inside(abs(to)))) return null
-			if (!(await mine(at))) return null
+			// Kept, so what lands at the far end can be held to what left this one.
+			const was = await lstat(at.path)
+			if (was === null || String(was.ino) !== at.ino) return null
 			await rename(abs(at.path), abs(to))
-			return held(to, BigInt(at.ino))
+			return held(to, was)
 		},
 
 		async drop(at, holding, directory) {
