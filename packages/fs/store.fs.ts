@@ -589,11 +589,20 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		 * while `blobs` answered them under a key that does not name them.
 		 */
 		const keep = async (hash: Hash | undefined): Promise<{ hash?: Hash } | null> => {
-			if (at !== undefined) {
-				const s = await disk.stat(os)
-				if (s === null || !unchanged(at, s)) return null
+			if (at === undefined) {
+				await disk.stamp(os, on)
+				return { hash }
 			}
+			const was = await disk.stat(os)
+			if (was === null || !unchanged(at, was)) return null
 			await disk.stamp(os, on)
+			// And asked again on the other side of it. A check BEFORE an act only ever buys
+			// a narrower window, and this one is asked after: the stamp moves mode, mtime
+			// and ctime, so nothing else may have moved — another inode is somebody's
+			// replacement, another size is somebody's write. What that still lets through is
+			// an edit of exactly the same length, landing inside three syscalls.
+			const now = await disk.stat(os)
+			if (now === null || String(now.ino) !== at.ino || now.size !== was.size) return null
 			return { hash }
 		}
 		if (row.content === undefined) {

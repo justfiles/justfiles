@@ -417,4 +417,54 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 			leaked: null
 		})
 	}, 30_000)
+
+	test('a stamp that landed on a stranger is not recorded as a placement', async () => {
+		// The check before the act only buys a narrower window; this one is asked on the
+		// other side of it. A local writer arriving between the two gets stamped — a lost
+		// write, which the next scan reports — but nothing is claimed about the file it
+		// left, which is the part that would otherwise be permanent.
+		const disk = memDisk()
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...disk,
+			async stamp(spot, on) {
+				if (spot === meddle) {
+					meddle = null
+					await disk.write(spot, bytes('typed by a local tool'))
+				}
+				return disk.stamp(spot, on)
+			}
+		}
+		const store = fsStore('mem', racy)
+		built.push(store)
+		const at = under(AT_ROOT, 'a.txt')
+		if (at === null) throw new Error('unreachable')
+
+		const key = 'e'.repeat(64)
+		const same = (mode: number, version: string): Node => ({
+			id: 'a',
+			parent: ROOT,
+			name: 'a.txt',
+			type: 'file',
+			mode,
+			size: 5n,
+			mtimeNs: 0n,
+			content: key,
+			version
+		})
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([same(0o100644, 'v1')])
+		await store.since()
+
+		meddle = at
+		await store.commit([same(0o100600, 'v2')])
+		meddle = null
+
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS * 6))
+		await store.since()
+		expect({
+			content: (await store.get('a'))?.content,
+			leaked: await store.blobs.get(key)
+		}).toEqual({ content: await sha256Hex(bytes('typed by a local tool')), leaked: null })
+	}, 30_000)
 })
