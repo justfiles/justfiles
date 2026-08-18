@@ -673,6 +673,15 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			// else's change. The move hands back the state it left, the way `park` takes it.
 			const now = await disk.move(at, path)
 			if (now === null) {
+				// A move also refuses a name something already holds, and this store believes
+				// this one is free: the commit looked at it before it began, and any row that
+				// held it has just been parked. So what is there arrived since, nothing has
+				// ever seen its bytes, and this file is their only copy — the write below
+				// would take the name from them just as surely as the rename would. The row
+				// keeps the file it has instead, untouched by the refusal, and waits: the next
+				// scan adopts what is there, and two rows wanting one name is resolved the
+				// ordinary way.
+				if (owner.get(path) === undefined && !(await disk.absent(path))) return null
 				unmark(row.id) // that file is gone, or is another row's now
 				at = undefined
 			} else {

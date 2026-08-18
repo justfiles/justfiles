@@ -177,7 +177,9 @@ export interface Disk {
 
 	/**
 	 * Rename, but only while the disk still holds what the caller observed — the whole of
-	 * it, because the state it left with is the baseline the far end is held to.
+	 * it, because the state it left with is the baseline the far end is held to — and only
+	 * onto a name nothing holds. A caller frees the name first; anything at it by now is
+	 * somebody else's, and a rename over it would be a removal nobody asked for.
 	 */
 	move(at: Seen, to: Spot): Promise<Seen | null>
 
@@ -460,6 +462,12 @@ export function fsDisk(rootPath: string): Disk {
 			// taking THAT as the baseline hands the writer's bytes on as this move's own.
 			const was = await lstat(at.path)
 			if (was === null || !unchanged(at, was)) return null
+			// The far end too: `rename` replaces whatever is at the name without a word, and
+			// both callers have already made the name free. So the one thing that can be there
+			// arrived since, nothing has ever seen its bytes, and this is their only copy.
+			// Asked immediately before the act, the way `publish` asks: POSIX has no rename
+			// that refuses, so two adjacent calls is the whole of what a name can be held to.
+			if ((await lstat(to)) !== null) return null
 			await rename(abs(at.path), abs(to))
 			return held(to, was)
 		},

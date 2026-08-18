@@ -355,6 +355,9 @@ export function memDisk(fault: Fault = () => null): Disk {
 			check('move', to)
 			// The whole observation, like the real one: an in-place edit keeps the inode.
 			if (!(await still(was))) return null
+			// And the far end, like the real one: the name has been freed by the caller, so
+			// anything at it now is somebody else's and is not this move's to replace.
+			if ((await look(to)) !== null) return null
 			const obj = take(was.path)
 			if (obj === null) return null
 			put(to, () => obj)

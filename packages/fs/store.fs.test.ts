@@ -1917,4 +1917,52 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 		const got = await store.blobs.get(key)
 		expect(got === null || (await sha256Hex(got)) === key).toBe(true)
 	})
+
+	test('a rename does not take a name something else got to first', async () => {
+		// The commit looks at every name it is about to take before it takes any of them, so a
+		// file a local tool put there is already a row by the time the placement runs. What
+		// this is about is the window AFTER that look: `rename` replaces the destination
+		// without a word, and those bytes have never been seen by anything — no row, no feed,
+		// no blob. Losing them is not a conflict resolved the wrong way, it is a deletion
+		// nobody asked for.
+		const root = await temp()
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async move(at, to) {
+				// Between the look this commit took at the destination and the rename onto it.
+				if (to === meddle) {
+					meddle = null
+					await writeFile(join(root, to), 'typed by a local tool')
+				}
+				return real.move(at, to)
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const key = await sha256Hex(bytes('hello'))
+		const named = (name: string, version: string): Node => ({
+			id: 'a',
+			parent: ROOT,
+			name,
+			type: 'file',
+			mode: 0o100644,
+			size: 5n,
+			mtimeNs: 0n,
+			content: key,
+			version
+		})
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([named('a.txt', 'v1')])
+		await store.since()
+
+		meddle = 'b.txt' as Spot
+		await store.commit([named('b.txt', 'v2')])
+
+		// Both files, both sets of bytes. The row did not get its new name this pass — it kept
+		// the file it had, untouched, rather than write over somebody else's.
+		expect(await readFile(join(root, 'b.txt'), 'utf8')).toBe('typed by a local tool')
+		expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('hello')
+	})
 })
