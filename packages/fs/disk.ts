@@ -14,7 +14,7 @@
  *   back as the pass's last act (`relock`).
  */
 
-import { type BigIntStats, watch as watchPath } from 'node:fs'
+import { type BigIntStats, constants, watch as watchPath } from 'node:fs'
 import {
 	chmod,
 	lstat as lstatOf,
@@ -34,6 +34,10 @@ import { join, sep } from 'node:path'
 import type { NodeId } from './store'
 
 const NUL = String.fromCharCode(0)
+
+const { O_RDONLY } = constants
+/** Not defined on every platform, and an undefined flag would poison the open. */
+const NOFOLLOW = constants.O_NOFOLLOW ?? 0
 
 declare const Inside: unique symbol
 
@@ -252,7 +256,7 @@ export function fsDisk(rootPath: string): Disk {
 	 * is no `fchmodat` here. Those fall back to the name, raced at worst.
 	 */
 	const setMode = async (spot: Spot, ino: string, mode: number): Promise<BigIntStats | null> => {
-		const handle = await openPath(abs(spot)).catch(() => null)
+		const handle = await openPath(abs(spot), O_RDONLY | NOFOLLOW).catch(() => null)
 		if (handle === null) {
 			const s = await lstat(spot)
 			if (s === null || String(s.ino) !== ino) return null
@@ -272,10 +276,37 @@ export function fsDisk(rootPath: string): Disk {
 		}
 	}
 
+	/**
+	 * A mode on the thing AT this name, never on what it points to. `chmod` resolves a
+	 * symlink, so a name a local tool has turned into one is a way for this store to change
+	 * a file outside the tree it was given entirely — `Spot` says where a name IS, and
+	 * nothing about what it resolves to. Opened `O_NOFOLLOW` and changed through the
+	 * descriptor, so a link is refused rather than walked.
+	 *
+	 * The fallback is for the one thing that cannot be opened: a directory whose own mode
+	 * shuts this store out (`0300`, `0100`, `0000`). It asks the name what it is first, and
+	 * a link is left alone — raced at worst, where before it was followed at leisure.
+	 */
+	const modeAt = async (os: string, mode: number): Promise<void> => {
+		const handle = await openPath(os, O_RDONLY | NOFOLLOW).catch(() => null)
+		if (handle === null) {
+			const s = await lstatOf(os).catch(() => null)
+			if (s === null || s.isSymbolicLink()) return
+			await chmod(os, mode)
+			return
+		}
+		try {
+			await handle.chmod(mode)
+		} finally {
+			await handle.close()
+		}
+	}
+
 	const stampAt = async (os: string, at: Stamp): Promise<void> => {
 		// A symlink's own mode is not settable on every platform, and nothing reads it.
-		if (!at.symlink) await chmod(os, at.mode & 0o7777)
+		if (!at.symlink) await modeAt(os, at.mode & 0o7777)
 		if (at.mtimeNs === undefined) return
+		// `lutimes`, which does not follow either.
 		const when = new Date(Number(at.mtimeNs / 1_000_000n))
 		await lutimes(os, when, when)
 	}

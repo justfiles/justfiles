@@ -23,6 +23,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
+import { type Disk, fsDisk, type Spot } from './disk'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
 import { storeConformance } from './store.conformance'
 import { fsStore, SWEEP_MS } from './store.fs'
@@ -1716,4 +1717,50 @@ describe('fsStore: the sidecar is a file, and a file is not a promise', () => {
 
 		expect(await readFile(victim, 'utf8')).toBe('not this store to touch')
 	}, 30_000)
+})
+
+describe('fsStore: a name says where it is, not what it resolves to', () => {
+	test('a directory swapped for a symlink is not chmodded through', async () => {
+		// `chmod` resolves a symlink. `Spot` guarantees a name is inside the root and
+		// says nothing about what the name points at, so a local tool that turns one into
+		// a link is offering this store a way to change a file outside the tree it was
+		// given. Nothing else in here reaches out; neither may this.
+		const root = await temp()
+		const outside = await temp()
+		const victim = join(outside, 'victim.txt')
+		await writeFile(victim, "not the store's to touch")
+		await chmod(victim, 0o644)
+
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async dir(spot) {
+				await real.dir(spot)
+				// Placed; the batch has not stamped or observed it yet.
+				if (spot === meddle) {
+					meddle = null
+					await rm(join(root, spot), { recursive: true, force: true })
+					await symlink(victim, join(root, spot))
+				}
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		meddle = 'folder' as Spot
+		await store.commit([
+			{
+				id: 'd',
+				parent: ROOT,
+				name: 'folder',
+				type: 'dir',
+				mode: 0o040700,
+				size: 0n,
+				mtimeNs: 0n,
+				version: 'v1'
+			}
+		])
+
+		expect(((await stat(victim)).mode & 0o7777).toString(8)).toBe('644')
+	})
 })
