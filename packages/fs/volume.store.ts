@@ -126,7 +126,7 @@ const REMOTE = 'remote'
  * the ordinary `free` guard — and the BINDING is local, so a replica joins its
  * own store in behind a name every replica can see. A binding with no row under
  * it is a SILENT mount: nothing is written anywhere, so no peer can learn even
- * that the name exists. Either way this is the only place the two stores meet.
+ * that the name exists.
  *
  * Keyed by the mount point rather than by the mount row's id, because a silent
  * binding has no row to key on — and because it is fstab: a position in the
@@ -146,17 +146,22 @@ export function storeVolume(
 	/**
 	 * What is bound inside one directory, if anything.
 	 *
-	 * Only in the store this volume was built over. Bindings are positions in ITS
+	 * Only in the store this volume was built over: bindings are positions in ITS
 	 * tree, and what a bound store holds is its own business — a mount is where
-	 * this table stops. It has to be: `ROOT` is the same constant in every store,
-	 * so a binding at the root would otherwise reappear inside every store it
-	 * binds. An id means something only where it was minted.
+	 * this table stops. A binding at the root would otherwise reappear inside
+	 * every store it binds.
 	 */
 	const boundIn = (st: Store, dir: NodeId): Map<string, Store> | undefined =>
 		st === store ? bindings?.get(dir) : undefined
 
-	/** A resolved path: the row it names, and the store that holds it. Ids are unique
-	 * within one store and nowhere else, so the two always travel together. */
+	/**
+	 * A resolved path: the row it names, and the store that holds it.
+	 *
+	 * The two travel together because an id only means something in the store that
+	 * minted it — every store spells its root `ROOT`, so ids collide across a
+	 * mount. Nothing below compares an id, guards on one, or walks up from one
+	 * without the store it came from beside it.
+	 */
 	type At = { store: Store; node: Node }
 
 	/** Where a walk stands. `node` is `null` at the root of `store`. */
@@ -180,9 +185,8 @@ export function storeVolume(
 		let hops = 0
 
 		/**
-		 * Step into another store. Guards and ancestry are read per store — an id
-		 * means something in the store that minted it and nothing anywhere else — so
-		 * the path walked so far stops speaking for where the walk now stands.
+		 * Step into another store, dropping the path walked so far: those rows are
+		 * guards for a commit that is no longer going where they were read.
 		 */
 		const jump = (into: Store): Step => {
 			if (walked && into !== at.store) walked.length = 0
@@ -506,6 +510,66 @@ export function storeVolume(
 	}
 
 	/**
+	 * A rename, as ONE guarded commit — and one commit belongs to one store, so a
+	 * path that resolves into another is `EXDEV`, exactly as it is on a real
+	 * filesystem. `vol.rename` is the `mv` that answers it.
+	 */
+	const moveRow = (oldPath: string, newPath: string): Promise<void> =>
+		retry(async () => {
+			const walked: Node[] = []
+			const from = await parentOf(oldPath, walked)
+			// Not followed, again: `mv` moves the link itself.
+			const node = await from.store.child(from.dir.id, from.name)
+			if (node === null) throw new Error(`ENOENT: ${oldPath}`)
+			const to = await parentOf(newPath, walked)
+			if (to.store !== from.store) throw new Error(`EXDEV: ${oldPath} -> ${newPath}`)
+			// Moving a row below itself makes a detached cycle.
+			const checked = await within(from.store, to.dir, node.id)
+			if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
+			const target = await from.store.child(to.dir.id, to.name)
+			if (target?.id === node.id) return // the same row, in the same place
+
+			// ONE row moves, whatever hangs below it: a child's location is
+			// `(parent, name)`, and neither field changed. This is the O(1) move.
+			const writes: Node[] = [{ ...node, parent: to.dir.id, name: to.name, version: mint() }]
+			const guards: Guard[] = [
+				unchanged(node),
+				// Keep repeat ids: two versions mean the path changed between walks.
+				...walked.map(unchanged),
+				// `to.dir` is guarded below. The other guards keep this check valid.
+				...checked.rows
+					.slice(1)
+					.filter((row) => row.id !== ROOT)
+					.map(unchanged)
+			]
+			if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
+			else {
+				// POSIX rename replaces, but only like for like. A directory is never
+				// replaced by a file, a file never by a directory, and a directory
+				// that still holds entries is never replaced at all: its children
+				// would be left parented on a tombstone, which loses them.
+				if (isDir(target) !== isDir(node))
+					throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${newPath}`)
+				// Safe to read and then act on: the guard below fails if anything is
+				// created inside the target after this listing (the stamp rule).
+				if (isDir(target) && (await from.store.children(target.id)).nodes.length > 0)
+					throw new Error(`ENOTEMPTY: ${newPath}`)
+				// The displaced row is tombstoned in the SAME commit, so no reader
+				// ever sees the name twice or not at all.
+				writes.push(tomb(target))
+				guards.push(unchanged(target))
+			}
+			// Both directories changed shape — one stamp when they are one directory.
+			writes.push(stamp(from.dir))
+			guards.push(unchanged(from.dir))
+			if (to.dir.id !== from.dir.id) {
+				writes.push(stamp(to.dir))
+				guards.push(unchanged(to.dir))
+			}
+			await from.store.commit(writes, guards)
+		})
+
+	/**
 	 * Was this row written somewhere else? The old model answered by threading a
 	 * `MutationOptions.origin` through every write, which the sync engine tagged
 	 * `'remote'`; this model deletes origin tags outright, and the row answers
@@ -552,8 +616,7 @@ export function storeVolume(
 	 * them, and WHICH one is a question only a read of the tree can answer. Asking
 	 * it first would put that read in front of the subscription, which is the one
 	 * order that loses an event. So the watch subscribes to all of them and lets
-	 * `bind` say afterwards which one it is listening to. An id only means
-	 * something in the store that minted it, so the tag is not decoration.
+	 * `bind` say afterwards which one it is listening to.
 	 */
 	async function changes(
 		bind: () => Promise<void>,
@@ -567,7 +630,7 @@ export function storeVolume(
 			else listener(from, rows)
 		}
 		const feeds = new Set<Store>([store])
-		for (const dir of bindings?.values() ?? []) for (const into of dir.values()) feeds.add(into)
+		for (const bound of bindings?.values() ?? []) for (const into of bound.values()) feeds.add(into)
 		const offs = await Promise.all(
 			[...feeds].map((feed) =>
 				feed.subscribe
@@ -773,8 +836,7 @@ export function storeVolume(
 		path: string,
 		listener: (event: WatchEvent) => void
 	): Promise<() => void> {
-		// One store, as `watchPath` above: the rows of a feed are matched by id here,
-		// and an id means something only where it was minted.
+		// One store, as `watchPath` above.
 		let feed: Store = store
 		let root: NodeId | null = null
 		let chain = new Set<NodeId>([ROOT])
@@ -881,66 +943,6 @@ export function storeVolume(
 			off()
 		}
 	}
-
-	/**
-	 * The rename primitive: ONE guarded commit, and one commit belongs to ONE
-	 * store. A path that resolves into another is `EXDEV`, exactly as it is on a
-	 * real filesystem, and `rename` above is the `mv` that answers it.
-	 */
-	const renameOne = (oldPath: string, newPath: string): Promise<void> =>
-		retry(async () => {
-			const walked: Node[] = []
-			const from = await parentOf(oldPath, walked)
-			// Not followed, again: `mv` moves the link itself.
-			const node = await from.store.child(from.dir.id, from.name)
-			if (node === null) throw new Error(`ENOENT: ${oldPath}`)
-			const to = await parentOf(newPath, walked)
-			if (to.store !== from.store) throw new Error(`EXDEV: ${oldPath} -> ${newPath}`)
-			// Moving a row below itself makes a detached cycle.
-			const checked = await within(from.store, to.dir, node.id)
-			if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
-			const target = await from.store.child(to.dir.id, to.name)
-			if (target?.id === node.id) return // the same row, in the same place
-
-			// ONE row moves, whatever hangs below it: a child's location is
-			// `(parent, name)`, and neither field changed. This is the O(1) move.
-			const writes: Node[] = [{ ...node, parent: to.dir.id, name: to.name, version: mint() }]
-			const guards: Guard[] = [
-				unchanged(node),
-				// Keep repeat ids: two versions mean the path changed between walks.
-				...walked.map(unchanged),
-				// `to.dir` is guarded below. The other guards keep this check valid.
-				...checked.rows
-					.slice(1)
-					.filter((row) => row.id !== ROOT)
-					.map(unchanged)
-			]
-			if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
-			else {
-				// POSIX rename replaces, but only like for like. A directory is never
-				// replaced by a file, a file never by a directory, and a directory
-				// that still holds entries is never replaced at all: its children
-				// would be left parented on a tombstone, which loses them.
-				if (isDir(target) !== isDir(node))
-					throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${newPath}`)
-				// Safe to read and then act on: the guard below fails if anything is
-				// created inside the target after this listing (the stamp rule).
-				if (isDir(target) && (await from.store.children(target.id)).nodes.length > 0)
-					throw new Error(`ENOTEMPTY: ${newPath}`)
-				// The displaced row is tombstoned in the SAME commit, so no reader
-				// ever sees the name twice or not at all.
-				writes.push(tomb(target))
-				guards.push(unchanged(target))
-			}
-			// Both directories changed shape — one stamp when they are one directory.
-			writes.push(stamp(from.dir))
-			guards.push(unchanged(from.dir))
-			if (to.dir.id !== from.dir.id) {
-				writes.push(stamp(to.dir))
-				guards.push(unchanged(to.dir))
-			}
-			await from.store.commit(writes, guards)
-		})
 
 	// Read caller-owned inputs before the first await. Reuse them on every retry.
 	const vol: Volume = {
@@ -1068,9 +1070,9 @@ export function storeVolume(
 			const at = await resolve(path, true)
 			if (!isDir(at.node)) throw new Error(`ENOTDIR: ${path}`)
 			const entries: Dirent[] = []
-			// A crossed entry reports the bound store's root id, which is the same
-			// constant in every store — an id is unique within one the way a POSIX
-			// inode number is unique within a device, and this model has no `st_dev`.
+			// A crossed entry reports the bound store's root id — unique in that store
+			// the way a POSIX inode number is unique within a device, and this model
+			// has no `st_dev` to tell two of them apart.
 			for await (const entry of entriesOf(at.store, at.node.id))
 				entries.push({ ino: entry.node.id, name: entry.name, type: TYPE[entry.node.type] })
 			return entries
@@ -1115,7 +1117,7 @@ export function storeVolume(
 
 		async rename(oldPath, newPath) {
 			try {
-				await renameOne(oldPath, newPath)
+				await moveRow(oldPath, newPath)
 			} catch (e) {
 				if (!(e instanceof Error) || !e.message.startsWith('EXDEV')) throw e
 				// What `mv` does with an EXDEV: copy, then remove. Not atomic, and the
@@ -1211,11 +1213,10 @@ export function storeVolume(
 				seen: Set<NodeId>
 			): Promise<void> {
 				for await (const entry of entriesOf(st, dir)) {
-					// A crossing is not one of this store's rows: it is the bound store's
-					// root, whose id every store spells the same way. So it is neither
-					// checked against this walk's visited set nor added to it — a scan of
-					// `/` would find its own root's id there and skip the mount whole — and
-					// it starts a set of its own, a cycle being per store too.
+					// A crossing is the bound store's ROOT, and a scan of `/` already holds
+					// that id: it would find the mount visited and skip it whole. So a
+					// crossing is neither checked against this walk's set nor added to it,
+					// and starts one of its own — a cycle is per store too.
 					const crossed = entry.store !== st
 					if (!crossed) {
 						if (seen.has(entry.node.id)) continue

@@ -65,7 +65,7 @@ async function mkmount(store: Store, parent: NodeId, name: string, version = '1'
 }
 
 /** One binding, as the constructor takes it: which store stands at which name, in which directory. */
-const bind = (parent: NodeId, name: string, into: Store): Bindings =>
+const binding = (parent: NodeId, name: string, into: Store): Bindings =>
 	new Map([[parent, new Map([[name, into]])]])
 
 /** Every row a store has ever written, in feed order. */
@@ -166,7 +166,7 @@ describe('crossing', () => {
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
 		const env = await mkfile(priv, ROOT, 'env', 'SECRET=1')
-		const vol = storeVolume(outer, { bindings: bind(ROOT, 'private', priv) })
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
 		const child = vi.spyOn(outer, 'child')
 
 		expect(dec.decode(await vol.readFile('/private/env'))).toBe('SECRET=1')
@@ -190,7 +190,7 @@ describe('crossing', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: bind(ROOT, 'private', priv) })
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
 		const before = await rows(outer)
 
 		await vol.mkdir('/private/notes')
@@ -231,7 +231,7 @@ describe('crossing', () => {
 		await mkmount(outer, ROOT, 'private')
 		const notes = await mkdir(outer, ROOT, 'notes')
 		const kyoto = await mkfile(outer, notes, 'kyoto.md', 'go')
-		const vol = storeVolume(outer, { bindings: bind(ROOT, 'private', priv) })
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
 
 		await vol.rename('/notes', '/private/notes')
 
@@ -257,7 +257,7 @@ describe('silent bindings', () => {
 		const special = await mkdir(outer, ROOT, '.special')
 		await mkfile(outer, special, 'shared.md', 'everyone')
 		const mine = await mkfile(priv, ROOT, 'mine.md', 'only me')
-		const bindings = bind(ROOT, '.special', priv)
+		const bindings = binding(ROOT, '.special', priv)
 		const vol = storeVolume(outer, { bindings })
 		const before = await rows(outer)
 		const fetched = vi.spyOn(outer.blobs, 'get')
@@ -290,7 +290,7 @@ describe('isolation', () => {
 		const priv = recording(memStore())
 		const mint = versions('a')
 		const vol = storeVolume(outer, {
-			bindings: bind(ROOT, 'private', priv.store),
+			bindings: binding(ROOT, 'private', priv.store),
 			mintVersion: mint
 		})
 		await mkmount(outer, ROOT, 'private', mint())
@@ -323,7 +323,7 @@ describe('isolation', () => {
 
 		const mint = versions('a')
 		const volHere = storeVolume(here, {
-			bindings: bind(ROOT, 'private', privHere),
+			bindings: binding(ROOT, 'private', privHere),
 			mintVersion: mint
 		})
 		await mkmount(here, ROOT, 'private', mint())
@@ -333,7 +333,7 @@ describe('isolation', () => {
 
 		await sync(here, there, { replica: 'a', pull: cursor(), push: cursor() })
 		const volThere = storeVolume(there, {
-			bindings: bind(ROOT, 'private', privThere),
+			bindings: binding(ROOT, 'private', privThere),
 			mintVersion: versions('b')
 		})
 
