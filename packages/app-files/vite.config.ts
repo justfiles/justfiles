@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
 						id: 'justfiles.files',
 						name: 'Files',
 						description: 'Browse and preview files',
-						icon: 'icon.png',
+						icon: 'icon.svg',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})
