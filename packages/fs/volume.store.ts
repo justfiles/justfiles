@@ -338,13 +338,20 @@ export function storeVolume(
 	/** A tombstone is still a whole row; only `deleted` and the version speak. */
 	const tomb = (node: Node): Node => ({ ...node, deleted: true, version: mint() })
 
-	/** What a row is made of, apart from where it lives and when it changed. */
+	/**
+	 * What a row is made of, apart from where it lives. `mtimeNs` and `xattrs` are
+	 * left out by everything that WRITES — a write is a new edit, and the name
+	 * keeps its own attributes — and given only by a rename that crosses a store,
+	 * which cannot move its row and so must re-create it whole.
+	 */
 	type Payload = {
 		type: Node['type']
 		mode: number
 		size: bigint
 		content?: Hash
 		link?: string
+		xattrs?: Record<string, Uint8Array>
+		mtimeNs?: bigint
 	}
 
 	/** The bytes a payload names: the caller's array, or the store that has them. */
@@ -377,11 +384,13 @@ export function storeVolume(
 					type: payload.type,
 					// The NAME keeps its permissions and its xattrs; the payload brings
 					// the type bits, so a row that changes kind still says which it is.
+					// A payload that carries them anyway is replacing the row outright.
 					mode: (payload.mode & IFMT) | (node.mode & 0o7777),
 					size: payload.size,
 					content: payload.content,
 					link: payload.link,
-					mtimeNs: now(),
+					xattrs: payload.xattrs ?? node.xattrs,
+					mtimeNs: payload.mtimeNs ?? now(),
 					version: mint()
 				}
 			],
@@ -499,6 +508,55 @@ export function storeVolume(
 				if (isDir(child)) queue.push(child.id)
 			}
 		return out
+	}
+
+	/**
+	 * Copy a subtree. Rows, not bytes: a copy names the content its source already
+	 * stored (design table A — "no byte copy; hash reuse"), which is also why a
+	 * symlink copies as a symlink instead of dereferencing into a fresh file. A
+	 * copy that crosses a mount is the one exception, and only for the bytes:
+	 * `place` carries them, because a hash names nothing in a store that lacks it.
+	 *
+	 * `whole` carries the ROW — its xattrs and its mtime — which is what a rename
+	 * across a store owes and what `cp` must not give: POSIX `cp` needs `-a` before
+	 * it preserves either, and this volume's `cp` is the plain one.
+	 */
+	async function copy(src: string, dest: string, recursive: boolean, whole = false): Promise<void> {
+		const at = await resolve(src, false)
+		const payload: Payload = {
+			type: at.node.type,
+			mode: at.node.mode,
+			size: at.node.size,
+			content: at.node.content,
+			link: at.node.link,
+			...(whole && { xattrs: at.node.xattrs, mtimeNs: at.node.mtimeNs })
+		}
+		if (!isDir(at.node)) {
+			await retry(() => place(dest, payload, undefined, at.store))
+			return
+		}
+
+		if (!recursive) throw new Error(`EISDIR: ${src}`)
+		// Paths lie about ancestry when they cross a link. Walk ids so a copy
+		// cannot find its own output and run without bound — and only within one
+		// store, since a destination in another cannot be inside this one.
+		const there = await find(dest)
+		// Where the copy lands: the destination itself, or — with nothing there
+		// yet — the directory it would be created in.
+		let anchor: At | null = there
+		if (anchor === null) {
+			const up = await parentOf(dest)
+			anchor = { store: up.store, node: up.dir }
+		}
+		if (anchor.store === at.store && (await within(at.store, anchor.node, at.node.id)).inside)
+			throw new Error(`EINVAL: cannot copy ${src} into itself`)
+
+		const names: string[] = []
+		for await (const entry of entriesOf(at.store, at.node.id)) names.push(entry.name)
+
+		if (there === null) await retry(() => place(dest, payload, { exclusive: true }))
+		else if (!isDir(there.node)) throw new Error(`ENOTDIR: ${dest}`)
+		for (const name of names) await copy(join(src, name), join(dest, name), recursive, whole)
 	}
 
 	/**
@@ -1136,54 +1194,21 @@ export function storeVolume(
 				// an id belongs to the store that minted it.
 				const src = await resolve(oldPath, false)
 				const dest = await find(newPath, false)
-				if (dest !== null) await replaces(dest.store, dest.node, src.node, newPath)
-				await vol.cp(oldPath, newPath, { recursive: true })
+				if (dest !== null) {
+					await replaces(dest.store, dest.node, src.node, newPath)
+					// A rename REPLACES, and letting the copy land on what is there is not
+					// the same thing: `place` writes THROUGH a symlink, overwriting a file
+					// nobody named, and merges into a directory rather than taking its
+					// place. So the destination goes first.
+					await vol.rm(newPath)
+				}
+				await copy(oldPath, newPath, true, true)
 				await vol.rm(oldPath, { recursive: true })
 			}
 		},
 
-		async cp(src, dest, opts) {
-			const recursive = opts?.recursive ?? false
-			// Rows, not bytes: a copy names the content its source already stored
-			// (design table A — "no byte copy; hash reuse"), which is also why a
-			// symlink copies as a symlink instead of dereferencing into a fresh file.
-			// A copy that crosses a mount is the one exception, and only for the
-			// bytes: `place` carries them, because a hash names nothing in a store
-			// that does not hold them.
-			const at = await resolve(src, false)
-			if (!isDir(at.node)) {
-				const payload: Payload = {
-					type: at.node.type,
-					mode: at.node.mode,
-					size: at.node.size,
-					content: at.node.content,
-					link: at.node.link
-				}
-				await retry(() => place(dest, payload, undefined, at.store))
-				return
-			}
-
-			if (!recursive) throw new Error(`EISDIR: ${src}`)
-			// Paths lie about ancestry when they cross a link. Walk ids so a copy
-			// cannot find its own output and run without bound — and only within one
-			// store, since a destination in another cannot be inside this one.
-			const there = await find(dest)
-			// Where the copy lands: the destination itself, or — with nothing there
-			// yet — the directory it would be created in.
-			let anchor: At | null = there
-			if (anchor === null) {
-				const up = await parentOf(dest)
-				anchor = { store: up.store, node: up.dir }
-			}
-			if (anchor.store === at.store && (await within(at.store, anchor.node, at.node.id)).inside)
-				throw new Error(`EINVAL: cannot copy ${src} into itself`)
-
-			const names: string[] = []
-			for await (const entry of entriesOf(at.store, at.node.id)) names.push(entry.name)
-
-			if (there === null) await vol.mkdir(dest, { mode: at.node.mode & 0o7777 })
-			else if (!isDir(there.node)) throw new Error(`ENOTDIR: ${dest}`)
-			for (const name of names) await vol.cp(join(src, name), join(dest, name), { recursive })
+		cp(src, dest, opts) {
+			return copy(src, dest, opts?.recursive ?? false)
 		},
 
 		async symlink(target, path) {

@@ -284,6 +284,46 @@ describe('crossing', () => {
 		expect((await vol.stat('/private/kyoto.md')).type).toBe(FileType.Directory)
 	})
 
+	it('replaces a destination symlink instead of writing through it', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.writeFile('/kyoto.md', enc.encode('go'))
+		await vol.writeFile('/private/target.md', enc.encode('keep'))
+		await vol.symlink('target.md', '/private/link')
+
+		await vol.rename('/kyoto.md', '/private/link')
+
+		// A rename replaces the LINK. `cp` would have written through it, leaving the
+		// link in place and overwriting a file nobody named.
+		expect((await vol.lstat('/private/link')).type).toBe(FileType.Regular)
+		expect(dec.decode(await vol.readFile('/private/link'))).toBe('go')
+		expect(dec.decode(await vol.readFile('/private/target.md'))).toBe('keep')
+		expect(await vol.exists('/kyoto.md')).toBe(false)
+	})
+
+	it('carries xattrs and mtime across a rename that crosses a mount', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.mkdir('/notes')
+		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
+		await vol.setXattr('/notes', 'user.tag', enc.encode('folder'))
+		await vol.setXattr('/notes/kyoto.md', 'user.tag', enc.encode('trip'))
+		await vol.utimes('/notes/kyoto.md', 4_000n)
+
+		await vol.rename('/notes', '/private/notes')
+
+		// A rename moves the row. Crossing a store cannot, so it re-creates it — and
+		// what it owes is the ROW, not just the bytes. (`cp` carries less on purpose:
+		// POSIX `cp` needs `-a` before it preserves xattrs either.)
+		expect(await vol.getXattr('/private/notes', 'user.tag')).toEqual(enc.encode('folder'))
+		expect(await vol.getXattr('/private/notes/kyoto.md', 'user.tag')).toEqual(enc.encode('trip'))
+		expect((await vol.stat('/private/notes/kyoto.md')).mtimeNs).toBe(4_000n)
+	})
+
 	it('keeps the guards of both endpoint walks inside one mount', async () => {
 		const outer = memStore()
 		const priv = memStore()
