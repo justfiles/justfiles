@@ -23,7 +23,9 @@
  * Outside it: it does not work around a mode that shuts it out of a LOOK. A directory it
  * cannot list is skipped and its rows keep the last state it saw, which is rsync's
  * answer; a WRITE is the one exception, because the page carrying it would otherwise be
- * retried for ever. It does not defend against a tree whose owner is hostile to it: a
+ * retried for ever. It does not adopt what POSIX has and a row cannot say — a FIFO, a
+ * socket, a device node — and does not read one either: those names are left where they
+ * are, untouched and unreported. It does not defend against a tree whose owner is hostile to it: a
  * `.jfs` an attacker can write is a store an attacker controls. And it has no
  * transaction, so a commit that FAILS halfway leaves the batch half applied and the
  * sidecar unsaved — the next scan reconciles what it can see, and a retry heals the rest.
@@ -158,8 +160,15 @@ const rounded = (disk: bigint, stated: bigint): boolean => {
 	return (disk > written ? disk - written : written - disk) < 1_000_000n
 }
 
-const kindOf = (s: BigIntStats): Node['type'] =>
-	s.isDirectory() ? 'dir' : s.isSymbolicLink() ? 'symlink' : 'file'
+/**
+ * What POSIX says this is, in the vocabulary a row has — and null for everything else: a
+ * FIFO, a socket, a device node. Not a row this store can state, and not one it may even
+ * LOOK at: opening a FIFO blocks until somebody writes to it, and the hash of every
+ * changed file is taken on the one turn the whole store shares. One named pipe in the
+ * tree would take the store with it.
+ */
+const kindOf = (s: BigIntStats): Node['type'] | null =>
+	s.isDirectory() ? 'dir' : s.isSymbolicLink() ? 'symlink' : s.isFile() ? 'file' : null
 
 /** Does this row hold entries on the disk? A mount stands where a directory would. */
 const isDir = (row: Node): boolean => row.type === 'dir' || row.type === 'mount'
@@ -873,6 +882,9 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	/** The row a file states it is. Everything POSIX knows about it, and nothing else. */
 	const derive = async (path: Spot, s: BigIntStats, base: NewNode): Promise<Node | null> => {
 		const kind = kindOf(s)
+		// Nothing this store can say, so it says nothing: no row, and the name is left exactly
+		// as it is for whoever does own it.
+		if (kind === null) return null
 		const row: Node = {
 			id: base.id,
 			parent: base.parent,

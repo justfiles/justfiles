@@ -6,6 +6,7 @@
  * file that already has one.
  */
 
+import { execFile } from 'node:child_process'
 import {
 	chmod,
 	mkdir,
@@ -22,6 +23,7 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, test } from 'vitest'
 import { type Disk, fsDisk, type Spot } from './disk'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
@@ -43,6 +45,11 @@ afterEach(async () => {
 })
 
 const temp = (): Promise<string> => mkdtemp(join(tmpdir(), 'jfs-t14-'))
+
+/** A named pipe. `node:fs` cannot make one, and the point is what POSIX does with it. */
+const mkfifo = async (at: string): Promise<void> => {
+	await promisify(execFile)('mkfifo', [at])
+}
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 const read = (data: Uint8Array | null): string | null =>
@@ -2192,4 +2199,33 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 			return (await store.child(found.id, 'late.txt')) !== null
 		})
 	})
+
+	test('a named pipe is not a file, and is never opened', async () => {
+		// `readFile` on a FIFO blocks until somebody writes to it, and the hash of every
+		// changed file is taken on the one turn the whole store shares. Called a file, one
+		// named pipe anywhere in the tree stops the store for good — not slowly, permanently.
+		const root = await temp()
+		await mkfifo(join(root, 'pipe'))
+		await writeFile(join(root, 'a.txt'), 'an ordinary file')
+		const store = open(root)
+
+		// A regression HANGS rather than fails, so the case holds it to a clock of its own.
+		const got = await Promise.race([
+			feed(store).then(() => 'scanned'),
+			new Promise<string>((resolve) => setTimeout(() => resolve('blocked on the pipe'), 5_000))
+		])
+		if (got !== 'scanned') {
+			// Let the blocked reader go, or the worker never exits to report the failure.
+			await writeFile(join(root, 'pipe'), '')
+		}
+		expect(got).toBe('scanned')
+
+		// The ordinary file is a row. The pipe is nobody's — not adopted, not tombstoned,
+		// not touched.
+		expect((await store.child(ROOT, 'a.txt'))?.content).toBe(
+			await sha256Hex(bytes('an ordinary file'))
+		)
+		expect(await store.child(ROOT, 'pipe')).toBeNull()
+		expect((await stat(join(root, 'pipe'))).isFIFO()).toBe(true)
+	}, 20_000)
 })
