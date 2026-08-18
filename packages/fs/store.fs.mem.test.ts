@@ -12,9 +12,9 @@
 import { describe, expect, test } from 'vitest'
 import { AT_ROOT, type Disk, type Spot, stateOf, under } from './disk'
 import { memDisk } from './disk.mem'
-import { ROOT, type Store } from './store'
+import { ROOT, type Store, sha256Hex } from './store'
 import { storeConformance } from './store.conformance'
-import { fsStore } from './store.fs'
+import { fsStore, SWEEP_MS } from './store.fs'
 
 const built: Store[] = []
 const open = (fault?: Parameters<typeof memDisk>[0]): Store => {
@@ -193,4 +193,58 @@ describe('fsStore: a file is not a blob store', () => {
 
 		expect(await disk.bytes(at)).toEqual(bytes('mine, typed while waiting'))
 	})
+})
+
+describe('fsStore: what a placement may claim about the file it left', () => {
+	test('a hash is not recorded against a file somebody else took the name for', async () => {
+		// The observation is deferred to the end of the batch, so a directory's mtime has
+		// settled before it is read. That leaves a window between a file being placed and
+		// being looked at, and a local tool taking the name in it would have its state
+		// recorded next to the hash of the bytes the store meant to place. That pair reads
+		// as already reconciled: the scan skips the edit for ever, and `blobs` answers
+		// those bytes under a hash that does not name them.
+		const disk = memDisk()
+		let meddle: Spot | null = null
+		let looks = 0
+		const racy: Disk = {
+			...disk,
+			async stat(spot) {
+				const s = await disk.stat(spot)
+				// The placement's own last act is to look at what it left, so firing straight
+				// after that puts the edit in the window: placed, not yet observed.
+				if (spot === meddle && ++looks === 1) await disk.write(spot, bytes('typed by a local tool'))
+				return s
+			}
+		}
+		const store = fsStore('mem', racy)
+		built.push(store)
+		const at = under(AT_ROOT, 'a.txt')
+		if (at === null) throw new Error('unreachable')
+
+		const key = 'e'.repeat(64)
+		await store.blobs.put(key, bytes('what the store meant to place'))
+		meddle = at
+		await store.commit([
+			{
+				id: 'a',
+				parent: ROOT,
+				name: 'a.txt',
+				type: 'file',
+				mode: 0o100644,
+				size: 29n,
+				mtimeNs: 0n,
+				content: key,
+				version: 'v1'
+			}
+		])
+		meddle = null
+
+		expect(await disk.bytes(at)).toEqual(bytes('typed by a local tool'))
+		// Not answered under a key that does not name them,
+		expect(await store.blobs.get(key)).not.toEqual(bytes('typed by a local tool'))
+		// and not invisible to the scan either — the deep pass derives what is there.
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS * 6))
+		await store.since()
+		expect((await store.get('a'))?.content).toBe(await sha256Hex(bytes('typed by a local tool')))
+	}, 30_000)
 })

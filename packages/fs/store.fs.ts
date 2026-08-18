@@ -10,8 +10,15 @@
  * This store OWNS the tree it is given, and runs as somebody who can read and write it.
  * Inside that it defends against concurrent change — a local tool may create, edit, move
  * or delete anything at any moment, including between this store's own two calls, and
- * identity is checked against the inode every time — and against a row from a peer
- * naming anything outside the tree.
+ * what was observed is checked again before it is acted on — and against a row from a
+ * peer naming anything outside the tree.
+ *
+ * That defence is a check next to the act, never one call. POSIX offers no rename, write
+ * or chmod conditional on what the name currently holds, so every one of them is
+ * check-then-act, and a local tool writing between the two still wins. What the checks
+ * buy is a window of adjacent syscalls instead of one spanning a whole batch — and, where
+ * a claim would outlive the window, silence: nothing is recorded rather than something
+ * that would read as reconciled and stop the scan ever looking again.
  *
  * Outside it: it does not work around a mode that shuts it out of a LOOK. A directory it
  * cannot list is skipped and its rows keep the last state it saw, which is rsync's
@@ -110,8 +117,13 @@ const DEEP_MS = 5_000
 
 const EMPTY = new Uint8Array()
 
-/** Where a row was just put, for the observation pass at the end of a batch. */
-type Landed = { id: NodeId; path: Spot; hash?: Hash }
+/**
+ * Where a row was just put, for the observation pass at the end of a batch. `was` is what
+ * the placement left at the name, for anything whose state the rest of the batch has no
+ * business moving — everything but a directory, whose mtime an entry landing inside it
+ * moves on purpose, which is why the observation is deferred at all.
+ */
+type Landed = { id: NodeId; path: Spot; hash?: Hash; was?: Seen }
 
 /** All a node needs before the disk says what it is: an id and a place in the tree. */
 type NewNode = Pick<Node, 'id' | 'parent' | 'name'> & Partial<Node>
@@ -643,9 +655,18 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// store out would fail the child of the same batch with EACCES, stalling the replica for
 		// good. A mode it can still write through goes on now — write and SEARCH is the whole
 		// requirement, so `0300` is as workable as `0700`.
-		if (!isDir(row)) await disk.stamp(path, stampOf(row))
-		else if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
-		return { id: row.id, path, hash }
+		if (isDir(row)) {
+			if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
+			return { id: row.id, path, hash }
+		}
+		await disk.stamp(path, stampOf(row))
+		return { id: row.id, path, hash, was: await stateAt(path) }
+	}
+
+	/** What is at a name, as an observation to hold somebody to. */
+	const stateAt = async (path: Spot): Promise<Seen | undefined> => {
+		const s = await disk.stat(path)
+		return s === null ? undefined : { path, ino: String(s.ino), state: stateOf(s) }
 	}
 
 	/**
@@ -712,7 +733,13 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		}
 		for (const [id, landed] of where) {
 			const s = await disk.stat(landed.path)
-			if (s === null) unmark(id)
+			// The hash names what this pass PUT there, and the state is being read now. A
+			// local tool that took the name in between makes that pair a lie: the state is
+			// its file's, the hash is somebody else's bytes. Recorded, it would read as
+			// already reconciled — the scan would skip the edit for ever, and `blobs` would
+			// answer those bytes under a hash that does not name them. So nothing is
+			// recorded, and the next scan derives what is really there.
+			if (s === null || (landed.was !== undefined && !unchanged(landed.was, s))) unmark(id)
 			else mark(id, { path: landed.path, ino: String(s.ino), state: stateOf(s), hash: landed.hash })
 		}
 		// Last, because everything above had to be able to write and look through them.
@@ -1183,7 +1210,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 				continue
 			}
 			await disk.stamp(at.path, stampOf(row))
-			placed.push({ id: row.id, path: at.path, hash })
+			placed.push({ id: row.id, path: at.path, hash, was: await stateAt(at.path) })
 			dirs.add(row.parent)
 		}
 		if (placed.length === 0) return false
