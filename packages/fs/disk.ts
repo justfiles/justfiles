@@ -140,6 +140,10 @@ export interface Disk {
 	/**
 	 * Bytes into a name in ONE operation: built beside it, then renamed over it.
 	 *
+	 * `at` is put on the payload BEFORE it takes the name, so what arrives is already the
+	 * object the row describes — there is no moment where the name holds a file wearing
+	 * `writeFile`'s mode, and nothing to stamp afterwards on whatever answers by then.
+	 *
 	 * `was` makes it conditional — the bytes land only while the disk still holds what
 	 * the caller observed there, and false is somebody else's having arrived instead.
 	 * The whole state and not just the inode: `echo x > f` truncates in place, so a
@@ -147,9 +151,9 @@ export interface Disk {
 	 * Asked immediately before the rename, so the window is two adjacent calls rather
 	 * than however long the payload took to write.
 	 */
-	write(spot: Spot, data: Uint8Array, was?: Seen): Promise<boolean>
+	write(spot: Spot, data: Uint8Array, at?: Stamp, was?: Seen): Promise<boolean>
 	/** A symlink into a name, the same way. */
-	link(spot: Spot, target: string): Promise<void>
+	link(spot: Spot, target: string, at?: Stamp): Promise<void>
 	/** This directory and every one above it. */
 	dir(spot: Spot): Promise<void>
 	/** What a row states about its object, on the object. */
@@ -219,12 +223,14 @@ export function fsDisk(rootPath: string): Disk {
 	const publish = async (
 		spot: Spot,
 		build: (tmp: string) => Promise<void>,
+		at?: Stamp,
 		was?: Seen
 	): Promise<boolean> => {
 		const os = abs(spot)
 		const tmp = `${os}.jfs-${crypto.randomUUID()}`
 		try {
 			await build(tmp)
+			if (at !== undefined) await stampAt(tmp, at)
 			if (was !== undefined) {
 				const s = await lstat(spot)
 				if (s === null || !unchanged(was, s)) return false
@@ -266,6 +272,14 @@ export function fsDisk(rootPath: string): Disk {
 		}
 	}
 
+	const stampAt = async (os: string, at: Stamp): Promise<void> => {
+		// A symlink's own mode is not settable on every platform, and nothing reads it.
+		if (!at.symlink) await chmod(os, at.mode & 0o7777)
+		if (at.mtimeNs === undefined) return
+		const when = new Date(Number(at.mtimeNs / 1_000_000n))
+		await lutimes(os, when, when)
+	}
+
 	/** Directories opened for a pass, closed again by the pass that opened them. */
 	const opened = new Set<NodeId>()
 
@@ -302,21 +316,15 @@ export function fsDisk(rootPath: string): Disk {
 
 		mine,
 
-		write: (spot, data, was) => publish(spot, (tmp) => writeFile(tmp, data), was),
+		write: (spot, data, at, was) => publish(spot, (tmp) => writeFile(tmp, data), at, was),
 
-		link: async (spot, target) => void (await publish(spot, (tmp) => symlink(target, tmp))),
+		link: async (spot, target, at) => void (await publish(spot, (tmp) => symlink(target, tmp), at)),
 
 		async dir(spot) {
 			await mkdir(abs(spot), { recursive: true })
 		},
 
-		async stamp(spot, at) {
-			// A symlink's own mode is not settable on every platform, and nothing reads it.
-			if (!at.symlink) await chmod(abs(spot), at.mode & 0o7777)
-			if (at.mtimeNs === undefined) return
-			const when = new Date(Number(at.mtimeNs / 1_000_000n))
-			await lutimes(abs(spot), when, when)
-		},
+		stamp: (spot, at) => stampAt(abs(spot), at),
 
 		async move(at, to) {
 			if (!(await mine(at))) return false

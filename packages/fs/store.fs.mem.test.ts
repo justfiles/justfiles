@@ -12,7 +12,7 @@
 import { describe, expect, test } from 'vitest'
 import { AT_ROOT, type Disk, type Spot, stateOf, under } from './disk'
 import { memDisk } from './disk.mem'
-import { ROOT, type Store, sha256Hex } from './store'
+import { type Node, ROOT, type Store, sha256Hex } from './store'
 import { storeConformance } from './store.conformance'
 import { fsStore, SWEEP_MS } from './store.fs'
 
@@ -109,9 +109,9 @@ test('a write that carries an observation lands only while it holds', async () =
 	if (s === null) throw new Error('unreachable')
 	const was = { path: at, ino: String(s.ino), state: stateOf(s) }
 
-	expect(await disk.write(at, bytes('again'), was)).toBe(true)
+	expect(await disk.write(at, bytes('again'), undefined, was)).toBe(true)
 	// And now the observation is stale, because that write moved it.
-	expect(await disk.write(at, bytes('third'), was)).toBe(false)
+	expect(await disk.write(at, bytes('third'), undefined, was)).toBe(false)
 	expect(await disk.bytes(at)).toEqual(bytes('again'))
 })
 
@@ -247,4 +247,111 @@ describe('fsStore: what a placement may claim about the file it left', () => {
 		await store.since()
 		expect((await store.get('a'))?.content).toBe(await sha256Hex(bytes('typed by a local tool')))
 	}, 30_000)
+})
+
+describe('fsStore: what a commit may take off the disk', () => {
+	const folder = (deleted = false): Node => ({
+		id: 'd',
+		parent: ROOT,
+		name: 'folder',
+		type: 'dir',
+		mode: 0o040755,
+		size: 0n,
+		mtimeNs: 0n,
+		version: deleted ? 'v2' : 'v1',
+		...(deleted ? { deleted: true } : {})
+	})
+
+	test('a file the store never saw is not taken with the directory holding it', async () => {
+		// A peer deletes a folder; a local tool made a file in it since the last look. That
+		// file is in nobody's index, so `holdsFiles` would call the directory empty and the
+		// recursive removal would take the only copy of it there is. Looked at first, it
+		// becomes a row instead — of the buried directory, so it keeps its bytes in the
+		// holding area, and it goes out on the feed for every other replica.
+		const disk = memDisk()
+		const store = fsStore('mem', disk)
+		built.push(store)
+		await store.commit([folder()])
+		await store.since()
+
+		const at = under(AT_ROOT, 'folder')
+		if (at === null) throw new Error('unreachable')
+		const child = under(at, 'local.txt')
+		if (child === null) throw new Error('unreachable')
+		await disk.write(child, bytes('the only copy of this'))
+
+		await store.commit([folder(true)])
+
+		const hash = await sha256Hex(bytes('the only copy of this'))
+		const feed = await store.since()
+		expect({
+			reachable: await store.blobs.has(hash),
+			content: await store.blobs.get(hash),
+			live: feed.nodes.filter((n) => !n.deleted && n.content === hash).map((n) => n.name)
+		}).toEqual({
+			reachable: true,
+			content: bytes('the only copy of this'),
+			live: ['local.txt']
+		})
+	})
+
+	test('a directory this store cannot list is moved aside, never removed', async () => {
+		// Not knowing what is under it is reason enough. A recursive removal cannot be
+		// taken back, and a mode that shuts this store out hides exactly the files it
+		// would be taking.
+		const disk = memDisk()
+		const store = fsStore('mem', disk)
+		built.push(store)
+		await store.commit([folder()])
+		await store.since()
+
+		const at = under(AT_ROOT, 'folder')
+		if (at === null) throw new Error('unreachable')
+		const child = under(at, 'local.txt')
+		if (child === null) throw new Error('unreachable')
+		await disk.write(child, bytes('behind a shut door'))
+		await disk.stamp(at, { mode: 0o000 }) // no read, no search
+
+		await store.commit([folder(true)])
+
+		// Nothing is at the name any more, because the whole thing went aside intact.
+		expect(await disk.stat(at)).toBeNull()
+		const held = under(AT_ROOT, '.jfs')
+		if (held === null) throw new Error('unreachable')
+		expect(await disk.list(held)).toContain('detached')
+	})
+})
+
+describe('fsStore: a file arrives already describing itself', () => {
+	test('a placement needs no stamp of its own', async () => {
+		// The stamp rides in with the payload, so what takes the name is already the object
+		// the row describes — there is no moment where it wears `writeFile`'s mode, and
+		// nothing to put on whatever answers to the name afterwards. Shown by refusing every
+		// `stamp` at the path: the mode has to be right without one.
+		const store = fsStore(
+			'mem',
+			memDisk((op, at) => (op === 'stamp' && at === 'a.txt' ? 'EPERM' : null))
+		)
+		built.push(store)
+		const key = 'f'.repeat(64)
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([
+			{
+				id: 'a',
+				parent: ROOT,
+				name: 'a.txt',
+				type: 'file',
+				mode: 0o100600,
+				size: 5n,
+				mtimeNs: 1_000_000_000n,
+				content: key,
+				version: 'v1'
+			}
+		])
+		const row = await store.get('a')
+		expect({ mode: row?.mode, mtimeNs: row?.mtimeNs }).toEqual({
+			mode: 0o100600,
+			mtimeNs: 1_000_000_000n
+		})
+	})
 })

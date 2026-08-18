@@ -367,6 +367,31 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	 * a directory may belong to rows nobody deleted, and their files are the only copy of
 	 * their bytes there is. `was` is what the disk holds there, when the caller knows.
 	 */
+	/**
+	 * Everything under a directory this batch is about to take off the disk, looked at
+	 * first. A commit is not a scan, but a recursive removal is the one act that cannot be
+	 * taken back: a file a local tool made since the last look is in nobody's index, so
+	 * `holdsFiles` would call the directory empty and `rm -rf` the only copy of it.
+	 *
+	 * Looking makes it a row — of the buried directory, so it has no path and its bytes go
+	 * to the holding area with the subtree, and onto the feed for every other replica.
+	 */
+	const lookUnder = async (id: NodeId, path: Spot): Promise<void> => {
+		const queue: Landed[] = [{ id, path }]
+		for (let dir = queue.pop(); dir !== undefined; dir = queue.pop())
+			queue.push(...(await syncDir(dir.id, dir.path)))
+	}
+
+	/**
+	 * Is there anything under this that must not go with it? What this store tracks, and
+	 * whatever a directory it cannot list may be holding — not knowing is reason enough to
+	 * move it aside rather than remove it.
+	 */
+	const keepsAnything = async (path: Spot, was: Node | null): Promise<boolean> => {
+		if (was && !isDir(was)) return false
+		return holdsFiles(path, was) || (await disk.list(path)) === null
+	}
+
 	const holdsFiles = (path: Spot, was: Node | null = null): boolean => {
 		if (was && !isDir(was)) return false
 		const under = `${path}/`
@@ -552,20 +577,28 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		old: Node | null,
 		at: Seen | undefined
 	): Promise<Hash | undefined> => {
+		const on = stampOf(row)
+		// Nothing to publish, so the stamp goes on the name instead. Every other way out of
+		// here rides in with the payload, which is the only way it can be the first thing
+		// true about the file rather than the second.
+		const keep = async (hash: Hash | undefined): Promise<Hash | undefined> => {
+			await disk.stamp(os, on)
+			return hash
+		}
 		if (row.content === undefined) {
 			// No content is a claim too, so a row that dropped its hash empties its file.
-			if (at && old?.content === undefined) return undefined
-			await disk.write(os, EMPTY)
+			if (at && old?.content === undefined) return keep(undefined)
+			await disk.write(os, EMPTY, on)
 			return undefined
 		}
-		if (at?.hash === row.content) return at.hash
+		if (at?.hash === row.content) return keep(at.hash)
 		const data = await readBlob(row.content)
 		if (data !== null) {
-			await disk.write(os, data)
+			await disk.write(os, data, on)
 			return row.content
 		}
-		if (at) return at.hash // the row is a stub over whatever the file holds
-		await disk.write(os, EMPTY)
+		if (at) return keep(at.hash) // the row is a stub over whatever the file holds
+		await disk.write(os, EMPTY, on)
 		return undefined
 	}
 
@@ -584,8 +617,10 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			if (at) {
 				await unlockFor(up(at.path))
 				// A batch may tombstone a directory a page before the rows inside it, so what is
-				// under it decides: a recursive `rm` does not get to take a file it is not deleting.
-				if (holdsFiles(at.path, old)) await park(row.id, at)
+				// under it decides — and what is under it is looked at first, because a recursive
+				// `rm` does not get to take a file nobody has ever seen.
+				if (old && isDir(old)) await lookUnder(row.id, at.path)
+				if (await keepsAnything(at.path, old)) await park(row.id, at)
 				else await remove(at, old)
 			}
 			unmark(row.id)
@@ -634,7 +669,8 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// way a tombstoned directory does — what was inside it may be live rows whose own pages
 		// have not arrived yet.
 		if (at && old && old.type !== row.type) {
-			if (holdsFiles(at.path, old)) await park(row.id, at)
+			if (isDir(old)) await lookUnder(row.id, at.path)
+			if (await keepsAnything(at.path, old)) await park(row.id, at)
 			else await remove(at, old)
 			unmark(row.id)
 			at = undefined
@@ -642,7 +678,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 
 		let hash = at?.hash
 		if (row.type === 'symlink') {
-			await disk.link(path, row.link ?? '')
+			await disk.link(path, row.link ?? '', stampOf(row))
 		} else if (row.type === 'file') {
 			hash = await fill(path, row, old, at)
 		} else {
@@ -659,7 +695,8 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
 			return { id: row.id, path, hash }
 		}
-		await disk.stamp(path, stampOf(row))
+		// Already stamped, by whatever put it there: a file rides in wearing what the row
+		// states, so there is no moment between arriving and being described.
 		return { id: row.id, path, hash, was: await stateAt(path) }
 	}
 
@@ -1205,11 +1242,10 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			// name that moved under it is looked at again instead, which makes what the file
 			// holds a row, and a row naming other content is no stub waiting for these bytes.
 			await unlockFor(up(at.path))
-			if (!(await disk.write(at.path, data, at))) {
+			if (!(await disk.write(at.path, data, stampOf(row), at))) {
 				await settle([[row.parent, row.name]])
 				continue
 			}
-			await disk.stamp(at.path, stampOf(row))
 			placed.push({ id: row.id, path: at.path, hash, was: await stateAt(at.path) })
 			dirs.add(row.parent)
 		}

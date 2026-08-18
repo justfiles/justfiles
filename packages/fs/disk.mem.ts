@@ -29,6 +29,7 @@ import {
 	SEARCH,
 	type Seen,
 	type Spot,
+	type Stamp,
 	stateOf,
 	unchanged,
 	WRITE
@@ -179,6 +180,21 @@ export function memDisk(fault: Fault = () => null): Disk {
 		return s !== null && String(s.ino) === was.ino
 	}
 
+	const stampOn = (obj: Obj, how: Stamp): void => {
+		// A symlink's own mode is not settable on every platform, and nothing reads it —
+		// the same carve-out the real one makes.
+		if (!how.symlink) {
+			obj.perm = how.mode & 0o7777
+			obj.ctimeNs = now()
+		}
+		if (how.mtimeNs === undefined) return
+		// A `Date` carries milliseconds, so that is all a stamp can write. The store knows
+		// this and forgives the difference (`rounded`); it has to be real here or that
+		// forgiveness is never exercised.
+		obj.mtimeNs = (how.mtimeNs / 1_000_000n) * 1_000_000n
+		obj.ctimeNs = now()
+	}
+
 	/** Is the name still holding what the caller observed there? */
 	const still = async (was: Seen): Promise<boolean> => {
 		const s = await look(was.path)
@@ -264,37 +280,46 @@ export function memDisk(fault: Fault = () => null): Disk {
 
 		mine,
 
-		async write(at, data, was) {
+		async write(at, data, on, was) {
 			check('write', at)
 			// The same condition the real one applies, and at the same moment: what the
 			// caller observed is still what the name holds, or these bytes are not its
 			// write to make.
 			if (was !== undefined && !(await still(was))) return false
-			put(at, () => ({
-				// A publish takes the name with a rename, so what lands is a NEW object —
-				// a new inode, and the mode a fresh file gets. That is the whole reason a
-				// stamp has to follow every write, and a test that reused the old inode
-				// here would never see it.
-				ino: inos++,
-				kind: 'file',
-				perm: 0o644,
-				mtimeNs: now(),
-				ctimeNs: now(),
-				data: new Uint8Array(data)
-			}))
+			put(at, () => {
+				// A publish takes the name with a rename, so what lands is a NEW object — a
+				// new inode, and the mode a fresh file gets. A test that reused the old inode
+				// here would never see the checks that exist because it does not.
+				const made: Obj = {
+					ino: inos++,
+					kind: 'file',
+					perm: 0o644,
+					mtimeNs: now(),
+					ctimeNs: now(),
+					data: new Uint8Array(data)
+				}
+				// Stamped before it has a name, like the real one: what arrives is already
+				// the object the row describes.
+				if (on !== undefined) stampOn(made, on)
+				return made
+			})
 			return true
 		},
 
-		async link(at, target) {
+		async link(at, target, on) {
 			check('link', at)
-			put(at, () => ({
-				ino: inos++,
-				kind: 'symlink',
-				perm: 0o777,
-				mtimeNs: now(),
-				ctimeNs: now(),
-				link: target
-			}))
+			put(at, () => {
+				const made: Obj = {
+					ino: inos++,
+					kind: 'symlink',
+					perm: 0o777,
+					mtimeNs: now(),
+					ctimeNs: now(),
+					link: target
+				}
+				if (on !== undefined) stampOn(made, on)
+				return made
+			})
 		},
 
 		async dir(at) {
@@ -304,19 +329,7 @@ export function memDisk(fault: Fault = () => null): Disk {
 
 		async stamp(at, how) {
 			check('stamp', at)
-			const obj = must(at)
-			// A symlink's own mode is not settable on every platform, and nothing reads
-			// it — the same carve-out the real one makes.
-			if (!how.symlink) {
-				obj.perm = how.mode & 0o7777
-				obj.ctimeNs = now()
-			}
-			if (how.mtimeNs === undefined) return
-			// A `Date` carries milliseconds, so that is all a stamp can write. The store
-			// knows this and forgives the difference (`rounded`); it has to be real here
-			// or that forgiveness is never exercised.
-			obj.mtimeNs = (how.mtimeNs / 1_000_000n) * 1_000_000n
-			obj.ctimeNs = now()
+			stampOn(must(at), how)
 		},
 
 		async move(was, to) {
