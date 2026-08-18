@@ -90,13 +90,27 @@ Three things the RED list did not spell out, decided here:
   `readdir` entry reports the bound root's id — unique per store, the way a POSIX
   inode number is unique per device, and this model has no `st_dev`.
 
-A rename that crosses a mount does not go through `cp`. `cp` is a different
-operation — it chooses what to carry, writes THROUGH a destination symlink, and
-merges into a directory instead of taking its place — so a rename built out of
-one diverges silently, once per field and once per rule. `moveAcross` moves ROWS
-instead, stating the rule once (`{ ...row, id: fresh, parent, name, version }`),
-and `volume.store.mounts.test.ts` pins the two renames to each other over a
-PRODUCT of source kinds and destination kinds rather than a list of cases.
+A rename that crosses a mount does two things differently from the first cut,
+after eight review findings that were all the same operation.
+
+It does not go through `cp`. `cp` chooses what to carry, writes THROUGH a
+destination symlink, and merges into a directory instead of taking its place, so
+a rename built out of one diverges once per field and once per rule.
+`moveAcross` moves ROWS, stating the rule once —
+`{ ...row, id: fresh, parent, name, version }` — so nothing is enumerated and
+nothing can be left out.
+
+And it only ATTEMPTS a move it can make whole: an ordinary row, into a free
+name, with no mount under it. A mount point is not a row to move, a taken
+destination cannot be replaced across two commits, and a mount inside the source
+is a route the move would tombstone. Each of those keeps the `EXDEV` — which is
+what `rename(2)` answers for every cross-device rename, emulation being
+userspace's job there. The design doc's sentence on this is narrowed to match.
+
+`volume.store.mounts.test.ts` holds the pair to one of two answers, over a
+PRODUCT of source kinds and destination kinds rather than a list of cases: it
+did what the one-store rename did, or it refused with `EXDEV` and left
+everything exactly as it was.
 
 `rm` of a BOUND mount point resolves to the bound store's root and is refused —
 `EBUSY` by another name; unbind first. An unbound one is an ordinary row and goes

@@ -315,7 +315,13 @@ describe('crossing', () => {
  * forgets, and every rule about the destination it reads differently, is a bug.
  * They can disagree in more ways than a list of cases would ever cover, and each
  * one found by hand is one more patch. So this does not list them: it runs the
- * SAME story through both and compares what each leaves behind, field for field.
+ * SAME story through both and holds the crossing to one of two answers.
+ *
+ * It did what the one-store rename did, or it refused with `EXDEV` and left
+ * everything exactly as it was. There is no third answer. Crossing a mount
+ * narrows what `mv` will ATTEMPT — the kernel refuses every cross-device rename,
+ * and this refuses the ones it cannot finish whole — and never changes what `mv`
+ * MEANS where it does go through.
  */
 describe('a rename across a mount is still a rename', () => {
 	/**
@@ -397,27 +403,43 @@ describe('a rename across a mount is still a rename', () => {
 	const beside = async (vol: Volume, path: string): Promise<string[]> =>
 		(await vol.readdir(path)).map((entry) => `${entry.name}:${entry.type}`).sort()
 
-	/** Everything the rename did: what it refused with, and the state it left. */
-	async function outcome(vol: Volume, from: string, dest: string, box: string): Promise<unknown> {
+	/** Everything there is to see, from the three places a rename can change. */
+	const state = async (
+		vol: Volume,
+		from: string,
+		dest: string,
+		box: string
+	): Promise<Record<string, unknown>> => ({
+		moved: await tree(vol, dest).catch(() => null),
+		beside: await beside(vol, box),
+		source: await tree(vol, from).catch(() => null)
+	})
+
+	/** What the rename did: what it refused with, and the state it left. */
+	async function outcome(
+		vol: Volume,
+		from: string,
+		dest: string,
+		box: string
+	): Promise<Record<string, unknown>> {
 		let refused: string | undefined
 		try {
 			await vol.rename(from, dest)
 		} catch (e) {
 			refused = (e as Error).message.split(':')[0]
 		}
-		return {
-			refused,
-			moved: await tree(vol, dest).catch(() => null),
-			beside: await beside(vol, box),
-			source: await tree(vol, from).catch(() => null)
-		}
+		return { refused, ...(await state(vol, from, dest, box)) }
 	}
 
 	/** One story, run inside a single store and then across a mount. */
 	async function both(
 		from: string,
 		set?: (vol: Volume, dest: string) => Promise<void>
-	): Promise<{ here: unknown; across: unknown }> {
+	): Promise<{
+		here: Record<string, unknown>
+		untouched: Record<string, unknown>
+		across: Record<string, unknown>
+	}> {
 		const one = memStore()
 		const here = storeVolume(one)
 		await here.mkdir('/box')
@@ -434,6 +456,8 @@ describe('a rename across a mount is still a rename', () => {
 
 		return {
 			here: await outcome(here, from, '/box/dest', '/box'),
+			// What a refusal has to leave behind, read before anything is attempted.
+			untouched: await state(across, from, '/private/box/dest', '/private/box'),
 			across: await outcome(across, from, '/private/box/dest', '/private/box')
 		}
 	}
@@ -490,9 +514,75 @@ describe('a rename across a mount is still a rename', () => {
 	for (const source of sources)
 		for (const dest of destinations)
 			it(`moves ${source.kind} onto ${dest.kind}`, async () => {
-				const { here, across } = await both(source.from, dest.set)
-				expect(across).toEqual(here)
+				const { here, untouched, across } = await both(source.from, dest.set)
+				if (across.refused === 'EXDEV') expect(across).toEqual({ refused: 'EXDEV', ...untouched })
+				else expect(across).toEqual(here)
 			})
+
+	// The three refusals, named. Each is a move that cannot be made WHOLE, and half
+	// a move is worse than none — so `EXDEV` reaches the caller, exactly as it does
+	// for every cross-device rename the kernel is asked for.
+
+	it('refuses to move a mount point into another store', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		const other = memStore()
+		await mkmount(outer, ROOT, 'private')
+		await mkmount(outer, ROOT, 'other')
+		const vol = storeVolume(outer, {
+			bindings: new Map([
+				[
+					ROOT,
+					new Map([
+						['private', priv],
+						['other', other]
+					])
+				]
+			])
+		})
+		await vol.writeFile('/private/env', enc.encode('SECRET'))
+
+		// `/private` names the mount POINT, and resolution crosses it — so what a
+		// move would find there is the local store's root, not a row to move.
+		await expect(vol.rename('/private', '/other/moved')).rejects.toThrow(/^EXDEV/)
+
+		expect((await outer.child(ROOT, 'private'))?.type).toBe('mount')
+		expect(dec.decode(await vol.readFile('/private/env'))).toBe('SECRET')
+		expect(await vol.readdir('/other')).toEqual([])
+	})
+
+	it('refuses to move a directory into a store mounted beneath it', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		const src = await mkdir(outer, ROOT, 'src')
+		await mkmount(outer, src, 'private')
+		const vol = storeVolume(outer, { bindings: binding(src, 'private', priv) })
+		await vol.writeFile('/src/private/env', enc.encode('SECRET'))
+
+		// The route to the local store is the very row this move would tombstone,
+		// which would strand what it had just written there.
+		await expect(vol.rename('/src', '/src/private/moved')).rejects.toThrow(/^EXDEV/)
+
+		expect(await vol.exists('/src')).toBe(true)
+		expect(await vol.exists('/src/private/moved')).toBe(false)
+		expect(dec.decode(await vol.readFile('/src/private/env'))).toBe('SECRET')
+	})
+
+	it('refuses to replace a destination that already exists', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.writeFile('/kyoto.md', enc.encode('go'))
+		await vol.writeFile('/private/kyoto.md', enc.encode('keep'))
+
+		// Two stores are two commits, so there is no moment where the name holds one
+		// or the other. Inside one store the same rename still replaces, atomically.
+		await expect(vol.rename('/kyoto.md', '/private/kyoto.md')).rejects.toThrow(/^EXDEV/)
+
+		expect(dec.decode(await vol.readFile('/kyoto.md'))).toBe('go')
+		expect(dec.decode(await vol.readFile('/private/kyoto.md'))).toBe('keep')
+	})
 
 	// The differential above pins the two to each other; this pins them to
 	// something, so they cannot agree by both being empty.

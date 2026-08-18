@@ -582,16 +582,30 @@ export function storeVolume(
 	 * the one thing that cannot travel: it belongs to the store that minted it.
 	 *
 	 * Not atomic, and it cannot be: two stores are two commits. That IS `EXDEV`.
+	 *
+	 * So it only attempts a move it can make WHOLE, and says `EXDEV` to the rest —
+	 * which is what the kernel says to EVERY cross-device rename, emulation being
+	 * userspace's job there. Half a move is worse than none, and each refusal below
+	 * is a move this cannot finish. A caller that wants one copies and removes, with
+	 * the semantics it chooses.
 	 */
 	async function moveAcross(oldPath: string, newPath: string): Promise<void> {
-		// Neither end is followed. `mv` moves the link itself, and replaces the NAME
-		// it lands on rather than whatever that name points at.
+		// Not followed: `mv` moves the link itself.
 		const src = await resolve(oldPath, false)
-		const dest = await find(newPath, false)
-		if (dest !== null) {
-			await replaces(dest.store, dest.node, src.node, newPath)
-			await vol.rm(newPath)
-		}
+		// A store's own root is not a row to move. `/private` is the mount POINT, an
+		// ordinary row in the store that holds it, and moving THAT is a one-store
+		// rename the primitive already made — this is resolution having crossed into
+		// what the point leads to.
+		if (src.node.id === ROOT) throw new Error(`EXDEV: ${oldPath} is a mount point`)
+		// A destination that exists would have to be replaced, and two stores are two
+		// commits: there is no moment where the name holds one or the other, and a
+		// failure between them takes the target with it.
+		if ((await find(newPath, false)) !== null) throw new Error(`EXDEV: ${newPath} is taken`)
+		// A mount under the source is a route into a third store, and the row that
+		// holds it is one this move is about to tombstone. Re-creating it elsewhere
+		// would leave two points and one binding, and removing it strands the store.
+		if (await holdsMount(src, new Set([src.node.id])))
+			throw new Error(`EXDEV: ${oldPath} holds a mount`)
 		// The moved row and the directory that gains it commit together — the
 		// parent-mtime rule, exactly as a create does — and replan together.
 		const top = await retry(async () => {
@@ -640,22 +654,20 @@ export function storeVolume(
 	}
 
 	/**
-	 * POSIX rename replaces, but only like for like: a directory is never replaced
-	 * by a file, a file never by a directory, and a directory that still holds
-	 * entries is never replaced at all — its children would be left parented on a
-	 * tombstone, which loses them.
+	 * Is there a mount at or under this row? Bounded by a visited set (rule 9).
 	 *
-	 * Both ways of renaming ask it. `moveRow` asks inside the commit it guards, and
-	 * safely reads then acts, since the guard it adds fails if anything is created
-	 * inside the target afterwards (the stamp rule). `vol.rename`'s copy-then-remove
-	 * has to ask BEFORE it copies: `EXDEV` is raised before the primitive ever reads
-	 * the destination, and `cp` merges into a directory rather than refusing it.
+	 * Both kinds count. An announced one is a `mount` row; a silent one is a binding
+	 * with no row at all, so the table is what has to be asked.
 	 */
-	async function replaces(st: Store, target: Node, node: Node, path: string): Promise<void> {
-		if (isDir(target) !== isDir(node))
-			throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${path}`)
-		if (isDir(target) && (await st.children(target.id)).nodes.length > 0)
-			throw new Error(`ENOTEMPTY: ${path}`)
+	async function holdsMount(at: At, seen: Set<NodeId>): Promise<boolean> {
+		if (boundIn(at.store, at.node.id) !== undefined) return true
+		for await (const child of childrenOf(at.store, at.node.id)) {
+			if (seen.has(child.id)) continue
+			seen.add(child.id)
+			if (child.type === 'mount') return true
+			if (isDir(child) && (await holdsMount({ store: at.store, node: child }, seen))) return true
+		}
+		return false
 	}
 
 	/**
@@ -697,7 +709,16 @@ export function storeVolume(
 			]
 			if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
 			else {
-				await replaces(from.store, target, node, newPath)
+				// POSIX rename replaces, but only like for like. A directory is never
+				// replaced by a file, a file never by a directory, and a directory that
+				// still holds entries is never replaced at all: its children would be
+				// left parented on a tombstone, which loses them.
+				if (isDir(target) !== isDir(node))
+					throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${newPath}`)
+				// Safe to read and then act on: the guard below fails if anything is
+				// created inside the target after this listing (the stamp rule).
+				if (isDir(target) && (await from.store.children(target.id)).nodes.length > 0)
+					throw new Error(`ENOTEMPTY: ${newPath}`)
 				// The displaced row is tombstoned in the SAME commit, so no reader
 				// ever sees the name twice or not at all.
 				writes.push(tomb(target))

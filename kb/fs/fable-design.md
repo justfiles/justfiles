@@ -294,8 +294,12 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   the mount node can never have children — a `/private` subtree cannot
   exist in the synced store at all, on any replica, buggy or not. An
   unbound mount reads as an empty read-only directory. A rename that
-  resolves across two stores returns `EXDEV`; the volume emulates
-  copy-then-remove, like `mv` across real filesystems. A sync engine
+  resolves across two stores returns `EXDEV`, as `rename(2)` does for every
+  cross-device rename; the volume emulates copy-then-remove, like `mv`, but
+  only for a move it can make whole — an ordinary row, into a free name, with
+  no mount under it. The rest keeps the `EXDEV`, because two stores are two
+  commits: there is no moment where a replaced name holds one or the other,
+  and a mount inside the source is a route the move would tombstone. A sync engine
   receives one store and nothing else, so no delta, tombstone, or blob
   request can even name local data. This deletes the projection filter, the
   visible↔ignored transition rules, the effective-list hashing, and the
