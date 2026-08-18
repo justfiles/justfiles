@@ -287,5 +287,18 @@ describe('hydratingBlobs', () => {
 		expect(await hydrating.child(ROOT, 'mine.txt')).toEqual(await local.child(ROOT, 'mine.txt'))
 		expect(await hydrating.blobs.has(await hashOf('hello'))).toBe(true)
 		expect(await hydrating.blobs.has(await hashOf('elsewhere'))).toBe(false)
+
+		// Every seam call but one: `close` belongs to whoever CONSTRUCTED the store, and
+		// this wrapper constructed nothing. Forwarding it would let a reader end the
+		// store its other holders are still using.
+		let closed = false
+		const owning = {
+			...local,
+			close: async (): Promise<void> => {
+				closed = true
+			}
+		}
+		expect(hydratingBlobs(owning, remote).close).toBeUndefined()
+		expect(closed).toBe(false)
 	})
 })

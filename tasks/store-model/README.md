@@ -110,7 +110,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | --- | --- | --- | --- |
 | T12 | [SQLite Store (server)](t12-sqlite-store.md) | T1–T3 | done |
 | T13 | [HTTP wire: `storeApi` + `httpStore`](t13-http-wire.md) | T1–T3, T10 | done |
-| T14 | [Native FS Store](t14-native-fs-store.md) | T1–T3 | todo |
+| T14 | [Native FS Store](t14-native-fs-store.md) | T1–T3 | done |
 
 ### Phase D — namespace, migration, swap, retire
 
@@ -120,6 +120,15 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | T16 | [Data migration](t16-data-migration.md) | T4, T12 | todo |
 | T17 | [Swap the consumers](t17-swap-consumers.md) | T11, T13, T15, T16 | todo |
 | T18 | [Retire the twin vocabulary](t18-retire.md) | T17 | todo |
+
+### Optional — take it or leave it
+
+Not on the critical path. Nothing above waits for these, and the story ships
+without them.
+
+| # | Task | Depends on | Status |
+| --- | --- | --- | --- |
+| T19 | [The sidecar stops being one file](t19-sidecar-write-amplification.md) | T14 | optional |
 
 ## Dependency map
 

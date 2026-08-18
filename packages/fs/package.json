@@ -91,6 +91,7 @@
 		"@justfiles/tsconfig": "workspace:*",
 		"@types/node": "^25.5.0",
 		"fake-indexeddb": "^6.2.5",
+		"fast-check": "^4.9.0",
 		"tsdown": "^0.21.5",
 		"typescript": "catalog:"
 	},

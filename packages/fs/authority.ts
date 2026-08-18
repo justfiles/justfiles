@@ -27,6 +27,7 @@
 
 import {
 	type Cursor,
+	forwarded,
 	GuardError,
 	type Node,
 	type NodeId,
@@ -56,7 +57,7 @@ export function authority(store: Store): Store {
 	let queue: Promise<unknown> = Promise.resolve()
 
 	return {
-		...store,
+		...forwarded(store),
 		// Rule 7: this is the store that accepts writes from peers, so it is the one
 		// that cannot take a caller's word for what its bytes hash to. The engine's
 		// push transfers unverified for exactly this reason.
