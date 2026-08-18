@@ -1763,4 +1763,52 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 
 		expect(((await stat(victim)).mode & 0o7777).toString(8)).toBe('644')
 	})
+
+	test('an ancestor swapped for a symlink does not carry a write out of the tree', async () => {
+		// `O_NOFOLLOW` guards the last component of a path and nothing before it, and Node
+		// has no `openat` to walk the rest one at a time with. So an ancestor a local tool
+		// turns into a link takes every by-name call with it, however deep the name sits.
+		const root = await temp()
+		const outside = await temp()
+		const victim = join(outside, 'victim.txt')
+		await writeFile(victim, "not the store's")
+		await chmod(victim, 0o644)
+
+		const real = fsDisk(root)
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...real,
+			async stat(spot) {
+				const s = await real.stat(spot)
+				// Right after the store has looked at the ancestor and been satisfied.
+				if (spot === meddle) {
+					meddle = null
+					await rm(join(root, 'dir'), { recursive: true, force: true })
+					await symlink(outside, join(root, 'dir'))
+				}
+				return s
+			}
+		}
+		const store = fsStore(root, racy)
+		built.push(store)
+		const row = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
+			parent: ROOT,
+			type: 'file',
+			mode: 0o100644,
+			size: 0n,
+			mtimeNs: 0n,
+			version: `v-${over.id}-${over.mode ?? ''}`,
+			...over
+		})
+		await store.commit([
+			row({ id: 'd', name: 'dir', type: 'dir', mode: 0o040755 }),
+			row({ id: 'v', name: 'victim.txt', parent: 'd', mode: 0o100600 })
+		])
+		await store.since()
+
+		meddle = 'dir' as Spot
+		await store.commit([row({ id: 'v', name: 'victim.txt', parent: 'd', mode: 0o100700 })])
+
+		expect(((await stat(victim)).mode & 0o7777).toString(8)).toBe('644')
+	})
 })

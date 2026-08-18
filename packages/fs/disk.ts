@@ -24,13 +24,14 @@ import {
 	readdir,
 	readFile,
 	readlink,
+	realpath,
 	rename,
 	rm,
 	rmdir,
 	symlink,
 	writeFile
 } from 'node:fs/promises'
-import { join, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import type { NodeId } from './store'
 
 const NUL = String.fromCharCode(0)
@@ -215,6 +216,35 @@ export interface Disk {
 export function fsDisk(rootPath: string): Disk {
 	const abs = (at: Spot): string => (at === AT_ROOT ? rootPath : join(rootPath, at))
 
+	/** The root with every link in it already resolved, asked once. */
+	let base: Promise<string> | null = null
+	const rootReal = (): Promise<string> =>
+		(base ??= realpath(rootPath).catch(() => resolve(rootPath)))
+
+	/**
+	 * Does this path still lead inside the root? `O_NOFOLLOW` guards the last component
+	 * only, and Node has no `openat` to walk the rest one at a time with — so an ancestor a
+	 * local tool has turned into a link out of the tree takes every by-name call with it.
+	 * `realpath` resolves the whole way, which catches it wherever it sits.
+	 *
+	 * The way TO the name, not the name: `rename`, `rm` and `lutimes` act on a link rather
+	 * than through it, so a leaf that is one is the caller's business and `O_NOFOLLOW` is
+	 * what guards the calls that would follow it. The deepest ancestor that EXISTS is what
+	 * gets asked, because a path about to be created has none of itself yet. Check-then-act like everything else here: a swap landing
+	 * between this and the call it guards still wins. What it buys is that an escape has to
+	 * win a race rather than simply be left lying there.
+	 */
+	const inside = async (os: string): Promise<boolean> => {
+		// The root is inside itself, and what sits above it was never this store's business.
+		if (resolve(os) === resolve(rootPath)) return true
+		const root = await rootReal()
+		for (let at = dirname(os); ; at = dirname(at)) {
+			const real = await realpath(at).catch(() => null)
+			if (real !== null) return real === root || real.startsWith(root + sep)
+			if (dirname(at) === at) return false
+		}
+	}
+
 	const lstat = (at: Spot): Promise<BigIntStats | null> =>
 		lstatOf(abs(at), { bigint: true }).catch(() => null)
 
@@ -231,6 +261,7 @@ export function fsDisk(rootPath: string): Disk {
 		was?: Seen
 	): Promise<boolean> => {
 		const os = abs(spot)
+		if (!(await inside(os))) return false
 		const tmp = `${os}.jfs-${crypto.randomUUID()}`
 		try {
 			await build(tmp)
@@ -256,6 +287,7 @@ export function fsDisk(rootPath: string): Disk {
 	 * is no `fchmodat` here. Those fall back to the name, raced at worst.
 	 */
 	const setMode = async (spot: Spot, ino: string, mode: number): Promise<BigIntStats | null> => {
+		if (!(await inside(abs(spot)))) return null
 		const handle = await openPath(abs(spot), O_RDONLY | NOFOLLOW).catch(() => null)
 		if (handle === null) {
 			const s = await lstat(spot)
@@ -288,6 +320,7 @@ export function fsDisk(rootPath: string): Disk {
 	 * a link is left alone — raced at worst, where before it was followed at leisure.
 	 */
 	const modeAt = async (os: string, mode: number): Promise<void> => {
+		if (!(await inside(os))) return
 		const handle = await openPath(os, O_RDONLY | NOFOLLOW).catch(() => null)
 		if (handle === null) {
 			const s = await lstatOf(os).catch(() => null)
@@ -306,7 +339,8 @@ export function fsDisk(rootPath: string): Disk {
 		// A symlink's own mode is not settable on every platform, and nothing reads it.
 		if (!at.symlink) await modeAt(os, at.mode & 0o7777)
 		if (at.mtimeNs === undefined) return
-		// `lutimes`, which does not follow either.
+		// `lutimes` does not follow the last component, and follows every one before it.
+		if (!(await inside(os))) return
 		const when = new Date(Number(at.mtimeNs / 1_000_000n))
 		await lutimes(os, when, when)
 	}
@@ -352,18 +386,23 @@ export function fsDisk(rootPath: string): Disk {
 		link: async (spot, target, at) => void (await publish(spot, (tmp) => symlink(target, tmp), at)),
 
 		async dir(spot) {
+			if (!(await inside(abs(spot)))) return
 			await mkdir(abs(spot), { recursive: true })
 		},
 
 		stamp: (spot, at) => stampAt(abs(spot), at),
 
 		async move(at, to) {
+			// Both ends: a rename out of the tree loses the file, and one in from outside
+			// adopts something this store was never given.
+			if (!(await inside(abs(at.path))) || !(await inside(abs(to)))) return false
 			if (!(await mine(at))) return false
 			await rename(abs(at.path), abs(to))
 			return true
 		},
 
 		async drop(at, holding, directory) {
+			if (!(await inside(abs(at.path)))) return
 			if (!(await mine(at))) return
 			if (!directory) {
 				await rm(abs(at.path), { force: true })
@@ -393,13 +432,16 @@ export function fsDisk(rootPath: string): Disk {
 			await rename(abs(aside), abs(at.path)).catch(() => {})
 		},
 
-		prune: (spot) =>
-			rmdir(abs(spot)).then(
+		async prune(spot) {
+			if (!(await inside(abs(spot)))) return false
+			return rmdir(abs(spot)).then(
 				() => true,
 				() => false
-			),
+			)
+		},
 
 		async clear(spot) {
+			if (!(await inside(abs(spot)))) return
 			await rm(abs(spot), { recursive: true, force: true })
 		},
 
@@ -409,7 +451,7 @@ export function fsDisk(rootPath: string): Disk {
 				const mode = (step.mode & 0o7777) | step.need
 				// No `ino` when this store has just made the directory itself; the marking that
 				// records its identity comes after.
-				if (step.ino === undefined) await chmod(abs(step.spot), mode)
+				if (step.ino === undefined) await modeAt(abs(step.spot), mode)
 				else await setMode(step.spot, step.ino, mode)
 			}
 		},
