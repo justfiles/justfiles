@@ -34,6 +34,7 @@ import {
 } from './icon-document.ts'
 import { fitIcon, focusIconCamera, iconFrame } from './icon-frame.ts'
 import { iconFitViewportFactor, iconWindowLayout, resizeIconViewport } from './icon-viewport.ts'
+import { serializeIconSvg } from './svg-export.ts'
 import './gui.css'
 
 const EXT = '.excalidraw'
@@ -448,6 +449,8 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 					exportScale: iconExportScale(camera)
 				}
 				const basename = pathRef.current === DRAFT_PATH ? 'untitled_icon' : titleOf(pathRef.current)
+				const exportTitle =
+					pathRef.current === DRAFT_PATH ? 'Untitled icon' : titleOf(pathRef.current)
 				if (format === 'png') {
 					const blob = await exportToBlob({
 						elements,
@@ -470,7 +473,7 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 						exportingFrame: iconFrame(camera)
 					})
 					downloadBlob(
-						new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n${svg.outerHTML}`], {
+						new Blob([serializeIconSvg(svg.outerHTML, exportTitle)], {
 							type: 'image/svg+xml'
 						}),
 						`${basename}.svg`
