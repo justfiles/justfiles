@@ -1,0 +1,17 @@
+# TEMPORARY. Delete this file once both versions below clear pnpm's 24h
+# minimumReleaseAge window: @justfiles/design@0.1.0 at 2026-08-13T23:51Z and
+# @justfiles/app@0.4.2 at 2026-08-14T06:16Z. #1 is open to do exactly that.
+#
+# pnpm 11 turns supply-chain protection on by default: minimumReleaseAge is 1440
+# minutes, and `pnpm install --frozen-lockfile` verifies the lockfile against that
+# policy. Verification has no fallback path, so CI cannot resolve around it. Both
+# packages here went out hours ago, so the build fails on dependencies that are
+# fine — only new.
+#
+# ONE ENTRY PER PACKAGE. The list is keyed by package name, so a second entry for
+# a package it already names is ignored without a warning. The stale
+# '@justfiles/app@0.3.0' entry shadowed 0.4.2 this way, and the install failed on
+# a version that is listed right here. Replace the version, never append to it.
+minimumReleaseAgeExclude:
+  - '@justfiles/app@0.4.2'
+  - '@justfiles/design@0.1.0'
