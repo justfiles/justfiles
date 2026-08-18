@@ -355,3 +355,66 @@ describe('fsStore: a file arrives already describing itself', () => {
 		})
 	})
 })
+
+describe('fsStore: a commit that publishes nothing still claims nothing', () => {
+	test('a metadata-only change does not stamp, or vouch for, a file it did not put there', async () => {
+		// A chmod, or a re-commit of a row whose file already holds its content, has no
+		// payload to ride in with — so the stamp goes on the NAME, and a name can change
+		// hands between `settle` looking and the stamp landing. Stamping a stranger and
+		// then recording the row's hash beside its state would read as reconciled: the
+		// scan would skip those bytes for ever, and `blobs` would answer them under a key
+		// that does not name them.
+		const disk = memDisk()
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			// `unlockFor` runs inside the placement, after `settle` has looked and before
+			// anything is put on the name. A local write landing here is the window.
+			...disk,
+			async unlock(steps) {
+				if (meddle !== null) {
+					const spot = meddle
+					meddle = null
+					await disk.write(spot, bytes('typed by a local tool'))
+				}
+				return disk.unlock(steps)
+			}
+		}
+		const store = fsStore('mem', racy)
+		built.push(store)
+		const at = under(AT_ROOT, 'a.txt')
+		if (at === null) throw new Error('unreachable')
+
+		const key = 'e'.repeat(64)
+		const same = (mode: number, version: string): Node => ({
+			id: 'a',
+			parent: ROOT,
+			name: 'a.txt',
+			type: 'file',
+			mode,
+			size: 5n,
+			mtimeNs: 0n,
+			content: key,
+			version
+		})
+		await store.blobs.put(key, bytes('hello'))
+		await store.commit([same(0o100644, 'v1')])
+		await store.since()
+
+		meddle = at
+		await store.commit([same(0o100600, 'v2')]) // same content, new mode
+		meddle = null
+
+		expect(await disk.bytes(at)).toEqual(bytes('typed by a local tool'))
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS * 6))
+		await store.since()
+		expect({
+			content: (await store.get('a'))?.content,
+			// The store no longer holds `hello` — that file was its only copy — and it does
+			// not offer what took its place instead.
+			leaked: await store.blobs.get(key)
+		}).toEqual({
+			content: await sha256Hex(bytes('typed by a local tool')),
+			leaked: null
+		})
+	}, 30_000)
+})

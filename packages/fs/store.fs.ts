@@ -576,30 +576,41 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		row: Node,
 		old: Node | null,
 		at: Seen | undefined
-	): Promise<Hash | undefined> => {
+	): Promise<{ hash?: Hash } | null> => {
 		const on = stampOf(row)
-		// Nothing to publish, so the stamp goes on the name instead. Every other way out of
-		// here rides in with the payload, which is the only way it can be the first thing
-		// true about the file rather than the second.
-		const keep = async (hash: Hash | undefined): Promise<Hash | undefined> => {
+		/**
+		 * Nothing to publish — a metadata-only change, or a file that already holds what
+		 * the row names — so the stamp goes on the NAME, and a name can change hands. The
+		 * observation is checked next to the act, because everything else here rides in
+		 * with the payload and cannot be given to somebody else's file by mistake.
+		 *
+		 * Null when it has: stamping a stranger and then recording the row's hash beside
+		 * its state would read as reconciled, and the scan would skip those bytes for ever
+		 * while `blobs` answered them under a key that does not name them.
+		 */
+		const keep = async (hash: Hash | undefined): Promise<{ hash?: Hash } | null> => {
+			if (at !== undefined) {
+				const s = await disk.stat(os)
+				if (s === null || !unchanged(at, s)) return null
+			}
 			await disk.stamp(os, on)
-			return hash
+			return { hash }
 		}
 		if (row.content === undefined) {
 			// No content is a claim too, so a row that dropped its hash empties its file.
 			if (at && old?.content === undefined) return keep(undefined)
 			await disk.write(os, EMPTY, on)
-			return undefined
+			return {}
 		}
 		if (at?.hash === row.content) return keep(at.hash)
 		const data = await readBlob(row.content)
 		if (data !== null) {
 			await disk.write(os, data, on)
-			return row.content
+			return { hash: row.content }
 		}
 		if (at) return keep(at.hash) // the row is a stub over whatever the file holds
 		await disk.write(os, EMPTY, on)
-		return undefined
+		return {}
 	}
 
 	/** Put one row on the disk, at the path the tree gives it. Null when there is nothing to put. */
@@ -659,6 +670,12 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			await unlockFor(up(at.path))
 			if (await disk.move(at, path)) {
 				moveSeen(at.path, path)
+				// A rename moves the ctime of what it moved, so the state carried over is
+				// already out of date — and a later check would read this store's own rename
+				// as somebody else's change. Taken down again here, the way `park` does it.
+				const moved = seen.get(row.id)
+				const now = moved === undefined ? undefined : await stateAt(path)
+				if (moved !== undefined && now !== undefined) mark(row.id, { ...moved, ...now })
 				at = seen.get(row.id)
 			} else {
 				unmark(row.id) // that file is gone, or is another row's now
@@ -680,7 +697,14 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		if (row.type === 'symlink') {
 			await disk.link(path, row.link ?? '', stampOf(row))
 		} else if (row.type === 'file') {
-			hash = await fill(path, row, old, at)
+			const filled = await fill(path, row, old, at)
+			// Somebody else's file is at the name. Nothing is claimed about it, and the
+			// stale observation goes, so the next scan derives what is really there.
+			if (filled === null) {
+				unmark(row.id)
+				return null
+			}
+			hash = filled.hash
 		} else {
 			// A mount is a junction into another store, which reads as a directory to
 			// anything local — and as an empty one until that store is bound.
