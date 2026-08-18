@@ -467,4 +467,56 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 			leaked: await store.blobs.get(key)
 		}).toEqual({ content: await sha256Hex(bytes('typed by a local tool')), leaked: null })
 	}, 30_000)
+
+	test('a directory replaced by a file is not recorded under the directory row', async () => {
+		// A directory's state is meant to move while a batch runs — an entry landing inside
+		// it bumps its mtime, which is why the observation waits until the end. Its inode
+		// is not. Without holding it to that, a local tool replacing the directory with a
+		// file has that file's state recorded under a row that still says directory, and
+		// `syncPath` takes the unchanged path straight past it: nothing ever lists it, and
+		// the bytes that took its name never reach the feed at all.
+		const disk = memDisk()
+		let meddle: Spot | null = null
+		const racy: Disk = {
+			...disk,
+			async stamp(spot, on) {
+				const done = await disk.stamp(spot, on)
+				// Placed and stamped; the batch has not observed it yet.
+				if (spot === meddle) {
+					meddle = null
+					await disk.clear(spot)
+					await disk.write(spot, bytes('a file now'))
+				}
+				return done
+			}
+		}
+		const store = fsStore('mem', racy)
+		built.push(store)
+		const at = under(AT_ROOT, 'folder')
+		if (at === null) throw new Error('unreachable')
+
+		meddle = at
+		await store.commit([
+			{
+				id: 'd',
+				parent: ROOT,
+				name: 'folder',
+				type: 'dir',
+				mode: 0o040755,
+				size: 0n,
+				mtimeNs: 0n,
+				version: 'v1'
+			}
+		])
+		meddle = null
+		expect((await disk.stat(at))?.isFile()).toBe(true)
+
+		await new Promise((resolve) => setTimeout(resolve, SWEEP_MS * 6))
+		await store.since()
+		const row = await store.child(ROOT, 'folder')
+		expect({ type: row?.type, content: row?.content }).toEqual({
+			type: 'file',
+			content: await sha256Hex(bytes('a file now'))
+		})
+	}, 30_000)
 })

@@ -119,9 +119,9 @@ const EMPTY = new Uint8Array()
 
 /**
  * Where a row was just put, for the observation pass at the end of a batch. `was` is what
- * the placement left at the name, for anything whose state the rest of the batch has no
- * business moving — everything but a directory, whose mtime an entry landing inside it
- * moves on purpose, which is why the observation is deferred at all.
+ * the placement left at the name: held to in full for anything the rest of the batch has
+ * no business moving, and by its identity alone for a directory, whose mtime an entry
+ * landing inside it moves on purpose — which is why the observation is deferred at all.
  */
 type Landed = { id: NodeId; path: Spot; hash?: Hash; was?: Seen }
 
@@ -725,8 +725,13 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		// good. A mode it can still write through goes on now — write and SEARCH is the whole
 		// requirement, so `0300` is as workable as `0700`.
 		if (isDir(row)) {
+			// Its identity, taken before the stamp and before anything lands inside it. What
+			// this store does next moves its state on purpose and its inode never — so what
+			// it was already observed to be is the better baseline, and a fresh look is only
+			// for the directory this pass has just made.
+			const was = at ?? (await stateAt(path))
 			if ((row.mode & 0o300) === 0o300) await disk.stamp(path, { mode: row.mode })
-			return { id: row.id, path, hash }
+			return { id: row.id, path, hash, was }
 		}
 		// Already stamped, by whatever put it there: a file rides in wearing what the row
 		// states, so there is no moment between arriving and being described.
@@ -781,6 +786,24 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	 * removing or renaming an entry bumps a DIRECTORY’s mtime, and a directory row nobody
 	 * wrote must not turn up in the feed for it.
 	 */
+	/**
+	 * Is what is at the name still what the placement left? A DIRECTORY is held only to
+	 * its identity — an entry landing inside it moves its mtime, which is the whole reason
+	 * this waits until now — and everything else to its whole state.
+	 *
+	 * Identity, because without it a directory a local tool replaced with a file would be
+	 * recorded under the row that still says directory. `syncPath` would then take the
+	 * unchanged path straight past it, and nothing would ever list it: the bytes that took
+	 * its name would never reach the feed at all.
+	 */
+	const ours = (id: NodeId, landed: Landed, s: BigIntStats): boolean => {
+		if (landed.was === undefined) return true
+		const row = byId.get(id)
+		return row !== undefined && isDir(row)
+			? String(s.ino) === landed.was.ino
+			: unchanged(landed.was, s)
+	}
+
 	const observe = async (placed: Landed[], dirs: Set<NodeId>): Promise<void> => {
 		// A directory’s own stamp is the last word on it: an entry moves its mtime AFTER the
 		// placement that stated it. One path, one owner here too — a later placement may have
@@ -799,7 +822,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		const where = new Map<NodeId, Landed>(placed.map((landed) => [landed.id, landed]))
 		for (const id of dirs) {
 			const at = seen.get(id)
-			if (at && !where.has(id)) where.set(id, { id, path: at.path, hash: at.hash })
+			if (at && !where.has(id)) where.set(id, { id, path: at.path, hash: at.hash, was: at })
 		}
 		for (const [id, landed] of where) {
 			const s = await disk.stat(landed.path)
@@ -809,7 +832,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			// already reconciled — the scan would skip the edit for ever, and `blobs` would
 			// answer those bytes under a hash that does not name them. So nothing is
 			// recorded, and the next scan derives what is really there.
-			if (s === null || (landed.was !== undefined && !unchanged(landed.was, s))) unmark(id)
+			if (s === null || !ours(id, landed, s)) unmark(id)
 			else mark(id, { path: landed.path, ino: String(s.ino), state: stateOf(s), hash: landed.hash })
 		}
 		// Last, because everything above had to be able to write and look through them.
