@@ -91,6 +91,15 @@
 					"bucket_name": "frieren-staging-fs-blobs"
 				}
 			],
+			// Repeated on purpose: wrangler does NOT inherit bindings into a named
+			// environment. Without this, `env.LOADER` is undefined on staging and every
+			// kernel call — the agent's `app list` included — fails with
+			// "LOADER binding unavailable".
+			"worker_loaders": [
+				{
+					"binding": "LOADER"
+				}
+			],
 			"durable_objects": {
 				"bindings": [
 					{
