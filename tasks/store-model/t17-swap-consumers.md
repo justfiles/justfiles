@@ -123,6 +123,39 @@ non-seam route that reports it, and both callers that need one — the wipe and
 the `reset()` closure — read it there. It is the server's protocol, not the
 seam's, which is what `synced.ts` already says about `generation()`.
 
+## Order of the swap
+
+The rows are not as independent as the table above suggests, and one of them is
+not a row at all. What decides the order:
+
+1. **The decisions first** — the atomic commit and the namespace
+   ([T12](t12-sqlite-store.md)'s file), then the durable discard slot
+   ([T11](t11-lifecycle-wrapper.md)'s).
+2. **A server and its own clients are ONE step.** The old routes serve the old
+   tables and `storeApi` serves the new ones; a server mounting both would let a
+   write land in a table the other half cannot see. Frieren and worker own
+   separate databases and separate clients, so that step is per APP — which is
+   what keeps the two apps independently landable, and it needs the new server
+   surface to arrive UNDER A NEW NAME beside the old one, the way every other
+   task in this story ran the two models side by side.
+3. **`/private` before either.** The mount row, the second store, and the
+   migration that splits the old tree at that name. Nothing may reach the wire
+   before this: the first pull after the swap would otherwise copy the DO's
+   credentials onto every client.
+4. **The standalone volumes** — `apps/cli`,
+   `apps/frieren/scripts/frieren-auth.ts` go with the server they talk to;
+   `packages/app/dev-server.ts` talks to none and goes whenever.
+
+So the task lands as a stack, each PR on the one before it, each green on its
+own:
+
+| PR | What | State |
+| --- | --- | --- |
+| 1 | The decisions: atomic commit + table namespace, the durable discard slot, this order | landed |
+| 2 | `/private` is a mount: the announced row, the second store, the migration split, `emptyStore` + the reset on the synchronous seam | next |
+| 3 | The new `/fs` surface beside the old one, and frieren onto it: DO host, browser client, `apps/cli`, `frieren-auth` | |
+| 4 | `apps/worker` onto it, then the old surface deleted: the retired routes, `apiStorage` / `remoteSyncReplica`, the old-wire tests, the dependencies | |
+
 ## RED
 
 Each consumer's own existing test suite is the red bar. Point the consumer at
@@ -143,4 +176,10 @@ silently.
 grep -r "@justfiles/sync" apps packages --include=package.json
 ```
 
-shows only `packages/sync` itself.
+shows only `packages/sync` itself — with ONE exception, reported rather than
+papered over: `packages/core` keeps it as a **devDependency** for
+`migrate.sqlite.test.ts`, whose fixture is built through the old stack end to end
+(that is what makes the migration proof worth anything). The production code in
+`packages/core` imports none of it. It leaves with the fixture in
+[T18](t18-retire.md), which is also where that file's own list puts the rest of
+core's retirement.
