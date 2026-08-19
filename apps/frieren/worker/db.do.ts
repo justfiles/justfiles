@@ -91,3 +91,22 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 export function cfFsStorage(adapter: DbAdapter, namespace: string, blobStore?: BlobStore): Storage {
 	return sqliteStorage(adapter, { namespace, blobStore })
 }
+
+/**
+ * This instance's own corner of the shared bucket.
+ *
+ * One R2 bucket serves every Durable Object, and `sqliteStore` keys an object by its
+ * store id and hash — which two users would collide on. Scoping is the HOST's job
+ * because only the host knows what it is one of, so this is where that name is added
+ * and the only place that knows the layout.
+ */
+export function scopedBlobs(bucket: BlobStore | undefined, namespace: string) {
+	if (!bucket) return undefined
+	const at = (key: string) => `${namespace}/store/${key}`
+	return {
+		put: (key: string, value: ArrayBuffer | ArrayBufferView) => bucket.put(at(key), value),
+		get: (key: string) => bucket.get(at(key)),
+		delete: async (keys: string | string[]) =>
+			bucket.delete?.(typeof keys === 'string' ? at(keys) : keys.map(at))
+	}
+}

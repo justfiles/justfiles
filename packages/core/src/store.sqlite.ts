@@ -22,6 +22,7 @@ import {
 	ForeignCursorError,
 	type Guard,
 	GuardError,
+	type Hash,
 	type Node,
 	type NodeId,
 	ROOT,
@@ -39,6 +40,30 @@ const PAGE = 128
  * object for the length of the backlog.
  */
 const SWEEP = 128
+
+/**
+ * Bytes at or under this stay in the row; anything larger goes to the external store
+ * when the host gave one.
+ *
+ * The number is not a tuning knob, it is a platform limit: a Workers SQLite ROW is
+ * capped at 2 MB, hard, so a store that inlined everything could not hold a file
+ * bigger than that at all — and the old backend already sent every binary to R2 for
+ * the same reason. 256 KB is the old inline limit, well clear of the cap once a
+ * hash, a key and a stamp are on the row beside the bytes.
+ */
+const INLINE = 256 * 1024
+
+/**
+ * Where bytes go when they are too big for a row: R2's shape, and nothing more of it
+ * than this uses. It is the HOST's to scope — one bucket serves every Durable Object,
+ * so the view handed in here must already be this host's.
+ */
+export type BlobStore = {
+	put(key: string, value: ArrayBuffer | ArrayBufferView): Promise<unknown>
+	get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>
+	/** One key or a batch — R2's own signature, so a sweep costs one round trip per 1000. */
+	delete?(keys: string | string[]): Promise<void>
+}
 
 /**
  * How long bytes are safe from the sweep after they land.
@@ -128,10 +153,16 @@ const SCHEMA = [
 	// it is what `gc` needs to tell "no row names these bytes" from "no row names
 	// them YET". Epoch milliseconds as INTEGER: it is compared, and it is nowhere
 	// near the 2^53 the two nanosecond fields above are.
+	//
+	// Exactly one of `data` and `blob_key` is set: the bytes are in the row, or the
+	// row names where they are. Which one is a size question and nothing else (see
+	// `INLINE`), so it is decided per blob and never revisited — content is immutable,
+	// so the same hash is always the same length.
 	`CREATE TABLE IF NOT EXISTS blobs (
 		sid INTEGER NOT NULL,
 		hash TEXT NOT NULL,
-		data BLOB NOT NULL,
+		data BLOB,
+		blob_key TEXT,
 		written_ms INTEGER NOT NULL,
 		PRIMARY KEY (sid, hash)
 	)`,
@@ -169,8 +200,17 @@ const ROOT_ROW: Node = {
  * reaches the schema, and renaming the mount is a `name` column in the PARENT
  * store's row. The default is the tree every host has one of.
  */
-export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
+export function sqliteStore(
+	db: SyncDb,
+	id: string = MAIN,
+	opts: { blobs?: BlobStore; inline?: number } = {}
+): Store {
 	let opened: Opened | undefined
+	const external = opts.blobs
+	const inline = opts.inline ?? INLINE
+	// Content-addressed, and the store's id is in it: two stores over one database
+	// never share an object, which is the same boundary `sid` draws on the table.
+	const keyFor = (hash: Hash): string => `${id}/${hash}`
 
 	const start = (): Opened => {
 		let sid = 0
@@ -353,9 +393,10 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 			const { sid } = open()
 			let reclaimed = 0
 			let done = true
+			const keys: string[] = []
 			db.transactionSync(() => {
 				const orphans = db.query<Row>(
-					`SELECT hash FROM blobs
+					`SELECT hash, blob_key FROM blobs
 						WHERE sid = ? AND written_ms < ? AND hash NOT IN (
 							SELECT content FROM nodes WHERE sid = ? AND deleted = 0 AND content IS NOT NULL
 						)
@@ -367,9 +408,16 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 				done = orphans.length <= SWEEP
 				for (const found of orphans.slice(0, SWEEP)) {
 					db.exec('DELETE FROM blobs WHERE sid = ? AND hash = ?', [sid, String(found.hash)])
+					const key = text(found.blob_key)
+					if (key !== null) keys.push(key)
 					reclaimed++
 				}
 			})
+			// The external half, always AFTER the transaction that dropped the rows: an
+			// object store can never join one, and the row is what makes the bytes
+			// reachable. Losing these deletes leaks paid-for garbage; losing the rows
+			// would be data loss, so this is the order that fails the right way.
+			if (keys.length > 0) await external?.delete?.(keys).catch(() => undefined)
 			return { reclaimed, done }
 		},
 
@@ -384,6 +432,8 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 		// already the answer and the second put is nothing. SQLite hands every
 		// reader its own buffer, so nothing here can reach into stored content.
 		blobs: {
+			// The ROW is what this store holds, whichever side the bytes are on: an
+			// external object with no row here belongs to nobody, and `gc` sweeps by row.
 			async has(hash) {
 				const { sid } = open()
 				return (
@@ -393,11 +443,18 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 			},
 			async get(hash) {
 				const { sid } = open()
-				const [found] = db.query<Row>('SELECT data FROM blobs WHERE sid = ? AND hash = ? LIMIT 1', [
-					sid,
-					hash
-				])
-				return found ? bytes(found.data) : null
+				const [found] = db.query<Row>(
+					'SELECT data, blob_key FROM blobs WHERE sid = ? AND hash = ? LIMIT 1',
+					[sid, hash]
+				)
+				if (!found) return null
+				if (found.data != null) return bytes(found.data)
+				const key = text(found.blob_key)
+				// A row naming an object nobody can produce is the seam's own answer to
+				// content that is not here: `null`, and the reader is told.
+				if (key === null || !external) return null
+				const object = await external.get(key)
+				return object === null ? null : new Uint8Array(await object.arrayBuffer())
 			},
 			async put(hash, data) {
 				// Held before the first `await`: the caller may edit its array the
@@ -405,12 +462,33 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 				// handed over.
 				const held = new Uint8Array(data)
 				const { sid } = open()
-				db.exec('INSERT OR IGNORE INTO blobs(sid, hash, data, written_ms) VALUES (?, ?, ?, ?)', [
-					sid,
-					hash,
-					held,
-					Date.now()
-				])
+				const stamp = Date.now()
+				if (external === undefined || held.byteLength <= inline) {
+					db.exec(
+						'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, written_ms) VALUES (?, ?, ?, NULL, ?)',
+						[sid, hash, held, stamp]
+					)
+					return
+				}
+				// Rule 7 makes content immutable, so a hash this store already holds is
+				// already the answer — and skipping here is what keeps a re-run of the
+				// one pass from re-uploading a volume it already moved.
+				if (
+					db.query('SELECT 1 AS held FROM blobs WHERE sid = ? AND hash = ? LIMIT 1', [sid, hash])
+						.length > 0
+				)
+					return
+				// Bytes BEFORE the row, the way rule 10 puts them before the node that
+				// names them: a failure here leaves an unreferenced object, which is
+				// garbage, rather than a row whose bytes were never stored, which is a
+				// hole. The key is derived from the hash, so a repeat writes the same
+				// object to the same place.
+				const key = keyFor(hash)
+				await external.put(key, held)
+				db.exec(
+					'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, written_ms) VALUES (?, ?, NULL, ?, ?)',
+					[sid, hash, key, stamp]
+				)
 			}
 		}
 	}
@@ -433,6 +511,12 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
  * `content: 'keep'` is what an adopt-mine wants: the initiator republishes rows it may
  * only hold as stubs, and the bytes behind them are already here. A wipe drops them,
  * because "delete everything" must not leave the discarded bytes fetchable by hash.
+ *
+ * It drops the ROWS, which is what makes the bytes unfetchable — an offloaded object
+ * is only reachable through the row that names its key. Objects in an external store
+ * are left where they are: this body is synchronous, deliberately (it shares the CAS's
+ * transaction), and an object store can never join one. The old model's wipe left them
+ * too, for the same reason, so this leaks no more than it used to.
  *
  * NO TRANSACTION OF ITS OWN — the caller owns one, because the only caller commits
  * this together with the CAS that authorised it (`resetStore` in `reset.ts`). And any

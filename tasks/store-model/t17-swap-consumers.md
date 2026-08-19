@@ -178,6 +178,22 @@ by any LIVE row, a bounded slice, one transaction — and the DO's daily routine
 sweeps BOTH its stores, because the bytes behind `/private` go stale exactly the
 way the tree's do.
 
+It also needs somewhere to put bytes that do not fit. A Workers SQLite ROW is capped
+at 2 MB — hard — and the old backend sent every binary to R2 for exactly that reason,
+so a store that inlined everything could not hold a file over that size AT ALL, and
+the one pass would throw on the first such object inside `blockConcurrencyWhile` and
+take every request to that user's object down with it. So `sqliteStore` takes an
+optional `BlobStore` and tiers by size: the row holds small values, the external store
+holds the rest, and the ROW is still what this store holds either way — an object with
+no row belongs to nobody, which is what lets `gc` sweep by row and then delete the
+objects those rows named. Scoping the bucket is the HOST's job, because only the host
+knows what it is one of.
+
+A wipe drops the rows and leaves the objects, which is what the old wipe did too: the
+body is synchronous on purpose (it shares the CAS's transaction) and an object store
+can never join one. Dropping the row is what makes the bytes unfetchable; the storage
+leaks, as it did before.
+
 It needs one column the seam does not: `written_ms` on `blobs`. Rule 10 puts the
 bytes in before the row that names them, and on a server those are two REQUESTS —
 a `PUT /blob`, then the `POST /commit` that adopts it, seconds or minutes later.

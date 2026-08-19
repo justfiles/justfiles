@@ -72,7 +72,13 @@ import { createAiGateway } from './ai-gateway.ts'
 import { requestUserId } from './auth.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
-import { cfFsStorage, createDOSqliteAdapter, createDOSyncDb, migrateCF } from './db.do.ts'
+import {
+	cfFsStorage,
+	createDOSqliteAdapter,
+	createDOSyncDb,
+	migrateCF,
+	scopedBlobs
+} from './db.do.ts'
 import { generateFace } from './faces.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { createServerPoke, notifying } from './frieren.poke.ts'
@@ -227,8 +233,12 @@ export class Frieren extends DurableObject<Env> {
 		// name a row in the other; the mount row announced at `(ROOT, 'private')` (see
 		// `adoptStore`) then reserves that name on every replica, and `holdsRows` makes a
 		// subtree under it unspellable in the synced store on any client, buggy or not.
-		this.store = sqliteStore(this.sync)
-		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT))
+		// Bytes too big for a row go to R2, because a Workers SQLite ROW is capped at
+		// 2 MB — hard — so a store that inlined everything could not hold a file bigger
+		// than that at all. The old backend sent every binary there for the same reason.
+		const blobs = scopedBlobs(env.FS_BLOBS, namespace)
+		this.store = sqliteStore(this.sync, undefined, { blobs })
+		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT, { blobs }))
 		this.tree = notifying(authority(this.store))
 		this.tree.subscribe?.(poke)
 		// Constructing a Volume touches no storage; the migration barrier below still runs

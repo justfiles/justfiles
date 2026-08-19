@@ -447,3 +447,138 @@ describe('emptyStore: the authority starts a new lineage', () => {
 		expect((await sqliteStore(db, 'private').since()).nodes.map((n) => n.id)).toEqual([ROOT, 'b'])
 	})
 })
+
+describe('sqliteStore: bytes too big for a row', () => {
+	/**
+	 * An object store, and a database that refuses a row over 2 MB the way Workers
+	 * SQLite does — the whole reason the offload exists, so the test has to have it.
+	 */
+	const durable = () => {
+		const objects = new Map<string, Uint8Array>()
+		const raw = adapter(new DatabaseSync(':memory:'))
+		const db: SyncDb = {
+			...raw,
+			exec: (sql, args) => {
+				for (const arg of args ?? [])
+					if (arg instanceof Uint8Array && arg.byteLength > 2 * 1024 * 1024)
+						throw new Error('Row too large')
+				raw.exec(sql, args)
+			}
+		}
+		const blobs = {
+			puts: 0,
+			async put(key: string, value: ArrayBuffer | ArrayBufferView) {
+				blobs.puts++
+				objects.set(key, new Uint8Array(value as ArrayBuffer))
+			},
+			async get(key: string) {
+				const held = objects.get(key)
+				return held === undefined
+					? null
+					: {
+							async arrayBuffer() {
+								return held.buffer as ArrayBuffer
+							}
+						}
+			},
+			async delete(keys: string | string[]) {
+				for (const key of typeof keys === 'string' ? [keys] : keys) objects.delete(key)
+			}
+		}
+		return { db, blobs, objects }
+	}
+
+	const big = (size: number) => new Uint8Array(size).fill(7)
+
+	test('a file over the row limit round-trips through the external store', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+
+		await store.blobs.put(hash, data)
+
+		// The row names where the bytes are; the bytes are not in it. Without this the
+		// put throws outright, which is what a 2 MB cap does to a store that inlines.
+		expect([...objects.keys()]).toEqual([`main/${hash}`])
+		expect(await store.blobs.has(hash)).toBe(true)
+		expect(await store.blobs.get(hash)).toEqual(data)
+	})
+
+	test('without one, the same file cannot be stored at all', async () => {
+		const { db } = durable()
+		const store = sqliteStore(db)
+		const data = big(3 * 1024 * 1024)
+
+		// The reason the offload exists, pinned: a Workers SQLite row is capped at 2 MB,
+		// so a store that inlines everything refuses the write outright — and on the
+		// Durable Object that refusal lands inside the boot barrier, where it takes every
+		// request to that object down with it.
+		await expect(store.blobs.put(await sha256Hex(data), data)).rejects.toThrow('Row too large')
+	})
+
+	test('small bytes stay in the row: an offload is a size answer, not a policy', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(1024)
+		const hash = await sha256Hex(data)
+
+		await store.blobs.put(hash, data)
+
+		expect(objects.size).toBe(0)
+		expect(await store.blobs.get(hash)).toEqual(data)
+	})
+
+	test('a second put of the same hash uploads nothing', async () => {
+		const { db, blobs } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+
+		await store.blobs.put(hash, data)
+		await store.blobs.put(hash, data)
+
+		// Rule 7: a hash the store already holds is already the answer. This is what
+		// keeps a re-run of the one pass from re-uploading a volume it already moved.
+		expect(blobs.puts).toBe(1)
+	})
+
+	test('the sweep collects the object too, after the row that named it', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		db.exec('UPDATE blobs SET written_ms = 0')
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(objects.size).toBe(0)
+	})
+
+	test('two stores over one database never share an object', async () => {
+		const { db, blobs, objects } = durable()
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+
+		await sqliteStore(db, undefined, { blobs }).blobs.put(hash, data)
+		await sqliteStore(db, 'private', { blobs }).blobs.put(hash, data)
+
+		// The same bytes, and still two objects: a hash in the local store must not be
+		// fetchable through the synced one's blob route, and the key is what draws that
+		// boundary outside the database as `sid` draws it inside.
+		expect([...objects.keys()].sort()).toEqual([`main/${hash}`, `private/${hash}`])
+	})
+
+	test('a row whose object is gone reads as absent, not as a failure', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		objects.clear()
+
+		// The seam's own answer to content that is not here: a reader is told rather
+		// than guessed at, and `hydratingBlobs` asks the peer.
+		expect(await store.blobs.get(hash)).toBeNull()
+	})
+})
