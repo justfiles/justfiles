@@ -2,38 +2,50 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const H = vi.hoisted(() => ({
 	reset: vi.fn(),
+	handshake: vi.fn(),
 	reload: vi.fn(),
-	deleteDatabase: vi.fn()
+	deleteDatabase: vi.fn(),
+	migrateIdb: vi.fn(async () => {})
 }))
 
 vi.mock('@justfiles/core', () => ({
-	remoteSyncReplica: () => ({}),
-	createFsClient: () => ({ reset: { $post: H.reset } })
+	createFsClient: () => ({ reset: { $post: H.reset }, index: { $get: H.handshake } })
 }))
 
-vi.mock('@justfiles/sync/storage/idb', () => ({
-	idbStorage: (name: string) => ({
-		name,
-		rootIno: '1',
-		destroy: () => {}
-	})
-}))
+// A store per database name, and a real one: the module under test announces a mount
+// and builds a volume over what this hands back, so a hand-rolled stub would only test
+// the stub. `memStore` is the same seam `idbStore` implements.
+vi.mock('@justfiles/fs/store.idb', async () => {
+	const { memStore } = await import('@justfiles/fs/store.mem')
+	const stores = new Map<string, ReturnType<typeof memStore>>()
+	return {
+		idbStore: (name: string) => {
+			const held = stores.get(name) ?? memStore()
+			stores.set(name, held)
+			return held
+		},
+		persistStorage: async () => true
+	}
+})
 
-vi.mock('@justfiles/fs', () => ({
-	volume: () => ({
-		readFile: async () => new Uint8Array()
-	})
-}))
+// The one pass from the old model has its own tests (`migrate.idb.test.ts`); here it
+// is the boot step that must not run twice, which the registry marker is what settles.
+vi.mock('@justfiles/fs/migrate.idb', () => ({ migrateIdb: H.migrateIdb }))
+vi.mock('@justfiles/fs/store.http', () => ({ httpStore: () => ({}) }))
 
-vi.mock('@justfiles/sync', () => ({
-	synced: async () => ({
+vi.mock('@justfiles/fs/synced', async (original) => ({
+	...(await original<Record<string, unknown>>()),
+	syncedVolume: async () => ({
 		readFile: async () => new Uint8Array(),
 		flush: async () => {},
 		pause: () => {},
 		resume: () => {},
 		destroy: () => {},
 		status: () => 'synced',
-		onStatusChange: () => () => {}
+		onStatusChange: () => () => {},
+		takeTheirs: async () => {},
+		takeMine: async () => {},
+		generation: () => 1
 	})
 }))
 
@@ -41,6 +53,7 @@ type StoredProfile = {
 	id: string
 	remoteUserId?: string
 	lastOpenedAt: number
+	adopted?: true
 	pendingFactoryReset?: { operationId: string; fromGeneration: number }
 }
 
@@ -50,7 +63,8 @@ function stubBrowser(registry: StoredProfile[] = []) {
 	const data = new Map([[REGISTRY_KEY, JSON.stringify(registry)]])
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => data.get(key) ?? null,
-		setItem: (key: string, value: string) => data.set(key, value)
+		setItem: (key: string, value: string) => data.set(key, value),
+		removeItem: (key: string) => data.delete(key)
 	})
 	vi.stubGlobal('window', {
 		addEventListener: vi.fn(),
@@ -61,7 +75,9 @@ function stubBrowser(registry: StoredProfile[] = []) {
 		addEventListener: vi.fn(),
 		removeEventListener: vi.fn()
 	})
-	vi.stubGlobal('crypto', { randomUUID: () => 'account-profile' })
+	// `subtle` is kept: a mount row's id is a hash of its position, so announcing one
+	// is the first thing every profile does.
+	vi.stubGlobal('crypto', { randomUUID: () => 'account-profile', subtle: globalThis.crypto.subtle })
 	vi.stubGlobal('indexedDB', {
 		deleteDatabase: H.deleteDatabase.mockImplementation(() => {
 			const request: { onsuccess?: () => void } = {}
@@ -80,11 +96,21 @@ async function loadFs(registry?: StoredProfile[]) {
 	return { data, fs }
 }
 
+const handshakeIs = (generation: number, lineageId?: string) =>
+	H.handshake.mockResolvedValue({
+		ok: true,
+		status: 200,
+		json: async () => ({ generation, lineageId })
+	})
+
 describe('profile session switching', () => {
 	beforeEach(() => {
 		H.reset.mockReset()
+		H.handshake.mockReset()
 		H.reload.mockReset()
 		H.deleteDatabase.mockReset()
+		H.migrateIdb.mockReset()
+		handshakeIs(1)
 		vi.useFakeTimers()
 		vi.setSystemTime(new Date('2026-05-31T00:00:00Z'))
 	})
@@ -148,10 +174,26 @@ describe('profile session switching', () => {
 		)
 	})
 
+	test('the one pass runs once per profile, and the registry is what says so', async () => {
+		const { data, fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+
+		await fs.openProfile()
+		expect(H.migrateIdb).toHaveBeenCalledTimes(1)
+		expect(JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0].adopted).toBe(true)
+
+		// A second open of the same profile must not copy the old tree again: rule 3
+		// only makes an IDENTICAL row a no-op, so a re-run over a live volume would
+		// put stale rows back over what the user has written since.
+		await fs.releaseFsVolume({ flush: false })
+		await fs.openProfile()
+		expect(H.migrateIdb).toHaveBeenCalledTimes(1)
+	})
+
 	test('factory reset reuses an operation after ambiguous confirmation failure', async () => {
 		H.reset
 			.mockResolvedValueOnce({ ok: false, status: 503 })
 			.mockResolvedValueOnce({ ok: true, status: 200 })
+		handshakeIs(4, 'vol-A')
 		const { data, fs } = await loadFs([
 			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 2 }
 		])
@@ -159,6 +201,10 @@ describe('profile session switching', () => {
 
 		await expect(fs.factoryReset(async () => 'token')).rejects.toThrow('factory reset failed: 503')
 		const firstRequest = H.reset.mock.calls[0]?.[0]
+		// The epoch is READ from the server, not remembered: `generation()` only ever
+		// reports what a `reset()` returned, which is nothing on a replica that never
+		// ran "take mine".
+		expect(firstRequest.json).toMatchObject({ fromGeneration: 4, lineageId: 'vol-A' })
 		expect(JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0].pendingFactoryReset).toEqual({
 			operationId: firstRequest.json.operationId,
 			fromGeneration: firstRequest.json.fromGeneration
@@ -168,6 +214,10 @@ describe('profile session switching', () => {
 
 		expect(H.reset.mock.calls[1]?.[0]).toEqual(firstRequest)
 		expect(JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0].pendingFactoryReset).toBeUndefined()
+		// Both stores this profile holds, and the old model's database the pass copied
+		// out of: a reset that left any of the three would come back on the next boot.
+		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-store-account-profile')
+		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-store-account-profile-private')
 		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-fs-profile-account-profile')
 		expect(H.reload).toHaveBeenCalledOnce()
 	})

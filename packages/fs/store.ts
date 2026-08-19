@@ -200,10 +200,11 @@ export const verifiedBlobs = (blobs: Store['blobs']): Store['blobs'] => ({
 
 /** The one definition of what a `Hash` is: SHA-256 of the bytes, hex. */
 export const sha256Hex = async (data: Uint8Array): Promise<Hash> => {
-	// The cast: `BufferSource` names a `Uint8Array` over a plain `ArrayBuffer`,
-	// and a plain `Uint8Array` is over `ArrayBufferLike` — the shared-memory case
-	// `digest` never sees here.
-	const digest = await crypto.subtle.digest('SHA-256', data as BufferSource)
+	// The cast: `digest` takes a buffer over a plain `ArrayBuffer`, and a plain
+	// `Uint8Array` is over `ArrayBufferLike` — the shared-memory case it never sees
+	// here. Spelled through `unknown` rather than through `BufferSource`, which is a
+	// DOM name this package cannot assume its consumers' lib has.
+	const digest = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer)
 	return Array.from(new Uint8Array(digest))
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('')

@@ -36,6 +36,14 @@ import { type Bindings, storeVolume } from './volume.store'
 
 /** A host that keeps a cursor for this wrapper needs its type, and nothing else of the engine's. */
 export type { CursorSlot } from './engine'
+/**
+ * The minter, for a host that builds a SECOND volume over the same store — one that
+ * answers before this wrapper exists, as an app must while it is still deciding whether
+ * it has a peer at all. It has to carry the same replica id: the push offers rows this
+ * replica AUTHORED, so a volume minting under any other tag writes rows no cycle will
+ * ever send.
+ */
+export { versions } from './engine'
 
 /** How often the loop runs when nothing has asked it to run sooner. */
 const INTERVAL_MS = 30_000

@@ -1,18 +1,25 @@
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
+import type { Volume } from '@justfiles/fs'
+import { migrateIdb } from '@justfiles/fs/migrate.idb'
+import { forwarded, type Node, ROOT, type Store } from '@justfiles/fs/store'
+import { httpStore } from '@justfiles/fs/store.http'
+import { idbStore } from '@justfiles/fs/store.idb'
 import {
-	createFsClient as createCoreFsClient,
-	type FsClient,
-	remoteSyncReplica
-} from '@justfiles/core'
-import { type Volume, volume } from '@justfiles/fs'
+	type CursorSlot,
+	type DiscardSlot,
+	type SyncStatus as StoreSyncStatus,
+	syncedVolume,
+	versions
+} from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
-import { type SyncStatus as FsSyncStatus, synced } from '@justfiles/sync'
-import { idbStorage } from '@justfiles/sync/storage/idb'
+import { announceMount, storeVolume } from '@justfiles/fs/volume.store'
+import { PRIVATE_MOUNT } from '../shared/private'
 
 export type { FsClient, Volume }
-export type SyncStatus = FsSyncStatus | 'local-only'
+export type SyncStatus = StoreSyncStatus | 'local-only'
 
-type SyncVolume = Awaited<ReturnType<typeof synced>>
+type SyncVolume = Awaited<ReturnType<typeof syncedVolume>>
 
 export type ProfileVolume = Volume & {
 	flush(): Promise<void>
@@ -36,6 +43,110 @@ export function createFsClient(getToken: GetToken): FsClient {
 	return createCoreFsClient({ baseUrl: '/fs', headers: makeHeaders(getToken) })
 }
 
+// The seam, over the wire. `/store` rather than `/fs`: the old routes serve the old
+// tables and this serves the one table the model has. The token is minted per REQUEST
+// — Clerk's expires — so it goes in through the injected `fetch` rather than through
+// the static header bag, which is read once at construction.
+function remoteStore(getToken: GetToken): Store {
+	return httpStore('/store', {
+		fetch: async (url, init) => {
+			const token = await getToken()
+			return fetch(url, {
+				...init,
+				headers: {
+					...(init?.headers as Record<string, string>),
+					Authorization: `Bearer ${token ?? ''}`
+				}
+			})
+		}
+	})
+}
+
+// ── The host's slots ─────────────────────────────────────────────────────────
+// Engine state — two cursors, an unfinished-discard bit, and this replica's id — kept
+// where the profile registry already lives. It may not go in the replicated table (it
+// is not the user's data) nor in the user's tree (the old engine's mistake), and
+// `localStorage` is the one place this host has that is neither.
+
+const slot = (key: string): CursorSlot => ({
+	async load() {
+		return localStorage.getItem(key) ?? undefined
+	},
+	async save(cursor) {
+		if (cursor === undefined) localStorage.removeItem(key)
+		else localStorage.setItem(key, cursor)
+	}
+})
+
+const discardSlot = (key: string): DiscardSlot => ({
+	async load() {
+		return localStorage.getItem(key) === '1'
+	},
+	async save(unfinished) {
+		if (unfinished) localStorage.setItem(key, '1')
+		else localStorage.removeItem(key)
+	}
+})
+
+// Stable across restarts, or the push filter stops recognising this replica's own work
+// and every row it ever wrote is offered again.
+function replicaId(profileId: string): string {
+	const key = `frieren-replica-${profileId}`
+	const held = localStorage.getItem(key)
+	if (held) return held
+	const minted = crypto.randomUUID()
+	localStorage.setItem(key, minted)
+	return minted
+}
+
+function forgetSlots(profileId: string): void {
+	for (const suffix of ['pull', 'push', 'discard', 'replica'])
+		localStorage.removeItem(
+			suffix === 'replica' ? `frieren-replica-${profileId}` : `frieren-fs-${profileId}-${suffix}`
+		)
+}
+
+/**
+ * A commit, told to every tab over this database.
+ *
+ * `idbStore` offers no `subscribe`, and its reasoning is exactly right for a library:
+ * the DATABASE is the store, not the connection, so a wake held in one tab's closure
+ * would go permanently stale for another tab's commit — and a consumer takes
+ * `subscribe` INSTEAD of polling `since`. It also names the answer, and says it belongs
+ * where its latency is measured rather than in `packages/fs`: a `BroadcastChannel`
+ * beside the commit. This is that.
+ *
+ * With it, `storeVolume`'s watch stops polling and a local write arms its push at once
+ * instead of waiting out the interval.
+ */
+function shared(store: Store, channel: string): Store {
+	const bus = new BroadcastChannel(channel)
+	const listeners = new Set<(writes: Node[]) => void>()
+	const tell = (writes: Node[]) => {
+		for (const fn of listeners) fn(writes)
+	}
+	bus.onmessage = (event) => tell(event.data as Node[])
+	return {
+		...forwarded(store),
+		async commit(writes, guards) {
+			await store.commit(writes, guards)
+			if (writes.length === 0) return
+			tell(writes)
+			// Rows, not a bare wake: a watcher decides from what changed, and a tab that
+			// had to re-scan to find out would pay for every other tab's writes.
+			bus.postMessage(writes)
+		},
+		subscribe(listener) {
+			listeners.add(listener)
+			return () => listeners.delete(listener)
+		},
+		async close() {
+			bus.close()
+			await store.close?.()
+		}
+	}
+}
+
 // Local profiles own local storage, not Clerk users. A profile is a browser-local
 // identity that holds one IDB replica. The default local profile is the signed-out
 // workspace; signed-in accounts are sibling profiles that can sync.
@@ -46,6 +157,11 @@ export type LocalProfile = {
 	// Whether the one-time "bring your local work into this account" offer was
 	// resolved for this account profile. Absent = never asked.
 	migration?: 'migrated' | 'dismissed'
+	// Whether the one pass from the old twin model has run for this profile. Copy-then-
+	// swap, so an interrupted pass has broken nothing and re-running it costs a re-read
+	// — but a pass that ran again after the volume was live would copy stale rows over
+	// live ones, since rule 3 only makes an IDENTICAL row a no-op.
+	adopted?: true
 	// A remote wipe whose acknowledgement/local deletion has not completed. Kept
 	// outside the IDB being deleted so a 503 retry reuses the committed operation.
 	pendingFactoryReset?: { operationId: string; fromGeneration: number }
@@ -112,6 +228,14 @@ function forgetProfileEntry(id: string): void {
 	writeRegistry(readRegistry().filter((p) => p.id !== id))
 }
 
+function recordAdopted(profileId: string): void {
+	const profiles = readRegistry()
+	const profile = profiles.find((entry) => entry.id === profileId)
+	if (!profile) return
+	profile.adopted = true
+	writeRegistry(profiles)
+}
+
 function factoryResetOperation(profileId: string, fromGeneration: number) {
 	const profiles = readRegistry()
 	const profile = profiles.find((entry) => entry.id === profileId)
@@ -129,15 +253,36 @@ function clearFactoryResetOperation(profileId: string): void {
 	writeRegistry(profiles)
 }
 
-function dbName(profileId: string): string {
+// The old twin model's database, read once by the adoption pass and never written.
+function legacyDb(profileId: string): string {
 	return `frieren-fs-profile-${profileId}`
+}
+
+// A store is a whole database here, named by the store's id — so the two a profile
+// holds are two names. Different from `legacyDb` on purpose: the pass copies rather
+// than upgrading in place, and the swap is which name the host opens.
+function storeDb(profileId: string): string {
+	return `frieren-store-${profileId}`
+}
+
+function privateDb(profileId: string): string {
+	return `frieren-store-${profileId}-${PRIVATE_MOUNT}`
 }
 
 type Active = {
 	profileId: string
 	remoteUserId?: string
-	dbName: string
-	local: ReturnType<typeof idbStorage>
+	replica: string
+	/** The synced tree. What the volume reads and what a peer is offered. */
+	local: Store
+	/** This browser's own data, joined at `/private`: credentials, the app cache. */
+	private: Store
+	/**
+	 * The volume this profile answers on before — and beside — any sync. It mints under
+	 * the profile's replica id, so a write made while auth is still resolving is still
+	 * this replica's to push.
+	 */
+	plain: Volume
 	sync: SyncVolume | null
 	volume: ProfileVolume
 	status: SyncStatus
@@ -158,12 +303,13 @@ function setActiveStatus(entry: Active, status: SyncStatus): void {
 	emitStatus()
 }
 
-function createProfileVolume(localVolume: Volume, sync: () => SyncVolume | null): ProfileVolume {
+function createProfileVolume(plain: Volume, sync: () => SyncVolume | null): ProfileVolume {
 	return {
-		...localVolume,
-		// `synced` only adds behavior Frieren needs for remote-backed reads:
-		// lazy blob hydration. Writes/watch/stat can use the same local storage.
-		readFile: (path) => sync()?.readFile(path) ?? localVolume.readFile(path),
+		...plain,
+		// The synced volume reads through `hydratingBlobs`, so a row this replica holds
+		// only as a stub still reads: the bytes are fetched from the peer on demand.
+		// Everything else is the same tree over the same store, so it stays on `plain`.
+		readFile: (path) => sync()?.readFile(path) ?? plain.readFile(path),
 		flush: () => sync()?.flush() ?? Promise.resolve(),
 		pause: () => sync()?.pause(),
 		resume: () => sync()?.resume(),
@@ -187,17 +333,35 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	entry.sync?.destroy()
 	entry.sync = null
 	setActiveStatus(entry, 'connecting')
-	// CLIENT<->SERVER: inject a factory that builds the HTTP `SyncReplica` speaking
-	// the /fs path wire, bound to the clientId `synced()` owns (so the server-stamped
-	// origin matches pull's excludeOrigin). Passing a `Storage` here would be read as
-	// a two-folder P2P peer and fail (no path journal).
 	const client = createFsClient(getToken)
-	const syncVolume = await synced({
+	const syncVolume = await syncedVolume({
 		local: entry.local,
-		remote: ({ clientId, generation, lineageId }) =>
-			remoteSyncReplica(client, { clientId, generation, lineageId }),
+		remote: remoteStore(getToken),
+		replica: entry.replica,
+		pull: slot(`frieren-fs-${entry.profileId}-pull`),
+		push: slot(`frieren-fs-${entry.profileId}-push`),
+		// A discard that stopped half-done is finished before the first cycle, which is
+		// the only way it can be: `syncedVolume` starts its loop before it returns, so
+		// nothing the app could call afterwards is early enough.
+		discard: discardSlot(`frieren-fs-${entry.profileId}-discard`),
+		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, entry.private]])]]),
 		lazyContent: true,
-		localFirst: true
+		localFirst: true,
+		// "Take mine" asks the authority to start a new lineage. The epoch is READ from
+		// the server rather than remembered here — nothing in the seam carries one.
+		reset: async () => {
+			const from = await readGeneration(client)
+			const res = await client.reset.$post({
+				json: {
+					mode: 'adopt-mine',
+					fromGeneration: from.generation,
+					operationId: crypto.randomUUID(),
+					...(from.lineageId === undefined ? {} : { lineageId: from.lineageId })
+				}
+			})
+			if (!res.ok) throw new Error(`take mine was refused by the server: ${res.status}`)
+			return (await res.json()).generation
+		}
 	})
 	if (active !== entry) {
 		syncVolume.destroy()
@@ -210,15 +374,40 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	})
 }
 
-function setActive(
-	profileId: string,
-	name: string,
-	local: ReturnType<typeof idbStorage>,
-	remoteUserId?: string
-): Active {
-	const localVolume = volume(local)
+/** The server's own lineage, off the one non-seam route that reports it. */
+async function readGeneration(
+	client: FsClient
+): Promise<{ generation: number; lineageId?: string }> {
+	const res = await client.index.$get()
+	if (!res.ok) throw new Error(`the server would not report its generation: ${res.status}`)
+	const handshake = await res.json()
+	return { generation: handshake.generation ?? 1, lineageId: handshake.lineageId }
+}
+
+async function setActive(profile: LocalProfile): Promise<Active> {
+	const replica = replicaId(profile.id)
+	const local = shared(idbStore(storeDb(profile.id)), `frieren-store-${profile.id}`)
+	const privateStore = shared(
+		idbStore(privateDb(profile.id)),
+		`frieren-store-${profile.id}-${PRIVATE_MOUNT}`
+	)
+	// The name is claimed before anything reads the tree: the row is derived from its
+	// position, so every replica writes a byte-identical one and none of them ever sends
+	// it — the whole of how this browser reserves `/private` with no coordination.
+	await announceMount(local, ROOT, PRIVATE_MOUNT)
+	if (!profile.adopted) {
+		// `/private` was a path the old engine filtered; here its subtree lands in the
+		// store bound at that name, hanging off that store's own root.
+		await migrateIdb(legacyDb(profile.id), local, new Map([[PRIVATE_MOUNT, privateStore]]))
+		recordAdopted(profile.id)
+	}
+
 	let entry: Active
-	const managed = createProfileVolume(localVolume, () => entry.sync)
+	const plain = storeVolume(local, {
+		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]]),
+		mintVersion: versions(replica)
+	})
+	const managed = createProfileVolume(plain, () => entry.sync)
 
 	// Online-aware sync: stop pushing when the network drops, resume when it
 	// returns, and flush pending writes to the backend before the tab goes away.
@@ -236,10 +425,12 @@ function setActive(
 	document.addEventListener('visibilitychange', onHidden)
 
 	entry = {
-		profileId,
-		remoteUserId,
-		dbName: name,
+		profileId: profile.id,
+		remoteUserId: profile.remoteUserId,
+		replica,
 		local,
+		private: privateStore,
+		plain,
 		sync: null,
 		volume: managed,
 		status: 'local-only',
@@ -256,20 +447,15 @@ function setActive(
 	return entry
 }
 
-function openProfileVolume(profile: LocalProfile): ProfileVolume {
-	const name = dbName(profile.id)
-	return setActive(profile.id, name, idbStorage(name), profile.remoteUserId).volume
-}
-
-function openLocalProfile(): ProfileVolume {
-	return openProfileVolume(localProfile())
+async function openProfileVolume(profile: LocalProfile): Promise<ProfileVolume> {
+	return (await setActive(profile)).volume
 }
 
 // Open the current browser profile's IDB volume. Remote profiles boot from their
 // local replica immediately; auth later starts sync or switches after sign-out.
 export function openProfile(): Promise<ProfileVolume> {
 	if (active) return Promise.resolve(active.volume)
-	return Promise.resolve(openProfileVolume(currentProfile()))
+	return openProfileVolume(currentProfile())
 }
 
 // A local profile can start the runtime before Clerk resolves. An account profile
@@ -312,13 +498,7 @@ export async function attachRemoteUser(userId: string, getToken: GetToken): Prom
 
 	// Switch to (or create) the profile that owns this user.
 	await releaseFsVolume({ flush: false })
-	const profile = profileForUser(userId)
-	const entry = setActive(
-		profile.id,
-		dbName(profile.id),
-		idbStorage(dbName(profile.id)),
-		profile.remoteUserId
-	)
+	const entry = await setActive(profileForUser(userId))
 	await startSync(entry, getToken)
 	return entry.volume
 }
@@ -331,7 +511,7 @@ export async function switchToLocalProfile(): Promise<ProfileVolume> {
 		return active.volume
 	}
 	await releaseFsVolume({ flush: false })
-	return openLocalProfile()
+	return openProfileVolume(localProfile())
 }
 
 // Stop syncing and release the active replica WITHOUT deleting it. Called on
@@ -347,7 +527,10 @@ export async function releaseFsVolume(options: { flush?: boolean } = {}): Promis
 	if (options.flush ?? true) await prev.sync?.flush().catch(() => {})
 	else prev.sync?.pause()
 	prev.sync?.destroy()
-	prev.local.destroy()
+	// Whoever CONSTRUCTED a store closes it, and this is that: the connections are
+	// what a later delete of these databases would otherwise block on.
+	await prev.local.close?.()
+	await prev.private.close?.()
 }
 
 // Explicit "forget this browser": release and permanently delete the active
@@ -355,10 +538,11 @@ export async function releaseFsVolume(options: { flush?: boolean } = {}): Promis
 export async function forgetActiveProfile(): Promise<void> {
 	const prev = active
 	if (!prev) return
-	const { profileId, dbName: name } = prev
+	const { profileId } = prev
 	await releaseFsVolume({ flush: false })
 	forgetProfileEntry(profileId)
-	await deleteIdb(name)
+	forgetSlots(profileId)
+	await deleteProfileDbs(profileId)
 }
 
 // Force an immediate sync (push+pull) on the active volume. The capability
@@ -378,11 +562,11 @@ export function flushActiveVolume(): void {
 // User content lives OUTSIDE these reserved runtime prefixes. Apps can claim any
 // other top-level prefix (per-app /data, the shared /notes knowledge base, …), so
 // a denylist is more robust than an allowlist and needs no per-app knowledge.
-const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'private', 'state', 'system'])
-// Copied subtree: user data + personalized identity only — never the sync journal, the
-// `/private` tree (credentials, the active-AI selection, and the app cache, which
-// refills from its origin), app bundles, or per-app UI state.
-const MIGRATE_SKIP = ['/.state', '/private', '/applications', '/state']
+const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', PRIVATE_MOUNT, 'state', 'system'])
+// Copied subtree: user data + personalized identity only — never app bundles or per-app
+// UI state. `/private` needs no entry: it is a MOUNT, and `scan` stops at one, so the
+// credentials and the app cache behind it are not reachable from this walk at all.
+const MIGRATE_SKIP = ['/.state', '/applications', '/state']
 // The two identity files — the only paths a migration is allowed to overwrite (with the
 // user's personalized version). Nothing writes them until someone personalizes, so on the
 // destination they are usually absent rather than a `seeded: true` default; both read as
@@ -399,9 +583,11 @@ function anonymousProfileId(): string {
 	return profile?.id ?? 'local'
 }
 
-function openLocalSource(): { volume: Volume; destroy: () => void } {
-	const storage = idbStorage(dbName(anonymousProfileId()))
-	return { volume: volume(storage), destroy: () => storage.destroy() }
+function openLocalSource(): { volume: Volume; destroy: () => Promise<void> } {
+	// The synced tree alone, with no binding: the walk below never leaves it, and the
+	// anonymous profile's `/private` is not this account's to copy.
+	const store = idbStore(storeDb(anonymousProfileId()))
+	return { volume: storeVolume(store), destroy: async () => store.close?.() }
 }
 
 // A soul/profile file is "personalized" once the user writes one of their own. An absent
@@ -423,7 +609,7 @@ async function hasUserContent(vol: Volume): Promise<boolean> {
 }
 
 // Resolve once the entry's FIRST sync settles (its local replica now mirrors the
-// DO). `synced` cycles syncing→synced on success and syncing→error on failure
+// DO). The loop cycles syncing→synced on success and syncing→error on failure
 // (including offline), so we resolve true on synced and false on error /
 // switch-away — a transient first-cycle error just defers the offer to the next
 // attach.
@@ -457,7 +643,7 @@ export async function shouldOfferMigration(): Promise<boolean> {
 	try {
 		return await hasUserContent(source.volume)
 	} finally {
-		source.destroy()
+		await source.destroy()
 	}
 }
 
@@ -495,20 +681,19 @@ export function migrateLocalProfileInto(): Promise<void> {
 			recordMigration(acct.profileId, 'migrated')
 			await acct.sync?.flush().catch(() => {})
 		} finally {
-			source.destroy()
+			await source.destroy()
 			migrating = null
 		}
 	})()
 	return migrating
 }
 
-// fullScan is BFS, so `scan` visits a directory before its contents — mkdir the
-// dir, then writeFile children into it. Per-path conflict policy: the offer is
-// non-blocking, so between the freshness check and confirmation the account can
-// gain content (the user makes a note; another device syncs one in). So NEVER
-// clobber an existing destination path — the one exception is replacing an
-// identity file the account never personalized with the user's own soul/profile,
-// which is the whole point of migrating identity.
+// scan is BFS, so it visits a directory before its contents — mkdir the dir, then
+// writeFile children into it. Per-path conflict policy: the offer is non-blocking, so
+// between the freshness check and confirmation the account can gain content (the user
+// makes a note; another device syncs one in). So NEVER clobber an existing destination
+// path — the one exception is replacing an identity file the account never personalized
+// with the user's own soul/profile, which is the whole point of migrating identity.
 async function copyUserData(src: Volume, dst: Volume): Promise<void> {
 	const skip = (p: string) => MIGRATE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
 	await src.scan('/', async (path, stat) => {
@@ -530,6 +715,12 @@ async function replacesSeededIdentity(src: Volume, dst: Volume, path: string): P
 	return (await isPersonalized(src, path)) && !(await isPersonalized(dst, path))
 }
 
+/** Both databases a profile holds, and the old one the pass copied out of. */
+async function deleteProfileDbs(profileId: string): Promise<void> {
+	for (const name of [storeDb(profileId), privateDb(profileId), legacyDb(profileId)])
+		await deleteIdb(name)
+}
+
 function deleteIdb(name: string): Promise<void> {
 	return new Promise((resolve) => {
 		const req = indexedDB.deleteDatabase(name)
@@ -537,7 +728,7 @@ function deleteIdb(name: string): Promise<void> {
 		// previous behaviour) let the caller's `location.reload()` race ahead and abort
 		// the still-pending delete, so the local replica survived a factory reset — its
 		// stale sync state then stalled the next bootstrap. `releaseFsVolume`'s
-		// destroy() already closed the connection, so a transient block clears itself.
+		// `close()` already closed the connection, so a transient block clears itself.
 		req.onsuccess = req.onerror = () => resolve()
 		req.onblocked = () =>
 			console.warn(`[factoryReset] IndexedDB "${name}" delete blocked — close other tabs`)
@@ -546,13 +737,12 @@ function deleteIdb(name: string): Promise<void> {
 
 // ── Server-coordinated volume reset ──────────────────────────────────────────
 // Surfaced in the sync-status menu (DesktopShell). "Take theirs" and "take mine"
-// are intents on the synced volume — the state machine (and the POST /fs/reset it
-// drives) lives in `synced()`. Only "factory reset" is app-level: it wipes the
-// server AND nukes local IDB, which no library-level reset can do.
+// are intents on the synced volume — the loop that carries them out lives in
+// `syncedVolume`. Only "factory reset" is app-level: it wipes the server AND nukes
+// local IDB, which no library-level reset can do.
 
 // "Take theirs" — discard this device's local replica and re-pull the server's
-// volume. Purely client-side (the marker under /.state survives, so the server is
-// adopted verbatim without reseeding built-ins). Synced profiles only.
+// volume. Purely client-side. Synced profiles only.
 export async function resetTakeTheirs(): Promise<void> {
 	const sync = active?.sync
 	if (!sync) throw new Error('“take theirs” requires a synced profile')
@@ -561,7 +751,7 @@ export async function resetTakeTheirs(): Promise<void> {
 
 // "Take mine" — make this device's volume the new server baseline; every other
 // device converges to it over ordinary sync. The reset is a small atomic server
-// op (truncate + bump); the republish then rides the normal resilient loop — so a
+// op (empty + bump); the republish then rides the normal resilient loop — so a
 // closed tab / dropped network just resumes, and it can take as long as it needs.
 export async function resetTakeMine(): Promise<void> {
 	const sync = active?.sync
@@ -578,16 +768,20 @@ export async function factoryReset(getToken: GetToken): Promise<void> {
 	if (!prev) return
 	let operation: LocalProfile['pendingFactoryReset']
 	if (prev.remoteUserId) {
-		// `wipe` is not part of the sync layer's reset (it discards content too), so
-		// it goes over the same typed /fs/reset route directly. Persist the request
-		// outside IDB first: a 503 is ambiguous, and retrying must confirm the same
+		// `wipe` is not part of the sync loop's reset (it discards content too), so it
+		// goes over the same typed /fs/reset route directly. The epoch is READ from the
+		// server, not remembered: nothing in the seam carries one. Persist the request
+		// outside IDB first — a 503 is ambiguous, and retrying must confirm the same
 		// operation rather than race it with a new id at the old generation.
-		operation = factoryResetOperation(prev.profileId, prev.sync?.generation() ?? 1)
-		const res = await createFsClient(getToken).reset.$post({
+		const client = createFsClient(getToken)
+		const from = await readGeneration(client)
+		operation = factoryResetOperation(prev.profileId, from.generation)
+		const res = await client.reset.$post({
 			json: {
 				mode: 'wipe',
 				fromGeneration: operation.fromGeneration,
-				operationId: operation.operationId
+				operationId: operation.operationId,
+				...(from.lineageId === undefined ? {} : { lineageId: from.lineageId })
 			}
 		})
 		if (!res.ok) {
@@ -597,9 +791,10 @@ export async function factoryReset(getToken: GetToken): Promise<void> {
 			throw new Error(`factory reset failed: ${res.status}`)
 		}
 	}
-	const name = prev.dbName
+	const { profileId } = prev
 	await releaseFsVolume({ flush: false })
-	await deleteIdb(name)
-	if (operation) clearFactoryResetOperation(prev.profileId)
+	forgetSlots(profileId)
+	await deleteProfileDbs(profileId)
+	if (operation) clearFactoryResetOperation(profileId)
 	location.reload()
 }

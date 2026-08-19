@@ -113,9 +113,6 @@ importers:
       '@justfiles/state':
         specifier: workspace:*
         version: link:../../packages/state
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../../packages/sync
       '@justfiles/ui':
         specifier: workspace:*
         version: link:../../packages/ui
