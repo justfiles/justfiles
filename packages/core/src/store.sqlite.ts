@@ -66,6 +66,23 @@ export type BlobStore = {
 }
 
 /**
+ * One host's own corner of a shared bucket.
+ *
+ * `sqliteStore` keys an object by its store id and hash, which two users would collide
+ * on — and one bucket serves every Durable Object. Scoping is the host's job because
+ * only the host knows what it is one of; the layout is this file's, because this is what
+ * reads the keys back.
+ */
+export const scopedBlobs = (bucket: BlobStore, prefix: string): BlobStore => {
+	const at = (key: string) => `${prefix}/store/${key}`
+	return {
+		put: (key, value) => bucket.put(at(key), value),
+		get: (key) => bucket.get(at(key)),
+		delete: async (keys) => bucket.delete?.(typeof keys === 'string' ? at(keys) : keys.map(at))
+	}
+}
+
+/**
  * How long bytes are safe from the sweep after an adopter last TOUCHED them.
  *
  * Rule 10 puts the bytes in before the row that names them, and on a server those are

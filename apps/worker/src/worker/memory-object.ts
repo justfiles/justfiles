@@ -1,8 +1,15 @@
 import { DurableObject } from 'cloudflare:workers'
-import { migrateSqlite, sqliteStore } from '@justfiles/core'
+import {
+	createDoAdapter,
+	createDoSyncDb,
+	migrateSqlite,
+	migrateSync,
+	scopedBlobs,
+	sqliteStore
+} from '@justfiles/core'
+import { coreMigrations } from '@justfiles/core/migrations'
 import { authority } from '@justfiles/fs/authority'
 import { createWorkerApiApp, type WorkerApiType } from './app'
-import { createDOSqliteAdapter, createDOSyncDb, migrateCF, scopedBlobs } from './db.do'
 
 /**
  * Where the one-time pass from the old tables to the store model is recorded.
@@ -25,7 +32,7 @@ export class MemoryObject extends DurableObject<Env> {
 		const namespace = ctx.id.toString()
 		// Bytes too big for a row go to R2: a Workers SQLite ROW is capped at 2 MB — hard
 		// — so a store that inlined everything could not hold a larger file at all.
-		const store = sqliteStore(createDOSyncDb(ctx.storage), undefined, {
+		const store = sqliteStore(createDoSyncDb(ctx.storage), undefined, {
 			blobs: scopedBlobs(env.ASSETS, namespace)
 		})
 		// Every served path goes through the authority: rule 9's invariants, one commit at
@@ -37,9 +44,12 @@ export class MemoryObject extends DurableObject<Env> {
 		// out of this same database rather than off a wire, and every parent is written
 		// before its children, so rule 9 holds by construction.
 		ctx.blockConcurrencyWhile(async () => {
-			await migrateCF(ctx.storage)
+			// Synchronous, so each migration's statements and its `schema_migrations` record
+			// commit together — an interrupted one that half-applied would brick every later
+			// one (a re-run `ALTER TABLE ADD COLUMN` failing as a duplicate).
+			migrateSync(createDoSyncDb(ctx.storage), coreMigrations)
 			if (await ctx.storage.get(ADOPTED_KEY)) return
-			await migrateSqlite(createDOSqliteAdapter(ctx.storage), store, { blobs: env.ASSETS })
+			await migrateSqlite(createDoAdapter(ctx.storage), store, { blobs: env.ASSETS })
 			await ctx.storage.put(ADOPTED_KEY, true)
 		})
 	}

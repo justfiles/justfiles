@@ -1,4 +1,5 @@
 export type { DbAdapter, SqlValue, SyncDb } from './db'
+export { createDoAdapter, createDoSyncDb, type DoStorage } from './db.do'
 export { createSqliteAdapter, createSqliteSyncDb } from './db.sqlite'
 export { fileApi } from './file.api'
 export {
@@ -25,7 +26,7 @@ export {
 // The server half of the seam, unexported until the first consumer arrived: half a
 // server surface is no use to anyone.
 export { storeApi } from './store.api'
-export { emptyStore, sqliteStore } from './store.sqlite'
+export { type BlobStore, emptyStore, scopedBlobs, sqliteStore } from './store.sqlite'
 // NOT exported: `storage.sqlite.ts`. It is the old model's backend, and nothing in
 // production reaches it now that both hosts serve the seam — it survives only as the
 // fixture `migrate.sqlite.test.ts` builds the old tree with, which imports it by path.

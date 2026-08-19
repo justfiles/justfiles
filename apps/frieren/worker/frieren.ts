@@ -46,20 +46,25 @@ import type { UsageSnapshot } from '@justfiles/app/capabilities/settings'
 import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import {
 	clearReset,
+	createDoAdapter,
+	createDoSyncDb,
 	createFsApi,
 	type DbAdapter,
 	type DestructiveResetBody,
 	fileApi,
 	migrateSqlite,
+	migrateSync,
 	type ResetResult,
 	type ResetStatus,
 	readGenerationState,
 	readResetStatus,
 	resetStore,
 	type SyncDb,
+	scopedBlobs,
 	sqliteStore,
 	storeApi
 } from '@justfiles/core'
+import { coreMigrations } from '@justfiles/core/migrations'
 import type { Volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { ROOT, type Store } from '@justfiles/fs/store'
@@ -71,7 +76,6 @@ import { buildProviders } from './accounts/providers.ts'
 import { createAiGateway } from './ai-gateway.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
-import { createDOSqliteAdapter, createDOSyncDb, migrateCF, scopedBlobs } from './db.do.ts'
 import { generateFace } from './faces.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { createServerPoke, notifying } from './frieren.poke.ts'
@@ -157,7 +161,7 @@ const ADOPTED_KEY = 'store:adopted'
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
-	// The same database, synchronously: what an atomic transaction needs (db.do.ts).
+	// The same database, synchronously: what an atomic transaction needs.
 	private readonly sync: SyncDb
 	// The synced tree, raw — the store the migration writes into and the mount row is
 	// announced in. Every SERVED path goes through `tree` instead, which is this behind
@@ -205,9 +209,9 @@ export class Frieren extends DurableObject<Env> {
 		const namespace = ctx.id.toString()
 		// The async seam, for the two readers that are not the store: the generation row,
 		// and the one pass that reads the old tables.
-		const adapter = createDOSqliteAdapter(ctx.storage)
+		const adapter = createDoAdapter(ctx.storage)
 		this.db = adapter
-		this.sync = createDOSyncDb(ctx.storage)
+		this.sync = createDoSyncDb(ctx.storage)
 
 		// Proactive server->client sync: any committed write to the server volume
 		// (agent turn, cron alarm, or an applied client push) nudges every connected
@@ -230,7 +234,8 @@ export class Frieren extends DurableObject<Env> {
 		// Bytes too big for a row go to R2, because a Workers SQLite ROW is capped at
 		// 2 MB — hard — so a store that inlined everything could not hold a file bigger
 		// than that at all. The old backend sent every binary there for the same reason.
-		const blobs = scopedBlobs(env.FS_BLOBS, namespace)
+		// Absent locally (no bucket bound), so dev runs on rows alone.
+		const blobs = env.FS_BLOBS && scopedBlobs(env.FS_BLOBS, namespace)
 		this.store = sqliteStore(this.sync, undefined, { blobs })
 		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT, { blobs }))
 		this.tree = notifying(authority(this.store))
@@ -326,7 +331,10 @@ export class Frieren extends DurableObject<Env> {
 		// The DO's one initialization seam: no request runs until the schema exists and
 		// the tree has been adopted, so nothing else needs a readiness gate.
 		ctx.blockConcurrencyWhile(async () => {
-			await migrateCF(this.ctx.storage)
+			// Synchronous, so each migration's statements and its `schema_migrations` record
+			// commit together — an interrupted one that half-applied would brick every later
+			// one (a re-run `ALTER TABLE ADD COLUMN` failing as a duplicate).
+			migrateSync(this.sync, coreMigrations)
 			await this.adoptStore()
 		})
 	}
