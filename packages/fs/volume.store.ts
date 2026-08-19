@@ -159,26 +159,32 @@ export async function announceMount(store: Store, parent: NodeId, name: string):
 	const row = await mountRow(parent, name)
 	const held = await store.child(parent, name)
 	if (held !== null) return held.type === 'mount' ? held.id : refuse(name, held)
-	// A FREE name is not the same as an announceable one, because the id is derived: a
-	// mount that was removed from this position left a tombstone that rule 8 makes
-	// final, and the name it freed is a name this row can never take again. The volume
-	// cannot produce that tombstone — `rm` and `rename` refuse a mount row — but a
-	// store written to directly, or by a replica from before that rule, can.
-	//
-	// Asked HERE rather than left to the commit, so that both backends answer it the
-	// same way. An authority refuses the write with a guard error the catch below
-	// would report as a taken name; a raw store ACCEPTS it, bringing a dead id back
-	// with nothing downstream to catch it — the `mount` author tag keeps this row off
-	// every push, so no authority ever sees the resurrection.
-	if ((await store.get(row.id))?.deleted)
-		throw new Error(`EBUSY: ${name} was a mount here, and a tombstone is final`)
 	try {
-		await store.commit([row], [{ free: { parent, name } }])
+		// TWO guards, because a free NAME settles nothing when the id is a function of
+		// the position. `free` is the claim. `is: null` is the id itself being
+		// unspoken-for: a mount removed from this position left a tombstone that rule 8
+		// makes final, and a tombstone FREES the name — so `free` alone passes, a raw
+		// store resurrects a dead id, and an authority refuses the write. The volume
+		// cannot leave that tombstone (`pinned` below), but a store written to
+		// directly, or a replica from before that rule, can.
+		//
+		// Stated as a guard rather than read first, because a read is a moment and this
+		// is a race: a peer's page carrying that tombstone may land between any two
+		// awaits here. The guard makes the answer the commit's own.
+		await store.commit([row], [{ free: { parent, name } }, { version: { id: row.id, is: null } }])
 	} catch (e) {
 		if (!(e instanceof GuardError)) throw e
 		const raced = await store.child(parent, name)
-		if (raced === null || raced.type !== 'mount') return refuse(name, raced)
-		return raced.id
+		if (raced !== null) return raced.type === 'mount' ? raced.id : refuse(name, raced)
+		// Which guard lost is what the name cannot say. Nothing holds it, so the ID is
+		// what refused — this position was announced once, and its row is somewhere no
+		// second announcement can reach past: gone, which rule 8 makes final, or moved,
+		// which nothing but a write around `pinned` could have done.
+		const derived = await store.get(row.id)
+		if (derived === null) return refuse(name, null) // the holder vanished; the name is free again
+		throw new Error(
+			`EBUSY: ${name} was a mount here, and its id is ${derived.deleted ? 'a tombstone, which is final' : `live at ${derived.name}`}`
+		)
 	}
 	return row.id
 }

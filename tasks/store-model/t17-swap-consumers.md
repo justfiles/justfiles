@@ -89,12 +89,15 @@ remove (named or swept up in a recursive delete), to rename away, and to replace
 — `pinned` in `volume.store.ts`, beside `bound`. Retiring a mount point is
 unbinding it; the claim is what the row is for.
 
-`announceMount` asks about the derived id's tombstone itself, before committing,
-because a free NAME settles nothing when the id is a function of the position —
-and because the two backends would otherwise disagree: an authority refuses the
-write, while a raw store accepts it and brings a dead id back with nothing
-downstream to catch it, since the `mount` author tag keeps the row off every
-push. Only a write that goes around the volume can leave such a tombstone now.
+`announceMount` states the derived id as a SECOND guard — `{ version: { id, is:
+null } }` beside the `free` one — because a free NAME settles nothing when the id
+is a function of the position: a tombstone frees the name, so `free` alone
+passes, and the two backends then disagree, an authority refusing the write while
+a raw store brings a dead id back with nothing downstream to catch it (the
+`mount` author tag keeps the row off every push). A guard rather than a read
+before the commit, because a read is a moment and this is a race — a peer's page
+carrying that tombstone can land between any two awaits. Only a write that goes
+around the volume can leave such a tombstone now.
 
 On a real filesystem the mounted store's tree is a REAL directory under the same
 root — `<root>/private`, openable in Finder — so the boundary has to be something

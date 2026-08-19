@@ -1006,5 +1006,26 @@ describe('a mount point is pinned: its id is its position, so neither may move',
 		await expect(announceMount(authority(store), ROOT, 'private')).rejects.toThrow(
 			/^EBUSY: private was a mount here/
 		)
+		expect((await store.get(mount))?.deleted).toBe(true)
+	})
+
+	it('leaves that answer to the commit, so a tombstone arriving mid-announce still refuses', async () => {
+		// The window a read cannot cover: a peer's page carrying the tombstone lands
+		// between the lookup and the write. A store that answers every READ as though
+		// the tombstone were not there yet is that window held open — and the commit,
+		// which is the only step that sees the store as it is, has to be what refuses.
+		const store = memStore()
+		const mount = await announceMount(store, ROOT, 'private')
+		await store.commit([{ ...((await store.get(mount)) as Node), deleted: true, version: 'x:2' }])
+
+		const late: Store = { ...store, get: async (id) => (id === mount ? null : store.get(id)) }
+		// It refuses — on the guard, since every read here says the id is free. What it
+		// can SAY is only as good as the re-read that follows, and this one lies, so the
+		// message is the ordinary one for a name nothing holds. What matters is that
+		// nothing came back to life: `free` alone would have passed, the tombstone
+		// having freed the name.
+		await expect(announceMount(late, ROOT, 'private')).rejects.toThrow(Error)
+		expect((await store.get(mount))?.deleted).toBe(true)
+		expect(await store.child(ROOT, 'private')).toBeNull()
 	})
 })
