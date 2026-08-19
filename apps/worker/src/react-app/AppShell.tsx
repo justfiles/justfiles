@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import { persistStorage } from '@justfiles/fs/storage/idb'
+import { persistStorage } from '@justfiles/fs/store.idb'
 import { Outlet } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'

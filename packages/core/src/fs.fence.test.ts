@@ -217,12 +217,15 @@ describe('/fs reset route — server', () => {
 			body: JSON.stringify(body)
 		})
 
-	const adoptMine: ResetBody = {
+	// `as const` rather than `: ResetBody`, because the old client's own request type
+	// still REQUIRES a `resetId` — this one carries one, and the widened union no
+	// longer proves that to it.
+	const adoptMine = {
 		mode: 'adopt-mine',
 		fromGeneration: 5,
 		operationId: 'op-1',
 		resetId: 'r1'
-	}
+	} as const satisfies ResetBody
 
 	it('delegates a complete to the injected capability and returns the generation', async () => {
 		const app = createFsApi(memStorage(), capability(5))

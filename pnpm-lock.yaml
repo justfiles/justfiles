@@ -32,9 +32,6 @@ importers:
 
   apps/cli:
     devDependencies:
-      '@justfiles/core':
-        specifier: workspace:*
-        version: link:../../packages/core
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs

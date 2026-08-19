@@ -49,6 +49,7 @@ import {
 	createFsApi,
 	type DbAdapter,
 	type DestructiveResetBody,
+	fileApi,
 	migrateSqlite,
 	type ResetResult,
 	type ResetStatus,
@@ -297,6 +298,12 @@ export class Frieren extends DurableObject<Env> {
 			// and a client speaks exactly one of them ([T18](../../../tasks/store-model/t18-retire.md)
 			// deletes the other).
 			.route('/store', storeApi(this.tree))
+			// The one route beside it, for the callers that are not replicas: a CLI
+			// reading one file, for which the seam is a walk and a fetch. Over the synced
+			// tree UNBOUND — not `this.volume` — for the same reason `storeApi` is handed
+			// the synced store alone: a request may not name anything behind the mount,
+			// and an unbound one reads as the empty directory it is.
+			.route('/store', fileApi(storeVolume(this.tree)))
 			.route(
 				'/fs',
 				createFsApi(fs, {

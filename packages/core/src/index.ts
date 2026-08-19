@@ -1,5 +1,6 @@
 export type { DbAdapter, SqlValue, SyncDb } from './db'
 export { createSqliteAdapter, createSqliteSyncDb } from './db.sqlite'
+export { fileApi } from './file.api'
 export {
 	createFsApi,
 	type DestructiveResetBody,
