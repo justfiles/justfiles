@@ -66,14 +66,22 @@ export type BlobStore = {
 }
 
 /**
- * How long bytes are safe from the sweep after they land.
+ * How long bytes are safe from the sweep after an adopter last TOUCHED them.
  *
- * Rule 10 puts the bytes in before the row that names them, and on a server those
- * are two REQUESTS: a `PUT /blob` and, some seconds or minutes later, the `POST
- * /commit` that adopts it. A sweep in between would collect content the pusher has
- * already ticked off, and the engine never offers a pushed row's bytes twice — so
- * the row would be a stub for ever, with no peer left that knows to re-send. An
- * hour is far longer than any push takes and far shorter than the daily sweep.
+ * Rule 10 puts the bytes in before the row that names them, and on a server those are
+ * two REQUESTS with a gap between them. A sweep in that gap collects content the
+ * pusher has already ticked off, and the engine never offers a pushed row's bytes
+ * twice — so the row is a stub for ever, with no peer left that knows to re-send.
+ *
+ * There are TWO ways to be mid-adoption, which is why the stamp says "touched" and
+ * not "written". A pusher holding the only copy PUTs the bytes and then commits. A
+ * pusher whose bytes this store already has asks `has`, is told yes, skips the upload
+ * — and then commits, with a `bases` round trip in between (`engine.ts`). The second
+ * is the dangerous one: those bytes may have been unreferenced for weeks, so nothing
+ * about when they were WRITTEN protects them, and only the ask says an adopter is
+ * coming.
+ *
+ * An hour is far longer than one page of a push and far shorter than the daily sweep.
  */
 const GRACE_MS = 60 * 60 * 1000
 
@@ -149,10 +157,11 @@ const SCHEMA = [
 	// Content is per store too. Sharing one map would make a hash in the local
 	// store fetchable through the synced one's blob route, and rule 7 would then
 	// be the only thing standing between them — the boundary has to be the data.
-	// `written_ms` is not part of the content map — a hash is still the whole key —
+	// `touched_ms` is not part of the content map — a hash is still the whole key —
 	// it is what `gc` needs to tell "no row names these bytes" from "no row names
-	// them YET". Epoch milliseconds as INTEGER: it is compared, and it is nowhere
-	// near the 2^53 the two nanosecond fields above are.
+	// them YET": the last moment an adopter wrote them or asked after them. Epoch
+	// milliseconds as INTEGER: it is compared, and it is nowhere near the 2^53 the
+	// two nanosecond fields above are.
 	//
 	// Exactly one of `data` and `blob_key` is set: the bytes are in the row, or the
 	// row names where they are. Which one is a size question and nothing else (see
@@ -163,7 +172,7 @@ const SCHEMA = [
 		hash TEXT NOT NULL,
 		data BLOB,
 		blob_key TEXT,
-		written_ms INTEGER NOT NULL,
+		touched_ms INTEGER NOT NULL,
 		PRIMARY KEY (sid, hash)
 	)`,
 	'CREATE TABLE IF NOT EXISTS meta (sid INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (sid, key))'
@@ -397,7 +406,7 @@ export function sqliteStore(
 			db.transactionSync(() => {
 				const orphans = db.query<Row>(
 					`SELECT hash, blob_key FROM blobs
-						WHERE sid = ? AND written_ms < ? AND hash NOT IN (
+						WHERE sid = ? AND touched_ms < ? AND hash NOT IN (
 							SELECT content FROM nodes WHERE sid = ? AND deleted = 0 AND content IS NOT NULL
 						)
 						LIMIT ${SWEEP + 1}`,
@@ -432,14 +441,35 @@ export function sqliteStore(
 		// already the answer and the second put is nothing. SQLite hands every
 		// reader its own buffer, so nothing here can reach into stored content.
 		blobs: {
-			// The ROW is what this store holds, whichever side the bytes are on: an
-			// external object with no row here belongs to nobody, and `gc` sweeps by row.
+			/**
+			 * The ROW is what this store holds, whichever side the bytes are on: an
+			 * external object with no row here belongs to nobody, and `gc` sweeps by row.
+			 *
+			 * Asking RENEWS the lease, and that is not a convenience. This question is
+			 * the one a pusher asks before deciding not to upload (`transfer` in
+			 * `engine.ts`), so a `true` here is a promise that the bytes will still be
+			 * here when the commit naming them arrives — a commit that is two round trips
+			 * away. Without the renewal a hash unreferenced since last week answers
+			 * `true`, the sweep collects it in the gap, and the row lands naming content
+			 * no peer will ever offer again.
+			 *
+			 * Guarded on the stamp, so the common case writes nothing: a blob touched
+			 * within the last half-window is already safe for longer than the push, and
+			 * an `UPDATE` that matches no row costs no write.
+			 */
 			async has(hash) {
 				const { sid } = open()
-				return (
+				const held =
 					db.query('SELECT 1 AS held FROM blobs WHERE sid = ? AND hash = ? LIMIT 1', [sid, hash])
 						.length > 0
-				)
+				if (held)
+					db.exec('UPDATE blobs SET touched_ms = ? WHERE sid = ? AND hash = ? AND touched_ms < ?', [
+						Date.now(),
+						sid,
+						hash,
+						Date.now() - GRACE_MS / 2
+					])
+				return held
 			},
 			async get(hash) {
 				const { sid } = open()
@@ -465,7 +495,7 @@ export function sqliteStore(
 				const stamp = Date.now()
 				if (external === undefined || held.byteLength <= inline) {
 					db.exec(
-						'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, written_ms) VALUES (?, ?, ?, NULL, ?)',
+						'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, touched_ms) VALUES (?, ?, ?, NULL, ?)',
 						[sid, hash, held, stamp]
 					)
 					return
@@ -486,7 +516,7 @@ export function sqliteStore(
 				const key = keyFor(hash)
 				await external.put(key, held)
 				db.exec(
-					'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, written_ms) VALUES (?, ?, NULL, ?, ?)',
+					'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, touched_ms) VALUES (?, ?, NULL, ?, ?)',
 					[sid, hash, key, stamp]
 				)
 			}

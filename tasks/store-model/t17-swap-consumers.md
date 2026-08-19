@@ -194,13 +194,22 @@ body is synchronous on purpose (it shares the CAS's transaction) and an object s
 can never join one. Dropping the row is what makes the bytes unfetchable; the storage
 leaks, as it did before.
 
-It needs one column the seam does not: `written_ms` on `blobs`. Rule 10 puts the
-bytes in before the row that names them, and on a server those are two REQUESTS —
-a `PUT /blob`, then the `POST /commit` that adopts it, seconds or minutes later.
-A sweep in between would collect content the pusher has already ticked off, and
-the engine never offers a pushed row's bytes twice, so the row would be a stub
-for ever with no peer left that knows to re-send. An hour's grace is far longer
-than any push and far shorter than the daily sweep.
+It needs one column the seam does not: `touched_ms` on `blobs` — the last moment an
+adopter either wrote those bytes or asked after them. Rule 10 puts the
+bytes in before the row that names them, and on a server those are two REQUESTS
+with a gap between them. A sweep in that gap collects content the pusher has
+already ticked off, and the engine never offers a pushed row's bytes twice, so
+the row is a stub for ever with no peer left that knows to re-send.
+
+There are TWO ways to be mid-adoption, and only one of them is a write. A pusher
+holding the only copy PUTs the bytes and then commits. A pusher whose bytes the
+store already has asks `has`, is told yes, skips the upload — and commits two
+round trips later. The second is the dangerous one: those bytes may have been
+unreferenced for weeks, so nothing about when they were WRITTEN protects them.
+So the ASK renews the lease: `has` is the question a pusher asks before deciding
+not to upload, which makes a `true` a promise, and the stamp is what keeps it. An
+hour's grace is far longer than one page of a push and far shorter than the daily
+sweep.
 
 ### The wake a backend cannot promise, kept by the host that can
 

@@ -327,7 +327,7 @@ describe('sqliteStore: the sweep', () => {
 	const bytes = (text: string) => new TextEncoder().encode(text)
 
 	/** Age every blob past the grace window, which is the only thing a clock buys here. */
-	const age = (db: SyncDb) => db.exec('UPDATE blobs SET written_ms = 0')
+	const age = (db: SyncDb) => db.exec('UPDATE blobs SET touched_ms = 0')
 
 	test('collects bytes no live row names, and keeps the ones that are named', async () => {
 		const { db, store } = pair()
@@ -384,6 +384,32 @@ describe('sqliteStore: the sweep', () => {
 		expect(await synced.gc?.()).toEqual({ reclaimed: 1, done: true })
 		expect(await synced.blobs.has(shared)).toBe(false)
 		expect(await local.blobs.has(shared)).toBe(true)
+	})
+
+	test('asking renews the lease, so a re-adopted blob survives the sweep', async () => {
+		const { db, store } = pair()
+		const hash = await sha('re-adopted')
+		await store.blobs.put(hash, bytes('re-adopted'))
+		// Unreferenced since last week: nothing about when these bytes were WRITTEN
+		// protects them any more.
+		age(db)
+
+		// A pusher asks before deciding not to upload. Told yes, it skips the upload and
+		// commits two round trips later — and this is the window the sweep must not use.
+		expect(await store.blobs.has(hash)).toBe(true)
+		expect(await store.gc?.()).toEqual({ reclaimed: 0, done: true })
+		expect(await store.blobs.has(hash)).toBe(true)
+
+		// The row that ends the race, and the blob stops being a candidate at all.
+		await store.commit([node({ id: 'a', name: 'a.txt', content: hash })])
+		expect(await store.gc?.()).toEqual({ reclaimed: 0, done: true })
+		expect(await store.blobs.get(hash)).toEqual(bytes('re-adopted'))
+	})
+
+	test('asking about a blob it does not hold renews nothing', async () => {
+		const { store } = pair()
+
+		expect(await store.blobs.has(await sha('never here'))).toBe(false)
 	})
 
 	test('a full slice reports more to do, and a second pass finishes it', async () => {
@@ -549,7 +575,7 @@ describe('sqliteStore: bytes too big for a row', () => {
 		const data = big(3 * 1024 * 1024)
 		const hash = await sha256Hex(data)
 		await store.blobs.put(hash, data)
-		db.exec('UPDATE blobs SET written_ms = 0')
+		db.exec('UPDATE blobs SET touched_ms = 0')
 
 		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
 		expect(objects.size).toBe(0)
