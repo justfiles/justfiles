@@ -1,6 +1,6 @@
 import { sweepTrash } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
-import type { Storage } from '@justfiles/fs/storage'
+import type { Store } from '@justfiles/fs/store'
 
 // A storage sweep that ran out of budget leaves this marker and re-arms the alarm,
 // so the next wake is a CONTINUATION rather than a new day. Durable, because that
@@ -21,17 +21,21 @@ interface SweepState {
 /**
  * The storage half of the daily routine, plus its own continuation.
  *
- * The journal prune takes a bounded slice per run — it shares one Durable Object
- * event with every other write, so it cannot be allowed to grow with the backlog.
- * When it reports work remaining, this re-arms the alarm itself instead of waiting
- * a day, which a large backlog would never drain.
+ * Every store the host holds is swept, not just the synced one: rule 7 makes content
+ * immutable, so an edited file simply stops naming its old bytes — and the bytes
+ * behind `/private` go stale exactly the way the tree's do.
+ *
+ * The sweep takes a bounded slice per run — it shares one Durable Object event with
+ * every other write, so it cannot be allowed to grow with the backlog. When any store
+ * reports work remaining, this re-arms the alarm itself instead of waiting a day,
+ * which a large backlog would never drain.
  *
  * `daily` says whether this wake is the DAILY one. A resumed sweep is not: the
  * caller's other daily work (the agent rolls yesterday's notes into memory, and
  * builds its runtime to do it) must run once a day, not once a minute.
  */
 export async function runDailyMaintenance(
-	storage: Storage,
+	stores: readonly Store[],
 	volume: Volume,
 	state: SweepState,
 	now = Date.now()
@@ -41,8 +45,8 @@ export async function runDailyMaintenance(
 	await sweepTrash(volume).catch(() => {})
 	// A failed (or absent) sweep reports nothing: it retries on the next daily alarm,
 	// and a backend that cannot sweep has nothing to come back for.
-	const swept = await storage.caps?.content?.gcUnreferenced().catch(() => undefined)
-	if (swept?.done === false) {
+	const swept = await Promise.all(stores.map((store) => store.gc?.().catch(() => undefined)))
+	if (swept.some((pass) => pass?.done === false)) {
 		// Alarm first, marker second: a failed re-arm must not leave a marker behind
 		// that would silently skip the next day's agent maintenance.
 		await state.setAlarm(now + SWEEP_RESUME_DELAY_MS)

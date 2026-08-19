@@ -2,7 +2,7 @@
  * DO SQLite adapter for @justfiles/core sqliteStorage.
  * Copied from apps/worker/src/worker/db.do.ts — same pattern.
  */
-import type { DbAdapter, SqlValue } from '@justfiles/core'
+import type { DbAdapter, SqlValue, SyncDb } from '@justfiles/core'
 import { migrateSync, sqliteStorage } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import type { Storage } from '@justfiles/fs/storage'
@@ -55,25 +55,37 @@ export function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter 
 	return adapter
 }
 
-export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
+/**
+ * The same storage as a `SyncDb`: `transactionSync` is the only genuinely ATOMIC
+ * transaction a Durable Object has, and it takes a synchronous body.
+ *
+ * One seam, two callers, deliberately. The migration runner needed it first — an
+ * interrupted migration that half-applied would brick every later one — and
+ * `sqliteStore` needs it for the same reason at a smaller scale: a guard evaluated
+ * in a transaction the writes do not share is a race, and a write that fails
+ * mid-batch must take the rows before it out with it (rule 2).
+ */
+export function createDOSyncDb(storage: DurableObjectStorage): SyncDb {
 	const { sql } = storage
 	sql.exec('PRAGMA foreign_keys = ON')
+	return {
+		exec: (query, args = []) => {
+			sql.exec(query, ...normalizeArgs(args))
+		},
+		query: <T extends Record<string, unknown>>(query: string, args: SqlValue[] = []) =>
+			sql.exec(query, ...normalizeArgs(args)).toArray() as unknown as T[],
+		transactionSync: (fn) => {
+			storage.transactionSync(fn)
+		}
+	}
+}
+
+export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 	// Synchronous + `transactionSync` so each migration's statements and its
 	// `schema_migrations` record commit atomically (the DbAdapter's `transaction` is a
 	// no-op on the DO, so an interrupted migration would otherwise half-apply and brick
 	// later ones — e.g. a re-run `ALTER TABLE ADD COLUMN` failing as a duplicate).
-	migrateSync(
-		{
-			exec: (query, args = []) => {
-				sql.exec(query, ...normalizeArgs(args))
-			},
-			query: (query) => sql.exec(query).toArray() as Array<Record<string, unknown>>,
-			transactionSync: (fn) => {
-				storage.transactionSync(fn)
-			}
-		},
-		coreMigrations
-	)
+	migrateSync(createDOSyncDb(storage), coreMigrations)
 }
 
 export function cfFsStorage(adapter: DbAdapter, namespace: string, blobStore?: BlobStore): Storage {

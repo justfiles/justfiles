@@ -49,24 +49,32 @@ import {
 	createFsApi,
 	type DbAdapter,
 	type DestructiveResetBody,
+	migrateSqlite,
 	type ResetResult,
 	type ResetStatus,
 	readGenerationState,
 	readResetStatus,
-	resetVolume
+	resetStore,
+	type SyncDb,
+	sqliteStore,
+	storeApi
 } from '@justfiles/core'
-import { type Volume, volume } from '@justfiles/fs'
+import type { Volume } from '@justfiles/fs'
+import { authority } from '@justfiles/fs/authority'
+import { ROOT, type Store } from '@justfiles/fs/store'
+import { announceMount, storeVolume } from '@justfiles/fs/volume.store'
 import { Hono } from 'hono'
+import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { createAiGateway } from './ai-gateway.ts'
 import { requestUserId } from './auth.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
-import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
+import { cfFsStorage, createDOSqliteAdapter, createDOSyncDb, migrateCF } from './db.do.ts'
 import { generateFace } from './faces.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
-import { createServerPoke } from './frieren.poke.ts'
+import { createServerPoke, poking } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
@@ -135,10 +143,31 @@ const DEV_TIER_OVERRIDE = import.meta.env.DEV ? 'unlimited' : undefined
 // Image cost is per-image, not token-based, so a usage-less image result records nothing
 // (there's no reliable amount to charge); a result that reports usage is recorded normally.
 
+/**
+ * Where the one-time pass from the old tables to the store model is recorded.
+ *
+ * Durable and outside SQLite on purpose: the pass is idempotent and resumable, so a
+ * crash before this lands costs a re-read and nothing else — but a pass that ran AGAIN
+ * after clients started writing would copy stale rows over live ones, since rule 3 only
+ * makes an IDENTICAL row a no-op. Everything between the migration and this marker runs
+ * inside `blockConcurrencyWhile`, so no request can be served in that window.
+ */
+const ADOPTED_KEY = 'store:adopted'
+
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
-	private readonly fs: ReturnType<typeof cfFsStorage>
+	// The same database, synchronously: what an atomic transaction needs (db.do.ts).
+	private readonly sync: SyncDb
+	// The synced tree, raw — the store the migration writes into and the mount row is
+	// announced in. Every SERVED path goes through `tree` instead, which is this behind
+	// the authority: rule 9's invariants, one commit at a time, and the poke.
+	private readonly store: Store
+	private readonly tree: Store
+	// The DO's own local store, joined at `/private`. It is not `storeApi`'s, so no
+	// request can name a row in it — the credentials and the sealed provider records are
+	// simply not in the table a client pulls.
+	private readonly local: Store
 	// THE filesystem of this instance. A destructive reset commits and then terminates the
 	// Durable Object (reset-instance.ts), so an instance never spans two generations and
 	// nothing ever swaps this out — which is why it needs no fence, no lifetime, and no
@@ -177,26 +206,35 @@ export class Frieren extends DurableObject<Env> {
 		const adapter = createDOSqliteAdapter(ctx.storage)
 		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
 		this.db = adapter
-		this.fs = fs
-		// Constructing a Volume touches no storage; the migration barrier below still runs
-		// before any request can call a method on it.
-		this.volume = volume(fs)
-		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
+		this.sync = createDOSyncDb(ctx.storage)
 
 		// Proactive server->client sync: any committed write to the server volume
 		// (agent turn, cron alarm, or an applied client push) nudges every connected
 		// tab to pull now. Coalesced so a burst folds into one poke. Registered per
 		// instance — the in-memory listener dies on hibernation and re-arms on wake.
-		this.fs.caps?.subscribe?.(
-			createServerPoke(() => {
-				const payload = JSON.stringify({ type: 'sync' } satisfies ServerMessage)
-				for (const ws of this.ctx.getWebSockets()) {
-					const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
-					// `_caps` speaks Cap'n Web and may not be open; sync pokes use session sockets.
-					if (!attachment?.caps) ws.send(payload)
-				}
-			})
-		)
+		const poke = createServerPoke(() => {
+			const payload = JSON.stringify({ type: 'sync' } satisfies ServerMessage)
+			for (const ws of this.ctx.getWebSockets()) {
+				const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
+				// `_caps` speaks Cap'n Web and may not be open; sync pokes use session sockets.
+				if (!attachment?.caps) ws.send(payload)
+			}
+		})
+
+		// TWO stores over the one database, and the whole of what keeps `/private` off
+		// the wire. `storeApi` below is handed the synced one alone, so no request can
+		// name a row in the other; the mount row announced at `(ROOT, 'private')` (see
+		// `adoptStore`) then reserves that name on every replica, and `holdsRows` makes a
+		// subtree under it unspellable in the synced store on any client, buggy or not.
+		this.store = sqliteStore(this.sync)
+		this.local = sqliteStore(this.sync, PRIVATE_MOUNT)
+		this.tree = poking(authority(this.store), poke)
+		// Constructing a Volume touches no storage; the migration barrier below still runs
+		// before any request can call a method on it.
+		this.volume = storeVolume(this.tree, {
+			bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, this.local]])]])
+		})
+		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
 
 		const { models, model, apiKey, generateImage } = this.createPlatformAi()
 		this.models = models
@@ -254,6 +292,11 @@ export class Frieren extends DurableObject<Env> {
 					waitUntil: (p) => this.ctx.waitUntil(p)
 				})
 			)
+			// The seam, as routes, over the synced store alone. Beside `/fs` rather than
+			// inside it: the old routes serve the old tables and these serve the new one,
+			// and a client speaks exactly one of them ([T18](../../../tasks/store-model/t18-retire.md)
+			// deletes the other).
+			.route('/store', storeApi(this.tree))
 			.route(
 				'/fs',
 				createFsApi(fs, {
@@ -271,9 +314,41 @@ export class Frieren extends DurableObject<Env> {
 				})
 			)
 
-		// The DO's one initialization seam: no request runs until the schema exists, so
-		// nothing else needs a readiness gate.
-		ctx.blockConcurrencyWhile(() => migrateCF(this.ctx.storage))
+		// The DO's one initialization seam: no request runs until the schema exists and
+		// the tree has been adopted, so nothing else needs a readiness gate.
+		ctx.blockConcurrencyWhile(async () => {
+			await migrateCF(this.ctx.storage)
+			await this.adoptStore()
+		})
+	}
+
+	/**
+	 * The store model's tree, brought up before anything can be served over it: the
+	 * mount point claimed, and — once — the old tables copied across.
+	 *
+	 * `announceMount` runs on EVERY boot rather than only after the copy. It is
+	 * idempotent and costs one lookup when the row is already there, and it is the
+	 * claim that makes `/private` uncollidable: a store whose row went missing (an
+	 * older build, a hand-edited database) has to be able to claim it again.
+	 *
+	 * The copy goes into the RAW stores, past the authority. Nothing else is running —
+	 * this is inside `blockConcurrencyWhile` — the rows come out of this same database
+	 * rather than off a wire, and the pass writes every parent before its children, so
+	 * rule 9 holds by construction. Through the authority it would instead re-hash every
+	 * blob in the volume at boot, which is the one thing a boot barrier cannot afford.
+	 */
+	private async adoptStore(): Promise<void> {
+		await announceMount(this.tree, ROOT, PRIVATE_MOUNT)
+		if (await this.ctx.storage.get(ADOPTED_KEY)) return
+		// `/private` is a root-level name in the old tree, and its subtree lands in the
+		// local store hanging off that store's own root: what was `/private/accounts.json`
+		// is `/accounts.json` there. Nothing of it is ever written into the synced store,
+		// so no page, no tombstone and no blob request can name one.
+		await migrateSqlite(this.db, this.store, {
+			blobs: this.env.FS_BLOBS,
+			mounts: new Map([[PRIVATE_MOUNT, this.local]])
+		})
+		await this.ctx.storage.put(ADOPTED_KEY, true)
 	}
 
 	// Commit a destructive reset and take this instance down with it. A successful commit
@@ -283,7 +358,10 @@ export class Frieren extends DurableObject<Env> {
 	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
 		return this.ctx.blockConcurrencyWhile(() =>
 			commitReset(request, {
-				reset: (body) => resetVolume(this.db, body),
+				// A wipe means "delete everything", so it names the bound store too; an
+				// adopt-mine names only the synced tree, and the credentials survive by
+				// never having been in it.
+				reset: async (body) => resetStore(this.sync, body, { local: [PRIVATE_MOUNT] }),
 				sync: () => this.ctx.storage.sync(),
 				terminate: (reason) => {
 					this.ctx.abort(reason)
@@ -629,7 +707,11 @@ export class Frieren extends DurableObject<Env> {
 	async alarm(): Promise<void> {
 		// The DO owns the synced fs, so daily trash retention and content collection
 		// run without an open tab. Both are best-effort and retry on the next alarm.
-		const { daily } = await runDailyMaintenance(this.fs, this.volume, this.ctx.storage)
+		const { daily } = await runDailyMaintenance(
+			[this.store, this.local],
+			this.volume,
+			this.ctx.storage
+		)
 		if (daily) await this.getSession().runMaintenance()
 		// A continuation OWNS the one alarm slot until it drains, so every interaction
 		// during it called `scheduleDailyAlarm`, found the slot taken and gave up — and
