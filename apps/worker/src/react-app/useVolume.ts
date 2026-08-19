@@ -1,8 +1,11 @@
-import { apiStorage, remoteSyncReplica } from '@justfiles/core'
-import { volume as createVolume, decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
+import { useAuth } from '@clerk/clerk-react'
+import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
+import { migrateIdb } from '@justfiles/fs/migrate.idb'
+import type { Store } from '@justfiles/fs/store'
+import { httpStore } from '@justfiles/fs/store.http'
+import { idbStore, sharedStore } from '@justfiles/fs/store.idb'
+import { type CursorSlot, syncedVolume } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
-import { synced } from '@justfiles/sync'
-import { idbStorage } from '@justfiles/sync/storage/idb'
 import {
 	createContext,
 	createElement,
@@ -16,8 +19,9 @@ import {
 } from 'react'
 import {
 	assetDirPath,
-	assetUrlForIno,
+	assetUrl,
 	basename,
+	contentTypeOf,
 	displayFilenameFromSrc,
 	nextAssetPath,
 	normalizeVolumePath,
@@ -26,7 +30,6 @@ import {
 } from './assets'
 import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
 import type { FileMeta, LinkInfo } from './types'
-import { type FsClient, useFsClient } from './useApiClient'
 
 type MemoryRecord = {
 	id: string
@@ -315,16 +318,78 @@ async function loadInitialEntries(
 	}
 }
 
-export async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
-	const local = idbStorage('justfiles-fs')
-	const remote = await apiStorage(fsClient)
-	const volume = await synced({
-		local,
-		remote: ({ clientId, generation, lineageId }) =>
-			remoteSyncReplica(fsClient, { clientId, generation, lineageId }),
-		lazyContent: true
+// ── The host's slots ─────────────────────────────────────────────────────────
+// Engine state — two cursors and this replica's id. It may not go in the replicated
+// table (it is not the user's data) nor in the user's tree (the old engine's mistake),
+// and `localStorage` is the one place this host has that is neither.
+//
+// None of it is keyed by user, because the replica it describes is not either: this app
+// has opened one database for the whole browser since it shipped, and a per-user key
+// over a shared store would only make the incoherence harder to see.
+
+/** The old twin model's database, read once by the adoption pass and never written. */
+const LEGACY_DB = 'justfiles-fs'
+/** A store is a whole database here, named by the store's id. */
+const STORE_DB = 'justfiles-store'
+/** Where the one pass is recorded. Copy-then-swap, so re-running it costs a re-read —
+ * but a pass that ran again after the volume was live would copy stale rows over live
+ * ones, since rule 3 only makes an IDENTICAL row a no-op. */
+const ADOPTED_KEY = 'justfiles-store-adopted'
+
+type GetToken = () => Promise<string | null>
+
+const slot = (key: string): CursorSlot => ({
+	async load() {
+		return localStorage.getItem(key) ?? undefined
+	},
+	async save(cursor) {
+		if (cursor === undefined) localStorage.removeItem(key)
+		else localStorage.setItem(key, cursor)
+	}
+})
+
+// Stable across restarts, or the push filter stops recognising this replica's own work
+// and every row it ever wrote is offered again.
+function replicaId(): string {
+	const held = localStorage.getItem('justfiles-replica')
+	if (held) return held
+	const minted = crypto.randomUUID()
+	localStorage.setItem('justfiles-replica', minted)
+	return minted
+}
+
+// The seam, over the wire. The token is minted per REQUEST — Clerk's expires — so it
+// goes in through the injected `fetch` rather than a static header bag read once.
+function remoteStore(getToken: GetToken): Store {
+	return httpStore('/store', {
+		fetch: async (url, init) => {
+			const token = await getToken()
+			return fetch(url, {
+				...init,
+				headers: {
+					...(init?.headers as Record<string, string>),
+					Authorization: `Bearer ${token ?? ''}`
+				}
+			})
+		}
 	})
-	const remoteVolume = createVolume(remote)
+}
+
+export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRuntime> {
+	const local = sharedStore(idbStore(STORE_DB), STORE_DB)
+	if (!localStorage.getItem(ADOPTED_KEY)) {
+		await migrateIdb(LEGACY_DB, local)
+		localStorage.setItem(ADOPTED_KEY, '1')
+	}
+	const volume = await syncedVolume({
+		local,
+		remote: remoteStore(getToken),
+		replica: replicaId(),
+		pull: slot('justfiles-store-pull'),
+		push: slot('justfiles-store-push'),
+		lazyContent: true,
+		localFirst: true
+	})
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
 	const initialEntries = await loadInitialEntries(volume)
@@ -523,35 +588,29 @@ export async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRun
 
 	async function writeAssetFile(file: File): Promise<string> {
 		const assetPath = nextAssetPath(file.name || 'asset.bin')
-		const assetDir = assetDirPath()
 		const bytes = new Uint8Array(await file.arrayBuffer())
 
-		// Editor-inserted assets must be readable immediately by the preview
-		// renderer, which fetches through the authenticated remote /fs route.
-		// Write them to remote synchronously instead of relying on local
-		// write-behind flush timing.
-		await remoteVolume.mkdir(assetDir, { recursive: true })
-		await remoteVolume.writeFile(assetPath, bytes)
+		// The local store IS the working copy, so the write that lands here is the write
+		// the preview renderer reads back — no remote round trip, and no dependence on
+		// flush timing. The push carries it to the server on the next cycle, which the
+		// commit itself arms.
+		await volume.mkdir(assetDirPath(), { recursive: true })
+		await volume.writeFile(assetPath, bytes)
 
 		return assetPath
 	}
 
+	// Whether the asset EXISTS, said as the URL that would serve it. Every caller uses it
+	// as a gate and then reads the bytes through `readAssetBlob`, so nothing fetches this
+	// — but a URL that would not have worked is not an honest answer to give.
 	async function resolveAssetUrl(notePath: string, src: string): Promise<string | null> {
 		const resolvedPath = resolveRelativeFsPath(notePath, src)
 		if (!resolvedPath) return src
 
-		// Fall back to remoteVolume if the synced volume hasn't pulled the asset yet
-		// (e.g. immediately after writeAssetFile which writes to remote only).
-		const stat = await volume
-			.stat(resolvedPath)
-			.catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
+		const stat = await volume.stat(resolvedPath).catch(() => null)
 		if (!stat || stat.type !== FileType.Regular) return null
 
-		return assetUrlForIno(
-			stat.ino,
-			displayFilenameFromSrc(src),
-			stat.contentHash ?? stat.mtimeNs.toString()
-		)
+		return assetUrl(resolvedPath, stat.contentHash ?? stat.mtimeNs.toString())
 	}
 
 	async function readAssetBlob(notePath: string, src: string): Promise<Blob | null> {
@@ -562,18 +621,12 @@ export async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRun
 			return await res.blob()
 		}
 
-		// Fall back to remoteVolume if the synced volume hasn't pulled the asset yet.
-		const stat = await volume
-			.stat(resolvedPath)
-			.catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
-		if (!stat || stat.type !== FileType.Regular) return null
-
-		const filename = displayFilenameFromSrc(src)
-		const res = await fsClient.inodes[':ino'].content[':filename'].$get({
-			param: { ino: stat.ino, filename }
-		})
-		if (!res.ok) return null
-		return await res.blob()
+		// The synced volume reads through `hydratingBlobs`: a row this replica holds only
+		// as a stub still reads, because the bytes are fetched from the peer on demand.
+		// That is what the two remote fallbacks used to be for.
+		const bytes = await volume.readFile(resolvedPath).catch(() => null)
+		if (!bytes) return null
+		return new Blob([bytes as BlobPart], { type: contentTypeOf(displayFilenameFromSrc(src)) })
 	}
 
 	return {
@@ -625,11 +678,11 @@ export async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRun
 	}
 }
 
-function getOrCreateVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
+function getOrCreateVolumeRuntime(userId: string, getToken: GetToken): Promise<VolumeRuntime> {
 	const existing = runtimeSingletons.get(userId)
 	if (existing) return existing
 
-	const promise = createVolumeRuntime(fsClient)
+	const promise = createVolumeRuntime(getToken)
 	runtimeSingletons.set(userId, promise)
 	return promise
 }
@@ -643,18 +696,18 @@ export function VolumeProvider({
 	userId: string
 	fallback?: ReactNode
 }) {
-	const fsClient = useFsClient()
+	const { getToken } = useAuth()
 	const [runtime, setRuntime] = useState<VolumeRuntime | null>(null)
 
 	useEffect(() => {
 		let active = true
-		getOrCreateVolumeRuntime(userId, fsClient).then((r) => {
+		getOrCreateVolumeRuntime(userId, getToken).then((r) => {
 			if (active) setRuntime(r)
 		})
 		return () => {
 			active = false
 		}
-	}, [userId, fsClient])
+	}, [userId, getToken])
 
 	useEffect(() => {
 		if (!runtime) return

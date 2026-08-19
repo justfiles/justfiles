@@ -329,9 +329,6 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../../packages/sync
       '@justfiles/ui':
         specifier: workspace:*
         version: link:../../packages/ui

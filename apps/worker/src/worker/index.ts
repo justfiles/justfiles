@@ -134,8 +134,10 @@ const applyApiKeyAuth = async (
 
 let clerkMw: ReturnType<typeof clerkMiddleware> | null = null
 
-// Apply auth + routing to /fs*.
-for (const path of ['/fs', '/fs/*'] as const) {
+// Apply auth + routing to /store*. Named explicitly rather than nested under a
+// broader prefix, so no ordering between two overlapping mounts decides which half a
+// request reaches.
+for (const path of ['/store', '/store/*'] as const) {
 	app.use(path, async (c, next) => applyApiKeyAuth(c as never, next))
 	app.use(path, async (c, next) => {
 		if (c.get('apiKeyUserId')) return next()
@@ -149,11 +151,9 @@ for (const path of ['/fs', '/fs/*'] as const) {
 			return new Response('Unauthorized', { status: 401 })
 		}
 
-		const id = c.env.STORE.idFromName(userId)
-		const stub = c.env.STORE.get(id)
-		const headers = new Headers(c.req.raw.headers)
-		headers.set('x-user-id', userId)
-		return stub.fetch(new Request(c.req.raw, { headers }))
+		// The object IS the user. Nothing downstream is told who they are, because
+		// nothing downstream can be reached by anyone else.
+		return c.env.STORE.get(c.env.STORE.idFromName(userId)).fetch(c.req.raw)
 	})
 }
 

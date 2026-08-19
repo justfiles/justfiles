@@ -24,6 +24,9 @@ vi.mock('@justfiles/fs/store.idb', async () => {
 			stores.set(name, held)
 			return held
 		},
+		// The cross-tab wake is a latency optimization over polling `since`, and
+		// nothing here measures latency.
+		sharedStore: (store: unknown) => store,
 		persistStorage: async () => true
 	}
 })

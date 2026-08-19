@@ -27,7 +27,6 @@
 		"hono": "4.11.1",
 		"idb": "^8.0.3",
 		"@justfiles/fs": "workspace:*",
-		"@justfiles/sync": "workspace:*",
 		"prosemirror-commands": "^1.7.1",
 		"prosemirror-dropcursor": "^1.8.2",
 		"prosemirror-gapcursor": "^1.4.1",
