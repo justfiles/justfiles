@@ -13,7 +13,7 @@
  * The republish after a "take mine" is ordinary sync, not a special server op, so
  * there is no publishing lock or finalize. `resetId` is an advisory "reset in
  * progress" flag, cleared by `clearReset` when the republish drains; a
- * stale/never-sent clear is a harmless no-op. The reset endpoints live outside
+ * stale/never-sent clear is a harmless no-op. The DESTRUCTIVE endpoints live outside
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 

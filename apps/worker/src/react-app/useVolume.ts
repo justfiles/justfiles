@@ -331,9 +331,11 @@ async function loadInitialEntries(
 const LEGACY_DB = 'justfiles-fs'
 /** A store is a whole database here, named by the store's id. */
 const STORE_DB = 'justfiles-store'
-/** Where the one pass is recorded. Copy-then-swap, so re-running it costs a re-read —
+/**
+ * Where the one pass is recorded. Copy-then-swap, so re-running it costs a re-read —
  * but a pass that ran again after the volume was live would copy stale rows over live
- * ones, since rule 3 only makes an IDENTICAL row a no-op. */
+ * ones, since rule 3 only makes an IDENTICAL row a no-op.
+ */
 const ADOPTED_KEY = 'justfiles-store-adopted'
 
 type GetToken = () => Promise<string | null>
