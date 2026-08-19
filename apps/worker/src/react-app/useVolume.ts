@@ -1,6 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
-import { migrateIdb } from '@justfiles/fs/migrate.idb'
+import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import type { Store } from '@justfiles/fs/store'
 import { httpStore } from '@justfiles/fs/store.http'
 import { idbStore, sharedStore } from '@justfiles/fs/store.idb'
@@ -379,10 +379,11 @@ function remoteStore(getToken: GetToken): Store {
 
 export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRuntime> {
 	const local = sharedStore(idbStore(STORE_DB), STORE_DB)
-	if (!localStorage.getItem(ADOPTED_KEY)) {
+	await adoptOnce(STORE_DB, async () => {
+		if (localStorage.getItem(ADOPTED_KEY)) return
 		await migrateIdb(LEGACY_DB, local)
 		localStorage.setItem(ADOPTED_KEY, '1')
-	}
+	})
 	// NO `localFirst`. This runtime lists the whole tree ONCE, here, and then serves that
 	// listing from memory until something asks it to refresh — and the only thing that does
 	// is a window focus. So the first cycle has to have run before the listing is taken, or

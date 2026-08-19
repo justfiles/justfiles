@@ -32,8 +32,12 @@ vi.mock('@justfiles/fs/store.idb', async () => {
 })
 
 // The one pass from the old model has its own tests (`migrate.idb.test.ts`); here it
-// is the boot step that must not run twice, which the registry marker is what settles.
-vi.mock('@justfiles/fs/migrate.idb', () => ({ migrateIdb: H.migrateIdb }))
+// is the boot step that must not run twice, which the registry marker read inside
+// `adoptOnce` is what settles — so that half is the REAL one.
+vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
+	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
+	migrateIdb: H.migrateIdb
+}))
 vi.mock('@justfiles/fs/store.http', () => ({ httpStore: () => ({}) }))
 
 vi.mock('@justfiles/fs/synced', async (original) => ({

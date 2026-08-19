@@ -60,6 +60,34 @@ interface Old extends DBSchema {
 }
 
 /**
+ * Run an adoption pass — and the marker check that decides whether to run it — with
+ * every other tab of this origin waiting rather than racing it.
+ *
+ * The marker alone is not enough, and the reason is the whole of why this exists: it is
+ * read before the pass and written after it, so two tabs opened on the same upgrade both
+ * read "not adopted" and both copy. `migrate` commits WITHOUT guards, so the slower tab's
+ * blind writes land on whatever is at those ids by then — and by then the faster tab has
+ * a live volume, so what they land on is rows a peer just delivered or the user just
+ * wrote. Rule 3 makes a second identical row a no-op, which is what makes re-running the
+ * pass safe; it says nothing about a stale row overwriting a newer one.
+ *
+ * So the section held here is all three steps, not just the copy. Serializing the copies
+ * alone would leave the second one running after the first tab's volume went live, which
+ * is the same damage.
+ *
+ * `name` scopes the lock to the database being adopted INTO — that is what must not be
+ * written by two passes at once. Only a browser needs this: on the server the pass runs
+ * inside `blockConcurrencyWhile` on the one instance that owns the database.
+ */
+export function adoptOnce<T>(name: string, section: () => Promise<T>): Promise<T> {
+	// Absent only where there is no second tab to race: a test, or an insecure context.
+	// Running the section directly is then both the correct answer and the only one.
+	const locks = globalThis.navigator?.locks
+	if (!locks) return section()
+	return locks.request(`adopt:${name}`, section) as Promise<T>
+}
+
+/**
  * Copy one old database into `into`. `from` is a database NAME — `store.idb`
  * takes one too, and the two must differ, which is the whole of the swap.
  *

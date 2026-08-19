@@ -1,7 +1,7 @@
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
 import type { Volume } from '@justfiles/fs'
-import { migrateIdb } from '@justfiles/fs/migrate.idb'
+import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import { ROOT, type Store } from '@justfiles/fs/store'
 import { httpStore } from '@justfiles/fs/store.http'
 import { idbStore, sharedStore } from '@justfiles/fs/store.idb'
@@ -353,12 +353,18 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	// position, so every replica writes a byte-identical one and none of them ever sends
 	// it — the whole of how this browser reserves `/private` with no coordination.
 	await announceMount(local, ROOT, PRIVATE_MOUNT)
-	if (!profile.adopted) {
+	// Held against every other tab, and the marker READ inside it: a second tab that
+	// checked `adopted` before this one recorded it would copy the old tree a second time,
+	// over rows this tab's volume had already pulled or written (see `adoptOnce`). The
+	// registry is re-read rather than trusting the `profile` this was called with, which is
+	// a snapshot taken before the wait.
+	await adoptOnce(storeDb(profile.id), async () => {
+		if (readRegistry().find((entry) => entry.id === profile.id)?.adopted) return
 		// `/private` was a path the old engine filtered; here its subtree lands in the
 		// store bound at that name, hanging off that store's own root.
 		await migrateIdb(legacyDb(profile.id), local, new Map([[PRIVATE_MOUNT, privateStore]]))
 		recordAdopted(profile.id)
-	}
+	})
 
 	let entry: Active
 	const plain = storeVolume(local, {
