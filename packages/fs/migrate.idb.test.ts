@@ -127,3 +127,15 @@ test('a tree wider than one commit lands whole, parents before children', async 
 	expect(text(await vol.readFile('/a/b/c/f299.txt'))).toBe('n299')
 	expect(text(await vol.readFile('/a/.state/keep'))).toBe('mine')
 })
+
+test('a host cannot keep the old database name: the store opens at a lower version', async () => {
+	// Why the swap is copy-then-SWAP into a second name, and not just a new
+	// constructor over the old one. The old backend's database is at version 6 and
+	// `idbStore` opens at 1, which IndexedDB refuses — so a host that changed only
+	// the constructor gets a `VersionError` on its first read instead of the tree it
+	// used to have, and the documents behind that name become unreachable.
+	const name = await fixture()
+	await expect(volume(idbStore(name)).readdir('/')).rejects.toThrow(
+		/lower version than the existing version/
+	)
+})

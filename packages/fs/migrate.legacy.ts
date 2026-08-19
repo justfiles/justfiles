@@ -48,13 +48,22 @@ export type LegacyNode = {
 export const LEGACY_MTIME_NS = 1_700_000_000_000_000_000n
 
 /**
+ * What the old backend's last schema was numbered. The pass itself never looks —
+ * it opens with no version at all — but a HOST does: `idbStore` opens at 1, so a
+ * host that swapped the constructor and kept the database name gets a
+ * `VersionError` instead of a volume. That is why the swap is copy-then-swap into
+ * a second name, and it is only demonstrable if the fixture carries the real one.
+ */
+export const LEGACY_DB_VERSION = 6
+
+/**
  * Write one old-model IndexedDB database. `syncNodes` is created only when some
  * node carries a shared id — its ABSENCE is what tells the pass "this client never
  * had the sync extension attached", which is a case worth being able to build.
  */
 export async function writeLegacyIdb(name: string, nodes: LegacyNode[]): Promise<void> {
 	const shared = nodes.some((node) => node.id !== undefined)
-	const db = await openDB(name, 1, {
+	const db = await openDB(name, LEGACY_DB_VERSION, {
 		upgrade(db) {
 			db.createObjectStore('inodes', { keyPath: 'ino' })
 			db.createObjectStore('content', { keyPath: 'contentHash' })
