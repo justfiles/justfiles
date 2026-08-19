@@ -481,6 +481,9 @@ describe('sqliteStore: bytes too big for a row', () => {
 	 */
 	const durable = () => {
 		const objects = new Map<string, Uint8Array>()
+		// A delete a test can hold open, the way a round trip to R2 is open for a while.
+		let inflight: Promise<void> | undefined
+		let finish: (() => void) | undefined
 		const raw = adapter(new DatabaseSync(':memory:'))
 		const db: SyncDb = {
 			...raw,
@@ -508,7 +511,14 @@ describe('sqliteStore: bytes too big for a row', () => {
 						}
 			},
 			async delete(keys: string | string[]) {
+				await inflight
 				for (const key of typeof keys === 'string' ? [keys] : keys) objects.delete(key)
+			},
+			hold() {
+				inflight = new Promise<void>((resolve) => (finish = resolve))
+			},
+			land() {
+				finish?.()
 			}
 		}
 		return { db, blobs, objects }
@@ -606,5 +616,29 @@ describe('sqliteStore: bytes too big for a row', () => {
 		// The seam's own answer to content that is not here: a reader is told rather
 		// than guessed at, and `hydratingBlobs` asks the peer.
 		expect(await store.blobs.get(hash)).toBeNull()
+	})
+
+	test('a push mid-sweep waits for the delete that is already on its way', async () => {
+		const { db, blobs } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		db.exec('UPDATE blobs SET touched_ms = 0')
+
+		// The window the sweep cannot close by ordering alone: the row is already gone,
+		// so a push asks, is told no, and adopts the same hash into the same key while the
+		// object delete is still in flight. The Durable Object holds no input gate across
+		// that request, so this interleaving is the deployed one.
+		blobs.hold()
+		const sweep = store.gc?.()
+		const adopt = store.blobs.put(hash, data)
+		blobs.land()
+		await Promise.all([sweep, adopt])
+
+		// The re-adopted bytes survive their own collection. Without the wait the delete
+		// lands after the upload, and the row the push is about to commit names nothing —
+		// with no peer left that knows to offer the content again.
+		expect(await store.blobs.get(hash)).toEqual(data)
 	})
 })

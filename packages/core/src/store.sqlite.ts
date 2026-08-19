@@ -220,6 +220,20 @@ export function sqliteStore(
 	// Content-addressed, and the store's id is in it: two stores over one database
 	// never share an object, which is the same boundary `sid` draws on the table.
 	const keyFor = (hash: Hash): string => `${id}/${hash}`
+	/**
+	 * The sweep's outstanding object deletes, which a new upload waits for.
+	 *
+	 * `gc` drops the rows and then deletes the objects, and that second half is network
+	 * I/O — a Durable Object holds no input gate across it. So a push lands in the gap,
+	 * finds no row, and re-uploads the same hash to the same derived key; if the delete
+	 * already on its way then wins, the fresh row names an object that is gone, and the
+	 * pusher's cursor has moved past the only offer of those bytes.
+	 *
+	 * A fresh key per adoption would dodge it, but a key derived from the hash is what
+	 * makes a repeated put idempotent (see `put`). So the upload waits instead: one
+	 * promise, one batch long, awaited only on the path that has a key at all.
+	 */
+	let sweeping: Promise<unknown> | undefined
 
 	const start = (): Opened => {
 		let sid = 0
@@ -426,7 +440,11 @@ export function sqliteStore(
 			// object store can never join one, and the row is what makes the bytes
 			// reachable. Losing these deletes leaks paid-for garbage; losing the rows
 			// would be data loss, so this is the order that fails the right way.
-			if (keys.length > 0) await external?.delete?.(keys).catch(() => undefined)
+			if (keys.length > 0) {
+				sweeping = external?.delete?.(keys).catch(() => undefined)
+				await sweeping
+				sweeping = undefined
+			}
 			return { reclaimed, done }
 		},
 
@@ -514,6 +532,9 @@ export function sqliteStore(
 				// hole. The key is derived from the hash, so a repeat writes the same
 				// object to the same place.
 				const key = keyFor(hash)
+				// A sweep may be deleting this very key right now, and it dropped the row
+				// this put just found missing (see `sweeping`).
+				await sweeping
 				await external.put(key, held)
 				db.exec(
 					'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, touched_ms) VALUES (?, ?, NULL, ?, ?)',
