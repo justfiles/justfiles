@@ -500,6 +500,11 @@ describe('syncedVolume: take theirs', () => {
 		broken = true
 		await expect(vol.takeTheirs()).rejects.toThrow('the slot is full')
 
+		// The loop is stopped and only another discard can start it again, so the
+		// status has to say so: a caller watching it would otherwise read the state
+		// before the discard — `synced` over a replica that will never sync again.
+		expect(vol.status()).toBe('error')
+
 		await vi.advanceTimersByTimeAsync(200_000)
 		await vol.flush()
 
@@ -617,6 +622,43 @@ describe('syncedVolume: take theirs', () => {
 		await vol.writeFile('/after.txt', enc.encode('after'))
 		await vol.flush()
 		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs', '/after.txt': 'after' })
+	})
+
+	// The same crash, and the recovery fails too. The volume is still handed over —
+	// rejecting would leave the app with no volume and the same store to recover
+	// from — so the status is the only thing that can say this replica is inert
+	// rather than still connecting.
+	it('reports error when it cannot finish the discard it inherited', async () => {
+		vi.useFakeTimers()
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+
+		const local = memStore()
+		const pull = slot()
+		const push = slot()
+		const discard = flag()
+		let broken = false
+		const flaky: CursorSlot = {
+			load: () => push.load(),
+			save: (cursor) => (broken ? Promise.reject(new Error('the slot is full')) : push.save(cursor))
+		}
+
+		const first = await replica(remote, { local, pull, push: flaky, discard })
+		await first.vol.writeFile('/mine.txt', enc.encode('mine'))
+		broken = true
+		await expect(first.vol.takeTheirs()).rejects.toThrow('the slot is full')
+		first.vol.destroy()
+
+		// Still broken, so the inherited discard cannot finish either.
+		const { vol } = await replica(remote, { local, pull, push: flaky, discard })
+		const ran = cycles(vol)
+
+		expect(vol.status()).toBe('error')
+		await vi.advanceTimersByTimeAsync(200_000)
+		expect(ran()).toBe(0)
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+		expect(await discard.load()).toBe(true)
 	})
 
 	it('leaves a replica that keeps syncing afterwards', async () => {

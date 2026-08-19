@@ -371,6 +371,14 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 				throw new Error(`${what} did not converge: ${message(error)}`, { cause: error })
 			}
 			return done
+		} catch (error) {
+			// The fence is still up, so the loop stays stopped and only another discard
+			// can start it again. The status has to say that, whatever the last cycle
+			// said: a caller would otherwise read the state from BEFORE the reset —
+			// `synced` over a replica that will never sync again, or `connecting` for
+			// ever on the one that inherited the flag at startup and could not clear it.
+			if (unfinished) setStatus('error')
+			throw error
 		} finally {
 			resetting = false
 			// A reset that THREW never reaches the cycle that would put a timer back,
@@ -533,10 +541,10 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	})
 
 	// A discard the last process could not finish, finished before anything else
-	// runs. Its own failure is not raised here: the flag stays up and the loop
-	// stays stopped, which is what a failed discard leaves anyway — so the app gets
-	// its volume, sees the status, and can ask again. Rejecting would leave it with
-	// no volume at all and the same store to recover from.
+	// runs. Its own failure is not raised here: the flag stays up and the loop stays
+	// stopped, which is what a failed discard leaves anyway — so the app gets its
+	// volume, reads `error` from the status, and can ask again. Rejecting would leave
+	// it with no volume at all and the same store to recover from.
 	if (await props.discard?.load()) {
 		unfinished = true
 		await takeTheirs().catch((error) => console.error(error))
