@@ -227,12 +227,12 @@ describe('sqliteStore: the production adapter reads every column as a number', (
 })
 
 describe('sqliteStore: two stores in one database', () => {
-	test('a namespaced store shares no row, no blob and no lineage with the default one', async () => {
+	test('a second store shares no row, no blob and no lineage with the first', async () => {
 		// The server's tree and its `/private` (T15's mount) are two stores over one
 		// Durable Object, so "separate store" has to mean separate TABLES here.
 		const db = new DatabaseSync(':memory:')
 		const synced = sqliteStore(adapter(db))
-		const local = sqliteStore(adapter(db), { namespace: 'private' })
+		const local = sqliteStore(adapter(db), crypto.randomUUID())
 
 		await synced.commit([node({ id: 'a', name: 'shared.txt' })])
 		await local.commit([node({ id: 'b', name: 'secret.txt' })])
@@ -251,15 +251,21 @@ describe('sqliteStore: two stores in one database', () => {
 		await expect(synced.since(cursor)).rejects.toThrow()
 	})
 
-	test('a namespace that is not a bare identifier is refused, not interpolated', () => {
-		// The name is a table name, so it goes into the SQL as itself. Quoting every
-		// identifier would let `user-data` through; refusing it says the mistake where
-		// it was made instead of `near "-": syntax error` on the first read — and it
-		// leaves nothing to interpolate that could be anything but a name.
-		for (const namespace of ['user-data', 'a b', 'private"', '1st', ''])
-			expect(() => sqliteStore(adapter(new DatabaseSync(':memory:')), { namespace })).toThrow(
-				/namespace/
-			)
+	test('a store id is data, so nothing about it can reach the schema', async () => {
+		// The id is a bound parameter, so there is no name to quote, validate or
+		// migrate: `user-data` is as good an id as any, and renaming the mount point
+		// it is joined at touches only the parent store's row.
+		const db = new DatabaseSync(':memory:')
+		const odd = sqliteStore(adapter(db), 'user-data / a "quoted" name; DROP TABLE nodes--')
+		await odd.commit([node({ id: 'a', name: 'a.txt' })])
+		expect((await odd.get('a'))?.name).toBe('a.txt')
+		// Every store is a row in one table, findable without reading `sqlite_master`.
+		expect(
+			db
+				.prepare('SELECT id FROM stores ORDER BY sid')
+				.all()
+				.map((row) => (row as { id: string }).id)
+		).toEqual(['user-data / a "quoted" name; DROP TABLE nodes--'])
 	})
 })
 

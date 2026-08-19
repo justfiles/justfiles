@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stores, mounts, and where your files actually live</title>
+<style>
+	:root {
+		--ink: #1b1917;
+		--dim: #6b635a;
+		--line: #d9d2c7;
+		--bg: #fbfaf8;
+		--panel: #fff;
+		--synced: #2c5fa8;
+		--synced-bg: #eef3fb;
+		--local: #a8562c;
+		--local-bg: #fbf1ea;
+		--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0;
+		background: var(--bg);
+		color: var(--ink);
+		font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+	}
+	main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 8rem; }
+	h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .5rem; letter-spacing: -0.01em; }
+	h2 {
+		font-size: 1.3rem; margin: 3.5rem 0 1rem; padding-top: 1.25rem;
+		border-top: 1px solid var(--line); letter-spacing: -0.01em;
+	}
+	h3 { font-size: 1.05rem; margin: 2rem 0 .5rem; }
+	p, li { max-width: 46rem; }
+	code, pre, .mono { font-family: var(--mono); font-size: .86em; }
+	code { background: #f1ece4; padding: .1em .35em; border-radius: 3px; }
+	pre {
+		background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+		padding: .9rem 1rem; overflow-x: auto; line-height: 1.5;
+	}
+	pre code { background: none; padding: 0; }
+	.lede { font-size: 1.1rem; color: var(--dim); max-width: 44rem; }
+	figure { margin: 2rem 0; }
+	figcaption { font-size: .85rem; color: var(--dim); margin-top: .6rem; }
+	table { border-collapse: collapse; width: 100%; margin: 1.25rem 0; font-size: .88rem; }
+	th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+	th { font-weight: 600; color: var(--dim); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+	td.mono, th.mono { font-family: var(--mono); font-size: .8rem; }
+	.rows { font-size: .78rem; }
+	.rows td { padding: .35rem .55rem; font-family: var(--mono); white-space: nowrap; }
+	.rows th { padding: .35rem .55rem; }
+	.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+	.scroll table { margin: 0; }
+	.tag {
+		display: inline-block; padding: .1rem .45rem; border-radius: 4px;
+		font-family: var(--mono); font-size: .75rem; font-weight: 600;
+	}
+	.tag.s { background: var(--synced-bg); color: var(--synced); }
+	.tag.l { background: var(--local-bg); color: var(--local); }
+	.note {
+		border-left: 3px solid var(--line); padding: .1rem 0 .1rem 1rem;
+		margin: 1.5rem 0; color: var(--dim);
+	}
+	.note strong { color: var(--ink); }
+	.warn { border-left-color: var(--local); }
+	.ok { border-left-color: var(--synced); }
+	svg { max-width: 100%; height: auto; display: block; }
+	svg text { font-family: var(--mono); font-size: 12px; fill: var(--ink); }
+	svg .lbl { font-family: -apple-system, system-ui, sans-serif; font-size: 12.5px; fill: var(--dim); }
+	svg .ttl { font-family: -apple-system, system-ui, sans-serif; font-size: 13px; font-weight: 600; fill: var(--ink); }
+	ul.tight li { margin: .2rem 0; }
+	.two { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+	@media (max-width: 44rem) { .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Stores, mounts, and where your files actually live</h1>
+<p class="lede">
+	Yes — this is <code>mount(2)</code>, not an ignore list. A <code>Store</code> is the
+	flash drive; a binding is the fstab line; the mount row is the mountpoint directory.
+	This page walks the whole thing down to the SQL you can run on your own dev database.
+</p>
+
+<div class="note warn">
+	<strong>Status.</strong> The model below is what <code>packages/fs</code> and
+	<code>packages/core</code> implement and test today. <em>No production database has these
+	tables yet</em> — the running server is still the old twin model
+	(<code>fs_inodes</code>, <code>fs_dirents</code>, <code>fs_sync_nodes</code>). PRs 2–4 of
+	T17 do the swap. Both shapes are shown side by side in §3, using rows from your own
+	<code>.wrangler</code> database.
+</div>
+
+<h2>The short answer to “is this fstab?”</h2>
+
+<table>
+	<tr><th>Unix</th><th>Here</th><th>Same?</th></tr>
+	<tr>
+		<td>A block device with a filesystem on it</td>
+		<td>A <code>Store</code> — one table of rows, one blob map, one feed</td>
+		<td>yes</td>
+	</tr>
+	<tr>
+		<td>An fstab line: <em>this device, at this path</em></td>
+		<td>A <code>Bindings</code> entry: <em>this store, at this (parent&nbsp;id,&nbsp;name)</em></td>
+		<td>yes — runtime, not in any table</td>
+	</tr>
+	<tr>
+		<td>The mountpoint directory inode</td>
+		<td>The <code>mount</code> row (or nothing at all, for a silent mount)</td>
+		<td>nearly</td>
+	</tr>
+	<tr>
+		<td><code>stat</code> on a mountpoint reports the <em>mounted</em> root’s inode</td>
+		<td><code>stat('/private')</code> reports the bound store’s <code>ROOT</code> row</td>
+		<td>yes</td>
+	</tr>
+	<tr>
+		<td>Mounting over a non-empty directory shadows its contents</td>
+		<td>A binding shadows rows of the same name underneath it</td>
+		<td>yes</td>
+	</tr>
+	<tr>
+		<td><code>rename(2)</code> across devices → <code>EXDEV</code>; <code>mv</code> copies</td>
+		<td><code>EXDEV</code>; the volume emulates it for one file, refuses a directory</td>
+		<td>yes</td>
+	</tr>
+	<tr>
+		<td>Cannot <code>umount</code> or move a busy mountpoint</td>
+		<td><code>EBUSY</code> on renaming or removing a <em>bound</em> mount point</td>
+		<td>yes</td>
+	</tr>
+	<tr>
+		<td><code>st_dev</code> distinguishes two devices’ identical inode numbers</td>
+		<td>No <code>st_dev</code>. Ids are unique <em>per store</em> only</td>
+		<td><strong>no</strong> — see §8</td>
+	</tr>
+	<tr>
+		<td>fstab is local config; nobody else learns your mounts</td>
+		<td>An <em>announced</em> mount row is replicated: every replica sees the name</td>
+		<td><strong>no</strong> — deliberately; §8</td>
+	</tr>
+</table>
+
+<p>
+	The one thing that is <em>not</em> negotiable is that the two trees are two
+	<code>Store</code>s. Isolation is structural, exactly as with a flash drive: the sync
+	engine is handed one store and holds no handle to the other, so no page, tombstone or
+	blob request <em>can</em> name your private data. One table plus a “view” would put a
+	per-row filter on every feed read — that is the ignore-list model this design deleted.
+</p>
+
+<h2 id="one">§1 One namespace, two stores</h2>
+
+<figure>
+<svg viewBox="0 0 900 430" role="img" aria-label="One path namespace resolving into two separate stores">
+	<!-- namespace column -->
+	<text class="ttl" x="0" y="16">What you see (one namespace)</text>
+	<rect x="0" y="30" width="330" height="360" rx="6" fill="#fff" stroke="#d9d2c7"/>
+	<text x="20" y="58">/</text>
+	<text x="40" y="82">├── notes/</text>
+	<text x="40" y="106">│      └── today.md</text>
+	<text x="40" y="130">├── system/</text>
+	<text x="40" y="154">│      └── profiles/user.md</text>
+	<text x="40" y="186" fill="#a8562c">├── private/      ← mount</text>
+	<text x="40" y="210" fill="#a8562c">│      └── credentials.json</text>
+	<text x="40" y="234">└── mnt/            (empty dir)</text>
+
+	<line x1="34" y1="168" x2="300" y2="168" stroke="#a8562c" stroke-dasharray="4 4"/>
+	<line x1="34" y1="222" x2="300" y2="222" stroke="#a8562c" stroke-dasharray="4 4"/>
+	<text class="lbl" x="40" y="266" fill="#a8562c">everything between the dashes</text>
+	<text class="lbl" x="40" y="284" fill="#a8562c">is not in the synced store at all</text>
+
+	<!-- arrows -->
+	<path d="M335 120 L 455 120" stroke="#2c5fa8" stroke-width="1.5" marker-end="url(#ab)"/>
+	<path d="M335 200 L 455 250" stroke="#a8562c" stroke-width="1.5" marker-end="url(#ar)"/>
+	<defs>
+		<marker id="ab" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+			<path d="M0 0 L8 4 L0 8 z" fill="#2c5fa8"/>
+		</marker>
+		<marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+			<path d="M0 0 L8 4 L0 8 z" fill="#a8562c"/>
+		</marker>
+	</defs>
+
+	<!-- synced store -->
+	<rect x="460" y="60" width="430" height="140" rx="6" fill="#eef3fb" stroke="#2c5fa8"/>
+	<text class="ttl" x="476" y="84" fill="#2c5fa8">Store A — the synced tree</text>
+	<text x="476" y="108">nodes · blobs · meta</text>
+	<text class="lbl" x="476" y="130">rows for / , /notes , /system , /mnt ,</text>
+	<text class="lbl" x="476" y="148">and one `mount` row named "private"</text>
+	<text class="lbl" x="476" y="176">→ handed to sync + the HTTP wire</text>
+
+	<!-- local store -->
+	<rect x="460" y="230" width="430" height="140" rx="6" fill="#fbf1ea" stroke="#a8562c"/>
+	<text class="ttl" x="476" y="254" fill="#a8562c">Store B — local only</text>
+	<text x="476" y="278">private_nodes · private_blobs · private_meta</text>
+	<text class="lbl" x="476" y="300">rows for its OWN root and everything</text>
+	<text class="lbl" x="476" y="318">below it (credentials.json …)</text>
+	<text class="lbl" x="476" y="346">→ handed to nobody but the volume</text>
+</svg>
+<figcaption>
+	Fig 1. The path namespace is one tree. The rows behind it are in two stores, and the
+	boundary is the <code>mount</code> row — the way a flash drive’s files are behind
+	<code>/mnt/drive</code> and nowhere in your root filesystem.
+</figcaption>
+</figure>
+
+<p>Two rules of the data make the boundary real, with no policy code anywhere:</p>
+<ul class="tight">
+	<li>
+		<strong>A mount row claims its name</strong> like any other row, through the ordinary
+		<code>free</code> guard. So no peer can create a <em>directory</em> called
+		<code>private</code> at the root — the name is taken, everywhere.
+	</li>
+	<li>
+		<strong>Only a directory may be a parent.</strong> <code>authority.ts</code>’s
+		<code>holdsRows</code> refuses any row whose parent is a <code>mount</code>, so a
+		<code>/private/*</code> row cannot exist in the synced store on <em>any</em> replica,
+		buggy or not.
+	</li>
+</ul>
+
+<h2 id="db">§2 Where a Store is in the database</h2>
+
+<p>
+	A <code>Store</code> is three tables. The default store gets the bare names; a namespaced
+	store gets the same three with a prefix. One Durable Object = one SQLite database = both
+	stores, side by side:
+</p>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-label="One SQLite database holding two stores as two groups of tables">
+	<rect x="0" y="20" width="900" height="260" rx="8" fill="#fff" stroke="#d9d2c7"/>
+	<text class="ttl" x="20" y="46">one Durable Object → one SQLite database</text>
+
+	<rect x="24" y="62" width="410" height="120" rx="6" fill="#eef3fb" stroke="#2c5fa8"/>
+	<text class="ttl" x="40" y="86" fill="#2c5fa8">sqliteStore(db)</text>
+	<text x="40" y="110">nodes</text>   <text class="lbl" x="150" y="110">every row of the synced tree</text>
+	<text x="40" y="132">blobs</text>   <text class="lbl" x="150" y="132">its content, keyed by sha-256</text>
+	<text x="40" y="154">meta</text>    <text class="lbl" x="150" y="154">one row: 'lineage' = a uuid</text>
+
+	<rect x="466" y="62" width="410" height="120" rx="6" fill="#fbf1ea" stroke="#a8562c"/>
+	<text class="ttl" x="482" y="86" fill="#a8562c">sqliteStore(db, { namespace: 'private' })</text>
+	<text x="482" y="110">private_nodes</text>
+	<text x="482" y="132">private_blobs</text>
+	<text x="482" y="154">private_meta</text>
+	<text class="lbl" x="482" y="176">same schema, different tables, own lineage</text>
+
+	<rect x="24" y="196" width="852" height="66" rx="6" fill="#f6f3ee" stroke="#d9d2c7"/>
+	<text class="ttl" x="40" y="220">also in the same file, not part of any store</text>
+	<text x="40" y="244">schema_migrations · fs_generation · fs_* (the old model, until T18)</text>
+</svg>
+<figcaption>Fig 2. “A separate store” is spelled as separate tables on this backend. It could equally be a separate database, IDB name, or folder — nothing above the seam can tell.</figcaption>
+</figure>
+
+<h3>The schema, in full</h3>
+
+<pre><code>CREATE TABLE nodes (
+  id        TEXT PRIMARY KEY,        -- uuid, minted once, never rebound
+  parent    TEXT NOT NULL,           -- root is its own parent
+  name      TEXT NOT NULL COLLATE BINARY,
+  type      TEXT NOT NULL,           -- 'file' | 'dir' | 'symlink' | 'mount'
+  mode      INTEGER NOT NULL,        -- full POSIX mode, S_IFMT bits included
+  mtime_ns  TEXT NOT NULL,           -- decimal TEXT: past 2^53, so not INTEGER
+  size      TEXT NOT NULL,           -- ditto
+  xattrs    TEXT,                    -- one JSON object of base64 values, or NULL
+  content   TEXT,                    -- sha-256 hex of the bytes, files only
+  link      TEXT,                    -- symlink target, inline
+  version   TEXT NOT NULL,           -- '&lt;replica&gt;:&lt;nonce&gt;-&lt;n&gt;' — the author tag is the prefix
+  deleted   INTEGER NOT NULL DEFAULT 0,
+  seq       INTEGER NOT NULL         -- the one order; the change feed reads this
+);
+CREATE INDEX nodes_live ON nodes(parent, name, id) WHERE deleted = 0;   -- lookup by name
+CREATE INDEX nodes_seq  ON nodes(seq);                                  -- the feed
+
+CREATE TABLE blobs (hash TEXT PRIMARY KEY, data BLOB NOT NULL);
+CREATE TABLE meta  (key TEXT PRIMARY KEY, value TEXT NOT NULL);         -- 'lineage'</code></pre>
+
+<p>That is the whole storage model: <strong>one table, two lookups, one order, one blob map.</strong></p>
+
+<h3>Finding it on your machine</h3>
+
+<p>Your local dev DO database is a plain SQLite file:</p>
+
+<pre><code>$ ls apps/frieren/.wrangler/state/v3/do/frieren-Frieren/*.sqlite
+b5c2a1a5…6d.sqlite      # one file per DO instance id (= one per user)
+
+$ sqlite3 apps/frieren/.wrangler/state/v3/do/frieren-Frieren/b5c2a1a5…6d.sqlite '.tables'
+# today:        fs_inodes  fs_dirents  fs_contents  fs_xattrs  fs_generation …
+# after PR 3/4: nodes  blobs  meta  private_nodes  private_blobs  private_meta …</code></pre>
+
+<div class="note">
+	<strong>Which store is “/”?</strong> The store whose tables have no prefix —
+	<code>nodes</code>. There is no row anywhere that says “this table is the root store”:
+	being the store the volume was <em>constructed over</em> is what makes it the root.
+	<code>storeVolume(A, { bindings })</code> — A is <code>/</code>, and every binding is a
+	position inside A.
+</div>
+
+<h2 id="rows">§3 From the Files view to the row</h2>
+
+<p>
+	Take a real file out of your dev database: <code>/system/profiles/user.md</code>. Here is
+	how it is stored today, and how the same file is stored after the swap.
+</p>
+
+<h3>Today (the old twin model — three tables joined)</h3>
+<div class="scroll">
+<table class="rows">
+	<tr><th colspan="3">fs_dirents — the name, one row per link</th></tr>
+	<tr><th>dir_ino</th><th>name</th><th>ino</th></tr>
+	<tr><td>1</td><td>system</td><td>b1a1fc40-9912-40cf-a791-6d9050529f92</td></tr>
+	<tr><td>b1a1fc40-…</td><td>profiles</td><td>7a8e2395-192a-4322-ad44-62ff4de4a3f8</td></tr>
+	<tr><td>7a8e2395-…</td><td>user.md</td><td>f3be430c-7a80-4f68-93d0-20812a3427c5</td></tr>
+</table>
+</div>
+<div class="scroll" style="margin-top:.75rem">
+<table class="rows">
+	<tr><th colspan="6">fs_inodes — the metadata, keyed by a PER-REPLICA ino</th></tr>
+	<tr><th>ino</th><th>type</th><th>mode</th><th>size</th><th>mtime_ns</th><th>content_hash</th></tr>
+	<tr><td>f3be430c-…</td><td>0</td><td>420</td><td>80</td><td>1783994334112000000</td><td>6567e4a6…</td></tr>
+</table>
+</div>
+<p class="mono" style="color:var(--dim)">
+	+ fs_sync_nodes (the shared identity), fs_path_journal, fs_node_journal, fs_path_version,
+	fs_node_operations… — the second half of the twin model.
+</p>
+
+<h3>After the swap (one row)</h3>
+<div class="scroll">
+<table class="rows">
+	<tr><th colspan="9">nodes</th></tr>
+	<tr><th>id</th><th>parent</th><th>name</th><th>type</th><th>mode</th><th>size</th><th>mtime_ns</th><th>content</th><th>version</th></tr>
+	<tr>
+		<td>f3be430c-…</td><td>7a8e2395-…</td><td>user.md</td><td>file</td><td>33188</td>
+		<td>80</td><td>1783994334112000000</td><td>6567e4a6…</td><td>migrated:0</td>
+	</tr>
+</table>
+</div>
+
+<ul class="tight">
+	<li><code>id</code> — the file’s <em>shared</em> identity: the sync id where the replica had one, else the old ino. Never re-minted, never rebound.</li>
+	<li><code>parent</code> — the id of <code>/system/profiles</code>. The dirent table is gone: the name and the parent are columns on the file itself.</li>
+	<li><code>mode</code> — <code>33188</code> = <code>0o100644</code>: the old <code>420</code> = <code>0o644</code> plus the <code>S_IFREG</code> bits, so the row states its kind once.</li>
+	<li><code>content</code> — the same sha-256. The bytes are <code>SELECT data FROM blobs WHERE hash = '6567e4a6…'</code>, shared by every row with the same content.</li>
+	<li><code>version</code> — after migration, <code>migrated:0</code>; after your next edit, <code>&lt;replica-id&gt;:&lt;nonce&gt;-&lt;n&gt;</code>. The prefix is the <em>author</em>, and that is what keeps the push loop from echoing.</li>
+</ul>
+
+<h3>The queries, one per path segment</h3>
+
+<p>Resolution is literally this — <code>child(parent, name)</code> per segment, which is one index hit on <code>nodes_live</code>:</p>
+
+<pre><code>-- /system
+SELECT * FROM nodes WHERE parent = '00000000-0000-0000-0000-000000000000'
+  AND deleted = 0 AND name = 'system' ORDER BY id LIMIT 1;
+-- /system/profiles
+SELECT * FROM nodes WHERE parent = 'b1a1fc40-…' AND deleted = 0 AND name = 'profiles' …;
+-- /system/profiles/user.md
+SELECT * FROM nodes WHERE parent = '7a8e2395-…' AND deleted = 0 AND name = 'user.md' …;
+-- the bytes
+SELECT length(data) FROM blobs WHERE hash = '6567e4a6…';</code></pre>
+
+<p>Two shortcuts worth knowing when you go poking:</p>
+<pre><code>-- the whole tree of one store, shallow-first (ids abbreviated for reading)
+SELECT substr(id,1,8) AS id, substr(parent,1,8) AS parent, name, type, seq
+FROM nodes WHERE deleted = 0 ORDER BY seq;
+
+-- what the change feed will hand a replica next, in order
+SELECT seq, name, type, deleted, version FROM nodes ORDER BY seq LIMIT 20;
+
+-- this store's identity: every cursor it ever minted starts with this
+SELECT value FROM meta WHERE key = 'lineage';</code></pre>
+
+<h2 id="resolve">§4 Crossing the mount, query by query</h2>
+
+<figure>
+<svg viewBox="0 0 900 400" role="img" aria-label="Resolution of /private/credentials.json crossing from store A to store B">
+	<text class="ttl" x="0" y="16">resolve('/private/credentials.json')</text>
+
+	<rect x="0" y="30" width="900" height="80" rx="6" fill="#fff" stroke="#d9d2c7"/>
+	<text x="16" y="58">step 1 — at: { store: A, node: null }   (null means “the root of A”, id is a constant)</text>
+	<text x="16" y="82">segment "private": is there a BINDING at (A, ROOT, 'private') ?  ▸ yes</text>
+	<text class="lbl" x="16" y="100">the binding is read BEFORE any row lookup, so the mount row is never even fetched</text>
+
+	<rect x="0" y="126" width="900" height="80" rx="6" fill="#fbf1ea" stroke="#a8562c"/>
+	<text x="16" y="154">step 2 — at: { store: B, node: null }   ← we are now in the other store</text>
+	<text x="16" y="178">segment "credentials.json": SELECT * FROM private_nodes</text>
+	<text x="16" y="196" >   WHERE parent = '00000000-…-000000000000' AND deleted = 0 AND name = 'credentials.json'</text>
+
+	<rect x="0" y="222" width="900" height="58" rx="6" fill="#fff" stroke="#d9d2c7"/>
+	<text x="16" y="250">step 3 — read the bytes: SELECT data FROM private_blobs WHERE hash = 'b94d27b9…'</text>
+	<text class="lbl" x="16" y="270">a hash means nothing in a store that does not hold it — content never crosses either</text>
+
+	<rect x="0" y="300" width="900" height="90" rx="6" fill="#f6f3ee" stroke="#d9d2c7"/>
+	<text class="ttl" x="16" y="324">the gotcha</text>
+	<text x="16" y="348">BOTH tables contain a row with id = '00000000-0000-0000-0000-000000000000'.</text>
+	<text x="16" y="370">Every store spells its root with the same constant, so an id only means something</text>
+	<text x="16" y="388">together with the store it came from. Nothing above compares ids across a mount.</text>
+</svg>
+<figcaption>Fig 3. The binding is consulted per segment, before the row lookup — which is why a silent mount can shadow rows a peer pushed, and why an announced mount’s own row is never read during resolution (a kernel reports the mounted root’s inode too).</figcaption>
+</figure>
+
+<h2 id="binding">§5 The binding is runtime. Only the name is durable.</h2>
+
+<p>The fstab is a JavaScript <code>Map</code>, built when the volume is constructed:</p>
+
+<pre><code>// packages/fs/volume.store.ts
+export type Bindings = Map&lt;NodeId, Map&lt;string, Store&gt;&gt;   //  parent id → name → store
+
+const bindings: Bindings = new Map([[ROOT, new Map([['private', localStore]])]])
+const vol = storeVolume(syncedStore, { bindings, mintVersion: mint })</code></pre>
+
+<table>
+	<tr><th>Thing</th><th>Where it lives</th><th>Survives a restart?</th></tr>
+	<tr><td>The binding <em>(store B goes at this name)</em></td><td>memory, in the volume’s closure</td><td>no — rebuilt at boot</td></tr>
+	<tr><td>The <code>mount</code> row <em>(this name is reserved)</em></td><td><code>nodes</code>, replicated to every replica</td><td>yes</td></tr>
+	<tr><td>The private files themselves</td><td><code>private_nodes</code> / <code>private_blobs</code></td><td>yes, and they never move</td></tr>
+</table>
+
+<p>Three consequences, all of them Unix-shaped:</p>
+<ul class="tight">
+	<li><strong>An unbound mount row</strong> reads as an empty, read-only directory: <code>stat</code> works, <code>readdir</code> is empty, and a write under it is <code>EROFS</code>. That is a device that is not mounted.</li>
+	<li><strong>A binding with no row</strong> is a <em>silent</em> mount: nothing is written anywhere, so no peer learns the name even exists.</li>
+	<li><strong>Bindings are only read in the volume’s own store</strong> (<code>st === store</code>), so you cannot nest a binding inside a bound store. One level, from the root store.</li>
+</ul>
+
+<h2 id="remount">§6 “I want <code>/private</code> at <code>/mnt/private</code> instead”</h2>
+
+<p>Doable, and cheap. What it costs depends only on whether the mount is announced.</p>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="Before and after moving the mount point, showing that only one row changes">
+	<text class="ttl" x="0" y="16">before</text>
+	<rect x="0" y="28" width="430" height="130" rx="6" fill="#fff" stroke="#d9d2c7"/>
+	<text x="16" y="54">nodes:  (ROOT, 'private') → type 'mount'   id d0c9b8a7…</text>
+	<text x="16" y="76">        (ROOT, 'mnt')     → type 'dir'     id e5f6a7b8…</text>
+	<text x="16" y="106" fill="#a8562c">bindings: { ROOT → { 'private' → B } }</text>
+	<text class="lbl" x="16" y="134">private_nodes: 12 rows, ids d1…, d2…, …</text>
+
+	<text class="ttl" x="470" y="16">after</text>
+	<rect x="470" y="28" width="430" height="130" rx="6" fill="#fff" stroke="#d9d2c7"/>
+	<text x="486" y="54">nodes:  (e5f6a7b8…, 'private') → 'mount'  id d0c9b8a7…</text>
+	<text class="lbl" x="486" y="72">same row, same id — only parent + version changed</text>
+	<text x="486" y="106" fill="#a8562c">bindings: { e5f6a7b8… → { 'private' → B } }</text>
+	<text class="lbl" x="486" y="134">private_nodes: 12 rows, ids d1…, d2…, …  (untouched)</text>
+
+	<path d="M435 90 L 465 90" stroke="#6b635a" stroke-width="1.5" marker-end="url(#ag)"/>
+	<defs><marker id="ag" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#6b635a"/></marker></defs>
+
+	<rect x="0" y="180" width="900" height="140" rx="6" fill="#f6f3ee" stroke="#d9d2c7"/>
+	<text class="ttl" x="16" y="204">what the database sees</text>
+	<text x="16" y="230">3 rows rewritten in `nodes`: the mount point, and the two directories whose mtime</text>
+	<text x="16" y="252">  it moved (/ and /mnt) — the same three any rename writes. They travel the feed.</text>
+	<text x="16" y="278">0 writes in `private_nodes` / `private_blobs`. No file moved. No id changed.</text>
+	<text x="16" y="304">0 writes of any kind if the mount is SILENT — the whole change is one Map key.</text>
+</svg>
+<figcaption>Fig 4. Moving a mount point is one row write, or none. It is not a data migration, because the data was never in the store the point lives in.</figcaption>
+</figure>
+
+<h3>The steps, in order</h3>
+
+<p><strong>Silent binding (no row):</strong> change the key you build the <code>Bindings</code> with. That is the entire operation.</p>
+
+<pre><code>const mnt = (await vol.stat('/mnt')).ino          // the parent's id — bindings key on ids
+const bindings = new Map([[mnt, new Map([['private', localStore]])]])
+// rebuild the volume; /mnt/private now resolves into the local store</code></pre>
+
+<p><strong>Announced mount (a row exists):</strong> unmount, move, remount — the same order <code>mount(8)</code> makes you use:</p>
+
+<ol class="tight">
+	<li>
+		<strong>Unbind</strong> (drop the entry / rebuild the volume without it). You must:
+		while it is bound, <code>rename('/private', '/mnt/private')</code> answers
+		<code>EBUSY</code>, because both ends of a rename read their last component straight
+		out of the table and a bound point has no row there to move. Unbind first — exactly
+		“device is busy”.
+	</li>
+	<li>
+		<strong>Move the row.</strong> An unbound mount is an ordinary row:
+		<code>await vol.rename('/private', '/mnt/private')</code> — one guarded commit: the
+		row's <code>parent</code>, <code>name</code> and <code>version</code>, plus the mtime of
+		the two directories it moved between. (Or tombstone
+		it and commit a fresh <code>mount</code> row; then the reserved name at the root is
+		released.)
+	</li>
+	<li>
+		<strong>Rebind</strong> at <code>(id of /mnt, 'private')</code>.
+	</li>
+</ol>
+
+<div class="note ok">
+	<strong>Bindings key on the parent’s <em>id</em>, not on a path string.</strong> So if you
+	later rename <code>/mnt</code> → <code>/media</code>, the binding still resolves and your
+	private tree appears at <code>/media/private</code> — it follows the directory’s identity,
+	the way the kernel attaches a vfsmount to a dentry rather than to a string. Nothing to
+	update.
+</div>
+
+<div class="note warn">
+	<strong>The one thing that is not free:</strong> moving a <em>file</em> across the
+	boundary. <code>mv /notes/x.md /private/x.md</code> is <code>EXDEV</code>, and the volume
+	emulates it for a single file (one row into a free name in B, then a tombstone in A — so
+	the file gets a <em>new id</em> and the bytes are re-stored under the same hash in
+	<code>private_blobs</code>). A directory keeps the <code>EXDEV</code>: a subtree is a
+	commit per row across two stores with no guard spanning them, so anything that fails
+	leaves half a tree. That is the price of structural isolation, and it is what a real
+	cross-device <code>mv</code> costs too.
+</div>
+
+<h2 id="crossing">§7 What crosses a mount, and what does not</h2>
+
+<table>
+	<tr><th>Operation</th><th>Crosses?</th><th>Why</th></tr>
+	<tr><td><code>stat</code>, <code>readFile</code>, <code>writeFile</code>, <code>mkdir</code>…</td><td>yes</td><td>resolution crosses, then every read and commit goes to the store the path landed in</td></tr>
+	<tr><td><code>readdir</code></td><td>yes</td><td>a binding shadows a row of the same name, so a listing can never contradict resolving that name</td></tr>
+	<tr><td><code>scan</code></td><td>yes</td><td>and it starts a fresh visited-set at each crossing, because ids are per store</td></tr>
+	<tr><td><code>watch</code></td><td>yes — every feed</td><td>it subscribes to the store and every bound store <em>before</em> binding a path, since which store holds the path is a question only a read can answer. A recursive watch does not climb <em>out</em> of a mount.</td></tr>
+	<tr><td><code>rm -r</code>’s row list</td><td><strong>no</strong></td><td><code>descendants</code> is the list of rows one store is about to tombstone; what a mount holds is not its business. Removing a bound mount point is refused.</td></tr>
+	<tr><td><code>rename</code></td><td><strong>no</strong></td><td><code>EXDEV</code> across stores, <code>EBUSY</code> on a bound point</td></tr>
+	<tr><td><code>cp</code></td><td>yes, and it carries bytes</td><td>a hash names nothing in a store that lacks the content, so a cross-mount copy re-stores the bytes</td></tr>
+	<tr><td><code>sync(local, remote)</code></td><td><strong>never</strong></td><td>the engine is handed one store; it has no way to name another</td></tr>
+	<tr><td><code>storeApi</code> (the HTTP wire)</td><td><strong>never</strong></td><td>same — mounted over the synced store alone</td></tr>
+</table>
+
+<h2 id="differs">§8 Where it is not Unix</h2>
+
+<ul class="tight">
+	<li>
+		<strong>No <code>st_dev</code>.</strong> Every store spells its root
+		<code>00000000-…-000000000000</code>, so an id is unique <em>within</em> a store only. A
+		crossed <code>readdir</code> entry reports the bound root’s id, the way a POSIX inode
+		number is unique per device — but there is no device number to pair it with, so nothing
+		may compare two ids without knowing both stores. In practice: never key a cache on an
+		id alone if a mount can be involved.
+	</li>
+	<li>
+		<strong>The mountpoint is replicated.</strong> An announced mount row syncs, so every
+		replica sees that <code>/private</code> exists and is a mount — that is the point (the
+		name becomes uncollidable), but it does disclose the name. Choose a silent binding when
+		even the existence must stay private; the cost is that a peer’s rows under that name
+		are shadowed rather than refused.
+	</li>
+	<li>
+		<strong>An unbound mount is empty</strong>, not “the directory underneath”. Unix shows
+		you the mountpoint directory’s own contents when nothing is mounted; here nothing can
+		<em>be</em> underneath, because only a directory may be a parent.
+	</li>
+	<li>
+		<strong>Per-replica content is a feature.</strong> A synced symlink pointing into a
+		local mount resolves to different bytes on every device — the Unix <code>/etc</code>
+		convention, and the intended shape for <code>.env</code>-style secrets: the tree shape
+		syncs, the content never does.
+	</li>
+</ul>
+
+<h2 id="status">§9 What exists today</h2>
+
+<table>
+	<tr><th>Piece</th><th>State</th></tr>
+	<tr><td><code>sqliteStore</code> with the <code>namespace</code> option, atomic commits</td><td><span class="tag s">landed</span> PR 1 (#529)</td></tr>
+	<tr><td><code>storeVolume</code> + <code>Bindings</code>, crossing, EXDEV/EBUSY/EROFS, watch over every feed</td><td><span class="tag s">landed</span> T15</td></tr>
+	<tr><td><code>authority</code> refusing rows under a mount</td><td><span class="tag s">landed</span> T10</td></tr>
+	<tr><td>The <code>mount</code> row for <code>/private</code>, the second store, the migration that splits the old tree at that name</td><td><span class="tag l">PR 2</span></td></tr>
+	<tr><td>The server serving <code>storeApi</code>, frieren on it, then worker</td><td><span class="tag l">PR 3 / 4</span></td></tr>
+</table>
+
+<p class="mono" style="color:var(--dim);margin-top:2rem">
+	sources — packages/fs/volume.store.ts (resolution, bindings, crossing) ·
+	packages/fs/authority.ts (holdsRows) · packages/core/src/store.sqlite.ts (the schema) ·
+	kb/fs/fable-design.md §3 “The namespace” · tasks/store-model/t15-mounts.md ·
+	tasks/store-model/t17-swap-consumers.md
+</p>
+
+</main>
+</body>
+</html>
