@@ -16,8 +16,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterAll, describe, expect, test } from 'vitest'
 import { type Guard, GuardError, type Node, ROOT } from '../../fs/store'
 import { storeConformance } from '../../fs/store.conformance'
-import type { DbAdapter } from './db'
-import { createSqliteAdapter } from './db.sqlite'
+import type { SyncDb } from './db'
+import { createSqliteSyncDb } from './db.sqlite'
 import { sqliteStore } from './store.sqlite'
 
 /**
@@ -26,7 +26,7 @@ import { sqliteStore } from './store.sqlite'
  * conversions already accept both, as bun:sqlite and the DO adapter hand back
  * either.
  */
-const adapter = (db: DatabaseSync): DbAdapter => {
+const adapter = (db: DatabaseSync): SyncDb => {
 	const db64 = {
 		prepare(sql: string) {
 			const statement = db.prepare(sql)
@@ -35,7 +35,7 @@ const adapter = (db: DatabaseSync): DbAdapter => {
 		},
 		exec: (sql: string) => db.exec(sql)
 	}
-	return createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0])
+	return createSqliteSyncDb(db64 as unknown as Parameters<typeof createSqliteSyncDb>[0])
 }
 
 /** A fresh in-memory database per store, so two `open()` calls are two lineages. */
@@ -48,7 +48,7 @@ const fresh = () => sqliteStore(adapter(new DatabaseSync(':memory:')))
  * `SqlStorageValue` has no bigint. Reading integers as numbers (no
  * `setReadBigInts`) is what reproduces that half here.
  */
-const likeDurableObject = (db: DatabaseSync): DbAdapter => {
+const likeDurableObject = (db: DatabaseSync): SyncDb => {
 	const digits = (args: unknown[]) =>
 		args.map((arg) => (typeof arg === 'bigint' ? arg.toString() : arg))
 	const asDO = {
@@ -61,7 +61,7 @@ const likeDurableObject = (db: DatabaseSync): DbAdapter => {
 		},
 		exec: (sql: string) => db.exec(sql)
 	}
-	return createSqliteAdapter(asDO as unknown as Parameters<typeof createSqliteAdapter>[0])
+	return createSqliteSyncDb(asDO as unknown as Parameters<typeof createSqliteSyncDb>[0])
 }
 
 const dir = mkdtempSync(join(tmpdir(), 't12-'))
@@ -89,33 +89,56 @@ const batch = (): Node[] =>
 const allNew = (rows: Node[]): Guard[] => rows.map((row) => ({ version: { id: row.id, is: null } }))
 
 /**
- * A `DbAdapter` that records every statement and the transaction it ran in —
- * `null` for a statement that ran in none. A nested `transaction` is the same
- * transaction, because SQLite has no nesting (`db.sqlite.ts`).
+ * A `SyncDb` that records every statement and the transaction it ran in —
+ * `null` for a statement that ran in none.
  */
-const recording = (
-	inner: DbAdapter
-): { db: DbAdapter; log: { tx: number | null; sql: string }[] } => {
+const recording = (inner: SyncDb): { db: SyncDb; log: { tx: number | null; sql: string }[] } => {
 	const log: { tx: number | null; sql: string }[] = []
+	let open: number | null = null
 	let opened = 0
-	const wrap = (db: DbAdapter, tx: number | null): DbAdapter => ({
-		query: (sql, args) => {
-			log.push({ tx, sql })
-			return db.query(sql, args)
-		},
-		run: (sql, args) => {
-			log.push({ tx, sql })
-			return db.run(sql, args)
-		},
-		transaction: (fn) => {
-			const id = tx ?? opened++
-			return db.transaction((inside) => fn(wrap(inside, id)))
+	return {
+		log,
+		db: {
+			query: <T extends Record<string, unknown>>(
+				sql: string,
+				args?: Parameters<SyncDb['exec']>[1]
+			) => {
+				log.push({ tx: open, sql })
+				return inner.query<T>(sql, args)
+			},
+			exec: (sql, args) => {
+				log.push({ tx: open, sql })
+				inner.exec(sql, args)
+			},
+			transactionSync: (fn) => {
+				open = opened++
+				try {
+					inner.transactionSync(fn)
+				} finally {
+					open = null
+				}
+			}
 		}
-	})
-	return { db: wrap(inner, null), log }
+	}
 }
 
 storeConformance('sqliteStore', async () => fresh())
+
+/**
+ * A connection where the write naming `stops` fails, so a batch stops in the
+ * middle. Its `transactionSync` is the real one: the platform HAS a rollback,
+ * and the question is whether the store uses it.
+ */
+const failing = (db: DatabaseSync, stops: string): SyncDb => {
+	const inner = adapter(db)
+	return {
+		...inner,
+		exec: (sql, args) => {
+			if (args?.includes(stops)) throw new Error('out of space')
+			inner.exec(sql, args)
+		}
+	}
+}
 
 describe('sqliteStore: the guard and its writes are one transaction', () => {
 	test('a failed guard in a 100-row batch commits zero rows, and every statement shared one transaction', async () => {
@@ -157,6 +180,26 @@ describe('sqliteStore: the guard and its writes are one transaction', () => {
 	})
 })
 
+describe('sqliteStore: rule 2 on the platform whose transaction has no rollback', () => {
+	test('a write that fails mid-batch leaves the rows before it out too', async () => {
+		const db = new DatabaseSync(':memory:')
+		const store = sqliteStore(failing(db, 'n1'))
+		await store.commit([node({ id: 'seed', name: 'seed.txt' })])
+
+		// A quota, a row limit, a broken connection: the batch stops in the middle,
+		// and rule 2 says the store then holds none of it. `DbAdapter.transaction` is
+		// a bare `await fn(adapter)` on the Durable Object with nothing to roll back,
+		// which is why this store speaks the synchronous seam instead.
+		const rows = [node({ id: 'n0', name: 'f0.txt' }), node({ id: 'n1', name: 'f1.txt' })]
+		await expect(store.commit(rows)).rejects.toThrow('out of space')
+
+		expect(await store.get('n0')).toBeNull()
+		expect(await store.get('n1')).toBeNull()
+		// … and the feed took no position for either, so no replica ever hears of one.
+		expect((await store.since()).nodes.map((row) => row.id)).toEqual([ROOT, 'seed'])
+	})
+})
+
 describe('sqliteStore: the production adapter reads every column as a number', () => {
 	test('a nanosecond mtime and a 64-bit size survive the round trip intact', async () => {
 		const store = sqliteStore(likeDurableObject(new DatabaseSync(':memory:')))
@@ -180,6 +223,32 @@ describe('sqliteStore: the production adapter reads every column as a number', (
 		const mark = (await store.since()).next
 		await store.commit([row])
 		expect((await store.since(mark)).nodes).toEqual([])
+	})
+})
+
+describe('sqliteStore: two stores in one database', () => {
+	test('a namespaced store shares no row, no blob and no lineage with the default one', async () => {
+		// The server's tree and its `/private` (T15's mount) are two stores over one
+		// Durable Object, so "separate store" has to mean separate TABLES here.
+		const db = new DatabaseSync(':memory:')
+		const synced = sqliteStore(adapter(db))
+		const local = sqliteStore(adapter(db), { namespace: 'private' })
+
+		await synced.commit([node({ id: 'a', name: 'shared.txt' })])
+		await local.commit([node({ id: 'b', name: 'secret.txt' })])
+		await local.blobs.put('cafe', new Uint8Array([1]))
+
+		expect(await local.get('a')).toBeNull()
+		expect(await synced.get('b')).toBeNull()
+		expect(await synced.child(ROOT, 'secret.txt')).toBeNull()
+		expect(await synced.blobs.has('cafe')).toBe(false)
+		// Each feed carries its own rows and only its own root (rule 6 on both).
+		expect((await synced.since()).nodes.map((row) => row.id)).toEqual([ROOT, 'a'])
+		expect((await local.since()).nodes.map((row) => row.id)).toEqual([ROOT, 'b'])
+		// And a cursor is a position in ONE feed: two lineages, so neither answers
+		// to the other's (rule 11).
+		const { next: cursor } = await local.since()
+		await expect(synced.since(cursor)).rejects.toThrow()
 	})
 })
 

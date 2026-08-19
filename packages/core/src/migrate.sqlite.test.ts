@@ -28,7 +28,7 @@ import { expect, test } from 'vitest'
 import { type CursorSlot, sync } from '../../fs/engine'
 import { idbStore } from '../../fs/store.idb'
 import { storeVolume } from '../../fs/volume.store'
-import { createSqliteAdapter } from './db.sqlite'
+import { createSqliteAdapter, createSqliteSyncDb } from './db.sqlite'
 import { migrateSqlite } from './migrate.sqlite'
 import { storage as sqliteStorage } from './storage.sqlite'
 import { sqliteStore } from './store.sqlite'
@@ -54,7 +54,19 @@ function openSqlite() {
 		},
 		exec: (sql: string) => db.exec(sql)
 	} as unknown as Parameters<typeof createSqliteAdapter>[0])
-	return { db, adapter, storage: sqliteStorage(adapter) }
+	// Two seams over ONE connection: the old tables are read through the async
+	// adapter, and the new store commits through the synchronous one it needs to be
+	// atomic (`db.ts`). The reads are awaited before each commit, so no `BEGIN` of
+	// one ever opens inside the other's.
+	const sync = createSqliteSyncDb({
+		prepare(sql: string) {
+			const statement = db.prepare(sql)
+			statement.setReadBigInts(true)
+			return statement
+		},
+		exec: (sql: string) => db.exec(sql)
+	} as unknown as Parameters<typeof createSqliteSyncDb>[0])
+	return { db, adapter, sync, storage: sqliteStorage(adapter) }
 }
 
 function replicaOf(storage: Parameters<typeof storageSyncReplica>[0]) {
@@ -150,7 +162,7 @@ test('both halves migrate to the same rows, under the same shared ids', async ()
 	)
 
 	const local = idbStore(`t16-local-${crypto.randomUUID()}`)
-	const remote = sqliteStore(server.adapter)
+	const remote = sqliteStore(server.sync)
 	await migrateIdb(clientDb, local)
 	await migrateSqlite(server.adapter, remote)
 
@@ -180,7 +192,7 @@ test('both halves migrate to the same rows, under the same shared ids', async ()
 test('the first sync after migration writes no row and moves no blob', async () => {
 	const { server, clientDb } = await converged()
 	const local = counted(idbStore(`t16-local-${crypto.randomUUID()}`))
-	const remote = counted(sqliteStore(server.adapter))
+	const remote = counted(sqliteStore(server.sync))
 	await migrateIdb(clientDb, local)
 	await migrateSqlite(server.adapter, remote)
 
@@ -212,7 +224,7 @@ test('the first sync after migration writes no row and moves no blob', async () 
 
 test('a second pass over the same tables writes nothing', async () => {
 	const { server } = await converged()
-	const store = sqliteStore(server.adapter)
+	const store = sqliteStore(server.sync)
 	await migrateSqlite(server.adapter, store)
 
 	const after = await store.since()
@@ -233,7 +245,7 @@ test('content the old server offloaded comes from the bucket, or the row is a st
 		[hash]
 	)
 
-	const stub = sqliteStore(server.adapter)
+	const stub = sqliteStore(server.sync)
 	await migrateSqlite(server.adapter, stub)
 	expect((await stub.get((await storeVolume(stub).lstat('/docs/note.md')).ino))?.content).toBe(hash)
 	expect(await stub.blobs.has(hash)).toBe(false)
