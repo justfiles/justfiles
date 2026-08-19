@@ -60,6 +60,39 @@ with a default of `1`.
 The four questions above, answered before the first swap, plus a fifth the swap
 found. Each answer is implemented where it is named.
 
+### A store has an id, not a name — and a mount row derives from its position
+
+The first cut gave the second store a table-name prefix (`private_nodes`), which
+put a mount POINT's name in the schema: renaming a mount would have been a DDL
+migration, and the identifier had to be validated because it reached SQL as text.
+Both are the id/name conflation this model refuses everywhere else. So a store is
+a row in `stores` and a partition of the one table set, carried as a bound
+parameter — creating one is an `INSERT`, deleting one is a `DELETE`, and the mount
+point's name lives in the PARENT store's row, where it may be renamed freely.
+
+The mount row itself is DERIVED, not minted: the id is a v8 uuid hashed from
+`(parent, name)`, `mtimeNs` is 0, the version is `mount:1`. Every replica writes a
+byte-identical row, so rule 3 reads a second copy as a no-op and the author tag —
+no live replica — keeps it off every push: the name is claimed everywhere with no
+coordination and no traffic. A minted id would give two replicas two live rows for
+one name, which rule 1 settles by the lowest id and the engine then RENAMES the
+loser.
+
+On a real filesystem the mounted store's tree is a REAL directory under the same
+root — `<root>/private`, openable in Finder — so the boundary has to be something
+the bridge can see. `fsStore` already refused exactly one root-level name, its own
+sidecar; a bound name goes through the same filter, which is where the design puts
+it ("an import filter private to the native bridge"). One name per binding, out of
+the host's own fstab: not a pattern language, and a name that is not bound is
+ordinary data.
+
+A separate database FILE per store was investigated and is impossible on the
+Durable Object, permanently — workerd's authorizer refuses `SQLITE_ATTACH`: "we do
+not support attached databases. It seems unlikely that we ever will." The only
+per-file store there is a second Durable Object, which would make every `child()`
+an RPC and could not be the synchronous seam the atomic commit needs. On
+IndexedDB a store is already a whole database, named by the store's id.
+
 ### `/private` is a mount on the SERVER too — the one thing the row list missed
 
 The old engine kept `/private` off the wire with a path filter
@@ -152,8 +185,8 @@ own:
 | PR | What | State |
 | --- | --- | --- |
 | 1 | The decisions: atomic commit + table namespace, the durable discard slot, this order | landed |
-| 2 | `/private` is a mount: the announced row, the second store, the migration split, `emptyStore` + the reset on the synchronous seam | next |
-| 3 | The new `/fs` surface beside the old one, and frieren onto it: DO host, browser client, `apps/cli`, `frieren-auth` | |
+| 2 | `/private` is a mount: a store is an id, the announced row, the migration split, the native import filter | landed |
+| 3 | The new `/fs` surface beside the old one, and frieren onto it: DO host (two stores, bound), browser client, `apps/cli`, `frieren-auth`, `emptyStore` + the reset on the synchronous seam | |
 | 4 | `apps/worker` onto it, then the old surface deleted: the retired routes, `apiStorage` / `remoteSyncReplica`, the old-wire tests, the dependencies | |
 
 ## RED
