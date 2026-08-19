@@ -1,4 +1,5 @@
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { beforeEach, describe, expect, test } from 'vitest'
 import {
 	FIRST_PARTY_APP_ID_RENAMES,
@@ -24,7 +25,7 @@ describe('migrateFirstPartyAppIds', () => {
 	let fs: Volume
 
 	beforeEach(() => {
-		fs = volume(memStorage())
+		fs = volume(memStore())
 	})
 
 	test('moves app storage and rewrites stored id references', async () => {

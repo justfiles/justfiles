@@ -1,5 +1,6 @@
 import type { CapabilityCall } from '@justfiles/app/capabilities'
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { aiCapability, type GenerateText } from './ai.capability.ts'
 
@@ -44,7 +45,7 @@ async function seedLearner(vol: Volume) {
 describe('aiCapability', () => {
 	let vol: Volume
 	beforeEach(() => {
-		vol = volume(memStorage())
+		vol = volume(memStore())
 	})
 
 	test('generateText returns the model text', async () => {

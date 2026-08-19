@@ -1,8 +1,8 @@
 /**
  * One pass: the old twin model's data → `Node` rows. Ids survive.
  *
- * The old model kept the same tree twice — a disk-FS half (`Ino`, dirents,
- * `InodeMeta`) and a sync half (`SyncNodeId`, `parentId + name`, revisions) —
+ * The old model kept the same tree twice — a disk-FS half (inodes, dirents,
+ * per-inode meta) and a sync half (sync ids, `parentId + name`, revisions) —
  * joined by a per-replica `ino ↔ syncId` mapping. This is that join, run once:
  * each inode is read with the dirent that named it, and written as one row.
  *

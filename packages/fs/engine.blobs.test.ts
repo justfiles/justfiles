@@ -13,10 +13,10 @@
 
 import { describe, expect, it } from 'vitest'
 import { type CursorSlot, hydratingBlobs, sync, versions } from './engine'
+import { memStore } from './mem'
 import { type Cursor, type Hash, ROOT, type Store, sha256Hex } from './store'
-import { memStore } from './store.mem'
 import type { Volume } from './volume'
-import { storeVolume } from './volume.store'
+import { volume } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -45,8 +45,8 @@ function pair() {
 		pull,
 		push,
 		opts: { replica: 'a', pull, push },
-		here: storeVolume(local, { mintVersion: versions('a') }),
-		there: storeVolume(remote, { mintVersion: versions('b') })
+		here: volume(local, { mintVersion: versions('a') }),
+		there: volume(remote, { mintVersion: versions('b') })
 	}
 }
 
@@ -105,7 +105,7 @@ describe('sync: content on the push', () => {
 
 		// Rule 10, as an order: asked, absent, transferred, and only then the row.
 		expect(peer.log).toEqual([`has ${hash}`, `put ${hash}`, 'commit'])
-		expect(await read(storeVolume(remote), '/notes.txt')).toBe('hello')
+		expect(await read(volume(remote), '/notes.txt')).toBe('hello')
 	})
 
 	it('transfers nothing for a hash the peer already holds — a rename is free', async () => {
@@ -118,7 +118,7 @@ describe('sync: content on the push', () => {
 		await sync(local, peer.store, opts)
 
 		expect(peer.log.filter((call) => call.startsWith('put'))).toEqual([])
-		expect(await read(storeVolume(remote), '/renamed.txt')).toBe('hello')
+		expect(await read(volume(remote), '/renamed.txt')).toBe('hello')
 	})
 
 	it('transfers nothing for a tombstone, whose content hash is dead weight', async () => {
@@ -152,7 +152,7 @@ describe('sync: content on the push', () => {
 		await sync(local, peer.store, opts)
 
 		expect(peer.log.filter((call) => call.startsWith('put'))).toEqual([])
-		expect(await read(storeVolume(remote), '/notes.txt')).toBe('hello')
+		expect(await read(volume(remote), '/notes.txt')).toBe('hello')
 	})
 })
 
@@ -163,7 +163,7 @@ describe('sync: content on the pull', () => {
 
 		await sync(local, remote, opts)
 
-		expect(await read(storeVolume(local), '/notes.txt')).toBe('hello')
+		expect(await read(volume(local), '/notes.txt')).toBe('hello')
 	})
 
 	it('fetches only what it does not already hold', async () => {
@@ -177,7 +177,7 @@ describe('sync: content on the pull', () => {
 		await sync(local, peer.store, opts)
 
 		expect(peer.log.filter((call) => call.startsWith('get'))).toEqual([])
-		expect(await read(storeVolume(local), '/theirs.txt')).toBe('hello')
+		expect(await read(volume(local), '/theirs.txt')).toBe('hello')
 	})
 
 	it('refuses bytes that do not hash to the key, and keeps the row as a stub', async () => {
@@ -216,7 +216,7 @@ describe('sync: content on the pull', () => {
 		await sync(local, remote, opts)
 		expect(await local.blobs.has(hash)).toBe(false)
 		// The demand side is what closes it, and closing it there is enough.
-		expect(await read(storeVolume(hydratingBlobs(local, remote)), '/notes.txt')).toBe('hello')
+		expect(await read(volume(hydratingBlobs(local, remote)), '/notes.txt')).toBe('hello')
 	})
 })
 
@@ -231,7 +231,7 @@ describe('sync: lazy content', () => {
 		expect(peer.log.filter((call) => call.startsWith('get'))).toEqual([])
 		expect(await local.child(ROOT, 'notes.txt')).not.toBeNull()
 		// And the stub says so rather than reading as an empty file.
-		await expect(storeVolume(local).readFile('/notes.txt')).rejects.toThrow('ENOENT')
+		await expect(volume(local).readFile('/notes.txt')).rejects.toThrow('ENOENT')
 	})
 
 	it('still pushes its own content, which only this replica holds', async () => {
@@ -240,7 +240,7 @@ describe('sync: lazy content', () => {
 
 		await sync(local, remote, { ...opts, lazyContent: true })
 
-		expect(await read(storeVolume(remote), '/mine.txt')).toBe('hello')
+		expect(await read(volume(remote), '/mine.txt')).toBe('hello')
 	})
 })
 
@@ -252,12 +252,12 @@ describe('hydratingBlobs', () => {
 		const hash = await hashOf('hello')
 		const peer = trace(remote)
 
-		expect(await read(storeVolume(hydratingBlobs(local, peer.store)), '/notes.txt')).toBe('hello')
+		expect(await read(volume(hydratingBlobs(local, peer.store)), '/notes.txt')).toBe('hello')
 
 		expect(peer.log).toEqual([`get ${hash}`])
 		expect(await local.blobs.has(hash)).toBe(true)
 		// Cached, so the second read never leaves this replica.
-		expect(await read(storeVolume(hydratingBlobs(local, peer.store)), '/notes.txt')).toBe('hello')
+		expect(await read(volume(hydratingBlobs(local, peer.store)), '/notes.txt')).toBe('hello')
 		expect(peer.log.filter((call) => call.startsWith('get'))).toEqual([`get ${hash}`])
 	})
 

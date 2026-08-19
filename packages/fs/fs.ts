@@ -66,6 +66,7 @@ import {
 	up,
 	WRITE
 } from './disk'
+import { decodeNode, encodeNode, type WireNode } from './http'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -81,7 +82,6 @@ import {
 	sha256Hex,
 	type Version
 } from './store'
-import { decodeNode, encodeNode, type WireNode } from './store.http'
 
 /** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128

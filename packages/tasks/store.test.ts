@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import { volume } from '../fs/index.ts'
-import { memStorage } from '../fs/storage.mem.ts'
+import { memStore } from '../fs/mem.ts'
 import { createStore, generateId } from './store.ts'
 
 function makeStore(dir = '/tasks', timezone = 'UTC') {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	return { vol, store: createStore(vol, dir, { timezone }) }
 }
 
@@ -122,7 +122,7 @@ describe('store', () => {
 	})
 
 	test('listTasks on missing directory returns empty list', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const store = createStore(vol, '/never-created')
 		expect(await store.listTasks()).toEqual([])
 	})

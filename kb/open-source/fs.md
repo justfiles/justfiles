@@ -215,8 +215,6 @@ Monorepo assumptions to replace, all inside the package:
 | No test runner; tests run from the root `vitest.config.ts` | Add a `vitest` devDep, a `vitest.config.ts`, and a `test` script |
 | No lint/format config | Add `biome.json` mirroring the root settings (tabs, single quotes, semicolons as-needed, width 100, the `*.test.ts` `noNonNullAssertion` override) plus `lint`/`format` scripts |
 | No repo hygiene files | `.gitignore` (node_modules, dist, `*.tsbuildinfo`, `.turbo/`), `.node-version` (24), `.npmrc`, `README.md`, `LICENSE`, its own `pnpm-lock.yaml` |
-| `volume.test.js` imports `bun:test` | Runs nowhere today — the root vitest `include` only matches `*.test.ts`. Port to vitest or delete |
-| `discussion.md` | Keep with the package, or move into this repo's `docs/` |
 
 `build` (tsdown) and `typecheck` (`tsc --noEmit`) already work standalone with no
 turbo involvement.
@@ -295,8 +293,6 @@ root config (see Open decisions).
 2. **Who lints the submodule?** fs owns its `biome.json` and the root excludes it
    (clean ownership, two configs to keep in step), or the root keeps linting it and
    fs's config is standalone-only. *Leaning: fs owns it.*
-3. **`volume.test.js`** — port to vitest (it covers the wider `volume.ts` surface
-   and currently runs nowhere) or delete?
-4. **Tags** — keep the rewritten `fs-v*` history tags, or start clean at `v0.6.0`?
-5. **npm auth** — reconfigure trusted publishing for the new repo (preferred), or
+3. **Tags** — keep the rewritten `fs-v*` history tags, or start clean at `v0.6.0`?
+4. **npm auth** — reconfigure trusted publishing for the new repo (preferred), or
    fall back to an `NPM_TOKEN` secret?

@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterAll, describe, expect, test } from 'vitest'
+import { storeConformance } from '../../fs/conformance'
 import {
 	ForeignCursorError,
 	type Guard,
@@ -22,7 +23,6 @@ import {
 	ROOT,
 	sha256Hex
 } from '../../fs/store'
-import { storeConformance } from '../../fs/store.conformance'
 import type { SyncDb } from './db'
 import { createSqliteSyncDb } from './db.sqlite'
 import { emptyStore, sqliteStore } from './store.sqlite'

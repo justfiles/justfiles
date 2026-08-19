@@ -2,7 +2,7 @@
  * A `Disk` that is not a disk. The same tree, the same inodes, the same permission
  * rules, in memory — so `fsStore` can be run thousands of times a second,
  * deterministically, with faults injected wherever a test wants one. It exists for the
- * oracle in `store.fs.model.test.ts`: a property test that has to make real files does a
+ * oracle in `fs.model.test.ts`: a property test that has to make real files does a
  * few hundred cases before CI notices, and every one is at the mercy of the host’s
  * timestamp granularity.
  *
@@ -18,7 +18,7 @@
  * Where it differs, it differs on the strict side: a symlink in the MIDDLE of a path is
  * not followed here, so a path through one fails instead of resolving. There is no
  * outside for it to resolve to — the escape that matters about a symlinked ancestor can
- * only be shown against a real filesystem, and is (`store.fs.test.ts`).
+ * only be shown against a real filesystem, and is (`fs.test.ts`).
  */
 
 import type { BigIntStats } from 'node:fs'

@@ -65,10 +65,9 @@ import {
 	storeApi
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
-import type { Volume } from '@justfiles/fs'
+import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { ROOT, type Store } from '@justfiles/fs/store'
-import { announceMount, storeVolume } from '@justfiles/fs/volume.store'
 import { Hono } from 'hono'
 import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { guardCapability } from './accounts/guard.ts'
@@ -242,7 +241,7 @@ export class Frieren extends DurableObject<Env> {
 		this.tree.subscribe?.(poke)
 		// Constructing a Volume touches no storage; the migration barrier below still runs
 		// before any request can call a method on it.
-		this.volume = storeVolume(this.tree, {
+		this.volume = volume(this.tree, {
 			bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, this.local]])]])
 		})
 		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
@@ -310,9 +309,9 @@ export class Frieren extends DurableObject<Env> {
 			// tree UNBOUND — not `this.volume` — for the same reason `storeApi` is handed
 			// the synced store alone: a request may not name anything behind the mount,
 			// and an unbound one reads as the empty directory it is.
-			.route('/store', fileApi(storeVolume(this.tree)))
+			.route('/store', fileApi(volume(this.tree)))
 			// What is left of `/fs`: the server's own protocol, which the seam does not
-			// carry. The lineage epoch both the factory reset and `syncedVolume`'s
+			// carry. The lineage epoch both the factory reset and `synced`'s
 			// `reset()` closure READ from here, and the reset itself.
 			.route(
 				'/fs',

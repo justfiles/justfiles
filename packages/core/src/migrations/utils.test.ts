@@ -50,6 +50,14 @@ CREATE TABLE b(y);`
 		expect(parseSqlStatements(sql)).toEqual(['CREATE TABLE a(x)', 'CREATE TABLE b(y)'])
 	})
 
+	it('yields nothing for a trailing comment block, newline or not', () => {
+		// A file that ends in prose. Without this the tail is handed to the runner as
+		// a statement, and the migration fails on a note about what it just did.
+		const sql = 'CREATE TABLE a(x);\n-- what this left alone, and why\n-- the last word'
+		expect(parseSqlStatements(sql)).toEqual(['CREATE TABLE a(x)'])
+		expect(parseSqlStatements(`${sql}\n`)).toEqual(['CREATE TABLE a(x)'])
+	})
+
 	it('keeps a BEGIN…END trigger body as a single statement', () => {
 		const sql = `CREATE TRIGGER t AFTER INSERT ON a BEGIN
 	UPDATE a SET x = 1;
@@ -94,7 +102,12 @@ describe('migrateSync', () => {
 		expect(versions).toEqual([1])
 	})
 
-	it('adds node sync tables from a fresh schema and every prior migration level', () => {
+	/**
+	 * The one thing the whole history has to get right: a volume at ANY applied level
+	 * reaches the same schema as a fresh one. That is what makes 0012 a new migration
+	 * instead of an edit to the files that created what it drops.
+	 */
+	it('lands on one schema from a fresh database and from every prior level', () => {
 		const directory = new URL('./', import.meta.url)
 		const migrations = readdirSync(directory)
 			.filter((file) => /^\d+.*\.sql$/.test(file))
@@ -112,10 +125,28 @@ describe('migrateSync', () => {
 					.query("SELECT name FROM sqlite_master WHERE type = 'table'")
 					.map((row) => String(row.name))
 			)
-			expect(tables.has('fs_sync_nodes')).toBe(true)
-			expect(tables.has('fs_node_journal')).toBe(true)
-			expect(tables.has('fs_node_journal_mutations')).toBe(true)
-			expect(tables.has('fs_node_clock')).toBe(true)
+			// What the one pass reads (migrate.sqlite.ts). It runs on a volume's first
+			// boot after the swap, so these outlive the engine that wrote them.
+			for (const table of ['fs_inodes', 'fs_dirents', 'fs_xattrs', 'fs_contents', 'fs_sync_nodes'])
+				expect(tables.has(table)).toBe(true)
+			// The old sync engine's own bookkeeping, retired by 0012.
+			for (const table of [
+				'fs_path_journal',
+				'fs_path_version',
+				'fs_node_journal',
+				'fs_node_journal_mutations',
+				'fs_node_clock',
+				'fs_node_operations',
+				'fs_content_fts'
+			])
+				expect(tables.has(table)).toBe(false)
+			// The lineage row keeps its live columns and loses the prune's two bookmarks.
+			const columns = new Set(
+				db.query("SELECT name FROM pragma_table_info('fs_generation')").map((r) => String(r.name))
+			)
+			expect(columns.has('lineage_id')).toBe(true)
+			expect(columns.has('journal_coalesce_path')).toBe(false)
+			expect(columns.has('journal_pruned_below')).toBe(false)
 			db.raw.close()
 		}
 	})

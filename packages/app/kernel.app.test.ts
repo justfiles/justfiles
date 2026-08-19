@@ -1,8 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { memStorage, type Volume, volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { fsStore } from '@justfiles/fs/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test } from 'vitest'
 import { type AppBundle, type AppManifest, appBundleFromMemory } from './app.ts'
 import { apps } from './kernel.app.ts'
@@ -12,7 +13,7 @@ import { apps } from './kernel.app.ts'
 // record whose payload is mounted from an origin), the install-existence guards, and
 // the rollback contract: a failed install must not corrupt the previously installed app.
 
-const store = () => apps(volume(memStorage()))
+const store = () => apps(volume(memStore()))
 const decode = (b: Uint8Array) => new TextDecoder().decode(b)
 const enc = (s: string) => new TextEncoder().encode(s)
 
@@ -153,7 +154,7 @@ test("a bundle that vanished behind the volume's back does not wedge later insta
 	// ENOENT on the vanished path, and fail that way for good.
 	const root = await mkdtemp(join(tmpdir(), 'kernel-app-'))
 	try {
-		const s = apps(volume(await nativeStorage(root)))
+		const s = apps(volume(fsStore(root)))
 		const id = await s.install(
 			appBundleFromMemory({ id: 'com.example.app', name: 'App', app: 'CODE_V1' })
 		)
@@ -173,7 +174,7 @@ test("a bundle that vanished behind the volume's back does not wedge later insta
 // ── hosted apps: the manifest is the app, the payload is a mount ──────────────
 
 test('installing a hosted app writes the record and the reducer, nothing else', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const s = apps(vol, origin({}).fetchAsset)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
 
@@ -185,7 +186,7 @@ test('installing a hosted app writes the record and the reducer, nothing else', 
 })
 
 test('the reducer of a hosted app is read from the volume, never mounted', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const o = origin({ 'gui.js': 'GUI' })
 	// No fetcher at all: the reducer must still be readable.
 	const id = await apps(vol).install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
@@ -197,7 +198,7 @@ test('the reducer of a hosted app is read from the volume, never mounted', async
 })
 
 test('reading a hosted file goes through the host fetch layer, never the volume', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const o = origin({ 'app.js': 'REDUCER', 'gui.js': 'GUI' })
 	const s = apps(vol, o.fetchAsset)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
@@ -215,7 +216,7 @@ test('reading a hosted file goes through the host fetch layer, never the volume'
 })
 
 test('a mounted file that does not match its pinned hash is refused and evicted', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	// The record pins the real bytes; the origin serves something else.
 	const o = origin({ 'gui.js': 'TAMPERED' })
 	const evicted: string[] = []
@@ -233,7 +234,7 @@ test('a mounted file that does not match its pinned hash is refused and evicted'
 })
 
 test('a host with no asset fetcher cannot mount, but still runs the reducer', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const s = apps(vol)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
 	const installed = await s.get(id)
@@ -244,7 +245,7 @@ test('a host with no asset fetcher cannot mount, but still runs the reducer', as
 test('a hosted record naming an entry its origin will not serve is rejected at install', async () => {
 	// The bytes are not here to check, so the pinned file list stands in — the failure
 	// surfaces at install rather than at launch.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const bundle = await hostedBundle({ app: 'REDUCER', gui: 'GUI' })
 	const manifest = await bundle.manifest()
 	const unpinned: AppBundle = { ...bundle, manifest: async () => ({ ...manifest, files: {} }) }
@@ -257,7 +258,7 @@ test('a hosted record naming an entry its origin will not serve is rejected at i
 // is replaced by a record, and `install` replaces the whole app root — so the synced
 // copies are deleted and that delete propagates.
 test('reinstalling a copied app as hosted removes its bytes from the volume', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
 	const id = await s.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: 'REDUCER', gui: 'GUI' })
@@ -272,7 +273,7 @@ test('reinstalling a copied app as hosted removes its bytes from the volume', as
 })
 
 test('replacing a hosted app evicts the previous release after commit', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const evicted: string[] = []
 	const o = origin({ 'gui.js': 'GUI' })
 	const s = apps(
@@ -301,7 +302,7 @@ test('replacing a hosted app evicts the previous release after commit', async ()
 })
 
 test('reinstalling the same hosted release keeps its mounted cache', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const evicted: string[] = []
 	const o = origin({ 'gui.js': 'GUI' })
 	const s = apps(
@@ -321,7 +322,7 @@ test('reinstalling the same hosted release keeps its mounted cache', async () =>
 })
 
 test('a failed hosted replacement keeps the previous release cache', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const evicted: string[] = []
 	const o = origin({ 'gui.js': 'GUI' })
 	const s = apps(
@@ -360,7 +361,7 @@ test('a failed hosted replacement keeps the previous release cache', async () =>
 test('every staged byte is written under /private, never a synced path', async () => {
 	// Staged bytes exist only to be renamed away, so they must never reach the wire.
 	// This used to churn `/system/tmp` on every locally-authored install.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const seen: string[] = []
 	const spy = new Proxy(vol, {
 		get(target, prop, receiver) {
@@ -383,7 +384,7 @@ test('every staged byte is written under /private, never a synced path', async (
 test('the rename that commits an install leaves nothing staged behind', async () => {
 	// The commit is one rename, so the staging directory has to end up empty — and the
 	// bytes have to land in `/applications` readable, not just linked.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const s = apps(vol)
 	const id = await s.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: 'CODE', gui: 'GUI' })
@@ -407,7 +408,7 @@ test('uninstall removes the bundle', async () => {
 test('uninstall evicts the hosted payload from the host cache', async () => {
 	// The payload never entered the volume, so trashing the bundle would leave it in the
 	// host's (per-origin) cache with nothing left to name it by.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const evicted: string[] = []
 	const o = origin({ 'gui.js': 'GUI' })
 	const s = apps(
@@ -428,7 +429,7 @@ test('uninstall evicts the hosted payload from the host cache', async () => {
 })
 
 test('uninstall evicts a hosted read started before the bundle is trashed', async () => {
-	const { vol, renaming, resume } = pauseTrash(volume(memStorage()))
+	const { vol, renaming, resume } = pauseTrash(volume(memStore()))
 	const calls: string[] = []
 	const fetchAsset = Object.assign(
 		async () => {
@@ -456,7 +457,7 @@ test('uninstall evicts a hosted read started before the bundle is trashed', asyn
 })
 
 test('uninstall evicts the release it moves when install overlaps', async () => {
-	const { vol, renaming, resume } = pauseTrash(volume(memStorage()))
+	const { vol, renaming, resume } = pauseTrash(volume(memStore()))
 	const evicted: string[] = []
 	const fetchAsset = Object.assign(async () => enc('GUI'), {
 		evict: async (url: string) => {
@@ -481,7 +482,7 @@ test('uninstall evicts the release it moves when install overlaps', async () => 
 })
 
 test('an eviction that fails does not fail the uninstall', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const o = origin({ 'gui.js': 'GUI' })
 	const s = apps(
 		vol,
@@ -498,7 +499,7 @@ test('an eviction that fails does not fail the uninstall', async () => {
 
 test('a host with no evict hook uninstalls cleanly', async () => {
 	// The DO and apps/mac pass a plain fetcher — they have no browser cache to sweep.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))
 	await s.uninstall(id)
@@ -508,7 +509,7 @@ test('a host with no evict hook uninstalls cleanly', async () => {
 test('uninstall moves the bundle to /trash atomically instead of deleting it', async () => {
 	// The bundle leaves /applications in ONE atomic rename (no torn intermediate
 	// state a racing reconcile could "repair"), and its bytes survive under /trash.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const s = apps(vol)
 	const id = await s.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: 'CODE_V1' })

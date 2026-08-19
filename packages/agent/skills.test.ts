@@ -1,5 +1,5 @@
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import {
 	createManifestSkillSource,
@@ -17,7 +17,7 @@ async function seed(vol: ReturnType<typeof volume>, path: string, content: strin
 
 describe('volume skill source', () => {
 	test('lists directory and single-file skills from frontmatter, loads bodies on demand', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await seed(
 			vol,
 			'/system/skills/pdf/SKILL.md',
@@ -39,17 +39,17 @@ describe('volume skill source', () => {
 	})
 
 	test('ignores directories without a SKILL.md', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/system/skills/empty', { recursive: true })
 		expect(await createVolumeSkillSource(vol).list()).toEqual([])
 	})
 
 	test('returns an empty list when the skills dir is missing', async () => {
-		expect(await createVolumeSkillSource(volume(memStorage())).list()).toEqual([])
+		expect(await createVolumeSkillSource(volume(memStore())).list()).toEqual([])
 	})
 
 	test('falls back to the id when frontmatter omits name', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await seed(vol, '/system/skills/raw.md', 'no frontmatter here')
 		expect(await createVolumeSkillSource(vol).list()).toEqual([
 			{ id: 'raw', name: 'raw', description: '' }
@@ -83,7 +83,7 @@ describe('skill registry', () => {
 	})
 
 	test('an earlier source shadows a built-in skill with the same id', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await seed(
 			vol,
 			'/system/skills/pdf/SKILL.md',

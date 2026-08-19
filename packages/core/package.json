@@ -14,7 +14,6 @@
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {
-		"@justfiles/sync": "workspace:*",
 		"@justfiles/tsconfig": "workspace:*",
 		"@types/node": "^26.1.0",
 		"fake-indexeddb": "^6.2.5"

@@ -27,8 +27,3 @@ export {
 // server surface is no use to anyone.
 export { storeApi } from './store.api'
 export { type BlobStore, emptyStore, scopedBlobs, sqliteStore } from './store.sqlite'
-// NOT exported: `storage.sqlite.ts`. It is the old model's backend, and nothing in
-// production reaches it now that both hosts serve the seam — it survives only as the
-// fixture `migrate.sqlite.test.ts` builds the old tree with, which imports it by path.
-// T18 deletes it, and `@justfiles/sync` (a devDependency for exactly that fixture)
-// leaves with it.

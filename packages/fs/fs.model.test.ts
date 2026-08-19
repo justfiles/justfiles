@@ -15,16 +15,16 @@
  * What it deliberately does NOT generate: directory modes that shut the store out. The
  * expected answer is a walk of the same disk, and a walk that cannot read where the
  * store let itself in has no answer to compare with. That family has its own cases, over
- * a real filesystem, in `store.fs.test.ts`.
+ * a real filesystem, in `fs.test.ts`.
  */
 
 import fc from 'fast-check'
 import { expect, test } from 'vitest'
 import { AT_ROOT, type Spot, spot, up } from './disk'
 import { memDisk } from './disk.mem'
+import { fsStore } from './fs'
+import { memStore } from './mem'
 import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
-import { fsStore } from './store.fs'
-import { memStore } from './store.mem'
 
 /**
  * How many cases per property. Cheap enough that the default is a real search — sixty

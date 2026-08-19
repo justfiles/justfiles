@@ -39,7 +39,7 @@ Comfortable to ~50k files. Uncomfortable at ~100k. Unusable past ~300k.
 
 For scale: the Linux kernel tree is ~80k files; a large `node_modules` is
 100–300k. The wall sits at the size of a realistic project rather than far beyond
-it. `store.fs.ts` already says this backend "serves a working tree, not a
+it. `fs.ts` already says this backend "serves a working tree, not a
 warehouse" — this task is about writing the number down and, if it matters,
 moving it.
 
@@ -66,7 +66,7 @@ a database rather than a file.
 - Decide it is worth it. The number above is the argument, and "a working tree,
   not a warehouse" may simply be the right answer — in which case close this and
   write the ceiling into the module header instead.
-- Whatever lands must keep the crash model `store.fs.ts` documents: a half-written
+- Whatever lands must keep the crash model `fs.ts` documents: a half-written
   sidecar must never lose ids, which is what the publish-and-rename buys today.
 - `load()` must keep the distinction it fought for — only "not there" means a
   tree with no history; anything else throws (`disk.bytes(index, true)`).

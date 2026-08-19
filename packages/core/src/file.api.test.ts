@@ -4,9 +4,9 @@
  * failures a caller acts on are told apart from a server that broke.
  */
 
+import { announceMount, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { ROOT } from '@justfiles/fs/store'
-import { memStore } from '@justfiles/fs/store.mem'
-import { announceMount, storeVolume } from '@justfiles/fs/volume.store'
 import { Hono } from 'hono'
 import { describe, expect, test } from 'vitest'
 import { fileApi } from './file.api'
@@ -16,15 +16,15 @@ const enc = new TextEncoder()
 const served = async (files: Record<string, string>, mount?: string) => {
 	const store = memStore()
 	if (mount !== undefined) await announceMount(store, ROOT, mount)
-	const volume = storeVolume(store)
+	const vol = volume(store)
 	for (const [path, body] of Object.entries(files)) {
 		const dir = path.slice(0, path.lastIndexOf('/'))
-		if (dir !== '') await volume.mkdir(dir, { recursive: true })
-		await volume.writeFile(path, enc.encode(body))
+		if (dir !== '') await vol.mkdir(dir, { recursive: true })
+		await vol.writeFile(path, enc.encode(body))
 	}
 	// Mounted under a prefix, because that is how a host uses it — and the route reads
 	// the path from a named catch-all rather than from the request's own URL.
-	return new Hono().route('/store', fileApi(volume))
+	return new Hono().route('/store', fileApi(vol))
 }
 
 describe('fileApi', () => {

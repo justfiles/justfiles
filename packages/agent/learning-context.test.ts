@@ -1,4 +1,5 @@
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { learningContext } from './learning-context.ts'
 
@@ -55,7 +56,7 @@ const NOW = () => at('2025-06-20T00:00:00Z')
 describe('learningContext.compose', () => {
 	let vol: Volume
 	beforeEach(() => {
-		vol = volume(memStorage())
+		vol = volume(memStore())
 	})
 
 	test('composes the host fragment from age + projected memory', async () => {

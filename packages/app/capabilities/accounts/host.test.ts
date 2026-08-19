@@ -1,4 +1,5 @@
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
@@ -89,7 +90,7 @@ const put = (store: AccountStore, account: Account): Promise<void> =>
 	store.update(account.id, () => account)
 
 async function setup(providers: Provider[] = testProviders()) {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const caps = hostAccounts(providers, vol)
 	return { caps, vol, accounts: volumeAccountStore(vol), activeAi: volumeActiveAi(vol) }
 }
@@ -179,7 +180,7 @@ describe('accounts admin impl', () => {
 	// account it projects, so Settings can label which lane an account lives in (#296).
 	describe('origin', () => {
 		test('every account is stamped with the configured origin', async () => {
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			const caps = hostAccounts(testProviders(), vol, {
 				origin: { kind: 'device', label: 'Fern’s MacBook' }
 			})
@@ -189,7 +190,7 @@ describe('accounts admin impl', () => {
 		})
 
 		test('the cloud variant stamps the same way', async () => {
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			const caps = hostAccounts(testProviders(), vol, { origin: { kind: 'cloud' } })
 			await caps.admin.connect({ providerId: 'chatgpt' })
 			const [account] = await caps.admin.listAccounts({})
@@ -247,7 +248,7 @@ describe('accounts admin impl', () => {
 	test('widened consent landing after a disconnect does not resurrect the account', async () => {
 		// The browser flow can take minutes; the write that follows takes the account as it is
 		// by then, not as it was when the toggle was clicked.
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const accounts = volumeAccountStore(vol)
 		await put(accounts, { id: 'me@gmail.com', provider: 'google', creds: { refresh: 'R' } })
 		const caps = hostAccounts(
@@ -364,7 +365,7 @@ describe('the built-in platform account is derived', () => {
 		// The key rotated (or was never deployed): the record reads back with `creds: undefined`
 		// and mints nothing, so honouring the selection would strand the user with a dead agent.
 		// The record itself is untouched — its sealed bytes wait for the restored key.
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
 			id: 'u@openai',
 			provider: 'chatgpt',
@@ -409,7 +410,7 @@ describe('the built-in platform account is derived', () => {
 	test('a leftover platform record is superseded, not trusted', async () => {
 		// The seeding this replaced wrote `/private/accounts/frieren.json`. Under a rotated key
 		// that record reads back broken — which must never be what the platform AI looks like.
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
 			id: 'frieren',
 			provider: 'frieren',
@@ -536,7 +537,7 @@ describe('use-facet dispatch', () => {
 			// Incremental consent (setEnabled) and a re-connect both replace the whole grant while
 			// a refresh is in flight. Overwriting it with the older refresh result is the lost
 			// update that leaves the user re-connecting.
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			const accounts = volumeAccountStore(vol)
 			await put(accounts, { id: 'g1', provider: 'google', creds: { refresh: 'R' } })
 			const caps = hostAccounts(
@@ -635,7 +636,7 @@ describe('secretCodec wiring', () => {
 	const codec = aesGcmSecretCodec('host-key')
 
 	test('what the admin surface writes sealed, the AI lease still reads', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const caps = hostAccounts(testProviders(), vol, { secretCodec: codec })
 		await caps.admin.connect({ providerId: 'chatgpt' })
 		await caps.admin.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
@@ -648,7 +649,7 @@ describe('secretCodec wiring', () => {
 		// The rotated/missing-key path, end to end: Settings still renders the account (so
 		// the user can re-connect it) and a credential-using call reports UNAVAILABLE rather
 		// than leaking a decrypt exception.
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
 			id: 'me@gmail.com',
 			provider: 'google',
@@ -672,7 +673,7 @@ describe('secretCodec wiring', () => {
 			new TextDecoder().decode(await vol.readFile('/private/accounts/u%40me.com.json'))
 
 		test('a plaintext record is sealed without any caller asking', async () => {
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
 			hostAccounts(testProviders(), vol, { secretCodec: codec })
 			await until(async () => expect(await sealedRecord(vol)).not.toContain('PW'))
@@ -685,7 +686,7 @@ describe('secretCodec wiring', () => {
 			// Nobody awaits it, so on a Worker the runtime may end the event (or hibernate the
 			// Durable Object) before it finishes — and the records it targets are exactly the
 			// ones nothing else ever rewrites, so "next time" would never come.
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
 			const retained: Promise<unknown>[] = []
 			hostAccounts(testProviders(), vol, {
@@ -700,7 +701,7 @@ describe('secretCodec wiring', () => {
 		})
 
 		test('with no key there is nothing to seal with, so the record is left as it was', async () => {
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
 			const before = await sealedRecord(vol)
 			hostAccounts(testProviders(), vol)
@@ -712,7 +713,7 @@ describe('secretCodec wiring', () => {
 			// A locked Keychain must not cost the platform AI, and must not be memoised as a
 			// permanent verdict — the keychain may be open by the next time anyone asks.
 			vi.spyOn(console, 'warn').mockImplementation(() => {})
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
 			let locked = true
 			const flaky: SecretCodec = {

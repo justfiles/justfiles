@@ -2,10 +2,10 @@
  * `volume.watch` over the seam — design table A's watch row: events synthesized
  * by row diff from the commit feed.
  *
- * The scenarios of `watch.test.ts` are ported whole: it is the behaviour spec,
- * and no consumer may be able to tell this volume from the old one. One
- * behaviour DOES change, and it has its own test — the old model tagged every
- * write with a `MutationOptions.origin` and this model has no origin tags at
+ * The scenarios of the old model's `watch.test.ts` are ported whole: it was the
+ * behaviour spec, and no consumer may be able to tell this volume from the one
+ * it replaced. One behaviour DOES change, and it has its own test — the old
+ * model tagged every write with an origin and this model has no origin tags at
  * all, so a remote event is one whose row carries another replica's author
  * inside its `version`.
  *
@@ -15,12 +15,11 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { memStore } from './mem'
 import { type Node, ROOT, type Store } from './store'
-import { memStore } from './store.mem'
 // `chroot` is written against the `Volume` interface and nothing else, so the
 // old volume's one wraps this one unchanged — including its watch root.
-import { chroot, WATCH_BURST_MS } from './volume'
-import { storeVolume } from './volume.store'
+import { chroot, volume, WATCH_BURST_MS } from './volume'
 
 const enc = new TextEncoder()
 
@@ -69,7 +68,7 @@ const feeds: [string, () => Store][] = [
 
 describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 	it('fires on content and meta change of the watched path', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.writeFile('/s.json', enc.encode('1'))
 
 		let fired = 0
@@ -94,7 +93,7 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 
 	it('reports a row another replica authored as a remote event', async () => {
 		const store = newStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/s.json', enc.encode('1'))
 
 		let lastSource: string | undefined
@@ -111,7 +110,7 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 
 	it('coalesces the commits of one turn into one event', async () => {
 		const store = newStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/s.json', enc.encode('1'))
 
 		let fired = 0
@@ -128,7 +127,7 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 	})
 
 	it('re-resolves when the path is rebound (delete + recreate)', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.writeFile('/r.json', enc.encode('1'))
 
 		let fired = 0
@@ -153,7 +152,7 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 	})
 
 	it('re-resolves on rename/replace of the watched path', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.writeFile('/dest.json', enc.encode('old'))
 		await vol.writeFile('/src.json', enc.encode('new'))
 
@@ -174,7 +173,7 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 	})
 
 	it('rebinds when the watched path is a symlink that is unlinked', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.writeFile('/target.json', enc.encode('1'))
 		await vol.symlink('/target.json', '/link.json')
 
@@ -196,7 +195,7 @@ describe.each(feeds)('volume.watch over %s', (_feed, newStore) => {
 	})
 
 	it('binds a path whose parent directory does not exist yet', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 
 		let fired = 0
 		await vol.watch('/state/app.json', () => {
@@ -249,7 +248,7 @@ describe('volume.watch over a store that changes lineage', () => {
 
 	it('starts again from the empty cursor and converges', async () => {
 		const { store, replace } = replaceable()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/notes')
 
 		let fired = 0
@@ -264,7 +263,7 @@ describe('volume.watch over a store that changes lineage', () => {
 
 	it('rebinds a single-path watch, which no replayed row could reach', async () => {
 		const { store, replace } = replaceable()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/state.json', enc.encode('1'))
 
 		let fired = 0
@@ -288,7 +287,7 @@ describe('volume.watch over a store that changes lineage', () => {
 
 describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	it('follows a symlinked root to where the events actually land', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.mkdir('/notes/trips', { recursive: true })
 		await vol.symlink('/notes', '/alias')
 
@@ -305,7 +304,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('watches a root that does not exist yet', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 
 		let fired = 0
 		// What frieren's dock does: watch `/applications` before anything has seeded
@@ -329,7 +328,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 
 	it('does not miss the create that binds its root while it is still binding', async () => {
 		const store = newStore()
-		const writer = storeVolume(store)
+		const writer = volume(store)
 
 		// Slip the create in AFTER the watch has read the tree and BEFORE it could
 		// be told anything. It is the one window that costs more than an event: the
@@ -348,7 +347,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 		}
 
 		let fired = 0
-		await storeVolume(racing).watch('/applications', () => fired++, { recursive: true })
+		await volume(racing).watch('/applications', () => fired++, { recursive: true })
 		// Held while binding, then replayed against the bound state: the root came
 		// into being, which is a wake.
 		await waitFor(() => expect(fired).toBe(1))
@@ -359,7 +358,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('wakes when an ancestor moves, taking the subtree with it', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.mkdir('/notes/trips', { recursive: true })
 		await vol.writeFile('/notes/trips/kyoto.md', enc.encode('go'))
 
@@ -386,7 +385,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('resolves a non-canonical watch root the way every other operation does', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.mkdir('/notes/trips', { recursive: true })
 
 		let fired = 0
@@ -403,7 +402,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('is scoped to the watched subtree', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.mkdir('/notes/trips', { recursive: true })
 		await vol.mkdir('/state', { recursive: true })
 		const notes = chroot(vol, '/notes')
@@ -433,7 +432,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('fires on a structural change anywhere in the tree, not on content edits', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.mkdir('/deep/nested', { recursive: true })
 		await vol.writeFile('/a.txt', enc.encode('1'))
 
@@ -473,7 +472,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 		const store = newStore()
 		let n = 0
 		// A known author, so the test can commit a row this volume will read as its own.
-		const vol = storeVolume(store, { mintVersion: () => `me:${++n}` })
+		const vol = volume(store, { mintVersion: () => `me:${++n}` })
 		await vol.mkdir('/notes')
 		const dir = await rowAt(store, '/notes')
 
@@ -528,7 +527,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	it('reports a remote entry that left the subtree, whose stamp a local write overwrote', async () => {
 		const store = newStore()
 		let n = 0
-		const vol = storeVolume(store, { mintVersion: () => `me:${++n}` })
+		const vol = volume(store, { mintVersion: () => `me:${++n}` })
 		await vol.mkdir('/notes')
 		await vol.mkdir('/elsewhere')
 		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
@@ -577,7 +576,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('thins a burst of writes into a bounded number of wakes, ending on a trailing one', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		const N = 300
 		await vol.mkdir('/heavy', { recursive: true })
 
@@ -603,7 +602,7 @@ describe.each(feeds)('volume.watch recursive over %s', (_feed, newStore) => {
 	})
 
 	it('wakes once for a recursive removal — the seam makes it one commit', async () => {
-		const vol = storeVolume(newStore())
+		const vol = volume(newStore())
 		await vol.mkdir('/heavy', { recursive: true })
 		for (let i = 0; i < 50; i++) await vol.writeFile(`/heavy/f${i}.md`, enc.encode('x'))
 

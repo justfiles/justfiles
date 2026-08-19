@@ -1,8 +1,7 @@
 import { resolve } from 'node:path'
 import { type Volume, volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { httpStore } from '@justfiles/fs/store.http'
-import { storeVolume } from '@justfiles/fs/volume.store'
+import { fsStore } from '@justfiles/fs/fs'
+import { httpStore } from '@justfiles/fs/http'
 import type { CliConfig, RemoteVolumeConfig, VolumeConfig } from './config.ts'
 import { CliUsageError } from './errors.ts'
 
@@ -77,8 +76,8 @@ function resolveRemoteToken(config: RemoteVolumeConfig): string {
 }
 
 async function createLocalVolume(root: string, cliConfig: CliConfig): Promise<Volume> {
-	const storage = await nativeStorage(resolveLocalRoot(root, cliConfig.configDir))
-	return volume(storage)
+	const store = fsStore(resolveLocalRoot(root, cliConfig.configDir))
+	return volume(store)
 }
 
 function encodeVolumePath(path: string): string {
@@ -98,7 +97,7 @@ async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 	const token = resolveRemoteToken(config)
 	const baseUrl = resolveStoreBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL)
 	const headers = { Authorization: `Bearer ${token}` }
-	const baseVolume = storeVolume(httpStore(baseUrl, { headers }))
+	const baseVolume = volume(httpStore(baseUrl, { headers }))
 	return {
 		...baseVolume,
 		async readFile(path) {

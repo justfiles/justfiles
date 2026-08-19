@@ -288,7 +288,7 @@ export function idbStore(name: string): Store {
  *
  * A `BroadcastChannel` reaches every tab of the origin, so a subscriber over one is
  * complete in exactly the way a connection-local closure is not — which is the whole of
- * `idbStore`'s objection to offering `subscribe` itself. With it, `storeVolume`'s watch
+ * `idbStore`'s objection to offering `subscribe` itself. With it, `volume`'s watch
  * stops polling and a local write arms its push at once instead of waiting out the
  * interval.
  *

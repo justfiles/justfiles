@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { AuditLog } from './audit.ts'
 import type { KvStorage } from './storage.ts'
 
-function memStorage(): KvStorage {
+function memStore(): KvStorage {
 	const map = new Map<string, unknown>()
 	return {
 		async get<T>(key: string) {
@@ -28,7 +28,7 @@ function memStorage(): KvStorage {
 
 describe('AuditLog', () => {
 	test('append + list returns entries in chronological order', async () => {
-		const log = new AuditLog(memStorage())
+		const log = new AuditLog(memStore())
 		await log.append({
 			integrationId: 'fastmail',
 			accountId: 'default',
@@ -51,7 +51,7 @@ describe('AuditLog', () => {
 	})
 
 	test('caps the list at 1000 entries', async () => {
-		const log = new AuditLog(memStorage(), { max: 5 })
+		const log = new AuditLog(memStore(), { max: 5 })
 		for (let i = 0; i < 8; i++) {
 			await log.append({
 				integrationId: 'a',

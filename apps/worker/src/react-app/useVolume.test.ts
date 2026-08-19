@@ -11,8 +11,8 @@
  * once per tab.
  */
 
-import { memStore } from '@justfiles/fs/store.mem'
-import { storeVolume } from '@justfiles/fs/volume.store'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 // The pass itself has its own tests (`migrate.idb.test.ts`); what matters here is how
@@ -30,11 +30,11 @@ let adoptions = 0
 // The two stores this runtime opens by name. The local one is shared across the "tabs"
 // below, because two tabs of one origin open the same database.
 const tree = memStore()
-vi.mock('@justfiles/fs/store.idb', () => ({
+vi.mock('@justfiles/fs/idb', () => ({
 	idbStore: () => tree,
 	sharedStore: (store: unknown) => store
 }))
-vi.mock('@justfiles/fs/store.http', () => ({ httpStore: () => peer }))
+vi.mock('@justfiles/fs/http', () => ({ httpStore: () => peer }))
 
 import { createVolumeRuntime } from './useVolume'
 
@@ -63,7 +63,7 @@ beforeEach(() => {
 })
 
 test('the boot listing already holds what only the peer had', async () => {
-	await storeVolume(peer).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
+	await volume(peer).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
 
 	const runtime = await createVolumeRuntime(async () => 'token')
 

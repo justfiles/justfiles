@@ -1,7 +1,41 @@
-import { createSingleFlight } from './singleFlight'
-import type { InodeMeta, Storage } from './storage'
-import type { Dirent, DirentMin, Ino, Stat } from './types'
-import { FileType } from './types'
+/**
+ * The POSIX view over a `Store`. Design table A maps every operation to seam
+ * calls, and this is that table as code: resolution is a `child` per segment,
+ * `stat` is a row, `readdir` is a paged `children`, `readFile` is a row plus one
+ * `blobs.get` — and every write is one guarded `commit`.
+ *
+ * There is no cache here. The old volume cached dirents and meta because a
+ * segment cost it a `getDirent` and then a `getMeta`; here a segment IS one
+ * `child`, and the row it hands back is already the stat. A cache would buy
+ * back nothing per segment and owe invalidation on every write.
+ *
+ * There is no lock here either. The old volume held a per-inode write chain so a
+ * read-modify-write could not be split; the seam does that with a version guard,
+ * so a writer that loses reads again instead of waiting. Concurrency is settled
+ * by the store, in one place, for every backend.
+ *
+ * Mounts are the one thing here that is not a view over ONE store. A binding
+ * joins another store in at a name, and resolution crosses into it the way a
+ * kernel crosses a vfsmount — so `store` is never assumed below: every read and
+ * every commit goes to the store the path resolved into. Nothing else in the
+ * system learns of any of it, which is the whole point — a sync engine is handed
+ * one store, and what is behind a mount was never in it.
+ */
+
+import {
+	type Cursor,
+	ForeignCursorError,
+	type Guard,
+	GuardError,
+	type Hash,
+	type Node,
+	type NodeId,
+	ROOT,
+	type Store,
+	sha256Hex,
+	type Version
+} from './store'
+import { type Dirent, FileType, type Stat } from './types'
 
 /**
  * The recursive watch's delivery window, in ms.
@@ -18,15 +52,14 @@ import { FileType } from './types'
  * 1000/WATCH_BURST_MS per second instead of one per entry.
  *
  * Exported for tests only — a coalescing watch has no other honest way to say
- * "settled". Deliberately NOT re-exported from the package index. `storeVolume`
- * reads it as the same window, and as the rate of its `since` poll when a store
- * offers no push feed: both answer the same question, "how often may a consumer
- * be told to re-scan".
+ * "settled". Deliberately NOT re-exported from the package index. It is also the
+ * rate of the `since` poll when a store offers no push feed: both answer the same
+ * question, "how often may a consumer be told to re-scan".
  */
 export const WATCH_BURST_MS = 50
 
 /**
- * Path-based filesystem interface built on top of Storage.
+ * Path-based filesystem interface over a `Store`.
  *
  * Design principles:
  * - All paths are absolute (start with '/').
@@ -190,10 +223,10 @@ export interface Volume {
 	 * writes `.dpkg-tmp` and moves it. Here it is app-notes' `claimPath` — order the claims,
 	 * check the destination, number up on EEXIST (its DESIGN.md §1b records why).
 	 *
-	 * What the backends owe REGARDLESS, and honour without being asked, is not corrupting
-	 * the tree while replacing: a displaced inode is freed only when no other directory
-	 * entry still names it (`Storage.deleteInode`'s rule), so a name that survives the move
-	 * still resolves.
+	 * What the model owes REGARDLESS is not corrupting the tree while replacing: a name is
+	 * `(parent, name)` on a row, so a displaced row is tombstoned and the row that took its
+	 * name is a separate write in the same commit — a name that survives the move still
+	 * resolves.
 	 */
 	rename(oldPath: string, newPath: string): Promise<void>
 
@@ -246,8 +279,9 @@ export interface Volume {
 	 * Directories are visited before their contents. Paths passed to the
 	 * visitor are absolute and normalised.
 	 *
-	 * Delegates to Storage.caps.fullScan() when available —
-	 * O(pages) round trips for cloud backends. Falls back to recursive readdir.
+	 * One paged `children` per directory, which is what `readdir` costs too — the
+	 * seam has no whole-subtree read, and a walk that asked for one would be
+	 * reading rows a mount boundary makes not ours to read.
 	 *
 	 * Throws ENOENT if path does not exist.
 	 */
@@ -280,10 +314,9 @@ export interface Volume {
 	 * per `WATCH_BURST_MS` with a guaranteed trailing one. A bulk operation therefore
 	 * wakes a consumer a bounded number of times, not once per entry.
 	 *
-	 * Needs a change feed underneath: this volume requires `Storage.caps.subscribe`
-	 * and is inert without it, returning a no-op unsubscribe. (`storeVolume` polls
-	 * the store's `since` instead, so there it always delivers.) Returns a promise
-	 * of the unsubscribe.
+	 * Synthesized from the store's own order: `subscribe` where a store pushes,
+	 * a `since` poll on the same window where it does not. Either way it always
+	 * delivers. Returns a promise of the unsubscribe.
 	 */
 	watch(
 		path: string,
@@ -295,296 +328,1214 @@ export interface Volume {
 /** Payload delivered to a `volume.watch` listener. */
 export interface WatchEvent {
 	/**
-	 * Who wrote it, when that was not this replica: `'remote'`. This volume takes
-	 * it from the write's `MutationOptions.origin`; `storeVolume` has no origin
-	 * tags to take it from and reads the author out of the committed row's
-	 * `version` instead. Either way it is what lets a consumer that watches a
-	 * file it also writes react only to the writes it did not make.
+	 * Who wrote it, when that was not this replica: `'remote'`. Read out of the
+	 * committed row's `version`, which carries its author — there is no origin tag
+	 * on a write to take it from. It is what lets a consumer that watches a file it
+	 * also writes react only to the writes it did not make.
 	 */
 	source?: string
 }
 
-export function volume(storage: Storage): Volume {
-	const MAX_SYMLINK_DEPTH = 40
+/** Hops, not depth: what bounds a symlink cycle. Same limit as Linux. */
+const MAX_SYMLINK_HOPS = 40
 
-	const metaCache = new Map<Ino, InodeMeta>()
-	const dirCache = new Map<string, DirentMin | null>()
-	const metaRequests = createSingleFlight<Ino, InodeMeta>()
-	const dirLookupRequests = createSingleFlight<string, DirentMin | null>()
+/**
+ * How many times an operation replans before it gives up. A rejected guard means
+ * another writer committed between this attempt's read and its write, so every
+ * rejection is somebody else making progress — the cap is a livelock stop, not a
+ * concurrency limit.
+ */
+const MAX_ATTEMPTS = 32
 
-	// A regular file's data writes are ordered against each other, per inode — what POSIX
-	// requires of `read`/`write` (XSH 2.9.7) and what Linux does by holding that inode's
-	// `i_rwsem` exclusively for a buffered write. The same lock is what makes `O_APPEND`
-	// atomic: the seek to end and the write cannot be split.
-	//
-	// `appendFile` below is exactly that seek-and-write, spread across a `getBlob` and a
-	// `putBlob` — and a backend is free to yield to real I/O between them (hashing the
-	// content, a round trip to object storage). Unordered, two appends read identical bytes
-	// and the later put silently drops the earlier entry; a `writeFile` landing inside one
-	// loses the whole edit the same way.
-	//
-	// Per INODE, as the kernel does it, so unrelated files never share a chain and still
-	// write concurrently. Per PROCESS, unlike the kernel: the window that remains is another
-	// writer of the same volume, which needs coordination above this layer.
-	const inodeWrites = new Map<Ino, Promise<unknown>>()
+/** S_IFMT: the row carries a whole POSIX mode, `Stat` carries a `type`. */
+const IFMT = 0o170000
+const IFREG = 0o100000
+const IFDIR = 0o040000
+const IFLNK = 0o120000
 
-	function writeSerially<T>(ino: Ino, write: () => Promise<T>): Promise<T> {
-		const result = (inodeWrites.get(ino) ?? Promise.resolve()).then(write)
-		// The chain a later writer joins never rejects, so one failed write cannot cancel
-		// the writes queued behind it.
-		const settled = result.catch(() => undefined)
-		inodeWrites.set(ino, settled)
-		// Forget the inode once its chain drains, so this maps what is in flight rather than
-		// every file the volume has ever written.
-		void settled.then(() => {
-			if (inodeWrites.get(ino) === settled) inodeWrites.delete(ino)
-		})
-		return result
+const utf8 = new TextEncoder()
+
+const TYPE: Record<Node['type'], FileType> = {
+	file: FileType.Regular,
+	dir: FileType.Directory,
+	symlink: FileType.Symlink,
+	// A junction stands where a directory would, so that is what it stats as.
+	// T15 is what makes resolution continue through it into the bound store.
+	mount: FileType.Directory
+}
+
+/** The row IS the stat. Nothing here is derived, and nothing touches content. */
+const statOf = (node: Node): Stat => ({
+	ino: node.id,
+	type: TYPE[node.type],
+	size: node.size,
+	// The ROW holds a whole POSIX mode; `Stat` does not. `type` above carries the
+	// kind, and the old volume reports permission bits here — the stores mint the
+	// root as `0o040755`, and just-bash prints this number straight out of `stat`,
+	// so an unmasked view would have agents reading `40755` for `/`.
+	mode: node.mode & 0o7777,
+	mtimeNs: node.mtimeNs,
+	// The model has no ctime (design #2, deliberate omissions): report mtime.
+	ctimeNs: node.mtimeNs,
+	contentHash: node.content
+})
+
+const isDir = (node: Node): boolean => node.type === 'dir' || node.type === 'mount'
+
+const join = (dir: string, name: string): string => (dir === '/' ? `/${name}` : `${dir}/${name}`)
+
+/**
+ * `local:<author>:<counter>` until [T8], where the engine mints author-tagged
+ * versions and injects its own here. The author tag is not decoration even now:
+ * two volumes over one store must never mint the same string, or a stale version
+ * guard passes and a lost update goes unseen.
+ */
+function localVersions(): () => Version {
+	const author = crypto.randomUUID()
+	let n = 0
+	return () => `local:${author}:${++n}`
+}
+
+/**
+ * The author tag inside a `Version`: everything before its last `:`. Storage
+ * treats a version as opaque, and this is the one thing anything above it reads
+ * out of one — the same tag the engine filters its push on (design, push-filter
+ * bullet), so the format is a standing contract between minters, not a detail
+ * of `watch`.
+ *
+ * A version with no `:` names no author, so it reads as somebody else's: a
+ * consumer that answers only remote changes then answers one time too many,
+ * which is recoverable, rather than never, which is not.
+ */
+const authorOf = (version: Version): string => {
+	const cut = version.lastIndexOf(':')
+	return cut === -1 ? version : version.slice(0, cut)
+}
+
+/**
+ * The only `source` this model can report: some other replica wrote the row.
+ *
+ * The old engine tagged every write with an origin and let a caller name any of
+ * them; this one has exactly two answers — a write made through this volume, and
+ * a row that arrived in a feed — so the constant is the whole vocabulary. It is
+ * exported because an app filters on it: frieren's kernel re-reads app state only
+ * when the agent's server-side write arrives, not when its own dispatch does.
+ */
+export const REMOTE_SOURCE = 'remote'
+
+/**
+ * fstab, as data: which store stands at which name, inside which directory.
+ *
+ * The mount POINT is shared — an ordinary `mount` row, claiming its name through
+ * the ordinary `free` guard — and the BINDING is local, so a replica joins its
+ * own store in behind a name every replica can see. A binding with no row under
+ * it is a SILENT mount: nothing is written anywhere, so no peer can learn even
+ * that the name exists.
+ *
+ * Keyed by the mount point rather than by the mount row's id, because a silent
+ * binding has no row to key on — and because it is fstab: a position in the
+ * tree. Move the point and the binding stays where it was pointed, exactly as an
+ * fstab entry does.
+ */
+export type Bindings = Map<NodeId, Map<string, Store>>
+
+/**
+ * The mount POINT, claimed in the store it stands in: the row every replica sees,
+ * written the ordinary way. The BINDING is separate and local (`Bindings` above) —
+ * this is only the reservation, which is what makes the name uncollidable and, with
+ * `authority.ts`'s `holdsRows`, makes a subtree under it unspellable.
+ *
+ * Every field is derived from `(parent, name)`, so every replica writes a BYTE-IDENTICAL
+ * row and none of them ever sends it: rule 3 reads a second copy as a no-op, and the
+ * `mount` author tag is no live replica, so the push filter drops it. That is the whole
+ * of how a host claims its local data's name with no coordination and no traffic — the
+ * same trick the migration plays with `migrated:<revision>`.
+ *
+ * The id is derived too, and it has to be: minting one would give two replicas two live
+ * rows for one name, which rule 1 resolves by the lowest id and the engine then RENAMES
+ * the loser. A hash of the position is the one id both sides can reach alone.
+ *
+ * Idempotent. A mount already standing here is the answer; a peer that claimed the name
+ * first wins the guard, and reading back its identical row is the same answer again.
+ * Anything else holding the name is a real conflict the host has to see.
+ */
+export async function announceMount(store: Store, parent: NodeId, name: string): Promise<NodeId> {
+	const row = await mountRow(parent, name)
+	const held = await store.child(parent, name)
+	if (held !== null) return held.type === 'mount' ? held.id : refuse(name, held)
+	try {
+		// TWO guards, because a free NAME settles nothing when the id is a function of
+		// the position. `free` is the claim. `is: null` is the id itself being
+		// unspoken-for: a mount removed from this position left a tombstone that rule 8
+		// makes final, and a tombstone FREES the name — so `free` alone passes, a raw
+		// store resurrects a dead id, and an authority refuses the write. The volume
+		// cannot leave that tombstone (`pinned` below), but a store written to
+		// directly, or a replica from before that rule, can.
+		//
+		// Stated as a guard rather than read first, because a read is a moment and this
+		// is a race: a peer's page carrying that tombstone may land between any two
+		// awaits here. The guard makes the answer the commit's own.
+		await store.commit([row], [{ free: { parent, name } }, { version: { id: row.id, is: null } }])
+	} catch (e) {
+		if (!(e instanceof GuardError)) throw e
+		const raced = await store.child(parent, name)
+		if (raced !== null) return raced.type === 'mount' ? raced.id : refuse(name, raced)
+		// Which guard lost is what the name cannot say. Nothing holds it, so the ID is
+		// what refused — this position was announced once, and its row is somewhere no
+		// second announcement can reach past: gone, which rule 8 makes final, or moved,
+		// which nothing but a write around `pinned` could have done.
+		const derived = await store.get(row.id)
+		if (derived === null) return refuse(name, null) // the holder vanished; the name is free again
+		throw new Error(
+			`EBUSY: ${name} was a mount here, and its id is ${derived.deleted ? 'a tombstone, which is final' : `live at ${derived.name}`}`
+		)
 	}
+	return row.id
+}
 
-	function nowNs(): bigint {
-		return BigInt(Date.now()) * 1_000_000n
-	}
+const refuse = (name: string, held: Node | null): never => {
+	throw new Error(`EEXIST: ${name} is ${held === null ? 'gone' : `a ${held.type}`}, not a mount`)
+}
 
-	function dirCacheKey(dirIno: Ino, name: string): string {
-		return `${dirIno}:${name}`
-	}
+/**
+ * The one row, from its position and nothing else. `mtimeNs` is 0 for the reason the root
+ * row's is (rule 6): a stamp is per-replica, and a field that differs is a field that
+ * would have to converge.
+ */
+const mountRow = async (parent: NodeId, name: string): Promise<Node> => ({
+	id: await derivedId(parent, name),
+	parent,
+	name,
+	type: 'mount',
+	mode: 0o040755,
+	mtimeNs: 0n,
+	size: 0n,
+	version: 'mount:1'
+})
 
-	function invalidateDirCache(dirIno: Ino): void {
-		const prefix = `${dirIno}:`
-		for (const key of dirCache.keys()) {
-			if (key.startsWith(prefix)) {
-				dirCache.delete(key)
-			}
-		}
-		dirLookupRequests.deleteWhere((key) => key.startsWith(prefix))
-	}
+/**
+ * A uuid every replica derives from the same position: the hash of `(parent, name)`, laid
+ * out as a v8 uuid — the version the RFC reserves for exactly this, an id whose bits are
+ * an application's to choose.
+ */
+const derivedId = async (parent: NodeId, name: string): Promise<NodeId> => {
+	// NUL between the parts: the one byte a name can never hold, so two positions
+	// never hash to one id.
+	const nul = String.fromCharCode(0)
+	const hex = await sha256Hex(new TextEncoder().encode(`mount${nul}${parent}${nul}${name}`))
+	// The version nibble and the variant nibble are SET rather than taken from the hash,
+	// which is what makes this a well-formed uuid and not 32 hex characters with dashes.
+	return [
+		hex.slice(0, 8),
+		hex.slice(8, 12),
+		`8${hex.slice(13, 16)}`,
+		`8${hex.slice(17, 20)}`,
+		hex.slice(20, 32)
+	].join('-')
+}
 
-	function invalidateIno(ino: Ino): void {
-		metaCache.delete(ino)
-		metaRequests.delete(ino)
-	}
-
-	function makeStat(ino: Ino, meta: InodeMeta): Stat {
-		return {
-			ino,
-			type: meta.type,
-			size: meta.size,
-			mode: meta.mode,
-			mtimeNs: meta.mtimeNs,
-			ctimeNs: meta.ctimeNs,
-			contentHash: meta.contentHash
-		}
-	}
-
-	async function getMetaOrThrow(ino: Ino): Promise<InodeMeta> {
-		const cached = metaCache.get(ino)
-		if (cached) return cached
-
-		return metaRequests.run(ino, async () => {
-			const meta = await storage.getMeta(ino)
-			if (meta === null) {
-				throw new Error(`ENOENT: inode ${ino}`)
-			}
-			metaCache.set(ino, meta)
-			return meta
-		})
-	}
-
-	async function lookupDirent(dirIno: Ino, name: string): Promise<DirentMin | null> {
-		const key = dirCacheKey(dirIno, name)
-		if (dirCache.has(key)) {
-			return dirCache.get(key) ?? null
-		}
-
-		return dirLookupRequests.run(key, async () => {
-			const entry = await storage.getDirent(dirIno, name)
-			// Only ever cache a HIT. A cached miss has no way to be corrected: this `set`
-			// runs AFTER the await, so it can land after the `invalidateDirCache` of the
-			// very create that filled the name in — writing a stale absence that nothing
-			// invalidates again, and a caller polling the path is then stuck forever. The
-			// asymmetry is the standard one (DNS negative-caching TTLs, HTTP 404-caching
-			// guidance): a stale hit is recoverable, a stale miss is a livelock.
-			// `dirLookupRequests` is single-flight, not a cache, so concurrent misses are
-			// still deduped for free — they just stop being remembered past that.
-			if (entry !== null) dirCache.set(key, entry)
-			return entry
-		})
-	}
-
-	async function lookupIno(dirIno: Ino, name: string): Promise<Ino | null> {
-		return (await lookupDirent(dirIno, name))?.ino ?? null
-	}
-
-	type ResolvedPath = {
-		ino: Ino
-		type: FileType
-		// Where the walk LANDED: `.`/`..` folded away and every traversed symlink
-		// replaced by its target, so this is the path the change feed reports entries
-		// under. `/alias/trips` (alias -> /notes) lands on `/notes/trips`.
-		path: string
-	}
+export function volume(
+	store: Store,
+	opts?: { bindings?: Bindings; mintVersion?: () => Version }
+): Volume {
+	const mint = opts?.mintVersion ?? localVersions()
+	const bindings = opts?.bindings
+	const now = (): bigint => BigInt(Date.now()) * 1_000_000n
 
 	/**
-	 * Resolve an absolute path to an inode, its final type, and the canonical path
-	 * it landed on.
-	 * followLast controls whether a final symlink component is followed.
+	 * What is bound inside one directory, if anything.
+	 *
+	 * Only in the store this volume was built over: bindings are positions in ITS
+	 * tree, and what a bound store holds is its own business — a mount is where
+	 * this table stops. A binding at the root would otherwise reappear inside
+	 * every store it binds.
 	 */
-	async function resolvePathInfo(
-		path: string,
-		followLast: boolean,
-		initialDepth = 0
-	): Promise<ResolvedPath> {
-		const normalized = path.replace(/\/+$/, '') || '/'
-		if (normalized === '/') {
-			const meta = await getMetaOrThrow(storage.rootIno)
-			return { ino: storage.rootIno, type: meta.type, path: '/' }
-		}
+	const boundIn = (st: Store, dir: NodeId): Map<string, Store> | undefined =>
+		st === store ? bindings?.get(dir) : undefined
 
-		const queue: string[] = normalized.split('/').filter((p) => p !== '')
-		const inoStack: Ino[] = [storage.rootIno]
-		// The names behind `inoStack`, kept in lockstep so the walk can report where
-		// it ended up rather than what the caller spelled.
-		const names: string[] = []
-		let symlinkDepth = initialDepth
-		let resolved: ResolvedPath | null = null
+	/**
+	 * A resolved path: the row it names, and the store that holds it.
+	 *
+	 * The two travel together because an id only means something in the store that
+	 * minted it — every store spells its root `ROOT`, so ids collide across a
+	 * mount. Nothing below compares an id, guards on one, or walks up from one
+	 * without the store it came from beside it.
+	 */
+	type At = { store: Store; node: Node }
+
+	/** Where a walk stands. `node` is `null` at the root of `store`. */
+	type Step = { store: Store; node: Node | null }
+
+	/** One row a feed delivered, with the store it came from. */
+	type Seen = { from: Store; row: Node }
+
+	/** The same row in the same store — never the id alone, which two stores share. */
+	const is = (a: At | null, row: Node, from: Store): boolean =>
+		a !== null && a.store === from && a.node.id === row.id
+
+	/** The same again, between two resolutions: has this path landed somewhere new? */
+	const sameAt = (a: At | null, b: At | null): boolean =>
+		a === null || b === null ? a === b : is(a, b.node, b.store)
+
+	/**
+	 * Walk from the root, one `child` per segment. `followLast` decides whether a
+	 * final symlink is followed (`stat` vs `lstat`).
+	 *
+	 * `at` is where the walk stands and a `null` node is the root of the store it
+	 * stands in — the one row whose id is a constant, so a path that never lands on
+	 * it costs no `get` on the hottest read in the system. `up` holds the ancestors,
+	 * so `..` is a pop, and popping past the top leaves the root, which is what
+	 * `/..` means. `walked`, when given, keeps each row read so a later commit can
+	 * guard the path — each with the store it was read in, since a walk that
+	 * crosses a mount reads rows no one commit can guard together.
+	 */
+	async function resolve(path: string, followLast: boolean, walked?: At[]): Promise<At> {
+		const queue = path.split('/').filter((s) => s !== '')
+		const up: Step[] = []
+		let at: Step = { store, node: null }
+		let hops = 0
 
 		for (let i = 0; i < queue.length; i++) {
 			const name = queue[i]
-			if (name === undefined) continue
-
-			if (name === '.') continue
-
+			if (name === undefined || name === '.') continue
 			if (name === '..') {
-				if (inoStack.length > 1) {
-					inoStack.pop()
-					names.pop()
-				}
-				// We are no longer at the entry we last descended into, so the destination
-				// has to be re-read from the stack below: `/a/b/..` is `/a`, not `/a/b`.
-				resolved = null
+				at = up.pop() ?? { store, node: null }
 				continue
 			}
 
+			// The mount crossing, and the whole of it. A binding is read BEFORE the
+			// row lookup, so a bound name never reaches the table underneath: an
+			// announced mount's own row is never even read — a kernel reports the
+			// MOUNTED root's inode for a mountpoint, not the directory beneath it —
+			// and a silent binding shadows whatever rows a peer pushed down there.
+			const into = boundIn(at.store, at.node?.id ?? ROOT)?.get(name)
+			if (into !== undefined) {
+				if (at.node && !isDir(at.node)) throw new Error(`ENOTDIR: ${path}`)
+				up.push(at)
+				at = { store: into, node: null }
+				continue
+			}
+
+			const found = await at.store.child(at.node?.id ?? ROOT, name)
+			if (found === null) throw new Error(`ENOENT: ${path}`)
+			walked?.push({ store: at.store, node: found })
+			// Rule 9 again: "every parent a live directory" is the authority's to
+			// keep, so a replica may hold a row parented on a file. Reachability
+			// from the root is what makes a row visible, and POSIX cannot walk
+			// through a file — so this one is not reachable. The test comes after
+			// the lookup, not before it, to leave a name no row holds as ENOENT.
+			if (at.node && !isDir(at.node)) throw new Error(`ENOTDIR: ${path}`)
+
 			const isLast = i === queue.length - 1
-			const currentIno = inoStack[inoStack.length - 1]
-			if (currentIno === undefined) throw new Error(`ENOENT: ${path}`)
-
-			const entry = await lookupDirent(currentIno, name)
-			if (entry === null) throw new Error(`ENOENT: ${path}`)
-
-			if (entry.type === FileType.Symlink && (!isLast || followLast)) {
-				const meta = await getMetaOrThrow(entry.ino)
-				if (++symlinkDepth > MAX_SYMLINK_DEPTH)
-					throw new Error('ELOOP: too many levels of symbolic links')
-
-				const target = meta.symlinkTarget
-				if (!target) throw new Error(`EINVAL: symlink has no target`)
-				const targetParts = target.split('/').filter((p) => p !== '')
-
-				if (target.startsWith('/')) {
-					inoStack.splice(0, inoStack.length, storage.rootIno)
-					names.length = 0
+			if (found.type === 'symlink' && (!isLast || followLast)) {
+				if (++hops > MAX_SYMLINK_HOPS) throw new Error('ELOOP: too many levels of symbolic links')
+				if (!found.link) throw new Error('EINVAL: symlink has no target')
+				if (found.link.startsWith('/')) {
+					up.length = 0
+					// An absolute target starts at the GLOBAL root, whichever store the
+					// link itself lives in. That is what makes one synced symlink into a
+					// local mount resolve to different bytes on every replica.
+					at = { store, node: null }
 				}
-				queue.splice(i, 1, ...targetParts)
+				// Splice the target in where the link was, so the rest of the path
+				// carries on behind it and a target of its own gets the same treatment.
+				queue.splice(i, 1, ...found.link.split('/').filter((s) => s !== ''))
 				i--
-			} else {
-				inoStack.push(entry.ino)
-				names.push(name)
-				resolved = { ino: entry.ino, type: entry.type, path: `/${names.join('/')}` }
+				continue
+			}
+
+			up.push(at)
+			at = { store: at.store, node: found }
+		}
+
+		if (at.node) return { store: at.store, node: at.node }
+		const root = await at.store.get(ROOT)
+		if (!root) throw new Error(`ENOENT: ${path}`) // rule 6: unreachable on a live store
+		walked?.push({ store: at.store, node: root })
+		return { store: at.store, node: root }
+	}
+
+	/** Resolve, or `null` where the path simply is not there. */
+	async function find(path: string, followLast = true): Promise<At | null> {
+		try {
+			return await resolve(path, followLast)
+		} catch (e) {
+			if (e instanceof Error && e.message.startsWith('ENOENT')) return null
+			throw e
+		}
+	}
+
+	/** The directory a path is created in, the store that holds it, and the name it takes there. */
+	async function parentOf(
+		path: string,
+		walked?: At[]
+	): Promise<{ store: Store; dir: Node; name: string }> {
+		const full = path.replace(/\/+$/, '')
+		const cut = full.lastIndexOf('/')
+		const name = full.slice(cut + 1)
+		if (name === '' || name === '.' || name === '..') throw new Error(`EINVAL: ${path}`)
+		const at = await resolve(cut <= 0 ? '/' : full.slice(0, cut), true, walked)
+		if (!isDir(at.node)) throw new Error(`ENOTDIR: ${path}`)
+		// An UNBOUND mount is an empty read-only directory, and the emptiness is the
+		// data's doing rather than a rule kept here: only a directory may be a parent,
+		// so no row of this store can ever sit below it, on any replica. Bind it, or
+		// nothing goes in. A bound one is never seen here — resolution crossed it.
+		if (at.node.type === 'mount') throw new Error(`EROFS: ${path}`)
+		return { store: at.store, dir: at.node, name }
+	}
+
+	/** One directory listing, page after page — the seam hands back a cursor until it is done. */
+	async function* childrenOf(st: Store, parent: NodeId): AsyncGenerator<Node> {
+		let cursor: Cursor | undefined
+		do {
+			const page = await st.children(parent, cursor)
+			yield* page.nodes
+			cursor = page.next
+		} while (cursor !== undefined)
+	}
+
+	/**
+	 * One directory's entries, with its mounts crossed: the row a name holds, or
+	 * the root of the store bound over it. A binding shadows the row of the same
+	 * name — a kernel mount over a non-empty directory — so each name appears once,
+	 * and a listing can never contradict what resolving that name gives.
+	 */
+	async function* entriesOf(st: Store, dir: NodeId): AsyncGenerator<At & { name: string }> {
+		const bound = boundIn(st, dir)
+		for await (const child of childrenOf(st, dir))
+			if (!bound?.has(child.name)) yield { name: child.name, store: st, node: child }
+		for (const [name, into] of bound ?? []) {
+			// A store with no root is not one rule 6 allows, and one bad binding is no
+			// reason to fail the whole listing: leave the name out.
+			const root = await into.get(ROOT)
+			if (root !== null) yield { name, store: into, node: root }
+		}
+	}
+
+	/**
+	 * Replan on a rejected guard: the row moved between this attempt's read and
+	 * its commit, so the WHOLE attempt runs again on what is there now. This is
+	 * what makes a read-modify-write one operation without a lock, and what makes
+	 * a batch that enumerated a directory safe against a create it never saw.
+	 */
+	async function retry<T>(attempt: () => Promise<T>): Promise<T> {
+		for (let left = MAX_ATTEMPTS; ; left--) {
+			try {
+				return await attempt()
+			} catch (e) {
+				if (left === 0 || !(e instanceof GuardError)) throw e
 			}
 		}
+	}
 
-		if (!resolved) {
-			const ino = inoStack[inoStack.length - 1]
-			if (!ino) throw new Error(`ENOENT: ${path}`)
-			const meta = await getMetaOrThrow(ino)
-			return { ino, type: meta.type, path: names.length ? `/${names.join('/')}` : '/' }
+	/** The guard that says "nobody wrote this row after I read it". */
+	const unchanged = (node: Node): Guard => ({ version: { id: node.id, is: node.version } })
+
+	/**
+	 * The parent-mtime rule (design, `volume(store)`): a create, a delete or a
+	 * rename inside a directory moves that directory's mtime, as a real filesystem
+	 * does — and with it the row's version. That version is what `rm -r` guards
+	 * on after enumerating, so a create it never saw cannot slip in behind it.
+	 *
+	 * Every caller guards what it stamps. This is a whole-row write, so a stamp
+	 * built from a stale read would put a removed or moved directory back exactly
+	 * as it was. The cost is that two writers in one directory replan instead of
+	 * running side by side — which is what a real filesystem does too, by taking
+	 * that directory's lock.
+	 */
+	const stamp = (dir: Node): Node => ({ ...dir, mtimeNs: now(), version: mint() })
+
+	/** A tombstone is still a whole row; only `deleted` and the version speak. */
+	const tomb = (node: Node): Node => ({ ...node, deleted: true, version: mint() })
+
+	/**
+	 * What a WRITE states about a row: its kind and its bytes. Not its mtime, which
+	 * a write always moves to now, and not its xattrs, which belong to the name.
+	 * A MOVE states none of it — see `moveAcross`, which carries whole rows.
+	 */
+	type Payload = {
+		type: Node['type']
+		mode: number
+		size: bigint
+		content?: Hash
+		link?: string
+	}
+
+	/** The bytes a payload names: the caller's array, or the store that has them. */
+	type Bytes = Uint8Array | Store
+
+	/**
+	 * Rule 10, with a mount in the way: the bytes are durable IN THE STORE THE ROW
+	 * LANDS IN before that row names them. A crash between the two leaves an orphan
+	 * blob; the other order leaves a committed row whose content was never stored,
+	 * which is lost data — and a hash is nothing but a promise to a store that does
+	 * not hold the bytes, so crossing a mount is where that promise gets kept.
+	 */
+	async function durable(st: Store, content?: Hash, bytes?: Bytes): Promise<void> {
+		if (content === undefined || bytes === undefined) return
+		if (bytes instanceof Uint8Array) return st.blobs.put(content, bytes)
+		// Ask before hauling: a transfer usually has nothing to transfer.
+		if (bytes === st || (await st.blobs.has(content))) return
+		const data = await bytes.blobs.get(content)
+		if (data === null) throw new Error(`ENOENT: content ${content}`)
+		await st.blobs.put(content, data)
+	}
+
+	/** Whole-row replace (rule 3: no partial patch), guarded on what we read. */
+	const swap = async (st: Store, node: Node, payload: Payload, bytes?: Bytes): Promise<void> => {
+		await durable(st, payload.content, bytes)
+		await st.commit(
+			[
+				{
+					...node,
+					type: payload.type,
+					// The NAME keeps its permissions and its xattrs; the payload brings
+					// the type bits, so a row that changes kind still says which it is.
+					mode: (payload.mode & IFMT) | (node.mode & 0o7777),
+					size: payload.size,
+					content: payload.content,
+					link: payload.link,
+					mtimeNs: now(),
+					version: mint()
+				}
+			],
+			[unchanged(node)]
+		)
+	}
+
+	/** Claim a free name for a new row, and stamp the directory that gained it. */
+	async function create(
+		path: string,
+		payload: Payload,
+		exclusive?: boolean,
+		bytes?: Bytes
+	): Promise<void> {
+		const { store: st, dir, name } = await parentOf(path)
+		const row: Node = {
+			id: crypto.randomUUID(), // minted once, never rebound
+			parent: dir.id,
+			name,
+			mtimeNs: now(),
+			version: mint(),
+			...payload
 		}
-		return resolved
+		await durable(st, payload.content, bytes)
+		try {
+			await st.commit([row, stamp(dir)], [{ free: { parent: dir.id, name } }, unchanged(dir)])
+		} catch (e) {
+			if (!(e instanceof GuardError)) throw e
+			// WHICH guard failed decides what this is. A name still free means the
+			// PARENT moved under this attempt, so the caller replans — the stamp
+			// writes the whole directory row back, and a row read before a concurrent
+			// `rm -r` would bring that directory back to life after the removal
+			// reported success.
+			const holder = await st.child(dir.id, name)
+			if (holder === null) throw e
+			// An id-local holder does not prove that the path still reaches this
+			// parent. It may have moved before another writer took the name.
+			if ((await find(path, false)) === null) throw e
+			// A write through a dangling link can never resolve, so the name is
+			// taken. A symlink payload replaces the link itself and replans instead.
+			if (exclusive || (payload.type !== 'symlink' && (await find(path)) === null))
+				throw new Error(`EEXIST: ${path}`)
+			throw e
+		}
 	}
 
-	async function resolvePath(path: string, followLast: boolean, initialDepth = 0): Promise<Ino> {
-		return (await resolvePathInfo(path, followLast, initialDepth)).ino
+	/**
+	 * Create the row a path names, or replace the one already there — one commit
+	 * either way. A symlink payload replaces the final link; other payloads follow
+	 * it. `exclusive` refuses a taken name; `update` refuses a free one.
+	 */
+	async function place(
+		path: string,
+		payload: Payload,
+		opts?: { exclusive?: boolean; update?: boolean },
+		bytes?: Bytes
+	): Promise<void> {
+		const there = await find(path, payload.type !== 'symlink')
+		if (there !== null) {
+			if (opts?.exclusive) throw new Error(`EEXIST: ${path}`)
+			if (isDir(there.node)) throw new Error(`EISDIR: ${path}`)
+			return swap(there.store, there.node, payload, bytes)
+		}
+		if (opts?.update) throw new Error(`ENOENT: ${path}`)
+		await create(path, payload, opts?.exclusive, bytes)
 	}
 
-	function splitPath(path: string): { dir: string; name: string } {
-		const lastSlash = path.lastIndexOf('/')
-		const dir = lastSlash === 0 ? '/' : path.slice(0, lastSlash)
-		const name = path.slice(lastSlash + 1)
-		return { dir, name }
+	const file = (size: number, content: Hash): Payload => ({
+		type: 'file',
+		mode: IFREG | 0o644,
+		size: BigInt(size),
+		content
+	})
+
+	/** Whole-row replace of one node — the shape of chmod, utimes and xattrs. */
+	const edit = (path: string, change: (row: Node) => Node): Promise<void> =>
+		retry(async () => {
+			const at = await resolve(path, true)
+			await at.store.commit([{ ...change(at.node), version: mint() }], [unchanged(at.node)])
+		})
+
+	/** Walk from `node` to root. Return whether it reaches `ancestor` and each row read. */
+	async function within(
+		st: Store,
+		node: Node,
+		ancestor: NodeId
+	): Promise<{ inside: boolean; rows: Node[] }> {
+		const seen = new Set<NodeId>()
+		const rows: Node[] = []
+		let at: Node | null = node
+		while (at !== null && !seen.has(at.id)) {
+			rows.push(at)
+			if (at.id === ancestor) return { inside: true, rows }
+			if (at.id === ROOT) return { inside: false, rows }
+			seen.add(at.id)
+			at = await st.get(at.parent)
+		}
+		return { inside: false, rows }
 	}
 
-	async function resolveParent(path: string): Promise<{ dirIno: Ino; name: string }> {
-		const { dir, name } = splitPath(path)
-		const dirIno = await resolvePath(dir, true)
-		return { dirIno, name }
+	/**
+	 * Every row under a directory, in ONE store. A mount is not crossed: what it
+	 * holds is another store's rows, and this is the list of rows a delete is about
+	 * to tombstone here.
+	 */
+	async function descendants(st: Store, id: NodeId): Promise<Node[]> {
+		const out: Node[] = []
+		const seen = new Set<NodeId>([id])
+		const queue: NodeId[] = [id]
+		for (let dir = queue.pop(); dir !== undefined; dir = queue.pop())
+			for await (const child of childrenOf(st, dir)) {
+				if (seen.has(child.id)) continue
+				seen.add(child.id)
+				out.push(child)
+				if (isDir(child)) queue.push(child.id)
+			}
+		return out
 	}
 
-	async function readdirAll(dirIno: Ino): Promise<Dirent[]> {
-		const entries: Dirent[] = []
-		let cursor = ''
-		do {
-			const batch = await storage.listDirents(dirIno, cursor)
-			entries.push(...batch.entries.map((e) => ({ ino: e.ino, name: e.name, type: e.type })))
-			cursor = batch.next
-		} while (cursor !== '')
-		return entries
-	}
-
-	async function createNode(
-		dirIno: Ino,
-		name: string,
-		meta: InodeMeta,
-		content?: Uint8Array
-	): Promise<Ino> {
-		if (storage.caps?.atomicCreate) {
-			// Write-then-publish (#321/#322/#324/#323): the name and the content it names
-			// commit as ONE fact. The VFS hands the bytes over and stays out of HOW — staging
-			// them here first (hash them, `putByHash`, then claim) is what left a window in
-			// which the blob had zero inode references, and `gcUnreferenced()` reclaiming it
-			// there was the sweep doing its job correctly. Only the backend can put the
-			// staging and the claim in one transaction, so only the backend does it.
-			const ino = await storage.caps.atomicCreate(dirIno, name, meta, content)
-			invalidateDirCache(dirIno)
-			return ino
+	/**
+	 * Copy a subtree. Rows, not bytes: a copy names the content its source already
+	 * stored (design table A — "no byte copy; hash reuse"), which is also why a
+	 * symlink copies as a symlink instead of dereferencing into a fresh file. A
+	 * copy that crosses a mount is the one exception, and only for the bytes:
+	 * `place` carries them, because a hash names nothing in a store that lacks it.
+	 *
+	 * It carries what a copy carries and no more: POSIX `cp` needs `-a` before it
+	 * preserves xattrs or times either. A MOVE owes more than this, which is why
+	 * `moveAcross` does not go through it.
+	 */
+	async function copy(src: string, dest: string, recursive: boolean): Promise<void> {
+		const at = await resolve(src, false)
+		const payload: Payload = {
+			type: at.node.type,
+			mode: at.node.mode,
+			size: at.node.size,
+			content: at.node.content,
+			link: at.node.link
+		}
+		if (!isDir(at.node)) {
+			await retry(() => place(dest, payload, undefined, at.store))
+			return
 		}
 
-		// No atomic create, so nothing here is atomic: both the orphaned-inode window
-		// this cap exists to close and the create-then-fill one are open. No shipped
-		// backend takes this path.
-		const ino = crypto.randomUUID()
-		await storage.setMeta(ino, meta)
-		await storage.putDirent(dirIno, name, { ino, type: meta.type })
-		if (content !== undefined) await storage.putBlob(ino, content)
-		dirCache.set(dirCacheKey(dirIno, name), { ino, type: meta.type })
-		metaCache.set(ino, meta)
-		return ino
+		if (!recursive) throw new Error(`EISDIR: ${src}`)
+		// Paths lie about ancestry when they cross a link. Walk ids so a copy
+		// cannot find its own output and run without bound — and only within one
+		// store, since a destination in another cannot be inside this one.
+		const there = await find(dest)
+		// Where the copy lands: the destination itself, or — with nothing there
+		// yet — the directory it would be created in.
+		let anchor: At | null = there
+		if (anchor === null) {
+			const up = await parentOf(dest)
+			anchor = { store: up.store, node: up.dir }
+		}
+		if (anchor.store === at.store && (await within(at.store, anchor.node, at.node.id)).inside)
+			throw new Error(`EINVAL: cannot copy ${src} into itself`)
+
+		const names: string[] = []
+		for await (const entry of entriesOf(at.store, at.node.id)) names.push(entry.name)
+
+		if (there === null) await retry(() => place(dest, payload, { exclusive: true }))
+		else if (!isDir(there.node)) throw new Error(`ENOTDIR: ${dest}`)
+		for (const name of names) await copy(join(src, name), join(dest, name), recursive)
 	}
 
-	async function unlinkIno(dirIno: Ino, name: string): Promise<void> {
-		const entry = await storage.getDirent(dirIno, name)
-		if (entry === null) throw new Error(`ENOENT: ${name}`)
-		await storage.deleteDirent(dirIno, name)
-		await storage.deleteInode(entry.ino)
-		invalidateDirCache(dirIno)
-		invalidateIno(entry.ino)
+	/**
+	 * `mv` across a store, which is what `EXDEV` leaves behind. It moves ONE ROW,
+	 * and that is the whole of why it is not `copy` then `rm`.
+	 *
+	 * A copy is a different operation, and every difference is a way for a rename
+	 * built out of one to quietly mean something else. It chooses what to carry
+	 * (POSIX `cp` needs `-a` before it takes xattrs or times); it writes THROUGH a
+	 * symlink standing on the destination, overwriting a file nobody named; and it
+	 * MERGES into a directory instead of taking its place. A move states its rule
+	 * once instead, and the rule is the whole row:
+	 *
+	 *     { ...row, id: <fresh>, parent, name, version }
+	 *
+	 * Nothing is enumerated, so nothing can be left out — mode, xattrs, times, and
+	 * whatever a later field on `Node` adds, all travel by construction. The id is
+	 * the one thing that cannot travel: it belongs to the store that minted it.
+	 *
+	 * Two stores are two commits, so this is not atomic and cannot be. That IS
+	 * `EXDEV`. What it can still refuse is a PARTIAL result, and it does that by
+	 * attempting only a move that is two commits and no more: the row into a free
+	 * name, then that row's tombstone. Each refusal below is a move that would need
+	 * a third.
+	 *
+	 * Half a move is worse than none, so the rest keeps its `EXDEV` and a caller
+	 * that wants it copies and removes, with the semantics it chooses — which is
+	 * what the kernel says to EVERY cross-device rename, emulation being userspace's
+	 * job there.
+	 */
+	async function moveAcross(oldPath: string, newPath: string): Promise<void> {
+		// Not followed: `mv` moves the link itself.
+		const src = await resolve(oldPath, false)
+		// A directory is a WALK — a commit per row, in two stores, with no guard that
+		// spans them. Stop anywhere and half a subtree stands in a place nobody asked
+		// for; a lazy row whose blob never arrived is enough to stop it. This covers a
+		// bound mount point too, which resolution crossed: what stands here is the
+		// other store's root, and rule 6 makes that a directory.
+		if (isDir(src.node)) throw new Error(`EXDEV: ${oldPath} is a directory`)
+		// A destination that exists would have to be replaced, and two commits give no
+		// moment where the name holds one or the other.
+		if ((await find(newPath, false)) !== null) throw new Error(`EXDEV: ${newPath} is taken`)
+
+		// The row and the directory that gains it commit together — the parent-mtime
+		// rule, exactly as a create does — and replan together.
+		await retry(async () => {
+			const to = await parentOf(newPath)
+			const row = reparent(src.node, to.dir.id, to.name)
+			await durable(to.store, row.content, src.store)
+			await to.store.commit(
+				[row, stamp(to.dir)],
+				[{ free: { parent: to.dir.id, name: to.name } }, unchanged(to.dir)]
+			)
+		})
+
+		// The row that MOVED, and never whatever has since taken its name. Re-reading
+		// the path here would remove a concurrent writer's newer file and leave the
+		// snapshot standing at the destination; the version is the whole difference
+		// between the two. A guard that will not pass leaves a copy with its removal
+		// refused, which is a `cp` whose `rm` failed — visible, and finishable.
+		await retry(async () => {
+			const dir = await src.store.get(src.node.parent)
+			if (dir === null) throw new Error(`ENOENT: ${oldPath}`)
+			await src.store.commit([tomb(src.node), stamp(dir)], [unchanged(src.node), unchanged(dir)])
+		})
 	}
 
+	/** One row, placed somewhere else. The whole rule of a move. */
+	const reparent = (row: Node, parent: NodeId, name: string): Node => ({
+		...row,
+		id: crypto.randomUUID(), // minted once, never rebound
+		parent,
+		name,
+		version: mint()
+	})
+
+	/**
+	 * Is a mount standing on this name? Both ends of a rename read their last
+	 * component straight out of the table, which `resolve` never does — it reads
+	 * the binding BEFORE the row, and there is no row here to read it before. So
+	 * the binding is asked here instead. Otherwise a mount point moves out from
+	 * under the store it leads to, and a bound name with no row under it reads as
+	 * free and swallows whatever lands on it. `EBUSY`: unbind first, which is what
+	 * `rm` already answers on the same row.
+	 */
+	const bound = (end: { store: Store; dir: Node; name: string }): boolean =>
+		boundIn(end.store, end.dir.id)?.has(end.name) ?? false
+
+	/**
+	 * A mount row is never moved and never tombstoned. `bound` above refuses the
+	 * BINDING's name; this refuses the ROW, whether anything is bound over it or
+	 * not, and for a reason of its own: `announceMount` DERIVES the id from
+	 * `(parent, name)`, so a row that leaves its position leaves its identity
+	 * behind. Removed, it is a tombstone the derived id can never get past (rule
+	 * 8) — the name is claimed for ever by a row that is not there. Renamed, the
+	 * next announcement at the old position derives that same id and drags the row
+	 * back out of wherever it went, silently.
+	 *
+	 * `EBUSY`, the answer a bound one already gets: a mount point is a claim rather
+	 * than the host's data, and unbinding is what retires it.
+	 */
+	const pinned = (rows: Array<Node | null>, path: string): void => {
+		if (rows.some((row) => row?.type === 'mount')) throw new Error(`EBUSY: ${path}`)
+	}
+
+	/**
+	 * A rename, as ONE guarded commit — and one commit belongs to one store, so a
+	 * path that resolves into another is `EXDEV`, exactly as it is on a real
+	 * filesystem. `vol.rename` is the `mv` that answers it.
+	 */
+	const moveRow = (oldPath: string, newPath: string): Promise<void> =>
+		retry(async () => {
+			const walked: At[] = []
+			const from = await parentOf(oldPath, walked)
+			if (bound(from)) throw new Error(`EBUSY: ${oldPath}`)
+			// Not followed, again: `mv` moves the link itself.
+			const node = await from.store.child(from.dir.id, from.name)
+			if (node === null) throw new Error(`ENOENT: ${oldPath}`)
+			pinned([node], oldPath)
+			const to = await parentOf(newPath, walked)
+			if (bound(to)) throw new Error(`EBUSY: ${newPath}`)
+			if (to.store !== from.store) throw new Error(`EXDEV: ${oldPath} -> ${newPath}`)
+			// Moving a row below itself makes a detached cycle.
+			const checked = await within(from.store, to.dir, node.id)
+			if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
+			const target = await from.store.child(to.dir.id, to.name)
+			if (target?.id === node.id) return // the same row, in the same place
+			// A taken destination is tombstoned below, which a mount row is never.
+			pinned([target], newPath)
+
+			// ONE row moves, whatever hangs below it: a child's location is
+			// `(parent, name)`, and neither field changed. This is the O(1) move.
+			const writes: Node[] = [{ ...node, parent: to.dir.id, name: to.name, version: mint() }]
+			const guards: Guard[] = [
+				unchanged(node),
+				// Keep repeat ids: two versions mean the path changed between walks. Both
+				// walks are here, and both are needed — a path that reaches into a mount
+				// crosses on EVERY walk, so keeping only the last one would drop what the
+				// first read and let a moved ancestor through. What is dropped instead is
+				// what this commit could never guard: rows another store minted.
+				...walked.filter((step) => step.store === from.store).map((step) => unchanged(step.node)),
+				// `to.dir` is guarded below. The other guards keep this check valid.
+				...checked.rows
+					.slice(1)
+					.filter((row) => row.id !== ROOT)
+					.map(unchanged)
+			]
+			if (target === null) guards.push({ free: { parent: to.dir.id, name: to.name } })
+			else {
+				// POSIX rename replaces, but only like for like. A directory is never
+				// replaced by a file, a file never by a directory, and a directory that
+				// still holds entries is never replaced at all: its children would be
+				// left parented on a tombstone, which loses them.
+				if (isDir(target) !== isDir(node))
+					throw new Error(`${isDir(target) ? 'EISDIR' : 'ENOTDIR'}: ${newPath}`)
+				// Safe to read and then act on: the guard below fails if anything is
+				// created inside the target after this listing (the stamp rule).
+				if (isDir(target) && (await from.store.children(target.id)).nodes.length > 0)
+					throw new Error(`ENOTEMPTY: ${newPath}`)
+				// The displaced row is tombstoned in the SAME commit, so no reader
+				// ever sees the name twice or not at all.
+				writes.push(tomb(target))
+				guards.push(unchanged(target))
+			}
+			// Both directories changed shape — one stamp when they are one directory.
+			writes.push(stamp(from.dir))
+			guards.push(unchanged(from.dir))
+			if (to.dir.id !== from.dir.id) {
+				writes.push(stamp(to.dir))
+				guards.push(unchanged(to.dir))
+			}
+			await from.store.commit(writes, guards)
+		})
+
+	/**
+	 * Was this row written somewhere else? The old model answered by threading an
+	 * origin tag through every write, which the sync engine set to `'remote'`;
+	 * this model has no origin tags, and the row answers for itself, because its
+	 * `Version` carries its author.
+	 *
+	 * That is what keeps `WatchEvent.source` worth having: a consumer watches a
+	 * file it also writes, and must react only to the writes it did not make —
+	 * frieren re-reads an app's state on a remote change and would loop on its
+	 * own. Nothing in the types can recover this; it is why `source` outlived
+	 * the origins it used to carry.
+	 *
+	 * `me` is sampled from the mint rather than configured, because the caller
+	 * may mint versions itself (the engine will). One burned version is cheaper
+	 * than a second option that has to agree with the first: versions are opaque
+	 * and only ever compared for equality, so a gap in the counter costs nothing.
+	 */
+	let me: string | undefined
+	const foreign = (row: Node): boolean => {
+		me ??= authorOf(mint())
+		return authorOf(row.version) !== me
+	}
+
+	/**
+	 * Take a watch's position on the change feed, then let it `bind` to the tree
+	 * it is watching, holding back whatever commits in between.
+	 *
+	 * The order is the whole point. A watch has to be ON the feed before it reads
+	 * the tree, or a commit that lands between the read and the subscription is
+	 * neither in what it read nor in what it will be told — and for a subtree that
+	 * is not one missed event but a watch that can never wake at all: the create
+	 * it missed is the one that would have bound its root, and every later write
+	 * inside that root stamps a directory the watch has never heard of. Held rows
+	 * are then replayed against the bound state, so a commit the bind DID see is
+	 * assessed twice — one wake too many, which a re-scan absorbs, rather than
+	 * none, which nothing does.
+	 *
+	 * `restarted` is called when the feed had to start over because the store was
+	 * reset or replaced (rule 11). Only a watch whose bindings are ids from the
+	 * lineage that is gone needs telling: `watchTree` finds out by itself, because
+	 * ROOT is on its way in and every row is in the feed, so the replay probes it.
+	 *
+	 * Every feed this volume can reach is taken, and each batch is handed over with
+	 * the store it came from — because a mount means the path may live on any of
+	 * them, and WHICH one is a question only a read of the tree can answer. Asking
+	 * it first would put that read in front of the subscription, which is the one
+	 * order that loses an event. So the watch subscribes to all of them and lets
+	 * `bind` say afterwards which one it is listening to.
+	 */
+	async function changes(
+		bind: () => Promise<void>,
+		listener: (from: Store, rows: Node[]) => void,
+		restarted?: () => void
+	): Promise<() => void> {
+		let holding = true
+		let held: [Store, Node[]][] = []
+		const take = (from: Store, rows: Node[]): void => {
+			if (holding) held.push([from, rows])
+			else listener(from, rows)
+		}
+		const feeds = new Set<Store>([store])
+		for (const bound of bindings?.values() ?? []) for (const into of bound.values()) feeds.add(into)
+		const offs = await Promise.all(
+			[...feeds].map((feed) =>
+				feed.subscribe
+					? feed.subscribe((rows) => take(feed, rows))
+					: poll(feed, (rows) => take(feed, rows), restarted)
+			)
+		)
+		await bind()
+		holding = false
+		const missed = held
+		held = []
+		for (const [from, rows] of missed) listener(from, rows)
+		return () => {
+			for (const off of offs) off()
+		}
+	}
+
+	/**
+	 * The feed a store without `subscribe` still has: `since`, read on a timer.
+	 * Nothing above can tell the two apart beyond latency — which is what lets
+	 * the seam leave `subscribe` optional at all.
+	 */
+	async function poll(
+		feed: Store,
+		listener: (rows: Node[]) => void,
+		restarted?: () => void
+	): Promise<() => void> {
+		// Start at the tip: a watch reports what happens after it, never the
+		// history the feed was already holding.
+		let cursor = await drain(feed)
+		let reading = false
+		const tick = setInterval(() => {
+			if (reading) return // a slow read is not a reason to start another
+			reading = true
+			const rows: Node[] = []
+			drain(feed, cursor, rows)
+				.then((at) => {
+					cursor = at
+					if (rows.length > 0) listener(rows)
+				})
+				.catch((e: unknown) => {
+					// Rule 11: the store was reset or replaced under this watch, so the
+					// cursor names a position in a lineage that is gone and no later
+					// read from it can ever succeed. The contract's answer is to start
+					// again from the empty cursor — which for a watch is also the right
+					// event, since everything the new store holds is news to it.
+					if (e instanceof ForeignCursorError) {
+						cursor = undefined
+						restarted?.()
+					}
+					// Any other failure is retried by the next tick, from the same cursor.
+				})
+				.finally(() => {
+					reading = false
+				})
+		}, WATCH_BURST_MS)
+		return () => clearInterval(tick)
+	}
+
+	/** Read the feed to its end from `cursor`, collecting the rows if asked. */
+	async function drain(feed: Store, cursor?: Cursor, into?: Node[]): Promise<Cursor | undefined> {
+		for (;;) {
+			const page = await feed.since(cursor)
+			into?.push(...page.nodes)
+			// The contract has `since` always hand a cursor back; a store that does
+			// not gives no next position, so this read is the last one.
+			if (page.next === undefined) return cursor
+			cursor = page.next
+			if (page.nodes.length === 0) return cursor
+		}
+	}
+
+	/**
+	 * One path, watched the way inotify watches one: the resolved row (its own
+	 * edits) AND the `(directory, name)` that binds the path (a rebind). Either
+	 * may be missing — a watch on a path that does not exist yet binds as soon
+	 * as something takes the name.
+	 *
+	 * Delivery coalesces onto a microtask, not the window `watchTree` uses: this
+	 * watches ONE row, so a burst is already bounded by how often that row is
+	 * written, and an event here carries a change rather than asking for a re-scan.
+	 */
+	async function watchPath(
+		path: string,
+		listener: (event: WatchEvent) => void
+	): Promise<() => void> {
+		// What a watch remembers, it remembers WITH its store. Every feed is listened
+		// to (see `changes`) and every row arrives with the store it came from, so
+		// nothing here has to decide up front which store the path lives in — a
+		// question only a read of the tree answers, and a watch is armed before it may
+		// read one. A path whose parent does not exist yet has no answer at all.
+		let node: At | null = null
+		let dir: (At & { name: string }) | null = null
+		async function bind(): Promise<void> {
+			// Every way of not being there — missing, unwalkable, looping — is the
+			// same answer to a watch: unbound.
+			node = await resolve(path, true).catch(() => null)
+			const parent = await parentOf(path).catch(() => null)
+			dir = parent === null ? null : { store: parent.store, node: parent.dir, name: parent.name }
+		}
+
+		let scheduled = false
+		let rebind = false
+		let fire = false
+		let remote = false
+		let stopped = false
+
+		/** Coalesce the commits of one turn into one event. */
+		const schedule = (): void => {
+			if (scheduled) return
+			scheduled = true
+			queueMicrotask(async () => {
+				scheduled = false
+				const definite = fire
+				const before = node
+				const source = remote ? REMOTE_SOURCE : undefined
+				fire = false
+				remote = false
+				if (rebind) {
+					rebind = false
+					await bind()
+				}
+				// A re-resolve that landed somewhere new IS the event, whether the path
+				// gained a row, lost one, or was rebound to another. A speculative one
+				// that changed nothing is not.
+				if (!stopped && (definite || !sameAt(node, before))) listener({ source })
+			})
+		}
+
+		const off = await changes(
+			bind,
+			(from, rows) => {
+				for (const row of rows) {
+					const hitsNode = is(node, row, from)
+					// A tombstone counts, and must: when the watched path IS a symlink,
+					// `node` is what it resolved THROUGH to, so unlinking the link itself
+					// hits nothing else — and a watch that missed it would go on reporting
+					// edits to a target the path no longer names.
+					const hitsName =
+						dir !== null &&
+						from === dir.store &&
+						row.parent === dir.node.id &&
+						row.name === dir.name
+					// With no parent directory yet there is no name to compare against, so
+					// any directory row in any store is a candidate: re-resolve, and fire
+					// only if it turned out to bind the path.
+					const mayBind = dir === null && isDir(row)
+					if (!hitsNode && !hitsName && !mayBind) continue
+					if (hitsNode || hitsName) fire = true
+					// The row left the path (deleted, or moved elsewhere), or something
+					// else moved onto it: either way the path resolves somewhere new.
+					const moved = row.deleted === true || !hitsName
+					if (hitsName || mayBind || (hitsNode && moved)) rebind = true
+					if (foreign(row)) remote = true
+				}
+				if (fire || rebind) schedule()
+			},
+			() => {
+				// The store was replaced under this watch, so `node` and `dir` are ids
+				// from a lineage that no longer answers: nothing in the new store can
+				// match them, and no replayed row would ever wake this watch again.
+				// Re-resolve, and report if the path landed somewhere else — which it
+				// did if the replacement does not hold it. Whoever swapped the store
+				// out, it was not this replica writing a row, so it reads as remote.
+				rebind = true
+				remote = true
+				schedule()
+			}
+		)
+
+		return () => {
+			stopped = true // a scheduled delivery must not outlive the watch
+			off()
+		}
+	}
+
+	/**
+	 * A subtree, watched as a WAKE: "the listing you are showing is stale". Two
+	 * things can make it stale, and this is the whole of it.
+	 *
+	 * - A directory row at or under the root was committed. Every create, delete
+	 *   and rename stamps the directory it happened in, in the SAME commit (the
+	 *   parent-mtime rule above), so a committed directory row IS a listing that
+	 *   changed — while a content edit writes one file row and no directory,
+	 *   which is exactly why editing a file does not wake a tree watcher. A
+	 *   tombstone counts too: it always removes an entry from somewhere.
+	 * - A row the resolution walked through was committed. That is the way in,
+	 *   and a rename of an ancestor empties the subtree without touching one row
+	 *   inside it — a child's location is `(parent, name)`, and neither field
+	 *   changed. Those rows are re-resolved instead of read, and the wake is the
+	 *   root having moved. A root that does not exist yet holds the rows its
+	 *   walk did reach, which is precisely what the create that binds it stamps.
+	 *
+	 * Re-resolving the way in also means a re-pointed symlink re-targets the
+	 * watch, where `inotify_add_watch` would have pinned it at add time. Nothing
+	 * here can hold a resolution still: every read on this volume follows the
+	 * link, so a watch that did not would report on a subtree its owner has
+	 * stopped reading.
+	 */
+	async function watchTree(
+		path: string,
+		listener: (event: WatchEvent) => void
+	): Promise<() => void> {
+		// Rows come from every feed, each with its store, exactly as in `watchPath`.
+		let root: At | null = null
+		let chain: At[] = []
+		async function bind(): Promise<void> {
+			const walked: At[] = []
+			root = await resolve(path, true, walked).catch(() => null)
+			chain = walked
+		}
+
+		/**
+		 * Is this row on the way in? A store's root always is — it is where every walk
+		 * starts, and it is what the create that first binds an unbound path stamps.
+		 */
+		const onChain = (from: Store, row: Node): boolean =>
+			row.id === ROOT || chain.some((step) => is(step, row, from))
+
+		/**
+		 * Is `id` the root or under it? Bounded by a visited set (rule 9), and it
+		 * climbs within ONE store: a mount is where the walk stops, so a recursive
+		 * watch above one is not told what happens inside it.
+		 */
+		async function under(from: Store, id: NodeId, memo: Map<NodeId, boolean>): Promise<boolean> {
+			const climbed: NodeId[] = []
+			const seen = new Set<NodeId>()
+			let at: NodeId | undefined = id
+			let answer = false
+			while (at !== undefined && !seen.has(at)) {
+				const known = memo.get(at)
+				if (known !== undefined) {
+					answer = known
+					break
+				}
+				if (root !== null && from === root.store && at === root.node.id) {
+					answer = true
+					break
+				}
+				if (at === ROOT) break
+				seen.add(at)
+				climbed.push(at)
+				at = (await from.get(at))?.parent
+			}
+			// Whatever the answer, it holds for every id on the way up: they all
+			// reach the root through the same rows.
+			for (const step of climbed) memo.set(step, answer)
+			return answer
+		}
+
+		async function assess(batch: Seen[]): Promise<{ wake: boolean; source?: string }> {
+			// One memo per store: an id answers for a climb in the store that minted it.
+			const memos = new Map<Store, Map<NodeId, boolean>>()
+			const memo = (from: Store): Map<NodeId, boolean> => {
+				const held = memos.get(from) ?? new Map<NodeId, boolean>()
+				memos.set(from, held)
+				return held
+			}
+			let wake = false
+			let probe = false
+			// Attribution is a question about the WINDOW, not about the rows that wake
+			// us — because the rows that would answer it precisely are the ones the
+			// feed destroys. A window holds several commits, and a polled feed carries
+			// each row once at its LATEST state: a remote create's parent stamp is
+			// overwritten by the next local write to that directory, and a remote
+			// rename OUT of the subtree leaves its moved row pointing somewhere else
+			// entirely. Every way of scoping the question re-opens one of those holes,
+			// so it is not scoped. This over-reports when unrelated remote traffic
+			// shares a window with a local change — a re-scan absorbs that, while a
+			// missed remote change is the thing `source` exists to prevent.
+			const remote = batch.some(({ row }) => foreign(row))
+			for (const { from, row } of batch) {
+				const structural = isDir(row) || row.deleted === true
+				if (structural && (is(root, row, from) || (await under(from, row.parent, memo(from)))))
+					wake = true
+				if (onChain(from, row)) probe = true
+			}
+			if (probe) {
+				const was = root
+				await bind()
+				if (!sameAt(root, was)) wake = true
+			}
+			return { wake, source: remote ? REMOTE_SOURCE : undefined }
+		}
+
+		let queued: Seen[] = []
+		let timer: ReturnType<typeof setTimeout> | undefined
+		let stopped = false
+		// At most one delivery per window, always with a trailing one. Arming only
+		// while something is queued keeps an idle watch timer-free; re-arming after
+		// a delivery is what bounds the RATE — the next change waits out a fresh
+		// window instead of firing at once.
+		const arm = (): void => {
+			if (timer !== undefined || stopped) return
+			timer = setTimeout(async () => {
+				timer = undefined
+				if (queued.length === 0) return
+				const batch = queued
+				queued = []
+				// A read that failed may have hidden a change: wake rather than miss it.
+				const { wake, source } = await assess(batch).catch(() => ({
+					wake: true,
+					source: undefined
+				}))
+				if (!wake || stopped) return
+				arm()
+				listener({ source })
+			}, WATCH_BURST_MS)
+		}
+
+		const off = await changes(bind, (from, rows) => {
+			for (const row of rows) queued.push({ from, row })
+			arm()
+		})
+
+		return () => {
+			stopped = true
+			queued = []
+			if (timer !== undefined) clearTimeout(timer)
+			timer = undefined
+			off()
+		}
+	}
+
+	// Read caller-owned inputs before the first await. Reuse them on every retry.
 	const vol: Volume = {
 		async stat(path) {
-			const ino = await resolvePath(path, true)
-			return makeStat(ino, await getMetaOrThrow(ino))
+			return statOf((await resolve(path, true)).node)
 		},
 
 		async lstat(path) {
-			const ino = await resolvePath(path, false)
-			return makeStat(ino, await getMetaOrThrow(ino))
+			return statOf((await resolve(path, false)).node)
 		},
 
 		async exists(path) {
+			// Never throws, so every way a path can fail to be there — missing,
+			// unwalkable, looping — is one answer.
 			try {
-				await resolvePath(path, false)
+				await resolve(path, false)
 				return true
 			} catch {
 				return false
@@ -592,538 +1543,242 @@ export function volume(storage: Storage): Volume {
 		},
 
 		async getXattr(path, name) {
-			const ino = await resolvePath(path, true)
-			return storage.caps?.getXattr?.(ino, name) ?? null
+			return (await resolve(path, true)).node.xattrs?.[name] ?? null
 		},
 
 		async setXattr(path, name, value) {
-			const ino = await resolvePath(path, true)
-			await storage.caps?.setXattr?.(ino, name, value)
+			const held = new Uint8Array(value)
+			await edit(path, (row) => ({ ...row, xattrs: { ...row.xattrs, [name]: held } }))
 		},
 
 		async listXattr(path) {
-			const ino = await resolvePath(path, true)
-			return storage.caps?.listXattrs?.(ino) ?? []
+			return Object.keys((await resolve(path, true)).node.xattrs ?? {})
 		},
 
 		async removeXattr(path, name) {
-			const ino = await resolvePath(path, true)
-			await storage.caps?.removeXattr?.(ino, name)
+			await edit(path, (row) => {
+				const xattrs = { ...row.xattrs }
+				delete xattrs[name]
+				return { ...row, xattrs }
+			})
 		},
 
 		async readFile(path) {
-			const resolved = await resolvePathInfo(path, true)
-			if (resolved.type === FileType.Directory) {
-				throw new Error(`EISDIR: ${path}`)
-			}
-			return storage.getBlob(resolved.ino)
+			const at = await resolve(path, true)
+			if (isDir(at.node)) throw new Error(`EISDIR: ${path}`)
+			if (at.node.content === undefined) return new Uint8Array()
+			const data = await at.store.blobs.get(at.node.content)
+			// A row may name content this replica does not hold — a lazy stub, not
+			// an empty file. T9 fetches it; saying so is the only honest answer.
+			if (data === null) throw new Error(`ENOENT: content ${at.node.content} of ${path}`)
+			return data
 		},
 
 		async writeFile(path, data, opts) {
-			let ino: Ino
-			let resolved: Ino | null = null
-			try {
-				resolved = await resolvePath(path, true)
-			} catch (e) {
-				if (!(e as Error).message.startsWith('ENOENT')) throw e
-			}
-
-			if (resolved !== null) {
-				if (opts?.exclusive) throw new Error(`EEXIST: ${path}`)
-				const meta = await getMetaOrThrow(resolved)
-				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
-				ino = resolved
-				await writeSerially(ino, () => storage.putBlob(ino, data))
-			} else {
-				// An edit has nothing to edit. Refused HERE, where the path was just
-				// resolved, so no caller can create a file (and its parents) from a path it
-				// no longer holds.
-				if (opts?.update) throw new Error(`ENOENT: ${path}`)
-				const { dirIno, name } = await resolveParent(path)
-				const now = nowNs()
-				const meta: InodeMeta = {
-					type: FileType.Regular,
-					size: 0n,
-					mode: 0o644,
-					mtimeNs: now,
-					ctimeNs: now
-				}
-				// Write-then-publish: `createNode` commits these bytes and this name as ONE
-				// fact, so no reader ever resolves the path and finds a prefix of `data`
-				// (#324). It throws EEXIST when the name was taken between the resolve above
-				// and here — which is what makes `exclusive` a claim and not just a probe.
-				//
-				// For `exclusive: true` that EEXIST IS the claim working, so it propagates. A
-				// PLAIN write promises create-OR-overwrite and never a claim, so it must not
-				// surface that internal detail: retry as an update against whoever holds the
-				// name, exactly as if `resolvePath` above had found them first.
-				//
-				// Safe to retry: `atomicCreate` throws before mutating anything, and the
-				// content published ahead of a failed claim is a harmless orphan either way —
-				// an unreferenced hash `gcUnreferenced` reclaims, or a temp file the native
-				// backend has already unlinked.
-				try {
-					ino = await createNode(dirIno, name, meta, data)
-				} catch (e) {
-					if (!(e instanceof Error) || !e.message.startsWith('EEXIST') || opts?.exclusive) throw e
-					// Re-resolve the FULL PATH the way the top of this function does, NOT the raw
-					// dirent: that would land on a SYMLINK's own inode instead of its target.
-					// `resolveParent`'s dirIno+name split never follows the final component, so a
-					// symlink already occupying `name` makes `createNode` throw this exact EEXIST
-					// with no writer racing at all — and writing into that raw ino would strand
-					// the bytes in a slot nothing ever reads through the path again.
-					let winner: Ino
-					try {
-						winner = await resolvePath(path, true)
-					} catch (e2) {
-						if (!(e2 as Error).message.startsWith('ENOENT')) throw e2
-						// The name IS taken — that is what the EEXIST just proved — but the path
-						// resolves to nothing writable (a dangling symlink). The original EEXIST
-						// says that more honestly than ENOENT would.
-						throw e
-					}
-					const winnerMeta = await getMetaOrThrow(winner)
-					if (winnerMeta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
-					await writeSerially(winner, () => storage.putBlob(winner, data))
-					ino = winner
-				}
-			}
-
-			invalidateIno(ino)
+			const options = opts && { ...opts }
+			// One snapshot, hashed once: the caller still owns `data` and may edit it
+			// while the write is in flight. `place` is what puts the bytes down, once
+			// it knows which store the row is landing in.
+			const held = new Uint8Array(data)
+			const payload = file(held.length, await sha256Hex(held))
+			await retry(() => place(path, payload, options, held))
 		},
 
 		async appendFile(path, data) {
-			let ino: Ino
-			let resolved: Ino | null = null
-			try {
-				resolved = await resolvePath(path, true)
-			} catch (e) {
-				if (!(e as Error).message.startsWith('ENOENT')) throw e
-			}
-
-			if (resolved !== null) {
-				const meta = await getMetaOrThrow(resolved)
-				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
-				ino = resolved
-				await writeSerially(ino, async () => {
-					const existing = await storage.getBlob(ino)
-					const merged = new Uint8Array(existing.length + data.length)
-					merged.set(existing)
-					merged.set(data, existing.length)
-					await storage.putBlob(ino, merged)
-				})
-			} else {
-				const { dirIno, name } = await resolveParent(path)
-				const now = nowNs()
-				ino = await createNode(
-					dirIno,
-					name,
-					{
-						type: FileType.Regular,
-						size: 0n,
-						mode: 0o644,
-						mtimeNs: now,
-						ctimeNs: now
-					},
-					data // appending to nothing is a create, and it publishes atomically too
-				)
-			}
-			invalidateIno(ino)
+			const held = new Uint8Array(data)
+			await retry(async () => {
+				const at = await find(path)
+				if (at !== null && isDir(at.node)) throw new Error(`EISDIR: ${path}`)
+				// Read-modify-write at the view layer: the model has no range write
+				// (design #2, deliberate omissions). The guard below is what keeps the
+				// read and the write one operation — a second append that lost the race
+				// reads again rather than dropping the first one's entry.
+				const before =
+					at?.node.content === undefined
+						? new Uint8Array()
+						: await at.store.blobs.get(at.node.content)
+				if (before === null) throw new Error(`ENOENT: content ${at?.node.content} of ${path}`)
+				const merged = new Uint8Array(before.length + held.length)
+				merged.set(before)
+				merged.set(held, before.length)
+				const payload = file(merged.length, await sha256Hex(merged))
+				// Appending to nothing is a create, and the name and the bytes still
+				// commit as one fact.
+				await (at === null
+					? create(path, payload, undefined, merged)
+					: swap(at.store, at.node, payload, merged))
+			})
 		},
 
 		async mkdir(path, opts) {
 			const recursive = opts?.recursive ?? false
-			const mode = opts?.mode ?? 0o755
-
-			if (recursive) {
-				const parts = path.split('/').filter((p) => p !== '')
-				let current = '/'
-				for (const part of parts) {
-					const parentPath = current
-					current = current === '/' ? `/${part}` : `${current}/${part}`
-					const parentIno = await resolvePath(parentPath, true)
-					const existingIno = await lookupIno(parentIno, part)
-					if (existingIno !== null) {
-						// `mkdir -p` may pass over a component that is already a DIRECTORY. It may not
-						// pass over a file and report that the folder exists: the caller asked for a
-						// place to put things, and a caller that has to check first can always be
-						// overtaken between the check and this call.
-						const existing = await getMetaOrThrow(existingIno)
-						if (existing.type !== FileType.Directory) {
-							throw new Error(current === path ? `EEXIST: ${path}` : `ENOTDIR: ${current}`)
-						}
-						continue
-					}
-					try {
-						const now = nowNs()
-						await createNode(parentIno, part, {
-							type: FileType.Directory,
-							size: 0n,
-							mode,
-							mtimeNs: now,
-							ctimeNs: now
-						})
-					} catch (e) {
-						if (!(e instanceof Error) || !e.message.startsWith('EEXIST')) throw e
-					}
-				}
+			const mode = IFDIR | ((opts?.mode ?? 0o755) & 0o7777)
+			const dir: Payload = { type: 'dir', mode, size: 0n }
+			if (!recursive) {
+				await retry(() => place(path, dir, { exclusive: true }))
 				return
 			}
 
-			const { dirIno, name } = await resolveParent(path)
-			const existingIno = await lookupIno(dirIno, name)
-			if (existingIno !== null) {
-				throw new Error(`EEXIST: ${path}`)
+			const parts = path.split('/').filter((s) => s !== '')
+			let walked = '/'
+			for (const [i, part] of parts.entries()) {
+				walked = join(walked, part)
+				const there = await find(walked)
+				if (there !== null) {
+					// `-p` may pass over a DIRECTORY. It may not pass over a file and
+					// report that the folder is there: the caller asked for a place to
+					// put things, and a caller that checks first can always be overtaken.
+					if (!isDir(there.node))
+						throw new Error(i === parts.length - 1 ? `EEXIST: ${path}` : `ENOTDIR: ${walked}`)
+					continue
+				}
+				try {
+					await retry(() => place(walked, dir, { exclusive: true }))
+				} catch (e) {
+					// Another walk got there first. `-p` is idempotent, so a directory
+					// standing where this one was going is success, not EEXIST.
+					const raced = await find(walked)
+					if (raced === null || !isDir(raced.node)) throw e
+				}
 			}
-			const now = nowNs()
-			await createNode(dirIno, name, {
-				type: FileType.Directory,
-				size: 0n,
-				mode,
-				mtimeNs: now,
-				ctimeNs: now
-			})
 		},
 
 		async readdir(path) {
-			const ino = await resolvePath(path, true)
-			const meta = await getMetaOrThrow(ino)
-			if (meta.type !== FileType.Directory) {
-				throw new Error(`ENOTDIR: ${path}`)
-			}
-			return readdirAll(ino)
+			const at = await resolve(path, true)
+			if (!isDir(at.node)) throw new Error(`ENOTDIR: ${path}`)
+			const entries: Dirent[] = []
+			// A crossed entry reports the bound store's root id — unique in that store
+			// the way a POSIX inode number is unique within a device, and this model
+			// has no `st_dev` to tell two of them apart.
+			for await (const entry of entriesOf(at.store, at.node.id))
+				entries.push({ ino: entry.node.id, name: entry.name, type: TYPE[entry.node.type] })
+			return entries
 		},
 
 		async rm(path, opts) {
-			const force = opts?.force ?? false
 			const recursive = opts?.recursive ?? false
-
-			let ino: Ino
-			try {
-				ino = await resolvePath(path, false)
-			} catch (e) {
-				if (force && (e as Error).message.startsWith('ENOENT')) return
-				throw e
-			}
-
-			const meta = await getMetaOrThrow(ino)
-			if (meta.type === FileType.Directory) {
-				const entries = await readdirAll(ino)
-				if (entries.length > 0 && !recursive) {
-					throw new Error(`ENOTEMPTY: ${path}`)
+			const force = opts?.force ?? false
+			await retry(async () => {
+				// The final component is not followed: `rm` removes the link, never
+				// what it points at.
+				const at = await find(path, false)
+				if (at === null) {
+					if (force) return
+					throw new Error(`ENOENT: ${path}`)
 				}
-				if (recursive) {
-					for (const entry of entries) {
-						const childPath = path === '/' ? `/${entry.name}` : `${path}/${entry.name}`
-						await vol.rm(childPath, { recursive: true })
-					}
-				}
-			}
+				// A BOUND mount point resolves to the bound store's root, and that is
+				// the one row nothing removes — `EBUSY` by another name, and the right
+				// answer: unbind it first, the way a filesystem is unmounted before its
+				// mountpoint goes. An unbound one is refused too, by `pinned` below.
+				if (at.node.id === ROOT) throw new Error(`EINVAL: ${path}`)
+				const dir = await at.store.get(at.node.parent)
+				if (dir === null || dir.deleted) throw new Error(`ENOENT: ${path}`)
+				if (!isDir(dir)) throw new Error(`ENOTDIR: ${path}`)
 
-			const { dirIno, name } = await resolveParent(path)
-			await unlinkIno(dirIno, name)
+				const dead = [at.node]
+				if (isDir(at.node)) {
+					if (recursive) dead.push(...(await descendants(at.store, at.node.id)))
+					else if ((await at.store.children(at.node.id)).nodes.length > 0)
+						throw new Error(`ENOTEMPTY: ${path}`)
+				}
+				// The walk is what makes this the whole rule and not the top row's: a
+				// recursive removal tombstones everything it collected, so a mount
+				// standing anywhere under `path` is here too.
+				pinned(dead, path)
+				// One batch, one guard per row it replaces — the parent it stamps
+				// included. A directory's version moves on every create inside it, so an
+				// entry this walk never saw fails the commit, and the attempt enumerates
+				// again.
+				await at.store.commit(
+					[...dead.map(tomb), stamp(dir)],
+					[...dead.map(unchanged), unchanged(dir)]
+				)
+			})
 		},
 
 		async rename(oldPath, newPath) {
-			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
-			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
-
-			if (storage.caps?.atomicMove) {
-				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
-				invalidateDirCache(oldDirIno)
-				invalidateDirCache(newDirIno)
-				if (displaced !== null) invalidateIno(displaced)
-				return
+			try {
+				await moveRow(oldPath, newPath)
+			} catch (e) {
+				if (!(e instanceof Error) || !e.message.startsWith('EXDEV')) throw e
+				await moveAcross(oldPath, newPath)
 			}
-
-			const source = await storage.getDirent(oldDirIno, oldName)
-			if (source === null) throw new Error(`ENOENT: ${oldName}`)
-
-			const displaced = await storage.getDirent(newDirIno, newName)
-			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })
-			await storage.deleteDirent(oldDirIno, oldName)
-
-			if (displaced && displaced.ino !== source.ino) {
-				await storage.deleteInode(displaced.ino)
-				invalidateIno(displaced.ino)
-			}
-
-			invalidateDirCache(oldDirIno)
-			invalidateDirCache(newDirIno)
 		},
 
-		async cp(src, dest, opts) {
-			const recursive = opts?.recursive ?? false
-
-			const srcIno = await resolvePath(src, true)
-			const srcMeta = await getMetaOrThrow(srcIno)
-
-			if (srcMeta.type === FileType.Directory) {
-				if (!recursive) throw new Error(`EISDIR: ${src}`)
-
-				let destExists = false
-				try {
-					const destIno = await resolvePath(dest, true)
-					const destMeta = await getMetaOrThrow(destIno)
-					if (destMeta.type !== FileType.Directory) throw new Error(`ENOTDIR: ${dest}`)
-					destExists = true
-				} catch (e) {
-					if (!(e as Error).message.startsWith('ENOENT')) throw e
-				}
-
-				if (!destExists) {
-					await vol.mkdir(dest, { mode: srcMeta.mode })
-				}
-
-				const entries = await readdirAll(srcIno)
-				for (const entry of entries) {
-					const srcChild = src === '/' ? `/${entry.name}` : `${src}/${entry.name}`
-					const destChild = dest === '/' ? `/${entry.name}` : `${dest}/${entry.name}`
-					await vol.cp(srcChild, destChild, { recursive })
-				}
-			} else {
-				try {
-					const destIno = await resolvePath(dest, true)
-					const destMeta = await getMetaOrThrow(destIno)
-					if (destMeta.type === FileType.Directory) throw new Error(`EISDIR: ${dest}`)
-				} catch (e) {
-					if (!(e as Error).message.startsWith('ENOENT')) throw e
-				}
-
-				const data = await vol.readFile(src)
-				await vol.writeFile(dest, data)
-			}
+		cp(src, dest, opts) {
+			return copy(src, dest, opts?.recursive ?? false)
 		},
 
 		async symlink(target, path) {
-			const { dirIno, name } = await resolveParent(path)
-			const existingIno = await lookupIno(dirIno, name)
-			if (existingIno !== null) throw new Error(`EEXIST: ${path}`)
-			const now = nowNs()
-			await createNode(dirIno, name, {
-				type: FileType.Symlink,
-				size: BigInt(new TextEncoder().encode(target).length),
-				mode: 0o777,
-				mtimeNs: now,
-				ctimeNs: now,
-				symlinkTarget: target
-			})
+			const payload: Payload = {
+				type: 'symlink',
+				mode: IFLNK | 0o777,
+				size: BigInt(utf8.encode(target).length),
+				link: target
+			}
+			await retry(() => place(path, payload, { exclusive: true }))
 		},
 
 		async readlink(path) {
-			const ino = await resolvePath(path, false)
-			const meta = await getMetaOrThrow(ino)
-			if (meta.type !== FileType.Symlink) throw new Error(`EINVAL: ${path} is not a symlink`)
-			if (!meta.symlinkTarget) throw new Error(`EINVAL: symlink has no target`)
-			return meta.symlinkTarget
+			const { node } = await resolve(path, false)
+			if (node.type !== 'symlink') throw new Error(`EINVAL: ${path} is not a symlink`)
+			if (!node.link) throw new Error('EINVAL: symlink has no target')
+			return node.link
 		},
 
 		async chmod(path, mode) {
-			const ino = await resolvePath(path, true)
-			await storage.setMeta(ino, { mode })
-			invalidateIno(ino)
+			// The row carries a whole POSIX mode, so the caller's permission bits go
+			// on and the type bits stay: a chmod cannot turn a file into a directory.
+			await edit(path, (row) => ({ ...row, mode: (row.mode & IFMT) | (mode & 0o7777) }))
 		},
 
 		async utimes(path, mtimeNs) {
-			const ino = await resolvePath(path, true)
-			await storage.setMeta(ino, { mtimeNs })
-			invalidateIno(ino)
+			await edit(path, (row) => ({ ...row, mtimeNs }))
 		},
 
 		async scan(path, visitor) {
-			const ino = await resolvePath(path, true)
-			const meta = await getMetaOrThrow(ino)
+			const at = await resolve(path, true)
+			await visitor(path, statOf(at.node))
+			if (!isDir(at.node)) return
 
-			await visitor(path, makeStat(ino, meta))
-
-			if (meta.type !== FileType.Directory) return
-
-			if (storage.caps?.fullScan) {
-				const inoToPath = new Map<Ino, string>([[storage.rootIno, '/']])
-				let cursor = ''
-				do {
-					const { entries, next } = await storage.caps.fullScan(cursor)
-					for (const e of entries) {
-						const dir = inoToPath.get(e.dirIno) ?? '/'
-						const ePath = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
-						inoToPath.set(e.ino, ePath)
-						metaCache.set(e.ino, e.meta)
-						dirCache.set(dirCacheKey(e.dirIno, e.name), { ino: e.ino, type: e.meta.type })
-						// Filter to descendants of the requested path
-						if (path === '/' || ePath === path || ePath.startsWith(`${path}/`)) {
-							await visitor(ePath, makeStat(e.ino, e.meta))
-						}
+			// Rule 9: a replica may transiently hold detached or cyclic rows, so the
+			// walk bounds itself instead of trusting what it is walking to be a tree.
+			async function walk(
+				st: Store,
+				dir: NodeId,
+				dirPath: string,
+				seen: Set<NodeId>
+			): Promise<void> {
+				for await (const entry of entriesOf(st, dir)) {
+					// A crossing is the bound store's ROOT, and a scan of `/` already holds
+					// that id: it would find the mount visited and skip it whole. So a
+					// crossing is neither checked against this walk's set nor added to it,
+					// and starts one of its own — a cycle is per store too.
+					const crossed = entry.store !== st
+					if (!crossed) {
+						if (seen.has(entry.node.id)) continue
+						seen.add(entry.node.id)
 					}
-					cursor = next
-				} while (cursor !== '')
-				return
+					const childPath = join(dirPath, entry.name)
+					await visitor(childPath, statOf(entry.node))
+					if (isDir(entry.node))
+						await walk(
+							entry.store,
+							entry.node.id,
+							childPath,
+							crossed ? new Set([entry.node.id]) : seen
+						)
+				}
 			}
-
-			// Recursive fallback
-			async function walk(dirIno: Ino, dirPath: string): Promise<void> {
-				let cursor = ''
-				do {
-					const { entries, next } = await storage.listDirents(dirIno, cursor)
-					for (const e of entries) {
-						const ePath = dirPath === '/' ? `/${e.name}` : `${dirPath}/${e.name}`
-						const eMeta = await storage.getMeta(e.ino)
-						if (eMeta === null) continue
-						metaCache.set(e.ino, eMeta)
-						dirCache.set(dirCacheKey(dirIno, e.name), { ino: e.ino, type: e.type })
-						await visitor(ePath, makeStat(e.ino, eMeta))
-						if (e.type === FileType.Directory) await walk(e.ino, ePath)
-					}
-					cursor = next
-				} while (cursor !== '')
-			}
-			await walk(ino, path)
+			await walk(at.store, at.node.id, path, new Set([at.node.id]))
 		},
 
 		async watch(path, listener, opts) {
-			const subscribe = storage.caps?.subscribe
-			if (!subscribe) return () => {}
-
-			// Recursive: a STRUCTURAL change signal for the subtree at `path`. Only
-			// dirent mutations (create/remove/rename) reshape a tree's entry set; content
-			// edits to existing files keep the listing identical, so they don't fire.
-			//
-			// Deliveries are rate-bounded, not merely deduplicated: this is a WAKE, and every
-			// consumer answers it by re-listing the subtree, so the cost is per DELIVERY — see
-			// the WATCH_BURST_MS note. The single-path watch below stays on a microtask: it
-			// tracks ONE file, so a burst there is already bounded by that file's writes.
-			if (opts?.recursive) {
-				// Compare against where the root RESOLVES, not how it was spelled: every
-				// other operation on this volume follows symlinks, so a watch on an alias
-				// has to see the events its own reads produce (they arrive under the
-				// target's path). Pinned once here, as `inotify_add_watch` pins at add
-				// time; re-point the symlink and you re-watch. A root that does not exist
-				// yet has nothing to resolve through, so it stays as spelled.
-				const spelled = normalizePath(path)
-				let root = spelled
-				try {
-					const landed = await resolvePathInfo(spelled || '/', true)
-					root = landed.path === '/' ? '' : landed.path
-				} catch {
-					// Not created yet: nothing to resolve through, so compare as spelled.
-				}
-				let timer: ReturnType<typeof setTimeout> | undefined
-				let pending = false
-				let pendingSource: string | undefined
-				// Deliver at most one event per window, always with a trailing one. Arming
-				// only while something is pending keeps an idle watch timer-free; re-arming
-				// after a delivery is what bounds the RATE (the next change waits out a
-				// fresh window instead of firing at once).
-				const arm = () => {
-					if (timer !== undefined) return
-					timer = setTimeout(() => {
-						timer = undefined
-						if (!pending) return
-						pending = false
-						const source = pendingSource
-						pendingSource = undefined
-						arm()
-						listener({ source })
-					}, WATCH_BURST_MS)
-				}
-				const unsubscribe = subscribe((change) => {
-					if (change.kind !== 'dirent') return
-					// Scope: only what can reshape this subtree's listing. A change with no
-					// path is unlocatable (its parent is already unlinked), so it fires —
-					// a spurious re-scan is recoverable, a missed change is not.
-					if (!touchesSubtree(root, change.path)) return
-					pending = true
-					pendingSource = change.source
-					arm()
-				})
-				return () => {
-					unsubscribe()
-					// Drop a scheduled delivery: an unwatched listener must not fire.
-					if (timer !== undefined) clearTimeout(timer)
-					timer = undefined
-					pending = false
-				}
-			}
-
-			// Track the resolved inode (content/meta edits) and the parent dentry
-			// (rebinds). The path need not exist yet — dirIno/name bind it once the
-			// parent exists.
-			let targetIno: Ino | null = null
-			let dirIno: Ino | null = null
-			let name = ''
-			async function resolve(): Promise<void> {
-				targetIno = await resolvePath(path, true).catch(() => null)
-				const parent = await resolveParent(path).catch(() => null)
-				dirIno = parent?.dirIno ?? null
-				name = parent?.name ?? ''
-			}
-			await resolve()
-
-			let scheduled = false
-			let needsResolve = false
-			let definiteFire = false
-			let pendingSource: string | undefined
-
-			return subscribe((change) => {
-				const hitsIno =
-					targetIno !== null &&
-					change.ino === targetIno &&
-					(change.kind === 'meta' || change.kind === 'content')
-				const hitsDentry =
-					change.kind === 'dirent' && change.dirIno === dirIno && change.name === name
-				// While the parent chain is incomplete (dirIno still null) we can't
-				// know which dentry will bind the path, so any dir mutation is a
-				// candidate: re-resolve and fire only if it actually bound the file.
-				const mayBind = dirIno === null && change.kind === 'dirent'
-				if (!hitsIno && !hitsDentry && !mayBind) return
-				pendingSource = change.source
-				if (hitsIno || hitsDentry) definiteFire = true
-				if (hitsDentry || mayBind) needsResolve = true
-				// Coalesce the several storage ops of one logical write into one event.
-				if (scheduled) return
-				scheduled = true
-				queueMicrotask(async () => {
-					scheduled = false
-					const fire = definiteFire
-					const wasUnbound = dirIno === null && targetIno === null
-					definiteFire = false
-					if (needsResolve) {
-						needsResolve = false
-						await resolve()
-					}
-					// A speculative re-resolve that still didn't bind the file (some
-					// unrelated dir was created) is not an event.
-					if (fire || (wasUnbound && targetIno !== null)) listener({ source: pendingSource })
-				})
-			})
+			return opts?.recursive ? watchTree(path, listener) : watchPath(path, listener)
 		}
 	}
 
-	// Keep path caches coherent with writes that bypass this wrapper. Driving
-	// invalidation from the storage feed covers both local and direct backend writes.
-	storage.caps?.subscribe?.((change) => {
-		if (change.kind === 'dirent' && change.dirIno !== undefined) invalidateDirCache(change.dirIno)
-		invalidateIno(change.ino)
-	})
-
 	return vol
-}
-
-/**
- * Can a dirent change at `path` reshape the listing of the subtree at `root`?
- * Three ways, and no others:
- *   - it IS the root (the watched directory itself came or went),
- *   - it is INSIDE the root (an entry of the listing changed),
- *   - it is an ANCESTOR of the root (the way in was rebound — rename `/notes` to
- *     `/archive` and everything under `/notes/trips` has vanished without a
- *     single event under that path, because descendants keep their
- *     parent-ino-keyed dirents and only the moved entry is reported).
- * `root` is normalised, so '' is the volume root and contains everything. An
- * unknown (undefined) path counts as relevant — see the caller.
- */
-function touchesSubtree(root: string, path: string | undefined): boolean {
-	if (path === undefined || root === '') return true
-	if (path === root) return true
-	return path.startsWith(`${root}/`) || root.startsWith(`${path}/`)
 }
 
 /**

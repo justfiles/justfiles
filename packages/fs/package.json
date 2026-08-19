@@ -4,22 +4,17 @@
 	"type": "module",
 	"exports": {
 		".": "./index.ts",
-		"./storage": "./storage.ts",
-		"./storage.shared": "./storage.shared.ts",
-		"./persistedState": "./persistedState.ts",
-		"./migrate": "./migrate.ts",
-		"./migrate.idb": "./migrate.idb.ts",
 		"./store": "./store.ts",
-		"./store.http": "./store.http.ts",
-		"./volume.store": "./volume.store.ts",
 		"./synced": "./synced.ts",
 		"./authority": "./authority.ts",
-		"./store.mem": "./store.mem.ts",
-		"./store.idb": "./store.idb.ts",
-		"./store.fs": "./store.fs.ts",
-		"./storage/mem": "./storage.mem.ts",
-		"./storage/idb": "./storage.idb.ts",
-		"./storage/fs": "./storage.fs.ts",
+		"./mem": "./mem.ts",
+		"./idb": "./idb.ts",
+		"./fs": "./fs.ts",
+		"./http": "./http.ts",
+		"./migrate": "./migrate.ts",
+		"./migrate.idb": "./migrate.idb.ts",
+		"./migrate.legacy": "./migrate.legacy.ts",
+		"./persistedState": "./persistedState.ts",
 		"./types": "./types.ts",
 		"./xattr": "./xattr.ts"
 	},
@@ -33,45 +28,10 @@
 				"import": "./dist/index.js",
 				"default": "./dist/index.js"
 			},
-			"./storage": {
-				"types": "./dist/storage.d.ts",
-				"import": "./dist/storage.js",
-				"default": "./dist/storage.js"
-			},
-			"./storage.shared": {
-				"types": "./dist/storage.shared.d.ts",
-				"import": "./dist/storage.shared.js",
-				"default": "./dist/storage.shared.js"
-			},
-			"./persistedState": {
-				"types": "./dist/persistedState.d.ts",
-				"import": "./dist/persistedState.js",
-				"default": "./dist/persistedState.js"
-			},
-			"./migrate": {
-				"types": "./dist/migrate.d.ts",
-				"import": "./dist/migrate.js",
-				"default": "./dist/migrate.js"
-			},
-			"./migrate.idb": {
-				"types": "./dist/migrate.idb.d.ts",
-				"import": "./dist/migrate.idb.js",
-				"default": "./dist/migrate.idb.js"
-			},
 			"./store": {
 				"types": "./dist/store.d.ts",
 				"import": "./dist/store.js",
 				"default": "./dist/store.js"
-			},
-			"./store.http": {
-				"types": "./dist/store.http.d.ts",
-				"import": "./dist/store.http.js",
-				"default": "./dist/store.http.js"
-			},
-			"./volume.store": {
-				"types": "./dist/volume.store.d.ts",
-				"import": "./dist/volume.store.js",
-				"default": "./dist/volume.store.js"
 			},
 			"./synced": {
 				"types": "./dist/synced.d.ts",
@@ -83,35 +43,45 @@
 				"import": "./dist/authority.js",
 				"default": "./dist/authority.js"
 			},
-			"./store.mem": {
-				"types": "./dist/store.mem.d.ts",
-				"import": "./dist/store.mem.js",
-				"default": "./dist/store.mem.js"
+			"./mem": {
+				"types": "./dist/mem.d.ts",
+				"import": "./dist/mem.js",
+				"default": "./dist/mem.js"
 			},
-			"./store.idb": {
-				"types": "./dist/store.idb.d.ts",
-				"import": "./dist/store.idb.js",
-				"default": "./dist/store.idb.js"
+			"./idb": {
+				"types": "./dist/idb.d.ts",
+				"import": "./dist/idb.js",
+				"default": "./dist/idb.js"
 			},
-			"./store.fs": {
-				"types": "./dist/store.fs.d.ts",
-				"import": "./dist/store.fs.js",
-				"default": "./dist/store.fs.js"
+			"./fs": {
+				"types": "./dist/fs.d.ts",
+				"import": "./dist/fs.js",
+				"default": "./dist/fs.js"
 			},
-			"./storage/mem": {
-				"types": "./dist/storage.mem.d.ts",
-				"import": "./dist/storage.mem.js",
-				"default": "./dist/storage.mem.js"
+			"./http": {
+				"types": "./dist/http.d.ts",
+				"import": "./dist/http.js",
+				"default": "./dist/http.js"
 			},
-			"./storage/idb": {
-				"types": "./dist/storage.idb.d.ts",
-				"import": "./dist/storage.idb.js",
-				"default": "./dist/storage.idb.js"
+			"./migrate": {
+				"types": "./dist/migrate.d.ts",
+				"import": "./dist/migrate.js",
+				"default": "./dist/migrate.js"
 			},
-			"./storage/fs": {
-				"types": "./dist/storage.fs.d.ts",
-				"import": "./dist/storage.fs.js",
-				"default": "./dist/storage.fs.js"
+			"./migrate.idb": {
+				"types": "./dist/migrate.idb.d.ts",
+				"import": "./dist/migrate.idb.js",
+				"default": "./dist/migrate.idb.js"
+			},
+			"./migrate.legacy": {
+				"types": "./dist/migrate.legacy.d.ts",
+				"import": "./dist/migrate.legacy.js",
+				"default": "./dist/migrate.legacy.js"
+			},
+			"./persistedState": {
+				"types": "./dist/persistedState.d.ts",
+				"import": "./dist/persistedState.js",
+				"default": "./dist/persistedState.js"
 			},
 			"./types": {
 				"types": "./dist/types.d.ts",

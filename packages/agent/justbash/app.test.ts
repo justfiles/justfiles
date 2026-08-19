@@ -1,6 +1,6 @@
 import type { AppController, AppInspection } from '@justfiles/app'
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { createAppCommand } from './app.ts'
 import { createJustBashTool } from './index.ts'
@@ -84,7 +84,7 @@ function fakeController(): AppController {
 
 async function runShell(command: string): Promise<{ text: string; exitCode: number }> {
 	const tool = createJustBashTool({
-		volume: volume(memStorage()),
+		volume: volume(memStore()),
 		commands: [createAppCommand(fakeController())]
 	})
 	const r = await tool.execute('1', { command })

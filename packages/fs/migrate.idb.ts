@@ -88,7 +88,7 @@ export function adoptOnce<T>(name: string, section: () => Promise<T>): Promise<T
 }
 
 /**
- * Copy one old database into `into`. `from` is a database NAME — `store.idb`
+ * Copy one old database into `into`. `from` is a database NAME — `idb.ts`
  * takes one too, and the two must differ, which is the whole of the swap.
  *
  * `mounts` is `migrate`'s: a root-level name whose subtree belongs in another

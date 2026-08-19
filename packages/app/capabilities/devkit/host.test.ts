@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test } from 'vitest'
 import type { Kernel } from '../../kernel.ts'
 import { sdkRuntimeSpecs } from '../../runtime-specs.ts'
@@ -34,7 +35,7 @@ async function seed(fs: ReturnType<typeof volume>, appId: string, slug: string):
 // empty blob), because `loadRuntime` rejects an incomplete sysroot.
 const STUB = 'stub'
 function harness() {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const seen: string[] = []
 	const index = enc.encode(
 		JSON.stringify({

@@ -1,6 +1,6 @@
 # T18 — Retire the twin vocabulary
 
-**Status:** todo
+**Status:** done
 **Phase:** D — namespace, migration, swap, retire
 **Depends on:** [T17](t17-swap-consumers.md), fully landed and released
 **Context:** [overview](README.md) · [design, "Review: compress until nothing can move"](../../kb/fs/fable-design.md)
@@ -64,3 +64,45 @@ are satisfied, or leave it.
 - The final `packages/fs` file list matches the design's final form — one
   table, two lookups, one order, one guarded atomic write, one hash-keyed blob
   map, and the engine, volume, authority, and backends over it. Nothing else.
+
+## What landed
+
+The plan above, with four decisions it did not make.
+
+**`volume.store.ts` merged INTO `volume.ts`** rather than being renamed beside it.
+The old file held the `Volume` interface, `WatchEvent` and `chroot` as well as the
+old implementation, and once the implementation went there was no second concept
+left to keep in two files. `packages/fs` is now: `store.ts` (the seam), `volume.ts`
+(the POSIX view, mounts and `chroot`), `engine.ts`, `authority.ts`, `synced.ts`,
+the four backends (`mem` / `idb` / `fs` / `http`) with `disk.ts` under the native
+one, `conformance.ts`, `migrate*.ts`, `persistedState.ts`, `types.ts`, `xattr.ts`.
+
+**`migrate.sqlite.test.ts` was kept, with a fixture that states the old model
+instead of driving it.** The task retired it with `storage.sqlite.ts`, but
+`migrate.sqlite.ts` SHIPS — it runs on every DO boot until that volume is adopted —
+and this is its only test, and the only cover for the claim the whole migration
+rests on. A new `packages/fs/migrate.legacy.ts` describes one old tree and writes
+the IndexedDB half of it; the test writes the SQL half beside itself. Both sides
+come from ONE description with two ino namespaces and one set of sync ids, which
+is the disagreement the pass has to survive, said directly. `migrate.idb.test.ts`
+uses the same module for the same reason. `migrate.legacy.ts` leaves when
+`migrate.*` does.
+
+**The dead tables leave in a new migration (`0012`), not by editing 0002/0010/0011.**
+Those already ran: a live volume's schema is what its applied migrations left
+behind. 0012 drops the six sync tables and `fs_content_fts`, and the two prune
+bookmarks off `fs_generation`. `fs_inodes` / `fs_dirents` / `fs_xattrs` /
+`fs_contents` / `fs_sync_nodes` STAY — they are what the one pass reads, and a
+volume nobody has opened since the swap has not run it yet. (`parseSqlStatements`
+grew one character class on the way: a migration file ending in a comment block
+used to hand the runner a statement of prose.)
+
+## Left undone, and named
+
+`apps/frieren/worker/usage.ts` still meters storage off `fs_contents` / `fs_inodes`,
+so the number it reports has been frozen since the swap. T17 missed it and T18 does
+not regress it — the tables it reads are the ones that stay. Porting it is not a
+rename: the new `blobs` table has no size column, so the deduped total has to come
+from the distinct `(content, size)` pairs on live rows, and the inline/R2 split from
+`blobs.data IS NULL`. That is a metering change on a billable figure, so it wants
+its own task and its own test.

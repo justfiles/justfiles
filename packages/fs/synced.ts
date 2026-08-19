@@ -2,7 +2,7 @@
  * A volume that runs its own sync: the surface an app holds.
  *
  * Everything underneath already exists and neither half of it RUNS anything —
- * `storeVolume` answers calls, `sync` returns when its cycle is done. This is
+ * `volume` answers calls, `sync` returns when its cycle is done. This is
  * what makes them a live replica, and it is deliberately thin: a timer, a
  * debounce, a status, and the two resets.
  *
@@ -25,14 +25,11 @@
  *   Both then loop until a scan finds nothing left to do, because standing the
  *   loop off does not stand the app off: a row that lands after the last pass
  *   would be stranded on this device by the very cursor the reset saves.
- *
- * T18 renames this to `synced`.
  */
 
 import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
-import type { Volume } from './volume'
-import { type Bindings, storeVolume } from './volume.store'
+import { type Bindings, type Volume, volume } from './volume'
 
 /** A host that keeps a cursor for this wrapper needs its type, and nothing else of the engine's. */
 export type { CursorSlot } from './engine'
@@ -89,7 +86,7 @@ export type SyncedProps = {
 	/** The peer. A `Store`, so a folder, a server and another replica all fit. */
 	remote: Store
 	/**
-	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.store.ts`).
+	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.ts`).
 	 * Only the local store is synced — a bound store is joined at a name and is nobody
 	 * else's business — so this is here rather than anywhere near the engine: the volume
 	 * is what crosses a mount, and the volume is what this builds.
@@ -173,7 +170,7 @@ export type SyncLifecycle = {
 	generation(): number | undefined
 }
 
-export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLifecycle> {
+export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle> {
 	const { local, remote, replica } = props
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
@@ -186,9 +183,9 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	// would buy a second way to fail rather than a second behaviour.
 	// The bindings are keyed on the store the volume is built over, which is the
 	// WRAPPER — so they are read against `hydratingBlobs(local, remote)`, not against
-	// `local`. Nothing else here knows the difference, and `storeVolume` compares
+	// `local`. Nothing else here knows the difference, and `volume` compares
 	// identity rather than looking inside.
-	const vol = storeVolume(hydratingBlobs(local, remote), {
+	const vol = volume(hydratingBlobs(local, remote), {
 		bindings: props.bindings,
 		mintVersion: mint
 	})

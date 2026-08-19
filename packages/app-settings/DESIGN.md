@@ -39,7 +39,7 @@ OAuth) and **Fastmail email** — so both work in both hosts.
 > The host reads those files to activate commands and to resolve the AI backend.
 
 Everything else follows. The Volume is the substrate both hosts already share
-(`nativeStorage` in quay today, frieren's synced backend later — same `@justfiles/fs`
+(`fsStore` in quay today, frieren's synced backend later — same `@justfiles/fs`
 `volume`). Put the credential there and the question "how do I do this in *both* frieren and
 quay" mostly dissolves: the record syncs, and **using** a token never needs a browser.
 

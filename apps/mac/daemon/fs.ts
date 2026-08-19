@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { type Volume, volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { fsStore } from '@justfiles/fs/fs'
 
 // Where the daemon keeps its Volume + runtime.json. Overridable via FRIEREN_SUPPORT_DIR so a test
 // can point it at a temp dir and never touch the real support tree; read lazily (a
@@ -24,8 +24,8 @@ let volumeOnce: Promise<Volume> | undefined
 export function getVolume(): Promise<Volume> {
 	volumeOnce ??= (async () => {
 		const root = join(supportDir(), 'volume')
-		await mkdir(root, { recursive: true }) // nativeStorage lstats the root — it must exist
-		return volume(await nativeStorage(root))
+		await mkdir(root, { recursive: true }) // fsStore lstats the root — it must exist
+		return volume(fsStore(root))
 	})()
 	return volumeOnce
 }

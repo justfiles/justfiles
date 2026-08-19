@@ -16,8 +16,8 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { type CursorSlot, sync, versions } from './engine'
+import { memStore } from './mem'
 import { type Cursor, type Node, ROOT, type Store, type Version } from './store'
-import { memStore } from './store.mem'
 
 /**
  * The host-local slot the engine keeps its cursor in. A variable is the whole
@@ -112,7 +112,7 @@ describe('versions', () => {
 	it('mints a string no other minter for the same replica can mint', () => {
 		// Two minters for one replica is a restart, or a second volume over the same
 		// store. A version is compared by equality — a guard states the one it read
-		// (`volume.store.ts`) and rule 3 calls a row it matches a no-op — so a
+		// (`volume.ts`) and rule 3 calls a row it matches a no-op — so a
 		// repeat lets a stale guard pass against a row it never saw, and the
 		// concurrent update it was there to catch is lost.
 		const one = versions('a')

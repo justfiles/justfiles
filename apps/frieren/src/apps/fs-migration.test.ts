@@ -7,8 +7,8 @@ import { PRIVATE_MOUNT } from '../../shared/private'
 // the genuine article. Only the two things a browser has and node does not are faked.
 const H = vi.hoisted(() => ({ stores: new Map<string, unknown>() }))
 
-vi.mock('@justfiles/fs/store.idb', async () => {
-	const { memStore } = await import('@justfiles/fs/store.mem')
+vi.mock('@justfiles/fs/idb', async () => {
+	const { memStore } = await import('@justfiles/fs/mem')
 	return {
 		idbStore: (name: string) => {
 			const held = H.stores.get(name) ?? memStore()
@@ -29,17 +29,17 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	migrateIdb: async () => {}
 }))
 vi.mock('@justfiles/core', () => ({ createFsClient: () => ({}) }))
-vi.mock('@justfiles/fs/store.http', () => ({ httpStore: () => ({}) }))
+vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
 
 // The loop, stood down — everything below is about what the OFFER reads and copies,
 // and a running cycle would only add a peer. The volume under it is real, so
 // `readFile` through the facade reads the same tree the writes land in.
 vi.mock('@justfiles/fs/synced', async (original) => {
-	const { storeVolume } = await import('@justfiles/fs/volume.store')
+	const { volume } = await import('@justfiles/fs')
 	return {
 		...(await original<Record<string, unknown>>()),
-		syncedVolume: async (props: Parameters<typeof storeVolume>[1] & { local: never }) => ({
-			...storeVolume(props.local, { bindings: props?.bindings }),
+		synced: async (props: Parameters<typeof volume>[1] & { local: never }) => ({
+			...volume(props.local, { bindings: props?.bindings }),
 			flush: async () => {},
 			pause: () => {},
 			resume: () => {},
@@ -115,13 +115,13 @@ async function loadFs(registry: StoredProfile[]) {
  * the whole reason the copy below cannot reach it.
  */
 async function seedProfile(id: string, files: Record<string, string>): Promise<void> {
-	const { idbStore } = await import('@justfiles/fs/store.idb')
+	const { idbStore } = await import('@justfiles/fs/idb')
 	const { ROOT } = await import('@justfiles/fs/store')
-	const { announceMount, storeVolume } = await import('@justfiles/fs/volume.store')
+	const { announceMount, volume } = await import('@justfiles/fs')
 	const tree = idbStore(`frieren-store-${id}`)
 	const local = idbStore(`frieren-store-${id}-${PRIVATE_MOUNT}`)
 	await announceMount(tree, ROOT, PRIVATE_MOUNT)
-	const vol = storeVolume(tree, { bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, local]])]]) })
+	const vol = volume(tree, { bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, local]])]]) })
 	for (const [path, body] of Object.entries(files)) {
 		const dir = path.slice(0, path.lastIndexOf('/'))
 		if (dir !== '') await vol.mkdir(dir, { recursive: true })
@@ -131,9 +131,9 @@ async function seedProfile(id: string, files: Record<string, string>): Promise<v
 
 /** The account's SYNCED tree, unbound: what a peer would see, and nothing else. */
 async function accountVolume() {
-	const { idbStore } = await import('@justfiles/fs/store.idb')
-	const { storeVolume } = await import('@justfiles/fs/volume.store')
-	return storeVolume(idbStore('frieren-store-account-profile'))
+	const { idbStore } = await import('@justfiles/fs/idb')
+	const { volume } = await import('@justfiles/fs')
+	return volume(idbStore('frieren-store-account-profile'))
 }
 
 async function listAccountFiles(): Promise<Set<string>> {

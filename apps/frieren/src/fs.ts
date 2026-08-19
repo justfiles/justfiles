@@ -1,25 +1,24 @@
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
-import type { Volume } from '@justfiles/fs'
+import { announceMount, type Volume, volume } from '@justfiles/fs'
+import { httpStore } from '@justfiles/fs/http'
+import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import { ROOT, type Store } from '@justfiles/fs/store'
-import { httpStore } from '@justfiles/fs/store.http'
-import { idbStore, sharedStore } from '@justfiles/fs/store.idb'
 import {
 	type CursorSlot,
 	type DiscardSlot,
 	type SyncStatus as StoreSyncStatus,
-	syncedVolume,
+	synced,
 	versions
 } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
-import { announceMount, storeVolume } from '@justfiles/fs/volume.store'
 import { PRIVATE_MOUNT } from '../shared/private'
 
 export type { FsClient, Volume }
 export type SyncStatus = StoreSyncStatus | 'local-only'
 
-type SyncVolume = Awaited<ReturnType<typeof syncedVolume>>
+type SyncVolume = Awaited<ReturnType<typeof synced>>
 
 export type ProfileVolume = Volume & {
 	flush(): Promise<void>
@@ -293,14 +292,14 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	entry.sync = null
 	setActiveStatus(entry, 'connecting')
 	const client = createFsClient(getToken)
-	const syncVolume = await syncedVolume({
+	const syncVolume = await synced({
 		local: entry.local,
 		remote: remoteStore(getToken),
 		replica: entry.replica,
 		pull: slot(`frieren-fs-${entry.profileId}-pull`),
 		push: slot(`frieren-fs-${entry.profileId}-push`),
 		// A discard that stopped half-done is finished before the first cycle, which is
-		// the only way it can be: `syncedVolume` starts its loop before it returns, so
+		// the only way it can be: `synced` starts its loop before it returns, so
 		// nothing the app could call afterwards is early enough.
 		discard: discardSlot(`frieren-fs-${entry.profileId}-discard`),
 		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, entry.private]])]]),
@@ -367,7 +366,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	})
 
 	let entry: Active
-	const plain = storeVolume(local, {
+	const plain = volume(local, {
 		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]]),
 		mintVersion: versions(replica)
 	})
@@ -551,7 +550,7 @@ function openLocalSource(): { volume: Volume; destroy: () => Promise<void> } {
 	// The synced tree alone, with no binding: the walk below never leaves it, and the
 	// anonymous profile's `/private` is not this account's to copy.
 	const store = idbStore(storeDb(anonymousProfileId()))
-	return { volume: storeVolume(store), destroy: async () => store.close?.() }
+	return { volume: volume(store), destroy: async () => store.close?.() }
 }
 
 // A soul/profile file is "personalized" once the user writes one of their own. An absent
@@ -702,7 +701,7 @@ function deleteIdb(name: string): Promise<void> {
 // ── Server-coordinated volume reset ──────────────────────────────────────────
 // Surfaced in the sync-status menu (DesktopShell). "Take theirs" and "take mine"
 // are intents on the synced volume — the loop that carries them out lives in
-// `syncedVolume`. Only "factory reset" is app-level: it wipes the server AND nukes
+// `synced`. Only "factory reset" is app-level: it wipes the server AND nukes
 // local IDB, which no library-level reset can do.
 
 // "Take theirs" — discard this device's local replica and re-pull the server's

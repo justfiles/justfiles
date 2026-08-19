@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test, vi } from 'vitest'
 import { defineCapability, implementTool } from './core.ts'
 
@@ -27,7 +28,7 @@ test('implementTool derives a passthrough tool per metadata-carrying method', as
 	expect(tool?.description).toBe('Ping the thing.')
 	expect(tool?.parameters).toEqual({ type: 'object' })
 	const invoke = vi.fn(async () => ({ pong: 2 }))
-	const result = await tool?.execute(invoke, { a: 1 }, { volume: volume(memStorage()) })
+	const result = await tool?.execute(invoke, { a: 1 }, { volume: volume(memStore()) })
 	expect(invoke).toHaveBeenCalledWith('ping', { a: 1 })
 	expect(result).toEqual({ pong: 2 })
 })
@@ -43,6 +44,6 @@ test('overrides replace name, description, and execute', async () => {
 	const [tool] = set.tools
 	expect(tool?.name).toBe('ping')
 	expect(tool?.description).toBe('For the model.')
-	const result = await tool?.execute(vi.fn(), { a: 3 }, { volume: volume(memStorage()) })
+	const result = await tool?.execute(vi.fn(), { a: 3 }, { volume: volume(memStore()) })
 	expect(result).toEqual({ content: 'sent 3' })
 })
