@@ -383,14 +383,19 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 		await migrateIdb(LEGACY_DB, local)
 		localStorage.setItem(ADOPTED_KEY, '1')
 	}
+	// NO `localFirst`. This runtime lists the whole tree ONCE, here, and then serves that
+	// listing from memory until something asks it to refresh — and the only thing that does
+	// is a window focus. So the first cycle has to have run before the listing is taken, or
+	// a device whose local replica is empty records "loaded" over an empty workspace and
+	// keeps showing it. `flush()` never rejects, so an offline boot still gets its volume;
+	// it just gets `error` status and the local tree, which is what shipped.
 	const volume = await syncedVolume({
 		local,
 		remote: remoteStore(getToken),
 		replica: replicaId(),
 		pull: slot('justfiles-store-pull'),
 		push: slot('justfiles-store-push'),
-		lazyContent: true,
-		localFirst: true
+		lazyContent: true
 	})
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
