@@ -205,7 +205,11 @@ export const ResetBody = z.discriminatedUnion('mode', [
 		mode: z.literal('adopt-mine'),
 		fromGeneration: z.number().int(),
 		operationId: z.string().min(1),
-		resetId: z.string(),
+		// Optional, because a republish that needs no marker may say so. The store
+		// model's `takeMine` is one: interrupted anywhere it leaves an emptied
+		// authority and a volume still whole here, so running it again is both the
+		// retry and the recovery — there is no half-state for a flag to name.
+		resetId: z.string().optional(),
 		// The volume identity the client believes it is republishing onto. The reset
 		// capability validates it atomically with the generation CAS (see reset.ts), so a
 		// stale endpoint swap can't truncate a different volume at the same generation.

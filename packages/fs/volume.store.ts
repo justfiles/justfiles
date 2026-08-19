@@ -116,8 +116,16 @@ const authorOf = (version: Version): string => {
 	return cut === -1 ? version : version.slice(0, cut)
 }
 
-/** The only `source` this model can report: some other replica wrote the row. */
-const REMOTE = 'remote'
+/**
+ * The only `source` this model can report: some other replica wrote the row.
+ *
+ * The old engine tagged every write with an origin and let a caller name any of
+ * them; this one has exactly two answers — a write made through this volume, and
+ * a row that arrived in a feed — so the constant is the whole vocabulary. It is
+ * exported because an app filters on it: frieren's kernel re-reads app state only
+ * when the agent's server-side write arrives, not when its own dispatch does.
+ */
+export const REMOTE_SOURCE = 'remote'
 
 /**
  * fstab, as data: which store stands at which name, inside which directory.
@@ -134,6 +142,101 @@ const REMOTE = 'remote'
  * fstab entry does.
  */
 export type Bindings = Map<NodeId, Map<string, Store>>
+
+/**
+ * The mount POINT, claimed in the store it stands in: the row every replica sees,
+ * written the ordinary way. The BINDING is separate and local (`Bindings` above) —
+ * this is only the reservation, which is what makes the name uncollidable and, with
+ * `authority.ts`'s `holdsRows`, makes a subtree under it unspellable.
+ *
+ * Every field is derived from `(parent, name)`, so every replica writes a BYTE-IDENTICAL
+ * row and none of them ever sends it: rule 3 reads a second copy as a no-op, and the
+ * `mount` author tag is no live replica, so the push filter drops it. That is the whole
+ * of how a host claims its local data's name with no coordination and no traffic — the
+ * same trick the migration plays with `migrated:<revision>`.
+ *
+ * The id is derived too, and it has to be: minting one would give two replicas two live
+ * rows for one name, which rule 1 resolves by the lowest id and the engine then RENAMES
+ * the loser. A hash of the position is the one id both sides can reach alone.
+ *
+ * Idempotent. A mount already standing here is the answer; a peer that claimed the name
+ * first wins the guard, and reading back its identical row is the same answer again.
+ * Anything else holding the name is a real conflict the host has to see.
+ */
+export async function announceMount(store: Store, parent: NodeId, name: string): Promise<NodeId> {
+	const row = await mountRow(parent, name)
+	const held = await store.child(parent, name)
+	if (held !== null) return held.type === 'mount' ? held.id : refuse(name, held)
+	try {
+		// TWO guards, because a free NAME settles nothing when the id is a function of
+		// the position. `free` is the claim. `is: null` is the id itself being
+		// unspoken-for: a mount removed from this position left a tombstone that rule 8
+		// makes final, and a tombstone FREES the name — so `free` alone passes, a raw
+		// store resurrects a dead id, and an authority refuses the write. The volume
+		// cannot leave that tombstone (`pinned` below), but a store written to
+		// directly, or a replica from before that rule, can.
+		//
+		// Stated as a guard rather than read first, because a read is a moment and this
+		// is a race: a peer's page carrying that tombstone may land between any two
+		// awaits here. The guard makes the answer the commit's own.
+		await store.commit([row], [{ free: { parent, name } }, { version: { id: row.id, is: null } }])
+	} catch (e) {
+		if (!(e instanceof GuardError)) throw e
+		const raced = await store.child(parent, name)
+		if (raced !== null) return raced.type === 'mount' ? raced.id : refuse(name, raced)
+		// Which guard lost is what the name cannot say. Nothing holds it, so the ID is
+		// what refused — this position was announced once, and its row is somewhere no
+		// second announcement can reach past: gone, which rule 8 makes final, or moved,
+		// which nothing but a write around `pinned` could have done.
+		const derived = await store.get(row.id)
+		if (derived === null) return refuse(name, null) // the holder vanished; the name is free again
+		throw new Error(
+			`EBUSY: ${name} was a mount here, and its id is ${derived.deleted ? 'a tombstone, which is final' : `live at ${derived.name}`}`
+		)
+	}
+	return row.id
+}
+
+const refuse = (name: string, held: Node | null): never => {
+	throw new Error(`EEXIST: ${name} is ${held === null ? 'gone' : `a ${held.type}`}, not a mount`)
+}
+
+/**
+ * The one row, from its position and nothing else. `mtimeNs` is 0 for the reason the root
+ * row's is (rule 6): a stamp is per-replica, and a field that differs is a field that
+ * would have to converge.
+ */
+const mountRow = async (parent: NodeId, name: string): Promise<Node> => ({
+	id: await derivedId(parent, name),
+	parent,
+	name,
+	type: 'mount',
+	mode: 0o040755,
+	mtimeNs: 0n,
+	size: 0n,
+	version: 'mount:1'
+})
+
+/**
+ * A uuid every replica derives from the same position: the hash of `(parent, name)`, laid
+ * out as a v8 uuid — the version the RFC reserves for exactly this, an id whose bits are
+ * an application's to choose.
+ */
+const derivedId = async (parent: NodeId, name: string): Promise<NodeId> => {
+	// NUL between the parts: the one byte a name can never hold, so two positions
+	// never hash to one id.
+	const nul = String.fromCharCode(0)
+	const hex = await sha256Hex(new TextEncoder().encode(`mount${nul}${parent}${nul}${name}`))
+	// The version nibble and the variant nibble are SET rather than taken from the hash,
+	// which is what makes this a well-formed uuid and not 32 hex characters with dashes.
+	return [
+		hex.slice(0, 8),
+		hex.slice(8, 12),
+		`8${hex.slice(13, 16)}`,
+		`8${hex.slice(17, 20)}`,
+		hex.slice(20, 32)
+	].join('-')
+}
 
 export function storeVolume(
 	store: Store,
@@ -651,6 +754,23 @@ export function storeVolume(
 		boundIn(end.store, end.dir.id)?.has(end.name) ?? false
 
 	/**
+	 * A mount row is never moved and never tombstoned. `bound` above refuses the
+	 * BINDING's name; this refuses the ROW, whether anything is bound over it or
+	 * not, and for a reason of its own: `announceMount` DERIVES the id from
+	 * `(parent, name)`, so a row that leaves its position leaves its identity
+	 * behind. Removed, it is a tombstone the derived id can never get past (rule
+	 * 8) — the name is claimed for ever by a row that is not there. Renamed, the
+	 * next announcement at the old position derives that same id and drags the row
+	 * back out of wherever it went, silently.
+	 *
+	 * `EBUSY`, the answer a bound one already gets: a mount point is a claim rather
+	 * than the host's data, and unbinding is what retires it.
+	 */
+	const pinned = (rows: Array<Node | null>, path: string): void => {
+		if (rows.some((row) => row?.type === 'mount')) throw new Error(`EBUSY: ${path}`)
+	}
+
+	/**
 	 * A rename, as ONE guarded commit — and one commit belongs to one store, so a
 	 * path that resolves into another is `EXDEV`, exactly as it is on a real
 	 * filesystem. `vol.rename` is the `mv` that answers it.
@@ -663,6 +783,7 @@ export function storeVolume(
 			// Not followed, again: `mv` moves the link itself.
 			const node = await from.store.child(from.dir.id, from.name)
 			if (node === null) throw new Error(`ENOENT: ${oldPath}`)
+			pinned([node], oldPath)
 			const to = await parentOf(newPath, walked)
 			if (bound(to)) throw new Error(`EBUSY: ${newPath}`)
 			if (to.store !== from.store) throw new Error(`EXDEV: ${oldPath} -> ${newPath}`)
@@ -671,6 +792,8 @@ export function storeVolume(
 			if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
 			const target = await from.store.child(to.dir.id, to.name)
 			if (target?.id === node.id) return // the same row, in the same place
+			// A taken destination is tombstoned below, which a mount row is never.
+			pinned([target], newPath)
 
 			// ONE row moves, whatever hangs below it: a child's location is
 			// `(parent, name)`, and neither field changed. This is the O(1) move.
@@ -893,7 +1016,7 @@ export function storeVolume(
 				scheduled = false
 				const definite = fire
 				const before = node
-				const source = remote ? REMOTE : undefined
+				const source = remote ? REMOTE_SOURCE : undefined
 				fire = false
 				remote = false
 				if (rebind) {
@@ -1060,7 +1183,7 @@ export function storeVolume(
 				await bind()
 				if (!sameAt(root, was)) wake = true
 			}
-			return { wake, source: remote ? REMOTE : undefined }
+			return { wake, source: remote ? REMOTE_SOURCE : undefined }
 		}
 
 		let queued: Seen[] = []
@@ -1250,7 +1373,7 @@ export function storeVolume(
 				// A BOUND mount point resolves to the bound store's root, and that is
 				// the one row nothing removes — `EBUSY` by another name, and the right
 				// answer: unbind it first, the way a filesystem is unmounted before its
-				// mountpoint goes. An unbound one is an ordinary row and goes with it.
+				// mountpoint goes. An unbound one is refused too, by `pinned` below.
 				if (at.node.id === ROOT) throw new Error(`EINVAL: ${path}`)
 				const dir = await at.store.get(at.node.parent)
 				if (dir === null || dir.deleted) throw new Error(`ENOENT: ${path}`)
@@ -1262,6 +1385,10 @@ export function storeVolume(
 					else if ((await at.store.children(at.node.id)).nodes.length > 0)
 						throw new Error(`ENOTEMPTY: ${path}`)
 				}
+				// The walk is what makes this the whole rule and not the top row's: a
+				// recursive removal tombstones everything it collected, so a mount
+				// standing anywhere under `path` is here too.
+				pinned(dead, path)
 				// One batch, one guard per row it replaces — the parent it stamps
 				// included. A directory's version moves on every create inside it, so an
 				// entry this walk never saw fails the commit, and the attempt enumerates

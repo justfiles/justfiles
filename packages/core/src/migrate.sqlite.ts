@@ -71,8 +71,17 @@ const bytes = (value: unknown): Uint8Array =>
  * to; without it, content it never inlined migrates as a row naming bytes this
  * store does not hold — which the seam allows, and which a read through
  * `hydratingBlobs` can still fetch from a peer that has them.
+ *
+ * `mounts` is `migrate`'s: a root-level name whose subtree belongs in another
+ * store — `/private` on this side, into the DO's own local store bound there, so
+ * the credentials it holds are not in the table clients pull.
  */
-export async function migrateSqlite(db: DbAdapter, into: Store, blobs?: BlobReader): Promise<void> {
+export async function migrateSqlite(
+	db: DbAdapter,
+	into: Store,
+	opts?: { blobs?: BlobReader; mounts?: Map<string, Store> }
+): Promise<void> {
+	const blobs = opts?.blobs
 	await migrate(
 		{
 			async entries(dir) {
@@ -104,7 +113,8 @@ export async function migrateSqlite(db: DbAdapter, into: Store, blobs?: BlobRead
 			},
 			blob: (hash) => readBlob(db, hash, blobs)
 		},
-		into
+		into,
+		opts?.mounts
 	)
 }
 

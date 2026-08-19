@@ -4,7 +4,8 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { sandboxClient } from '@justfiles/app/sandbox'
 import '@justfiles/design/mac.css'
 import { volume } from '@justfiles/fs'
-import { idbStorage, persistStorage } from '@justfiles/fs/storage/idb'
+import { idbStorage } from '@justfiles/fs/storage/idb'
+import { persistStorage } from '@justfiles/fs/store.idb'
 
 // The page's platform entry: real TypeScript, bundled by Vite and served as a
 // hashed static asset (see `route.get('/')` in ../app.tsx). Everything an app

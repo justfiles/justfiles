@@ -36,7 +36,6 @@
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
 		"@justfiles/state": "workspace:*",
-		"@justfiles/sync": "workspace:*",
 		"@justfiles/ui": "workspace:*",
 		"@earendil-works/pi-agent-core": "^0.80.10",
 		"@earendil-works/pi-ai": "^0.80.10",

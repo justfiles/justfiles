@@ -186,7 +186,33 @@ const holdsRows = (row: Node): boolean => row.type === 'dir'
  */
 const own = (id: NodeId): string => `id-${encodeURIComponent(id)}`
 
-export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
+export type FsStoreOptions = {
+	/** The disk to reach the tree through. Defaults to the real one, rooted at `root`. */
+	disk?: Disk
+	/**
+	 * Root-level names another store is joined at (T15's bindings, as this backend sees
+	 * them). Their directories are left exactly as they are: not listed, not adopted,
+	 * not reported — so `<root>/private` can be a real folder in Finder that this store
+	 * never puts on any wire.
+	 */
+	mounts?: Iterable<string>
+}
+
+export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
+	const disk = opts.disk ?? fsDisk(root)
+	/**
+	 * Root-level names this store does not own, and therefore never imports: its own
+	 * sidecar, and every name the host has joined another store at.
+	 *
+	 * A mount is what keeps local data out of a synced store, and on this backend the
+	 * mounted store's tree is a REAL directory a user can open in Finder — so the
+	 * boundary has to be something the bridge can see, and the design puts exactly this
+	 * filter here ("an import filter private to the native bridge: the bridge never
+	 * commits matching observations"). It is one name per binding, out of the host's own
+	 * fstab, not a pattern language: nothing here matches, and a name that is not bound
+	 * is ordinary data.
+	 */
+	const foreign = new Set<string>([SIDECAR, ...(opts.mounts ?? [])])
 	const byId = new Map<NodeId, Node>()
 	/**
 	 * parent → name → ids, live rows only. One index for both jobs the tree has: the
@@ -323,7 +349,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 			if (!up || up.deleted || !holdsRows(up)) return null
 			at = up
 		}
-		if (names[0] === SIDECAR) return null
+		if (names[0] !== undefined && foreign.has(names[0])) return null
 		// Down from root, ONE name at a time: a row from a peer carrying `..`, a separator or a
 		// NUL simply has nowhere to be.
 		let spot = AT_ROOT
@@ -340,7 +366,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 	 * row may hold yet. Null when the parent has no path of its own.
 	 */
 	const pathUnder = (parent: NodeId, name: string): Spot | null => {
-		if (parent === ROOT) return name === SIDECAR ? null : under(AT_ROOT, name)
+		if (parent === ROOT) return foreign.has(name) ? null : under(AT_ROOT, name)
 		const up = byId.get(parent)
 		if (!up || up.deleted || !holdsRows(up)) return null
 		const dir = pathOf(up)
@@ -964,7 +990,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		const found = new Set(names)
 		const below: Landed[] = []
 		for (const name of names) {
-			if (path === AT_ROOT && name === SIDECAR) continue
+			if (path === AT_ROOT && foreign.has(name)) continue
 			// A name the OS lists that this store could never address. Not adopted, and not a
 			// reason to stop: the rest of the directory is still this store’s to reconcile.
 			const at = under(path, name)
@@ -1120,7 +1146,7 @@ export function fsStore(root: string, disk: Disk = fsDisk(root)): Store {
 		if (dir === undefined || !parent || parent.deleted) return
 		if (!holdsRows(parent)) return
 		const name = above === AT_ROOT ? path : path.slice(above.length + 1)
-		if (above === AT_ROOT && name === SIDECAR) return // this store's own bookkeeping
+		if (above === AT_ROOT && foreign.has(name)) return // not this store's to touch
 
 		if (await disk.absent(path)) {
 			bury(above, new Set([name]))

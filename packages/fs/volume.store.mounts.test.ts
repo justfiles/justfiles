@@ -24,7 +24,7 @@ import { type Cursor, GuardError, type Node, type NodeId, ROOT, type Store } fro
 import { memStore } from './store.mem'
 import { FileType } from './types'
 import { type Volume, WATCH_BURST_MS } from './volume'
-import { type Bindings, storeVolume } from './volume.store'
+import { announceMount, type Bindings, storeVolume } from './volume.store'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -238,7 +238,10 @@ describe('crossing', () => {
 		])
 		await expect(vol.writeFile('/private/env', enc.encode('no'))).rejects.toThrow(/^EROFS/)
 		await expect(vol.mkdir('/private/notes')).rejects.toThrow(/^EROFS/)
-		await expect(vol.rename('/private', '/private/self')).rejects.toThrow(/^EROFS/)
+		// Both true of this one — nothing goes inside an unbound mount, and the row
+		// itself never moves — and the row is what answers: a move is refused on what
+		// it would move, before it looks at where that was headed.
+		await expect(vol.rename('/private', '/private/self')).rejects.toThrow(/^EBUSY/)
 	})
 
 	it('refuses a rename onto a mount point', async () => {
@@ -877,5 +880,152 @@ describe('isolation', () => {
 		expect(dec.decode(await volHere.readFile('/config'))).toBe('API_KEY=here')
 		expect(dec.decode(await volThere.readFile('/config'))).toBe('API_KEY=there')
 		expect(await there.blobs.has(await hash(enc.encode('API_KEY=here')))).toBe(false)
+	})
+})
+
+describe('announceMount: the host claims the name, with no traffic and no coordination', () => {
+	it('mints the same row on every replica, so the first sync is silent', async () => {
+		const a = memStore()
+		const b = memStore()
+
+		const here = await announceMount(a, ROOT, 'private')
+		const there = await announceMount(b, ROOT, 'private')
+
+		// Same id, or two replicas hold two live rows for one name — which rule 1
+		// resolves by the lowest id and the engine then renames the loser.
+		expect(here).toBe(there)
+		const [rowA, rowB] = [await a.child(ROOT, 'private'), await b.child(ROOT, 'private')]
+		expect(rowA).toEqual(rowB)
+		expect(rowA?.type).toBe('mount')
+
+		// Byte-identical, so a page carrying one is a no-op (rule 3) — and the author
+		// is no live replica, so no push ever carries it in the first place.
+		expect(rowA?.version).toBe('mount:1')
+
+		// A pull of b's whole feed into a writes nothing: proved by the feed position,
+		// which only moves when a row lands.
+		const before = (await a.since()).next
+		await a.commit([rowB as Node])
+		expect((await a.since(before)).nodes).toEqual([])
+	})
+
+	it('is idempotent, and a peer that claimed it first is the same answer', async () => {
+		const store = memStore()
+		const first = await announceMount(store, ROOT, 'private')
+		expect(await announceMount(store, ROOT, 'private')).toBe(first)
+
+		// The race, which is the same fact from the other side: the row lands between
+		// the look and the commit. A store whose first look misses it is that window,
+		// and the `free` guard is what closes it — the answer is the row that is there.
+		let looked = false
+		const blind: Store = {
+			...store,
+			child: async (parent, name) => {
+				if (looked) return store.child(parent, name)
+				looked = true
+				return null
+			}
+		}
+		expect(await announceMount(blind, ROOT, 'private')).toBe(first)
+	})
+
+	it('refuses a name something else already holds', async () => {
+		const store = memStore()
+		await mkdir(store, ROOT, 'private')
+		await expect(announceMount(store, ROOT, 'private')).rejects.toThrow(/EEXIST/)
+	})
+
+	it('claims a name nothing else can then take, and holds no rows (T10)', async () => {
+		const store = authority(memStore())
+		const mount = await announceMount(store, ROOT, 'private')
+
+		await expect(mkdir(store, ROOT, 'private')).rejects.toThrow(GuardError)
+		await expect(mkfile(store, mount, 'secret.env', 'shh')).rejects.toThrow(GuardError)
+	})
+})
+
+/**
+ * The other half of a DERIVED id: a mount row's identity IS its position, so the two
+ * are never allowed to disagree. Everything a volume could do to make them disagree —
+ * remove the row, move it, replace it, sweep it up in a recursive delete — is refused
+ * here, which is what keeps `announceMount` able to answer the same way for ever.
+ */
+describe('a mount point is pinned: its id is its position, so neither may move', () => {
+	it('refuses to remove one, and refuses to sweep one up in a recursive delete', async () => {
+		const store = memStore()
+		const src = await mkdir(store, ROOT, 'src')
+		const mount = await mkmount(store, src, 'private')
+		const vol = storeVolume(store)
+
+		// Removing it would tombstone the very id the next announcement derives.
+		await expect(vol.rm('/src/private')).rejects.toThrow(/^EBUSY/)
+		// `force` is about a name that is not there, and this one is.
+		await expect(vol.rm('/src/private', { force: true })).rejects.toThrow(/^EBUSY/)
+		// And a removal that never named it takes it just the same, so the walk is
+		// where the rule has to be asked.
+		await expect(vol.rm('/src', { recursive: true })).rejects.toThrow(/^EBUSY/)
+
+		expect((await store.get(mount))?.deleted).toBeUndefined()
+		expect((await store.get(src))?.deleted).toBeUndefined()
+	})
+
+	it('refuses to rename one away, or to replace one', async () => {
+		const store = memStore()
+		const mount = await mkmount(store, ROOT, 'private')
+		const vol = storeVolume(store)
+		await vol.mkdir('/src')
+
+		// Off the point: the row would keep an id derived from a position it no longer
+		// stands at — and the next `announceMount` at `/private` would drag it back.
+		await expect(vol.rename('/private', '/archive')).rejects.toThrow(/^EBUSY/)
+		// Onto it: a replaced row is tombstoned, which is the removal above by another
+		// name. (The bound case is refused a step earlier, by the binding itself.)
+		await expect(vol.rename('/src', '/private')).rejects.toThrow(/^EBUSY/)
+
+		expect((await store.child(ROOT, 'private'))?.id).toBe(mount)
+		expect(await store.child(ROOT, 'archive')).toBeNull()
+		expect(await vol.exists('/src')).toBe(true)
+	})
+
+	it('says what a tombstone at the derived id is, instead of reporting a free name as taken', async () => {
+		// Only a write that went around the volume can leave one now, which is the case
+		// this is for: a replica from before the rule above, or a store written directly.
+		const store = memStore()
+		const mount = await announceMount(store, ROOT, 'private')
+		await store.commit([{ ...((await store.get(mount)) as Node), deleted: true, version: 'x:2' }])
+		// Rule 3: the tombstone freed the name — and the id it kept is the one the
+		// next announcement derives, so the name being free settles nothing.
+		expect(await store.child(ROOT, 'private')).toBeNull()
+
+		await expect(announceMount(store, ROOT, 'private')).rejects.toThrow(
+			/^EBUSY: private was a mount here/
+		)
+		// The same answer under an authority, which refuses the write for the same
+		// reason — rather than one backend saying EEXIST and the other silently
+		// bringing a dead id back to life.
+		await expect(announceMount(authority(store), ROOT, 'private')).rejects.toThrow(
+			/^EBUSY: private was a mount here/
+		)
+		expect((await store.get(mount))?.deleted).toBe(true)
+	})
+
+	it('leaves that answer to the commit, so a tombstone arriving mid-announce still refuses', async () => {
+		// The window a read cannot cover: a peer's page carrying the tombstone lands
+		// between the lookup and the write. A store that answers every READ as though
+		// the tombstone were not there yet is that window held open — and the commit,
+		// which is the only step that sees the store as it is, has to be what refuses.
+		const store = memStore()
+		const mount = await announceMount(store, ROOT, 'private')
+		await store.commit([{ ...((await store.get(mount)) as Node), deleted: true, version: 'x:2' }])
+
+		const late: Store = { ...store, get: async (id) => (id === mount ? null : store.get(id)) }
+		// It refuses — on the guard, since every read here says the id is free. What it
+		// can SAY is only as good as the re-read that follows, and this one lies, so the
+		// message is the ordinary one for a name nothing holds. What matters is that
+		// nothing came back to life: `free` alone would have passed, the tombstone
+		// having freed the name.
+		await expect(announceMount(late, ROOT, 'private')).rejects.toThrow(Error)
+		expect((await store.get(mount))?.deleted).toBe(true)
+		expect(await store.child(ROOT, 'private')).toBeNull()
 	})
 })
