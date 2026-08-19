@@ -209,6 +209,26 @@ their own:
 connection and fires `onblocked` rather than completing, so "forget this browser"
 could not delete what it promised to.
 
+### A lane you can rename ACROSS is a lane in the same store
+
+Running the app found this one, and nothing in the task list did: app install
+staged its bundle under `/private/tmp/app-installs` and committed it with a
+rename into `/applications/<id>`. That worked when `/private` was a path prefix
+the old engine filtered — "commit by renaming across the lane boundary" is what
+[#379](https://github.com/xiaoxinghu/justfiles/pull/379) chose it for. A mount is
+a STORE boundary, so the same rename is `EXDEV`, and every install failed.
+
+Staging moves back into the synced lane (`/system/tmp/app-installs`), because a
+rename is the only atomic commit there is and it cannot cross a mount. The wire
+objection that moved it out does not survive into this model: a push offers each
+row ONCE at its latest state (rule 4), so a subtree staged and renamed inside one
+cycle reaches a peer as the finished bundle and nothing else — and content is
+hash-keyed, so a cycle that does catch it mid-stage re-sends no bytes when the
+rename lands. The old put-then-delete churn was the journal's, not the tree's.
+
+The mac daemon's `/private/tmp/app-assets` needs no change: it renames a FILE,
+which is the one thing a cross-mount rename does carry (the bytes).
+
 ### `/file/*` is not the seam, and does not live in `store.api.ts`
 
 The CLI reads one file at a time, and over the seam that is a request per path
@@ -254,6 +274,10 @@ not a row at all. What decides the order:
 The new name is `/store`. It is a top-level route rather than something under
 `/fs`, so the host's auth middleware and its owner routing name it explicitly and
 no ordering between two overlapping mounts decides which half a request reaches.
+A new top-level prefix on frieren is THREE places, not one: the Worker's
+middleware and routing, `run_worker_first` in `wrangler.jsonc` (without it the
+asset handler answers a seam call with `index.html`, and a client reads HTML
+where it expected JSON), and the PWA's `navigateFallbackDenylist`.
 
 One thing that ordering does NOT close, and it is a deploy window rather than a
 design hole: a tab still running the previous bundle keeps writing to `/fs`, and

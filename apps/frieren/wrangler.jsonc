@@ -6,7 +6,7 @@
 	"assets": {
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws"]
+		"run_worker_first": ["/api/*", "/fs", "/fs/*", "/store", "/store/*", "/ws"]
 	},
 	"observability": {
 		"enabled": true
@@ -79,7 +79,7 @@
 			"assets": {
 				"binding": "ASSETS",
 				"not_found_handling": "single-page-application",
-				"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws"]
+				"run_worker_first": ["/api/*", "/fs", "/fs/*", "/store", "/store/*", "/ws"]
 			},
 			// Same as prod: staging carries the same orphaned hourly cron.
 			"triggers": {
