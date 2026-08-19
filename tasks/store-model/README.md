@@ -29,7 +29,9 @@ it lives in `packages/fs`. Two parts stay outside:
   `packages/core`. They are server code. `packages/fs` must stay
   dependency-free; `core` depends on `fs`, never the reverse.
 - `packages/sync` is deleted in the last task only, after every consumer has
-  moved. Until then both models run side by side.
+  moved. They all have as of [T17](t17-swap-consumers.md): what still references
+  it is `packages/core`'s migration fixture, which is the proof the one pass
+  works and so leaves with the pass.
 
 ## Ground rules — every task
 
@@ -118,7 +120,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | --- | --- | --- | --- |
 | T15 | [Mounts](t15-mounts.md) | T6, T13 | done |
 | T16 | [Data migration](t16-data-migration.md) | T4, T12 | done |
-| T17 | [Swap the consumers](t17-swap-consumers.md) | T11, T13, T15, T16 | in progress |
+| T17 | [Swap the consumers](t17-swap-consumers.md) | T11, T13, T15, T16 | done |
 | T18 | [Retire the twin vocabulary](t18-retire.md) | T17 | todo |
 
 ### Optional — take it or leave it
