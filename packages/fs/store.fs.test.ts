@@ -1753,7 +1753,7 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 				return made
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		meddle = 'folder' as Spot
 		await store.commit([
@@ -1797,7 +1797,7 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 				return s
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const row = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 			parent: ROOT,
@@ -1842,7 +1842,7 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 				return real.write(spot, data, at, was)
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const key = await sha256Hex(bytes('mine'))
 		await store.blobs.put(key, bytes('mine'))
@@ -1899,7 +1899,7 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 				return real.move(at, to)
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const key = await sha256Hex(bytes('hello'))
 		const named = (name: string, version: string): Node => ({
@@ -1946,7 +1946,7 @@ describe('fsStore: a name says where it is, not what it resolves to', () => {
 				return real.move(at, to)
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const key = await sha256Hex(bytes('hello'))
 		const named = (name: string, version: string): Node => ({
@@ -2002,7 +2002,7 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 				return real.link(spot, target, at, was)
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const pointing = (target: string, version: string): Node => ({
 			id: 'l',
@@ -2050,7 +2050,7 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 				return real.drop(at, directory)
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const key = await sha256Hex(bytes('hello'))
 		const row: Node = {
@@ -2105,7 +2105,7 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 				return real.drop(at, directory)
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const key = await sha256Hex(bytes('hello'))
 		await store.blobs.put(key, bytes('hello'))
@@ -2168,7 +2168,7 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 				return names
 			}
 		}
-		const store = fsStore(root, racy)
+		const store = fsStore(root, { disk: racy })
 		built.push(store)
 		const box: Node = {
 			id: 'b',
@@ -2228,4 +2228,68 @@ describe('fsStore: an act carries what the commit saw, or it does not act', () =
 		expect(await store.child(ROOT, 'pipe')).toBeNull()
 		expect((await stat(join(root, 'pipe'))).isFIFO()).toBe(true)
 	}, 20_000)
+})
+
+describe('a mount is a real directory this store does not own', () => {
+	/**
+	 * The native case the two database backends do not have: the mounted store's tree
+	 * is a REAL folder under the same root, so a user opens `<root>/private` in Finder
+	 * like anything else. What keeps it out of THIS store is the same filter its own
+	 * sidecar goes through — one name per binding, out of the host's fstab.
+	 */
+	const bound = (root: string): Store => {
+		const store = fsStore(root, { mounts: ['private'] })
+		built.push(store)
+		return store
+	}
+
+	test('the bound name is never adopted, never listed, and never touched', async () => {
+		const root = await temp()
+		await mkdir(join(root, 'private'))
+		await writeFile(join(root, 'private', 'credentials.json'), 'secret')
+		await mkdir(join(root, 'notes'))
+		await writeFile(join(root, 'notes', 'today.md'), 'hello')
+
+		const store = bound(root)
+		const { nodes } = await feed(store)
+		const names = nodes.filter((row) => !row.deleted).map((row) => row.name)
+
+		// The ordinary data is there …
+		expect(names).toContain('notes')
+		expect(names).toContain('today.md')
+		// … and nothing of the bound name is, at any depth. Not a directory row a peer
+		// could push into, not a stub, not a tombstone.
+		expect(names).not.toContain('private')
+		expect(names).not.toContain('credentials.json')
+		expect(await store.child(ROOT, 'private')).toBeNull()
+
+		// And the files are still exactly where the user put them: this store leaves a
+		// name it does not own alone rather than reconciling it away.
+		expect(await readFile(join(root, 'private', 'credentials.json'), 'utf8')).toBe('secret')
+	})
+
+	test('a peer cannot write into the bound name either', async () => {
+		const root = await temp()
+		await mkdir(join(root, 'private'))
+		const store = bound(root)
+		await feed(store)
+
+		// A row from a peer named for a bound directory has nowhere to be — `pathUnder`
+		// refuses the name — so the commit is accepted as rows and lands on no file. The
+		// user's folder is untouched, which is the property that matters: a buggy or
+		// hostile peer cannot reach through a mount point.
+		await store.commit([
+			{
+				id: 'intruder',
+				parent: ROOT,
+				name: 'private',
+				type: 'dir',
+				mode: 0o040755,
+				mtimeNs: 0n,
+				size: 0n,
+				version: 'peer:1'
+			}
+		])
+		expect(await readdir(join(root, 'private'))).toEqual([])
+	})
 })
