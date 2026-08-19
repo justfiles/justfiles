@@ -1,6 +1,6 @@
 # T17 — Swap the consumers
 
-**Status:** in progress
+**Status:** done
 **Phase:** D — namespace, migration, swap, retire
 **Depends on:** [T11](t11-lifecycle-wrapper.md), [T13](t13-http-wire.md), [T15](t15-mounts.md), [T16](t16-data-migration.md)
 **Context:** [overview](README.md)
@@ -318,7 +318,48 @@ own:
 | 1 | The decisions: atomic commit + table namespace, the durable discard slot, this order | landed |
 | 2 | `/private` is a mount: a store is an id, the announced row, the migration split, the native import filter | landed |
 | 3 | The new `/fs` surface beside the old one, and frieren onto it: DO host (two stores, bound), browser client, `apps/cli`, `frieren-auth`, `emptyStore` + the reset on the synchronous seam | landed |
-| 4 | `apps/worker` onto it, then the old surface deleted: the retired routes, `apiStorage` / `remoteSyncReplica`, the old-wire tests, the dependencies | |
+| 4 | `apps/worker` onto it, then the old surface deleted: the retired routes, `apiStorage` / `remoteSyncReplica`, the old-wire tests, the dependencies | landed |
+
+### What PR 4 found
+
+**A second browser host settles where the cross-tab wake lives.** PR 3 put the
+`BroadcastChannel` wrapper in frieren, because `store.idb.ts` says a wake "belongs
+where its latency is measured, not here". With two browser hosts that argument
+produces the same thirty lines twice, and the thing being asked for is not host
+policy: there is one browser, and `BroadcastChannel` is available exactly where
+`indexedDB` is. So it is `sharedStore` in `store.idb.ts`. It stays a WRAPPER rather
+than something `idbStore` does for itself, which is the half of the original
+reasoning that survives — the store is still not where a latency decision is made.
+
+**`resolveAssetUrl` was never a URL resolver.** Every caller in `apps/worker` uses
+it as an existence gate and then reads the bytes through `readAssetBlob`, so the
+string it returns is never fetched. Left as it is (answering over `/store/file/<path>`,
+which does work) rather than renamed across six files, but it is the reason the
+swap needed no remote volume: the old one existed so an editor-inserted asset was
+readable through the authenticated route before write-behind flushed it, and the
+local store IS the working copy now.
+
+**`apps/worker` opens one database for the whole browser.** `idbStorage('justfiles-fs')`
+is not keyed by user, and never was, so neither are the cursors and the replica id
+this swap adds beside it. Reported rather than fixed: a per-user key over a shared
+store would hide the incoherence rather than close it, and closing it is a data
+migration, not a swap.
+
+**`createFsApi` is two routes now, and takes no backend.** Retiring the seam's old
+routes took the whole `Storage` argument with them, and with it the push fence (its
+only mutating route left is `/reset`, which was always registered ahead of it) and
+the `actor` option (nothing reads it: a version carries its own author). What is
+left is the server's own protocol — the lineage epoch, and the reset — which is
+exactly what the "the wipe route reads the generation itself" decision above needs.
+`resetVolume` went the same way: `resetStore` is what both hosts call, and the walk
+that spared `/private` from an adopt-mine has nothing to spare now that it is a
+different store.
+
+**`sqliteStorage` is no longer exported.** It has no production consumer once both
+hosts serve the seam; it survives only as the fixture `migrate.sqlite.test.ts`
+builds the old tree with, which imports it by path. That is what lets
+`@justfiles/sync` move to a devDependency in `packages/core` — the one exception the
+"done when" below states — and [T18](t18-retire.md) deletes both together.
 
 ## RED
 

@@ -1,5 +1,4 @@
 import { memStorage, volume } from '@justfiles/fs'
-import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import { describe, expect, test } from 'vitest'
 import { volumeActiveAi } from './active-ai.ts'
 
@@ -29,6 +28,5 @@ describe('volumeActiveAi', () => {
 			if (path.endsWith('active-ai.json')) written.push(path)
 		})
 		expect(written).toEqual(['/private/active-ai.json'])
-		expect(PRIVATE_PREFIXES.some((p) => written[0].startsWith(`${p}/`))).toBe(true)
 	})
 })

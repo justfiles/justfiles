@@ -25,9 +25,19 @@ every `package.json`.
 
 **In `packages/core`:**
 
-- Delete the retired routes in `fs.ts`, `apiStorage` / `remoteSyncReplica` in
-  `fs.client.ts`, the old `storage.sqlite.ts` node and journal machinery, and
-  dead migration guards.
+- Delete `storage.sqlite.ts` and its tests. [T17](t17-swap-consumers.md) took its
+  last production consumer and stopped exporting it; what is left is the fixture
+  `migrate.sqlite.test.ts` builds the old tree with, which is also the last reason
+  `@justfiles/sync` is a devDependency here. Both leave together.
+- Delete the migration `.sql` files' dead tables, and the dead migration guards.
+
+  ([T17](t17-swap-consumers.md) already deleted the retired routes in `fs.ts`,
+  `apiStorage` / `remoteSyncReplica` in `fs.client.ts`, and `resetVolume`.)
+
+**In `apps/mac` and `apps/runner`:** both still hold a `volume(...)` over the old
+`Storage` — `nativeStorage`, `memStorage`, `idbStorage`. Neither syncs, which is why
+[T17](t17-swap-consumers.md)'s consumer list left them out; they go with the files
+above.
 
 **Docs:** update `docs/app.md` and any kb docs that name the old vocabulary.
 

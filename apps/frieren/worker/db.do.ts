@@ -1,26 +1,14 @@
 /**
- * DO SQLite adapter for @justfiles/core sqliteStorage.
- * Copied from apps/worker/src/worker/db.do.ts — same pattern.
+ * This Durable Object's SQLite, in the two shapes the store model asks for.
+ * The same pair apps/worker keeps — see the note there.
  */
 import type { DbAdapter, SqlValue, SyncDb } from '@justfiles/core'
-import { migrateSync, sqliteStorage } from '@justfiles/core'
+import { migrateSync } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
-import type { Storage } from '@justfiles/fs/storage'
-
-type BlobObject = {
-	arrayBuffer(): Promise<ArrayBuffer>
-}
 
 type BlobStore = {
-	put(
-		key: string,
-		value: ArrayBuffer | ArrayBufferView | string | Blob,
-		options?: {
-			httpMetadata?: { contentType?: string }
-			customMetadata?: Record<string, string>
-		}
-	): Promise<unknown>
-	get(key: string): Promise<BlobObject | null>
+	put(key: string, value: ArrayBuffer | ArrayBufferView): Promise<unknown>
+	get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>
 	delete?(keys: string | string[]): Promise<void>
 }
 
@@ -86,10 +74,6 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 	// no-op on the DO, so an interrupted migration would otherwise half-apply and brick
 	// later ones — e.g. a re-run `ALTER TABLE ADD COLUMN` failing as a duplicate).
 	migrateSync(createDOSyncDb(storage), coreMigrations)
-}
-
-export function cfFsStorage(adapter: DbAdapter, namespace: string, blobStore?: BlobStore): Storage {
-	return sqliteStorage(adapter, { namespace, blobStore })
 }
 
 /**

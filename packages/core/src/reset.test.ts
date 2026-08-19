@@ -1,27 +1,26 @@
-// Volume reset. The pure CAS decision plus the transactional reset/clear bodies,
-// driven against a REAL BEGIN/COMMIT adapter over node:sqlite — the same transport
-// the sqlite conformance suite uses, so the reset-atomicity code path runs under
-// vitest with no bun / Cloudflare runtime.
+// Volume reset: the pure CAS decision, the lineage identity it carries through, and
+// the advisory in-progress flag — driven against a REAL BEGIN/COMMIT adapter over
+// node:sqlite, so the transactional paths run under vitest with no bun / Cloudflare
+// runtime.
 //
-// The take-mine republish rides ordinary sync (no publishing lock, no finalize),
-// so this file covers only the server-side reset primitives; the client-side
-// resume/adopt/republish logic lives in packages/sync/synced.test.ts.
+// What a reset APPLIES lives in `reset.store.test.ts`: the tree it empties is a store,
+// and the whole body is one `transactionSync`. This file is everything around that.
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { volume } from '@justfiles/fs'
+import { ROOT } from '@justfiles/fs/store'
 import { describe, expect, it } from 'vitest'
-import type { DbAdapter } from './db'
-import { createSqliteAdapter } from './db.sqlite'
+import type { DbAdapter, SyncDb } from './db'
+import { createSqliteAdapter, createSqliteSyncDb } from './db.sqlite'
 import {
 	clearReset,
 	decideReset,
 	type GenerationState,
 	readGenerationState,
 	readResetStatus,
-	resetVolume
+	resetStore
 } from './reset'
-import { storage as sqliteStorage } from './storage.sqlite'
+import { sqliteStore } from './store.sqlite'
 
 const migrationsDir = new URL('./migrations/', import.meta.url)
 const schema = readdirSync(migrationsDir)
@@ -30,7 +29,8 @@ const schema = readdirSync(migrationsDir)
 	.map((f) => readFileSync(new URL(f, migrationsDir), 'utf8'))
 	.join('\n')
 
-function makeDb(): { db: DbAdapter; storage: ReturnType<typeof sqliteStorage> } {
+/** One database, both seams: the reset is atomic and synchronous, the reads are not. */
+async function makeDb(): Promise<{ db: DbAdapter; sync: SyncDb }> {
 	const raw = new DatabaseSync(':memory:')
 	raw.exec(schema)
 	const db64 = {
@@ -40,12 +40,13 @@ function makeDb(): { db: DbAdapter; storage: ReturnType<typeof sqliteStorage> } 
 			return stmt
 		},
 		exec: (sql: string) => raw.exec(sql)
-	}
-	const db = createSqliteAdapter(db64 as unknown as Parameters<typeof createSqliteAdapter>[0])
-	return { db, storage: sqliteStorage(db) }
+	} as unknown as Parameters<typeof createSqliteAdapter>[0]
+	const sync = createSqliteSyncDb(db64)
+	// The store's own tables are created when a store is first opened, and a reset
+	// empties them — so a host always has one before it can reset anything.
+	await sqliteStore(sync).get(ROOT)
+	return { db: createSqliteAdapter(db64), sync }
 }
-
-const enc = new TextEncoder()
 
 describe('reset — pure CAS decision', () => {
 	const at = (o: Partial<GenerationState> = {}): GenerationState => ({ generation: 5, ...o })
@@ -74,196 +75,12 @@ describe('reset — pure CAS decision', () => {
 	})
 })
 
-describe('reset — transaction body', () => {
-	it('CAS bumps the generation and rejects a stale fromGeneration', async () => {
-		const { db } = makeDb()
-		expect((await readGenerationState(db)).generation).toBe(1)
-
-		const ok = await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
-		expect(ok).toMatchObject({ ok: true, next: { generation: 2, resetId: undefined } })
-		expect((await readGenerationState(db)).generation).toBe(2)
-
-		const stale = await resetVolume(db, {
-			mode: 'wipe',
-			fromGeneration: 1,
-			operationId: 'op-2'
-		})
-		expect(stale).toEqual({ ok: false, error: 'generation_stale', generation: 2 })
-		expect((await readGenerationState(db)).generation).toBe(2) // unchanged
-	})
-
-	it('persists acknowledgement atomically and replays the same operation idempotently', async () => {
-		const { db, storage } = makeDb()
-		await volume(storage).writeFile('/before.txt', enc.encode('before'))
-		const request = { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' } as const
-
-		const committed = await resetVolume(db, request)
-		expect(committed).toMatchObject({ ok: true, next: { generation: 2 } })
-		expect(await readResetStatus(db, 'op-1')).toEqual({ committed: true, generation: 2 })
-
-		await volume(storage).writeFile('/after.txt', enc.encode('after'))
-		expect(await resetVolume(db, request)).toMatchObject({
-			ok: true,
-			replayed: true,
-			next: { generation: 2 }
-		})
-		expect(await volume(storage).exists('/after.txt')).toBe(true)
-		expect(await readResetStatus(db, 'other')).toEqual({ committed: false, generation: 2 })
-	})
-
-	it('truncates the tree + sync tables and leaves a working root', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.writeFile('/a.txt', enc.encode('hello'))
-		await vol.mkdir('/dir')
-		expect(await vol.exists('/a.txt')).toBe(true)
-
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
-
-		// The reset writes the DB directly, so an existing volume's dirent/meta cache
-		// is stale — a fresh volume (as the DO rebuilds after a reset) sees the truth.
-		const fresh = volume(storage)
-		// Root survives (regression for the ensureBootstrapped cache bug): a fresh
-		// write into the reset volume works, and the old tree is gone.
-		expect(await fresh.exists('/a.txt')).toBe(false)
-		expect(await fresh.exists('/dir')).toBe(false)
-		expect((await fresh.readdir('/')).length).toBe(0)
-		await fresh.writeFile('/after.txt', enc.encode('new'))
-		expect(new TextDecoder().decode(await fresh.readFile('/after.txt'))).toBe('new')
-
-		// Sync tables were cleared by the reset; only /after.txt's write remains.
-		const journal = await db.query('SELECT COUNT(*) AS n FROM fs_path_journal')
-		expect(Number((journal[0] as { n: unknown }).n)).toBeGreaterThan(0)
-	})
-
-	it('recreates the same path after a destructive reset', async () => {
-		const { db, storage } = makeDb()
-		await volume(storage).writeFile('/same.txt', enc.encode('before'))
-
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
-
-		const fresh = volume(storage)
-		await fresh.writeFile('/same.txt', enc.encode('after'))
-		expect(new TextDecoder().decode(await fresh.readFile('/same.txt'))).toBe('after')
-	})
-
-	it('wipe drops content + FTS; the blobs become unfetchable and unsearchable', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.writeFile('/note.txt', enc.encode('searchable text'))
-		const hash = (await vol.stat('/note.txt')).contentHash
-		expect(hash).toBeTruthy()
-		expect(await storage.caps?.content?.hasByHash(hash as string)).toBe(true)
-
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
-
-		expect(await storage.caps?.content?.hasByHash(hash as string)).toBe(false)
-		const fts = await db.query('SELECT COUNT(*) AS n FROM fs_content_fts')
-		expect(Number((fts[0] as { n: unknown }).n)).toBe(0)
-	})
-
-	it('adopt-mine keeps content (lazy blobs) and records the in-progress resetId', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.writeFile('/keep.txt', enc.encode('bytes'))
-		const hash = (await vol.stat('/keep.txt')).contentHash as string
-		const { lineageId } = await readGenerationState(db)
-
-		const res = await resetVolume(db, {
-			mode: 'adopt-mine',
-			fromGeneration: 1,
-			operationId: 'op-1',
-			resetId: 'r1',
-			lineageId
-		})
-		expect(res.ok).toBe(true)
-		expect(await readGenerationState(db)).toMatchObject({ generation: 2, resetId: 'r1' })
-		// Tree gone (fresh volume — the pre-reset cache is stale), but the content
-		// blob is retained for the republish.
-		expect(await volume(storage).exists('/keep.txt')).toBe(false)
-		expect(await storage.caps?.content?.hasByHash(hash)).toBe(true)
-	})
-
-	// An `adopt-mine` truncates the tree so the initiator can republish it — but the
-	// initiator CANNOT republish `/private`: it never crosses the wire (that is the point),
-	// so truncating it would destroy THIS host's credentials with no way back.
-	it('adopt-mine keeps the private tree the republish cannot restore', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.mkdir('/private/accounts', { recursive: true })
-		await vol.writeFile('/private/accounts/google.json', enc.encode('{"refresh":"SEKRIT"}'))
-		await vol.mkdir('/private/connections/chatgpt', { recursive: true })
-		await vol.writeFile('/private/connections/chatgpt/default.json', enc.encode('CONN'))
-		await vol.mkdir('/notes', { recursive: true })
-		await vol.writeFile('/notes/mine.md', enc.encode('note'))
-		const { lineageId } = await readGenerationState(db)
-
-		await resetVolume(db, {
-			mode: 'adopt-mine',
-			fromGeneration: 1,
-			operationId: 'op-1',
-			resetId: 'r1',
-			lineageId
-		})
-
-		const fresh = volume(storage)
-		expect(new TextDecoder().decode(await fresh.readFile('/private/accounts/google.json'))).toBe(
-			'{"refresh":"SEKRIT"}'
-		)
-		expect(
-			new TextDecoder().decode(await fresh.readFile('/private/connections/chatgpt/default.json'))
-		).toBe('CONN')
-		// Everything the initiator CAN republish is still truncated.
-		expect(await fresh.exists('/notes/mine.md')).toBe(false)
-		expect((await fresh.readdir('/')).map((e) => e.name)).toEqual(['private'])
-		// And the reset volume still works: a fresh write lands next to the kept tree.
-		await fresh.writeFile('/after.txt', enc.encode('new'))
-		expect(new TextDecoder().decode(await fresh.readFile('/after.txt'))).toBe('new')
-	})
-
-	it('wipe deletes the private tree too — an explicit wipe keeps no secrets', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.mkdir('/private/accounts', { recursive: true })
-		await vol.writeFile('/private/accounts/google.json', enc.encode('{"refresh":"SEKRIT"}'))
-
-		await resetVolume(db, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
-
-		const fresh = volume(storage)
-		expect(await fresh.exists('/private')).toBe(false)
-		expect((await fresh.readdir('/')).length).toBe(0)
-	})
-
-	it('rolls back the whole reset if the transaction throws (atomicity path)', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.writeFile('/a.txt', enc.encode('hi'))
-
-		// A throwing wrapper mid-transaction must leave the OLD lineage intact.
-		const boom: DbAdapter = {
-			query: db.query,
-			run: db.run,
-			transaction: (fn) =>
-				db.transaction(async (tx) => {
-					await fn(tx)
-					throw new Error('crash after body')
-				})
-		}
-		await expect(
-			resetVolume(boom, { mode: 'wipe', fromGeneration: 1, operationId: 'op-1' })
-		).rejects.toThrow('crash after body')
-		// Old generation + old tree survive (rolled back).
-		expect((await readGenerationState(db)).generation).toBe(1)
-		expect(await vol.exists('/a.txt')).toBe(true)
-	})
-})
-
 describe('reset — lineage identity (issue #245)', () => {
 	// A stable, unique per-volume id disambiguates two volumes that both read
 	// `generation: 1` — the root-cause fix for cursors reused across volumes.
 	it('mints a stable, unique lineageId per fresh volume', async () => {
-		const { db: a } = makeDb()
-		const { db: b } = makeDb()
+		const { db: a } = await makeDb()
+		const { db: b } = await makeDb()
 		const aId = (await readGenerationState(a)).lineageId
 		const bId = (await readGenerationState(b)).lineageId
 		expect(aId).toMatch(/^[0-9a-f]{32}$/) // defined — 16 random bytes as hex
@@ -274,7 +91,7 @@ describe('reset — lineage identity (issue #245)', () => {
 
 	// A reset is the SAME volume at a new epoch: bump `generation`, keep `lineageId`.
 	it('a reset bumps the generation but keeps the lineageId', async () => {
-		const { db } = makeDb()
+		const { db, sync } = await makeDb()
 		const before = await readGenerationState(db)
 		expect(before.lineageId).toBeDefined()
 
@@ -294,7 +111,7 @@ describe('reset — lineage identity (issue #245)', () => {
 		})
 
 		// Transaction body: generation bumps, lineageId is untouched.
-		await resetVolume(db, {
+		resetStore(sync, {
 			mode: 'adopt-mine',
 			fromGeneration: before.generation,
 			operationId: 'op-2',
@@ -347,47 +164,13 @@ describe('reset — lineage identity (issue #245)', () => {
 			decideReset(current, { mode: 'wipe', fromGeneration: 5, operationId: 'op-2' })
 		).toMatchObject({ ok: true, next: { generation: 6, lineageId: 'vol-A' } })
 	})
-
-	it('resetVolume rejects an adopt-mine that omits the lineageId and leaves the volume intact', async () => {
-		const { db, storage } = makeDb()
-		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
-		const before = await readGenerationState(db)
-
-		const res = await resetVolume(db, {
-			mode: 'adopt-mine',
-			fromGeneration: before.generation,
-			operationId: 'op-1',
-			resetId: 'r1'
-		})
-		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
-		expect(await readGenerationState(db)).toEqual(before)
-		expect(await volume(storage).exists('/a.txt')).toBe(true)
-	})
-
-	it('resetVolume rejects a mismatched-lineage adopt-mine and leaves the volume intact', async () => {
-		const { db, storage } = makeDb()
-		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
-		const before = await readGenerationState(db)
-
-		const res = await resetVolume(db, {
-			mode: 'adopt-mine',
-			fromGeneration: before.generation,
-			operationId: 'op-1',
-			resetId: 'r1',
-			lineageId: 'some-other-volume'
-		})
-		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
-		// Untouched: same generation + lineageId, and the tree survives.
-		expect(await readGenerationState(db)).toEqual(before)
-		expect(await volume(storage).exists('/a.txt')).toBe(true)
-	})
 })
 
 describe('reset — clearReset (advisory in-progress flag)', () => {
 	it('clears the flag only for the matching reset; a stale/duplicate clear is a no-op', async () => {
-		const { db } = makeDb()
+		const { db, sync } = await makeDb()
 		const { lineageId } = await readGenerationState(db)
-		await resetVolume(db, {
+		resetStore(sync, {
 			mode: 'adopt-mine',
 			fromGeneration: 1,
 			operationId: 'op-1',

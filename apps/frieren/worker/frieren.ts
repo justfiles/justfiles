@@ -69,16 +69,9 @@ import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { createAiGateway } from './ai-gateway.ts'
-import { requestUserId } from './auth.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
-import {
-	cfFsStorage,
-	createDOSqliteAdapter,
-	createDOSyncDb,
-	migrateCF,
-	scopedBlobs
-} from './db.do.ts'
+import { createDOSqliteAdapter, createDOSyncDb, migrateCF, scopedBlobs } from './db.do.ts'
 import { generateFace } from './faces.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { createServerPoke, notifying } from './frieren.poke.ts'
@@ -210,8 +203,9 @@ export class Frieren extends DurableObject<Env> {
 		if (env.ENCRYPTION_KEY) this.secretCodec = aesGcmSecretCodec(env.ENCRYPTION_KEY)
 		else console.warn('ENCRYPTION_KEY is not set — account credentials are stored in the clear')
 		const namespace = ctx.id.toString()
+		// The async seam, for the two readers that are not the store: the generation row,
+		// and the one pass that reads the old tables.
 		const adapter = createDOSqliteAdapter(ctx.storage)
-		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
 		this.db = adapter
 		this.sync = createDOSyncDb(ctx.storage)
 
@@ -304,10 +298,7 @@ export class Frieren extends DurableObject<Env> {
 					waitUntil: (p) => this.ctx.waitUntil(p)
 				})
 			)
-			// The seam, as routes, over the synced store alone. Beside `/fs` rather than
-			// inside it: the old routes serve the old tables and these serve the new one,
-			// and a client speaks exactly one of them ([T18](../../../tasks/store-model/t18-retire.md)
-			// deletes the other).
+			// The seam, as routes, over the synced store alone.
 			.route('/store', storeApi(this.tree))
 			// The one route beside it, for the callers that are not replicas: a CLI
 			// reading one file, for which the seam is a walk and a fetch. Over the synced
@@ -315,20 +306,20 @@ export class Frieren extends DurableObject<Env> {
 			// the synced store alone: a request may not name anything behind the mount,
 			// and an unbound one reads as the empty directory it is.
 			.route('/store', fileApi(storeVolume(this.tree)))
+			// What is left of `/fs`: the server's own protocol, which the seam does not
+			// carry. The lineage epoch both the factory reset and `syncedVolume`'s
+			// `reset()` closure READ from here, and the reset itself.
 			.route(
 				'/fs',
-				createFsApi(fs, {
-					// Reading the volume's lineage epoch needs the DO's raw store, so it is
-					// injected; createFsApi owns the routes.
+				createFsApi({
 					lineage: () => readGenerationState(this.db),
-					actor: requestUserId,
 					// Only the non-destructive marker clear — the destructive half is not
 					// injectable, by design. A destructive reset is a commit-then-restart
 					// handshake the authenticated Worker drives from OUTSIDE (reset-ack.ts),
 					// and it intercepts POST /fs/reset ahead of this route — committing here
 					// instead would leave THIS instance running at a generation it no longer
 					// owns.
-					complete: (resetId) => this.completeReset(resetId)
+					complete: (resetId: string) => this.completeReset(resetId)
 				})
 			)
 
