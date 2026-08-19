@@ -34,7 +34,7 @@ import {
 } from '@justfiles/sync/path'
 import type { JournaledStorage, JournaledSyncModule } from '@justfiles/sync/replica'
 import { coalesceByPath, type PathChange } from '@justfiles/sync/wire'
-import type { DbAdapter } from './db'
+import { type DbAdapter, IN_LIST } from './db'
 
 type BlobObject = {
 	arrayBuffer(): Promise<ArrayBuffer>
@@ -235,8 +235,8 @@ async function readXattrsByIno(
 	const byIno = new Map<string, Record<string, Uint8Array>>()
 	if (inos.length === 0) return byIno
 	const rows = await tx.query<{ ino: unknown; name: unknown; value: unknown }>(
-		`SELECT ino, name, value FROM fs_xattrs WHERE ino IN (${inos.map(() => '?').join(', ')})`,
-		inos
+		`SELECT ino, name, value FROM fs_xattrs WHERE ino IN ${IN_LIST}`,
+		[JSON.stringify(inos)]
 	)
 	for (const row of rows) {
 		const ino = String(row.ino)
@@ -710,10 +710,7 @@ export function storage(
 		)
 		if (aged.length === 0) return true
 		const paths = aged.map((row) => String(row.path))
-		await tx.run(
-			`DELETE FROM fs_path_journal WHERE path IN (${paths.map(() => '?').join(', ')})`,
-			paths
-		)
+		await tx.run(`DELETE FROM fs_path_journal WHERE path IN ${IN_LIST}`, [JSON.stringify(paths)])
 		// The floor is the highest seq collected: a reader AT it has already seen every
 		// row up to and including it, so only a reader strictly below has lost history.
 		const floor = aged.reduce((max, row) => Math.max(max, toNumber(row.newest)), 0)
@@ -1058,8 +1055,8 @@ export function storage(
 				if (affected.length > 0) {
 					const references = await tx.query<{ seq: unknown }>(
 						`SELECT DISTINCT seq FROM fs_node_journal_mutations
-						 WHERE node_id IN (${affected.map(() => '?').join(', ')})`,
-						affected
+						 WHERE node_id IN ${IN_LIST}`,
+						[JSON.stringify(affected)]
 					)
 					const sequences = references.map((row) => toNumber(row.seq))
 					if (sequences.length > 0) {
@@ -1069,8 +1066,8 @@ export function storage(
 							operation_json: unknown
 						}>(
 							`SELECT seq, local_source, operation_json FROM fs_node_journal
-							 WHERE seq IN (${sequences.map(() => '?').join(', ')}) ORDER BY seq`,
-							sequences
+							 WHERE seq IN ${IN_LIST} ORDER BY seq`,
+							[JSON.stringify(sequences)]
 						)
 						const rows = stored.map(
 							(row): NodeJournalRow => ({
@@ -1086,8 +1083,8 @@ export function storage(
 						if (deleted.length > 0) {
 							const states = await tx.query<{ sync_id: unknown }>(
 								`SELECT sync_id FROM fs_sync_nodes
-								 WHERE type = ? AND sync_id IN (${deleted.map(() => '?').join(', ')})`,
-								[FileType.Directory, ...deleted]
+								 WHERE type = ? AND sync_id IN ${IN_LIST}`,
+								[FileType.Directory, JSON.stringify(deleted)]
 							)
 							for (const state of states) directoryTombstones.add(String(state.sync_id))
 						}

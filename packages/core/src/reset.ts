@@ -19,7 +19,7 @@
  */
 
 import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
-import type { DbAdapter } from './db'
+import { type DbAdapter, IN_LIST } from './db'
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
 // INSERT so a reset recreates an identical root (kept local to keep this module
@@ -55,8 +55,8 @@ export type ResetMode = 'adopt-mine' | 'wipe'
  * client's snapshot has never contained them). A `wipe` is an explicit "delete
  * everything", so it keeps deleting them.
  *
- * A plain BFS, not a recursive CTE: the tree is a handful of small JSON files, and
- * this stays portable across the DO and node:sqlite with no JSON1/CTE assumptions.
+ * A plain BFS, not a recursive CTE: the tree is a handful of small JSON files, so the
+ * walk stays as readable as the invariant it protects.
  */
 async function privateInos(tx: DbAdapter): Promise<string[]> {
 	const keep = new Set<string>()
@@ -265,10 +265,11 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 			return
 		}
 		const keep = req.mode === 'adopt-mine' ? await privateInos(tx) : []
-		const survives = keep.length > 0 ? ` WHERE ino NOT IN (${keep.map(() => '?').join(',')})` : ''
+		const survivors = keep.length > 0 ? [JSON.stringify(keep)] : []
+		const survives = survivors.length > 0 ? ` WHERE ino NOT IN ${IN_LIST}` : ''
 		// Child rows first (FK RESTRICT), and the kept closure is complete — every
 		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.
-		for (const table of TREE_TABLES) await tx.run(`DELETE FROM ${table}${survives}`, keep)
+		for (const table of TREE_TABLES) await tx.run(`DELETE FROM ${table}${survives}`, survivors)
 		for (const table of SYNC_TABLES) await tx.run(`DELETE FROM ${table}`)
 		await tx.run('UPDATE fs_node_clock SET head = 0 WHERE id = 1')
 		if (req.mode === 'wipe')
