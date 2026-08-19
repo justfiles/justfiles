@@ -18,7 +18,7 @@ import { fsStore, SWEEP_MS } from './store.fs'
 
 const built: Store[] = []
 const open = (fault?: Parameters<typeof memDisk>[0]): Store => {
-	const store = fsStore('mem', memDisk(fault))
+	const store = fsStore('mem', { disk: memDisk(fault) })
 	built.push(store)
 	return store
 }
@@ -95,7 +95,7 @@ describe('fsStore over memDisk: a fault is not a lie', () => {
 		// absent mints a new lineage, rebinds every id, and then saves over the index
 		// that could have said otherwise.
 		const disk = memDisk((op, at) => (op === 'read' && at.endsWith('index.json') ? 'EACCES' : null))
-		const store = fsStore('mem', disk)
+		const store = fsStore('mem', { disk: disk })
 		await expect(store.get(ROOT)).rejects.toThrow(/EACCES/)
 	})
 })
@@ -139,7 +139,7 @@ describe('fsStore: a file is not a blob store', () => {
 				return disk.bytes(spot, strict)
 			}
 		}
-		const store = fsStore('mem', racy)
+		const store = fsStore('mem', { disk: racy })
 		built.push(store)
 
 		const hash = 'a'.repeat(64)
@@ -171,7 +171,7 @@ describe('fsStore: a file is not a blob store', () => {
 		// that placeholder first, those bytes are the only copy of themselves there is —
 		// the row is looked at again instead, and what the file holds becomes its content.
 		const disk = memDisk()
-		const store = fsStore('mem', disk)
+		const store = fsStore('mem', { disk: disk })
 		built.push(store)
 
 		const hash = 'd'.repeat(64)
@@ -221,7 +221,7 @@ describe('fsStore: what a placement may claim about the file it left', () => {
 				return s
 			}
 		}
-		const store = fsStore('mem', racy)
+		const store = fsStore('mem', { disk: racy })
 		built.push(store)
 		const at = under(AT_ROOT, 'a.txt')
 		if (at === null) throw new Error('unreachable')
@@ -274,7 +274,7 @@ describe('fsStore: what a commit may take off the disk', () => {
 		// becomes a row instead — of the buried directory, so it keeps its bytes in the
 		// holding area, and it goes out on the feed for every other replica.
 		const disk = memDisk()
-		const store = fsStore('mem', disk)
+		const store = fsStore('mem', { disk: disk })
 		built.push(store)
 		await store.commit([folder()])
 		await store.since()
@@ -305,7 +305,7 @@ describe('fsStore: what a commit may take off the disk', () => {
 		// taken back, and a mode that shuts this store out hides exactly the files it
 		// would be taking.
 		const disk = memDisk()
-		const store = fsStore('mem', disk)
+		const store = fsStore('mem', { disk: disk })
 		built.push(store)
 		await store.commit([folder()])
 		await store.since()
@@ -333,10 +333,9 @@ describe('fsStore: a file arrives already describing itself', () => {
 		// the row describes — there is no moment where it wears `writeFile`'s mode, and
 		// nothing to put on whatever answers to the name afterwards. Shown by refusing every
 		// `stamp` at the path: the mode has to be right without one.
-		const store = fsStore(
-			'mem',
-			memDisk((op, at) => (op === 'stamp' && at === 'a.txt' ? 'EPERM' : null))
-		)
+		const store = fsStore('mem', {
+			disk: memDisk((op, at) => (op === 'stamp' && at === 'a.txt' ? 'EPERM' : null))
+		})
 		built.push(store)
 		const key = 'f'.repeat(64)
 		await store.blobs.put(key, bytes('hello'))
@@ -384,7 +383,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 				return disk.unlock(steps)
 			}
 		}
-		const store = fsStore('mem', racy)
+		const store = fsStore('mem', { disk: racy })
 		built.push(store)
 		const at = under(AT_ROOT, 'a.txt')
 		if (at === null) throw new Error('unreachable')
@@ -440,7 +439,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 				return disk.stamp(spot, on, was)
 			}
 		}
-		const store = fsStore('mem', racy)
+		const store = fsStore('mem', { disk: racy })
 		built.push(store)
 		const at = under(AT_ROOT, 'a.txt')
 		if (at === null) throw new Error('unreachable')
@@ -495,7 +494,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 				return done
 			}
 		}
-		const store = fsStore('mem', racy)
+		const store = fsStore('mem', { disk: racy })
 		built.push(store)
 		const at = under(AT_ROOT, 'folder')
 		if (at === null) throw new Error('unreachable')
@@ -544,7 +543,7 @@ describe('fsStore: a commit that publishes nothing still claims nothing', () => 
 				return disk.write(spot, data, on, was)
 			}
 		}
-		const store = fsStore('mem', racy)
+		const store = fsStore('mem', { disk: racy })
 		built.push(store)
 		const at = under(AT_ROOT, 'a.txt')
 		if (at === null) throw new Error('unreachable')

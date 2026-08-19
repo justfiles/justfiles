@@ -252,8 +252,10 @@ test('content the old server offloaded comes from the bucket, or the row is a st
 
 	const whole = idbStore(`t16-r2-${crypto.randomUUID()}`)
 	await migrateSqlite(server.adapter, whole, {
-		get: async (key) =>
-			key === 'ns/note' ? { arrayBuffer: async () => bytes('hello').buffer as ArrayBuffer } : null
+		blobs: {
+			get: async (key) =>
+				key === 'ns/note' ? { arrayBuffer: async () => bytes('hello').buffer as ArrayBuffer } : null
+		}
 	})
 	expect(await whole.blobs.has(hash)).toBe(true)
 	expect(text(await storeVolume(whole).readFile('/docs/note.md'))).toBe('hello')

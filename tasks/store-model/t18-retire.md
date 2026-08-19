@@ -31,6 +31,15 @@ every `package.json`.
 
 **Docs:** update `docs/app.md` and any kb docs that name the old vocabulary.
 
+**Not done, deliberately:** the old backend's R2 objects (`<ns>/fs/blobs/sha256/…`)
+are orphaned once `storage.sqlite.ts` goes, since `gcUnreferenced` is what swept
+them. The store model keeps its own under `<ns>/store/…`, so nothing collides and
+nothing collects. Sweeping them safely would mean checking every hash against the
+new `blobs` table BEFORE `fs_contents` is dropped — the one pass writes a stub for
+a blob it could not fetch, so a blind prefix delete can destroy the only copy. Not
+worth the code for the number of users this has: delete the prefix by hand when you
+are satisfied, or leave it.
+
 ## Done when
 
 - This returns nothing (excluding `node_modules` and `dist`):

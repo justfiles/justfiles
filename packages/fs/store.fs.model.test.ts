@@ -204,7 +204,7 @@ test('what the tree holds is what the rows say', async () => {
 	await fc.assert(
 		fc.asyncProperty(fc.array(op, { minLength: 1, maxLength: 12 }), async (ops) => {
 			const disk = memDisk()
-			const store = fsStore('mem', disk)
+			const store = fsStore('mem', { disk: disk })
 			await quiet(store) // open, and take the tree as it is
 
 			for (const what of ops) {
@@ -236,7 +236,7 @@ test('a reopen sees exactly what the store that wrote it saw', async () => {
 	await fc.assert(
 		fc.asyncProperty(fc.array(op, { minLength: 1, maxLength: 12 }), async (ops) => {
 			const disk = memDisk()
-			const first = fsStore('mem', disk)
+			const first = fsStore('mem', { disk: disk })
 			await quiet(first)
 			for (const what of ops) {
 				await apply(disk, what)
@@ -247,7 +247,7 @@ test('a reopen sees exactly what the store that wrote it saw', async () => {
 			const ids = new Map([...(await quiet(first))].map((row) => [row.id, row.name]))
 			await first.close?.()
 
-			const again = fsStore('mem', disk)
+			const again = fsStore('mem', { disk: disk })
 			await quiet(again)
 			expect(Object.fromEntries(await asRows(again))).toEqual(Object.fromEntries(before))
 			// And the ids are the ones the sidecar held, not fresh ones over the same files.
@@ -276,7 +276,7 @@ test('a commit leaves the same tree here as it leaves in memory', async () => {
 			),
 			async (writes) => {
 				const disk = memDisk()
-				const here = fsStore('mem', disk)
+				const here = fsStore('mem', { disk: disk })
 				const there = memStore()
 				await quiet(here)
 
@@ -344,7 +344,7 @@ test('a commit and a local tool, taking turns on the same names', async () => {
 			),
 			async (turns) => {
 				const disk = memDisk()
-				const store = fsStore('mem', disk)
+				const store = fsStore('mem', { disk: disk })
 				await quiet(store)
 
 				for (const turn of turns) {

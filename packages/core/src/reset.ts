@@ -19,7 +19,8 @@
  */
 
 import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
-import type { DbAdapter } from './db'
+import type { DbAdapter, SyncDb } from './db'
+import { emptyStore } from './store.sqlite'
 
 // Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
 // INSERT so a reset recreates an identical root (kept local to keep this module
@@ -174,18 +175,29 @@ export function decideReset(current: GenerationState, req: ResetRequest): ResetD
 
 // ── Row IO ────────────────────────────────────────────────────────────────────
 
-/** Read the decoded generation row (pre-migration default: generation 1). */
-export async function readGenerationState(db: DbAdapter): Promise<GenerationState> {
-	const [row] = await db.query<{
-		generation: unknown
-		reset_id: unknown
-		lineage_id: unknown
-		reset_operation_id: unknown
-		reset_operation_generation: unknown
-	}>(
-		`SELECT generation, reset_id, lineage_id, reset_operation_id, reset_operation_generation
-		 FROM fs_generation WHERE id = 1 LIMIT 1`
-	)
+/**
+ * The generation row, as SQL and a codec — written once and read through both
+ * seams. The row is the same row whichever one asks for it: `DbAdapter` for the
+ * old model's routes, `SyncDb` for the reset that has to be atomic (`db.ts`).
+ */
+const GENERATION_SELECT = `SELECT generation, reset_id, lineage_id,
+		reset_operation_id, reset_operation_generation
+	FROM fs_generation WHERE id = 1 LIMIT 1`
+
+// `lineage_id` is intentionally NOT in the UPDATE set: it is minted once by the
+// migration and preserved across every reset (same volume, new epoch), so the
+// on-conflict path leaves it untouched.
+const GENERATION_UPSERT = `INSERT INTO fs_generation(
+		id, generation, reset_id, reset_operation_id, reset_operation_generation
+	) VALUES (1, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		generation = excluded.generation,
+		reset_id = excluded.reset_id,
+		reset_operation_id = excluded.reset_operation_id,
+		reset_operation_generation = excluded.reset_operation_generation`
+
+/** Pre-migration default: generation 1. */
+const decodeGeneration = (row: Record<string, unknown> | undefined): GenerationState => {
 	if (!row) return { generation: 1 }
 	return {
 		generation: Number(row.generation),
@@ -201,31 +213,25 @@ export async function readGenerationState(db: DbAdapter): Promise<GenerationStat
 	}
 }
 
+const generationArgs = (next: GenerationState) => [
+	next.generation,
+	next.resetId ?? null,
+	next.committedReset?.operationId ?? null,
+	next.committedReset?.generation ?? null
+]
+
+/** Read the decoded generation row (pre-migration default: generation 1). */
+export async function readGenerationState(db: DbAdapter): Promise<GenerationState> {
+	return decodeGeneration((await db.query(GENERATION_SELECT))[0])
+}
+
 /** The lineage epoch — the value stamped on the handshake and fenced on writes. */
 export async function readGeneration(db: DbAdapter): Promise<number> {
 	return (await readGenerationState(db)).generation
 }
 
 async function writeGenerationState(db: DbAdapter, next: GenerationState): Promise<void> {
-	// `lineage_id` is intentionally NOT in the UPDATE set: it is minted once by the
-	// migration and preserved across every reset (same volume, new epoch), so the
-	// on-conflict path leaves it untouched.
-	await db.run(
-		`INSERT INTO fs_generation(
-			id, generation, reset_id, reset_operation_id, reset_operation_generation
-		 ) VALUES (1, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET
-			generation = excluded.generation,
-			reset_id = excluded.reset_id,
-			reset_operation_id = excluded.reset_operation_id,
-			reset_operation_generation = excluded.reset_operation_generation`,
-		[
-			next.generation,
-			next.resetId ?? null,
-			next.committedReset?.operationId ?? null,
-			next.committedReset?.generation ?? null
-		]
-	)
+	await db.run(GENERATION_UPSERT, generationArgs(next))
 }
 
 /**
@@ -289,6 +295,54 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 		result = decision
 	})
 	if (!result) throw new Error('resetVolume: transaction did not resolve')
+	return result
+}
+
+/**
+ * What a reset empties, in the store model: the synced tree, and — for a wipe — the
+ * host's own stores joined at a name.
+ *
+ * The old model needed `privateInos` to walk out the subtrees an adopt-mine must not
+ * destroy, because they were rows in the same tree it was truncating. Here they are a
+ * DIFFERENT STORE, so keeping them is not something this has to remember to do: an
+ * adopt-mine names the synced store and the credentials are simply not in it.
+ */
+export type ResetStores = {
+	/** The synced tree, emptied by every mode. Its content survives an `adopt-mine`. */
+	synced?: string
+	/** Stores bound at a name. A `wipe` means "delete everything", so it empties these too. */
+	local?: string[]
+}
+
+/**
+ * Apply a reset in ONE ATOMIC transaction: the CAS, the empty, and the generation
+ * bump together.
+ *
+ * On the synchronous seam, and that is the point of it. `DbAdapter.transaction` is
+ * `await fn(adapter)` on a Durable Object, so a body that fails halfway leaves the
+ * statements before it written — and half a reset is a truncated tree at the old
+ * generation, which every replica then fails to notice. `transactionSync` is the only
+ * transaction there that rolls back, and it takes a synchronous body, which is exactly
+ * what `emptyStore` and this CAS are.
+ *
+ * The caller still has to flush and terminate (`commitReset`): a DO's writes ride the
+ * event's implicit transaction and are discarded with the event that is about to abort.
+ */
+export function resetStore(db: SyncDb, req: ResetRequest, stores: ResetStores = {}): ResetDecision {
+	let result: ResetDecision | undefined
+	db.transactionSync(() => {
+		const current = decodeGeneration(db.query(GENERATION_SELECT)[0])
+		const decision = decideReset(current, req)
+		result = decision
+		if (!decision.ok || decision.replayed) return
+		// An adopt-mine keeps the bytes: the initiator republishes rows it may only
+		// hold as stubs, and those stubs need something behind them here.
+		emptyStore(db, stores.synced, { content: req.mode === 'wipe' ? 'drop' : 'keep' })
+		if (req.mode === 'wipe')
+			for (const id of stores.local ?? []) emptyStore(db, id, { content: 'drop' })
+		db.exec(GENERATION_UPSERT, generationArgs(decision.next))
+	})
+	if (!result) throw new Error('resetStore: transaction did not resolve')
 	return result
 }
 

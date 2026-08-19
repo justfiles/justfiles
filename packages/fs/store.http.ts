@@ -178,8 +178,10 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 				return res === null ? null : new Uint8Array(await res.arrayBuffer())
 			},
 			async put(hash, data) {
-				// Held before the first await, for the reason `commit` stringifies early.
-				const body = new Uint8Array(data)
+				// Held before the first await, for the reason `commit` stringifies early. As
+				// a plain `ArrayBuffer`, which is both what a body takes everywhere and a
+				// copy that cannot alias the caller's array.
+				const body = new Uint8Array(data).buffer
 				await answer(blobPath(hash), {
 					method: 'PUT',
 					body,
@@ -195,7 +197,12 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 	}
 }
 
-type Init = { method?: string; body?: BodyInit; type?: string }
+/**
+ * The two bodies this wire sends: a JSON document, and blob bytes. Named exactly
+ * rather than as `BodyInit`, which is a DOM name — this package is `platform:
+ * neutral` and its consumers compile it under whatever lib they have.
+ */
+type Init = { method?: string; body?: string | ArrayBuffer; type?: string }
 
 const blobPath = (hash: Hash): string => `/blob/${encodeURIComponent(hash)}`
 

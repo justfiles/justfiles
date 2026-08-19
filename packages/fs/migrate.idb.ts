@@ -62,8 +62,15 @@ interface Old extends DBSchema {
 /**
  * Copy one old database into `into`. `from` is a database NAME — `store.idb`
  * takes one too, and the two must differ, which is the whole of the swap.
+ *
+ * `mounts` is `migrate`'s: a root-level name whose subtree belongs in another
+ * store — `/private` on this side, into the browser-local store bound there.
  */
-export async function migrateIdb(from: string, into: Store): Promise<void> {
+export async function migrateIdb(
+	from: string,
+	into: Store,
+	mounts?: Map<string, Store>
+): Promise<void> {
 	// No version, so this opens whatever is there and never triggers an upgrade:
 	// the old database must come out of this pass exactly as it went in.
 	const db = await openDB<Old>(from)
@@ -112,7 +119,8 @@ export async function migrateIdb(from: string, into: Store): Promise<void> {
 					return (await db.get('content', hash))?.data ?? null
 				}
 			},
-			into
+			into,
+			mounts
 		)
 	} finally {
 		db.close()

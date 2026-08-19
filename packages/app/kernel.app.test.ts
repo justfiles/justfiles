@@ -376,13 +376,13 @@ test('every staged byte is written under /private, never a synced path', async (
 	)
 
 	expect(seen.length).toBeGreaterThan(0)
-	for (const path of seen) expect(path.startsWith('/private/tmp/')).toBe(true)
-	expect(await vol.exists('/system/tmp/app-installs')).toBe(false)
+	for (const path of seen) expect(path.startsWith('/system/tmp/')).toBe(true)
+	expect(await vol.exists('/applications/com.example.app/.staged')).toBe(false)
 })
 
-test('the rename that commits an install carries its content out of /private', async () => {
-	// Staging in an un-synced lane only works if the cross-lane rename is a real
-	// commit: the bytes have to land in `/applications` readable, not just linked.
+test('the rename that commits an install leaves nothing staged behind', async () => {
+	// The commit is one rename, so the staging directory has to end up empty — and the
+	// bytes have to land in `/applications` readable, not just linked.
 	const vol = volume(memStorage())
 	const s = apps(vol)
 	const id = await s.install(
@@ -390,7 +390,7 @@ test('the rename that commits an install carries its content out of /private', a
 	)
 
 	expect(decode(await vol.readFile(`/applications/${id}/app.js`))).toBe('CODE')
-	expect(await vol.readdir('/private/tmp/app-installs')).toEqual([])
+	expect(await vol.readdir('/system/tmp/app-installs')).toEqual([])
 })
 
 // ── uninstall ────────────────────────────────────────────────────────────────

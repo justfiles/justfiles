@@ -73,13 +73,11 @@ const ROOT_INO = '1'
  * and is NOT the same problem. It holds real user data — credentials, caches —
  * that the old engine kept local by FILTERING the path, and this model has no
  * path filter: [T15](../../tasks/store-model/t15-mounts.md) replaced that with a
- * mount, so local-only data is a separate store joined at a name. So a
- * `/private` migrated into a REPLICATED store stops being local. Nothing here
- * can fix that, because the fix is a binding and only the host knows its local
- * store; what T17 must do is migrate `/private` into THAT store and leave a
- * `mount` row in this one. Until it does, the `migrated` author is the only
- * thing keeping those rows off the wire, and it stops keeping them off the
- * moment one of them is edited.
+ * mount. So a `/private` migrated into a REPLICATED store stops being local, and
+ * that is what `mounts` is for: a root-level name in it takes its whole subtree
+ * into another store, hanging off that store's own root, and the host announces a
+ * `mount` row in its place. Both halves belong to the host, because only the host
+ * knows its local store.
  */
 const STATE = '.state'
 
@@ -138,30 +136,57 @@ export type LegacyTree = {
  * Bytes land before the row that names them (rule 10): a crash then leaves an
  * orphan blob, which is garbage, instead of a row whose content was never
  * stored, which is a hole.
+ *
+ * `mounts` maps a ROOT-LEVEL name to the store its subtree belongs in — the
+ * local data the old model kept off the wire with a path filter. Its rows land
+ * under that store's own root and are never written here at all, so no page, no
+ * tombstone and no blob request in the synced store can name one.
  */
-export async function migrate(from: LegacyTree, into: Store): Promise<void> {
-	const queue: Array<{ ino: string; id: NodeId }> = [{ ino: ROOT_INO, id: ROOT }]
-	let batch: Node[] = []
+export async function migrate(
+	from: LegacyTree,
+	into: Store,
+	mounts?: Map<string, Store>
+): Promise<void> {
+	const queue: Array<{ ino: string; id: NodeId; into: Store }> = [{ ino: ROOT_INO, id: ROOT, into }]
+	const batches = new Map<Store, Node[]>()
 	const flush = async (): Promise<void> => {
-		if (batch.length === 0) return
-		await into.commit(batch)
-		batch = []
+		for (const [store, rows] of batches) if (rows.length > 0) await store.commit(rows)
+		batches.clear()
 	}
 
 	for (let dir = queue.shift(); dir !== undefined; dir = queue.shift()) {
+		const store = dir.into
 		for (const entry of await from.entries(dir.ino)) {
-			if (dir.id === ROOT && entry.name === STATE) continue
+			// The root of the store this pass was HANDED is the one place a name can be a
+			// mount point: a bound store's own root is `ROOT` too, so the store is what
+			// tells the two apart.
+			if (store === into && dir.id === ROOT) {
+				if (entry.name === STATE) continue
+				const bound = mounts?.get(entry.name)
+				if (bound !== undefined) {
+					// Everything under this name goes into the bound store, hanging off ITS
+					// root: what was `/private/x` is `x` there. The name in THIS store
+					// becomes a mount row, which `announceMount` writes and this pass does
+					// not — a derived row needs no data out of the old model, and writing
+					// one here would put the old directory's per-replica ino on it.
+					queue.push({ ino: entry.ino, id: ROOT, into: bound })
+					continue
+				}
+			}
 			const node = row(entry, dir.id)
-			if (node.content !== undefined && !(await into.blobs.has(node.content))) {
+			if (node.content !== undefined && !(await store.blobs.has(node.content))) {
 				// A hash the backend cannot produce — evicted from the client's LRU,
 				// swept on the server — travels as a stub, which the seam allows and a
 				// read through `hydratingBlobs` fetches from the peer. Failing here
 				// would let one missing blob stop the whole tree from migrating.
 				const data = await from.blob(node.content)
-				if (data !== null) await into.blobs.put(node.content, data)
+				if (data !== null) await store.blobs.put(node.content, data)
 			}
+			const batch = batches.get(store) ?? []
 			batch.push(node)
-			if (entry.type === FileType.Directory) queue.push({ ino: entry.ino, id: node.id })
+			batches.set(store, batch)
+			if (entry.type === FileType.Directory)
+				queue.push({ ino: entry.ino, id: node.id, into: store })
 			if (batch.length >= BATCH) await flush()
 		}
 	}
