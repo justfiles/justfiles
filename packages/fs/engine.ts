@@ -55,6 +55,18 @@ const SEP = String.fromCharCode(0)
 /** How many extra attempts a cycle gets before the failure becomes the caller's. */
 const RETRIES = 3
 
+/**
+ * How many of a page's per-row calls a scan keeps in flight.
+ *
+ * A page carries up to a hundred-odd rows, and both directions ask the target one
+ * question per row: the base it is about to replace, the bytes it may already
+ * hold. Over a network that is the whole cost of a sync, since the rows themselves
+ * travel in one commit — serially it is a hundred latencies, and all at once it is
+ * a burst nobody asked for. A handful of lanes divides the wait without becoming a
+ * flood.
+ */
+const LANES = 8
+
 /** The first backoff. Each further attempt doubles it. */
 const BACKOFF_MS = 1000
 
@@ -175,15 +187,37 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	const pull = async (rows: Node[]): Promise<void> => {
 		// The base first: a local write landing after this read fails the guard
 		// below, and the cycle starts again with the push, which carries it.
-		const guards = await bases(local, rows)
+		const held = await bases(local, rows)
+		// Rule 3, one step before the commit rather than inside it. A version names a
+		// STATE of a row — that is the whole of what makes a guard mean anything — so a
+		// base equal to the row being written IS that row, already here.
+		//
+		// The reason to drop it here is that a store cannot: `commit` is told a batch
+		// and answers nothing, so a wrapper that wakes subscribers reports the rows it
+		// was HANDED, no-ops and all. Every push comes back round this feed — the peer's
+		// feed carries this replica's own rows too — so the echo of a push looks to
+		// `synced.ts` like fresh local work and arms another one, and no write ever
+		// settles in one cycle. The rows the peer really changed are unaffected.
+		const fresh: Node[] = []
+		const guards: Base[] = []
+		for (const [at, row] of rows.entries()) {
+			const base = held[at]
+			if (base === undefined || base.version.is === row.version) continue
+			fresh.push(row)
+			guards.push(base)
+		}
 		// One that landed BEFORE it is work the peer has never been offered — the
 		// page in hand was read before that write existed, so applying it would
 		// overwrite the write, and the next push would skip the row because what it
 		// found there is the peer's. Hand it over, and start again on a page that
 		// has it. Empty in the steady state: one local `since` that returns nothing.
-		if (await drain(local, push, opts.push, false, mine)) throw new Restart()
-		await local.commit(rows, guards)
-		replans = 0
+		// A page with nothing to apply cannot overwrite anything, so it asks nothing
+		// of the local feed at all.
+		if (fresh.length > 0) {
+			if (await drain(local, push, opts.push, false, mine)) throw new Restart()
+			await local.commit(fresh, guards)
+			replans = 0
+		}
 		// Rule 7: bytes from a peer are checked against the hash that named them
 		// before they land. The peer's own store verifies what this replica pushes.
 		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs))
@@ -283,15 +317,39 @@ async function drain(
  * a rejection the engine can replan instead of a silent overwrite. `null` is
  * "not there", so a create is guarded too.
  *
- * One `get` per row. On the push that is a read at the peer, and the push filter
- * leaves the steady state with no rows at all, so the steady state still costs
- * nothing.
+ * One `get` per row, `LANES` of them at a time. On the push that is a read at the
+ * peer, and the push filter leaves the steady state with no rows at all, so the
+ * steady state still costs nothing.
  */
-async function bases(store: Store, rows: Node[]): Promise<Guard[]> {
-	const guards: Guard[] = []
-	for (const row of rows)
-		guards.push({ version: { id: row.id, is: (await store.get(row.id))?.version ?? null } })
-	return guards
+async function bases(store: Store, rows: Node[]): Promise<Base[]> {
+	return fanned(rows, async (row) => ({
+		version: { id: row.id, is: (await store.get(row.id))?.version ?? null }
+	}))
+}
+
+/**
+ * The one guard shape a base is: a CAS on the version the target holds. Named so
+ * that a caller can read `is` off it without asking which kind of guard it got —
+ * the pull compares it against the row it is about to write.
+ */
+type Base = { version: { id: NodeId; is: Version | null } }
+
+/**
+ * Map over items with at most `LANES` calls in flight, answers in the order the
+ * items came. Order is not a nicety: a guard belongs to the row at its own index,
+ * and a batch whose guards slid by one would state conditions nobody meant.
+ */
+async function fanned<T, R>(items: T[], work: (item: T) => Promise<R>): Promise<R[]> {
+	const answers: R[] = Array.from({ length: items.length })
+	let next = 0
+	const lane = async (): Promise<void> => {
+		for (let at = next++; at < items.length; at = next++) {
+			const item = items[at]
+			if (item !== undefined) answers[at] = await work(item)
+		}
+	}
+	await Promise.all(Array.from({ length: Math.min(LANES, items.length) }, lane))
+	return answers
 }
 
 /**
@@ -492,11 +550,14 @@ async function transfer(rows: Node[], from: Store['blobs'], into: Store['blobs']
 		// more (rule 8) — moving bytes for a dead row is pure waste.
 		if (row.content !== undefined && !row.deleted) hashes.add(row.content)
 	}
-	for (const hash of hashes) {
-		if (await into.has(hash)) continue
+	// In lanes, for the reason the bases are read that way: each hash is up to three
+	// round trips at a peer, and one blob's latency is nothing for the next blob to
+	// wait on. Content is keyed by hash, so no two of these are about the same bytes.
+	await fanned([...hashes], async (hash) => {
+		if (await into.has(hash)) return
 		const data = await from.get(hash)
 		if (data !== null) await into.put(hash, data)
-	}
+	})
 }
 
 /**
