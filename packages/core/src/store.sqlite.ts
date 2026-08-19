@@ -441,8 +441,11 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
  * replaced. Frieren's reset answers that by taking the whole instance down with it.
  */
 export function emptyStore(db: SyncDb, id: string = MAIN, opts?: { content?: 'keep' | 'drop' }) {
+	// The store's schema is the CALLER's to have created, by holding a `sqliteStore`
+	// over this database — which frieren's host does at boot, announcing its mount
+	// before any request can reach it. A store that exists but was never written to
+	// holds nothing, which is already what this was asked for.
 	const [store] = db.query<Row>('SELECT sid FROM stores WHERE id = ? LIMIT 1', [id])
-	// A store nobody ever opened holds nothing, which is what this was asked for.
 	if (!store) return
 	const sid = toNumber(store.sid)
 	db.exec('DELETE FROM nodes WHERE sid = ? AND id <> ?', [sid, ROOT])
