@@ -75,7 +75,7 @@ import { runDailyMaintenance } from './daily-maintenance.ts'
 import { cfFsStorage, createDOSqliteAdapter, createDOSyncDb, migrateCF } from './db.do.ts'
 import { generateFace } from './faces.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
-import { createServerPoke, poking } from './frieren.poke.ts'
+import { createServerPoke, notifying } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
@@ -228,8 +228,9 @@ export class Frieren extends DurableObject<Env> {
 		// `adoptStore`) then reserves that name on every replica, and `holdsRows` makes a
 		// subtree under it unspellable in the synced store on any client, buggy or not.
 		this.store = sqliteStore(this.sync)
-		this.local = sqliteStore(this.sync, PRIVATE_MOUNT)
-		this.tree = poking(authority(this.store), poke)
+		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT))
+		this.tree = notifying(authority(this.store))
+		this.tree.subscribe?.(poke)
 		// Constructing a Volume touches no storage; the migration barrier below still runs
 		// before any request can call a method on it.
 		this.volume = storeVolume(this.tree, {
