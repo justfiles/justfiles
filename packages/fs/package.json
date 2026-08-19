@@ -7,6 +7,8 @@
 		"./storage": "./storage.ts",
 		"./storage.shared": "./storage.shared.ts",
 		"./persistedState": "./persistedState.ts",
+		"./migrate": "./migrate.ts",
+		"./migrate.idb": "./migrate.idb.ts",
 		"./store": "./store.ts",
 		"./store.http": "./store.http.ts",
 		"./storage/mem": "./storage.mem.ts",
@@ -39,6 +41,16 @@
 				"types": "./dist/persistedState.d.ts",
 				"import": "./dist/persistedState.js",
 				"default": "./dist/persistedState.js"
+			},
+			"./migrate": {
+				"types": "./dist/migrate.d.ts",
+				"import": "./dist/migrate.js",
+				"default": "./dist/migrate.js"
+			},
+			"./migrate.idb": {
+				"types": "./dist/migrate.idb.d.ts",
+				"import": "./dist/migrate.idb.js",
+				"default": "./dist/migrate.idb.js"
 			},
 			"./store": {
 				"types": "./dist/store.d.ts",

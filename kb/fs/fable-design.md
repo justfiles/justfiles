@@ -647,6 +647,11 @@ our contract rule 9.
   (verified: `storage.mem.ts:64`, `storage.idb.ts:405`), so `id` can simply
   *be* the existing ino — the data migration is one pass that joins each
   inode with its dirent and writes one row (taken from opus-design).
+  **Corrected in T16:** the ino is per-replica, not shared. A node arriving
+  from a peer is given a FRESH local ino (`applyMutation` in `sync/node.ts`
+  calls `port.mintIno()`), so the shared identity is the SYNC id and that is
+  what `id` must be; the ino stands in only where a node has no sync row. The
+  pass is otherwise exactly this one — the join is what it always was.
 - First proof lives in one small isolated package. It must show: a rename of
   a directory with 4,000 children is one row in the feed; a crash between
   `blobs.put` and `commit` leaves only an orphan blob; a deleted cursor

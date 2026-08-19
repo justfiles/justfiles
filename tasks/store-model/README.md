@@ -117,7 +117,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`.
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
 | T15 | [Mounts](t15-mounts.md) | T6, T13 | done |
-| T16 | [Data migration](t16-data-migration.md) | T4, T12 | todo |
+| T16 | [Data migration](t16-data-migration.md) | T4, T12 | done |
 | T17 | [Swap the consumers](t17-swap-consumers.md) | T11, T13, T15, T16 | todo |
 | T18 | [Retire the twin vocabulary](t18-retire.md) | T17 | todo |
 
