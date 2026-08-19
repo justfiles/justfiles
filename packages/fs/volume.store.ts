@@ -116,8 +116,16 @@ const authorOf = (version: Version): string => {
 	return cut === -1 ? version : version.slice(0, cut)
 }
 
-/** The only `source` this model can report: some other replica wrote the row. */
-const REMOTE = 'remote'
+/**
+ * The only `source` this model can report: some other replica wrote the row.
+ *
+ * The old engine tagged every write with an origin and let a caller name any of
+ * them; this one has exactly two answers — a write made through this volume, and
+ * a row that arrived in a feed — so the constant is the whole vocabulary. It is
+ * exported because an app filters on it: frieren's kernel re-reads app state only
+ * when the agent's server-side write arrives, not when its own dispatch does.
+ */
+export const REMOTE_SOURCE = 'remote'
 
 /**
  * fstab, as data: which store stands at which name, inside which directory.
@@ -1008,7 +1016,7 @@ export function storeVolume(
 				scheduled = false
 				const definite = fire
 				const before = node
-				const source = remote ? REMOTE : undefined
+				const source = remote ? REMOTE_SOURCE : undefined
 				fire = false
 				remote = false
 				if (rebind) {
@@ -1175,7 +1183,7 @@ export function storeVolume(
 				await bind()
 				if (!sameAt(root, was)) wake = true
 			}
-			return { wake, source: remote ? REMOTE : undefined }
+			return { wake, source: remote ? REMOTE_SOURCE : undefined }
 		}
 
 		let queued: Seen[] = []

@@ -14,11 +14,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterAll, describe, expect, test } from 'vitest'
-import { type Guard, GuardError, type Node, ROOT } from '../../fs/store'
+import {
+	ForeignCursorError,
+	type Guard,
+	GuardError,
+	type Node,
+	ROOT,
+	sha256Hex
+} from '../../fs/store'
 import { storeConformance } from '../../fs/store.conformance'
 import type { SyncDb } from './db'
 import { createSqliteSyncDb } from './db.sqlite'
-import { sqliteStore } from './store.sqlite'
+import { emptyStore, sqliteStore } from './store.sqlite'
+
+/** The one definition of a `Hash`, so a test never invents one the store would refuse. */
+const sha = (text: string) => sha256Hex(new TextEncoder().encode(text))
 
 /**
  * node:sqlite returns INTEGER as a JS number by default and THROWS on values
@@ -304,5 +314,331 @@ describe('sqliteStore: what outlives the connection', () => {
 		// And the fence still stands where it should: another database is another
 		// lineage, and it rejects this cursor rather than answering it (rule 11).
 		await expect(onDisk('other')().since(cursor)).rejects.toThrow()
+	})
+})
+
+describe('sqliteStore: the sweep', () => {
+	/** A store and the database under it, because a reset is the database's, not the handle's. */
+	const pair = () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		return { db, store: sqliteStore(db) }
+	}
+
+	const bytes = (text: string) => new TextEncoder().encode(text)
+
+	/** Age every blob past the grace window, which is the only thing a clock buys here. */
+	const age = (db: SyncDb) => db.exec('UPDATE blobs SET touched_ms = 0')
+
+	test('collects bytes no live row names, and keeps the ones that are named', async () => {
+		const { db, store } = pair()
+		const kept = await sha('kept')
+		const orphan = await sha('orphan')
+		await store.blobs.put(kept, bytes('kept'))
+		await store.blobs.put(orphan, bytes('orphan'))
+		await store.commit([node({ id: 'a', name: 'a.txt', content: kept })])
+		age(db)
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(await store.blobs.has(kept)).toBe(true)
+		expect(await store.blobs.has(orphan)).toBe(false)
+	})
+
+	test('bytes still inside the grace window survive: a push puts them before it commits', async () => {
+		const { store } = pair()
+		const hash = await sha('in flight')
+		await store.blobs.put(hash, bytes('in flight'))
+
+		// Rule 10's two steps are two REQUESTS on a server, and the engine never
+		// offers a pushed row's bytes twice — so collecting them in between would
+		// leave a permanent stub with nobody left to fill it.
+		expect(await store.gc?.()).toEqual({ reclaimed: 0, done: true })
+		expect(await store.blobs.has(hash)).toBe(true)
+	})
+
+	test('a tombstone keeps nothing alive: its content is unreadable by anyone', async () => {
+		const { db, store } = pair()
+		const hash = await sha('deleted')
+		await store.blobs.put(hash, bytes('deleted'))
+		await store.commit([node({ id: 'a', name: 'a.txt', content: hash })])
+		await store.commit([
+			node({ id: 'a', name: 'a.txt', content: hash, deleted: true, version: '2' })
+		])
+		age(db)
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(await store.blobs.has(hash)).toBe(false)
+	})
+
+	test('one store never keeps another store’s bytes alive', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const synced = sqliteStore(db)
+		const local = sqliteStore(db, 'private')
+		const shared = await sha('shared')
+		await synced.blobs.put(shared, bytes('shared'))
+		await local.blobs.put(shared, bytes('shared'))
+		// Named in the LOCAL store only. The two blob rows are two rows, so the
+		// synced store's copy is unreferenced and the local one is not.
+		await local.commit([node({ id: 'a', name: 'a.txt', content: shared })])
+		age(db)
+
+		expect(await synced.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(await synced.blobs.has(shared)).toBe(false)
+		expect(await local.blobs.has(shared)).toBe(true)
+	})
+
+	test('asking renews the lease, so a re-adopted blob survives the sweep', async () => {
+		const { db, store } = pair()
+		const hash = await sha('re-adopted')
+		await store.blobs.put(hash, bytes('re-adopted'))
+		// Unreferenced since last week: nothing about when these bytes were WRITTEN
+		// protects them any more.
+		age(db)
+
+		// A pusher asks before deciding not to upload. Told yes, it skips the upload and
+		// commits two round trips later — and this is the window the sweep must not use.
+		expect(await store.blobs.has(hash)).toBe(true)
+		expect(await store.gc?.()).toEqual({ reclaimed: 0, done: true })
+		expect(await store.blobs.has(hash)).toBe(true)
+
+		// The row that ends the race, and the blob stops being a candidate at all.
+		await store.commit([node({ id: 'a', name: 'a.txt', content: hash })])
+		expect(await store.gc?.()).toEqual({ reclaimed: 0, done: true })
+		expect(await store.blobs.get(hash)).toEqual(bytes('re-adopted'))
+	})
+
+	test('asking about a blob it does not hold renews nothing', async () => {
+		const { store } = pair()
+
+		expect(await store.blobs.has(await sha('never here'))).toBe(false)
+	})
+
+	test('a full slice reports more to do, and a second pass finishes it', async () => {
+		const { db, store } = pair()
+		for (let i = 0; i < 130; i++) await store.blobs.put(await sha(`b${i}`), bytes(`b${i}`))
+		age(db)
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 128, done: false })
+		expect(await store.gc?.()).toEqual({ reclaimed: 2, done: true })
+	})
+})
+
+describe('emptyStore: the authority starts a new lineage', () => {
+	const bytes = (text: string) => new TextEncoder().encode(text)
+
+	test('every row but the root goes, and the cursors that watched them are fenced', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const store = sqliteStore(db)
+		await store.commit([node({ id: 'a', name: 'a.txt' })])
+		const { next: cursor } = await store.since()
+		if (!cursor) throw new Error('since must always hand a cursor back')
+
+		db.transactionSync(() => emptyStore(db))
+
+		// The handle that was open when it happened is stale, exactly as documented:
+		// it still holds the lineage it read at open. A fresh one is what a restarted
+		// instance has, and it is what answers here.
+		const after = sqliteStore(db)
+		// Rule 6's root row is all that is left, and it is all a scan finds.
+		expect((await after.since()).nodes.map((n) => n.id)).toEqual([ROOT])
+		expect(await after.get(ROOT)).not.toBeNull()
+		await expect(after.since(cursor)).rejects.toThrow(ForeignCursorError)
+	})
+
+	test('content survives an adopt-mine and goes with a wipe', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const hash = await sha('kept')
+		await sqliteStore(db).blobs.put(hash, bytes('kept'))
+
+		db.transactionSync(() => emptyStore(db))
+		// The initiator republishes rows it may only hold as stubs, so the bytes
+		// behind them have to still be here.
+		expect(await sqliteStore(db).blobs.has(hash)).toBe(true)
+
+		db.transactionSync(() => emptyStore(db, undefined, { content: 'drop' }))
+		expect(await sqliteStore(db).blobs.has(hash)).toBe(false)
+	})
+
+	test('it empties the store it is named, and no other', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const synced = sqliteStore(db)
+		const local = sqliteStore(db, 'private')
+		await synced.commit([node({ id: 'a', name: 'a.txt' })])
+		await local.commit([node({ id: 'b', name: 'b.txt' })])
+
+		db.transactionSync(() => emptyStore(db))
+
+		expect((await sqliteStore(db).since()).nodes.map((n) => n.id)).toEqual([ROOT])
+		// The whole point of the DO holding two: an adopt-mine truncates the tree the
+		// client republishes and cannot touch the credentials it has never seen.
+		expect((await sqliteStore(db, 'private').since()).nodes.map((n) => n.id)).toEqual([ROOT, 'b'])
+	})
+})
+
+describe('sqliteStore: bytes too big for a row', () => {
+	/**
+	 * An object store, and a database that refuses a row over 2 MB the way Workers
+	 * SQLite does — the whole reason the offload exists, so the test has to have it.
+	 */
+	const durable = () => {
+		const objects = new Map<string, Uint8Array>()
+		// A delete a test can hold open, the way a round trip to R2 is open for a while.
+		let inflight: Promise<void> | undefined
+		let finish: (() => void) | undefined
+		const raw = adapter(new DatabaseSync(':memory:'))
+		const db: SyncDb = {
+			...raw,
+			exec: (sql, args) => {
+				for (const arg of args ?? [])
+					if (arg instanceof Uint8Array && arg.byteLength > 2 * 1024 * 1024)
+						throw new Error('Row too large')
+				raw.exec(sql, args)
+			}
+		}
+		const blobs = {
+			puts: 0,
+			async put(key: string, value: ArrayBuffer | ArrayBufferView) {
+				blobs.puts++
+				objects.set(key, new Uint8Array(value as ArrayBuffer))
+			},
+			async get(key: string) {
+				const held = objects.get(key)
+				return held === undefined
+					? null
+					: {
+							async arrayBuffer() {
+								return held.buffer as ArrayBuffer
+							}
+						}
+			},
+			async delete(keys: string | string[]) {
+				await inflight
+				for (const key of typeof keys === 'string' ? [keys] : keys) objects.delete(key)
+			},
+			hold() {
+				inflight = new Promise<void>((resolve) => (finish = resolve))
+			},
+			land() {
+				finish?.()
+			}
+		}
+		return { db, blobs, objects }
+	}
+
+	const big = (size: number) => new Uint8Array(size).fill(7)
+
+	test('a file over the row limit round-trips through the external store', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+
+		await store.blobs.put(hash, data)
+
+		// The row names where the bytes are; the bytes are not in it. Without this the
+		// put throws outright, which is what a 2 MB cap does to a store that inlines.
+		expect([...objects.keys()]).toEqual([`main/${hash}`])
+		expect(await store.blobs.has(hash)).toBe(true)
+		expect(await store.blobs.get(hash)).toEqual(data)
+	})
+
+	test('without one, the same file cannot be stored at all', async () => {
+		const { db } = durable()
+		const store = sqliteStore(db)
+		const data = big(3 * 1024 * 1024)
+
+		// The reason the offload exists, pinned: a Workers SQLite row is capped at 2 MB,
+		// so a store that inlines everything refuses the write outright — and on the
+		// Durable Object that refusal lands inside the boot barrier, where it takes every
+		// request to that object down with it.
+		await expect(store.blobs.put(await sha256Hex(data), data)).rejects.toThrow('Row too large')
+	})
+
+	test('small bytes stay in the row: an offload is a size answer, not a policy', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(1024)
+		const hash = await sha256Hex(data)
+
+		await store.blobs.put(hash, data)
+
+		expect(objects.size).toBe(0)
+		expect(await store.blobs.get(hash)).toEqual(data)
+	})
+
+	test('a second put of the same hash uploads nothing', async () => {
+		const { db, blobs } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+
+		await store.blobs.put(hash, data)
+		await store.blobs.put(hash, data)
+
+		// Rule 7: a hash the store already holds is already the answer. This is what
+		// keeps a re-run of the one pass from re-uploading a volume it already moved.
+		expect(blobs.puts).toBe(1)
+	})
+
+	test('the sweep collects the object too, after the row that named it', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		db.exec('UPDATE blobs SET touched_ms = 0')
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(objects.size).toBe(0)
+	})
+
+	test('two stores over one database never share an object', async () => {
+		const { db, blobs, objects } = durable()
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+
+		await sqliteStore(db, undefined, { blobs }).blobs.put(hash, data)
+		await sqliteStore(db, 'private', { blobs }).blobs.put(hash, data)
+
+		// The same bytes, and still two objects: a hash in the local store must not be
+		// fetchable through the synced one's blob route, and the key is what draws that
+		// boundary outside the database as `sid` draws it inside.
+		expect([...objects.keys()].sort()).toEqual([`main/${hash}`, `private/${hash}`])
+	})
+
+	test('a row whose object is gone reads as absent, not as a failure', async () => {
+		const { db, blobs, objects } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		objects.clear()
+
+		// The seam's own answer to content that is not here: a reader is told rather
+		// than guessed at, and `hydratingBlobs` asks the peer.
+		expect(await store.blobs.get(hash)).toBeNull()
+	})
+
+	test('a push mid-sweep waits for the delete that is already on its way', async () => {
+		const { db, blobs } = durable()
+		const store = sqliteStore(db, undefined, { blobs })
+		const data = big(3 * 1024 * 1024)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		db.exec('UPDATE blobs SET touched_ms = 0')
+
+		// The window the sweep cannot close by ordering alone: the row is already gone,
+		// so a push asks, is told no, and adopts the same hash into the same key while the
+		// object delete is still in flight. The Durable Object holds no input gate across
+		// that request, so this interleaving is the deployed one.
+		blobs.hold()
+		const sweep = store.gc?.()
+		const adopt = store.blobs.put(hash, data)
+		blobs.land()
+		await Promise.all([sweep, adopt])
+
+		// The re-adopted bytes survive their own collection. Without the wait the delete
+		// lands after the upload, and the row the push is about to commit names nothing —
+		// with no peer left that knows to offer the content again.
+		expect(await store.blobs.get(hash)).toEqual(data)
 	})
 })

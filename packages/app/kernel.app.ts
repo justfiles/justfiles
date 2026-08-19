@@ -34,12 +34,19 @@ function appRoot(appId: AppId): string {
 }
 
 // Where install stages a bundle before committing it with a rename, and parks the
-// previous one until the swap succeeds. Under `/private` — the host's local-only lane
-// — because staged bytes exist solely to be renamed away and no peer has any use for
-// them at this path. It also keeps an install from churning the wire with a
-// put-then-delete, which a synced staging dir did for every locally-authored install.
-// Not under `/private/cache`: staging is in flight, not a copy of anything.
-const INSTALL_TMP = '/private/tmp/app-installs'
+// previous one until the swap succeeds.
+//
+// In the SAME lane as `/applications`, and it has to be: `/private` is a mount now
+// (T15), so a rename out of it is a rename across stores — which a filesystem answers
+// with EXDEV, and this volume does too for anything but a single file's bytes. Staging
+// there and "committing by renaming across the lane boundary" was the old model's
+// answer, when a lane was a path prefix rather than a store.
+//
+// The wire objection that put it there does not survive the move either. A push offers
+// each row ONCE, at its latest state, so a subtree staged and renamed inside one cycle
+// reaches a peer as the finished bundle and nothing else; and content is hash-keyed, so
+// a cycle that does catch it mid-stage re-sends no bytes when the rename lands.
+const INSTALL_TMP = '/system/tmp/app-installs'
 
 const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/')
 

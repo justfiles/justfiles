@@ -22,6 +22,7 @@ import {
 	ForeignCursorError,
 	type Guard,
 	GuardError,
+	type Hash,
 	type Node,
 	type NodeId,
 	ROOT,
@@ -32,6 +33,57 @@ import type { SqlValue, SyncDb } from './db'
 
 /** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128
+
+/**
+ * Blobs per `gc` pass. The sweep shares one Durable Object event with every other
+ * write, so it takes a slice and says whether more is left rather than holding the
+ * object for the length of the backlog.
+ */
+const SWEEP = 128
+
+/**
+ * Bytes at or under this stay in the row; anything larger goes to the external store
+ * when the host gave one.
+ *
+ * The number is not a tuning knob, it is a platform limit: a Workers SQLite ROW is
+ * capped at 2 MB, hard, so a store that inlined everything could not hold a file
+ * bigger than that at all — and the old backend already sent every binary to R2 for
+ * the same reason. 256 KB is the old inline limit, well clear of the cap once a
+ * hash, a key and a stamp are on the row beside the bytes.
+ */
+const INLINE = 256 * 1024
+
+/**
+ * Where bytes go when they are too big for a row: R2's shape, and nothing more of it
+ * than this uses. It is the HOST's to scope — one bucket serves every Durable Object,
+ * so the view handed in here must already be this host's.
+ */
+export type BlobStore = {
+	put(key: string, value: ArrayBuffer | ArrayBufferView): Promise<unknown>
+	get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>
+	/** One key or a batch — R2's own signature, so a sweep costs one round trip per 1000. */
+	delete?(keys: string | string[]): Promise<void>
+}
+
+/**
+ * How long bytes are safe from the sweep after an adopter last TOUCHED them.
+ *
+ * Rule 10 puts the bytes in before the row that names them, and on a server those are
+ * two REQUESTS with a gap between them. A sweep in that gap collects content the
+ * pusher has already ticked off, and the engine never offers a pushed row's bytes
+ * twice — so the row is a stub for ever, with no peer left that knows to re-send.
+ *
+ * There are TWO ways to be mid-adoption, which is why the stamp says "touched" and
+ * not "written". A pusher holding the only copy PUTs the bytes and then commits. A
+ * pusher whose bytes this store already has asks `has`, is told yes, skips the upload
+ * — and then commits, with a `bases` round trip in between (`engine.ts`). The second
+ * is the dangerous one: those bytes may have been unreferenced for weeks, so nothing
+ * about when they were WRITTEN protects them, and only the ask says an adopter is
+ * coming.
+ *
+ * An hour is far longer than one page of a push and far shorter than the daily sweep.
+ */
+const GRACE_MS = 60 * 60 * 1000
 
 /**
  * The store every host has one of: the tree its volume is built over. A constant
@@ -105,7 +157,24 @@ const SCHEMA = [
 	// Content is per store too. Sharing one map would make a hash in the local
 	// store fetchable through the synced one's blob route, and rule 7 would then
 	// be the only thing standing between them — the boundary has to be the data.
-	'CREATE TABLE IF NOT EXISTS blobs (sid INTEGER NOT NULL, hash TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (sid, hash))',
+	// `touched_ms` is not part of the content map — a hash is still the whole key —
+	// it is what `gc` needs to tell "no row names these bytes" from "no row names
+	// them YET": the last moment an adopter wrote them or asked after them. Epoch
+	// milliseconds as INTEGER: it is compared, and it is nowhere near the 2^53 the
+	// two nanosecond fields above are.
+	//
+	// Exactly one of `data` and `blob_key` is set: the bytes are in the row, or the
+	// row names where they are. Which one is a size question and nothing else (see
+	// `INLINE`), so it is decided per blob and never revisited — content is immutable,
+	// so the same hash is always the same length.
+	`CREATE TABLE IF NOT EXISTS blobs (
+		sid INTEGER NOT NULL,
+		hash TEXT NOT NULL,
+		data BLOB,
+		blob_key TEXT,
+		touched_ms INTEGER NOT NULL,
+		PRIMARY KEY (sid, hash)
+	)`,
 	'CREATE TABLE IF NOT EXISTS meta (sid INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (sid, key))'
 ]
 
@@ -140,8 +209,31 @@ const ROOT_ROW: Node = {
  * reaches the schema, and renaming the mount is a `name` column in the PARENT
  * store's row. The default is the tree every host has one of.
  */
-export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
+export function sqliteStore(
+	db: SyncDb,
+	id: string = MAIN,
+	opts: { blobs?: BlobStore; inline?: number } = {}
+): Store {
 	let opened: Opened | undefined
+	const external = opts.blobs
+	const inline = opts.inline ?? INLINE
+	// Content-addressed, and the store's id is in it: two stores over one database
+	// never share an object, which is the same boundary `sid` draws on the table.
+	const keyFor = (hash: Hash): string => `${id}/${hash}`
+	/**
+	 * The sweep's outstanding object deletes, which a new upload waits for.
+	 *
+	 * `gc` drops the rows and then deletes the objects, and that second half is network
+	 * I/O — a Durable Object holds no input gate across it. So a push lands in the gap,
+	 * finds no row, and re-uploads the same hash to the same derived key; if the delete
+	 * already on its way then wins, the fresh row names an object that is gone, and the
+	 * pusher's cursor has moved past the only offer of those bytes.
+	 *
+	 * A fresh key per adoption would dodge it, but a key derived from the hash is what
+	 * makes a repeated put idempotent (see `put`). So the upload waits instead: one
+	 * promise, one batch long, awaited only on the path that has a key at all.
+	 */
+	let sweeping: Promise<unknown> | undefined
 
 	const start = (): Opened => {
 		let sid = 0
@@ -310,6 +402,52 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 			})
 		},
 
+		/**
+		 * Rule 7 makes content immutable and hash-keyed, so nothing ever overwrites a
+		 * blob — an edited file simply stops naming its old bytes, and those bytes are
+		 * this store's to collect. Live rows only: a tombstone keeps whatever columns it
+		 * was written with, and content a deleted row still names is content nobody can
+		 * read.
+		 *
+		 * Per store, like everything else here: one store's rows can never keep
+		 * another's bytes alive, which is the same boundary the blob table's `sid` draws.
+		 */
+		async gc() {
+			const { sid } = open()
+			let reclaimed = 0
+			let done = true
+			const keys: string[] = []
+			db.transactionSync(() => {
+				const orphans = db.query<Row>(
+					`SELECT hash, blob_key FROM blobs
+						WHERE sid = ? AND touched_ms < ? AND hash NOT IN (
+							SELECT content FROM nodes WHERE sid = ? AND deleted = 0 AND content IS NOT NULL
+						)
+						LIMIT ${SWEEP + 1}`,
+					[sid, Date.now() - GRACE_MS, sid]
+				)
+				// One past the slice is how a pass knows there is more, without counting
+				// the whole backlog it deliberately did not read.
+				done = orphans.length <= SWEEP
+				for (const found of orphans.slice(0, SWEEP)) {
+					db.exec('DELETE FROM blobs WHERE sid = ? AND hash = ?', [sid, String(found.hash)])
+					const key = text(found.blob_key)
+					if (key !== null) keys.push(key)
+					reclaimed++
+				}
+			})
+			// The external half, always AFTER the transaction that dropped the rows: an
+			// object store can never join one, and the row is what makes the bytes
+			// reachable. Losing these deletes leaks paid-for garbage; losing the rows
+			// would be data loss, so this is the order that fails the right way.
+			if (keys.length > 0) {
+				sweeping = external?.delete?.(keys).catch(() => undefined)
+				await sweeping
+				sweeping = undefined
+			}
+			return { reclaimed, done }
+		},
+
 		// No `subscribe`. Rule 8 makes it optional, and a consumer takes it INSTEAD
 		// of polling `since` whenever a store offers one — which this backend cannot
 		// honour: the DATABASE is the store, not the connection, so a wake held in
@@ -321,20 +459,50 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 		// already the answer and the second put is nothing. SQLite hands every
 		// reader its own buffer, so nothing here can reach into stored content.
 		blobs: {
+			/**
+			 * The ROW is what this store holds, whichever side the bytes are on: an
+			 * external object with no row here belongs to nobody, and `gc` sweeps by row.
+			 *
+			 * Asking RENEWS the lease, and that is not a convenience. This question is
+			 * the one a pusher asks before deciding not to upload (`transfer` in
+			 * `engine.ts`), so a `true` here is a promise that the bytes will still be
+			 * here when the commit naming them arrives — a commit that is two round trips
+			 * away. Without the renewal a hash unreferenced since last week answers
+			 * `true`, the sweep collects it in the gap, and the row lands naming content
+			 * no peer will ever offer again.
+			 *
+			 * Guarded on the stamp, so the common case writes nothing: a blob touched
+			 * within the last half-window is already safe for longer than the push, and
+			 * an `UPDATE` that matches no row costs no write.
+			 */
 			async has(hash) {
 				const { sid } = open()
-				return (
+				const held =
 					db.query('SELECT 1 AS held FROM blobs WHERE sid = ? AND hash = ? LIMIT 1', [sid, hash])
 						.length > 0
-				)
+				if (held)
+					db.exec('UPDATE blobs SET touched_ms = ? WHERE sid = ? AND hash = ? AND touched_ms < ?', [
+						Date.now(),
+						sid,
+						hash,
+						Date.now() - GRACE_MS / 2
+					])
+				return held
 			},
 			async get(hash) {
 				const { sid } = open()
-				const [found] = db.query<Row>('SELECT data FROM blobs WHERE sid = ? AND hash = ? LIMIT 1', [
-					sid,
-					hash
-				])
-				return found ? bytes(found.data) : null
+				const [found] = db.query<Row>(
+					'SELECT data, blob_key FROM blobs WHERE sid = ? AND hash = ? LIMIT 1',
+					[sid, hash]
+				)
+				if (!found) return null
+				if (found.data != null) return bytes(found.data)
+				const key = text(found.blob_key)
+				// A row naming an object nobody can produce is the seam's own answer to
+				// content that is not here: `null`, and the reader is told.
+				if (key === null || !external) return null
+				const object = await external.get(key)
+				return object === null ? null : new Uint8Array(await object.arrayBuffer())
 			},
 			async put(hash, data) {
 				// Held before the first `await`: the caller may edit its array the
@@ -342,10 +510,82 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 				// handed over.
 				const held = new Uint8Array(data)
 				const { sid } = open()
-				db.exec('INSERT OR IGNORE INTO blobs(sid, hash, data) VALUES (?, ?, ?)', [sid, hash, held])
+				const stamp = Date.now()
+				if (external === undefined || held.byteLength <= inline) {
+					db.exec(
+						'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, touched_ms) VALUES (?, ?, ?, NULL, ?)',
+						[sid, hash, held, stamp]
+					)
+					return
+				}
+				// Rule 7 makes content immutable, so a hash this store already holds is
+				// already the answer — and skipping here is what keeps a re-run of the
+				// one pass from re-uploading a volume it already moved.
+				if (
+					db.query('SELECT 1 AS held FROM blobs WHERE sid = ? AND hash = ? LIMIT 1', [sid, hash])
+						.length > 0
+				)
+					return
+				// Bytes BEFORE the row, the way rule 10 puts them before the node that
+				// names them: a failure here leaves an unreferenced object, which is
+				// garbage, rather than a row whose bytes were never stored, which is a
+				// hole. The key is derived from the hash, so a repeat writes the same
+				// object to the same place.
+				const key = keyFor(hash)
+				// A sweep may be deleting this very key right now, and it dropped the row
+				// this put just found missing (see `sweeping`).
+				await sweeping
+				await external.put(key, held)
+				db.exec(
+					'INSERT OR IGNORE INTO blobs(sid, hash, data, blob_key, touched_ms) VALUES (?, ?, NULL, ?, ?)',
+					[sid, hash, key, stamp]
+				)
 			}
 		}
 	}
+}
+
+/**
+ * Empty one store and start it on a NEW LINEAGE: the authority half of "take mine",
+ * and the whole of a wipe.
+ *
+ * A lineage rather than a flag, because rule 11 is what this model fences with. Every
+ * replica's pull cursor was minted by the lineage this replaces, so the next `since`
+ * over any of them throws `ForeignCursorError` and that replica scans the emptied feed
+ * from the top — including the one that ASKED for the reset, whose own cursor is no
+ * more valid than anybody else's. Nothing has to be told; the cursors say it.
+ *
+ * The root row stays. It is a constant on every store (rule 6), so removing and
+ * re-seeding it would be a write that says nothing, and a store with no root is one no
+ * volume can read.
+ *
+ * `content: 'keep'` is what an adopt-mine wants: the initiator republishes rows it may
+ * only hold as stubs, and the bytes behind them are already here. A wipe drops them,
+ * because "delete everything" must not leave the discarded bytes fetchable by hash.
+ *
+ * It drops the ROWS, which is what makes the bytes unfetchable — an offloaded object
+ * is only reachable through the row that names its key. Objects in an external store
+ * are left where they are: this body is synchronous, deliberately (it shares the CAS's
+ * transaction), and an object store can never join one. The old model's wipe left them
+ * too, for the same reason, so this leaks no more than it used to.
+ *
+ * NO TRANSACTION OF ITS OWN — the caller owns one, because the only caller commits
+ * this together with the CAS that authorised it (`resetStore` in `reset.ts`). And any
+ * `sqliteStore` handle already open over this store is STALE afterwards: it holds the
+ * lineage it read at open, so it would keep minting cursors of a lineage this just
+ * replaced. Frieren's reset answers that by taking the whole instance down with it.
+ */
+export function emptyStore(db: SyncDb, id: string = MAIN, opts?: { content?: 'keep' | 'drop' }) {
+	// The store's schema is the CALLER's to have created, by holding a `sqliteStore`
+	// over this database — which frieren's host does at boot, announcing its mount
+	// before any request can reach it. A store that exists but was never written to
+	// holds nothing, which is already what this was asked for.
+	const [store] = db.query<Row>('SELECT sid FROM stores WHERE id = ? LIMIT 1', [id])
+	if (!store) return
+	const sid = toNumber(store.sid)
+	db.exec('DELETE FROM nodes WHERE sid = ? AND id <> ?', [sid, ROOT])
+	if (opts?.content === 'drop') db.exec('DELETE FROM blobs WHERE sid = ?', [sid])
+	db.exec("UPDATE meta SET value = ? WHERE sid = ? AND key = 'lineage'", [crypto.randomUUID(), sid])
 }
 
 // ── The row codec: one table row ↔ one `Node` ────────────────────────────────

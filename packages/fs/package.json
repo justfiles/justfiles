@@ -11,6 +11,12 @@
 		"./migrate.idb": "./migrate.idb.ts",
 		"./store": "./store.ts",
 		"./store.http": "./store.http.ts",
+		"./volume.store": "./volume.store.ts",
+		"./synced": "./synced.ts",
+		"./authority": "./authority.ts",
+		"./store.mem": "./store.mem.ts",
+		"./store.idb": "./store.idb.ts",
+		"./store.fs": "./store.fs.ts",
 		"./storage/mem": "./storage.mem.ts",
 		"./storage/idb": "./storage.idb.ts",
 		"./storage/fs": "./storage.fs.ts",
@@ -61,6 +67,36 @@
 				"types": "./dist/store.http.d.ts",
 				"import": "./dist/store.http.js",
 				"default": "./dist/store.http.js"
+			},
+			"./volume.store": {
+				"types": "./dist/volume.store.d.ts",
+				"import": "./dist/volume.store.js",
+				"default": "./dist/volume.store.js"
+			},
+			"./synced": {
+				"types": "./dist/synced.d.ts",
+				"import": "./dist/synced.js",
+				"default": "./dist/synced.js"
+			},
+			"./authority": {
+				"types": "./dist/authority.d.ts",
+				"import": "./dist/authority.js",
+				"default": "./dist/authority.js"
+			},
+			"./store.mem": {
+				"types": "./dist/store.mem.d.ts",
+				"import": "./dist/store.mem.js",
+				"default": "./dist/store.mem.js"
+			},
+			"./store.idb": {
+				"types": "./dist/store.idb.d.ts",
+				"import": "./dist/store.idb.js",
+				"default": "./dist/store.idb.js"
+			},
+			"./store.fs": {
+				"types": "./dist/store.fs.d.ts",
+				"import": "./dist/store.fs.js",
+				"default": "./dist/store.fs.js"
 			},
 			"./storage/mem": {
 				"types": "./dist/storage.mem.d.ts",

@@ -93,7 +93,7 @@ export default defineConfig({
 				cleanupOutdatedCaches: true,
 				clientsClaim: true,
 				navigateFallback: '/index.html',
-				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/ws$/],
+				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/store\//, /^\/ws$/],
 				// Runner release URLs are immutable. Cache them on first use so an installed
 				// app's mounted GUI/assets keep working with no network; the volume retains
 				// only its manifest and reducer. Bound the cache so superseded releases cannot
