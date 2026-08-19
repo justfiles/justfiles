@@ -1,8 +1,36 @@
-import type { DbAdapter, SqlValue } from './db'
+import type { DbAdapter, SqlValue, SyncDb } from './db'
 
 interface BunDatabase {
 	prepare(sql: string): { all(...args: SqlValue[]): unknown[]; run(...args: SqlValue[]): void }
 	exec(sql: string): void
+}
+
+/**
+ * A `SyncDb` over ONE synchronous connection (`node:sqlite`, bun's `Database`) — no queue,
+ * because a synchronous body has nothing to interleave with: `BEGIN`, the whole body,
+ * `COMMIT`, in one turn of the event loop. That is the entire reason the seam is synchronous
+ * (`db.ts`), and it is what the async adapter below spends a serialization queue to
+ * approximate.
+ */
+export function createSqliteSyncDb(db: BunDatabase): SyncDb {
+	db.exec('PRAGMA foreign_keys = ON')
+	return {
+		exec: (sql, args = []) => {
+			db.prepare(sql).run(...args)
+		},
+		query: <T extends Record<string, unknown>>(sql: string, args: SqlValue[] = []) =>
+			db.prepare(sql).all(...args) as T[],
+		transactionSync(fn) {
+			db.exec('BEGIN')
+			try {
+				fn()
+				db.exec('COMMIT')
+			} catch (e) {
+				db.exec('ROLLBACK')
+				throw e
+			}
+		}
+	}
 }
 
 /**

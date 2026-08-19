@@ -55,6 +55,23 @@ const MAX_ATTEMPTS = 8
  */
 export type SyncStatus = 'connecting' | 'syncing' | 'synced' | 'error'
 
+/**
+ * Where a replica keeps the one bit that says a DISCARD stopped half-done. The
+ * host owns the storage, for the reason it owns the two cursors: this is engine
+ * state, so it may not live in the replicated table nor in the user's tree.
+ *
+ * It has to be durable because the two halves of `takeTheirs` cannot be one step
+ * — the cutoff is only knowable AFTER the tombstones are committed, so a crash
+ * in between leaves a store whose rows say "delete everywhere" sitting past a
+ * push cursor that never moved. A wrapper built over a raised flag finishes the
+ * discard before its first cycle; without a slot, the flag is in memory and that
+ * crash is unrecoverable.
+ */
+export type DiscardSlot = {
+	load(): Promise<boolean>
+	save(unfinished: boolean): Promise<void>
+}
+
 export type SyncedProps = {
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
@@ -71,6 +88,12 @@ export type SyncedProps = {
 	pull: CursorSlot
 	/** Where it keeps its position in its own. */
 	push: CursorSlot
+	/**
+	 * Where it keeps "a discard stopped half-done". An app without one keeps that
+	 * bit in memory and cannot recover the crash the type above describes — which is
+	 * a test's business, not an app's.
+	 */
+	discard?: DiscardSlot
 	/** How often the loop runs by itself. Default 30s. */
 	interval?: number
 	/**
@@ -170,7 +193,8 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	let resetting = false
 	/**
 	 * A DISCARD stopped half-done, and nothing but another discard can finish it.
-	 * The loop must not act in either half:
+	 * Durable, in a slot the host keeps beside the two cursors, because the two
+	 * halves below cannot be made one step. The loop must not act in either half:
 	 *
 	 * - before the cutoff is saved, the tombstones sit past a push cursor that
 	 *   has not moved, so one cycle offers them to the authority and turns "take
@@ -183,9 +207,16 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	 * `takeTheirs` is the recovery — it finds nothing left to tombstone and
 	 * finishes the cursors its first run could not — which is why `takeMine` must
 	 * refuse to start here: it would truncate the authority and then be unable to
-	 * publish anything to it.
+	 * publish anything to it. The recovery runs by itself for the crash case: a
+	 * wrapper built over a raised flag finishes the discard before its first cycle.
 	 */
 	let unfinished = false
+
+	/** Raise or lower the flag, durably first: a bit only this process knows fences nothing. */
+	const discarding = async (on: boolean): Promise<void> => {
+		await props.discard?.save(on)
+		unfinished = on
+	}
 
 	/** May the loop act? Every way it must not, in one place. */
 	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfinished
@@ -340,6 +371,14 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 				throw new Error(`${what} did not converge: ${message(error)}`, { cause: error })
 			}
 			return done
+		} catch (error) {
+			// The fence is still up, so the loop stays stopped and only another discard
+			// can start it again. The status has to say that, whatever the last cycle
+			// said: a caller would otherwise read the state from BEFORE the reset —
+			// `synced` over a replica that will never sync again, or `connecting` for
+			// ever on the one that inherited the flag at startup and could not clear it.
+			if (unfinished) setStatus('error')
+			throw error
 		} finally {
 			resetting = false
 			// A reset that THREW never reaches the cycle that would put a timer back,
@@ -397,8 +436,9 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// The tombstones and the two cursors are one step or they are nothing, and
 			// only the flag can say so: a discard that stops in between leaves either
 			// a tree the next cycle would delete everywhere, or an empty one no cycle
-			// would refill.
-			unfinished = true
+			// would refill. It is raised DURABLY before the first tombstone, so the
+			// crash in between is recoverable rather than merely fenced.
+			await discarding(true)
 			// Tombstone until nothing live is left, and take the cutoff from the scan
 			// that PROVES it. Two things make the passes necessary, and each leaves a
 			// row that would sit past the cutoff — alive, never offered, and
@@ -429,7 +469,7 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 			// loop left running over a store that lost this step would never bring
 			// one of them back, and would look perfectly healthy doing it.
 			await props.pull.save(undefined)
-			unfinished = false
+			await discarding(false)
 		})
 	}
 
@@ -499,6 +539,16 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	const stop = local.subscribe?.((rows) => {
 		if (rows.some((row) => authorOf(row.version) === replica)) armPush()
 	})
+
+	// A discard the last process could not finish, finished before anything else
+	// runs. Its own failure is not raised here: the flag stays up and the loop stays
+	// stopped, which is what a failed discard leaves anyway — so the app gets its
+	// volume, reads `error` from the status, and can ask again. Rejecting would leave
+	// it with no volume at all and the same store to recover from.
+	if (await props.discard?.load()) {
+		unfinished = true
+		await takeTheirs().catch((error) => console.error(error))
+	}
 
 	// The first cycle is armed the same way every other one is, so `connecting`
 	// is a state a caller can actually observe: with `localFirst` the volume is
