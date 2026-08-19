@@ -1,5 +1,5 @@
 import { type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { Bash } from 'just-bash'
 import { describe, expect, test } from 'vitest'
 import { volumeFs } from './volume-fs.ts'
@@ -14,7 +14,7 @@ const dec = (b: Uint8Array) => new TextDecoder().decode(b)
 const flush = () => new Promise((r) => setTimeout(r, 150))
 
 function fresh(): { vol: Volume; fs: ReturnType<typeof volumeFs> } {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	return { vol, fs: volumeFs(vol) }
 }
 
@@ -184,7 +184,7 @@ describe('path helpers', () => {
 
 describe('drives a real Bash over the volume', () => {
 	test('cat / redirect / glob run against the shared volume', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/work')
 		await vol.writeFile('/work/a.txt', enc('hello\n'))
 		await vol.writeFile('/work/b.txt', enc('world\n'))
@@ -212,7 +212,7 @@ describe('denied prefixes', () => {
 	const DENY = ['/private/accounts']
 
 	async function denied(): Promise<{ vol: Volume; bash: Bash }> {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/private/accounts', { recursive: true })
 		await vol.writeFile('/private/accounts/google.json', enc('{"token":"SECRET"}'))
 		await vol.mkdir('/system', { recursive: true })
@@ -259,7 +259,7 @@ describe('denied prefixes', () => {
 	})
 
 	test('exists reads as absent (not an error), and writes are refused', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/private/accounts', { recursive: true })
 		await vol.writeFile('/private/accounts/google.json', enc('{}'))
 		const fs = volumeFs(vol, DENY)

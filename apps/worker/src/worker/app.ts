@@ -1,6 +1,6 @@
 import { fileApi, storeApi } from '@justfiles/core'
+import { volume } from '@justfiles/fs'
 import type { Store } from '@justfiles/fs/store'
-import { storeVolume } from '@justfiles/fs/volume.store'
 import { Hono } from 'hono'
 
 /**
@@ -19,7 +19,7 @@ import { Hono } from 'hono'
 export function createWorkerApiApp(args: { store: Store }) {
 	const { store } = args
 
-	return new Hono().route('/store', storeApi(store)).route('/store', fileApi(storeVolume(store)))
+	return new Hono().route('/store', storeApi(store)).route('/store', fileApi(volume(store)))
 }
 
 export type WorkerApiType = ReturnType<typeof createWorkerApiApp>

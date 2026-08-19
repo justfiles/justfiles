@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { persistStorage } from './store.idb'
+import { persistStorage } from './idb'
 
 const withStorage = (storage: unknown) =>
 	vi.stubGlobal('navigator', { storage } as unknown as Navigator)

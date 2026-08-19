@@ -13,11 +13,11 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { memStore } from './mem'
 import { type Legacy, migrate } from './migrate'
 import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
-import { memStore } from './store.mem'
 import { FileType } from './types'
-import { announceMount, type Bindings, storeVolume } from './volume.store'
+import { announceMount, type Bindings, volume } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -129,7 +129,7 @@ describe('migrate: a root-level name whose subtree belongs in another store', ()
 		// replica, and the binding that joins its own store in behind it.
 		const mount = await announceMount(synced, ROOT, 'private')
 		const bindings: Bindings = new Map([[ROOT, new Map([['private', local]])]])
-		const vol = storeVolume(synced, { bindings })
+		const vol = volume(synced, { bindings })
 
 		expect((await vol.readdir('/')).map((entry) => entry.name).sort()).toEqual(['notes', 'private'])
 		expect(await vol.exists('/private/env')).toBe(true)

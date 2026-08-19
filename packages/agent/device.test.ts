@@ -1,13 +1,13 @@
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { deviceId } from './device.ts'
 
 // The claim/race behaviour itself is pinned in @justfiles/fs's persistedState.test.ts —
-// device.ts delegates to it entirely. A BARE `memStorage()` on purpose: every backend now
+// device.ts delegates to it entirely. A BARE `memStore()` on purpose: every backend now
 // claims a name atomically with no condition attached, so the convergence tests below
 // exercise the real claim rather than volume.ts's non-atomic fallback.
-const storage = () => memStorage()
+const storage = () => memStore()
 
 describe('deviceId', () => {
 	test('first call creates /.state/clientid and returns 8 lowercase hex chars', async () => {

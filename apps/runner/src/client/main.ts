@@ -4,8 +4,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { sandboxClient } from '@justfiles/app/sandbox'
 import '@justfiles/design/mac.css'
 import { volume } from '@justfiles/fs'
-import { idbStorage } from '@justfiles/fs/storage/idb'
-import { persistStorage } from '@justfiles/fs/store.idb'
+import { idbStore, persistStorage } from '@justfiles/fs/idb'
 
 // The page's platform entry: real TypeScript, bundled by Vite and served as a
 // hashed static asset (see `route.get('/')` in ../app.tsx). Everything an app
@@ -54,7 +53,7 @@ worker.onerror = (event) => fail(new Error(event.message || 'reducer worker fail
 
 // Browser-local and unsynced, per the hosted-app posture: this app's documents
 // live in this browser, keyed by the app's own id.
-const fs = volume(idbStorage(`justapps:${id}`))
+const fs = volume(idbStore(`justapps:${id}`))
 const k = kernel({
 	fs,
 	sandbox: async () => sandbox,

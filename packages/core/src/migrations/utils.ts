@@ -7,10 +7,13 @@ export function parseSqlStatements(sql: string): string[] {
 	let inLineComment = false
 
 	const pushStatement = (end: number) => {
+		// `$` as well as `\n`, so the LAST comment line counts as one too: `.trim()`
+		// has already taken the newline off it, and without this a file that ends in
+		// a comment block hands the runner a statement of pure prose to execute.
 		const stmt = sql
 			.slice(start, end)
 			.trim()
-			.replace(/^(--[^\n]*\n\s*)+/, '')
+			.replace(/^(--[^\n]*(?:\n\s*|$))+/, '')
 			.trim()
 		if (stmt) statements.push(stmt)
 	}

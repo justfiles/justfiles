@@ -1,5 +1,6 @@
 import { hostAccounts } from '@justfiles/app/capabilities/accounts/host'
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { chatgptProvider, codexBackend, codexModels } from './chatgpt.ts'
 
@@ -15,7 +16,7 @@ const ID = 'u@openai.com'
 async function seed(
 	opts: { ai?: boolean; access?: string; model?: string; expires?: number } = {}
 ): Promise<Volume> {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const enc = new TextEncoder()
 	await fs.mkdir('/private/accounts', { recursive: true })
 	await fs.mkdir('/system', { recursive: true })

@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Kernel, Message } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { fsStore } from '@justfiles/fs/fs'
 import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 import { installStoreApp, storeCatalog } from './store.ts'
@@ -26,7 +26,7 @@ let kernel: Kernel
 
 beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), 'daemon-devkit-'))
-	const fs = volume(await nativeStorage(root))
+	const fs = volume(fsStore(root))
 	kernel = await buildKernel(fs, daemonAccounts(fs))
 	// Install Code the way the store tile does: browse, then install the exact version listed.
 	const code = (await storeCatalog()).find((app) => app.id === CODE)

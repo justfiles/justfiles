@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
@@ -39,7 +40,7 @@ const sandbox: GetSandbox = async ({ code }) => {
 
 async function start(invoke: Capabilities['invoke'], code = coreCode) {
 	const k = kernel({
-		fs: volume(memStorage()),
+		fs: volume(memStore()),
 		sandbox,
 		clock: {},
 		capabilities: { invoke, subscribe: async () => () => {} }

@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test, vi } from 'vitest'
 import { hostAccounts } from '../accounts/host.ts'
 import { icloudProvider } from '../accounts/providers/icloud.ts'
@@ -53,7 +54,7 @@ const snapshot = {
 // A host with the real accounts admin impl over a throwaway Volume, plus whatever
 // else the case wires.
 function host(over: Omit<SettingsHostDeps, 'accounts'> = {}) {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const providers = [icloudProvider(), platformProvider({ generate: async () => 'x' })]
 	const { admin: accounts } = hostAccounts(providers, vol)
 	return settingsHost({ accounts, ...over })
@@ -91,9 +92,11 @@ test('accounts.* administer the machine: connect, project, toggle ai, disconnect
 		caps.invoke(call('accounts.listAccounts')) as Promise<
 			{ accountId: string; enabled: string[] }[]
 		>
-	expect((await listed()).map((a) => [a.accountId, a.enabled.join('+')])).toEqual([
-		['u@me.com', 'calendar'],
-		['frieren', 'ai']
+	// Sorted, because the listing is a `readdir` and a directory has no order the
+	// caller may rely on — the store returns its own, by name.
+	expect((await listed()).map((a) => [a.accountId, a.enabled.join('+')]).sort()).toEqual([
+		['frieren', 'ai'],
+		['u@me.com', 'calendar']
 	])
 
 	await caps.invoke(call('accounts.disconnect', { accountId: 'u@me.com' }))
@@ -172,7 +175,7 @@ test('a method with no dep here goes to the remote, frame intact; the rest stay 
 // `accounts.listAccounts` is the one method that unions them; every other accounts.*
 // method stays single-sided.
 test('accounts.listAccounts unions the local list with the remote one when both are wired', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const providers = [icloudProvider(), platformProvider({ generate: async () => 'x' })]
 	const { admin: accounts } = hostAccounts(providers, vol, {
 		origin: { kind: 'device', label: 'This Mac' }
@@ -209,7 +212,7 @@ test('accounts.listAccounts unions the local list with the remote one when both 
 // locally). `listProviders` merges too, so that metadata reaches every host that
 // can show a remote account.
 test('accounts.listProviders unions the catalog, deduped by id (this side wins)', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	// This host's own catalog lacks the cloud-only built-in — the real shape of the
 	// Mac daemon.
 	const { admin: accounts } = hostAccounts([icloudProvider()], vol)
@@ -345,7 +348,7 @@ const BUILTINS = {
 }
 
 function agentHost(over: Partial<SettingsHostDeps['agent']> = {}) {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const { admin: accounts } = hostAccounts([icloudProvider()], vol)
 	return {
 		vol,
@@ -539,7 +542,7 @@ test('no step of a publish can lose the state the user is wearing', async () => 
 	// replaced taken out. Sweeping first would cost the user their portrait for good on the one
 	// run where the rename failed — and it is the same file either way, so there is nothing to
 	// restore it from.
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	let fail: 'write' | 'rename' | null = null
 	const caps = settingsHost({
 		agent: {
@@ -762,7 +765,7 @@ test('a non-allowlisted app is refused every agent.* method', async () => {
 const WALLPAPER = '/system/wallpaper'
 
 function appearanceHost() {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	return { vol, caps: settingsHost({ appearance: { volume: vol, wallpaper: WALLPAPER } }) }
 }
 

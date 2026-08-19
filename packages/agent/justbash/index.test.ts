@@ -1,5 +1,5 @@
 import { type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { createJustBashTool, type ShellCommand } from './index.ts'
 
@@ -7,7 +7,7 @@ const enc = (s: string) => new TextEncoder().encode(s)
 const textOf = (r: { content: Array<{ type: string; text?: string }> }) => r.content[0]?.text ?? ''
 
 async function fresh(seed?: Record<string, string>): Promise<Volume> {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	for (const [path, body] of Object.entries(seed ?? {})) {
 		const parent = path.replace(/\/[^/]*$/, '')
 		if (parent) await vol.mkdir(parent, { recursive: true })

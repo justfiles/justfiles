@@ -2,19 +2,19 @@
  * `fsStore` over a disk that is not a disk: the same store and the same contract suite,
  * with no temp directories, no timestamp granularity to work around and no OS
  * scheduling. That is what makes the conformance suite run in milliseconds against the
- * native backend, and the property tests in `store.fs.model.test.ts` possible at all.
+ * native backend, and the property tests in `fs.model.test.ts` possible at all.
  *
- * Not a replacement for `store.fs.test.ts`. A fake disk proves the store’s reasoning,
+ * Not a replacement for `fs.test.ts`. A fake disk proves the store’s reasoning,
  * never the platform’s behaviour, so the cases that turn on what a real filesystem does
  * — a symlinked ancestor, `lutimes` precision, an unopenable directory — live there.
  */
 
 import { describe, expect, test } from 'vitest'
+import { storeConformance } from './conformance'
 import { AT_ROOT, type Disk, type Spot, stateOf, under } from './disk'
 import { memDisk } from './disk.mem'
+import { fsStore, SWEEP_MS } from './fs'
 import { type Node, ROOT, type Store, sha256Hex } from './store'
-import { storeConformance } from './store.conformance'
-import { fsStore, SWEEP_MS } from './store.fs'
 
 const built: Store[] = []
 const open = (fault?: Parameters<typeof memDisk>[0]): Store => {

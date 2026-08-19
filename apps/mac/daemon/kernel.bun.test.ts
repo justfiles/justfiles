@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/capabilities/accounts/host'
 import type { Kernel, Message } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { fsStore } from '@justfiles/fs/fs'
 import { buildKernel, daemonAccounts } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 
@@ -35,7 +35,7 @@ const tempRoot = async (name: string): Promise<string> => {
 
 beforeAll(async () => {
 	root = await tempRoot('')
-	const fs = volume(await nativeStorage(root))
+	const fs = volume(fsStore(root))
 	kernel = await buildKernel(fs, daemonAccounts(fs))
 })
 afterAll(async () => {
@@ -82,7 +82,7 @@ test('Files reads the real volume through the system-scoped volume capability', 
 })
 
 test('soul preview keeps the capability error when no AI account is enabled', async () => {
-	const fs = volume(await nativeStorage(await tempRoot('no-ai')))
+	const fs = volume(fsStore(await tempRoot('no-ai')))
 	const offline = await buildKernel(fs, daemonAccounts(fs))
 
 	await expect(
@@ -95,7 +95,7 @@ test('soul preview keeps the capability error when no AI account is enabled', as
 
 test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)', async () => {
 	const sealedRoot = await tempRoot('sealed')
-	const sealedFs = volume(await nativeStorage(sealedRoot))
+	const sealedFs = volume(fsStore(sealedRoot))
 	const sealed = await buildKernel(
 		sealedFs,
 		daemonAccounts(sealedFs, { secretCodec: aesGcmSecretCodec('a-test-root-secret') })
@@ -134,7 +134,7 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 
 	// Connect an account with no codec — exactly what every account on disk before this
 	// feature landed looks like.
-	const clearFs = volume(await nativeStorage(upgradeRoot))
+	const clearFs = volume(fsStore(upgradeRoot))
 	const clear = await buildKernel(clearFs, daemonAccounts(clearFs))
 	await clear.dispatch(SETTINGS, {
 		type: 'connectAccount',
@@ -158,7 +158,7 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 	// Reboot the SAME Volume with a key now available — nothing ever rewrites this record
 	// (an iCloud app-specific password is written once, at connect), so only a reseal sweep
 	// on boot can close the gap.
-	const upgradedFs = volume(await nativeStorage(upgradeRoot))
+	const upgradedFs = volume(fsStore(upgradeRoot))
 	daemonAccounts(upgradedFs, { secretCodec: aesGcmSecretCodec('a-test-root-secret') })
 	// The sweep is best-effort and never awaited — nothing may wait on a credential being
 	// sealed — so this polls for it rather than reading once.
@@ -171,7 +171,7 @@ test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts 
 test('a kernel whose key can never be read still boots — the creds lane degrades, the daemon does not (A4)', async () => {
 	const deadRoot = await tempRoot('nokey')
 	// A pre-A4 plaintext record, so the boot reseal sweep has work to do — and hits the wall.
-	const clearFs = volume(await nativeStorage(deadRoot))
+	const clearFs = volume(fsStore(deadRoot))
 	const clear = await buildKernel(clearFs, daemonAccounts(clearFs))
 	await clear.dispatch(SETTINGS, {
 		type: 'connectAccount',
@@ -201,7 +201,7 @@ test('a kernel whose key can never be read still boots — the creds lane degrad
 			throw new Error('keychain: locked')
 		}
 	}
-	const deadFs = volume(await nativeStorage(deadRoot))
+	const deadFs = volume(fsStore(deadRoot))
 	const dead = await buildKernel(deadFs, daemonAccounts(deadFs, { secretCodec: locked }))
 
 	// It BOOTED: a failed reseal sweep is best-effort, and files/apps/devkit/notify carry on.

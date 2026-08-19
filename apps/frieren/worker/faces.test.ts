@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test, vi } from 'vitest'
 import { generateFace } from './faces'
 
@@ -12,7 +13,7 @@ const MINE = '/system/agents/main/avatars/mine'
 // contract ("the caller's hash must match the resting art") rather than a magic constant.
 async function setup(options: { avatar?: Uint8Array } = {}) {
 	const { avatarFaceHash } = await import('@justfiles/agent/defaults')
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	if (options.avatar !== null) {
 		await vol.mkdir(MINE, { recursive: true })
 		await vol.writeFile(`${MINE}/resting.png`, options.avatar ?? PNG)
@@ -79,7 +80,7 @@ describe('generateFace', () => {
 			)
 		).toBeNull()
 
-		const bare = volume(memStorage())
+		const bare = volume(memStore())
 		expect(
 			await generateFace(
 				{

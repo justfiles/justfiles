@@ -32,7 +32,7 @@ export function createServerPoke(send: () => void): () => void {
  * and every write reaches the tree through the store this wraps — so the wake the
  * backend cannot promise in general is exactly the wake this host can.
  *
- * Two consumers take it: `storeVolume`'s watch, which then stops polling SQLite on a
+ * Two consumers take it: `volume`'s watch, which then stops polling SQLite on a
  * timer, and the server->client poke, which is an ordinary subscriber.
  */
 export const notifying = (store: Store): Store => {

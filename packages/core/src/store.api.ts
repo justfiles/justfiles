@@ -24,6 +24,7 @@
  * dependency-free.
  */
 
+import { decodeCommit, encodeNode } from '@justfiles/fs/http'
 import {
 	ForeignCursorError,
 	GuardError,
@@ -32,7 +33,6 @@ import {
 	type Page,
 	type Store
 } from '@justfiles/fs/store'
-import { decodeCommit, encodeNode } from '@justfiles/fs/store.http'
 import { type Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 

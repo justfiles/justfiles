@@ -18,10 +18,10 @@
 import { describe, expect, it } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
+import { memStore } from './mem'
 import { type Cursor, GuardError, type Node, ROOT, type Store } from './store'
-import { memStore } from './store.mem'
 import type { Volume } from './volume'
-import { storeVolume } from './volume.store'
+import { volume } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -45,12 +45,12 @@ function replica(id: string) {
 	return {
 		store,
 		opts: { replica: id, pull, push },
-		vol: storeVolume(store, { mintVersion: versions(id) })
+		vol: volume(store, { mintVersion: versions(id) })
 	}
 }
 
 const read = async (store: Store, path: string): Promise<string> =>
-	dec.decode(await storeVolume(store).readFile(path))
+	dec.decode(await volume(store).readFile(path))
 
 const names = async (vol: Volume): Promise<string[]> =>
 	(await vol.readdir('/')).map((e) => e.name).sort()
@@ -71,7 +71,7 @@ describe('sync: conflicts', () => {
 		await sync(a.store, hub, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			expect(await names(storeVolume(store))).toEqual(['note.txt', 'note.txt (conflict b)'])
+			expect(await names(volume(store))).toEqual(['note.txt', 'note.txt (conflict b)'])
 			expect(await read(store, '/note.txt')).toBe('from a')
 			expect(await read(store, '/note.txt (conflict b)')).toBe('from b')
 		}
@@ -94,7 +94,7 @@ describe('sync: conflicts', () => {
 		await sync(a.store, hub, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			expect(await names(storeVolume(store))).toEqual([
+			expect(await names(volume(store))).toEqual([
 				'note.txt',
 				'note.txt (conflict b 2)',
 				'note.txt (conflict b)'
@@ -182,7 +182,7 @@ describe('sync: conflicts', () => {
 		await sync(a.store, hub, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			expect(await names(storeVolume(store))).toEqual([
+			expect(await names(volume(store))).toEqual([
 				'note.txt',
 				'note.txt (conflict b 2)',
 				'note.txt (conflict b)'
@@ -216,7 +216,7 @@ describe('sync: conflicts', () => {
 		await sync(a.store, hub, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			expect(await names(storeVolume(store))).toEqual(['note.txt', 'note.txt (conflict b)'])
+			expect(await names(volume(store))).toEqual(['note.txt', 'note.txt (conflict b)'])
 			expect((await store.child(ROOT, 'note.txt'))?.id).toBe('b1')
 			expect((await store.child(ROOT, 'note.txt (conflict b)'))?.id).toBe('b2')
 		}
@@ -312,7 +312,7 @@ describe('sync: conflicts', () => {
 			expect(await read(store, '/docs/new.txt')).toBe('from b')
 			// And the delete still won everything it actually covered: rescuing the
 			// container must not drag the buried subtree back with it.
-			expect(await storeVolume(store).exists('/docs/old.txt')).toBe(false)
+			expect(await volume(store).exists('/docs/old.txt')).toBe(false)
 		}
 	})
 
@@ -343,7 +343,7 @@ describe('sync: conflicts', () => {
 
 		for (const store of [hub, a.store, b.store]) {
 			expect(await read(store, `${path}/new.txt`)).toBe('from b')
-			expect(await storeVolume(store).exists(`${path}/old.txt`)).toBe(false)
+			expect(await volume(store).exists(`${path}/old.txt`)).toBe(false)
 		}
 	})
 
@@ -399,7 +399,7 @@ describe('sync: conflicts', () => {
 		await sync(a.store, hub, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			const vol = storeVolume(store)
+			const vol = volume(store)
 			const dirs = await names(vol)
 			expect(dirs).toEqual(['docs', 'docs (conflict b)'])
 			// Split, but whole: every file is somewhere, and each still reads back.
@@ -606,7 +606,7 @@ describe('sync: the replan budget', () => {
 		await sync(b.store, grudging, b.opts)
 
 		expect(seen.size).toBeGreaterThan(8)
-		expect((await storeVolume(hub).readdir('/')).length).toBe(rows.length)
+		expect((await volume(hub).readdir('/')).length).toBe(rows.length)
 	})
 })
 
@@ -626,7 +626,7 @@ describe('sync: the replan does not disturb the quiet case', () => {
 		await sync(b.store, hub, b.opts)
 
 		expect(wrote).toEqual([])
-		expect(await names(storeVolume(b.store))).toEqual(['docs'])
+		expect(await names(volume(b.store))).toEqual(['docs'])
 		expect(await read(b.store, '/docs/note.txt')).toBe('hello')
 	})
 })

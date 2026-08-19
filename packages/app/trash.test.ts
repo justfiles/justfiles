@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_TRASH_RETENTION_MS, sweepTrash } from './trash.ts'
 
@@ -7,7 +8,7 @@ const day = (offsetDays: number) =>
 	new Date(NOW - offsetDays * 86_400_000).toISOString().slice(0, 10)
 
 async function seedTrash(names: string[]) {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	for (const name of names) {
 		await vol.mkdir(`/trash/${name}/entry`, { recursive: true })
 		await vol.writeFile(`/trash/${name}/entry/f`, new TextEncoder().encode('x'))
@@ -29,7 +30,7 @@ describe('sweepTrash', () => {
 		await sweepTrash(vol, DEFAULT_TRASH_RETENTION_MS, NOW)
 		expect((await vol.readdir('/trash')).map((e) => e.name)).toEqual(['not-a-day'])
 
-		const empty = volume(memStorage())
+		const empty = volume(memStore())
 		await expect(sweepTrash(empty, DEFAULT_TRASH_RETENTION_MS, NOW)).resolves.toBeUndefined()
 	})
 })

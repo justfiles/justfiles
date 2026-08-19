@@ -1,7 +1,7 @@
 /**
  * The lifecycle wrapper: a volume that runs its own sync.
  *
- * `storeVolume` answers calls and `sync` returns when its cycle is done —
+ * `volume` answers calls and `sync` returns when its cycle is done —
  * neither of them RUNS anything. What is on trial here is the small amount of
  * behaviour that turns the pair into a live replica:
  *
@@ -16,12 +16,12 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type CursorSlot, versions } from './engine'
+import { memStore } from './mem'
 import { type Cursor, type Node, ROOT, type Store } from './store'
-import { memStore } from './store.mem'
-import { type DiscardSlot, type SyncedProps, type SyncStatus, syncedVolume } from './synced'
+import { type DiscardSlot, type SyncedProps, type SyncStatus, synced } from './synced'
 import { FileType } from './types'
 import type { Volume } from './volume'
-import { storeVolume } from './volume.store'
+import { volume } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -59,9 +59,9 @@ afterEach(() => {
 async function replica(
 	remote: Store,
 	over: Partial<SyncedProps> = {}
-): Promise<{ vol: Awaited<ReturnType<typeof syncedVolume>>; local: Store }> {
+): Promise<{ vol: Awaited<ReturnType<typeof synced>>; local: Store }> {
 	const local = over.local ?? memStore()
-	const vol = await syncedVolume({
+	const vol = await synced({
 		local,
 		remote,
 		replica: 'a',
@@ -101,7 +101,7 @@ function cycles(vol: { onStatusChange(fn: (s: SyncStatus) => void): () => void }
 }
 
 /** A plain view over a peer's store, for saying what it holds. */
-const peerVolume = (store: Store): Volume => storeVolume(store, { mintVersion: versions('b') })
+const peerVolume = (store: Store): Volume => volume(store, { mintVersion: versions('b') })
 
 /** Every path a volume holds and what is in it — directories as `<dir>`. */
 async function tree(vol: Volume): Promise<Record<string, string>> {
@@ -158,7 +158,7 @@ function authorityPeer(): { store: Store; reset: () => Promise<number> } {
 	}
 }
 
-describe('syncedVolume: the loop', () => {
+describe('synced: the loop', () => {
 	it('hands over a volume that already holds the peer’s tree', async () => {
 		const remote = memStore()
 		await peerVolume(remote).writeFile('/hello.txt', enc.encode('hi'))
@@ -270,7 +270,7 @@ describe('syncedVolume: the loop', () => {
 	})
 })
 
-describe('syncedVolume: the debounced push', () => {
+describe('synced: the debounced push', () => {
 	it('folds a burst into one cycle, three seconds after the last write', async () => {
 		vi.useFakeTimers()
 		const remote = memStore()
@@ -366,7 +366,7 @@ function racing(store: Store): Store & { armWith: (rows: Node[]) => void } {
 	}
 }
 
-describe('syncedVolume: take theirs', () => {
+describe('synced: take theirs', () => {
 	it('throws this replica’s work away and takes the peer’s tree', async () => {
 		const remote = memStore()
 		const there = peerVolume(remote)
@@ -682,7 +682,7 @@ describe('syncedVolume: take theirs', () => {
 	})
 })
 
-describe('syncedVolume: take mine', () => {
+describe('synced: take mine', () => {
 	it('publishes this volume to a reset authority, and the other replica converges', async () => {
 		const hub = authorityPeer()
 		const a = await replica(hub.store, { replica: 'a', reset: hub.reset })
@@ -702,7 +702,7 @@ describe('syncedVolume: take mine', () => {
 		// The whole volume is on the fresh authority — including the row this
 		// replica merely HELD. A replica pushes what it authored, so re-authoring
 		// is what makes the rest of the tree its to publish.
-		expect(await tree(storeVolume(hub.store))).toEqual({
+		expect(await tree(volume(hub.store))).toEqual({
 			'/a.txt': 'from a',
 			'/b.txt': 'from b'
 		})
@@ -730,7 +730,7 @@ describe('syncedVolume: take mine', () => {
 
 		await vol.takeMine()
 
-		expect(await tree(storeVolume(hub.store))).toEqual({
+		expect(await tree(volume(hub.store))).toEqual({
 			'/a.txt': 'from a',
 			'/first.txt': '',
 			'/theirs.txt': ''
@@ -750,7 +750,7 @@ describe('syncedVolume: take mine', () => {
 		await a.vol.takeMine()
 		await a.vol.takeMine()
 
-		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })
+		expect(await tree(volume(hub.store))).toEqual({ '/a.txt': 'from a' })
 		expect(a.vol.generation()).toBe(3)
 	})
 
@@ -788,7 +788,7 @@ describe('syncedVolume: take mine', () => {
 		await expect(vol.takeTheirs()).rejects.toThrow(/already running/)
 		await first
 
-		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })
+		expect(await tree(volume(hub.store))).toEqual({ '/a.txt': 'from a' })
 	})
 
 	// The first reset owns the wrapper until it has converged, not just until it
@@ -833,7 +833,7 @@ describe('syncedVolume: take mine', () => {
 		release()
 		await first
 
-		expect(await tree(storeVolume(hub.store))).toEqual({ '/a.txt': 'from a' })
+		expect(await tree(volume(hub.store))).toEqual({ '/a.txt': 'from a' })
 	})
 
 	// A reset that says "done" is the app's cue to move on — frieren's menu
@@ -898,7 +898,7 @@ describe('syncedVolume: take mine', () => {
 	})
 })
 
-describe('syncedVolume: lazy content', () => {
+describe('synced: lazy content', () => {
 	it('reads a file the pull never brought the bytes for', async () => {
 		const remote = memStore()
 		await peerVolume(remote).writeFile('/doc.txt', enc.encode('the bytes'))
@@ -925,7 +925,7 @@ describe('syncedVolume: lazy content', () => {
 	})
 })
 
-describe('syncedVolume: the surface', () => {
+describe('synced: the surface', () => {
 	// Read out of `apps/frieren/src/fs.ts`: every member the app calls on what
 	// `synced()` hands it. Listed here so a drift fails loudly now rather than at
 	// the swap. `apps/worker/src/react-app/useVolume.ts` is the other consumer and

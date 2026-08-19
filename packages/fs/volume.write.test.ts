@@ -12,11 +12,11 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { memStore } from './mem'
 import { type Cursor, GuardError, type Node, ROOT, type Store } from './store'
-import { memStore } from './store.mem'
 import { FileType } from './types'
 import type { Volume } from './volume'
-import { storeVolume } from './volume.store'
+import { volume } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -82,7 +82,7 @@ describe('writeFile: a create claims a name', () => {
 			}
 		}
 
-		await storeVolume(traced).writeFile('/kyoto.md', enc.encode('go'))
+		await volume(traced).writeFile('/kyoto.md', enc.encode('go'))
 
 		// A crash between them may leave an orphan blob. The other order would leave
 		// a committed row whose bytes were never stored.
@@ -91,7 +91,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('stores the bytes passed when the write starts', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const data = enc.encode('hello')
 
 		const write = vol.writeFile('/kyoto.md', data)
@@ -102,7 +102,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('keeps the size when the caller transfers the input buffer', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const data = enc.encode('hello')
 
 		const write = vol.writeFile('/kyoto.md', data)
@@ -119,7 +119,7 @@ describe('writeFile: a create claims a name', () => {
 		const root = await store.get(ROOT)
 		const commit = vi.spyOn(store, 'commit')
 
-		await storeVolume(store).writeFile('/kyoto.md', enc.encode('go'))
+		await volume(store).writeFile('/kyoto.md', enc.encode('go'))
 
 		expect(commit.mock.calls[0]?.[1]).toEqual([
 			{ free: { parent: ROOT, name: 'kyoto.md' } },
@@ -128,7 +128,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('gives the name to exactly one of N concurrent claimants', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		// All 20 start before any of them finishes: the interleaving a TOCTOU loses to.
 		const results = await Promise.allSettled(
 			Array.from({ length: 20 }, (_, i) =>
@@ -144,7 +144,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('keeps exclusive when the caller changes its options', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/kyoto.md', enc.encode('old'))
 		const opts = { exclusive: true }
 
@@ -159,7 +159,7 @@ describe('writeFile: a create claims a name', () => {
 		// The loser's catch fires the instant ITS write rejects, which is independent
 		// of whether the winner's write has finished. Awaiting both first would never
 		// see the window.
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		let loser: string | undefined
 		const claim = (body: string) =>
 			vol.writeFile('/id', enc.encode(body), { exclusive: true }).catch(async () => {
@@ -171,7 +171,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('is create-OR-overwrite without the flag, so two racers both survive', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const results = await Promise.allSettled([
 			vol.writeFile('/app.json', enc.encode('a')),
 			vol.writeFile('/app.json', enc.encode('b'))
@@ -184,7 +184,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('refuses a name a dangling symlink holds, rather than stranding the bytes in it', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.symlink('/missing-target', '/link')
 
 		await expect(vol.writeFile('/link', enc.encode('hello'))).rejects.toThrow(/^EEXIST/)
@@ -192,7 +192,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('lands on the target through a live symlink, and leaves the link a link', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/target.txt', enc.encode('original'))
 		await vol.symlink('/target.txt', '/link')
 
@@ -203,17 +203,17 @@ describe('writeFile: a create claims a name', () => {
 
 	it('mints a file row with the file type bits and 0644', async () => {
 		const store = memStore()
-		await storeVolume(store).writeFile('/kyoto.md', enc.encode('go'))
+		await volume(store).writeFile('/kyoto.md', enc.encode('go'))
 
 		const row = await rowAt(store, '/kyoto.md')
 		expect(row.mode).toBe(0o100644)
 		expect(row.type).toBe('file')
 		expect(row.size).toBe(2n)
-		expect((await storeVolume(store).stat('/kyoto.md')).mode).toBe(0o644)
+		expect((await volume(store).stat('/kyoto.md')).mode).toBe(0o644)
 	})
 
 	it('refuses to invent a file for an update, and conjures no folders on the way', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 
 		await expect(
 			vol.writeFile('/trips/kyoto.md', enc.encode('edited'), { update: true })
@@ -222,7 +222,7 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('keeps update when the caller changes its options', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const opts = { update: true }
 
 		const write = vol.writeFile('/kyoto.md', enc.encode('new'), opts)
@@ -233,12 +233,12 @@ describe('writeFile: a create claims a name', () => {
 	})
 
 	it('throws ENOENT when a parent directory is missing', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await expect(vol.writeFile('/trips/kyoto.md', enc.encode('x'))).rejects.toThrow(/^ENOENT/)
 	})
 
 	it('throws EISDIR on a directory, with or without the flag', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 
 		await expect(vol.writeFile('/trips', enc.encode('x'))).rejects.toThrow(/^EISDIR/)
@@ -251,7 +251,7 @@ describe('writeFile: a create claims a name', () => {
 describe('writeFile: an overwrite replaces the row', () => {
 	it('guards on the version it read', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('first'))
 		const before = await rowAt(store, '/kyoto.md')
 		const commit = vi.spyOn(store, 'commit')
@@ -264,7 +264,7 @@ describe('writeFile: an overwrite replaces the row', () => {
 
 	it('keeps the id, the mode and the xattrs, and moves mtime', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('first'))
 		await vol.chmod('/kyoto.md', 0o600)
 		await vol.setXattr('/kyoto.md', 'user.tag', enc.encode('trip'))
@@ -282,7 +282,7 @@ describe('writeFile: an overwrite replaces the row', () => {
 
 	it('truncates: the row names the new bytes and nothing of the old ones', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('a long first body'))
 
 		await vol.writeFile('/kyoto.md', enc.encode('hi'))
@@ -295,7 +295,7 @@ describe('writeFile: an overwrite replaces the row', () => {
 		// The gap `update: true` cannot close by resolving alone: the path resolved,
 		// and the file went away before the row committed. Reporting success there is
 		// how an editor clears its unsaved marker over a note that is gone.
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/kyoto.md', enc.encode('first'))
 		const write = vol.writeFile('/kyoto.md', enc.encode('second'), { update: true })
 		await vol.rm('/kyoto.md')
@@ -306,7 +306,7 @@ describe('writeFile: an overwrite replaces the row', () => {
 
 	it('does not stamp the parent — content is not structure', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('first'))
 		const root = await store.get(ROOT)
 
@@ -319,7 +319,7 @@ describe('writeFile: an overwrite replaces the row', () => {
 describe('the parent stamp', () => {
 	it('rides in the same commit as a create', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/notes')
 		const before = await rowAt(store, '/notes')
 		const commit = vi.spyOn(store, 'commit')
@@ -339,8 +339,8 @@ describe('the parent stamp', () => {
 		// would restore a directory that `rm -r` already reported gone. The parent
 		// is guarded for that reason, not only stamped.
 		const store = memStore()
-		const vol = storeVolume(store)
-		const other = storeVolume(store)
+		const vol = volume(store)
+		const other = volume(store)
 		await vol.mkdir('/notes')
 		const notes = await rowAt(store, '/notes')
 
@@ -357,7 +357,7 @@ describe('the parent stamp', () => {
 			}
 		}
 
-		await expect(storeVolume(racy).writeFile('/notes/kyoto.md', enc.encode('go'))).rejects.toThrow(
+		await expect(volume(racy).writeFile('/notes/kyoto.md', enc.encode('go'))).rejects.toThrow(
 			/^ENOENT/
 		)
 		expect(raced).toBe(true)
@@ -367,7 +367,7 @@ describe('the parent stamp', () => {
 
 	it('replans a claim when its parent moved before the commit', async () => {
 		const store = memStore()
-		const other = storeVolume(store)
+		const other = volume(store)
 		await other.mkdir('/d')
 		const dir = await rowAt(store, '/d')
 		let raced = false
@@ -384,7 +384,7 @@ describe('the parent stamp', () => {
 		}
 
 		await expect(
-			storeVolume(racy).writeFile('/d/x', enc.encode('mine'), { exclusive: true })
+			volume(racy).writeFile('/d/x', enc.encode('mine'), { exclusive: true })
 		).rejects.toThrow(/^ENOENT/)
 		expect(raced).toBe(true)
 		expect(await read(other, '/e/x')).toBe('other')
@@ -394,7 +394,7 @@ describe('the parent stamp', () => {
 		// The price of guarding the parent: creates in one directory replan instead
 		// of blocking, the way a real filesystem takes that directory's lock. What
 		// they must never do is report EEXIST at each other — the name was free.
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/notes')
 
 		await Promise.all([
@@ -409,7 +409,7 @@ describe('the parent stamp', () => {
 
 	it('rides in the same commit as a delete and as a rename', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/notes')
 		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
 
@@ -426,7 +426,7 @@ describe('the parent stamp', () => {
 describe('mkdir', () => {
 	it('creates a directory row and refuses a taken name', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		await vol.mkdir('/trips')
 		const row = await rowAt(store, '/trips')
@@ -438,22 +438,22 @@ describe('mkdir', () => {
 
 	it('takes a mode, and keeps the directory type bits', async () => {
 		const store = memStore()
-		await storeVolume(store).mkdir('/trips', { mode: 0o700 })
+		await volume(store).mkdir('/trips', { mode: 0o700 })
 		expect((await rowAt(store, '/trips')).mode).toBe(0o040700)
 	})
 
 	it('drops caller-supplied type bits from mode', async () => {
 		const store = memStore()
-		await storeVolume(store).mkdir('/trips', { mode: 0o100700 })
+		await volume(store).mkdir('/trips', { mode: 0o100700 })
 		expect((await rowAt(store, '/trips')).mode).toBe(0o040700)
 	})
 
 	it('throws ENOENT when a parent is missing and the walk is not recursive', async () => {
-		await expect(storeVolume(memStore()).mkdir('/a/b')).rejects.toThrow(/^ENOENT/)
+		await expect(volume(memStore()).mkdir('/a/b')).rejects.toThrow(/^ENOENT/)
 	})
 
 	it('passes over a folder with -p, never over a file', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips/kyoto/east', { recursive: true })
 		await vol.mkdir('/trips/kyoto/east', { recursive: true }) // idempotent, as -p promises
 		expect((await vol.readdir('/trips/kyoto')).map((e) => e.name)).toEqual(['east'])
@@ -468,7 +468,7 @@ describe('mkdir', () => {
 	})
 
 	it('lets two racing -p walks both report success', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const results = await Promise.allSettled([
 			vol.mkdir('/trips/kyoto', { recursive: true }),
 			vol.mkdir('/trips/osaka', { recursive: true })
@@ -481,13 +481,13 @@ describe('mkdir', () => {
 
 describe('appendFile', () => {
 	it('is a create when there is nothing to append to', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.appendFile('/log.md', enc.encode('start'))
 		expect(await read(vol, '/log.md')).toBe('start')
 	})
 
 	it('stores the bytes passed when a create starts', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const data = enc.encode('start')
 
 		const append = vol.appendFile('/log.md', data)
@@ -498,14 +498,14 @@ describe('appendFile', () => {
 	})
 
 	it('reads, merges and writes the whole row', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/log.md', enc.encode('start'))
 		await vol.appendFile('/log.md', enc.encode('-more'))
 		expect(await read(vol, '/log.md')).toBe('start-more')
 	})
 
 	it('stores the bytes passed when an append starts', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/log.md', enc.encode('start'))
 		const data = enc.encode('-more')
 
@@ -519,7 +519,7 @@ describe('appendFile', () => {
 	it('keeps both entries when two appends to one file overlap', async () => {
 		// Unordered, both appends read `start` and the later put drops the earlier
 		// entry. Here the version guard rejects the loser and it reads again.
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/journal.md', enc.encode('start'))
 
 		await Promise.all([
@@ -531,7 +531,7 @@ describe('appendFile', () => {
 	})
 
 	it('does not let a full write vanish inside an append', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/note.md', enc.encode('old'))
 
 		await Promise.all([
@@ -546,7 +546,7 @@ describe('appendFile', () => {
 	})
 
 	it('throws EISDIR on a directory', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 		await expect(vol.appendFile('/trips', enc.encode('x'))).rejects.toThrow(/^EISDIR/)
 	})
@@ -555,7 +555,7 @@ describe('appendFile', () => {
 describe('chmod, utimes and xattrs', () => {
 	it('replaces permission bits and keeps the type bits', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 		await vol.mkdir('/trips')
 
@@ -569,7 +569,7 @@ describe('chmod, utimes and xattrs', () => {
 	})
 
 	it('sets mtime, and reports it as ctime too', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 
 		await vol.utimes('/kyoto.md', 1_234n)
@@ -581,7 +581,7 @@ describe('chmod, utimes and xattrs', () => {
 
 	it('writes and removes xattrs inside the row', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 
 		await vol.setXattr('/kyoto.md', 'user.tag', enc.encode('trip'))
@@ -597,7 +597,7 @@ describe('chmod, utimes and xattrs', () => {
 	})
 
 	it('stores the xattr bytes passed when the write starts', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 		const value = enc.encode('trip')
 
@@ -609,7 +609,7 @@ describe('chmod, utimes and xattrs', () => {
 	})
 
 	it('throws ENOENT on a missing path', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await expect(vol.chmod('/nope', 0o600)).rejects.toThrow(/^ENOENT/)
 		await expect(vol.utimes('/nope', 1n)).rejects.toThrow(/^ENOENT/)
 		await expect(vol.setXattr('/nope', 'user.tag', enc.encode('x'))).rejects.toThrow(/^ENOENT/)
@@ -619,7 +619,7 @@ describe('chmod, utimes and xattrs', () => {
 describe('symlink', () => {
 	it('writes the target inline on the row', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/target.txt', enc.encode('original'))
 
 		await vol.symlink('/target.txt', '/link')
@@ -634,7 +634,7 @@ describe('symlink', () => {
 	})
 
 	it('refuses a taken name', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 		await expect(vol.symlink('/target.txt', '/kyoto.md')).rejects.toThrow(/^EEXIST/)
 	})
@@ -643,7 +643,7 @@ describe('symlink', () => {
 describe('rename', () => {
 	it('commits exactly three rows: the node and both parents', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/trips')
 		await vol.mkdir('/archive')
 		await vol.writeFile('/trips/kyoto.md', enc.encode('note'))
@@ -663,7 +663,7 @@ describe('rename', () => {
 
 	it('replaces an occupied destination with a tombstone in the same commit', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('theirs'))
 		await vol.mkdir('/trips')
 		await vol.writeFile('/trips/kyoto.md', enc.encode('mine'))
@@ -683,7 +683,7 @@ describe('rename', () => {
 		// A tombstoned directory leaves its children parented on a tombstone —
 		// unreachable, which is the same as losing them. POSIX refuses the whole
 		// class, so this does too.
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/incoming.txt', enc.encode('mine'))
 		await vol.mkdir('/archive')
 		await vol.writeFile('/archive/kyoto.md', enc.encode('go'))
@@ -702,7 +702,7 @@ describe('rename', () => {
 	})
 
 	it('moves a folder with everything under it', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 		await vol.writeFile('/trips/kyoto.md', enc.encode('note'))
 
@@ -713,7 +713,7 @@ describe('rename', () => {
 	})
 
 	it('refuses to move a directory below any of its descendants', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/a/b', { recursive: true })
 
 		await expect(vol.rename('/a', '/a/b/c')).rejects.toThrow(/^EINVAL/)
@@ -724,7 +724,7 @@ describe('rename', () => {
 
 	it('rechecks the destination ancestry when an ancestor moves', async () => {
 		const store = memStore()
-		const other = storeVolume(store)
+		const other = volume(store)
 		await other.mkdir('/left/a/b', { recursive: true })
 		await other.mkdir('/right/x/y', { recursive: true })
 		const a = await rowAt(store, '/left/a')
@@ -741,7 +741,7 @@ describe('rename', () => {
 			}
 		}
 
-		await expect(storeVolume(racy).rename('/left/a', '/right/x/y/a')).rejects.toThrow(/^ENOENT/)
+		await expect(volume(racy).rename('/left/a', '/right/x/y/a')).rejects.toThrow(/^ENOENT/)
 
 		expect(raced).toBe(true)
 		expect(await other.exists('/left/a/b/x/y')).toBe(true)
@@ -750,7 +750,7 @@ describe('rename', () => {
 
 	it('retries when a shared link changes between endpoint walks', async () => {
 		const store = memStore()
-		const other = storeVolume(store)
+		const other = volume(store)
 		await other.mkdir('/a')
 		await other.mkdir('/b')
 		await other.writeFile('/a/old', enc.encode('old'))
@@ -771,7 +771,7 @@ describe('rename', () => {
 			}
 		}
 
-		await expect(storeVolume(racy).rename('/link/old', '/link/new')).rejects.toThrow(/^ENOENT/)
+		await expect(volume(racy).rename('/link/old', '/link/new')).rejects.toThrow(/^ENOENT/)
 
 		expect(raced).toBe(true)
 		expect(await other.readlink('/link')).toBe('/b')
@@ -780,7 +780,7 @@ describe('rename', () => {
 	})
 
 	it('moves the link, not what it points at', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/target.txt', enc.encode('original'))
 		await vol.symlink('/target.txt', '/link')
 
@@ -791,13 +791,13 @@ describe('rename', () => {
 	})
 
 	it('throws ENOENT when there is nothing to move', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await expect(vol.rename('/nope', '/gone')).rejects.toThrow(/^ENOENT/)
 	})
 
 	it('is one feed entry for a directory of 4,000 children (proof 1 of 4)', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/trips')
 		await vol.mkdir('/archive')
 		const trips = await rowAt(store, '/trips')
@@ -832,7 +832,7 @@ describe('rename', () => {
 describe('rm', () => {
 	it('tombstones a file and stamps its parent', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 		const row = await rowAt(store, '/kyoto.md')
 
@@ -843,7 +843,7 @@ describe('rm', () => {
 	})
 
 	it('removes the link itself, not its target', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/target.txt', enc.encode('original'))
 		await vol.symlink('/target.txt', '/link')
 
@@ -855,7 +855,7 @@ describe('rm', () => {
 
 	it('stamps the parent that held a removed child when a link changes', async () => {
 		const store = memStore()
-		const other = storeVolume(store)
+		const other = volume(store)
 		await other.mkdir('/a')
 		await other.mkdir('/b')
 		await other.writeFile('/a/file', enc.encode('a'))
@@ -878,7 +878,7 @@ describe('rm', () => {
 			}
 		}
 
-		await storeVolume(racy).rm('/link/file')
+		await volume(racy).rm('/link/file')
 
 		expect(raced).toBe(true)
 		expect(await store.child(a.id, 'file')).toBe(null)
@@ -888,7 +888,7 @@ describe('rm', () => {
 	})
 
 	it('refuses a non-empty directory without recursive, and forgives a missing path with force', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 		await vol.writeFile('/trips/kyoto.md', enc.encode('go'))
 
@@ -901,7 +901,7 @@ describe('rm', () => {
 	})
 
 	it('keeps recursive false when the caller changes its options', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 		await vol.writeFile('/trips/kyoto.md', enc.encode('go'))
 		const opts = { recursive: false }
@@ -914,7 +914,7 @@ describe('rm', () => {
 	})
 
 	it('keeps force true when the caller changes its options', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const opts = { force: true }
 
 		const remove = vol.rm('/missing', opts)
@@ -925,7 +925,7 @@ describe('rm', () => {
 
 	it('keeps recursive through retries', async () => {
 		const store = memStore()
-		const source = storeVolume(store)
+		const source = volume(store)
 		await source.mkdir('/trips')
 		await source.writeFile('/trips/kyoto.md', enc.encode('go'))
 		const opts = { recursive: true }
@@ -942,7 +942,7 @@ describe('rm', () => {
 			}
 		}
 
-		await storeVolume(racy).rm('/trips', opts)
+		await volume(racy).rm('/trips', opts)
 
 		expect(rejected).toBe(true)
 		expect(await source.exists('/trips')).toBe(false)
@@ -950,7 +950,7 @@ describe('rm', () => {
 
 	it('removes a subtree in one guarded batch', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/trips/kyoto/east', { recursive: true })
 		await vol.writeFile('/trips/kyoto/east/note.md', enc.encode('go'))
 		await vol.writeFile('/trips/index.md', enc.encode('list'))
@@ -973,7 +973,7 @@ describe('rm', () => {
 		// another writer adds a file to it before the batch lands, which moves the
 		// `/notes` version the batch guarded on.
 		const store = memStore()
-		const other = storeVolume(store)
+		const other = volume(store)
 		await other.mkdir('/notes')
 		await other.writeFile('/notes/kyoto.md', enc.encode('go'))
 		const notes = await rowAt(store, '/notes')
@@ -992,13 +992,13 @@ describe('rm', () => {
 			}
 		}
 
-		await storeVolume(racy).rm('/notes', { recursive: true })
+		await volume(racy).rm('/notes', { recursive: true })
 
 		expect(raced).toBe(true)
 		// The first batch was rejected; the retry saw `late.md` and took it too.
 		expect(commits.filter((writes) => writes.some((w) => w.deleted))).toHaveLength(2)
 		expect(await store.child(notes.id, 'late.md')).toBe(null)
-		expect(await storeVolume(store).exists('/notes')).toBe(false)
+		expect(await volume(store).exists('/notes')).toBe(false)
 	})
 
 	it('lists what is there when entries vanish mid-listing', async () => {
@@ -1006,7 +1006,7 @@ describe('rm', () => {
 		// the next one. The old volume statted each name after listing it, which is
 		// the window this shape has no way to open.
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/d')
 		const names = Array.from({ length: 200 }, (_, i) => `n${String(i).padStart(3, '0')}.md`)
 		for (const name of names) await vol.writeFile(`/d/${name}`, enc.encode('x'))
@@ -1022,7 +1022,7 @@ describe('rm', () => {
 			}
 		}
 
-		const entries = await storeVolume(vanishing).readdir('/d')
+		const entries = await volume(vanishing).readdir('/d')
 		expect(entries.map((e) => e.name)).toEqual(names.slice(0, 128))
 	})
 })
@@ -1030,7 +1030,7 @@ describe('rm', () => {
 describe('cp', () => {
 	it('copies a file by reference: a new id, the same content hash, no bytes read', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 		const source = await rowAt(store, '/kyoto.md')
 		const get = vi.spyOn(store.blobs, 'get')
@@ -1047,7 +1047,7 @@ describe('cp', () => {
 	})
 
 	it('replaces a destination link without changing its target', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.writeFile('/target.txt', enc.encode('keep'))
 		await vol.symlink('/source-target', '/source')
 		await vol.symlink('/target.txt', '/dest')
@@ -1060,7 +1060,7 @@ describe('cp', () => {
 
 	it('retries when a dangling destination link wins the name', async () => {
 		const store = memStore()
-		const other = storeVolume(store)
+		const other = volume(store)
 		await other.symlink('/source-target', '/source')
 		let raced = false
 		const racy: Store = {
@@ -1074,7 +1074,7 @@ describe('cp', () => {
 			}
 		}
 
-		await storeVolume(racy).cp('/source', '/dest')
+		await volume(racy).cp('/source', '/dest')
 
 		expect(raced).toBe(true)
 		expect(await other.readlink('/dest')).toBe('/source-target')
@@ -1082,7 +1082,7 @@ describe('cp', () => {
 
 	it('copies a subtree with new ids and reused hashes', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/trips/kyoto', { recursive: true })
 		await vol.writeFile('/trips/kyoto/note.md', enc.encode('go'))
 		await vol.writeFile('/trips/index.md', enc.encode('list'))
@@ -1105,7 +1105,7 @@ describe('cp', () => {
 	})
 
 	it('keeps recursive when the caller changes its options', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips/kyoto', { recursive: true })
 		await vol.writeFile('/trips/kyoto/note.md', enc.encode('go'))
 		const opts = { recursive: true }
@@ -1119,7 +1119,7 @@ describe('cp', () => {
 
 	it('keeps recursive for every child copy', async () => {
 		const store = memStore()
-		const source = storeVolume(store)
+		const source = volume(store)
 		await source.mkdir('/trips/kyoto', { recursive: true })
 		await source.writeFile('/trips/kyoto/note.md', enc.encode('go'))
 		const opts = { recursive: true }
@@ -1135,14 +1135,14 @@ describe('cp', () => {
 			}
 		}
 
-		await storeVolume(changing).cp('/trips', '/archive', opts)
+		await volume(changing).cp('/trips', '/archive', opts)
 
 		expect(changed).toBe(true)
 		expect(await read(source, '/archive/kyoto/note.md')).toBe('go')
 	})
 
 	it('needs recursive for a directory, and refuses to write a file over one', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 
@@ -1151,7 +1151,7 @@ describe('cp', () => {
 	})
 
 	it('refuses to copy a directory into itself', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/a')
 		await vol.writeFile('/a/note.md', enc.encode('go'))
 
@@ -1164,7 +1164,7 @@ describe('cp', () => {
 	it('refuses an aliased destination inside the source before it writes', async () => {
 		for (const target of ['/a/existing', '/a']) {
 			const store = memStore()
-			const vol = storeVolume(store)
+			const vol = volume(store)
 			await vol.mkdir('/a/existing', { recursive: true })
 			await vol.writeFile('/a/note.md', enc.encode('go'))
 			await vol.symlink(target, '/link')
@@ -1178,7 +1178,7 @@ describe('cp', () => {
 	})
 
 	it('overwrites a file at the destination and merges into a directory', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await vol.mkdir('/trips')
 		await vol.writeFile('/trips/kyoto.md', enc.encode('new'))
 		await vol.mkdir('/archive')
@@ -1195,7 +1195,7 @@ describe('cp', () => {
 describe('the feed', () => {
 	it('carries whole rows, never a patch', async () => {
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		const cursor = await tip(store)
 
 		await vol.mkdir('/trips')
@@ -1223,7 +1223,7 @@ describe('the feed', () => {
 	it('takes the version format from the caller, for the engine to own later', async () => {
 		const store = memStore()
 		let n = 0
-		const vol = storeVolume(store, { mintVersion: () => `alice:${++n}` })
+		const vol = volume(store, { mintVersion: () => `alice:${++n}` })
 
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 
@@ -1234,7 +1234,7 @@ describe('the feed', () => {
 		const store = memStore()
 		const author = '12345678-1234-1234-1234-123456789abc'
 		const random = vi.spyOn(crypto, 'randomUUID').mockReturnValue(author)
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		random.mockRestore()
 
 		await vol.writeFile('/kyoto.md', enc.encode('go'))

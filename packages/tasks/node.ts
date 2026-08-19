@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { fsStore } from '@justfiles/fs/fs'
 import { createTaskManager, type TaskManager, type TaskManagerOptions } from './index.ts'
 
 export async function findLocalTasksDir(cwd: string = process.cwd()): Promise<string | null> {
@@ -25,6 +25,6 @@ export async function createNodeTaskManager(
 	if (!existsSync(path)) {
 		mkdirSync(path, { recursive: true })
 	}
-	const storage = await nativeStorage(path)
-	return createTaskManager(volume(storage), '/', options)
+	const store = fsStore(path)
+	return createTaskManager(volume(store), '/', options)
 }

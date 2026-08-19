@@ -78,7 +78,7 @@ Three forces shape the design:
 │   • nodeSandbox → worker_threads  (lazy, content-addressed)       │
 │   • pi agent  (@justfiles/agent)                                  │
 │   • http: serves gui.js · icons · shared-React importmap          │
-│   • Volume → nativeStorage(~/Library/Application Support/quay)    │
+│   • Volume → fsStore(~/Library/Application Support/quay)          │
 │   • hosted assets → /private/cache/apps                           │
 └───────────────────────────────▲──────────────────────────────────┘
               ws (Cap'n Web) +   │   http (assets)
@@ -112,7 +112,7 @@ One Node process is the entire trusted host. It is the **single writer** of the 
 ```ts
 // quayd — boot (sketch)
 const root = `${os.homedir()}/Library/Application Support/quay/volume`
-const fs = volume(await nativeStorage(root))                 // real macOS folder
+const fs = volume(fsStore(root))                             // real macOS folder
 const capabilities = capabilityRegistry({ volume: volumeCapability(fs, { systemAllowlist }), /* ai, devkit */ })
 const fetchAsset = await appAssets(fs)                         // cache-first hosted files
 const kernel = createKernel({ fs, sandbox: nodeSandbox(), capabilities, fetchAsset })
@@ -125,7 +125,7 @@ What lives here and why it must be singular:
 
 - **Kernel** — owns `/applications`, `/state`, the per-app serialized dispatch queue, commands,
   procedures, and capability-fed subscriptions. Emits `app.update`.
-- **Volume** — `nativeStorage` over `~/Library/Application Support/quay/volume`. Everything frieren
+- **Volume** — `fsStore` over `~/Library/Application Support/quay/volume`. Everything frieren
   keeps in a synced volume is now a real folder you can open in Finder (`/applications`, `/state`,
   `/data/<id>`, `/system` for the agent's memory). `/private/cache/apps` is local derived data and is
   outside sync.
@@ -336,7 +336,7 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 
 - `@justfiles/app` — kernel, SDK, `defineGUI`, `kernelHost` build, `volumeCapability`, `reconcileBuiltins`, devkit; depends on `capnweb`.
 - `@justfiles/agent` — runtime, tools, bash, `createAppCommand` + `AppController`.
-- `@justfiles/fs` — `volume`, `nativeStorage`, `chroot`.
+- `@justfiles/fs` — `volume`, `fsStore`, `chroot`.
 - Every `@justfiles/app-*` bundle (counter, files, paint, settings, code, …) — as-is.
 - The agent React UI (transport-agnostic via `SocketLike`).
 

@@ -1,5 +1,6 @@
 import { avatarDir } from '@justfiles/agent/defaults'
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { requestFace } from './faces'
 import { derivedDir, readAvatar } from './identity'
@@ -30,7 +31,7 @@ beforeEach(() => {
 })
 
 async function wearing() {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	await vol.mkdir(MINE, { recursive: true })
 	await vol.writeFile(`${MINE}/resting.png`, PNG)
 	// Someone drew this one: it must survive every generation, forever.

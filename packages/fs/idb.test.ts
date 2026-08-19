@@ -1,5 +1,5 @@
 /**
- * `fake-indexeddb/auto` MUST be imported FIRST — before `store.idb` and before
+ * `fake-indexeddb/auto` MUST be imported FIRST — before `idb.ts` and before
  * anything else that touches IDB. It installs `indexedDB`, `IDBKeyRange` and
  * `IDBDatabase` as globals, and a module that reads one of them at load time
  * captures whatever is there at that moment (see the header of
@@ -15,9 +15,9 @@
 
 import 'fake-indexeddb/auto'
 import { describe, expect, test } from 'vitest'
+import { storeConformance } from './conformance'
+import { idbStore } from './idb'
 import { type Guard, type Node, ROOT } from './store'
-import { storeConformance } from './store.conformance'
-import { idbStore } from './store.idb'
 
 /** A fresh database per store, so two `open()` calls are two lineages. */
 const fresh = () => idbStore(`t04-${crypto.randomUUID()}`)

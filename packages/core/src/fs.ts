@@ -77,7 +77,7 @@ export function createFsApi(opts: {
 	return (
 		new Hono()
 			// The one non-seam read: the authority's lineage, for the two callers that need
-			// an epoch — the app's factory reset, and the `reset()` closure `syncedVolume`
+			// an epoch — the app's factory reset, and the `reset()` closure `synced`
 			// calls to start a new one.
 			.get('/', async (c) => {
 				const lineage = await opts.lineage()

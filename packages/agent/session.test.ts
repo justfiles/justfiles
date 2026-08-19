@@ -6,7 +6,7 @@ import {
 	type Model
 } from '@earendil-works/pi-ai'
 import { type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { DEFAULT_AGENT_NAME, PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts'
 import type { AgentBackend } from './llm.ts'
@@ -117,7 +117,7 @@ describe('createAgentSession', () => {
 	test('runs a turn: broadcasts busy + transcript and returns the answer', async () => {
 		const events: SessionEvent[] = []
 		const session = createAgentSession({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'Hi there' }])]),
 			compaction: NO_COMPACTION
 		})
@@ -138,7 +138,7 @@ describe('createAgentSession', () => {
 	test('an ask_user turn pings a question notification', async () => {
 		const notifications: { kind: string; body: string; route?: unknown }[] = []
 		const session = createAgentSession({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			backend: scriptedBackend([
 				assistant([
 					{
@@ -163,7 +163,7 @@ describe('createAgentSession', () => {
 	test('a turn ping carries the reply without its expression tags', async () => {
 		const notifications: { kind: string; body: string }[] = []
 		const session = createAgentSession({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			expressions: true,
 			backend: scriptedBackend([
 				assistant([{ type: 'text', text: '[concerned]Stop writes. [curious]Restore from 04:00?' }])
@@ -185,7 +185,7 @@ describe('createAgentSession', () => {
 	test('a host without expressions keeps a literal bracket in the ping', async () => {
 		const notifications: { body: string }[] = []
 		const session = createAgentSession({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			backend: scriptedBackend([
 				assistant([{ type: 'text', text: '[thinking] is the tag you asked about.' }])
 			]),
@@ -202,7 +202,7 @@ describe('createAgentSession', () => {
 		const events: SessionEvent[] = []
 		const notifications: { kind: string }[] = []
 		const session = createAgentSession({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			backend: scriptedBackend([
 				assistant([], { stopReason: 'error', errorMessage: '401 Unauthorized' })
 			]),
@@ -219,7 +219,7 @@ describe('createAgentSession', () => {
 	})
 
 	test('newSession clears the transcript', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const session = createAgentSession({
 			volume: vol,
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'first' }])]),
@@ -237,7 +237,7 @@ describe('createAgentSession', () => {
 	})
 
 	test('applySkill loads a Volume skill and runs it as a turn', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/system/skills', { recursive: true })
 		await vol.writeFile(
 			'/system/skills/greet.md',
@@ -254,7 +254,7 @@ describe('createAgentSession', () => {
 	})
 
 	test('runMaintenance consolidates yesterday notes into memory', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 		await vol.mkdir('/system/memory/daily', { recursive: true })
 		await vol.writeFile(`/system/memory/daily/${yesterday}.md`, encoder.encode('- user likes tea'))
@@ -272,7 +272,7 @@ describe('createAgentSession', () => {
 
 	test('nextMaintenanceAt returns 4am in the configured timezone', async () => {
 		const session = createAgentSession({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			backend: scriptedBackend([]),
 			timezone: () => 'UTC'
 		})
@@ -286,7 +286,7 @@ describe('createAgentSession', () => {
 	// chronological index the agent searches (#284 §8) — and for the device that owns it, so it
 	// has exactly one writer and sync's whole-file LWW cannot destroy a peer's turns (#300).
 	test('a fresh transcript is named for its start time and this device', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const session = createAgentSession({
 			volume: vol,
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
@@ -307,7 +307,7 @@ describe('createAgentSession', () => {
 	// no device suffix, so it keeps loading with `sessions.json` GONE — which matters, because
 	// deriving the current session is the only thing that finds it now.
 	test('an old-style transcript still loads without a sessions map', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/system/agents/main/sessions', { recursive: true })
 		await vol.writeFile(
 			'/system/agents/main/sessions/abcd1234.jsonl',
@@ -337,7 +337,7 @@ describe('createAgentSession', () => {
 	// pointer may name a session that is no longer newest) and must not be rewritten — writing
 	// it is what two hosts used to clobber.
 	test('a leftover sessions.json is ignored and never rewritten', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const dir = '/system/agents/main/sessions'
 		await vol.mkdir(dir, { recursive: true })
 		const stale = encoder.encode(
@@ -370,7 +370,7 @@ describe('createAgentSession', () => {
 	// short later one) and not mtime (that is last-WRITE — sync rewrites a file long after the
 	// conversation in it ended). Here both wrong clocks point elsewhere.
 	test('the current session is the one with the newest entry, not the newest name or mtime', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const dir = '/system/agents/main/sessions'
 		await vol.mkdir(dir, { recursive: true })
 		const line = (id: string, ts: string) =>
@@ -410,7 +410,7 @@ describe('createAgentSession', () => {
 	// the new turn still parents onto it, so nothing is lost and the lineage is right — and two
 	// consecutive user messages is a shape most APIs reject anyway.
 	test('an already-running assistant picks up a peer turn on its next prompt', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const seen: unknown[] = []
 		const session = createAgentSession({
 			volume: vol,
@@ -490,7 +490,7 @@ describe('createAgentSession', () => {
 	// the turn boundary — otherwise reopening the tab shows a conversation missing the turn the
 	// other device just had, which is the exact promise of #300.
 	test('history shows a peer turn on a warm host with no prompt in between', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const session = createAgentSession({
 			volume: vol,
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'answered here' }])]),
@@ -532,7 +532,7 @@ describe('createAgentSession', () => {
 	// other test would still pass — the manager-level test only proves the manager honours
 	// the argument, not that the caller passes it.
 	test('compaction after a peer arrives mid-turn stays on the local branch', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const dir = '/system/agents/main/sessions'
 
 		// Lands while the model is streaming turn 2: after that turn's context was built, before
@@ -601,7 +601,7 @@ describe('createAgentSession', () => {
 	// sync); this host must continue that SESSION — a new shard of its own, parented into the
 	// foreign one — rather than starting a fresh conversation.
 	test('a turn continues a session another device started', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const dir = '/system/agents/main/sessions'
 		const peer = `${dir}/2026-07-26T09-00-00Z-5e551011.bbbb2222.jsonl`
 		await vol.mkdir(dir, { recursive: true })
@@ -685,7 +685,7 @@ describe('retiring a session on rollover', () => {
 	}
 
 	test('the retired conversation is summarised once, however often the host re-initialises', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await seedIdleSession(vol)
 		let completions = 0
 		const open = () =>
@@ -716,7 +716,7 @@ describe('retiring a session on rollover', () => {
 	// Two builds against ONE backend — an evicted DO rebuilding while a request is already in
 	// flight. The claim is a real atomic create here, so exactly one archives.
 	test('two builds racing over one backend retire it once between them', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await seedIdleSession(vol)
 		let completions = 0
 		const open = () =>
@@ -755,7 +755,7 @@ describe('retiring a session on rollover', () => {
 		let completions = 0
 		const hosts = await Promise.all(
 			[0, 1].map(async () => {
-				const vol = volume(memStorage())
+				const vol = volume(memStore())
 				await seedIdleSession(vol)
 				const session = createAgentSession({
 					volume: vol,
@@ -783,7 +783,7 @@ describe('retiring a session on rollover', () => {
 // them: an adopt-mine republish is about to land the user's real ones, and a default written
 // here would be a second writer racing it (#425).
 test('a session against an empty volume is the built-in agent and seeds nothing', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const session = createAgentSession({
 		volume: vol,
 		backend: scriptedBackend([]),
@@ -801,7 +801,7 @@ test('a session against an empty volume is the built-in agent and seeds nothing'
 // yet, so the soul an adopt-mine republish lands takes over from the built-in default on the
 // next turn — the same way an edit made here would.
 test('a soul arriving on a volume that had none replaces the built-in default', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const session = createAgentSession({
 		volume: vol,
 		backend: scriptedBackend([]),
@@ -821,7 +821,7 @@ test('a soul arriving on a volume that had none replaces the built-in default', 
 // nothing else until the host restarted. Watching belongs to the session for exactly that
 // reason: no host can forget it.
 test('a soul written under a live session reaches the next turn', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Kodama\n---\n\nYou are Kodama.'))
 	const session = createAgentSession({
@@ -841,7 +841,7 @@ test('a soul written under a live session reaches the next turn', async () => {
 })
 
 test('construction does not register watches before storage is migrated', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	let migrated = false
 	const registrations: string[] = []
 	const guarded: Volume = {
@@ -866,7 +866,7 @@ test('construction does not register watches before storage is migrated', async 
 })
 
 test('a watch racing a pending build discards it and retries against the current files', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	await seedIdentity(vol)
 	const reached = deferred()
 	const release = deferred()
@@ -899,7 +899,7 @@ test('a watch racing a pending build discards it and retries against the current
 })
 
 test('concurrent callers share the current build', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	await seedIdentity(vol)
 	const reached = deferred()
 	const release = deferred()
@@ -934,7 +934,7 @@ test('concurrent callers share the current build', async () => {
 })
 
 test('a failed build is evicted so later access retries', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	await seedIdentity(vol)
 	let failed = false
 	const flaky: Volume = {

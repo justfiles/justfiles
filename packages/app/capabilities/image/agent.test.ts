@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test } from 'vitest'
 import type { ScopedInvoke } from '../core.ts'
 import { imageAgentTools } from './agent.ts'
@@ -20,7 +21,7 @@ test('the tool set derives from the contract: schema and description are the met
 })
 
 test('generate_image offloads bytes to the volume and returns refs in details', async () => {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const [tool] = imageAgentTools.tools
 	if (!tool) throw new Error('no tool derived')
 	const result = (await tool.execute(invoke, { prompt: 'a red panda' }, { volume: vol })) as {
@@ -41,6 +42,6 @@ test('generate_image errors when the engine returns no image', async () => {
 	const [tool] = imageAgentTools.tools
 	if (!tool) throw new Error('no tool derived')
 	await expect(
-		tool.execute(empty, { prompt: 'x' }, { volume: volume(memStorage()) })
+		tool.execute(empty, { prompt: 'x' }, { volume: volume(memStore()) })
 	).rejects.toThrow(/no image/)
 })

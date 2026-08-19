@@ -9,14 +9,13 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { memStore } from './mem'
 import { type Node, type NodeId, ROOT, type Store } from './store'
-import { memStore } from './store.mem'
 import { FileType } from './types'
 // `chroot` is written against the `Volume` interface and nothing else, so the
 // old volume's one wraps this one unchanged. That it needs no new code IS the
 // composition test; T18 moves it across with the rest.
-import { chroot } from './volume'
-import { storeVolume } from './volume.store'
+import { chroot, volume } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -72,7 +71,7 @@ describe('resolution', () => {
 		const child = vi.spyOn(store, 'child')
 		const get = vi.spyOn(store, 'get')
 
-		expect((await storeVolume(store).stat('/notes/trips/kyoto.md')).ino).toBe(kyoto)
+		expect((await volume(store).stat('/notes/trips/kyoto.md')).ino).toBe(kyoto)
 		expect(child.mock.calls).toEqual([
 			[ROOT, 'notes'],
 			[notes, 'trips'],
@@ -84,7 +83,7 @@ describe('resolution', () => {
 	})
 
 	it('resolves the root itself', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		const root = await vol.stat('/')
 		expect(root.ino).toBe(ROOT)
 		expect(root.type).toBe(FileType.Directory)
@@ -94,7 +93,7 @@ describe('resolution', () => {
 		const store = memStore()
 		const notes = await mkdir(store, ROOT, 'notes')
 		await mkdir(store, notes, 'trips')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		expect((await vol.stat('/notes/trips/..')).ino).toBe(notes)
 		expect((await vol.stat('/notes/trips/../')).ino).toBe(notes)
@@ -106,7 +105,7 @@ describe('resolution', () => {
 	})
 
 	it('throws ENOENT for a missing segment', async () => {
-		const vol = storeVolume(memStore())
+		const vol = volume(memStore())
 		await expect(vol.stat('/nope/deeper')).rejects.toThrow('ENOENT: /nope/deeper')
 	})
 
@@ -118,7 +117,7 @@ describe('resolution', () => {
 		// what makes a row visible, and POSIX cannot walk through a file — so this
 		// row is not reachable, and the walk must say so rather than hand it back.
 		await store.commit([row({ parent: kyoto, name: 'sub', type: 'file', size: 7n })])
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		await expect(vol.stat('/kyoto.md/sub')).rejects.toThrow('ENOTDIR: /kyoto.md/sub')
 		await expect(vol.readFile('/kyoto.md/sub')).rejects.toThrow('ENOTDIR: /kyoto.md/sub')
@@ -135,7 +134,7 @@ describe('resolution', () => {
 		await mkfile(store, trips, 'kyoto.md', 'go')
 		await mklink(store, ROOT, 'alias', '/notes')
 		await mklink(store, notes, 'here', 'trips') // relative targets resolve beside the link
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		expect((await vol.stat('/alias/trips')).ino).toBe(trips)
 		expect((await vol.stat('/notes/here')).ino).toBe(trips)
@@ -147,7 +146,7 @@ describe('resolution', () => {
 		await mklink(store, ROOT, 'a', '/b')
 		await mklink(store, ROOT, 'b', '/a')
 
-		await expect(storeVolume(store).stat('/a')).rejects.toThrow('ELOOP')
+		await expect(volume(store).stat('/a')).rejects.toThrow('ELOOP')
 	})
 })
 
@@ -156,7 +155,7 @@ describe('stat', () => {
 		const store = memStore()
 		const kyoto = await mkfile(store, ROOT, 'kyoto.md', 'go')
 		const alias = await mklink(store, ROOT, 'alias', '/kyoto.md')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		const stat = await vol.stat('/alias')
 		expect(stat.ino).toBe(kyoto)
@@ -179,7 +178,7 @@ describe('stat', () => {
 		// permission bits here. just-bash prints this number straight out of
 		// `stat`, so `/` must keep reading `0755` and not `40755`.
 		await store.commit([row({ parent: ROOT, name: 'kyoto.md', type: 'file', mode: 0o100644 })])
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		expect((await vol.stat('/')).mode).toBe(0o755)
 		expect((await vol.stat('/kyoto.md')).mode).toBe(0o644)
@@ -193,7 +192,7 @@ describe('stat', () => {
 		await mkfile(store, ROOT, 'kyoto.md', 'go')
 		const get = vi.spyOn(store.blobs, 'get')
 
-		expect((await storeVolume(store).stat('/kyoto.md')).size).toBe(2n)
+		expect((await volume(store).stat('/kyoto.md')).size).toBe(2n)
 		expect(get).not.toHaveBeenCalled()
 	})
 
@@ -201,7 +200,7 @@ describe('stat', () => {
 		const store = memStore()
 		await mkfile(store, ROOT, 'kyoto.md', 'go')
 		await mklink(store, ROOT, 'dangling', '/gone.md')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		expect(await vol.exists('/kyoto.md')).toBe(true)
 		expect(await vol.exists('/')).toBe(true)
@@ -218,7 +217,7 @@ describe('readdir', () => {
 		for (let i = 0; i < 130; i++) await mkdir(store, many, `n${String(i).padStart(3, '0')}`)
 		const children = vi.spyOn(store, 'children')
 
-		const entries = await storeVolume(store).readdir('/many')
+		const entries = await volume(store).readdir('/many')
 		expect(entries).toHaveLength(130)
 		expect(new Set(entries.map((e) => e.name)).size).toBe(130)
 		// One page holds 128 rows, so a full listing has to follow the cursor.
@@ -232,7 +231,7 @@ describe('readdir', () => {
 		const trips = await mkdir(store, notes, 'trips')
 		await mklink(store, notes, 'alias', '/notes')
 
-		expect(await storeVolume(store).readdir('/notes')).toEqual([
+		expect(await volume(store).readdir('/notes')).toEqual([
 			{ ino: expect.any(String), name: 'alias', type: FileType.Symlink },
 			{ ino: kyoto, name: 'kyoto.md', type: FileType.Regular },
 			{ ino: trips, name: 'trips', type: FileType.Directory }
@@ -242,7 +241,7 @@ describe('readdir', () => {
 	it('throws ENOTDIR on a file and ENOENT on a missing path', async () => {
 		const store = memStore()
 		await mkfile(store, ROOT, 'kyoto.md', 'go')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		await expect(vol.readdir('/kyoto.md')).rejects.toThrow('ENOTDIR: /kyoto.md')
 		await expect(vol.readdir('/nope')).rejects.toThrow('ENOENT: /nope')
@@ -255,7 +254,7 @@ describe('readFile', () => {
 		await mkfile(store, ROOT, 'kyoto.md', 'go')
 		const get = vi.spyOn(store.blobs, 'get')
 
-		expect(dec.decode(await storeVolume(store).readFile('/kyoto.md'))).toBe('go')
+		expect(dec.decode(await volume(store).readFile('/kyoto.md'))).toBe('go')
 		expect(get).toHaveBeenCalledWith(await hash(enc.encode('go')))
 	})
 
@@ -263,13 +262,13 @@ describe('readFile', () => {
 		const store = memStore()
 		await store.commit([row({ parent: ROOT, name: 'empty.md', type: 'file' })])
 
-		expect(await storeVolume(store).readFile('/empty.md')).toEqual(new Uint8Array())
+		expect(await volume(store).readFile('/empty.md')).toEqual(new Uint8Array())
 	})
 
 	it('throws ENOENT for a missing path and EISDIR for a directory', async () => {
 		const store = memStore()
 		await mkdir(store, ROOT, 'notes')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		await expect(vol.readFile('/nope.md')).rejects.toThrow('ENOENT: /nope.md')
 		await expect(vol.readFile('/notes')).rejects.toThrow('EISDIR: /notes')
@@ -281,7 +280,7 @@ describe('readFile', () => {
 
 		// A lazy stub: the row is real, its bytes are not local. T9 fetches them;
 		// until then the honest answer is that the content is missing, never zero bytes.
-		await expect(storeVolume(store).readFile('/lazy.md')).rejects.toThrow('ENOENT')
+		await expect(volume(store).readFile('/lazy.md')).rejects.toThrow('ENOENT')
 	})
 })
 
@@ -290,7 +289,7 @@ describe('symlinks and xattrs', () => {
 		const store = memStore()
 		await mklink(store, ROOT, 'alias', '/notes')
 		await mkfile(store, ROOT, 'kyoto.md', 'go')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		expect(await vol.readlink('/alias')).toBe('/notes')
 		await expect(vol.readlink('/kyoto.md')).rejects.toThrow('EINVAL')
@@ -302,7 +301,7 @@ describe('symlinks and xattrs', () => {
 		const xattrs = { 'user.tag': enc.encode('trip'), 'user.mood': enc.encode('warm') }
 		await store.commit([row({ parent: ROOT, name: 'kyoto.md', type: 'file', xattrs })])
 		await mkfile(store, ROOT, 'plain.md', 'go')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		expect(await vol.getXattr('/kyoto.md', 'user.tag')).toEqual(enc.encode('trip'))
 		expect(await vol.getXattr('/kyoto.md', 'user.none')).toBe(null)
@@ -322,7 +321,7 @@ describe('scan', () => {
 		await mkdir(store, ROOT, 'other')
 
 		const seen: string[] = []
-		await storeVolume(store).scan('/notes', async (path, stat) => {
+		await volume(store).scan('/notes', async (path, stat) => {
 			seen.push(`${path} ${stat.type}`)
 		})
 		expect(seen).toEqual([
@@ -338,7 +337,7 @@ describe('scan', () => {
 		await mkfile(store, ROOT, 'kyoto.md', 'go')
 
 		const seen: string[] = []
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.scan('/', async (path) => {
 			seen.push(path)
 		})
@@ -361,7 +360,7 @@ describe('scan', () => {
 		}
 
 		const seen: string[] = []
-		await storeVolume(cyclic).scan('/', async (path) => {
+		await volume(cyclic).scan('/', async (path) => {
 			seen.push(path)
 		})
 		expect(seen).toEqual(['/', '/kyoto.md'])
@@ -375,7 +374,7 @@ describe('chroot', () => {
 		const data = await mkdir(store, apps, 'data')
 		await mkfile(store, data, 'note.txt', 'hello')
 		await mkfile(store, ROOT, 'note.txt', 'outside')
-		const jailed = chroot(storeVolume(store), '/apps/data')
+		const jailed = chroot(volume(store), '/apps/data')
 
 		expect(dec.decode(await jailed.readFile('/note.txt'))).toBe('hello')
 		expect((await jailed.readdir('/')).map((e) => e.name)).toEqual(['note.txt'])

@@ -38,7 +38,7 @@ import {
 
 /**
  * Can rows in THIS store sit beneath this one? Only a directory can, and the
- * `mount` a junction stands for is the reason this is not `volume.store.ts`'s
+ * `mount` a junction stands for is the reason this is not `volume.ts`'s
  * `isDir`, which counts one — a junction stands where a directory would, so
  * that is what it resolves and stats as.
  *

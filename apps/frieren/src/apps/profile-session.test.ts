@@ -15,8 +15,8 @@ vi.mock('@justfiles/core', () => ({
 // A store per database name, and a real one: the module under test announces a mount
 // and builds a volume over what this hands back, so a hand-rolled stub would only test
 // the stub. `memStore` is the same seam `idbStore` implements.
-vi.mock('@justfiles/fs/store.idb', async () => {
-	const { memStore } = await import('@justfiles/fs/store.mem')
+vi.mock('@justfiles/fs/idb', async () => {
+	const { memStore } = await import('@justfiles/fs/mem')
 	const stores = new Map<string, ReturnType<typeof memStore>>()
 	return {
 		idbStore: (name: string) => {
@@ -38,11 +38,11 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
 	migrateIdb: H.migrateIdb
 }))
-vi.mock('@justfiles/fs/store.http', () => ({ httpStore: () => ({}) }))
+vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
 
 vi.mock('@justfiles/fs/synced', async (original) => ({
 	...(await original<Record<string, unknown>>()),
-	syncedVolume: async () => ({
+	synced: async () => ({
 		readFile: async () => new Uint8Array(),
 		flush: async () => {},
 		pause: () => {},

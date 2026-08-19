@@ -1,10 +1,11 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { volumeActiveAi } from './active-ai.ts'
 
 describe('volumeActiveAi', () => {
 	test('defaults to null and round-trips a selection', async () => {
-		const store = volumeActiveAi(volume(memStorage()))
+		const store = volumeActiveAi(volume(memStore()))
 		expect(await store.get()).toBeNull()
 
 		await store.set({ accountId: 'x', model: 'gpt-x' })
@@ -21,7 +22,7 @@ describe('volumeActiveAi', () => {
 	// same never-replicated lane. Synced, it outlives accounts that were never here and lets
 	// two hosts overwrite each other's choice — so the lane is pinned, not incidental.
 	test('is host-private: written inside a never-replicated prefix', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await volumeActiveAi(vol).set({ accountId: 'x' })
 		const written: string[] = []
 		await vol.scan('/', async (path) => {

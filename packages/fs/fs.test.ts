@@ -25,10 +25,10 @@ import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, test } from 'vitest'
+import { storeConformance } from './conformance'
 import { type Disk, fsDisk, type Spot } from './disk'
+import { fsStore, SWEEP_MS } from './fs'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
-import { storeConformance } from './store.conformance'
-import { fsStore, SWEEP_MS } from './store.fs'
 
 /**
  * Every store this file builds, closed when the case ends. A `Store` is closed by

@@ -1,7 +1,7 @@
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
 import { type AssistantMessage, createAssistantMessageEventStream } from '@earendil-works/pi-ai'
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
 import { createAssistant } from './assistant.ts'
@@ -72,7 +72,7 @@ function scriptedAgent(messages: AssistantMessage[]): Agent {
 describe('assistant prompt', () => {
 	test('retries an empty assistant response before persisting', async () => {
 		const rt = await createAssistant({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			agent: scriptedAgent([assistant([]), assistant([{ type: 'text', text: 'Recovered' }])]),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -104,7 +104,7 @@ describe('assistant prompt', () => {
 		])
 		agent.state.tools = [imageTool]
 		const rt = await createAssistant({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			agent,
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -130,7 +130,7 @@ describe('assistant tool API', () => {
 	test('adds tools to the agent tool list', async () => {
 		const agent = new Agent()
 		const rt = await createAssistant({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			agent,
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
@@ -143,7 +143,7 @@ describe('assistant tool API', () => {
 	})
 
 	test('returns the composed system prompt', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/system/agents/main', { recursive: true })
 		await vol.mkdir('/system/memory/daily', { recursive: true })
 		await vol.writeFile('/system/agents/main/soul.md', encoder.encode('soul'))
@@ -181,7 +181,7 @@ describe('assistant tool API', () => {
 	})
 
 	test('injects the user age computed from the profile birth date', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir('/system', { recursive: true })
 		await vol.writeFile(
 			'/system/user.md',
@@ -198,7 +198,7 @@ describe('assistant tool API', () => {
 
 	test('adds the apps block from appsPrompt', async () => {
 		const rt = await createAssistant({
-			volume: volume(memStorage()),
+			volume: volume(memStore()),
 			agent: new Agent(),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },
@@ -211,7 +211,7 @@ describe('assistant tool API', () => {
 	test('orients the agent on the filesystem, and mentions `os windows` only with an os port', async () => {
 		const make = (os: boolean) =>
 			createAssistant({
-				volume: volume(memStorage()),
+				volume: volume(memStore()),
 				agent: new Agent(),
 				text: testText(),
 				compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },

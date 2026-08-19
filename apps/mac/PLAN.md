@@ -12,7 +12,7 @@ rendering in a `WKWebView`, all docking at one shared Node daemon (`quayd`). See
 
 Nothing here is built from scratch; `quay` is a new **host** over existing packages:
 `@justfiles/app` (kernel, `defineGUI`, `volumeCapability`, `reconcileBuiltins`, devkit; depends on
-`capnweb`), `@justfiles/agent`, `@justfiles/fs` (`volume`, `nativeStorage`), and every `@justfiles/app-*`
+`capnweb`), `@justfiles/agent`, `@justfiles/fs` (`volume`, `fsStore`), and every `@justfiles/app-*`
 bundle. The WKWebView `.app` shape has already been proven by a small native POC.
 
 ## Where apps live (the one architectural decision)
@@ -120,7 +120,7 @@ the launcher re-spawns it). `pnpm typecheck && pnpm test` green.
 
 ## Slice 5 — Volume + kernel + seed built-ins
 
-**Goal:** `quayd` mounts `volume(nativeStorage(...))`, instantiates the kernel with a **stub** capability
+**Goal:** `quayd` mounts `volume(fsStore(...))`, instantiates the kernel with a **stub** capability
 seam, and seeds built-ins via `reconcileBuiltins` over packaged bundles — **app-code (Code) +
 app-files (Files)**. The launcher lists the real `kernel.list()`.
 
@@ -224,7 +224,7 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
 | Item                            | Note                                                                                                                                                                                 |
 |---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Hardening**                   | enforce token scoping, WKWebView CSP/navigation lockdown, `quayd` single-writer lock, idle-exit policy, booter reconnect-on-drop. Fold critical bits into earlier slices.            |
-| **Sync backend**                | swap `nativeStorage` for frieren's synced Volume backend — apps/state/data then sync across devices with no change to where apps live; the `.app` projection regenerates per device. |
+| **Sync backend**                | swap `fsStore` for frieren's synced Volume backend — apps/state/data then sync across devices with no change to where apps live; the `.app` projection regenerates per device. |
 | **Projection drift**            | watch `~/Applications/Quay Apps/` so a Trash-ed `.app` becomes a real uninstall (the one tolerated `.app` → Volume edge). v1 just re-materialises on next reconcile.                 |
 | **Live preview** (`devkit.run`) | the one bespoke seam — a second `WKWebView` over the code window's slot.                                                                                                             |
 | **Multi-window** per app        | `open -n` / in-shell windows, all live-syncing one kernel state.                                                                                                                     |

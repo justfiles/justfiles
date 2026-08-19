@@ -19,7 +19,10 @@
 import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import { authority } from '../../fs/authority'
+import { storeConformance } from '../../fs/conformance'
 import { type CursorSlot, sync, versions } from '../../fs/engine'
+import { httpStore } from '../../fs/http'
+import { memStore } from '../../fs/mem'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -29,10 +32,7 @@ import {
 	type Store,
 	sha256Hex
 } from '../../fs/store'
-import { storeConformance } from '../../fs/store.conformance'
-import { httpStore } from '../../fs/store.http'
-import { memStore } from '../../fs/store.mem'
-import { storeVolume } from '../../fs/volume.store'
+import { volume } from '../../fs/volume'
 import { storeApi } from './store.api'
 
 const enc = new TextEncoder()
@@ -213,12 +213,12 @@ function replica(id: string) {
 	return {
 		store,
 		opts: { replica: id, pull: slot(), push: slot() },
-		vol: storeVolume(store, { mintVersion: versions(id) })
+		vol: volume(store, { mintVersion: versions(id) })
 	}
 }
 
 const read = async (store: Store, path: string): Promise<string> =>
-	dec.decode(await storeVolume(store).readFile(path))
+	dec.decode(await volume(store).readFile(path))
 
 describe('sync over the wire', () => {
 	it('replans a conflict the hub refused, with an HTTP boundary in the middle', async () => {
@@ -244,7 +244,7 @@ describe('sync over the wire', () => {
 		await sync(a.store, fromA, a.opts)
 
 		for (const store of [hub, a.store, b.store]) {
-			expect((await storeVolume(store).readdir('/')).map((e) => e.name).sort()).toEqual([
+			expect((await volume(store).readdir('/')).map((e) => e.name).sort()).toEqual([
 				'note.txt',
 				'note.txt (conflict b)'
 			])

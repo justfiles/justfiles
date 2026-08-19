@@ -15,9 +15,9 @@
 import { describe, expect, it } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
+import { memStore } from './mem'
 import { type Cursor, GuardError, type Node, ROOT } from './store'
-import { memStore } from './store.mem'
-import { storeVolume } from './volume.store'
+import { volume } from './volume'
 
 const enc = new TextEncoder()
 
@@ -154,7 +154,7 @@ describe('authority: the tree invariants', () => {
 
 		await expect(server.commit([{ ...docs, deleted: true, version: '2' }])).resolves.toBeUndefined()
 
-		expect(await storeVolume(store).readdir('/')).toEqual([])
+		expect(await volume(store).readdir('/')).toEqual([])
 	})
 
 	it('refuses to bury, re-type or reparent the root', async () => {
@@ -270,16 +270,16 @@ describe('authority: the tree invariants', () => {
 		const server = authority(memStore())
 		const store = memStore()
 		const opts = { replica: 'a', pull: cursor(), push: cursor() }
-		const vol = storeVolume(store, { mintVersion: versions('a') })
+		const vol = volume(store, { mintVersion: versions('a') })
 		await vol.mkdir('/docs')
 		for (let i = 0; i < 200; i++) await vol.writeFile(`/docs/f${i}.txt`, enc.encode(`${i}`))
 		await sync(store, server, opts)
-		expect((await storeVolume(server).readdir('/docs')).length).toBe(200)
+		expect((await volume(server).readdir('/docs')).length).toBe(200)
 
 		await vol.rm('/docs', { recursive: true })
 		await sync(store, server, opts)
 
-		expect(await storeVolume(server).readdir('/')).toEqual([])
+		expect(await volume(server).readdir('/')).toEqual([])
 	})
 
 	it('refuses a move that puts a directory under its own descendant', async () => {
@@ -423,7 +423,7 @@ describe('a detached cluster on a replica', () => {
 		// place: a replica needs no repair pass, because a row the root cannot reach
 		// is not in the tree.
 		const store = memStore()
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await store.commit([
 			dir({ id: 'orphan', name: 'orphan', parent: 'ghost' }),
 			file({ id: 'buried', name: 'buried.txt', parent: 'orphan' })

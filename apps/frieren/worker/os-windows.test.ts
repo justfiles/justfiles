@@ -1,12 +1,12 @@
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { currentAppId, readWindows } from './os-windows.ts'
 
 // The single reader of `/system/os-state.json` (#284 §6): one walk, two projections —
 // `readWindows` for the agent's `os windows`, `currentAppId` for the app bridge's focus.
 async function seed(snapshot?: unknown) {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	if (snapshot !== undefined) {
 		await fs.mkdir('/system', { recursive: true })
 		await fs.writeFile(

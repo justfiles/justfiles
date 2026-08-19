@@ -3,13 +3,15 @@
  * whether it may ship: a migrated client and a migrated server converge with
  * nothing on the wire.
  *
- * The fixture is built through the OLD stack end to end — a client writes into
- * `packages/sync`'s journaled IndexedDB backend, and its node operations are
- * applied to the SQLite server, so the two hold the same tree under the same
- * shared sync ids and each holds its OWN local inodes. That last part is what
- * the pass has to get right: the ino is per-replica, so a migration that used it
- * as the row id would give the two sides different ids for the same file, and
- * the first sync would re-upload the entire volume.
+ * The fixture states the old model rather than driving it — the stack that used
+ * to write it is gone. That is the honest way round for what is being claimed
+ * here anyway, because the claim is about a DISAGREEMENT the old stack produced
+ * as a side effect: the two sides hold one tree under the same shared sync ids,
+ * and each holds its OWN local inodes (a node arriving from a peer was given a
+ * fresh local ino). A migration that used the ino as the row id would therefore
+ * give the two sides different ids for the same file, and the first sync would
+ * re-upload the entire volume. So the fixture says exactly that, in one place:
+ * one tree, two ino namespaces, one set of sync ids.
  *
  * `fake-indexeddb/auto` MUST be imported FIRST — before anything that touches
  * IDB — because a module that reads `indexedDB` at load time captures whatever
@@ -20,89 +22,176 @@ import 'fake-indexeddb/auto'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { volume } from '@justfiles/fs'
+import { idbStore } from '@justfiles/fs/idb'
 import { migrateIdb } from '@justfiles/fs/migrate.idb'
-import { type Cursor, type Node, ROOT, type Store } from '@justfiles/fs/store'
-import { storageSyncReplica } from '@justfiles/sync'
-import { idbStorage } from '@justfiles/sync/storage/idb'
+import {
+	dir,
+	file,
+	LEGACY_MTIME_NS,
+	LEGACY_ROOT,
+	type LegacyNode,
+	symlink,
+	writeLegacyIdb
+} from '@justfiles/fs/migrate.legacy'
+import { type Cursor, type Node, ROOT, type Store, sha256Hex } from '@justfiles/fs/store'
 import { expect, test } from 'vitest'
 import { type CursorSlot, sync } from '../../fs/engine'
-import { idbStore } from '../../fs/store.idb'
-import { storeVolume } from '../../fs/volume.store'
+import type { DbAdapter } from './db'
 import { createSqliteAdapter, createSqliteSyncDb } from './db.sqlite'
 import { migrateSqlite } from './migrate.sqlite'
-import { storage as sqliteStorage } from './storage.sqlite'
 import { sqliteStore } from './store.sqlite'
 
 const migrationsDir = new URL('./migrations/', import.meta.url)
 const schema = readdirSync(migrationsDir)
-	.filter((file) => file.endsWith('.sql'))
+	.filter((name) => name.endsWith('.sql'))
 	.sort()
-	.map((file) => readFileSync(new URL(file, migrationsDir), 'utf8'))
+	.map((name) => readFileSync(new URL(name, migrationsDir), 'utf8'))
 	.join('\n')
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 const text = (value: Uint8Array): string => new TextDecoder().decode(value)
 
+// ── The fixture ───────────────────────────────────────────────────────────────
+
+/**
+ * One node, keyed by the identity BOTH replicas share. `parent` is another key,
+ * or `''` for a root entry — an ino is per-side, so the description cannot name
+ * one.
+ */
+type Spec = Omit<LegacyNode, 'ino' | 'parent' | 'id'> & { key: string; parent: string }
+
+const spec = (parent: string, key: string, node: Omit<LegacyNode, 'ino' | 'parent'>): Spec => ({
+	...node,
+	key,
+	parent
+})
+
+const NOTE_XATTRS = { 'ghostore.title': bytes('Note') }
+
+/** What the two sides agree on. Every node here synced, so every one has a shared id. */
+const SHARED: Spec[] = [
+	spec('', 'docs', dir('', '', 'docs')),
+	spec('docs', 'note', { ...file('', '', 'note.md', bytes('hello')), xattrs: NOTE_XATTRS }),
+	spec('docs', 'copy', file('', '', 'copy.md', bytes('hello'))), // same bytes, one blob
+	spec('', 'link', symlink('', '', 'link', '/docs/note.md'))
+]
+
+/** Client-only: the old engine's private tree, which the pass drops. */
+const CLIENT_ONLY: Spec[] = [
+	spec('', 'state', dir('', '', '.state')),
+	spec('state', 'state-sync', file('', '', 'sync', bytes('{"schemaVersion":1}')))
+]
+
+const localOnly = new Set(CLIENT_ONLY.map((s) => s.key))
+
+/**
+ * One side's nodes: the shared ids, and inos in THIS side's namespace. The two
+ * prefixes are what make every ino disagree while every sync id agrees.
+ */
+function side(prefix: string, specs: Spec[]): LegacyNode[] {
+	const ino = (key: string) => `${prefix}-${key}`
+	return specs.map(({ key, parent, ...node }) => ({
+		...node,
+		ino: ino(key),
+		// `.state` never crossed the wire, so it never had a sync row.
+		id: localOnly.has(key) ? undefined : `sync-${key}`,
+		parent: parent === '' ? LEGACY_ROOT : ino(parent)
+	}))
+}
+
+/** The old SQL tables, written directly — the half `migrate.sqlite.ts` reads. */
+async function writeLegacySqlite(db: DbAdapter, nodes: LegacyNode[]): Promise<void> {
+	const syncIdOf = new Map(nodes.map((node) => [node.ino, node.id]))
+	// `fs_dirents.dir_ino` is a foreign key, so the root has to be an inode too.
+	await db.run(
+		`INSERT OR IGNORE INTO fs_inodes(ino, type, mode, size, mtime_ns, ctime_ns, storage_kind)
+		 VALUES (?, 1, 493, 0, 0, 0, 0)`,
+		[LEGACY_ROOT]
+	)
+	for (const node of nodes) {
+		const hash = node.content ? await sha256Hex(node.content) : null
+		if (node.content && hash)
+			await db.run(
+				`INSERT OR IGNORE INTO fs_contents(content_hash, storage_kind, size, inline_bytes, created_at_ns)
+				 VALUES (?, 1, ?, ?, 0)`,
+				[hash, node.content.byteLength, node.content]
+			)
+		await db.run(
+			`INSERT INTO fs_inodes(ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, storage_kind)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+			[
+				node.ino,
+				node.type,
+				node.mode,
+				BigInt(node.content?.byteLength ?? 0),
+				LEGACY_MTIME_NS,
+				LEGACY_MTIME_NS,
+				hash,
+				node.target ?? null
+			]
+		)
+		await db.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
+			node.parent,
+			node.name,
+			node.ino,
+			node.type
+		])
+		for (const [name, value] of Object.entries(node.xattrs ?? {}))
+			await db.run('INSERT INTO fs_xattrs(ino, name, value) VALUES (?, ?, ?)', [
+				node.ino,
+				name,
+				value
+			])
+		if (node.id !== undefined)
+			await db.run(
+				`INSERT INTO fs_sync_nodes(sync_id, local_ino, parent_sync_id, name, type, revision, deleted, meta_json, content_hash)
+				 VALUES (?, ?, ?, ?, ?, ?, 0, '{}', ?)`,
+				[
+					node.id,
+					node.ino,
+					syncIdOf.get(node.parent) ?? null,
+					node.name,
+					node.type,
+					node.revision ?? 0,
+					hash
+				]
+			)
+	}
+}
+
 function openSqlite() {
 	const db = new DatabaseSync(':memory:')
 	db.exec(schema)
-	const adapter = createSqliteAdapter({
-		prepare(sql: string) {
-			const statement = db.prepare(sql)
-			statement.setReadBigInts(true)
-			return statement
-		},
-		exec: (sql: string) => db.exec(sql)
-	} as unknown as Parameters<typeof createSqliteAdapter>[0])
+	const seam = () =>
+		({
+			prepare(sql: string) {
+				const statement = db.prepare(sql)
+				statement.setReadBigInts(true)
+				return statement
+			},
+			exec: (sql: string) => db.exec(sql)
+		}) as unknown as Parameters<typeof createSqliteAdapter>[0]
 	// Two seams over ONE connection: the old tables are read through the async
 	// adapter, and the new store commits through the synchronous one it needs to be
 	// atomic (`db.ts`). The reads are awaited before each commit, so no `BEGIN` of
 	// one ever opens inside the other's.
-	const sync = createSqliteSyncDb({
-		prepare(sql: string) {
-			const statement = db.prepare(sql)
-			statement.setReadBigInts(true)
-			return statement
-		},
-		exec: (sql: string) => db.exec(sql)
-	} as unknown as Parameters<typeof createSqliteSyncDb>[0])
-	return { db, adapter, sync, storage: sqliteStorage(adapter) }
+	return {
+		db,
+		adapter: createSqliteAdapter(seam()),
+		sync: createSqliteSyncDb(seam() as unknown as Parameters<typeof createSqliteSyncDb>[0])
+	}
 }
 
-function replicaOf(storage: Parameters<typeof storageSyncReplica>[0]) {
-	const selected = storageSyncReplica(storage)
-	if (selected.strategy !== 'incremental') throw new Error('expected incremental sync')
-	return selected.replica
-}
-
-/**
- * A client and a server that already agree, through the OLD stack: the client
- * writes, and its node operations are applied to the server verbatim.
- */
+/** A client and a server holding one tree: same sync ids, their own inos. */
 async function converged() {
 	const server = openSqlite()
-	const clientDb = `t16-client-${crypto.randomUUID()}`
-	const clientStorage = idbStorage(clientDb)
-	const client = volume(clientStorage)
-
-	await client.mkdir('/docs')
-	await client.writeFile('/docs/note.md', bytes('hello'))
-	await client.writeFile('/docs/copy.md', bytes('hello')) // same bytes, one blob
-	await client.setXattr('/docs/note.md', 'ghostore.title', bytes('Note'))
-	await client.symlink('/docs/note.md', '/link')
-	await client.mkdir('/.state')
-	await client.writeFile('/.state/sync', bytes('{"schemaVersion":1}'))
-
-	const source = replicaOf(clientStorage)
-	const delta = await source.nodeDeltas('', { limit: 500 })
-	await replicaOf(server.storage).applyNodeOperations(delta.operations, (hash) =>
-		source.getBlobByHash(hash)
-	)
-	// The fixture is only worth migrating if the old stack really converged.
-	expect(text(await volume(server.storage).readFile('/docs/note.md'))).toBe('hello')
-
-	return { server, clientDb, clientStorage }
+	await writeLegacySqlite(server.adapter, side('srv', SHARED))
+	const clientDb = `t18-client-${crypto.randomUUID()}`
+	await writeLegacyIdb(clientDb, side('cli', [...SHARED, ...CLIENT_ONLY]))
+	return { server, clientDb }
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Rows in one order both backends agree on — the feed's own is per-replica. */
 const byId = (nodes: Node[]): Node[] => [...nodes].sort((a, b) => (a.id < b.id ? -1 : 1))
@@ -153,15 +242,15 @@ function counted(store: Store): Store & { commits: Node[][]; puts: string[] } {
 	}
 }
 
-test('both halves migrate to the same rows, under the same shared ids', async () => {
-	const { server, clientDb, clientStorage } = await converged()
-	// The old models disagree about local inodes on purpose — that is what a
-	// migration keyed on the ino would carry into the new one.
-	expect((await volume(clientStorage).lstat('/docs/note.md')).ino).not.toBe(
-		(await volume(server.storage).lstat('/docs/note.md')).ino
-	)
+// ── The claims ────────────────────────────────────────────────────────────────
 
-	const local = idbStore(`t16-local-${crypto.randomUUID()}`)
+test('both halves migrate to the same rows, under the same shared ids', async () => {
+	const { server, clientDb } = await converged()
+	// The two sides disagree about local inodes on purpose — that is what a
+	// migration keyed on the ino would carry into the new model.
+	expect(side('cli', SHARED).map((n) => n.ino)).not.toEqual(side('srv', SHARED).map((n) => n.ino))
+
+	const local = idbStore(`t18-local-${crypto.randomUUID()}`)
 	const remote = sqliteStore(server.sync)
 	await migrateIdb(clientDb, local)
 	await migrateSqlite(server.adapter, remote)
@@ -172,7 +261,7 @@ test('both halves migrate to the same rows, under the same shared ids', async ()
 	expect(byId(mine)).toEqual(byId(await rows(remote)))
 	// The tree reads back on both sides, the bytes are there, and `/.state` is gone.
 	for (const store of [local, remote]) {
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		expect(text(await vol.readFile('/docs/note.md'))).toBe('hello')
 		expect(await vol.readlink('/link')).toBe('/docs/note.md')
 		expect(await vol.exists('/.state')).toBe(false)
@@ -180,6 +269,8 @@ test('both halves migrate to the same rows, under the same shared ids', async ()
 		expect(note.contentHash).toBeDefined()
 		expect(await store.blobs.has(note.contentHash ?? '')).toBe(true)
 		expect(await store.child(ROOT, '.state')).toBeNull()
+		// The id is the SHARED one on both sides — not either side's ino.
+		expect(note.ino).toBe('sync-note')
 	}
 	// Every migrated row is authored by the pass, on both sides, so no replica
 	// claims one and the version is identical wherever the row is.
@@ -191,7 +282,7 @@ test('both halves migrate to the same rows, under the same shared ids', async ()
 
 test('the first sync after migration writes no row and moves no blob', async () => {
 	const { server, clientDb } = await converged()
-	const local = counted(idbStore(`t16-local-${crypto.randomUUID()}`))
+	const local = counted(idbStore(`t18-local-${crypto.randomUUID()}`))
 	const remote = counted(sqliteStore(server.sync))
 	await migrateIdb(clientDb, local)
 	await migrateSqlite(server.adapter, remote)
@@ -214,7 +305,7 @@ test('the first sync after migration writes no row and moves no blob', async () 
 	expect(await rows(remote)).toEqual(before.remote)
 	// And not one byte of content moves in either direction — which means
 	// something only because both sides went in holding the bytes already.
-	const hash = (await storeVolume(local).lstat('/docs/note.md')).contentHash ?? ''
+	const hash = (await volume(local).lstat('/docs/note.md')).contentHash ?? ''
 	expect(await local.blobs.has(hash)).toBe(true)
 	expect(await remote.blobs.has(hash)).toBe(true)
 	expect(local.puts).toEqual([])
@@ -237,7 +328,7 @@ test('a second pass over the same tables writes nothing', async () => {
 
 test('content the old server offloaded comes from the bucket, or the row is a stub', async () => {
 	const { server, clientDb } = await converged()
-	const hash = (await volume(server.storage).lstat('/docs/note.md')).contentHash ?? ''
+	const hash = await sha256Hex(bytes('hello'))
 	// Rewrite the row the way a bucket-backed server held it: the bytes are out
 	// in R2 under a key, and `fs_contents` keeps only the key.
 	await server.adapter.run(
@@ -247,10 +338,10 @@ test('content the old server offloaded comes from the bucket, or the row is a st
 
 	const stub = sqliteStore(server.sync)
 	await migrateSqlite(server.adapter, stub)
-	expect((await stub.get((await storeVolume(stub).lstat('/docs/note.md')).ino))?.content).toBe(hash)
+	expect((await stub.get((await volume(stub).lstat('/docs/note.md')).ino))?.content).toBe(hash)
 	expect(await stub.blobs.has(hash)).toBe(false)
 
-	const whole = idbStore(`t16-r2-${crypto.randomUUID()}`)
+	const whole = idbStore(`t18-r2-${crypto.randomUUID()}`)
 	await migrateSqlite(server.adapter, whole, {
 		blobs: {
 			get: async (key) =>
@@ -258,9 +349,9 @@ test('content the old server offloaded comes from the bucket, or the row is a st
 		}
 	})
 	expect(await whole.blobs.has(hash)).toBe(true)
-	expect(text(await storeVolume(whole).readFile('/docs/note.md'))).toBe('hello')
+	expect(text(await volume(whole).readFile('/docs/note.md'))).toBe('hello')
 	// The client still holds its own copy, so a stubbed server costs nothing there.
-	const client = idbStore(`t16-r2c-${crypto.randomUUID()}`)
+	const client = idbStore(`t18-r2c-${crypto.randomUUID()}`)
 	await migrateIdb(clientDb, client)
 	expect(await client.blobs.has(hash)).toBe(true)
 	server.db.close()

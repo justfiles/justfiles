@@ -1,5 +1,6 @@
 import type { Kernel } from '@justfiles/app'
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
 	beginInstall,
@@ -11,7 +12,7 @@ import {
 } from './installing'
 import { resumePendingInstalls } from './manage'
 
-const fresh = () => volume(memStorage())
+const fresh = () => volume(memStore())
 
 beforeEach(() => seedInstalling([]))
 

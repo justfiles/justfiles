@@ -1,6 +1,6 @@
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import type { Store } from '@justfiles/fs/store'
-import { memStore } from '@justfiles/fs/store.mem'
-import { storeVolume } from '@justfiles/fs/volume.store'
 import { describe, expect, it, vi } from 'vitest'
 import { runDailyMaintenance } from './daily-maintenance'
 
@@ -48,7 +48,7 @@ describe('daily maintenance', () => {
 		const tree = sweepsPartially()
 		const local = sweepsPartially()
 
-		await runDailyMaintenance([tree, local], storeVolume(memStore()), alarmState())
+		await runDailyMaintenance([tree, local], volume(memStore()), alarmState())
 
 		// The app cache and the credentials live behind `/private`, in a store of their
 		// own — its garbage is nobody else's sweep.
@@ -60,7 +60,7 @@ describe('daily maintenance', () => {
 		const store = sweptClean()
 		const state = alarmState()
 
-		expect(await runDailyMaintenance([store], storeVolume(store), state)).toEqual({ daily: true })
+		expect(await runDailyMaintenance([store], volume(store), state)).toEqual({ daily: true })
 
 		expect(state.alarms).toEqual([])
 		expect(state.kv.size).toBe(0)
@@ -71,14 +71,14 @@ describe('daily maintenance', () => {
 		const state = alarmState()
 
 		// The first wake is the daily one, and it asks to be woken again.
-		expect(await runDailyMaintenance([store], storeVolume(store), state, 1_000)).toEqual({
+		expect(await runDailyMaintenance([store], volume(store), state, 1_000)).toEqual({
 			daily: true
 		})
 		expect(state.alarms).toEqual([61_000])
 
 		// The wake it asked for is a CONTINUATION: the sweep resumes, the daily half
 		// (the agent's memory consolidation) does not.
-		expect(await runDailyMaintenance([store], storeVolume(store), state, 2_000)).toEqual({
+		expect(await runDailyMaintenance([store], volume(store), state, 2_000)).toEqual({
 			daily: false
 		})
 		expect(state.alarms).toEqual([61_000, 62_000])
@@ -88,7 +88,7 @@ describe('daily maintenance', () => {
 		const store = sweptClean()
 		const state = alarmState({ 'fs:sweep:resume': true })
 
-		expect(await runDailyMaintenance([store], storeVolume(store), state)).toEqual({
+		expect(await runDailyMaintenance([store], volume(store), state)).toEqual({
 			daily: false
 		})
 
@@ -100,7 +100,7 @@ describe('daily maintenance', () => {
 		const store = cannotSweep()
 		const state = alarmState()
 
-		expect(await runDailyMaintenance([store], storeVolume(store), state)).toEqual({ daily: true })
+		expect(await runDailyMaintenance([store], volume(store), state)).toEqual({ daily: true })
 		expect(state.alarms).toEqual([])
 	})
 })

@@ -1,14 +1,13 @@
-import type { Volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import type { Cursor, Store } from '@justfiles/fs/store'
-import { memStore } from '@justfiles/fs/store.mem'
-import { storeVolume } from '@justfiles/fs/volume.store'
 import { expect, test } from 'vitest'
 import { stateStore } from './kernel.state.ts'
 
 // The state store in isolation — no kernel, no sandbox, just a fs. Covers the
 // in-memory/write-through cache, monotonic seq, fs hydration on boot, and drop.
 
-const fresh = () => storeVolume(memStore())
+const fresh = () => volume(memStore())
 
 /**
  * What a peer would be offered from `at` onwards — which is what "no write happened"
@@ -57,7 +56,7 @@ test('state and seq are tracked per app', async () => {
 
 test('a commit that lands the same value writes nothing', async () => {
 	const store = memStore()
-	const s = stateStore(storeVolume(store))
+	const s = stateStore(volume(store))
 	await s.commit('a', { n: 1 })
 	const at = await caughtUp(store)
 
@@ -75,7 +74,7 @@ test('a commit that lands the same value writes nothing', async () => {
 
 test('a hydrated store skips a re-commit of what it read', async () => {
 	const store = memStore()
-	const fs = storeVolume(store)
+	const fs = volume(store)
 	await stateStore(fs).commit('a', { n: 7 })
 	const at = await caughtUp(store)
 

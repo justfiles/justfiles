@@ -1,10 +1,10 @@
 import { useAuth } from '@clerk/clerk-react'
 import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
+import { httpStore } from '@justfiles/fs/http'
+import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import type { Store } from '@justfiles/fs/store'
-import { httpStore } from '@justfiles/fs/store.http'
-import { idbStore, sharedStore } from '@justfiles/fs/store.idb'
-import { type CursorSlot, syncedVolume } from '@justfiles/fs/synced'
+import { type CursorSlot, synced } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
 import {
 	createContext,
@@ -390,7 +390,7 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 	// a device whose local replica is empty records "loaded" over an empty workspace and
 	// keeps showing it. `flush()` never rejects, so an offline boot still gets its volume;
 	// it just gets `error` status and the local tree, which is what shipped.
-	const volume = await syncedVolume({
+	const volume = await synced({
 		local,
 		remote: remoteStore(getToken),
 		replica: replicaId(),

@@ -1,5 +1,5 @@
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test, vi } from 'vitest'
 import {
 	DEFAULT_AGENT_NAME,
@@ -20,7 +20,7 @@ async function write(vol: ReturnType<typeof volume>, path: string, text: string)
 }
 
 test('an empty volume reads as the built-in identity', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 
 	expect(await readSoul(fs)).toBe(DEFAULT_SOUL)
 	expect(await readProfile(fs)).toBe(DEFAULT_PROFILE)
@@ -30,7 +30,7 @@ test('an empty volume reads as the built-in identity', async () => {
 // The point of the whole slice: an adopt-mine republish must have no competing writer, so
 // READING the identity of a volume that has none may not create one.
 test('reading identity writes nothing', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const write = vi.spyOn(fs, 'writeFile')
 	const mkdir = vi.spyOn(fs, 'mkdir')
 
@@ -43,7 +43,7 @@ test('reading identity writes nothing', async () => {
 })
 
 test('one file present defaults only the other', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	await write(fs, SOUL_PATH, '---\nagent_name: Fern\n---\n\nYou are Fern.')
 
 	expect(await readAgentName(fs)).toBe('Fern')
@@ -52,7 +52,7 @@ test('one file present defaults only the other', async () => {
 })
 
 test('an explicit file is authoritative and reloads unchanged', async () => {
-	const storage = memStorage()
+	const storage = memStore()
 	await write(volume(storage), PROFILE_PATH, '---\nname: Stark\n---\n')
 
 	// A fresh Volume over the same storage is what a restarted host sees.
@@ -60,7 +60,7 @@ test('an explicit file is authoritative and reloads unchanged', async () => {
 })
 
 test('a soul with no agent_name falls back to the built-in name', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	await write(fs, SOUL_PATH, '---\nseeded: true\n---\n\nagent_name: not frontmatter')
 
 	expect(await readAgentName(fs)).toBe(DEFAULT_AGENT_NAME)

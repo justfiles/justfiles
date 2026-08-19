@@ -1,6 +1,7 @@
 import { type GetSandbox, kernel } from '@justfiles/app'
 import type { Catalog } from '@justfiles/app/appstore'
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { zipSync } from 'fflate'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { CATALOG_SCHEMA } from '../../shared/appstore'
@@ -13,7 +14,7 @@ const sandbox: GetSandbox = async () => ({
 })
 
 function setup() {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox, clock: {} })
 	return { fs, k }
 }

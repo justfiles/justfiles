@@ -1,4 +1,5 @@
-import { memStorage, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test, vi } from 'vitest'
 import { appAssets } from './app-assets'
 
@@ -6,7 +7,7 @@ const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
 const text = (value: Uint8Array): string => new TextDecoder().decode(value)
 
 test('the default request has a deadline', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const signal = new AbortController().signal
 	const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(signal)
 	const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(bytes('GUI')))
@@ -24,7 +25,7 @@ test('the default request has a deadline', async () => {
 })
 
 test('a downloaded asset is available after restart without the network', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let online = true
 	let requests = 0
 	const request = async (): Promise<Response> => {
@@ -42,7 +43,7 @@ test('a downloaded asset is available after restart without the network', async 
 })
 
 test('a failed cache read falls back to the network', async () => {
-	const base = volume(memStorage())
+	const base = volume(memStore())
 	let failRead = false
 	const fs: Volume = {
 		...base,
@@ -68,7 +69,7 @@ test('a failed cache read falls back to the network', async () => {
 })
 
 test('concurrent reads of one uncached URL share one request', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let requests = 0
 	let release: () => void = () => {}
 	const pending = new Promise<void>((resolve) => {
@@ -90,7 +91,7 @@ test('concurrent reads of one uncached URL share one request', async () => {
 })
 
 test('a failed response is not cached', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let requests = 0
 	const cache = await appAssets(fs, async () => {
 		requests++
@@ -104,7 +105,7 @@ test('a failed response is not cached', async () => {
 })
 
 test('a rejected request can be retried', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let requests = 0
 	const cache = await appAssets(fs, async () => {
 		requests++
@@ -119,7 +120,7 @@ test('a rejected request can be retried', async () => {
 })
 
 test('eviction removes only the named URL', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let online = true
 	const cache = await appAssets(fs, async (url) => {
 		if (!online) throw new Error('offline')
@@ -137,7 +138,7 @@ test('eviction removes only the named URL', async () => {
 })
 
 test('eviction waits for an in-flight cache write', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let online = true
 	let start: () => void = () => {}
 	let release: () => void = () => {}
@@ -166,7 +167,7 @@ test('eviction waits for an in-flight cache write', async () => {
 })
 
 test('eviction waits for an in-flight cache probe', async () => {
-	const base = volume(memStorage())
+	const base = volume(memStore())
 	let startProbe: () => void = () => {}
 	let resumeProbe: () => void = () => {}
 	const probing = new Promise<void>((resolve) => {
@@ -205,7 +206,7 @@ test('eviction waits for an in-flight cache probe', async () => {
 })
 
 test('a read started during eviction does not restore the cache', async () => {
-	const base = volume(memStorage())
+	const base = volume(memStore())
 	let startRemove: () => void = () => {}
 	let resumeRemove: () => void = () => {}
 	const removing = new Promise<void>((resolve) => {
@@ -241,7 +242,7 @@ test('a read started during eviction does not restore the cache', async () => {
 })
 
 test('the cache uses a flat path-safe URL hash', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const cache = await appAssets(fs, async () => new Response(bytes('GUI')))
 	await cache('https://notes.justapps.run/v/1/assets/gui.js?theme=dark')
 
@@ -251,7 +252,7 @@ test('the cache uses a flat path-safe URL hash', async () => {
 })
 
 test('start removes abandoned temporary files', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	await fs.mkdir('/private/tmp/app-assets', { recursive: true })
 	await fs.writeFile('/private/tmp/app-assets/abandoned', bytes('partial'))
 
@@ -261,7 +262,7 @@ test('start removes abandoned temporary files', async () => {
 })
 
 test('start keeps only the newest 500 cached files', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	await fs.mkdir('/private/cache/apps', { recursive: true })
 	for (let i = 0; i < 501; i++) {
 		const path = `/private/cache/apps/${i.toString(16).padStart(64, '0')}`
@@ -278,7 +279,7 @@ test('start keeps only the newest 500 cached files', async () => {
 })
 
 test('a cache write failure does not stop an online read', async () => {
-	const base = volume(memStorage())
+	const base = volume(memStore())
 	const fs: Volume = {
 		...base,
 		async writeFile(path, data, options) {
@@ -298,7 +299,7 @@ test('a cache write failure does not stop an online read', async () => {
 })
 
 test('a cache startup failure does not stop an online read', async () => {
-	const base = volume(memStorage())
+	const base = volume(memStore())
 	const fs: Volume = {
 		...base,
 		async mkdir(path, options) {

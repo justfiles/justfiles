@@ -1,5 +1,5 @@
 /**
- * The disk, and the only thing that touches it. `store.fs.ts` decides WHAT should be
+ * The disk, and the only thing that touches it. `fs.ts` decides WHAT should be
  * where; this decides how a location is named, whether it is inside the store, and
  * whether the thing at it is still the thing the caller meant.
  *

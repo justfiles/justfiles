@@ -20,11 +20,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
+import { memStore } from './mem'
 import { type Cursor, GuardError, type Node, type NodeId, ROOT, type Store } from './store'
-import { memStore } from './store.mem'
 import { FileType } from './types'
-import { type Volume, WATCH_BURST_MS } from './volume'
-import { announceMount, type Bindings, storeVolume } from './volume.store'
+import { announceMount, type Bindings, type Volume, volume, WATCH_BURST_MS } from './volume'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -182,7 +181,7 @@ describe('crossing', () => {
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
 		const env = await mkfile(priv, ROOT, 'env', 'SECRET=1')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		const child = vi.spyOn(outer, 'child')
 
 		expect(dec.decode(await vol.readFile('/private/env'))).toBe('SECRET=1')
@@ -206,7 +205,7 @@ describe('crossing', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		const before = await rows(outer)
 
 		await vol.mkdir('/private/notes')
@@ -228,7 +227,7 @@ describe('crossing', () => {
 	it('reads an unbound mount as an empty read-only directory', async () => {
 		const outer = memStore()
 		const mount = await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer)
+		const vol = volume(outer)
 
 		expect(await vol.stat('/private')).toMatchObject({ ino: mount, type: FileType.Directory })
 		expect(await vol.readdir('/private')).toEqual([])
@@ -248,7 +247,7 @@ describe('crossing', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		await vol.writeFile('/private/env', enc.encode('SECRET'))
 		await vol.mkdir('/src')
 		await vol.writeFile('/src/note.md', enc.encode('go'))
@@ -266,7 +265,7 @@ describe('crossing', () => {
 	it('refuses a rename onto a silent binding, which has no row at all', async () => {
 		const outer = memStore()
 		const priv = memStore()
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'hidden', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'hidden', priv) })
 		await vol.writeFile('/hidden/env', enc.encode('SECRET'))
 		await vol.mkdir('/src')
 
@@ -283,7 +282,7 @@ describe('crossing', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		await vol.writeFile('/private/env', enc.encode('SECRET'))
 
 		// The same rule from the other end: moving the row would leave the binding
@@ -301,7 +300,7 @@ describe('crossing', () => {
 		await mkmount(outer, ROOT, 'private')
 		const notes = await mkdir(outer, ROOT, 'notes')
 		const kyoto = await mkfile(outer, notes, 'kyoto.md', 'go')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 
 		await vol.rename('/notes/kyoto.md', '/private/kyoto.md')
 
@@ -320,7 +319,7 @@ describe('crossing', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		await vol.mkdir('/private/a')
 		await vol.mkdir('/private/b')
 		await vol.writeFile('/private/a/old', enc.encode('old'))
@@ -347,7 +346,7 @@ describe('crossing', () => {
 				return node
 			}
 		}
-		const racy = storeVolume(outer, { bindings: binding(ROOT, 'private', racing) })
+		const racy = volume(outer, { bindings: binding(ROOT, 'private', racing) })
 
 		await expect(racy.rename('/private/link/old', '/private/link/new')).rejects.toThrow(/^ENOENT/)
 
@@ -492,13 +491,13 @@ describe('a rename across a mount is still a rename', () => {
 		across: Record<string, unknown>
 	}> {
 		const one = memStore()
-		const here = storeVolume(one)
+		const here = volume(one)
 		await here.mkdir('/box')
 		await seed(one, ROOT, 'src')
 
 		const outer = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const across = storeVolume(outer, { bindings: binding(ROOT, 'private', memStore()) })
+		const across = volume(outer, { bindings: binding(ROOT, 'private', memStore()) })
 		await across.mkdir('/private/box')
 		await seed(outer, ROOT, 'src')
 
@@ -579,7 +578,7 @@ describe('a rename across a mount is still a rename', () => {
 		const priv = memStore()
 		const src = await mkdir(outer, ROOT, 'src')
 		await mkmount(outer, src, 'private')
-		const vol = storeVolume(outer, { bindings: binding(src, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(src, 'private', priv) })
 		await vol.writeFile('/src/private/env', enc.encode('SECRET'))
 
 		// A subtree is a commit per row across two stores. This one would also
@@ -595,7 +594,7 @@ describe('a rename across a mount is still a rename', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 		await vol.writeFile('/private/kyoto.md', enc.encode('keep'))
 
@@ -611,7 +610,7 @@ describe('a rename across a mount is still a rename', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		const notes = row({ parent: ROOT, name: 'notes', type: 'dir', mode: 0o040755 })
 		const here = enc.encode('here')
 		const held = await hash(here)
@@ -645,7 +644,7 @@ describe('a rename across a mount is still a rename', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 		const gone = await hash(enc.encode('gone'))
 		await outer.commit([
 			row({ parent: ROOT, name: 'kyoto.md', type: 'file', content: gone, size: 4n })
@@ -676,7 +675,7 @@ describe('a rename across a mount is still a rename', () => {
 				await vol.writeFile('/kyoto.md', enc.encode('newer'))
 			}
 		}
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', racing) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', racing) })
 		await vol.writeFile('/kyoto.md', enc.encode('go'))
 
 		await expect(vol.rename('/kyoto.md', '/private/kyoto.md')).rejects.toThrow(GuardError)
@@ -693,7 +692,7 @@ describe('a rename across a mount is still a rename', () => {
 	it('carries the whole row, not a list of its fields', async () => {
 		const outer = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', memStore()) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', memStore()) })
 		await seed(outer, ROOT, 'src')
 
 		await vol.rename('/src/deep/kyoto.md', '/private/kyoto.md')
@@ -731,7 +730,7 @@ describe('silent bindings', () => {
 		await mkfile(outer, special, 'shared.md', 'everyone')
 		const mine = await mkfile(priv, ROOT, 'mine.md', 'only me')
 		const bindings = binding(ROOT, '.special', priv)
-		const vol = storeVolume(outer, { bindings })
+		const vol = volume(outer, { bindings })
 		const before = await rows(outer)
 		const fetched = vi.spyOn(outer.blobs, 'get')
 
@@ -768,7 +767,7 @@ describe('watching across a mount', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 
 		// Neither the path nor its parent resolves, so nothing about the tree can say
 		// which store this will live in. Only the mount point does.
@@ -786,7 +785,7 @@ describe('watching across a mount', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 
 		// Deep enough that the parent does not resolve either — with `/private/state`
 		// already there, the parent walk alone would have found the store.
@@ -804,7 +803,7 @@ describe('watching across a mount', () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
-		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const vol = volume(outer, { bindings: binding(ROOT, 'private', priv) })
 
 		// The watched path's parent IS the bound store's root, and every store spells
 		// its root `ROOT` — so a row at the same name under the OUTER root carries the
@@ -829,7 +828,7 @@ describe('isolation', () => {
 		const hub = memStore()
 		const priv = recording(memStore())
 		const mint = versions('a')
-		const vol = storeVolume(outer, {
+		const vol = volume(outer, {
 			bindings: binding(ROOT, 'private', priv.store),
 			mintVersion: mint
 		})
@@ -862,7 +861,7 @@ describe('isolation', () => {
 		await mkfile(privThere, ROOT, 'env', 'API_KEY=there')
 
 		const mint = versions('a')
-		const volHere = storeVolume(here, {
+		const volHere = volume(here, {
 			bindings: binding(ROOT, 'private', privHere),
 			mintVersion: mint
 		})
@@ -872,7 +871,7 @@ describe('isolation', () => {
 		await volHere.symlink('/private/env', '/config')
 
 		await sync(here, there, { replica: 'a', pull: cursor(), push: cursor() })
-		const volThere = storeVolume(there, {
+		const volThere = volume(there, {
 			bindings: binding(ROOT, 'private', privThere),
 			mintVersion: versions('b')
 		})
@@ -955,7 +954,7 @@ describe('a mount point is pinned: its id is its position, so neither may move',
 		const store = memStore()
 		const src = await mkdir(store, ROOT, 'src')
 		const mount = await mkmount(store, src, 'private')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 
 		// Removing it would tombstone the very id the next announcement derives.
 		await expect(vol.rm('/src/private')).rejects.toThrow(/^EBUSY/)
@@ -972,7 +971,7 @@ describe('a mount point is pinned: its id is its position, so neither may move',
 	it('refuses to rename one away, or to replace one', async () => {
 		const store = memStore()
 		const mount = await mkmount(store, ROOT, 'private')
-		const vol = storeVolume(store)
+		const vol = volume(store)
 		await vol.mkdir('/src')
 
 		// Off the point: the row would keep an id derived from a position it no longer

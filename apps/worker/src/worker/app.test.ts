@@ -6,17 +6,18 @@
  * wiring — a `fileApi` built over a different store than `storeApi` would read an
  * empty tree and say ENOENT to a file the seam just accepted.
  */
-import { memStore } from '@justfiles/fs/store.mem'
-import { storeVolume } from '@justfiles/fs/volume.store'
+
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test } from 'vitest'
 import { createWorkerApiApp } from './app'
 
 test('a file written through the seam reads back through the one-request route', async () => {
 	const store = memStore()
 	const app = createWorkerApiApp({ store })
-	const volume = storeVolume(store)
-	await volume.mkdir('/notes')
-	await volume.writeFile('/notes/hello.md', new TextEncoder().encode('# hi'))
+	const vol = volume(store)
+	await vol.mkdir('/notes')
+	await vol.writeFile('/notes/hello.md', new TextEncoder().encode('# hi'))
 
 	const response = await app.request('/store/file/notes/hello.md')
 

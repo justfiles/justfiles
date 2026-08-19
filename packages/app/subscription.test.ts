@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { buildSync } from 'esbuild'
 import { expect, test, vi } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
@@ -78,7 +79,7 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 }
 
 async function start(stream: Capabilities['subscribe']) {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({
 		fs,
 		sandbox,
@@ -144,7 +145,7 @@ test('background subscription work already in flight is discarded and logged on 
 		}
 	}
 	const host = fakeStream()
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({
 		fs,
 		sandbox: delayed,
@@ -289,7 +290,7 @@ test('a cold kernel rehydrates streams on first actions() touch, not only state(
 
 test('install starts a stream the init state unconditionally declares', async () => {
 	const host = fakeStream()
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({
 		fs,
 		sandbox,
@@ -307,7 +308,7 @@ test('install starts a stream the init state unconditionally declares', async ()
 })
 
 test('no host stream wiring → no subscriptions, dispatch still works', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox, clock: {} })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.watch', name: 'Watch', app: code })
