@@ -187,7 +187,7 @@
 	<!-- synced store -->
 	<rect x="460" y="60" width="430" height="140" rx="6" fill="#eef3fb" stroke="#2c5fa8"/>
 	<text class="ttl" x="476" y="84" fill="#2c5fa8">Store A — the synced tree</text>
-	<text x="476" y="108">nodes · blobs · meta</text>
+	<text x="476" y="108">nodes · blobs · meta  (its own store id)</text>
 	<text class="lbl" x="476" y="130">rows for / , /notes , /system , /mnt ,</text>
 	<text class="lbl" x="476" y="148">and one `mount` row named "private"</text>
 	<text class="lbl" x="476" y="176">→ handed to sync + the HTTP wire</text>
@@ -195,7 +195,7 @@
 	<!-- local store -->
 	<rect x="460" y="230" width="430" height="140" rx="6" fill="#fbf1ea" stroke="#a8562c"/>
 	<text class="ttl" x="476" y="254" fill="#a8562c">Store B — local only</text>
-	<text x="476" y="278">private_nodes · private_blobs · private_meta</text>
+	<text x="476" y="278">the same tables, at its own store id</text>
 	<text class="lbl" x="476" y="300">rows for its OWN root and everything</text>
 	<text class="lbl" x="476" y="318">below it (credentials.json …)</text>
 	<text class="lbl" x="476" y="346">→ handed to nobody but the volume</text>
@@ -225,40 +225,42 @@
 <h2 id="db">§2 Where a Store is in the database</h2>
 
 <p>
-	A <code>Store</code> is three tables. The default store gets the bare names; a namespaced
-	store gets the same three with a prefix. One Durable Object = one SQLite database = both
-	stores, side by side:
+	A <code>Store</code> is a row in <code>stores</code> and a partition of the three tables
+	under it, named by its own <code>sid</code>. One Durable Object = one SQLite database =
+	both stores, side by side:
 </p>
 
 <figure>
-<svg viewBox="0 0 900 300" role="img" aria-label="One SQLite database holding two stores as two groups of tables">
+<svg viewBox="0 0 900 300" role="img" aria-label="One SQLite database holding two stores as partitions of one table set">
 	<rect x="0" y="20" width="900" height="260" rx="8" fill="#fff" stroke="#d9d2c7"/>
 	<text class="ttl" x="20" y="46">one Durable Object → one SQLite database</text>
 
-	<rect x="24" y="62" width="410" height="120" rx="6" fill="#eef3fb" stroke="#2c5fa8"/>
-	<text class="ttl" x="40" y="86" fill="#2c5fa8">sqliteStore(db)</text>
-	<text x="40" y="110">nodes</text>   <text class="lbl" x="150" y="110">every row of the synced tree</text>
-	<text x="40" y="132">blobs</text>   <text class="lbl" x="150" y="132">its content, keyed by sha-256</text>
-	<text x="40" y="154">meta</text>    <text class="lbl" x="150" y="154">one row: 'lineage' = a uuid</text>
+	<rect x="24" y="62" width="852" height="94" rx="6" fill="#f6f3ee" stroke="#d9d2c7"/>
+	<text class="ttl" x="40" y="86">stores</text>
+	<text x="40" y="110">sid  id                                    created_ns</text>
+	<text x="40" y="132" fill="#2c5fa8">1    main                                  1783994334112000000</text>
+	<text x="40" y="150" fill="#a8562c">2    9f14c0d2-6b3e-4a71-b8ad-2f0e5c7d1a44  1783994334999000000</text>
 
-	<rect x="466" y="62" width="410" height="120" rx="6" fill="#fbf1ea" stroke="#a8562c"/>
-	<text class="ttl" x="482" y="86" fill="#a8562c">sqliteStore(db, { namespace: 'private' })</text>
-	<text x="482" y="110">private_nodes</text>
-	<text x="482" y="132">private_blobs</text>
-	<text x="482" y="154">private_meta</text>
-	<text class="lbl" x="482" y="176">same schema, different tables, own lineage</text>
-
-	<rect x="24" y="196" width="852" height="66" rx="6" fill="#f6f3ee" stroke="#d9d2c7"/>
-	<text class="ttl" x="40" y="220">also in the same file, not part of any store</text>
-	<text x="40" y="244">schema_migrations · fs_generation · fs_* (the old model, until T18)</text>
+	<rect x="24" y="170" width="852" height="92" rx="6" fill="#fff" stroke="#d9d2c7"/>
+	<text class="ttl" x="40" y="194">nodes · blobs · meta — one table set, partitioned by sid</text>
+	<text x="40" y="218" fill="#2c5fa8">sid=1 → the synced tree (what storeApi and sync are handed)</text>
+	<text x="40" y="240" fill="#a8562c">sid=2 → the local store bound at /private (handed to nobody)</text>
+	<text class="lbl" x="40" y="258">PRIMARY KEY (sid, id) · nodes_live(sid,parent,name,id) · nodes_seq(sid,seq)</text>
 </svg>
-<figcaption>Fig 2. “A separate store” is spelled as separate tables on this backend. It could equally be a separate database, IDB name, or folder — nothing above the seam can tell.</figcaption>
+<figcaption>Fig 2. A store is a row in <code>stores</code> plus a partition of the one table set. Creating one is an <code>INSERT</code>: no DDL, and no name anywhere in the SQL. On IndexedDB the same store is a whole database named by that id; on a real filesystem it is a directory. Nothing above the seam can tell.</figcaption>
 </figure>
 
 <h3>The schema, in full</h3>
 
-<pre><code>CREATE TABLE nodes (
-  id        TEXT PRIMARY KEY,        -- uuid, minted once, never rebound
+<pre><code>CREATE TABLE stores (
+  sid        INTEGER PRIMARY KEY AUTOINCREMENT,  -- narrow: it is on every row
+  id         TEXT NOT NULL UNIQUE,               -- the store's stable identity
+  created_ns TEXT NOT NULL
+);
+
+CREATE TABLE nodes (
+  sid       INTEGER NOT NULL,        -- which store's row this is
+  id        TEXT NOT NULL,           -- uuid, minted once, never rebound
   parent    TEXT NOT NULL,           -- root is its own parent
   name      TEXT NOT NULL COLLATE BINARY,
   type      TEXT NOT NULL,           -- 'file' | 'dir' | 'symlink' | 'mount'
@@ -270,13 +272,24 @@
   link      TEXT,                    -- symlink target, inline
   version   TEXT NOT NULL,           -- '&lt;replica&gt;:&lt;nonce&gt;-&lt;n&gt;' — the author tag is the prefix
   deleted   INTEGER NOT NULL DEFAULT 0,
-  seq       INTEGER NOT NULL         -- the one order; the change feed reads this
+  seq       INTEGER NOT NULL,        -- the one order, per store
+  PRIMARY KEY (sid, id)              -- two stores share the constant they spell root with
 );
-CREATE INDEX nodes_live ON nodes(parent, name, id) WHERE deleted = 0;   -- lookup by name
-CREATE INDEX nodes_seq  ON nodes(seq);                                  -- the feed
+CREATE INDEX nodes_live ON nodes(sid, parent, name, id) WHERE deleted = 0;  -- lookup by name
+CREATE INDEX nodes_seq  ON nodes(sid, seq);                                 -- the feed
 
-CREATE TABLE blobs (hash TEXT PRIMARY KEY, data BLOB NOT NULL);
-CREATE TABLE meta  (key TEXT PRIMARY KEY, value TEXT NOT NULL);         -- 'lineage'</code></pre>
+CREATE TABLE blobs (sid INTEGER NOT NULL, hash TEXT NOT NULL, data BLOB NOT NULL,
+                    PRIMARY KEY (sid, hash));
+CREATE TABLE meta  (sid INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                    PRIMARY KEY (sid, key));   -- 'lineage', per store</code></pre>
+
+<div class="note ok">
+	<strong>The store id never enters the SQL as text.</strong> It is a bound parameter, so
+	nothing about a store's name or position reaches the schema — which is why renaming the
+	mount point is a <code>name</code> column in the parent store's row and not a migration.
+	Content is partitioned too: one shared blob map would make a hash in the local store
+	fetchable through the synced store's blob route, and the boundary has to be the data.
+</div>
 
 <p>That is the whole storage model: <strong>one table, two lookups, one order, one blob map.</strong></p>
 
@@ -289,14 +302,18 @@ b5c2a1a5…6d.sqlite      # one file per DO instance id (= one per user)
 
 $ sqlite3 apps/frieren/.wrangler/state/v3/do/frieren-Frieren/b5c2a1a5…6d.sqlite '.tables'
 # today:        fs_inodes  fs_dirents  fs_contents  fs_xattrs  fs_generation …
-# after PR 3/4: nodes  blobs  meta  private_nodes  private_blobs  private_meta …</code></pre>
+# after PR 3/4: stores  nodes  blobs  meta …
+
+$ sqlite3 …/b5c2a1a5…6d.sqlite 'SELECT sid, id FROM stores'
+1|main                                    # the synced tree
+2|9f14c0d2-6b3e-4a71-b8ad-2f0e5c7d1a44    # the local store bound at /private</code></pre>
 
 <div class="note">
-	<strong>Which store is “/”?</strong> The store whose tables have no prefix —
-	<code>nodes</code>. There is no row anywhere that says “this table is the root store”:
-	being the store the volume was <em>constructed over</em> is what makes it the root.
-	<code>storeVolume(A, { bindings })</code> — A is <code>/</code>, and every binding is a
-	position inside A.
+	<strong>Which store is “/”?</strong> The one the volume was <em>constructed over</em> —
+	nothing in the database says so. <code>storeVolume(A, { bindings })</code> makes A the
+	root, and every binding is a position inside A. The id <code>main</code> is only a
+	convention for “the tree this host has one of”, the way <code>ROOT</code> is the constant
+	id of every store's root row.
 </div>
 
 <h2 id="rows">§3 From the Files view to the row</h2>
@@ -352,26 +369,29 @@ $ sqlite3 apps/frieren/.wrangler/state/v3/do/frieren-Frieren/b5c2a1a5…6d.sqlit
 
 <p>Resolution is literally this — <code>child(parent, name)</code> per segment, which is one index hit on <code>nodes_live</code>:</p>
 
-<pre><code>-- /system
-SELECT * FROM nodes WHERE parent = '00000000-0000-0000-0000-000000000000'
+<pre><code>-- /system   (sid 1 = the synced store)
+SELECT * FROM nodes WHERE sid = 1 AND parent = '00000000-0000-0000-0000-000000000000'
   AND deleted = 0 AND name = 'system' ORDER BY id LIMIT 1;
 -- /system/profiles
-SELECT * FROM nodes WHERE parent = 'b1a1fc40-…' AND deleted = 0 AND name = 'profiles' …;
+SELECT * FROM nodes WHERE sid = 1 AND parent = 'b1a1fc40-…' AND deleted = 0 AND name = 'profiles' …;
 -- /system/profiles/user.md
-SELECT * FROM nodes WHERE parent = '7a8e2395-…' AND deleted = 0 AND name = 'user.md' …;
+SELECT * FROM nodes WHERE sid = 1 AND parent = '7a8e2395-…' AND deleted = 0 AND name = 'user.md' …;
 -- the bytes
-SELECT length(data) FROM blobs WHERE hash = '6567e4a6…';</code></pre>
+SELECT length(data) FROM blobs WHERE sid = 1 AND hash = '6567e4a6…';</code></pre>
 
 <p>Two shortcuts worth knowing when you go poking:</p>
-<pre><code>-- the whole tree of one store, shallow-first (ids abbreviated for reading)
+<pre><code>-- the whole tree of one store, in feed order (ids abbreviated for reading)
 SELECT substr(id,1,8) AS id, substr(parent,1,8) AS parent, name, type, seq
-FROM nodes WHERE deleted = 0 ORDER BY seq;
+FROM nodes WHERE sid = 1 AND deleted = 0 ORDER BY seq;
 
--- what the change feed will hand a replica next, in order
-SELECT seq, name, type, deleted, version FROM nodes ORDER BY seq LIMIT 20;
+-- what the change feed will hand a replica next
+SELECT seq, name, type, deleted, version FROM nodes WHERE sid = 1 ORDER BY seq LIMIT 20;
 
 -- this store's identity: every cursor it ever minted starts with this
-SELECT value FROM meta WHERE key = 'lineage';</code></pre>
+SELECT value FROM meta WHERE sid = 1 AND key = 'lineage';
+
+-- the local store's rows: the same queries, one number apart
+SELECT name, type FROM nodes WHERE sid = 2 AND deleted = 0;</code></pre>
 
 <h2 id="resolve">§4 Crossing the mount, query by query</h2>
 
@@ -386,11 +406,11 @@ SELECT value FROM meta WHERE key = 'lineage';</code></pre>
 
 	<rect x="0" y="126" width="900" height="80" rx="6" fill="#fbf1ea" stroke="#a8562c"/>
 	<text x="16" y="154">step 2 — at: { store: B, node: null }   ← we are now in the other store</text>
-	<text x="16" y="178">segment "credentials.json": SELECT * FROM private_nodes</text>
-	<text x="16" y="196" >   WHERE parent = '00000000-…-000000000000' AND deleted = 0 AND name = 'credentials.json'</text>
+	<text x="16" y="178">segment "credentials.json": SELECT * FROM nodes WHERE sid = 2</text>
+	<text x="16" y="196" >   AND parent = '00000000-…-000000000000' AND deleted = 0 AND name = 'credentials.json'</text>
 
 	<rect x="0" y="222" width="900" height="58" rx="6" fill="#fff" stroke="#d9d2c7"/>
-	<text x="16" y="250">step 3 — read the bytes: SELECT data FROM private_blobs WHERE hash = 'b94d27b9…'</text>
+	<text x="16" y="250">step 3 — read the bytes: SELECT data FROM blobs WHERE sid = 2 AND hash = 'b94d27b9…'</text>
 	<text class="lbl" x="16" y="270">a hash means nothing in a store that does not hold it — content never crosses either</text>
 
 	<rect x="0" y="300" width="900" height="90" rx="6" fill="#f6f3ee" stroke="#d9d2c7"/>
@@ -415,9 +435,20 @@ const vol = storeVolume(syncedStore, { bindings, mintVersion: mint })</code></pr
 <table>
 	<tr><th>Thing</th><th>Where it lives</th><th>Survives a restart?</th></tr>
 	<tr><td>The binding <em>(store B goes at this name)</em></td><td>memory, in the volume’s closure</td><td>no — rebuilt at boot</td></tr>
-	<tr><td>The <code>mount</code> row <em>(this name is reserved)</em></td><td><code>nodes</code>, replicated to every replica</td><td>yes</td></tr>
-	<tr><td>The private files themselves</td><td><code>private_nodes</code> / <code>private_blobs</code></td><td>yes, and they never move</td></tr>
+	<tr><td>The <code>mount</code> row <em>(this name is reserved)</em></td><td><code>nodes</code>, in the parent store</td><td>yes</td></tr>
+	<tr><td>The private files themselves</td><td><code>nodes</code> / <code>blobs</code> at the local store's <code>sid</code></td><td>yes, and they never move</td></tr>
 </table>
+
+<div class="note ok">
+	<strong>The mount row is derived, not minted.</strong> <code>announceMount(store, parent,
+	name)</code> builds every field from the position — id = a v8 uuid hashed from
+	<code>(parent, name)</code>, <code>mtimeNs</code> = 0, <code>version</code> =
+	<code>mount:1</code> — so every replica writes a byte-identical row and none of them ever
+	sends it: rule 3 reads a second copy as a no-op, and the <code>mount</code> author tag is
+	no live replica, so the push filter drops it. A minted id would give two replicas two live
+	rows for one name, which rule 1 settles by the lowest id and the engine then <em>renames</em>
+	the loser.
+</div>
 
 <p>Three consequences, all of them Unix-shaped:</p>
 <ul class="tight">
@@ -437,14 +468,14 @@ const vol = storeVolume(syncedStore, { bindings, mintVersion: mint })</code></pr
 	<text x="16" y="54">nodes:  (ROOT, 'private') → type 'mount'   id d0c9b8a7…</text>
 	<text x="16" y="76">        (ROOT, 'mnt')     → type 'dir'     id e5f6a7b8…</text>
 	<text x="16" y="106" fill="#a8562c">bindings: { ROOT → { 'private' → B } }</text>
-	<text class="lbl" x="16" y="134">private_nodes: 12 rows, ids d1…, d2…, …</text>
+	<text class="lbl" x="16" y="134">local store (sid 2): 12 rows, ids d1…, d2…, …</text>
 
 	<text class="ttl" x="470" y="16">after</text>
 	<rect x="470" y="28" width="430" height="130" rx="6" fill="#fff" stroke="#d9d2c7"/>
 	<text x="486" y="54">nodes:  (e5f6a7b8…, 'private') → 'mount'  id d0c9b8a7…</text>
 	<text class="lbl" x="486" y="72">same row, same id — only parent + version changed</text>
 	<text x="486" y="106" fill="#a8562c">bindings: { e5f6a7b8… → { 'private' → B } }</text>
-	<text class="lbl" x="486" y="134">private_nodes: 12 rows, ids d1…, d2…, …  (untouched)</text>
+	<text class="lbl" x="486" y="134">local store (sid 2): 12 rows, untouched</text>
 
 	<path d="M435 90 L 465 90" stroke="#6b635a" stroke-width="1.5" marker-end="url(#ag)"/>
 	<defs><marker id="ag" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#6b635a"/></marker></defs>
@@ -453,7 +484,7 @@ const vol = storeVolume(syncedStore, { bindings, mintVersion: mint })</code></pr
 	<text class="ttl" x="16" y="204">what the database sees</text>
 	<text x="16" y="230">3 rows rewritten in `nodes`: the mount point, and the two directories whose mtime</text>
 	<text x="16" y="252">  it moved (/ and /mnt) — the same three any rename writes. They travel the feed.</text>
-	<text x="16" y="278">0 writes in `private_nodes` / `private_blobs`. No file moved. No id changed.</text>
+	<text x="16" y="278">0 writes at the local store's sid. No file moved. No id changed.</text>
 	<text x="16" y="304">0 writes of any kind if the mount is SILENT — the whole change is one Map key.</text>
 </svg>
 <figcaption>Fig 4. Moving a mount point is one row write, or none. It is not a data migration, because the data was never in the store the point lives in.</figcaption>
@@ -502,8 +533,8 @@ const bindings = new Map([[mnt, new Map([['private', localStore]])]])
 	<strong>The one thing that is not free:</strong> moving a <em>file</em> across the
 	boundary. <code>mv /notes/x.md /private/x.md</code> is <code>EXDEV</code>, and the volume
 	emulates it for a single file (one row into a free name in B, then a tombstone in A — so
-	the file gets a <em>new id</em> and the bytes are re-stored under the same hash in
-	<code>private_blobs</code>). A directory keeps the <code>EXDEV</code>: a subtree is a
+	the file gets a <em>new id</em> and the bytes are re-stored under the same hash at B's
+	<code>sid</code>). A directory keeps the <code>EXDEV</code>: a subtree is a
 	commit per row across two stores with no guard spanning them, so anything that fails
 	leaves half a tree. That is the price of structural isolation, and it is what a real
 	cross-device <code>mv</code> costs too.
@@ -559,10 +590,11 @@ const bindings = new Map([[mnt, new Map([['private', localStore]])]])
 
 <table>
 	<tr><th>Piece</th><th>State</th></tr>
-	<tr><td><code>sqliteStore</code> with the <code>namespace</code> option, atomic commits</td><td><span class="tag s">landed</span> PR 1 (#529)</td></tr>
+	<tr><td><code>sqliteStore</code> atomic commits</td><td><span class="tag s">landed</span> PR 1 (#529)</td></tr>
+	<tr><td>A store is a <code>stores</code> row + a partition; <code>announceMount</code>; the migration split; <code>fsStore</code> leaves a bound name alone</td><td><span class="tag s">landed</span> PR 2</td></tr>
 	<tr><td><code>storeVolume</code> + <code>Bindings</code>, crossing, EXDEV/EBUSY/EROFS, watch over every feed</td><td><span class="tag s">landed</span> T15</td></tr>
 	<tr><td><code>authority</code> refusing rows under a mount</td><td><span class="tag s">landed</span> T10</td></tr>
-	<tr><td>The <code>mount</code> row for <code>/private</code>, the second store, the migration that splits the old tree at that name</td><td><span class="tag l">PR 2</span></td></tr>
+	<tr><td>The hosts actually opening two stores and binding them</td><td><span class="tag l">PR 3</span></td></tr>
 	<tr><td>The server serving <code>storeApi</code>, frieren on it, then worker</td><td><span class="tag l">PR 3 / 4</span></td></tr>
 </table>
 

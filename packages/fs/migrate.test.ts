@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { type Legacy, migrate } from './migrate'
-import { type Cursor, type Node, ROOT, sha256Hex, type Store } from './store'
+import { type Cursor, type Node, ROOT, type Store, sha256Hex } from './store'
 import { memStore } from './store.mem'
 import { FileType } from './types'
 import { announceMount, type Bindings, storeVolume } from './volume.store'

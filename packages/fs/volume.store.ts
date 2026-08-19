@@ -200,15 +200,14 @@ const derivedId = async (parent: NodeId, name: string): Promise<NodeId> => {
 	// never hash to one id.
 	const nul = String.fromCharCode(0)
 	const hex = await sha256Hex(new TextEncoder().encode(`mount${nul}${parent}${nul}${name}`))
-	const nibble = (at: number, value: string): string => hex.slice(0, at) + value + hex.slice(at + 1)
-	const set = nibble(16, '8') // the variant
-	const bits = set.slice(0, 12) + '8' + set.slice(13) // version 8: custom
+	// The version nibble and the variant nibble are SET rather than taken from the hash,
+	// which is what makes this a well-formed uuid and not 32 hex characters with dashes.
 	return [
-		bits.slice(0, 8),
-		bits.slice(8, 12),
-		bits.slice(12, 16),
-		bits.slice(16, 20),
-		bits.slice(20, 32)
+		hex.slice(0, 8),
+		hex.slice(8, 12),
+		`8${hex.slice(13, 16)}`,
+		`8${hex.slice(17, 20)}`,
+		hex.slice(20, 32)
 	].join('-')
 }
 
