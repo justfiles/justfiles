@@ -250,6 +250,17 @@ describe('sqliteStore: two stores in one database', () => {
 		const { next: cursor } = await local.since()
 		await expect(synced.since(cursor)).rejects.toThrow()
 	})
+
+	test('a namespace that is not a bare identifier is refused, not interpolated', () => {
+		// The name is a table name, so it goes into the SQL as itself. Quoting every
+		// identifier would let `user-data` through; refusing it says the mistake where
+		// it was made instead of `near "-": syntax error` on the first read — and it
+		// leaves nothing to interpolate that could be anything but a name.
+		for (const namespace of ['user-data', 'a b', 'private"', '1st', ''])
+			expect(() => sqliteStore(adapter(new DatabaseSync(':memory:')), { namespace })).toThrow(
+				/namespace/
+			)
+	})
 })
 
 describe('sqliteStore: what outlives the connection', () => {

@@ -99,10 +99,23 @@ const seed = (t: Tables): string =>
  * that name ([T15](../../../tasks/store-model/t15-mounts.md)) — local data is a
  * separate store joined at a name, and on this backend "separate" is these three
  * table names.
+ *
+ * A namespace is a TABLE NAME, so it goes into every statement as itself, and it
+ * is refused unless it is a bare identifier. Quoting the identifiers instead
+ * would admit `user-data` and leave a name that means one thing in SQL and
+ * another everywhere else; this way there is nothing to interpolate that could be
+ * anything but a name, and a mistake is reported where it was made rather than as
+ * a syntax error on the first read.
  */
 type Tables = { nodes: string; blobs: string; meta: string }
 
+const IDENTIFIER = /^[a-z][a-z0-9_]*$/
+
 const tablesOf = (namespace: string | undefined): Tables => {
+	if (namespace !== undefined && !IDENTIFIER.test(namespace))
+		throw new Error(
+			`sqliteStore: namespace must match ${IDENTIFIER}, got ${JSON.stringify(namespace)}`
+		)
 	const prefix = namespace === undefined ? '' : `${namespace}_`
 	return { nodes: `${prefix}nodes`, blobs: `${prefix}blobs`, meta: `${prefix}meta` }
 }
@@ -118,7 +131,14 @@ const ROOT_ROW: Node = {
 	version: '0'
 }
 
-/** The durable `Store`. Reopening the same database is not a reset. */
+/**
+ * The durable `Store`. Reopening the same database is not a reset.
+ *
+ * `namespace` prefixes this store's three table names, so one database can hold
+ * more than one store — the server's synced tree and the local one bound at
+ * `/private`. It is a table name, so it must be a bare identifier
+ * (`[a-z][a-z0-9_]*`) and is refused otherwise.
+ */
 export function sqliteStore(db: SyncDb, opts?: { namespace?: string }): Store {
 	const t = tablesOf(opts?.namespace)
 	const SCHEMA = schema(t)
