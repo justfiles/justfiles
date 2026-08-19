@@ -32,7 +32,10 @@
 import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
 import type { Volume } from './volume'
-import { storeVolume } from './volume.store'
+import { type Bindings, storeVolume } from './volume.store'
+
+/** A host that keeps a cursor for this wrapper needs its type, and nothing else of the engine's. */
+export type { CursorSlot } from './engine'
 
 /** How often the loop runs when nothing has asked it to run sooner. */
 const INTERVAL_MS = 30_000
@@ -77,6 +80,13 @@ export type SyncedProps = {
 	local: Store
 	/** The peer. A `Store`, so a folder, a server and another replica all fit. */
 	remote: Store
+	/**
+	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.store.ts`).
+	 * Only the local store is synced — a bound store is joined at a name and is nobody
+	 * else's business — so this is here rather than anywhere near the engine: the volume
+	 * is what crosses a mount, and the volume is what this builds.
+	 */
+	bindings?: Bindings
 	/**
 	 * This replica's id: the author tag inside every version it mints, which is
 	 * what keeps the push echo-free. It must be STABLE across restarts, and it is
@@ -166,7 +176,14 @@ export async function syncedVolume(props: SyncedProps): Promise<Volume & SyncLif
 	// — an eager pull moves what the peer could produce WHEN the page landed, and
 	// a peer that was a stub itself then can answer for it now — so the branch
 	// would buy a second way to fail rather than a second behaviour.
-	const vol = storeVolume(hydratingBlobs(local, remote), { mintVersion: mint })
+	// The bindings are keyed on the store the volume is built over, which is the
+	// WRAPPER — so they are read against `hydratingBlobs(local, remote)`, not against
+	// `local`. Nothing else here knows the difference, and `storeVolume` compares
+	// identity rather than looking inside.
+	const vol = storeVolume(hydratingBlobs(local, remote), {
+		bindings: props.bindings,
+		mintVersion: mint
+	})
 
 	let epoch: number | undefined
 	let status: SyncStatus = 'connecting'

@@ -14,11 +14,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterAll, describe, expect, test } from 'vitest'
-import { type Guard, GuardError, type Node, ROOT } from '../../fs/store'
+import {
+	ForeignCursorError,
+	type Guard,
+	GuardError,
+	type Node,
+	ROOT,
+	sha256Hex
+} from '../../fs/store'
 import { storeConformance } from '../../fs/store.conformance'
 import type { SyncDb } from './db'
 import { createSqliteSyncDb } from './db.sqlite'
-import { sqliteStore } from './store.sqlite'
+import { emptyStore, sqliteStore } from './store.sqlite'
+
+/** The one definition of a `Hash`, so a test never invents one the store would refuse. */
+const sha = (text: string) => sha256Hex(new TextEncoder().encode(text))
 
 /**
  * node:sqlite returns INTEGER as a JS number by default and THROWS on values
@@ -304,5 +314,136 @@ describe('sqliteStore: what outlives the connection', () => {
 		// And the fence still stands where it should: another database is another
 		// lineage, and it rejects this cursor rather than answering it (rule 11).
 		await expect(onDisk('other')().since(cursor)).rejects.toThrow()
+	})
+})
+
+describe('sqliteStore: the sweep', () => {
+	/** A store and the database under it, because a reset is the database's, not the handle's. */
+	const pair = () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		return { db, store: sqliteStore(db) }
+	}
+
+	const bytes = (text: string) => new TextEncoder().encode(text)
+
+	/** Age every blob past the grace window, which is the only thing a clock buys here. */
+	const age = (db: SyncDb) => db.exec('UPDATE blobs SET written_ms = 0')
+
+	test('collects bytes no live row names, and keeps the ones that are named', async () => {
+		const { db, store } = pair()
+		const kept = await sha('kept')
+		const orphan = await sha('orphan')
+		await store.blobs.put(kept, bytes('kept'))
+		await store.blobs.put(orphan, bytes('orphan'))
+		await store.commit([node({ id: 'a', name: 'a.txt', content: kept })])
+		age(db)
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(await store.blobs.has(kept)).toBe(true)
+		expect(await store.blobs.has(orphan)).toBe(false)
+	})
+
+	test('bytes still inside the grace window survive: a push puts them before it commits', async () => {
+		const { store } = pair()
+		const hash = await sha('in flight')
+		await store.blobs.put(hash, bytes('in flight'))
+
+		// Rule 10's two steps are two REQUESTS on a server, and the engine never
+		// offers a pushed row's bytes twice — so collecting them in between would
+		// leave a permanent stub with nobody left to fill it.
+		expect(await store.gc?.()).toEqual({ reclaimed: 0, done: true })
+		expect(await store.blobs.has(hash)).toBe(true)
+	})
+
+	test('a tombstone keeps nothing alive: its content is unreadable by anyone', async () => {
+		const { db, store } = pair()
+		const hash = await sha('deleted')
+		await store.blobs.put(hash, bytes('deleted'))
+		await store.commit([node({ id: 'a', name: 'a.txt', content: hash })])
+		await store.commit([
+			node({ id: 'a', name: 'a.txt', content: hash, deleted: true, version: '2' })
+		])
+		age(db)
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(await store.blobs.has(hash)).toBe(false)
+	})
+
+	test('one store never keeps another store’s bytes alive', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const synced = sqliteStore(db)
+		const local = sqliteStore(db, 'private')
+		const shared = await sha('shared')
+		await synced.blobs.put(shared, bytes('shared'))
+		await local.blobs.put(shared, bytes('shared'))
+		// Named in the LOCAL store only. The two blob rows are two rows, so the
+		// synced store's copy is unreferenced and the local one is not.
+		await local.commit([node({ id: 'a', name: 'a.txt', content: shared })])
+		age(db)
+
+		expect(await synced.gc?.()).toEqual({ reclaimed: 1, done: true })
+		expect(await synced.blobs.has(shared)).toBe(false)
+		expect(await local.blobs.has(shared)).toBe(true)
+	})
+
+	test('a full slice reports more to do, and a second pass finishes it', async () => {
+		const { db, store } = pair()
+		for (let i = 0; i < 130; i++) await store.blobs.put(await sha(`b${i}`), bytes(`b${i}`))
+		age(db)
+
+		expect(await store.gc?.()).toEqual({ reclaimed: 128, done: false })
+		expect(await store.gc?.()).toEqual({ reclaimed: 2, done: true })
+	})
+})
+
+describe('emptyStore: the authority starts a new lineage', () => {
+	const bytes = (text: string) => new TextEncoder().encode(text)
+
+	test('every row but the root goes, and the cursors that watched them are fenced', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const store = sqliteStore(db)
+		await store.commit([node({ id: 'a', name: 'a.txt' })])
+		const { next: cursor } = await store.since()
+		if (!cursor) throw new Error('since must always hand a cursor back')
+
+		db.transactionSync(() => emptyStore(db))
+
+		// The handle that was open when it happened is stale, exactly as documented:
+		// it still holds the lineage it read at open. A fresh one is what a restarted
+		// instance has, and it is what answers here.
+		const after = sqliteStore(db)
+		// Rule 6's root row is all that is left, and it is all a scan finds.
+		expect((await after.since()).nodes.map((n) => n.id)).toEqual([ROOT])
+		expect(await after.get(ROOT)).not.toBeNull()
+		await expect(after.since(cursor)).rejects.toThrow(ForeignCursorError)
+	})
+
+	test('content survives an adopt-mine and goes with a wipe', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const hash = await sha('kept')
+		await sqliteStore(db).blobs.put(hash, bytes('kept'))
+
+		db.transactionSync(() => emptyStore(db))
+		// The initiator republishes rows it may only hold as stubs, so the bytes
+		// behind them have to still be here.
+		expect(await sqliteStore(db).blobs.has(hash)).toBe(true)
+
+		db.transactionSync(() => emptyStore(db, undefined, { content: 'drop' }))
+		expect(await sqliteStore(db).blobs.has(hash)).toBe(false)
+	})
+
+	test('it empties the store it is named, and no other', async () => {
+		const db = adapter(new DatabaseSync(':memory:'))
+		const synced = sqliteStore(db)
+		const local = sqliteStore(db, 'private')
+		await synced.commit([node({ id: 'a', name: 'a.txt' })])
+		await local.commit([node({ id: 'b', name: 'b.txt' })])
+
+		db.transactionSync(() => emptyStore(db))
+
+		expect((await sqliteStore(db).since()).nodes.map((n) => n.id)).toEqual([ROOT])
+		// The whole point of the DO holding two: an adopt-mine truncates the tree the
+		// client republishes and cannot touch the credentials it has never seen.
+		expect((await sqliteStore(db, 'private').since()).nodes.map((n) => n.id)).toEqual([ROOT, 'b'])
 	})
 })

@@ -34,6 +34,25 @@ import type { SqlValue, SyncDb } from './db'
 const PAGE = 128
 
 /**
+ * Blobs per `gc` pass. The sweep shares one Durable Object event with every other
+ * write, so it takes a slice and says whether more is left rather than holding the
+ * object for the length of the backlog.
+ */
+const SWEEP = 128
+
+/**
+ * How long bytes are safe from the sweep after they land.
+ *
+ * Rule 10 puts the bytes in before the row that names them, and on a server those
+ * are two REQUESTS: a `PUT /blob` and, some seconds or minutes later, the `POST
+ * /commit` that adopts it. A sweep in between would collect content the pusher has
+ * already ticked off, and the engine never offers a pushed row's bytes twice — so
+ * the row would be a stub for ever, with no peer left that knows to re-send. An
+ * hour is far longer than any push takes and far shorter than the daily sweep.
+ */
+const GRACE_MS = 60 * 60 * 1000
+
+/**
  * The store every host has one of: the tree its volume is built over. A constant
  * id rather than a name, the way `ROOT` is the constant id of every store's root
  * row — and like that one, it means nothing outside the database that holds it.
@@ -105,7 +124,17 @@ const SCHEMA = [
 	// Content is per store too. Sharing one map would make a hash in the local
 	// store fetchable through the synced one's blob route, and rule 7 would then
 	// be the only thing standing between them — the boundary has to be the data.
-	'CREATE TABLE IF NOT EXISTS blobs (sid INTEGER NOT NULL, hash TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (sid, hash))',
+	// `written_ms` is not part of the content map — a hash is still the whole key —
+	// it is what `gc` needs to tell "no row names these bytes" from "no row names
+	// them YET". Epoch milliseconds as INTEGER: it is compared, and it is nowhere
+	// near the 2^53 the two nanosecond fields above are.
+	`CREATE TABLE IF NOT EXISTS blobs (
+		sid INTEGER NOT NULL,
+		hash TEXT NOT NULL,
+		data BLOB NOT NULL,
+		written_ms INTEGER NOT NULL,
+		PRIMARY KEY (sid, hash)
+	)`,
 	'CREATE TABLE IF NOT EXISTS meta (sid INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (sid, key))'
 ]
 
@@ -310,6 +339,40 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 			})
 		},
 
+		/**
+		 * Rule 7 makes content immutable and hash-keyed, so nothing ever overwrites a
+		 * blob — an edited file simply stops naming its old bytes, and those bytes are
+		 * this store's to collect. Live rows only: a tombstone keeps whatever columns it
+		 * was written with, and content a deleted row still names is content nobody can
+		 * read.
+		 *
+		 * Per store, like everything else here: one store's rows can never keep
+		 * another's bytes alive, which is the same boundary the blob table's `sid` draws.
+		 */
+		async gc() {
+			const { sid } = open()
+			let reclaimed = 0
+			let done = true
+			db.transactionSync(() => {
+				const orphans = db.query<Row>(
+					`SELECT hash FROM blobs
+						WHERE sid = ? AND written_ms < ? AND hash NOT IN (
+							SELECT content FROM nodes WHERE sid = ? AND deleted = 0 AND content IS NOT NULL
+						)
+						LIMIT ${SWEEP + 1}`,
+					[sid, Date.now() - GRACE_MS, sid]
+				)
+				// One past the slice is how a pass knows there is more, without counting
+				// the whole backlog it deliberately did not read.
+				done = orphans.length <= SWEEP
+				for (const found of orphans.slice(0, SWEEP)) {
+					db.exec('DELETE FROM blobs WHERE sid = ? AND hash = ?', [sid, String(found.hash)])
+					reclaimed++
+				}
+			})
+			return { reclaimed, done }
+		},
+
 		// No `subscribe`. Rule 8 makes it optional, and a consumer takes it INSTEAD
 		// of polling `since` whenever a store offers one — which this backend cannot
 		// honour: the DATABASE is the store, not the connection, so a wake held in
@@ -342,10 +405,49 @@ export function sqliteStore(db: SyncDb, id: string = MAIN): Store {
 				// handed over.
 				const held = new Uint8Array(data)
 				const { sid } = open()
-				db.exec('INSERT OR IGNORE INTO blobs(sid, hash, data) VALUES (?, ?, ?)', [sid, hash, held])
+				db.exec('INSERT OR IGNORE INTO blobs(sid, hash, data, written_ms) VALUES (?, ?, ?, ?)', [
+					sid,
+					hash,
+					held,
+					Date.now()
+				])
 			}
 		}
 	}
+}
+
+/**
+ * Empty one store and start it on a NEW LINEAGE: the authority half of "take mine",
+ * and the whole of a wipe.
+ *
+ * A lineage rather than a flag, because rule 11 is what this model fences with. Every
+ * replica's pull cursor was minted by the lineage this replaces, so the next `since`
+ * over any of them throws `ForeignCursorError` and that replica scans the emptied feed
+ * from the top — including the one that ASKED for the reset, whose own cursor is no
+ * more valid than anybody else's. Nothing has to be told; the cursors say it.
+ *
+ * The root row stays. It is a constant on every store (rule 6), so removing and
+ * re-seeding it would be a write that says nothing, and a store with no root is one no
+ * volume can read.
+ *
+ * `content: 'keep'` is what an adopt-mine wants: the initiator republishes rows it may
+ * only hold as stubs, and the bytes behind them are already here. A wipe drops them,
+ * because "delete everything" must not leave the discarded bytes fetchable by hash.
+ *
+ * NO TRANSACTION OF ITS OWN — the caller owns one, because the only caller commits
+ * this together with the CAS that authorised it (`resetStore` in `reset.ts`). And any
+ * `sqliteStore` handle already open over this store is STALE afterwards: it holds the
+ * lineage it read at open, so it would keep minting cursors of a lineage this just
+ * replaced. Frieren's reset answers that by taking the whole instance down with it.
+ */
+export function emptyStore(db: SyncDb, id: string = MAIN, opts?: { content?: 'keep' | 'drop' }) {
+	const [store] = db.query<Row>('SELECT sid FROM stores WHERE id = ? LIMIT 1', [id])
+	// A store nobody ever opened holds nothing, which is what this was asked for.
+	if (!store) return
+	const sid = toNumber(store.sid)
+	db.exec('DELETE FROM nodes WHERE sid = ? AND id <> ?', [sid, ROOT])
+	if (opts?.content === 'drop') db.exec('DELETE FROM blobs WHERE sid = ?', [sid])
+	db.exec("UPDATE meta SET value = ? WHERE sid = ? AND key = 'lineage'", [crypto.randomUUID(), sid])
 }
 
 // ── The row codec: one table row ↔ one `Node` ────────────────────────────────
