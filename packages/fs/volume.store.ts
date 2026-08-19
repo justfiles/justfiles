@@ -159,6 +159,19 @@ export async function announceMount(store: Store, parent: NodeId, name: string):
 	const row = await mountRow(parent, name)
 	const held = await store.child(parent, name)
 	if (held !== null) return held.type === 'mount' ? held.id : refuse(name, held)
+	// A FREE name is not the same as an announceable one, because the id is derived: a
+	// mount that was removed from this position left a tombstone that rule 8 makes
+	// final, and the name it freed is a name this row can never take again. The volume
+	// cannot produce that tombstone — `rm` and `rename` refuse a mount row — but a
+	// store written to directly, or by a replica from before that rule, can.
+	//
+	// Asked HERE rather than left to the commit, so that both backends answer it the
+	// same way. An authority refuses the write with a guard error the catch below
+	// would report as a taken name; a raw store ACCEPTS it, bringing a dead id back
+	// with nothing downstream to catch it — the `mount` author tag keeps this row off
+	// every push, so no authority ever sees the resurrection.
+	if ((await store.get(row.id))?.deleted)
+		throw new Error(`EBUSY: ${name} was a mount here, and a tombstone is final`)
 	try {
 		await store.commit([row], [{ free: { parent, name } }])
 	} catch (e) {
@@ -727,6 +740,23 @@ export function storeVolume(
 		boundIn(end.store, end.dir.id)?.has(end.name) ?? false
 
 	/**
+	 * A mount row is never moved and never tombstoned. `bound` above refuses the
+	 * BINDING's name; this refuses the ROW, whether anything is bound over it or
+	 * not, and for a reason of its own: `announceMount` DERIVES the id from
+	 * `(parent, name)`, so a row that leaves its position leaves its identity
+	 * behind. Removed, it is a tombstone the derived id can never get past (rule
+	 * 8) — the name is claimed for ever by a row that is not there. Renamed, the
+	 * next announcement at the old position derives that same id and drags the row
+	 * back out of wherever it went, silently.
+	 *
+	 * `EBUSY`, the answer a bound one already gets: a mount point is a claim rather
+	 * than the host's data, and unbinding is what retires it.
+	 */
+	const pinned = (rows: Array<Node | null>, path: string): void => {
+		if (rows.some((row) => row?.type === 'mount')) throw new Error(`EBUSY: ${path}`)
+	}
+
+	/**
 	 * A rename, as ONE guarded commit — and one commit belongs to one store, so a
 	 * path that resolves into another is `EXDEV`, exactly as it is on a real
 	 * filesystem. `vol.rename` is the `mv` that answers it.
@@ -739,6 +769,7 @@ export function storeVolume(
 			// Not followed, again: `mv` moves the link itself.
 			const node = await from.store.child(from.dir.id, from.name)
 			if (node === null) throw new Error(`ENOENT: ${oldPath}`)
+			pinned([node], oldPath)
 			const to = await parentOf(newPath, walked)
 			if (bound(to)) throw new Error(`EBUSY: ${newPath}`)
 			if (to.store !== from.store) throw new Error(`EXDEV: ${oldPath} -> ${newPath}`)
@@ -747,6 +778,8 @@ export function storeVolume(
 			if (checked.inside) throw new Error(`EINVAL: ${newPath} is inside ${oldPath}`)
 			const target = await from.store.child(to.dir.id, to.name)
 			if (target?.id === node.id) return // the same row, in the same place
+			// A taken destination is tombstoned below, which a mount row is never.
+			pinned([target], newPath)
 
 			// ONE row moves, whatever hangs below it: a child's location is
 			// `(parent, name)`, and neither field changed. This is the O(1) move.
@@ -1326,7 +1359,7 @@ export function storeVolume(
 				// A BOUND mount point resolves to the bound store's root, and that is
 				// the one row nothing removes — `EBUSY` by another name, and the right
 				// answer: unbind it first, the way a filesystem is unmounted before its
-				// mountpoint goes. An unbound one is an ordinary row and goes with it.
+				// mountpoint goes. An unbound one is refused too, by `pinned` below.
 				if (at.node.id === ROOT) throw new Error(`EINVAL: ${path}`)
 				const dir = await at.store.get(at.node.parent)
 				if (dir === null || dir.deleted) throw new Error(`ENOENT: ${path}`)
@@ -1338,6 +1371,10 @@ export function storeVolume(
 					else if ((await at.store.children(at.node.id)).nodes.length > 0)
 						throw new Error(`ENOTEMPTY: ${path}`)
 				}
+				// The walk is what makes this the whole rule and not the top row's: a
+				// recursive removal tombstones everything it collected, so a mount
+				// standing anywhere under `path` is here too.
+				pinned(dead, path)
 				// One batch, one guard per row it replaces — the parent it stamps
 				// included. A directory's version moves on every create inside it, so an
 				// entry this walk never saw fails the commit, and the attempt enumerates

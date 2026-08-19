@@ -78,6 +78,24 @@ coordination and no traffic. A minted id would give two replicas two live rows f
 one name, which rule 1 settles by the lowest id and the engine then RENAMES the
 loser.
 
+Deriving the id makes identity and position ONE fact, and [T15](t15-mounts.md)'s
+"an unbound mount moves and goes like an ordinary row" would have let them
+disagree. Removed, the row leaves a tombstone at the very id the next
+announcement derives — final by rule 8, so the name is claimed for ever by a row
+that is not there, and an authority-backed store can never re-announce it.
+Renamed, the next announcement at the old position derives that same id and drags
+the row silently back out of wherever it went. So a mount row is now `EBUSY` to
+remove (named or swept up in a recursive delete), to rename away, and to replace
+— `pinned` in `volume.store.ts`, beside `bound`. Retiring a mount point is
+unbinding it; the claim is what the row is for.
+
+`announceMount` asks about the derived id's tombstone itself, before committing,
+because a free NAME settles nothing when the id is a function of the position —
+and because the two backends would otherwise disagree: an authority refuses the
+write, while a raw store accepts it and brings a dead id back with nothing
+downstream to catch it, since the `mount` author tag keeps the row off every
+push. Only a write that goes around the volume can leave such a tombstone now.
+
 On a real filesystem the mounted store's tree is a REAL directory under the same
 root — `<root>/private`, openable in Finder — so the boundary has to be something
 the bridge can see. `fsStore` already refused exactly one root-level name, its own

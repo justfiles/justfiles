@@ -124,5 +124,12 @@ everything exactly as it was.
 `EBUSY` by another name; unbind first. A rename answers the same on either end,
 and has to ask the binding itself: both ends read their last component straight
 out of the table, which resolution never does — it reads the binding BEFORE the
-row, and there is no row there to read it before. An unbound mount is an ordinary
-row and moves and goes like one.
+row, and there is no row there to read it before.
+
+An UNBOUND one was an ordinary row that moved and went like one, until
+[T17](t17-swap-consumers.md) derived the mount row's id from its position. A
+derived id makes identity and position one fact, so nothing may set them apart:
+a mount row is `EBUSY` to remove — named directly or swept up in a recursive
+delete — to rename away, and to replace at a rename's destination. `pinned` in
+`volume.store.ts` is that rule, beside `bound`, which refuses the same two
+operations for the binding rather than the row.

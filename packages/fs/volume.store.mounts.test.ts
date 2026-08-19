@@ -238,7 +238,10 @@ describe('crossing', () => {
 		])
 		await expect(vol.writeFile('/private/env', enc.encode('no'))).rejects.toThrow(/^EROFS/)
 		await expect(vol.mkdir('/private/notes')).rejects.toThrow(/^EROFS/)
-		await expect(vol.rename('/private', '/private/self')).rejects.toThrow(/^EROFS/)
+		// Both true of this one — nothing goes inside an unbound mount, and the row
+		// itself never moves — and the row is what answers: a move is refused on what
+		// it would move, before it looks at where that was headed.
+		await expect(vol.rename('/private', '/private/self')).rejects.toThrow(/^EBUSY/)
 	})
 
 	it('refuses a rename onto a mount point', async () => {
@@ -938,5 +941,70 @@ describe('announceMount: the host claims the name, with no traffic and no coordi
 
 		await expect(mkdir(store, ROOT, 'private')).rejects.toThrow(GuardError)
 		await expect(mkfile(store, mount, 'secret.env', 'shh')).rejects.toThrow(GuardError)
+	})
+})
+
+/**
+ * The other half of a DERIVED id: a mount row's identity IS its position, so the two
+ * are never allowed to disagree. Everything a volume could do to make them disagree —
+ * remove the row, move it, replace it, sweep it up in a recursive delete — is refused
+ * here, which is what keeps `announceMount` able to answer the same way for ever.
+ */
+describe('a mount point is pinned: its id is its position, so neither may move', () => {
+	it('refuses to remove one, and refuses to sweep one up in a recursive delete', async () => {
+		const store = memStore()
+		const src = await mkdir(store, ROOT, 'src')
+		const mount = await mkmount(store, src, 'private')
+		const vol = storeVolume(store)
+
+		// Removing it would tombstone the very id the next announcement derives.
+		await expect(vol.rm('/src/private')).rejects.toThrow(/^EBUSY/)
+		// `force` is about a name that is not there, and this one is.
+		await expect(vol.rm('/src/private', { force: true })).rejects.toThrow(/^EBUSY/)
+		// And a removal that never named it takes it just the same, so the walk is
+		// where the rule has to be asked.
+		await expect(vol.rm('/src', { recursive: true })).rejects.toThrow(/^EBUSY/)
+
+		expect((await store.get(mount))?.deleted).toBeUndefined()
+		expect((await store.get(src))?.deleted).toBeUndefined()
+	})
+
+	it('refuses to rename one away, or to replace one', async () => {
+		const store = memStore()
+		const mount = await mkmount(store, ROOT, 'private')
+		const vol = storeVolume(store)
+		await vol.mkdir('/src')
+
+		// Off the point: the row would keep an id derived from a position it no longer
+		// stands at — and the next `announceMount` at `/private` would drag it back.
+		await expect(vol.rename('/private', '/archive')).rejects.toThrow(/^EBUSY/)
+		// Onto it: a replaced row is tombstoned, which is the removal above by another
+		// name. (The bound case is refused a step earlier, by the binding itself.)
+		await expect(vol.rename('/src', '/private')).rejects.toThrow(/^EBUSY/)
+
+		expect((await store.child(ROOT, 'private'))?.id).toBe(mount)
+		expect(await store.child(ROOT, 'archive')).toBeNull()
+		expect(await vol.exists('/src')).toBe(true)
+	})
+
+	it('says what a tombstone at the derived id is, instead of reporting a free name as taken', async () => {
+		// Only a write that went around the volume can leave one now, which is the case
+		// this is for: a replica from before the rule above, or a store written directly.
+		const store = memStore()
+		const mount = await announceMount(store, ROOT, 'private')
+		await store.commit([{ ...((await store.get(mount)) as Node), deleted: true, version: 'x:2' }])
+		// Rule 3: the tombstone freed the name — and the id it kept is the one the
+		// next announcement derives, so the name being free settles nothing.
+		expect(await store.child(ROOT, 'private')).toBeNull()
+
+		await expect(announceMount(store, ROOT, 'private')).rejects.toThrow(
+			/^EBUSY: private was a mount here/
+		)
+		// The same answer under an authority, which refuses the write for the same
+		// reason — rather than one backend saying EEXIST and the other silently
+		// bringing a dead id back to life.
+		await expect(announceMount(authority(store), ROOT, 'private')).rejects.toThrow(
+			/^EBUSY: private was a mount here/
+		)
 	})
 })
