@@ -135,6 +135,83 @@ const REMOTE = 'remote'
  */
 export type Bindings = Map<NodeId, Map<string, Store>>
 
+/**
+ * The mount POINT, claimed in the store it stands in: the row every replica sees,
+ * written the ordinary way. The BINDING is separate and local (`Bindings` above) —
+ * this is only the reservation, which is what makes the name uncollidable and, with
+ * `authority.ts`'s `holdsRows`, makes a subtree under it unspellable.
+ *
+ * Every field is derived from `(parent, name)`, so every replica writes a BYTE-IDENTICAL
+ * row and none of them ever sends it: rule 3 reads a second copy as a no-op, and the
+ * `mount` author tag is no live replica, so the push filter drops it. That is the whole
+ * of how a host claims its local data's name with no coordination and no traffic — the
+ * same trick the migration plays with `migrated:<revision>`.
+ *
+ * The id is derived too, and it has to be: minting one would give two replicas two live
+ * rows for one name, which rule 1 resolves by the lowest id and the engine then RENAMES
+ * the loser. A hash of the position is the one id both sides can reach alone.
+ *
+ * Idempotent. A mount already standing here is the answer; a peer that claimed the name
+ * first wins the guard, and reading back its identical row is the same answer again.
+ * Anything else holding the name is a real conflict the host has to see.
+ */
+export async function announceMount(store: Store, parent: NodeId, name: string): Promise<NodeId> {
+	const row = await mountRow(parent, name)
+	const held = await store.child(parent, name)
+	if (held !== null) return held.type === 'mount' ? held.id : refuse(name, held)
+	try {
+		await store.commit([row], [{ free: { parent, name } }])
+	} catch (e) {
+		if (!(e instanceof GuardError)) throw e
+		const raced = await store.child(parent, name)
+		if (raced === null || raced.type !== 'mount') return refuse(name, raced)
+		return raced.id
+	}
+	return row.id
+}
+
+const refuse = (name: string, held: Node | null): never => {
+	throw new Error(`EEXIST: ${name} is ${held === null ? 'gone' : `a ${held.type}`}, not a mount`)
+}
+
+/**
+ * The one row, from its position and nothing else. `mtimeNs` is 0 for the reason the root
+ * row's is (rule 6): a stamp is per-replica, and a field that differs is a field that
+ * would have to converge.
+ */
+const mountRow = async (parent: NodeId, name: string): Promise<Node> => ({
+	id: await derivedId(parent, name),
+	parent,
+	name,
+	type: 'mount',
+	mode: 0o040755,
+	mtimeNs: 0n,
+	size: 0n,
+	version: 'mount:1'
+})
+
+/**
+ * A uuid every replica derives from the same position: the hash of `(parent, name)`, laid
+ * out as a v8 uuid — the version the RFC reserves for exactly this, an id whose bits are
+ * an application's to choose.
+ */
+const derivedId = async (parent: NodeId, name: string): Promise<NodeId> => {
+	// NUL between the parts: the one byte a name can never hold, so two positions
+	// never hash to one id.
+	const nul = String.fromCharCode(0)
+	const hex = await sha256Hex(new TextEncoder().encode(`mount${nul}${parent}${nul}${name}`))
+	const nibble = (at: number, value: string): string => hex.slice(0, at) + value + hex.slice(at + 1)
+	const set = nibble(16, '8') // the variant
+	const bits = set.slice(0, 12) + '8' + set.slice(13) // version 8: custom
+	return [
+		bits.slice(0, 8),
+		bits.slice(8, 12),
+		bits.slice(12, 16),
+		bits.slice(16, 20),
+		bits.slice(20, 32)
+	].join('-')
+}
+
 export function storeVolume(
 	store: Store,
 	opts?: { bindings?: Bindings; mintVersion?: () => Version }

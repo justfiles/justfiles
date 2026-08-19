@@ -24,7 +24,7 @@ import { type Cursor, GuardError, type Node, type NodeId, ROOT, type Store } fro
 import { memStore } from './store.mem'
 import { FileType } from './types'
 import { type Volume, WATCH_BURST_MS } from './volume'
-import { type Bindings, storeVolume } from './volume.store'
+import { announceMount, type Bindings, storeVolume } from './volume.store'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -877,5 +877,66 @@ describe('isolation', () => {
 		expect(dec.decode(await volHere.readFile('/config'))).toBe('API_KEY=here')
 		expect(dec.decode(await volThere.readFile('/config'))).toBe('API_KEY=there')
 		expect(await there.blobs.has(await hash(enc.encode('API_KEY=here')))).toBe(false)
+	})
+})
+
+describe('announceMount: the host claims the name, with no traffic and no coordination', () => {
+	it('mints the same row on every replica, so the first sync is silent', async () => {
+		const a = memStore()
+		const b = memStore()
+
+		const here = await announceMount(a, ROOT, 'private')
+		const there = await announceMount(b, ROOT, 'private')
+
+		// Same id, or two replicas hold two live rows for one name — which rule 1
+		// resolves by the lowest id and the engine then renames the loser.
+		expect(here).toBe(there)
+		const [rowA, rowB] = [await a.child(ROOT, 'private'), await b.child(ROOT, 'private')]
+		expect(rowA).toEqual(rowB)
+		expect(rowA?.type).toBe('mount')
+
+		// Byte-identical, so a page carrying one is a no-op (rule 3) — and the author
+		// is no live replica, so no push ever carries it in the first place.
+		expect(rowA?.version).toBe('mount:1')
+
+		// A pull of b's whole feed into a writes nothing: proved by the feed position,
+		// which only moves when a row lands.
+		const before = (await a.since()).next
+		await a.commit([rowB as Node])
+		expect((await a.since(before)).nodes).toEqual([])
+	})
+
+	it('is idempotent, and a peer that claimed it first is the same answer', async () => {
+		const store = memStore()
+		const first = await announceMount(store, ROOT, 'private')
+		expect(await announceMount(store, ROOT, 'private')).toBe(first)
+
+		// The race, which is the same fact from the other side: the row lands between
+		// the look and the commit. A store whose first look misses it is that window,
+		// and the `free` guard is what closes it — the answer is the row that is there.
+		let looked = false
+		const blind: Store = {
+			...store,
+			child: async (parent, name) => {
+				if (looked) return store.child(parent, name)
+				looked = true
+				return null
+			}
+		}
+		expect(await announceMount(blind, ROOT, 'private')).toBe(first)
+	})
+
+	it('refuses a name something else already holds', async () => {
+		const store = memStore()
+		await mkdir(store, ROOT, 'private')
+		await expect(announceMount(store, ROOT, 'private')).rejects.toThrow(/EEXIST/)
+	})
+
+	it('claims a name nothing else can then take, and holds no rows (T10)', async () => {
+		const store = authority(memStore())
+		const mount = await announceMount(store, ROOT, 'private')
+
+		await expect(mkdir(store, ROOT, 'private')).rejects.toThrow(GuardError)
+		await expect(mkfile(store, mount, 'secret.env', 'shh')).rejects.toThrow(GuardError)
 	})
 })
