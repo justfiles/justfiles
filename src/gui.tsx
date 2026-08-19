@@ -19,7 +19,7 @@ import type {
 } from '@excalidraw/excalidraw/types'
 import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { DRAFT_PATH, type IconApp, type IconState } from './app.ts'
 import {
@@ -34,6 +34,13 @@ import {
 } from './icon-document.ts'
 import { fitIcon, focusIconCamera, iconFrame } from './icon-frame.ts'
 import { iconFitViewportFactor, iconWindowLayout, resizeIconViewport } from './icon-viewport.ts'
+import {
+	IOS_GRID_CENTER,
+	IOS_GRID_OFFSETS,
+	IOS_GRID_RADII,
+	IOS_GRID_SIZE,
+	IOS_GRID_SQUIRCLE_PATH
+} from './ios-grid.ts'
 import { serializeIconSvg } from './svg-export.ts'
 import './gui.css'
 
@@ -117,6 +124,36 @@ function downloadBlob(blob: Blob, filename: string) {
 	setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
+// Apple's keyline grid, drawn over the output window at the size the window
+// happens to be. It is a sibling of the canvas rather than a scene element, so
+// it cannot be selected, moved, or exported, and `pointer-events: none` keeps
+// every pointer event flowing through to Excalidraw underneath.
+function IconGridOverlay() {
+	return (
+		<svg
+			className="icon-grid-overlay"
+			viewBox={`0 0 ${IOS_GRID_SIZE} ${IOS_GRID_SIZE}`}
+			aria-hidden="true"
+			focusable="false"
+		>
+			<g>
+				{IOS_GRID_OFFSETS.map((offset) => (
+					<Fragment key={offset}>
+						<line x1={offset} y1={0} x2={offset} y2={IOS_GRID_SIZE} />
+						<line x1={0} y1={offset} x2={IOS_GRID_SIZE} y2={offset} />
+					</Fragment>
+				))}
+				<line x1={0} y1={0} x2={IOS_GRID_SIZE} y2={IOS_GRID_SIZE} />
+				<line x1={0} y1={IOS_GRID_SIZE} x2={IOS_GRID_SIZE} y2={0} />
+				{IOS_GRID_RADII.map((radius) => (
+					<circle key={radius} cx={IOS_GRID_CENTER} cy={IOS_GRID_CENTER} r={radius} />
+				))}
+				<path className="icon-grid-squircle" d={IOS_GRID_SQUIRCLE_PATH} />
+			</g>
+		</svg>
+	)
+}
+
 function SvgGraphic({ svg, label }: { svg: SVGSVGElement | null; label: string }) {
 	const hostRef = useRef<HTMLDivElement>(null)
 	useEffect(() => {
@@ -191,6 +228,7 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 	const [previewError, setPreviewError] = useState<string | null>(null)
 	const [exporting, setExporting] = useState(false)
 	const [exportBackground, setExportBackground] = useState(DEFAULT_ICON_SETTINGS.exportBackground)
+	const [grid, setGrid] = useState(DEFAULT_ICON_SETTINGS.grid)
 	const [canvasColor, setCanvasColor] = useState(DEFAULT_CANVAS_COLOR)
 
 	const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
@@ -205,6 +243,7 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 	const previewTokenRef = useRef(0)
 	const latestSceneRef = useRef<LiveScene | null>(null)
 	const exportBackgroundRef = useRef(exportBackground)
+	const gridRef = useRef(grid)
 	const canvasColorRef = useRef(canvasColor)
 	const cameraRef = useRef<IconCamera>(DEFAULT_ICON_CAMERA)
 	const cameraReadyRef = useRef(false)
@@ -216,6 +255,7 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 			serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), 'local'),
 			{
 				exportBackground: exportBackgroundRef.current,
+				grid: gridRef.current,
 				camera: cameraRef.current
 			}
 		)
@@ -316,8 +356,10 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 			cameraReadyRef.current = false
 			cameraRef.current = settings.camera
 			exportBackgroundRef.current = settings.exportBackground
+			gridRef.current = settings.grid
 			canvasColorRef.current = nextCanvasColor
 			setExportBackground(settings.exportBackground)
+			setGrid(settings.grid)
 			setCanvasColor(nextCanvasColor)
 			setPreviewSvg(null)
 			setInitialData(data)
@@ -417,6 +459,17 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 			schedulePreview()
 		},
 		[schedulePreview, scheduleSave]
+	)
+
+	// The grid never reaches the export, so toggling it only records the
+	// preference alongside the rest of the icon's settings.
+	const changeGrid = useCallback(
+		(next: boolean) => {
+			gridRef.current = next
+			setGrid(next)
+			scheduleSave()
+		},
+		[scheduleSave]
 	)
 
 	const changeCanvasColor = useCallback((color: string) => {
@@ -650,6 +703,9 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 								>
 									Fit artwork
 								</button>
+								<button type="button" aria-pressed={grid} onClick={() => changeGrid(!grid)}>
+									Grid
+								</button>
 								<button type="button" disabled={exporting} onClick={() => void exportIcon('png')}>
 									PNG
 								</button>
@@ -697,6 +753,7 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 								/>
 							) : null}
 							<div className="icon-output-frame" ref={outputFrameRef} aria-hidden="true">
+								{grid ? <IconGridOverlay /> : null}
 								<span>
 									{ICON_SIZE} × {ICON_SIZE}
 								</span>
@@ -754,7 +811,10 @@ function IconCreator({ state, actions }: IconCreatorProps) {
 									<PreviewTile key={size} svg={previewSvg} size={size} />
 								))}
 							</div>
-							<p>Zoom and pan the artwork behind the fixed purple output window.</p>
+							<p>
+								Zoom and pan the artwork behind the fixed purple output window. Grid overlays
+								Apple’s app icon keylines; it is a guide only and never exports.
+							</p>
 						</aside>
 					</div>
 				)}

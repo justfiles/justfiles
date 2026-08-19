@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-	DEFAULT_ICON_CAMERA,
 	DEFAULT_ICON_SETTINGS,
 	ICON_BOUNDS,
 	iconExportScale,
@@ -20,6 +19,7 @@ describe('icon document', () => {
 	it('round-trips icon settings through otherwise-valid Excalidraw JSON', () => {
 		const settings = {
 			exportBackground: true,
+			grid: true,
 			camera: { x: 12.5, y: -8, size: 20 }
 		}
 		const json = withIconSettings('{"type":"excalidraw","elements":[]}', settings)
@@ -35,8 +35,8 @@ describe('icon document', () => {
 			iconSettingsOf({ icon: { exportBackground: 'yes', camera: { x: 0, y: 0, size: -1 } } })
 		).toEqual(DEFAULT_ICON_SETTINGS)
 		expect(iconSettingsOf({ icon: { exportBackground: true } })).toEqual({
-			exportBackground: true,
-			camera: DEFAULT_ICON_CAMERA
+			...DEFAULT_ICON_SETTINGS,
+			exportBackground: true
 		})
 	})
 })

@@ -22,11 +22,15 @@ export const ICON_BOUNDS = {
 
 export type IconSettings = {
 	exportBackground: boolean
+	// Apple's app icon keyline grid, drawn over the output window as an editor
+	// guide. It is host UI, so it never reaches the scene or the export.
+	grid: boolean
 	camera: IconCamera
 }
 
 export const DEFAULT_ICON_SETTINGS: IconSettings = {
 	exportBackground: false,
+	grid: true,
 	camera: DEFAULT_ICON_CAMERA
 }
 
@@ -34,6 +38,10 @@ export const iconExportScale = (camera: IconCamera) => ICON_SIZE / camera.size
 
 function finite(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value)
+}
+
+function flag(value: unknown, fallback: boolean): boolean {
+	return typeof value === 'boolean' ? value : fallback
 }
 
 function cameraOf(value: unknown): IconCamera {
@@ -46,12 +54,11 @@ export function iconSettingsOf(value: unknown): IconSettings {
 	if (!value || typeof value !== 'object') return DEFAULT_ICON_SETTINGS
 	const icon = (value as { icon?: unknown }).icon
 	if (typeof icon !== 'object' || icon === null) return DEFAULT_ICON_SETTINGS
+	const { exportBackground, grid, camera } = icon as Partial<Record<keyof IconSettings, unknown>>
 	return {
-		exportBackground:
-			typeof (icon as { exportBackground?: unknown }).exportBackground === 'boolean'
-				? (icon as { exportBackground: boolean }).exportBackground
-				: DEFAULT_ICON_SETTINGS.exportBackground,
-		camera: cameraOf((icon as { camera?: unknown }).camera)
+		exportBackground: flag(exportBackground, DEFAULT_ICON_SETTINGS.exportBackground),
+		grid: flag(grid, DEFAULT_ICON_SETTINGS.grid),
+		camera: cameraOf(camera)
 	}
 }
 
