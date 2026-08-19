@@ -57,8 +57,8 @@ with a default of `1`.
 
 ## Decided here
 
-The four questions above, answered before the first swap, plus a fifth the swap
-found. Each answer is implemented where it is named.
+The four questions above, answered before the first swap, plus the ones the swap
+found on its way through. Each answer is implemented where it is named.
 
 ### A store has an id, not a name — and a mount row derives from its position
 
@@ -168,6 +168,57 @@ mutations, which resolve paths and enumerate subtrees inside their transactions,
 onto a synchronous seam — and [T18](t18-retire.md) deletes the file. The hole
 leaves with it, and this swap is what makes that true.
 
+### A store collects its own garbage, and it needs a stamp to do it
+
+Nothing in this story gave the durable store a `gc`, and the day frieren's data
+moves is the day the old daily sweep is looking at the wrong table: rule 7 makes
+content immutable, so an edited file stops naming its old bytes and nothing ever
+collects them. `sqliteStore` implements the seam's optional `gc` — unreferenced
+by any LIVE row, a bounded slice, one transaction — and the DO's daily routine
+sweeps BOTH its stores, because the bytes behind `/private` go stale exactly the
+way the tree's do.
+
+It needs one column the seam does not: `written_ms` on `blobs`. Rule 10 puts the
+bytes in before the row that names them, and on a server those are two REQUESTS —
+a `PUT /blob`, then the `POST /commit` that adopts it, seconds or minutes later.
+A sweep in between would collect content the pusher has already ticked off, and
+the engine never offers a pushed row's bytes twice, so the row would be a stub
+for ever with no peer left that knows to re-send. An hour's grace is far longer
+than any push and far shorter than the daily sweep.
+
+### The wake a backend cannot promise, kept by the host that can
+
+Neither `idbStore` nor `sqliteStore` offers `subscribe`, and both are right: the
+DATABASE is the store, not the connection, so a wake held in one tab's — or one
+process's — closure goes permanently stale for another's commit, and a consumer
+takes `subscribe` INSTEAD of polling `since`. But `syncedVolume` arms its push
+off exactly that signal, so without one a local write waits out the whole
+interval; and `storeVolume`'s watch falls back to polling the feed on a timer.
+
+`store.idb.ts` names the answer and says where it belongs — "a `BroadcastChannel`
+beside the commit… where its latency is measured, not here" — so both hosts keep
+their own:
+
+- the browser wraps each store in one, which is complete across every tab of the
+  origin, so nothing regresses against the raw store's polling;
+- the Durable Object wraps its own, which is complete because a DO IS the one
+  writer — and the server→client poke becomes an ordinary subscriber instead of a
+  special case in the commit path.
+
+`idbStore` also gains `close()`: `indexedDB.deleteDatabase` waits on every open
+connection and fires `onblocked` rather than completing, so "forget this browser"
+could not delete what it promised to.
+
+### `/file/*` is not the seam, and does not live in `store.api.ts`
+
+The CLI reads one file at a time, and over the seam that is a request per path
+segment plus a blob fetch. The route survives, reimplemented over the new volume
+— but in `file.api.ts`, not in `store.api.ts`, which is the wire and takes no
+addition without a design review that starts with "why can this not be rows?".
+It reads through a `Volume` and writes nothing, so it can say nothing the seam
+does not; it only says it in one request. The host serves it over the UNBOUND
+tree, for the same reason `storeApi` is handed the synced store alone.
+
 ### The wipe route reads the generation itself
 
 Frieren's factory reset CASes on `fromGeneration`, and `generation()` only ever
@@ -200,6 +251,16 @@ not a row at all. What decides the order:
    `apps/frieren/scripts/frieren-auth.ts` go with the server they talk to;
    `packages/app/dev-server.ts` talks to none and goes whenever.
 
+The new name is `/store`. It is a top-level route rather than something under
+`/fs`, so the host's auth middleware and its owner routing name it explicitly and
+no ordering between two overlapping mounts decides which half a request reaches.
+
+One thing that ordering does NOT close, and it is a deploy window rather than a
+design hole: a tab still running the previous bundle keeps writing to `/fs`, and
+the one pass has already run. Those writes reach tables nothing reads afterwards.
+A reload is what fixes it, and [T18](t18-retire.md) — which deletes the routes —
+is what makes the window impossible rather than merely short.
+
 So the task lands as a stack, each PR on the one before it, each green on its
 own:
 
@@ -207,7 +268,7 @@ own:
 | --- | --- | --- |
 | 1 | The decisions: atomic commit + table namespace, the durable discard slot, this order | landed |
 | 2 | `/private` is a mount: a store is an id, the announced row, the migration split, the native import filter | landed |
-| 3 | The new `/fs` surface beside the old one, and frieren onto it: DO host (two stores, bound), browser client, `apps/cli`, `frieren-auth`, `emptyStore` + the reset on the synchronous seam | |
+| 3 | The new `/fs` surface beside the old one, and frieren onto it: DO host (two stores, bound), browser client, `apps/cli`, `frieren-auth`, `emptyStore` + the reset on the synchronous seam | landed |
 | 4 | `apps/worker` onto it, then the old surface deleted: the retired routes, `apiStorage` / `remoteSyncReplica`, the old-wire tests, the dependencies | |
 
 ## RED
