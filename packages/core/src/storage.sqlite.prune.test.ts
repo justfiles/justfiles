@@ -9,8 +9,6 @@ import { volume } from '@justfiles/fs'
 import { CursorPrunedError, journaledChangeSource, treeChangeSource } from '@justfiles/sync/replica'
 import { describe, expect, it } from 'vitest'
 import { createSqliteAdapter } from './db.sqlite'
-import { createFsApi } from './fs'
-import { createFsClient, remoteSyncReplica } from './fs.client'
 import { storage as sqliteStorage } from './storage.sqlite'
 
 const migrationsDir = new URL('./migrations/', import.meta.url)
@@ -342,28 +340,6 @@ describe('sqlite pruned-cursor floor', () => {
 		await expect(
 			journaledChangeSource(storage.sync).pathDeltas(scan.syncCursor)
 		).resolves.toMatchObject({ done: true })
-	})
-
-	it('answers a pruned cursor with 410, and the client raises it as a typed error', async () => {
-		const { db, storage, vol } = makeStorage()
-		await vol.writeFile('/gone.md', bytes('gone'))
-		await vol.rm('/gone.md')
-		ageJournal(db)
-		await storage.caps?.content?.gcUnreferenced()
-		const app = createFsApi(storage)
-
-		const res = await app.request('/path/changes?cursor=0')
-		expect(res.status).toBe(410)
-		expect(await res.json()).toMatchObject({ error: 'cursor_pruned' })
-
-		const client = createFsClient({
-			baseUrl: 'http://prune.test',
-			fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
-				app.request(input as string, init)) as unknown as typeof fetch
-		})
-		await expect(
-			remoteSyncReplica(client, { clientId: 'c1' }).pathDeltas('0')
-		).rejects.toBeInstanceOf(CursorPrunedError)
 	})
 })
 

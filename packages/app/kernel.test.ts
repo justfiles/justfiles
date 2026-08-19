@@ -1,5 +1,6 @@
-import { chroot, type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/sync/storage/mem'
+import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/store.mem'
+import { storeVolume } from '@justfiles/fs/volume.store'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'
@@ -246,17 +247,16 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	// way down: no write, no new version. Otherwise every idle signal becomes a
 	// versioned write that sync hands to the other replica, whose apps wake on it in
 	// turn — and the pair never settles.
-	const storage = memStorage()
-	const fs = volume(storage)
-	const journal = storage.sync.journal
-	if (!journal) throw new Error('memStorage exposes no journal')
+	const store = memStore()
+	const fs = storeVolume(store)
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
 
 	await k.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
-	const quiet = await journal.head()
+	// Where a peer's pull would resume: what "nothing to carry" has to mean.
+	const quiet = (await store.since()).next
 
 	const updates: unknown[] = []
 	k.subscribe((e) => {
@@ -269,7 +269,7 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	).toEqual({ count: 5 })
 
 	// Nothing was written, so there is nothing for sync to carry.
-	expect(await journal.head()).toBe(quiet)
+	expect((await store.since(quiet)).nodes).toEqual([])
 	expect(JSON.parse(new TextDecoder().decode(await fs.readFile(`/state/${appId}.json`)))).toEqual({
 		count: 5
 	})
@@ -278,7 +278,7 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	expect(
 		await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
 	).toEqual({ count: 6 })
-	expect(await journal.head()).toBeGreaterThan(quiet)
+	expect((await store.since(quiet)).nodes).toHaveLength(1)
 	expect(await k.state(appId)).toEqual({ count: 6 })
 	expect(updates).toEqual([{ count: 6 }])
 })

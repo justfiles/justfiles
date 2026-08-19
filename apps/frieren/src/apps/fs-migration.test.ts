@@ -15,13 +15,19 @@ vi.mock('@justfiles/fs/store.idb', async () => {
 			H.stores.set(name, held)
 			return held
 		},
+		// The cross-tab wake is a latency optimization over polling `since`, and
+		// nothing here measures latency.
+		sharedStore: (store: unknown) => store,
 		persistStorage: async () => true
 	}
 })
 
 // The one pass from the old model has its own tests; here every profile is already
 // adopted, which is what a browser that has run this build once looks like.
-vi.mock('@justfiles/fs/migrate.idb', () => ({ migrateIdb: async () => {} }))
+vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
+	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
+	migrateIdb: async () => {}
+}))
 vi.mock('@justfiles/core', () => ({ createFsClient: () => ({}) }))
 vi.mock('@justfiles/fs/store.http', () => ({ httpStore: () => ({}) }))
 

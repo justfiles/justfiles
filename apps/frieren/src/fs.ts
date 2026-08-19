@@ -1,10 +1,10 @@
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
 import type { Volume } from '@justfiles/fs'
-import { migrateIdb } from '@justfiles/fs/migrate.idb'
-import { forwarded, type Node, ROOT, type Store } from '@justfiles/fs/store'
+import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
+import { ROOT, type Store } from '@justfiles/fs/store'
 import { httpStore } from '@justfiles/fs/store.http'
-import { idbStore } from '@justfiles/fs/store.idb'
+import { idbStore, sharedStore } from '@justfiles/fs/store.idb'
 import {
 	type CursorSlot,
 	type DiscardSlot,
@@ -104,47 +104,6 @@ function forgetSlots(profileId: string): void {
 		localStorage.removeItem(
 			suffix === 'replica' ? `frieren-replica-${profileId}` : `frieren-fs-${profileId}-${suffix}`
 		)
-}
-
-/**
- * A commit, told to every tab over this database.
- *
- * `idbStore` offers no `subscribe`, and its reasoning is exactly right for a library:
- * the DATABASE is the store, not the connection, so a wake held in one tab's closure
- * would go permanently stale for another tab's commit — and a consumer takes
- * `subscribe` INSTEAD of polling `since`. It also names the answer, and says it belongs
- * where its latency is measured rather than in `packages/fs`: a `BroadcastChannel`
- * beside the commit. This is that.
- *
- * With it, `storeVolume`'s watch stops polling and a local write arms its push at once
- * instead of waiting out the interval.
- */
-function shared(store: Store, channel: string): Store {
-	const bus = new BroadcastChannel(channel)
-	const listeners = new Set<(writes: Node[]) => void>()
-	const tell = (writes: Node[]) => {
-		for (const fn of listeners) fn(writes)
-	}
-	bus.onmessage = (event) => tell(event.data as Node[])
-	return {
-		...forwarded(store),
-		async commit(writes, guards) {
-			await store.commit(writes, guards)
-			if (writes.length === 0) return
-			tell(writes)
-			// Rows, not a bare wake: a watcher decides from what changed, and a tab that
-			// had to re-scan to find out would pay for every other tab's writes.
-			bus.postMessage(writes)
-		},
-		subscribe(listener) {
-			listeners.add(listener)
-			return () => listeners.delete(listener)
-		},
-		async close() {
-			bus.close()
-			await store.close?.()
-		}
-	}
 }
 
 // Local profiles own local storage, not Clerk users. A profile is a browser-local
@@ -386,21 +345,26 @@ async function readGeneration(
 
 async function setActive(profile: LocalProfile): Promise<Active> {
 	const replica = replicaId(profile.id)
-	const local = shared(idbStore(storeDb(profile.id)), `frieren-store-${profile.id}`)
-	const privateStore = shared(
-		idbStore(privateDb(profile.id)),
-		`frieren-store-${profile.id}-${PRIVATE_MOUNT}`
-	)
+	// The channel is the DATABASE's name in both cases: what a wake has to be scoped to
+	// is the store it is telling other tabs about.
+	const local = sharedStore(idbStore(storeDb(profile.id)), storeDb(profile.id))
+	const privateStore = sharedStore(idbStore(privateDb(profile.id)), privateDb(profile.id))
 	// The name is claimed before anything reads the tree: the row is derived from its
 	// position, so every replica writes a byte-identical one and none of them ever sends
 	// it — the whole of how this browser reserves `/private` with no coordination.
 	await announceMount(local, ROOT, PRIVATE_MOUNT)
-	if (!profile.adopted) {
+	// Held against every other tab, and the marker READ inside it: a second tab that
+	// checked `adopted` before this one recorded it would copy the old tree a second time,
+	// over rows this tab's volume had already pulled or written (see `adoptOnce`). The
+	// registry is re-read rather than trusting the `profile` this was called with, which is
+	// a snapshot taken before the wait.
+	await adoptOnce(storeDb(profile.id), async () => {
+		if (readRegistry().find((entry) => entry.id === profile.id)?.adopted) return
 		// `/private` was a path the old engine filtered; here its subtree lands in the
 		// store bound at that name, hanging off that store's own root.
 		await migrateIdb(legacyDb(profile.id), local, new Map([[PRIVATE_MOUNT, privateStore]]))
 		recordAdopted(profile.id)
-	}
+	})
 
 	let entry: Active
 	const plain = storeVolume(local, {

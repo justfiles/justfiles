@@ -17,6 +17,7 @@ import { type DBSchema, type IDBPDatabase, openDB } from 'idb'
 import {
 	type Cursor,
 	ForeignCursorError,
+	forwarded,
 	GuardError,
 	type Hash,
 	type Node,
@@ -253,8 +254,8 @@ export function idbStore(name: string): Store {
 		// it meant to the next), so a wake held in one connection's closure would
 		// never fire for a second tab's commit and a watcher would go permanently
 		// stale rather than merely late. Polling `since` sees every connection's
-		// commits. A real cross-tab wake is additive — a `BroadcastChannel` beside
-		// the commit — and belongs where its latency is measured, not here.
+		// commits. The cross-tab wake is additive and lives beside the commit
+		// instead: `sharedStore` below.
 
 		// Rule 7: content-keyed and immutable, so a hash the map already holds is
 		// already the answer and the second put is nothing. IDB hands every reader
@@ -278,6 +279,51 @@ export function idbStore(name: string): Store {
 				if ((await tx.store.getKey(hash)) === undefined) await tx.store.put({ hash, data: held })
 				await tx.done
 			}
+		}
+	}
+}
+
+/**
+ * The wake this backend cannot promise, over the one bus that can keep it.
+ *
+ * A `BroadcastChannel` reaches every tab of the origin, so a subscriber over one is
+ * complete in exactly the way a connection-local closure is not — which is the whole of
+ * `idbStore`'s objection to offering `subscribe` itself. With it, `storeVolume`'s watch
+ * stops polling and a local write arms its push at once instead of waiting out the
+ * interval.
+ *
+ * A wrapper rather than something `idbStore` does for itself, because a wake is a
+ * latency decision and the store is not where it is measured. It is here rather than in
+ * a host because there are two browser hosts and one browser: `BroadcastChannel` is
+ * available exactly where `indexedDB` is.
+ *
+ * `channel` must be scoped the way the database is — the database's own name is the
+ * obvious choice, since two stores over one name are two connections to one store.
+ */
+export function sharedStore(store: Store, channel: string): Store {
+	const bus = new BroadcastChannel(channel)
+	const listeners = new Set<(writes: Node[]) => void>()
+	const tell = (writes: Node[]) => {
+		for (const fn of listeners) fn(writes)
+	}
+	bus.onmessage = (event) => tell(event.data as Node[])
+	return {
+		...forwarded(store),
+		async commit(writes, guards) {
+			await store.commit(writes, guards)
+			if (writes.length === 0) return
+			tell(writes)
+			// Rows, not a bare wake: a watcher decides from what changed, and a tab that
+			// had to re-scan to find out would pay for every other tab's writes.
+			bus.postMessage(writes)
+		},
+		subscribe(listener) {
+			listeners.add(listener)
+			return () => listeners.delete(listener)
+		},
+		async close() {
+			bus.close()
+			await store.close?.()
 		}
 	}
 }
