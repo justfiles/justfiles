@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type CursorSlot, versions } from './engine'
 import { type Cursor, type Node, ROOT, type Store } from './store'
 import { memStore } from './store.mem'
-import { type SyncedProps, type SyncStatus, syncedVolume } from './synced'
+import { type DiscardSlot, type SyncedProps, type SyncStatus, syncedVolume } from './synced'
 import { FileType } from './types'
 import type { Volume } from './volume'
 import { storeVolume } from './volume.store'
@@ -33,6 +33,17 @@ function slot(): CursorSlot {
 		load: async () => at,
 		save: async (cursor) => {
 			at = cursor
+		}
+	}
+}
+
+/** The third durable slot: "a discard stopped half-done". Same contract, one bit. */
+function flag(): DiscardSlot {
+	let on = false
+	return {
+		load: async () => on,
+		save: async (value) => {
+			on = value
 		}
 	}
 }
@@ -489,6 +500,11 @@ describe('syncedVolume: take theirs', () => {
 		broken = true
 		await expect(vol.takeTheirs()).rejects.toThrow('the slot is full')
 
+		// The loop is stopped and only another discard can start it again, so the
+		// status has to say so: a caller watching it would otherwise read the state
+		// before the discard — `synced` over a replica that will never sync again.
+		expect(vol.status()).toBe('error')
+
 		await vi.advanceTimersByTimeAsync(200_000)
 		await vol.flush()
 
@@ -563,6 +579,86 @@ describe('syncedVolume: take theirs', () => {
 		await expect(vol.takeMine()).rejects.toThrow(/discard did not finish/)
 		expect(reset).toBe(0)
 		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+	})
+
+	// The crash the in-memory flag cannot survive. The tombstones are durable and
+	// the cutoff is not, so a replica built over this store next — a reloaded tab,
+	// a restarted daemon — finds live-looking work sitting past a push cursor that
+	// never moved, and one cycle turns "discard mine" into "delete everywhere".
+	// Which is why the flag is a slot the host keeps, like the two cursors.
+	it('finishes a discard the last process could not, before its first cycle', async () => {
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+
+		// Everything durable about this replica, outliving the wrapper over it: the
+		// store, the two cursors, and the flag.
+		const local = memStore()
+		const pull = slot()
+		const push = slot()
+		const discard = flag()
+		let broken = false
+		const flaky: CursorSlot = {
+			load: () => push.load(),
+			save: (cursor) => (broken ? Promise.reject(new Error('the slot is full')) : push.save(cursor))
+		}
+
+		const first = await replica(remote, { local, pull, push: flaky, discard })
+		await first.vol.writeFile('/mine.txt', enc.encode('mine'))
+		broken = true
+		await expect(first.vol.takeTheirs()).rejects.toThrow('the slot is full')
+		first.vol.destroy() // the tab closes on a half-done discard
+
+		broken = false
+		const { vol } = await replica(remote, { local, pull, push, discard })
+
+		// The peer still holds its volume: the second wrapper finished the discard
+		// before its first cycle, so the tombstones were never offered.
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+		expect(await tree(vol)).toEqual({ '/keep.txt': 'theirs' })
+		expect(await discard.load()).toBe(false)
+
+		// And it is an ordinary replica from here on, not one still standing off.
+		await vol.writeFile('/after.txt', enc.encode('after'))
+		await vol.flush()
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs', '/after.txt': 'after' })
+	})
+
+	// The same crash, and the recovery fails too. The volume is still handed over —
+	// rejecting would leave the app with no volume and the same store to recover
+	// from — so the status is the only thing that can say this replica is inert
+	// rather than still connecting.
+	it('reports error when it cannot finish the discard it inherited', async () => {
+		vi.useFakeTimers()
+		const remote = memStore()
+		const there = peerVolume(remote)
+		await there.writeFile('/keep.txt', enc.encode('theirs'))
+
+		const local = memStore()
+		const pull = slot()
+		const push = slot()
+		const discard = flag()
+		let broken = false
+		const flaky: CursorSlot = {
+			load: () => push.load(),
+			save: (cursor) => (broken ? Promise.reject(new Error('the slot is full')) : push.save(cursor))
+		}
+
+		const first = await replica(remote, { local, pull, push: flaky, discard })
+		await first.vol.writeFile('/mine.txt', enc.encode('mine'))
+		broken = true
+		await expect(first.vol.takeTheirs()).rejects.toThrow('the slot is full')
+		first.vol.destroy()
+
+		// Still broken, so the inherited discard cannot finish either.
+		const { vol } = await replica(remote, { local, pull, push: flaky, discard })
+		const ran = cycles(vol)
+
+		expect(vol.status()).toBe('error')
+		await vi.advanceTimersByTimeAsync(200_000)
+		expect(ran()).toBe(0)
+		expect(await tree(there)).toEqual({ '/keep.txt': 'theirs' })
+		expect(await discard.load()).toBe(true)
 	})
 
 	it('leaves a replica that keeps syncing afterwards', async () => {

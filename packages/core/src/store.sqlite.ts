@@ -3,19 +3,15 @@
  * the one order as indexes over it, one `blobs` table, and one `meta` row for
  * the lineage — the same schema the model has on every other backend.
  *
- * It takes a `DbAdapter` (`db.ts`), so the same code runs on `node:sqlite`
+ * It takes a `SyncDb` (`db.ts`), so the same code runs on `node:sqlite`
  * under vitest and on the Durable Object's SQLite in production. The whole of
- * `commit` — every guard and every write — is one `db.transaction`: a guard
- * evaluated in a transaction the writes do not share is a race, not a guard.
- * Every guard runs before any write, so a REJECTED commit has written nothing
- * to roll back — which is how that half of rule 2 holds even on the Durable
- * Object, whose `transaction` is a bare wrapper with no rollback of its own.
- * The other half does not hold there: a write that FAILS mid-batch — a quota,
- * a row limit — leaves the rows before it written, because `transactionSync`
- * is the only genuinely atomic transaction on that platform and it needs a
- * synchronous body. Nothing runs this store on a Durable Object yet; T17 wires
- * it, and closes this with the synchronous seam the migration runner already
- * uses (`migrations/utils.ts`).
+ * `commit` — every guard and every write — is one `transactionSync`: a guard
+ * evaluated in a transaction the writes do not share is a race, not a guard,
+ * and a write that fails mid-batch must leave the rows before it out too
+ * (rule 2). That second half is why the seam is synchronous: `transactionSync`
+ * is the only genuinely atomic transaction a Durable Object has, and it needs a
+ * synchronous body. Nothing here ever awaited anything but the database, so
+ * that costs this store no capability.
  *
  * It lives in `packages/core` because it is server code; `packages/fs` stays
  * dependency-free.
@@ -32,7 +28,7 @@ import {
 	type Store,
 	same
 } from '@justfiles/fs/store'
-import type { DbAdapter, SqlValue } from './db'
+import type { SqlValue, SyncDb } from './db'
 
 /** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128
@@ -52,8 +48,8 @@ const PLACEHOLDERS = COLUMNS.split(', ')
  * No foreign key binds a row to its parent — rule 9 leaves tree invariants to
  * the authority's guards, and a replica may transiently hold detached rows.
  */
-const SCHEMA = [
-	`CREATE TABLE IF NOT EXISTS nodes (
+const schema = (t: Tables): string[] => [
+	`CREATE TABLE IF NOT EXISTS ${t.nodes} (
 		id TEXT PRIMARY KEY,
 		parent TEXT NOT NULL,
 		name TEXT NOT NULL COLLATE BINARY,
@@ -80,21 +76,49 @@ const SCHEMA = [
 	// delete, no second table. Not UNIQUE: rule 1 admits two live rows for one
 	// name mid-sync and resolves them by the lowest id, and `id` is the last
 	// index column so that winner is the first record read.
-	'CREATE INDEX IF NOT EXISTS nodes_live ON nodes(parent, name, id) WHERE deleted = 0',
-	'CREATE INDEX IF NOT EXISTS nodes_seq ON nodes(seq)',
-	'CREATE TABLE IF NOT EXISTS blobs (hash TEXT PRIMARY KEY, data BLOB NOT NULL)',
-	'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)'
+	`CREATE INDEX IF NOT EXISTS ${t.nodes}_live ON ${t.nodes}(parent, name, id) WHERE deleted = 0`,
+	`CREATE INDEX IF NOT EXISTS ${t.nodes}_seq ON ${t.nodes}(seq)`,
+	`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, data BLOB NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS ${t.meta} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`
 ]
 
 /** Rule 3: a write replaces the WHOLE row, so every column comes from the new one. */
-const REPLACE = `INSERT INTO nodes(${COLUMNS}) VALUES (${PLACEHOLDERS})
+const replace = (t: Tables): string => `INSERT INTO ${t.nodes}(${COLUMNS}) VALUES (${PLACEHOLDERS})
 	ON CONFLICT(id) DO UPDATE SET
 		parent = excluded.parent, name = excluded.name, type = excluded.type,
 		mode = excluded.mode, mtime_ns = excluded.mtime_ns, size = excluded.size,
 		xattrs = excluded.xattrs, content = excluded.content, link = excluded.link,
 		version = excluded.version, deleted = excluded.deleted, seq = excluded.seq`
 
-const SEED = `INSERT OR IGNORE INTO nodes(${COLUMNS}) VALUES (${PLACEHOLDERS})`
+const seed = (t: Tables): string =>
+	`INSERT OR IGNORE INTO ${t.nodes}(${COLUMNS}) VALUES (${PLACEHOLDERS})`
+
+/**
+ * Which table set a store owns. One database holds more than one store: the
+ * server's tree is the synced one, and its `/private` is a second store bound at
+ * that name ([T15](../../../tasks/store-model/t15-mounts.md)) — local data is a
+ * separate store joined at a name, and on this backend "separate" is these three
+ * table names.
+ *
+ * A namespace is a TABLE NAME, so it goes into every statement as itself, and it
+ * is refused unless it is a bare identifier. Quoting the identifiers instead
+ * would admit `user-data` and leave a name that means one thing in SQL and
+ * another everywhere else; this way there is nothing to interpolate that could be
+ * anything but a name, and a mistake is reported where it was made rather than as
+ * a syntax error on the first read.
+ */
+type Tables = { nodes: string; blobs: string; meta: string }
+
+const IDENTIFIER = /^[a-z][a-z0-9_]*$/
+
+const tablesOf = (namespace: string | undefined): Tables => {
+	if (namespace !== undefined && !IDENTIFIER.test(namespace))
+		throw new Error(
+			`sqliteStore: namespace must match ${IDENTIFIER}, got ${JSON.stringify(namespace)}`
+		)
+	const prefix = namespace === undefined ? '' : `${namespace}_`
+	return { nodes: `${prefix}nodes`, blobs: `${prefix}blobs`, meta: `${prefix}meta` }
+}
 
 const ROOT_ROW: Node = {
 	id: ROOT,
@@ -107,27 +131,37 @@ const ROOT_ROW: Node = {
 	version: '0'
 }
 
-/** The durable `Store`. Reopening the same database is not a reset. */
-export function sqliteStore(db: DbAdapter): Store {
-	let opening: Promise<string> | null = null
+/**
+ * The durable `Store`. Reopening the same database is not a reset.
+ *
+ * `namespace` prefixes this store's three table names, so one database can hold
+ * more than one store — the server's synced tree and the local one bound at
+ * `/private`. It is a table name, so it must be a bare identifier
+ * (`[a-z][a-z0-9_]*`) and is refused otherwise.
+ */
+export function sqliteStore(db: SyncDb, opts?: { namespace?: string }): Store {
+	const t = tablesOf(opts?.namespace)
+	const SCHEMA = schema(t)
+	const REPLACE = replace(t)
+	let opened: string | undefined
 
-	const start = async (): Promise<string> => {
-		await db.transaction(async (tx) => {
-			for (const statement of SCHEMA) await tx.run(statement)
+	const start = (): string => {
+		db.transactionSync(() => {
+			for (const statement of SCHEMA) db.exec(statement)
 			// The lineage (rule 11) and the root row (rule 6), each only on a
 			// database that lacks it. A reopen finds both and keeps them — a restart
 			// is not a reset, so it must not fence the replicas whose cursors this
 			// store minted, nor overwrite a root whose mtime the volume has stamped.
-			await tx.run("INSERT OR IGNORE INTO meta(key, value) VALUES ('lineage', ?)", [
+			db.exec(`INSERT OR IGNORE INTO ${t.meta}(key, value) VALUES ('lineage', ?)`, [
 				crypto.randomUUID()
 			])
-			await tx.run(SEED, bind(ROOT_ROW, 0))
+			db.exec(seed(t), bind(ROOT_ROW, 0))
 		})
-		const [row] = await db.query<Row>("SELECT value FROM meta WHERE key = 'lineage' LIMIT 1")
+		const [row] = db.query<Row>(`SELECT value FROM ${t.meta} WHERE key = 'lineage' LIMIT 1`)
 		return String(row?.value)
 	}
 
-	const open = (): Promise<string> => (opening ??= start())
+	const open = (): string => (opened ??= start())
 
 	const position = (cursor: Cursor | undefined, lineage: string): number => {
 		if (cursor === undefined) return 0
@@ -135,19 +169,19 @@ export function sqliteStore(db: DbAdapter): Store {
 		return Number(cursor.slice(lineage.length + SEP.length))
 	}
 
-	const byId = async (tx: DbAdapter, id: NodeId): Promise<Node | null> => {
-		const [found] = await tx.query<Row>('SELECT * FROM nodes WHERE id = ? LIMIT 1', [id])
+	const byId = (id: NodeId): Node | null => {
+		const [found] = db.query<Row>(`SELECT * FROM ${t.nodes} WHERE id = ? LIMIT 1`, [id])
 		return found ? decode(found) : null
 	}
 
 	// The live rows of one directory. Root is left out because it is nobody's
 	// child — it is its own parent, so without this a listing of root would
 	// contain root.
-	const LIVE = 'FROM nodes WHERE parent = ? AND deleted = 0 AND id <> ?'
+	const LIVE = `FROM ${t.nodes} WHERE parent = ? AND deleted = 0 AND id <> ?`
 
-	const passes = async (tx: DbAdapter, guard: Guard): Promise<boolean> => {
+	const passes = (guard: Guard): boolean => {
 		if ('free' in guard) {
-			const held = await tx.query(`SELECT 1 AS held ${LIVE} AND name = ? LIMIT 1`, [
+			const held = db.query(`SELECT 1 AS held ${LIVE} AND name = ? LIMIT 1`, [
 				guard.free.parent,
 				ROOT,
 				guard.free.name
@@ -156,7 +190,7 @@ export function sqliteStore(db: DbAdapter): Store {
 		}
 		// A tombstone is still a row, so a CAS against `null` fails on one: an id is
 		// minted once and never rebound.
-		const [found] = await tx.query<Row>('SELECT version FROM nodes WHERE id = ? LIMIT 1', [
+		const [found] = db.query<Row>(`SELECT version FROM ${t.nodes} WHERE id = ? LIMIT 1`, [
 			guard.version.id
 		])
 		return (found ? String(found.version) : null) === guard.version.is
@@ -164,16 +198,16 @@ export function sqliteStore(db: DbAdapter): Store {
 
 	return {
 		async get(id) {
-			await open()
-			return byId(db, id)
+			open()
+			return byId(id)
 		},
 
 		async child(parent, name) {
-			await open()
+			open()
 			// Index records that share a `(parent, name)` are ordered by id, so the
 			// first one back holds the lowest — rule 1's winner, without reading the
 			// losers.
-			const [found] = await db.query<Row>(`SELECT * ${LIVE} AND name = ? ORDER BY id LIMIT 1`, [
+			const [found] = db.query<Row>(`SELECT * ${LIVE} AND name = ? ORDER BY id LIMIT 1`, [
 				parent,
 				ROOT,
 				name
@@ -182,13 +216,13 @@ export function sqliteStore(db: DbAdapter): Store {
 		},
 
 		async children(parent, cursor) {
-			await open()
+			open()
 			const args: SqlValue[] = [parent, ROOT]
 			// The cursor is just the last name emitted: a duplicate sorts next to its
 			// winner, so dropping the whole name resumes the listing and drops the
 			// losers in one step.
 			if (cursor !== undefined) args.push(cursor)
-			const rows = await db.query<Row>(
+			const rows = db.query<Row>(
 				`SELECT * ${LIVE}${cursor === undefined ? '' : ' AND name > ?'}
 					ORDER BY name, id LIMIT ${PAGE + 1}`,
 				args
@@ -216,10 +250,10 @@ export function sqliteStore(db: DbAdapter): Store {
 		 * is journaled behind it.
 		 */
 		async since(cursor) {
-			const lineage = await open()
+			const lineage = open()
 			const from = position(cursor, lineage)
-			const rows = await db.query<Row>(
-				`SELECT * FROM nodes WHERE seq >= ? ORDER BY seq LIMIT ${PAGE + 1}`,
+			const rows = db.query<Row>(
+				`SELECT * FROM ${t.nodes} WHERE seq >= ? ORDER BY seq LIMIT ${PAGE + 1}`,
 				[from]
 			)
 			const page = rows.slice(0, PAGE)
@@ -232,9 +266,11 @@ export function sqliteStore(db: DbAdapter): Store {
 		},
 
 		/**
-		 * Rule 2: every guard, then every write, in ONE transaction. Nothing here
-		 * awaits anything but the database, so the state a guard passed against
-		 * cannot move before the writes land.
+		 * Rule 2: every guard, then every write, in ONE ATOMIC transaction — both
+		 * halves of the rule, which is what the synchronous seam buys. Nothing here
+		 * touches anything but the database, so the state a guard passed against
+		 * cannot move before the writes land, and a write that fails takes the
+		 * whole batch back out with it.
 		 */
 		async commit(writes, guards) {
 			// Taken before the first `await`, which is where the caller gets control
@@ -243,21 +279,20 @@ export function sqliteStore(db: DbAdapter): Store {
 			const batch = structuredClone(writes)
 			const checks = structuredClone(guards)
 
-			await open()
-			await db.transaction(async (tx) => {
-				for (const guard of checks ?? [])
-					if (!(await passes(tx, guard))) throw new GuardError(guard)
+			open()
+			db.transactionSync(() => {
+				for (const guard of checks ?? []) if (!passes(guard)) throw new GuardError(guard)
 
 				// The next position, read from the table rather than counted in
 				// memory: another process commits into this same database, and two
 				// rows sharing a seq would let a resumed cursor step over one of them.
-				const [top] = await tx.query<Row>('SELECT MAX(seq) AS top FROM nodes')
+				const [top] = db.query<Row>(`SELECT MAX(seq) AS top FROM ${t.nodes}`)
 				let seq = toNumber(top?.top ?? -1) + 1
 
 				for (const write of batch) {
-					const old = await byId(tx, write.id)
+					const old = byId(write.id)
 					if (old && same(old, write)) continue // rule 3: a row the store already holds is a no-op
-					await tx.run(REPLACE, bind(write, seq++))
+					db.exec(REPLACE, bind(write, seq++))
 				}
 			})
 		},
@@ -274,14 +309,14 @@ export function sqliteStore(db: DbAdapter): Store {
 		// reader its own buffer, so nothing here can reach into stored content.
 		blobs: {
 			async has(hash) {
-				await open()
+				open()
 				return (
-					(await db.query('SELECT 1 AS held FROM blobs WHERE hash = ? LIMIT 1', [hash])).length > 0
+					db.query(`SELECT 1 AS held FROM ${t.blobs} WHERE hash = ? LIMIT 1`, [hash]).length > 0
 				)
 			},
 			async get(hash) {
-				await open()
-				const [found] = await db.query<Row>('SELECT data FROM blobs WHERE hash = ? LIMIT 1', [hash])
+				open()
+				const [found] = db.query<Row>(`SELECT data FROM ${t.blobs} WHERE hash = ? LIMIT 1`, [hash])
 				return found ? bytes(found.data) : null
 			},
 			async put(hash, data) {
@@ -289,8 +324,8 @@ export function sqliteStore(db: DbAdapter): Store {
 				// moment this call returns to it, and what lands must be what it
 				// handed over.
 				const held = new Uint8Array(data)
-				await open()
-				await db.run('INSERT OR IGNORE INTO blobs(hash, data) VALUES (?, ?)', [hash, held])
+				open()
+				db.exec(`INSERT OR IGNORE INTO ${t.blobs}(hash, data) VALUES (?, ?)`, [hash, held])
 			}
 		}
 	}
