@@ -296,10 +296,13 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   unbound mount reads as an empty read-only directory. A rename that
   resolves across two stores returns `EXDEV`, as `rename(2)` does for every
   cross-device rename; the volume emulates copy-then-remove, like `mv`, but
-  only for a move it can make whole — an ordinary row, into a free name, with
-  no mount under it. The rest keeps the `EXDEV`, because two stores are two
-  commits: there is no moment where a replaced name holds one or the other,
-  and a mount inside the source is a route the move would tombstone. A sync engine
+  only for a move that is two commits and no more — one row, into a free
+  name. A directory keeps the `EXDEV`: a subtree is a commit per row across
+  two stores with no guard spanning them, so anything that stops it leaves
+  half a subtree standing. So does a taken destination, since two commits
+  give no moment where the name holds one or the other. And a mount point is
+  no end of a rename at all — `EBUSY`, unbind it first, as `rm` already
+  answers on the same row. A sync engine
   receives one store and nothing else, so no delta, tombstone, or blob
   request can even name local data. This deletes the projection filter, the
   visible↔ignored transition rules, the effective-list hashing, and the

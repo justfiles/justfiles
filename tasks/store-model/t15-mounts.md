@@ -38,7 +38,7 @@ The key structural facts:
   resolution; operations inside the mount hit only the bound store.
 - An unbound mount reads as an empty read-only directory.
 - Cross-store rename returns `EXDEV`; the volume's `rename` falls back to
-  copy-then-remove. Assert the final state of BOTH stores.
+  copy-then-remove for one row. Assert the final state of BOTH stores.
 - Silent binding: an overlay entry `(parentId, name) → store`, checked during
   resolution BEFORE the synced-row lookup. Synced rows under that name stay
   shadowed, their blobs are never fetched, and removing the binding reveals the
@@ -100,12 +100,20 @@ a rename built out of one diverges once per field and once per rule.
 `{ ...row, id: fresh, parent, name, version }` — so nothing is enumerated and
 nothing can be left out.
 
-And it only ATTEMPTS a move it can make whole: an ordinary row, into a free
-name, with no mount under it. A mount point is not a row to move, a taken
-destination cannot be replaced across two commits, and a mount inside the source
-is a route the move would tombstone. Each of those keeps the `EXDEV` — which is
-what `rename(2)` answers for every cross-device rename, emulation being
-userspace's job there. The design doc's sentence on this is narrowed to match.
+And it only ATTEMPTS what is two commits and no more: one row into a free name,
+then that row's tombstone. A directory is a commit per row across two stores with
+no guard spanning them, so anything that stops it — a lazy row whose blob never
+arrived is enough — leaves half a subtree standing where nobody asked for it. A
+taken destination cannot be replaced across two commits either. Both keep the
+`EXDEV`, which is what `rename(2)` answers for every cross-device rename,
+emulation being userspace's job there. The design doc's sentence is narrowed to
+match.
+
+The tombstone is guarded on the row that MOVED, not on whatever the path holds
+by then: re-reading it would remove a concurrent writer's newer file and leave
+the snapshot standing at the destination. A guard that will not pass leaves a
+copy with its removal refused — a `cp` whose `rm` failed, which the caller can
+see and finish.
 
 `volume.store.mounts.test.ts` holds the pair to one of two answers, over a
 PRODUCT of source kinds and destination kinds rather than a list of cases: it
@@ -113,6 +121,8 @@ did what the one-store rename did, or it refused with `EXDEV` and left
 everything exactly as it was.
 
 `rm` of a BOUND mount point resolves to the bound store's root and is refused —
-`EBUSY` by another name; unbind first. An unbound one is an ordinary row and goes
-with it. Renaming a bound mount point moves the row and leaves the binding where
-it was pointed, exactly as an fstab entry does.
+`EBUSY` by another name; unbind first. A rename answers the same on either end,
+and has to ask the binding itself: both ends read their last component straight
+out of the table, which resolution never does — it reads the binding BEFORE the
+row, and there is no row there to read it before. An unbound mount is an ordinary
+row and moves and goes like one.

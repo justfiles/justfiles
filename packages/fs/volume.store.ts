@@ -565,8 +565,8 @@ export function storeVolume(
 	}
 
 	/**
-	 * `mv` across a store, which is what `EXDEV` leaves behind. It moves ROWS, and
-	 * that is the whole of why it is not `copy` then `rm`.
+	 * `mv` across a store, which is what `EXDEV` leaves behind. It moves ONE ROW,
+	 * and that is the whole of why it is not `copy` then `rm`.
 	 *
 	 * A copy is a different operation, and every difference is a way for a rename
 	 * built out of one to quietly mean something else. It chooses what to carry
@@ -581,34 +581,33 @@ export function storeVolume(
 	 * whatever a later field on `Node` adds, all travel by construction. The id is
 	 * the one thing that cannot travel: it belongs to the store that minted it.
 	 *
-	 * Not atomic, and it cannot be: two stores are two commits. That IS `EXDEV`.
+	 * Two stores are two commits, so this is not atomic and cannot be. That IS
+	 * `EXDEV`. What it can still refuse is a PARTIAL result, and it does that by
+	 * attempting only a move that is two commits and no more: the row into a free
+	 * name, then that row's tombstone. Each refusal below is a move that would need
+	 * a third.
 	 *
-	 * So it only attempts a move it can make WHOLE, and says `EXDEV` to the rest —
-	 * which is what the kernel says to EVERY cross-device rename, emulation being
-	 * userspace's job there. Half a move is worse than none, and each refusal below
-	 * is a move this cannot finish. A caller that wants one copies and removes, with
-	 * the semantics it chooses.
+	 * Half a move is worse than none, so the rest keeps its `EXDEV` and a caller
+	 * that wants it copies and removes, with the semantics it chooses — which is
+	 * what the kernel says to EVERY cross-device rename, emulation being userspace's
+	 * job there.
 	 */
 	async function moveAcross(oldPath: string, newPath: string): Promise<void> {
 		// Not followed: `mv` moves the link itself.
 		const src = await resolve(oldPath, false)
-		// A store's own root is not a row to move. `/private` is the mount POINT, an
-		// ordinary row in the store that holds it, and moving THAT is a one-store
-		// rename the primitive already made — this is resolution having crossed into
-		// what the point leads to.
-		if (src.node.id === ROOT) throw new Error(`EXDEV: ${oldPath} is a mount point`)
-		// A destination that exists would have to be replaced, and two stores are two
-		// commits: there is no moment where the name holds one or the other, and a
-		// failure between them takes the target with it.
+		// A directory is a WALK — a commit per row, in two stores, with no guard that
+		// spans them. Stop anywhere and half a subtree stands in a place nobody asked
+		// for; a lazy row whose blob never arrived is enough to stop it. This covers a
+		// bound mount point too, which resolution crossed: what stands here is the
+		// other store's root, and rule 6 makes that a directory.
+		if (isDir(src.node)) throw new Error(`EXDEV: ${oldPath} is a directory`)
+		// A destination that exists would have to be replaced, and two commits give no
+		// moment where the name holds one or the other.
 		if ((await find(newPath, false)) !== null) throw new Error(`EXDEV: ${newPath} is taken`)
-		// A mount under the source is a route into a third store, and the row that
-		// holds it is one this move is about to tombstone. Re-creating it elsewhere
-		// would leave two points and one binding, and removing it strands the store.
-		if (await holdsMount(src, new Set([src.node.id])))
-			throw new Error(`EXDEV: ${oldPath} holds a mount`)
-		// The moved row and the directory that gains it commit together — the
-		// parent-mtime rule, exactly as a create does — and replan together.
-		const top = await retry(async () => {
+
+		// The row and the directory that gains it commit together — the parent-mtime
+		// rule, exactly as a create does — and replan together.
+		await retry(async () => {
 			const to = await parentOf(newPath)
 			const row = reparent(src.node, to.dir.id, to.name)
 			await durable(to.store, row.content, src.store)
@@ -616,59 +615,40 @@ export function storeVolume(
 				[row, stamp(to.dir)],
 				[{ free: { parent: to.dir.id, name: to.name } }, unchanged(to.dir)]
 			)
-			return { store: to.store, node: row }
 		})
-		// Below the top row nothing is contended: every name is claimed inside a
-		// directory this move has just made.
-		if (isDir(src.node)) await graft(src, top, new Set([src.node.id]))
-		await vol.rm(oldPath, { recursive: true })
+
+		// The row that MOVED, and never whatever has since taken its name. Re-reading
+		// the path here would remove a concurrent writer's newer file and leave the
+		// snapshot standing at the destination; the version is the whole difference
+		// between the two. A guard that will not pass leaves a copy with its removal
+		// refused, which is a `cp` whose `rm` failed — visible, and finishable.
+		await retry(async () => {
+			const dir = await src.store.get(src.node.parent)
+			if (dir === null) throw new Error(`ENOENT: ${oldPath}`)
+			await src.store.commit([tomb(src.node), stamp(dir)], [unchanged(src.node), unchanged(dir)])
+		})
 	}
 
 	/** One row, placed somewhere else. The whole rule of a move. */
 	const reparent = (row: Node, parent: NodeId, name: string): Node => ({
 		...row,
-		id: crypto.randomUUID(),
+		id: crypto.randomUUID(), // minted once, never rebound
 		parent,
 		name,
 		version: mint()
 	})
 
 	/**
-	 * Everything under `from`, written into `into`. A mount is not crossed: its row
-	 * moves like any other and its binding stays where it was pointed, which is
-	 * what the one-store rename does too. Crossing would write another store's rows
-	 * into this one, which is the whole thing a mount exists to prevent.
-	 *
-	 * Bounded by a visited set, like every other walk here (rule 9).
+	 * Is a mount standing on this name? Both ends of a rename read their last
+	 * component straight out of the table, which `resolve` never does — it reads
+	 * the binding BEFORE the row, and there is no row here to read it before. So
+	 * the binding is asked here instead. Otherwise a mount point moves out from
+	 * under the store it leads to, and a bound name with no row under it reads as
+	 * free and swallows whatever lands on it. `EBUSY`: unbind first, which is what
+	 * `rm` already answers on the same row.
 	 */
-	async function graft(from: At, into: At, seen: Set<NodeId>): Promise<void> {
-		for await (const child of childrenOf(from.store, from.node.id)) {
-			if (seen.has(child.id)) continue
-			seen.add(child.id)
-			const row = reparent(child, into.node.id, child.name)
-			await durable(into.store, row.content, from.store)
-			await into.store.commit([row], [{ free: { parent: row.parent, name: row.name } }])
-			if (isDir(child))
-				await graft({ store: from.store, node: child }, { store: into.store, node: row }, seen)
-		}
-	}
-
-	/**
-	 * Is there a mount at or under this row? Bounded by a visited set (rule 9).
-	 *
-	 * Both kinds count. An announced one is a `mount` row; a silent one is a binding
-	 * with no row at all, so the table is what has to be asked.
-	 */
-	async function holdsMount(at: At, seen: Set<NodeId>): Promise<boolean> {
-		if (boundIn(at.store, at.node.id) !== undefined) return true
-		for await (const child of childrenOf(at.store, at.node.id)) {
-			if (seen.has(child.id)) continue
-			seen.add(child.id)
-			if (child.type === 'mount') return true
-			if (isDir(child) && (await holdsMount({ store: at.store, node: child }, seen))) return true
-		}
-		return false
-	}
+	const bound = (end: { store: Store; dir: Node; name: string }): boolean =>
+		boundIn(end.store, end.dir.id)?.has(end.name) ?? false
 
 	/**
 	 * A rename, as ONE guarded commit — and one commit belongs to one store, so a
@@ -679,10 +659,12 @@ export function storeVolume(
 		retry(async () => {
 			const walked: At[] = []
 			const from = await parentOf(oldPath, walked)
+			if (bound(from)) throw new Error(`EBUSY: ${oldPath}`)
 			// Not followed, again: `mv` moves the link itself.
 			const node = await from.store.child(from.dir.id, from.name)
 			if (node === null) throw new Error(`ENOENT: ${oldPath}`)
 			const to = await parentOf(newPath, walked)
+			if (bound(to)) throw new Error(`EBUSY: ${newPath}`)
 			if (to.store !== from.store) throw new Error(`EXDEV: ${oldPath} -> ${newPath}`)
 			// Moving a row below itself makes a detached cycle.
 			const checked = await within(from.store, to.dir, node.id)

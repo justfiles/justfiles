@@ -241,7 +241,58 @@ describe('crossing', () => {
 		await expect(vol.rename('/private', '/private/self')).rejects.toThrow(/^EROFS/)
 	})
 
-	it('falls back to copy-then-remove when a rename crosses stores', async () => {
+	it('refuses a rename onto a mount point', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.writeFile('/private/env', enc.encode('SECRET'))
+		await vol.mkdir('/src')
+		await vol.writeFile('/src/note.md', enc.encode('go'))
+
+		// A binding stands ABOVE the table, so a row written under this name would be
+		// invisible the moment it landed — and the mount row it replaced is gone for
+		// every replica. `EBUSY`: unmount it first, the way `rm` already answers.
+		await expect(vol.rename('/src', '/private')).rejects.toThrow(/^EBUSY/)
+
+		expect((await outer.child(ROOT, 'private'))?.type).toBe('mount')
+		expect(dec.decode(await vol.readFile('/private/env'))).toBe('SECRET')
+		expect(dec.decode(await vol.readFile('/src/note.md'))).toBe('go')
+	})
+
+	it('refuses a rename onto a silent binding, which has no row at all', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'hidden', priv) })
+		await vol.writeFile('/hidden/env', enc.encode('SECRET'))
+		await vol.mkdir('/src')
+
+		// Nothing holds the name in the table, so a lookup there reads it as free.
+		// The binding is what holds it.
+		await expect(vol.rename('/src', '/hidden')).rejects.toThrow(/^EBUSY/)
+
+		expect(await outer.child(ROOT, 'hidden')).toBeNull()
+		expect(dec.decode(await vol.readFile('/hidden/env'))).toBe('SECRET')
+		expect(await vol.exists('/src')).toBe(true)
+	})
+
+	it('refuses a rename off a mount point', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		await vol.writeFile('/private/env', enc.encode('SECRET'))
+
+		// The same rule from the other end: moving the row would leave the binding
+		// pointing at the name it left, and the store reachable through neither.
+		await expect(vol.rename('/private', '/archive')).rejects.toThrow(/^EBUSY/)
+
+		expect((await outer.child(ROOT, 'private'))?.type).toBe('mount')
+		expect(await outer.child(ROOT, 'archive')).toBeNull()
+		expect(dec.decode(await vol.readFile('/private/env'))).toBe('SECRET')
+	})
+
+	it('re-creates the row under a new id when a rename crosses stores', async () => {
 		const outer = memStore()
 		const priv = memStore()
 		await mkmount(outer, ROOT, 'private')
@@ -249,20 +300,17 @@ describe('crossing', () => {
 		const kyoto = await mkfile(outer, notes, 'kyoto.md', 'go')
 		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
 
-		await vol.rename('/notes', '/private/notes')
+		await vol.rename('/notes/kyoto.md', '/private/kyoto.md')
 
-		// The synced store lost the whole subtree...
-		expect(await outer.child(ROOT, 'notes')).toBeNull()
-		expect((await outer.get(notes))?.deleted).toBe(true)
+		// The synced store lost the row...
+		expect(await outer.child(notes, 'kyoto.md')).toBeNull()
 		expect((await outer.get(kyoto))?.deleted).toBe(true)
-		// ...and the bound one gained it under NEW ids. A rename moves one row and
+		// ...and the bound one gained it under a NEW id. A rename moves one row and
 		// keeps its id; nothing that crosses a store can, which is what EXDEV says.
-		const there = await priv.child(ROOT, 'notes')
-		expect(there?.id).not.toBe(notes)
-		expect((await priv.child(there?.id ?? ROOT, 'kyoto.md'))?.id).not.toBe(kyoto)
+		expect((await priv.child(ROOT, 'kyoto.md'))?.id).not.toBe(kyoto)
 		// The bytes crossed too: a hash names nothing in a store that lacks them.
 		expect(await priv.blobs.has(await hash(enc.encode('go')))).toBe(true)
-		expect(dec.decode(await vol.readFile('/private/notes/kyoto.md'))).toBe('go')
+		expect(dec.decode(await vol.readFile('/private/kyoto.md'))).toBe('go')
 	})
 
 	it('keeps the guards of both endpoint walks inside one mount', async () => {
@@ -523,35 +571,7 @@ describe('a rename across a mount is still a rename', () => {
 	// a move is worse than none — so `EXDEV` reaches the caller, exactly as it does
 	// for every cross-device rename the kernel is asked for.
 
-	it('refuses to move a mount point into another store', async () => {
-		const outer = memStore()
-		const priv = memStore()
-		const other = memStore()
-		await mkmount(outer, ROOT, 'private')
-		await mkmount(outer, ROOT, 'other')
-		const vol = storeVolume(outer, {
-			bindings: new Map([
-				[
-					ROOT,
-					new Map([
-						['private', priv],
-						['other', other]
-					])
-				]
-			])
-		})
-		await vol.writeFile('/private/env', enc.encode('SECRET'))
-
-		// `/private` names the mount POINT, and resolution crosses it — so what a
-		// move would find there is the local store's root, not a row to move.
-		await expect(vol.rename('/private', '/other/moved')).rejects.toThrow(/^EXDEV/)
-
-		expect((await outer.child(ROOT, 'private'))?.type).toBe('mount')
-		expect(dec.decode(await vol.readFile('/private/env'))).toBe('SECRET')
-		expect(await vol.readdir('/other')).toEqual([])
-	})
-
-	it('refuses to move a directory into a store mounted beneath it', async () => {
+	it('refuses to move a directory, so nothing is left half-moved', async () => {
 		const outer = memStore()
 		const priv = memStore()
 		const src = await mkdir(outer, ROOT, 'src')
@@ -559,8 +579,8 @@ describe('a rename across a mount is still a rename', () => {
 		const vol = storeVolume(outer, { bindings: binding(src, 'private', priv) })
 		await vol.writeFile('/src/private/env', enc.encode('SECRET'))
 
-		// The route to the local store is the very row this move would tombstone,
-		// which would strand what it had just written there.
+		// A subtree is a commit per row across two stores. This one would also
+		// tombstone the very row that leads to the store it is moving into.
 		await expect(vol.rename('/src', '/src/private/moved')).rejects.toThrow(/^EXDEV/)
 
 		expect(await vol.exists('/src')).toBe(true)
@@ -584,6 +604,87 @@ describe('a rename across a mount is still a rename', () => {
 		expect(dec.decode(await vol.readFile('/private/kyoto.md'))).toBe('keep')
 	})
 
+	it('refuses a directory outright, rather than half-filling the destination', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const notes = row({ parent: ROOT, name: 'notes', type: 'dir', mode: 0o040755 })
+		const here = enc.encode('here')
+		const held = await hash(here)
+		await outer.blobs.put(held, here)
+		// One row with its bytes and one without — what a lazy pull leaves until the
+		// blob catches up. A walk that commits as it goes publishes the first and then
+		// stops on the second, and the caller is left holding half a subtree.
+		await outer.commit([
+			notes,
+			row({ parent: notes.id, name: 'a.md', type: 'file', content: held, size: 4n }),
+			row({
+				parent: notes.id,
+				name: 'b.md',
+				type: 'file',
+				content: await hash(enc.encode('gone')),
+				size: 4n
+			})
+		])
+
+		await expect(vol.rename('/notes', '/private/notes')).rejects.toThrow(/^EXDEV/)
+
+		expect(await priv.child(ROOT, 'notes')).toBeNull()
+		expect(await vol.readdir('/private')).toEqual([])
+		expect((await vol.readdir('/notes')).map((entry) => entry.name).sort()).toEqual([
+			'a.md',
+			'b.md'
+		])
+	})
+
+	it('refuses one row whose bytes are missing, before anything moves', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', priv) })
+		const gone = await hash(enc.encode('gone'))
+		await outer.commit([
+			row({ parent: ROOT, name: 'kyoto.md', type: 'file', content: gone, size: 4n })
+		])
+
+		await expect(vol.rename('/kyoto.md', '/private/kyoto.md')).rejects.toThrow(/^ENOENT/)
+
+		// Rule 10 is what makes this safe rather than lucky: the bytes go first, so a
+		// store that cannot supply them fails before any row names them.
+		expect(await priv.child(ROOT, 'kyoto.md')).toBeNull()
+		expect((await outer.child(ROOT, 'kyoto.md'))?.deleted).toBeUndefined()
+	})
+
+	it('removes the row it moved, and never what took its place', async () => {
+		const outer = memStore()
+		const priv = memStore()
+		await mkmount(outer, ROOT, 'private')
+		let raced = false
+		// Another writer replaces the source between the two commits. That window is
+		// what `EXDEV` IS, and a removal that re-reads the path would take the newer
+		// file with it — losing the write and leaving the stale copy standing.
+		const racing: Store = {
+			...priv,
+			async commit(writes, guards) {
+				await priv.commit(writes, guards)
+				if (raced) return
+				raced = true
+				await vol.writeFile('/kyoto.md', enc.encode('newer'))
+			}
+		}
+		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', racing) })
+		await vol.writeFile('/kyoto.md', enc.encode('go'))
+
+		await expect(vol.rename('/kyoto.md', '/private/kyoto.md')).rejects.toThrow(GuardError)
+
+		expect(raced).toBe(true)
+		// A copy with its removal refused — which is what a failed `rm` after a `cp`
+		// leaves, and something the caller can see and finish.
+		expect(dec.decode(await vol.readFile('/kyoto.md'))).toBe('newer')
+		expect(dec.decode(await vol.readFile('/private/kyoto.md'))).toBe('go')
+	})
+
 	// The differential above pins the two to each other; this pins them to
 	// something, so they cannot agree by both being empty.
 	it('carries the whole row, not a list of its fields', async () => {
@@ -592,54 +693,29 @@ describe('a rename across a mount is still a rename', () => {
 		const vol = storeVolume(outer, { bindings: binding(ROOT, 'private', memStore()) })
 		await seed(outer, ROOT, 'src')
 
-		await vol.rename('/src', '/private/dest')
+		await vol.rename('/src/deep/kyoto.md', '/private/kyoto.md')
+		await vol.rename('/src/link', '/private/link')
 
-		expect(await tree(vol, '/private/dest')).toEqual({
-			'/': {
-				type: FileType.Directory,
-				mode: 0o755,
-				size: 0n,
-				mtimeNs: 1_000n,
-				content: undefined,
-				link: undefined,
-				xattrs: { 'user.tag': 'root' }
-			},
-			'/deep': {
-				type: FileType.Directory,
-				mode: 0o750,
-				size: 0n,
-				mtimeNs: 2_000n,
-				content: undefined,
-				link: undefined,
-				xattrs: { 'user.tag': 'folder' }
-			},
-			'/deep/kyoto.md': {
-				type: FileType.Regular,
-				mode: 0o600,
-				size: 2n,
-				mtimeNs: 3_000n,
-				content: await hash(enc.encode('go')),
-				link: undefined,
-				xattrs: { 'user.tag': 'trip' }
-			},
-			'/empty': {
-				type: FileType.Directory,
-				mode: 0o700,
-				size: 0n,
-				mtimeNs: 4_000n,
-				content: undefined,
-				link: undefined,
-				xattrs: {}
-			},
-			'/link': {
-				type: FileType.Symlink,
-				mode: 0o777,
-				size: 13n,
-				mtimeNs: 5_000n,
-				content: undefined,
-				link: 'deep/kyoto.md',
-				xattrs: { 'user.tag': 'trip' }
-			}
+		const there = await tree(vol, '/private')
+		expect(there['/kyoto.md']).toEqual({
+			type: FileType.Regular,
+			mode: 0o600,
+			size: 2n,
+			mtimeNs: 3_000n,
+			content: await hash(enc.encode('go')),
+			link: undefined,
+			xattrs: { 'user.tag': 'trip' }
+		})
+		expect(there['/link']).toEqual({
+			type: FileType.Symlink,
+			mode: 0o777,
+			size: 13n,
+			mtimeNs: 5_000n,
+			content: undefined,
+			link: 'deep/kyoto.md',
+			// A relative target follows the link, so this one now dangles — and the
+			// xattrs read through it are the target's, not the link's.
+			xattrs: {}
 		})
 	})
 })
