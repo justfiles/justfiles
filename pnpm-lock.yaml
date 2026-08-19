@@ -329,9 +329,6 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../../packages/sync
       '@justfiles/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -492,9 +489,6 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../sync
       just-bash:
         specifier: 3.0.2
         version: 3.0.2
@@ -536,9 +530,6 @@ importers:
         specifier: ^5.6.0
         version: 5.6.0
     devDependencies:
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../sync
       '@justfiles/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -801,9 +792,6 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
-      '@justfiles/sync':
-        specifier: workspace:*
-        version: link:../sync
       hono:
         specifier: 4.11.1
         version: 4.11.1
@@ -811,6 +799,9 @@ importers:
         specifier: ^4.3.6
         version: 4.4.3
     devDependencies:
+      '@justfiles/sync':
+        specifier: workspace:*
+        version: link:../sync
       '@justfiles/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

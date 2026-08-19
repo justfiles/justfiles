@@ -1,12 +1,23 @@
-import { type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/sync/storage/mem'
+import type { Volume } from '@justfiles/fs'
+import type { Cursor, Store } from '@justfiles/fs/store'
+import { memStore } from '@justfiles/fs/store.mem'
+import { storeVolume } from '@justfiles/fs/volume.store'
 import { expect, test } from 'vitest'
 import { stateStore } from './kernel.state.ts'
 
 // The state store in isolation — no kernel, no sandbox, just a fs. Covers the
 // in-memory/write-through cache, monotonic seq, fs hydration on boot, and drop.
 
-const fresh = () => volume(memStorage())
+const fresh = () => storeVolume(memStore())
+
+/**
+ * What a peer would be offered from `at` onwards — which is what "no write happened"
+ * has to mean here. Rule 3 makes a row identical to the stored one a no-op, so it takes
+ * no new position in the one order, and a position is exactly what sync picks up.
+ */
+const caughtUp = async (store: Store): Promise<Cursor | undefined> => (await store.since()).next
+const offered = async (store: Store, at: Cursor | undefined): Promise<number> =>
+	(await store.since(at)).nodes.length
 test('current is undefined and seq is 0 before any commit', async () => {
 	const s = stateStore(fresh())
 	expect(await s.current('a')).toBeUndefined()
@@ -45,39 +56,35 @@ test('state and seq are tracked per app', async () => {
 })
 
 test('a commit that lands the same value writes nothing', async () => {
-	const storage = memStorage()
-	const s = stateStore(volume(storage))
-	const journal = storage.sync.journal
-	if (!journal) throw new Error('memStorage exposes no journal')
+	const store = memStore()
+	const s = stateStore(storeVolume(store))
 	await s.commit('a', { n: 1 })
-	const head = await journal.head()
+	const at = await caughtUp(store)
 
 	// The reducer folded a subscription wake into an identical state: no write, so
 	// no new version and — the point — nothing for sync to pick up and hand to the
 	// other replica, whose own apps would wake on it in turn.
 	expect(await s.commit('a', { n: 1 })).toBe(1)
 	expect(s.seq('a')).toBe(1)
-	expect(await journal.head()).toBe(head)
+	expect(await offered(store, at)).toBe(0)
 
 	// A real change still writes and versions.
 	expect(await s.commit('a', { n: 2 })).toBe(2)
-	expect(await journal.head()).toBeGreaterThan(head)
+	expect(await offered(store, at)).toBe(1)
 })
 
 test('a hydrated store skips a re-commit of what it read', async () => {
-	const storage = memStorage()
-	const fs = volume(storage)
-	const journal = storage.sync.journal
-	if (!journal) throw new Error('memStorage exposes no journal')
+	const store = memStore()
+	const fs = storeVolume(store)
 	await stateStore(fs).commit('a', { n: 7 })
-	const head = await journal.head()
+	const at = await caughtUp(store)
 
 	// Boot: the state came off disk, so re-committing it (a first dispatch that
 	// changes nothing) must not rewrite the file either.
 	const rebooted = stateStore(fs)
 	expect(await rebooted.current('a')).toEqual({ n: 7 })
 	expect(await rebooted.commit('a', { n: 7 })).toBe(0)
-	expect(await journal.head()).toBe(head)
+	expect(await offered(store, at)).toBe(0)
 })
 
 test('a slow first read cannot leave the store believing a stale file', async () => {

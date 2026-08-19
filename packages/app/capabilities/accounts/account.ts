@@ -8,7 +8,7 @@
 // SecretCodec (default clear — see secret-codec.ts). `creds` are opaque here: only the
 // owning provider ever interprets them. `/private` never replicates, in either direction:
 // a capability routes to the host that owns the credential, so no peer needs the bytes
-// (see @justfiles/fs PRIVATE_PREFIXES).
+// (the host joins its own store at that name; see @justfiles/agent SECRET_PREFIXES).
 
 import type { Volume } from '@justfiles/fs'
 import { clearSecretCodec, isSealed } from './secret-codec.ts'

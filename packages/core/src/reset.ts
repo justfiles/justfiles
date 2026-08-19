@@ -7,89 +7,20 @@
  * - `decideReset` — a pure CAS over the `fs_generation` row: `fromGeneration` must
  *   match, so racing resets can't double-bump; `operationId` makes delivery
  *   idempotent and `resetId` names an adopt-mine republish.
- * - `resetVolume` — one SQLite transaction that CAS-checks, truncates the tree +
- *   sync tables (+ content for `wipe`), recreates the root inode, and bumps
- *   `generation`. Atomic against a real BEGIN/COMMIT adapter.
+ * - `resetStore` — one ATOMIC transaction that CAS-checks, empties the stores the
+ *   mode names, and bumps `generation`.
  *
  * The republish after a "take mine" is ordinary sync, not a special server op, so
  * there is no publishing lock or finalize. `resetId` is an advisory "reset in
  * progress" flag, cleared by `clearReset` when the republish drains; a
- * stale/never-sent clear is a harmless no-op. The reset endpoints live outside
+ * stale/never-sent clear is a harmless no-op. The DESTRUCTIVE endpoints live outside
  * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
-import { PRIVATE_PREFIXES } from '@justfiles/sync/replica'
 import type { DbAdapter, SyncDb } from './db'
 import { emptyStore } from './store.sqlite'
 
-// Root inode + storage-kind constants, matching storage.sqlite.ts's bootstrap
-// INSERT so a reset recreates an identical root (kept local to keep this module
-// dependency-free of the storage internals).
-const ROOT_INO = '1'
-const TYPE_DIRECTORY = 1 // FileType.Directory
-const STORAGE_NONE = 0
-
-// Tables a reset always clears. Tree = the inode graph; sync = path and node
-// identity/journal state. Content is mode-specific (see `resetVolume`). Child rows
-// first: fs_dirents/fs_xattrs FK-reference fs_inodes (ON DELETE RESTRICT), so the
-// inodes can only be deleted once nothing points at them.
-const TREE_TABLES = ['fs_dirents', 'fs_xattrs', 'fs_inodes'] as const
-const SYNC_TABLES = [
-	'fs_path_journal',
-	'fs_path_version',
-	'fs_node_operations',
-	'fs_node_journal_mutations',
-	'fs_node_journal',
-	'fs_sync_nodes'
-] as const
-const CONTENT_TABLES = ['fs_contents', 'fs_content_fts'] as const
-
 export type ResetMode = 'adopt-mine' | 'wipe'
-
-/**
- * Every inode of the private roots (`/private`, `/.state`) plus the root itself,
- * resolved through dirents.
- *
- * An `adopt-mine` truncates the tree so the initiator can republish it — but the
- * initiator CANNOT republish these: they never cross the wire, by design, so
- * truncating them would destroy THIS host's own credentials with no way back (the
- * client's snapshot has never contained them). A `wipe` is an explicit "delete
- * everything", so it keeps deleting them.
- *
- * A plain BFS, not a recursive CTE: the tree is a handful of small JSON files, and
- * this stays portable across the DO and node:sqlite with no JSON1/CTE assumptions.
- */
-async function privateInos(tx: DbAdapter): Promise<string[]> {
-	const keep = new Set<string>()
-	const queue: string[] = []
-	for (const prefix of PRIVATE_PREFIXES) {
-		let ino: string | undefined = ROOT_INO
-		for (const segment of prefix.split('/').filter(Boolean)) {
-			const rows: { ino: unknown }[] = await tx.query<{ ino: unknown }>(
-				'SELECT ino FROM fs_dirents WHERE dir_ino = ? AND name = ? LIMIT 1',
-				[ino, segment]
-			)
-			ino = rows[0] === undefined ? undefined : String(rows[0].ino)
-			if (ino === undefined) break
-		}
-		if (ino !== undefined) queue.push(ino)
-	}
-	if (queue.length === 0) return []
-	// The root is kept too: a preserved subtree's dirent FK-references it (ON DELETE
-	// RESTRICT), so deleting the root would fail — and the volume needs one anyway.
-	keep.add(ROOT_INO)
-	while (queue.length > 0) {
-		const ino = queue.pop() as string
-		if (keep.has(ino)) continue
-		keep.add(ino)
-		for (const row of await tx.query<{ ino: unknown }>(
-			'SELECT ino FROM fs_dirents WHERE dir_ino = ?',
-			[ino]
-		))
-			queue.push(String(row.ino))
-	}
-	return [...keep]
-}
 
 /** The `fs_generation` row, decoded. */
 export interface GenerationState {
@@ -178,7 +109,7 @@ export function decideReset(current: GenerationState, req: ResetRequest): ResetD
 /**
  * The generation row, as SQL and a codec — written once and read through both
  * seams. The row is the same row whichever one asks for it: `DbAdapter` for the
- * old model's routes, `SyncDb` for the reset that has to be atomic (`db.ts`).
+ * routes that only READ it, `SyncDb` for the reset that has to be atomic (`db.ts`).
  */
 const GENERATION_SELECT = `SELECT generation, reset_id, lineage_id,
 		reset_operation_id, reset_operation_generation
@@ -225,11 +156,6 @@ export async function readGenerationState(db: DbAdapter): Promise<GenerationStat
 	return decodeGeneration((await db.query(GENERATION_SELECT))[0])
 }
 
-/** The lineage epoch — the value stamped on the handshake and fenced on writes. */
-export async function readGeneration(db: DbAdapter): Promise<number> {
-	return (await readGenerationState(db)).generation
-}
-
 async function writeGenerationState(db: DbAdapter, next: GenerationState): Promise<void> {
 	await db.run(GENERATION_UPSERT, generationArgs(next))
 }
@@ -250,62 +176,13 @@ export async function readResetStatus(db: DbAdapter, operationId: string): Promi
 // ── Transaction bodies ──────────────────────────────────────────────────────────
 
 /**
- * Apply a reset in ONE transaction: CAS, truncate the tree + sync tables (+ the
- * content tables for `wipe`, so no client can fetch/search discarded bytes),
- * recreate the root inode, bump the generation, and store the operation acknowledgement
- * plus `resetId`. `adopt-mine`
- * keeps the content tables — lazy blobs the republish reuses — and the private
- * subtrees, which no republish could restore (see `privateInos`).
- */
-export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<ResetDecision> {
-	let result: ResetDecision | undefined
-	await db.transaction(async (tx) => {
-		const current = await readGenerationState(tx)
-		const decision = decideReset(current, req)
-		if (!decision.ok) {
-			result = decision
-			return
-		}
-		if (decision.replayed) {
-			result = decision
-			return
-		}
-		const keep = req.mode === 'adopt-mine' ? await privateInos(tx) : []
-		const survives = keep.length > 0 ? ` WHERE ino NOT IN (${keep.map(() => '?').join(',')})` : ''
-		// Child rows first (FK RESTRICT), and the kept closure is complete — every
-		// surviving dirent's `dir_ino` is in `keep` too, so no FK is left dangling.
-		for (const table of TREE_TABLES) await tx.run(`DELETE FROM ${table}${survives}`, keep)
-		for (const table of SYNC_TABLES) await tx.run(`DELETE FROM ${table}`)
-		await tx.run('UPDATE fs_node_clock SET head = 0 WHERE id = 1')
-		if (req.mode === 'wipe')
-			for (const table of CONTENT_TABLES) await tx.run(`DELETE FROM ${table}`)
-		// Recreate root ino=1 so the volume has a root immediately (the storage's
-		// ensureBootstrapped cache would otherwise skip re-seeding it). DO NOTHING, not
-		// REPLACE: a preserved root must keep its identity (REPLACE is delete+insert,
-		// which a kept dirent's FK would refuse). Identical when the tree was truncated.
-		const now = BigInt(Date.now()) * 1_000_000n
-		await tx.run(
-			`INSERT INTO fs_inodes(
-				ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-			) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-			 ON CONFLICT(ino) DO NOTHING`,
-			[ROOT_INO, TYPE_DIRECTORY, 0o755, 0, now, now, STORAGE_NONE]
-		)
-		await writeGenerationState(tx, decision.next)
-		result = decision
-	})
-	if (!result) throw new Error('resetVolume: transaction did not resolve')
-	return result
-}
-
-/**
- * What a reset empties, in the store model: the synced tree, and — for a wipe — the
- * host's own stores joined at a name.
+ * What a reset empties: the synced tree, and — for a wipe — the host's own stores
+ * joined at a name.
  *
- * The old model needed `privateInos` to walk out the subtrees an adopt-mine must not
- * destroy, because they were rows in the same tree it was truncating. Here they are a
- * DIFFERENT STORE, so keeping them is not something this has to remember to do: an
- * adopt-mine names the synced store and the credentials are simply not in it.
+ * The old model had to walk out the subtrees an adopt-mine must not destroy, because
+ * they were rows in the same tree it was truncating. Here they are a DIFFERENT STORE, so
+ * keeping them is not something this has to remember to do: an adopt-mine names the
+ * synced store and the credentials are simply not in it.
  */
 export type ResetStores = {
 	/** The synced tree, emptied by every mode. Its content survives an `adopt-mine`. */

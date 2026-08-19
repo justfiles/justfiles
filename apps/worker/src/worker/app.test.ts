@@ -1,35 +1,25 @@
-import { ROOT_NODE_ID } from '@justfiles/sync/node'
-import { nodeMemStorage } from '@justfiles/sync/storage/node-mem'
+/**
+ * The host's one claim: both routes stand over the SAME store.
+ *
+ * The seam's own behaviour is core's to prove (`store.api.test.ts` runs the whole
+ * conformance suite over this wire). What is only this file's to get wrong is the
+ * wiring — a `fileApi` built over a different store than `storeApi` would read an
+ * empty tree and say ENOENT to a file the seam just accepted.
+ */
+import { memStore } from '@justfiles/fs/store.mem'
+import { storeVolume } from '@justfiles/fs/volume.store'
 import { expect, test } from 'vitest'
 import { createWorkerApiApp } from './app'
 
-test('the filesystem host stamps the authenticated user as operation origin', async () => {
-	const app = createWorkerApiApp({ fs: nodeMemStorage() })
-	const response = await app.request('/fs/node/operations', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'x-user-id': 'verified-user' },
-		body: JSON.stringify({
-			operations: [
-				{
-					operationId: 'create-docs',
-					mutations: [
-						{
-							kind: 'create',
-							nodeId: 'docs-id',
-							parentId: ROOT_NODE_ID,
-							name: 'docs',
-							baseRevision: 0,
-							revision: 1,
-							meta: { type: 1, mode: 0o755, mtimeNs: '0', size: '0' }
-						}
-					]
-				}
-			]
-		})
-	})
+test('a file written through the seam reads back through the one-request route', async () => {
+	const store = memStore()
+	const app = createWorkerApiApp({ store })
+	const volume = storeVolume(store)
+	await volume.mkdir('/notes')
+	await volume.writeFile('/notes/hello.md', new TextEncoder().encode('# hi'))
+
+	const response = await app.request('/store/file/notes/hello.md')
 
 	expect(response.status).toBe(200)
-	expect(await response.json()).toMatchObject({
-		results: [{ status: 'accepted', operation: { origin: 'verified-user' } }]
-	})
+	expect(await response.text()).toBe('# hi')
 })

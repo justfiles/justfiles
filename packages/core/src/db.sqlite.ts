@@ -62,7 +62,7 @@ export function createSqliteSyncDb(db: BunDatabase): SyncDb {
  * `DbAdapter` is unchanged: this is the driver keeping the promise the word "transaction"
  * already made, not a new capability for callers to reason about.
  *
- * The DO adapter (`createDOSqliteAdapter`) needs none of this: it issues no `BEGIN` at all
+ * The DO adapter (`createDoAdapter`) needs none of this: it issues no `BEGIN` at all
  * and leans on the Durable Object running one event at a time.
  */
 export function createSqliteAdapter(db: BunDatabase): DbAdapter {

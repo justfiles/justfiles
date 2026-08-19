@@ -53,7 +53,7 @@ const fresh = () => sqliteStore(adapter(new DatabaseSync(':memory:')))
 
 /**
  * The PRODUCTION adapter's value handling, which the one above does not share:
- * `createDOSqliteAdapter` binds a bigint as a decimal string, and the Durable
+ * `createDoSyncDb` binds a bigint as a decimal string, and the Durable
  * Object hands every column back as `ArrayBuffer | string | number | null` —
  * `SqlStorageValue` has no bigint. Reading integers as numbers (no
  * `setReadBigInts`) is what reproduces that half here.
