@@ -11,7 +11,7 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
-import type { AppManifest, InstalledApp } from './app.ts'
+import type { AppManifest } from './app.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -232,7 +232,8 @@ async function performInstall(kernel: Kernel, store: AppStore, app: CatalogApp):
 }
 
 /**
- * Warm the cache with everything a hosted app mounts, so it runs offline.
+ * Warm the cache with the files a hosted app cannot be shown or opened without:
+ * the two its manifest NAMES, its GUI and its icon.
  *
  * Fast-follow, not part of the install: the record and the reducer are already
  * in the volume when this starts, so an interrupted prefetch leaves a working
@@ -245,35 +246,40 @@ async function performInstall(kernel: Kernel, store: AppStore, app: CatalogApp):
  *
  * It reads through `mount()` — fetch and verify against the pin — so the host's
  * fetch layer fills exactly the entries a later read requests.
+ *
+ * Those two and no more, because "every mounted file" is not a bounded set. One app
+ * ships a compiler SDK: 236 of its 238 mounted files, against a runner cache of 500
+ * entries, warmed into every user's browser at boot — and warmed again on every
+ * install, every catalog change and every burst of sync traffic, since a skip is
+ * where this runs. Growing that set evicts the other apps' assets to hold an SDK
+ * most sessions never open. What the manifest names is bounded by the record's own
+ * shape instead, and the rest of a bundle stays pinned in the record and mounts on
+ * demand, verified by the read that asks for it.
+ *
+ * The icon is not decoration here: a host that draws its launcher through the kernel
+ * (the Mac daemon) reads it exactly like the GUI, so an app whose icon is cold has
+ * no face offline. A host that renders icons over HTTP instead (frieren's dock)
+ * fetches the same URL its own way, and this fills the same cache.
+ *
+ * What is given up is an app whose GUI needs more than itself to start — a chunked
+ * build, an asset fetched at load — on a device that has never opened it and is
+ * offline. Bounded per app, and the app with a real appetite for offline assets is
+ * where that gets answered, not here.
+ *
+ * A skipped app that arrived through SYNC is the same call and the same reason: it
+ * ran no install here, so nothing filled this browser's cache, and reconcile is the
+ * only pass that can notice. Reads go through the host cache, so an app already
+ * holding its entries moves no payload again.
  */
 async function prefetchApp(kernel: Kernel, appId: string): Promise<void> {
 	const installed = await kernel.app(appId)
-	await warm(installed, Object.keys(installed.manifest.files ?? {}))
-}
-
-/**
- * The same warming, for an app that never installed on THIS device.
- *
- * A hosted app arrives through sync fully formed — another device installed it,
- * and the record and reducer replicated here — so no install ran locally and
- * nothing filled the cache. `decide` is right to skip it (the volume does match
- * the catalog; the mounted half is a cache, not part of the install), which
- * leaves reconcile as the only pass that can notice, and multi-device is the
- * ordinary way a second device gets an app.
- *
- * Reads still go through the host cache, so an already-cached immutable release
- * does not move its payload again.
- */
-async function warm(installed: InstalledApp, queue: string[]): Promise<void> {
-	const readOne = async (): Promise<void> => {
-		// Swallowed per file: being offline, or reaching an origin that is not serving
-		// this release yet, leaves a cold cache rather than a broken app — the file
-		// mounts on demand later exactly as it did before. Both callers swallow the
-		// whole pass as well, because both run after the app is already usable.
-		for (let path = queue.pop(); path; path = queue.pop())
-			await installed.read(path).catch(() => {})
+	for (const path of [installed.manifest.gui, installed.manifest.icon]) {
+		// Swallowed per file: being offline, or reaching an origin that is not serving this
+		// release yet, leaves a cold cache rather than a broken app — the file mounts on
+		// demand later exactly as it did before. Both callers swallow the whole pass as
+		// well, because both run after the app is already usable.
+		if (path !== undefined) await installed.read(path).catch(() => {})
 	}
-	await Promise.all(Array.from({ length: Math.min(INSTALL_CONCURRENCY, queue.length) }, readOne))
 }
 
 // The app's own declared metadata — entry paths, capabilities, description — read from
