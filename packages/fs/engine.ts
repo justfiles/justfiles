@@ -71,6 +71,28 @@ const LANES = 8
 const BACKOFF_MS = 1000
 
 /**
+ * Bytes above which the target is ASKED whether it already holds a blob, and at or
+ * under which the bytes just go.
+ *
+ * The probe exists to make a rename, a copy and a re-push after a crash cost nothing:
+ * content is keyed by hash, so identical bytes are one blob wherever they appear. But
+ * over a network the question is itself a round trip that answers with a boolean, and
+ * the answer is no for every byte a replica has just written — which is most of what a
+ * push carries. Paid on every blob to save the rare one, it is a latency tax on the
+ * ordinary case: the whole of a small file crosses in the same round trip the question
+ * would have spent, so asking first can only double it.
+ *
+ * Above the line the arithmetic inverts. The bytes saved grow with the file while the
+ * probe stays one small request, so a renamed video is worth asking about and a
+ * renamed note is not — and the note costs one round trip either way, differing only
+ * in a body that rides along in packets already being sent.
+ *
+ * 64 KB is where a body stops being incidental to the request carrying it. It is a
+ * network judgement, not a limit: nothing breaks at any value, the cost just moves.
+ */
+const PROBE_ABOVE = 64n * 1024n
+
+/**
  * How many times a cycle may replan WITHOUT anything landing before it gives up.
  * A rejection means somebody else made progress, so this is a livelock stop
  * rather than a concurrency limit — the same reasoning as `MAX_ATTEMPTS` in the
@@ -171,7 +193,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	// holds them, so a row may land ahead of its content and a gap is a fetch away,
 	// which is what lets a lazy replica skip the fetch entirely.
 	const push = async (rows: Node[]): Promise<void> => {
-		await transfer(rows, local.blobs, remote.blobs)
+		await transfer(rows, local.blobs, remote.blobs, PROBE_ABOVE)
 		const guards = await bases(remote, rows)
 		try {
 			await remote.commit(rows, guards)
@@ -220,7 +242,10 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 		}
 		// Rule 7: bytes from a peer are checked against the hash that named them
 		// before they land. The peer's own store verifies what this replica pushes.
-		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs))
+		//
+		// Every hash asked about, however small: on this side the question is a local read
+		// and what it saves is a download. The push's arithmetic runs the other way round.
+		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs), 0n)
 	}
 	for (;;) {
 		try {
@@ -526,9 +551,17 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 }
 
 /**
- * Copy the bytes these rows name, and only the ones the target lacks. The `has`
- * check is what makes a rename, a copy, and a re-push after a crash cost nothing:
- * content is keyed by hash, so identical bytes are one blob wherever they appear.
+ * Copy the bytes these rows name, and only the ones worth asking about first. The
+ * `has` check is what makes a rename, a copy, and a re-push after a crash cost
+ * nothing: content is keyed by hash, so identical bytes are one blob wherever they
+ * appear. `probeAbove` is where that question stops paying for itself — see the
+ * constant; a target that is not across a wire wants every hash asked about, and
+ * passes zero.
+ *
+ * The size comes off the row, which carries it denormalized for exactly this kind of
+ * decision — no read, and none of the bytes crossing to find out how many there are.
+ * A row that understates its content buys nothing: it can only make this replica send
+ * bytes it holds anyway, and the pull side asks about every hash regardless.
  *
  * A hash the source cannot produce is skipped, not fatal, and the row travels
  * anyway: the source is lazy, or its blob was swept, and a row naming absent
@@ -543,18 +576,23 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
  * anything reads them wants a sweep of its own rows (`content` set, `has` false),
  * derivable from the table at any time and no business of the cycle.
  */
-async function transfer(rows: Node[], from: Store['blobs'], into: Store['blobs']): Promise<void> {
-	const hashes = new Set<Hash>()
+async function transfer(
+	rows: Node[],
+	from: Store['blobs'],
+	into: Store['blobs'],
+	probeAbove: bigint
+): Promise<void> {
+	const sizes = new Map<Hash, bigint>()
 	for (const row of rows) {
 		// A tombstone keeps whatever fields it had, and none of them mean anything any
 		// more (rule 8) — moving bytes for a dead row is pure waste.
-		if (row.content !== undefined && !row.deleted) hashes.add(row.content)
+		if (row.content !== undefined && !row.deleted) sizes.set(row.content, row.size)
 	}
 	// In lanes, for the reason the bases are read that way: each hash is up to three
 	// round trips at a peer, and one blob's latency is nothing for the next blob to
 	// wait on. Content is keyed by hash, so no two of these are about the same bytes.
-	await fanned([...hashes], async (hash) => {
-		if (await into.has(hash)) return
+	await fanned([...sizes], async ([hash, size]) => {
+		if (size > probeAbove && (await into.has(hash))) return
 		const data = await from.get(hash)
 		if (data !== null) await into.put(hash, data)
 	})
