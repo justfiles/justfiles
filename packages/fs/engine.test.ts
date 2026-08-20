@@ -96,30 +96,6 @@ function spy(store: Store): { store: Store; calls: Node[][] } {
 	}
 }
 
-/** A store whose reads report how many of them were in flight at once. */
-function busy(store: Store): { store: Store; peak: () => number } {
-	let live = 0
-	let peak = 0
-	return {
-		peak: () => peak,
-		store: {
-			...store,
-			async get(id) {
-				live++
-				peak = Math.max(peak, live)
-				// A turn of the loop, so a serial caller and a parallel one differ: without
-				// it a memStore answers inside the same microtask and every read looks alone.
-				await new Promise((resolve) => setTimeout(resolve, 0))
-				try {
-					return await store.get(id)
-				} finally {
-					live--
-				}
-			}
-		}
-	}
-}
-
 /**
  * Every row a store actually WROTE from here on. A commit of rows it already
  * holds is a no-op (rule 3) and notifies nobody, so an empty list is the proof
@@ -213,20 +189,19 @@ describe('sync: the push filter', () => {
 	})
 })
 
-describe('sync: a page of round trips', () => {
-	it('reads a page of bases side by side, not one after another', async () => {
+describe('sync: push cost', () => {
+	it('commits a page without reading or guarding peer rows', async () => {
 		const { local, remote, opts } = pair()
 		await local.commit(many(versions('a')))
-		const peer = busy(remote)
+		const get = vi.fn(remote.get)
+		const commit = vi.fn(remote.commit)
+		const peer: Store = { ...remote, get, commit }
 
-		await sync(local, peer.store, opts)
+		await sync(local, peer, opts)
 
-		// One base read per row, and a page is a hundred-odd rows: at a peer that is a
-		// hundred latencies in a row, and no row's base is another row's business. In
-		// lanes rather than all at once, so a wide page is not a burst either — the
-		// bound is well under the page the store hands out.
-		expect(peer.peak()).toBeGreaterThan(1)
-		expect(peer.peak()).toBeLessThan(128)
+		expect(get).not.toHaveBeenCalled()
+		expect(commit).toHaveBeenCalled()
+		for (const call of commit.mock.calls) expect(call[1]).toBeUndefined()
 		expect(await rowsOf(remote)).toEqual(await rowsOf(local))
 	})
 })

@@ -493,7 +493,7 @@ describe('sync: conflicts', () => {
 			expect(await read(store, '/note.txt')).toBe('newest from b')
 	})
 
-	it('takes the loser of an edit/edit race as the last writer, on the base it lost to', async () => {
+	it('takes the later push in an edit/edit race', async () => {
 		const hub = authority(memStore())
 		const a = replica('a')
 		const b = replica('b')
@@ -503,18 +503,17 @@ describe('sync: conflicts', () => {
 
 		await a.vol.writeFile('/note.txt', enc.encode('from a'))
 		await b.vol.writeFile('/note.txt', enc.encode('from b'))
-		// a commits between b reading the base for its push and b writing on it.
-		// b's guard names a version the hub no longer holds, so nothing lands.
+		// a commits while b's push is in flight. The push has no stale base to name,
+		// so b lands after a and wins.
 		let raced = false
 		const contended: Store = {
 			...hub,
-			async get(id) {
-				const row = await hub.get(id)
-				if (!raced && id !== ROOT) {
+			async commit(writes, guards) {
+				if (!raced) {
 					raced = true
 					await sync(a.store, hub, a.opts)
 				}
-				return row
+				return hub.commit(writes, guards)
 			}
 		}
 
