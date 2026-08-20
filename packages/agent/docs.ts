@@ -28,7 +28,7 @@ export const DOCS: DocRef[] = [
 		id: 'app',
 		name: 'how apps work',
 		description:
-			'How @justfiles/app works — the app model, kernel, sandbox, reducers, and capabilities. Read before building, editing, or explaining an app (e.g. in packages/app-code).'
+			'How @justfiles/app works — the app model, kernel, sandbox, reducers, and capabilities. Read before building, editing, or explaining an app.'
 	},
 	{
 		id: 'fs',

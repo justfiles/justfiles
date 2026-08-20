@@ -389,4 +389,4 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 ------------------------------------------------------------------------
 
 Cross-references: `packages/fs/{volume,storage.fs}.ts` · `packages/app/{kernel,react,vite}.ts` +
-`capnweb` · `packages/agent/*` · `packages/app-code/src/app.ts`.
+`capnweb` · `packages/agent/*` · `@justfiles/app-code`.
