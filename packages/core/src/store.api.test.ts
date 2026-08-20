@@ -11,7 +11,7 @@
  *
  * What the cases below the suite add is what only a WIRE can be wrong about —
  * the status codes, and the fact that a refusal survives the round trip as the
- * typed error the engine turns on. The last one is the whole story end to end:
+ * typed error the engine acts on. The last one is the whole story end to end:
  * two `httpStore` clients, one authority hub, and a conflict settled by the
  * replan from T10 with an HTTP boundary in the middle.
  */
@@ -95,11 +95,12 @@ describe('storeApi: what the wire answers', () => {
 		// hold, so a caller can tell "read again and replan" from "this peer is
 		// broken" without parsing a message.
 		expect(res.status).toBe(409)
+		expect(res.headers.get('cache-control')).toBe('no-store')
 		expect(await res.json()).toEqual({ error: 'guard', reason: guard })
 		// And the commit wrote nothing (rule 2).
 		expect(await store.get('a')).toBeNull()
 
-		// The client turns that status back into the ONE type the engine replans on.
+		// The client turns that status back into the seam's typed refusal.
 		await expect(client.commit([node({ id: 'a', name: 'a.txt' })], [guard])).rejects.toThrow(
 			GuardError
 		)
@@ -112,9 +113,10 @@ describe('storeApi: what the wire answers', () => {
 		if (cursor === undefined) throw new Error('since must always hand a cursor back')
 
 		// Rule 11: no position in that store answers to this cursor, ever — so the
-		// status is Gone, and the client restarts from the empty cursor.
+		// status is Gone, and the engine restarts from the empty cursor.
 		const res = await other.ask(`/since?cursor=${encodeURIComponent(cursor)}`)
 		expect(res.status).toBe(410)
+		expect(res.headers.get('cache-control')).toBe('no-store')
 		await expect(other.client.since(cursor)).rejects.toThrow(ForeignCursorError)
 		expect((await other.client.since()).nodes.map((n) => n.id)).toEqual([ROOT])
 	})
@@ -193,6 +195,21 @@ describe('storeApi: what the wire answers', () => {
 			client.commit([node({ id: 'kid', name: 'kid.txt', parent: 'f' })])
 		).rejects.toThrow(GuardError)
 		expect(await client.get('kid')).toBeNull()
+	})
+})
+
+describe('httpStore: caching', () => {
+	it('bypasses HTTP caches for every store call', async () => {
+		let request: RequestInit | undefined
+		const client = httpStore('http://hub.test/store', {
+			fetch: async (_url, init) => {
+				request = init
+				return new Response(null, { status: 404 })
+			}
+		})
+
+		expect(await client.blobs.has('absent')).toBe(false)
+		expect(request?.cache).toBe('no-store')
 	})
 })
 

@@ -129,7 +129,12 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 	const call = async (path: string, init?: Init): Promise<Response> => {
 		const headers: Record<string, string> = { ...opts.headers }
 		if (init?.type !== undefined) headers['content-type'] = init.type
-		const res = await send(base + path, { method: init?.method, body: init?.body, headers })
+		const res = await send(base + path, {
+			method: init?.method,
+			body: init?.body,
+			headers,
+			cache: 'no-store'
+		})
 		// A refusal, not a failure: a guard did not hold, and the body says which.
 		if (res.status === 409) throw new GuardError(await refusal(res))
 		// Rule 11: no position in that store will ever answer to that cursor.
