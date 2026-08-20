@@ -205,6 +205,24 @@ test('the app page itself is not cross-origin readable', async () => {
 	expect(res.headers.get('access-control-allow-origin')).toBe(null)
 })
 
+test('the app shell keeps a shelf back to the store above the app', async () => {
+	const page = await (await get('https://alice-notes.example.com/', envWith(published))).text()
+	expect(page).toContain('<meta name="viewport" content="width=device-width, initial-scale=1"/>')
+	expect(page).toContain('<nav id="runner-shelf" aria-label="App navigation">')
+	expect(page).toContain('src="/v/1.2.0/icon.png"')
+	expect(page).toContain('<span class="runner-shelf-name">Notes</span>')
+	expect(page).toContain('<span class="runner-shelf-host">example.com</span>')
+	expect(page).toContain(
+		'class="runner-shelf-home" href="https://example.com/" aria-label="All apps"'
+	)
+	expect(page.indexOf('id="runner-shelf"')).toBeLessThan(page.indexOf('id="app"'))
+})
+
+test('the shelf links back to localhost in local dev', async () => {
+	const page = await (await get('http://alice-notes.localhost:8787/', envWith(published))).text()
+	expect(page).toContain('href="http://localhost:8787/"')
+})
+
 // The bytes are there for the taking; the release record is what makes them
 // reachable. Otherwise a guessed version could be answered out of a half-written
 // import and cached as immutable over bytes the retry then rewrites.
