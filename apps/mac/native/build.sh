@@ -80,7 +80,7 @@ make_bundle() { # app_path name bundle_id [app_id] [lsui]
 	rm -rf "$app"
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 	cp "$BIN" "$app/Contents/MacOS/$2"
-	cp ../../../app_store.svg "$app/Contents/Resources/AppStore.svg"
+	cp ../../../packages/design/assets/app_store.svg "$app/Contents/Resources/AppStore.svg"
 	emit_plist "$2" "$3" "$4" "$5" >"$app/Contents/Info.plist"
 	make_icon "$app" "$(printf '%s' "$2" | cut -c1)"
 	codesign --force --sign - "$app" 2>/dev/null || true
