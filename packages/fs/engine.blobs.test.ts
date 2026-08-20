@@ -4,8 +4,10 @@
  * - **Rule 10, on the push.** The bytes are durable at the peer BEFORE the row
  *   that names them commits. A crash between the two leaves an orphan blob; the
  *   other order leaves a committed row whose content nobody has (proof 2 of 4).
- * - **Dedup by hash.** `has` before `put`, so a rename, a copy, and a re-push of
- *   a row the peer already backs transfer zero bytes.
+ * - **Dedup by hash, where asking is worth it.** `has` before `put` for a blob big
+ *   enough that the bytes it saves beat the round trip the question costs, so a
+ *   rename, a copy, and a re-push of a large file the peer already backs transfer
+ *   zero bytes. Under that line the bytes just go: one round trip either way.
  * - **Selective content, on the pull.** Rows always land. Whether the bytes
  *   follow is this replica's own choice: eager fetches them behind the page,
  *   lazy fetches nothing and `hydratingBlobs` gets them when a read asks.
@@ -94,6 +96,12 @@ const read = async (vol: Volume, path: string): Promise<string> =>
 
 const hashOf = (text: string): Promise<Hash> => sha256Hex(enc.encode(text))
 
+/**
+ * Bytes past the size where a peer is asked before they are sent. Distinct per seed,
+ * so two of these are two blobs.
+ */
+const big = (seed: string): Uint8Array => enc.encode(seed.padEnd(70 * 1024, '.'))
+
 describe('sync: content on the push', () => {
 	it('makes the bytes durable at the peer before the row that names them', async () => {
 		const { local, remote, here, opts } = pair()
@@ -103,12 +111,41 @@ describe('sync: content on the push', () => {
 
 		await sync(local, peer.store, opts)
 
-		// Rule 10, as an order: asked, absent, transferred, and only then the row.
-		expect(peer.log).toEqual([`has ${hash}`, `put ${hash}`, 'commit'])
+		// Rule 10, as an order: transferred, and only then the row that names it.
+		expect(peer.log).toEqual([`put ${hash}`, 'commit'])
 		expect(await read(volume(remote), '/notes.txt')).toBe('hello')
 	})
 
-	it('transfers nothing for a hash the peer already holds — a rename is free', async () => {
+	it('asks about a big blob before sending it, and the row still goes last', async () => {
+		const { local, remote, here, opts } = pair()
+		await here.writeFile('/video.bin', big('video'))
+		const hash = await sha256Hex(big('video'))
+		const peer = trace(remote)
+
+		await sync(local, peer.store, opts)
+
+		expect(peer.log).toEqual([`has ${hash}`, `put ${hash}`, 'commit'])
+	})
+
+	it('transfers nothing for a big hash the peer already holds — a rename is free', async () => {
+		const { local, remote, here, opts } = pair()
+		await here.writeFile('/video.bin', big('video'))
+		await sync(local, remote, opts)
+
+		await here.rename('/video.bin', '/renamed.bin')
+		const peer = trace(remote)
+		await sync(local, peer.store, opts)
+
+		expect(peer.log.filter((call) => call.startsWith('put'))).toEqual([])
+		expect((await volume(remote).stat('/renamed.bin')).size).toBe(BigInt(big('video').byteLength))
+	})
+
+	it('sends a small blob without asking, rather than spending a round trip on the answer', async () => {
+		// The peer HAS these bytes, which is the case the question exists for — and the
+		// case it still loses at this size. Asking is one round trip that comes back with
+		// a boolean; the whole file fits in the round trip the sending was going to cost
+		// anyway. Every byte a replica has just written answers no, so the ordinary push
+		// paid that tax on everything to save the rename of a note.
 		const { local, remote, here, opts } = pair()
 		await here.writeFile('/notes.txt', enc.encode('hello'))
 		await sync(local, remote, opts)
@@ -117,7 +154,7 @@ describe('sync: content on the push', () => {
 		const peer = trace(remote)
 		await sync(local, peer.store, opts)
 
-		expect(peer.log.filter((call) => call.startsWith('put'))).toEqual([])
+		expect(peer.log.filter((call) => call.startsWith('has'))).toEqual([])
 		expect(await read(volume(remote), '/renamed.txt')).toBe('hello')
 	})
 
@@ -137,22 +174,23 @@ describe('sync: content on the push', () => {
 		// Proof 2 of 4. The crash lands in the one window rule 10 creates: the peer
 		// holds the bytes and does not yet hold the row.
 		const { local, remote, here, push, opts } = pair()
-		await here.writeFile('/notes.txt', enc.encode('hello'))
-		const hash = await hashOf('hello')
+		await here.writeFile('/video.bin', big('video'))
+		const hash = await sha256Hex(big('video'))
 		const dying: Store = { ...remote, commit: () => Promise.reject(new Error('crash')) }
 
 		await expect(sync(local, dying, { ...opts, retries: 0 })).rejects.toThrow('crash')
 
 		expect(await remote.blobs.has(hash)).toBe(true)
-		expect(await remote.child(ROOT, 'notes.txt')).toBeNull()
+		expect(await remote.child(ROOT, 'video.bin')).toBeNull()
 		expect(push.at()).toBeUndefined()
 
-		// The re-run costs the re-scan and nothing more: the bytes are already there.
+		// The re-run costs the re-scan and nothing more: the bytes are already there, and
+		// at this size the peer is asked, so a backlog is not uploaded twice.
 		const peer = trace(remote)
 		await sync(local, peer.store, opts)
 
 		expect(peer.log.filter((call) => call.startsWith('put'))).toEqual([])
-		expect(await read(volume(remote), '/notes.txt')).toBe('hello')
+		expect(await remote.child(ROOT, 'video.bin')).not.toBeNull()
 	})
 
 	it('offers a page of hashes side by side, not one after another', async () => {
@@ -164,14 +202,14 @@ describe('sync: content on the push', () => {
 			...remote,
 			blobs: {
 				...remote.blobs,
-				async has(hash) {
+				async put(hash, data) {
 					live++
 					peak = Math.max(peak, live)
 					// A turn of the loop, or a memStore answers inside the same microtask and
-					// every ask looks alone.
+					// every transfer looks alone.
 					await new Promise((resolve) => setTimeout(resolve, 0))
 					try {
-						return await remote.blobs.has(hash)
+						await remote.blobs.put(hash, data)
 					} finally {
 						live--
 					}
@@ -199,10 +237,15 @@ describe('sync: content on the pull', () => {
 		expect(await read(volume(local), '/notes.txt')).toBe('hello')
 	})
 
-	it('fetches only what it does not already hold', async () => {
+	it('fetches only what it does not already hold, at any size', async () => {
 		const { local, remote, here, there, opts } = pair()
 		// The same bytes on both sides under different names: the hash is the same,
 		// so the row travels and the content does not.
+		//
+		// Five bytes, deliberately: the push stops asking about a blob this small because
+		// asking costs a round trip and the bytes do not. Here the question is a LOCAL read
+		// and the answer saves a download, so the asymmetry is the point — the same rule on
+		// both sides would have this replica re-fetching bytes it is sitting on.
 		await here.writeFile('/mine.txt', enc.encode('hello'))
 		await there.writeFile('/theirs.txt', enc.encode('hello'))
 		const peer = trace(remote)
