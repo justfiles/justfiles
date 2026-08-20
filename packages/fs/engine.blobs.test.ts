@@ -154,6 +154,39 @@ describe('sync: content on the push', () => {
 		expect(peer.log.filter((call) => call.startsWith('put'))).toEqual([])
 		expect(await read(volume(remote), '/notes.txt')).toBe('hello')
 	})
+
+	it('offers a page of hashes side by side, not one after another', async () => {
+		const { local, remote, here, opts } = pair()
+		for (let n = 0; n < 20; n++) await here.writeFile(`/n${n}.txt`, enc.encode(`file ${n}`))
+		let live = 0
+		let peak = 0
+		const peer: Store = {
+			...remote,
+			blobs: {
+				...remote.blobs,
+				async has(hash) {
+					live++
+					peak = Math.max(peak, live)
+					// A turn of the loop, or a memStore answers inside the same microtask and
+					// every ask looks alone.
+					await new Promise((resolve) => setTimeout(resolve, 0))
+					try {
+						return await remote.blobs.has(hash)
+					} finally {
+						live--
+					}
+				}
+			}
+		}
+
+		await sync(local, peer, opts)
+
+		// Every hash is up to three round trips at the peer, and no two of them are
+		// about the same bytes — content is keyed by hash. Rule 10 is untouched: all of
+		// them are durable there before the commit that names any of them.
+		expect(peak).toBeGreaterThan(1)
+		expect(await read(volume(remote), '/n19.txt')).toBe('file 19')
+	})
 })
 
 describe('sync: content on the pull', () => {

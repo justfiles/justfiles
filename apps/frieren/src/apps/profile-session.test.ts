@@ -5,7 +5,12 @@ const H = vi.hoisted(() => ({
 	handshake: vi.fn(),
 	reload: vi.fn(),
 	deleteDatabase: vi.fn(),
-	migrateIdb: vi.fn(async () => {})
+	migrateIdb: vi.fn(async () => {}),
+	// Which databases were opened, and how many sync loops were built and torn down.
+	// One profile is one replica, whoever asks for it and however often.
+	opened: vi.fn(),
+	synced: vi.fn(),
+	destroyed: vi.fn()
 }))
 
 vi.mock('@justfiles/core', () => ({
@@ -20,6 +25,7 @@ vi.mock('@justfiles/fs/idb', async () => {
 	const stores = new Map<string, ReturnType<typeof memStore>>()
 	return {
 		idbStore: (name: string) => {
+			H.opened(name)
 			const held = stores.get(name) ?? memStore()
 			stores.set(name, held)
 			return held
@@ -42,18 +48,21 @@ vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
 
 vi.mock('@justfiles/fs/synced', async (original) => ({
 	...(await original<Record<string, unknown>>()),
-	synced: async () => ({
-		readFile: async () => new Uint8Array(),
-		flush: async () => {},
-		pause: () => {},
-		resume: () => {},
-		destroy: () => {},
-		status: () => 'synced',
-		onStatusChange: () => () => {},
-		takeTheirs: async () => {},
-		takeMine: async () => {},
-		generation: () => 1
-	})
+	synced: async () => {
+		H.synced()
+		return {
+			readFile: async () => new Uint8Array(),
+			flush: async () => {},
+			pause: () => {},
+			resume: () => {},
+			destroy: H.destroyed,
+			status: () => 'synced',
+			onStatusChange: () => () => {},
+			takeTheirs: async () => {},
+			takeMine: async () => {},
+			generation: () => 1
+		}
+	}
 }))
 
 type StoredProfile = {
@@ -117,6 +126,9 @@ describe('profile session switching', () => {
 		H.reload.mockReset()
 		H.deleteDatabase.mockReset()
 		H.migrateIdb.mockReset()
+		H.opened.mockReset()
+		H.synced.mockReset()
+		H.destroyed.mockReset()
 		handshakeIs(1)
 		vi.useFakeTimers()
 		vi.setSystemTime(new Date('2026-05-31T00:00:00Z'))
@@ -194,6 +206,65 @@ describe('profile session switching', () => {
 		await fs.releaseFsVolume({ flush: false })
 		await fs.openProfile()
 		expect(H.migrateIdb).toHaveBeenCalledTimes(1)
+	})
+
+	test('two boots in one tick stand up one replica, not two', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+
+		// React invokes a mount effect twice, so both calls are in flight before either
+		// has an active profile to report. Two replicas of one database is two store
+		// connections and two cross-tab channels, and only the last is ever closed.
+		const [one, two] = await Promise.all([fs.openProfile(), fs.openProfile()])
+
+		expect(one).toBe(two)
+		expect(H.opened.mock.calls.map(([name]) => name)).toEqual([
+			'frieren-store-local',
+			'frieren-store-local-private'
+		])
+	})
+
+	test('two attaches in one tick leave one sync loop running', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await fs.openProfile()
+
+		await Promise.all([
+			fs.attachRemoteUser('user-1', async () => 'token'),
+			fs.attachRemoteUser('user-1', async () => 'token')
+		])
+
+		// One loop, built once. A second one over the same store pushes the same rows at
+		// the same time — and a `destroy` cannot take back the cycle the first already
+		// has in flight, so "tear the old one down" is not an answer either.
+		expect(H.synced).toHaveBeenCalledTimes(1)
+		expect(H.destroyed).not.toHaveBeenCalled()
+	})
+
+	test('a released profile syncs again when it is attached again', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await fs.openProfile()
+		await fs.attachRemoteUser('user-1', async () => 'token')
+
+		// Sign-out stops the loop; signing back in has to start one, or the account
+		// looks synced on a replica that never talks to the server again.
+		await fs.switchToLocalProfile()
+		await fs.attachRemoteUser('user-1', async () => 'token')
+
+		expect(H.synced).toHaveBeenCalledTimes(2)
+	})
+
+	test('a volume its holder destroyed syncs again when it is attached again', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await fs.openProfile()
+		const volume = await fs.attachRemoteUser('user-1', async () => 'token')
+
+		volume.destroy()
+		await fs.attachRemoteUser('user-1', async () => 'token')
+
+		// A destroyed loop is terminal, so holding a reference to one would leave the
+		// profile reading as synced on a replica nothing syncs — the attach that follows
+		// leaves a loop that is already there alone.
+		expect(H.destroyed).toHaveBeenCalledTimes(1)
+		expect(H.synced).toHaveBeenCalledTimes(2)
 	})
 
 	test('factory reset reuses an operation after ambiguous confirmation failure', async () => {

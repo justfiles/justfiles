@@ -251,6 +251,29 @@ type Active = {
 let active: Active | null = null
 const statusListeners = new Set<() => void>()
 
+/**
+ * Every switch of the active profile runs alone.
+ *
+ * All of them are the same two steps — tear the current replica down, stand the
+ * next one up — and each step spans awaits, so two of them interleaved stand up
+ * two live replicas of one database: two store connections and two cross-tab
+ * channels, of which only the last is `active` and therefore the only one anything
+ * ever closes. The window is not hypothetical: React invokes a mount effect twice,
+ * so boot asks for a profile twice in one tick, and an auth resolve can land on top
+ * of that.
+ *
+ * A queue rather than "one at a time, drop the rest": a caller asking for the local
+ * profile while an account is still being attached wants its answer AFTER that
+ * attach, not the account's volume.
+ */
+let switching: Promise<unknown> = Promise.resolve()
+function alone<T>(body: () => Promise<T>): Promise<T> {
+	// What the next switch waits on is this one having FINISHED, not having worked.
+	const next = switching.then(body)
+	switching = next.catch(() => undefined)
+	return next
+}
+
 function emitStatus(): void {
 	for (const fn of statusListeners) fn()
 }
@@ -261,7 +284,8 @@ function setActiveStatus(entry: Active, status: SyncStatus): void {
 	emitStatus()
 }
 
-function createProfileVolume(plain: Volume, sync: () => SyncVolume | null): ProfileVolume {
+function createProfileVolume(plain: Volume, of: () => Active): ProfileVolume {
+	const sync = () => of().sync
 	return {
 		...plain,
 		// The synced volume reads through `hydratingBlobs`, so a row this replica holds
@@ -271,7 +295,13 @@ function createProfileVolume(plain: Volume, sync: () => SyncVolume | null): Prof
 		flush: () => sync()?.flush() ?? Promise.resolve(),
 		pause: () => sync()?.pause(),
 		resume: () => sync()?.resume(),
-		destroy: () => sync()?.destroy(),
+		// Through `stopSync`, because a destroyed loop is TERMINAL — `synced.destroy()`
+		// stands its timer down for good and nothing resumes it. A reference to one is a
+		// profile that reads as syncing and never will again: `flush` and `status` answer
+		// for a loop that stopped, and `startSync` leaves a loop that is already there
+		// alone. Dropping the reference is what makes this recoverable — the profile falls
+		// back to local-only, and the next attach builds a loop.
+		destroy: () => stopSync(of()),
 		status: activeStatus,
 		onStatusChange: (fn) => onActiveStatusChange(() => fn(activeStatus()))
 	}
@@ -287,9 +317,14 @@ function stopSync(entry: Active): void {
 }
 
 async function startSync(entry: Active, getToken: GetToken): Promise<void> {
+	// This profile is already syncing, so there is nothing to start. The auth effect
+	// re-runs whenever Clerk hands out a new token getter, and each getter is a
+	// closure over the LIVE session — the running loop's is as current as this one.
+	// Building a second loop over the same store is not free and not idempotent: a
+	// `destroy` cannot take back the cycle the old loop already has in flight, so the
+	// two of them push the same rows at the same time.
+	if (entry.sync) return
 	entry.unsubscribeSyncStatus?.()
-	entry.sync?.destroy()
-	entry.sync = null
 	setActiveStatus(entry, 'connecting')
 	const client = createFsClient(getToken)
 	const syncVolume = await synced({
@@ -370,7 +405,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]]),
 		mintVersion: versions(replica)
 	})
-	const managed = createProfileVolume(plain, () => entry.sync)
+	const managed = createProfileVolume(plain, () => entry)
 
 	// Online-aware sync: stop pushing when the network drops, resume when it
 	// returns, and flush pending writes to the backend before the tab goes away.
@@ -417,8 +452,10 @@ async function openProfileVolume(profile: LocalProfile): Promise<ProfileVolume> 
 // Open the current browser profile's IDB volume. Remote profiles boot from their
 // local replica immediately; auth later starts sync or switches after sign-out.
 export function openProfile(): Promise<ProfileVolume> {
-	if (active) return Promise.resolve(active.volume)
-	return openProfileVolume(currentProfile())
+	// The check is INSIDE the queue: a caller that read `active` while a switch was
+	// still running would either build a second replica of the same profile or hand
+	// back the volume that switch is about to release.
+	return alone(async () => active?.volume ?? (await openProfileVolume(currentProfile())))
 }
 
 // A local profile can start the runtime before Clerk resolves. An account profile
@@ -452,36 +489,46 @@ export function onActiveStatusChange(fn: () => void): () => void {
 // Switch to the signed-in account profile and start sync. Called when auth
 // resolves — never a boot prerequisite. Do not auto-merge the local workspace
 // into an account; keep it separate and switch/create the account profile.
-export async function attachRemoteUser(userId: string, getToken: GetToken): Promise<ProfileVolume> {
-	const cur = active
-	if (cur?.remoteUserId === userId) {
-		await startSync(cur, getToken)
-		return cur.volume
-	}
+export function attachRemoteUser(userId: string, getToken: GetToken): Promise<ProfileVolume> {
+	return alone(async () => {
+		const cur = active
+		if (cur?.remoteUserId === userId) {
+			await startSync(cur, getToken)
+			return cur.volume
+		}
 
-	// Switch to (or create) the profile that owns this user.
-	await releaseFsVolume({ flush: false })
-	const entry = await setActive(profileForUser(userId))
-	await startSync(entry, getToken)
-	return entry.volume
+		// Switch to (or create) the profile that owns this user.
+		await release({ flush: false })
+		const entry = await setActive(profileForUser(userId))
+		await startSync(entry, getToken)
+		return entry.volume
+	})
 }
 
 // Sign-out switches back to the browser-local workspace. Account data stays on
 // disk for that account profile, but it is no longer the active desktop.
-export async function switchToLocalProfile(): Promise<ProfileVolume> {
-	if (active && !activeProfileHasRemoteUser()) {
-		stopSync(active)
-		return active.volume
-	}
-	await releaseFsVolume({ flush: false })
-	return openProfileVolume(localProfile())
+export function switchToLocalProfile(): Promise<ProfileVolume> {
+	return alone(async () => {
+		if (active && !activeProfileHasRemoteUser()) {
+			stopSync(active)
+			return active.volume
+		}
+		await release({ flush: false })
+		return openProfileVolume(localProfile())
+	})
 }
 
 // Stop syncing and release the active replica WITHOUT deleting it. Called on
 // user switch — local profile data is preserved on this browser so the user can
 // return to it. Per-profile DB names already prevent cross-user leakage, so
 // there is nothing to delete for safety.
-export async function releaseFsVolume(options: { flush?: boolean } = {}): Promise<void> {
+export function releaseFsVolume(options: { flush?: boolean } = {}): Promise<void> {
+	return alone(() => release(options))
+}
+
+// The release itself, for the switches that hold the queue already: a switch that
+// waited on itself here would never run at all.
+async function release(options: { flush?: boolean } = {}): Promise<void> {
 	const prev = active
 	if (!prev) return
 	active = null
@@ -498,14 +545,16 @@ export async function releaseFsVolume(options: { flush?: boolean } = {}): Promis
 
 // Explicit "forget this browser": release and permanently delete the active
 // profile's local replica and registry entry. Sign-out alone never does this.
-export async function forgetActiveProfile(): Promise<void> {
-	const prev = active
-	if (!prev) return
-	const { profileId } = prev
-	await releaseFsVolume({ flush: false })
-	forgetProfileEntry(profileId)
-	forgetSlots(profileId)
-	await deleteProfileDbs(profileId)
+export function forgetActiveProfile(): Promise<void> {
+	return alone(async () => {
+		const prev = active
+		if (!prev) return
+		const { profileId } = prev
+		await release({ flush: false })
+		forgetProfileEntry(profileId)
+		forgetSlots(profileId)
+		await deleteProfileDbs(profileId)
+	})
 }
 
 // Force an immediate sync (push+pull) on the active volume. The capability
@@ -726,38 +775,40 @@ export async function resetTakeMine(): Promise<void> {
 // wipes the server first; both paths delete local IDB and reload, so `seedBuiltins`
 // re-materialises the built-ins against the now-empty server and pushes them as
 // the new baseline.
-export async function factoryReset(getToken: GetToken): Promise<void> {
-	const prev = active
-	if (!prev) return
-	let operation: LocalProfile['pendingFactoryReset']
-	if (prev.remoteUserId) {
-		// `wipe` is not part of the sync loop's reset (it discards content too), so it
-		// goes over the same typed /fs/reset route directly. The epoch is READ from the
-		// server, not remembered: nothing in the seam carries one. Persist the request
-		// outside IDB first — a 503 is ambiguous, and retrying must confirm the same
-		// operation rather than race it with a new id at the old generation.
-		const client = createFsClient(getToken)
-		const from = await readGeneration(client)
-		operation = factoryResetOperation(prev.profileId, from.generation)
-		const res = await client.reset.$post({
-			json: {
-				mode: 'wipe',
-				fromGeneration: operation.fromGeneration,
-				operationId: operation.operationId,
-				...(from.lineageId === undefined ? {} : { lineageId: from.lineageId })
+export function factoryReset(getToken: GetToken): Promise<void> {
+	return alone(async () => {
+		const prev = active
+		if (!prev) return
+		let operation: LocalProfile['pendingFactoryReset']
+		if (prev.remoteUserId) {
+			// `wipe` is not part of the sync loop's reset (it discards content too), so it
+			// goes over the same typed /fs/reset route directly. The epoch is READ from the
+			// server, not remembered: nothing in the seam carries one. Persist the request
+			// outside IDB first — a 503 is ambiguous, and retrying must confirm the same
+			// operation rather than race it with a new id at the old generation.
+			const client = createFsClient(getToken)
+			const from = await readGeneration(client)
+			operation = factoryResetOperation(prev.profileId, from.generation)
+			const res = await client.reset.$post({
+				json: {
+					mode: 'wipe',
+					fromGeneration: operation.fromGeneration,
+					operationId: operation.operationId,
+					...(from.lineageId === undefined ? {} : { lineageId: from.lineageId })
+				}
+			})
+			if (!res.ok) {
+				// A conflict is definitive: this operation did not commit and cannot be
+				// replayed. Transport/5xx failures remain ambiguous and retain the marker.
+				if (res.status === 409) clearFactoryResetOperation(prev.profileId)
+				throw new Error(`factory reset failed: ${res.status}`)
 			}
-		})
-		if (!res.ok) {
-			// A conflict is definitive: this operation did not commit and cannot be
-			// replayed. Transport/5xx failures remain ambiguous and retain the marker.
-			if (res.status === 409) clearFactoryResetOperation(prev.profileId)
-			throw new Error(`factory reset failed: ${res.status}`)
 		}
-	}
-	const { profileId } = prev
-	await releaseFsVolume({ flush: false })
-	forgetSlots(profileId)
-	await deleteProfileDbs(profileId)
-	if (operation) clearFactoryResetOperation(profileId)
-	location.reload()
+		const { profileId } = prev
+		await release({ flush: false })
+		forgetSlots(profileId)
+		await deleteProfileDbs(profileId)
+		if (operation) clearFactoryResetOperation(profileId)
+		location.reload()
+	})
 }

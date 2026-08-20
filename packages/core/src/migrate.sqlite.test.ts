@@ -209,13 +209,14 @@ async function rows(store: Store): Promise<Node[]> {
 	throw new Error('feed did not end')
 }
 
-function slot(): CursorSlot {
+function slot(): CursorSlot & { at: () => Cursor | undefined } {
 	let at: Cursor | undefined
 	return {
 		load: async () => at,
 		save: async (cursor: Cursor | undefined) => {
 			at = cursor
-		}
+		},
+		at: () => at
 	}
 }
 
@@ -293,14 +294,18 @@ test('the first sync after migration writes no row and moves no blob', async () 
 	local.puts.length = 0
 	remote.puts.length = 0
 
-	await sync(local, remote, { replica: 'client-a', pull: slot(), push: slot() })
+	const pull = slot()
+	await sync(local, remote, { replica: 'client-a', pull, push: slot() })
 
 	// The push offers nothing at all: every migrated row is authored `migrated`,
 	// which is no live replica, so the author filter empties the page.
 	expect(remote.commits).toEqual([])
-	// The pull scans the server's whole feed — it has no cursor yet — and every
-	// page lands as a no-op, because the rows are identical on both sides.
-	expect(local.commits.length).toBeGreaterThan(0)
+	// Nor does the pull write: it scans the server's whole feed — it has no cursor
+	// yet — and every row on it is one this replica already holds, which the base it
+	// took for the guard already says, so the commit is never asked for. The cursor
+	// is what proves the scan happened at all.
+	expect(local.commits).toEqual([])
+	expect(pull.at()).toBeDefined()
 	expect(await rows(local)).toEqual(before.local)
 	expect(await rows(remote)).toEqual(before.remote)
 	// And not one byte of content moves in either direction — which means
