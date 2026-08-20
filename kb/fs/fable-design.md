@@ -68,7 +68,7 @@ These are the accesses a real disk FS cannot serve well. This is the
 | effective path of a node | walk `parent` links upward | pure reads; cacheable; needed for watch scoping and event paths |
 | tombstones | deleted rows stay in the table and appear in the feed | no separate tombstone store |
 | engine state (peer cursors) | host-local durable slot, outside the replicated table | may only lag the applied rows; idempotent apply makes a stale cursor harmless |
-| conflict detect / authority accept | version guard + name-free guard at commit | rejection is a commit failure |
+| push conflict / authority accept | edit/edit is last-writer-wins; the authority enforces tree rules | a tree-rule rejection is a commit failure |
 
 ### C. Maintenance
 
@@ -246,11 +246,11 @@ rows (the moved node, both parents) — still independent of subtree size.
 
 ```text
 pull: remote.since(cursor) → local.commit(rows) → advance cursor
-push: local.since(cursor)  → remote.commit(rows, guards) → advance cursor
+push: local.since(cursor)  → remote.commit(rows) → advance cursor
 blobs: for each new content hash — has? skip : transfer (lazy where allowed)
 ```
 
-- **Idempotent**: version-guarded upserts make retries and echo loops
+- **Idempotent**: same-version upserts make retries and echo loops
   harmless. No origin tags, no echo suppression machinery.
 - **Push filter — no echo in the steady state** (sharpened by opus-design):
   `Version` carries its author replica id. Push sends only rows this
@@ -261,16 +261,15 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   the comparison).
 - **Resumable**: the cursor advances only after its batch commits. It may
   lag, never lead, so a crash costs a re-apply of rows that no-op.
-- **Authoritative**: the server is a `Store` whose `commit` enforces the
-  guards plus tree invariants and serializes accepted writes into its feed.
-  A rejection is a failed commit; the engine pulls and replans.
-- **Conflicts**: v1 rejects and replans through guards. Tombstones and
-  versions on the wire already separate a create on one side from a delete
-  on the other — the distinction Unison proves needs a common base — at the
-  cost of keeping tombstones as long as the longest-offline replica may
-  return. If the product later needs field-level merges (one side moves,
-  the other edits), the engine keeps a base cache of last-synced rows and
-  applies three-way rules per node. Engine module; zero seam change.
+- **Authoritative**: the server serializes accepted writes into its feed and
+  refuses tree changes that break namespace rules. The engine settles those
+  refusals locally, then replans.
+- **Conflicts**: edit/edit is last-writer-wins. Tombstones and versions on
+  the wire separate an edit from a delete, so the authority can reject a
+  buried id and the engine can recreate the edited file. If the product later
+  needs edit conflict copies or field-level merges, the engine keeps a base
+  cache of last-synced rows and applies that policy per node. Engine module;
+  zero seam change. See [`sync-conflict-policy.md`](sync-conflict-policy.md).
 - **Composable**: client–server is a star of `sync(local, hub)` loops. P2P
   is `sync(a, b)` both ways. The seam does not know the topology; only the
   meaning of `Version` (single authority counter vs. version vector) changes,
@@ -438,8 +437,8 @@ now a pure module behind the seam, not a seam:
   silent binding; a small, contained piece of `volume()`. The price of
   deleting the projection machinery is `EXDEV` at mount boundaries and
   kernel-style shadowing under silent mounts, which UX must explain.
-- Conflict policy (reject-and-replan first; three-way merge later) — engine
-  module, pure function of versions and an optional base cache.
+- Conflict policy (last-writer-wins for edits, settle tree-rule refusals) —
+  engine module. Detecting edit conflicts later needs a base cache.
 - Tombstone retention — tombstones must outlive the longest-offline replica;
   pruning needs a horizon every peer has passed.
 - Native FS reconciliation — one adapter's private problem.
@@ -481,13 +480,13 @@ commits. Everything else has a place already waiting for it.
   row apply is enough for our topology, and the task doc already declared
   the planner a non-goal.
 - **CouchDB/PouchDB replication** — taken almost whole: the changes feed as
-  an index (not a journal), idempotent revision-guarded apply, checkpoints,
+  an index (not a journal), idempotent apply, checkpoints,
   resumability, any-topology composition. This is the backbone of the sync
   loop. Adapted: we add tree guards at the authority because we have a
   namespace and CouchDB does not.
 - **Unison** — taken: the proof that two current trees cannot distinguish a
-  create from a delete; a common base is required. In the feed model the
-  base travels as tombstones and versions; a base *cache* appears only if
+  create from a delete; a common base is required. Tombstones distinguish the
+  edit/delete case. A base *cache* appears if edit conflict copies or
   three-way field merges become a product need.
 - **Google Drive / Microsoft Graph delta APIs** — taken as confirmation:
   their delta feeds return full item state, not diffs, tombstones included
@@ -540,7 +539,8 @@ construction.
   the object store churns garbage at write rate; GC must trace reachability
   from every ref. sol-design itself names write amplification and head
   contention as its kill criteria. Our commit writes only the rows it
-  touches, and guards contend per node, not per tree — neither risk exists.
+  touches, and guarded volume writes contend per node, not per tree — neither
+  risk exists.
 - *The four-method seam.* It is smaller than ours because a storage engine
   moved into shared core: canonical encoding, hashing, a hand-rolled
   persistent ordered Merkle map, structural diff. That map re-implements, on

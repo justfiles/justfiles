@@ -1,15 +1,14 @@
 # The push-side version guard
 
-> Status: **open question. No code changed.** Found while measuring sync traffic
-> for #541, #542 and #546. The decision below is a design call, and item 3 of that
-> investigation is the only one still unresolved.
+> Status: **resolved by deleting the push-side guards.** The pull-side guards remain.
+> Found while measuring sync traffic for #541, #542 and #546.
 
-The engine reads the peer's current version for every row it pushes and uses it as a
-compare-and-set guard on the commit. That read costs a round trip per row, and it
-cannot detect the conflict it looks like it is there to detect. This note records
-why, what it costs, and the three ways out.
+Before the deletion, the engine read the peer's current version for every row it
+pushed and used it as a compare-and-set guard on the commit. That read cost a round
+trip per row, and it could not detect the conflict it looked like it was there to
+detect. This note records why, what it cost, and the three options considered.
 
-## What the code does
+## What the code did
 
 `packages/fs/engine.ts`:
 
@@ -28,7 +27,7 @@ async function bases(store: Store, rows: Node[]): Promise<Base[]> {
 ```
 
 One `get` per row at the peer, eight at a time, then a CAS commit against what those
-reads returned. The module header states the intent:
+reads returned. The old module header stated the intent:
 
 > Conflicts are v1's policy and nothing more: reject, then replan. Every commit names
 > the base it is replacing, so a conflict arrives as a refusal rather than a silent
@@ -148,6 +147,13 @@ The pull side keeps its guards. There the read is local and free, and the race i
 catches is real: the volume writes while the sync loop runs, and the guard is what
 sends the loop back through the push that carries the new local write.
 
+## Outcome
+
+The engine now pushes rows with `remote.commit(rows)`. It no longer reads each row
+from the peer or sends version guards with a push. Edit conflicts are explicitly
+last-writer-wins. The authority still refuses invalid tree changes, and `settle`
+still handles those refusals. Pull still reads local bases and commits with guards.
+
 ## Where this sits in the investigation
 
 - #541, merged. Round trips batched into 8 lanes, own-push echoes dropped in `pull`,
@@ -157,6 +163,6 @@ sends the loop back through the push that carries the new local write.
   every file it mounts. 510 fetches per page load down to 41.
 - #546, merged. No `HEAD` before a `PUT` under 64KB, because the probe missed 100% of
   the time and cost a round trip each.
-- This note. Open.
+- This note, resolved by deleting the push-side guards.
 
 Related: #544, App Code's SDK is 236 of 246 mounted files against a 500-entry cache.

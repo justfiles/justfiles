@@ -2,7 +2,7 @@
  * The sync engine. It is the seam's second consumer, beside the POSIX volume,
  * and its whole loop is two scans of the same feed in opposite directions:
  *
- *     push: local.since(cursor)  → remote.commit(rows, bases) → advance cursor
+ *     push: local.since(cursor)  → remote.commit(rows)        → advance cursor
  *     pull: remote.since(cursor) → local.commit(rows, bases)  → advance cursor
  *
  * There is no journal, no snapshot session, no handoff, and no wire ordering:
@@ -27,12 +27,12 @@
  * question costs, and `lazyContent` with `hydratingBlobs` lets a replica take every
  * row and fetch bytes only when a read asks for them.
  *
- * Conflicts are v1's policy and nothing more: reject, then replan. Every commit
- * names the base it is replacing, so a conflict arrives as a refusal rather than
- * a silent overwrite, and `settle` turns each refusal into a local write the
- * next push carries — a renamed loser, a recreated file, or nothing at all.
- * `authority.ts` is what refuses; the three-way field merge the design parks for
- * later is another module over a base cache, and it changes no seam signature.
+ * Edit conflicts are last-writer-wins at the authority. The push has no stale
+ * base to name, so it does not pretend to guard one. `authority.ts` still refuses
+ * tree changes that would break its rules, and `settle` turns those refusals into
+ * local writes the next push carries: a renamed loser, a recreated file, or
+ * nothing at all. A later three-way field merge needs a base cache and a user-facing
+ * conflict policy; it changes no seam signature.
  */
 
 import {
@@ -59,12 +59,10 @@ const RETRIES = 3
 /**
  * How many of a page's per-row calls a scan keeps in flight.
  *
- * A page carries up to a hundred-odd rows, and both directions ask the target one
- * question per row: the base it is about to replace, the bytes it may already
- * hold. Over a network that is the whole cost of a sync, since the rows themselves
- * travel in one commit — serially it is a hundred latencies, and all at once it is
- * a burst nobody asked for. A handful of lanes divides the wait without becoming a
- * flood.
+ * A page carries up to a hundred-odd rows. Blob transfer may need several calls per
+ * hash, while pull reads each local base before it commits. Serial calls stall a
+ * page and sending all of them at once makes a burst nobody asked for. A handful
+ * of lanes divides the work without becoming a flood.
  */
 const LANES = 8
 
@@ -163,12 +161,11 @@ export type SyncOptions = {
  * behind it would skip that row because what it finds there is now the peer's.
  * Offering local work before accepting any is what keeps it.
  *
- * Neither direction applies a page blind. Both read the rows they are about to
- * replace and guard the commit on them, so a commit that lands in between takes
- * the row and this one is refused — and a refusal is not a failure here, it is
- * the signal to read again and replan. That is the whole of v1's conflict
- * policy: reject and replan, no merges, and `settle` below is where the three
- * outcomes live.
+ * The directions have different race rules. Push writes without version guards,
+ * so two edits to one row are last-writer-wins at the authority. The authority may
+ * still refuse a tree change; `settle` handles those refusals. Pull reads the local
+ * rows it will replace and guards its commit, so a local write that lands during
+ * the cycle sends the loop back through push instead of being overwritten.
  *
  * The retries are deliberately dumb. A cursor only ever lags, so an attempt that
  * died halfway left nothing to unwind: re-running the cycle is both the recovery
@@ -195,9 +192,8 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	// which is what lets a lazy replica skip the fetch entirely.
 	const push = async (rows: Node[]): Promise<void> => {
 		await transfer(rows, local.blobs, remote.blobs, PROBE_ABOVE)
-		const guards = await bases(remote, rows)
 		try {
-			await remote.commit(rows, guards)
+			await remote.commit(rows)
 			replans = 0 // a page landed: whatever the last rejection was, it is behind us
 		} catch (err) {
 			// What the refusal MEANT is decided here, where the rows still are: the
@@ -337,15 +333,11 @@ async function drain(
 }
 
 /**
- * The versions the target store holds for these rows: the base this page is
- * about to replace. A commit guarded on it is a read-modify-write — it lands
- * only if the rows are still what was read — which is what turns a conflict into
- * a rejection the engine can replan instead of a silent overwrite. `null` is
- * "not there", so a create is guarded too.
+ * The versions the local store holds for rows pulled from the peer. A commit
+ * guarded on them lands only if local writes have not changed the rows since this
+ * read. `null` means "not there", so a concurrent local create is guarded too.
  *
- * One `get` per row, `LANES` of them at a time. On the push that is a read at the
- * peer, and the push filter leaves the steady state with no rows at all, so the
- * steady state still costs nothing.
+ * One local `get` per row, `LANES` of them at a time.
  */
 async function bases(store: Store, rows: Node[]): Promise<Base[]> {
 	return fanned(rows, async (row) => ({
@@ -544,9 +536,8 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 		// replicas conflicting over one name never pick the same answer, and every
 		// file survives everywhere.
 		if (lost) fix(row, { ...row, name: await free(row), version: mint() })
-		// EDIT vs EDIT needs no fix. The row is still this row at the peer; what moved
-		// is the base under it, and the re-push reads the new one. Last writer wins,
-		// and this replica is now the last writer.
+		// EDIT vs EDIT needs no fix. Pushes carry no version guards, so the last write
+		// the authority accepts wins.
 	}
 	if (fixes.length > 0) await local.commit(fixes, guards)
 }
@@ -589,7 +580,7 @@ async function transfer(
 		// more (rule 8) — moving bytes for a dead row is pure waste.
 		if (row.content !== undefined && !row.deleted) sizes.set(row.content, row.size)
 	}
-	// In lanes, for the reason the bases are read that way: each hash is up to three
+	// In lanes, for the same reason as the pull's base reads: each hash is up to three
 	// round trips at a peer, and one blob's latency is nothing for the next blob to
 	// wait on. Content is keyed by hash, so no two of these are about the same bytes.
 	await fanned([...sizes], async ([hash, size]) => {
