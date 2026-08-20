@@ -567,45 +567,50 @@ describe('sync: conflicts', () => {
 	})
 })
 
-describe('sync: the replan budget', () => {
-	it('is spent only on replans that land nothing', async () => {
-		// A wide sync can meet a rejection on more pages than the budget has
-		// entries, resolve every one of them, and still be cut off — if the budget
-		// counts rejections rather than stalls. It is a livelock stop: a page that
-		// lands says the last rejection is behind us, whatever it was.
-		const hub = authority(memStore())
+describe('sync: an unresolved refusal', () => {
+	it('does not retry the same page when settlement writes nothing', async () => {
+		const raw = memStore()
+		const hub = authority(raw)
 		const b = replica('b')
 		const mint = versions('b')
-		const rows = Array.from({ length: 12 * 128 }, (_, i) => ({
-			id: `n${i}`,
-			parent: ROOT,
-			name: `f${i}.txt`,
-			type: 'file' as const,
-			mode: 0o100644,
-			mtimeNs: 0n,
-			size: 0n,
-			version: mint()
-		}))
-		await b.store.commit(rows)
-
-		// One refusal per page, then it takes the same page on the replan.
-		const seen = new Set<string>()
-		const grudging: Store = {
+		await raw.commit([
+			{
+				id: 'private',
+				parent: ROOT,
+				name: 'private',
+				type: 'mount',
+				mode: 0o40755,
+				mtimeNs: 0n,
+				size: 0n,
+				version: 'server:1'
+			}
+		])
+		await b.store.commit([
+			{
+				id: 'child',
+				parent: 'private',
+				name: 'child.txt',
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 0n,
+				size: 0n,
+				version: mint()
+			}
+		])
+		let commits = 0
+		const refusing: Store = {
 			...hub,
-			async commit(writes, guards) {
-				const page = writes[0]?.id
-				if (page !== undefined && !seen.has(page)) {
-					seen.add(page)
-					throw new GuardError('not this page, not yet')
-				}
+			commit(writes, guards) {
+				commits++
 				return hub.commit(writes, guards)
 			}
 		}
 
-		await sync(b.store, grudging, b.opts)
+		await expect(sync(b.store, refusing, { ...b.opts, retries: 0 })).rejects.toThrow(GuardError)
 
-		expect(seen.size).toBeGreaterThan(8)
-		expect((await volume(hub).readdir('/')).length).toBe(rows.length)
+		// A row under a mount has no conflict copy or other useful settlement. The
+		// unchanged batch cannot succeed on an immediate retry.
+		expect(commits).toBe(1)
 	})
 })
 

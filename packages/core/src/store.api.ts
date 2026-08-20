@@ -38,6 +38,10 @@ import { HTTPException } from 'hono/http-exception'
 
 export function storeApi(store: Store): Hono {
 	const app = new Hono()
+	app.use('*', async (c, next) => {
+		c.header('cache-control', 'no-store')
+		await next()
+	})
 
 	app.onError((err, c) => {
 		// A refusal is not a failure. The reason travels because the caller acts on

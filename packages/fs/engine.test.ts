@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
 import { memStore } from './mem'
 import { type Cursor, type Node, ROOT, type Store, type Version } from './store'
@@ -391,6 +392,117 @@ describe('sync: lineage', () => {
 		await sync(replacement, remote, opts)
 
 		expect(await rowsOf(replacement)).toEqual(await rowsOf(remote))
+	})
+
+	it('resumes a reset feed after settling a later page', async () => {
+		const local = memStore()
+		const hub = authority(memStore())
+		const pull = slot()
+		const push = slot((await memStore().since()).next)
+		const rows = many(versions('a'))
+		const conflict = rows[200]
+		if (conflict === undefined) throw new Error('the conflict row must exist')
+		rows[200] = { ...conflict, name: 'taken.txt' }
+		await local.commit(rows)
+		await hub.commit([file(versions('b'), { id: 'holder', name: 'taken.txt' })])
+
+		let firstPage = 0
+		const observed: Store = {
+			...hub,
+			commit(writes, guards) {
+				if (writes.some((row) => row.id === 'n0')) firstPage++
+				return hub.commit(writes, guards)
+			}
+		}
+
+		await sync(local, observed, { replica: 'a', pull, push })
+
+		// The reset starts at the top once. When page two is refused and settled,
+		// its replan resumes from the cursor saved after page one.
+		expect(firstPage).toBe(1)
+		expect(await rowsOf(local)).toEqual(await rowsOf(hub))
+	})
+
+	it('clears pull before a fenced push cursor, so a crash cannot skip the peer history', async () => {
+		const local = memStore()
+		const remote = memStore()
+		await remote.commit([file(versions('b'), { id: 'theirs', name: 'theirs.txt' })])
+		const alien = (await memStore().since()).next
+		const { cursor: remoteTail } = await scan(remote)
+		let pullAt: Cursor | undefined = remoteTail
+		let pushAt = alien
+		let crash = true
+		const cleared: string[] = []
+		const pull: CursorSlot = {
+			load: async () => pullAt,
+			save: async (cursor) => {
+				if (cursor === undefined) cleared.push('pull')
+				pullAt = cursor
+			}
+		}
+		const push: CursorSlot = {
+			load: async () => pushAt,
+			save: async (cursor) => {
+				if (cursor === undefined) {
+					cleared.push('push')
+					if (crash) {
+						crash = false
+						throw new Error('crash')
+					}
+				}
+				pushAt = cursor
+			}
+		}
+
+		await expect(sync(local, remote, { replica: 'a', pull, push, retries: 0 })).rejects.toThrow(
+			'crash'
+		)
+		expect(cleared).toEqual(['pull', 'push'])
+		expect(await pull.load()).toBeUndefined()
+
+		await sync(local, remote, { replica: 'a', pull, push })
+		expect(await local.get('theirs')).toMatchObject({ name: 'theirs.txt' })
+	})
+
+	it('clears push before a fenced pull cursor, so a crash cannot strand local work', async () => {
+		const local = memStore()
+		const remote = memStore()
+		await local.commit([file(versions('a'), { id: 'mine', name: 'mine.txt' })])
+		const { cursor: localTail } = await scan(local)
+		const alien = (await memStore().since()).next
+		let pushAt: Cursor | undefined = localTail
+		let pullAt = alien
+		let crash = true
+		const cleared: string[] = []
+		const push: CursorSlot = {
+			load: async () => pushAt,
+			save: async (cursor) => {
+				if (cursor === undefined) cleared.push('push')
+				pushAt = cursor
+			}
+		}
+		const pull: CursorSlot = {
+			load: async () => pullAt,
+			save: async (cursor) => {
+				if (cursor === undefined) {
+					cleared.push('pull')
+					if (crash) {
+						crash = false
+						throw new Error('crash')
+					}
+				}
+				pullAt = cursor
+			}
+		}
+
+		await expect(sync(local, remote, { replica: 'a', pull, push, retries: 0 })).rejects.toThrow(
+			'crash'
+		)
+		expect(cleared).toEqual(['push', 'pull'])
+		expect(await push.load()).toBeUndefined()
+
+		await sync(local, remote, { replica: 'a', pull, push })
+		expect(await remote.get('mine')).toMatchObject({ name: 'mine.txt' })
 	})
 })
 

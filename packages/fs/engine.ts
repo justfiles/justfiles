@@ -92,24 +92,20 @@ const BACKOFF_MS = 1000
 const PROBE_ABOVE = 64n * 1024n
 
 /**
- * How many times a cycle may replan WITHOUT anything landing before it gives up.
- * A rejection means somebody else made progress, so this is a livelock stop
- * rather than a concurrency limit — the same reasoning as `MAX_ATTEMPTS` in the
- * volume. Counting rejections outright would be a limit: a sync wide enough to
- * meet a conflict on nine separate pages resolves every one of them and would
- * still be cut off on the ninth, so a page that lands puts the budget back.
+ * How many times local progress may restart a cycle without a page reaching the
+ * peer. A successful page resets it; the limit only stops continuous local
+ * writes from keeping one sync call alive forever.
  */
 const REPLANS = 8
 
 /**
- * Start the cycle over. Not a failure and never seen by a caller: something
- * landed locally that the peer has to be offered before the page in hand may be
- * applied over it.
+ * Start the cycle over because local work has to be offered before the page in
+ * hand may be applied over it.
  */
-class Restart extends Error {
+class Replan extends Error {
 	constructor() {
-		super('sync restarted: local work landed mid-cycle')
-		this.name = 'Restart'
+		super('sync replanned after local progress')
+		this.name = 'Replan'
 	}
 }
 
@@ -181,7 +177,6 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	const mine = (row: Node): boolean => authorOf(row.version) === opts.replica
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
-	let rewind = false
 	let failures = 0
 	let replans = 0
 	// The two directions differ only in where the bytes go, and rule 10 is why they
@@ -199,8 +194,20 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			// What the refusal MEANT is decided here, where the rows still are: the
 			// error cannot carry them, since a peer refuses a whole batch and for
 			// reasons — a taken name, a dead id — that no `Guard` states.
-			if (err instanceof GuardError) await settle(local, remote, rows, opts.replica)
-			throw err
+			if (!(err instanceof GuardError)) throw err
+			let changed: boolean
+			try {
+				changed = await settle(local, remote, rows, opts.replica)
+			} catch (settling) {
+				// A local write raced the settlement's guards. Re-read the page and
+				// settle the current row instead of replacing it with the stale fix.
+				if (settling instanceof GuardError) throw new Replan()
+				throw settling
+			}
+			// No local write changed the refused page, so offering it again now
+			// cannot produce a different answer.
+			if (!changed) throw err
+			throw new Replan()
 		}
 	}
 	const pull = async (rows: Node[]): Promise<void> => {
@@ -233,8 +240,13 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 		// A page with nothing to apply cannot overwrite anything, so it asks nothing
 		// of the local feed at all.
 		if (fresh.length > 0) {
-			if (await drain(local, push, opts.push, false, mine)) throw new Restart()
-			await local.commit(fresh, guards)
+			if (await drain(local, push, opts.push, mine)) throw new Replan()
+			try {
+				await local.commit(fresh, guards)
+			} catch (err) {
+				if (err instanceof GuardError) throw new Replan()
+				throw err
+			}
 			replans = 0
 		}
 		// Rule 7: bytes from a peer are checked against the hash that named them
@@ -246,31 +258,41 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	}
 	for (;;) {
 		try {
-			await drain(local, push, opts.push, rewind, mine)
-			await drain(remote, pull, opts.pull, rewind)
-			return
-		} catch (err) {
-			// Rule 11 fences the PAIR, not the cursor that threw. The two cursors are
-			// one relationship — where this replica stands in the peer's feed, and what
-			// it has already handed that peer — so a replaced store voids both halves,
-			// and rewinding one leaves the other asserting a history the replacement
-			// never had. It is not a failure to retry either, since no position in that
-			// store will ever answer to that cursor: it spends no retry budget, and it
-			// happens at most once, an empty cursor being one no store can fence.
-			if (err instanceof ForeignCursorError && !rewind) {
-				rewind = true
+			try {
+				await drain(local, push, opts.push, mine)
+			} catch (err) {
+				if (!(err instanceof ForeignCursorError) || !(await reset(opts.push, opts.pull))) throw err
 				continue
 			}
-			// A refused commit is somebody else making progress, not a peer that is
-			// down, so it costs no retry and no backoff — it costs a replan. `settle`
-			// has already written whatever the refusal called for, and running the
-			// cycle again is what offers it. The budget is spent only on replans that
-			// land nothing, since it is there to stop a livelock, not a wide sync.
-			if ((err instanceof GuardError || err instanceof Restart) && replans++ < REPLANS) continue
+			try {
+				await drain(remote, pull, opts.pull)
+			} catch (err) {
+				if (!(err instanceof ForeignCursorError) || !(await reset(opts.pull, opts.push))) throw err
+				continue
+			}
+			return
+		} catch (err) {
+			if (err instanceof Replan) {
+				if (replans++ < REPLANS) continue
+				throw err
+			}
+			if (err instanceof GuardError) throw err
 			if (failures >= retries) throw err
 			await sleep(backoff * 2 ** failures++)
 		}
 	}
+}
+
+/**
+ * Clear a fenced relationship. The other half goes first, so a crash while the
+ * bad cursor is cleared can only cause a replay; it cannot leave either store
+ * claiming rows its replacement never saw.
+ */
+async function reset(fenced: CursorSlot, other: CursorSlot): Promise<boolean> {
+	if ((await fenced.load()) === undefined) return false
+	await other.save(undefined)
+	await fenced.save(undefined)
+	return true
 }
 
 /**
@@ -296,10 +318,10 @@ export function versions(replica: string): () => Version {
  * may lag its rows and may never lead them, which is the whole of the crash
  * story — a re-run re-applies rows the store already holds and writes nothing.
  *
- * `rewind` starts from the empty cursor and ignores the slot, which is how a
- * bootstrap and a fenced relationship are the same code path. `mine` is the push
- * filter: without it every pulled row would be sent back once, which idempotence
- * would absorb and the network would still pay for.
+ * A bootstrap and a fenced relationship both start from the empty cursor saved
+ * in the slot. `mine` is the push filter: without it every pulled row would be
+ * sent back once, which idempotence would absorb and the network would still pay
+ * for.
  *
  * Returns how many rows it moved, which is how the pull tells "nothing to offer"
  * from "this replica wrote something the peer has not seen".
@@ -308,10 +330,9 @@ async function drain(
 	from: Store,
 	apply: (rows: Node[]) => Promise<void>,
 	slot: CursorSlot,
-	rewind: boolean,
 	mine?: (row: Node) => boolean
 ): Promise<number> {
-	let cursor = rewind ? undefined : await slot.load()
+	let cursor = await slot.load()
 	let moved = 0
 	for (;;) {
 		const page = await from.since(cursor)
@@ -382,10 +403,15 @@ async function fanned<T, R>(items: T[], work: (item: T) => Promise<R>): Promise<
  * Each outcome is a LOCAL write, and the push behind it needs no special path —
  * a written row moves to the end of the local feed (rule 4), so the re-scan
  * offers the fix and no longer offers what was refused. A page refused for a
- * reason none of these covers writes nothing, is offered again unchanged, and
- * after `REPLANS` of that becomes the caller's error.
+ * reason none of these covers writes nothing and becomes the caller's error;
+ * retrying the same rows immediately cannot change the peer's answer.
  */
-async function settle(local: Store, remote: Store, rows: Node[], replica: string): Promise<void> {
+async function settle(
+	local: Store,
+	remote: Store,
+	rows: Node[],
+	replica: string
+): Promise<boolean> {
 	// A minter per refusal, which is a minter this replica hardly ever draws. Two
 	// minters for one replica are the supported case, and each draws its own nonce.
 	const mint = versions(replica)
@@ -539,7 +565,9 @@ async function settle(local: Store, remote: Store, rows: Node[], replica: string
 		// EDIT vs EDIT needs no fix. Pushes carry no version guards, so the last write
 		// the authority accepts wins.
 	}
-	if (fixes.length > 0) await local.commit(fixes, guards)
+	if (fixes.length === 0) return false
+	await local.commit(fixes, guards)
+	return true
 }
 
 /**
