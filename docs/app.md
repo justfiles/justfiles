@@ -13,7 +13,6 @@ Frieren and Kodama for Mac. The best examples are:
 - `packages/app-crossword` — AI procedure committing one atomic result
 - `packages/app-dictionary` — a framework-free GUI (plain DOM, no React) over an AI procedure
 - `packages/app-files` — recursive file watching and command coalescing
-- `packages/app-code` — the in-app authoring environment
 
 This is the app-author API. Do not use kernel, sandbox, transport, app-store, or host internals from an
 app.

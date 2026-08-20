@@ -124,7 +124,7 @@ menubar. Build + tests green.
     (`onTool`/`onSize`) already covers Tools/Brush (S).
   - `packages/app-notes/src/gui.tsx`: delete the `menu` export — the items only fire
     `window` events the palette/shortcuts already trigger (S).
-  - `packages/app-code`: remove the `menu` procedure (`src/app.ts`), the `Menubar` +
+  - App Code: remove the `menu` procedure (`src/app.ts`), the `Menubar` +
     dropdown UI (`src/editor-screen.tsx`, `src/editor-view.tsx`), and the `.menu({})` /
     `.selectMenu()` calls. This is the bulk of the step.
 
