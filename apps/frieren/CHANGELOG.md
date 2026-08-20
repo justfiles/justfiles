@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.14.2](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.14.1...frieren-v0.14.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **frieren:** bind LOADER on staging ([#532](https://github.com/xiaoxinghu/justfiles/issues/532)) ([f466974](https://github.com/xiaoxinghu/justfiles/commit/f4669745c660c7e341c3b9960a18160e7e1efb94))
+* use App Store tile icon ([#551](https://github.com/xiaoxinghu/justfiles/issues/551)) ([2e0a9ab](https://github.com/xiaoxinghu/justfiles/commit/2e0a9ab544e5761d699c6c94f8e8324ec60af18c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.6.1
+    * @justfiles/design bumped to 0.1.1
+
 ## [0.14.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.14.0...frieren-v0.14.1) (2026-08-18)
 
 

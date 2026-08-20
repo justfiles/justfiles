@@ -1,6 +1,6 @@
 {
 	"name": "@justfiles/design",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "The JustFiles design system: tokens, shell components, and platform sheets.",
 	"type": "module",
 	"repository": {

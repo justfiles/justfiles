@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.6.0...app-v0.6.1) (2026-08-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/design bumped to 0.1.1
+
 ## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.5.0...app-v0.6.0) (2026-08-18)
 
 
