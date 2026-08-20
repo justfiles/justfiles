@@ -538,7 +538,7 @@ describe('sqliteStore: bytes too big for a row', () => {
 		// put throws outright, which is what a 2 MB cap does to a store that inlines.
 		expect([...objects.keys()]).toEqual([`main/${hash}`])
 		expect(await store.blobs.has(hash)).toBe(true)
-		expect(await store.blobs.get(hash)).toEqual(data)
+		expect(await sha256Hex((await store.blobs.get(hash))!)).toBe(hash)
 	})
 
 	test('without one, the same file cannot be stored at all', async () => {
@@ -639,6 +639,6 @@ describe('sqliteStore: bytes too big for a row', () => {
 		// The re-adopted bytes survive their own collection. Without the wait the delete
 		// lands after the upload, and the row the push is about to commit names nothing —
 		// with no peer left that knows to offer the content again.
-		expect(await store.blobs.get(hash)).toEqual(data)
+		expect(await sha256Hex((await store.blobs.get(hash))!)).toBe(hash)
 	})
 })
