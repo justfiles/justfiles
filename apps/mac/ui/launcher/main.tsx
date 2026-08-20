@@ -3,6 +3,7 @@ import '@justfiles/design/mac.css'
 import { Transcript } from '@justfiles/ui/Transcript'
 import { StrictMode, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import appStoreIcon from '../../../../packages/design/assets/app_store.svg'
 import { useAgentChat } from './agentChat'
 import { StoreSurface } from './appStore'
 import { type App, useSystemApps } from './system'
@@ -72,9 +73,7 @@ export function Launcher() {
 									title="Browse the App Store"
 									type="button"
 								>
-									<span className="app-icon app-glyph">
-										<StoreGlyph />
-									</span>
+									<img className="app-icon" src={appStoreIcon} alt="" />
 									<span className="app-name">App Store</span>
 								</button>
 							) : null}
@@ -151,25 +150,6 @@ function AppIcon({ app }: { app: App }) {
 		)
 	}
 	return <span className="app-icon app-glyph">{glyph(app)}</span>
-}
-
-function StoreGlyph() {
-	return (
-		<svg
-			aria-hidden="true"
-			fill="none"
-			height="34"
-			stroke="currentColor"
-			strokeLinecap="round"
-			strokeWidth="1.6"
-			viewBox="0 0 24 24"
-			width="34"
-		>
-			<path d="M3 9.5 5.5 4h13L21 9.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0Z" />
-			<path d="M4.8 11.4v8.6h14.4v-8.6" />
-			<path d="M9.8 20v-5.4h4.4V20" />
-		</svg>
-	)
 }
 
 function glyph(app: App): string {

@@ -8,12 +8,12 @@ import {
 	ChatCircleIcon,
 	DownloadSimpleIcon,
 	SparkleIcon,
-	StorefrontIcon,
 	TrashIcon
 } from '@phosphor-icons/react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import appStoreIcon from '../../../../packages/design/assets/app_store.svg'
 import type { RunnerCatalogApp } from '../../../shared/justapps'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
@@ -780,7 +780,7 @@ export function Omnibar({
 								onClick={() => setBrowseStore(true)}
 							>
 								<span className="frn-omnibar-icon">
-									<StorefrontIcon />
+									<img src={appStoreIcon} alt="" />
 									{held.length ? (
 										<span className="frn-omnibar-tile-badge">{held.length}</span>
 									) : null}
