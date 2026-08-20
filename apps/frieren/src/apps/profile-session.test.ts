@@ -252,6 +252,21 @@ describe('profile session switching', () => {
 		expect(H.synced).toHaveBeenCalledTimes(2)
 	})
 
+	test('a volume its holder destroyed syncs again when it is attached again', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await fs.openProfile()
+		const volume = await fs.attachRemoteUser('user-1', async () => 'token')
+
+		volume.destroy()
+		await fs.attachRemoteUser('user-1', async () => 'token')
+
+		// A destroyed loop is terminal, so holding a reference to one would leave the
+		// profile reading as synced on a replica nothing syncs — the attach that follows
+		// leaves a loop that is already there alone.
+		expect(H.destroyed).toHaveBeenCalledTimes(1)
+		expect(H.synced).toHaveBeenCalledTimes(2)
+	})
+
 	test('factory reset reuses an operation after ambiguous confirmation failure', async () => {
 		H.reset
 			.mockResolvedValueOnce({ ok: false, status: 503 })

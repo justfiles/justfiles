@@ -284,7 +284,8 @@ function setActiveStatus(entry: Active, status: SyncStatus): void {
 	emitStatus()
 }
 
-function createProfileVolume(plain: Volume, sync: () => SyncVolume | null): ProfileVolume {
+function createProfileVolume(plain: Volume, of: () => Active): ProfileVolume {
+	const sync = () => of().sync
 	return {
 		...plain,
 		// The synced volume reads through `hydratingBlobs`, so a row this replica holds
@@ -294,7 +295,13 @@ function createProfileVolume(plain: Volume, sync: () => SyncVolume | null): Prof
 		flush: () => sync()?.flush() ?? Promise.resolve(),
 		pause: () => sync()?.pause(),
 		resume: () => sync()?.resume(),
-		destroy: () => sync()?.destroy(),
+		// Through `stopSync`, because a destroyed loop is TERMINAL — `synced.destroy()`
+		// stands its timer down for good and nothing resumes it. A reference to one is a
+		// profile that reads as syncing and never will again: `flush` and `status` answer
+		// for a loop that stopped, and `startSync` leaves a loop that is already there
+		// alone. Dropping the reference is what makes this recoverable — the profile falls
+		// back to local-only, and the next attach builds a loop.
+		destroy: () => stopSync(of()),
 		status: activeStatus,
 		onStatusChange: (fn) => onActiveStatusChange(() => fn(activeStatus()))
 	}
@@ -398,7 +405,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]]),
 		mintVersion: versions(replica)
 	})
-	const managed = createProfileVolume(plain, () => entry.sync)
+	const managed = createProfileVolume(plain, () => entry)
 
 	// Online-aware sync: stop pushing when the network drops, resume when it
 	// returns, and flush pending writes to the backend before the tab goes away.
