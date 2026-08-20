@@ -22,6 +22,23 @@ if (!root) throw new Error('missing app root')
 const { id, name, version, base, app, gui: guiPath } = root.dataset
 if (!id || !name || !base || !app || !guiPath) throw new Error('missing app identity')
 
+const scrollTops = new WeakMap<EventTarget, number>()
+root.addEventListener(
+	'scroll',
+	(event) => {
+		if (!(event.target instanceof Element)) return
+		const top = event.target.scrollTop
+		const last = scrollTops.get(event.target) ?? 0
+		if (top > last + 4 && top > 24) document.body.classList.add('runner-shelf-hidden')
+		else if (top < last - 4) document.body.classList.remove('runner-shelf-hidden')
+		scrollTops.set(event.target, top)
+	},
+	true
+)
+document.addEventListener('pointermove', (event) => {
+	if (event.clientY < 46) document.body.classList.remove('runner-shelf-hidden')
+})
+
 // `base` is `/v/{version}/`, emitted by the document that resolved the live
 // version. Every URL here hangs off it, so one page load can never mix bytes
 // from two releases — and the integrity pins an installed device holds keep

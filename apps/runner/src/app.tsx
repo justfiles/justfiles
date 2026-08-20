@@ -1,5 +1,6 @@
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { Hono } from 'hono'
+import { raw } from 'hono/html'
 import type { MiddlewareHandler } from 'hono/types'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
 import { findApp, servable } from './catalog'
@@ -46,6 +47,35 @@ const IMMUTABLE = 'public, max-age=31536000, immutable'
  * about a minute, and the immutable URL it points at pays nothing.
  */
 const POINTER = 'public, max-age=60'
+
+const SHELL_STYLE = `
+:root { color-scheme: light dark }
+html, body { height: 100%; margin: 0 }
+body { display: flex; flex-direction: column; overflow: hidden }
+#runner-shelf { --bg: #f7f7f5; --text: #1b1a18; --dim: #6f6c66; --rule: #e8e6e0; --mark: #b06a2c;
+	align-items: center; background: var(--bg); border-bottom: 1px solid var(--rule);
+	box-sizing: border-box; color: var(--text); display: flex; flex: 0 0 32px;
+	font: 12px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; gap: 9px; height: 32px;
+	padding: 0 12px; transition: margin-top .3s cubic-bezier(.32,.72,0,1), opacity .2s ease; z-index: 2147483647 }
+#runner-shelf .runner-shelf-icon { align-items: center; background: var(--rule); border-radius: 5px;
+	display: flex; flex: none; font-size: 10px; height: 17px; justify-content: center; overflow: hidden; width: 17px }
+#runner-shelf .runner-shelf-icon img { display: block; height: 100%; object-fit: cover; width: 100% }
+#runner-shelf .runner-shelf-name { font-size: 12.5px; font-weight: 550 }
+#runner-shelf .runner-shelf-name, #runner-shelf .runner-shelf-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+#runner-shelf .runner-shelf-dot { background: var(--dim); border-radius: 50%; flex: none; height: 3px; opacity: .5; width: 3px }
+#runner-shelf .runner-shelf-host { color: var(--dim); font-size: 11.5px }
+#runner-shelf .runner-shelf-home { align-items: center; border-radius: 999px; color: var(--mark); display: flex;
+	flex: none; font-size: 11.5px; font-weight: 550; gap: 5px; margin-left: auto; padding: 5px 9px; text-decoration: none }
+#runner-shelf .runner-shelf-home:hover { background: color-mix(in srgb, var(--mark) 15%, transparent) }
+#runner-shelf .runner-shelf-home:focus-visible { outline: 2px solid var(--mark); outline-offset: -2px }
+#runner-shelf .runner-shelf-dots { display: grid; gap: 2px; grid-template-columns: 1fr 1fr }
+#runner-shelf .runner-shelf-dots i { background: currentColor; border-radius: 1px; height: 4px; width: 4px }
+body.runner-shelf-hidden #runner-shelf { margin-top: -32px; opacity: 0; pointer-events: none }
+#app { flex: 1; min-height: 0; overflow: auto; width: 100% }
+@media (prefers-color-scheme: dark) { #runner-shelf {
+	--bg: #16171a; --text: #eae8e3; --dim: #8e8b85; --rule: #26282d; --mark: #dda05a } }
+@media (prefers-reduced-motion: reduce) { #runner-shelf { transition: none } }
+`
 
 /**
  * `/v/{version}/…` is resolved by string construction: the shell below emits
@@ -219,20 +249,43 @@ route.get('/', async (c) => {
 	if (!app) return c.notFound()
 
 	const base = `/v/${app.version}/`
+	const request = new URL(c.req.url)
+	const home = request.hostname.endsWith('.localhost')
+		? `${request.protocol}//localhost${request.port ? `:${request.port}` : ''}/`
+		: `https://${c.env.ROOT_DOMAIN}/`
 	return c.html(
 		<html lang="en">
 			<head>
+				<meta charset="utf-8" />
+				<meta name="viewport" content="width=device-width, initial-scale=1" />
 				<title>{app.name}</title>
 				{/* The GUI is the app's own code, served from the store rather than bundled
 				    into the platform entry below — so the browser only discovers it once
 				    that entry runs. Start the fetch at parse time instead. */}
 				{app.gui ? <link rel="modulepreload" href={`${base}${app.gui}`} /> : null}
 				<link rel="manifest" href="/manifest.webmanifest" />
-				<style>{'html, body, #app { height: 100%; margin: 0 }'}</style>
+				<style>{raw(SHELL_STYLE)}</style>
 				<ViteClient />
 				<Script src="/src/client/main.ts" />
 			</head>
 			<body>
+				<nav id="runner-shelf" aria-label="App navigation">
+					<span class="runner-shelf-icon" aria-hidden="true">
+						{app.icon ? <img src={`${base}${app.icon}`} alt="" /> : app.name.slice(0, 1)}
+					</span>
+					<span class="runner-shelf-name">{app.name}</span>
+					<span class="runner-shelf-dot"></span>
+					<span class="runner-shelf-host">{c.env.ROOT_DOMAIN}</span>
+					<a class="runner-shelf-home" href={home} aria-label="All apps">
+						<span class="runner-shelf-dots" aria-hidden="true">
+							<i></i>
+							<i></i>
+							<i></i>
+							<i></i>
+						</span>
+						Apps
+					</a>
+				</nav>
 				{/* The mount point, carrying the app's identity, the entry points its
 				    manifest declares, AND the version-pinned origin its bytes come from:
 				    resolving the live version is this request's job, so the page inherits

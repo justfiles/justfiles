@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Four Ways Home</title>
+<link rel="stylesheet" href="home-button.css">
+<style>
+:root {
+	--ground: #f3f4f7; --surface: #fff; --ink: #14171c; --dim: #6a7280; --line: #e1e4ea;
+	--acc: #2c6b5b; --bezel: #d7dae1; --bezel-in: #b9bec9;
+	--sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+	--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+	--ground: #0c0e11; --surface: #14171b; --ink: #e9ecf1; --dim: #8f97a4; --line: #232830;
+	--acc: #6fb9a2; --bezel: #262b33; --bezel-in: #12151a;
+} }
+:root[data-theme="dark"] {
+	--ground: #0c0e11; --surface: #14171b; --ink: #e9ecf1; --dim: #8f97a4; --line: #232830;
+	--acc: #6fb9a2; --bezel: #262b33; --bezel-in: #12151a;
+}
+body { background: var(--ground); color: var(--ink); font-family: var(--sans); line-height: 1.55; margin: 0; }
+.wrap { margin: 0 auto; max-width: 1180px; padding: 56px 28px 90px; }
+.eyebrow { color: var(--acc); font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em; margin: 0 0 14px; text-transform: uppercase; }
+h1 { font-family: var(--mono); font-size: clamp(28px, 4.4vw, 42px); font-weight: 600; letter-spacing: -.03em; margin: 0; text-wrap: balance; }
+.lede { color: var(--dim); font-size: 16.5px; margin: 14px 0 0; max-width: 62ch; }
+.lede a, .notes a { color: var(--acc); }
+.lede strong { color: var(--ink); font-weight: 600; }
+.notes { border-top: 1px solid var(--line); display: grid; gap: 8px 34px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	margin-top: 30px; padding-top: 18px; }
+.notes p { color: var(--dim); font-size: 13.5px; margin: 0; }
+.notes b { color: var(--ink); font-weight: 600; }
+code { font-family: var(--mono); font-size: .92em; }
+
+.index { border-top: 1px solid var(--line); margin-top: 34px; }
+.index a { align-items: baseline; border-bottom: 1px solid var(--line); color: inherit; display: flex; gap: 16px;
+	padding: 11px 2px; text-decoration: none; }
+.index a:hover { color: var(--acc); }
+.index .id { color: var(--dim); font-family: var(--mono); font-size: 12px; width: 24px; }
+.index .nm { font-weight: 600; width: 96px; }
+.index .wh { color: var(--dim); font-size: 13.5px; }
+.index .ct { color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-left: auto; text-align: right; white-space: nowrap; }
+
+.study { border-top: 1px solid var(--line); margin-top: 64px; padding-top: 30px; scroll-margin-top: 20px; }
+.study h2 { align-items: baseline; display: flex; flex-wrap: wrap; font-size: 25px; font-weight: 600; gap: 12px; letter-spacing: -.02em; margin: 0; }
+.study h2 .id { background: color-mix(in srgb, var(--acc) 16%, transparent); border-radius: 5px; color: var(--acc);
+	font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; padding: 3px 7px; }
+.study .thesis { font-size: 16px; margin: 10px 0 0; max-width: 64ch; }
+.study .where { color: var(--dim); font-size: 14px; margin: 8px 0 0; max-width: 64ch; }
+.study .where b { color: var(--ink); font-weight: 600; }
+.study .open { color: var(--acc); font-family: var(--mono); font-size: 12.5px; }
+
+.frames { align-items: start; display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) 390px; margin-top: 26px; }
+.desk { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 18px 40px -28px rgba(10,14,25,.5);
+	overflow: hidden; }
+.desk .bar { align-items: center; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); border-bottom: 1px solid var(--line);
+	display: flex; gap: 8px; padding: 9px 13px; }
+.desk .bar i { background: var(--bezel-in); border-radius: 50%; height: 8px; opacity: .55; width: 8px; }
+.desk .bar span { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-left: 8px; }
+.phone { background: var(--bezel); border-radius: 48px; box-shadow: 0 22px 50px -30px rgba(10,14,25,.65); padding: 9px; position: relative; }
+.phone .screen { border-radius: 40px; overflow: hidden; position: relative; }
+.phone .notch { background: var(--bezel-in); border-radius: 999px; height: 6px; left: 50%; opacity: .8; position: absolute;
+	top: 15px; transform: translateX(-50%); width: 68px; z-index: 6; }
+.cap { color: var(--dim); font-family: var(--mono); font-size: 11px; letter-spacing: .1em; margin: 10px 0 0; text-align: center;
+	text-transform: uppercase; }
+@media (max-width: 1000px) {
+	.frames { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+	.desk { width: 100%; }
+	.phone { max-width: 100%; }
+}
+.index a:focus-visible, .study .open:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
+
+.land { border-top: 2px solid var(--ink); margin-top: 66px; padding-top: 22px; }
+.land h2 { font-size: 25px; font-weight: 600; letter-spacing: -.02em; margin: 0 0 4px; }
+.land .call { font-size: 16.5px; margin: 0 0 26px; max-width: 64ch; }
+.land .call b { color: var(--acc); }
+.land ol { counter-reset: n; display: grid; gap: 22px; list-style: none; margin: 0; padding: 0; }
+.land li { display: grid; gap: 4px 16px; grid-template-columns: 26px minmax(0, 1fr); }
+.land li::before { color: var(--acc); content: counter(n); counter-increment: n; font-family: var(--mono);
+	font-size: 12px; padding-top: 4px; }
+.land li h3 { font-size: 15.5px; font-weight: 600; grid-column: 2; margin: 0; }
+.land li p { color: var(--dim); font-size: 14.5px; grid-column: 2; margin: 0; max-width: 62ch; }
+.land .then { border-top: 1px solid var(--line); font-size: 15.5px; margin-top: 28px; max-width: 64ch; padding-top: 22px; }
+.land .then b { font-weight: 600; }
+.land pre { background: color-mix(in srgb, var(--ink) 4%, var(--surface)); border: 1px solid var(--line);
+	border-radius: 9px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; margin: 18px 0 0;
+	overflow-x: auto; padding: 14px 16px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+	<p class="eyebrow">justapps.run &middot; the way out</p>
+	<h1>Four ways home</h1>
+	<p class="lede">An app on justapps.run owns its whole subdomain, and its whole screen. Installed to a home
+		screen it owns even more than that: no address bar, no back button, no tab &mdash; nothing that leads
+		anywhere. These are four ways to give the screen back without taking it from the app, drawn over the
+		same notes editor so you can see what each one collides with.
+		<strong>Every frame is live.</strong> The question they answer differently is
+		<strong>what the way out costs the app</strong> &mdash; from 32&thinsp;px of reserved chrome down to nothing at all.</p>
+	<div class="notes">
+		<p><b>The way out belongs to the host, not the app.</b> It is drawn by the page the runner serves, outside the mount point, so no app has to add it and no app can remove it.</p>
+		<p><b>The mock app has furniture at both edges</b> &mdash; a toolbar on top, a formatting bar below &mdash; because an app with clear edges cannot show you what a way out costs.</p>
+		<p><b>The phone is not a screenshot.</b> It is the same markup in a 390&thinsp;px container, laid out by container queries.</p>
+	</div>
+	<nav class="index">
+		<a href="#d1"><span class="id">d1</span><span class="nm">Indicator</span><span class="wh">A home bar in a gutter the host keeps for itself.</span><span class="ct">22&thinsp;px of height, permanently</span></a>
+		<a href="#d2"><span class="id">d2</span><span class="nm">Beacon</span><span class="wh">A floating orb that idles down to a smudge.</span><span class="ct">no layout at all; 42&thinsp;px over the app, movable</span></a>
+		<a href="#d3"><span class="id">d3</span><span class="nm">Shelf</span><span class="wh">A strip of host chrome above the app, which yields as you read.</span><span class="ct">32&thinsp;px at the top, handed back while you read</span></a>
+		<a href="#d4"><span class="id">d4</span><span class="nm">Edge</span><span class="wh">Nothing on the screen. Swipe in from the left.</span><span class="ct">nothing</span></a>
+	</nav>
+
+<section class="study" id="d1">
+	<h2><span class="id">d1</span> Indicator</h2>
+	<p class="thesis">The iPhone answer, translated. The host reserves a 22&thinsp;px strip below the app and draws one capsule in it. The app never paints there, so nothing it does can ever cover the way out, and nothing it draws has to dodge either.</p>
+	<p class="where"><b>Try:</b> Tap the bar, or flick it up. &nbsp;<b>Costs the app:</b> 22&thinsp;px of height, permanently. &nbsp;<a class="open" href="indicator.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>notes-justfiles.justapps.run</span></div>
+				<div class="stage d1" data-dir="d1" style="--stage-h: 560px"></div>
+			</div>
+			<p class="cap">Browser tab &mdash; 1024&thinsp;px</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage d1" data-dir="d1" style="--stage-h: 720px"></div></div></div>
+			<p class="cap">Installed to the home screen &mdash; 390&thinsp;px</p>
+		</div>
+	</div>
+</section>
+
+<section class="study" id="d2">
+	<h2><span class="id">d2</span> Beacon</h2>
+	<p class="thesis">Costs no layout at all &mdash; it is over the app, not beside it. A few seconds after you stop touching anything it drops to a quarter opacity and shrinks; the next touch anywhere brings it back to full. If it lands on something you need, drag it to a corner that is free.</p>
+	<p class="where"><b>Try:</b> Tap the orb. Or drag it &mdash; it snaps to the nearer side. &nbsp;<b>Costs the app:</b> no layout at all; 42&thinsp;px over the app, movable. &nbsp;<a class="open" href="beacon.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>notes-justfiles.justapps.run</span></div>
+				<div class="stage d2" data-dir="d2" style="--stage-h: 560px"></div>
+			</div>
+			<p class="cap">Browser tab &mdash; 1024&thinsp;px</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage d2" data-dir="d2" style="--stage-h: 720px"></div></div></div>
+			<p class="cap">Installed to the home screen &mdash; 390&thinsp;px</p>
+		</div>
+	</div>
+</section>
+
+<section class="study" id="d3">
+	<h2><span class="id">d3</span> Shelf</h2>
+	<p class="thesis">The only direction that says what app you are in and who is hosting it &mdash; which is worth something in an installed app, where the browser has taken the address bar away and nothing else on screen answers either question. It is real reserved space, so it can never overlap the app; scroll down and it retracts, scroll up or reach for the top and it comes back.</p>
+	<p class="where"><b>Try:</b> Scroll the note down, then back up. &nbsp;<b>Costs the app:</b> 32&thinsp;px at the top, handed back while you read. &nbsp;<a class="open" href="shelf.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>notes-justfiles.justapps.run</span></div>
+				<div class="stage d3" data-dir="d3" style="--stage-h: 560px"></div>
+			</div>
+			<p class="cap">Browser tab &mdash; 1024&thinsp;px</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage d3" data-dir="d3" style="--stage-h: 720px"></div></div></div>
+			<p class="cap">Installed to the home screen &mdash; 390&thinsp;px</p>
+		</div>
+	</div>
+</section>
+
+<section class="study" id="d4">
+	<h2><span class="id">d4</span> Edge</h2>
+	<p class="thesis">The app gets literally all of it. A 3&thinsp;px hairline at the left edge is the only standing tell &mdash; enough to say something is there, too little to read as a control. A coach mark teaches the gesture on the first few launches and then never appears again.</p>
+	<p class="where"><b>Try:</b> Drag in from the left edge. Or press Escape. &nbsp;<b>Costs the app:</b> nothing &mdash; you pay in discoverability instead. &nbsp;<a class="open" href="edge.html">open full screen &rarr;</a></p>
+	<div class="frames">
+		<div>
+			<div class="desk">
+				<div class="bar"><i></i><i></i><i></i><span>notes-justfiles.justapps.run</span></div>
+				<div class="stage d4" data-dir="d4" style="--stage-h: 560px"></div>
+			</div>
+			<p class="cap">Browser tab &mdash; 1024&thinsp;px</p>
+		</div>
+		<div>
+			<div class="phone"><div class="notch"></div><div class="screen"><div class="stage d4" data-dir="d4" style="--stage-h: 720px"></div></div></div>
+			<p class="cap">Installed to the home screen &mdash; 390&thinsp;px</p>
+		</div>
+	</div>
+</section>
+
+<section class="land" id="land">
+	<h2>Where I would land</h2>
+	<p class="call"><b>d2 Beacon</b>, with <b>d3 Shelf</b> as the fallback if the store would rather be a
+		place than a set of unrelated origins. Three things decide it, and none of them are visible in the
+		frames above &mdash; they are all about what the platform has already taken.</p>
+	<ol>
+		<li><h3>The bottom edge is already spoken for</h3>
+			<p>Installed to an iPhone home screen, the system draws its own home indicator across the bottom of
+			the screen. d1's capsule lands directly above it: two home bars, one of which is a lie. The direction
+			that imitates iOS most faithfully is the one iOS has left no room for. In a browser tab it is
+			perfect; installed &mdash; the case that actually strands you &mdash; it is not.</p></li>
+		<li><h3>So is the left edge</h3>
+			<p>In a browser tab, swiping in from the left edge is the browser's own back gesture, on iOS Safari
+			and on Android Chrome. d4 cannot have it there. Installed, the gesture is free &mdash; so d4 works
+			exactly where it is hardest to teach, and fails exactly where a first-time visitor meets it.</p></li>
+		<li><h3>Only d3 answers &ldquo;where am I?&rdquo;</h3>
+			<p>Installed, there is no address bar, so nothing on the screen says this app came from
+			justapps.run. Whether that is worth 32&thinsp;px is a product question, not a layout one: it is the
+			difference between a store and a set of bookmarks.</p></li>
+	</ol>
+	<p class="then"><b>Which leaves the Beacon.</b> It costs no layout, collides with no platform gesture,
+		behaves identically in a tab and installed, and moves out of the way when it is in the way. It is the
+		only one of the four that is obvious the moment the app opens and gone by the second paragraph.</p>
+	<p class="then"><b>It is also nearly free to build.</b> The way out belongs to the host, so it is rendered
+		by the runner beside the mount point, where no app can reach it &mdash; and the tap needs no client code
+		at all, just a link off this origin.</p>
+	<pre>// apps/runner/src/app.tsx &mdash; in the body, after &lt;div id="app"&gt;
+&lt;a class="beacon" href={`https://${c.env.ROOT_DOMAIN}/`} aria-label="All apps"&gt;&hellip;&lt;/a&gt;</pre>
+	<p class="then"><b>One prerequisite either way.</b> The app document renders no
+		<code>&lt;meta name="viewport"&gt;</code> today, so a phone lays it out at 980&thinsp;px and scales down.
+		Every direction here assumes that tag &mdash; and d1 additionally assumes
+		<code>viewport-fit=cover</code> plus <code>env(safe-area-inset-bottom)</code>, or its bar sits under the
+		system's.</p>
+</section>
+</div>
+<script src="home-button.js"></script>
+</body>
+</html>
