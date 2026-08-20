@@ -609,6 +609,16 @@ const HOSTED: Record<string, string> = {
 	'gui.js': '// gui'
 }
 
+// The shape one real app has and the fixture above does not: a bundle whose mounted
+// half is mostly neither its GUI nor its icon. App Code ships a compiler SDK this way
+// — 236 files beside the two that put it on screen.
+const HOSTED_SDK: Record<string, string> = {
+	...HOSTED,
+	'sdk/one.d.ts': '// types',
+	'sdk/two.d.ts': '// more types',
+	'sdk/runtime.js': '// sdk runtime'
+}
+
 describe('prefetch', () => {
 	test('a hosted app reads offline once installed', async () => {
 		const store = await builtinStore(HOSTED)
@@ -646,6 +656,25 @@ describe('prefetch', () => {
 		expect(requested).toEqual([])
 	})
 
+	test('the named entries are warmed; the rest of the bundle waits to be asked for', async () => {
+		const store = await builtinStore(HOSTED_SDK)
+		const { kernel, requested } = fakeWorld((path) => enc.encode(HOSTED_SDK[path] ?? ''))
+
+		await materialise(kernel, store)
+
+		// "Every mounted file" is not a bounded set: one app's SDK is 236 of them, against
+		// a runner cache of 500 entries, and this pass runs again on every catalog change
+		// and every burst of sync traffic. What the manifest NAMES is what a host needs to
+		// show the app and open it.
+		expect(requested).toEqual(['gui.js'])
+
+		// And the rest is not lost — it is pinned in the record and mounts when something
+		// reads it, verified on the way in like every other mounted byte.
+		const installed = await kernel.app('app.x')
+		expect(new TextDecoder().decode(await installed.read('sdk/runtime.js'))).toBe('// sdk runtime')
+		expect(requested).toEqual(['gui.js', 'sdk/runtime.js'])
+	})
+
 	test('a prefetch that cannot even resolve the app does not fail the install', async () => {
 		// The install has committed by the time the prefetch starts, so a transient
 		// failure reading the record back out is not a failed install: the caller would
@@ -680,9 +709,23 @@ describe('prefetch on the sync path', () => {
 		expect(device.installs).toEqual([]) // `decide` said skip; this is not a reinstall
 
 		// And not paid for again on every later pass — the watcher runs reconcile on
-		// each burst of sync traffic, so a warm app has to cost reads of nothing.
+		// each burst of sync traffic, so a warm app has to cost one cached read and no
+		// payload.
 		await reconcile(device.kernel, device.fs, store)
 		expect(device.requested).toEqual(['gui.js'])
+	})
+
+	test('an app that arrived through sync gets its entries and not its SDK', async () => {
+		const store = await builtinStore(HOSTED_SDK)
+		const source = fakeWorld((path) => enc.encode(HOSTED_SDK[path] ?? ''))
+		await materialise(source.kernel, store)
+		const device = fakeWorld((path) => enc.encode(HOSTED_SDK[path] ?? ''))
+		for (const [path, bytes] of source.blobs) device.blobs.set(path, bytes)
+
+		await reconcile(device.kernel, device.fs, store)
+
+		expect(device.requested).toEqual(['gui.js'])
+		expect(device.installs).toEqual([])
 	})
 
 	test('a cache the previous release left behind counts as cold, not warm', async () => {

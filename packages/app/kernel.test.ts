@@ -1,5 +1,5 @@
 import { chroot, type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/sync/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'
@@ -65,7 +65,7 @@ const caps = (invoke: Capabilities['invoke']): Capabilities => ({
 const clock = {}
 
 function testKernel() {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	return kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 }
 
@@ -84,7 +84,7 @@ function bundle(manifest: AppBundle['manifest'], files: Record<string, string>):
 }
 
 test('smoke test kernel', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const app = appBundleFromMemory({
 		id: 'com.example.app',
@@ -147,7 +147,7 @@ test('smoke test kernel', async () => {
 })
 
 test('disposed kernel surfaces reset and a fresh kernel cannot serve or recreate cached state', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const app = appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	const first = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await first.install(app)
@@ -169,7 +169,7 @@ test('kernel attaches appId and the app-declared scopes to capability calls', as
 	// The trust boundary moved into the kernel: the host executor receives the
 	// appId and the scopes the app DECLARED (volume → ['app'], test → []), read
 	// from the bundle — never whatever the isolate forwards.
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const calls: Array<{ appId: string; capability: string; scopes: readonly string[] }> = []
 	const k = kernel({
 		fs,
@@ -194,7 +194,7 @@ test('kernel attaches appId and the app-declared scopes to capability calls', as
 })
 
 test('serializes concurrent dispatches — no lost update', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
@@ -215,7 +215,7 @@ test('serializes concurrent dispatches — no lost update', async () => {
 })
 
 test('settled resolves with the converged state at a version', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
@@ -246,17 +246,16 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	// way down: no write, no new version. Otherwise every idle signal becomes a
 	// versioned write that sync hands to the other replica, whose apps wake on it in
 	// turn — and the pair never settles.
-	const storage = memStorage()
-	const fs = volume(storage)
-	const journal = storage.sync.journal
-	if (!journal) throw new Error('memStorage exposes no journal')
+	const store = memStore()
+	const fs = volume(store)
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
 
 	await k.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
-	const quiet = await journal.head()
+	// Where a peer's pull would resume: what "nothing to carry" has to mean.
+	const quiet = (await store.since()).next
 
 	const updates: unknown[] = []
 	k.subscribe((e) => {
@@ -269,7 +268,7 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	).toEqual({ count: 5 })
 
 	// Nothing was written, so there is nothing for sync to carry.
-	expect(await journal.head()).toBe(quiet)
+	expect((await store.since(quiet)).nodes).toEqual([])
 	expect(JSON.parse(new TextDecoder().decode(await fs.readFile(`/state/${appId}.json`)))).toEqual({
 		count: 5
 	})
@@ -278,13 +277,13 @@ test('an action that leaves state unchanged does not touch the state file', asyn
 	expect(
 		await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
 	).toEqual({ count: 6 })
-	expect(await journal.head()).toBeGreaterThan(quiet)
+	expect((await store.since(quiet)).nodes).toHaveLength(1)
 	expect(await k.state(appId)).toEqual({ count: 6 })
 	expect(updates).toEqual([{ count: 6 }])
 })
 
 test('settled rejects when the version can never be reached', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
@@ -318,7 +317,7 @@ test('install rejects invalid listed file path', async () => {
 })
 
 test('uninstall removes bundle, state, and data', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const app = appBundleFromMemory({
 		id: 'com.example.app',
@@ -358,7 +357,7 @@ test('install rejects missing app entry', async () => {
 })
 
 test('failed reinstall preserves the existing app', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	await k.install(appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code }))
 
@@ -403,7 +402,7 @@ test('reload re-hydrates state written outside the kernel (a synced-down agent e
 	// REMOTE_SOURCE write it never authored. The state cache assumes the kernel is
 	// the sole writer, so `state()` would serve the stale pre-sync value forever —
 	// `reload` is the seam the host calls on that remote write.
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
@@ -431,7 +430,7 @@ test('reload re-hydrates state written outside the kernel (a synced-down agent e
 })
 
 test('app controller reloads state written outside the server kernel', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })

@@ -1,6 +1,7 @@
 import { existsSync, globSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative, resolve } from 'node:path'
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import type { Connect, RunnableDevEnvironment, ViteDevServer } from 'vite'
 import { isRunnableDevEnvironment } from 'vite'
 import { appBundleFromMemory } from './app.ts'
@@ -120,7 +121,7 @@ export async function createDevServer(
 	const env = server.environments.kernel
 	if (!env || !isRunnableDevEnvironment(env))
 		throw new Error('kernel environment is not runnable (Vite Environment API)')
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const devkit = devkitHost(fs)
 	const appSandbox = viteSandbox(env, appUrl)
 	const k = kernel({

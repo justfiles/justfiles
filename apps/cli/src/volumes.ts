@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
-import { apiStorage, createFsClient } from '@justfiles/core/fs.client'
 import { type Volume, volume } from '@justfiles/fs'
-import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { fsStore } from '@justfiles/fs/fs'
+import { httpStore } from '@justfiles/fs/http'
 import type { CliConfig, RemoteVolumeConfig, VolumeConfig } from './config.ts'
 import { CliUsageError } from './errors.ts'
 
@@ -45,7 +45,8 @@ function resolveLocalRoot(root: string, configDir: string): string {
 	return resolve(configDir, root)
 }
 
-function resolveFsBaseUrl(url: string): string {
+/** Where the seam is mounted on a justfiles host, from whatever the config names. */
+function resolveStoreBaseUrl(url: string): string {
 	let resolved: URL
 	try {
 		resolved = new URL(url)
@@ -54,13 +55,10 @@ function resolveFsBaseUrl(url: string): string {
 	}
 
 	const pathname = resolved.pathname.replace(/\/+$/, '') || '/'
-	if (pathname === '/fs') {
-		resolved.pathname = '/fs'
-		return resolved.toString()
-	}
+	if (pathname === '/store') return resolved.toString()
 
-	resolved.pathname = pathname === '/' ? '/fs' : `${pathname}/fs`
-	return resolved.toString()
+	resolved.pathname = pathname === '/' ? '/store' : `${pathname}/store`
+	return resolved.toString().replace(/\/+$/, '')
 }
 
 function resolveRemoteToken(config: RemoteVolumeConfig): string {
@@ -78,26 +76,28 @@ function resolveRemoteToken(config: RemoteVolumeConfig): string {
 }
 
 async function createLocalVolume(root: string, cliConfig: CliConfig): Promise<Volume> {
-	const storage = await nativeStorage(resolveLocalRoot(root, cliConfig.configDir))
-	return volume(storage)
+	const store = fsStore(resolveLocalRoot(root, cliConfig.configDir))
+	return volume(store)
 }
 
 function encodeVolumePath(path: string): string {
 	return path.split('/').map(encodeURIComponent).join('/')
 }
 
+/**
+ * A remote volume is a volume over a remote `Store`. There is no client library to
+ * speak of: the storage API and the wire are the same thing, so `httpStore` is the
+ * whole of it.
+ *
+ * `readFile` keeps its one-request path, which is the only thing here the seam does
+ * not already say in one call — a walk is a request per segment, and a CLI reads one
+ * file at a time.
+ */
 async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 	const token = resolveRemoteToken(config)
-	const baseUrl = resolveFsBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL)
-	const headers = {
-		Authorization: `Bearer ${token}`
-	}
-	const client = createFsClient({
-		baseUrl,
-		headers
-	})
-
-	const baseVolume = volume(await apiStorage(client))
+	const baseUrl = resolveStoreBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL)
+	const headers = { Authorization: `Bearer ${token}` }
+	const baseVolume = volume(httpStore(baseUrl, { headers }))
 	return {
 		...baseVolume,
 		async readFile(path) {
@@ -117,7 +117,7 @@ async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 			}
 
 			console.warn(
-				`[files] remote read fast path failed for ${path}: ${message}; falling back to inode walk`
+				`[files] remote read fast path failed for ${path}: ${message}; falling back to the seam`
 			)
 			return baseVolume.readFile(path)
 		}

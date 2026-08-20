@@ -1,6 +1,7 @@
 import { BUILTIN_AVATARS, builtinFaces } from '@justfiles/agent/avatars'
 import { avatarDir, SOUL_PATH } from '@justfiles/agent/defaults'
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test } from 'vitest'
 import { derivedDir, readAgentSoul, readAvatar, watchIdentity } from './identity'
 
@@ -23,7 +24,7 @@ const PNG = png(1, 2, 3)
 const MINE = avatarDir('mine')
 
 async function seeded() {
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(
 		SOUL_PATH,

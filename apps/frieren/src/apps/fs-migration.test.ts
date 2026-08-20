@@ -1,100 +1,57 @@
 import { FileType } from '@justfiles/fs/types'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { PRIVATE_MOUNT } from '../../shared/private'
 
-// A minimal in-memory FS, fully hand-rolled (like profile-session.test.ts) so no
-// real `@justfiles/fs` is pulled — partially mocking that package deadlocks the
-// runner. One store per db name, shared between the module under test and the
-// harness so a seeded source profile and the account are the same bytes.
-const H = vi.hoisted(() => {
-	type Store = { files: Map<string, Uint8Array>; dirs: Set<string>; destroy: () => void }
-	const stores = new Map<string, Store>()
-	const depth = (p: string) => (p === '/' ? 0 : p.split('/').filter(Boolean).length)
-	const ancestors = (p: string): string[] => {
-		const parts = p.split('/').filter(Boolean)
-		const out: string[] = []
-		let cur = ''
-		for (let i = 0; i < parts.length - 1; i++) {
-			cur += `/${parts[i]}`
-			out.push(cur)
-		}
-		return out
+// Real stores, one per database name — `memStore` is the same seam `idbStore`
+// implements, so the module under test announces its mount and builds its volume over
+// the genuine article. Only the two things a browser has and node does not are faked.
+const H = vi.hoisted(() => ({ stores: new Map<string, unknown>() }))
+
+vi.mock('@justfiles/fs/idb', async () => {
+	const { memStore } = await import('@justfiles/fs/mem')
+	return {
+		idbStore: (name: string) => {
+			const held = H.stores.get(name) ?? memStore()
+			H.stores.set(name, held)
+			return held
+		},
+		// The cross-tab wake is a latency optimization over polling `since`, and
+		// nothing here measures latency.
+		sharedStore: (store: unknown) => store,
+		persistStorage: async () => true
 	}
-	const newStore = (): Store => ({ files: new Map(), dirs: new Set(), destroy: () => {} })
-	const getStore = (name: string): Store => {
-		let s = stores.get(name)
-		if (!s) {
-			s = newStore()
-			stores.set(name, s)
-		}
-		return s
-	}
-	const makeVolume = (store: Store) => ({
-		async readdir(path: string) {
-			const prefix = path === '/' ? '/' : `${path}/`
-			const seen = new Map<string, number>()
-			const add = (full: string, type: number) => {
-				if (full === path || !full.startsWith(prefix)) return
-				const rest = full.slice(prefix.length)
-				if (rest.includes('/') || rest === '') return
-				if (!seen.has(rest)) seen.set(rest, type)
-			}
-			for (const d of store.dirs) add(d, FileType.Directory)
-			for (const f of store.files.keys()) add(f, FileType.Regular)
-			return [...seen].map(([name, type]) => ({ name, type, ino: name }))
-		},
-		async exists(path: string) {
-			return store.files.has(path) || store.dirs.has(path)
-		},
-		async readFile(path: string) {
-			const b = store.files.get(path)
-			if (!b) throw new Error(`ENOENT: ${path}`)
-			return b
-		},
-		async writeFile(path: string, data: Uint8Array) {
-			for (const a of ancestors(path)) store.dirs.add(a)
-			store.files.set(path, data)
-		},
-		async mkdir(path: string) {
-			store.dirs.add(path)
-			for (const a of ancestors(path)) store.dirs.add(a)
-		},
-		async scan(root: string, visitor: (p: string, stat: { type: number }) => Promise<void>) {
-			const prefix = root === '/' ? '/' : `${root}/`
-			const all = new Set<string>([root])
-			for (const d of store.dirs) if (d === root || d.startsWith(prefix)) all.add(d)
-			for (const f of store.files.keys()) if (f === root || f.startsWith(prefix)) all.add(f)
-			const sorted = [...all].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b))
-			for (const p of sorted)
-				await visitor(p, { type: store.files.has(p) ? FileType.Regular : FileType.Directory })
-		}
-	})
-	return { stores, getStore, newStore, makeVolume }
 })
 
-vi.mock('@justfiles/core', () => ({ remoteSyncReplica: () => ({}), createFsClient: () => ({}) }))
-
-vi.mock('@justfiles/sync/storage/idb', () => ({ idbStorage: (name: string) => H.getStore(name) }))
-
-vi.mock('@justfiles/fs', () => ({
-	memStorage: () => H.newStore(),
-	volume: (store: Parameters<typeof H.makeVolume>[0]) => H.makeVolume(store)
+// The one pass from the old model has its own tests; here every profile is already
+// adopted, which is what a browser that has run this build once looks like.
+vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
+	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
+	migrateIdb: async () => {}
 }))
+vi.mock('@justfiles/core', () => ({ createFsClient: () => ({}) }))
+vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
 
-vi.mock('@justfiles/sync', () => ({
-	synced: async ({ local }: { local: Parameters<typeof H.makeVolume>[0] }) => {
-		const v = H.makeVolume(local)
-		return {
-			readFile: v.readFile,
+// The loop, stood down — everything below is about what the OFFER reads and copies,
+// and a running cycle would only add a peer. The volume under it is real, so
+// `readFile` through the facade reads the same tree the writes land in.
+vi.mock('@justfiles/fs/synced', async (original) => {
+	const { volume } = await import('@justfiles/fs')
+	return {
+		...(await original<Record<string, unknown>>()),
+		synced: async (props: Parameters<typeof volume>[1] & { local: never }) => ({
+			...volume(props.local, { bindings: props?.bindings }),
 			flush: async () => {},
 			pause: () => {},
 			resume: () => {},
 			destroy: () => {},
-			generation: () => 1,
 			status: () => 'synced',
-			onStatusChange: () => () => {}
-		}
+			onStatusChange: () => () => {},
+			takeTheirs: async () => {},
+			takeMine: async () => {},
+			generation: () => 1
+		})
 	}
-}))
+})
 
 const REGISTRY_KEY = 'frieren-profiles'
 const enc = new TextEncoder()
@@ -111,7 +68,8 @@ function stubBrowser(registry: StoredProfile[]): Map<string, string> {
 	const data = new Map([[REGISTRY_KEY, JSON.stringify(registry)]])
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => data.get(key) ?? null,
-		setItem: (key: string, value: string) => data.set(key, value)
+		setItem: (key: string, value: string) => data.set(key, value),
+		removeItem: (key: string) => data.delete(key)
 	})
 	vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() })
 	vi.stubGlobal('document', {
@@ -119,12 +77,30 @@ function stubBrowser(registry: StoredProfile[]): Map<string, string> {
 		addEventListener: vi.fn(),
 		removeEventListener: vi.fn()
 	})
-	vi.stubGlobal('crypto', { randomUUID: () => 'account-profile' })
+	// Unique, because the STORE mints one per node: a constant would give every
+	// created row the same id, and rule 3 would read each one as an overwrite of the
+	// last. `subtle` is kept for the same reason — a mount row's id is a hash of its
+	// position, so announcing one is the first thing every profile does.
+	let minted = 0
+	vi.stubGlobal('crypto', {
+		randomUUID: () => `uuid-${++minted}`,
+		subtle: globalThis.crypto.subtle
+	})
 	return data
 }
 
 // Fresh module graph + cleared stores + stubbed browser. Seed AFTER this, attach,
 // then assert.
+/**
+ * The account profile is in every registry, and least-recently-opened, so 'local' is
+ * still the current one and the account's id is a NAME this file can seed against.
+ * `profileForUser` finds it rather than minting one.
+ */
+const registryWith = (account: Partial<StoredProfile> = {}): StoredProfile[] => [
+	{ id: 'local', lastOpenedAt: 1 },
+	{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 0, ...account }
+]
+
 async function loadFs(registry: StoredProfile[]) {
 	vi.resetModules()
 	H.stores.clear()
@@ -133,17 +109,31 @@ async function loadFs(registry: StoredProfile[]) {
 	return { fs, data }
 }
 
+/**
+ * A profile as this build leaves one: the synced tree, and its own store joined at
+ * `/private` — so a path under that name is written to the OTHER database, which is
+ * the whole reason the copy below cannot reach it.
+ */
 async function seedProfile(id: string, files: Record<string, string>): Promise<void> {
-	const { idbStorage } = await import('@justfiles/sync/storage/idb')
-	const { volume } = await import('@justfiles/fs')
-	const vol = volume(idbStorage(`frieren-fs-profile-${id}`) as never)
-	for (const [path, body] of Object.entries(files)) await vol.writeFile(path, enc.encode(body))
+	const { idbStore } = await import('@justfiles/fs/idb')
+	const { ROOT } = await import('@justfiles/fs/store')
+	const { announceMount, volume } = await import('@justfiles/fs')
+	const tree = idbStore(`frieren-store-${id}`)
+	const local = idbStore(`frieren-store-${id}-${PRIVATE_MOUNT}`)
+	await announceMount(tree, ROOT, PRIVATE_MOUNT)
+	const vol = volume(tree, { bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, local]])]]) })
+	for (const [path, body] of Object.entries(files)) {
+		const dir = path.slice(0, path.lastIndexOf('/'))
+		if (dir !== '') await vol.mkdir(dir, { recursive: true })
+		await vol.writeFile(path, enc.encode(body))
+	}
 }
 
+/** The account's SYNCED tree, unbound: what a peer would see, and nothing else. */
 async function accountVolume() {
-	const { idbStorage } = await import('@justfiles/sync/storage/idb')
+	const { idbStore } = await import('@justfiles/fs/idb')
 	const { volume } = await import('@justfiles/fs')
-	return volume(idbStorage('frieren-fs-profile-account-profile') as never)
+	return volume(idbStore('frieren-store-account-profile'))
 }
 
 async function listAccountFiles(): Promise<Set<string>> {
@@ -174,14 +164,14 @@ describe('local → account migration', () => {
 	})
 
 	test('offers when local has content and the account is fresh', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', { '/notes/a.txt': 'hi', '/data/app/x.bin': 'z' })
 		await attach(fs)
 		expect(await fs.shouldOfferMigration()).toBe(true)
 	})
 
 	test('does not offer when the local profile has no user content', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', {
 			'/system/agents/main/soul.md': SEEDED_SOUL,
 			'/system/user.md': SEEDED_PROFILE,
@@ -192,7 +182,7 @@ describe('local → account migration', () => {
 	})
 
 	test('does not offer when the account already has data', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', { '/notes/a.txt': 'hi' })
 		await seedProfile('account-profile', { '/notes/existing.txt': 'from another device' })
 		await attach(fs)
@@ -200,7 +190,7 @@ describe('local → account migration', () => {
 	})
 
 	test('personalized soul counts as content even with no /data or /notes', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', {
 			'/system/agents/main/soul.md': '---\nagent_name: Custom\n---\nYou are custom.\n',
 			'/system/user.md': SEEDED_PROFILE
@@ -210,17 +200,14 @@ describe('local → account migration', () => {
 	})
 
 	test('does not offer once a decision is recorded', async () => {
-		const { fs } = await loadFs([
-			{ id: 'local', lastOpenedAt: 1 },
-			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 2, migration: 'dismissed' }
-		])
+		const { fs } = await loadFs(registryWith({ migration: 'dismissed' }))
 		await seedProfile('local', { '/notes/a.txt': 'hi' })
 		await attach(fs)
 		expect(await fs.shouldOfferMigration()).toBe(false)
 	})
 
 	test('copies user data + identity, skips journal/private/apps/state', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', {
 			'/notes/a.txt': 'note body',
 			'/data/justfiles.paint/drawing.bin': 'pixels',
@@ -252,7 +239,7 @@ describe('local → account migration', () => {
 	})
 
 	test('does not clobber account content created/synced after the offer', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', { '/notes/a.txt': 'local-a', '/notes/b.txt': 'local-b' })
 		await attach(fs)
 		// The account gains a file at the same path after the offer was shown.
@@ -266,7 +253,7 @@ describe('local → account migration', () => {
 	})
 
 	test('replaces a seeded account identity with the personalized local one', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', {
 			'/system/agents/main/soul.md': '---\nagent_name: Custom\n---\npersonalized\n'
 		})
@@ -281,7 +268,7 @@ describe('local → account migration', () => {
 	})
 
 	test('keeps a personalized account identity over the local one', async () => {
-		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs } = await loadFs(registryWith())
 		await seedProfile('local', {
 			'/system/agents/main/soul.md': '---\nagent_name: Local\n---\nlocal soul\n'
 		})
@@ -298,7 +285,7 @@ describe('local → account migration', () => {
 	})
 
 	test('migrate records the decision so the offer never repeats', async () => {
-		const { fs, data } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs, data } = await loadFs(registryWith())
 		await seedProfile('local', { '/notes/a.txt': 'hi' })
 		await attach(fs)
 		await fs.migrateLocalProfileInto()
@@ -308,7 +295,7 @@ describe('local → account migration', () => {
 	})
 
 	test('dismiss records the decision', async () => {
-		const { fs, data } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const { fs, data } = await loadFs(registryWith())
 		await seedProfile('local', { '/notes/a.txt': 'hi' })
 		await attach(fs)
 		fs.dismissMigration()

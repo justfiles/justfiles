@@ -8,7 +8,7 @@
 // re-boots from the persisted snapshot on every load. True teardown is close().
 
 import type { Kernel } from '@justfiles/app'
-import { REMOTE_SOURCE } from '@justfiles/sync'
+import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
 import { FRAME_SRCDOC, guiHost } from './gui-channel'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'

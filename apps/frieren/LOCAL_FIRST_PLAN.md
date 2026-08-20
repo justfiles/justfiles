@@ -1,5 +1,10 @@
 # Frieren local-first plan
 
+> **Superseded, kept as a record.** Frieren is local-first, but not by this route:
+> the store model replaced the machinery this plan is written against, so every
+> name below from `idbStorage` down is gone. What shipped is in
+> [kb/fs/fable-design.md](../../kb/fs/fable-design.md) and `tasks/store-model/`.
+
 Goal: make Frieren a local-first PWA. A browser-local volume becomes the
 working copy; the backend becomes a synced replica. General apps (paint, later
 notes / code) run entirely in the browser and keep working offline. AI / email /

@@ -228,7 +228,7 @@ they are not new — `kernel()` is already parameterized by `sandbox: GetSandbox
 so the standalone case is a `GetSandbox` that does not isolate:
 
 ```ts
-kernel({ fs: volume(idbStorage(dbName)), sandbox, capabilities })
+kernel({ fs: volume(idbStore(dbName)), sandbox, capabilities })
 ```
 
 plus a boot that mounts `gui.js` against a client — on the order of 150–200 lines.
@@ -418,16 +418,19 @@ general network client.
 ## Later: going online
 
 Turning a standalone app online is small **client-side**: swap
-`volume(idbStorage(…))` for `synced({ local, remote })` in the shell. The kernel,
+`volume(idbStore(…))` for `synced({ local, remote })` in the shell. The kernel,
 the app, and the GUI are untouched.
 
-The server side is the real work and the real risk gate. `remoteSyncReplica`
-calls only eight endpoints, none inode-based, and the sync wire is path-based —
-so a prefix-scoped route is mostly filtering. **The sharp edge is blob-by-hash**:
-content addressing makes a hash a capability, and `GET /blob/:hash` is
-prefix-blind, so a scoped client that learns a hash reads that content regardless
-of scope. Scoped blob reads must be **reachability-gated** — is this hash
-referenced by an inode under the granted prefix? — or the scope is decorative.
+The server side is the real work and the real risk gate. The wire IS the storage
+seam — `storeApi` is six routes over `Store` — so there is no separate protocol
+to scope, but there is also no path to filter on: a row's location is
+`(parent, name)`, and a prefix is something a scoped route would have to resolve
+for itself. **The sharp edge is blob-by-hash**: content addressing makes a hash a
+capability, and `GET /blob/:hash` is position-blind, so a scoped client that
+learns a hash reads that content regardless of scope. Scoped blob reads must be
+**reachability-gated** — is this hash named by a row under the granted subtree? —
+or the scope is decorative. The alternative the store model opens up is to give
+the app its own `Store` and mount it, so there is no subtree to scope at all.
 
 The credential is a token scoped to `/data/<app-id>` for one app and one user,
 enforced by the DO. That, not a browser realm, is the boundary: a fully malicious

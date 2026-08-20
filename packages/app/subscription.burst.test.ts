@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
@@ -53,7 +54,7 @@ function makeSandbox(runDelayMs = 0) {
 }
 
 async function boot(runDelayMs = 0) {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const { sandbox, counter } = makeSandbox(runDelayMs)
 	const k = kernel({
 		fs,

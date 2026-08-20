@@ -1,0 +1,100 @@
+# T4 — IndexedDB Store: the kill criterion
+
+**Status:** done
+**Phase:** A — the seam
+**Depends on:** [T1](t01-store-types-and-memstore.md), [T2](t02-change-feed-and-lineage.md), [T3](t03-blobs.md)
+**Context:** [overview](README.md) · [design, kill criterion at the end](../../kb/fs/fable-design.md)
+
+## Goal
+
+Prove guarded atomic batch commit inside IndexedDB transaction rules. The
+design names this the ONE structural risk in the whole model. Do it before any
+volume or engine work builds up on top of the seam.
+
+## Context
+
+- Test setup: `import 'fake-indexeddb/auto'` FIRST — see the header comment of
+  `packages/fs/storage.idb.dirty.test.ts` for why the import order matters
+  (module-load `IDBKeyRange` capture reads the global).
+- Schema per the design backends table: one object store for nodes with two
+  indexes (`parent+name`, `seq`), one object store for blobs.
+- Existing IDB idioms: `packages/fs/storage.idb.ts`. Read it for patterns; do
+  NOT import it.
+- The IDB hazard the design calls out: any `await` of non-IDB work inside a
+  transaction auto-commits it. This is exactly why the seam is
+  `commit(writes, guards)` and not a `tx(fn)` closure.
+
+## Files
+
+- `packages/fs/store.idb.ts`
+- `packages/fs/store.idb.test.ts`
+
+## RED
+
+Run the FULL conformance suite (T1–T3) against `idbStore(name)`. Add
+IDB-specific tests:
+
+- All guard evaluation and all writes happen in ONE IDB transaction. No `await`
+  of non-IDB work inside it. Everything async is precomputed before the
+  transaction opens.
+- A failed guard in a 100-row batch commits zero rows (reopen the DB and count).
+- Two overlapping `commit` calls serialize; both guards evaluate against
+  committed state.
+
+## GREEN
+
+Implement. Hash computation, row encoding — everything async happens BEFORE the
+transaction opens.
+
+## Done when
+
+Suite green under fake-indexeddb.
+
+**Kill criterion.** If atomic guarded batches cannot be made to work within IDB
+transaction lifetime rules: STOP. Do not build a workaround. Report back — the
+seam, not the engine, must change, and the design is wrong.
+
+## Verdict: the design survives
+
+Guarded atomic batches work inside IDB transaction lifetime rules, with no
+workaround. 102 guards and 100 writes commit in ONE `readwrite` transaction,
+and a failed guard leaves zero rows in a reopened database. `commit(writes,
+guards)` needs nothing IDB cannot give it, because nothing inside the
+transaction is anything but an IDB read or an IDB write — the seq the batch
+writes at is read from the `seq` index rather than counted in memory, so even
+that stays inside.
+
+What the rules cost, and where it is paid:
+
+- **The hazard is real, and the environment enforces it.** A deliberately
+  planted `await new Promise(setTimeout)` inside the transaction failed 20 of
+  the 26 tests under fake-indexeddb. This is the exact failure a `tx(fn)`
+  closure seam would invite, and why the design rejected one.
+- **Splitting guards into their own transaction is invisible to the
+  conformance suite** — it stays green — and fails all three IDB-specific
+  atomicity tests. A backend can therefore pass the contract and still be
+  racy, which is what those three tests are for.
+- **A `put` that THROWS is not a failed request, and IDB will not abort for
+  it.** An uncloneable value or a key the store cannot extract leaves no request
+  to fail, so the writes before it would commit while the call reports failure.
+  Every failure path therefore aborts, from one place.
+- **A commit must resolve on the transaction, not on its last request.** A
+  transaction taken away after its last write LANDED (storage pressure, a
+  closed tab) rolls the batch back, and only `await tx.done` reports it. Both
+  abort moments are pinned by tests.
+
+**This backend advertises no `subscribe`, and T7 must poll `since` on it.** The
+database is the store, not the connection: a cursor one connection mints still
+means what it meant to the next, so two `idbStore(name)` instances — two tabs —
+are one store. A wake held in one connection's closure never fires for the
+other's commit, and [T7](t07-watch.md) takes `subscribe` INSTEAD of polling
+whenever a store offers one, so a watcher would go permanently stale rather than
+merely late. Polling sees every connection's commits. A real cross-tab wake is
+additive — a `BroadcastChannel` beside the commit — and belongs in T7, where its
+latency can be measured, not here.
+
+The schema is the model with nothing added: one object store for nodes with the
+two indexes, one for blobs, and one durable value — the lineage, which is not a
+node. Both indexes are derived from the row (`live` is absent on a tombstone, so
+an IDB index skips it), so replacing a row moves its own index entries and there
+is no second table to keep in step.

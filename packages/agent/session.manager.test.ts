@@ -1,5 +1,5 @@
 import { type Volume, volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import {
 	type AppendPayload,
@@ -33,7 +33,7 @@ function compactionPayload(summary: string, firstKeptEntryId: string): AppendPay
 	}
 }
 
-async function makeManager(vol = volume(memStorage()), deviceId = 'aaaa1111') {
+async function makeManager(vol = volume(memStore()), deviceId = 'aaaa1111') {
 	return session(vol, {
 		agentId: 'test',
 		sessionId: 'sess0001',
@@ -167,7 +167,7 @@ describe('session manager', () => {
 // sharding is not the alternative to merging — it is the mechanism for it.
 describe('session shards merge across devices', () => {
 	test('append writes only this device’s shard and never touches a peer’s', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const peer = '2026-07-26T09-00-00Z-sess0001.bbbb2222.jsonl'
 		await writeShard(vol, peer, [entry({ id: 'peer0001' })])
 		const before = await vol.stat(`${SESSIONS}/${peer}`)
@@ -188,7 +188,7 @@ describe('session shards merge across devices', () => {
 	})
 
 	test('a lineage that spans two shards builds as one conversation', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl', [
 			entry({ id: 'aaaa0001', content: 'mac question', ts: '2026-07-26T09:00:00.000Z' }),
 			entry({
@@ -222,7 +222,7 @@ describe('session shards merge across devices', () => {
 	// grow-only set of immutable nodes should be REPRESENTED as a set at that boundary — not
 	// because the walk is fragile without it.
 	test('an entry present in two shards appears once', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const dup = entry({ id: 'aaaa0001', content: 'said once' })
 		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl', [dup])
 		// A replayed sync: the same immutable node, delivered twice.
@@ -237,7 +237,7 @@ describe('session shards merge across devices', () => {
 	// Zero coordination: two devices that never talk must land on the same leaf, so the
 	// tie-break cannot be file order, mtime, or arrival order.
 	test('two managers over the same shards agree on the leaf at equal timestamps', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const root = entry({ id: 'aaaa0000', content: 'shared root' })
 		const tie = '2026-07-26T09:09:09.000Z'
 		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl', [
@@ -261,7 +261,7 @@ describe('session shards merge across devices', () => {
 	// Concurrent turns are a real fork. The leaf rule decides what is on screen; it must not
 	// decide what EXISTS.
 	test('the losing branch stays readable even though it is off-context', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl', [
 			entry({ id: 'aaaa0000', content: 'shared root' }),
 			entry({
@@ -326,7 +326,7 @@ describe('session shards merge across devices', () => {
 		// `readdir` returns whatever the backend's order is; writing in both orders is the
 		// only way to prove the reader does not inherit it.
 		for (const order of [shards, [...shards].reverse()]) {
-			const vol = volume(memStorage())
+			const vol = volume(memStore())
 			for (const [name, entries] of order) await writeShard(vol, name, entries)
 			contexts.push(stripContext(await (await makeManager(vol, 'cccc3333')).buildSessionContext()))
 		}
@@ -339,7 +339,7 @@ describe('session shards merge across devices', () => {
 	})
 
 	test('a compaction in one shard resolves for a branch that continues in another', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await writeShard(vol, '2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl', [
 			entry({ id: 'aaaa0001', content: 'ancient history', ts: '2026-07-26T09:00:00.000Z' }),
 			entry({
@@ -378,7 +378,7 @@ describe('session shards merge across devices', () => {
 	// Two devices compacting independently is duplicated WORK, not corruption: each
 	// compaction sits on its own branch, and the walk stops at the first one it meets.
 	test('independent compactions on two branches leave both walks intact', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const root = entry({ id: 'aaaa0000', content: 'root' })
 		const shared = entry({
 			id: 'aaaa0001',
@@ -416,7 +416,7 @@ describe('session shards merge across devices', () => {
 	// A transcript is appended on every turn and synced whole-file, so a torn line is cheap
 	// to produce. It must cost its own entry and nothing more.
 	test('a malformed line costs only itself, not its shard or its peers', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await vol.mkdir(SESSIONS, { recursive: true })
 		await vol.writeFile(
 			`${SESSIONS}/2026-07-26T09-00-00Z-sess0001.aaaa1111.jsonl`,
@@ -455,7 +455,7 @@ describe('session shards merge across devices', () => {
 	// turn and truncate it. Only leaves are candidates, so that is structurally impossible.
 	// Reopened from disk, because that is where the leaf rule actually runs.
 	test('a multi-entry turn sharing one timestamp keeps its whole lineage', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		await (await makeManager(vol)).append([
 			user('plan my trip'),
 			toolCall('search', { q: 'kyoto' }),
@@ -481,7 +481,7 @@ describe('session shards merge across devices', () => {
 // the first one.
 describe('a long-lived manager keeps up with arriving shards', () => {
 	test('a peer shard that lands after the first read advances the leaf', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const manager = await makeManager(vol, 'aaaa1111')
 		await manager.append([user('asked here')])
 		const localLeaf = manager.activeLeafId as string
@@ -518,7 +518,7 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 	// several appends (its messages, then a compaction node). A peer entry landing between
 	// them must not splice itself into the middle of this device's turn.
 	test('a peer arrival mid-turn does not splice into the local lineage', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const manager = await makeManager(vol, 'aaaa1111')
 		await manager.append([user('start of my turn'), assistant('my reply')])
 		const myTail = manager.activeLeafId as string
@@ -558,7 +558,7 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 	// conversation as it stands, or #300's headline — open the other device and see the same
 	// conversation — fails on exactly the path a user takes.
 	test('a standalone read shows a peer arrival without needing a prompt', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const manager = await makeManager(vol, 'aaaa1111')
 		await manager.append([user('asked here'), assistant('answered here')])
 
@@ -581,7 +581,7 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 	// back through the UI instead of through the compaction flow itself. A polling transcript
 	// view is a read that can land at any moment, including mid-turn.
 	test('a display read mid-turn does not steal the compaction', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const manager = await makeManager(vol, 'aaaa1111')
 		await manager.append([user('my question'), assistant('my reply')])
 		const myTail = manager.activeLeafId as string
@@ -616,7 +616,7 @@ describe('a long-lived manager keeps up with arriving shards', () => {
 	// turn's messages and the compaction node (assistant.ts). A peer arriving in that window
 	// must not capture the compaction.
 	test('a read between a turn and its compaction does not hand the compaction to a peer', async () => {
-		const vol = volume(memStorage())
+		const vol = volume(memStore())
 		const manager = await makeManager(vol, 'aaaa1111')
 		await manager.append([user('my question'), assistant('my reply')])
 		const myTail = manager.activeLeafId as string

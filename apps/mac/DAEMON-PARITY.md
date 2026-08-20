@@ -110,7 +110,7 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   `volume` capability (the scan walks `/applications/*`) — proving a capability-using reducer
   reaches real files through the daemon's own wiring, not a stub. (`getVolume` also gained a
   lazy `QUAY_SUPPORT_DIR` override + a `mkdir` of the volume root, so a run over a fresh
-  support dir — tests, or a truly first-ever boot — no longer ENOENTs on `nativeStorage`.)
+  support dir — tests, or a truly first-ever boot — no longer ENOENTs on `fsStore`.)
 - [x] fuller materialize/projection tests (`materialize.test.ts` only covered
   `projectionSignature` today). `daemon/materialize.test.ts` now exhaustively pins the
   signature — the reconcile's entire rebuild-vs-skip story: identical inputs → identical

@@ -1,8 +1,36 @@
-import type { DbAdapter, SqlValue } from './db'
+import type { DbAdapter, SqlValue, SyncDb } from './db'
 
 interface BunDatabase {
 	prepare(sql: string): { all(...args: SqlValue[]): unknown[]; run(...args: SqlValue[]): void }
 	exec(sql: string): void
+}
+
+/**
+ * A `SyncDb` over ONE synchronous connection (`node:sqlite`, bun's `Database`) — no queue,
+ * because a synchronous body has nothing to interleave with: `BEGIN`, the whole body,
+ * `COMMIT`, in one turn of the event loop. That is the entire reason the seam is synchronous
+ * (`db.ts`), and it is what the async adapter below spends a serialization queue to
+ * approximate.
+ */
+export function createSqliteSyncDb(db: BunDatabase): SyncDb {
+	db.exec('PRAGMA foreign_keys = ON')
+	return {
+		exec: (sql, args = []) => {
+			db.prepare(sql).run(...args)
+		},
+		query: <T extends Record<string, unknown>>(sql: string, args: SqlValue[] = []) =>
+			db.prepare(sql).all(...args) as T[],
+		transactionSync(fn) {
+			db.exec('BEGIN')
+			try {
+				fn()
+				db.exec('COMMIT')
+			} catch (e) {
+				db.exec('ROLLBACK')
+				throw e
+			}
+		}
+	}
 }
 
 /**
@@ -34,7 +62,7 @@ interface BunDatabase {
  * `DbAdapter` is unchanged: this is the driver keeping the promise the word "transaction"
  * already made, not a new capability for callers to reason about.
  *
- * The DO adapter (`createDOSqliteAdapter`) needs none of this: it issues no `BEGIN` at all
+ * The DO adapter (`createDoAdapter`) needs none of this: it issues no `BEGIN` at all
  * and leans on the Durable Object running one event at a time.
  */
 export function createSqliteAdapter(db: BunDatabase): DbAdapter {

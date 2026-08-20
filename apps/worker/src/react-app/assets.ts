@@ -70,11 +70,26 @@ export function isAssetPath(path: string): boolean {
 	return normalized === `/${ASSET_DIR_NAME}` || normalized.includes(`/${ASSET_DIR_NAME}/`)
 }
 
-export function assetUrlForIno(ino: string, filename: string, version: string | null): string {
-	const encodedIno = encodeURIComponent(ino)
-	const encodedFilename = encodeURIComponent(filename || 'file')
+/**
+ * Where the one-request read route would serve this path. The seam addresses rows by id;
+ * this addresses a file by PATH, which is what a `<img src>` can hold.
+ */
+export function assetUrl(path: string, version: string | null): string {
+	const encoded = normalizeVolumePath(path).split('/').map(encodeURIComponent).join('/')
 	const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
-	return `/fs/inodes/${encodedIno}/content/${encodedFilename}${suffix}`
+	return `/store/file${encoded}${suffix}`
+}
+
+/** An object URL with no type renders as a download, not an image. */
+export function contentTypeOf(filename: string): string {
+	const lower = filename.toLowerCase()
+	if (lower.endsWith('.png')) return 'image/png'
+	if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+	if (lower.endsWith('.gif')) return 'image/gif'
+	if (lower.endsWith('.webp')) return 'image/webp'
+	if (lower.endsWith('.svg')) return 'image/svg+xml'
+	if (lower.endsWith('.pdf')) return 'application/pdf'
+	return 'application/octet-stream'
 }
 
 export function displayFilenameFromSrc(src: string): string {

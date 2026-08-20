@@ -3,8 +3,8 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { createClerkClient } from '@clerk/backend'
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
-import { apiStorage, createFsClient } from '@justfiles/core'
 import { volume } from '@justfiles/fs'
+import { httpStore } from '@justfiles/fs/http'
 import { chromium } from '@playwright/test'
 
 const DEFAULT_EMAIL = 'llm+clerk_test@example.com'
@@ -105,11 +105,9 @@ async function createSessionToken(): Promise<string> {
 
 async function createAuthedVolume(token: string) {
 	const { baseUrl } = config()
-	const client = createFsClient({
-		baseUrl: `${baseUrl}/fs`,
-		headers: { Authorization: `Bearer ${token}` }
-	})
-	return volume(await apiStorage(client))
+	// The seam is the wire, so a script needs no client library — just the store the
+	// server serves, and a volume over it.
+	return volume(httpStore(`${baseUrl}/store`, { headers: { Authorization: `Bearer ${token}` } }))
 }
 
 async function seedOnboarding(token: string) {

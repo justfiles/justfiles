@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import { volumeCapability } from './host.ts'
@@ -21,7 +22,7 @@ const call = (method: string, args: unknown[], x?: Partial<CapabilityCall>): Cap
 })
 
 function setup() {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	return { fs, cap: volumeCapability(fs, { systemAllowlist: ['app.trusted'] }) }
 }
 

@@ -4,12 +4,17 @@
 	"type": "module",
 	"exports": {
 		".": "./index.ts",
-		"./storage": "./storage.ts",
-		"./storage.shared": "./storage.shared.ts",
+		"./store": "./store.ts",
+		"./synced": "./synced.ts",
+		"./authority": "./authority.ts",
+		"./mem": "./mem.ts",
+		"./idb": "./idb.ts",
+		"./fs": "./fs.ts",
+		"./http": "./http.ts",
+		"./migrate": "./migrate.ts",
+		"./migrate.idb": "./migrate.idb.ts",
+		"./migrate.legacy": "./migrate.legacy.ts",
 		"./persistedState": "./persistedState.ts",
-		"./storage/mem": "./storage.mem.ts",
-		"./storage/idb": "./storage.idb.ts",
-		"./storage/fs": "./storage.fs.ts",
 		"./types": "./types.ts",
 		"./xattr": "./xattr.ts"
 	},
@@ -23,35 +28,60 @@
 				"import": "./dist/index.js",
 				"default": "./dist/index.js"
 			},
-			"./storage": {
-				"types": "./dist/storage.d.ts",
-				"import": "./dist/storage.js",
-				"default": "./dist/storage.js"
+			"./store": {
+				"types": "./dist/store.d.ts",
+				"import": "./dist/store.js",
+				"default": "./dist/store.js"
 			},
-			"./storage.shared": {
-				"types": "./dist/storage.shared.d.ts",
-				"import": "./dist/storage.shared.js",
-				"default": "./dist/storage.shared.js"
+			"./synced": {
+				"types": "./dist/synced.d.ts",
+				"import": "./dist/synced.js",
+				"default": "./dist/synced.js"
+			},
+			"./authority": {
+				"types": "./dist/authority.d.ts",
+				"import": "./dist/authority.js",
+				"default": "./dist/authority.js"
+			},
+			"./mem": {
+				"types": "./dist/mem.d.ts",
+				"import": "./dist/mem.js",
+				"default": "./dist/mem.js"
+			},
+			"./idb": {
+				"types": "./dist/idb.d.ts",
+				"import": "./dist/idb.js",
+				"default": "./dist/idb.js"
+			},
+			"./fs": {
+				"types": "./dist/fs.d.ts",
+				"import": "./dist/fs.js",
+				"default": "./dist/fs.js"
+			},
+			"./http": {
+				"types": "./dist/http.d.ts",
+				"import": "./dist/http.js",
+				"default": "./dist/http.js"
+			},
+			"./migrate": {
+				"types": "./dist/migrate.d.ts",
+				"import": "./dist/migrate.js",
+				"default": "./dist/migrate.js"
+			},
+			"./migrate.idb": {
+				"types": "./dist/migrate.idb.d.ts",
+				"import": "./dist/migrate.idb.js",
+				"default": "./dist/migrate.idb.js"
+			},
+			"./migrate.legacy": {
+				"types": "./dist/migrate.legacy.d.ts",
+				"import": "./dist/migrate.legacy.js",
+				"default": "./dist/migrate.legacy.js"
 			},
 			"./persistedState": {
 				"types": "./dist/persistedState.d.ts",
 				"import": "./dist/persistedState.js",
 				"default": "./dist/persistedState.js"
-			},
-			"./storage/mem": {
-				"types": "./dist/storage.mem.d.ts",
-				"import": "./dist/storage.mem.js",
-				"default": "./dist/storage.mem.js"
-			},
-			"./storage/idb": {
-				"types": "./dist/storage.idb.d.ts",
-				"import": "./dist/storage.idb.js",
-				"default": "./dist/storage.idb.js"
-			},
-			"./storage/fs": {
-				"types": "./dist/storage.fs.d.ts",
-				"import": "./dist/storage.fs.js",
-				"default": "./dist/storage.fs.js"
 			},
 			"./types": {
 				"types": "./dist/types.d.ts",
@@ -79,6 +109,7 @@
 		"@justfiles/tsconfig": "workspace:*",
 		"@types/node": "^25.5.0",
 		"fake-indexeddb": "^6.2.5",
+		"fast-check": "^4.9.0",
 		"tsdown": "^0.21.5",
 		"typescript": "catalog:"
 	},

@@ -1,7 +1,8 @@
 import { appBundleFromMemory, type GetSandbox, kernel } from '@justfiles/app'
 import { type Capability, capabilityRegistry } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 
@@ -64,7 +65,7 @@ const tick = () => new Promise((r) => setTimeout(r, 10))
 const enc = new TextEncoder()
 
 test('files watches the open file: one fileChanged per write, stops on clear', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	await fs.writeFile('/notes.txt', enc.encode('hello'))
 
 	const v = probe(volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }))
@@ -108,7 +109,7 @@ test('files watches the open file: one fileChanged per write, stops on clear', a
 // app in a permanent "Loading…" (the old bug: a `treeChanged` before any scan
 // latched a rescan that never ran).
 test('files converges from the recursive watch alone, with no refresh/GUI', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	await fs.writeFile('/a.txt', enc.encode('a'))
 
 	const v = probe(volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }))

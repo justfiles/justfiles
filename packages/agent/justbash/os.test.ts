@@ -1,12 +1,12 @@
 import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { createJustBashTool } from './index.ts'
 import { createOsCommand, type OsWindowInfo } from './os.ts'
 
 function shell(windows: readonly OsWindowInfo[]) {
 	const tool = createJustBashTool({
-		volume: volume(memStorage()),
+		volume: volume(memStore()),
 		commands: [createOsCommand(async () => ({ windows }))]
 	})
 	return async (command: string) => {

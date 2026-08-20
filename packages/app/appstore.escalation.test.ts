@@ -2,7 +2,8 @@
 // path — the Step 4 additions. Uses a real kernel over an in-memory Volume so the
 // installed manifest (which carries `capabilities`) is what the guard reads back.
 
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import {
 	type AppStore,
@@ -47,8 +48,8 @@ async function makeApp(id: string, version: string, capabilities: Caps = {}) {
 	return { app, files }
 }
 
-// A store over makeApp entries. Optional ids model host-trusted built-ins.
-function memStore(
+// An AppStore over makeApp entries. Optional ids model host-trusted built-ins.
+function appStore(
 	entries: Awaited<ReturnType<typeof makeApp>>[],
 	builtinIds: string[] = []
 ): AppStore {
@@ -72,7 +73,7 @@ function memStore(
 }
 
 function setup() {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	return { fs, k: kernel({ fs, sandbox, clock: {} }) }
 }
 
@@ -102,7 +103,7 @@ describe('installApp integrity', () => {
 	test('installs when every pinned hash matches', async () => {
 		const { fs, k } = setup()
 		const { app } = await makeApp('com.x.ok', '1.0.0')
-		await installApp(k, memStore([await makeApp('com.x.ok', '1.0.0')]), app)
+		await installApp(k, appStore([await makeApp('com.x.ok', '1.0.0')]), app)
 		expect(await fs.exists('/applications/com.x.ok/app.js')).toBe(true)
 	})
 
@@ -129,23 +130,23 @@ describe('reconcile capability-escalation guard', () => {
 	test('holds a non-builtin update that declares more capabilities', async () => {
 		const { fs, k } = setup()
 		const v1 = await makeApp('com.x.app', '1.0.0', { volume: { id: 'volume', scopes: ['/a'] } })
-		await installApp(k, memStore([v1]), v1.app)
+		await installApp(k, appStore([v1]), v1.app)
 
 		const escalated = await makeApp('com.x.app', '1.1.0', {
 			volume: { id: 'volume', scopes: ['/a'] },
 			ai: { id: 'ai', scopes: [] }
 		})
-		await reconcile(k, fs, memStore([escalated]))
+		await reconcile(k, fs, appStore([escalated]))
 		expect(await installedVersion(fs, 'com.x.app')).toBe('1.0.0')
 	})
 
 	test('auto-applies a non-escalating update', async () => {
 		const { fs, k } = setup()
 		const v1 = await makeApp('com.x.app2', '1.0.0', { volume: { id: 'volume', scopes: ['/a'] } })
-		await installApp(k, memStore([v1]), v1.app)
+		await installApp(k, appStore([v1]), v1.app)
 
 		const same = await makeApp('com.x.app2', '1.1.0', { volume: { id: 'volume', scopes: ['/a'] } })
-		await reconcile(k, fs, memStore([same]))
+		await reconcile(k, fs, appStore([same]))
 		expect(await installedVersion(fs, 'com.x.app2')).toBe('1.1.0')
 	})
 
@@ -154,13 +155,13 @@ describe('reconcile capability-escalation guard', () => {
 		const v1 = await makeApp('justfiles.notes', '1.0.0', {
 			volume: { id: 'volume', scopes: ['/notes'] }
 		})
-		await installApp(k, memStore([v1]), v1.app)
+		await installApp(k, appStore([v1]), v1.app)
 
 		const v2 = await makeApp('justfiles.notes', '1.1.0', {
 			volume: { id: 'volume', scopes: ['/notes'] },
 			ai: { id: 'ai', scopes: [] }
 		})
-		await reconcile(k, fs, memStore([v2], ['justfiles.notes']))
+		await reconcile(k, fs, appStore([v2], ['justfiles.notes']))
 		expect(await installedVersion(fs, 'justfiles.notes')).toBe('1.1.0')
 	})
 })

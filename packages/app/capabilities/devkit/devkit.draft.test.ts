@@ -1,4 +1,5 @@
-import { chroot, memStorage, volume } from '@justfiles/fs'
+import { chroot, volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import * as esbuild from 'esbuild'
 import { unzipSync } from 'fflate'
 import { beforeAll, describe, expect, test } from 'vitest'
@@ -36,7 +37,7 @@ export const gui = defineGUI({ mount(el) { return { update() {}, unmount() {} } 
 const stubSandbox: GetSandbox = async () => ({ run: async () => ({ result: null }) })
 
 async function seedProject(id = PROJECT.id): Promise<ReturnType<typeof volume>> {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const root = `/data/${APP_ID}/projects/${SLUG}`
 	await fs.mkdir(root, { recursive: true })
 	await fs.writeFile(`${root}/project.json`, enc.encode(JSON.stringify({ ...PROJECT, id })))

@@ -1,4 +1,5 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { aesGcmSecretCodec } from './secret-codec.ts'
@@ -16,7 +17,7 @@ const put = (store: AccountStore, a: Account): Promise<void> => store.update(a.i
 
 describe('volumeAccountStore', () => {
 	test('round-trips accounts and lists them; delete removes one', async () => {
-		const store = volumeAccountStore(volume(memStorage()))
+		const store = volumeAccountStore(volume(memStore()))
 		expect(await store.list()).toEqual([])
 
 		const a = account({ scopes: ['openid'] })
@@ -30,12 +31,12 @@ describe('volumeAccountStore', () => {
 	})
 
 	test('get is undefined for an unknown account', async () => {
-		const store = volumeAccountStore(volume(memStorage()))
+		const store = volumeAccountStore(volume(memStore()))
 		expect(await store.get('nobody')).toBeUndefined()
 	})
 
 	test('secretCodec transforms only the creds lane on disk; reads decode it back', async () => {
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const codec: SecretCodec = {
 			encode: (creds) => ({ sealed: JSON.stringify(creds) }),
 			decode: (raw) => JSON.parse((raw as { sealed: string }).sealed)
@@ -55,7 +56,7 @@ describe('volumeAccountStore', () => {
 	})
 
 	test('an encrypting codec leaves no credential in the bytes on disk', async () => {
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('host-key') })
 		const a = account()
 		await put(store, a)
@@ -73,7 +74,7 @@ describe('volumeAccountStore', () => {
 	})
 
 	test('with no key at all, a sealed record is unreadable — never handed out sealed', async () => {
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		await put(volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('gone') }), account())
 		const [only] = await volumeAccountStore(fs).list()
 		expect(only).toMatchObject({ id: 'u@openai.com', provider: 'chatgpt' })
@@ -85,7 +86,7 @@ describe('volumeAccountStore', () => {
 		// A key missing only for NOW (deployed before the secret was set, a mistyped
 		// rotation) must not make an ordinary write destructive: Settings toggling a
 		// capability off writes back the creds it was handed, which is `undefined` here.
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const sealed = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('real-key') })
 		await put(sealed, account({ scopes: ['openid'] }))
 
@@ -101,7 +102,7 @@ describe('volumeAccountStore', () => {
 	test('reseal seals what is in the clear, and rewrites nothing else', async () => {
 		// The lane a lazy "encrypt on next write" never reaches: an iCloud app-specific
 		// password is written once, at connect, and no provider persists rotated creds today.
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const clear = volumeAccountStore(fs)
 		await put(
 			clear,
@@ -123,7 +124,7 @@ describe('volumeAccountStore', () => {
 	})
 
 	test('reseal never touches a record it cannot open', async () => {
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const old = { secretCodec: aesGcmSecretCodec('old-key') }
 		await put(volumeAccountStore(fs, old), account())
 		const path = '/private/accounts/u%40openai.com.json'
@@ -140,7 +141,7 @@ describe('volumeAccountStore', () => {
 	test('a record this key cannot open still lists, without creds and flagged', async () => {
 		// The rotated-the-key path: the account must stay visible (Settings shows it, the
 		// user re-connects) and must not take the rest of the list down with it.
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		await put(volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('old-key') }), account())
 		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('new-key') })
 		await put(store, account({ id: 'me@gmail.com', provider: 'google', creds: { access: 'g' } }))
@@ -164,7 +165,7 @@ describe('one account at a time', () => {
 	const PATH = '/private/accounts/u%40openai.com.json'
 
 	test('a read/decide/write cannot lose the update it started after', async () => {
-		const store = volumeAccountStore(volume(memStorage()))
+		const store = volumeAccountStore(volume(memStore()))
 		await put(store, account({ creds: { n: 0 } }))
 		// Each bump reads, yields (the external call), then writes. Reading outside the chain,
 		// both would see n=0 and the second write would drop the first.
@@ -183,7 +184,7 @@ describe('one account at a time', () => {
 		// backend that fills in place a torn read parses as NO record — an account that blinks
 		// out of Settings, or an active AI that resolves to nothing, while the boot reseal
 		// sweep rewrites what is on disk underneath the first request.
-		const store = volumeAccountStore(volume(memStorage()))
+		const store = volumeAccountStore(volume(memStore()))
 		await put(store, account({ creds: { v: 'old' } }))
 		let release = (): void => {}
 		const parked = new Promise<void>((r) => {
@@ -204,7 +205,7 @@ describe('one account at a time', () => {
 	})
 
 	test('a change that declines writes nothing at all', async () => {
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const store = volumeAccountStore(fs)
 		await put(store, account())
 		const before = await fs.readFile(PATH)
@@ -215,7 +216,7 @@ describe('one account at a time', () => {
 	test('two different accounts never wait on each other', async () => {
 		// The chain is per account, not per store: a sign-in parked on a browser redirect must
 		// not hold up every other account (or, in the DO, the events behind it).
-		const store = volumeAccountStore(volume(memStorage()))
+		const store = volumeAccountStore(volume(memStore()))
 		let release = (): void => {}
 		const parked = new Promise<void>((r) => {
 			release = r
@@ -237,7 +238,7 @@ describe('one account at a time', () => {
 	test('a credential this host cannot seal leaves the previous file untouched', async () => {
 		// Fail closed: encode throwing (a locked Keychain) must not fall back to plaintext, and
 		// must not destroy the record that is already there either.
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const real = aesGcmSecretCodec('host-key')
 		let sealable = true
 		const codec: SecretCodec = {
@@ -262,7 +263,7 @@ describe('one account at a time', () => {
 	test('a mutation racing the reseal sweep is never overwritten by it', async () => {
 		// The sweep scans, then publishes. Publishing what the SCAN saw would undo a write that
 		// landed in between — so it re-reads the record inside that account's chain.
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		await put(volumeAccountStore(fs), account({ creds: { access: 'OLD' } }))
 		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('host-key') })
 
@@ -276,7 +277,7 @@ describe('one account at a time', () => {
 	})
 
 	test('one record it cannot seal does not strand the rest of the sweep', async () => {
-		const fs = volume(memStorage())
+		const fs = volume(memStore())
 		const clear = volumeAccountStore(fs)
 		await put(clear, account({ id: 'a@x', creds: { p: 'A-PW' } }))
 		await put(clear, account({ id: 'b@x', creds: { p: 'B-PW' } }))

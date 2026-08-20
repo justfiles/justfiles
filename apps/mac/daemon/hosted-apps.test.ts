@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { type AppStore, type CatalogApp, installApp } from '@justfiles/app/appstore'
 import { appBundleFromMemory, kernel } from '@justfiles/app/runtime'
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test } from 'vitest'
 import { appAssets } from './app-assets'
 
@@ -10,7 +11,7 @@ const text = (value: Uint8Array): string => new TextDecoder().decode(value)
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex')
 
 async function hostedWorld() {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	const baseUrl = 'https://notes.justapps.run/v/1/'
 	const payload = { 'app.js': 'REDUCER', 'gui.js': 'GUI', 'icon.png': 'ICON' }
 	let online = true
@@ -101,7 +102,7 @@ test('a bad cached asset is rejected, evicted, and fetched again', async () => {
 })
 
 test('a local install keeps its complete bundle in the Volume', async () => {
-	const fs = volume(memStorage())
+	const fs = volume(memStore())
 	let requests = 0
 	const appKernel = kernel({
 		fs,

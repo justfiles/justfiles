@@ -4,7 +4,8 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { sandboxClient } from '@justfiles/app/sandbox'
 import '@justfiles/design/mac.css'
 import { volume } from '@justfiles/fs'
-import { idbStorage, persistStorage } from '@justfiles/fs/storage/idb'
+import { idbStore, persistStorage } from '@justfiles/fs/idb'
+import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 
 // The page's platform entry: real TypeScript, bundled by Vite and served as a
 // hashed static asset (see `route.get('/')` in ../app.tsx). Everything an app
@@ -53,7 +54,31 @@ worker.onerror = (event) => fail(new Error(event.message || 'reducer worker fail
 
 // Browser-local and unsynced, per the hosted-app posture: this app's documents
 // live in this browser, keyed by the app's own id.
-const fs = volume(idbStorage(`justapps:${id}`))
+//
+// Two names, and they have to be two: the old model's database is at schema
+// version 6 and `idbStore` opens at 1, so reusing the name is a `VersionError`
+// on the first read — the app would not boot, and since nothing here syncs, the
+// documents behind that name are the only copy there is. Copy-then-swap instead,
+// the same pass the other two browser hosts run.
+const LEGACY_DB = `justapps:${id}`
+const STORE_DB = `justapps-store:${id}`
+/**
+ * Where the one pass is recorded. Re-running it only costs a re-read, but a pass
+ * that ran again after the volume was live would copy stale rows over live ones —
+ * rule 3 only makes an IDENTICAL row a no-op. Per app, because the databases are.
+ */
+const ADOPTED_KEY = `justapps-adopted:${id}`
+
+const store = idbStore(STORE_DB)
+// Held against every other tab, and the marker READ inside it: a second tab that
+// checked before this one recorded would copy the old tree over rows this one had
+// already written (see `adoptOnce`).
+await adoptOnce(STORE_DB, async () => {
+	if (localStorage.getItem(ADOPTED_KEY)) return
+	await migrateIdb(LEGACY_DB, store)
+	localStorage.setItem(ADOPTED_KEY, '1')
+})
+const fs = volume(store)
 const k = kernel({
 	fs,
 	sandbox: async () => sandbox,

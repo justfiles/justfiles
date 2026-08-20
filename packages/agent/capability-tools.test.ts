@@ -1,10 +1,11 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { volume } from '@justfiles/fs'
+import { memStore } from '@justfiles/fs/mem'
 import { expect, test, vi } from 'vitest'
 import { capabilityTools } from './capability-tools.ts'
 
 function build(execute: Parameters<typeof capabilityTools>[1][number]['tools'][number]['execute']) {
 	const invoke = vi.fn(async () => ({ ok: true }))
-	const vol = volume(memStorage())
+	const vol = volume(memStore())
 	const [tool] = capabilityTools(
 		invoke,
 		[
