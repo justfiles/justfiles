@@ -22,9 +22,10 @@
  *   batch commits, it lives in a slot the caller injects, and it never enters
  *   the replicated table or the user's tree.
  *
- * Content moves separately from the rows and is keyed by hash: `transfer` copies
- * only the bytes the other side lacks, and `lazyContent` with `hydratingBlobs`
- * lets a replica take every row and fetch bytes only when a read asks for them.
+ * Content moves separately from the rows and is keyed by hash: `transfer` asks the
+ * other side about a blob when the bytes it may save are worth the round trip the
+ * question costs, and `lazyContent` with `hydratingBlobs` lets a replica take every
+ * row and fetch bytes only when a read asks for them.
  *
  * Conflicts are v1's policy and nothing more: reject, then replan. Every commit
  * names the base it is replacing, so a conflict arrives as a refusal rather than
