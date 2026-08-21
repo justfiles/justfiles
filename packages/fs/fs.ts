@@ -1427,6 +1427,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	let scanTimer: ReturnType<typeof setTimeout> | undefined
 	let scanning = false
 	let stopped = false
+	let retryFrom: number | undefined
 
 	const publishSince = (from: number): void => {
 		if (stopped || listeners.size === 0) return
@@ -1446,9 +1447,18 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	}
 
 	const reconcileAndPublish = async (): Promise<void> => {
-		const from = next
-		await reconcile()
+		const from = retryFrom ?? next
+		try {
+			await reconcile()
+			// A failed save leaves the new rows in memory. Save them on the next turn,
+			// even when the scan finds no further disk change.
+			if (retryFrom !== undefined) await save()
+		} catch (error) {
+			retryFrom ??= from
+			throw error
+		}
 		publishSince(from)
+		retryFrom = undefined
 	}
 
 	/** One queued scan at a time. Watch hints replace the slower fallback timer. */
@@ -1463,7 +1473,11 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			if (stopped || listeners.size === 0 || scanning) return
 			scanning = true
 			void open()
-				.then(() => serial(reconcileAndPublish))
+				.then(() =>
+					serial(async () => {
+						if (!stopped) await reconcileAndPublish()
+					})
+				)
 				.catch(() => {})
 				.finally(() => {
 					scanning = false

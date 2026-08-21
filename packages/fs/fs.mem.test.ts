@@ -81,6 +81,73 @@ describe('fsStore subscriptions', () => {
 		expect(calls).toBe(0)
 	})
 
+	test('a sidecar save retry publishes the rows from the failed turn', async () => {
+		let fail = false
+		let failures = 0
+		const disk = memDisk((op, at) => {
+			if (!fail || op !== 'write' || !at.endsWith('index.json')) return null
+			fail = false
+			failures++
+			return 'EIO'
+		})
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		const notices: Node[][] = []
+		store.subscribe?.((rows) => notices.push(rows))
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid test path')
+
+		fail = true
+		await disk.write(path, bytes('a'), undefined, 'unseen')
+		for (let tries = 0; failures === 0 && tries < 20; tries++)
+			await new Promise((resolve) => setTimeout(resolve, 1))
+		expect(failures).toBe(1)
+		expect(notices).toEqual([])
+
+		await store.since()
+		expect(notices.flat().some((node) => node.name === 'a.txt')).toBe(true)
+		await store.close?.()
+		const reopened = fsStore('mem', { disk })
+		built.push(reopened)
+		expect(await reopened.child(ROOT, 'a.txt')).not.toBeNull()
+	})
+
+	test('close while open is pending does not arm a watcher', async () => {
+		const disk = memDisk()
+		let release = (): void => {}
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let firstRootStat = true
+		let watches = 0
+		const slow: Disk = {
+			...disk,
+			async stat(at) {
+				if (at === AT_ROOT && firstRootStat) {
+					firstRootStat = false
+					await gate
+				}
+				return disk.stat(at)
+			},
+			watch(onPath, onLost) {
+				watches++
+				return disk.watch(onPath, onLost)
+			}
+		}
+		const store = fsStore('mem', { disk: slow })
+		built.push(store)
+		store.subscribe?.(() => {})
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		await store.close?.()
+		release()
+		await store.get(ROOT)
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		expect(watches).toBe(0)
+	})
+
 	test('combined native hints publish one reconciled batch', async () => {
 		const disk = memDisk()
 		const store = fsStore('mem', { disk })
