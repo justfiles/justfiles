@@ -562,7 +562,7 @@ async function claimArchive(volume: Volume, agentId: string, sessionId: string):
 // Note the one thing deriving costs: a brand-new session has no entries, so it is not yet
 // discoverable. Ask for a new conversation, say nothing, restart — and route() resolves back
 // to the previous session. No content is lost (there was none); the INTENT is. Recording it
-// would mean host-private state under /.state, which #300 leaves optional and nothing has
+// would mean host-private state under /private, which #300 leaves optional and nothing has
 // asked for.
 //
 // The second-order effect of that same gap was a real bug, now fixed: the retired session

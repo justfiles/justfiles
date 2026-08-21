@@ -9,10 +9,11 @@
  * — a symlinked ancestor, `lutimes` precision, an unopenable directory — live there.
  */
 
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { storeConformance } from './conformance'
 import { AT_ROOT, type Disk, type Spot, stateOf, under } from './disk'
 import { memDisk } from './disk.mem'
+import { authorOf } from './engine'
 import { fsStore, SWEEP_MS } from './fs'
 import { type Node, ROOT, type Store, sha256Hex } from './store'
 
@@ -22,10 +23,263 @@ const open = (fault?: Parameters<typeof memDisk>[0]): Store => {
 	built.push(store)
 	return store
 }
+afterEach(async () => {
+	for (const store of built.splice(0)) await store.close?.()
+})
 
 storeConformance('fsStore over memDisk', async () => open())
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value)
+
+describe('fsStore subscriptions', () => {
+	const row = (id: string, name: string): Node => ({
+		id,
+		parent: ROOT,
+		name,
+		type: 'file',
+		mode: 0o100644,
+		mtimeNs: 0n,
+		size: 0n,
+		version: `test:${id}`
+	})
+
+	test('an internal commit publishes only after the sidecar is saved', async () => {
+		const disk = memDisk()
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		const side = under(AT_ROOT, '.jfs')
+		const index = side === null ? null : under(side, 'index.json')
+		if (index === null) throw new Error('invalid sidecar path')
+
+		const delivered = new Promise<Node[]>((resolve) => {
+			store.subscribe?.((rows) => {
+				void disk.bytes(index, true).then((saved) => {
+					expect(new TextDecoder().decode(saved ?? new Uint8Array())).toContain('"id":"a"')
+					resolve(rows)
+				})
+			})
+		})
+		await store.commit([row('a', 'a.txt')])
+		expect((await delivered).map((node) => node.id)).toEqual(['a'])
+	})
+
+	test('a failed commit does not publish', async () => {
+		let fail = false
+		const disk = memDisk((op, at) =>
+			fail && op === 'write' && at.endsWith('index.json') ? 'EIO' : null
+		)
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		let calls = 0
+		store.subscribe?.(() => calls++)
+
+		fail = true
+		await expect(store.commit([row('a', 'a.txt')])).rejects.toThrow('EIO')
+		await new Promise((resolve) => setTimeout(resolve, 10))
+		expect(calls).toBe(0)
+	})
+
+	test('a sidecar save retry publishes the rows from the failed turn', async () => {
+		let fail = false
+		let failures = 0
+		const disk = memDisk((op, at) => {
+			if (!fail || op !== 'write' || !at.endsWith('index.json')) return null
+			fail = false
+			failures++
+			return 'EIO'
+		})
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		const notices: Node[][] = []
+		store.subscribe?.((rows) => notices.push(rows))
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid test path')
+
+		fail = true
+		await disk.write(path, bytes('a'), undefined, 'unseen')
+		for (let tries = 0; failures === 0 && tries < 20; tries++)
+			await new Promise((resolve) => setTimeout(resolve, 1))
+		expect(failures).toBe(1)
+		expect(notices).toEqual([])
+
+		await store.since()
+		expect(notices.flat().some((node) => node.name === 'a.txt')).toBe(true)
+		await store.close?.()
+		const reopened = fsStore('mem', { disk })
+		built.push(reopened)
+		expect(await reopened.child(ROOT, 'a.txt')).not.toBeNull()
+	})
+
+	test('close while open is pending does not arm a watcher', async () => {
+		const disk = memDisk()
+		let release = (): void => {}
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let firstRootStat = true
+		let watches = 0
+		const slow: Disk = {
+			...disk,
+			async stat(at) {
+				if (at === AT_ROOT && firstRootStat) {
+					firstRootStat = false
+					await gate
+				}
+				return disk.stat(at)
+			},
+			watch(onPath, onLost) {
+				watches++
+				return disk.watch(onPath, onLost)
+			}
+		}
+		const store = fsStore('mem', { disk: slow })
+		built.push(store)
+		store.subscribe?.(() => {})
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		await store.close?.()
+		release()
+		await store.get(ROOT)
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		expect(watches).toBe(0)
+	})
+
+	test('a rejected commit still publishes the Finder row it settled', async () => {
+		const disk = memDisk()
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.commit([row('a', 'a.txt')])
+		await store.since()
+		const notices: Node[][] = []
+		store.subscribe?.((rows) => notices.push(rows))
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid test path')
+
+		await disk.write(path, bytes('from Finder'), undefined, 'unseen')
+		await expect(
+			store.commit([row('b', 'b.txt')], [{ version: { id: 'a', is: 'stale' } }])
+		).rejects.toThrow()
+
+		expect(notices.flat().some((node) => node.id === 'a')).toBe(true)
+		expect(notices.flat().some((node) => node.id === 'b')).toBe(false)
+	})
+
+	test('a failed settle publishes its Finder row after the sidecar retry', async () => {
+		let fail = false
+		const disk = memDisk((op, at) => {
+			if (!fail || op !== 'write' || !at.endsWith('index.json')) return null
+			fail = false
+			return 'EIO'
+		})
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.commit([row('a', 'a.txt')])
+		await store.since()
+		const notices: Node[][] = []
+		store.subscribe?.((rows) => notices.push(rows))
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid test path')
+
+		fail = true
+		await disk.write(path, bytes('from Finder'), undefined, 'unseen')
+		await expect(
+			store.commit([row('b', 'b.txt')], [{ version: { id: 'a', is: 'test:a' } }])
+		).rejects.toThrow('EIO')
+		expect(notices).toEqual([])
+
+		await store.since()
+		expect(notices.flat().some((node) => node.id === 'a')).toBe(true)
+		expect(notices.flat().some((node) => node.id === 'b')).toBe(false)
+	})
+
+	test('combined native hints publish one reconciled batch', async () => {
+		const disk = memDisk()
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		const notices: Node[][] = []
+		store.subscribe?.((rows) => notices.push(rows))
+		const a = under(AT_ROOT, 'a.txt')
+		const b = under(AT_ROOT, 'b.txt')
+		if (a === null || b === null) throw new Error('invalid test path')
+
+		await disk.write(a, bytes('a'), undefined, 'unseen')
+		await disk.write(b, bytes('b'), undefined, 'unseen')
+		await new Promise((resolve) => setTimeout(resolve, 10))
+
+		expect(notices).toHaveLength(1)
+		expect(notices[0]?.map((node) => node.name)).toEqual(expect.arrayContaining(['a.txt', 'b.txt']))
+		expect(await store.child(ROOT, 'a.txt')).not.toBeNull()
+		expect(await store.child(ROOT, 'b.txt')).not.toBeNull()
+	})
+
+	test('the full scan finds a change when the watcher has no hint', async () => {
+		const disk = memDisk()
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		const clock = vi.spyOn(Date, 'now')
+		try {
+			await store.commit([row('a', 'a.txt')])
+			await store.since()
+			const later = Date.now() + SWEEP_MS * 6
+			const notices: Node[][] = []
+			store.subscribe?.((rows) => notices.push(rows))
+			const path = under(AT_ROOT, 'a.txt')
+			if (path === null) throw new Error('invalid test path')
+
+			await disk.stamp(path, { mode: 0o600, mtimeNs: 9_000_000n }, 'unseen')
+			clock.mockReturnValue(later)
+			await new Promise((resolve) => setTimeout(resolve, 10))
+
+			expect((await store.get('a'))?.mode).toBe(0o100600)
+			expect(notices.flat().some((node) => node.id === 'a')).toBe(true)
+		} finally {
+			await store.close?.()
+			clock.mockRestore()
+		}
+	})
+
+	test('unsubscribe and close stop later callbacks', async () => {
+		const disk = memDisk()
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		let calls = 0
+		const stop = store.subscribe?.(() => calls++)
+		stop?.()
+		const a = under(AT_ROOT, 'a.txt')
+		if (a === null) throw new Error('invalid test path')
+		await disk.write(a, bytes('a'), undefined, 'unseen')
+		await new Promise((resolve) => setTimeout(resolve, 10))
+		expect(calls).toBe(0)
+
+		store.subscribe?.(() => calls++)
+		await store.close?.()
+		const b = under(AT_ROOT, 'b.txt')
+		if (b === null) throw new Error('invalid test path')
+		await disk.write(b, bytes('b'), undefined, 'unseen')
+		await new Promise((resolve) => setTimeout(resolve, 10))
+		expect(calls).toBe(0)
+	})
+
+	test('the default version source keeps a private fs author', async () => {
+		const disk = memDisk()
+		const store = fsStore('mem', { disk })
+		built.push(store)
+		await store.since()
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid test path')
+
+		await disk.write(path, bytes('a'), undefined, 'unseen')
+		await store.since()
+		const found = await store.child(ROOT, 'a.txt')
+		expect(authorOf(found?.version ?? '')).toMatch(/^fs:/)
+	})
+})
 
 describe('memDisk: the rules that made the findings', () => {
 	test('a directory that grants no read is not a directory with no entries', async () => {

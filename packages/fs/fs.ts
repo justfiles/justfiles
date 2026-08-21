@@ -66,6 +66,7 @@ import {
 	up,
 	WRITE
 } from './disk'
+import { versions } from './engine'
 import { decodeNode, encodeNode, type WireNode } from './http'
 import {
 	type Cursor,
@@ -189,6 +190,8 @@ const own = (id: NodeId): string => `id-${encodeURIComponent(id)}`
 export type FsStoreOptions = {
 	/** The disk to reach the tree through. Defaults to the real one, rooted at `root`. */
 	disk?: Disk
+	/** The version source for changes found on disk. Defaults to a private fs author. */
+	mintVersion?: () => Version
 	/**
 	 * Root-level names another store is joined at (T15's bindings, as this backend sees
 	 * them). Their directories are left exactly as they are: not listed, not adopted,
@@ -230,10 +233,8 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	const holders = new Map<Hash, Set<NodeId>>()
 	let lineage = ''
 	let next = 0
-	/** The author tag of every version the scan mints — nothing else writes one. */
-	const author = `fs:${crypto.randomUUID()}`
-	let counter = 0
-	const mint = (): Version => `${author}:${++counter}`
+	/** The author tag of every version the scan mints. Nothing else writes one. */
+	const mint = opts.mintVersion ?? versions(`fs:${crypto.randomUUID()}`)
 
 	/**
 	 * This store's own corner of the tree, built through `under` like every other name.
@@ -1159,17 +1160,11 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			queue.push(...(await syncDir(at.id, at.path)))
 	}
 
-	/**
-	 * Look where there is reason to, in three tiers: the paths the watcher named, on
-	 * every call; the directories, on the cheap floor; every file, on the deep one.
-	 * This is `since`'s first act, because on a real filesystem the feed cannot be a
-	 * record of commits.
-	 */
+	/** Look at watch hints first, then directories, then every file on the deep pass. */
 	const reconcile = async (): Promise<void> => {
 		if (!armed) {
 			armed = true
-			// The first `since` is where a watcher starts earning its keep. Armed BEFORE the walk,
-			// or a change that lands while the walk runs is in neither.
+			// Arm before the walk, or a change during the walk is in neither place.
 			arm()
 			if (watching) return scanAll()
 		}
@@ -1263,10 +1258,10 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 
 	// ── The watcher: the OS says where to look ───────────────────────────────────
 
-	/** Paths the OS says may have changed. Drained by `since`, never trusted. */
+	/** Paths the OS says may have changed. Reconciled before subscribers hear about them. */
 	const dirty = new Set<Spot>()
 	let watcher: (() => void) | null = null
-	/** Has a watcher been asked for yet? Only the first `since` asks. */
+	/** Has the first feed read or subscription asked for a watcher? */
 	let armed = false
 	/** Is one listening? False means the walk is the only thing that reports. */
 	let watching = false
@@ -1281,7 +1276,10 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	 * a walk rather than correctness.
 	 */
 	const arm = (): void => {
-		watcher = disk.watch((spot) => void dirty.add(spot), lost)
+		watcher = disk.watch((spot) => {
+			dirty.add(spot)
+			scheduleReconcile(0)
+		}, lost)
 		watching = watcher !== null
 	}
 
@@ -1405,9 +1403,9 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		// putting the remembered one back would revert somebody's chmod and then record the
 		// revert as the truth. What was found is left for the scan below, which publishes it.
 		if (shut) await disk.stamp(AT_ROOT, { mode: Number(s.mode) & 0o7777 }, 'unseen')
-		// The watcher is not armed here: the first `since` does that, so a consumer that only
-		// reads and writes never asks the OS for one at all. The index is rebuilt against the
-		// tree on open, so a path resolves the moment the store is there. And this is the one
+		// The watcher is not armed here. The first feed read or subscription does that, so a
+		// consumer that only reads and writes never asks the OS for one. The index is rebuilt
+		// against the tree on open, so a path resolves when the store is there. This is the one
 		// pass that takes no turn of its own, so it closes its own way in.
 		try {
 			await scanAll()
@@ -1425,6 +1423,71 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	const open = (): Promise<void> => (opening ??= start())
 
 	const copy = (n: Node): Node => structuredClone(n)
+	const listeners = new Set<(writes: Node[]) => void>()
+	let scanTimer: ReturnType<typeof setTimeout> | undefined
+	let scanning = false
+	let stopped = false
+	let retryFrom: number | undefined
+
+	const publishSince = (from: number): void => {
+		if (stopped || listeners.size === 0) return
+		const rows: Node[] = []
+		for (const [id, at] of order) {
+			if (at < from) continue
+			const row = byId.get(id)
+			if (row) rows.push(row)
+		}
+		if (rows.length === 0) return
+		for (const listener of listeners)
+			try {
+				listener(rows.map(copy))
+			} catch {
+				// The listener owns its errors.
+			}
+	}
+
+	/** Save and publish rows found by a disk check. A failed turn keeps its first position. */
+	const publishChanges = async (work: () => Promise<void>): Promise<void> => {
+		const from = retryFrom ?? next
+		try {
+			await work()
+			// A failed save leaves the new rows in memory. Save them on the next turn,
+			// even when the scan finds no further disk change.
+			if (retryFrom !== undefined) await save()
+		} catch (error) {
+			retryFrom ??= from
+			throw error
+		}
+		publishSince(from)
+		retryFrom = undefined
+	}
+
+	const reconcileAndPublish = (): Promise<void> => publishChanges(reconcile)
+
+	/** One queued scan at a time. Watch hints replace the slower fallback timer. */
+	const scheduleReconcile = (delay: number): void => {
+		if (stopped || listeners.size === 0 || scanning) return
+		if (scanTimer !== undefined) {
+			if (delay > 0) return
+			clearTimeout(scanTimer)
+		}
+		scanTimer = setTimeout(() => {
+			scanTimer = undefined
+			if (stopped || listeners.size === 0 || scanning) return
+			scanning = true
+			void open()
+				.then(() =>
+					serial(async () => {
+						if (!stopped) await reconcileAndPublish()
+					})
+				)
+				.catch(() => {})
+				.finally(() => {
+					scanning = false
+					scheduleReconcile(dirty.size > 0 ? 0 : SWEEP_MS)
+				})
+		}, delay)
+	}
 
 	return {
 		async get(id) {
@@ -1462,7 +1525,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		async since(cursor) {
 			await open()
 			const from = position(cursor) // rule 11, before any work: a fenced cursor buys no scan
-			await serial(reconcile)
+			await serial(reconcileAndPublish)
 			const nodes: Node[] = []
 			for (const [id, at] of order) {
 				if (at < from) continue
@@ -1508,9 +1571,10 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 						if (held && !held.deleted) touch(held.parent, held.name)
 					}
 				}
-				await settle(touched.values())
+				await publishChanges(() => settle(touched.values()))
 
 				for (const guard of checks ?? []) if (!passes(guard)) throw new GuardError(guard)
+				const from = next
 
 				const todo: { row: Node; old: Node | null; fresh: boolean }[] = []
 				for (const row of batch) {
@@ -1557,20 +1621,31 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 				}
 				await observe(placed, dirs)
 				await save()
+				publishSince(from)
 			})
 		},
 
-		// No `subscribe`. Rule 8 makes it optional, and a consumer takes it INSTEAD of polling
-		// `since` whenever a store offers one — which would blind it to the very changes this
-		// backend exists for: an edit made outside the store tells no one.
+		subscribe(listener) {
+			listeners.add(listener)
+			scheduleReconcile(0)
+			return () => {
+				listeners.delete(listener)
+				if (listeners.size === 0 && scanTimer !== undefined) {
+					clearTimeout(scanTimer)
+					scanTimer = undefined
+				}
+			}
+		},
 
 		/**
-		 * The watcher, and nothing else: every commit and every reconcile saves the sidecar
-		 * before it returns, so no state here outlives this call. The store keeps answering
-		 * afterwards by walking the tree instead of being told, but a caller that meant to be
-		 * done should behave as though it is.
+		 * Stop watch and scan work. The store still answers by walking the tree, but a caller
+		 * that closed it must treat it as done.
 		 */
 		async close() {
+			stopped = true
+			listeners.clear()
+			if (scanTimer !== undefined) clearTimeout(scanTimer)
+			scanTimer = undefined
 			lost()
 		},
 
