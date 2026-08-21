@@ -148,6 +148,49 @@ describe('fsStore subscriptions', () => {
 		expect(watches).toBe(0)
 	})
 
+	test('close waits for an in-flight store turn', async () => {
+		const disk = memDisk()
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid file path')
+		let release = (): void => {}
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let enter = (): void => {}
+		const entered = new Promise<void>((resolve) => {
+			enter = resolve
+		})
+		const slow: Disk = {
+			...disk,
+			async write(spot, data, on, was) {
+				if (spot === path) {
+					enter()
+					await gate
+				}
+				return disk.write(spot, data, on, was)
+			}
+		}
+		const store = fsStore('mem', { disk: slow })
+		built.push(store)
+		await store.since()
+		const data = bytes('hello')
+		const content = await sha256Hex(data)
+		await store.blobs.put(content, data)
+
+		const commit = store.commit([{ ...row('a', 'a.txt'), content, size: BigInt(data.length) }])
+		await entered
+		let closed = false
+		const close = store.close?.().then(() => {
+			closed = true
+		})
+		await Promise.resolve()
+		expect(closed).toBe(false)
+
+		release()
+		await Promise.all([commit, close])
+		expect(closed).toBe(true)
+	})
+
 	test('a rejected commit still publishes the Finder row it settled', async () => {
 		const disk = memDisk()
 		const store = fsStore('mem', { disk })
