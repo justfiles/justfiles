@@ -7,7 +7,7 @@ import { Script, ViteClient } from 'vite-ssr-components/hono'
 import { findApp, servable } from './catalog'
 import { readRecord } from './catalog/refresh-app'
 import swSource from './client/sw.js?raw'
-import { frameDocument, GUEST_CSP } from './gui-frame'
+import { frameDocument, guestCsp } from './gui-frame'
 import { decodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
@@ -206,7 +206,7 @@ route.get('/gui-frame', (c) =>
 	c.body(GUI_FRAME, 200, {
 		'content-type': MIME.html as string,
 		'cache-control': 'no-cache',
-		'content-security-policy': GUEST_CSP
+		'content-security-policy': guestCsp(new URL('/v/', c.req.url).href)
 	})
 )
 

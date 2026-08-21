@@ -1,9 +1,36 @@
 import { MessageChannel } from 'node:worker_threads'
-import { expect, test } from 'vitest'
-import { guiHost } from './iframe.ts'
+import { afterEach, expect, test, vi } from 'vitest'
+import { guiFrameScript, guiHost } from './iframe.ts'
 
 const nextMessage = (port: import('node:worker_threads').MessagePort) =>
 	new Promise<unknown>((resolve) => port.once('message', resolve))
+
+afterEach(() => vi.unstubAllGlobals())
+
+test('a hosted GUI keeps its module URL', async () => {
+	let boot: ((event: MessageEvent) => Promise<void>) | undefined
+	const root = {} as { url?: string }
+	const parentWindow = {}
+	vi.stubGlobal('parent', parentWindow)
+	vi.stubGlobal('document', { getElementById: () => root })
+	vi.stubGlobal('window', {
+		addEventListener: (_type: string, listener: (event: MessageEvent) => Promise<void>) => {
+			boot = listener
+		}
+	})
+	await import(`data:text/javascript,${encodeURIComponent(guiFrameScript)}#hosted-gui-test`)
+
+	const guiUrl = `data:text/javascript,${encodeURIComponent(
+		'export const gui={mount(root){root.url=import.meta.url}}'
+	)}`
+	await boot?.({
+		source: parentWindow,
+		data: { type: 'boot', guiUrl, state: null },
+		ports: [{ postMessage() {} }]
+	} as unknown as MessageEvent)
+
+	expect(root.url).toBe(guiUrl)
+})
 
 test('the GUI invokes the host and receives state through its port', async () => {
 	const { port1, port2 } = new MessageChannel()

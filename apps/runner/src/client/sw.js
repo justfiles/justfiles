@@ -5,8 +5,8 @@
  * platform bundle come from the network, so an app whose reducer and documents
  * are already in the volume is still unreachable. It carries more here than in a
  * host that mounts app bytes through the kernel — this page installs with
- * `appBundleFromMemory` and sends `gui.js` text to the guest frame, so the HTTP
- * cache is the only thing that holds the GUI.
+ * `appBundleFromMemory` and the guest imports `gui.js` from the release, so the
+ * HTTP cache is the only thing that holds the GUI.
  *
  * Served as text by the Worker (see `/sw.js` in ../app.tsx) rather than shipped
  * as a build asset, so it needs no build-tool integration and its scope is the

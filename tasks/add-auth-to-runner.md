@@ -105,9 +105,9 @@ Change the Runner app page to use the same host shape as Frieren:
    so the browser cannot send a native form request. Do not add `allow-same-origin`,
    `allow-downloads`, popups, or navigation permissions.
 4. Give the iframe one `MessagePort` for the app SDK transport.
-5. Give the iframe a guest CSP that blocks direct network connections, form submissions, child
-   frames, popups, downloads, and top-level navigation. Route approved links and downloads
-   through host capabilities.
+5. Give the iframe a guest CSP that can load the app's public, immutable `/v/` release files and
+   blocks all other direct network connections, form submissions, child frames, popups, downloads,
+   and top-level navigation. Route approved links and downloads through host capabilities.
 6. Keep the kernel, remote Store handle, OAuth session, request nonce, and capability handlers in
    the parent.
 7. Do not pass a Frieren token, Runner session ID, user ID, request nonce, or Store handle through

@@ -40,9 +40,9 @@ document.addEventListener('pointermove', (event) => {
 // matching after the next publish. The entry points come from the manifest the
 // same way, so an app that names its reducer something else still boots.
 
-// Fetch the publisher's GUI as text. Only the opaque frame imports and runs it.
-// Start the request now so it overlaps the kernel boot.
-const guiCode = fetch(`${base}${guiPath}`).then((response) => response.text())
+// The opaque frame imports this public release URL. Keeping the URL intact lets
+// the GUI resolve companion files against import.meta.url.
+const guiUrl = new URL(`${base}${guiPath}`, location.href).href
 
 // `/worker.js` is the reducer isolate: HOST code, one body for every app and
 // every release, so it carries no reducer URL of its own. This release's reducer
@@ -123,11 +123,9 @@ const postState = guiHost(port1, {
 k.subscribe((event) => {
 	if (event.type === 'app.update' && event.appId === appId) postState(event.state)
 })
-frame.contentWindow?.postMessage(
-	{ type: 'boot', guiCode: await guiCode, state: await k.state(appId) },
-	'*',
-	[port2]
-)
+frame.contentWindow?.postMessage({ type: 'boot', guiUrl, state: await k.state(appId) }, '*', [
+	port2
+])
 
 // This origin holds one app and its documents, and nothing here syncs anywhere,
 // so eviction would be the only copy going. Asked for after mount, when the

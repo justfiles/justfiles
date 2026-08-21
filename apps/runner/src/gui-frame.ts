@@ -1,21 +1,22 @@
 import { guiFrameScript } from '@justfiles/app/iframe'
 
-export const GUEST_CSP = [
-	"default-src 'none'",
-	"script-src 'unsafe-inline' blob:",
-	"style-src 'unsafe-inline'",
-	'img-src data: blob:',
-	'font-src data:',
-	'media-src data: blob:',
-	"connect-src 'none'",
-	"form-action 'none'",
-	"frame-src 'none'",
-	"child-src 'none'",
-	"object-src 'none'",
-	"base-uri 'none'",
-	"navigate-to 'none'",
-	"frame-ancestors 'self'"
-].join('; ')
+export const guestCsp = (release: string) =>
+	[
+		"default-src 'none'",
+		`script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: ${release}`,
+		"style-src 'unsafe-inline'",
+		`img-src data: blob: ${release}`,
+		`font-src data: ${release}`,
+		`media-src data: blob: ${release}`,
+		`connect-src ${release}`,
+		"form-action 'none'",
+		"frame-src 'none'",
+		"child-src 'none'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"navigate-to 'none'",
+		"frame-ancestors 'self'"
+	].join('; ')
 
 const shelfScript = `(function () {
 	var booted = false

@@ -123,7 +123,8 @@ import { ai } from '@justfiles/app/capabilities/ai'
 `@justfiles/app/iframe` supplies the shared message-port host and the iframe boot script. The host
 still owns the iframe document, CSP, `sandbox` tokens, styles, and optional host UI. Use
 `form-action 'none'` when `allow-forms` is set so form event handlers work without permitting native
-form navigation.
+form navigation. Boot with `guiUrl` to keep a hosted GUI's `import.meta.url`, or with `guiCode` when
+the host supplies private bytes.
 
 ## App-authoring discipline
 

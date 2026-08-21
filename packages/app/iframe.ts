@@ -97,9 +97,13 @@ export const guiFrameScript = `(function () {
 		if (!port) return
 		booted = true
 		try {
-			var url = URL.createObjectURL(new Blob([event.data.guiCode], { type: 'text/javascript' }))
+			var url = event.data.guiUrl, revoke = false
+			if (!url) {
+				url = URL.createObjectURL(new Blob([event.data.guiCode], { type: 'text/javascript' }))
+				revoke = true
+			}
 			var module
-			try { module = await import(url) } finally { URL.revokeObjectURL(url) }
+			try { module = await import(url) } finally { if (revoke) URL.revokeObjectURL(url) }
 			await module.gui.mount(document.getElementById('root'), event.data.state, {
 				transport: guiClient(port)
 			})
