@@ -10,19 +10,19 @@ import { deviceId } from './device.ts'
 const storage = () => memStore()
 
 describe('deviceId', () => {
-	test('first call creates /.state/clientid and returns 8 lowercase hex chars', async () => {
+	test('first call creates /private/state/clientid and returns 8 lowercase hex chars', async () => {
 		const vol = volume(storage())
 		const id = await deviceId(vol)
 		expect(id).toMatch(/^[a-f0-9]{8}$/)
-		expect(await vol.exists('/.state/clientid')).toBe(true)
+		expect(await vol.exists('/private/state/clientid')).toBe(true)
 	})
 
 	test('second call is memoised and does not rewrite the file', async () => {
 		const vol = volume(storage())
 		const first = await deviceId(vol)
-		const before = await vol.readFile('/.state/clientid')
+		const before = await vol.readFile('/private/state/clientid')
 		const second = await deviceId(vol)
-		const after = await vol.readFile('/.state/clientid')
+		const after = await vol.readFile('/private/state/clientid')
 		expect(second).toBe(first)
 		expect(after).toEqual(before)
 	})
@@ -40,20 +40,19 @@ describe('deviceId', () => {
 		expect(a).not.toBe(b)
 	})
 
-	test('interop with synced(): derives from an existing clientid without rewriting it', async () => {
+	test('derives from an existing clientid without rewriting it', async () => {
 		const backing = storage()
 		const vol = volume(backing)
 		const uuid = crypto.randomUUID()
-		await vol.mkdir('/.state', { recursive: true })
-		await vol.writeFile('/.state/clientid', new TextEncoder().encode(JSON.stringify(uuid)))
-		const before = await vol.readFile('/.state/clientid')
+		await vol.mkdir('/private/state', { recursive: true })
+		await vol.writeFile('/private/state/clientid', new TextEncoder().encode(JSON.stringify(uuid)))
+		const before = await vol.readFile('/private/state/clientid')
 
 		const id = await deviceId(vol)
 
 		expect(id).toBe(uuid.replace(/-/g, '').slice(0, 8))
-		const after = await vol.readFile('/.state/clientid')
+		const after = await vol.readFile('/private/state/clientid')
 		expect(after).toEqual(before)
-		// The sync layer's own reader (JSON-decode) still parses it.
 		expect(JSON.parse(new TextDecoder().decode(after))).toBe(uuid)
 	})
 
@@ -68,7 +67,7 @@ describe('deviceId', () => {
 		expect(a).toBe(b)
 		// Exactly one clientid file, holding the winner — no overwrite, no divergence.
 		const raw = JSON.parse(
-			new TextDecoder().decode(await volume(backing).readFile('/.state/clientid'))
+			new TextDecoder().decode(await volume(backing).readFile('/private/state/clientid'))
 		)
 		expect(raw.replace(/-/g, '').slice(0, 8)).toBe(a)
 	})

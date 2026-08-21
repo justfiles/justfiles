@@ -1,8 +1,8 @@
 /**
  * `persistedState`'s first touch is a CLAIM, and that is the whole point of these
  * tests. Two cells over the SAME store can initialize at the same moment —
- * `synced()` mints `/.state/clientid` through this primitive while `deviceId()`
- * reads that same path through it too — and they must converge on ONE value.
+ * `deviceId()` mints `/private/state/clientid` through this primitive, and two
+ * callers must converge on ONE value.
  * `exists()` then `set()` would be a TOCTOU where both see nothing and both write.
  *
  * The loser reads the winner back in a SINGLE read: a create is one guarded commit,

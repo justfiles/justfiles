@@ -35,7 +35,7 @@ async function isBuiltin(id: string): Promise<boolean> {
 }
 
 // Restart installs left pending by a closed/crashed tab (the fs markers under
-// `/.state/installing`). Seeds the launcher tiles up front, then for each marker
+// `/private/state/installing`). Seeds the launcher tiles up front, then for each marker
 // either clears it (the app actually landed before the crash) or re-runs the
 // install. Restart, not byte-level resume — `installApp` is atomic + idempotent,
 // so re-downloading is safe; `finally` clears the marker so a permanently-failing

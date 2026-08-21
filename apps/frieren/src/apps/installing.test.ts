@@ -23,10 +23,12 @@ describe('installing store + fs markers', () => {
 		await beginInstall(fs, app)
 		expect(getInstalling()).toEqual([app])
 		expect(await readInstallMarkers(fs)).toEqual([app])
+		expect(await fs.exists('/private/state/installing/com.example.notes.json')).toBe(true)
 
 		await endInstall(fs, app.id)
 		expect(getInstalling()).toEqual([])
 		expect(await readInstallMarkers(fs)).toEqual([])
+		expect(await fs.exists('/private/state/installing/com.example.notes.json')).toBe(false)
 	})
 
 	it('notifies subscribers on begin/end (with an initial replay)', async () => {

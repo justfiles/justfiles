@@ -1,6 +1,6 @@
 # Phase 1: make `fsStore` sync-ready
 
-Status: `todo`
+Status: `done`
 
 Depends on: none
 

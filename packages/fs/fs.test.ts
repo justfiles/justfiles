@@ -27,6 +27,7 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, test } from 'vitest'
 import { storeConformance } from './conformance'
 import { type Disk, fsDisk, type Spot } from './disk'
+import { authorOf, versions } from './engine'
 import { fsStore, SWEEP_MS } from './fs'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
 
@@ -1619,6 +1620,69 @@ describe('fsStore: the sidecar is the store, not the tree', () => {
  */
 describe('fsStore: told, or else looked for', () => {
 	const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+	test('Finder changes use the supplied replica author', async () => {
+		const root = await temp()
+		const store = fsStore(root, { mintVersion: versions('mac-replica') })
+		built.push(store)
+		let cursor = (await feed(store)).cursor
+		const expectAuthored = (nodes: Node[]): void => {
+			expect(nodes.length).toBeGreaterThan(0)
+			expect(nodes.every((row) => authorOf(row.version) === 'mac-replica')).toBe(true)
+		}
+
+		await writeFile(join(root, 'a.txt'), 'one')
+		await settled(store, async () => (await store.child(ROOT, 'a.txt')) !== null)
+		let delta = await feed(store, cursor)
+		expectAuthored(delta.nodes)
+		const row = await store.child(ROOT, 'a.txt')
+		if (!row) throw new Error('create was not reconciled')
+		cursor = delta.cursor
+
+		await writeFile(join(root, 'a.txt'), 'edited')
+		await settled(store, async () => (await store.get(row.id))?.size === 6n)
+		delta = await feed(store, cursor)
+		expectAuthored(delta.nodes)
+		cursor = delta.cursor
+
+		await rename(join(root, 'a.txt'), join(root, 'b.txt'))
+		await settled(store, async () => (await store.child(ROOT, 'b.txt')) !== null)
+		delta = await feed(store, cursor)
+		expectAuthored(delta.nodes)
+		const renamed = await store.child(ROOT, 'b.txt')
+		if (!renamed) throw new Error('rename was not reconciled')
+		cursor = delta.cursor
+
+		await rm(join(root, 'b.txt'))
+		await settled(store, async () => (await store.get(renamed.id))?.deleted === true)
+		delta = await feed(store, cursor)
+		expectAuthored(delta.nodes)
+	}, 30_000)
+
+	test('a subscriber can read an external change from since', async () => {
+		const root = await temp()
+		const store = open(root)
+		const { cursor } = await feed(store)
+		let stop = (): void => {}
+		const delivered = new Promise<{ notice: Node[]; feed: Node[] }>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('subscriber was not called')), 5_000)
+			stop =
+				store.subscribe?.((notice) => {
+					void store.since(cursor).then((page) => {
+						clearTimeout(timeout)
+						resolve({ notice, feed: page.nodes })
+					}, reject)
+				}) ?? stop
+		})
+
+		await writeFile(join(root, 'outside.txt'), 'from Finder')
+		const { notice, feed: rows } = await delivered
+		stop()
+		const row = await store.child(ROOT, 'outside.txt')
+		expect(row).not.toBeNull()
+		expect(notice.some((node) => node.id === row?.id)).toBe(true)
+		expect(rows.some((node) => node.id === row?.id)).toBe(true)
+	})
 
 	test('a watcher makes a change visible well inside the floor', async () => {
 		const root = await temp()

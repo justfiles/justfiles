@@ -6,15 +6,15 @@ import type { Volume } from '@justfiles/fs'
 //
 // Durability lives in the fs (an intent marker per install), mirrored into this
 // in-memory store — the fast feed the launcher tiles subscribe to. Markers sit
-// under `/.state` (local-only, never synced), so an install intent is
-// device-local: a reload on THIS device resumes it; other devices are untouched.
+// in the host's private mount, so an install intent is device-local: a reload on
+// THIS device resumes it; other devices are untouched.
 export interface InstallingApp {
 	id: string
 	name: string
 	iconUrl?: string
 }
 
-const MARKER_DIR = '/.state/installing'
+const MARKER_DIR = '/private/state/installing'
 
 function markerPath(id: string): string {
 	return `${MARKER_DIR}/${encodeURIComponent(id)}.json`
