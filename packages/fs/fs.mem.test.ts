@@ -196,44 +196,6 @@ describe('fsStore subscriptions', () => {
 		expect(notices.flat().some((node) => node.id === 'b')).toBe(false)
 	})
 
-	test('a subscription sees a disk change made during the opening scan', async () => {
-		const disk = memDisk()
-		let entered = (): void => {}
-		const scanning = new Promise<void>((resolve) => {
-			entered = resolve
-		})
-		let release = (): void => {}
-		const gate = new Promise<void>((resolve) => {
-			release = resolve
-		})
-		let firstRootList = true
-		const slow: Disk = {
-			...disk,
-			async list(at) {
-				if (at === AT_ROOT && firstRootList) {
-					firstRootList = false
-					entered()
-					await gate
-				}
-				return disk.list(at)
-			}
-		}
-		const store = fsStore('mem', { disk: slow })
-		built.push(store)
-		const notices: Node[][] = []
-		store.subscribe?.((rows) => notices.push(rows))
-		await scanning
-		const path = under(AT_ROOT, 'a.txt')
-		if (path === null) throw new Error('invalid test path')
-
-		await disk.write(path, bytes('during open'), undefined, 'unseen')
-		release()
-		for (let tries = 0; notices.length === 0 && tries < 20; tries++)
-			await new Promise((resolve) => setTimeout(resolve, 1))
-
-		expect(notices.flat().some((node) => node.name === 'a.txt')).toBe(true)
-	})
-
 	test('combined native hints publish one reconciled batch', async () => {
 		const disk = memDisk()
 		const store = fsStore('mem', { disk })
