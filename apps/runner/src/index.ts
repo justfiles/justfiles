@@ -1,4 +1,6 @@
 import { appId, route as appSite } from './app'
+import { cleanExpired } from './auth/cleanup'
+import { d1 } from './auth/db'
 import { refresh } from './catalog'
 import { seed } from './catalog/seed'
 import { route as rootSite } from './home'
@@ -16,6 +18,6 @@ export default {
 	// interval of an hour or more gets 15 minutes of CPU, where anything shorter
 	// gets 30 seconds. `waitUntil` keeps it alive past the tick.
 	scheduled: (_controller: ScheduledController, env: CloudflareBindings, ctx: ExecutionContext) => {
-		ctx.waitUntil(refresh(env))
+		ctx.waitUntil(Promise.all([refresh(env), cleanExpired(d1(env.AUTH_DB))]))
 	}
-}
+} satisfies ExportedHandler<CloudflareBindings>
