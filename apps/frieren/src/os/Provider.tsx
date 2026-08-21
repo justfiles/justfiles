@@ -12,11 +12,10 @@ import { startOsRuntime } from './runtime'
 import { createOsStore } from './store'
 
 // Clerk serves avatars from img.clerk.com. An app renders the signed-in user's
-// avatar through the `user` capability, but the app frame's CSP is network-deny
-// (`img-src data: blob:`), so a remote `<img src>` is blocked. Convert the avatar
-// to a `data:` URL on the host (which has network) so the frame can render it with
-// no remote fetch — the capability-mediated pattern the sandbox plan calls for.
-// Sized down + cached by source URL to stay small in the app's synced state; any
+// avatar through the `user` capability, but the app frame's CSP blocks remote
+// images (`img-src data: blob:`). Convert the avatar to a `data:` URL on the host
+// so the frame can render it without a remote image request. Sized down + cached
+// by source URL to stay small in the app's synced state; any
 // failure (e.g. no CORS) drops the avatar and the app shows its placeholder. Host
 // chrome (banner/omnibar) is unaffected — it isn't inside a CSP'd frame.
 const avatarCache = new Map<string, Promise<string | undefined>>()

@@ -221,17 +221,15 @@ Current state (see `IFRAME_ISOLATION_PLAN.md`, Steps 1–4 **shipped**):
 
 - ✅ **GUI** runs in an opaque-origin `sandbox="allow-scripts"` iframe
   (`gui-channel.ts`): no host DOM, no cookies, no Clerk token, no
-  localStorage/IDB volume. Its only authority is the kernel MessagePort.
+  localStorage/IDB volume. The kernel MessagePort is its only host API.
 - ✅ **Reducer** runs in its own hidden opaque-origin frame (Topology B,
   `sandbox.worker.ts`), so it cannot `fetch` with the user's cookies either.
 - ✅ **Both frame documents carry a CSP** (`default-src 'none'` …
-  `connect-src 'none'`), so an app cannot beacon data it *legitimately* holds
-  (its chroot files, AI/email capability results) to an arbitrary host. The
-  policy allows only
-  `blob:` script/imports and nothing else; blob workers inherit the creator
-  document's CSP, so this covers the Topology-B reducer too. Network access then
-  becomes deny-by-default — a future *capability* (kernel-mediated fetch with
-  consent), not ambient.
+  `connect-src 'none'`). This blocks fetch, XHR, WebSocket, beacon, and remote
+  subresources. It is not total egress isolation for the GUI because `connect-src`
+  does not control WebRTC. Treat chroot files and capability results sent to the
+  GUI as disclosed to the publisher. Blob workers inherit the creator document's
+  CSP, so the normal request restrictions also cover the Topology-B reducer.
 - ⚠️ Same-process opaque origin: Spectre-class cross-frame reads remain
   theoretically possible; documented trade-off, escalate to a dedicated
   cross-origin domain only if that enters the threat model.

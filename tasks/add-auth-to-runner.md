@@ -66,7 +66,7 @@ Frieren Clerk instance  -> signs in the user and issues OAuth tokens
 Frieren Worker          -> owns /store, /api/ai, quota, and each user Durable Object
 Runner Worker           -> OAuth client and token-holding backend
 Runner host page        -> trusted capability host
-App iframe              -> untrusted app GUI with a MessagePort only
+App iframe              -> untrusted app GUI; MessagePort is its only host API
 ```
 
 Use one manually registered, confidential Clerk OAuth application for Runner in each Clerk
@@ -105,9 +105,10 @@ Change the Runner app page to use the same host shape as Frieren:
    so the browser cannot send a native form request. Do not add `allow-same-origin`,
    `allow-downloads`, popups, or navigation permissions.
 4. Give the iframe one `MessagePort` for the app SDK transport.
-5. Give the iframe a guest CSP that can load the app's public, immutable `/v/` release files and
-   blocks all other direct network connections, form submissions, child frames, popups, downloads,
-   and top-level navigation. Route approved links and downloads through host capabilities.
+5. Give the iframe a guest CSP that can load the app's public, immutable `/v/` release files. Block
+   other fetch, XHR, WebSocket, beacon, and subresource requests, plus form submissions, child
+   frames, popups, downloads, and top-level navigation. Route approved links and downloads through
+   host capabilities.
 6. Keep the kernel, remote Store handle, OAuth session, request nonce, and capability handlers in
    the parent.
 7. Do not pass a Frieren token, Runner session ID, user ID, request nonce, or Store handle through
@@ -121,6 +122,17 @@ same-origin cookie alone.
 
 After this change, an app can ask only for capabilities that the trusted parent registered for
 its signed release manifest. It cannot read the parent DOM, IndexedDB, or auth state.
+
+### Limit of GUI isolation
+
+The iframe protects host credentials, storage, DOM, kernel handles, and account APIs. It does not
+stop all outbound traffic from publisher JavaScript. CSP `connect-src` does not control WebRTC.
+
+Treat all reducer state and capability results sent to the GUI as disclosed to the publisher. Do
+not include credentials, handles, unrelated account data, or more user data than the app needs. A
+capability grant controls what the host gives the app. It cannot control how publisher code uses
+data after it receives it. If a product must prevent disclosure of granted data, use a host-rendered
+or declarative UI instead of publisher JavaScript.
 
 Keep each submitted app on its own app subdomain. The iframe limits what app code can do in the
 browser. The subdomain limits how a report or block against one app URL can affect other app URLs.
@@ -433,7 +445,7 @@ Keep OAuth code out of the app SDK and `packages/fs`. The Runner host owns auth.
 Add focused tests for these cases:
 
 - App GUI runs with an opaque origin and cannot access the parent DOM or storage.
-- The only app-to-host channel is the expected `MessagePort` protocol.
+- The only app-to-host API is the expected `MessagePort` protocol.
 - OAuth state, PKCE, OIDC nonce, issuer, audience, signature, expiry, and exact callback host are
   checked.
 - An OAuth flow, ticket, or session cannot be replayed after use or expiry.

@@ -126,6 +126,11 @@ still owns the iframe document, CSP, `sandbox` tokens, styles, and optional host
 form navigation. Boot with `guiUrl` to keep a hosted GUI's `import.meta.url`, or with `guiCode` when
 the host supplies private bytes.
 
+The iframe protects the host DOM, credentials, storage, and capability handles. Its CSP can block
+normal fetch and subresource paths, but it does not guarantee total network egress isolation.
+CSP `connect-src` does not control WebRTC. Treat all state and capability results sent to publisher
+GUI code as disclosed to the publisher.
+
 ## App-authoring discipline
 
 ### Self-contained artifacts

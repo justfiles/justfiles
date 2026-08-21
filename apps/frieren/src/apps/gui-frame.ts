@@ -1,6 +1,9 @@
 import { guiFrameScript } from '@justfiles/app/iframe'
 import macCss from '@justfiles/design/mac.css?inline'
 
+// This CSP blocks normal request paths. It is not total egress isolation because
+// `connect-src` does not control WebRTC. Never send credentials or host handles
+// to the GUI, and treat all state and capability results as publisher-visible.
 const CSP = [
 	"default-src 'none'",
 	"script-src 'unsafe-inline' blob:",

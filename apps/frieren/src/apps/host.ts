@@ -151,9 +151,10 @@ function createStage(id: string): Stage {
 
 	// The GUI lives in an opaque-origin sandboxed iframe: `allow-scripts` runs the
 	// app but withholds `allow-same-origin`, so it gets no cookies, no host DOM,
-	// and cannot read the token. Its only authority is the port handed off at boot.
-	// `allow-forms` lets an app handle submit events. The frame CSP blocks native
-	// form requests.
+	// and cannot read the token. The port handed off at boot is its only host API.
+	// Data sent through that API is disclosed to the publisher because CSP
+	// `connect-src` does not control WebRTC. `allow-forms` lets an
+	// app handle submit events. The frame CSP blocks native form requests.
 	// `allow-downloads` lets an app hand a file to the user (app-draw's "Export
 	// image" — an `<a download>` on a blob URL); without it the browser drops the
 	// download silently. It grants no read access, so isolation holds.

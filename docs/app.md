@@ -419,9 +419,12 @@ is preferred; both package and draft builds fold it into `gui.js`.
 `Client<A>`, `createClient<A>(transport)`, and `Transport` are exported from `@justfiles/app` for
 low-level adapters. Regular GUIs should use the client supplied by `defineGUI`.
 
-Both hosts sandbox reducers. Frieren also runs every GUI in an opaque-origin, network-denied iframe.
-For portable apps, do not use `fetch`, cookies, host DOM access, or ambient credentials. Use declared
-capabilities; use `data:` or `blob:` URLs for generated media.
+Both hosts sandbox reducers. Frieren also runs every GUI in an opaque-origin iframe. This protects
+the host DOM, credentials, and storage. The frame CSP blocks normal fetch and subresource paths, but
+not all browser network egress. CSP `connect-src` does not control WebRTC. Treat all state and
+capability results sent to the GUI as disclosed to the publisher. For portable apps, do not use
+`fetch`, cookies, host DOM access, or ambient credentials. Use declared capabilities; use `data:` or
+`blob:` URLs for generated media.
 
 ## Capabilities
 
