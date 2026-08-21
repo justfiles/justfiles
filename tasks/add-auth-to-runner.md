@@ -397,7 +397,7 @@ Use separate review steps. Do not start OAuth until the GUI isolation test passe
 
 1. [x] **Isolate the app GUI.** Replace the same-page GUI import with an opaque iframe and
    `MessagePort`. Keep current signed-out volume behavior unchanged.
-2. **Add Runner account storage.** Add D1 migrations, token sealing, flow/session helpers, expiry
+2. [x] **Add Runner account storage.** Add D1 migrations, token sealing, flow/session helpers, expiry
    cleanup, and Worker secrets.
 3. **Add Clerk OAuth.** Add root connect, callback, consent, ticket, app callback, account status,
    and disconnect routes.
