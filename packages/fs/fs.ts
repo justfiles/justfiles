@@ -1374,6 +1374,13 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	}
 
 	// ── Opening ──────────────────────────────────────────────────────────────────
+	const listeners = new Set<(writes: Node[]) => void>()
+	let scanTimer: ReturnType<typeof setTimeout> | undefined
+	let scanning = false
+	let stopped = false
+	let pendingFrom: number | undefined
+	let retrySave = false
+	let openingFrom: number | undefined
 
 	const start = async (): Promise<void> => {
 		// What the directory is before this store touches it. Its own mode decides whether the
@@ -1390,26 +1397,38 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		// taken down, so the sidecar's own arrival is not a change to it.
 		await disk.dir(spilled)
 		const loaded = await load()
-		if (!loaded) {
-			lineage = crypto.randomUUID() // rule 11: a fresh sidecar is a fresh lineage
-			const seed = await derive(AT_ROOT, s, { id: ROOT, parent: ROOT, name: '' })
-			// Rule 6: the root row, and the one row whose id is not minted here.
-			if (seed === null) throw new Error(`fsStore: cannot read ${root}`)
-			write(seed)
-			mark(ROOT, { path: AT_ROOT, ino: String(s.ino), state: stateOf(s) })
-		}
+		if (!loaded) lineage = crypto.randomUUID() // rule 11: a fresh sidecar is a fresh lineage
 		// And closed again before anything looks — to what was FOUND, not to what the sidecar
 		// remembered: a local tool may have set a mode while this store was not running, and
 		// putting the remembered one back would revert somebody's chmod and then record the
 		// revert as the truth. What was found is left for the scan below, which publishes it.
 		if (shut) await disk.stamp(AT_ROOT, { mode: Number(s.mode) & 0o7777 }, 'unseen')
-		// The watcher is not armed here. The first feed read or subscription does that, so a
-		// consumer that only reads and writes never asks the OS for one. The index is rebuilt
-		// against the tree on open, so a path resolves when the store is there. This is the one
-		// pass that takes no turn of its own, so it closes its own way in.
+		if (!loaded) {
+			// The root is taken after private setup, so the sidecar is not reported as a change.
+			const observed = await disk.stat(AT_ROOT)
+			if (observed === null) throw new Error(`fsStore: cannot read ${root}`)
+			const seed = await derive(AT_ROOT, observed, { id: ROOT, parent: ROOT, name: '' })
+			// Rule 6: the root row, and the one row whose id is not minted here.
+			if (seed === null) throw new Error(`fsStore: cannot read ${root}`)
+			write(seed)
+			mark(ROOT, { path: AT_ROOT, ino: String(observed.ino), state: stateOf(observed) })
+		}
+		openingFrom = next
+		if (listeners.size > 0) {
+			pendingFrom ??= openingFrom
+			if (!armed) {
+				armed = true
+				arm()
+			}
+		}
+		// A subscription arms the watcher before this scan. A consumer that only reads and
+		// writes never asks the OS for one. The index is rebuilt against the tree on open, so a
+		// path resolves when the store is there. This is the one pass that takes no turn of its
+		// own, so it closes its own way in.
 		try {
 			await scanAll()
 		} finally {
+			openingFrom = undefined
 			await relock()
 		}
 		// A lineage nobody else can read fences every cursor this instance hands out, so a fresh
@@ -1423,11 +1442,6 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	const open = (): Promise<void> => (opening ??= start())
 
 	const copy = (n: Node): Node => structuredClone(n)
-	const listeners = new Set<(writes: Node[]) => void>()
-	let scanTimer: ReturnType<typeof setTimeout> | undefined
-	let scanning = false
-	let stopped = false
-	let retryFrom: number | undefined
 
 	const publishSince = (from: number): void => {
 		if (stopped || listeners.size === 0) return
@@ -1446,20 +1460,25 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			}
 	}
 
-	const reconcileAndPublish = async (): Promise<void> => {
-		const from = retryFrom ?? next
+	/** Save and publish rows found by a disk check. A failed turn keeps its first position. */
+	const publishChanges = async (work: () => Promise<void>): Promise<void> => {
+		const from = pendingFrom ?? next
 		try {
-			await reconcile()
+			await work()
 			// A failed save leaves the new rows in memory. Save them on the next turn,
 			// even when the scan finds no further disk change.
-			if (retryFrom !== undefined) await save()
+			if (retrySave) await save()
 		} catch (error) {
-			retryFrom ??= from
+			pendingFrom ??= from
+			retrySave = true
 			throw error
 		}
 		publishSince(from)
-		retryFrom = undefined
+		pendingFrom = undefined
+		retrySave = false
 	}
+
+	const reconcileAndPublish = (): Promise<void> => publishChanges(reconcile)
 
 	/** One queued scan at a time. Watch hints replace the slower fallback timer. */
 	const scheduleReconcile = (delay: number): void => {
@@ -1545,7 +1564,6 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			const checks = structuredClone(guards)
 			await open()
 			return serial(async () => {
-				const from = next
 				// What this batch is about to touch, looked at on the DISK first: the names it takes,
 				// and the names its guards ask about. A guard answered from an index that has not
 				// looked since the last poll is answered about a tree that may no longer exist — a
@@ -1569,9 +1587,10 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 						if (held && !held.deleted) touch(held.parent, held.name)
 					}
 				}
-				await settle(touched.values())
+				await publishChanges(() => settle(touched.values()))
 
 				for (const guard of checks ?? []) if (!passes(guard)) throw new GuardError(guard)
+				const from = next
 
 				const todo: { row: Node; old: Node | null; fresh: boolean }[] = []
 				for (const row of batch) {
@@ -1581,10 +1600,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 					// never got it, which is how a retry after a failed write heals.
 					if (fresh || (!row.deleted && !seen.has(row.id))) todo.push({ row, old, fresh })
 				}
-				if (todo.length === 0) {
-					publishSince(from)
-					return
-				}
+				if (todo.length === 0) return
 
 				// The rows first, so a path resolves through rows this same batch adds:
 				// a new directory and a file inside it, in either order.
@@ -1627,6 +1643,13 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 
 		subscribe(listener) {
 			listeners.add(listener)
+			if (openingFrom !== undefined) {
+				pendingFrom ??= openingFrom
+				if (!armed) {
+					armed = true
+					arm()
+				}
+			}
 			scheduleReconcile(0)
 			return () => {
 				listeners.delete(listener)
