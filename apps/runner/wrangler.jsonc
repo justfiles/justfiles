@@ -15,7 +15,8 @@
 	// Zone apex the Worker is bound to; the first host label under it is the app id.
 	"vars": {
 		"ROOT_DOMAIN": "justapps.run",
-		"CLERK_ISSUER": "https://clerk.mykodama.app"
+		"CLERK_ISSUER": "https://clerk.mykodama.app",
+		"FRIEREN_ORIGIN": "https://mykodama.app"
 	},
 	// Everything we host: the catalog snapshot, per-app state, and every release's
 	// bytes. See kb/registry.md for the key layout.
@@ -66,7 +67,8 @@
 			"routes": [],
 			"vars": {
 				"ROOT_DOMAIN": "justapps.run",
-				"CLERK_ISSUER": "https://capable-spider-79.clerk.accounts.dev"
+				"CLERK_ISSUER": "https://capable-spider-79.clerk.accounts.dev",
+				"FRIEREN_ORIGIN": "https://staging.mykodama.app"
 			},
 			"r2_buckets": [
 				{

@@ -18,7 +18,9 @@ const CACHE = 'justapps'
 // Take over immediately. One app per origin, and the pages this could disrupt
 // are the ones that would otherwise go a whole visit uncached.
 self.addEventListener('install', () => self.skipWaiting())
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()))
+self.addEventListener('activate', (event) =>
+	event.waitUntil(Promise.all([self.clients.claim(), dropPrivateDocuments()]))
+)
 
 /** Frozen by construction: `/v/{version}/…` never changes, `/assets/…` is content-hashed. */
 const immutable = (path) => path.startsWith('/v/') || path.startsWith('/assets/')
@@ -32,9 +34,12 @@ const immutable = (path) => path.startsWith('/v/') || path.startsWith('/assets/'
  */
 const shell = (request, path) => request.mode === 'navigate' || path === '/worker.js'
 
+const privateRoute = (path) => path === '/_runner' || path.startsWith('/_runner/')
+
 self.addEventListener('fetch', (event) => {
 	const url = new URL(event.request.url)
 	if (event.request.method !== 'GET' || url.origin !== self.location.origin) return
+	if (privateRoute(url.pathname)) return
 
 	if (immutable(url.pathname)) event.respondWith(cacheFirst(event.request))
 	else if (shell(event.request, url.pathname)) event.respondWith(networkFirst(event.request))
@@ -60,12 +65,22 @@ async function networkFirst(request) {
 	const cache = await caches.open(CACHE)
 	try {
 		const response = await fetch(request)
-		if (response.ok) await cache.put(request, response.clone())
+		if (response.headers.get('x-runner-private') === '1') await cache.delete(request)
+		else if (response.ok && !response.headers.get('cache-control')?.includes('no-store'))
+			await cache.put(request, response.clone())
 		return response
 	} catch (offline) {
 		const hit = await cache.match(request)
 		if (hit) return hit
 		throw offline
+	}
+}
+
+async function dropPrivateDocuments() {
+	const cache = await caches.open(CACHE)
+	for (const request of await cache.keys()) {
+		const response = await cache.match(request)
+		if (response?.headers.get('x-runner-private') === '1') await cache.delete(request)
 	}
 }
 

@@ -24,6 +24,7 @@ test('discovers Clerk endpoints and builds the fixed authorization request', asy
 			token_endpoint: metadata.tokenEndpoint,
 			jwks_uri: metadata.jwksUri,
 			scopes_supported: ['openid', 'offline_access', 'profile'],
+			grant_types_supported: ['authorization_code', 'refresh_token'],
 			code_challenge_methods_supported: ['S256'],
 			token_endpoint_auth_methods_supported: ['client_secret_basic']
 		})
@@ -63,6 +64,7 @@ test('rejects metadata for another issuer or an insecure endpoint', async () => 
 					token_endpoint: metadata.tokenEndpoint,
 					jwks_uri: metadata.jwksUri,
 					scopes_supported: ['openid', 'offline_access'],
+					grant_types_supported: ['authorization_code', 'refresh_token'],
 					code_challenge_methods_supported: ['S256'],
 					token_endpoint_auth_methods_supported: ['client_secret_basic'],
 					...changed
