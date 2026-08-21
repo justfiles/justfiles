@@ -1638,8 +1638,8 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		},
 
 		/**
-		 * Stop new watch and scan work, then wait for the current store turn. The store still
-		 * answers by walking the tree, but a caller that closed it must treat it as done.
+		 * Stop new watch and scan work, then wait for the current open and store turn. The store
+		 * still answers by walking the tree, but a caller that closed it must treat it as done.
 		 */
 		async close() {
 			stopped = true
@@ -1647,6 +1647,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			if (scanTimer !== undefined) clearTimeout(scanTimer)
 			scanTimer = undefined
 			lost()
+			await opening?.catch(() => {})
 			await tail
 		},
 
