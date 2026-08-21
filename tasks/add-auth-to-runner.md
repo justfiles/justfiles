@@ -100,7 +100,9 @@ Change the Runner app page to use the same host shape as Frieren:
 
 1. The trusted Runner page loads the release GUI text.
 2. It starts that text in an iframe with an opaque origin.
-3. Use `sandbox="allow-scripts"`. Do not add `allow-same-origin`, `allow-forms`,
+3. Use `sandbox="allow-scripts allow-forms"`. Browsers do not fire submit events without
+   `allow-forms`, so client-side form handlers do not run. Keep `form-action 'none'` in the guest CSP
+   so the browser cannot send a native form request. Do not add `allow-same-origin`,
    `allow-downloads`, popups, or navigation permissions.
 4. Give the iframe one `MessagePort` for the app SDK transport.
 5. Give the iframe a guest CSP that blocks direct network connections, form submissions, child
@@ -381,7 +383,7 @@ need, reassess Clerk opaque tokens and their network cost.
 
 Use separate review steps. Do not start OAuth until the GUI isolation test passes.
 
-1. **Isolate the app GUI.** Replace the same-page GUI import with an opaque iframe and
+1. [x] **Isolate the app GUI.** Replace the same-page GUI import with an opaque iframe and
    `MessagePort`. Keep current signed-out volume behavior unchanged.
 2. **Add Runner account storage.** Add D1 migrations, token sealing, flow/session helpers, expiry
    cleanup, and Worker secrets.

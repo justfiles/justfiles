@@ -13,6 +13,7 @@
 		".": "./index.ts",
 		"./runtime": "./kernel.ts",
 		"./sandbox": "./sandbox.ts",
+		"./iframe": "./iframe.ts",
 		"./browser": "./browser.ts",
 		"./runtime-specs": "./runtime-specs.ts",
 		"./vite": "./vite.ts",
@@ -58,6 +59,10 @@
 			"./sandbox": {
 				"types": "./dist/sandbox.d.ts",
 				"default": "./dist/sandbox.js"
+			},
+			"./iframe": {
+				"types": "./dist/iframe.d.ts",
+				"default": "./dist/iframe.js"
 			},
 			"./browser": {
 				"types": "./dist/browser.d.ts",

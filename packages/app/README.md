@@ -115,9 +115,15 @@ import { ai } from '@justfiles/app/capabilities/ai'
 
 - `@justfiles/app` — platform-agnostic author SDK plus runtime types.
 - `@justfiles/app/browser` — browser GUI SDK (`defineGUI`, `injectStyle`).
+- `@justfiles/app/iframe` — host utilities for running a GUI in a sandboxed iframe.
 - `@justfiles/app/runtime` — kernel runtime host API.
 - `@justfiles/app/vite` — Vite build/dev plugin.
 - `@justfiles/app/capabilities/*` — capability contracts and broker helpers.
+
+`@justfiles/app/iframe` supplies the shared message-port host and the iframe boot script. The host
+still owns the iframe document, CSP, `sandbox` tokens, styles, and optional host UI. Use
+`form-action 'none'` when `allow-forms` is set so form event handlers work without permitting native
+form navigation.
 
 ## App-authoring discipline
 

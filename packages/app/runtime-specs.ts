@@ -2,7 +2,7 @@
 //
 // An app artifact bundles everything it uses into `app.js`/`gui.js`. No host serves
 // framework bytes; the only thing a host injects is the platform stylesheet (see
-// frieren's `gui-channel.ts`). A draft gets the platform SDK and nothing else — its
+// Frieren's `gui-frame.ts`). A draft gets the platform SDK and nothing else — its
 // GUI is plain DOM through `defineGUI`. An author who wants React (or anything else
 // off npm) uses `packages/create-app`, where the app's own bundler inlines it.
 

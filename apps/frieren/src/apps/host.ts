@@ -8,9 +8,10 @@
 // re-boots from the persisted snapshot on every load. True teardown is close().
 
 import type { Kernel } from '@justfiles/app'
+import { guiHost } from '@justfiles/app/iframe'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
-import { FRAME_SRCDOC, guiHost } from './gui-channel'
+import { FRAME_SRCDOC } from './gui-frame'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
@@ -21,7 +22,6 @@ interface Stage {
 	unsubscribe?: () => void
 	unwatch?: () => void
 	unwatchBundle?: () => void
-	unlisten?: () => void
 	port?: MessagePort
 	postState?: (state: unknown) => void
 	boot?: () => void
@@ -116,7 +116,6 @@ export function close(id: string): void {
 	stage.unsubscribe?.()
 	stage.unwatch?.()
 	stage.unwatchBundle?.()
-	stage.unlisten?.()
 	stage.port?.close()
 	// Last window of a local app closed — reclaim its Web Worker. Removing the
 	// wrapper discards the iframe's browsing context, tearing down the GUI realm.
@@ -153,8 +152,8 @@ function createStage(id: string): Stage {
 	// The GUI lives in an opaque-origin sandboxed iframe: `allow-scripts` runs the
 	// app but withholds `allow-same-origin`, so it gets no cookies, no host DOM,
 	// and cannot read the token. Its only authority is the port handed off at boot.
-	// `allow-forms` lets an app use plain `<form>`s (app-code's project/settings
-	// forms) — it permits submission only, never same-origin, so isolation holds.
+	// `allow-forms` lets an app handle submit events. The frame CSP blocks native
+	// form requests.
 	// `allow-downloads` lets an app hand a file to the user (app-draw's "Export
 	// image" — an `<a download>` on a blob URL); without it the browser drops the
 	// download silently. It grants no read access, so isolation holds.
@@ -258,7 +257,12 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				stage.port?.close()
 				const { port1, port2 } = new MessageChannel()
 				stage.port = port1
-				stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
+				stage.postState = guiHost(port1, {
+					invoke: (action) => kernel.dispatch(stage.id, action),
+					onError: (message) => {
+						if (!stage.cancelled) setError(stage, message)
+					}
+				})
 				stage.frame.contentWindow?.postMessage({ type: 'boot', guiCode, state: snapshot }, '*', [
 					port2
 				])
@@ -332,14 +336,6 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 			reboot(stage.id, opts)
 		})
 	})
-
-	// A guest boot failure (gui import/mount inside the frame) reports back here.
-	const onMessage = (e: MessageEvent) => {
-		if (e.source === stage.frame.contentWindow && (e.data as { type?: string })?.type === 'error')
-			setError(stage, String((e.data as { message?: unknown }).message))
-	}
-	window.addEventListener('message', onMessage)
-	stage.unlisten = () => window.removeEventListener('message', onMessage)
 
 	// The frame may have loaded during the awaits above; `boot()` is a no-op until
 	// a load has latched `pendingBoot`, and self-guards so a load caught here and
