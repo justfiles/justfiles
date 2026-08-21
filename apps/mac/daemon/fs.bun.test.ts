@@ -31,6 +31,7 @@ async function rows(root: string): Promise<Node[]> {
 }
 
 const childScript = `
+	import { access } from 'node:fs/promises'
 	import { join } from 'node:path'
 	import { getVolume } from ${JSON.stringify(new URL('./fs.ts', import.meta.url).href)}
 	import { startDaemon } from ${JSON.stringify(new URL('./main.ts', import.meta.url).href)}
@@ -54,12 +55,56 @@ const childScript = `
 	await Bun.sleep(100)
 	const eventFile = Bun.file(watchEvent)
 	if (await eventFile.exists()) await eventFile.delete()
+	const closeRace = process.env.FRIEREN_CLOSE_RACE === '1'
+	let releaseWrite = () => {}
+	let pendingWrite = Promise.resolve()
+	if (closeRace) {
+		const digest = crypto.subtle.digest.bind(crypto.subtle)
+		const closingBytes = new TextEncoder().encode('during close')
+		const gate = new Promise((resolve) => {
+			releaseWrite = resolve
+		})
+		let blocked = false
+		Object.defineProperty(crypto.subtle, 'digest', {
+			configurable: true,
+			value: async (algorithm, data) => {
+				const bytes = new Uint8Array(data)
+				if (
+					!blocked &&
+					bytes.length === closingBytes.length &&
+					bytes.every((byte, index) => byte === closingBytes[index])
+				) {
+					blocked = true
+					console.log('__WRITE_PENDING__')
+					await gate
+				}
+				return digest(algorithm, data)
+			}
+		})
+		// Stop before the first Store call so only the owner can see the pending work.
+		pendingWrite = fs.writeFile('/closing.txt', closingBytes)
+	}
 	let closing = false
 	process.on('SIGTERM', () => {
 		if (closing) return
 		closing = true
 		void (async () => {
-			await daemon.close()
+			const closed = daemon.close()
+			if (closeRace) {
+				console.log('__CLOSING__')
+				const release = join(support, 'release-write')
+				for (;;) {
+					try {
+						await access(release)
+						break
+					} catch {
+						await Bun.sleep(10)
+					}
+				}
+				releaseWrite()
+				await pendingWrite
+			}
+			await closed
 			await daemon.close()
 			if (await eventFile.exists()) await eventFile.delete()
 			console.log('__CLOSED__')
@@ -70,10 +115,14 @@ const childScript = `
 	await new Promise(() => {})
 	`
 
-const daemonProcess = (support: string) =>
+const daemonProcess = (support: string, closeRace = false) =>
 	Bun.spawn([process.execPath, '--eval', childScript], {
 		cwd: import.meta.dir,
-		env: { ...process.env, FRIEREN_SUPPORT_DIR: support },
+		env: {
+			...process.env,
+			FRIEREN_SUPPORT_DIR: support,
+			...(closeRace ? { FRIEREN_CLOSE_RACE: '1' } : {})
+		},
 		stdout: 'pipe',
 		stderr: 'pipe'
 	})
@@ -140,15 +189,21 @@ test.skipIf(process.platform !== 'darwin')(
 			expect(mount?.type).toBe('mount')
 			expect(feed.some((row) => row.parent === mount?.id)).toBe(false)
 
-			const replacement = daemonProcess(support)
+			const replacement = daemonProcess(support, true)
 			children.push(replacement)
-			expect(await marker(replacement, ['__ACQUIRED__'])).toBe('__ACQUIRED__')
+			expect(await marker(replacement, ['__WRITE_PENDING__'])).toBe('__WRITE_PENDING__')
 			const runtime = (await Bun.file(join(support, 'runtime.json')).json()) as { pid: number }
 			expect(runtime.pid).toBe(replacement.pid)
 
 			replacement.kill('SIGTERM')
+			expect(await marker(replacement, ['__CLOSING__'])).toBe('__CLOSING__')
+			const blocked = daemonProcess(support)
+			children.push(blocked)
+			expect(await marker(blocked, ['__ACQUIRED__', '__BLOCKED__'])).toBe('__BLOCKED__')
+			await writeFile(join(support, 'release-write'), '')
 			expect(await marker(replacement, ['__CLOSED__'])).toBe('__CLOSED__')
 			expect(await Bun.file(join(support, 'runtime.json')).exists()).toBe(false)
+			expect(await readFile(join(mainRoot, 'closing.txt'), 'utf8')).toBe('during close')
 			await writeFile(join(mainRoot, 'note.txt'), 'changed after close')
 			await writeFile(join(privateRoot, 'state', 'clientid'), 'changed after close')
 			await sleep(150)

@@ -30,6 +30,33 @@ interface StorageOwner {
 	close(): Promise<void>
 }
 
+/** A Volume call can span several Store turns. Keep the stores open until the whole call ends. */
+function trackVolume(source: Volume): { volume: Volume; drain(): Promise<void> } {
+	const active = new Set<Promise<unknown>>()
+	let closing = false
+	const volume = new Proxy(source, {
+		get(target, key, receiver) {
+			const value = Reflect.get(target, key, receiver)
+			if (typeof value !== 'function') return value
+			return (...args: unknown[]) => {
+				if (closing) return Promise.reject(new Error('storage is closing'))
+				const run = Reflect.apply(value, target, args) as Promise<unknown>
+				active.add(run)
+				const done = (): void => void active.delete(run)
+				void run.then(done, done)
+				return run
+			}
+		}
+	})
+	return {
+		volume,
+		async drain() {
+			closing = true
+			await Promise.allSettled(active)
+		}
+	}
+}
+
 // One owner per process. The kernel and agent share its mounted Volume, while the owner keeps
 // both native Stores private and closes them together.
 let storageOnce: Promise<StorageOwner> | undefined
@@ -49,13 +76,15 @@ function getStorage(): Promise<StorageOwner> {
 		try {
 			await announceMount(mainStore, ROOT, PRIVATE)
 			const bindings: Bindings = new Map([[ROOT, new Map([[PRIVATE, privateStore]])]])
+			const tracked = trackVolume(volume(mainStore, { bindings }))
 			let closeOnce: Promise<void> | undefined
 			return {
-				volume: volume(mainStore, { bindings }),
+				volume: tracked.volume,
 				close() {
-					closeOnce ??= Promise.all([closeStore(mainStore), closeStore(privateStore)]).then(
-						() => {}
-					)
+					closeOnce ??= (async () => {
+						await tracked.drain()
+						await Promise.all([closeStore(mainStore), closeStore(privateStore)])
+					})()
 					return closeOnce
 				}
 			}
