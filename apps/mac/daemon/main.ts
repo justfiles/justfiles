@@ -10,7 +10,7 @@ import {
 	setAgentBroadcast
 } from './agent'
 import { coalesce } from './coalesce'
-import { clearRuntime, writeRuntime } from './fs'
+import { acquireDaemonLock, clearRuntime, closeStorage, getVolume, writeRuntime } from './fs'
 import { getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
@@ -327,31 +327,73 @@ function alive(pid: number): boolean {
 	}
 }
 
-// Process entry: start the server, write the runtime.json handshake, and bind our lifetime
-// to the owning app (FRIEREN_OWNER_PID watchdog + SIGINT/SIGTERM cleanup). Runs only as the
-// entry, so an `import` of `createServer` for tests has no process-level side effects.
-async function main(): Promise<void> {
-	const token = randomBytes(16).toString('hex')
-	let runtimeWritten = false
-	let runtimeCleared = false
+export async function startDaemon(
+	options: ServerOptions = {}
+): Promise<{ close(): Promise<void> } | null> {
+	const lock = await acquireDaemonLock()
+	if (!lock) return null
 
-	const cleanupRuntime = async (): Promise<void> => {
-		if (runtimeCleared || !runtimeWritten) return
-		runtimeCleared = true
-		try {
-			await clearRuntime()
-		} catch (error) {
-			console.error('daemon: failed to clear runtime file', error)
-		}
+	const token = randomBytes(16).toString('hex')
+	let server: Server<Context> | undefined
+	let closeOnce: Promise<void> | undefined
+	let runtimeWritten = false
+	const close = (): Promise<void> => {
+		closeOnce ??= (async () => {
+			try {
+				server?.stop(true)
+			} finally {
+				try {
+					await closeStorage()
+				} finally {
+					try {
+						if (runtimeWritten) await clearRuntime()
+					} finally {
+						await lock.release()
+					}
+				}
+			}
+		})()
+		return closeOnce
 	}
+
+	try {
+		await getVolume()
+		server = createServer(options)
+		const port = server.port
+		if (port === undefined) throw new Error('daemon: server has no TCP port')
+		await writeRuntime({ port, token, pid: process.pid })
+		runtimeWritten = true
+		return { close }
+	} catch (error) {
+		try {
+			await close()
+		} catch (closeError) {
+			console.error('daemon: failed to close after startup error', closeError)
+		}
+		throw error
+	}
+}
+
+// Process entry: bind the daemon lifetime to its owning app. Importing this module for tests has
+// no process-level side effects.
+async function main(): Promise<void> {
+	const daemon = await startDaemon()
+	if (!daemon) return
+	let exiting = false
 	const exit = async (): Promise<void> => {
-		await cleanupRuntime()
+		if (exiting) return
+		exiting = true
+		try {
+			await daemon.close()
+		} catch (error) {
+			console.error('daemon: failed to close', error)
+		}
 		process.exit(0)
 	}
 
 	process.on('SIGINT', () => void exit())
 	process.on('SIGTERM', () => void exit())
-	process.on('beforeExit', () => void cleanupRuntime())
+	process.on('beforeExit', () => void exit())
 
 	const ownerPid = Number(process.env.FRIEREN_OWNER_PID)
 	if (Number.isInteger(ownerPid) && ownerPid > 0) {
@@ -360,12 +402,6 @@ async function main(): Promise<void> {
 		}, 1000)
 		watchdog.unref()
 	}
-
-	const server = createServer()
-	const port = server.port
-	if (port === undefined) throw new Error('daemon: server has no TCP port')
-	await writeRuntime({ port, token, pid: process.pid })
-	runtimeWritten = true
 }
 
 if (import.meta.main) void main()

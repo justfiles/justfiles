@@ -20,6 +20,7 @@ import {
 	RUNNER_STORE_SCHEMA,
 	RUNNER_STORE_URL
 } from '../../shared/justapps.ts'
+import { closeStorage } from './fs.ts'
 import { getKernel } from './kernel.ts'
 import { createServer } from './main.ts'
 
@@ -39,6 +40,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
 	server.stop(true)
+	await closeStorage()
 	delete process.env.FRIEREN_SUPPORT_DIR
 	await rm(root, { recursive: true, force: true })
 })

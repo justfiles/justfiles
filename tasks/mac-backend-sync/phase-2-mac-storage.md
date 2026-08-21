@@ -1,6 +1,6 @@
 # Phase 2: make Mac storage safe
 
-Status: `todo`
+Status: `done`
 
 Depends on: Phase 1
 

@@ -140,12 +140,121 @@ describe('fsStore subscriptions', () => {
 		store.subscribe?.(() => {})
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
-		await store.close?.()
+		let closed = false
+		const close = store.close?.().then(() => {
+			closed = true
+		})
+		await Promise.resolve()
+		expect(closed).toBe(false)
+
 		release()
+		await close
 		await store.get(ROOT)
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
 		expect(watches).toBe(0)
+	})
+
+	test('close waits for a store turn queued behind open', async () => {
+		const disk = memDisk()
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid file path')
+		let releaseOpen = (): void => {}
+		const openGate = new Promise<void>((resolve) => {
+			releaseOpen = resolve
+		})
+		let enterOpen = (): void => {}
+		const openEntered = new Promise<void>((resolve) => {
+			enterOpen = resolve
+		})
+		let releaseWrite = (): void => {}
+		const writeGate = new Promise<void>((resolve) => {
+			releaseWrite = resolve
+		})
+		let enterWrite = (): void => {}
+		const writeEntered = new Promise<void>((resolve) => {
+			enterWrite = resolve
+		})
+		let firstRootStat = true
+		const slow: Disk = {
+			...disk,
+			async stat(at) {
+				if (at === AT_ROOT && firstRootStat) {
+					firstRootStat = false
+					enterOpen()
+					await openGate
+				}
+				return disk.stat(at)
+			},
+			async write(spot, data, on, was) {
+				if (spot === path) {
+					enterWrite()
+					await writeGate
+				}
+				return disk.write(spot, data, on, was)
+			}
+		}
+		const store = fsStore('mem', { disk: slow })
+		built.push(store)
+		const commit = store.commit([row('a', 'a.txt')])
+		await openEntered
+		let closed = false
+		const close = store.close?.().then(() => {
+			closed = true
+		})
+		await Promise.resolve()
+		expect(closed).toBe(false)
+
+		releaseOpen()
+		await writeEntered
+		expect(closed).toBe(false)
+
+		releaseWrite()
+		await Promise.all([commit, close])
+		expect(closed).toBe(true)
+	})
+
+	test('close waits for an in-flight store turn', async () => {
+		const disk = memDisk()
+		const path = under(AT_ROOT, 'a.txt')
+		if (path === null) throw new Error('invalid file path')
+		let release = (): void => {}
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let enter = (): void => {}
+		const entered = new Promise<void>((resolve) => {
+			enter = resolve
+		})
+		const slow: Disk = {
+			...disk,
+			async write(spot, data, on, was) {
+				if (spot === path) {
+					enter()
+					await gate
+				}
+				return disk.write(spot, data, on, was)
+			}
+		}
+		const store = fsStore('mem', { disk: slow })
+		built.push(store)
+		await store.since()
+		const data = bytes('hello')
+		const content = await sha256Hex(data)
+		await store.blobs.put(content, data)
+
+		const commit = store.commit([{ ...row('a', 'a.txt'), content, size: BigInt(data.length) }])
+		await entered
+		let closed = false
+		const close = store.close?.().then(() => {
+			closed = true
+		})
+		await Promise.resolve()
+		expect(closed).toBe(false)
+
+		release()
+		await Promise.all([commit, close])
+		expect(closed).toBe(true)
 	})
 
 	test('a rejected commit still publishes the Finder row it settled', async () => {

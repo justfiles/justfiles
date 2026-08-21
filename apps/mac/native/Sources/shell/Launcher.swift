@@ -544,7 +544,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 // Find-or-spawn the daemon daemon. Discovery is via runtime.json ({port, token,
 // pid}); liveness via the pid. If it is absent or dead, spawn the daemon from the
 // runtime + args + entrypoint stamped into Info.plist by build.sh (node or bun) and
-// wait for it to advertise itself. A single-writer lock is deferred (Phase 4 hardening).
+// wait for it to advertise itself. The daemon locks storage before it opens either Store.
 enum Daemon {
 	struct Runtime: Decodable {
 		let port: Int

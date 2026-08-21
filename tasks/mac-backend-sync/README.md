@@ -28,7 +28,7 @@ Status values are `todo`, `in progress`, `done`, and `blocked`.
 | Phase | Work | Depends on | Size | Status |
 | --- | --- | --- | --- | --- |
 | 1 | [Make `fsStore` sync-ready](phase-1-fs-store.md) | None | Medium | done |
-| 2 | [Make Mac storage safe](phase-2-mac-storage.md) | Phase 1 | Medium | todo |
+| 2 | [Make Mac storage safe](phase-2-mac-storage.md) | Phase 1 | Medium | done |
 | 3 | [Connect sync and refresh the runtime](phase-3-connect-sync.md) | Phase 2 | Large | todo |
 | 4 | [Test failure and recovery](phase-4-recovery.md) | Phase 3 | Small to medium | todo |
 
