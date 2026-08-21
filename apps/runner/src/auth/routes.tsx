@@ -116,9 +116,12 @@ rootAuth.get('/consent', async (c) => {
 
 	try {
 		const access = await appAccess(app.id, app.capabilities)
-		const csrf = await formToken(signedIn.id)
+		const [csrf, consent] = await Promise.all([
+			formToken(signedIn.id),
+			formToken(signedIn.id, app.id, access.hash)
+		])
 		const cancel = `${appOrigin(c.req.raw, c.env, app.id)}/`
-		return c.html(consentPage(app, access, csrf, cancel))
+		return c.html(consentPage(app, access, csrf, consent, cancel))
 	} catch {
 		return c.text('Runner cannot grant the app capabilities in this release.', 403)
 	}
@@ -136,13 +139,25 @@ rootAuth.post('/consent', async (c) => {
 	if (!signedIn) return c.text('Connect to Frieren again.', 401)
 	const form = await c.req.parseBody()
 	const csrf = stringField(form.csrf)
-	const app = await currentApp(c.env, stringField(form.app))
-	if (!csrf || !(await validFormToken(signedIn.id, csrf)))
+	const consent = stringField(form.consent)
+	const appId = stringField(form.app)
+	const capabilityHash = stringField(form.capabilityHash)
+	if (
+		!csrf ||
+		!consent ||
+		!appId ||
+		!capabilityHash ||
+		!(await validFormToken(signedIn.id, csrf)) ||
+		!(await validFormToken(signedIn.id, consent, appId, capabilityHash))
+	)
 		return c.text('The consent request is invalid.', 403)
+	const app = await currentApp(c.env, appId)
 	if (!app) return c.text('App not found.', 404)
 
 	try {
 		const access = await appAccess(app.id, app.capabilities)
+		if (access.hash !== capabilityHash)
+			return c.redirect(`/consent?app=${encodeURIComponent(app.id)}`, 303)
 		const target = appOrigin(c.req.raw, c.env, app.id)
 		await putGrant(database, {
 			userId: signedIn.userId,

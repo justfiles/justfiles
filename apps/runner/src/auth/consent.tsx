@@ -13,7 +13,13 @@ button { background: #b06a2c; border: 0; border-radius: 8px; color: white; curso
 a { color: inherit }
 `
 
-export function consentPage(app: ReleaseManifest, access: AppAccess, csrf: string, cancel: string) {
+export function consentPage(
+	app: ReleaseManifest,
+	access: AppAccess,
+	csrf: string,
+	consent: string,
+	cancel: string
+) {
 	const declared = [
 		...new Set(Object.values(app.capabilities ?? {}).map((capability) => capability.id))
 	].sort()
@@ -39,7 +45,9 @@ export function consentPage(app: ReleaseManifest, access: AppAccess, csrf: strin
 					<p>Connected access needs a network connection. Runner will not merge local app data.</p>
 					<form method="post" action="/consent">
 						<input type="hidden" name="app" value={app.id} />
+						<input type="hidden" name="capabilityHash" value={access.hash} />
 						<input type="hidden" name="csrf" value={csrf} />
+						<input type="hidden" name="consent" value={consent} />
 						<div class="actions">
 							<button type="submit">Connect app</button>
 							<a href={cancel}>Cancel</a>

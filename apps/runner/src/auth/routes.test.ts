@@ -9,7 +9,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 test('connects one app through consent and enforces each route binding', async () => {
 	const { binding, sqlite } = testDatabase()
-	const manifests = {
+	const manifests: Record<string, ReleaseManifest> = {
 		'alice.notes': manifest('alice.notes', 'Notes'),
 		'bob.tasks': manifest('bob.tasks', 'Tasks'),
 		'justfiles.files': {
@@ -105,29 +105,39 @@ test('connects one app through consent and enforces each route binding', async (
 	const systemConsent = await request('https://example.com/consent?app=justfiles.files', env, {
 		headers: { cookie: `__Host-runner-root=${rootCookie}` }
 	})
-	expect(await systemConsent.text()).toContain('your full non-private Frieren volume')
-	const csrf = /name="csrf" value="([^"]+)"/.exec(consentPage)?.[1] ?? ''
-	const consentBody = new URLSearchParams({ app: 'alice.notes', csrf })
-	const deniedConsent = await request('https://example.com/consent', env, {
-		method: 'POST',
-		headers: {
-			cookie: `__Host-runner-root=${rootCookie}`,
-			origin: 'https://attacker.example',
-			'content-type': 'application/x-www-form-urlencoded'
-		},
-		body: consentBody
+	const systemPage = await systemConsent.text()
+	expect(systemPage).toContain('your full non-private Frieren volume')
+	const consentBody = formBody('alice.notes', consentPage)
+	const csrf = consentBody.get('csrf') ?? ''
+
+	const staleBody = formBody('justfiles.files', systemPage)
+	manifests['justfiles.files'].capabilities = {
+		...manifests['justfiles.files'].capabilities,
+		ai: { id: 'ai', scopes: [] }
+	}
+	const updatedConsent = await request('https://example.com/consent?app=justfiles.files', env, {
+		headers: { cookie: `__Host-runner-root=${rootCookie}` }
 	})
+	const updatedPage = await updatedConsent.text()
+	expect(updatedPage).toContain('Use your Frieren AI budget.')
+	const changedBody = new URLSearchParams(staleBody)
+	changedBody.set('capabilityHash', formField(updatedPage, 'capabilityHash'))
+	expect(await submitConsent(env, rootCookie, changedBody)).toMatchObject({ status: 403 })
+	const staleConsent = await submitConsent(env, rootCookie, staleBody)
+	expect(staleConsent.status).toBe(303)
+	expect(staleConsent.headers.get('location')).toBe('/consent?app=justfiles.files')
+	expect(sqlite.prepare('SELECT COUNT(*) AS count FROM app_grants').get()).toEqual({ count: 0 })
+	delete manifests['justfiles.files'].capabilities?.ai
+
+	const deniedConsent = await submitConsent(
+		env,
+		rootCookie,
+		consentBody,
+		'https://attacker.example'
+	)
 	expect(deniedConsent.status).toBe(403)
 
-	const approved = await request('https://example.com/consent', env, {
-		method: 'POST',
-		headers: {
-			cookie: `__Host-runner-root=${rootCookie}`,
-			origin: 'https://example.com',
-			'content-type': 'application/x-www-form-urlencoded'
-		},
-		body: consentBody
-	})
+	const approved = await submitConsent(env, rootCookie, consentBody)
 	expect(approved.status).toBe(303)
 	const appCallback = new URL(approved.headers.get('location') ?? '')
 	expect(appCallback.origin + appCallback.pathname).toBe(
@@ -290,6 +300,33 @@ const testEnv = (
 
 const request = (url: string, env: CloudflareBindings, init?: RequestInit): Promise<Response> =>
 	worker.fetch(new Request(url, init), env, {} as ExecutionContext)
+
+const formBody = (app: string, page: string): URLSearchParams =>
+	new URLSearchParams({
+		app,
+		csrf: formField(page, 'csrf'),
+		capabilityHash: formField(page, 'capabilityHash'),
+		consent: formField(page, 'consent')
+	})
+
+const formField = (page: string, name: string): string =>
+	new RegExp(`name="${name}" value="([^"]+)"`).exec(page)?.[1] ?? ''
+
+const submitConsent = (
+	env: CloudflareBindings,
+	rootCookie: string,
+	body: BodyInit,
+	origin = 'https://example.com'
+): Promise<Response> =>
+	request('https://example.com/consent', env, {
+		method: 'POST',
+		headers: {
+			cookie: `__Host-runner-root=${rootCookie}`,
+			origin,
+			'content-type': 'application/x-www-form-urlencoded'
+		},
+		body
+	})
 
 async function idToken(key: CryptoKey, env: CloudflareBindings, nonce: string): Promise<string> {
 	return new SignJWT({ nonce })

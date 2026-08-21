@@ -31,11 +31,15 @@ export const clearFlowCookie = (c: Context): void => clearCookie(c, FLOW_COOKIE)
 export const clearRootCookie = (c: Context): void => clearCookie(c, ROOT_COOKIE)
 export const clearAppCookie = (c: Context): void => clearCookie(c, APP_COOKIE)
 
-export const formToken = (sessionId: string): Promise<string> =>
-	hashSecret(`runner-form:${sessionId}`)
+export const formToken = (sessionId: string, ...fields: string[]): Promise<string> =>
+	hashSecret(JSON.stringify(['runner-form', sessionId, ...fields]))
 
-export async function validFormToken(sessionId: string, value: string): Promise<boolean> {
-	return sameSecret(await formToken(sessionId), value)
+export async function validFormToken(
+	sessionId: string,
+	value: string,
+	...fields: string[]
+): Promise<boolean> {
+	return sameSecret(await formToken(sessionId, ...fields), value)
 }
 
 export const sameSecret = (left: string, right: string): boolean => {
