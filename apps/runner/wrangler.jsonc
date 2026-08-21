@@ -14,7 +14,8 @@
 	"upload_source_maps": true,
 	// Zone apex the Worker is bound to; the first host label under it is the app id.
 	"vars": {
-		"ROOT_DOMAIN": "justapps.run"
+		"ROOT_DOMAIN": "justapps.run",
+		"CLERK_ISSUER": "https://clerk.mykodama.app"
 	},
 	// Everything we host: the catalog snapshot, per-app state, and every release's
 	// bytes. See kb/registry.md for the key layout.
@@ -36,7 +37,7 @@
 	// Reading a public repo still needs a token: unauthenticated GitHub is 60
 	// requests/hour *per IP*, and a Worker's egress IP is shared.
 	"secrets": {
-		"required": ["GITHUB_TOKEN", "TOKEN_SEAL_KEY_V1"]
+		"required": ["GITHUB_TOKEN", "TOKEN_SEAL_KEY_V1", "CLERK_CLIENT_ID", "CLERK_CLIENT_SECRET"]
 	},
 	// Hourly, and deliberately not more often: a cron on an interval of an hour
 	// or more gets 15 minutes of CPU, where a sub-hourly one gets 30 seconds.
@@ -64,7 +65,8 @@
 		"dev": {
 			"routes": [],
 			"vars": {
-				"ROOT_DOMAIN": "justapps.run"
+				"ROOT_DOMAIN": "justapps.run",
+				"CLERK_ISSUER": "https://capable-spider-79.clerk.accounts.dev"
 			},
 			"r2_buckets": [
 				{
@@ -80,7 +82,7 @@
 				}
 			],
 			"secrets": {
-				"required": ["GITHUB_TOKEN", "TOKEN_SEAL_KEY_V1"]
+				"required": ["GITHUB_TOKEN", "TOKEN_SEAL_KEY_V1", "CLERK_CLIENT_ID", "CLERK_CLIENT_SECRET"]
 			}
 		}
 	}

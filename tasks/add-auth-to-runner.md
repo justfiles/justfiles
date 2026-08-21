@@ -399,7 +399,7 @@ Use separate review steps. Do not start OAuth until the GUI isolation test passe
    `MessagePort`. Keep current signed-out volume behavior unchanged.
 2. [x] **Add Runner account storage.** Add D1 migrations, token sealing, flow/session helpers, expiry
    cleanup, and Worker secrets.
-3. **Add Clerk OAuth.** Add root connect, callback, consent, ticket, app callback, account status,
+3. [x] **Add Clerk OAuth.** Add root connect, callback, consent, ticket, app callback, account status,
    and disconnect routes.
 4. **Allow Runner in Frieren.** Register the two Clerk OAuth apps and extend the Frieren client ID
    allowlist.

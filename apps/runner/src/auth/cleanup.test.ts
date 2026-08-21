@@ -9,7 +9,17 @@ test('deletes expired flows, tickets, and sessions', async () => {
 	await addAccount(database)
 	await beginFlow(database, 'old.app', 0)
 	await beginFlow(database, 'live.app', 10_000)
-	await createSession(database, { kind: 'ticket', userId: 'user_1', appId: 'old.app' }, 0)
+	await createSession(
+		database,
+		{
+			kind: 'ticket',
+			userId: 'user_1',
+			appId: 'old.app',
+			origin: 'https://old-app.example.com',
+			capabilityHash: 'hash'
+		},
+		0
+	)
 	await createSession(database, { kind: 'root', userId: 'user_1' }, 10_000)
 
 	expect(await cleanExpired(database, 10 * 60 * 1000)).toBe(2)
