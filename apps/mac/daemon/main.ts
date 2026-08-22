@@ -321,7 +321,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 			await project()
 		}
 	})
-	refresh.refreshApps()
+	void refresh.refreshApps()
 	runtimes.set(server, refresh)
 
 	return server

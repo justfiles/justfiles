@@ -16,42 +16,50 @@ function gate(): { promise: Promise<void>; open: () => void } {
 
 test('runs immediately on the leading edge', async () => {
 	let runs = 0
-	coalesce(async () => void runs++)()
-	await flush()
+	await coalesce(async () => void runs++)()
 	expect(runs).toBe(1)
 })
 
-test('collapses a mid-flight burst into one trailing run, without overlapping', async () => {
-	const g = gate()
+test('collapses a mid-flight burst and waits for the trailing run', async () => {
+	const first = gate()
+	const trailing = gate()
 	let started = 0
 	let finished = 0
 	const trigger = coalesce(async () => {
 		started++
-		await g.promise
+		await (started === 1 ? first.promise : trailing.promise)
 		finished++
 	})
 
-	trigger() // leading run starts, awaits the gate
-	trigger() // in-flight → queue a trailing run
-	trigger() // in-flight → collapses into the SAME trailing run
-	trigger()
+	const done = trigger()
+	expect(trigger()).toBe(done)
+	expect(trigger()).toBe(done)
 	expect(started).toBe(1) // never a second concurrent run
 	expect(finished).toBe(0)
 
-	g.open()
+	first.open()
 	await flush()
+	expect(started).toBe(2)
+	expect(finished).toBe(1)
 
-	// Leading + exactly one trailing run, no matter how many triggers arrived.
+	let settled = false
+	void done.then(() => {
+		settled = true
+	})
+	await flush()
+	expect(settled).toBe(false)
+
+	trailing.open()
+	await done
 	expect(started).toBe(2)
 	expect(finished).toBe(2)
+	expect(settled).toBe(true)
 })
 
 test('a trigger after settle starts a fresh run', async () => {
 	let runs = 0
 	const trigger = coalesce(async () => void runs++)
-	trigger()
-	await flush()
-	trigger()
-	await flush()
+	await trigger()
+	await trigger()
 	expect(runs).toBe(2)
 })

@@ -42,6 +42,7 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 
 	let state: unknown
 	let handler: ((event: unknown) => void) | undefined
+	let bundleGate: Promise<void> | undefined
 	let subscribed = (): void => {}
 	const subscription = new Promise<void>((resolve) => {
 		subscribed = resolve
@@ -52,6 +53,7 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 		},
 		async reloadBundle(appId: string) {
 			reloads.push(`kernel:${appId}`)
+			await bundleGate
 		},
 		async state() {
 			return state
@@ -106,8 +108,21 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 	expect(states).toHaveLength(stateCount)
 	expect(reloads).toHaveLength(reloadCount)
 
-	await refresh.openApp('app.one')
-	await waitFor(() => reloads.length === reloadCount + 2)
+	let releaseBundle!: () => void
+	bundleGate = new Promise((resolve) => {
+		releaseBundle = resolve
+	})
+	let opened = false
+	const opening = refresh.openApp('app.one').then(() => {
+		opened = true
+	})
+	await waitFor(() => reloads.length === reloadCount + 1)
+	expect(opened).toBe(false)
+	expect(reloads).toHaveLength(reloadCount + 1)
+
+	releaseBundle()
+	await opening
+	expect(opened).toBe(true)
 	expect(reloads.slice(-2)).toEqual(['kernel:app.one', 'browser:app.one'])
 	refresh.closeApp('app.one')
 

@@ -16,14 +16,14 @@ interface AppWatch {
 	manifest: string | null
 	off: (() => void)[]
 	ready: Promise<void>
-	stateChanged(): void
-	bundleChanged(): void
+	stateChanged(): Promise<void>
+	bundleChanged(): Promise<void>
 }
 
 export interface RuntimeRefresh {
 	openApp(appId: string): Promise<void>
 	closeApp(appId: string): void
-	refreshApps(): void
+	refreshApps(): Promise<void>
 	close(): Promise<void>
 }
 
@@ -59,7 +59,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		const unwatch = await fs.watch(
 			'/applications',
 			(event) => {
-				if (event.source === REMOTE_SOURCE) refreshApplications()
+				if (event.source === REMOTE_SOURCE) void refreshApplications()
 			},
 			{ recursive: true }
 		)
@@ -70,7 +70,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			if (closed) return
 			if (event.type === 'app.update') options.publishState(event.appId, event.state)
 			else if (event.type === 'app.installed' || event.type === 'app.uninstalled')
-				refreshApplications()
+				void refreshApplications()
 		})
 		if (closed) unsubscribe()
 		else off.add(unsubscribe)
@@ -129,17 +129,17 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			} else entry.manifest = saved
 			const watches = await Promise.all([
 				fs.watch(`/state/${appId}.json`, (event) => {
-					if (event.source === REMOTE_SOURCE && !entry.closed) entry.stateChanged()
+					if (event.source === REMOTE_SOURCE && !entry.closed) void entry.stateChanged()
 				}),
 				fs.watch(`/applications/${appId}/manifest.json`, (event) => {
-					if (event.source === REMOTE_SOURCE && !entry.closed) entry.bundleChanged()
+					if (event.source === REMOTE_SOURCE && !entry.closed) void entry.bundleChanged()
 				})
 			])
 			if (entry.closed || closed) for (const unwatch of watches) unwatch()
 			else entry.off.push(...watches)
 
 			const current = await readManifest(fs, appId)
-			if (current !== entry.manifest) entry.bundleChanged()
+			if (current !== entry.manifest) await entry.bundleChanged()
 		}).then(
 			() => undefined,
 			(error) => report(error)
