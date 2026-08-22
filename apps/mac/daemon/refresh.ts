@@ -14,6 +14,7 @@ interface AppWatch {
 	refs: number
 	closed: boolean
 	manifest: string | null
+	stateRetry: ReturnType<typeof setTimeout> | undefined
 	off: (() => void)[]
 	ready: Promise<void>
 	stateChanged(): Promise<void>
@@ -84,6 +85,13 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		}
 
 		let entry: AppWatch
+		const retryState = (): void => {
+			if (entry.closed || closed || entry.stateRetry) return
+			entry.stateRetry = setTimeout(() => {
+				entry.stateRetry = undefined
+				void entry.stateChanged()
+			}, 5_000)
+		}
 		const stateChanged = coalesce(() =>
 			run(async () => {
 				const kernel = await options.kernel
@@ -91,8 +99,14 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 				const state = await kernel.state(appId)
 				if (!entry.closed && !closed) options.publishState(appId, state)
 			}).then(
-				() => undefined,
-				(error) => report(error)
+				() => {
+					clearTimeout(entry.stateRetry)
+					entry.stateRetry = undefined
+				},
+				(error) => {
+					report(error)
+					retryState()
+				}
 			)
 		)
 		const bundleChanged = coalesce(() =>
@@ -114,6 +128,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			refs: 1,
 			closed: false,
 			manifest: null,
+			stateRetry: undefined,
 			off: [],
 			ready: Promise.resolve(),
 			stateChanged,
@@ -151,6 +166,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		const entry = apps.get(appId)
 		if (!entry || --entry.refs > 0) return
 		entry.closed = true
+		clearTimeout(entry.stateRetry)
 		for (const unwatch of entry.off.splice(0)) unwatch()
 		apps.delete(appId)
 	}
@@ -164,6 +180,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			closed = true
 			for (const entry of apps.values()) {
 				entry.closed = true
+				clearTimeout(entry.stateRetry)
 				for (const unwatch of entry.off) unwatch()
 			}
 			apps.clear()

@@ -2,10 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Kernel } from '@justfiles/app/runtime'
-import { volume } from '@justfiles/fs'
+import { REMOTE_SOURCE, type Volume, volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
 import { versions } from '@justfiles/fs/synced'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { runtimeRefresh } from './refresh'
 
 const enc = new TextEncoder()
@@ -13,8 +13,66 @@ const roots: string[] = []
 const stores: ReturnType<typeof fsStore>[] = []
 
 afterEach(async () => {
+	vi.useRealTimers()
 	for (const store of stores.splice(0)) await store.close?.()
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+})
+
+test('retries a failed remote state read', async () => {
+	vi.useFakeTimers()
+	let onState: ((event: { source?: string }) => void) | undefined
+	const fs = {
+		readFile: async () => enc.encode('{}'),
+		watch: async (path: string, listener: (event: { source?: string }) => void) => {
+			if (path === '/state/app.one.json') onState = listener
+			return () => {}
+		}
+	} as unknown as Volume
+	let attempts = 0
+	let failed!: () => void
+	const first = new Promise<void>((resolve) => {
+		failed = resolve
+	})
+	const kernel = {
+		async reload() {
+			attempts++
+			if (attempts === 1) {
+				failed()
+				throw new Error('offline')
+			}
+		},
+		async state() {
+			return { count: 2 }
+		},
+		subscribe: () => () => {}
+	} as unknown as Kernel
+	let published!: () => void
+	const pushed = new Promise<void>((resolve) => {
+		published = resolve
+	})
+	const states: unknown[] = []
+	const refresh = runtimeRefresh({
+		volume: Promise.resolve(fs),
+		kernel: Promise.resolve(kernel),
+		publishState: (_appId, state) => {
+			states.push(state)
+			published()
+		},
+		reloadApp: () => {},
+		refreshApplications: async () => {}
+	})
+	await refresh.openApp('app.one')
+
+	onState?.({ source: REMOTE_SOURCE })
+	await first
+	expect(states).toEqual([])
+	expect(attempts).toBe(1)
+
+	await vi.advanceTimersByTimeAsync(5_000)
+	await pushed
+	expect(attempts).toBe(2)
+	expect(states).toEqual([{ count: 2 }])
+	await refresh.close()
 })
 
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {

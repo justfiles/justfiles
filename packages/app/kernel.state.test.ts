@@ -43,6 +43,26 @@ test('a fresh store hydrates committed state from fs (boot)', async () => {
 	expect(await rebooted.commit('a', { n: 8 })).toBe(1)
 })
 
+test('a failed state read is not cached as missing', async () => {
+	const fs = fresh()
+	await stateStore(fs).commit('a', { n: 7 })
+	let offline = true
+	const flaky: Volume = {
+		...fs,
+		async readFile(path) {
+			if (offline) {
+				offline = false
+				throw new Error('offline')
+			}
+			return fs.readFile(path)
+		}
+	}
+	const s = stateStore(flaky)
+
+	await expect(s.current('a')).rejects.toThrow('offline')
+	expect(await s.current('a')).toEqual({ n: 7 })
+})
+
 test('state and seq are tracked per app', async () => {
 	const s = stateStore(fresh())
 	await s.commit('a', { v: 'a1' })
