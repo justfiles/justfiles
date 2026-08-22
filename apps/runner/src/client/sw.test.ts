@@ -80,13 +80,6 @@ async function message(data: unknown): Promise<void> {
 	await Promise.all(waits)
 }
 
-async function activate(): Promise<void> {
-	const waits: Promise<unknown>[] = []
-	for (const handler of handlers.activate ?? [])
-		handler({ waitUntil: (promise: Promise<unknown>) => void waits.push(promise) })
-	await Promise.all(waits)
-}
-
 beforeEach(load)
 
 it('serves frozen paths from cache without revalidating', async () => {
@@ -114,31 +107,6 @@ it('prefers the network for the document, so a publish is seen at once', async (
 	await get('/', 'navigate')
 	online = () => new Response('a newer release', { status: 200 })
 	expect(await (await get('/', 'navigate'))?.text()).toBe('a newer release')
-})
-
-it('drops the public fallback when the document becomes private', async () => {
-	await get('/', 'navigate')
-	online = () =>
-		new Response('connected', {
-			status: 200,
-			headers: { 'cache-control': 'no-store', 'x-runner-private': '1' }
-		})
-	expect(await (await get('/', 'navigate'))?.text()).toBe('connected')
-
-	online = null
-	await expect(get('/', 'navigate')).rejects.toThrow('offline')
-})
-
-it('removes a private document cached by an older worker', async () => {
-	cache.set(`${ORIGIN}/`, new Response('connected', { headers: { 'x-runner-private': '1' } }))
-
-	await activate()
-	expect(cache.has(`${ORIGIN}/`)).toBe(false)
-})
-
-it('never handles private Runner routes', async () => {
-	expect(await get('/_runner/connect/callback', 'navigate')).toBeNull()
-	expect(await get('/_runner/store/node/root')).toBeNull()
 })
 
 // `/worker.js` is host code that moves with our deployments, not with a release.

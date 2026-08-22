@@ -1,27 +1,27 @@
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import macCss from '@justfiles/design/mac.css?inline'
-import { type Context, Hono } from 'hono'
+import { Hono } from 'hono'
 import { raw } from 'hono/html'
 import type { MiddlewareHandler } from 'hono/types'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
-import { approvedAppSession } from './auth/app-session'
-import { d1 } from './auth/db'
-import { APP_COOKIE, clearAppCookie, cookie, noStore } from './auth/http'
-import { appAuth } from './auth/routes'
 import { findApp, servable } from './catalog'
 import { readRecord } from './catalog/refresh-app'
 import swSource from './client/sw.js?raw'
 import { frameDocument, guestCsp } from './gui-frame'
-import { appId } from './origin'
-import type { ReleaseManifest } from './protocol'
-import { storeProxy } from './store-proxy'
+import { decodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
 
 export const route = new Hono<Env>()
 
-route.route('/', appAuth)
-route.route('/_runner/store', storeProxy)
+/** Decode the first host label only when it is a direct app subdomain. */
+export const appId = (req: Request, env: CloudflareBindings): string | null => {
+	const host = new URL(req.url).hostname.toLowerCase()
+	// `*.localhost` keeps `wrangler dev` working without extra config.
+	const root = (host.endsWith('.localhost') ? 'localhost' : env.ROOT_DOMAIN).toLowerCase()
+	if (!host.endsWith(`.${root}`)) return null
+	return decodeLabel(host.slice(0, -root.length - 1))
+}
 
 const MIME: Record<string, string> = {
 	html: 'text/html; charset=utf-8',
@@ -278,11 +278,6 @@ route.get('/', async (c) => {
 	const id = appId(c.req.raw, c.env)
 	const app = id ? await findApp(c.env, id) : null
 	if (!app) return c.notFound()
-	const online = await onlineSession(c, app)
-	if (online) {
-		noStore(c)
-		c.header('x-runner-private', '1')
-	}
 
 	const base = `/v/${app.version}/`
 	const request = new URL(c.req.url)
@@ -333,8 +328,6 @@ route.get('/', async (c) => {
 					data-base={base}
 					data-app={app.app}
 					data-gui={app.gui}
-					data-request={online?.requestNonce}
-					data-volume-scopes={online ? JSON.stringify(volumeScopes(app)) : undefined}
 				>
 					{/* Browsers do not fire submit events without `allow-forms`. The guest CSP
 					    still blocks native form requests. */}
@@ -345,30 +338,3 @@ route.get('/', async (c) => {
 		</html>
 	)
 })
-
-/** Only a top-level page gets the nonce. A reducer Worker can also fetch this route. */
-async function onlineSession(c: Context<Env>, app: ReleaseManifest) {
-	const request = c.req.raw
-	if (
-		request.headers.get('sec-fetch-dest') !== 'document' ||
-		request.headers.get('sec-fetch-mode') !== 'navigate'
-	)
-		return null
-	const sessionId = cookie(c, APP_COOKIE)
-	if (!sessionId) return null
-	const session = await approvedAppSession(d1(c.env.AUTH_DB), sessionId, app)
-	if (!session) {
-		clearAppCookie(c)
-		return null
-	}
-	if (
-		!session.resources.some((resource) => resource === 'volume:app' || resource === 'volume:system')
-	)
-		return null
-	return session
-}
-
-const volumeScopes = (app: ReleaseManifest): string[][] =>
-	Object.values(app.capabilities ?? {})
-		.filter((capability) => capability.id === 'volume')
-		.map((capability) => capability.scopes)

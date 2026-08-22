@@ -15,8 +15,7 @@
 		"@justfiles/app": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
-		"hono": "4.11.1",
-		"jose": "^6.2.9"
+		"hono": "4.11.1"
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.50.0",
