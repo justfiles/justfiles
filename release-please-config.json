@@ -1,9 +1,5 @@
 {
 	"packages": {
-		"apps/cli": {
-			"release-type": "node",
-			"package-name": "@justfiles/cli"
-		},
 		"apps/frieren": {
 			"release-type": "node",
 			"component": "frieren"
