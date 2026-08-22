@@ -59,9 +59,13 @@ export function stateStore(fs: Volume): StateStore {
 	// The file's value plus its serialization, or `{}` when there is no file yet.
 	async function load(appId: AppId): Promise<{ value?: unknown; encoded?: string }> {
 		const statePath = `/state/${appId}.json`
-		if (!(await fs.exists(statePath))) return {}
-		const value = JSON.parse(text(await fs.readFile(statePath)))
-		return { value, encoded: JSON.stringify(value) }
+		try {
+			const value = JSON.parse(text(await fs.readFile(statePath)))
+			return { value, encoded: JSON.stringify(value) }
+		} catch (error) {
+			if (error instanceof Error && error.message === `ENOENT: ${statePath}`) return {}
+			throw error
+		}
 	}
 
 	async function current(appId: AppId): Promise<unknown> {

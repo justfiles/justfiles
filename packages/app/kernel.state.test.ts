@@ -63,6 +63,14 @@ test('a failed state read is not cached as missing', async () => {
 	expect(await s.current('a')).toEqual({ n: 7 })
 })
 
+test('state loading does not rely on exists', async () => {
+	const fs = fresh()
+	await stateStore(fs).commit('a', { n: 7 })
+	const noLookup: Volume = { ...fs, exists: async () => false }
+
+	expect(await stateStore(noLookup).current('a')).toEqual({ n: 7 })
+})
+
 test('state and seq are tracked per app', async () => {
 	const s = stateStore(fresh())
 	await s.commit('a', { v: 'a1' })
