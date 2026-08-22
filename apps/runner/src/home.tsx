@@ -1,13 +1,15 @@
 import { Hono } from 'hono'
 import { raw } from 'hono/html'
+import { rootAuth } from './auth/routes'
 import { readStore, refresh } from './catalog'
 import { iconPreview } from './icon-preview'
-import { encodeLabel } from './id'
+import { appOrigin } from './origin'
 
 type Env = { Bindings: CloudflareBindings }
 
 /** The root domain: the runner itself, no app in sight. */
 export const route = new Hono<Env>()
+route.route('/', rootAuth)
 
 /**
  * Where an app is served. Absolute, because the index is the one page here that
@@ -21,11 +23,7 @@ export const route = new Hono<Env>()
  * exactly the same way.
  */
 const appUrl = (req: Request, env: CloudflareBindings, id: string): string => {
-	const url = new URL(req.url)
-	const label = encodeLabel(id)
-	return url.hostname === 'localhost'
-		? `${url.protocol}//${label}.${url.host}/`
-		: `https://${label}.${env.ROOT_DOMAIN}/`
+	return `${appOrigin(req, env, id)}/`
 }
 
 /**

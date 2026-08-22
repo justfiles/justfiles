@@ -4,29 +4,18 @@ import { Hono } from 'hono'
 import { raw } from 'hono/html'
 import type { MiddlewareHandler } from 'hono/types'
 import { Script, ViteClient } from 'vite-ssr-components/hono'
+import { appAuth } from './auth/routes'
 import { findApp, servable } from './catalog'
 import { readRecord } from './catalog/refresh-app'
 import swSource from './client/sw.js?raw'
 import { frameDocument, guestCsp } from './gui-frame'
-import { decodeLabel } from './id'
+import { appId } from './origin'
 
 type Env = { Bindings: CloudflareBindings }
 
 export const route = new Hono<Env>()
 
-/**
- * The app id for a request: the first host label decoded, when it sits directly
- * under the root domain, else null (apex, workers.dev, deeper hosts, and any
- * label that is not the canonical encoding of an id — `www` among them, since
- * every id has two segments and so every app label has a hyphen).
- */
-export const appId = (req: Request, env: CloudflareBindings): string | null => {
-	const host = new URL(req.url).hostname.toLowerCase()
-	// `*.localhost` keeps `wrangler dev` working without extra config.
-	const root = (host.endsWith('.localhost') ? 'localhost' : env.ROOT_DOMAIN).toLowerCase()
-	if (!host.endsWith(`.${root}`)) return null
-	return decodeLabel(host.slice(0, -root.length - 1))
-}
+route.route('/', appAuth)
 
 const MIME: Record<string, string> = {
 	html: 'text/html; charset=utf-8',

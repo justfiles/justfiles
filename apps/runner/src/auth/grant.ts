@@ -57,3 +57,22 @@ export async function revokeGrant(
 		appId
 	)
 }
+
+export async function revokeApp(
+	database: Database,
+	userId: string,
+	appId: string,
+	now = Date.now()
+): Promise<void> {
+	await database.batch([
+		{
+			sql: 'UPDATE app_grants SET revoked_at = ? WHERE user_id = ? AND app_id = ?',
+			values: [now, userId, appId]
+		},
+		{
+			sql: `DELETE FROM sessions
+			 WHERE user_id = ? AND app_id = ? AND kind IN ('app', 'ticket')`,
+			values: [userId, appId]
+		}
+	])
+}

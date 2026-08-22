@@ -1,9 +1,10 @@
-import { appId, route as appSite } from './app'
+import { route as appSite } from './app'
 import { cleanExpired } from './auth/cleanup'
 import { d1 } from './auth/db'
 import { refresh } from './catalog'
 import { seed } from './catalog/seed'
 import { route as rootSite } from './home'
+import { appId } from './origin'
 
 /** `<app>.<root>`: one whole site per app — its page, its worker, its assets. */
 
