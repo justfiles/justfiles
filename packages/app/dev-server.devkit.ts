@@ -22,10 +22,7 @@ export function devkitHost(fs: Volume): {
 	let kernel: Kernel
 	const runner: Runner = {
 		mount: async (draft, { previewId, reset }) => {
-			if (reset) {
-				await fs.rm(`/state/${previewId}.json`, { force: true })
-				await kernel.reload(previewId)
-			}
+			if (reset) await fs.rm(`/state/${previewId}.json`, { force: true })
 			await kernel.install(
 				appBundleFromMemory({
 					id: previewId,

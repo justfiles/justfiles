@@ -20,13 +20,9 @@ afterEach(async () => {
 
 test('retries a failed remote state read', async () => {
 	vi.useFakeTimers()
-	let onState: ((event: { source?: string }) => void) | undefined
 	const fs = {
 		readFile: async () => enc.encode('{}'),
-		watch: async (path: string, listener: (event: { source?: string }) => void) => {
-			if (path === '/state/app.one.json') onState = listener
-			return () => {}
-		}
+		watch: async () => () => {}
 	} as unknown as Volume
 	let attempts = 0
 	let failed!: () => void
@@ -34,15 +30,17 @@ test('retries a failed remote state read', async () => {
 		failed = resolve
 	})
 	const kernel = {
-		async reload() {
+		async state() {
 			attempts++
 			if (attempts === 1) {
 				failed()
 				throw new Error('offline')
 			}
-		},
-		async state() {
 			return { count: 2 }
+		},
+		async reloadBundle() {},
+		async list() {
+			return []
 		},
 		subscribe: () => () => {}
 	} as unknown as Kernel
@@ -63,7 +61,6 @@ test('retries a failed remote state read', async () => {
 	})
 	await refresh.openApp('app.one')
 
-	onState?.({ source: REMOTE_SOURCE })
 	await first
 	expect(states).toEqual([])
 	expect(attempts).toBe(1)
@@ -72,6 +69,58 @@ test('retries a failed remote state read', async () => {
 	await pushed
 	expect(attempts).toBe(2)
 	expect(states).toEqual([{ count: 2 }])
+	await refresh.close()
+})
+
+test('publishes a trailing state read when sync changes the initial snapshot', async () => {
+	let onState: ((event: { source?: string }) => void) | undefined
+	const fs = {
+		readFile: async () => enc.encode('{}'),
+		watch: async (path: string, listener: (event: { source?: string }) => void) => {
+			if (path === '/state/app.one.json') onState = listener
+			return () => {}
+		}
+	} as unknown as Volume
+	let started!: () => void
+	let release!: () => void
+	const reading = new Promise<void>((resolve) => {
+		started = resolve
+	})
+	const gate = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	let reads = 0
+	const kernel = {
+		async state() {
+			if (++reads === 1) {
+				started()
+				await gate
+				return { count: 1 }
+			}
+			return { count: 2 }
+		},
+		async reloadBundle() {},
+		async list() {
+			return []
+		},
+		subscribe: () => () => {}
+	} as unknown as Kernel
+	const states: unknown[] = []
+	const refresh = runtimeRefresh({
+		volume: Promise.resolve(fs),
+		kernel: Promise.resolve(kernel),
+		publishState: (_appId, state) => states.push(state),
+		reloadApp: () => {},
+		refreshApplications: async () => {}
+	})
+
+	const opening = refresh.openApp('app.one')
+	await reading
+	onState?.({ source: REMOTE_SOURCE })
+	release()
+	await opening
+
+	expect(states).toEqual([{ count: 1 }, { count: 2 }])
 	await refresh.close()
 })
 
@@ -202,7 +251,6 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 		enc.encode('{"id":"app.one","version":"1"}')
 	)
 
-	let state: unknown
 	let handler: ((event: unknown) => void) | undefined
 	let bundleGate: Promise<void> | undefined
 	let subscribed = (): void => {}
@@ -210,15 +258,12 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 		subscribed = resolve
 	})
 	const kernel = {
-		async reload(appId: string) {
-			state = JSON.parse(new TextDecoder().decode(await local.readFile(`/state/${appId}.json`)))
-		},
 		async reloadBundle(appId: string) {
 			reloads.push(`kernel:${appId}`)
 			await bundleGate
 		},
-		async state() {
-			return state
+		async state(appId: string) {
+			return JSON.parse(new TextDecoder().decode(await local.readFile(`/state/${appId}.json`)))
 		},
 		async list() {
 			return [{ id: 'app.one', name: 'One', app: 'app.js' }]
@@ -243,10 +288,11 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 	})
 	await Promise.all([subscription, refresh.openApp('app.one')])
 	expect(reloads).toEqual(['kernel:app.one'])
+	expect(states).toEqual([{ count: 1 }])
 
 	await remote.writeFile('/state/app.one.json', enc.encode('{"count":2}'))
-	await waitFor(() => states.length === 1)
-	expect(states).toEqual([{ count: 2 }])
+	await waitFor(() => states.length === 2)
+	expect(states).toEqual([{ count: 1 }, { count: 2 }])
 
 	await remote.writeFile(
 		'/applications/app.one/manifest.json',

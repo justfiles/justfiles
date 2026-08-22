@@ -223,6 +223,38 @@ test('keeps the saved owner when identity is unresolved offline', async () => {
 	expect(dec.decode(await local.volume.readFile('/offline-boot.txt'))).toBe('keep')
 })
 
+test('keeps the saved owner while signed out and resumes for the same owner', async () => {
+	const support = await temp()
+	const hub = backend()
+	let local = await storage(support, hub)
+	await local.volume.writeFile('/local.txt', enc.encode('keep'))
+	await local.flush()
+	await local.close()
+	open.splice(open.indexOf(local), 1)
+	await hub.fs.writeFile('/while-signed-out.txt', enc.encode('remote'))
+
+	let token: string | null = null
+	local = await createNativeStorage({
+		supportDir: support,
+		ownerId: null,
+		getToken: async () => token,
+		origin: 'http://hub.test',
+		fetch: (url, init) =>
+			new Headers(init?.headers).get('authorization') === 'Bearer token-a'
+				? hub.fetch(url, init)
+				: Promise.resolve(new Response('Unauthorized', { status: 401 })),
+		interval: 60_000
+	})
+	open.push(local)
+
+	expect(local.ownerId).toBe('user-a')
+	expect(dec.decode(await local.volume.readFile('/local.txt'))).toBe('keep')
+	expect(await local.flush(500)).toBe(false)
+	token = 'token-a'
+	expect(await local.flush()).toBe(true)
+	expect(dec.decode(await local.volume.readFile('/while-signed-out.txt'))).toBe('remote')
+}, 15_000)
+
 test('uses the Mac origin override', async () => {
 	const support = await temp()
 	const hub = backend()
@@ -254,17 +286,13 @@ test('refreshes a running app after an HTTP pull', async () => {
 	const local = await storage(support, hub)
 	await local.flush()
 
-	let state: unknown
 	const kernel = {
-		async reload(appId: string) {
-			state = JSON.parse(dec.decode(await local.volume.readFile(`/state/${appId}.json`)))
-		},
 		async reloadBundle() {},
 		async list() {
 			return [{ id: 'app.one', name: 'One', app: 'app.js' }]
 		},
-		async state() {
-			return state
+		async state(appId: string) {
+			return JSON.parse(dec.decode(await local.volume.readFile(`/state/${appId}.json`)))
 		},
 		subscribe: () => () => {}
 	} as unknown as Kernel
@@ -279,11 +307,12 @@ test('refreshes a running app after an HTTP pull', async () => {
 		refreshApplications: async () => void applications++
 	})
 	await refresh.openApp('app.one')
+	expect(states).toEqual([{ count: 1 }])
 
 	await hub.fs.writeFile('/state/app.one.json', enc.encode('{"count":2}'))
 	await local.flush()
-	await waitFor(async () => states.length === 1)
-	expect(states).toEqual([{ count: 2 }])
+	await waitFor(async () => states.length === 2)
+	expect(states).toEqual([{ count: 1 }, { count: 2 }])
 
 	await hub.fs.writeFile(
 		'/applications/app.one/manifest.json',

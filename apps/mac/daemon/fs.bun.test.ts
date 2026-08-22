@@ -165,7 +165,8 @@ const signOutScript = `
 					await Bun.sleep(10)
 				}
 			}
-			await record('cleaned')
+			await record('failed')
+			throw new Error('the Keychain item remains')
 		},
 		currentUser: async () => ({ id: 'user-a' }),
 		ownerId: async () => 'user-a',
@@ -194,7 +195,7 @@ const signOutScript = `
 	`
 
 test.skipIf(process.platform !== 'darwin')(
-	'finishes and reports sign-out before identity teardown',
+	'keeps the daemon alive and reports a failed sign-out cleanup',
 	async () => {
 		const support = await mkdtemp(join(tmpdir(), 'kodama-sign-out-'))
 		const child = Bun.spawn([process.execPath, '--eval', signOutScript], {
@@ -228,13 +229,11 @@ test.skipIf(process.platform !== 'darwin')(
 			expect(await events()).toEqual(['change'])
 
 			await writeFile(join(support, 'release-sign-out'), '')
-			await Promise.race([
-				child.exited,
-				sleep(10_000).then(() => {
-					throw new Error('timed out waiting for daemon exit')
-				})
-			])
-			expect(await events()).toEqual(['change', 'cleaned', 'replied', 'terminated'])
+			await waitFor('replied')
+			expect(await events()).toEqual(['change', 'failed', 'replied'])
+			expect(
+				await Promise.race([child.exited.then(() => 'exited'), sleep(200).then(() => 'alive')])
+			).toBe('alive')
 		} finally {
 			child.kill('SIGKILL')
 			await child.exited

@@ -207,13 +207,10 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 				}
 				if (ws.data.type === 'app') {
 					// Pin the reducer worker for this window's lifetime (sync, before any await);
-					// subscribe before the first state frame so no update is missed.
+					// subscribe before refresh publishes the first state frame.
 					sandboxes.retain(ws.data.id)
 					ws.subscribe(`app:${ws.data.id}`)
 					await refresh.openApp(ws.data.id)
-					const kernel = await getKernel()
-					await kernel.reload(ws.data.id)
-					ws.send(JSON.stringify({ state: await kernel.state(ws.data.id) }))
 					return
 				}
 
@@ -255,13 +252,13 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 				const text = typeof message === 'string' ? message : message.toString()
 				const parsed = JSON.parse(text) as ClientMessage
 				if (parsed.type === 'command') {
-					const changesIdentity = parsed.name === 'sign-in' || parsed.name === 'sign-out'
-					if (changesIdentity) identityCommands?.begin()
+					const mayChangeOwner = parsed.name === 'sign-in'
+					if (mayChangeOwner) identityCommands?.begin()
 					try {
 						const result = await dispatchCommand(parsed.name)
 						send(ws, { type: 'commandResult', id: parsed.id, result })
 					} finally {
-						if (changesIdentity) identityCommands?.end()
+						if (mayChangeOwner) identityCommands?.end()
 					}
 					return
 				}
@@ -452,9 +449,15 @@ export async function startDaemon(
 			return null
 		}
 		offIdentity = auth.onChange((user) => {
-			if ((user?.id ?? null) === storage?.ownerId) return
+			// Sign-out only removes the token. The volume and daemon stay alive. A
+			// later sign-in by the same owner can resume the existing sync session.
+			if (!user) return
+			if (user.id === storage?.ownerId) {
+				void storage?.flush().catch((error) => console.warn('daemon: sync resume failed', error))
+				return
+			}
 			void storage?.stopSync()
-			// Identity changes before sign-out waits for Keychain and Clerk. Let the command
+			// A different signed-in owner needs a new volume. Let the sign-in command
 			// send its result before close tears down its socket.
 			void identityCommandsDone
 				.then(() => close(true))

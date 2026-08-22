@@ -158,11 +158,15 @@ export interface Volume {
 	 * moved or deleted silently *recreates* the tree it remembers instead of failing.
 	 * An editor autosaving to the note it has open wants this: the write is where the
 	 * path is proven still real, so it cannot be stale by the time the bytes land.
+	 *
+	 * With `ifHash`, the write lands only while the path still holds that content.
+	 * `null` means the path must still be absent. A mismatch throws ESTALE. This
+	 * makes a read, compute, write cycle safe against another writer without a lock.
 	 */
 	writeFile(
 		path: string,
 		data: Uint8Array,
-		opts?: { exclusive?: boolean; update?: boolean }
+		opts?: { exclusive?: boolean; update?: boolean; ifHash?: string | null }
 	): Promise<void>
 
 	/**
@@ -850,15 +854,18 @@ export function volume(
 	async function place(
 		path: string,
 		payload: Payload,
-		opts?: { exclusive?: boolean; update?: boolean },
+		opts?: { exclusive?: boolean; update?: boolean; ifHash?: string | null },
 		bytes?: Bytes
 	): Promise<void> {
 		const there = await find(path, payload.type !== 'symlink')
 		if (there !== null) {
 			if (opts?.exclusive) throw new Error(`EEXIST: ${path}`)
 			if (isDir(there.node)) throw new Error(`EISDIR: ${path}`)
+			if (opts?.ifHash !== undefined && there.node.content !== opts.ifHash)
+				throw new Error(`ESTALE: ${path}`)
 			return swap(there.store, there.node, payload, bytes)
 		}
+		if (opts?.ifHash !== undefined && opts.ifHash !== null) throw new Error(`ESTALE: ${path}`)
 		if (opts?.update) throw new Error(`ENOENT: ${path}`)
 		await create(path, payload, opts?.exclusive, bytes)
 	}

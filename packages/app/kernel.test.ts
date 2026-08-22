@@ -146,7 +146,7 @@ test('smoke test kernel', async () => {
 	).rejects.toThrow(/invalid params for increment/)
 })
 
-test('disposed kernel surfaces reset and a fresh kernel cannot serve or recreate cached state', async () => {
+test('disposed kernel surfaces reset and a fresh kernel does not recreate removed state', async () => {
 	const fs = volume(memStore())
 	const app = appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	const first = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
@@ -396,12 +396,7 @@ test('install/uninstall emit catalog events; hidden ids stay off the catalog sur
 	expect(events).toEqual(['app.installed:com.example.app', 'app.uninstalled:com.example.app'])
 })
 
-test('reload re-hydrates state written outside the kernel (a synced-down agent edit)', async () => {
-	// frieren's browser kernel and the server kernel share a volume via sync: the
-	// agent edits on the server, and the write lands in THIS kernel's fs as a
-	// REMOTE_SOURCE write it never authored. The state cache assumes the kernel is
-	// the sole writer, so `state()` would serve the stale pre-sync value forever —
-	// `reload` is the seam the host calls on that remote write.
+test('state reads and dispatches use a synced write without invalidation', async () => {
 	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(
@@ -409,24 +404,69 @@ test('reload re-hydrates state written outside the kernel (a synced-down agent e
 	)
 
 	await k.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
-	expect(await k.state(appId)).toEqual({ count: 5 }) // cached in-memory
+	expect(await k.state(appId)).toEqual({ count: 5 })
 
-	// Simulate the sync layer applying the agent's server-side edit to /state.
 	await fs.writeFile(
 		`/state/${appId}.json`,
 		new TextEncoder().encode(JSON.stringify({ count: 42 }))
 	)
-	// Without a reload the kernel still serves the stale cache — this WAS the bug
-	// (the open GUI, which reads state(), kept showing the pre-edit value).
-	expect(await k.state(appId)).toEqual({ count: 5 })
+	expect(await k.state(appId)).toEqual({ count: 42 })
 
-	await k.reload(appId)
-	expect(await k.state(appId)).toEqual({ count: 42 }) // now reflects the synced file
-
-	// The reloaded value is authoritative for the next dispatch — no stale clobber.
 	expect(
 		await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
 	).toEqual({ count: 43 })
+})
+
+test('a reducer retries when sync changes state during the transaction', async () => {
+	const fs = volume(memStore())
+	const base = sandboxFor()
+	let release = () => {}
+	let started = () => {}
+	const gate = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	const running = new Promise<void>((resolve) => {
+		started = resolve
+	})
+	let runs = 0
+	const k = kernel({
+		fs,
+		clock,
+		capabilities: caps(hostInvoke(fs)),
+		sandbox: async (input) => {
+			const sb = await base(input)
+			return {
+				...sb,
+				async run(message, context) {
+					const result = await sb.run(message, context)
+					if (++runs === 1) {
+						started()
+						await gate
+					}
+					return result
+				}
+			}
+		}
+	})
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+	const dispatched = k.dispatch(appId, {
+		type: 'increment',
+		params: { amount: 1 },
+		actor: 'agent'
+	})
+	await running
+	await fs.mkdir('/state', { recursive: true })
+	await fs.writeFile(
+		`/state/${appId}.json`,
+		new TextEncoder().encode(JSON.stringify({ count: 40 }))
+	)
+	release()
+
+	expect(await dispatched).toEqual({ count: 41 })
+	expect(runs).toBe(2)
+	expect(await k.state(appId)).toEqual({ count: 41 })
 })
 
 test('reloadBundle drops capabilities and procedure names cached from the old bundle', async () => {
@@ -487,7 +527,7 @@ test('reloadBundle does not warm an app that was cold', async () => {
 	expect(loads).toBe(0)
 })
 
-test('app controller reloads state written outside the server kernel', async () => {
+test('app controller reads state written outside the server kernel', async () => {
 	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
 	const appId = await k.install(

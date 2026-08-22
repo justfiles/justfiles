@@ -148,11 +148,13 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		await Promise.all([...ids.map((id) => watchBundle(id).ready), ...removed])
 	}
 
-	function openApp(appId: string): Promise<void> {
+	async function openApp(appId: string): Promise<void> {
 		const held = apps.get(appId)
 		if (held) {
 			held.refs++
-			return Promise.all([held.ready, watchBundle(appId).changed()]).then(() => undefined)
+			await Promise.all([held.ready, watchBundle(appId).changed()])
+			await held.stateChanged()
+			return
 		}
 
 		let entry: AppWatch
@@ -160,7 +162,6 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			() =>
 				run(async () => {
 					const kernel = await options.kernel
-					await kernel.reload(appId)
 					const state = await kernel.state(appId)
 					if (!closed && apps.get(appId) === entry) options.publishState(appId, state)
 				}).then(() => undefined),
@@ -186,7 +187,8 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			() => undefined,
 			(error) => report(error)
 		)
-		return entry.ready
+		await entry.ready
+		await entry.stateChanged()
 	}
 
 	function closeApp(appId: string): void {

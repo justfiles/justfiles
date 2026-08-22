@@ -14,8 +14,8 @@ agent.
 
 - The Mac app has no shipped user data. Use a new volume path. Do not write migration code.
 - One macOS account has one Kodama user.
-- An authenticated user ID change wipes the local volume and all sync metadata. Sign-out is
-  also an ID change. A token refresh for the same ID does not wipe data.
+- A different authenticated user wipes the local volume and all sync metadata. Sign-out keeps
+  the current owner's volume and stops online work. The same owner can sign in again and resume.
 - The daemon is the only writer for the native Store.
 - `/private` is a local mount. Its children never enter the synced Store.
 - Native file watch makes local uploads prompt. Remote pulls can use the normal sync timer.
@@ -85,5 +85,5 @@ Use these as references. Do not add a second wire protocol.
 - A backend edit appears on disk and refreshes a running app when applicable.
 - `/private` content never reaches the HTTP Store.
 - A daemon race leaves one writer.
-- A user ID change wipes local data before the new user connects.
+- A different user wipes local data before the new user connects.
 - Restart, network loss, expired tokens, and interrupted sync all recover.

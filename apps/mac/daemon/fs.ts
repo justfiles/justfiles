@@ -109,11 +109,15 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	await mkdir(root, { recursive: true })
 
 	const savedState = await readSyncState(statePath)
-	if (savedState && options.ownerId !== undefined && savedState.ownerId !== options.ownerId) {
+	const requestedOwner = options.ownerId
+	if (savedState && requestedOwner && savedState.ownerId !== requestedOwner) {
 		await rm(root, { recursive: true, force: true })
 		throw new OwnerChangedError()
 	}
-	const ownerId = options.ownerId === undefined ? (savedState?.ownerId ?? null) : options.ownerId
+	// A signed-out process still owns its existing local replica. Keep sync wired to
+	// that owner with a dynamic token source; it stays offline until the same owner
+	// signs in again. Only a different signed-in owner replaces the volume.
+	const ownerId = savedState?.ownerId ?? requestedOwner ?? null
 	const state: SyncState = savedState ?? {
 		replica: randomUUID(),
 		discard: false,

@@ -10,11 +10,8 @@ import source from './test-bundle/tree-watch.ts?raw'
 
 // The bug this pins, end to end over a REAL volume and the REAL volume capability:
 // a bulk fs operation (delete a heavy folder, import a vault) used to wake every
-// app watching the tree once per entry, and each wake is a full dispatch — read the
-// bundle, clone state through the isolate, commit. Those pile onto the app's queue,
-// and the host's GUI boot chains on that same queue, so opening the window rendered
-// nothing until the operation finished. Two properties fix it: the fan-out is
-// bounded, and a boot-shaped call stays responsive while the operation runs.
+// app watching the tree once per entry, and each wake is a full dispatch. The
+// fan-out stays bounded, and a state read does not join the reducer queue.
 
 const code = buildSync({
 	stdin: {
@@ -98,29 +95,16 @@ test('a bulk fs operation wakes a tree-watching app a bounded number of times', 
 	expect(await fs.exists('/heavy')).toBe(false)
 })
 
-test('a window opened while the wakes are still landing waits behind O(1) of them', async () => {
-	// A reduce SLOWER than the watch's delivery window is the condition the kernel's
-	// fold exists for: thinning the burst by time alone still leaves a backlog when a
-	// wake costs more than the window it arrives in — which is what a real reduce over a
-	// volume-sized state costs (read the bundle, clone state through the isolate, commit).
-	const REDUCE_MS = 120
-	const { fs, kernel: k, counter } = await boot(REDUCE_MS)
-
-	// A mutation stream that outlasts several delivery windows: an import writing a
-	// vault, an agent unpacking an archive. Each round produces a wake.
-	await fs.mkdir('/heavy', { recursive: true })
-	for (let round = 0; round < 16; round++) {
-		await fs.writeFile(`/heavy/f${round}.md`, new Uint8Array([1]))
-		await new Promise((r) => setTimeout(r, 60))
-	}
-
-	// `reload` is what the host awaits before it can mount a window, and it runs ON the
-	// app's queue — so what it waits behind IS the mount's latency. Every wake becoming
-	// its own queued reduce is the blank window; folding leaves the one in flight and
-	// its trailing successor.
+test('a state read does not wait for a reducer already in flight', async () => {
+	const { kernel: k, counter } = await boot(200)
 	const before = counter.runs
-	await k.reload(APP_ID)
-	expect(counter.runs - before).toBeLessThanOrEqual(2)
+	const dispatch = k.dispatch(APP_ID, { type: 'noop', params: {} })
+	while (counter.runs === before) await new Promise((resolve) => setTimeout(resolve, 1))
 
-	await settle()
-}, 20_000)
+	const read = await Promise.race([
+		k.state(APP_ID).then(() => 'read'),
+		new Promise((resolve) => setTimeout(() => resolve('blocked'), 50))
+	])
+	expect(read).toBe('read')
+	await dispatch
+})
