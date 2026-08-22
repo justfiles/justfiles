@@ -357,6 +357,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		// installed state declares (incl. an unconditional `init` stream) come up
 		// without waiting for a first dispatch/snapshot (Part D).
 		await reloadBundle(appId)
+		subs.ensure(appId)
 		if (!hidden(appId)) emit({ type: 'app.installed', appId })
 		return appId
 	}
@@ -512,8 +513,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		await enqueue(appId, async () => {
 			resolver.forget(appId)
 			procNames.delete(appId)
-			subs.stop(appId)
-			subs.ensure(appId)
+			if (subs.stop(appId) && (await store.has(appId))) subs.ensure(appId)
 		})
 		assertActive()
 	}

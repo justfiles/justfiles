@@ -154,6 +154,26 @@ test('uploads offline work after the backend returns', async () => {
 	expect(dec.decode(await hub.fs.readFile('/offline.txt'))).toBe('saved here')
 }, 15_000)
 
+test('reports the first successful remote cycle without blocking local work', async () => {
+	const support = await temp()
+	const hub = backend()
+	hub.setOnline(false)
+	const local = await storage(support, hub)
+	let ready: boolean | undefined
+	void local.firstSync.then((value) => {
+		ready = value
+	})
+
+	await local.volume.writeFile('/offline.txt', enc.encode('local'))
+	expect(dec.decode(await local.volume.readFile('/offline.txt'))).toBe('local')
+	await new Promise((resolve) => setTimeout(resolve, 100))
+	expect(ready).toBeUndefined()
+
+	hub.setOnline(true)
+	expect(await local.flush()).toBe(true)
+	expect(await local.firstSync).toBe(true)
+}, 15_000)
+
 test('wipes the old owner before a new owner can connect', async () => {
 	const support = await temp()
 	const firstHub = backend()
@@ -240,6 +260,9 @@ test('refreshes a running app after an HTTP pull', async () => {
 			state = JSON.parse(dec.decode(await local.volume.readFile(`/state/${appId}.json`)))
 		},
 		async reloadBundle() {},
+		async list() {
+			return [{ id: 'app.one', name: 'One', app: 'app.js' }]
+		},
 		async state() {
 			return state
 		},

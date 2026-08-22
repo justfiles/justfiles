@@ -1,4 +1,4 @@
-import type { Kernel } from '@justfiles/app/runtime'
+import type { AppManifest, Kernel } from '@justfiles/app/runtime'
 import { REMOTE_SOURCE, type Volume } from '@justfiles/fs'
 import { coalesce } from './coalesce'
 
@@ -7,17 +7,22 @@ interface RefreshOptions {
 	kernel: Promise<Kernel>
 	publishState(appId: string, state: unknown): void
 	reloadApp(appId: string): void
-	refreshApplications(): Promise<void>
+	refreshApplications(apps: AppManifest[]): Promise<void>
 }
 
 interface AppWatch {
 	refs: number
-	closed: boolean
-	manifest: string | null | undefined
-	off: (() => void)[]
+	off?: () => void
 	ready: Promise<void>
 	stateChanged(): Promise<void>
-	bundleChanged(): Promise<void>
+	stop(): void
+}
+
+interface BundleWatch {
+	manifest: string | null | undefined
+	off?: () => void
+	ready: Promise<void>
+	changed(): Promise<void>
 	stop(): void
 }
 
@@ -32,8 +37,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 	const jobs = new Set<Promise<unknown>>()
 	const off = new Set<() => void>()
 	const apps = new Map<string, AppWatch>()
-	// Watches stop with the last socket. Keep the manifest so reopen can find changes from the gap.
-	const manifests = new Map<string, string | null>()
+	const bundles = new Map<string, BundleWatch>()
 	let closed = false
 
 	const run = <T>(work: () => Promise<T>): Promise<T | undefined> => {
@@ -48,7 +52,13 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 	}
 	const report = (error: unknown): void => console.warn('runtime refresh:', error)
 	const applications = retry(
-		() => run(options.refreshApplications).then(() => undefined),
+		() =>
+			run(async () => {
+				const installed = await (await options.kernel).list()
+				if (closed) return
+				await syncBundles(installed.map((app) => app.id))
+				if (!closed) await options.refreshApplications(installed)
+			}).then(() => undefined),
 		() => closed,
 		report
 	)
@@ -77,11 +87,72 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		else off.add(unsubscribe)
 	}).catch(report)
 
+	function watchBundle(appId: string): BundleWatch {
+		const held = bundles.get(appId)
+		if (held) return held
+
+		let entry: BundleWatch
+		const changed = retry(
+			() =>
+				run(async () => {
+					const before = entry.manifest
+					const next = await readManifest(await options.volume, appId)
+					if (closed || bundles.get(appId) !== entry || (before !== undefined && next === before))
+						return
+					await (await options.kernel).reloadBundle(appId)
+					if (closed || bundles.get(appId) !== entry) return
+					entry.manifest = next
+					if (before !== undefined && apps.has(appId)) options.reloadApp(appId)
+				}).then(() => undefined),
+			() => closed || bundles.get(appId) !== entry,
+			report
+		)
+
+		entry = {
+			manifest: undefined,
+			ready: Promise.resolve(),
+			changed: changed.run,
+			stop: changed.stop
+		}
+		bundles.set(appId, entry)
+		entry.ready = run(async () => {
+			const fs = await options.volume
+			const unwatch = await fs.watch(`/applications/${appId}/manifest.json`, (event) => {
+				if (event.source === REMOTE_SOURCE && bundles.get(appId) === entry) void entry.changed()
+			})
+			if (closed || bundles.get(appId) !== entry) unwatch()
+			else entry.off = unwatch
+			await entry.changed()
+		}).then(
+			() => undefined,
+			(error) => report(error)
+		)
+		return entry
+	}
+
+	async function syncBundles(ids: string[]): Promise<void> {
+		const keep = new Set(ids)
+		const removed: Promise<unknown>[] = []
+		for (const [appId, entry] of bundles) {
+			if (keep.has(appId)) continue
+			bundles.delete(appId)
+			entry.stop()
+			entry.off?.()
+			removed.push(
+				run(async () => {
+					await (await options.kernel).reloadBundle(appId)
+					if (!closed && apps.has(appId)) options.reloadApp(appId)
+				})
+			)
+		}
+		await Promise.all([...ids.map((id) => watchBundle(id).ready), ...removed])
+	}
+
 	function openApp(appId: string): Promise<void> {
 		const held = apps.get(appId)
 		if (held) {
 			held.refs++
-			return held.ready
+			return Promise.all([held.ready, watchBundle(appId).changed()]).then(() => undefined)
 		}
 
 		let entry: AppWatch
@@ -91,59 +162,26 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 					const kernel = await options.kernel
 					await kernel.reload(appId)
 					const state = await kernel.state(appId)
-					if (!entry.closed && !closed) options.publishState(appId, state)
+					if (!closed && apps.get(appId) === entry) options.publishState(appId, state)
 				}).then(() => undefined),
-			() => entry.closed || closed,
+			() => closed || apps.get(appId) !== entry,
 			report
 		)
-		const bundle = retry(
-			() =>
-				run(async () => {
-					const next = await readManifest(await options.volume, appId)
-					if (entry.closed || closed) return
-					if (entry.manifest === undefined) {
-						entry.manifest = next
-						manifests.set(appId, next)
-						return
-					}
-					if (next === entry.manifest) return
-					await (await options.kernel).reloadBundle(appId)
-					if (entry.closed || closed) return
-					entry.manifest = next
-					manifests.set(appId, next)
-					options.reloadApp(appId)
-				}).then(() => undefined),
-			() => entry.closed || closed,
-			report
-		)
-
 		entry = {
 			refs: 1,
-			closed: false,
-			manifest: manifests.get(appId),
-			off: [],
 			ready: Promise.resolve(),
 			stateChanged: state.run,
-			bundleChanged: bundle.run,
-			stop() {
-				state.stop()
-				bundle.stop()
-			}
+			stop: state.stop
 		}
 		apps.set(appId, entry)
 		entry.ready = run(async () => {
 			const fs = await options.volume
-			const watches = await Promise.all([
-				fs.watch(`/state/${appId}.json`, (event) => {
-					if (event.source === REMOTE_SOURCE && !entry.closed) void entry.stateChanged()
-				}),
-				fs.watch(`/applications/${appId}/manifest.json`, (event) => {
-					if (event.source === REMOTE_SOURCE && !entry.closed) void entry.bundleChanged()
-				})
-			])
-			if (entry.closed || closed) for (const unwatch of watches) unwatch()
-			else entry.off.push(...watches)
-			await entry.bundleChanged()
+			const unwatch = await fs.watch(`/state/${appId}.json`, (event) => {
+				if (event.source === REMOTE_SOURCE && apps.get(appId) === entry) void entry.stateChanged()
+			})
+			if (closed || apps.get(appId) !== entry) unwatch()
+			else entry.off = unwatch
+			await watchBundle(appId).changed()
 		}).then(
 			() => undefined,
 			(error) => report(error)
@@ -154,10 +192,9 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 	function closeApp(appId: string): void {
 		const entry = apps.get(appId)
 		if (!entry || --entry.refs > 0) return
-		entry.closed = true
-		entry.stop()
-		for (const unwatch of entry.off.splice(0)) unwatch()
 		apps.delete(appId)
+		entry.stop()
+		entry.off?.()
 	}
 
 	return {
@@ -169,11 +206,15 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			closed = true
 			applications.stop()
 			for (const entry of apps.values()) {
-				entry.closed = true
 				entry.stop()
-				for (const unwatch of entry.off) unwatch()
+				entry.off?.()
 			}
 			apps.clear()
+			for (const entry of bundles.values()) {
+				entry.stop()
+				entry.off?.()
+			}
+			bundles.clear()
 			for (const stop of off) stop()
 			off.clear()
 			while (jobs.size > 0) await Promise.allSettled([...jobs])

@@ -269,6 +269,47 @@ async function marker(process: DaemonProcess, markers: string[]): Promise<string
 	}
 }
 
+const offlineBootstrapScript = `
+	import { startStorage } from ${JSON.stringify(new URL('./fs.ts', import.meta.url).href)}
+	import { getKernel } from ${JSON.stringify(new URL('./kernel.ts', import.meta.url).href)}
+	const storage = await startStorage({
+		ownerId: 'user-a',
+		getToken: async () => 'token',
+		origin: 'http://hub.test',
+		fetch: async () => { throw new Error('offline') }
+	})
+	const fs = storage.volume
+	await getKernel()
+	await fs.writeFile('/offline.txt', new TextEncoder().encode('local'))
+	if (await fs.exists('/applications')) throw new Error('built-ins were written before sync')
+	if (new TextDecoder().decode(await fs.readFile('/offline.txt')) !== 'local') {
+		throw new Error('local read failed')
+	}
+	console.log('__UNSEEDED__')
+	process.exit(0)
+	`
+
+test('keeps first-run kernel writes behind the first remote cycle', async () => {
+	const support = await mkdtemp(join(tmpdir(), 'kodama-bootstrap-'))
+	const child = Bun.spawn([process.execPath, '--eval', offlineBootstrapScript], {
+		cwd: import.meta.dir,
+		env: {
+			...process.env,
+			FRIEREN_SUPPORT_DIR: support
+		},
+		stdout: 'pipe',
+		stderr: 'pipe'
+	})
+	try {
+		expect(await marker(child, ['__UNSEEDED__'])).toBe('__UNSEEDED__')
+		await child.exited
+	} finally {
+		child.kill('SIGKILL')
+		await child.exited
+		await rm(support, { recursive: true, force: true })
+	}
+}, 15_000)
+
 test.skipIf(process.platform !== 'darwin')(
 	'owns both stores, excludes a second daemon, and recovers after a crash',
 	async () => {

@@ -462,6 +462,31 @@ test('reloadBundle drops capabilities and procedure names cached from the old bu
 	expect(calls).toEqual(['old:oldProcedure', 'new:newProcedure'])
 })
 
+test('reloadBundle does not warm an app that was cold', async () => {
+	const fs = volume(memStore())
+	const first = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
+	const appId = await first.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+	first.dispose()
+
+	let loads = 0
+	const load = sandboxFor()
+	const second = kernel({
+		fs,
+		clock,
+		capabilities: caps(hostInvoke(fs)),
+		sandbox: async (input) => {
+			loads++
+			return load(input)
+		}
+	})
+	await second.reloadBundle(appId)
+	await new Promise((resolve) => setTimeout(resolve, 10))
+
+	expect(loads).toBe(0)
+})
+
 test('app controller reloads state written outside the server kernel', async () => {
 	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })

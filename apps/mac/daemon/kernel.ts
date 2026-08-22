@@ -22,7 +22,7 @@ import { appAssets } from './app-assets'
 import { builtinStore } from './builtins'
 import { chatgptProvider, codexBackend } from './chatgpt'
 import { coalesce } from './coalesce'
-import { getVolume } from './fs'
+import { getStorage, getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { identity } from './identity'
 import { accountsSecretCodec } from './keychain'
@@ -32,7 +32,9 @@ import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
 let accountsOnce: Promise<HostAccounts> | undefined
+let appBoot: Promise<void> | undefined
 let appCheck: ReturnType<typeof setInterval> | undefined
+let kernelClosed = false
 
 const systemAllowlist = ['justfiles.files']
 
@@ -74,23 +76,38 @@ export function getAccounts(): Promise<HostAccounts> {
 }
 
 export function getKernel(): Promise<Kernel> {
-	kernelOnce ??= Promise.all([getVolume(), getAccounts()]).then(async ([fs, accounts]) => {
-		const k = await buildKernel(fs, accounts)
-		const check = coalesce(() =>
-			refreshApps(k, fs, false).catch((error) =>
-				console.warn('appstore: update check failed', error)
+	kernelOnce ??= Promise.all([getStorage(), getAccounts()]).then(async ([storage, accounts]) => {
+		const fs = storage.volume
+		const k = await makeKernel(fs, accounts)
+		const boot = async (): Promise<void> => {
+			if (kernelClosed) return
+			await bootKernel(k, fs)
+			if (kernelClosed) return
+			const check = coalesce(() =>
+				refreshApps(k, fs, false).catch((error) =>
+					console.warn('appstore: update check failed', error)
+				)
 			)
-		)
-		appCheck = setInterval(check, UPDATE_CHECK_INTERVAL_MS)
-		appCheck.unref()
+			appCheck = setInterval(check, UPDATE_CHECK_INTERVAL_MS)
+			appCheck.unref()
+		}
+		if (storage.ownerId === null) await boot()
+		else {
+			// Existing local apps can run at once. Generated writes wait until the remote tree is here.
+			appBoot = storage.firstSync
+				.then((synced) => (synced ? boot() : undefined))
+				.catch((error) => console.warn('appstore: boot failed', error))
+		}
 		return k
 	})
 	return kernelOnce
 }
 
 export async function closeKernel(): Promise<void> {
+	kernelClosed = true
 	if (appCheck) clearInterval(appCheck)
 	appCheck = undefined
+	await appBoot
 	const active = await kernelOnce?.catch(() => undefined)
 	active?.dispose()
 }
@@ -101,7 +118,12 @@ export async function closeKernel(): Promise<void> {
 // a throwaway kernel over a temp Volume (so they never touch the real support tree or share
 // the daemon's singleton).
 export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
-	await migrateFirstPartyAppIds(fs)
+	const k = await makeKernel(fs, accounts)
+	await bootKernel(k, fs)
+	return k
+}
+
+async function makeKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
 	const fetchAsset = await appAssets(fs)
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
@@ -116,7 +138,7 @@ export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<K
 		}
 	})
 
-	const k = kernel({
+	return kernel({
 		fs,
 		fetchAsset,
 		sandbox: sandboxes.get,
@@ -177,8 +199,11 @@ export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<K
 		}),
 		clock: {}
 	})
+}
+
+async function bootKernel(k: Kernel, fs: Volume): Promise<void> {
+	await migrateFirstPartyAppIds(fs)
 	await refreshApps(k, fs, true)
-	return k
 }
 
 async function refreshApps(k: Kernel, fs: Volume, installMissing: boolean): Promise<void> {

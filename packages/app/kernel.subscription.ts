@@ -37,8 +37,8 @@ export interface Subscriptions {
 	// Lazily warm an app's streams from persisted state on first touch. No-op once
 	// warm or when no host stream opener is wired.
 	ensure(appId: AppId): void
-	// Stop all of an app's streams (uninstall / pre-reinstall).
-	stop(appId: AppId): void
+	// Stop all of an app's streams. Returns whether the app was warm.
+	stop(appId: AppId): boolean
 	// Stop every stream and prevent an in-flight warm-up from re-arming one.
 	dispose(): void
 }
@@ -197,11 +197,12 @@ export function subscriptionRuntime({
 		)
 	}
 
-	function stop(appId: AppId): void {
+	function stop(appId: AppId): boolean {
 		const running = subs.get(appId)
-		if (!running) return
+		if (!running) return false
 		for (const entry of running.values()) entry.stop()
 		subs.delete(appId)
+		return true
 	}
 
 	// Warm an app's streams from persisted state. A DO restart/reinstall drops the

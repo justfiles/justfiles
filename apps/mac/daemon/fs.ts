@@ -61,6 +61,8 @@ export interface NativeStorageOptions {
 export interface NativeStorage {
 	volume: Volume
 	ownerId: string | null
+	/** True after the first remote cycle, or at once for local-only; false if sync stops first. */
+	firstSync: Promise<boolean>
 	status(): StorageStatus
 	flush(timeoutMs?: number): Promise<boolean>
 	stopSync(): Promise<void>
@@ -132,6 +134,8 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	let sync: SyncVolume | undefined
 	let abortRemote: (() => void) | undefined
 	let offStatus: (() => void) | undefined
+	let finishFirstSync: ((synced: boolean) => void) | undefined
+	let offFirstSync: (() => void) | undefined
 
 	try {
 		await announceMount(mainStore, ROOT, PRIVATE)
@@ -162,6 +166,21 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			offStatus = sync.onStatusChange((status) => console.info(`sync: ${status}`))
 			source = sync
 		}
+		const firstSync = sync
+			? new Promise<boolean>((resolve) => {
+					finishFirstSync = (synced) => {
+						offFirstSync?.()
+						offFirstSync = undefined
+						finishFirstSync = undefined
+						resolve(synced)
+					}
+					if (sync?.status() === 'synced') finishFirstSync(true)
+					else
+						offFirstSync = sync?.onStatusChange((status) => {
+							if (status === 'synced') finishFirstSync?.(true)
+						})
+				})
+			: Promise.resolve(true)
 
 		const tracked = trackVolume(source)
 		let stopOnce: Promise<void> | undefined
@@ -172,6 +191,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			if (!sync) return Promise.resolve()
 			if (!stopOnce) {
 				offStatus?.()
+				finishFirstSync?.(false)
 				sync.pause()
 				sync.destroy()
 				abortRemote?.()
@@ -192,6 +212,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		return {
 			volume: tracked.volume,
 			ownerId,
+			firstSync,
 			status: () => sync?.status() ?? 'local-only',
 			async flush(timeoutMs = SHUTDOWN_FLUSH_MS) {
 				if (!sync) return true
@@ -316,7 +337,7 @@ export async function startStorage(
 	return storage
 }
 
-function getStorage(): Promise<NativeStorage> {
+export function getStorage(): Promise<NativeStorage> {
 	storageOnce ??= createNativeStorage({ supportDir: supportDir(), ownerId: null })
 	return storageOnce
 }

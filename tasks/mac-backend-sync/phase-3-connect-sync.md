@@ -62,7 +62,9 @@ Keep the private Store outside `synced()`. The subscription from Phase 1 should 
 normal local-write debounce. Remote pulls can stay on the normal timer. A dedicated server
 notification socket is outside this story.
 
-Expose the sync status for logging. A network error must not stop reads or local writes.
+Expose the sync status for logging. A network error must not stop reads or local writes. For
+authenticated storage, keep kernel migrations, built-in seeding, and update writes behind the first
+successful remote cycle. The local kernel can serve existing data while that cycle is offline.
 
 ### Enforce the user boundary
 
@@ -86,12 +88,13 @@ Use `Volume.watch`. Do not add a second event bus.
 
 - Watch each open app state file. On change, call `kernel.reload(appId)` and publish the new
   state to its connected app sockets.
-- Watch open app bundle manifests. Reload the affected app host when a pull changes its
-  executable bundle.
+- Watch every installed app bundle manifest for the daemon lifetime. Invalidate the kernel bundle
+  cache when a pull changes it. Reload its app host too when that host is open.
 - Watch `/applications` recursively. Refresh the launcher catalog and reconcile the native
   `.app` projection after an install, update, or removal.
 - Coalesce a burst into one refresh for each affected target.
-- Stop the watches when the app socket closes or the daemon shuts down.
+- Stop an app state watch when its socket closes. Stop bundle and catalog watches when the daemon
+  shuts down.
 
 Follow the equivalent Frieren watchers. A remote pull writes directly to the Store and does
 not produce the normal kernel write event.
@@ -125,6 +128,8 @@ Use a real temporary `fsStore` and a fake HTTP authority for daemon integration 
 - A different user cannot upload the prior user's rows.
 - A remote state edit reloads a running app and updates its socket.
 - A remote application change refreshes the catalog and native projection.
+- First-run kernel writes do not start before the first successful remote cycle.
+- A remote bundle update invalidates kernel data even when only the agent used the app.
 - Closing an app or the daemon removes its watches.
 
 Run focused file-system and Mac daemon tests while working. Run the repository checks and a

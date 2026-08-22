@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
+import type { AppManifest } from '@justfiles/app/runtime'
 import type { Server, ServerWebSocket } from 'bun'
 import {
 	abortAgent,
@@ -292,17 +293,18 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 	// Project the catalog into ~/Applications/Kodama Apps/*.app (real macOS apps). One-way, the
 	// Volume wins; previews stay out. Fire-and-forget — a projection failure never takes the
 	// daemon down.
-	async function project(): Promise<void> {
+	async function project(installed: AppManifest[]): Promise<void> {
 		const kernel = await getKernel()
-		const installed = (await kernel.list()).filter((app) => !app.id.startsWith('preview.'))
 		const apps: ProjectionApp[] = await Promise.all(
-			installed.map(async (app) => ({
-				id: app.id,
-				name: app.name,
-				version: app.version,
-				iconPath: app.icon,
-				iconBytes: app.icon ? await readIcon(kernel, app.id, app.icon) : undefined
-			}))
+			installed
+				.filter((app) => !app.id.startsWith('preview.'))
+				.map(async (app) => ({
+					id: app.id,
+					name: app.name,
+					version: app.version,
+					iconPath: app.icon,
+					iconBytes: app.icon ? await readIcon(kernel, app.id, app.icon) : undefined
+				}))
 		)
 		await projectApps(apps)
 	}
@@ -320,10 +322,13 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 	}
 
 	// Push the current catalog to every launcher `/system` socket.
+	function publishCatalog(apps: AppManifest[]): void {
+		server.publish('catalog', JSON.stringify({ type: 'apps', apps } satisfies ServerMessage))
+	}
+
 	async function refreshCatalog(): Promise<void> {
 		const kernel = await getKernel()
-		const apps = await kernel.list()
-		server.publish('catalog', JSON.stringify({ type: 'apps', apps } satisfies ServerMessage))
+		publishCatalog(await kernel.list())
 	}
 
 	refresh = runtimeRefresh({
@@ -331,9 +336,9 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 		kernel: getKernel(),
 		publishState: (appId, state) => server.publish(`app:${appId}`, JSON.stringify({ state })),
 		reloadApp: (appId) => server.publish(`app:${appId}`, JSON.stringify({ reload: true })),
-		refreshApplications: async () => {
-			await refreshCatalog()
-			await project()
+		refreshApplications: async (apps) => {
+			publishCatalog(apps)
+			await project(apps)
 		}
 	})
 	void refresh.refreshApps()
