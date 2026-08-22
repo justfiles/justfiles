@@ -5,6 +5,7 @@ import { memStore } from '@justfiles/fs/mem'
 import type { Connect, RunnableDevEnvironment, ViteDevServer } from 'vite'
 import { isRunnableDevEnvironment } from 'vite'
 import { appBundleFromMemory } from './app.ts'
+import { type AiBackend, devAiForApp } from './capabilities/ai/dev.ts'
 import { capabilityRegistry } from './capabilities/index.ts'
 import { volumeCapability } from './capabilities/volume/host.ts'
 import { devkitHost, kernelEndpoint } from './dev-server.devkit.ts'
@@ -121,9 +122,16 @@ export async function createDevServer(
 	const env = server.environments.kernel
 	if (!env || !isRunnableDevEnvironment(env))
 		throw new Error('kernel environment is not runnable (Vite Environment API)')
+	const appSandbox = viteSandbox(env, appUrl)
+	const declared = await appSandbox({ appId: opts.id, code: '' }).then(
+		(sandbox) => sandbox.capabilities?.() ?? {}
+	)
+	const aiPlugin = server.config.plugins.find(({ name }) => name === 'kernel-host:ai')
+	const aiBackend = (aiPlugin?.api as { backend?: AiBackend } | undefined)?.backend
+	const devAi = await devAiForApp(opts.id, declared, aiBackend)
+	if (devAi.message) server.config.logger.info(devAi.message)
 	const fs = volume(memStore())
 	const devkit = devkitHost(fs)
-	const appSandbox = viteSandbox(env, appUrl)
 	const k = kernel({
 		fs,
 		sandbox: (input) => (input.appId === opts.id ? appSandbox(input) : devkit.sandbox(input)),
@@ -134,7 +142,8 @@ export async function createDevServer(
 		// since a dev host has no other tenant.
 		capabilities: capabilityRegistry({
 			volume: volumeCapability(fs, { systemAllowlist: [opts.id] }),
-			devkit: devkit.capability
+			devkit: devkit.capability,
+			...(devAi.capability ? { ai: devAi.capability } : {})
 		})
 	})
 	const bundle = appBundleFromMemory({

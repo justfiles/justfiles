@@ -100,6 +100,18 @@ host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults
 `package.json#version`. `include` is only for extra bundle files needed by a host; prefer a
 self-contained `gui.js`.
 
+For local text AI, add `devAi()` next to `kernelHost()`:
+
+```ts
+import { devAi, kernelHost } from '@justfiles/app/vite'
+
+plugins: [kernelHost({ /* ... */ }), devAi()]
+```
+
+It tries `pi`, Claude Code, Codex, Ollama, and LM Studio in that order. You can pass `pi-cli`,
+`claude-cli`, `codex-cli`, an OpenAI-compatible base URL, or a `GenerateText` function. The Codex
+backend runs the full agent and can use about 9,400 tokens for a short request.
+
 The host imports `gui.js` as one blob module. Avoid emitted chunks and URL-loaded assets in portable
 apps: inline dynamic imports and import small assets so the GUI bundle is self-contained. The icon is
 the supported separate launcher asset.
@@ -470,10 +482,11 @@ Availability differs by host and user configuration:
 | Host settings (accounts, plan usage, current user) | `capabilities/settings`: `settings` | First-party Settings only | First-party Settings only | Importable, but not granted to drafts |
 | App compiler/installer | `capabilities/devkit`: `devkit` | First-party Code only | Yes | Yes; Frieren denies authored apps at runtime |
 
-The standalone Vite development host always implements `volume`. It also implements `devkit` when
-the app declares it and ships its sysroot through `include`. This gives App Code native esbuild,
-TypeScript checking, a Node worker for generated reducers, and a local URL preview. Test other
-capabilities inside Frieren or Kodama for Mac, or unit-test the pure logic behind them.
+The standalone Vite development host always implements `volume`. It implements `ai` when the app
+declares it and `vite.config.ts` includes `devAi()`. It also implements `devkit` when the app declares
+it and ships its sysroot through `include`. This gives App Code native esbuild, TypeScript checking,
+a Node worker for generated reducers, and a local URL preview. Test other capabilities inside Frieren
+or Kodama for Mac, or unit-test the pure logic behind them.
 
 ### `volume`
 
