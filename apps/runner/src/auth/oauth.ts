@@ -40,7 +40,7 @@ export async function discover(
 	const issuer = cleanIssuer(config.CLERK_ISSUER)
 	const response = await fetcher(`${issuer}/.well-known/oauth-authorization-server`, {
 		headers: { accept: 'application/json' },
-		redirect: 'error',
+		redirect: 'manual',
 		signal: AbortSignal.timeout(TIMEOUT_MS)
 	})
 	if (!response.ok) throw new Error('OAuth metadata request failed')
@@ -85,7 +85,7 @@ export async function refreshAccessToken(
 			grant_type: 'refresh_token',
 			refresh_token: refreshToken
 		}),
-		redirect: 'error',
+		redirect: 'manual',
 		signal: AbortSignal.timeout(TIMEOUT_MS)
 	})
 	const value: unknown = await response.json().catch(() => null)
@@ -149,7 +149,7 @@ export async function exchangeCode(
 			redirect_uri: input.callback,
 			code_verifier: input.verifier
 		}),
-		redirect: 'error',
+		redirect: 'manual',
 		signal: AbortSignal.timeout(TIMEOUT_MS)
 	})
 	if (!response.ok) throw new Error('OAuth code exchange failed')
