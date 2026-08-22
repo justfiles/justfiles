@@ -172,6 +172,7 @@ test('the reducer isolate is host code, not a release asset', async () => {
 	const res = await get('https://alice-notes.example.com/worker.js', envWith(published))
 	expect(res.status).toBe(200)
 	expect(res.headers.get('cache-control')).toBe('no-cache')
+	expect(res.headers.get('content-security-policy')).toContain("connect-src 'self'")
 	expect(await res.text()).toContain('import(self.name)')
 })
 
@@ -216,6 +217,30 @@ test('the app shell keeps a shelf back to the store above the app', async () => 
 		'class="runner-shelf-home" href="https://example.com/" aria-label="All apps"'
 	)
 	expect(page.indexOf('id="runner-shelf"')).toBeLessThan(page.indexOf('id="app"'))
+})
+
+test('the app GUI handles submit events but blocks native form requests', async () => {
+	const res = await get('https://alice-notes.example.com/', envWith(published))
+	const page = await res.text()
+	const csp = res.headers.get('content-security-policy') ?? ''
+	const guest = await get('https://alice-notes.example.com/gui-frame', envWith(published))
+	const guestCsp = guest.headers.get('content-security-policy') ?? ''
+
+	expect(page).toContain('<iframe id="app-frame"')
+	expect(page).toContain('sandbox="allow-scripts allow-forms"')
+	expect(page).not.toContain('allow-same-origin')
+	expect(page).not.toContain('rel="modulepreload"')
+	expect(csp).toContain("default-src 'none'")
+	expect(csp).toContain("connect-src 'self'")
+	expect(csp).toContain("worker-src 'self'")
+	expect(guestCsp).toContain("default-src 'none'")
+	expect(guestCsp).toContain('connect-src https://alice-notes.example.com/v/')
+	expect(guestCsp).toContain(
+		"script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: https://alice-notes.example.com/v/"
+	)
+	expect(guestCsp).not.toContain('https://example.com/v/')
+	expect(guestCsp).toContain("form-action 'none'")
+	expect(guestCsp).toContain("frame-src 'none'")
 })
 
 test('the shelf links back to localhost in local dev', async () => {

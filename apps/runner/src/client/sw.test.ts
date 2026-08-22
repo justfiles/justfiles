@@ -92,11 +92,13 @@ it('serves frozen paths from cache without revalidating', async () => {
 
 it('serves the app offline once it has been seen', async () => {
 	await get('/', 'navigate')
+	await get('/gui-frame', 'navigate')
 	await get('/v/0.4.1/gui.js')
 	await get('/assets/main-abc123.js')
 
 	online = null
 	expect(await (await get('/', 'navigate'))?.text()).toBe('body of /')
+	expect(await (await get('/gui-frame', 'navigate'))?.text()).toBe('body of /gui-frame')
 	expect(await (await get('/v/0.4.1/gui.js'))?.text()).toBe('body of /v/0.4.1/gui.js')
 	expect(await (await get('/assets/main-abc123.js'))?.text()).toBe('body of /assets/main-abc123.js')
 })

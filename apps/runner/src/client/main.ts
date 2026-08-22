@@ -1,18 +1,16 @@
-import { appBundleFromMemory, kernel, type Message } from '@justfiles/app'
+import { appBundleFromMemory, kernel } from '@justfiles/app'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
+import { guiHost } from '@justfiles/app/iframe'
 import { sandboxClient } from '@justfiles/app/sandbox'
-import '@justfiles/design/mac.css'
 import { volume } from '@justfiles/fs'
 import { idbStore, persistStorage } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 
 // The page's platform entry: real TypeScript, bundled by Vite and served as a
 // hashed static asset (see `route.get('/')` in ../app.tsx). Everything an app
-// needs at runtime — kernel, volume, reducer — lives HERE, in the browser: the
-// app already owns this origin, so there is nothing on the page to isolate it
-// from, and the runner stays a router with no per-app compute. The app's own
-// bytes are served by the runner out of the store, under `/v/{version}/`.
+// needs at runtime — kernel, volume, reducer — lives HERE, in the trusted parent.
+// The publisher's GUI runs in the opaque iframe below and receives one port.
 
 // Who this page is, and where its bytes live: inlined by the runner onto the
 // mount node, so booting costs no `/manifest.json` round trip. Read first — a
@@ -22,19 +20,16 @@ if (!root) throw new Error('missing app root')
 const { id, name, version, base, app, gui: guiPath } = root.dataset
 if (!id || !name || !base || !app || !guiPath) throw new Error('missing app identity')
 
-const scrollTops = new WeakMap<EventTarget, number>()
-root.addEventListener(
-	'scroll',
-	(event) => {
-		if (!(event.target instanceof Element)) return
-		const top = event.target.scrollTop
-		const last = scrollTops.get(event.target) ?? 0
-		if (top > last + 4 && top > 24) document.body.classList.add('runner-shelf-hidden')
-		else if (top < last - 4) document.body.classList.remove('runner-shelf-hidden')
-		scrollTops.set(event.target, top)
-	},
-	true
-)
+const framePlaceholder = document.getElementById('app-frame')
+if (!(framePlaceholder instanceof HTMLIFrameElement)) throw new Error('missing app frame')
+const frame = framePlaceholder.cloneNode() as HTMLIFrameElement
+const frameLoaded = new Promise<void>((resolve) => frame.addEventListener('load', () => resolve()))
+frame.src = '/gui-frame'
+framePlaceholder.replaceWith(frame)
+
+const errorElement = document.getElementById('app-error')
+if (!errorElement) throw new Error('missing app error')
+
 document.addEventListener('pointermove', (event) => {
 	if (event.clientY < 46) document.body.classList.remove('runner-shelf-hidden')
 })
@@ -45,11 +40,9 @@ document.addEventListener('pointermove', (event) => {
 // matching after the next publish. The entry points come from the manifest the
 // same way, so an app that names its reducer something else still boots.
 
-// The app's own GUI: resolved by the browser, not the build, so the specifier
-// goes through a variable to stay out of Vite's import analysis. Started here
-// and awaited at the end — it downloads while the kernel boots rather than
-// after it.
-const guiModule = import(/* @vite-ignore */ `${base}${guiPath}`)
+// The opaque frame imports this public release URL. Keeping the URL intact lets
+// the GUI resolve companion files against import.meta.url.
+const guiUrl = new URL(`${base}${guiPath}`, location.href).href
 
 // `/worker.js` is the reducer isolate: HOST code, one body for every app and
 // every release, so it carries no reducer URL of its own. This release's reducer
@@ -114,18 +107,25 @@ const appId = await k.install(
 	})
 )
 
-// The GUI's half of the SDK contract: actions in, committed state out. State
-// flows one way — a dispatch's return value is ignored, the push is what renders.
-const transport = {
-	invoke: (message: Message) => k.dispatch(appId, message),
-	subscribe: (onState: (state: unknown) => void) =>
-		k.subscribe((event) => {
-			if (event.type === 'app.update' && event.appId === appId) onState(event.state)
-		})
-}
-
-const { gui } = await guiModule
-gui.mount(root, await k.state(appId), { transport })
+await frameLoaded
+const { port1, port2 } = new MessageChannel()
+const postState = guiHost(port1, {
+	invoke: (message) => k.dispatch(appId, message),
+	onError: (message) => {
+		errorElement.textContent = `Failed to load app: ${message}`
+		errorElement.hidden = false
+	},
+	onMessage: (message) => {
+		if (message.type === 'shelf' && typeof message.hidden === 'boolean')
+			document.body.classList.toggle('runner-shelf-hidden', message.hidden)
+	}
+})
+k.subscribe((event) => {
+	if (event.type === 'app.update' && event.appId === appId) postState(event.state)
+})
+frame.contentWindow?.postMessage({ type: 'boot', guiUrl, state: await k.state(appId) }, '*', [
+	port2
+])
 
 // This origin holds one app and its documents, and nothing here syncs anywhere,
 // so eviction would be the only copy going. Asked for after mount, when the

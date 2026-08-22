@@ -1,4 +1,5 @@
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
+import macCss from '@justfiles/design/mac.css?inline'
 import { Hono } from 'hono'
 import { raw } from 'hono/html'
 import type { MiddlewareHandler } from 'hono/types'
@@ -6,6 +7,7 @@ import { Script, ViteClient } from 'vite-ssr-components/hono'
 import { findApp, servable } from './catalog'
 import { readRecord } from './catalog/refresh-app'
 import swSource from './client/sw.js?raw'
+import { frameDocument, guestCsp } from './gui-frame'
 import { decodeLabel } from './id'
 
 type Env = { Bindings: CloudflareBindings }
@@ -27,6 +29,7 @@ export const appId = (req: Request, env: CloudflareBindings): string | null => {
 }
 
 const MIME: Record<string, string> = {
+	html: 'text/html; charset=utf-8',
 	js: 'text/javascript; charset=utf-8',
 	json: 'application/json; charset=utf-8',
 	css: 'text/css; charset=utf-8',
@@ -47,6 +50,26 @@ const IMMUTABLE = 'public, max-age=31536000, immutable'
  * about a minute, and the immutable URL it points at pays nothing.
  */
 const POINTER = 'public, max-age=60'
+
+const PAGE_CSP = (local: boolean) =>
+	[
+		"default-src 'none'",
+		"script-src 'self'",
+		"style-src 'unsafe-inline'",
+		"img-src 'self' data:",
+		"font-src 'self' data:",
+		"manifest-src 'self'",
+		`connect-src 'self'${local ? ' ws:' : ''}`,
+		"worker-src 'self'",
+		"frame-src 'self'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"form-action 'none'",
+		"frame-ancestors 'self'"
+	].join('; ')
+
+const WORKER_CSP = "default-src 'none'; script-src 'self'; connect-src 'self'"
+const GUI_FRAME = frameDocument(macCss)
 
 const SHELL_STYLE = `
 :root { color-scheme: light dark }
@@ -71,7 +94,11 @@ body { display: flex; flex-direction: column; overflow: hidden }
 #runner-shelf .runner-shelf-dots { display: grid; gap: 2px; grid-template-columns: 1fr 1fr }
 #runner-shelf .runner-shelf-dots i { background: currentColor; border-radius: 1px; height: 4px; width: 4px }
 body.runner-shelf-hidden #runner-shelf { margin-top: -32px; opacity: 0; pointer-events: none }
-#app { flex: 1; min-height: 0; overflow: auto; width: 100% }
+#app { flex: 1; min-height: 0; overflow: hidden; position: relative; width: 100% }
+#app-frame { border: 0; display: block; height: 100%; width: 100% }
+#app-error { align-items: center; background: Canvas; color: CanvasText; display: flex; inset: 0;
+	justify-content: center; padding: 24px; position: absolute; text-align: center }
+#app-error[hidden] { display: none }
 @media (prefers-color-scheme: dark) { #runner-shelf {
 	--bg: #16171a; --text: #eae8e3; --dim: #8e8b85; --rule: #26282d; --mark: #dda05a } }
 @media (prefers-reduced-motion: reduce) { #runner-shelf { transition: none } }
@@ -170,7 +197,16 @@ route.get('/v/:version/*', async (c) => {
 route.get('/worker.js', (c) =>
 	c.body(sandboxWorkerSource(null, 'web'), 200, {
 		'content-type': MIME.js as string,
-		'cache-control': 'no-cache'
+		'cache-control': 'no-cache',
+		'content-security-policy': WORKER_CSP
+	})
+)
+
+route.get('/gui-frame', (c) =>
+	c.body(GUI_FRAME, 200, {
+		'content-type': MIME.html as string,
+		'cache-control': 'no-cache',
+		'content-security-policy': guestCsp(new URL('/v/', c.req.url).href)
 	})
 )
 
@@ -250,19 +286,17 @@ route.get('/', async (c) => {
 
 	const base = `/v/${app.version}/`
 	const request = new URL(c.req.url)
-	const home = request.hostname.endsWith('.localhost')
+	const local = request.hostname.endsWith('.localhost')
+	const home = local
 		? `${request.protocol}//localhost${request.port ? `:${request.port}` : ''}/`
 		: `https://${c.env.ROOT_DOMAIN}/`
+	c.header('content-security-policy', PAGE_CSP(local))
 	return c.html(
 		<html lang="en">
 			<head>
 				<meta charset="utf-8" />
 				<meta name="viewport" content="width=device-width, initial-scale=1" />
 				<title>{app.name}</title>
-				{/* The GUI is the app's own code, served from the store rather than bundled
-				    into the platform entry below — so the browser only discovers it once
-				    that entry runs. Start the fetch at parse time instead. */}
-				{app.gui ? <link rel="modulepreload" href={`${base}${app.gui}`} /> : null}
 				<link rel="manifest" href="/manifest.webmanifest" />
 				<style>{raw(SHELL_STYLE)}</style>
 				<ViteClient />
@@ -299,7 +333,12 @@ route.get('/', async (c) => {
 					data-base={base}
 					data-app={app.app}
 					data-gui={app.gui}
-				></div>
+				>
+					{/* Browsers do not fire submit events without `allow-forms`. The guest CSP
+					    still blocks native form requests. */}
+					<iframe id="app-frame" title={app.name} sandbox="allow-scripts allow-forms"></iframe>
+					<div id="app-error" role="alert" hidden></div>
+				</div>
 			</body>
 		</html>
 	)

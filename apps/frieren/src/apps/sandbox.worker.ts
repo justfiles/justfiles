@@ -109,11 +109,10 @@ type ReducerFrame = {
 // `sandboxWorkerSource`, which also explains why this worker has to be classic.
 const WORKER_SRC = sandboxWorkerSource(null, 'web')
 
-// The hidden iframe's document. CSP makes it network-deny-by-default: only
-// inline (its own bootstrap) and blob: scripts run, only blob: workers spawn, and
-// `connect-src 'none'` blocks fetch/XHR/WebSocket/beacon — so a reducer holding
-// chroot files or capability results can't exfiltrate them. Blob workers inherit
-// this document's CSP, so the restriction covers the reducer Worker too. On
+// The hidden iframe's document. Only inline (its own bootstrap) and blob: scripts
+// run, only blob: workers spawn, and `connect-src 'none'` blocks fetch, XHR,
+// WebSocket, and beacon. Blob workers inherit this document's CSP, so these
+// restrictions cover the reducer Worker too. On
 // `init` it stores the shared port + worker source; then it spawns, feeds, and
 // terminates content-hashed Workers on the host's command, relaying each Worker
 // frame back tagged with its key.

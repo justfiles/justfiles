@@ -53,22 +53,24 @@ iframe wall — the contracts crossing each link do not change.
 
 - **Host (trusted), stays on the main thread:** the kernel, the capability registry
   (`caps`), the volume/IndexedDB, the token and the `_caps` WebSocket.
-- **Iframe (untrusted, opaque origin):** the GUI, and — for total isolation — a nested
+- **Iframe (untrusted, opaque origin):** the GUI, and — for credential isolation — a nested
   Worker running the reducer.
 
-The untrusted side's only authority is **one MessagePort to the kernel**. The kernel
+The untrusted side's only host API is **one MessagePort to the kernel**. The kernel
 dereferences local capability names into trusted `{ id, scopes }` (see the scope
 resolver in `packages/app/kernel.ts` — "a compromised isolate cannot escalate scope").
 Iframing does not remove any *intended* authority; it removes the *ambient* authority
-the GUI accidentally has by running in the host realm.
+the GUI accidentally has by running in the host realm. It does not give total network
+egress isolation. CSP `connect-src` does not control WebRTC, so treat data sent to
+publisher GUI code as disclosed to the publisher.
 
 ## Two topologies
 
 - **Topology A** — iframe the **GUI only**; the reducer Worker stays on the host.
   Closes the GUI hole. The reducer can still `fetch` with credentials.
 - **Topology B** — iframe the **GUI and a nested reducer Worker**. The Worker inherits
-  the iframe's opaque origin → neither half can `fetch` with credentials. Total
-  isolation. The kernel stays on the host and reaches the reducer over one extra hop.
+  the iframe's opaque origin → neither half can `fetch` with credentials. The kernel
+  stays on the host and reaches the reducer over one extra hop.
 
 The plan builds A first (Step 3), then B (Step 4).
 
@@ -224,7 +226,7 @@ pnpm run verify:ui                # open several apps; dispatch actions; confirm
 The core milestone. Put the GUI inside a `sandbox="allow-scripts"` iframe (opaque
 origin, no credentials). The reducer Worker **stays on the host** — do not touch
 `sandbox.worker.ts` here. This removes the GUI's ambient authority: its only power
-becomes the port from Step 2.
+over the host becomes the port from Step 2.
 
 ### Expectation
 
@@ -268,7 +270,7 @@ await frameReady(iframe)                                 // srcdoc posts 'ready'
 iframe.contentWindow!.postMessage(
 	{ type: 'boot', guiCode, state: snapshot },          // bytes, not URLs
 	'*',
-	[port2]                                               // the app's ONLY authority
+	[port2]                                               // the app's only host API
 )
 ```
 
@@ -319,7 +321,7 @@ frame: `document.cookie` is empty, `window.parent`'s document is unreachable
 > (`default-src 'none'; script-src 'unsafe-inline' blob:; worker-src blob:;
 > connect-src 'none'`) that classic+dynamic-import worker still spawns, and a
 > credentialed `fetch` to the host origin from inside it is blocked in every
-> engine — network is deny-by-default. So we take Topology B (not the SES
+> engine — direct fetch is deny-by-default. So we take Topology B (not the SES
 > fallback), with the classic-worker adaptation baked into
 > `sandboxWorkerSource(..., 'web-iframe')` and guarded by
 > `apps/frieren/scripts/reducer-frame-probe.ts` (real-browser check) plus a
