@@ -98,6 +98,8 @@ export interface Kernel {
 	// any open GUI reading it — reflects the synced value instead of a stale cache.
 	// Queued per app, so it never lands between a dispatch's read and its commit.
 	reload: (appId: AppId) => Promise<void>
+	// Reload capabilities, procedures, and subscriptions after an external bundle write.
+	reloadBundle: (appId: AppId) => Promise<void>
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher (hidden ids omitted)
@@ -183,6 +185,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		settled,
 		state,
 		reload,
+		reloadBundle,
 		actions,
 		subscribe,
 		app,
@@ -353,10 +356,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		// the running streams, then re-warm against the NEW bundle so streams the
 		// installed state declares (incl. an unconditional `init` stream) come up
 		// without waiting for a first dispatch/snapshot (Part D).
-		resolver.forget(appId)
-		procNames.delete(appId)
-		subs.stop(appId)
-		subs.ensure(appId)
+		await reloadBundle(appId)
 		if (!hidden(appId)) emit({ type: 'app.installed', appId })
 		return appId
 	}
@@ -503,6 +503,17 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		await enqueue(appId, async () => {
 			states.invalidate(appId)
 			await states.current(appId)
+		})
+		assertActive()
+	}
+
+	async function reloadBundle(appId: AppId): Promise<void> {
+		assertActive()
+		await enqueue(appId, async () => {
+			resolver.forget(appId)
+			procNames.delete(appId)
+			subs.stop(appId)
+			subs.ensure(appId)
 		})
 		assertActive()
 	}

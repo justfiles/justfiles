@@ -239,6 +239,7 @@ test('refreshes a running app after an HTTP pull', async () => {
 		async reload(appId: string) {
 			state = JSON.parse(dec.decode(await local.volume.readFile(`/state/${appId}.json`)))
 		},
+		async reloadBundle() {},
 		async state() {
 			return state
 		},

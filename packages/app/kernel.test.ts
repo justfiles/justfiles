@@ -429,6 +429,39 @@ test('reload re-hydrates state written outside the kernel (a synced-down agent e
 	).toEqual({ count: 43 })
 })
 
+test('reloadBundle drops capabilities and procedure names cached from the old bundle', async () => {
+	const fs = volume(memStore())
+	const calls: string[] = []
+	const k = kernel({
+		fs,
+		sandbox: sandboxFor(),
+		clock,
+		capabilities: caps(async (req) => {
+			calls.push(`${req.scopes.join(',')}:${String(req.args[0])}`)
+			return req.args[0]
+		})
+	})
+	const appId = await k.install(
+		appBundleFromMemory({
+			id: 'com.example.app',
+			name: 'App',
+			app: cachedBundle('oldProcedure', 'old')
+		})
+	)
+
+	expect(await k.dispatch(appId, { type: 'oldProcedure', params: {} })).toBe('oldProcedure')
+	await fs.writeFile(
+		`/applications/${appId}/app.js`,
+		new TextEncoder().encode(cachedBundle('newProcedure', 'new'))
+	)
+
+	await k.reloadBundle(appId)
+
+	expect(await k.dispatch(appId, { type: 'oldProcedure', params: {} })).toBe('handled:oldProcedure')
+	expect(await k.dispatch(appId, { type: 'newProcedure', params: {} })).toBe('newProcedure')
+	expect(calls).toEqual(['old:oldProcedure', 'new:newProcedure'])
+})
+
 test('app controller reloads state written outside the server kernel', async () => {
 	const fs = volume(memStore())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
@@ -448,3 +481,17 @@ test('app controller reloads state written outside the server kernel', async () 
 	expect(await controller.state(appId)).toEqual({ count: 42 })
 	expect(await controller.run(appId, 'increment', { amount: 1 })).toEqual({ count: 43 })
 })
+
+function cachedBundle(procedure: string, scope: string): string {
+	return `
+		export const app = {
+			initialState: {},
+			actions: { ${JSON.stringify(procedure)}: { kind: 'procedure' } },
+			capabilities: { data: { id: 'test', scopes: [${JSON.stringify(scope)}] } },
+			dispatch(message) { return { result: 'handled:' + message.type } },
+			runProcedure(name, _params, handle) {
+				return handle.invoke('data', 'echo', name)
+			}
+		}
+	`
+}

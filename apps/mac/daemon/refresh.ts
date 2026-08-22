@@ -97,6 +97,8 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			run(async () => {
 				const next = await readManifest(await options.volume, appId)
 				if (entry.closed || closed || next === entry.manifest) return
+				await (await options.kernel).reloadBundle(appId)
+				if (entry.closed || closed) return
 				entry.manifest = next
 				options.reloadApp(appId)
 			}).then(

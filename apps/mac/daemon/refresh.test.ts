@@ -50,6 +50,9 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 		async reload(appId: string) {
 			state = JSON.parse(new TextDecoder().decode(await local.readFile(`/state/${appId}.json`)))
 		},
+		async reloadBundle(appId: string) {
+			reloads.push(`kernel:${appId}`)
+		},
 		async state() {
 			return state
 		},
@@ -68,7 +71,7 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 		volume: Promise.resolve(local),
 		kernel: Promise.resolve(kernel),
 		publishState: (_appId, next) => states.push(next),
-		reloadApp: (appId) => reloads.push(appId),
+		reloadApp: (appId) => reloads.push(`browser:${appId}`),
 		refreshApplications: async () => void applications++
 	})
 	await Promise.all([subscription, refresh.openApp('app.one')])
@@ -81,8 +84,8 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 		'/applications/app.one/manifest.json',
 		enc.encode('{"id":"app.one","version":"2"}')
 	)
-	await waitFor(() => reloads.length === 1)
-	expect(reloads).toEqual(['app.one'])
+	await waitFor(() => reloads.length === 2)
+	expect(reloads).toEqual(['kernel:app.one', 'browser:app.one'])
 
 	await remote.mkdir('/applications/app.two', { recursive: true })
 	await remote.writeFile(
