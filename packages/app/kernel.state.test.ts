@@ -48,6 +48,17 @@ test('a commit with a stale snapshot does not overwrite newer state', async () =
 	expect((await state.read('a')).value).toEqual({ n: 2 })
 })
 
+test('an unchanged commit still rejects a stale snapshot', async () => {
+	const fs = fresh()
+	const state = stateStore(fs)
+	await state.commit('a', null, { n: 1 })
+	const stale = await state.read('a')
+	await fs.writeFile('/state/a.json', bytes({ n: 2 }))
+
+	expect(await state.commit('a', stale.hash, { n: 1 })).toBeNull()
+	expect((await state.read('a')).value).toEqual({ n: 2 })
+})
+
 test('committing the same bytes does not write or bump the sequence', async () => {
 	const store = memStore()
 	const state = stateStore(volume(store))

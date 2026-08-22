@@ -52,10 +52,19 @@ export function stateStore(fs: Volume): StateStore {
 		expectedHash: string | null,
 		next: unknown
 	): Promise<StateCommit | null> {
-		const data = bytes(JSON.stringify(next))
-		if ((await sha256Hex(data)) === expectedHash) return { seq: seq(appId), changed: false }
-
 		const statePath = `/state/${appId}.json`
+		const data = bytes(JSON.stringify(next))
+		if ((await sha256Hex(data)) === expectedHash) {
+			// No write will check `ifHash`, so confirm that the file still matches the snapshot.
+			try {
+				if ((await fs.stat(statePath)).contentHash !== expectedHash) return null
+			} catch (error) {
+				if (error instanceof Error && error.message === `ENOENT: ${statePath}`) return null
+				throw error
+			}
+			return { seq: seq(appId), changed: false }
+		}
+
 		await fs.mkdir('/state', { recursive: true })
 		try {
 			await fs.writeFile(statePath, data, { ifHash: expectedHash })
