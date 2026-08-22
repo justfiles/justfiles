@@ -75,6 +75,64 @@ test('retries a failed remote state read', async () => {
 	await refresh.close()
 })
 
+test('retries a failed remote manifest read', async () => {
+	vi.useFakeTimers()
+	let onManifest: ((event: { source?: string }) => void) | undefined
+	let manifest = '{"version":1}'
+	let offline = false
+	let failed!: () => void
+	const first = new Promise<void>((resolve) => {
+		failed = resolve
+	})
+	const fs = {
+		async readFile() {
+			if (offline) {
+				offline = false
+				failed()
+				throw new Error('offline')
+			}
+			return enc.encode(manifest)
+		},
+		watch: async (path: string, listener: (event: { source?: string }) => void) => {
+			if (path === '/applications/app.one/manifest.json') onManifest = listener
+			return () => {}
+		}
+	} as unknown as Volume
+	const reloads: string[] = []
+	const kernel = {
+		async reloadBundle() {
+			reloads.push('kernel')
+		},
+		subscribe: () => () => {}
+	} as unknown as Kernel
+	let published!: () => void
+	const pushed = new Promise<void>((resolve) => {
+		published = resolve
+	})
+	const refresh = runtimeRefresh({
+		volume: Promise.resolve(fs),
+		kernel: Promise.resolve(kernel),
+		publishState: () => {},
+		reloadApp: () => {
+			reloads.push('browser')
+			published()
+		},
+		refreshApplications: async () => {}
+	})
+	await refresh.openApp('app.one')
+
+	manifest = '{"version":2}'
+	offline = true
+	onManifest?.({ source: REMOTE_SOURCE })
+	await first
+	expect(reloads).toEqual([])
+
+	await vi.advanceTimersByTimeAsync(5_000)
+	await pushed
+	expect(reloads).toEqual(['kernel', 'browser'])
+	await refresh.close()
+})
+
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 	const end = Date.now() + timeoutMs
 	while (!check()) {

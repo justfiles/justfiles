@@ -13,12 +13,12 @@ interface RefreshOptions {
 interface AppWatch {
 	refs: number
 	closed: boolean
-	manifest: string | null
-	stateRetry: ReturnType<typeof setTimeout> | undefined
+	manifest: string | null | undefined
 	off: (() => void)[]
 	ready: Promise<void>
 	stateChanged(): Promise<void>
 	bundleChanged(): Promise<void>
+	stop(): void
 }
 
 export interface RuntimeRefresh {
@@ -47,12 +47,12 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		return job
 	}
 	const report = (error: unknown): void => console.warn('runtime refresh:', error)
-	const refreshApplications = coalesce(() =>
-		run(options.refreshApplications).then(
-			() => undefined,
-			(error) => report(error)
-		)
+	const applications = retry(
+		() => run(options.refreshApplications).then(() => undefined),
+		() => closed,
+		report
 	)
+	const refreshApplications = applications.run
 
 	void run(async () => {
 		const [fs, kernel] = await Promise.all([options.volume, options.kernel])
@@ -85,63 +85,54 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		}
 
 		let entry: AppWatch
-		const retryState = (): void => {
-			if (entry.closed || closed || entry.stateRetry) return
-			entry.stateRetry = setTimeout(() => {
-				entry.stateRetry = undefined
-				void entry.stateChanged()
-			}, 5_000)
-		}
-		const stateChanged = coalesce(() =>
-			run(async () => {
-				const kernel = await options.kernel
-				await kernel.reload(appId)
-				const state = await kernel.state(appId)
-				if (!entry.closed && !closed) options.publishState(appId, state)
-			}).then(
-				() => {
-					clearTimeout(entry.stateRetry)
-					entry.stateRetry = undefined
-				},
-				(error) => {
-					report(error)
-					retryState()
-				}
-			)
+		const state = retry(
+			() =>
+				run(async () => {
+					const kernel = await options.kernel
+					await kernel.reload(appId)
+					const state = await kernel.state(appId)
+					if (!entry.closed && !closed) options.publishState(appId, state)
+				}).then(() => undefined),
+			() => entry.closed || closed,
+			report
 		)
-		const bundleChanged = coalesce(() =>
-			run(async () => {
-				const next = await readManifest(await options.volume, appId)
-				if (entry.closed || closed || next === entry.manifest) return
-				await (await options.kernel).reloadBundle(appId)
-				if (entry.closed || closed) return
-				entry.manifest = next
-				manifests.set(appId, next)
-				options.reloadApp(appId)
-			}).then(
-				() => undefined,
-				(error) => report(error)
-			)
+		const bundle = retry(
+			() =>
+				run(async () => {
+					const next = await readManifest(await options.volume, appId)
+					if (entry.closed || closed) return
+					if (entry.manifest === undefined) {
+						entry.manifest = next
+						manifests.set(appId, next)
+						return
+					}
+					if (next === entry.manifest) return
+					await (await options.kernel).reloadBundle(appId)
+					if (entry.closed || closed) return
+					entry.manifest = next
+					manifests.set(appId, next)
+					options.reloadApp(appId)
+				}).then(() => undefined),
+			() => entry.closed || closed,
+			report
 		)
 
 		entry = {
 			refs: 1,
 			closed: false,
-			manifest: null,
-			stateRetry: undefined,
+			manifest: manifests.get(appId),
 			off: [],
 			ready: Promise.resolve(),
-			stateChanged,
-			bundleChanged
+			stateChanged: state.run,
+			bundleChanged: bundle.run,
+			stop() {
+				state.stop()
+				bundle.stop()
+			}
 		}
 		apps.set(appId, entry)
 		entry.ready = run(async () => {
 			const fs = await options.volume
-			const saved = manifests.get(appId)
-			if (saved === undefined) {
-				entry.manifest = await readManifest(fs, appId)
-				manifests.set(appId, entry.manifest)
-			} else entry.manifest = saved
 			const watches = await Promise.all([
 				fs.watch(`/state/${appId}.json`, (event) => {
 					if (event.source === REMOTE_SOURCE && !entry.closed) void entry.stateChanged()
@@ -152,9 +143,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 			])
 			if (entry.closed || closed) for (const unwatch of watches) unwatch()
 			else entry.off.push(...watches)
-
-			const current = await readManifest(fs, appId)
-			if (current !== entry.manifest) await entry.bundleChanged()
+			await entry.bundleChanged()
 		}).then(
 			() => undefined,
 			(error) => report(error)
@@ -166,7 +155,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		const entry = apps.get(appId)
 		if (!entry || --entry.refs > 0) return
 		entry.closed = true
-		clearTimeout(entry.stateRetry)
+		entry.stop()
 		for (const unwatch of entry.off.splice(0)) unwatch()
 		apps.delete(appId)
 	}
@@ -178,9 +167,10 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		async close() {
 			if (closed) return
 			closed = true
+			applications.stop()
 			for (const entry of apps.values()) {
 				entry.closed = true
-				clearTimeout(entry.stateRetry)
+				entry.stop()
 				for (const unwatch of entry.off) unwatch()
 			}
 			apps.clear()
@@ -192,9 +182,37 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 }
 
 async function readManifest(fs: Volume, appId: string): Promise<string | null> {
+	const path = `/applications/${appId}/manifest.json`
 	try {
-		return new TextDecoder().decode(await fs.readFile(`/applications/${appId}/manifest.json`))
-	} catch {
-		return null
+		return new TextDecoder().decode(await fs.readFile(path))
+	} catch (error) {
+		if (error instanceof Error && error.message === `ENOENT: ${path}`) return null
+		throw error
 	}
+}
+
+function retry(
+	work: () => Promise<void>,
+	stopped: () => boolean,
+	report: (error: unknown) => void
+): { run(): Promise<void>; stop(): void } {
+	let timer: ReturnType<typeof setTimeout> | undefined
+	const stop = (): void => {
+		clearTimeout(timer)
+		timer = undefined
+	}
+	const run = coalesce(async () => {
+		try {
+			await work()
+			stop()
+		} catch (error) {
+			report(error)
+			if (stopped() || timer !== undefined) return
+			timer = setTimeout(() => {
+				timer = undefined
+				void run()
+			}, 5_000)
+		}
+	})
+	return { run, stop }
 }
