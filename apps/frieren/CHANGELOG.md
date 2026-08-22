@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.14.2...frieren-v0.15.0) (2026-08-22)
+
+
+### Features
+
+* **frieren:** allow Runner OAuth clients ([#561](https://github.com/xiaoxinghu/justfiles/issues/561)) ([166ee56](https://github.com/xiaoxinghu/justfiles/commit/166ee56b039a9570113025af5eb2d3d1aefaf094))
+* **mac:** connect backend sync ([#565](https://github.com/xiaoxinghu/justfiles/issues/565)) ([7e1ba1d](https://github.com/xiaoxinghu/justfiles/commit/7e1ba1d258347998c31691bb087a73f9d3ae979f))
+* **runner:** isolate app GUI ([#556](https://github.com/xiaoxinghu/justfiles/issues/556)) ([800a0f3](https://github.com/xiaoxinghu/justfiles/commit/800a0f3ec9771a8b5211681e75f5b5793cc39fe3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.7.0
+    * @justfiles/fs bumped to 0.7.0
+
 ## [0.14.2](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.14.1...frieren-v0.14.2) (2026-08-20)
 
 

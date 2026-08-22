@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.6.0...fs-v0.7.0) (2026-08-22)
+
+
+### Features
+
+* **mac:** connect backend sync ([#565](https://github.com/xiaoxinghu/justfiles/issues/565)) ([7e1ba1d](https://github.com/xiaoxinghu/justfiles/commit/7e1ba1d258347998c31691bb087a73f9d3ae979f))
+* **mac:** make daemon storage safe ([#563](https://github.com/xiaoxinghu/justfiles/issues/563)) ([15af8ae](https://github.com/xiaoxinghu/justfiles/commit/15af8ae52a6964505cfdadaa17b324f604b87718))
+
 ## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.5.1...fs-v0.6.0) (2026-08-04)
 
 

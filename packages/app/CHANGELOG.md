@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.6.1...app-v0.7.0) (2026-08-22)
+
+
+### Features
+
+* **app:** add local AI to the dev host ([#567](https://github.com/xiaoxinghu/justfiles/issues/567)) ([c287989](https://github.com/xiaoxinghu/justfiles/commit/c28798921a9a1920a7d87a04385ad6e511ac23cc))
+* **mac:** connect backend sync ([#565](https://github.com/xiaoxinghu/justfiles/issues/565)) ([7e1ba1d](https://github.com/xiaoxinghu/justfiles/commit/7e1ba1d258347998c31691bb087a73f9d3ae979f))
+* **runner:** isolate app GUI ([#556](https://github.com/xiaoxinghu/justfiles/issues/556)) ([800a0f3](https://github.com/xiaoxinghu/justfiles/commit/800a0f3ec9771a8b5211681e75f5b5793cc39fe3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.7.0
+
 ## [0.6.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.6.0...app-v0.6.1) (2026-08-20)
 
 
