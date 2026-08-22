@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'vitest'
 import { actingUserId, forwardRequest, requestUserId } from './auth.ts'
 
-// The real ids are in auth.ts (public identifiers of our own OAuth apps); the tests name their
-// own so they assert the RULE, not today's ids.
+// Generic cases use fake ids to test the rule. The Runner case pins its registered client ids.
 const OURS = ['kodama-desktop-prod', 'kodama-desktop-dev']
+const RUNNER_CLIENTS = ['Zz6ZSAXTadmlf51W', 'hhjYxg5seYxVhOZ9']
 
 describe('actingUserId', () => {
 	test('forwarding replaces a caller-supplied user id with the verified user', () => {
@@ -27,6 +27,19 @@ describe('actingUserId', () => {
 					{ tokenType: 'oauth_token', isAuthenticated: true, userId: 'user_1', clientId },
 					OURS
 				)
+			).toBe('user_1')
+		}
+	})
+
+	test("Runner's OAuth token acts as its user, on either instance", () => {
+		for (const clientId of RUNNER_CLIENTS) {
+			expect(
+				actingUserId({
+					tokenType: 'oauth_token',
+					isAuthenticated: true,
+					userId: 'user_1',
+					clientId
+				})
 			).toBe('user_1')
 		}
 	})
