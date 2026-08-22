@@ -92,10 +92,19 @@ export interface ServerOptions {
 	projectApps?: (apps: ProjectionApp[]) => Promise<void>
 }
 
+interface IdentityCommands {
+	begin(): void
+	end(): void
+}
+
 // Build the HTTP + WebSocket server: static client tree, per-app gui.js/icon routes, and
 // the three sockets (`/system`, `/agent`, `/app/:id`). Pulls everything from the module
 // singletons, so a test stands it up over a temp Volume with a no-op `projectApps`.
 export function createServer(options: ServerOptions = {}): Server<Context> {
+	return serve(options)
+}
+
+function serve(options: ServerOptions, identityCommands?: IdentityCommands): Server<Context> {
 	const projectApps = options.projectApps ?? reconcileProjection
 	const port = options.port ?? (process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000)
 	let refresh!: RuntimeRefresh
@@ -245,8 +254,14 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				const text = typeof message === 'string' ? message : message.toString()
 				const parsed = JSON.parse(text) as ClientMessage
 				if (parsed.type === 'command') {
-					const result = await dispatchCommand(parsed.name)
-					send(ws, { type: 'commandResult', id: parsed.id, result })
+					const changesIdentity = parsed.name === 'sign-in' || parsed.name === 'sign-out'
+					if (changesIdentity) identityCommands?.begin()
+					try {
+						const result = await dispatchCommand(parsed.name)
+						send(ws, { type: 'commandResult', id: parsed.id, result })
+					} finally {
+						if (changesIdentity) identityCommands?.end()
+					}
 					return
 				}
 				send(ws, { type: 'error', message: `Unknown command: ${text}` })
@@ -364,6 +379,20 @@ export async function startDaemon(
 	let offIdentity: (() => void) | undefined
 	let removeVolume = false
 	let terminated = false
+	let activeIdentityCommands = 0
+	let identityCommandsDone = Promise.resolve()
+	let finishIdentityCommands = (): void => {}
+	const identityCommands: IdentityCommands = {
+		begin() {
+			if (activeIdentityCommands++ > 0) return
+			identityCommandsDone = new Promise((resolve) => {
+				finishIdentityCommands = resolve
+			})
+		},
+		end() {
+			if (--activeIdentityCommands === 0) finishIdentityCommands()
+		}
+	}
 	const terminate = (): void => {
 		if (terminated) return
 		terminated = true
@@ -420,11 +449,14 @@ export async function startDaemon(
 		offIdentity = auth.onChange((user) => {
 			if ((user?.id ?? null) === storage?.ownerId) return
 			void storage?.stopSync()
-			void close(true)
+			// Identity changes before sign-out waits for Keychain and Clerk. Let the command
+			// send its result before close tears down its socket.
+			void identityCommandsDone
+				.then(() => close(true))
 				.catch((error) => console.error('daemon: failed to close after identity change', error))
 				.finally(terminate)
 		})
-		server = createServer(options)
+		server = serve(options, identityCommands)
 		const port = server.port
 		if (port === undefined) throw new Error('daemon: server has no TCP port')
 		await writeRuntime({ port, token, pid: process.pid })

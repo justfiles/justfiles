@@ -140,6 +140,110 @@ const daemonProcess = (support: string, closeRace = false) =>
 
 type DaemonProcess = ReturnType<typeof daemonProcess>
 
+const signOutScript = `
+	import { access, appendFile, readFile } from 'node:fs/promises'
+	import { join } from 'node:path'
+	import { identity } from ${JSON.stringify(new URL('./identity.ts', import.meta.url).href)}
+	import { startDaemon } from ${JSON.stringify(new URL('./main.ts', import.meta.url).href)}
+	const support = process.env.FRIEREN_SUPPORT_DIR
+	if (!support) throw new Error('missing support directory')
+	const log = join(support, 'sign-out.log')
+	const record = (event) => appendFile(log, event + '\\n')
+	let publish = () => {}
+	Object.assign(identity, {
+		getToken: async () => null,
+		signIn: async () => { throw new Error('not used') },
+		async signOut() {
+			publish(null)
+			await record('change')
+			const release = join(support, 'release-sign-out')
+			for (;;) {
+				try {
+					await access(release)
+					break
+				} catch {
+					await Bun.sleep(10)
+				}
+			}
+			await record('cleaned')
+		},
+		currentUser: async () => ({ id: 'user-a' }),
+		ownerId: async () => 'user-a',
+		onChange(listener) {
+			publish = listener
+			return () => { publish = () => {} }
+		}
+	})
+	const daemon = await startDaemon({
+		port: 0,
+		projectApps: async () => {},
+		identity,
+		terminate: () => {
+			void record('terminated').then(() => process.exit(0))
+		}
+	})
+	if (!daemon) throw new Error('daemon lock unavailable')
+	const runtime = JSON.parse(await readFile(join(support, 'runtime.json'), 'utf8'))
+	const socket = new WebSocket('ws://127.0.0.1:' + runtime.port + '/system')
+	socket.onopen = () => socket.send(JSON.stringify({ type: 'command', id: 'out', name: 'sign-out' }))
+	socket.onmessage = (event) => {
+		const message = JSON.parse(String(event.data))
+		if (message.type === 'commandResult' && message.id === 'out') void record('replied')
+	}
+	await new Promise(() => {})
+	`
+
+test.skipIf(process.platform !== 'darwin')(
+	'finishes and reports sign-out before identity teardown',
+	async () => {
+		const support = await mkdtemp(join(tmpdir(), 'kodama-sign-out-'))
+		const child = Bun.spawn([process.execPath, '--eval', signOutScript], {
+			cwd: import.meta.dir,
+			env: {
+				...process.env,
+				FRIEREN_SUPPORT_DIR: support,
+				KODAMA_STORE_ORIGIN: 'http://127.0.0.1:1'
+			},
+			stdout: 'ignore',
+			stderr: 'pipe'
+		})
+		const log = join(support, 'sign-out.log')
+		const events = async (): Promise<string[]> => {
+			try {
+				return (await readFile(log, 'utf8')).trim().split('\n')
+			} catch {
+				return []
+			}
+		}
+		const waitFor = async (event: string): Promise<void> => {
+			for (let left = 500; left > 0; left--) {
+				if ((await events()).includes(event)) return
+				await sleep(10)
+			}
+			throw new Error(`timed out waiting for ${event}`)
+		}
+		try {
+			await waitFor('change')
+			await sleep(100)
+			expect(await events()).toEqual(['change'])
+
+			await writeFile(join(support, 'release-sign-out'), '')
+			await Promise.race([
+				child.exited,
+				sleep(10_000).then(() => {
+					throw new Error('timed out waiting for daemon exit')
+				})
+			])
+			expect(await events()).toEqual(['change', 'cleaned', 'replied', 'terminated'])
+		} finally {
+			child.kill('SIGKILL')
+			await child.exited
+			await rm(support, { recursive: true, force: true })
+		}
+	},
+	20_000
+)
+
 async function marker(process: DaemonProcess, markers: string[]): Promise<string> {
 	const reader = process.stdout.getReader()
 	const decoder = new TextDecoder()
