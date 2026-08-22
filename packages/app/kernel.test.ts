@@ -469,6 +469,52 @@ test('a reducer retries when sync changes state during the transaction', async (
 	expect(await k.state(appId)).toEqual({ count: 41 })
 })
 
+test('a state-less reducer retries when sync changes its snapshot', async () => {
+	const fs = volume(memStore())
+	const base = sandboxFor()
+	let release = () => {}
+	let started = () => {}
+	const gate = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	const running = new Promise<void>((resolve) => {
+		started = resolve
+	})
+	let runs = 0
+	const k = kernel({
+		fs,
+		clock,
+		capabilities: caps(hostInvoke(fs)),
+		sandbox: async (input) => {
+			const sb = await base(input)
+			return {
+				...sb,
+				async run(_message, context) {
+					const result = (context.state as { count?: number } | undefined)?.count ?? 0
+					if (++runs === 1) {
+						started()
+						await gate
+					}
+					return { result }
+				}
+			}
+		}
+	})
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+	await fs.mkdir('/state', { recursive: true })
+	await fs.writeFile(`/state/${appId}.json`, new TextEncoder().encode(JSON.stringify({ count: 1 })))
+	const dispatched = k.dispatch(appId, { type: 'read', params: {} })
+	await running
+	await fs.writeFile(`/state/${appId}.json`, new TextEncoder().encode(JSON.stringify({ count: 2 })))
+	release()
+
+	expect(await dispatched).toBe(2)
+	expect(runs).toBe(2)
+	expect(await k.state(appId)).toEqual({ count: 2 })
+})
+
 test('reloadBundle drops capabilities and procedure names cached from the old bundle', async () => {
 	const fs = volume(memStore())
 	const calls: string[] = []

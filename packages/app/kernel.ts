@@ -418,6 +418,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 			const out = await sb.run(message, { state: snapshot.value })
 			assertActive()
 			if (out.state === undefined) {
+				if ((await states.read(appId)).hash !== snapshot.hash) continue
 				if (out.command) commands.schedule(appId, out.command, message.actor)
 				return { result: out.result, seq: states.seq(appId) }
 			}
