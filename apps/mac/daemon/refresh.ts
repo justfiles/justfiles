@@ -31,6 +31,8 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 	const jobs = new Set<Promise<unknown>>()
 	const off = new Set<() => void>()
 	const apps = new Map<string, AppWatch>()
+	// Watches stop with the last socket. Keep the manifest so reopen can find changes from the gap.
+	const manifests = new Map<string, string | null>()
 	let closed = false
 
 	const run = <T>(work: () => Promise<T>): Promise<T | undefined> => {
@@ -100,6 +102,7 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 				await (await options.kernel).reloadBundle(appId)
 				if (entry.closed || closed) return
 				entry.manifest = next
+				manifests.set(appId, next)
 				options.reloadApp(appId)
 			}).then(
 				() => undefined,
@@ -119,7 +122,11 @@ export function runtimeRefresh(options: RefreshOptions): RuntimeRefresh {
 		apps.set(appId, entry)
 		entry.ready = run(async () => {
 			const fs = await options.volume
-			entry.manifest = await readManifest(fs, appId)
+			const saved = manifests.get(appId)
+			if (saved === undefined) {
+				entry.manifest = await readManifest(fs, appId)
+				manifests.set(appId, entry.manifest)
+			} else entry.manifest = saved
 			const watches = await Promise.all([
 				fs.watch(`/state/${appId}.json`, (event) => {
 					if (event.source === REMOTE_SOURCE && !entry.closed) entry.stateChanged()

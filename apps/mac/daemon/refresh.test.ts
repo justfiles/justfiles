@@ -106,6 +106,11 @@ test('refreshes remote state and bundles, then stops each watch', async () => {
 	expect(states).toHaveLength(stateCount)
 	expect(reloads).toHaveLength(reloadCount)
 
+	await refresh.openApp('app.one')
+	await waitFor(() => reloads.length === reloadCount + 2)
+	expect(reloads.slice(-2)).toEqual(['kernel:app.one', 'browser:app.one'])
+	refresh.closeApp('app.one')
+
 	const applicationCount = applications
 	await refresh.close()
 	await remote.mkdir('/applications/app.three', { recursive: true })
