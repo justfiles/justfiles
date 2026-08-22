@@ -22,9 +22,6 @@ function fakeKernel() {
 		app: async (id: string) => ({ manifest: manifests.find((m) => m.id === id) }),
 		state: async () => ({ count: 0 }),
 		actions: async () => ({ increment: { kind: 'handler' } }),
-		reload: async (id: string) => {
-			calls.push(`reload:${id}`)
-		},
 		dispatch: async (appId: string, message: unknown) => {
 			calls.push(`dispatch:${appId}`)
 			dispatched.push({ appId, message })
@@ -81,12 +78,12 @@ test('close with no current app is a no-op', async () => {
 	expect(closed).toEqual([])
 })
 
-test('run reloads before dispatching into the kernel as the agent', async () => {
+test('run dispatches into the kernel as the agent', async () => {
 	const { kernel, dispatched, calls } = fakeKernel()
 	await createAppController(kernel, { windows: spyWindows().windows }).run(COUNTER, 'increment', {
 		amount: 2
 	})
-	expect(calls).toEqual([`reload:${COUNTER}`, `dispatch:${COUNTER}`])
+	expect(calls).toEqual([`dispatch:${COUNTER}`])
 	expect(dispatched).toEqual([
 		{ appId: COUNTER, message: { type: 'increment', params: { amount: 2 }, actor: 'agent' } }
 	])

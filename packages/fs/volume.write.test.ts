@@ -221,6 +221,46 @@ describe('writeFile: a create claims a name', () => {
 		expect(await vol.exists('/trips')).toBe(false)
 	})
 
+	it('writes only while the file still has the expected content', async () => {
+		const vol = volume(memStore())
+		await vol.writeFile('/state.json', enc.encode('one'))
+		const hash = (await vol.stat('/state.json')).contentHash
+		expect(hash).toBeDefined()
+
+		await vol.writeFile('/state.json', enc.encode('remote'))
+		await expect(
+			vol.writeFile('/state.json', enc.encode('local'), { ifHash: hash })
+		).rejects.toThrow('ESTALE: /state.json')
+		expect(await read(vol, '/state.json')).toBe('remote')
+	})
+
+	it('lets only one writer commit from the same snapshot', async () => {
+		const vol = volume(memStore())
+		await vol.writeFile('/state.json', enc.encode('base'))
+		const hash = (await vol.stat('/state.json')).contentHash
+		expect(hash).toBeDefined()
+
+		const results = await Promise.allSettled([
+			vol.writeFile('/state.json', enc.encode('one'), { ifHash: hash }),
+			vol.writeFile('/state.json', enc.encode('two'), { ifHash: hash })
+		])
+
+		expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+		const rejected = results.find((result) => result.status === 'rejected')
+		expect(rejected?.reason).toHaveProperty('message', 'ESTALE: /state.json')
+		expect(['one', 'two']).toContain(await read(vol, '/state.json'))
+	})
+
+	it('creates only while the expected path stays absent', async () => {
+		const vol = volume(memStore())
+		await vol.writeFile('/state.json', enc.encode('remote'))
+
+		await expect(
+			vol.writeFile('/state.json', enc.encode('local'), { ifHash: null })
+		).rejects.toThrow('ESTALE: /state.json')
+		expect(await read(vol, '/state.json')).toBe('remote')
+	})
+
 	it('keeps update when the caller changes its options', async () => {
 		const vol = volume(memStore())
 		const opts = { update: true }

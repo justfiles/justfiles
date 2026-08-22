@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
+import type { AppManifest } from '@justfiles/app/runtime'
 import type { Server, ServerWebSocket } from 'bun'
 import {
 	abortAgent,
@@ -9,12 +10,21 @@ import {
 	promptAgent,
 	setAgentBroadcast
 } from './agent'
-import { coalesce } from './coalesce'
-import { acquireDaemonLock, clearRuntime, closeStorage, getVolume, writeRuntime } from './fs'
-import { getKernel } from './kernel'
+import {
+	acquireDaemonLock,
+	clearRuntime,
+	getVolume,
+	type NativeStorage,
+	OwnerChangedError,
+	startStorage,
+	writeRuntime
+} from './fs'
+import { type Identity, identity } from './identity'
+import { closeKernel, getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
 import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './protocol'
+import { type RuntimeRefresh, runtimeRefresh } from './refresh'
 import { SHIPPED } from './resources'
 import { sandboxes } from './sandbox'
 import { installStoreApp, storeCatalog } from './store'
@@ -49,6 +59,8 @@ function imageContentType(path: string, bytes: Uint8Array): string {
 
 type Context = { type: 'system' } | { type: 'agent' } | { type: 'app'; id: string }
 
+const runtimes = new WeakMap<Server<Context>, RuntimeRefresh>()
+
 const failure = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 // A failed store request: the response carries the message the tile shows, the log carries
@@ -81,12 +93,22 @@ export interface ServerOptions {
 	projectApps?: (apps: ProjectionApp[]) => Promise<void>
 }
 
+interface IdentityCommands {
+	begin(): void
+	end(): void
+}
+
 // Build the HTTP + WebSocket server: static client tree, per-app gui.js/icon routes, and
 // the three sockets (`/system`, `/agent`, `/app/:id`). Pulls everything from the module
 // singletons, so a test stands it up over a temp Volume with a no-op `projectApps`.
 export function createServer(options: ServerOptions = {}): Server<Context> {
+	return serve(options)
+}
+
+function serve(options: ServerOptions, identityCommands?: IdentityCommands): Server<Context> {
 	const projectApps = options.projectApps ?? reconcileProjection
 	const port = options.port ?? (process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000)
+	let refresh!: RuntimeRefresh
 
 	const server = Bun.serve({
 		// Loopback only (never Bun's default 0.0.0.0, which would expose us to the LAN).
@@ -185,11 +207,10 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				}
 				if (ws.data.type === 'app') {
 					// Pin the reducer worker for this window's lifetime (sync, before any await);
-					// subscribe before the first state frame so no update is missed.
+					// subscribe before refresh publishes the first state frame.
 					sandboxes.retain(ws.data.id)
 					ws.subscribe(`app:${ws.data.id}`)
-					const kernel = await getKernel()
-					ws.send(JSON.stringify({ state: await kernel.state(ws.data.id) }))
+					await refresh.openApp(ws.data.id)
 					return
 				}
 
@@ -231,15 +252,24 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 				const text = typeof message === 'string' ? message : message.toString()
 				const parsed = JSON.parse(text) as ClientMessage
 				if (parsed.type === 'command') {
-					const result = await dispatchCommand(parsed.name)
-					send(ws, { type: 'commandResult', id: parsed.id, result })
+					const mayChangeOwner = parsed.name === 'sign-in'
+					if (mayChangeOwner) identityCommands?.begin()
+					try {
+						const result = await dispatchCommand(parsed.name)
+						send(ws, { type: 'commandResult', id: parsed.id, result })
+					} finally {
+						if (mayChangeOwner) identityCommands?.end()
+					}
 					return
 				}
 				send(ws, { type: 'error', message: `Unknown command: ${text}` })
 			},
 			close(ws) {
 				// Bun auto-unsubscribes on close; unpin the app's reducer worker so it's reaped.
-				if (ws.data.type === 'app') sandboxes.release(ws.data.id)
+				if (ws.data.type === 'app') {
+					refresh.closeApp(ws.data.id)
+					sandboxes.release(ws.data.id)
+				}
 			}
 		}
 	})
@@ -260,17 +290,18 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 	// Project the catalog into ~/Applications/Kodama Apps/*.app (real macOS apps). One-way, the
 	// Volume wins; previews stay out. Fire-and-forget — a projection failure never takes the
 	// daemon down.
-	async function project(): Promise<void> {
+	async function project(installed: AppManifest[]): Promise<void> {
 		const kernel = await getKernel()
-		const installed = (await kernel.list()).filter((app) => !app.id.startsWith('preview.'))
 		const apps: ProjectionApp[] = await Promise.all(
-			installed.map(async (app) => ({
-				id: app.id,
-				name: app.name,
-				version: app.version,
-				iconPath: app.icon,
-				iconBytes: app.icon ? await readIcon(kernel, app.id, app.icon) : undefined
-			}))
+			installed
+				.filter((app) => !app.id.startsWith('preview.'))
+				.map(async (app) => ({
+					id: app.id,
+					name: app.name,
+					version: app.version,
+					iconPath: app.icon,
+					iconBytes: app.icon ? await readIcon(kernel, app.id, app.icon) : undefined
+				}))
 		)
 		await projectApps(apps)
 	}
@@ -288,32 +319,36 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 	}
 
 	// Push the current catalog to every launcher `/system` socket.
-	async function refreshCatalog(): Promise<void> {
-		const kernel = await getKernel()
-		const apps = await kernel.list()
+	function publishCatalog(apps: AppManifest[]): void {
 		server.publish('catalog', JSON.stringify({ type: 'apps', apps } satisfies ServerMessage))
 	}
 
-	// A catalog mutation (ship / uninstall) refreshes every launcher's list and re-projects
-	// the OS bundles. Coalesced so a burst collapses to one pass with no filesystem race.
-	const reconcile = coalesce(async () => {
-		await refreshCatalog()
-		await project()
+	async function refreshCatalog(): Promise<void> {
+		const kernel = await getKernel()
+		publishCatalog(await kernel.list())
+	}
+
+	refresh = runtimeRefresh({
+		volume: getVolume(),
+		kernel: getKernel(),
+		publishState: (appId, state) => server.publish(`app:${appId}`, JSON.stringify({ state })),
+		reloadApp: (appId) => server.publish(`app:${appId}`, JSON.stringify({ reload: true })),
+		refreshApplications: async (apps) => {
+			publishCatalog(apps)
+			await project(apps)
+		}
 	})
-
-	void project().catch((error) => console.error('daemon: projection failed', error))
-
-	// One kernel subscription drives both: live-state fan-out per window, and the coalesced
-	// reconcile on install/uninstall.
-	getKernel().then((kernel) =>
-		kernel.subscribe((event) => {
-			if (event.type === 'app.update')
-				server.publish(`app:${event.appId}`, JSON.stringify({ state: event.state }))
-			else if (event.type === 'app.installed' || event.type === 'app.uninstalled') reconcile()
-		})
-	)
+	void refresh.refreshApps()
+	runtimes.set(server, refresh)
 
 	return server
+}
+
+export async function closeServerRuntime(server: Server<Context>): Promise<void> {
+	const refresh = runtimes.get(server)
+	runtimes.delete(server)
+	await refresh?.close()
+	await closeKernel()
 }
 
 // Is `pid` alive? macOS has no parent-death signal, so the owner watchdog polls this.
@@ -327,28 +362,72 @@ function alive(pid: number): boolean {
 	}
 }
 
+export interface DaemonOptions extends ServerOptions {
+	identity?: Identity
+	terminate?: () => void
+}
+
 export async function startDaemon(
-	options: ServerOptions = {}
+	options: DaemonOptions = {}
 ): Promise<{ close(): Promise<void> } | null> {
 	const lock = await acquireDaemonLock()
 	if (!lock) return null
 
+	const auth = options.identity ?? identity
 	const token = randomBytes(16).toString('hex')
+	let storage: NativeStorage | undefined
 	let server: Server<Context> | undefined
 	let closeOnce: Promise<void> | undefined
-	let runtimeWritten = false
-	const close = (): Promise<void> => {
+	let offIdentity: (() => void) | undefined
+	let removeVolume = false
+	let terminated = false
+	let activeIdentityCommands = 0
+	let identityCommandsDone = Promise.resolve()
+	let finishIdentityCommands = (): void => {}
+	const identityCommands: IdentityCommands = {
+		begin() {
+			if (activeIdentityCommands++ > 0) return
+			identityCommandsDone = new Promise((resolve) => {
+				finishIdentityCommands = resolve
+			})
+		},
+		end() {
+			if (--activeIdentityCommands === 0) finishIdentityCommands()
+		}
+	}
+	const terminate = (): void => {
+		if (terminated) return
+		terminated = true
+		options.terminate?.()
+	}
+	const close = (remove = false): Promise<void> => {
+		removeVolume ||= remove
+		if (remove) void storage?.stopSync()
 		closeOnce ??= (async () => {
 			try {
+				offIdentity?.()
 				server?.stop(true)
 			} finally {
 				try {
-					await closeStorage()
+					if (!removeVolume) {
+						const flushed = await storage?.flush()
+						if (flushed === false) console.warn('daemon: final sync did not finish')
+					}
+					await storage?.stopSync()
 				} finally {
 					try {
-						if (runtimeWritten) await clearRuntime()
+						if (server) await closeServerRuntime(server)
 					} finally {
-						await lock.release()
+						try {
+							await storage?.close()
+							if (removeVolume) await storage?.remove()
+						} finally {
+							try {
+								await clearRuntime()
+							} finally {
+								await lock.release()
+							}
+						}
 					}
 				}
 			}
@@ -357,13 +436,39 @@ export async function startDaemon(
 	}
 
 	try {
-		await getVolume()
-		server = createServer(options)
+		const ownerId = await auth.ownerId()
+		try {
+			storage = await startStorage({
+				ownerId,
+				getToken: () => auth.getToken()
+			})
+		} catch (error) {
+			if (!(error instanceof OwnerChangedError)) throw error
+			await clearRuntime()
+			await lock.release()
+			return null
+		}
+		offIdentity = auth.onChange((user) => {
+			// Sign-out only removes the token. The volume and daemon stay alive. A
+			// later sign-in by the same owner can resume the existing sync session.
+			if (!user) return
+			if (user.id === storage?.ownerId) {
+				void storage?.flush().catch((error) => console.warn('daemon: sync resume failed', error))
+				return
+			}
+			void storage?.stopSync()
+			// A different signed-in owner needs a new volume. Let the sign-in command
+			// send its result before close tears down its socket.
+			void identityCommandsDone
+				.then(() => close(true))
+				.catch((error) => console.error('daemon: failed to close after identity change', error))
+				.finally(terminate)
+		})
+		server = serve(options, identityCommands)
 		const port = server.port
 		if (port === undefined) throw new Error('daemon: server has no TCP port')
 		await writeRuntime({ port, token, pid: process.pid })
-		runtimeWritten = true
-		return { close }
+		return { close: () => close() }
 	} catch (error) {
 		try {
 			await close()
@@ -377,7 +482,7 @@ export async function startDaemon(
 // Process entry: bind the daemon lifetime to its owning app. Importing this module for tests has
 // no process-level side effects.
 async function main(): Promise<void> {
-	const daemon = await startDaemon()
+	const daemon = await startDaemon({ terminate: () => process.exit(0) })
 	if (!daemon) return
 	let exiting = false
 	const exit = async (): Promise<void> => {

@@ -143,10 +143,11 @@ test('clearing the declared set stops the stream', async () => {
 
 test('stop tears down every stream for an app', async () => {
 	const { runtime, host } = make()
+	expect(runtime.stop('cold')).toBe(false)
 	runtime.reconcile('app', [sub('/a', 'a'), sub('/b', 'b')])
 	await until(() => host.live().length === 2, 'both started')
 
-	runtime.stop('app')
+	expect(runtime.stop('app')).toBe(true)
 	expect(host.opened.every((o) => o.stopped)).toBe(true)
 })
 

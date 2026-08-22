@@ -35,7 +35,18 @@ const childScript = `
 	import { join } from 'node:path'
 	import { getVolume } from ${JSON.stringify(new URL('./fs.ts', import.meta.url).href)}
 	import { startDaemon } from ${JSON.stringify(new URL('./main.ts', import.meta.url).href)}
-	const daemon = await startDaemon({ port: 0, projectApps: async () => {} })
+	const daemon = await startDaemon({
+		port: 0,
+		projectApps: async () => {},
+		identity: {
+			getToken: async () => null,
+			signIn: async () => { throw new Error('not used') },
+			signOut: async () => {},
+			currentUser: async () => null,
+			ownerId: async () => null,
+			onChange: () => () => {}
+		}
+	})
 	if (!daemon) {
 		console.log('__BLOCKED__')
 		process.exit(0)
@@ -129,6 +140,109 @@ const daemonProcess = (support: string, closeRace = false) =>
 
 type DaemonProcess = ReturnType<typeof daemonProcess>
 
+const signOutScript = `
+	import { access, appendFile, readFile } from 'node:fs/promises'
+	import { join } from 'node:path'
+	import { identity } from ${JSON.stringify(new URL('./identity.ts', import.meta.url).href)}
+	import { startDaemon } from ${JSON.stringify(new URL('./main.ts', import.meta.url).href)}
+	const support = process.env.FRIEREN_SUPPORT_DIR
+	if (!support) throw new Error('missing support directory')
+	const log = join(support, 'sign-out.log')
+	const record = (event) => appendFile(log, event + '\\n')
+	let publish = () => {}
+	Object.assign(identity, {
+		getToken: async () => null,
+		signIn: async () => { throw new Error('not used') },
+		async signOut() {
+			publish(null)
+			await record('change')
+			const release = join(support, 'release-sign-out')
+			for (;;) {
+				try {
+					await access(release)
+					break
+				} catch {
+					await Bun.sleep(10)
+				}
+			}
+			await record('failed')
+			throw new Error('the Keychain item remains')
+		},
+		currentUser: async () => ({ id: 'user-a' }),
+		ownerId: async () => 'user-a',
+		onChange(listener) {
+			publish = listener
+			return () => { publish = () => {} }
+		}
+	})
+	const daemon = await startDaemon({
+		port: 0,
+		projectApps: async () => {},
+		identity,
+		terminate: () => {
+			void record('terminated').then(() => process.exit(0))
+		}
+	})
+	if (!daemon) throw new Error('daemon lock unavailable')
+	const runtime = JSON.parse(await readFile(join(support, 'runtime.json'), 'utf8'))
+	const socket = new WebSocket('ws://127.0.0.1:' + runtime.port + '/system')
+	socket.onopen = () => socket.send(JSON.stringify({ type: 'command', id: 'out', name: 'sign-out' }))
+	socket.onmessage = (event) => {
+		const message = JSON.parse(String(event.data))
+		if (message.type === 'commandResult' && message.id === 'out') void record('replied')
+	}
+	await new Promise(() => {})
+	`
+
+test.skipIf(process.platform !== 'darwin')(
+	'keeps the daemon alive and reports a failed sign-out cleanup',
+	async () => {
+		const support = await mkdtemp(join(tmpdir(), 'kodama-sign-out-'))
+		const child = Bun.spawn([process.execPath, '--eval', signOutScript], {
+			cwd: import.meta.dir,
+			env: {
+				...process.env,
+				FRIEREN_SUPPORT_DIR: support,
+				KODAMA_STORE_ORIGIN: 'http://127.0.0.1:1'
+			},
+			stdout: 'ignore',
+			stderr: 'pipe'
+		})
+		const log = join(support, 'sign-out.log')
+		const events = async (): Promise<string[]> => {
+			try {
+				return (await readFile(log, 'utf8')).trim().split('\n')
+			} catch {
+				return []
+			}
+		}
+		const waitFor = async (event: string): Promise<void> => {
+			for (let left = 500; left > 0; left--) {
+				if ((await events()).includes(event)) return
+				await sleep(10)
+			}
+			throw new Error(`timed out waiting for ${event}`)
+		}
+		try {
+			await waitFor('change')
+			await sleep(100)
+			expect(await events()).toEqual(['change'])
+
+			await writeFile(join(support, 'release-sign-out'), '')
+			await waitFor('replied')
+			expect(await events()).toEqual(['change', 'failed', 'replied'])
+			expect(
+				await Promise.race([child.exited.then(() => 'exited'), sleep(200).then(() => 'alive')])
+			).toBe('alive')
+		} finally {
+			child.kill('SIGKILL')
+			await child.exited
+			await rm(support, { recursive: true, force: true })
+		}
+	},
+	20_000
+)
+
 async function marker(process: DaemonProcess, markers: string[]): Promise<string> {
 	const reader = process.stdout.getReader()
 	const decoder = new TextDecoder()
@@ -153,6 +267,47 @@ async function marker(process: DaemonProcess, markers: string[]): Promise<string
 		reader.releaseLock()
 	}
 }
+
+const offlineBootstrapScript = `
+	import { startStorage } from ${JSON.stringify(new URL('./fs.ts', import.meta.url).href)}
+	import { getKernel } from ${JSON.stringify(new URL('./kernel.ts', import.meta.url).href)}
+	const storage = await startStorage({
+		ownerId: 'user-a',
+		getToken: async () => 'token',
+		origin: 'http://hub.test',
+		fetch: async () => { throw new Error('offline') }
+	})
+	const fs = storage.volume
+	await getKernel()
+	await fs.writeFile('/offline.txt', new TextEncoder().encode('local'))
+	if (await fs.exists('/applications')) throw new Error('built-ins were written before sync')
+	if (new TextDecoder().decode(await fs.readFile('/offline.txt')) !== 'local') {
+		throw new Error('local read failed')
+	}
+	console.log('__UNSEEDED__')
+	process.exit(0)
+	`
+
+test('keeps first-run kernel writes behind the first remote cycle', async () => {
+	const support = await mkdtemp(join(tmpdir(), 'kodama-bootstrap-'))
+	const child = Bun.spawn([process.execPath, '--eval', offlineBootstrapScript], {
+		cwd: import.meta.dir,
+		env: {
+			...process.env,
+			FRIEREN_SUPPORT_DIR: support
+		},
+		stdout: 'pipe',
+		stderr: 'pipe'
+	})
+	try {
+		expect(await marker(child, ['__UNSEEDED__'])).toBe('__UNSEEDED__')
+		await child.exited
+	} finally {
+		child.kill('SIGKILL')
+		await child.exited
+		await rm(support, { recursive: true, force: true })
+	}
+}, 15_000)
 
 test.skipIf(process.platform !== 'darwin')(
 	'owns both stores, excludes a second daemon, and recovers after a crash',

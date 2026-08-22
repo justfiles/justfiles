@@ -91,13 +91,8 @@ export interface Kernel {
 	// (later phases) wait on; the GUI never calls it.
 	settled: (appId: AppId, seq: number, opts?: { timeout?: number }) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state, or the app initial state
-	// Re-hydrate an app's state from fs, discarding the cached copy. The state cache
-	// assumes the kernel is the sole writer of `/state`; a host whose volume is ALSO
-	// written outside the kernel (frieren syncs an agent's server-side edit down to
-	// `/state/<id>.json`) calls this on that remote write so the next `state()` — and
-	// any open GUI reading it — reflects the synced value instead of a stale cache.
-	// Queued per app, so it never lands between a dispatch's read and its commit.
-	reload: (appId: AppId) => Promise<void>
+	// Reload capabilities, procedures, and subscriptions after an external bundle write.
+	reloadBundle: (appId: AppId) => Promise<void>
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher (hidden ids omitted)
@@ -162,7 +157,7 @@ function hidden(id: string): boolean {
 
 export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kernel {
 	// The app store owns the `/applications/<id>` bundle layout; the state store
-	// owns each app's authoritative state + commit version; the capability resolver
+	// owns each app's guarded state transactions + commit version; the capability resolver
 	// owns the local-name → trusted { id, scopes } boundary. The kernel orchestrates
 	// the rest (commands, streams) on top of them.
 	const store = apps(fs, fetchAsset)
@@ -182,7 +177,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		dispatch,
 		settled,
 		state,
-		reload,
+		reloadBundle,
 		actions,
 		subscribe,
 		app,
@@ -211,18 +206,15 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		loadDesired: async (appId) => {
 			if (!(await store.has(appId))) return null
 			const sb = await loadSandbox(appId)
-			return (await sb.subscriptions?.(await states.current(appId))) ?? []
+			return (await sb.subscriptions?.((await states.read(appId)).value)) ?? []
 		},
 		onError: backgroundError
 	})
 	const handlers = new Set<KernelEventHandler>()
 	// Per-app serialization. `queues` holds each app's tail promise so every
 	// dispatch (GUI, agent, capability event) runs to completion before the next
-	// begins. The reduce runs in an out-of-process isolate, so `sb.run` is async:
-	// the read-modify-write straddles that await, and without serialization two
-	// concurrent messages are a lost update (see the kernel concurrency test). So
-	// the queue is the correctness primitive that keeps the state store's in-memory
-	// copy consistent across the async reduce.
+	// begins. This orders local reducer events. The volume guard below also protects
+	// the transaction from a synced write that lands while the reducer is running.
 	const queues = new Map<AppId, Promise<void>>()
 	// Per-app set of procedure names (Part C), derived once from the bundle's
 	// action meta (kind 'procedure'). Lets `dispatch` route a procedure call off
@@ -353,9 +345,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		// the running streams, then re-warm against the NEW bundle so streams the
 		// installed state declares (incl. an unconditional `init` stream) come up
 		// without waiting for a first dispatch/snapshot (Part D).
-		resolver.forget(appId)
-		procNames.delete(appId)
-		subs.stop(appId)
+		await reloadBundle(appId)
 		subs.ensure(appId)
 		if (!hidden(appId)) emit({ type: 'app.installed', appId })
 		return appId
@@ -419,44 +409,29 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	async function dispatchNow(appId: AppId, message: Message): Promise<Committed> {
 		assertActive()
 		if (!(await store.has(appId))) throw new Error(`app not found: ${appId}`)
-
-		// Read authoritative state from memory (hydrated from fs once). The queue
-		// serializes per app, so between this read and the commit below no other
-		// dispatch for this app runs — the read-modify-write is atomic despite
-		// `sb.run` being async.
-		const current = await states.current(appId)
-
-		// Validation runs inside the app bundle (defineApp), so it works
-		// identically for in-process and remote sandboxes. The bundle's dispatch
-		// is a pure reduce over `state` — effects ride out as command data, so the
-		// kernel hands it only the current state.
 		const sb = await loadSandbox(appId)
-		const out = await sb.run(message, { state: current })
-		assertActive()
-		// A public edge populates `state`; a procedure-routed read does not. Only
-		// commit + push when the transition produced a next state — that keeps
-		// caller-scoped reads (e.g. Files' readFile) from ballooning state.
-		let seq = states.seq(appId)
-		if (out.state !== undefined) {
-			// Write-through commit returns the new monotonic version — unchanged when the
-			// transition landed on the state already committed, which is how an ambient
-			// signal (a watch wake, a re-scan) that decides nothing stays silent: no
-			// write, no version, and no push for consumers to re-render on.
-			const before = seq
-			seq = await states.commit(appId, out.state)
-			if (seq !== before) {
-				emit({ type: 'app.update', appId, state: out.state as AppState, seq })
-				// State changed → the declared stream set may have too (Part D). The
-				// bundle folded it into `out.subscriptions` (same isolate, no extra RPC);
-				// diff it in-queue — host starts are fire-and-forget.
+		for (;;) {
+			const snapshot = await states.read(appId)
+			// The bundle is a pure reducer. If sync changes the file during this await,
+			// the guarded commit fails and the same message is reduced again from the
+			// new state. Effects are scheduled only after a successful transaction.
+			const out = await sb.run(message, { state: snapshot.value })
+			assertActive()
+			if (out.state === undefined) {
+				if ((await states.read(appId)).hash !== snapshot.hash) continue
+				if (out.command) commands.schedule(appId, out.command, message.actor)
+				return { result: out.result, seq: states.seq(appId) }
+			}
+
+			const committed = await states.commit(appId, snapshot.hash, out.state)
+			if (!committed) continue
+			if (committed.changed) {
+				emit({ type: 'app.update', appId, state: out.state as AppState, seq: committed.seq })
 				subs.reconcile(appId, out.subscriptions ?? [])
 			}
+			if (out.command) commands.schedule(appId, out.command, message.actor)
+			return { result: out.result, state: out.state, seq: committed.seq }
 		}
-		// A pure-core edge may emit a command. Run it after the state is
-		// committed and OUTSIDE this critical section, so a slow capability
-		// can't stall the queue; its result re-enters as a `__cmd/<to>` message.
-		if (out.command) commands.schedule(appId, out.command, message.actor)
-		return { result: out.result, state: out.state, seq }
 	}
 
 	// Run a procedure (Part C). The handle drives the reducer (each `dispatch`
@@ -468,7 +443,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		const sb = await loadSandbox(appId)
 		if (!sb.runProcedure) throw new Error(`procedures unsupported by sandbox: ${appId}`)
 		const handle: RawAppHandle = {
-			state: await states.current(appId),
+			state: (await states.read(appId)).value,
 			dispatch: (m) => enqueue(appId, () => dispatchNow(appId, m)).then(({ seq }) => ({ seq })),
 			settled: (seq, opts) => settled(appId, seq, opts),
 			invoke: (capability, method, ...args) =>
@@ -486,23 +461,19 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		// restart, so warm the app's streams from persisted state (Part D). Fire and
 		// forget — the snapshot itself doesn't depend on the streams being live yet.
 		subs.ensure(appId)
-		const current = await states.current(appId)
+		const current = (await states.read(appId)).value
 		assertActive()
 		const result = current === undefined ? await initialState(appId) : current
 		assertActive()
 		return result
 	}
 
-	// Re-read `/state/<id>.json` after it was written OUTSIDE this kernel (a synced
-	// agent edit). Runs on the app's queue so the invalidation never interleaves a
-	// dispatch's read-modify-write (which would resurrect the stale value), then
-	// re-hydrates the cache so the caller's next `state()` reflects the file.
-	async function reload(appId: AppId): Promise<void> {
+	async function reloadBundle(appId: AppId): Promise<void> {
 		assertActive()
-		if (!(await store.has(appId))) return
 		await enqueue(appId, async () => {
-			states.invalidate(appId)
-			await states.current(appId)
+			resolver.forget(appId)
+			procNames.delete(appId)
+			if (subs.stop(appId) && (await store.has(appId))) subs.ensure(appId)
 		})
 		assertActive()
 	}
@@ -557,7 +528,6 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		if (disposed) return
 		disposed = true
 		subs.dispose()
-		states.clear()
 		resolver.clear()
 		procNames.clear()
 		queues.clear()

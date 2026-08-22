@@ -189,7 +189,7 @@ async function signInReport(): Promise<string> {
 async function signOutReport(): Promise<string> {
 	try {
 		await identity.signOut()
-		return 'Signed out. Everything on this Mac stays where it is.'
+		return 'Signed out. Online sync has stopped.'
 	} catch (err) {
 		console.error('[identity] sign-out incomplete:', err)
 		return `${err instanceof Error ? err.message : String(err)}. Unlock your login keychain and run /sign-out again.`

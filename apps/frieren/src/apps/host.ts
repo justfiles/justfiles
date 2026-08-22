@@ -238,6 +238,28 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	const guiCode = new TextDecoder().decode(await installed.read(guiPath))
 	if (stage.cancelled) return
 
+	// Register both state sources before boot can read its first snapshot. A local
+	// dispatch pushes through the kernel. A server dispatch arrives as a remote
+	// write and only needs the watch to tell this window to read again.
+	stage.unsubscribe = kernel.subscribe((event) => {
+		if (event.type === 'app.update' && event.appId === stage.id) stage.postState?.(event.state)
+		else if (event.type === 'app.installed' && event.appId === stage.id) reboot(stage.id, opts)
+	})
+	const unwatchState = await vol.watch(`/state/${stage.id}.json`, (event) => {
+		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
+		void kernel
+			.state(stage.id)
+			.then((state) => {
+				if (!stage.cancelled) stage.postState?.(state ?? null)
+			})
+			.catch(() => {})
+	})
+	if (stage.cancelled) {
+		unwatchState()
+		return
+	}
+	stage.unwatch = unwatchState
+
 	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel
 	// per boot: the host keeps `port1` and dispatches; the frame receives `port2`
 	// and mounts. `state()` resolves to the reducer's initialState for a never-run
@@ -247,14 +269,6 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		stage.pendingBoot = false
 		void (async () => {
 			try {
-				// Mount on the CACHED snapshot. `state()` is off the app's dispatch queue;
-				// `reload()` is on it, and that queue belongs to the app — a burst of
-				// capability events (an fs watch during a bulk delete/import) can be ahead of
-				// us on it. Awaiting the reload before mounting made the first frame's latency
-				// that queue's depth, which is how a busy volume rendered an EMPTY window.
-				// Nothing about showing the last known state needs to wait for it.
-				const snapshot = await kernel.state(stage.id)
-				if (stage.cancelled) return
 				stage.port?.close()
 				const { port1, port2 } = new MessageChannel()
 				stage.port = port1
@@ -264,54 +278,21 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 						if (!stage.cancelled) setError(stage, message)
 					}
 				})
+				// Wire the port before the read. A watch event that arrives during the read
+				// is queued on the channel and lands after the frame boots from its snapshot.
+				const snapshot = await kernel.state(stage.id)
+				if (stage.cancelled) {
+					port2.close()
+					return
+				}
 				stage.frame.contentWindow?.postMessage({ type: 'boot', guiCode, state: snapshot }, '*', [
 					port2
 				])
-				// A remote write can land while this window is closed; the kernel's state cache
-				// didn't author it, so the snapshot above can be the pre-sync value. Reload and
-				// push — same follow-up the remote-write watch below does, just reached from the
-				// boot. `postState` is already wired, so the fresh value lands whenever it lands.
-				void kernel
-					.reload(stage.id)
-					.then(() => kernel.state(stage.id))
-					.then((state) => {
-						if (!stage.cancelled) stage.postState?.(state ?? null)
-					})
-					.catch(() => {})
 			} catch (e) {
 				if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
 			}
 		})()
 	}
-
-	// State pushes go to whichever port the current guest holds. Registered before
-	// the first boot so a mount-time dispatch's `app.update` is never missed (the
-	// GUI re-renders from state pushes, not action returns).
-	stage.unsubscribe = kernel.subscribe((event) => {
-		if (event.type === 'app.update' && event.appId === stage.id) stage.postState?.(event.state)
-		// A LOCAL reinstall (reconcile update or devkit publish) swaps the bundle under
-		// the open GUI; reboot into it. A synced-down swap arrives as a REMOTE_SOURCE
-		// write with no `app.installed`, so the manifest watch below covers it.
-		else if (event.type === 'app.installed' && event.appId === stage.id) reboot(stage.id, opts)
-	})
-
-	// Local dispatches push state via the kernel events above. The agent runs on
-	// the SERVER kernel, so its writes never fire those events — they arrive as a
-	// remote-sourced sync pull of /state/<id>.json. Watch that file and re-read
-	// fresh state on a remote change so the open window reflects the agent's work.
-	stage.unwatch = await vol.watch(`/state/${stage.id}.json`, (event) => {
-		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
-		// The kernel's state cache didn't author this write, so it's stale — reload it
-		// from fs, THEN read, or the snapshot is the pre-sync value (the agent's edit
-		// wouldn't show). `reload` is queued, so it can't race a local dispatch.
-		void kernel
-			.reload(stage.id)
-			.then(() => kernel.state(stage.id))
-			.then((state) => {
-				if (!stage.cancelled) stage.postState?.(state ?? null)
-			})
-			.catch(() => {})
-	})
 
 	// Quiesce: a synced-down bundle change (REMOTE_SOURCE write to
 	// /applications/<id>/*) must reboot the GUI. Watch the manifest — the atomic

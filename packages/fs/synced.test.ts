@@ -268,6 +268,45 @@ describe('synced: the loop', () => {
 
 		expect(await there.exists('/after.txt')).toBe(false)
 	})
+
+	it('drains the cycle that destroy stops', async () => {
+		const remote = memStore()
+		let release = (): void => {}
+		let entered = (): void => {}
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const started = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		let hold = false
+		const slow: Store = {
+			...remote,
+			since: async (cursor) => {
+				if (hold) {
+					entered()
+					await blocked
+				}
+				return remote.since(cursor)
+			}
+		}
+		const { vol } = await replica(slow)
+
+		hold = true
+		void vol.flush()
+		await started
+		vol.destroy()
+		let done = false
+		const drained = vol.drain().then(() => {
+			done = true
+		})
+		await Promise.resolve()
+		expect(done).toBe(false)
+
+		release()
+		await drained
+		expect(done).toBe(true)
+	})
 })
 
 describe('synced: the debounced push', () => {

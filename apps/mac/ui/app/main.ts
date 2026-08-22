@@ -26,6 +26,10 @@ function connect(appId: string) {
 
 	ws.onmessage = (e) => {
 		const msg = JSON.parse(e.data)
+		if (msg.reload === true) {
+			location.reload()
+			return
+		}
 		if ('id' in msg) {
 			const p = pending.get(msg.id)
 			if (!p) return

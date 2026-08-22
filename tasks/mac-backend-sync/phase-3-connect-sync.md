@@ -1,6 +1,6 @@
 # Phase 3: connect sync and refresh the runtime
 
-Status: `todo`
+Status: `done`
 
 Depends on: Phase 2
 
@@ -62,14 +62,19 @@ Keep the private Store outside `synced()`. The subscription from Phase 1 should 
 normal local-write debounce. Remote pulls can stay on the normal timer. A dedicated server
 notification socket is outside this story.
 
-Expose the sync status for logging. A network error must not stop reads or local writes.
+Expose the sync status for logging. A network error must not stop reads or local writes. For
+authenticated storage, keep kernel migrations, built-in seeding, and update writes behind the first
+successful remote cycle. The local kernel can serve existing data while that cycle is offline.
 
 ### Enforce the user boundary
 
 Compare the current authenticated user ID with the saved owner ID before connecting the
 remote Store.
 
-If the ID changes, including a change to or from signed-out state:
+Sign-out removes the token. Keep the daemon, local volume, saved owner ID, and sync wrapper.
+Online work fails while no token is available. A later sign-in by the same owner resumes sync.
+
+If a different user signs in, or a user signs in to a local-only volume:
 
 1. Pause and destroy sync.
 2. Close the main and private Stores.
@@ -77,21 +82,24 @@ If the ID changes, including a change to or from signed-out state:
 4. Clear `runtime.json`.
 5. Terminate the daemon.
 
-The existing launcher discovery path starts a clean daemon. A token refresh with the same
-user ID does not run this sequence.
+The existing launcher discovery path starts a clean daemon. Sign-out, a token refresh, and a
+later sign-in by the same owner do not run this sequence.
 
 ### Refresh live state after pulls
 
 Use `Volume.watch`. Do not add a second event bus.
 
-- Watch each open app state file. On change, call `kernel.reload(appId)` and publish the new
-  state to its connected app sockets.
-- Watch open app bundle manifests. Reload the affected app host when a pull changes its
-  executable bundle.
+- Read app state from the Volume at each reducer transaction. Guard each write with the hash of
+  the state that was read. If sync changes the file during the reduce, retry from the new state.
+- Watch each open app state file only to notify its connected app sockets. Read the state from
+  the Volume when the watch fires. Do not keep an app state cache in the kernel.
+- Watch every installed app bundle manifest for the daemon lifetime. Invalidate the kernel bundle
+  runtime when a pull changes it. Reload its app host too when that host is open.
 - Watch `/applications` recursively. Refresh the launcher catalog and reconcile the native
   `.app` projection after an install, update, or removal.
 - Coalesce a burst into one refresh for each affected target.
-- Stop the watches when the app socket closes or the daemon shuts down.
+- Stop an app state watch when its socket closes. Stop bundle and catalog watches when the daemon
+  shuts down.
 
 Follow the equivalent Frieren watchers. A remote pull writes directly to the Store and does
 not produce the normal kernel write event.
@@ -121,10 +129,13 @@ Use a real temporary `fsStore` and a fake HTTP authority for daemon integration 
 - Restart resumes from the saved cursors.
 - Offline local writes upload after the connection returns.
 - A token refresh for the same ID keeps the local volume.
-- Sign-out wipes the volume before another remote request.
+- Sign-out keeps the current owner's volume and stops authenticated requests.
+- The same owner can sign in again and resume sync.
 - A different user cannot upload the prior user's rows.
-- A remote state edit reloads a running app and updates its socket.
+- A remote state edit updates a running app socket without kernel invalidation.
 - A remote application change refreshes the catalog and native projection.
+- First-run kernel writes do not start before the first successful remote cycle.
+- A remote bundle update invalidates kernel data even when only the agent used the app.
 - Closing an app or the daemon removes its watches.
 
 Run focused file-system and Mac daemon tests while working. Run the repository checks and a
