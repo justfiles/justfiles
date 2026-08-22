@@ -48,12 +48,11 @@
 			"persistent": true
 		},
 		"frieren#dev": {
-			// Every built-in in `apps/frieren/vite-appstore.ts`'s BUILTIN_DIRS, because
+		// Every built-in in `apps/frieren/vite-appstore.ts`'s BUILTIN_DIRS, because
 			// the appstore plugin reads each one's `dist` at `buildStart` and throws
 			// ENOENT on a fresh checkout otherwise. Keep in step with that list and with
 			// frieren's `build-apps` script.
 			"dependsOn": [
-				"@justfiles/app-dictionary#build",
 				"@justfiles/app-files#build",
 				"@justfiles/app-settings#build",
 				"transit"
