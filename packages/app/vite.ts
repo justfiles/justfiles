@@ -1,10 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { PluginOption } from 'vite'
+import type { Plugin, PluginOption } from 'vite'
 import { build, createRunnableDevEnvironment } from 'vite'
 import type { AppManifest } from './app.ts'
+import type { AiBackend } from './capabilities/ai/dev.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
+
+export type { AiBackend, GenerateText } from './capabilities/ai/dev.ts'
 
 const DEV_STYLE_URL = '/_kernel-host/dev-style.js'
 const DEV_STYLE_ID = '\0kernel-host:dev-style'
@@ -13,6 +16,10 @@ const DEV_BOOTSTRAP_URL = '/_kernel-host/bootstrap.js'
 const DEV_BOOTSTRAP_ID = '\0kernel-host:bootstrap'
 const VIRTUAL_GUI_ID = 'virtual:justfiles-app/gui'
 const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
+
+export function devAi(backend: AiBackend = 'auto'): Plugin {
+	return { name: 'kernel-host:ai', apply: 'serve', api: { backend } }
+}
 
 // `kernelHost` is the app package's only build wiring. It has two modes:
 //

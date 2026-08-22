@@ -8,6 +8,20 @@ pnpm dev      # develop
 pnpm build    # emit dist/manifest.json, dist/app.js, dist/gui.js
 ```
 
+## Local AI
+
+If the app declares the `ai` capability, uncomment `devAi()` in `vite.config.ts`. With no
+argument, it checks for `pi`, Claude Code, Codex, Ollama, and LM Studio in that order. The dev
+server prints the backend that it selects.
+
+You can select one backend or pass your own function:
+
+```ts
+devAi('claude-cli')
+devAi('http://localhost:11434/v1')
+devAi(async ({ system, prompt }) => generate(system, prompt))
+```
+
 ## Publish to the Kodama App Store
 
 The [Kodama](https://mykodama.app) App Store is a search index over npm — there is no

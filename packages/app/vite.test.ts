@@ -1,6 +1,14 @@
 import { type Plugin, resolveConfig, type ViteDevServer } from 'vite'
 import { expect, test, vi } from 'vitest'
-import { kernelHost } from './vite.ts'
+import { devAi, kernelHost } from './vite.ts'
+
+test('devAi is a serve-only backend descriptor', () => {
+	expect(devAi()).toMatchObject({
+		name: 'kernel-host:ai',
+		apply: 'serve',
+		api: { backend: 'auto' }
+	})
+})
 
 test('dev scans the GUI hidden behind the generated page', async () => {
 	const config = await resolveConfig(
