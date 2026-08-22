@@ -4,8 +4,10 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { guiHost } from '@justfiles/app/iframe'
 import { sandboxClient } from '@justfiles/app/sandbox'
 import { volume } from '@justfiles/fs'
+import { httpStore } from '@justfiles/fs/http'
 import { idbStore, persistStorage } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
+import { onlineVolumeCapability } from './online-volume'
 
 // The page's platform entry: real TypeScript, bundled by Vite and served as a
 // hashed static asset (see `route.get('/')` in ../app.tsx). Everything an app
@@ -17,7 +19,16 @@ import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 // missing root is worth failing on before any of the machinery below exists.
 const root = document.getElementById('app')
 if (!root) throw new Error('missing app root')
-const { id, name, version, base, app, gui: guiPath } = root.dataset
+const {
+	id,
+	name,
+	version,
+	base,
+	app,
+	gui: guiPath,
+	request: requestNonce,
+	volumeScopes
+} = root.dataset
 if (!id || !name || !base || !app || !guiPath) throw new Error('missing app identity')
 
 const framePlaceholder = document.getElementById('app-frame')
@@ -62,14 +73,8 @@ const { sandbox, fail } = sandboxClient({
 // forever; reject them with the error the browser reported instead.
 worker.onerror = (event) => fail(new Error(event.message || 'reducer worker failed'))
 
-// Browser-local and unsynced, per the hosted-app posture: this app's documents
-// live in this browser, keyed by the app's own id.
-//
-// Two names, and they have to be two: the old model's database is at schema
-// version 6 and `idbStore` opens at 1, so reusing the name is a `VersionError`
-// on the first read — the app would not boot, and since nothing here syncs, the
-// documents behind that name are the only copy there is. Copy-then-swap instead,
-// the same pass the other two browser hosts run.
+// The old database uses schema version 6, but `idbStore` opens version 1. Two
+// names avoid a `VersionError` and let us copy the only local data once.
 const LEGACY_DB = `justapps:${id}`
 const STORE_DB = `justapps-store:${id}`
 /**
@@ -79,21 +84,28 @@ const STORE_DB = `justapps-store:${id}`
  */
 const ADOPTED_KEY = `justapps-adopted:${id}`
 
-const store = idbStore(STORE_DB)
-// Held against every other tab, and the marker READ inside it: a second tab that
-// checked before this one recorded would copy the old tree over rows this one had
-// already written (see `adoptOnce`).
-await adoptOnce(STORE_DB, async () => {
-	if (localStorage.getItem(ADOPTED_KEY)) return
-	await migrateIdb(LEGACY_DB, store)
-	localStorage.setItem(ADOPTED_KEY, '1')
-})
+const online = requestNonce !== undefined && volumeScopes !== undefined
+const store = online
+	? httpStore('/_runner/store', { headers: { 'x-runner-request': requestNonce } })
+	: idbStore(STORE_DB)
+if (!online) {
+	// The lock and marker stop two tabs from copying stale rows over new writes.
+	await adoptOnce(STORE_DB, async () => {
+		if (localStorage.getItem(ADOPTED_KEY)) return
+		await migrateIdb(LEGACY_DB, store)
+		localStorage.setItem(ADOPTED_KEY, '1')
+	})
+}
 const fs = volume(store)
 const k = kernel({
 	fs,
 	sandbox: async () => sandbox,
 	clock: {},
-	capabilities: capabilityRegistry({ volume: volumeCapability(fs) })
+	capabilities: capabilityRegistry({
+		volume: online
+			? onlineVolumeCapability(fs, id, readVolumeScopes(volumeScopes))
+			: volumeCapability(fs)
+	})
 })
 
 // Install on every load: the bundle write is idempotent and state lives in the
@@ -127,13 +139,12 @@ frame.contentWindow?.postMessage({ type: 'boot', guiUrl, state: await k.state(ap
 	port2
 ])
 
-// This origin holds one app and its documents, and nothing here syncs anywhere,
-// so eviction would be the only copy going. Asked for after mount, when the
-// browser has an engagement signal to weigh — Chrome and Safari decide silently
-// from one, and asking during boot is asking at the least convincing moment.
-persistStorage().then((granted) => {
-	if (!granted) console.warn('storage is best-effort: the browser may evict this app')
-})
+// Ask after mount, when the browser has an engagement signal. Online data lives
+// in Frieren, so only the signed-out store needs this protection from eviction.
+if (!online)
+	persistStorage().then((granted) => {
+		if (!granted) console.warn('storage is best-effort: the browser may evict this app')
+	})
 
 // After mount, never before: the worker only earns its keep on the NEXT visit,
 // so registering it earlier would spend first-paint time on nothing. It caches
@@ -149,4 +160,16 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 		// resolved per request — so the page that was rendered for it says.
 		.then((registration) => registration.active?.postMessage({ keep: base }))
 		.catch(() => {})
+}
+
+function readVolumeScopes(value: string | undefined): string[][] {
+	const parsed: unknown = JSON.parse(value ?? 'null')
+	if (
+		!Array.isArray(parsed) ||
+		!parsed.every(
+			(scopes) => Array.isArray(scopes) && scopes.every((scope) => typeof scope === 'string')
+		)
+	)
+		throw new Error('invalid online volume scopes')
+	return parsed
 }

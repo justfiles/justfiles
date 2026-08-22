@@ -32,6 +32,7 @@ test('connects one app through consent and enforces each route binding', async (
 					token_endpoint: `${env.CLERK_ISSUER}/oauth/token`,
 					jwks_uri: `${env.CLERK_ISSUER}/.well-known/jwks.json`,
 					scopes_supported: ['openid', 'offline_access'],
+					grant_types_supported: ['authorization_code', 'refresh_token'],
 					code_challenge_methods_supported: ['S256'],
 					token_endpoint_auth_methods_supported: ['client_secret_basic']
 				})
@@ -177,6 +178,28 @@ test('connects one app through consent and enforces each route binding', async (
 	const appSession = sqlite
 		.prepare("SELECT request_nonce FROM sessions WHERE kind = 'app'")
 		.get() as { request_nonce: string }
+	const connectedPage = await request('https://alice-notes.example.com/', env, {
+		headers: {
+			cookie: `__Host-runner-app=${appCookie}`,
+			'sec-fetch-dest': 'document',
+			'sec-fetch-mode': 'navigate'
+		}
+	})
+	const connectedHtml = await connectedPage.text()
+	expect(connectedPage.headers.get('cache-control')).toBe('no-store')
+	expect(connectedPage.headers.get('x-runner-private')).toBe('1')
+	expect(connectedHtml).toContain(`data-request="${appSession.request_nonce}"`)
+	expect(connectedHtml).toContain('data-volume-scopes="[[&quot;app&quot;]]"')
+	expect(connectedHtml).not.toContain('access-token-must-stay-server-side')
+	expect(connectedHtml).not.toContain('user_1')
+	const reducerRead = await request('https://alice-notes.example.com/', env, {
+		headers: {
+			cookie: `__Host-runner-app=${appCookie}`,
+			'sec-fetch-dest': 'worker',
+			'sec-fetch-mode': 'same-origin'
+		}
+	})
+	expect(await reducerRead.text()).not.toContain(appSession.request_nonce)
 	expect(
 		(
 			await request('https://alice-notes.example.com/_runner/account', env, {
@@ -281,6 +304,7 @@ const testEnv = (
 	({
 		ROOT_DOMAIN: 'example.com',
 		CLERK_ISSUER: 'https://clerk.example.com',
+		FRIEREN_ORIGIN: 'https://frieren.example.com',
 		CLERK_CLIENT_ID: 'client_1',
 		CLERK_CLIENT_SECRET: 'client_secret_1',
 		TOKEN_SEAL_KEY_V1: toBase64Url(new Uint8Array(32).fill(7)),

@@ -1,6 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { expect, test } from 'vitest'
-import { authorizationUrl, discover, exchangeCode } from './oauth'
+import { authorizationUrl, discover, exchangeCode, refreshAccessToken } from './oauth'
 
 const NOW = 1_700_000_000_000
 const config = {
@@ -17,17 +17,19 @@ const metadata = {
 } satisfies Parameters<typeof authorizationUrl>[0]
 
 test('discovers Clerk endpoints and builds the fixed authorization request', async () => {
-	const found = await discover(config, async () =>
-		Response.json({
+	const found = await discover(config, async (_input, init) => {
+		expect(init?.redirect).toBe('manual')
+		return Response.json({
 			issuer: config.CLERK_ISSUER,
 			authorization_endpoint: metadata.authorizationEndpoint,
 			token_endpoint: metadata.tokenEndpoint,
 			jwks_uri: metadata.jwksUri,
 			scopes_supported: ['openid', 'offline_access', 'profile'],
+			grant_types_supported: ['authorization_code', 'refresh_token'],
 			code_challenge_methods_supported: ['S256'],
 			token_endpoint_auth_methods_supported: ['client_secret_basic']
 		})
-	)
+	})
 	const url = new URL(
 		authorizationUrl(found, config, {
 			callback: 'https://runner.example.com/auth/callback',
@@ -63,6 +65,7 @@ test('rejects metadata for another issuer or an insecure endpoint', async () => 
 					token_endpoint: metadata.tokenEndpoint,
 					jwks_uri: metadata.jwksUri,
 					scopes_supported: ['openid', 'offline_access'],
+					grant_types_supported: ['authorization_code', 'refresh_token'],
 					code_challenge_methods_supported: ['S256'],
 					token_endpoint_auth_methods_supported: ['client_secret_basic'],
 					...changed
@@ -104,6 +107,7 @@ test('exchanges the code with PKCE and verifies the ID token', async () => {
 	expect(new Headers(tokenRequest?.headers).get('authorization')).toBe(
 		`Basic ${btoa('client_1:secret_1')}`
 	)
+	expect(tokenRequest?.redirect).toBe('manual')
 	expect(new URLSearchParams(String(tokenRequest?.body))).toEqual(
 		new URLSearchParams({
 			grant_type: 'authorization_code',
@@ -112,6 +116,27 @@ test('exchanges the code with PKCE and verifies the ID token', async () => {
 			code_verifier: 'verifier_1'
 		})
 	)
+})
+
+test('refreshes the access token without following redirects', async () => {
+	let request: RequestInit | undefined
+	const tokens = await refreshAccessToken(
+		metadata,
+		config,
+		'refresh-token',
+		async (_input, init) => {
+			request = init
+			return tokenResponse('unused')
+		},
+		NOW
+	)
+
+	expect(tokens).toEqual({
+		accessToken: 'access-token',
+		refreshToken: 'refresh-token',
+		accessExpiresAt: NOW + 3_600_000
+	})
+	expect(request?.redirect).toBe('manual')
 })
 
 test('checks ID token issuer, audience, nonce, signature, and expiry', async () => {

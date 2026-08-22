@@ -26,6 +26,13 @@ interface OAuthTokens {
 	scopes: string[]
 }
 
+export class OAuthGrantExpired extends Error {
+	constructor() {
+		super('OAuth refresh grant expired')
+		this.name = 'OAuthGrantExpired'
+	}
+}
+
 export async function discover(
 	config: OAuthConfig,
 	fetcher: Fetcher = fetch
@@ -33,7 +40,7 @@ export async function discover(
 	const issuer = cleanIssuer(config.CLERK_ISSUER)
 	const response = await fetcher(`${issuer}/.well-known/oauth-authorization-server`, {
 		headers: { accept: 'application/json' },
-		redirect: 'error',
+		redirect: 'manual',
 		signal: AbortSignal.timeout(TIMEOUT_MS)
 	})
 	if (!response.ok) throw new Error('OAuth metadata request failed')
@@ -46,12 +53,52 @@ export async function discover(
 		throw new Error('OAuth server does not support S256 PKCE')
 	if (!hasStrings(value.token_endpoint_auth_methods_supported, ['client_secret_basic']))
 		throw new Error('OAuth server does not support confidential clients')
+	if (!hasStrings(value.grant_types_supported, ['authorization_code', 'refresh_token']))
+		throw new Error('OAuth server does not support the required grants')
 
 	return {
 		issuer,
 		authorizationEndpoint: endpoint(value.authorization_endpoint),
 		tokenEndpoint: endpoint(value.token_endpoint),
 		jwksUri: endpoint(value.jwks_uri)
+	}
+}
+
+export async function refreshAccessToken(
+	metadata: OAuthMetadata,
+	config: OAuthConfig,
+	refreshToken: string,
+	fetcher: Fetcher = fetch,
+	now = Date.now()
+): Promise<{ accessToken: string; refreshToken: string; accessExpiresAt: number }> {
+	const response = await fetcher(metadata.tokenEndpoint, {
+		method: 'POST',
+		headers: {
+			accept: 'application/json',
+			authorization: `Basic ${basicCredentials(
+				config.CLERK_CLIENT_ID,
+				config.CLERK_CLIENT_SECRET
+			)}`,
+			'content-type': 'application/x-www-form-urlencoded'
+		},
+		body: new URLSearchParams({
+			grant_type: 'refresh_token',
+			refresh_token: refreshToken
+		}),
+		redirect: 'manual',
+		signal: AbortSignal.timeout(TIMEOUT_MS)
+	})
+	const value: unknown = await response.json().catch(() => null)
+	if (!response.ok) {
+		if (response.status === 400 && isRecord(value) && value.error === 'invalid_grant')
+			throw new OAuthGrantExpired()
+		throw new Error('OAuth token refresh failed')
+	}
+	if (!isRefreshResponse(value)) throw new Error('OAuth refresh response is invalid')
+	return {
+		accessToken: value.access_token,
+		refreshToken: value.refresh_token,
+		accessExpiresAt: now + value.expires_in * 1_000
 	}
 }
 
@@ -102,7 +149,7 @@ export async function exchangeCode(
 			redirect_uri: input.callback,
 			code_verifier: input.verifier
 		}),
-		redirect: 'error',
+		redirect: 'manual',
 		signal: AbortSignal.timeout(TIMEOUT_MS)
 	})
 	if (!response.ok) throw new Error('OAuth code exchange failed')
@@ -168,17 +215,27 @@ const isTokenResponse = (
 	scope: string
 	token_type: string
 } =>
+	isRefreshResponse(value) &&
+	typeof value.id_token === 'string' &&
+	value.id_token.length > 0 &&
+	typeof value.scope === 'string'
+
+const isRefreshResponse = (
+	value: unknown
+): value is Record<string, unknown> & {
+	access_token: string
+	refresh_token: string
+	expires_in: number
+	token_type: string
+} =>
 	isRecord(value) &&
 	typeof value.access_token === 'string' &&
 	value.access_token.length > 0 &&
 	typeof value.refresh_token === 'string' &&
 	value.refresh_token.length > 0 &&
-	typeof value.id_token === 'string' &&
-	value.id_token.length > 0 &&
 	typeof value.expires_in === 'number' &&
 	Number.isSafeInteger(value.expires_in) &&
 	value.expires_in > 0 &&
-	typeof value.scope === 'string' &&
 	typeof value.token_type === 'string' &&
 	value.token_type.toLowerCase() === 'bearer'
 

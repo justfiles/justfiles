@@ -108,6 +108,31 @@ export async function saveRefresh(
 	return row !== null
 }
 
+export async function releaseRefresh(
+	database: Database,
+	userId: string,
+	version: number
+): Promise<void> {
+	await database.run(
+		`UPDATE accounts SET refresh_lease_until = NULL
+		 WHERE user_id = ? AND token_version = ?`,
+		userId,
+		version
+	)
+}
+
+export async function deleteLeasedAccount(
+	database: Database,
+	userId: string,
+	version: number
+): Promise<void> {
+	await database.run(
+		'DELETE FROM accounts WHERE user_id = ? AND token_version = ?',
+		userId,
+		version
+	)
+}
+
 export async function deleteAccount(database: Database, userId: string): Promise<void> {
 	await database.run('DELETE FROM accounts WHERE user_id = ?', userId)
 }
