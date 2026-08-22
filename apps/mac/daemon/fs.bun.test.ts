@@ -35,7 +35,18 @@ const childScript = `
 	import { join } from 'node:path'
 	import { getVolume } from ${JSON.stringify(new URL('./fs.ts', import.meta.url).href)}
 	import { startDaemon } from ${JSON.stringify(new URL('./main.ts', import.meta.url).href)}
-	const daemon = await startDaemon({ port: 0, projectApps: async () => {} })
+	const daemon = await startDaemon({
+		port: 0,
+		projectApps: async () => {},
+		identity: {
+			getToken: async () => null,
+			signIn: async () => { throw new Error('not used') },
+			signOut: async () => {},
+			currentUser: async () => null,
+			ownerId: async () => null,
+			onChange: () => () => {}
+		}
+	})
 	if (!daemon) {
 		console.log('__BLOCKED__')
 		process.exit(0)

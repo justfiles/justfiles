@@ -147,6 +147,8 @@ export type SyncLifecycle = {
 	resume(): void
 	/** Done. No timer, no trigger, and no cycle — not even for a later `flush`. */
 	destroy(): void
+	/** Wait for the cycle that was running when `destroy()` stopped the loop. */
+	drain(): Promise<void>
 	status(): SyncStatus
 	onStatusChange(fn: (status: SyncStatus) => void): () => void
 	/**
@@ -322,6 +324,10 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		cancelPush()
 		clearTimeout(timer)
 		timer = undefined
+	}
+
+	async function drain(): Promise<void> {
+		while (running || queued) await Promise.all([running, queued])
 	}
 
 	function cancelPush(): void {
@@ -584,6 +590,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		pause,
 		resume,
 		destroy,
+		drain,
 		status: () => status,
 		onStatusChange(fn) {
 			watching.add(fn)

@@ -1,6 +1,6 @@
 # Phase 3: connect sync and refresh the runtime
 
-Status: `todo`
+Status: `done`
 
 Depends on: Phase 2
 

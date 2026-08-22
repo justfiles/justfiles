@@ -85,6 +85,8 @@ export interface Identity {
 	signIn(opts?: { signal?: AbortSignal }): Promise<UserProfile>
 	signOut(): Promise<void>
 	currentUser(): Promise<UserProfile | null>
+	// `undefined` means custody exists but the network or Keychain could not resolve it.
+	ownerId(): Promise<string | null | undefined>
 	// Fires on sign-in and sign-out, so E2's router can flip between local-only and proxying
 	// without a restart. Returns an unsubscribe.
 	onChange(listener: (user: UserProfile | null) => void): () => void
@@ -382,38 +384,44 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		}
 	}
 
+	async function resolveUser(): Promise<UserProfile | null | undefined> {
+		const at = generation
+		// A stored refresh token is the source of truth for "signed in", so resolving the user
+		// means minting a token — which is also what tells us the grant is still alive.
+		if (state.user === undefined) {
+			await getToken()
+			// Still unresolved: either there is no grant, or we could not tell (offline, or a
+			// Keychain that is locked or denied). Only an item the store positively does not have is
+			// a fact. Caching anything else would leave Settings saying "Local user" for the rest of
+			// the run with a perfectly good grant in the Keychain, so it stays unresolved and the
+			// next ask retries.
+			if (
+				state.user === undefined &&
+				(await serial(() =>
+					store.read().then(
+						(held) => !held,
+						() => false
+					)
+				))
+			) {
+				commit(at, { user: null, token: state.token, forgotten: state.forgotten })
+			}
+		}
+		const known = state.user
+		if (known && !known.name) await describe(known)
+		// Answer from state, never from `known`: it may be minutes old by now (a userinfo round
+		// trip), and a sign-out in that window must win.
+		return state.user
+	}
+
 	return {
 		getToken,
 		signIn,
 		signOut,
-		currentUser: async () => {
-			const at = generation
-			// A stored refresh token is the source of truth for "signed in", so resolving the user
-			// means minting a token — which is also what tells us the grant is still alive.
-			if (state.user === undefined) {
-				await getToken()
-				// Still unresolved: either there is no grant, or we could not tell (offline, or a
-				// Keychain that is locked or denied). Only an item the store positively does not have is
-				// a fact. Caching anything else would leave Settings saying "Local user" for the rest of
-				// the run with a perfectly good grant in the Keychain, so it stays unresolved and the
-				// next ask retries.
-				if (
-					state.user === undefined &&
-					(await serial(() =>
-						store.read().then(
-							(held) => !held,
-							() => false
-						)
-					))
-				) {
-					commit(at, { user: null, token: state.token, forgotten: state.forgotten })
-				}
-			}
-			const known = state.user
-			if (known && !known.name) await describe(known)
-			// Answer from state, never from `known`: it may be minutes old by now (a userinfo round
-			// trip), and a sign-out in that window must win.
-			return state.user ?? null
+		currentUser: async () => (await resolveUser()) ?? null,
+		ownerId: async () => {
+			const user = await resolveUser()
+			return user === undefined ? undefined : (user?.id ?? null)
 		},
 		onChange: (listener) => {
 			listeners.add(listener)

@@ -22,7 +22,7 @@ import {
 } from '../../shared/justapps.ts'
 import { closeStorage } from './fs.ts'
 import { getKernel } from './kernel.ts'
-import { createServer } from './main.ts'
+import { closeServerRuntime, createServer } from './main.ts'
 
 const FILES = 'justfiles.files'
 let root: string
@@ -40,6 +40,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
 	server.stop(true)
+	await closeServerRuntime(server)
 	await closeStorage()
 	delete process.env.FRIEREN_SUPPORT_DIR
 	await rm(root, { recursive: true, force: true })

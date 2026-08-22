@@ -32,6 +32,7 @@ import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
 let accountsOnce: Promise<HostAccounts> | undefined
+let appCheck: ReturnType<typeof setInterval> | undefined
 
 const systemAllowlist = ['justfiles.files']
 
@@ -80,10 +81,18 @@ export function getKernel(): Promise<Kernel> {
 				console.warn('appstore: update check failed', error)
 			)
 		)
-		setInterval(check, UPDATE_CHECK_INTERVAL_MS).unref()
+		appCheck = setInterval(check, UPDATE_CHECK_INTERVAL_MS)
+		appCheck.unref()
 		return k
 	})
 	return kernelOnce
+}
+
+export async function closeKernel(): Promise<void> {
+	if (appCheck) clearInterval(appCheck)
+	appCheck = undefined
+	const active = await kernelOnce?.catch(() => undefined)
+	active?.dispose()
 }
 
 // Build the kernel over a given Volume + that Volume's account module: the capability

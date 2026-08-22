@@ -168,6 +168,7 @@ test('signed out: getToken() resolves null and never throws', async () => {
 	const identity = identityOver(memoryStore())
 	expect(await identity.getToken()).toBeNull()
 	expect(await identity.currentUser()).toBeNull()
+	expect(await identity.ownerId()).toBeNull()
 	expect(server.tokenCalls()).toHaveLength(0)
 })
 
@@ -248,11 +249,13 @@ test('a transient failure keeps the credential — offline must not sign the use
 
 	expect(await identity.getToken()).toBeNull()
 	expect(store.value).toBe('rt-0') // still signed in, just unreachable
+	expect(await identity.ownerId()).toBeUndefined()
 
 	// …and the next attempt heals without a re-sign-in.
 	server.rotating(86_400)
 	expect(await identity.getToken()).toBe(accessToken(1))
 	expect(store.value).toBe('rt-1')
+	expect(await identity.ownerId()).toBe(USER)
 })
 
 test('an unreachable authorization server is a transient failure, not a sign-out', async () => {
