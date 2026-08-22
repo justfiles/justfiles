@@ -14,9 +14,7 @@
 	"upload_source_maps": true,
 	// Zone apex the Worker is bound to; the first host label under it is the app id.
 	"vars": {
-		"ROOT_DOMAIN": "justapps.run",
-		"CLERK_ISSUER": "https://clerk.mykodama.app",
-		"FRIEREN_ORIGIN": "https://mykodama.app"
+		"ROOT_DOMAIN": "justapps.run"
 	},
 	// Everything we host: the catalog snapshot, per-app state, and every release's
 	// bytes. See kb/registry.md for the key layout.
@@ -26,19 +24,10 @@
 			"bucket_name": "runner-store"
 		}
 	],
-	// Production gets its database_id during rollout. Local dev uses Wrangler's
-	// local D1 store without reaching a cloud database.
-	"d1_databases": [
-		{
-			"binding": "AUTH_DB",
-			"database_name": "runner-auth",
-			"migrations_dir": "migrations"
-		}
-	],
 	// Reading a public repo still needs a token: unauthenticated GitHub is 60
 	// requests/hour *per IP*, and a Worker's egress IP is shared.
 	"secrets": {
-		"required": ["GITHUB_TOKEN", "TOKEN_SEAL_KEY_V1", "CLERK_CLIENT_ID", "CLERK_CLIENT_SECRET"]
+		"required": ["GITHUB_TOKEN"]
 	},
 	// Hourly, and deliberately not more often: a cron on an interval of an hour
 	// or more gets 15 minutes of CPU, where a sub-hourly one gets 30 seconds.
@@ -66,9 +55,7 @@
 		"dev": {
 			"routes": [],
 			"vars": {
-				"ROOT_DOMAIN": "justapps.run",
-				"CLERK_ISSUER": "https://capable-spider-79.clerk.accounts.dev",
-				"FRIEREN_ORIGIN": "https://staging.mykodama.app"
+				"ROOT_DOMAIN": "justapps.run"
 			},
 			"r2_buckets": [
 				{
@@ -76,15 +63,8 @@
 					"bucket_name": "runner-store"
 				}
 			],
-			"d1_databases": [
-				{
-					"binding": "AUTH_DB",
-					"database_name": "runner-auth",
-					"migrations_dir": "migrations"
-				}
-			],
 			"secrets": {
-				"required": ["GITHUB_TOKEN", "TOKEN_SEAL_KEY_V1", "CLERK_CLIENT_ID", "CLERK_CLIENT_SECRET"]
+				"required": ["GITHUB_TOKEN"]
 			}
 		}
 	}
