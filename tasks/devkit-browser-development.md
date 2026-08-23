@@ -80,8 +80,8 @@ Add an optional import map to the Devkit `project.json` file:
 	"app": "src/app.ts",
 	"gui": "src/gui.tsx",
 	"imports": {
-		"react": "https://esm.sh/react@19.1.1?bundle",
-		"react-dom/client": "https://esm.sh/react-dom@19.1.1/client?bundle"
+		"react": "https://esm.sh/react@19.1.1",
+		"react-dom/client": "https://esm.sh/react-dom@19.1.1/client?bundle&deps=react@19.1.1"
 	}
 }
 ```
@@ -151,6 +151,35 @@ If `esm.sh` fails one of these checks, test a second CDN before adding any share
 Keep all CDN-specific header and URL handling in one module.
 
 Output: a Vitest fixture and a short decision note in this task file.
+
+### Decision, 2026-08-23
+
+Use `esm.sh` for the first adapter. Run the live probe with:
+
+```sh
+DEVKIT_CDN_PROBE=1 pnpm run test packages/app/capabilities/devkit/esm.probe.test.ts
+```
+
+The probe confirmed:
+
+- JavaScript and declaration responses allow browser CORS.
+- Versioned module responses use a one-year immutable cache policy.
+- `X-TypeScript-Types` points to a declaration entry.
+- Type ranges redirect to an exact versioned URL, which the lock must record.
+- React DOM imports a pinned React URL, so the resolver can keep one React module in the graph.
+- The downloaded JavaScript graph builds from memory after network access is disabled.
+
+The probe also found two rules that the resolver must enforce:
+
+1. Do not use `react@19.1.1?bundle`. React DOM imports `react.mjs`, while that entry imports
+   `react.bundle.mjs`. The two React module instances break hooks. Use the normal React entry.
+2. Do not trust CDN output as proof that a package supports the browser. `better-sqlite3`
+   returns JavaScript with `/node/` shim imports and no type header. Reject any `/node/` import
+   before the build.
+
+The React entry points to `@types/react@~19.1.17`, but the React DOM declaration imports
+`@types/react@19.2.14`. Stage 2 must lock every final declaration URL and detect two versions
+of the same type package. Do not silently load both.
 
 ## Stage 2: add the import resolver
 
