@@ -13,6 +13,8 @@ const paintReleaseUrl = 'https://justfiles-paint.justapps.run/v/0.1.0/manifest.j
 const dictionaryManifestUrl = 'https://justfiles-dictionary.justapps.run/manifest.json'
 const dictionaryReleaseUrl = 'https://justfiles-dictionary.justapps.run/v/0.1.0/manifest.json'
 const taskManifestUrl = 'https://com-example-tasks.justapps.run/manifest.json'
+const localStoreUrl = 'http://localhost:4173/store.json'
+const localManifestUrl = 'http://localhost:4173/manifest.json'
 const release = {
 	schema: RUNNER_MANIFEST_SCHEMA,
 	id: 'justfiles.notes',
@@ -137,5 +139,33 @@ describe('bootAppStore', () => {
 		expect(apps).toHaveLength(2)
 		expect(apps?.[0]).toMatchObject({ id: release.id, name: 'Bundled Notes' })
 		expect(await store?.latest(release.id)).toMatchObject({ name: 'Bundled Notes' })
+	})
+
+	test('keeps a local app authoritative over the same production Runner id', async () => {
+		const localRelease = { ...release, name: 'Local Notes', hash: 'local-release-hash' }
+		const localRunner = {
+			schema: RUNNER_STORE_SCHEMA,
+			apps: [{ ...runner.apps[0], name: localRelease.name, manifestUrl: localManifestUrl }]
+		}
+		const request = async (url: string): Promise<Response> => {
+			if (url === CATALOG_PATH) return json(builtin)
+			if (url === localStoreUrl) return json(localRunner, localStoreUrl)
+			if (url === localManifestUrl) return json(localRelease, localManifestUrl)
+			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
+			if (url === manifestUrl) return json(release, releaseUrl)
+			if (url === paintManifestUrl) return json(paintRelease, paintReleaseUrl)
+			if (url === dictionaryManifestUrl) return json(dictionaryRelease, dictionaryReleaseUrl)
+			if (url === 'http://localhost:4173/app.js') return new Response(new Uint8Array([3]))
+			return new Response(null, { status: 404 })
+		}
+
+		const store = await bootAppStore(request, localStoreUrl)
+		const app = await store?.latest(release.id)
+
+		expect(app).toMatchObject({
+			name: 'Local Notes',
+			hash: 'local-release-hash'
+		})
+		expect([...(await store!.read(app!, 'app.js'))]).toEqual([3])
 	})
 })

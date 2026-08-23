@@ -1,6 +1,6 @@
 import { deflateRawSync } from 'node:zlib'
+import type { ReleaseManifest } from '@justfiles/app/appstore/protocol'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ReleaseManifest } from '../protocol'
 import { importRelease } from './import'
 import type { AppRecord, Resolved } from './refresh-app'
 import { entries, inflate } from './zip'

@@ -187,6 +187,24 @@ When driving Code as an agent:
 
 `compile` strips TypeScript types and therefore does not replace `typecheck`.
 
+### Develop an app in Frieren
+
+In any app repository that uses `kernelHost`, run the watch build. It also starts the local app store:
+
+```sh
+pnpm build --watch
+```
+
+Then start Frieren from the justfiles repository:
+
+```sh
+VITE_FRIEREN_DEV_APP_STORE=http://localhost:4173/store.json pnpm dev
+```
+
+The watch build uses the same store, manifest, and `baseUrl` model as JustApps. Frieren checks the
+local store each second. When the app hash changes, Frieren installs the new build and reloads the
+open app. The app repository still controls which `@justfiles/app` version it builds against.
+
 ## State machine API
 
 Schemas use the [Standard Schema](https://standardschema.dev/) interface. Apps normally use Valibot.

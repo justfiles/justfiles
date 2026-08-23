@@ -1,7 +1,7 @@
+import type { StoreApp } from '@justfiles/app/appstore/protocol'
 import type { Handler } from 'hono'
 import { raw } from 'hono/html'
 import { readStore } from './catalog'
-import type { StoreApp } from './protocol'
 
 type Env = { Bindings: CloudflareBindings }
 

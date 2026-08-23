@@ -12,6 +12,7 @@
 
 import type { Volume } from '@justfiles/fs'
 import type { AppManifest } from './app.ts'
+import { appHash } from './appstore.protocol.ts'
 import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
@@ -143,7 +144,7 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 	// the migration off the copied layout does not depend on a version bump either.
 	if (installed && installed.baseUrl !== app.baseUrl) return gte ? 'repair' : 'skip'
 	if (!(await filesPresentAndMatch(fs, app, installed))) return gte ? 'repair' : 'skip'
-	if (installed?.hash === (app.hash ?? (await appHash(app)))) return 'skip'
+	if (installed?.hash === (app.hash ?? (await appHash(app.files)))) return 'skip'
 	return gte ? 'upgrade' : 'skip'
 }
 
@@ -187,7 +188,7 @@ async function performInstall(kernel: Kernel, store: AppStore, app: CatalogApp):
 		...declared,
 		id: app.id,
 		version: app.version,
-		hash: app.hash ?? (await appHash(app)),
+		hash: app.hash ?? (await appHash(app.files)),
 		// Where an app's bytes come from is the STORE's fact, never the bundle's claim —
 		// a published manifest that named its own origin would otherwise decide its own
 		// residency, and point the mount wherever it liked.
@@ -378,22 +379,6 @@ export function escalatesCapabilities(
 async function escalates(fs: Volume, app: CatalogApp): Promise<boolean> {
 	const installed = await installedManifest(fs, app.id)
 	return escalatesCapabilities(installed?.capabilities, app.capabilities)
-}
-
-// The whole-app hash: one sha256 folding every file's pinned hash together
-// (paths sorted, so it's independent of catalog order). Because manifest.json is
-// itself a hashed file, this covers ALL of an app's metadata — version, name,
-// icon, declared capabilities — alongside its code and assets, and it moves when
-// any file is added or removed. It is the single signal the update path
-// compares: a manifest-only edit that never touches the version still changes
-// the digest (so it reinstalls), and an unchanged app never does.
-async function appHash(app: CatalogApp): Promise<string> {
-	const input = [...app.files]
-		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-		.map((file) => `${file.path}\u0000${file.hash}`)
-		.join('\n')
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 // Integrity check: the catalog pins each file's `sha256-<hex>` digest (emitted

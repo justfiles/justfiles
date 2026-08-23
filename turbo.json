@@ -57,6 +57,7 @@
 				"@justfiles/app-settings#build",
 				"transit"
 			],
+			"env": ["FRIEREN_DEV_APPS", "VITE_FRIEREN_DEV_APP_STORE"],
 			"cache": false,
 			"persistent": true
 		}
