@@ -19,6 +19,8 @@ const reactCode = 'https://esm.sh/react@19.1.1/es2022/react.mjs'
 const dependencyCode = 'https://esm.sh/dependency@1.0.0/es2022/dependency.mjs'
 const reactTypes = 'https://esm.sh/@types/react@19.1.0/index.d.ts'
 const nestedTypes = 'https://esm.sh/@types/react@19.1.0/nested.d.ts'
+const rootTypes = 'https://esm.sh/@types/react@19.1.0/root.d.ts'
+const rootTypeRef = '/@types/react@19.1.0/root.d.ts'
 
 describe('Devkit import resolver', () => {
 	test('uses metadata for entries and leaves JavaScript traversal to esbuild', async () => {
@@ -68,6 +70,30 @@ describe('Devkit import resolver', () => {
 			loaded.paths
 		)
 		expect(checked.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+	})
+
+	test('maps root-relative declaration references', async () => {
+		const values = graph()
+		values[reactTypes] = {
+			text: `/// <reference path="${rootTypeRef}" />\nexport type RemoteValue = RootRelative`
+		}
+		values[rootTypes] = { text: 'interface RootRelative { label: string }' }
+		const imports = await resolveImports(
+			{ react },
+			{ cache: memoryCache(), fetch: fakeFetch(values) }
+		)
+		const loaded = await loadImportTypes(imports, ts)
+
+		expect(loaded.paths[rootTypeRef]).toEqual(['__imports__/esm.sh/@types/react@19.1.0/root.d.ts'])
+		const checked = tsTypecheck(
+			project(
+				"import type { RemoteValue } from 'react'; const value: RemoteValue = { label: 1 }; export { value }"
+			),
+			ts,
+			loaded.types,
+			loaded.paths
+		)
+		expect(checked.diagnostics).toEqual([expect.objectContaining({ code: 'TS2322' })])
 	})
 
 	test('uses a valid lock and cache without network access', async () => {
@@ -127,6 +153,26 @@ describe('Devkit import resolver', () => {
 		const result = await esbuildCompile(project("import 'react'"), esbuild.build, {}, imports)
 
 		expect(result.diagnostics[0]?.message).toContain('Node import is not supported')
+	})
+
+	test('rejects computed dynamic imports in remote modules', async () => {
+		const values = graph()
+		values[reactCode] = {
+			text: 'const url = "/dependency@1.0.0/es2022/dependency.mjs"; export const load = () => import(url)'
+		}
+		const imports = await resolveImports(
+			{ react },
+			{ cache: memoryCache(), fetch: fakeFetch(values) }
+		)
+
+		const result = await esbuildCompile(
+			project("import { load } from 'react'; load()"),
+			esbuild.build,
+			{},
+			imports
+		)
+
+		expect(result.diagnostics[0]?.message).toContain('Dynamic import must use a string literal')
 	})
 
 	test('limits one file by bytes', async () => {

@@ -178,8 +178,9 @@ The probe also found two rules that the resolver must enforce:
    before the build.
 
 The React entry points to `@types/react@~19.1.17`, but the React DOM declaration imports
-`@types/react@19.2.14`. Stage 2 must lock every final declaration URL and detect two versions
-of the same type package. Do not silently load both.
+`@types/react@19.2.14`. Stage 2 locks both exact versions. It does not reject a graph only
+because it contains two versions. npm and TypeScript permit this, and the live React graph
+passes the application type check. Devkit still reports type errors in application source.
 
 ## Stage 2: add the import resolver
 

@@ -49,8 +49,8 @@ export async function loadImportTypes(
 ): Promise<{ types: TypesBundle; paths: TypePaths }> {
 	const types: TypesBundle = {}
 	const paths: TypePaths = {}
-	const queue = Object.entries(imports.declarations).map(([specifier, url]) => ({
-		specifier,
+	const queue = Object.entries(imports.declarations).map(([alias, url]) => ({
+		alias,
 		url,
 		depth: 0
 	}))
@@ -62,7 +62,7 @@ export async function loadImportTypes(
 		const path = typePath(file.url)
 		paths[item.url] = [path]
 		paths[file.url] = [path]
-		if (item.specifier) paths[item.specifier] = [path]
+		if (item.alias) paths[item.alias] = [path]
 		if (path in types) continue
 		types[path] = file.text
 		const info = ts.preProcessFile(file.text, true, true)
@@ -73,7 +73,7 @@ export async function loadImportTypes(
 		]
 		for (const reference of references) {
 			queue.push({
-				specifier: '',
+				alias: reference.fileName.startsWith('/') ? reference.fileName : '',
 				url: imports.resolve(reference.fileName, file.url, 'types'),
 				depth: item.depth + 1
 			})
@@ -109,6 +109,12 @@ export function tsTypecheck(
 	// a complete `TypesBundle` instead and never touches the fs.
 	const root = `${import.meta.dirname}/__engine_draft__`
 	const norm = (path: string) => `${root}/${path}`
+	// Triple-slash root paths bypass compilerOptions.paths, so the host maps them too.
+	const aliases = new Map<string, string>()
+	for (const [specifier, [target]] of Object.entries(paths)) {
+		if (specifier.startsWith('/') && target) aliases.set(specifier, norm(target))
+	}
+	const actual = (path: string) => aliases.get(path) ?? path
 	// In-memory overlay: draft sources + the stdlib `.d.ts` bundle. Anything else
 	// (lib.*.d.ts, node_modules) falls through to the real host below.
 	const overlay = new Map<string, string>()
@@ -143,8 +149,8 @@ export function tsTypecheck(
 	const baseExists = host.fileExists.bind(host)
 	const baseDirExists = host.directoryExists?.bind(host)
 	const baseGetSource = host.getSourceFile.bind(host)
-	host.fileExists = (file) => overlay.has(file) || baseExists(file)
-	host.readFile = (file) => overlay.get(file) ?? baseRead(file)
+	host.fileExists = (file) => overlay.has(actual(file)) || baseExists(file)
+	host.readFile = (file) => overlay.get(actual(file)) ?? baseRead(file)
 	// A directory import (`import … from "./"`) probes
 	// `directoryExists` WITH a trailing slash; `dirs` holds the slash-free form, so
 	// normalise before the lookup or the no-fs (baked TypesBundle) path can't resolve
@@ -154,9 +160,10 @@ export function tsTypecheck(
 		return dirs.has(d) || (baseDirExists?.(dir) ?? false)
 	}
 	host.getSourceFile = (file, languageVersion, onError, shouldCreate) => {
-		const text = overlay.get(file)
+		const path = actual(file)
+		const text = overlay.get(path)
 		return text !== undefined
-			? ts.createSourceFile(file, text, languageVersion, true)
+			? ts.createSourceFile(path, text, languageVersion, true)
 			: baseGetSource(file, languageVersion, onError, shouldCreate)
 	}
 
