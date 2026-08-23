@@ -4,7 +4,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { zipSync } from 'fflate'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { CATALOG_SCHEMA } from '../../shared/appstore'
+import { CATALOG_PATH, CATALOG_SCHEMA } from '../../shared/appstore'
 import { installZipApp, uninstallLocalApp } from './manage'
 
 const enc = new TextEncoder()
@@ -62,28 +62,43 @@ describe('local app management', () => {
 		const { fs, k } = setup()
 		const id = await installZipApp(k, appZip())
 		await seedState(fs, id)
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => new Response(null, { status: 404 }))
-		)
+		const fetcher = vi.fn(async () => new Response(null, { status: 404 }))
+		vi.stubGlobal('fetch', fetcher)
 
 		await uninstallLocalApp(k, id)
 
+		expect(fetcher).toHaveBeenCalledOnce()
+		expect(fetcher).toHaveBeenCalledWith(CATALOG_PATH)
 		expect(await fs.exists('/applications/com.example.local')).toBe(false)
 		expect(await fs.exists('/state/com.example.local.json')).toBe(false)
 		expect(await fs.exists('/data/com.example.local')).toBe(false)
 	})
 
-	test('refuses to uninstall built-ins (reconcile reinstalls them on launch)', async () => {
+	test('refuses to uninstall bundled catalog apps', async () => {
 		const { fs, k } = setup()
-		const id = await installZipApp(k, appZip('justfiles.paint'))
+		const id = await installZipApp(k, appZip('com.example.builtin'))
 		await seedState(fs, id)
 		stubCatalog(id)
 
 		await expect(uninstallLocalApp(k, id)).rejects.toThrow(/cannot be uninstalled/)
 
-		expect(await fs.exists('/applications/justfiles.paint')).toBe(true)
-		expect(await fs.exists('/state/justfiles.paint.json')).toBe(true)
-		expect(await fs.exists('/data/justfiles.paint')).toBe(true)
+		expect(await fs.exists('/applications/com.example.builtin')).toBe(true)
+		expect(await fs.exists('/state/com.example.builtin.json')).toBe(true)
+		expect(await fs.exists('/data/com.example.builtin')).toBe(true)
+	})
+
+	test('refuses to uninstall hosted built-ins without fetching', async () => {
+		const { fs, k } = setup()
+		const id = await installZipApp(k, appZip('justfiles.dictionary'))
+		await seedState(fs, id)
+		const fetcher = vi.fn()
+		vi.stubGlobal('fetch', fetcher)
+
+		await expect(uninstallLocalApp(k, id)).rejects.toThrow(/cannot be uninstalled/)
+
+		expect(fetcher).not.toHaveBeenCalled()
+		expect(await fs.exists('/applications/justfiles.dictionary')).toBe(true)
+		expect(await fs.exists('/state/justfiles.dictionary.json')).toBe(true)
+		expect(await fs.exists('/data/justfiles.dictionary')).toBe(true)
 	})
 })

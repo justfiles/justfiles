@@ -10,6 +10,8 @@ const manifestUrl = 'https://justfiles-notes.justapps.run/manifest.json'
 const releaseUrl = 'https://justfiles-notes.justapps.run/v/1.2.0/manifest.json'
 const paintManifestUrl = 'https://justfiles-paint.justapps.run/manifest.json'
 const paintReleaseUrl = 'https://justfiles-paint.justapps.run/v/0.1.0/manifest.json'
+const dictionaryManifestUrl = 'https://justfiles-dictionary.justapps.run/manifest.json'
+const dictionaryReleaseUrl = 'https://justfiles-dictionary.justapps.run/v/0.1.0/manifest.json'
 const taskManifestUrl = 'https://com-example-tasks.justapps.run/manifest.json'
 const release = {
 	schema: RUNNER_MANIFEST_SCHEMA,
@@ -36,6 +38,14 @@ const paintRelease = {
 	icon: 'icon.png',
 	hash: 'paint-release-hash'
 }
+const dictionaryRelease = {
+	...release,
+	id: 'justfiles.dictionary',
+	name: 'Dictionary',
+	description: 'Look up words',
+	version: '0.1.0',
+	hash: 'dictionary-release-hash'
+}
 const runner = {
 	schema: RUNNER_STORE_SCHEMA,
 	apps: [
@@ -54,6 +64,14 @@ const runner = {
 			iconUrl: 'https://justfiles-paint.justapps.run/v/0.1.0/icon.png',
 			manifestUrl: paintManifestUrl,
 			repository: 'https://github.com/justfiles/app-paint'
+		},
+		{
+			id: dictionaryRelease.id,
+			name: dictionaryRelease.name,
+			version: dictionaryRelease.version,
+			iconUrl: 'https://justfiles-dictionary.justapps.run/v/0.1.0/icon.svg',
+			manifestUrl: dictionaryManifestUrl,
+			repository: 'https://github.com/justfiles/app-dictionary'
 		},
 		{
 			id: 'com.example.tasks',
@@ -88,13 +106,15 @@ describe('bootAppStore', () => {
 			if (url === RUNNER_STORE_URL) return json(runner, RUNNER_STORE_URL)
 			if (url === manifestUrl) return json(release, releaseUrl)
 			if (url === paintManifestUrl) return json(paintRelease, paintReleaseUrl)
+			if (url === dictionaryManifestUrl) return json(dictionaryRelease, dictionaryReleaseUrl)
 			return new Response(null, { status: 404 })
 		}
 		const store = await bootAppStore(request)
 		expect((await store?.builtins())?.map((app) => app.id)).toEqual([
 			'justfiles.files',
 			'justfiles.notes',
-			'justfiles.paint'
+			'justfiles.paint',
+			'justfiles.dictionary'
 		])
 		expect((await store?.latest('justfiles.files'))?.version).toBe('0.1.0')
 		expect((await store?.latest(release.id))?.version).toBe('1.2.0')

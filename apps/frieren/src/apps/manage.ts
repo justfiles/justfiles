@@ -27,11 +27,12 @@ export async function uninstallLocalApp(kernel: Kernel, id: string): Promise<voi
 }
 
 async function isBuiltin(id: string): Promise<boolean> {
+	if (id.startsWith('justfiles.')) return true
 	try {
 		const store = await httpAppStore((path) => fetch(path))
 		if (store) return (await store.builtins()).some((app) => app.id === id)
 	} catch {}
-	return id.startsWith('justfiles.')
+	return false
 }
 
 // Restart installs left pending by a closed/crashed tab (the fs markers under
