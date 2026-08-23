@@ -2,7 +2,7 @@ import { bundleFromZip, type Kernel } from '@justfiles/app'
 import { installApp } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
 import { runnerAppStore } from '../../../shared/justapps'
-import { bootAppStore } from '../../shared/appstore'
+import { httpAppStore } from '../../shared/appstore'
 import { endInstall, readInstallMarkers, seedInstalling } from './installing'
 
 export async function installZipApp(kernel: Kernel, zip: Uint8Array): Promise<string> {
@@ -27,11 +27,12 @@ export async function uninstallLocalApp(kernel: Kernel, id: string): Promise<voi
 }
 
 async function isBuiltin(id: string): Promise<boolean> {
+	if (id.startsWith('justfiles.')) return true
 	try {
-		const store = await bootAppStore((path) => fetch(path))
+		const store = await httpAppStore((path) => fetch(path))
 		if (store) return (await store.builtins()).some((app) => app.id === id)
 	} catch {}
-	return id.startsWith('justfiles.')
+	return false
 }
 
 // Restart installs left pending by a closed/crashed tab (the fs markers under
