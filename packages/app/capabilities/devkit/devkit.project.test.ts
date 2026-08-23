@@ -20,15 +20,10 @@ const project = {
 	imports: { react: 'https://esm.sh/react@19.1.1' }
 }
 const lock: ImportLock = {
-	schema: 'justfiles.devkit-imports.v1',
-	imports: {
-		react: {
-			source: 'https://esm.sh/react@19.1.1',
-			url: 'https://esm.sh/react@19.1.1'
-		}
-	},
-	files: {
-		'https://esm.sh/react@19.1.1': { hash: 'sha256-example', size: 9 }
+	version: 1,
+	redirects: {},
+	remote: {
+		'https://esm.sh/react@19.1.1': `sha256-${'0'.repeat(64)}`
 	}
 }
 

@@ -11,6 +11,7 @@
 // passes a baked `TypesBundle` instead; same code, no fs reliance.
 
 import type * as TS from 'typescript'
+import type { ResolvedImports } from './imports.ts'
 import type {
 	CheckResult,
 	Compile,
@@ -37,6 +38,59 @@ export function typescriptToolchain(opts: {
 		typecheck: async (input: ProjectInput) =>
 			tsTypecheck(input, opts.ts, opts.types ?? {}, opts.paths ?? {})
 	}
+}
+
+// Let TypeScript identify declaration references. The returned files keep the
+// CDN path under one virtual directory, so normal relative type imports still
+// resolve through the existing compiler host.
+export async function loadImportTypes(
+	imports: ResolvedImports,
+	ts: typeof TS
+): Promise<{ types: TypesBundle; paths: TypePaths }> {
+	const types: TypesBundle = {}
+	const paths: TypePaths = {}
+	const queue = Object.entries(imports.declarations).map(([specifier, url]) => ({
+		specifier,
+		url,
+		depth: 0
+	}))
+	for (let index = 0; index < queue.length; index++) {
+		const item = queue[index]
+		if (!item) break
+		if (item.depth > imports.limits.depth) throw new Error('Import graph is too deep')
+		const file = await imports.load(item.url)
+		const path = typePath(file.url)
+		paths[item.url] = [path]
+		paths[file.url] = [path]
+		if (item.specifier) paths[item.specifier] = [path]
+		if (path in types) continue
+		types[path] = file.text
+		const info = ts.preProcessFile(file.text, true, true)
+		const references = [
+			...info.importedFiles,
+			...info.referencedFiles,
+			...info.typeReferenceDirectives
+		]
+		for (const reference of references) {
+			queue.push({
+				specifier: '',
+				url: imports.resolve(reference.fileName, file.url, 'types'),
+				depth: item.depth + 1
+			})
+		}
+	}
+	return { types, paths }
+}
+
+function typePath(value: string): string {
+	const url = new URL(value)
+	let path = url.pathname.slice(1)
+	if (url.search) {
+		const dot = path.lastIndexOf('.')
+		const suffix = `--${encodeURIComponent(url.search.slice(1))}`
+		path = dot < 0 ? `${path}${suffix}` : `${path.slice(0, dot)}${suffix}${path.slice(dot)}`
+	}
+	return `__imports__/${url.hostname}/${path}`
 }
 
 // The typecheck backend hosts inject into `devkitCapability` (which loads `types`

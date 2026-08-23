@@ -1,13 +1,11 @@
-import { init, parse } from 'es-module-lexer'
 import { sdkRuntimeSpecs } from '../../runtime-specs.ts'
-import type { Diagnostic, TypePaths, TypesBundle } from './toolchain.ts'
+import type { Diagnostic } from './toolchain.ts'
 
 export type ImportMap = Record<string, string>
 
 export interface CachedImport {
 	url: string
 	text: string
-	types?: string
 }
 
 export interface ImportCache {
@@ -16,17 +14,9 @@ export interface ImportCache {
 }
 
 export interface ImportLock {
-	schema: 'justfiles.devkit-imports.v1'
-	imports: Record<string, { source: string; url: string; types?: string }>
-	files: Record<string, { hash: string; size: number }>
-}
-
-export interface ResolvedImports {
-	runtime: Record<string, string>
-	types: TypesBundle
-	paths: TypePaths
-	lock?: ImportLock
-	diagnostics: Diagnostic[]
+	version: 1
+	redirects: Record<string, string>
+	remote: Record<string, string>
 }
 
 export interface ImportLimits {
@@ -37,10 +27,21 @@ export interface ImportLimits {
 	timeoutMs: number
 }
 
+export interface ResolvedImports {
+	code: Record<string, string>
+	declarations: Record<string, string>
+	limits: Readonly<ImportLimits>
+	load(url: string): Promise<CachedImport>
+	resolve(specifier: string, importer: string, kind: 'code' | 'types'): string
+	lock(): ImportLock
+	diagnostics: Diagnostic[]
+}
+
 interface ResolveOptions {
 	cache: ImportCache
 	fetch?: typeof fetch
 	lock?: ImportLock
+	frozen?: boolean
 	limits?: Partial<ImportLimits>
 }
 
@@ -51,14 +52,11 @@ const LIMITS: ImportLimits = {
 	totalBytes: 20 * 1024 * 1024,
 	timeoutMs: 10_000
 }
-const LOCK_SCHEMA = 'justfiles.devkit-imports.v1'
 const encoder = new TextEncoder()
 
 export function validateImportMap(value: unknown): ImportMap {
 	if (value === undefined) return {}
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
-		throw new Error('project.json "imports" must be an object')
-	}
+	if (!isRecord(value)) throw new Error('project.json "imports" must be an object')
 	const imports: ImportMap = {}
 	for (const [specifier, source] of Object.entries(value)) {
 		if (!isBareSpecifier(specifier)) {
@@ -76,132 +74,98 @@ export function validateImportMap(value: unknown): ImportMap {
 }
 
 export function parseImportLock(value: unknown): ImportLock {
-	if (!value || typeof value !== 'object') throw new Error('devkit-lock.json is invalid')
-	const lock = value as Partial<ImportLock>
-	if (lock.schema !== LOCK_SCHEMA || !isRecord(lock.imports) || !isRecord(lock.files)) {
+	if (
+		!isRecord(value) ||
+		value.version !== 1 ||
+		!isRecord(value.redirects) ||
+		!isRecord(value.remote)
+	) {
 		throw new Error('devkit-lock.json is invalid')
 	}
-	for (const entry of Object.values(lock.imports)) {
-		if (
-			!isRecord(entry) ||
-			typeof entry.source !== 'string' ||
-			typeof entry.url !== 'string' ||
-			(entry.types !== undefined && typeof entry.types !== 'string')
-		) {
-			throw new Error('devkit-lock.json is invalid')
-		}
+	if (
+		!Object.values(value.redirects).every((url) => typeof url === 'string') ||
+		!Object.values(value.remote).every(
+			(hash) => typeof hash === 'string' && /^sha256-[0-9a-f]{64}$/.test(hash)
+		)
+	) {
+		throw new Error('devkit-lock.json is invalid')
 	}
-	for (const file of Object.values(lock.files)) {
-		if (!isRecord(file) || typeof file.hash !== 'string' || typeof file.size !== 'number') {
-			throw new Error('devkit-lock.json is invalid')
-		}
-	}
-	return lock as ImportLock
+	return value as unknown as ImportLock
 }
 
+// Resolve only package entry metadata here. esbuild and TypeScript follow their
+// own graphs through `load` and `resolve`, so this module does not parse either
+// language or keep a second module graph.
 export async function resolveImports(
-	imports: ImportMap,
+	value: ImportMap,
 	options: ResolveOptions
 ): Promise<ResolvedImports> {
+	const code: Record<string, string> = {}
+	const declarations: Record<string, string> = {}
+	const limits = { ...LIMITS, ...options.limits }
+	const store = new Store(options, limits)
 	const result: ResolvedImports = {
-		runtime: {},
-		types: {},
-		paths: {},
+		code,
+		declarations,
+		limits,
+		load: (url) => store.load(url),
+		resolve: (specifier, importer, kind) => {
+			if (specifier.startsWith('node:') || specifier.startsWith('/node/')) {
+				throw new ImportError('IMPORT_NODE', `Node import is not supported: ${specifier}`)
+			}
+			if (isBareSpecifier(specifier)) {
+				const url = kind === 'code' ? code[specifier] : declarations[specifier]
+				if (!url) throw new ImportError('IMPORT_BARE', `Unmapped import: ${specifier}`)
+				return url
+			}
+			return resolveUrl(specifier, importer)
+		},
+		lock: () => store.lock(),
 		diagnostics: []
 	}
 	try {
-		const validatedImports = validateImportMap(imports)
-		validateLockImports(validatedImports, options.lock)
-		const resolver = new Resolver(validatedImports, options)
-		const lockImports: ImportLock['imports'] = {}
-		const entries: Record<string, string> = {}
-		for (const [specifier, source] of Object.entries(validatedImports)) {
-			const module = await resolver.visit(source, 'module', 0)
-			entries[specifier] = module.url
-			if (module.types) {
-				const types = resolveUrl(module.types, module.url)
-				resolver.setTypeEntry(specifier, types)
-				result.paths[specifier] = [types]
-			}
-			lockImports[specifier] = {
-				source,
-				url: module.url,
-				...(result.paths[specifier] ? { types: result.paths[specifier][0] } : {})
-			}
+		for (const [specifier, source] of Object.entries(validateImportMap(value))) {
+			const metadata = await store.load(metadataUrl(source))
+			const entry = parseMetadata(metadata)
+			code[specifier] = resolveUrl(entry.module, metadata.url)
+			if (entry.dts) declarations[specifier] = resolveUrl(entry.dts, metadata.url)
 		}
-		for (const [specifier, targets] of Object.entries(result.paths)) {
-			const types = targets[0]
-			const lockEntry = lockImports[specifier]
-			if (!types || !lockEntry) throw new Error(`Missing type entry: ${specifier}`)
-			const finalUrl = (await resolver.visit(types, 'type', 0)).url
-			result.paths[specifier] = [finalUrl]
-			lockEntry.types = finalUrl
-		}
-		await resolver.drain()
-		result.runtime = { ...resolver.modules }
-		for (const [specifier, url] of Object.entries(entries)) {
-			const source = resolver.modules[url]
-			if (source === undefined) throw new Error(`Missing module entry: ${specifier}`)
-			result.runtime[specifier] = source
-		}
-		result.types = resolver.types
-		result.lock = { schema: LOCK_SCHEMA, imports: lockImports, files: resolver.files }
-		validateCompleteLock(result.lock, options.lock)
 	} catch (error) {
 		result.diagnostics.push(diagnostic(error))
 	}
 	return result
 }
 
-class Resolver {
-	readonly modules: Record<string, string> = {}
-	readonly types: Record<string, string> = {}
-	readonly files: ImportLock['files'] = {}
-	private readonly imports: ImportMap
+class Store {
 	private readonly options: ResolveOptions
 	private readonly limits: ImportLimits
-	private readonly queue: { url: string; kind: 'module' | 'type'; depth: number }[] = []
-	private readonly requested = new Set<string>()
-	private readonly versions = new Map<string, string>()
-	private readonly typeImports: ImportMap = {}
+	private readonly redirects: Record<string, string> = {}
+	private readonly remote: Record<string, string> = {}
+	private readonly loaded = new Map<string, CachedImport>()
+	private readonly pending = new Map<string, Promise<CachedImport>>()
 	private totalBytes = 0
 
-	constructor(imports: ImportMap, options: ResolveOptions) {
-		this.imports = imports
+	constructor(options: ResolveOptions, limits: ImportLimits) {
 		this.options = options
-		this.limits = { ...LIMITS, ...options.limits }
+		this.limits = limits
 	}
 
-	setTypeEntry(specifier: string, url: string): void {
-		this.typeImports[specifier] = url
-	}
-
-	async visit(url: string, kind: 'module' | 'type', depth: number): Promise<CachedImport> {
-		if (depth > this.limits.depth) throw new ImportError('IMPORT_DEPTH', 'Import graph is too deep')
+	load(url: string): Promise<CachedImport> {
 		assertAllowedUrl(url)
-		const value = await this.load(url)
-		const output = kind === 'module' ? this.modules : this.types
-		if (!(value.url in output)) {
-			output[value.url] = value.text
-			if (kind === 'type') this.trackVersion(value.url)
-			const refs = kind === 'module' ? await moduleRefs(value.text) : typeRefs(value.text)
-			for (const ref of refs) {
-				const next = this.resolveRef(ref, value.url, kind)
-				this.queue.push({ url: next, kind, depth: depth + 1 })
-			}
-		}
-		return value
+		const loaded = this.loaded.get(url)
+		if (loaded) return Promise.resolve(loaded)
+		const active = this.pending.get(url)
+		if (active) return active
+		const task = this.loadOne(url).finally(() => this.pending.delete(url))
+		this.pending.set(url, task)
+		return task
 	}
 
-	async drain(): Promise<void> {
-		for (const item of this.queue) {
-			if (this.requested.has(`${item.kind}:${item.url}`)) continue
-			this.requested.add(`${item.kind}:${item.url}`)
-			await this.visit(item.url, item.kind, item.depth)
-		}
+	lock(): ImportLock {
+		return { version: 1, redirects: { ...this.redirects }, remote: { ...this.remote } }
 	}
 
-	private async load(requestedUrl: string): Promise<CachedImport> {
+	private async loadOne(requestedUrl: string): Promise<CachedImport> {
 		const cached = await this.options.cache.get(requestedUrl)
 		const value = cached ?? (await this.download(requestedUrl))
 		assertAllowedUrl(value.url)
@@ -209,26 +173,42 @@ class Resolver {
 		if (bytes > this.limits.fileBytes) {
 			throw new ImportError('IMPORT_FILE_SIZE', `Import is too large: ${value.url}`)
 		}
-		if (!(value.url in this.files)) {
-			if (Object.keys(this.files).length >= this.limits.files) {
+		const digest = await hash(value.text)
+		this.verify(requestedUrl, value.url, digest)
+		if (requestedUrl !== value.url) this.redirects[requestedUrl] = value.url
+		const prior = this.remote[value.url]
+		if (prior && prior !== digest) {
+			throw new ImportError('IMPORT_LOCK_MISMATCH', `Import changed: ${value.url}`)
+		}
+		if (!prior) {
+			if (Object.keys(this.remote).length >= this.limits.files) {
 				throw new ImportError('IMPORT_FILE_COUNT', 'Import graph has too many files')
 			}
 			this.totalBytes += bytes
 			if (this.totalBytes > this.limits.totalBytes) {
 				throw new ImportError('IMPORT_TOTAL_SIZE', 'Import graph is too large')
 			}
-			const file = { hash: await hash(value.text), size: bytes }
-			const locked = this.options.lock?.files[value.url]
-			if (locked && (locked.hash !== file.hash || locked.size !== file.size)) {
-				throw new ImportError('IMPORT_LOCK_MISMATCH', `Import changed: ${value.url}`)
-			}
-			this.files[value.url] = file
+			this.remote[value.url] = digest
 		}
 		if (!cached) {
 			await this.options.cache.put(requestedUrl, value)
-			if (value.url !== requestedUrl) await this.options.cache.put(value.url, value)
+			if (requestedUrl !== value.url) await this.options.cache.put(value.url, value)
 		}
+		this.loaded.set(requestedUrl, value)
+		this.loaded.set(value.url, value)
 		return value
+	}
+
+	private verify(requestedUrl: string, finalUrl: string, digest: string): void {
+		if (!(this.options.frozen ?? !!this.options.lock)) return
+		const lock = this.options.lock
+		const expectedUrl = lock?.redirects[requestedUrl] ?? requestedUrl
+		if (expectedUrl !== finalUrl || lock?.remote[finalUrl] !== digest) {
+			throw new ImportError(
+				'IMPORT_LOCK_MISMATCH',
+				`Import does not match devkit-lock.json: ${requestedUrl}`
+			)
+		}
 	}
 
 	private async download(url: string): Promise<CachedImport> {
@@ -236,7 +216,6 @@ class Resolver {
 		try {
 			response = await (this.options.fetch ?? fetch)(url, {
 				credentials: 'omit',
-				// Browsers hide manual redirect targets. Fetch follow mode has a hard limit of 20.
 				redirect: 'follow',
 				signal: AbortSignal.timeout(this.limits.timeoutMs)
 			})
@@ -250,91 +229,28 @@ class Resolver {
 		if (length > this.limits.fileBytes) {
 			throw new ImportError('IMPORT_FILE_SIZE', `Import is too large: ${url}`)
 		}
-		const types = response.headers.get('x-typescript-types')
-		const value = {
-			url: response.url || url,
-			text: await response.text(),
-			...(types ? { types } : {})
-		}
-		return value
-	}
-
-	private resolveRef(ref: string, importer: string, kind: 'module' | 'type'): string {
-		if (ref.startsWith('node:') || ref.startsWith('/node/')) {
-			throw new ImportError('IMPORT_NODE', `Node import is not supported: ${ref}`)
-		}
-		if (isBareSpecifier(ref)) {
-			const source = kind === 'type' ? this.typeImports[ref] : this.imports[ref]
-			if (!source) throw new ImportError('IMPORT_BARE', `Unmapped import: ${ref}`)
-			return source
-		}
-		return resolveUrl(ref, importer)
-	}
-
-	private trackVersion(url: string): void {
-		const match = new URL(url).pathname.match(/^\/((?:@[^/]+\/)?[^/@]+)@([^/]+)/)
-		if (!match) return
-		const [, name, version] = match
-		if (!name || !version) return
-		const prior = this.versions.get(name)
-		if (prior && prior !== version) {
-			throw new ImportError(
-				'IMPORT_VERSION_CONFLICT',
-				`Import graph has two versions of ${name}: ${prior} and ${version}`
-			)
-		}
-		this.versions.set(name, version)
+		return { url: response.url || url, text: await response.text() }
 	}
 }
 
-async function moduleRefs(source: string): Promise<string[]> {
-	await init
-	const [imports] = parse(source)
-	const refs: string[] = []
-	for (const entry of imports) {
-		if (entry.d >= 0 && entry.n === undefined) {
-			throw new ImportError('IMPORT_DYNAMIC', 'Dynamic import must use a string literal')
-		}
-		if (entry.n !== undefined) refs.push(entry.n)
-	}
-	return refs
+function metadataUrl(source: string): string {
+	return `${source}${source.includes('?') ? '&' : '?'}meta`
 }
 
-function typeRefs(source: string): string[] {
-	const refs: string[] = []
-	for (const line of source.split('\n')) {
-		const text = line.trim()
-		if (!text || text.startsWith('//') || text.startsWith('*') || text.startsWith('/*')) continue
-		for (const match of text.matchAll(/\b(?:from|require\(|import\s*\(?)\s*["']([^"']+)["']/g)) {
-			if (match[1]) refs.push(match[1])
-		}
+function parseMetadata(file: CachedImport): { module: string; dts?: string } {
+	let value: unknown
+	try {
+		value = JSON.parse(file.text)
+	} catch {
+		throw new ImportError('IMPORT_METADATA', `Invalid package metadata: ${file.url}`)
 	}
-	for (const match of source.matchAll(
-		/^\s*\/\/\/\s*<reference\s+(?:path|types)=["']([^"']+)["']/gm
-	)) {
-		if (match[1]) refs.push(match[1])
+	if (!isRecord(value) || typeof value.module !== 'string') {
+		throw new ImportError('IMPORT_METADATA', `Invalid package metadata: ${file.url}`)
 	}
-	return refs
-}
-
-function validateLockImports(imports: ImportMap, lock?: ImportLock): void {
-	if (!lock) return
-	const keys = Object.keys(imports).sort()
-	if (JSON.stringify(keys) !== JSON.stringify(Object.keys(lock.imports).sort())) {
-		throw new ImportError('IMPORT_LOCK_MISMATCH', 'Import map does not match devkit-lock.json')
+	if (value.dts !== undefined && typeof value.dts !== 'string') {
+		throw new ImportError('IMPORT_METADATA', `Invalid package metadata: ${file.url}`)
 	}
-	for (const [specifier, source] of Object.entries(imports)) {
-		if (lock.imports[specifier]?.source !== source) {
-			throw new ImportError('IMPORT_LOCK_MISMATCH', `Locked import changed: ${specifier}`)
-		}
-	}
-}
-
-function validateCompleteLock(actual: ImportLock, expected?: ImportLock): void {
-	if (!expected) return
-	if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-		throw new ImportError('IMPORT_LOCK_MISMATCH', 'Resolved imports do not match devkit-lock.json')
-	}
+	return { module: value.module, ...(value.dts ? { dts: value.dts } : {}) }
 }
 
 function assertAllowedUrl(value: string): void {
