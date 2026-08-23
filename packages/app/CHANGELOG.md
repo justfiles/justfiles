@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.7.0...app-v0.8.0) (2026-08-23)
+
+
+### Features
+
+* **app:** serve watch builds as a local app store ([#570](https://github.com/xiaoxinghu/justfiles/issues/570)) ([1c5f826](https://github.com/xiaoxinghu/justfiles/commit/1c5f82666e4fbb6447353fdce3a482f7cce533d9))
+
 ## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.6.1...app-v0.7.0) (2026-08-22)
 
 
