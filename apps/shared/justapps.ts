@@ -1,9 +1,14 @@
 import type { AppManifest } from '../../packages/app/app.ts'
-import type { AppStore, CatalogApp, CatalogFile } from '../../packages/app/appstore.ts'
+import {
+	MANIFEST_SCHEMA,
+	type ReleaseManifest,
+	STORE_SCHEMA,
+	type StoreApp
+} from '../../packages/app/appstore.protocol.ts'
+import type { AppStore, CatalogApp } from '../../packages/app/appstore.ts'
 
 export const RUNNER_STORE_URL = 'https://justapps.run/store.json'
-export const RUNNER_STORE_SCHEMA = 'justapps/store/v1'
-export const RUNNER_MANIFEST_SCHEMA = 'justapps/manifest/v1'
+export { MANIFEST_SCHEMA as RUNNER_MANIFEST_SCHEMA, STORE_SCHEMA as RUNNER_STORE_SCHEMA }
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 // Hosted apps this release seeds. `justfiles.code` is here rather than packaged
@@ -12,28 +17,7 @@ export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 const BUILTIN_IDS = ['justfiles.code', 'justfiles.notes', 'justfiles.paint', 'justfiles.dictionary']
 const REQUEST_TIMEOUT_MS = 10_000
 
-interface StoreEntry {
-	id: string
-	name: string
-	description?: string
-	version: string
-	iconUrl?: string
-	manifestUrl: string
-	repository?: string
-}
-
-interface Release extends Omit<AppManifest, 'files'> {
-	schema: string
-	version: string
-	hash: string
-	files: CatalogFile[]
-}
-
-export interface RunnerCatalogApp extends CatalogApp {
-	description?: string
-	iconUrl?: string
-	manifestUrl: string
-	repository?: string
+export interface RunnerCatalogApp extends CatalogApp, StoreApp {
 	manifest: AppManifest
 	hash: string
 }
@@ -78,13 +62,12 @@ export async function runnerAppStore(
 		fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
 	storeUrl = RUNNER_STORE_URL
 ): Promise<RunnerAppStore | null> {
-	let entries: StoreEntry[]
+	let entries: StoreApp[]
 	try {
 		const response = await request(storeUrl)
 		if (!response.ok) return null
 		const index: unknown = await response.json()
-		if (!isRecord(index) || index.schema !== RUNNER_STORE_SCHEMA || !Array.isArray(index.apps))
-			return null
+		if (!isRecord(index) || index.schema !== STORE_SCHEMA || !Array.isArray(index.apps)) return null
 		entries = index.apps.filter(isStoreEntry)
 	} catch {
 		return null
@@ -92,7 +75,7 @@ export async function runnerAppStore(
 
 	const byId = new Map(entries.map((entry) => [entry.id, entry]))
 	const loaded = new Map<string, Promise<RunnerCatalogApp | null>>()
-	const load = (entry: StoreEntry): Promise<RunnerCatalogApp | null> => {
+	const load = (entry: StoreApp): Promise<RunnerCatalogApp | null> => {
 		const found = loaded.get(entry.id)
 		if (found) return found
 		const app = loadApp(entry, request)
@@ -131,7 +114,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isStoreEntry(value: unknown): value is StoreEntry {
+function isStoreEntry(value: unknown): value is StoreApp {
 	return (
 		isRecord(value) &&
 		typeof value.id === 'string' &&
@@ -145,15 +128,15 @@ function isStoreEntry(value: unknown): value is StoreEntry {
 }
 
 async function loadApp(
-	entry: StoreEntry,
+	entry: StoreApp,
 	request: (url: string) => Promise<Response>
 ): Promise<RunnerCatalogApp | null> {
 	try {
 		const response = await request(entry.manifestUrl)
 		if (!response.ok) return null
-		const release = (await response.json()) as Release
+		const release = (await response.json()) as ReleaseManifest
 		if (
-			release.schema !== RUNNER_MANIFEST_SCHEMA ||
+			release.schema !== MANIFEST_SCHEMA ||
 			release.id !== entry.id ||
 			!Array.isArray(release.files)
 		)

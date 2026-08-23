@@ -1,4 +1,4 @@
-import type { ReleaseManifest, StoreApp, StoreIndex } from '../protocol'
+import type { ReleaseManifest, StoreApp, StoreIndex } from '@justfiles/app/appstore/protocol'
 
 const PRODUCTION = 'https://justapps.run/'
 type Store = {

@@ -1,14 +1,17 @@
-import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join } from 'node:path'
 import type { Plugin, ResolvedConfig } from 'vite'
 import type { AppManifest } from './app.ts'
 import { builtinStoreFromFs } from './appstore.fs.ts'
-import type { CatalogFile } from './appstore.ts'
+import {
+	appHash,
+	type ReleaseManifest,
+	releaseManifest,
+	STORE_SCHEMA,
+	type StoreIndex
+} from './appstore.protocol.ts'
 
-const MANIFEST_SCHEMA = 'justapps/manifest/v1'
-const STORE_SCHEMA = 'justapps/store/v1'
 const PORT = 4173
 const CONTENT_TYPES: Record<string, string> = {
 	'.avif': 'image/avif',
@@ -29,18 +32,11 @@ const CONTENT_TYPES: Record<string, string> = {
 	'.woff2': 'font/woff2'
 }
 
-interface LocalRelease extends Omit<AppManifest, 'files' | 'version'> {
-	schema: typeof MANIFEST_SCHEMA
-	version: string
-	hash: string
-	files: CatalogFile[]
-}
-
 export function localStore(port = PORT): Plugin {
 	let config: ResolvedConfig
 	let server: Server | undefined
 	let origin = ''
-	let release: LocalRelease | undefined
+	let release: ReleaseManifest | undefined
 	return {
 		name: 'kernel-host-local-store',
 		apply: 'build',
@@ -79,35 +75,23 @@ export function localStore(port = PORT): Plugin {
 	}
 }
 
-async function buildRelease(root: string): Promise<LocalRelease> {
+async function buildRelease(root: string): Promise<ReleaseManifest> {
 	const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8')) as AppManifest
 	const store = await builtinStoreFromFs([root])
 	const app = (await store.builtins())[0]
 	if (!app) throw new Error('local store: build produced no app')
-	const hashInput = [...app.files]
-		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-		.map((file) => `${file.path}\0${file.hash}`)
-		.join('\n')
-	return {
-		schema: MANIFEST_SCHEMA,
+	return releaseManifest(manifest, {
 		id: app.id,
-		name: app.name,
-		description: manifest.description,
 		version: app.version,
-		icon: manifest.icon,
-		app: manifest.app,
-		gui: manifest.gui,
-		cli: manifest.cli,
-		capabilities: manifest.capabilities,
-		hash: createHash('sha256').update(hashInput).digest('hex'),
+		hash: await appHash(app.files),
 		files: app.files.filter((file) => file.path !== 'manifest.json')
-	}
+	})
 }
 
 async function serve(
 	request: IncomingMessage,
 	response: ServerResponse,
-	state: { root: string; origin: string; release: LocalRelease | undefined }
+	state: { root: string; origin: string; release: ReleaseManifest | undefined }
 ): Promise<void> {
 	response.setHeader('Access-Control-Allow-Origin', '*')
 	if (request.method !== 'GET') return fail(response, 405, 'method not allowed')
@@ -119,24 +103,20 @@ async function serve(
 	const etag = `"${release.hash}"`
 	if (path === '/manifest.json') return json(response, release, requestEtag, etag)
 	if (path === '/store.json') {
-		return json(
-			response,
-			{
-				schema: STORE_SCHEMA,
-				apps: [
-					{
-						id: release.id,
-						name: release.name,
-						description: release.description,
-						version: release.version,
-						iconUrl: release.icon ? new URL(release.icon, state.origin).href : undefined,
-						manifestUrl: new URL('manifest.json', state.origin).href
-					}
-				]
-			},
-			requestEtag,
-			etag
-		)
+		const store: StoreIndex = {
+			schema: STORE_SCHEMA,
+			apps: [
+				{
+					id: release.id,
+					name: release.name,
+					description: release.description,
+					version: release.version,
+					iconUrl: release.icon ? new URL(release.icon, state.origin).href : undefined,
+					manifestUrl: new URL('manifest.json', state.origin).href
+				}
+			]
+		}
+		return json(response, store, requestEtag, etag)
 	}
 
 	const filePath = decodeURIComponent(path.slice(1))

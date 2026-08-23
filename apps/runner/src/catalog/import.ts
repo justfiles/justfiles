@@ -1,6 +1,6 @@
 import { type AppManifest, safeBundlePath } from '@justfiles/app'
 import type { CatalogFile } from '@justfiles/app/appstore'
-import { MANIFEST_SCHEMA, type ReleaseManifest } from '../protocol'
+import { appHash, releaseManifest } from '@justfiles/app/appstore/protocol'
 import { archive } from './github'
 import { type AppRecord, type Release, type Resolved, readRecord, writeRecord } from './refresh-app'
 import { entries, inflate, readCapped, type ZipEntry } from './zip'
@@ -126,7 +126,12 @@ export async function importRelease(
 		if (!files.some((file) => file.path === authored.app))
 			throw new Error(`manifest names ${authored.app}, which is not here`)
 
-		const manifest = project(id, resolved.version, authored, files, await appHash(digests))
+		const manifest = releaseManifest(authored, {
+			id,
+			version: resolved.version,
+			hash: await appHash(Object.entries(digests).map(([path, hash]) => ({ path, hash }))),
+			files
+		})
 
 		await env.STORE.put(`${prefix}/bundle.zip`, bytes)
 		// One level above `files/`, so the document we generate can never be shadowed
@@ -155,43 +160,6 @@ export async function importRelease(
 		// Recorded rather than thrown, and retried next run — the resolution is not
 		// remembered, so a fixed release is picked up without anything to reset.
 		if (record) await writeRecord(env, id, { ...record, error })
-	}
-}
-
-/**
- * The canonical manifest: field by field, never a spread of the authored one.
- *
- * Authored metadata is INPUT. Copying it wholesale would carry an unknown field
- * into a document we vouch for, and would let the bundle state its own `id`,
- * `version`, `hash`, `files` or `baseUrl` — each of which is ours to decide. So
- * the projection is written out, and adding a field to the wire format is an
- * edit here rather than an omission nobody notices.
- */
-function project(
-	id: string,
-	version: string,
-	authored: AppManifest,
-	files: CatalogFile[],
-	hash: string
-): ReleaseManifest {
-	return {
-		schema: MANIFEST_SCHEMA,
-		// Ours, never the bundle's. An app claiming another id would otherwise be
-		// served — and trusted — under a name it does not own.
-		id,
-		name: authored.name,
-		description: authored.description,
-		// The tag is the immutable thing, so it wins where the two disagree.
-		version,
-		icon: authored.icon,
-		app: authored.app,
-		gui: authored.gui,
-		cli: authored.cli,
-		capabilities: authored.capabilities,
-		hash,
-		// Sorted, so the document is a function of the release rather than of the
-		// order entries happened to sit in the archive.
-		files: files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 	}
 }
 
@@ -274,22 +242,6 @@ function bundlePath(entry: ZipEntry, root: string): string {
 	if (SECRET.test(path.slice(path.lastIndexOf('/') + 1)))
 		throw new Error(`${path}: refusing to rehost`)
 	return path
-}
-
-/**
- * The whole-app fingerprint, matching `appstore.ts`'s `appHash` exactly —
- * a device compares this string to decide whether an installed app is still the
- * published one, so the two have to agree byte for byte. Sorted by path, so it
- * is independent of archive order, and over EVERY file including the authored
- * manifest, so a metadata-only edit that never touches the version still moves
- * it.
- */
-async function appHash(digests: Record<string, string>): Promise<string> {
-	const input = Object.entries(digests)
-		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-		.map(([path, hash]) => `${path}\u0000${hash}`)
-		.join('\n')
-	return sha256(new TextEncoder().encode(input))
 }
 
 const sha256 = async (bytes: Uint8Array) =>

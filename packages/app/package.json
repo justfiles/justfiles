@@ -19,6 +19,7 @@
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./appstore/fs": "./appstore.fs.ts",
+		"./appstore/protocol": "./appstore.protocol.ts",
 		"./toolchain/esbuild": "./capabilities/devkit/toolchain.esbuild.ts",
 		"./toolchain/bun": "./capabilities/devkit/toolchain.bun.ts",
 		"./toolchain/typescript": "./capabilities/devkit/toolchain.typescript.ts",
@@ -84,6 +85,10 @@
 			"./appstore/fs": {
 				"types": "./dist/appstore.fs.d.ts",
 				"default": "./dist/appstore.fs.js"
+			},
+			"./appstore/protocol": {
+				"types": "./dist/appstore.protocol.d.ts",
+				"default": "./dist/appstore.protocol.js"
 			},
 			"./toolchain/esbuild": {
 				"types": "./dist/capabilities/devkit/toolchain.esbuild.d.ts",

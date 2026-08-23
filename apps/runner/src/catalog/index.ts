@@ -1,5 +1,10 @@
+import {
+	type ReleaseManifest,
+	STORE_SCHEMA,
+	type StoreApp,
+	type StoreIndex
+} from '@justfiles/app/appstore/protocol'
 import { encodeLabel } from '../id'
-import { type ReleaseManifest, STORE_SCHEMA, type StoreApp, type StoreIndex } from '../protocol'
 import { importRelease } from './import'
 import { type Resolved, readRecord, refreshApp } from './refresh-app'
 import { type Catalog, type CatalogRefresh, refreshCatalog } from './refresh-catalog'
