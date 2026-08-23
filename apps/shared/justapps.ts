@@ -42,18 +42,32 @@ interface RunnerAppStore extends AppStore {
 	catalog(): Promise<RunnerCatalogApp[]>
 }
 
-// Packaged apps win when IDs match. manifestUrl sends hosted reads to JustApps.
+// Primary apps win when IDs match. Keep each result tied to the store that supplied it.
 export function mergeAppStores(primary: AppStore, runner: AppStore): AppStore {
+	const source = new WeakMap<CatalogApp, AppStore>()
+	const remember = (app: CatalogApp, store: AppStore) => {
+		source.set(app, store)
+		return app
+	}
 	return {
 		async builtins() {
-			const apps = await primary.builtins()
+			const apps = (await primary.builtins()).map((app) => remember(app, primary))
 			const ids = new Set(apps.map((app) => app.id))
-			return [...apps, ...(await runner.builtins()).filter((app) => !ids.has(app.id))]
+			return [
+				...apps,
+				...(await runner.builtins())
+					.filter((app) => !ids.has(app.id))
+					.map((app) => remember(app, runner))
+			]
 		},
 		async latest(id) {
-			return (await primary.latest(id)) ?? (await runner.latest(id))
+			const app = await primary.latest(id)
+			if (app) return remember(app, primary)
+			const fallback = await runner.latest(id)
+			return fallback ? remember(fallback, runner) : null
 		},
-		read: (app, path) => ('manifestUrl' in app ? runner.read(app, path) : primary.read(app, path))
+		read: (app, path) =>
+			(source.get(app) ?? ('manifestUrl' in app ? runner : primary)).read(app, path)
 	}
 }
 
@@ -61,11 +75,12 @@ export function mergeAppStores(primary: AppStore, runner: AppStore): AppStore {
 // catalog() loads all manifests because the store UI lists every app.
 export async function runnerAppStore(
 	request: (url: string) => Promise<Response> = (url) =>
-		fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+		fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
+	storeUrl = RUNNER_STORE_URL
 ): Promise<RunnerAppStore | null> {
 	let entries: StoreEntry[]
 	try {
-		const response = await request(RUNNER_STORE_URL)
+		const response = await request(storeUrl)
 		if (!response.ok) return null
 		const index: unknown = await response.json()
 		if (!isRecord(index) || index.schema !== RUNNER_STORE_SCHEMA || !Array.isArray(index.apps))

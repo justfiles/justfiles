@@ -6,6 +6,7 @@ import { build, createRunnableDevEnvironment } from 'vite'
 import type { AppManifest } from './app.ts'
 import type { AiBackend } from './capabilities/ai/dev.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
+import { localStore } from './vite.local-store.ts'
 
 export type { AiBackend, GenerateText } from './capabilities/ai/dev.ts'
 
@@ -153,6 +154,9 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	return [
 		{
 			name: 'kernel-host',
+			buildStart() {
+				emitted = false
+			},
 			config(_, env) {
 				if (env.command === 'serve') {
 					// The headless reducer runs in its own `kernel` server
@@ -282,6 +286,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					`var s=document.createElement("style");s.setAttribute("data-app-style",${JSON.stringify(opts.id)});` +
 					`s.textContent=${JSON.stringify(css)};document.head.appendChild(s)})();\n${entry.code}`
 			}
-		}
+		},
+		localStore()
 	]
 }

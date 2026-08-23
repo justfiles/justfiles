@@ -103,6 +103,9 @@ export default defineConfig({
 
 Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Nothing is external — the SDK, and whatever UI framework the GUI uses, are bundled into `app.js`/`gui.js`. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
 
+`pnpm build --watch` also serves the built app at `http://localhost:4173/store.json`. The URL uses
+the same store and manifest format as JustApps, so a local Frieren host can install each rebuild.
+
 ## Capabilities
 
 Import capability contracts from subpaths, for example:

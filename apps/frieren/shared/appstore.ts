@@ -39,12 +39,20 @@ export async function httpAppStore(
 	}
 }
 
-// Bundled apps remain authoritative. Trusted JustApps apps extend the built-in set.
+// Bundled apps remain authoritative. A local Runner store wins over production.
 export async function bootAppStore(
-	fetcher: (path: string) => Promise<Response>
+	fetcher: (path: string) => Promise<Response>,
+	localStoreUrl = import.meta.env.VITE_FRIEREN_DEV_APP_STORE as string | undefined
 ): Promise<AppStore | null> {
-	const [builtin, runner] = await Promise.all([httpAppStore(fetcher), runnerAppStore(fetcher)])
-	if (!builtin) return runner
-	if (!runner) return builtin
-	return mergeAppStores(builtin, runner)
+	const stores = (
+		await Promise.all([
+			httpAppStore(fetcher),
+			localStoreUrl ? runnerAppStore(fetcher, localStoreUrl) : null,
+			runnerAppStore(fetcher)
+		])
+	).filter((store): store is AppStore => store !== null)
+	return stores.reduce<AppStore | null>(
+		(merged, store) => (merged ? mergeAppStores(merged, store) : store),
+		null
+	)
 }

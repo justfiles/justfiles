@@ -1,6 +1,7 @@
 import type { Kernel } from '@justfiles/app'
-import { materialise, reconcile } from '@justfiles/app/appstore'
+import { installApp, materialise, reconcile, semverGte } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
+import { runnerAppStore } from '../../../shared/justapps'
 import { bootAppStore } from '../../shared/appstore'
 
 // The client is the single materialiser of built-in apps. On every boot it makes
@@ -23,4 +24,18 @@ export async function seedBuiltins(kernel: Kernel, fs: Volume): Promise<void> {
 export async function reconcileInstalled(kernel: Kernel, fs: Volume): Promise<void> {
 	const store = await bootAppStore((path) => fetch(path))
 	if (store) await reconcile(kernel, fs, store)
+}
+
+// The local store changes often. Compare its small manifest each second, but do
+// not run the full reconciliation pass or prefetch every hosted app each time.
+export async function reconcileLocalStore(kernel: Kernel, storeUrl: string): Promise<void> {
+	const store = await runnerAppStore((path) => fetch(path), storeUrl)
+	if (!store) return
+	const installed = new Map((await kernel.list()).map((manifest) => [manifest.id, manifest]))
+	for (const app of await store.builtins()) {
+		const current = installed.get(app.id)
+		if (current && current.hash === app.hash && current.baseUrl === app.baseUrl) continue
+		if (current && !semverGte(app.version, current.version ?? '0.0.0')) continue
+		await installApp(kernel, store, app)
+	}
 }

@@ -6,12 +6,15 @@ import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { resumePendingInstalls } from '../apps/manage'
-import { reconcileInstalled, seedBuiltins } from '../apps/seed'
+import { reconcileInstalled, reconcileLocalStore, seedBuiltins } from '../apps/seed'
 import { activeProfileHasRemoteUser, flushActiveVolume, type ProfileVolume } from '../fs'
 import { notificationStore } from '../notifications/store'
 import type { FrierenClient } from './client'
 import type { OsAction, OsState } from './state'
 import { bootOsStore } from './store'
+
+const LOCAL_UPDATE_CHECK_INTERVAL_MS = 1_000
+const LOCAL_APP_STORE_URL = import.meta.env.VITE_FRIEREN_DEV_APP_STORE as string | undefined
 
 export interface OsRuntimeEnv {
 	store: Store<OsState, OsAction>
@@ -81,6 +84,25 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	// app-code's `devkit.install` writes a new app straight to `/applications`
 	// via its own kernel; re-list so it appears in the launcher right away.
 	disposers.push(appHost.subscribeCatalog(() => client.refresh()))
+
+	// A local Runner store is a small development-only update channel. Check only
+	// that store here; the normal production checkpoint below stays slow.
+	if (LOCAL_APP_STORE_URL) {
+		let running = false
+		const update = () => {
+			if (running) return
+			running = true
+			void readyKernel()
+				.then((kernel) => reconcileLocalStore(kernel, LOCAL_APP_STORE_URL))
+				.catch(() => {})
+				.finally(() => {
+					running = false
+				})
+		}
+		update()
+		const timer = setInterval(update, LOCAL_UPDATE_CHECK_INTERVAL_MS)
+		disposers.push(() => clearInterval(timer))
+	}
 
 	// The dock's catalog is a projection of the local volume's `/applications/*`.
 	// Apps that arrive by sync-down land as REMOTE_SOURCE writes that no explicit

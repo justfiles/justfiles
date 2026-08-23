@@ -117,6 +117,16 @@ describe('runnerAppStore', () => {
 		expect(store).toBeNull()
 	})
 
+	test('can load a custom store URL', async () => {
+		const storeUrl = 'http://localhost:4173/store.json'
+		const request = vi.fn(async () => json({ schema: RUNNER_STORE_SCHEMA, apps: [] }, storeUrl))
+
+		await runnerAppStore(request, storeUrl)
+
+		expect(request).toHaveBeenCalledOnce()
+		expect(request).toHaveBeenCalledWith(storeUrl)
+	})
+
 	test('an invalid registry response does not provide a store', async () => {
 		const store = await runnerAppStore(async () => new Response('{'))
 
