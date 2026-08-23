@@ -4,7 +4,12 @@ import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { zipSync } from 'fflate'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { CATALOG_SCHEMA } from '../../shared/appstore'
+import {
+	RUNNER_MANIFEST_SCHEMA,
+	RUNNER_STORE_SCHEMA,
+	RUNNER_STORE_URL
+} from '../../../shared/justapps.ts'
+import { CATALOG_PATH, CATALOG_SCHEMA } from '../../shared/appstore'
 import { installZipApp, uninstallLocalApp } from './manage'
 
 const enc = new TextEncoder()
@@ -26,6 +31,12 @@ function appZip(id = 'com.example.local'): Uint8Array {
 	})
 }
 
+function json(data: unknown, url = ''): Response {
+	const response = Response.json(data)
+	Object.defineProperty(response, 'url', { value: url })
+	return response
+}
+
 async function seedState(fs: Volume, id: string): Promise<void> {
 	await fs.mkdir('/state', { recursive: true })
 	await fs.writeFile(`/state/${id}.json`, enc.encode('{}'))
@@ -41,6 +52,31 @@ function stubCatalog(appId: string): void {
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async () => new Response(JSON.stringify(catalog)))
+	)
+}
+
+function stubRunnerBuiltin(appId: string): void {
+	const manifestUrl = `https://${appId.replace('.', '-')}.justapps.run/manifest.json`
+	const catalog: Catalog = { schema: CATALOG_SCHEMA, apps: [] }
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (url: string) => {
+			if (url === CATALOG_PATH) return json(catalog)
+			if (url === RUNNER_STORE_URL)
+				return json(
+					{
+						schema: RUNNER_STORE_SCHEMA,
+						apps: [{ id: appId, name: 'Builtin', version: '1.0.0', manifestUrl }]
+					},
+					RUNNER_STORE_URL
+				)
+			if (url === manifestUrl)
+				return json(
+					{ schema: RUNNER_MANIFEST_SCHEMA, id: appId, name: 'Builtin', files: [] },
+					manifestUrl.replace('manifest.json', 'v/1.0.0/manifest.json')
+				)
+			return new Response(null, { status: 404 })
+		})
 	)
 }
 
@@ -85,5 +121,18 @@ describe('local app management', () => {
 		expect(await fs.exists('/applications/justfiles.paint')).toBe(true)
 		expect(await fs.exists('/state/justfiles.paint.json')).toBe(true)
 		expect(await fs.exists('/data/justfiles.paint')).toBe(true)
+	})
+
+	test('refuses to uninstall JustApps built-ins', async () => {
+		const { fs, k } = setup()
+		const id = await installZipApp(k, appZip('justfiles.dictionary'))
+		await seedState(fs, id)
+		stubRunnerBuiltin(id)
+
+		await expect(uninstallLocalApp(k, id)).rejects.toThrow(/cannot be uninstalled/)
+
+		expect(await fs.exists('/applications/justfiles.dictionary')).toBe(true)
+		expect(await fs.exists('/state/justfiles.dictionary.json')).toBe(true)
+		expect(await fs.exists('/data/justfiles.dictionary')).toBe(true)
 	})
 })

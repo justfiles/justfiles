@@ -2,7 +2,7 @@ import { bundleFromZip, type Kernel } from '@justfiles/app'
 import { installApp } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
 import { runnerAppStore } from '../../../shared/justapps'
-import { httpAppStore } from '../../shared/appstore'
+import { bootAppStore } from '../../shared/appstore'
 import { endInstall, readInstallMarkers, seedInstalling } from './installing'
 
 export async function installZipApp(kernel: Kernel, zip: Uint8Array): Promise<string> {
@@ -28,7 +28,7 @@ export async function uninstallLocalApp(kernel: Kernel, id: string): Promise<voi
 
 async function isBuiltin(id: string): Promise<boolean> {
 	try {
-		const store = await httpAppStore((path) => fetch(path))
+		const store = await bootAppStore((path) => fetch(path))
 		if (store) return (await store.builtins()).some((app) => app.id === id)
 	} catch {}
 	return id.startsWith('justfiles.')
