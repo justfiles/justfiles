@@ -178,8 +178,9 @@ The probe also found two rules that the resolver must enforce:
    before the build.
 
 The React entry points to `@types/react@~19.1.17`, but the React DOM declaration imports
-`@types/react@19.2.14`. Stage 2 must lock every final declaration URL and detect two versions
-of the same type package. Do not silently load both.
+`@types/react@19.2.14`. Stage 2 locks both exact versions. It does not reject a graph only
+because it contains two versions. npm and TypeScript permit this, and the live React graph
+passes the application type check. Devkit still reports type errors in application source.
 
 ## Stage 2: add the import resolver
 
@@ -212,6 +213,24 @@ The cache is build data. Do not store it in the project source tree or sync it a
 Frieren supplies a browser cache. The Node development host supplies a disk cache. Keep that
 host difference behind a small internal cache type.
 
+### Implementation, 2026-08-23
+
+`project.json` now accepts pinned `esm.sh` imports, and Devkit reads and writes
+`devkit-lock.json` as project metadata. The resolver uses the `esm.sh` metadata endpoint for
+package entry URLs. A shared URL store handles fetch, cache, limits, redirects, and hashes.
+esbuild follows the JavaScript graph through its normal resolve and load hooks. TypeScript
+finds declaration references with `preProcessFile`. The lock stores only redirects and remote
+content hashes.
+
+The resolver has fixed limits for graph depth, file count, file size, total bytes, Fetch's
+20-redirect limit, and request time. Tests cover each limit, offline cache use, lock mismatch,
+Node imports, final redirect URLs, and declaration loading. A live integration check built
+React and React DOM, loaded six declaration files, passed type checking, and locked ten remote
+responses.
+
+Stage 3 will merge this output with the platform sysroot and pass it to the build and type-check
+backends.
+
 ## Stage 3: use one resolved graph for build and type check
 
 Update the esbuild virtual-file resolver so it handles:
@@ -228,9 +247,9 @@ Update the TypeScript host so it handles:
 - downloaded package declarations;
 - the same bare import mappings used by the build.
 
-Do not write separate package resolvers for esbuild and TypeScript. One resolution step creates
-the JavaScript graph and the declaration graph. Build, run, install, pack, and type check use
-that same locked result.
+Do not write separate package graph walkers. esbuild finds JavaScript imports, and TypeScript
+finds declaration imports. Both tools use the same URL resolver, cache, limits, and lock.
+Build, run, install, pack, and type check use that same resolver session.
 
 Add React JSX support as an explicit project compiler setting. Do not make every `.tsx` file
 assume React. The React template supplies the setting and imports required by its JSX mode.

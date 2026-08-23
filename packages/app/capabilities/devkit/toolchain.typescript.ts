@@ -11,6 +11,7 @@
 // passes a baked `TypesBundle` instead; same code, no fs reliance.
 
 import type * as TS from 'typescript'
+import type { ResolvedImports } from './imports.ts'
 import type {
 	CheckResult,
 	Compile,
@@ -39,6 +40,59 @@ export function typescriptToolchain(opts: {
 	}
 }
 
+// Let TypeScript identify declaration references. The returned files keep the
+// CDN path under one virtual directory, so normal relative type imports still
+// resolve through the existing compiler host.
+export async function loadImportTypes(
+	imports: ResolvedImports,
+	ts: typeof TS
+): Promise<{ types: TypesBundle; paths: TypePaths }> {
+	const types: TypesBundle = {}
+	const paths: TypePaths = {}
+	const queue = Object.entries(imports.declarations).map(([alias, url]) => ({
+		alias,
+		url,
+		depth: 0
+	}))
+	for (let index = 0; index < queue.length; index++) {
+		const item = queue[index]
+		if (!item) break
+		if (item.depth > imports.limits.depth) throw new Error('Import graph is too deep')
+		const file = await imports.load(item.url)
+		const path = typePath(file.url)
+		paths[item.url] = [path]
+		paths[file.url] = [path]
+		if (item.alias) paths[item.alias] = [path]
+		if (path in types) continue
+		types[path] = file.text
+		const info = ts.preProcessFile(file.text, true, true)
+		const references = [
+			...info.importedFiles,
+			...info.referencedFiles,
+			...info.typeReferenceDirectives
+		]
+		for (const reference of references) {
+			queue.push({
+				alias: reference.fileName.startsWith('/') ? reference.fileName : '',
+				url: imports.resolve(reference.fileName, file.url, 'types'),
+				depth: item.depth + 1
+			})
+		}
+	}
+	return { types, paths }
+}
+
+function typePath(value: string): string {
+	const url = new URL(value)
+	let path = url.pathname.slice(1)
+	if (url.search) {
+		const dot = path.lastIndexOf('.')
+		const suffix = `--${encodeURIComponent(url.search.slice(1))}`
+		path = dot < 0 ? `${path}${suffix}` : `${path.slice(0, dot)}${suffix}${path.slice(dot)}`
+	}
+	return `__imports__/${url.hostname}/${path}`
+}
+
 // The typecheck backend hosts inject into `devkitCapability` (which loads `types`
 // + `paths` from the calling app's sysroot and threads them in). Building a
 // `ts.Program` over an in-memory `CompilerHost`; `ts` is the injected compiler so
@@ -55,6 +109,12 @@ export function tsTypecheck(
 	// a complete `TypesBundle` instead and never touches the fs.
 	const root = `${import.meta.dirname}/__engine_draft__`
 	const norm = (path: string) => `${root}/${path}`
+	// Triple-slash root paths bypass compilerOptions.paths, so the host maps them too.
+	const aliases = new Map<string, string>()
+	for (const [specifier, [target]] of Object.entries(paths)) {
+		if (specifier.startsWith('/') && target) aliases.set(specifier, norm(target))
+	}
+	const actual = (path: string) => aliases.get(path) ?? path
 	// In-memory overlay: draft sources + the stdlib `.d.ts` bundle. Anything else
 	// (lib.*.d.ts, node_modules) falls through to the real host below.
 	const overlay = new Map<string, string>()
@@ -89,8 +149,8 @@ export function tsTypecheck(
 	const baseExists = host.fileExists.bind(host)
 	const baseDirExists = host.directoryExists?.bind(host)
 	const baseGetSource = host.getSourceFile.bind(host)
-	host.fileExists = (file) => overlay.has(file) || baseExists(file)
-	host.readFile = (file) => overlay.get(file) ?? baseRead(file)
+	host.fileExists = (file) => overlay.has(actual(file)) || baseExists(file)
+	host.readFile = (file) => overlay.get(actual(file)) ?? baseRead(file)
 	// A directory import (`import … from "./"`) probes
 	// `directoryExists` WITH a trailing slash; `dirs` holds the slash-free form, so
 	// normalise before the lookup or the no-fs (baked TypesBundle) path can't resolve
@@ -100,9 +160,10 @@ export function tsTypecheck(
 		return dirs.has(d) || (baseDirExists?.(dir) ?? false)
 	}
 	host.getSourceFile = (file, languageVersion, onError, shouldCreate) => {
-		const text = overlay.get(file)
+		const path = actual(file)
+		const text = overlay.get(path)
 		return text !== undefined
-			? ts.createSourceFile(file, text, languageVersion, true)
+			? ts.createSourceFile(path, text, languageVersion, true)
 			: baseGetSource(file, languageVersion, onError, shouldCreate)
 	}
 

@@ -6,7 +6,9 @@
 // injects its own `build`; the Bun sibling lives in `toolchain.bun.ts` behind the
 // same vfs rules.
 
+import { init, parse } from 'es-module-lexer'
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
+import type { ResolvedImports } from './imports.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
 import {
 	compileVfs,
@@ -23,6 +25,7 @@ export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 // Keep a draft entry out of esbuild's real-file resolver. The host can have a
 // file with the same path, such as App Code's own `src/app.ts`.
 const ENTRY = 'devkit-entry:'
+const REMOTE = 'devkit-remote'
 
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
 // caller injects the esbuild toolchain + the runtime map. The shared `compileVfs`
@@ -31,7 +34,8 @@ const ENTRY = 'devkit-entry:'
 export function esbuildCompile(
 	input: ProjectInput,
 	build: BuildFn,
-	runtime: Record<string, string>
+	runtime: Record<string, string>,
+	imports?: ResolvedImports
 ): Promise<CompileResult> {
 	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
 		try {
@@ -41,7 +45,7 @@ export function esbuildCompile(
 				write: false,
 				format: 'esm',
 				logLevel: 'silent',
-				plugins: [vfs(sources, rt)]
+				plugins: [vfs(sources, rt, imports)]
 			})
 			return {
 				js: result.outputFiles?.[0]?.text ?? '',
@@ -53,14 +57,31 @@ export function esbuildCompile(
 	})
 }
 
-function vfs(files: Record<string, string>, runtime: Record<string, string>): Plugin {
+function vfs(
+	files: Record<string, string>,
+	runtime: Record<string, string>,
+	imports?: ResolvedImports
+): Plugin {
 	return {
 		name: 'devkit-vfs',
 		setup(build) {
-			build.onResolve({ filter: /.*/ }, (args) => {
+			const depths = new Map<string, number>()
+			const remote = async (url: string, depth: number) => {
+				if (!imports) return
+				if (depth > imports.limits.depth) throw new Error('Import graph is too deep')
+				const file = await imports.load(url)
+				const prior = depths.get(file.url)
+				if (prior === undefined || depth < prior) depths.set(file.url, depth)
+				return { path: file.url, namespace: REMOTE }
+			}
+			build.onResolve({ filter: /.*/ }, async (args) => {
 				if (args.kind === 'entry-point') {
 					const path = args.path.startsWith(ENTRY) ? args.path.slice(ENTRY.length) : args.path
 					return { path, namespace: VFS }
+				}
+				if (args.namespace === REMOTE && imports) {
+					const url = imports.resolve(args.path, args.importer, 'code')
+					return remote(url, (depths.get(args.importer) ?? 0) + 1)
 				}
 				if (args.path.startsWith('.')) {
 					const resolved = resolveRelative(args.importer, args.path, files)
@@ -69,6 +90,8 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 				// A pre-bundled system library (the SDK); side-effect-free so unused
 				// exports (e.g. the kernel half of `@justfiles/app`) tree-shake away.
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }
+				const entry = imports?.code[args.path]
+				if (entry) return remote(entry, 0)
 				// Nothing else is resolvable — say why, rather than esbuild's opaque
 				// "Could not resolve".
 				return { errors: [{ text: unsupportedImport(args.path) }] }
@@ -88,7 +111,21 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 				contents: runtime[args.path],
 				loader: 'js'
 			}))
+			build.onLoad({ filter: /.*/, namespace: REMOTE }, async (args) => {
+				const contents = (await imports?.load(args.path))?.text ?? ''
+				const loader = args.path.endsWith('.json') ? 'json' : 'js'
+				if (loader === 'js') await rejectComputedImports(contents)
+				return { contents, loader }
+			})
 		}
+	}
+}
+
+async function rejectComputedImports(source: string): Promise<void> {
+	await init
+	const [imports] = parse(source)
+	if (imports.some((item) => item.d >= 0 && item.n === undefined)) {
+		throw new Error('Dynamic import must use a string literal')
 	}
 }
 
