@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.15.0...frieren-v0.16.0) (2026-08-23)
+
+
+### Features
+
+* **app:** serve watch builds as a local app store ([#570](https://github.com/xiaoxinghu/justfiles/issues/570)) ([1c5f826](https://github.com/xiaoxinghu/justfiles/commit/1c5f82666e4fbb6447353fdce3a482f7cce533d9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.8.0
+
 ## [0.15.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.14.2...frieren-v0.15.0) (2026-08-22)
 
 
