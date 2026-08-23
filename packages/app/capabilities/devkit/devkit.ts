@@ -16,9 +16,11 @@ import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
 import type { TsConfigJson } from 'type-fest'
 import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from '../../kernel.ts'
+import { type ImportLock, type ImportMap, parseImportLock, validateImportMap } from './imports.ts'
 import type { ProjectInput, Toolchain } from './toolchain.ts'
 
 const PROJECT_FILE = 'project.json'
+export const DEVKIT_LOCK_FILE = 'devkit-lock.json'
 
 // A compiled draft: its identity (from `project.json`), the two compiled entries
 // (empty on failure), the optional icon data URL, and any compile diagnostics.
@@ -59,14 +61,25 @@ export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 export async function readProject(
 	data: Volume,
 	slug: string
-): Promise<{ manifest: AppManifest; input: ProjectInput }> {
-	const manifest = await readProjectFile(data, slug)
+): Promise<{
+	manifest: AppManifest
+	input: ProjectInput
+	imports: ImportMap
+	lock?: ImportLock
+}> {
+	const { manifest, imports } = await readProjectFile(data, slug)
+	const lock = await readImportLock(data, slug)
 	const files = await projectFiles(data, slug, manifest)
 	const entries: Record<string, string> = {
 		app: manifest.app,
 		...(manifest.gui ? { gui: manifest.gui } : {})
 	}
-	return { manifest, input: { files, entries, tsconfig: tsconfigFor(manifest) } }
+	return { manifest, input: { files, entries, tsconfig: tsconfigFor(manifest) }, imports, lock }
+}
+
+export async function writeImportLock(data: Volume, slug: string, lock: ImportLock): Promise<void> {
+	const path = `/projects/${slug}/${DEVKIT_LOCK_FILE}`
+	await data.writeFile(path, new TextEncoder().encode(`${JSON.stringify(lock, null, 2)}\n`))
 }
 
 // ── Draft build / install / pack ──────────────────────────────────────────
@@ -177,7 +190,10 @@ function assertBuilt(draft: DraftBuild): DraftBuild {
 // Read + validate the project file. The only convention between devkit and the
 // authoring app: a project is a directory holding a `project.json`. Required
 // `id`/`name`/`app`; declared paths are confined to the project dir.
-async function readProjectFile(data: Volume, slug: string): Promise<AppManifest> {
+async function readProjectFile(
+	data: Volume,
+	slug: string
+): Promise<{ manifest: AppManifest; imports: ImportMap }> {
 	const path = `/projects/${slug}/${PROJECT_FILE}`
 	if (!(await data.exists(path))) throw new Error(`${PROJECT_FILE} not found for project: ${slug}`)
 	let raw: unknown
@@ -191,13 +207,27 @@ async function readProjectFile(data: Volume, slug: string): Promise<AppManifest>
 		throw new Error(`${PROJECT_FILE} must declare string "id", "name" and "app"`)
 	}
 	return {
-		id: m.id,
-		name: m.name,
-		app: safeBundlePath(m.app),
-		gui: optionalPath(m.gui, 'gui'),
-		icon: optionalPath(m.icon, 'icon'),
-		version: typeof m.version === 'string' ? m.version : undefined,
-		description: typeof m.description === 'string' ? m.description : undefined
+		manifest: {
+			id: m.id,
+			name: m.name,
+			app: safeBundlePath(m.app),
+			gui: optionalPath(m.gui, 'gui'),
+			icon: optionalPath(m.icon, 'icon'),
+			version: typeof m.version === 'string' ? m.version : undefined,
+			description: typeof m.description === 'string' ? m.description : undefined
+		},
+		imports: validateImportMap(m.imports)
+	}
+}
+
+async function readImportLock(data: Volume, slug: string): Promise<ImportLock | undefined> {
+	const path = `/projects/${slug}/${DEVKIT_LOCK_FILE}`
+	if (!(await data.exists(path))) return
+	try {
+		return parseImportLock(JSON.parse(new TextDecoder().decode(await data.readFile(path))))
+	} catch (error) {
+		if (error instanceof SyntaxError) throw new Error(`${DEVKIT_LOCK_FILE} is not valid JSON`)
+		throw error
 	}
 }
 
@@ -217,7 +247,9 @@ async function projectFiles(
 	manifest: AppManifest
 ): Promise<Record<string, string>> {
 	const root = `/projects/${slug}`
-	const skip = new Set([PROJECT_FILE, manifest.icon].filter((name): name is string => !!name))
+	const skip = new Set(
+		[PROJECT_FILE, DEVKIT_LOCK_FILE, manifest.icon].filter((name): name is string => !!name)
+	)
 	const files: Record<string, string> = {}
 	if (await data.exists(root)) {
 		await data.scan(root, async (path, stat) => {

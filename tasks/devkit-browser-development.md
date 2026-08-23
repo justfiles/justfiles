@@ -212,6 +212,22 @@ The cache is build data. Do not store it in the project source tree or sync it a
 Frieren supplies a browser cache. The Node development host supplies a disk cache. Keep that
 host difference behind a small internal cache type.
 
+### Implementation, 2026-08-23
+
+`project.json` now accepts pinned `esm.sh` imports, and Devkit reads and writes
+`devkit-lock.json` as project metadata. The resolver returns the existing runtime, declaration,
+and type-path shapes. It follows and hashes both graphs, checks the lock, and uses an injected
+host cache.
+
+The resolver has fixed limits for graph depth, file count, file size, total bytes, Fetch's
+20-redirect limit, and request time. Tests cover each limit, offline cache use, lock mismatch,
+Node imports, final redirect URLs, and declaration version conflicts. A live check resolved
+React into five locked files. The live React and React DOM graph reports the expected
+`@types/react` 19.1.17/19.2.14 conflict.
+
+Stage 3 will merge this output with the platform sysroot and pass it to the build and type-check
+backends.
+
 ## Stage 3: use one resolved graph for build and type check
 
 Update the esbuild virtual-file resolver so it handles:
