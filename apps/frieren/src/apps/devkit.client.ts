@@ -1,5 +1,11 @@
 import { appBundleFromMemory } from '@justfiles/app'
-import type { CompileResult, ProjectInput, Runner } from '@justfiles/app/capabilities/devkit/host'
+import type {
+	CompileResult,
+	ImportCache,
+	ProjectInput,
+	ResolvedImports,
+	Runner
+} from '@justfiles/app/capabilities/devkit/host'
 import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
 import * as host from './host'
@@ -14,6 +20,25 @@ import { createClientKernel } from './kernel.client'
 // off the caller's data dir.
 
 type GetToken = () => Promise<string | null>
+
+const IMPORT_CACHE = 'justfiles-devkit-imports-v1'
+const FINAL_URL = 'x-justfiles-final-url'
+
+const importCache: ImportCache = {
+	async get(url) {
+		const response = await (await caches.open(IMPORT_CACHE)).match(url)
+		if (!response) return
+		const finalUrl = response.headers.get(FINAL_URL)
+		if (!finalUrl) throw new Error(`Invalid Devkit import cache entry: ${url}`)
+		return { url: finalUrl, text: await response.text() }
+	},
+	async put(url, value) {
+		const cache = await caches.open(IMPORT_CACHE)
+		await cache.put(url, new Response(value.text, { headers: { [FINAL_URL]: value.url } }))
+	}
+}
+
+export const frierenImports = { cache: importCache }
 
 // esbuild-wasm initialises ONCE per page (calling `initialize` twice throws),
 // pulled lazily so a session that never runs a draft pays nothing — and the 8 MB
@@ -35,10 +60,11 @@ function getEsbuild(): Promise<typeof import('esbuild-wasm')> {
 // from the caller's installed sysroot.
 export async function frierenCompile(
 	input: ProjectInput,
-	runtime: Record<string, string>
+	runtime: Record<string, string>,
+	imports?: ResolvedImports
 ): Promise<CompileResult> {
 	const esbuild = await getEsbuild()
-	return esbuildCompile(input, esbuild.build, runtime)
+	return esbuildCompile(input, esbuild.build, runtime, imports)
 }
 
 // The frieren Runner. The factory hands `mount` a clean build (diagnostics already

@@ -131,7 +131,7 @@ export async function resolveImports(
 			if (entry.dts) declarations[specifier] = resolveUrl(entry.dts, metadata.url)
 		}
 	} catch (error) {
-		result.diagnostics.push(diagnostic(error))
+		result.diagnostics.push(importDiagnostic(error))
 	}
 	return result
 }
@@ -148,6 +148,8 @@ class Store {
 	constructor(options: ResolveOptions, limits: ImportLimits) {
 		this.options = options
 		this.limits = limits
+		Object.assign(this.redirects, options.lock?.redirects)
+		Object.assign(this.remote, options.lock?.remote)
 	}
 
 	load(url: string): Promise<CachedImport> {
@@ -200,10 +202,21 @@ class Store {
 	}
 
 	private verify(requestedUrl: string, finalUrl: string, digest: string): void {
-		if (!(this.options.frozen ?? !!this.options.lock)) return
 		const lock = this.options.lock
-		const expectedUrl = lock?.redirects[requestedUrl] ?? requestedUrl
-		if (expectedUrl !== finalUrl || lock?.remote[finalUrl] !== digest) {
+		if (!lock) return
+		const frozen = this.options.frozen ?? true
+		const redirected = lock.redirects[requestedUrl]
+		const requestedDigest = lock.remote[requestedUrl]
+		const expectedDigest = lock.remote[finalUrl]
+		if (!frozen && redirected === undefined && requestedDigest === undefined) {
+			if (expectedDigest === undefined || expectedDigest === digest) return
+		}
+		const expectedUrl = redirected ?? requestedUrl
+		if (
+			expectedUrl !== finalUrl ||
+			(expectedDigest !== undefined && expectedDigest !== digest) ||
+			expectedDigest === undefined
+		) {
 			throw new ImportError(
 				'IMPORT_LOCK_MISMATCH',
 				`Import does not match devkit-lock.json: ${requestedUrl}`
@@ -311,7 +324,7 @@ async function hash(text: string): Promise<string> {
 	return `sha256-${Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
-function diagnostic(error: unknown): Diagnostic {
+export function importDiagnostic(error: unknown): Diagnostic {
 	return {
 		file: '',
 		range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },

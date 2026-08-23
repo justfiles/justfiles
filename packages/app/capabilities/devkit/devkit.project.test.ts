@@ -54,6 +54,22 @@ describe('Devkit project imports', () => {
 
 		await expect(readProject(fs, 'example')).rejects.toThrow(/invalid/)
 	})
+
+	test('enables React JSX only when the project requests it', async () => {
+		const fs = memoryVolume()
+		await seed(fs, { ...project, compiler: { jsx: 'react-jsx' } })
+
+		const result = await readProject(fs, 'example')
+
+		expect(result.input.tsconfig.compilerOptions?.jsx).toBe('react-jsx')
+	})
+
+	test('rejects an unknown compiler JSX mode', async () => {
+		const fs = memoryVolume()
+		await seed(fs, { ...project, compiler: { jsx: 'preserve' } })
+
+		await expect(readProject(fs, 'example')).rejects.toThrow(/compiler\.jsx/)
+	})
 })
 
 async function seed(

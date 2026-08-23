@@ -42,7 +42,7 @@ export function bunCompile(
 			// the root to a real, always-present dir so that probe succeeds; outputs are
 			// read back by their `.js`/`.css` suffix, so the relativised path is moot.
 			root: process.cwd(),
-			plugins: [vfs(sources, rt)]
+			plugins: [vfs(sources, rt, input.tsconfig.compilerOptions?.jsx === 'react-jsx')]
 		})
 		if (!result.success) {
 			return { diagnostics: result.logs.map((log) => logDiagnostic(log, 'error')) }
@@ -57,7 +57,11 @@ export function bunCompile(
 	})
 }
 
-function vfs(files: Record<string, string>, runtime: Record<string, string>): BunPlugin {
+function vfs(
+	files: Record<string, string>,
+	runtime: Record<string, string>,
+	jsx: boolean
+): BunPlugin {
 	return {
 		name: 'devkit-vfs',
 		setup(build) {
@@ -80,7 +84,7 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Bu
 				// than an unlinked sidecar — no host loads a separate stylesheet.
 				if (args.path.endsWith('.css'))
 					return { contents: cssModule(files[args.path] ?? ''), loader: 'js' }
-				return { contents: files[args.path] ?? '', loader: loaderFor(args.path) }
+				return { contents: files[args.path] ?? '', loader: loaderFor(args.path, jsx) }
 			})
 			build.onLoad({ filter: /.*/, namespace: RUNTIME }, (args) => ({
 				contents: runtime[args.path] ?? '',
