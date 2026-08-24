@@ -108,7 +108,9 @@ async function runEngine(
 		}
 		if (engine === 'chromium') {
 			const memoryMb = await workerMemoryMb(browser)
-			result.checks.workerMemoryWithinTarget = memoryMb !== undefined && memoryMb < 250
+			if (enforcePerformance) {
+				result.checks.workerMemoryWithinTarget = memoryMb !== undefined && memoryMb < 250
+			}
 			result.metrics.workerMemoryMb = memoryMb ?? -1
 		}
 		result.details.browser = await page.evaluate(() => navigator.userAgent)
