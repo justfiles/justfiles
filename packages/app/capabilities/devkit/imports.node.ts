@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CachedImport, ImportCache } from './imports.ts'
@@ -21,7 +21,14 @@ export function diskImportCache(root = join(tmpdir(), 'justfiles-devkit-imports-
 		},
 		async put(url, value) {
 			await mkdir(root, { recursive: true })
-			await writeFile(pathFor(url), JSON.stringify(value))
+			const path = pathFor(url)
+			const temp = `${path}.${randomUUID()}.tmp`
+			try {
+				await writeFile(temp, JSON.stringify(value))
+				await rename(temp, path)
+			} finally {
+				await rm(temp, { force: true })
+			}
 		}
 	}
 }
