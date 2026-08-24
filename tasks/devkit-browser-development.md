@@ -263,6 +263,27 @@ Acceptance checks:
 - Install and pack contain the dependency code.
 - A packed app runs without network access.
 
+### Implementation, 2026-08-24
+
+The Devkit host keeps the installed App Code sysroot as the trusted platform input. It creates one
+URL import session for each project and import map. Compile, type check, run, install, and pack reuse
+that session. Each successful operation writes the current graph to `devkit-lock.json` without
+dropping lock entries that the operation did not load. The host runs all calls for one project in
+order, including preview stop calls, so project state and lock writes cannot overlap.
+
+esbuild now bundles declared URL modules beside the platform SDK and supports `.tsx`, `.jsx`, and
+the automatic React JSX runtime. TypeScript loads package declarations into the same in-memory host
+as the sysroot declarations. Project source diagnostics remain visible, while package declaration
+diagnostics stay out of the Problems panel.
+
+Frieren stores downloaded modules in Cache Storage. The Node development host stores them in an OS
+temporary cache directory. A live React check builds and type-checks `react`, `react/jsx-runtime`,
+and `react-dom/client`, then repeats both operations offline from the locked cache.
+
+`project.json` enables JSX with `"compiler": { "jsx": "react-jsx" }`. Projects without this setting
+keep the existing TypeScript behavior. Stage 4 will move Frieren compilation into its toolchain
+worker and add the browser TypeScript backend.
+
 ## Stage 4: add the Frieren toolchain worker
 
 Create a Frieren worker entry, for example

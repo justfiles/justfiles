@@ -32,11 +32,22 @@ export interface DraftBuild {
 	diagnostics: string[]
 }
 
+interface DevkitCompiler {
+	jsx?: 'react-jsx'
+}
+
+export interface DevkitProject {
+	manifest: AppManifest
+	input: ProjectInput
+	imports: ImportMap
+	lock?: ImportLock
+}
+
 // The standard tsconfig generated from a manifest — the one home for our
-// conventions (strict, bundler resolution, noEmit). `tsc`/`tsgo`
-// consume it whole; esbuild's resolution is plugin-driven, so it ignores this.
+// conventions (strict, bundler resolution, noEmit). TypeScript consumes it whole;
+// esbuild reads only the explicit JSX mode.
 // type-fest's `TsConfigJson` is the zero-runtime schema — don't hand-roll it.
-export function tsconfigFor(manifest: AppManifest): TsConfigJson {
+export function tsconfigFor(manifest: AppManifest, compiler: DevkitCompiler = {}): TsConfigJson {
 	return {
 		compilerOptions: {
 			target: 'es2022',
@@ -47,7 +58,8 @@ export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 			esModuleInterop: true,
 			skipLibCheck: true,
 			noEmit: true,
-			types: []
+			types: [],
+			...(compiler.jsx ? { jsx: compiler.jsx } : {})
 		},
 		include: [manifest.app, ...(manifest.gui ? [manifest.gui] : [])]
 	}
@@ -58,23 +70,20 @@ export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 // toolchain method. Exported so the devkit host factory's `compile`/`typecheck` can
 // feed a `Toolchain` directly. Only `readProjectFile` can throw (missing/invalid
 // project.json).
-export async function readProject(
-	data: Volume,
-	slug: string
-): Promise<{
-	manifest: AppManifest
-	input: ProjectInput
-	imports: ImportMap
-	lock?: ImportLock
-}> {
-	const { manifest, imports } = await readProjectFile(data, slug)
+export async function readProject(data: Volume, slug: string): Promise<DevkitProject> {
+	const { manifest, imports, compiler } = await readProjectFile(data, slug)
 	const lock = await readImportLock(data, slug)
 	const files = await projectFiles(data, slug, manifest)
 	const entries: Record<string, string> = {
 		app: manifest.app,
 		...(manifest.gui ? { gui: manifest.gui } : {})
 	}
-	return { manifest, input: { files, entries, tsconfig: tsconfigFor(manifest) }, imports, lock }
+	return {
+		manifest,
+		input: { files, entries, tsconfig: tsconfigFor(manifest, compiler) },
+		imports,
+		lock
+	}
 }
 
 export async function writeImportLock(data: Volume, slug: string, lock: ImportLock): Promise<void> {
@@ -93,8 +102,13 @@ export async function writeImportLock(data: Volume, slug: string, lock: ImportLo
 // dir). Never throws on a compile error — diagnostics ride back so a live
 // preview can keep its last-good mount; only a missing/invalid `project.json`
 // throws.
-export async function buildDraft(data: Volume, slug: string, tc: Toolchain): Promise<DraftBuild> {
-	const { manifest, input } = await readProject(data, slug)
+export async function buildDraft(
+	data: Volume,
+	slug: string,
+	tc: Toolchain,
+	project?: DevkitProject
+): Promise<DraftBuild> {
+	const { manifest, input } = project ?? (await readProject(data, slug))
 	// Adapt the structured compile result to the preview/ship shape: pick the two
 	// conventional named bundles, flatten error diagnostics to strings (warnings
 	// stay off this surface; the Problems panel reads the full set via `compile`).
@@ -125,10 +139,10 @@ export async function installDraft(
 	slug: string,
 	kernel: Kernel,
 	tc: Toolchain,
-	opts?: { overwrite?: boolean }
+	opts?: { overwrite?: boolean; project?: DevkitProject }
 ): Promise<{ id: string }> {
 	const { manifest, app, gui, icon } = assertBuilt(
-		await buildDraft(chroot(fs, `/data/${appId}`), slug, tc)
+		await buildDraft(chroot(fs, `/data/${appId}`), slug, tc, opts?.project)
 	)
 	if (manifest.id === appId) throw new Error(`cannot install over calling app: ${appId}`)
 	if (!opts?.overwrite && (await kernel.list()).some((installed) => installed.id === manifest.id)) {
@@ -154,9 +168,10 @@ export async function installDraft(
 export async function packDraft(
 	data: Volume,
 	slug: string,
-	tc: Toolchain
+	tc: Toolchain,
+	project?: DevkitProject
 ): Promise<{ zip: Uint8Array }> {
-	const { manifest, app, gui, icon } = assertBuilt(await buildDraft(data, slug, tc))
+	const { manifest, app, gui, icon } = assertBuilt(await buildDraft(data, slug, tc, project))
 	// The bundle manifest: the project file with entries swapped to their compiled
 	// paths and the icon normalised to a single bundled file.
 	const bundleManifest = {
@@ -193,7 +208,7 @@ function assertBuilt(draft: DraftBuild): DraftBuild {
 async function readProjectFile(
 	data: Volume,
 	slug: string
-): Promise<{ manifest: AppManifest; imports: ImportMap }> {
+): Promise<{ manifest: AppManifest; imports: ImportMap; compiler: DevkitCompiler }> {
 	const path = `/projects/${slug}/${PROJECT_FILE}`
 	if (!(await data.exists(path))) throw new Error(`${PROJECT_FILE} not found for project: ${slug}`)
 	let raw: unknown
@@ -216,8 +231,22 @@ async function readProjectFile(
 			version: typeof m.version === 'string' ? m.version : undefined,
 			description: typeof m.description === 'string' ? m.description : undefined
 		},
-		imports: validateImportMap(m.imports)
+		imports: validateImportMap(m.imports),
+		compiler: compilerSettings(m.compiler)
 	}
+}
+
+function compilerSettings(value: unknown): DevkitCompiler {
+	if (value === undefined) return {}
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		throw new Error(`${PROJECT_FILE} "compiler" must be an object`)
+	}
+	const jsx = (value as Record<string, unknown>).jsx
+	if (jsx === undefined) return {}
+	if (jsx !== 'react-jsx') {
+		throw new Error(`${PROJECT_FILE} "compiler.jsx" must be "react-jsx"`)
+	}
+	return { jsx }
 }
 
 async function readImportLock(data: Volume, slug: string): Promise<ImportLock | undefined> {

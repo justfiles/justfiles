@@ -9,15 +9,23 @@ import {
 } from './imports.ts'
 import { esbuildCompile } from './toolchain.esbuild.ts'
 import type { ProjectInput } from './toolchain.ts'
-import { loadImportTypes, tsTypecheck } from './toolchain.typescript.ts'
+import { loadImportTypes, tsTypecheck, tsTypecheckImports } from './toolchain.typescript.ts'
 
 const react = 'https://esm.sh/react@19.1.1'
+const reactJsx = 'https://esm.sh/react@19.1.1/jsx-runtime'
+const reactDom = 'https://esm.sh/react-dom@19.1.1/client'
 const unused = 'https://esm.sh/unused@1.0.0'
 const reactMeta = `${react}?meta`
+const reactJsxMeta = `${reactJsx}?meta`
+const reactDomMeta = `${reactDom}?meta`
 const unusedMeta = `${unused}?meta`
 const reactCode = 'https://esm.sh/react@19.1.1/es2022/react.mjs'
+const reactJsxCode = 'https://esm.sh/react@19.1.1/es2022/jsx-runtime.mjs'
+const reactDomCode = 'https://esm.sh/react-dom@19.1.1/es2022/client.mjs'
 const dependencyCode = 'https://esm.sh/dependency@1.0.0/es2022/dependency.mjs'
 const reactTypes = 'https://esm.sh/@types/react@19.1.0/index.d.ts'
+const reactJsxTypes = 'https://esm.sh/@types/react@19.1.0/jsx-runtime.d.ts'
+const reactDomTypes = 'https://esm.sh/@types/react-dom@19.1.0/client.d.ts'
 const nestedTypes = 'https://esm.sh/@types/react@19.1.0/nested.d.ts'
 const rootTypes = 'https://esm.sh/@types/react@19.1.0/root.d.ts'
 const rootTypeRef = '/@types/react@19.1.0/root.d.ts'
@@ -96,6 +104,76 @@ describe('Devkit import resolver', () => {
 		expect(checked.diagnostics).toEqual([expect.objectContaining({ code: 'TS2322' })])
 	})
 
+	test('builds opt-in TSX with declared React subpaths', async () => {
+		const imports = await resolveImports(
+			{
+				'react/jsx-runtime': reactJsx,
+				'react-dom/client': reactDom
+			},
+			{ cache: memoryCache(), fetch: fakeFetch(graph()) }
+		)
+		const input = project(
+			"import { createRoot } from 'react-dom/client'; export const gui = createRoot(<main>ok</main>)"
+		)
+		input.files = { 'gui.tsx': input.files['app.ts']! }
+		input.entries = { gui: 'gui.tsx' }
+		input.tsconfig.compilerOptions = { ...input.tsconfig.compilerOptions, jsx: 'react-jsx' }
+
+		const result = await esbuildCompile(input, esbuild.build, {}, imports)
+
+		expect(result.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+		const output = result.outputs[0]?.text ?? ''
+		expect(output).toContain('jsx runtime marker')
+		expect(output).toContain('react dom client marker')
+		expect(output).not.toMatch(/(?:from\s*|import\()["']https:\/\/esm\.sh/)
+	})
+
+	test('does not enable JSX for every TSX file', async () => {
+		const input = project('export const gui = <main>no implicit JSX</main>')
+		input.files = { 'gui.tsx': input.files['app.ts']! }
+		input.entries = { gui: 'gui.tsx' }
+
+		const result = await esbuildCompile(input, esbuild.build, {})
+
+		expect(result.diagnostics.filter((item) => item.severity === 'error')).not.toEqual([])
+	})
+
+	test('reports a missing subpath export in the project source', async () => {
+		const imports = await resolveImports(
+			{
+				'react/jsx-runtime': reactJsx,
+				'react-dom/client': reactDom
+			},
+			{ cache: memoryCache(), fetch: fakeFetch(graph()) }
+		)
+		const input = project(
+			"import { Missing } from 'react-dom/client'; export const value = Missing"
+		)
+
+		const checked = await tsTypecheckImports(input, ts, {}, {}, imports)
+
+		expect(checked.diagnostics).toEqual([
+			expect.objectContaining({ file: 'app.ts', code: 'TS2305' })
+		])
+	})
+
+	test('does not report package declaration errors as project errors', async () => {
+		const imports = await resolveImports(
+			{ 'react-dom/client': reactDom },
+			{ cache: memoryCache(), fetch: fakeFetch(graph()) }
+		)
+		const loaded = await loadImportTypes(imports, ts)
+
+		const checked = tsTypecheck(
+			project("import { createRoot } from 'react-dom/client'; export const root = createRoot('x')"),
+			ts,
+			loaded.types,
+			loaded.paths
+		)
+
+		expect(checked.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+	})
+
 	test('uses a valid lock and cache without network access', async () => {
 		const cache = memoryCache()
 		const first = await resolveImports({ react }, { cache, fetch: fakeFetch(graph()) })
@@ -111,6 +189,37 @@ describe('Devkit import resolver', () => {
 		expect(second.diagnostics).toEqual([])
 		expect(second.lock()).toEqual(lock)
 		expect(fetch).not.toHaveBeenCalled()
+	})
+
+	test('extends a valid build lock with the declaration graph', async () => {
+		const cache = memoryCache()
+		const values = graph()
+		const finalTypes = 'https://esm.sh/@types/react@19.1.2/index.d.ts'
+		values[reactTypes] = {
+			url: finalTypes,
+			text: values[reactTypes]!.text
+		}
+		values['https://esm.sh/@types/react@19.1.2/nested.d.ts'] = values[nestedTypes]!
+		const first = await resolveImports({ react }, { cache, fetch: fakeFetch(values) })
+		await esbuildCompile(project("import 'react'"), esbuild.build, {}, first)
+		const buildLock = first.lock()
+
+		const second = await resolveImports(
+			{ react },
+			{ cache, fetch: fakeFetch(values), lock: buildLock, frozen: false }
+		)
+		await loadImportTypes(second, ts)
+
+		expect(second.lock().redirects[reactTypes]).toBe(finalTypes)
+		expect(second.lock().remote).toHaveProperty(finalTypes)
+
+		const fullLock = second.lock()
+		const third = await resolveImports(
+			{ react },
+			{ cache, fetch: fakeFetch(values), lock: fullLock }
+		)
+		await esbuildCompile(project("import 'react'"), esbuild.build, {}, third)
+		expect(third.lock()).toEqual(fullLock)
 	})
 
 	test('reports changed cached content against the lock', async () => {
@@ -215,6 +324,18 @@ describe('Devkit import resolver', () => {
 		expect(imports.diagnostics[0]).toMatchObject({ code: 'IMPORT_TOTAL_SIZE' })
 	})
 
+	test('applies graph limits to cached lock entries', async () => {
+		const cache = memoryCache()
+		const first = await resolveImports({ react, unused }, { cache, fetch: fakeFetch(graph()) })
+		const lock = first.lock()
+
+		const files = await resolveImports({ react, unused }, { cache, lock, limits: { files: 1 } })
+		const bytes = await resolveImports({ react }, { cache, lock, limits: { totalBytes: 1 } })
+
+		expect(files.diagnostics[0]).toMatchObject({ code: 'IMPORT_FILE_COUNT' })
+		expect(bytes.diagnostics[0]).toMatchObject({ code: 'IMPORT_TOTAL_SIZE' })
+	})
+
 	test('limits request time', async () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(
 			(_url, init) =>
@@ -268,15 +389,45 @@ function graph(): Record<string, Fixture> {
 				dts: '/@types/react@19.1.0/index.d.ts'
 			})
 		},
+		[reactJsxMeta]: {
+			text: JSON.stringify({
+				module: '/react@19.1.1/es2022/jsx-runtime.mjs',
+				dts: '/@types/react@19.1.0/jsx-runtime.d.ts'
+			})
+		},
+		[reactDomMeta]: {
+			text: JSON.stringify({
+				module: '/react-dom@19.1.1/es2022/client.mjs',
+				dts: '/@types/react-dom@19.1.0/client.d.ts'
+			})
+		},
 		[unusedMeta]: {
 			text: JSON.stringify({ module: '/unused@1.0.0/es2022/unused.mjs' })
 		},
 		[reactCode]: {
 			text: 'import { dependency } from "/dependency@1.0.0/es2022/dependency.mjs"; export default dependency'
 		},
+		[reactJsxCode]: {
+			text: `export const Fragment = Symbol();
+export const jsx = (type, props) => ({ type, props, marker: 'jsx runtime marker' });
+export const jsxs = jsx`
+		},
+		[reactDomCode]: {
+			text: "export const createRoot = (value) => ({ value, marker: 'react dom client marker' })"
+		},
 		[dependencyCode]: { text: 'export const dependency = "remote value"' },
 		[reactTypes]: {
 			text: "export interface RemoteValue { label: string }; export type NestedValue = import('./nested.d.ts').NestedValue"
+		},
+		[reactJsxTypes]: {
+			text: `export namespace JSX { export interface IntrinsicElements { [name: string]: unknown } }
+export declare const Fragment: unique symbol
+export declare function jsx(type: unknown, props: unknown): unknown
+export { jsx as jsxs }`
+		},
+		[reactDomTypes]: {
+			text: `export declare function createRoot(value: unknown): { value: unknown }
+export type BrokenPackageType = MissingPackageType`
 		},
 		[nestedTypes]: { text: 'export interface NestedValue { value: number }' }
 	}

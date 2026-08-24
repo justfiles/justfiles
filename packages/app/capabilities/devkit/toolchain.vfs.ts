@@ -21,9 +21,11 @@ export const RUNTIME = 'devkit-runtime'
 
 // The common loader vocabulary — every value is accepted verbatim by both esbuild
 // and Bun's `loader` field, so each adapter casts to its own `Loader` type.
-export type VfsLoader = 'ts' | 'js' | 'json' | 'css'
+export type VfsLoader = 'ts' | 'tsx' | 'js' | 'jsx' | 'json' | 'css'
 
-export function loaderFor(path: string): VfsLoader {
+export function loaderFor(path: string, jsx = false): VfsLoader {
+	if (path.endsWith('.tsx')) return jsx ? 'tsx' : 'ts'
+	if (path.endsWith('.jsx')) return jsx ? 'jsx' : 'js'
 	if (path.endsWith('.js')) return 'js'
 	if (path.endsWith('.json')) return 'json'
 	if (path.endsWith('.css')) return 'css'
@@ -55,7 +57,17 @@ export function resolveRelative(
 		else parts.push(seg)
 	}
 	const joined = parts.join('/')
-	const candidates = [joined, `${joined}.ts`, `${joined}.js`, `${joined}/index.ts`]
+	const candidates = [
+		joined,
+		`${joined}.ts`,
+		`${joined}.tsx`,
+		`${joined}.js`,
+		`${joined}.jsx`,
+		`${joined}/index.ts`,
+		`${joined}/index.tsx`,
+		`${joined}/index.js`,
+		`${joined}/index.jsx`
+	]
 	return candidates.find((candidate) => candidate in files)
 }
 

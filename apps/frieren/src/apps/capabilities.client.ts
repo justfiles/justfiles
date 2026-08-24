@@ -20,7 +20,7 @@ import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { notificationStore } from '../notifications/store.ts'
 import { WALLPAPER_PATH } from '../shell/wallpaper.ts'
-import { frierenCompile, frierenRunner } from './devkit.client.ts'
+import { frierenCompile, frierenImports, frierenRunner } from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
 
@@ -99,6 +99,7 @@ function devkitCapability(fs: Volume, getToken: GetToken, kernel: Kernel): Capab
 		fs,
 		kernel,
 		compile: frierenCompile,
+		imports: frierenImports,
 		runner: frierenRunner(fs, getToken)
 	})
 	return {

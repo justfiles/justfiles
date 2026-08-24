@@ -11,7 +11,7 @@
 // passes a baked `TypesBundle` instead; same code, no fs reliance.
 
 import type * as TS from 'typescript'
-import type { ResolvedImports } from './imports.ts'
+import { importDiagnostic, type ResolvedImports } from './imports.ts'
 import type {
 	CheckResult,
 	Compile,
@@ -80,6 +80,23 @@ export async function loadImportTypes(
 		}
 	}
 	return { types, paths }
+}
+
+// Add URL package declarations to the platform declaration set for one check.
+export async function tsTypecheckImports(
+	input: ProjectInput,
+	ts: typeof TS,
+	types: TypesBundle,
+	paths: TypePaths,
+	imports?: ResolvedImports
+): Promise<CheckResult> {
+	if (!imports) return tsTypecheck(input, ts, types, paths)
+	try {
+		const loaded = await loadImportTypes(imports, ts)
+		return tsTypecheck(input, ts, { ...types, ...loaded.types }, { ...paths, ...loaded.paths })
+	} catch (error) {
+		return { diagnostics: [importDiagnostic(error)] }
+	}
 }
 
 function typePath(value: string): string {

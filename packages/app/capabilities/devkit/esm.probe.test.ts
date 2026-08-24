@@ -1,7 +1,13 @@
 import { build, type Plugin } from 'esbuild'
+import * as ts from 'typescript'
 import { expect, test, vi } from 'vitest'
+import { type CachedImport, type ImportCache, resolveImports } from './imports.ts'
+import { esbuildCompile } from './toolchain.esbuild.ts'
+import type { ProjectInput } from './toolchain.ts'
+import { tsTypecheckImports } from './toolchain.typescript.ts'
 
 const react = 'https://esm.sh/react@19.1.1'
+const reactJsx = 'https://esm.sh/react@19.1.1/jsx-runtime'
 const reactDom = 'https://esm.sh/react-dom@19.1.1/client?bundle&deps=react@19.1.1'
 const nodePackage = 'https://esm.sh/better-sqlite3@12.2.0?bundle'
 const probe = process.env.DEVKIT_CDN_PROBE === '1' ? test : test.skip
@@ -82,6 +88,58 @@ probe(
 	30_000
 )
 
+probe(
+	'the Devkit graph builds and checks React from its offline cache',
+	async () => {
+		const cache = memoryCache()
+		const map = {
+			react,
+			'react/jsx-runtime': reactJsx,
+			'react-dom/client': reactDom
+		}
+		const input: ProjectInput = {
+			files: {
+				'gui.tsx': `import { useState } from 'react'
+import { createRoot } from 'react-dom/client'
+const View = () => {
+	const [count] = useState(1)
+	return <main>{count}</main>
+}
+createRoot(document.body).render(<View />)`
+			},
+			entries: { gui: 'gui.tsx' },
+			tsconfig: {
+				compilerOptions: {
+					lib: ['es2022', 'dom'],
+					module: 'esnext',
+					moduleResolution: 'bundler',
+					strict: true,
+					jsx: 'react-jsx'
+				}
+			}
+		}
+		const online = await resolveImports(map, { cache })
+		const built = await esbuildCompile(input, build, {}, online)
+		const checked = await tsTypecheckImports(input, ts, {}, {}, online)
+		expect(built.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+		expect(checked.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+		const lock = online.lock()
+		expect(
+			Object.keys(lock.remote).filter((url) => url.includes('/react@19.1.1/es2022/react.mjs'))
+		).toHaveLength(1)
+
+		const fetch = vi.fn<typeof globalThis.fetch>(() => Promise.reject(new Error('offline')))
+		const offline = await resolveImports(map, { cache, fetch, lock })
+		const rebuilt = await esbuildCompile(input, build, {}, offline)
+		const rechecked = await tsTypecheckImports(input, ts, {}, {}, offline)
+		expect(rebuilt.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+		expect(rechecked.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+		expect(offline.lock()).toEqual(lock)
+		expect(fetch).not.toHaveBeenCalled()
+	},
+	30_000
+)
+
 async function get(url: string): Promise<{ url: string; text: string; types: string | null }> {
 	const response = await fetch(url, { credentials: 'omit' })
 	expect(response.ok, `${url} returned ${response.status}`).toBe(true)
@@ -138,6 +196,18 @@ function cachedModules(imports: Map<string, string>, modules: Map<string, string
 				contents: modules.get(args.path),
 				loader: 'js'
 			}))
+		}
+	}
+}
+
+function memoryCache(): ImportCache {
+	const values = new Map<string, CachedImport>()
+	return {
+		async get(url) {
+			return values.get(url)
+		},
+		async put(url, value) {
+			values.set(url, { ...value })
 		}
 	}
 }

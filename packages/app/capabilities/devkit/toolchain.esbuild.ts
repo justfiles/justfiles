@@ -39,13 +39,15 @@ export function esbuildCompile(
 ): Promise<CompileResult> {
 	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
 		try {
+			const jsx = input.tsconfig.compilerOptions?.jsx
 			const result = await build({
 				entryPoints: [`${ENTRY}${entry}`],
 				bundle: true,
 				write: false,
 				format: 'esm',
+				...(jsx === 'react-jsx' ? { jsx: 'automatic' } : {}),
 				logLevel: 'silent',
-				plugins: [vfs(sources, rt, imports)]
+				plugins: [vfs(sources, rt, imports, jsx === 'react-jsx')]
 			})
 			return {
 				js: result.outputFiles?.[0]?.text ?? '',
@@ -60,7 +62,8 @@ export function esbuildCompile(
 function vfs(
 	files: Record<string, string>,
 	runtime: Record<string, string>,
-	imports?: ResolvedImports
+	imports?: ResolvedImports,
+	jsx = false
 ): Plugin {
 	return {
 		name: 'devkit-vfs',
@@ -104,7 +107,7 @@ function vfs(
 					return { contents: cssModule(files[args.path] ?? ''), loader: 'js' }
 				return {
 					contents: files[args.path] ?? '',
-					loader: loaderFor(args.path) as Loader
+					loader: loaderFor(args.path, jsx) as Loader
 				}
 			})
 			build.onLoad({ filter: /.*/, namespace: RUNTIME }, (args) => ({

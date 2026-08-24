@@ -131,7 +131,7 @@ export async function resolveImports(
 			if (entry.dts) declarations[specifier] = resolveUrl(entry.dts, metadata.url)
 		}
 	} catch (error) {
-		result.diagnostics.push(diagnostic(error))
+		result.diagnostics.push(importDiagnostic(error))
 	}
 	return result
 }
@@ -143,11 +143,14 @@ class Store {
 	private readonly remote: Record<string, string> = {}
 	private readonly loaded = new Map<string, CachedImport>()
 	private readonly pending = new Map<string, Promise<CachedImport>>()
+	private readonly counted = new Set<string>()
 	private totalBytes = 0
 
 	constructor(options: ResolveOptions, limits: ImportLimits) {
 		this.options = options
 		this.limits = limits
+		Object.assign(this.redirects, options.lock?.redirects)
+		Object.assign(this.remote, options.lock?.remote)
 	}
 
 	load(url: string): Promise<CachedImport> {
@@ -180,16 +183,17 @@ class Store {
 		if (prior && prior !== digest) {
 			throw new ImportError('IMPORT_LOCK_MISMATCH', `Import changed: ${value.url}`)
 		}
-		if (!prior) {
-			if (Object.keys(this.remote).length >= this.limits.files) {
+		if (!this.counted.has(value.url)) {
+			if (this.counted.size >= this.limits.files) {
 				throw new ImportError('IMPORT_FILE_COUNT', 'Import graph has too many files')
 			}
-			this.totalBytes += bytes
-			if (this.totalBytes > this.limits.totalBytes) {
+			if (this.totalBytes + bytes > this.limits.totalBytes) {
 				throw new ImportError('IMPORT_TOTAL_SIZE', 'Import graph is too large')
 			}
-			this.remote[value.url] = digest
+			this.totalBytes += bytes
+			this.counted.add(value.url)
 		}
+		if (!prior) this.remote[value.url] = digest
 		if (!cached) {
 			await this.options.cache.put(requestedUrl, value)
 			if (requestedUrl !== value.url) await this.options.cache.put(value.url, value)
@@ -200,10 +204,21 @@ class Store {
 	}
 
 	private verify(requestedUrl: string, finalUrl: string, digest: string): void {
-		if (!(this.options.frozen ?? !!this.options.lock)) return
 		const lock = this.options.lock
-		const expectedUrl = lock?.redirects[requestedUrl] ?? requestedUrl
-		if (expectedUrl !== finalUrl || lock?.remote[finalUrl] !== digest) {
+		if (!lock) return
+		const frozen = this.options.frozen ?? true
+		const redirected = lock.redirects[requestedUrl]
+		const requestedDigest = lock.remote[requestedUrl]
+		const expectedDigest = lock.remote[finalUrl]
+		if (!frozen && redirected === undefined && requestedDigest === undefined) {
+			if (expectedDigest === undefined || expectedDigest === digest) return
+		}
+		const expectedUrl = redirected ?? requestedUrl
+		if (
+			expectedUrl !== finalUrl ||
+			(expectedDigest !== undefined && expectedDigest !== digest) ||
+			expectedDigest === undefined
+		) {
 			throw new ImportError(
 				'IMPORT_LOCK_MISMATCH',
 				`Import does not match devkit-lock.json: ${requestedUrl}`
@@ -311,7 +326,7 @@ async function hash(text: string): Promise<string> {
 	return `sha256-${Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
-function diagnostic(error: unknown): Diagnostic {
+export function importDiagnostic(error: unknown): Diagnostic {
 	return {
 		file: '',
 		range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },

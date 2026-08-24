@@ -3,8 +3,9 @@ import { Worker } from 'node:worker_threads'
 import type { Volume } from '@justfiles/fs'
 import { appBundleFromMemory, type Message } from './app.ts'
 import { devkitCapability, type Runner } from './capabilities/devkit/host.ts'
+import { diskImportCache } from './capabilities/devkit/imports.node.ts'
 import { esbuildCompile } from './capabilities/devkit/toolchain.esbuild.ts'
-import { tsTypecheck } from './capabilities/devkit/toolchain.typescript.ts'
+import { tsTypecheckImports } from './capabilities/devkit/toolchain.typescript.ts'
 import type { Capability } from './capabilities/types.ts'
 import type { GetSandbox, Kernel, Sandbox } from './kernel.ts'
 import { sandboxClient, sandboxWorkerSource } from './sandbox.ts'
@@ -18,6 +19,7 @@ export function devkitHost(fs: Volume): {
 	close(): void
 } {
 	const workers = workerPool()
+	const imports = { cache: diskImportCache() }
 	const previews = new Map<string, string>()
 	let kernel: Kernel
 	const runner: Runner = {
@@ -47,10 +49,11 @@ export function devkitHost(fs: Volume): {
 			return devkitCapability({
 				fs,
 				kernel,
-				compile: async (input, runtime) =>
-					esbuildCompile(input, (await import('esbuild')).build, runtime),
-				typecheck: async (input, types, paths) =>
-					tsTypecheck(input, await import('typescript'), types, paths),
+				compile: async (input, runtime, resolved) =>
+					esbuildCompile(input, (await import('esbuild')).build, runtime, resolved),
+				typecheck: async (input, types, paths, resolved) =>
+					tsTypecheckImports(input, await import('typescript'), types, paths, resolved),
+				imports,
 				runner,
 				overwrite: true
 			})
