@@ -143,6 +143,7 @@ class Store {
 	private readonly remote: Record<string, string> = {}
 	private readonly loaded = new Map<string, CachedImport>()
 	private readonly pending = new Map<string, Promise<CachedImport>>()
+	private readonly counted = new Set<string>()
 	private totalBytes = 0
 
 	constructor(options: ResolveOptions, limits: ImportLimits) {
@@ -182,16 +183,17 @@ class Store {
 		if (prior && prior !== digest) {
 			throw new ImportError('IMPORT_LOCK_MISMATCH', `Import changed: ${value.url}`)
 		}
-		if (!prior) {
-			if (Object.keys(this.remote).length >= this.limits.files) {
+		if (!this.counted.has(value.url)) {
+			if (this.counted.size >= this.limits.files) {
 				throw new ImportError('IMPORT_FILE_COUNT', 'Import graph has too many files')
 			}
-			this.totalBytes += bytes
-			if (this.totalBytes > this.limits.totalBytes) {
+			if (this.totalBytes + bytes > this.limits.totalBytes) {
 				throw new ImportError('IMPORT_TOTAL_SIZE', 'Import graph is too large')
 			}
-			this.remote[value.url] = digest
+			this.totalBytes += bytes
+			this.counted.add(value.url)
 		}
+		if (!prior) this.remote[value.url] = digest
 		if (!cached) {
 			await this.options.cache.put(requestedUrl, value)
 			if (requestedUrl !== value.url) await this.options.cache.put(value.url, value)

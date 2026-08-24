@@ -324,6 +324,18 @@ describe('Devkit import resolver', () => {
 		expect(imports.diagnostics[0]).toMatchObject({ code: 'IMPORT_TOTAL_SIZE' })
 	})
 
+	test('applies graph limits to cached lock entries', async () => {
+		const cache = memoryCache()
+		const first = await resolveImports({ react, unused }, { cache, fetch: fakeFetch(graph()) })
+		const lock = first.lock()
+
+		const files = await resolveImports({ react, unused }, { cache, lock, limits: { files: 1 } })
+		const bytes = await resolveImports({ react }, { cache, lock, limits: { totalBytes: 1 } })
+
+		expect(files.diagnostics[0]).toMatchObject({ code: 'IMPORT_FILE_COUNT' })
+		expect(bytes.diagnostics[0]).toMatchObject({ code: 'IMPORT_TOTAL_SIZE' })
+	})
+
 	test('limits request time', async () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(
 			(_url, init) =>
