@@ -7,7 +7,18 @@ function getEsbuild(): Promise<typeof import('esbuild-wasm')> {
 	esbuildReady ??= (async () => {
 		const esbuild = await import('esbuild-wasm')
 		const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
-		await esbuild.initialize({ wasmURL })
+		try {
+			// The toolchain is a worker. Run esbuild here instead of in a nested worker.
+			await esbuild.initialize({ wasmURL, worker: false })
+		} catch (error) {
+			// WebKit can keep the service after this module loses its cached promise.
+			if (
+				!(error instanceof Error) ||
+				error.message !== 'Cannot call "initialize" more than once'
+			) {
+				throw error
+			}
+		}
 		return esbuild
 	})()
 	return esbuildReady

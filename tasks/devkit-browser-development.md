@@ -410,6 +410,31 @@ small React project.
 Release the feature to App Code first. Do not make URL packages part of the general Devkit
 contract until the React fixture completes one normal development cycle.
 
+### Implementation, 2026-08-24
+
+`pnpm --filter frieren run verify:devkit-worker` now runs the complete React fixture in Chromium,
+Firefox, and WebKit. Each engine compiles and type-checks the project, reports a source type error,
+restarts the worker, and then runs, packs, and installs the app from the locked offline cache. The
+packed GUI has no CDN module imports.
+
+The browser probe also checks a CDN timeout, a redirect loop, a changed locked response, a corrupt
+Cache Storage response, a missing declaration entry, a Node import, and a worker failure. App Code's
+`createProblemChecks` test covers a source edit while an older type check is active. It keeps one
+check active, drops the stale result, and runs one check for the latest revision.
+
+WebKit found one release defect. A compile after a type check could see esbuild's service as already
+initialized even when the toolchain wrapper had lost its cached promise. The toolchain now runs
+esbuild inside its existing worker and reuses WebKit's active service.
+
+The three-engine functional run passed on a 10-core Apple M5 MacBook Pro with 24 GB memory. A separate
+Chromium performance run keeps the Stage 4 limits as release checks. It compiled the 42-file fixture
+in 2.27 seconds, completed the first type check in 4.30 seconds, repeated it in 156 milliseconds, and
+used 77.4 MB after the restart flow.
+
+`docs/app.md` now lists the exact esm.sh rules, explains `devkit-lock.json`, and shows a small React
+project. App Code must still release this feature before URL packages become a general Devkit
+contract.
+
 ## Main repository files
 
 | File | Change |
