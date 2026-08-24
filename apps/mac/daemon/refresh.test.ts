@@ -386,3 +386,55 @@ test('uses kernel events for local state and catalog changes', async () => {
 
 	await refresh.close()
 })
+
+test('removes a native projection after the backend removes its app', async () => {
+	let installed = [{ id: 'app.one', name: 'One', app: 'app.js' }]
+	let removed = false
+	let onApplications: ((event: { source?: string }) => void) | undefined
+	const fs = {
+		async readFile(path: string) {
+			if (removed) throw new Error(`ENOENT: ${path}`)
+			return enc.encode('{"id":"app.one","version":"1"}')
+		},
+		watch: async (path: string, listener: (event: { source?: string }) => void) => {
+			if (path === '/applications') onApplications = listener
+			return () => {}
+		}
+	} as unknown as Volume
+	const reloads: string[] = []
+	const kernel = {
+		list: async () => installed,
+		async reloadBundle(appId: string) {
+			reloads.push(appId)
+		},
+		subscribe: () => () => {}
+	} as unknown as Kernel
+	let projected = new Set<string>()
+	let changed = (): void => {}
+	const projectionChanged = () =>
+		new Promise<void>((resolve) => {
+			changed = resolve
+		})
+	const refresh = runtimeRefresh({
+		volume: Promise.resolve(fs),
+		kernel: Promise.resolve(kernel),
+		publishState: () => {},
+		reloadApp: () => {},
+		refreshApplications: async (apps) => {
+			projected = new Set(apps.map((app) => app.id))
+			changed()
+		}
+	})
+
+	await refresh.refreshApps()
+	expect(projected).toEqual(new Set(['app.one']))
+
+	installed = []
+	removed = true
+	const nextProjection = projectionChanged()
+	onApplications?.({ source: REMOTE_SOURCE })
+	await nextProjection
+	expect(projected).toEqual(new Set())
+	expect(reloads).toEqual(['app.one', 'app.one'])
+	await refresh.close()
+})

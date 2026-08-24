@@ -5,6 +5,7 @@ import type { Kernel } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { memStore } from '@justfiles/fs/mem'
+import type { Cursor, Node, Store } from '@justfiles/fs/store'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
 import { storeApi } from '../../../packages/core/src/store.api'
@@ -36,6 +37,7 @@ function backend() {
 	const requests: { url: string; authorization: string | null }[] = []
 	return {
 		fs,
+		store,
 		requests,
 		setOnline(value: boolean) {
 			online = value
@@ -52,18 +54,30 @@ function backend() {
 	}
 }
 
+async function rows(store: Store): Promise<Node[]> {
+	const found: Node[] = []
+	let cursor: Cursor | undefined
+	for (;;) {
+		const page = await store.since(cursor)
+		found.push(...page.nodes)
+		if (page.next === undefined || page.nodes.length === 0) return found
+		cursor = page.next
+	}
+}
+
 async function storage(
 	supportDir: string,
 	hub: ReturnType<typeof backend>,
 	ownerId = 'user-a',
-	getToken: () => Promise<string | null> = async () => 'token-a'
+	getToken: () => Promise<string | null> = async () => 'token-a',
+	send = hub.fetch
 ): Promise<NativeStorage> {
 	const value = await createNativeStorage({
 		supportDir,
 		ownerId,
 		getToken,
 		origin: 'http://hub.test',
-		fetch: hub.fetch,
+		fetch: send,
 		interval: 60_000
 	})
 	open.push(value)
@@ -107,6 +121,30 @@ test('syncs both ways, uploads Finder edits, and keeps private data local', asyn
 	expect(await hub.fs.exists('/secret.txt')).toBe(false)
 }, 15_000)
 
+test('keeps every private Volume mutation out of the remote Store', async () => {
+	const support = await temp()
+	const hub = backend()
+	const local = await storage(support, hub)
+	await local.flush()
+	const before = await rows(hub.store)
+
+	await local.volume.mkdir('/private/work')
+	await local.volume.writeFile('/private/work/note.txt', enc.encode('one'))
+	await local.volume.appendFile('/private/work/note.txt', enc.encode(' two'))
+	await local.volume.setXattr('/private/work/note.txt', 'user.test', enc.encode('value'))
+	await local.volume.removeXattr('/private/work/note.txt', 'user.test')
+	await local.volume.chmod('/private/work/note.txt', 0o600)
+	await local.volume.utimes('/private/work/note.txt', 1_000_000n)
+	await local.volume.cp('/private/work/note.txt', '/private/work/copy.txt')
+	await local.volume.symlink('note.txt', '/private/work/link.txt')
+	await local.volume.rename('/private/work/copy.txt', '/private/work/moved.txt')
+	await local.volume.rm('/private/work/link.txt')
+	await local.volume.rm('/private/work', { recursive: true })
+	await local.flush()
+
+	expect(await rows(hub.store)).toEqual(before)
+})
+
 test('keeps cursors and uses a fresh token for every request', async () => {
 	const support = await temp()
 	const hub = backend()
@@ -136,6 +174,66 @@ test('keeps cursors and uses a fresh token for every request', async () => {
 	expect(dec.decode(await first.volume.readFile('/after-restart.txt'))).toBe('next')
 	expect(hub.requests.some((request) => request.authorization === 'Bearer token-a')).toBe(true)
 	expect(hub.requests.some((request) => request.authorization === 'Bearer token-b')).toBe(true)
+})
+
+test('retries with a refreshed token after the old token expires', async () => {
+	const support = await temp()
+	const hub = backend()
+	await hub.fs.writeFile('/remote.txt', enc.encode('remote'))
+	let calls = 0
+	const getToken = async () => (++calls === 1 ? 'expired' : 'fresh')
+	const send = (url: string, init?: RequestInit) =>
+		new Headers(init?.headers).get('authorization') === 'Bearer expired'
+			? Promise.resolve(new Response('Unauthorized', { status: 401 }))
+			: hub.fetch(url, init)
+	const local = await storage(support, hub, 'user-a', getToken, send)
+
+	expect(await local.flush()).toBe(true)
+	expect(calls).toBeGreaterThan(1)
+	expect(dec.decode(await local.volume.readFile('/remote.txt'))).toBe('remote')
+})
+
+test('uses the signed-out token state when sign-out races an active request', async () => {
+	const support = await temp()
+	const hub = backend()
+	let token: string | null = 'token-a'
+	let asked!: () => void
+	let release!: () => void
+	const waiting = new Promise<void>((resolve) => {
+		asked = resolve
+	})
+	const held = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	const getToken = async () => {
+		asked()
+		await held
+		return token
+	}
+	let signedOutRequest!: () => void
+	const requested = new Promise<void>((resolve) => {
+		signedOutRequest = resolve
+	})
+	let usedOldToken = false
+	const send = (url: string, init?: RequestInit) => {
+		const authorization = new Headers(init?.headers).get('authorization')
+		if (token === null) {
+			usedOldToken ||= authorization === 'Bearer token-a'
+			signedOutRequest()
+			return Promise.resolve(new Response('Unauthorized', { status: 401 }))
+		}
+		return hub.fetch(url, init)
+	}
+	const local = await storage(support, hub, 'user-a', getToken, send)
+	await waiting
+
+	token = null
+	release()
+	await requested
+	expect(usedOldToken).toBe(false)
+
+	token = 'token-a'
+	expect(await local.flush()).toBe(true)
 })
 
 test('uploads offline work after the backend returns', async () => {

@@ -270,7 +270,8 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			failures = 0
 			setStatus('synced')
 		} catch (error) {
-			console.error(error)
+			if (!(destroyed && error instanceof Error && error.name === 'AbortError'))
+				console.error(error)
 			failures++
 			setStatus('error')
 			throw error

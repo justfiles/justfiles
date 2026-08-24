@@ -1,6 +1,6 @@
 # Mac backend sync
 
-Story status: `in progress`
+Story status: `done`
 
 This story connects the Mac file system to the existing backend Store. The backend and
 OAuth path already support it. The work is in the native Store, the daemon, and the running
@@ -30,7 +30,7 @@ Status values are `todo`, `in progress`, `done`, and `blocked`.
 | 1 | [Make `fsStore` sync-ready](phase-1-fs-store.md) | None | Medium | done |
 | 2 | [Make Mac storage safe](phase-2-mac-storage.md) | Phase 1 | Medium | done |
 | 3 | [Connect sync and refresh the runtime](phase-3-connect-sync.md) | Phase 2 | Large | done |
-| 4 | [Test failure and recovery](phase-4-recovery.md) | Phase 3 | Small to medium | todo |
+| 4 | [Test failure and recovery](phase-4-recovery.md) | Phase 3 | Small to medium | done |
 
 When a phase starts, set its row and its phase file to `in progress`. Set both to `done` only
 after every exit check passes. Set the story status to `in progress` when Phase 1 starts and
