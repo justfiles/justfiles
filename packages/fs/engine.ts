@@ -276,6 +276,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 				if (replans++ < REPLANS) continue
 				throw err
 			}
+			if (err instanceof Error && err.name === 'AbortError') throw err
 			if (err instanceof GuardError) throw err
 			if (failures >= retries) throw err
 			await sleep(backoff * 2 ** failures++)

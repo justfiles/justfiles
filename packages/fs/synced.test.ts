@@ -307,6 +307,37 @@ describe('synced: the loop', () => {
 		await drained
 		expect(done).toBe(true)
 	})
+
+	it('does not log cancellation while destroy drains the active cycle', async () => {
+		let started!: () => void
+		let cancel!: (error: Error) => void
+		const entered = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		const stopped = new Promise<never>((_resolve, reject) => {
+			cancel = reject
+		})
+		const remote = memStore()
+		const blocked: Store = {
+			...remote,
+			since: () => {
+				started()
+				return stopped
+			}
+		}
+		const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+		const { vol } = await replica(blocked, { localFirst: true })
+		await entered
+
+		vol.destroy()
+		const aborted = new Error('The operation was aborted.')
+		aborted.name = 'AbortError'
+		cancel(aborted)
+		await vol.drain()
+
+		expect(logged).not.toHaveBeenCalled()
+		logged.mockRestore()
+	})
 })
 
 describe('synced: the debounced push', () => {

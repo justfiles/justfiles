@@ -1,6 +1,6 @@
 # Phase 4: test failure and recovery
 
-Status: `todo`
+Status: `done`
 
 Depends on: Phase 3
 
