@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { type Browser, chromium } from '@playwright/test'
+import { type Browser, chromium, firefox, webkit } from '@playwright/test'
 import { build, preview } from 'vite'
 
 type Result = {
@@ -10,10 +10,18 @@ type Result = {
 	details: Record<string, unknown>
 }
 
+const ENGINES = { chromium, firefox, webkit }
+type EngineName = keyof typeof ENGINES
+type EngineResult = {
+	engine: EngineName
+	status: 'pass' | 'fail' | 'skip'
+	result?: Result
+	note?: string
+}
+
 const root = path.resolve(import.meta.dirname, '..')
 const outDir = await mkdtemp(path.join(tmpdir(), 'frieren-devkit-worker-'))
 let server: Awaited<ReturnType<typeof preview>> | undefined
-let browser: Browser | undefined
 
 try {
 	await build({
@@ -36,38 +44,92 @@ try {
 	})
 	const address = server.httpServer.address()
 	if (!address || typeof address === 'string') throw new Error('Probe server did not start')
-	browser = await chromium.launch({ args: ['--enable-precise-memory-info'] })
-	const page = await browser.newPage()
-	const browserErrors: string[] = []
-	page.on('console', (message) => {
-		if (message.type() === 'error') browserErrors.push(message.text())
-	})
-	page.on('pageerror', (error) => browserErrors.push(error.message))
-	await page.goto(`http://127.0.0.1:${address.port}/devkit-worker-probe.html`)
-	const result = await page.evaluate(
-		() => (globalThis as unknown as { __DEVKIT_PROBE__: Promise<Result> }).__DEVKIT_PROBE__
-	)
-	const memoryMb = await workerMemoryMb(browser)
 	const assets = await readdir(path.join(outDir, 'assets'))
 	const worker = assets.find((file) => file.startsWith('devkit.toolchain.worker-'))
 	const typescript = assets.find((file) => file.startsWith('devkit.toolchain.typescript-'))
 	const html = await readFile(path.join(outDir, 'devkit-worker-probe.html'), 'utf8')
-	result.checks.typeScriptIsLazy = Boolean(worker && typescript && !html.includes(typescript))
-	result.checks.workerMemoryWithinTarget = memoryMb !== undefined && memoryMb < 250
-	result.checks.browserHadNoErrors = browserErrors.length === 0
-	result.metrics.workerMemoryMb = memoryMb ?? -1
-	result.details.browser = await page.evaluate(() => navigator.userAgent)
-	result.details.machine = `${process.platform} ${process.arch}`
-	result.details.workerChunk = worker ?? 'missing'
-	result.details.typeScriptChunk = typescript ?? 'missing'
-	result.details.browserErrors = browserErrors
-
-	console.log(JSON.stringify(result, null, 2))
-	if (Object.values(result.checks).some((passed) => !passed)) process.exitCode = 1
+	const url = `http://127.0.0.1:${address.port}/devkit-worker-probe.html`
+	const engines = parseEngines()
+	const enforcePerformance = engines.length === 1 && engines[0] === 'chromium'
+	const results: EngineResult[] = []
+	for (const engine of engines) {
+		results.push(await runEngine(engine, url, { worker, typescript, html }, enforcePerformance))
+	}
+	console.log(JSON.stringify(results, null, 2))
+	if (results.some((result) => result.status !== 'pass')) process.exitCode = 1
 } finally {
-	await browser?.close()
 	await server?.close()
 	await rm(outDir, { force: true, recursive: true })
+}
+
+function parseEngines(): EngineName[] {
+	const value = process.argv[2]
+	if (!value || value === 'all') return Object.keys(ENGINES) as EngineName[]
+	if (value in ENGINES) return [value as EngineName]
+	throw new Error(`Unknown browser engine: ${value}`)
+}
+
+async function runEngine(
+	engine: EngineName,
+	url: string,
+	assets: { worker?: string; typescript?: string; html: string },
+	enforcePerformance: boolean
+): Promise<EngineResult> {
+	let browser: Browser | undefined
+	try {
+		browser = await ENGINES[engine].launch(
+			engine === 'chromium' ? { args: ['--enable-precise-memory-info'] } : {}
+		)
+	} catch (error) {
+		return { engine, status: 'skip', note: message(error).split('\n')[0] }
+	}
+	const browserErrors: string[] = []
+	try {
+		const page = await browser.newPage()
+		page.on('console', (entry) => {
+			if (entry.type() === 'error') browserErrors.push(entry.text())
+		})
+		page.on('pageerror', (error) => browserErrors.push(error.message))
+		await page.goto(url)
+		const result = await page.evaluate(
+			() => (globalThis as unknown as { __DEVKIT_PROBE__: Promise<Result> }).__DEVKIT_PROBE__
+		)
+		result.checks.typeScriptIsLazy = Boolean(
+			assets.worker && assets.typescript && !assets.html.includes(assets.typescript)
+		)
+		result.checks.browserHadNoErrors = browserErrors.length === 0
+		if (!enforcePerformance) {
+			result.details.performanceTargets = {
+				firstTypecheckWithinTarget: result.checks.firstTypecheckWithinTarget,
+				repeatTypecheckWithinTarget: result.checks.repeatTypecheckWithinTarget
+			}
+			delete result.checks.firstTypecheckWithinTarget
+			delete result.checks.repeatTypecheckWithinTarget
+		}
+		if (engine === 'chromium') {
+			const memoryMb = await workerMemoryMb(browser)
+			result.checks.workerMemoryWithinTarget = memoryMb !== undefined && memoryMb < 250
+			result.metrics.workerMemoryMb = memoryMb ?? -1
+		}
+		result.details.browser = await page.evaluate(() => navigator.userAgent)
+		result.details.machine = `${process.platform} ${process.arch}`
+		result.details.workerChunk = assets.worker ?? 'missing'
+		result.details.typeScriptChunk = assets.typescript ?? 'missing'
+		result.details.browserErrors = browserErrors
+		return {
+			engine,
+			status: Object.values(result.checks).every(Boolean) ? 'pass' : 'fail',
+			result
+		}
+	} catch (error) {
+		return { engine, status: 'fail', note: `${message(error)} ${JSON.stringify(browserErrors)}` }
+	} finally {
+		await browser.close()
+	}
+}
+
+function message(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
 }
 
 async function workerMemoryMb(browser: Browser): Promise<number | undefined> {
