@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ResolvedImports } from './imports.ts'
+import { importDiagnostic, type ResolvedImports } from './imports.ts'
 import type { CheckResult, CompileResult, ProjectInput } from './toolchain.ts'
 import { serveToolchain, type ToolchainTransport, toolchainClient } from './toolchain.worker.ts'
 
@@ -135,5 +135,38 @@ describe('toolchain worker RPC', () => {
 		const result = await toolchainClient(host).compile(input, {}, imports)
 
 		expect(result.outputs[0]?.text).toBe('remote code')
+	})
+
+	it('keeps import error codes across the worker boundary', async () => {
+		const [host, worker] = link()
+		serveToolchain(
+			{
+				compile: async () => ({ outputs: [], diagnostics: [] }),
+				typecheck: async (_input, _types, _paths, imports) => {
+					try {
+						await imports?.load('https://esm.sh/example@1.0.0/index.d.ts')
+						return { diagnostics: [] }
+					} catch (error) {
+						return { diagnostics: [importDiagnostic(error)] }
+					}
+				}
+			},
+			worker
+		)
+		const imports: ResolvedImports = {
+			code: {},
+			declarations: {},
+			limits: { depth: 1, files: 1, fileBytes: 100, totalBytes: 100, timeoutMs: 100 },
+			load: async () => {
+				throw Object.assign(new Error('CDN failed'), { code: 'IMPORT_FETCH' })
+			},
+			resolve: () => '',
+			lock: () => ({ version: 1, redirects: {}, remote: {} }),
+			diagnostics: []
+		}
+
+		const result = await toolchainClient(host).typecheck(input, {}, {}, imports)
+
+		expect(result.diagnostics[0]?.code).toBe('IMPORT_FETCH')
 	})
 })

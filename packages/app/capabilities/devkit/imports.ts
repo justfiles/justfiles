@@ -342,9 +342,15 @@ export function importDiagnostic(error: unknown): Diagnostic {
 		range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
 		severity: 'error',
 		source: 'imports',
-		code: error instanceof ImportError ? error.code : 'IMPORT_ERROR',
+		code: importCode(error) ?? 'IMPORT_ERROR',
 		message: message(error)
 	}
+}
+
+function importCode(error: unknown): string | undefined {
+	if (error instanceof ImportError) return error.code
+	if (!(error instanceof Error) || !('code' in error) || typeof error.code !== 'string') return
+	return /^IMPORT_[A-Z_]+$/.test(error.code) ? error.code : undefined
 }
 
 function message(error: unknown): string {

@@ -32,7 +32,7 @@ type LoadReply =
 type HostFrame = RunReply | LoadRequest
 type WorkerFrame = RunRequest | LoadReply
 
-type WireError = { message: string; stack?: string }
+type WireError = { message: string; stack?: string; code?: string }
 type Pending<T> = { resolve: (value: T) => void; reject: (error: Error) => void }
 
 export type ToolchainTransport = {
@@ -91,7 +91,7 @@ export function toolchainClient(transport: ToolchainTransport): ToolchainClient 
 		pending.delete(reply.id)
 		imports.delete(reply.id)
 		if (reply.ok) p.resolve(reply.result)
-		else p.reject(Object.assign(new Error(reply.error.message), { stack: reply.error.stack }))
+		else p.reject(fromWire(reply.error))
 	})
 
 	const request = <T>(body: BareRequest, graph?: ResolvedImports): Promise<T> => {
@@ -160,7 +160,7 @@ export function serveToolchain(backends: ToolchainBackends, transport: Toolchain
 			if (!load) return
 			loads.delete(req.id)
 			if (req.ok) load.resolve(req.value)
-			else load.reject(Object.assign(new Error(req.error.message), { stack: req.error.stack }))
+			else load.reject(fromWire(req.error))
 			return
 		}
 		if (req.kind !== 'run') return
@@ -232,7 +232,14 @@ function replyTo(transport: ToolchainTransport, frame: LoadReply | RunReply): vo
 }
 
 function toWire(error: unknown): WireError {
-	return error instanceof Error
-		? { message: error.message, stack: error.stack }
-		: { message: String(error) }
+	if (!(error instanceof Error)) return { message: String(error) }
+	const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined
+	return { message: error.message, stack: error.stack, ...(code ? { code } : {}) }
+}
+
+function fromWire(error: WireError): Error {
+	return Object.assign(new Error(error.message), {
+		stack: error.stack,
+		...(error.code ? { code: error.code } : {})
+	})
 }
