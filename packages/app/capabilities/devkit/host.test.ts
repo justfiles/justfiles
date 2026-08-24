@@ -41,7 +41,9 @@ async function seed(
 // reaches `kernel().app()`. The runtime map lists every SDK spec (pointing at one
 // empty blob), because `loadRuntime` rejects an incomplete sysroot.
 const STUB = 'stub'
-function harness() {
+function harness(
+	backends: Partial<Pick<Parameters<typeof devkitCapability>[0], 'compile' | 'typecheck'>> = {}
+) {
 	const fs = volume(memStore())
 	const seen: string[] = []
 	const index = enc.encode(
@@ -72,8 +74,8 @@ function harness() {
 	const impl = devkitCapability({
 		fs,
 		kernel,
-		compile: async () => empty,
-		typecheck: async () => ({ diagnostics: [] }),
+		compile: backends.compile ?? (async () => empty),
+		typecheck: backends.typecheck ?? (async () => ({ diagnostics: [] })),
 		runner: noopRunner
 	})
 	const call = (appId: string, method: string, args: readonly unknown[]) =>
@@ -95,6 +97,43 @@ test('each caller resolves its own toolchain — no hardcoded app id', async () 
 	await call('justfiles.code', 'compile', [{ slug: 'a' }])
 	await call('app.other', 'typecheck', [{ slug: 'b' }])
 	expect(seen).toEqual(['justfiles.code', 'app.other'])
+})
+
+test('runs one operation at a time for each project', async () => {
+	const calls: string[] = []
+	let start!: () => void
+	const started = new Promise<void>((resolve) => {
+		start = resolve
+	})
+	let release!: () => void
+	const blocked = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	const { fs, call } = harness({
+		compile: async () => {
+			calls.push('compile')
+			start()
+			await blocked
+			throw new Error('compile failed')
+		},
+		typecheck: async () => {
+			calls.push('typecheck')
+			return { diagnostics: [] }
+		}
+	})
+	await seed(fs, 'justfiles.code', 'draft')
+
+	const compiling = call('justfiles.code', 'compile', [{ slug: 'draft' }])
+	await started
+	const checking = call('justfiles.code', 'typecheck', [{ slug: 'draft' }])
+	await new Promise((resolve) => setTimeout(resolve, 0))
+	const whileCompiling = [...calls]
+	release()
+	const results = await Promise.allSettled([compiling, checking])
+
+	expect(whileCompiling).toEqual(['compile'])
+	expect(calls).toEqual(['compile', 'typecheck'])
+	expect(results.map((result) => result.status)).toEqual(['rejected', 'fulfilled'])
 })
 
 test('all project operations reuse one import session and update its lock', async () => {

@@ -268,7 +268,8 @@ Acceptance checks:
 The Devkit host keeps the installed App Code sysroot as the trusted platform input. It creates one
 URL import session for each project and import map. Compile, type check, run, install, and pack reuse
 that session. Each successful operation writes the current graph to `devkit-lock.json` without
-dropping lock entries that the operation did not load.
+dropping lock entries that the operation did not load. The host runs all calls for one project in
+order, including preview stop calls, so project state and lock writes cannot overlap.
 
 esbuild now bundles declared URL modules beside the platform SDK and supports `.tsx`, `.jsx`, and
 the automatic React JSX runtime. TypeScript loads package declarations into the same in-memory host

@@ -103,6 +103,20 @@ export function devkitCapability(opts: {
 	const { fs, compile, typecheck, imports: importHost, runner, kernel, overwrite } = opts
 	// The caller's own data dir — where `projects/<slug>` lives.
 	const data = (ctx: { appId: string }) => chroot(fs, `/data/${ctx.appId}`)
+	// A project owns one import graph, lock, and preview. Run its calls one at a time.
+	const jobs = new Map<string, Promise<unknown>>()
+	const runProject = <T>(
+		ctx: { appId: string },
+		previewId: string,
+		job: () => Promise<T>
+	): Promise<T> => {
+		const id = `${ctx.appId}\0${previewId}`
+		const next = (jobs.get(id) ?? Promise.resolve()).catch(() => {}).then(job)
+		jobs.set(id, next)
+		return next.finally(() => {
+			if (jobs.get(id) === next) jobs.delete(id)
+		})
+	}
 	// Each installed App Code version supplies its own SDK. Keep that fixed input
 	// apart from project imports so a project cannot replace a platform module.
 	const platforms = new Map<
@@ -194,42 +208,48 @@ export function devkitCapability(opts: {
 	}
 
 	return implementCapability(devkit, {
-		compile: async (ctx, { slug }) => {
-			const { project, toolchain } = await prepare(ctx, slug)
-			return toolchain.compile(project.input)
-		},
-		typecheck: async (ctx, { slug }) => {
-			const { project, toolchain } = await prepare(ctx, slug)
-			if (!toolchain.typecheck)
-				throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', 'typecheck')
-			return toolchain.typecheck(project.input)
-		},
+		compile: (ctx, { slug }) =>
+			runProject(ctx, previewIdFor(slug), async () => {
+				const { project, toolchain } = await prepare(ctx, slug)
+				return toolchain.compile(project.input)
+			}),
+		typecheck: (ctx, { slug }) =>
+			runProject(ctx, previewIdFor(slug), async () => {
+				const { project, toolchain } = await prepare(ctx, slug)
+				if (!toolchain.typecheck)
+					throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', 'typecheck')
+				return toolchain.typecheck(project.input)
+			}),
 		// Promote the draft to the real `/applications`. The kernel emits
 		// `app.installed` on success; a host that must react (re-list a launcher,
 		// re-materialise an OS bundle) subscribes to that, off this call path.
-		install: async (ctx, { slug }) => {
-			const { project, toolchain } = await prepare(ctx, slug)
-			return installDraft(fs, ctx.appId, slug, kernel, toolchain, { overwrite, project })
-		},
-		pack: async (ctx, { slug }) => {
-			const { project, toolchain } = await prepare(ctx, slug)
-			return packDraft(data(ctx), slug, toolchain, project)
-		},
+		install: (ctx, { slug }) =>
+			runProject(ctx, previewIdFor(slug), async () => {
+				const { project, toolchain } = await prepare(ctx, slug)
+				return installDraft(fs, ctx.appId, slug, kernel, toolchain, { overwrite, project })
+			}),
+		pack: (ctx, { slug }) =>
+			runProject(ctx, previewIdFor(slug), async () => {
+				const { project, toolchain } = await prepare(ctx, slug)
+				return packDraft(data(ctx), slug, toolchain, project)
+			}),
 		// Compile, then (only on a clean build) hand the draft to the runner. On a
 		// compile error the last-good mount stays put — one uniform rule, here.
-		run: async (ctx, { slug, reset }) => {
-			const { project, toolchain } = await prepare(ctx, slug)
-			const draft = await buildDraft(data(ctx), slug, toolchain, project)
-			// A hidden kernel id (leading dot): the preview installs + serves like any
-			// app but stays off the catalog surface, so preview churn on every ⟳ Run
-			// never wakes a launcher.
+		run: (ctx, { slug, reset }) => {
 			const previewId = previewIdFor(slug)
-			if (draft.diagnostics.length > 0 || !draft.app || !draft.gui)
-				return { previewId, diagnostics: draft.diagnostics }
-			const preview = await runner.mount(draft, { appId: ctx.appId, slug, previewId, reset })
-			return { previewId, diagnostics: [], ...(preview ? { preview } : {}) }
+			return runProject(ctx, previewId, async () => {
+				const { project, toolchain } = await prepare(ctx, slug)
+				const draft = await buildDraft(data(ctx), slug, toolchain, project)
+				// A hidden kernel id (leading dot): the preview installs + serves like any
+				// app but stays off the catalog surface, so preview churn on every ⟳ Run
+				// never wakes a launcher.
+				if (draft.diagnostics.length > 0 || !draft.app || !draft.gui)
+					return { previewId, diagnostics: draft.diagnostics }
+				const preview = await runner.mount(draft, { appId: ctx.appId, slug, previewId, reset })
+				return { previewId, diagnostics: [], ...(preview ? { preview } : {}) }
+			})
 		},
-		stop: (_ctx, input) => runner.stop(input)
+		stop: (ctx, input) => runProject(ctx, input.previewId, () => runner.stop(input))
 	})
 }
 
