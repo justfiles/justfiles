@@ -16,6 +16,8 @@ interface Sticky {
 }
 
 type StickyFile = Omit<Sticky, 'id'>
+type Task = () => Promise<void>
+type Pending = { next?: Task }
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -25,7 +27,7 @@ export function Stickies() {
 	const [stickies, setStickies] = useState<Sticky[]>([])
 	const [focusId, setFocusId] = useState<string | null>(null)
 	const stickiesRef = useRef(stickies)
-	const writesRef = useRef(Promise.resolve())
+	const writesRef = useRef(new Map<string, Pending>())
 	const readyRef = useRef(false)
 	const focusRef = useRef<HTMLTextAreaElement>(null)
 	const layerRef = useRef<HTMLDivElement>(null)
@@ -39,6 +41,7 @@ export function Stickies() {
 		let cancelled = false
 		let unwatch: (() => void) | undefined
 		void volume.then(async (fs) => {
+			if (cancelled) return
 			const refresh = async () => {
 				await splitIndex(fs)
 				const loaded = await loadVisible(fs, layerRef.current)
@@ -46,15 +49,20 @@ export function Stickies() {
 				stickiesRef.current = loaded
 				setStickies(loaded)
 			}
-			unwatch = await fs.watch(
+			const stop = await fs.watch(
 				DIR,
 				(event) => {
 					if (event.source === 'remote') void refresh()
 				},
 				{ recursive: true }
 			)
+			if (cancelled) {
+				stop()
+				return
+			}
+			unwatch = stop
 			await refresh()
-			readyRef.current = true
+			if (!cancelled) readyRef.current = true
 		})
 		return () => {
 			cancelled = true
@@ -66,6 +74,7 @@ export function Stickies() {
 		let cancelled = false
 		let unwatches: Array<() => void> = []
 		void volume.then(async (fs) => {
+			if (cancelled) return
 			unwatches = await Promise.all(
 				paths
 					.split('\n')
@@ -102,8 +111,25 @@ export function Stickies() {
 		stickiesRef.current = next
 		setStickies(next)
 	}
-	const run = (task: () => Promise<void>) => {
-		writesRef.current = writesRef.current.then(task).catch(() => {})
+	// Keep one active write and only the latest waiting write per sticky. This keeps
+	// typing in one note from delaying another note.
+	const queue = (id: string, task: Task) => {
+		const active = writesRef.current.get(id)
+		if (active) {
+			active.next = task
+			return
+		}
+		const pending: Pending = {}
+		writesRef.current.set(id, pending)
+		void (async () => {
+			let next: Task | undefined = task
+			while (next) {
+				await next().catch(() => {})
+				next = pending.next
+				pending.next = undefined
+			}
+			writesRef.current.delete(id)
+		})()
 	}
 
 	const add = (event: MouseEvent<HTMLDivElement>) => {
@@ -119,7 +145,7 @@ export function Stickies() {
 		const visible = clamp(sticky, box.width, box.height)
 		setFocusId(sticky.id)
 		show([...stickiesRef.current, visible])
-		run(() => write(volume, visible, true))
+		queue(visible.id, () => write(volume, visible, true))
 	}
 
 	const startDrag = (event: PointerEvent<HTMLDivElement>, sticky: Sticky) => {
@@ -153,18 +179,18 @@ export function Stickies() {
 		if (event.currentTarget.hasPointerCapture(event.pointerId))
 			event.currentTarget.releasePointerCapture(event.pointerId)
 		const sticky = stickiesRef.current.find((item) => item.id === id)
-		if (sticky) run(() => write(volume, sticky, false))
+		if (sticky) queue(id, () => write(volume, sticky, false))
 	}
 
 	const edit = (sticky: Sticky, text: string) => {
 		const next = { ...sticky, text }
 		show(stickiesRef.current.map((item) => (item.id === sticky.id ? next : item)))
-		run(() => write(volume, next, false))
+		queue(sticky.id, () => write(volume, next, false))
 	}
 
 	const remove = (id: string) => {
 		show(stickiesRef.current.filter((sticky) => sticky.id !== id))
-		run(async () => (await volume).rm(pathFor(id), { force: true }))
+		queue(id, async () => (await volume).rm(pathFor(id), { force: true }))
 	}
 
 	return (
