@@ -40,10 +40,9 @@ export const initialState: FilesState = {
 
 // The Finder-like whitelist: only these top-level folders are shown by default.
 // This is deliberately small and grows by hand as more user-facing locations
-// earn a place in the sidebar. `/notes` is the shared Notes knowledge base;
-// `/pictures` is where generated images land. Everything else (the per-app
-// /data chroots, /system, /state, …) is "hidden" until ⌘⇧. reveals it.
-const USER_FACING_ROOTS = ['/notes', '/pictures'] as const
+// earn a place in the sidebar. Everything else (the per-app /data chroots,
+// /system, /state, …) is "hidden" until ⌘⇧. reveals it.
+const USER_FACING_ROOTS = ['/notes', '/pictures', '/stickies'] as const
 
 // A path is user-facing when it sits under one of the whitelisted roots. The
 // match is case-INsensitive: the constant is lowercase, but generated images
@@ -159,7 +158,7 @@ export const app = defineApp({
 			// already holds everything, so the GUI just re-derives what it renders.
 			toggleHidden: t.on(v.object({}), (state) => ({ ...state, showHidden: !state.showHidden }), {
 				description:
-					'Toggle showing every file vs only the user-facing folders (/notes, /pictures).'
+					'Toggle showing every file vs only the user-facing folders (/notes, /pictures, /stickies).'
 			}),
 			// The watched file changed on disk — bump `revision` so the GUI re-reads it.
 			// The bytes themselves never enter state (the preview is a caller-scoped
