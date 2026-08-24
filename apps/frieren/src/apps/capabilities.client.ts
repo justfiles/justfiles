@@ -20,7 +20,13 @@ import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { notificationStore } from '../notifications/store.ts'
 import { WALLPAPER_PATH } from '../shell/wallpaper.ts'
-import { frierenCompile, frierenImports, frierenRunner } from './devkit.client.ts'
+import {
+	frierenCompile,
+	frierenImports,
+	frierenRunner,
+	frierenTypecheck,
+	resetDevkitWorker
+} from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
 
@@ -99,6 +105,7 @@ function devkitCapability(fs: Volume, getToken: GetToken, kernel: Kernel): Capab
 		fs,
 		kernel,
 		compile: frierenCompile,
+		typecheck: frierenTypecheck,
 		imports: frierenImports,
 		runner: frierenRunner(fs, getToken)
 	})
@@ -142,9 +149,9 @@ function networkFallback(getToken: GetToken): Capabilities {
 	}
 }
 
-// Drop the shared socket — called on OS teardown (sign-out / user switch) so a
-// previous session's connection doesn't leak into the next.
+// Drop session-owned capability resources on sign-out or user switch.
 export function resetCapabilitySocket(): void {
+	resetDevkitWorker()
 	const ws = sharedWs
 	const conn = shared
 	sharedWs = undefined

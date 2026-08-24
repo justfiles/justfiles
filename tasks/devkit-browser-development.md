@@ -329,6 +329,35 @@ Performance targets for a medium React fixture:
 Record the browser, machine, fixture size, download time, check time, and worker memory. Treat
 these numbers as release checks, not assumptions.
 
+### Implementation, 2026-08-24
+
+Frieren now starts one module worker on the first compile or type-check request. The worker owns
+esbuild-wasm, TypeScript, the TypeScript standard libraries, and a single job queue. Frieren stops
+the worker during OS teardown and starts a new worker after a worker error. TypeScript and its
+standard libraries stay in a separate lazy chunk, so compile-only use does not load them.
+
+The host keeps the URL import session because it owns Cache Storage, graph limits, and the lock.
+The worker gets the plain import maps and asks the host for each file through the same worker
+channel. Compile and type check therefore use the same resolver session without a second graph
+walker. The TypeScript compiler host now reads only its in-memory overlay in the browser and keeps
+its existing file-system fallback in Node and Bun.
+
+`pnpm --filter frieren run verify:devkit-worker` builds a production probe and runs it in Chromium.
+The probe does not use the App Code UI. It compiles and type-checks a 42-file, 10,854-byte React
+fixture, checks a TS2322 source error, restarts the worker, and repeats compile and type check from
+the locked Cache Storage data with a fetch function that always fails.
+
+Release check on a 10-core Apple M5 MacBook Pro with 24 GB memory and headless Chromium 148:
+
+- 13 CDN fetches: 3.90 seconds of total request time;
+- cold compile: 1.80 seconds;
+- first type check: 3.49 seconds;
+- repeat type check: 206 milliseconds;
+- warm offline compile and type check: 746 milliseconds, with zero CDN requests;
+- main-thread long tasks: zero;
+- worker memory after the offline check: 108.3 MB;
+- worker chunk: separate from the TypeScript chunk, and TypeScript is not in the initial page.
+
 ## Stage 5: add the App Code flow
 
 App Code remains a normal app. It does not import toolchain code and does not create a worker.

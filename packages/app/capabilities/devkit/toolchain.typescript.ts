@@ -120,11 +120,12 @@ export function tsTypecheck(
 	types: TypesBundle,
 	paths: TypePaths
 ): CheckResult {
-	// Root the virtual draft inside this package's own dir, so node resolution
-	// reaches `@justfiles/app` (self-reference) + its deps (`valibot`, `type-fest`)
-	// regardless of the host's cwd. The container (Phase 4) passes
-	// a complete `TypesBundle` instead and never touches the fs.
-	const root = `${import.meta.dirname}/__engine_draft__`
+	// The browser TypeScript build has no `ts.sys`; it reads only the overlay.
+	const system = ts.sys as TS.System | undefined
+	const moduleDir = (import.meta as ImportMeta & { dirname?: string }).dirname
+	const root = system
+		? `${moduleDir ?? system.getCurrentDirectory()}/__engine_draft__`
+		: '/__engine_draft__'
 	const norm = (path: string) => `${root}/${path}`
 	// Triple-slash root paths bypass compilerOptions.paths, so the host maps them too.
 	const aliases = new Map<string, string>()
@@ -132,8 +133,6 @@ export function tsTypecheck(
 		if (specifier.startsWith('/') && target) aliases.set(specifier, norm(target))
 	}
 	const actual = (path: string) => aliases.get(path) ?? path
-	// In-memory overlay: draft sources + the stdlib `.d.ts` bundle. Anything else
-	// (lib.*.d.ts, node_modules) falls through to the real host below.
 	const overlay = new Map<string, string>()
 	for (const [path, text] of Object.entries(types)) overlay.set(norm(path), text)
 	for (const [path, text] of Object.entries(input.files)) overlay.set(norm(path), text)
@@ -161,28 +160,40 @@ export function tsTypecheck(
 			Object.entries(paths).map(([spec, targets]) => [spec, targets.map((t) => `${root}/${t}`)])
 		)
 	}
-	const host = ts.createCompilerHost(options, true)
-	const baseRead = host.readFile.bind(host)
-	const baseExists = host.fileExists.bind(host)
-	const baseDirExists = host.directoryExists?.bind(host)
-	const baseGetSource = host.getSourceFile.bind(host)
-	host.fileExists = (file) => overlay.has(actual(file)) || baseExists(file)
-	host.readFile = (file) => overlay.get(actual(file)) ?? baseRead(file)
-	// A directory import (`import … from "./"`) probes
-	// `directoryExists` WITH a trailing slash; `dirs` holds the slash-free form, so
-	// normalise before the lookup or the no-fs (baked TypesBundle) path can't resolve
-	// the package's own index and JSX collapses to an empty namespace.
-	host.directoryExists = (dir) => {
+	const fileExists = (file: string) =>
+		overlay.has(actual(file)) || (system?.fileExists(actual(file)) ?? false)
+	const readFile = (file: string) => overlay.get(actual(file)) ?? system?.readFile(actual(file))
+	const directoryExists = (dir: string) => {
 		const d = dir.endsWith('/') ? dir.slice(0, -1) : dir
-		return dirs.has(d) || (baseDirExists?.(dir) ?? false)
+		return dirs.has(d) || (system?.directoryExists?.(dir) ?? false)
 	}
-	host.getSourceFile = (file, languageVersion, onError, shouldCreate) => {
-		const path = actual(file)
-		const text = overlay.get(path)
-		return text !== undefined
-			? ts.createSourceFile(path, text, languageVersion, true)
-			: baseGetSource(file, languageVersion, onError, shouldCreate)
+	const host: TS.CompilerHost = {
+		fileExists,
+		readFile,
+		directoryExists,
+		getCanonicalFileName: (file) =>
+			system && !system.useCaseSensitiveFileNames ? file.toLowerCase() : file,
+		getCurrentDirectory: () => root,
+		getDefaultLibFileName: (compilerOptions) =>
+			system
+				? ts.getDefaultLibFilePath(compilerOptions)
+				: norm(ts.getDefaultLibFileName(compilerOptions)),
+		getDirectories: (dir) => system?.getDirectories(dir) ?? [],
+		getNewLine: () => system?.newLine ?? '\n',
+		getSourceFile: (file, languageVersion, onError) => {
+			const path = actual(file)
+			const text = readFile(path)
+			if (text === undefined) {
+				onError?.(`File not found: ${file}`)
+				return
+			}
+			return ts.createSourceFile(path, text, languageVersion, true)
+		},
+		useCaseSensitiveFileNames: () => system?.useCaseSensitiveFileNames ?? true,
+		writeFile: () => {}
 	}
+	const realpath = system?.realpath
+	if (realpath) host.realpath = realpath
 
 	const rootNames = Object.values(input.entries)
 		.filter((entry) => entry in input.files)

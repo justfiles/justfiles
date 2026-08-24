@@ -43,6 +43,7 @@ export default defineConfig({
 			'@': path.resolve(__dirname, './src')
 		}
 	},
+	worker: { format: 'es' },
 	environments: {
 		// Feeds `upload_source_maps` (wrangler.jsonc), which only ships maps that
 		// already exist: this plugin bundles the worker itself and sets `no_bundle`,
@@ -100,6 +101,15 @@ export default defineConfig({
 				// accumulate forever; a hash failure also evicts its exact entry in the kernel.
 				runtimeCaching: [
 					{
+						urlPattern:
+							/\/assets\/(?:devkit\.toolchain(?:\.worker|\.typescript)?-[^/]+\.js|esbuild-[^/]+\.wasm)$/,
+						handler: 'CacheFirst',
+						options: {
+							cacheName: 'justfiles-devkit-toolchain-v1',
+							expiration: { maxEntries: 4, purgeOnQuotaError: true }
+						}
+					},
+					{
 						urlPattern: /^https:\/\/[^/]+\.justapps\.run\/v\/[^/]+\//,
 						handler: 'CacheFirst',
 						options: {
@@ -117,7 +127,8 @@ export default defineConfig({
 				globPatterns: [
 					'**/*.{js,css,html,svg,png,jpg,jpeg,avif,webp,woff2,webmanifest}',
 					'appstore/**/*.json'
-				]
+				],
+				globIgnores: ['**/devkit.toolchain*.js']
 			}
 		}),
 		react(),

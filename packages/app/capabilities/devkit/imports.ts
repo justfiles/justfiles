@@ -27,10 +27,13 @@ export interface ImportLimits {
 	timeoutMs: number
 }
 
-export interface ResolvedImports {
+export interface ImportGraph {
 	code: Record<string, string>
 	declarations: Record<string, string>
 	limits: Readonly<ImportLimits>
+}
+
+export interface ResolvedImports extends ImportGraph {
 	load(url: string): Promise<CachedImport>
 	resolve(specifier: string, importer: string, kind: 'code' | 'types'): string
 	lock(): ImportLock
@@ -109,17 +112,7 @@ export async function resolveImports(
 		declarations,
 		limits,
 		load: (url) => store.load(url),
-		resolve: (specifier, importer, kind) => {
-			if (specifier.startsWith('node:') || specifier.startsWith('/node/')) {
-				throw new ImportError('IMPORT_NODE', `Node import is not supported: ${specifier}`)
-			}
-			if (isBareSpecifier(specifier)) {
-				const url = kind === 'code' ? code[specifier] : declarations[specifier]
-				if (!url) throw new ImportError('IMPORT_BARE', `Unmapped import: ${specifier}`)
-				return url
-			}
-			return resolveUrl(specifier, importer)
-		},
+		resolve: (specifier, importer, kind) => resolveImport(result, specifier, importer, kind),
 		lock: () => store.lock(),
 		diagnostics: []
 	}
@@ -134,6 +127,23 @@ export async function resolveImports(
 		result.diagnostics.push(importDiagnostic(error))
 	}
 	return result
+}
+
+export function resolveImport(
+	graph: ImportGraph,
+	specifier: string,
+	importer: string,
+	kind: 'code' | 'types'
+): string {
+	if (specifier.startsWith('node:') || specifier.startsWith('/node/')) {
+		throw new ImportError('IMPORT_NODE', `Node import is not supported: ${specifier}`)
+	}
+	if (isBareSpecifier(specifier)) {
+		const url = kind === 'code' ? graph.code[specifier] : graph.declarations[specifier]
+		if (!url) throw new ImportError('IMPORT_BARE', `Unmapped import: ${specifier}`)
+		return url
+	}
+	return resolveUrl(specifier, importer)
 }
 
 class Store {
@@ -332,9 +342,15 @@ export function importDiagnostic(error: unknown): Diagnostic {
 		range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
 		severity: 'error',
 		source: 'imports',
-		code: error instanceof ImportError ? error.code : 'IMPORT_ERROR',
+		code: importCode(error) ?? 'IMPORT_ERROR',
 		message: message(error)
 	}
+}
+
+function importCode(error: unknown): string | undefined {
+	if (error instanceof ImportError) return error.code
+	if (!(error instanceof Error) || !('code' in error) || typeof error.code !== 'string') return
+	return /^IMPORT_[A-Z_]+$/.test(error.code) ? error.code : undefined
 }
 
 function message(error: unknown): string {

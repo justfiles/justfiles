@@ -49,6 +49,7 @@ export type {
 	ProjectInput,
 	Range,
 	Toolchain,
+	TypePaths,
 	TypesBundle
 } from './toolchain.ts'
 
