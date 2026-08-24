@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.17.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.16.0...frieren-v0.17.0) (2026-08-24)
+
+
+### Features
+
+* **devkit:** run the Frieren toolchain in one worker ([#576](https://github.com/xiaoxinghu/justfiles/issues/576)) ([e11cf2e](https://github.com/xiaoxinghu/justfiles/commit/e11cf2e62d6ede348ef5259516e499183919c09f))
+* **devkit:** use resolved browser imports ([#575](https://github.com/xiaoxinghu/justfiles/issues/575)) ([146db76](https://github.com/xiaoxinghu/justfiles/commit/146db767b0a0966816c375b07a9f00dd910d0f83))
+
+
+### Bug Fixes
+
+* **frieren:** prepare browser Devkit development ([#572](https://github.com/xiaoxinghu/justfiles/issues/572)) ([25a799e](https://github.com/xiaoxinghu/justfiles/commit/25a799e9e7d3219c4f30dfaf1f64d1c43dff9640))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.9.0
+
 ## [0.16.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.15.0...frieren-v0.16.0) (2026-08-23)
 
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.8.0...app-v0.9.0) (2026-08-24)
+
+
+### Features
+
+* **devkit:** resolve pinned browser imports ([#574](https://github.com/xiaoxinghu/justfiles/issues/574)) ([a55b7fd](https://github.com/xiaoxinghu/justfiles/commit/a55b7fd8125328dcc0c5882e0155fd243ae419d5))
+* **devkit:** run the Frieren toolchain in one worker ([#576](https://github.com/xiaoxinghu/justfiles/issues/576)) ([e11cf2e](https://github.com/xiaoxinghu/justfiles/commit/e11cf2e62d6ede348ef5259516e499183919c09f))
+* **devkit:** use resolved browser imports ([#575](https://github.com/xiaoxinghu/justfiles/issues/575)) ([146db76](https://github.com/xiaoxinghu/justfiles/commit/146db767b0a0966816c375b07a9f00dd910d0f83))
+
+
+### Bug Fixes
+
+* **app:** initialize state through chroots ([#577](https://github.com/xiaoxinghu/justfiles/issues/577)) ([b230713](https://github.com/xiaoxinghu/justfiles/commit/b230713c8f53cc2d11214155ee790f81a756bd73))
+* **frieren:** prepare browser Devkit development ([#572](https://github.com/xiaoxinghu/justfiles/issues/572)) ([25a799e](https://github.com/xiaoxinghu/justfiles/commit/25a799e9e7d3219c4f30dfaf1f64d1c43dff9640))
+
 ## [0.8.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.7.0...app-v0.8.0) (2026-08-23)
 
 
