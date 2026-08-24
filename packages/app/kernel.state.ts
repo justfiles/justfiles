@@ -21,6 +21,17 @@ type StateCommit = {
 	changed: boolean
 }
 
+// A chroot keeps the backing path in file-system errors. Accept that prefix,
+// but do not hide other ENOENT errors such as a missing content blob.
+function isPathError(error: unknown, code: 'ENOENT' | 'ESTALE', path: string): boolean {
+	if (!(error instanceof Error)) return false
+	const message = `${code}: ${path}`
+	return (
+		error.message === message ||
+		(error.message.startsWith(`${code}: /`) && error.message.endsWith(path))
+	)
+}
+
 // App state has one source of truth: `/state/<id>.json` in the volume. A
 // transaction reads a snapshot and commits only if that snapshot is still
 // current. The kernel retries a stale transaction with the new state.
@@ -41,8 +52,7 @@ export function stateStore(fs: Volume): StateStore {
 			const data = await fs.readFile(statePath)
 			return { value: JSON.parse(text(data)), hash: await sha256Hex(data) }
 		} catch (error) {
-			if (error instanceof Error && error.message === `ENOENT: ${statePath}`)
-				return { value: undefined, hash: null }
+			if (isPathError(error, 'ENOENT', statePath)) return { value: undefined, hash: null }
 			throw error
 		}
 	}
@@ -59,7 +69,7 @@ export function stateStore(fs: Volume): StateStore {
 			try {
 				if ((await fs.stat(statePath)).contentHash !== expectedHash) return null
 			} catch (error) {
-				if (error instanceof Error && error.message === `ENOENT: ${statePath}`) return null
+				if (isPathError(error, 'ENOENT', statePath)) return null
 				throw error
 			}
 			return { seq: seq(appId), changed: false }
@@ -69,7 +79,7 @@ export function stateStore(fs: Volume): StateStore {
 		try {
 			await fs.writeFile(statePath, data, { ifHash: expectedHash })
 		} catch (error) {
-			if (error instanceof Error && error.message === `ESTALE: ${statePath}`) return null
+			if (isPathError(error, 'ESTALE', statePath)) return null
 			throw error
 		}
 

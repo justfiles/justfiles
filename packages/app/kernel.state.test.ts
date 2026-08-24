@@ -1,4 +1,4 @@
-import { type Volume, volume } from '@justfiles/fs'
+import { chroot, type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { type Cursor, type Store, sha256Hex } from '@justfiles/fs/store'
 import { expect, test } from 'vitest'
@@ -14,6 +14,16 @@ test('read returns an absent snapshot and seq 0 before a commit', async () => {
 	const state = stateStore(fresh())
 	expect(await state.read('a')).toEqual({ value: undefined, hash: null })
 	expect(state.seq('a')).toBe(0)
+})
+
+test('state initializes through a chroot', async () => {
+	const fs = chroot(fresh(), '/data/app/.devkit/draft')
+	const state = stateStore(fs)
+	const id = '.preview.draft'
+
+	expect(await state.read(id)).toEqual({ value: undefined, hash: null })
+	expect(await state.commit(id, null, { count: 0 })).toEqual({ seq: 1, changed: true })
+	expect((await state.read(id)).value).toEqual({ count: 0 })
 })
 
 test('commit writes through and bumps the local sequence', async () => {
