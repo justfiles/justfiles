@@ -439,6 +439,55 @@
 	transform: scale(0.985);
 	filter: brightness(0.65) saturate(0.85);
 }
+.frn-stickies {
+	position: absolute;
+	inset: 0;
+}
+.frn-sticky {
+	position: absolute;
+	box-sizing: border-box;
+	width: 220px;
+	height: 180px;
+	padding: 24px 12px 12px;
+	background: #fff29a;
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+	transform: rotate(-0.5deg);
+	cursor: grab;
+	touch-action: none;
+	user-select: text;
+	-webkit-user-select: text;
+}
+.frn-sticky textarea {
+	box-sizing: border-box;
+	width: 100%;
+	height: 100%;
+	padding: 0;
+	resize: none;
+	border: 0;
+	border-radius: 0;
+	outline: 0;
+	background: transparent;
+	box-shadow: none;
+	color: #3f3a22;
+	cursor: text;
+	font: 16px / 1.4 var(--font-ui);
+}
+.frn-sticky-close {
+	position: absolute;
+	top: 4px;
+	right: 5px;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: rgba(63, 58, 34, 0.55);
+	font-size: 18px;
+	line-height: 20px;
+}
+.frn-sticky-close:hover {
+	color: #3f3a22;
+}
 
 /* ── App stage: the durable wrapper + its sandboxed iframe fill the window ── */
 .frn-viewport {

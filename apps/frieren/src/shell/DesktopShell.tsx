@@ -28,6 +28,7 @@ import { useOsStore } from '../os/hooks'
 import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow } from '../os/state'
 import { Omnibar } from './Omnibar'
+import { Stickies } from './Stickies'
 import { useWallpaper } from './wallpaper'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -254,6 +255,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				    The body is picked by window kind: app windows present their stage,
 				    the agent window views the conversation session. */}
 				<div className="frn-desktop-windows">
+					<Stickies />
 					{windows.map((window) => (
 						<AppWindow
 							key={window.id}
