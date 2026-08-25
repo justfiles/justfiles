@@ -1,9 +1,7 @@
 import { escalatesCapabilities, semverGte } from '@justfiles/app/appstore'
-import { Transcript } from '@justfiles/ui/Transcript'
 import {
 	ArrowClockwiseIcon,
 	ArrowSquareOutIcon,
-	ArrowsOutIcon,
 	BellIcon,
 	ChatCircleIcon,
 	DownloadSimpleIcon,
@@ -17,8 +15,6 @@ import appStoreIcon from '../../../../packages/design/assets/app_store.svg'
 import type { RunnerCatalogApp } from '../../../shared/justapps'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
-import { resolveTranscriptImage } from '../agent/images'
-import { Whisper } from '../agent/Whisper'
 import {
 	useAppCommands,
 	useInstalledApps,
@@ -32,7 +28,6 @@ import { useDismissTimer } from '../notifications/lifetime'
 import { type NotificationEntry, notificationStore, type Route } from '../notifications/store'
 import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
 import { selectFocusedAppId } from '../os/selectors'
-import { AGENT_WINDOW_ID } from '../os/state'
 import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
 import { MigrationSheet } from './MigrationSheet'
 
@@ -52,10 +47,6 @@ type Row =
 	| { kind: 'store'; app: RunnerCatalogApp }
 	| { kind: 'update'; app: RunnerCatalogApp }
 	| { kind: 'ask' }
-
-// The sheet renders the whole conversation: the dedicated window is being faded
-// out, so there is nowhere else for older history to live. The sheet's height is
-// capped instead (`.frn-omnibar-chat`), and the transcript scrolls inside it.
 
 // The pill is ONE line at rest, so the banner it carries (typically the agent's last
 // reply) is flattened and cut rather than wrapped. 72 characters is what fits the
@@ -167,13 +158,15 @@ function caretVisualEdge(
 }
 
 export function Omnibar({
-	onAppMenu,
-	onPersonalize
+	chatOpen,
+	onOpenChat,
+	onAppMenu
 }: {
+	chatOpen: boolean
+	onOpenChat: () => void
 	// Right-click on an app tile reuses the desktop's shared context menu
 	// (Open / Uninstall), so deleting the dock doesn't strand uninstall.
 	onAppMenu?: (event: ReactMouseEvent, app: InstalledApp) => void
-	onPersonalize: () => void
 }) {
 	const apps = useInstalledApps()
 	const installing = useInstallingApps()
@@ -185,10 +178,8 @@ export function Omnibar({
 	const ready = connection.state === 'ready'
 
 	const [query, setQuery] = useState('')
-	const [chatOpen, setChatOpen] = useState(false)
 	// Engagement gates the surface: at rest the omnibar is just the pill. Focus
 	// (click, ⌘K, or just typing) expands the sheet above it; blur collapses it.
-	// A streaming reply keeps the sheet up so an in-flight answer isn't lost.
 	const [focused, setFocused] = useState(false)
 	// null means "follow the default target"; an arrow/hover pins an explicit row.
 	const [pinned, setPinned] = useState<number | null>(null)
@@ -291,39 +282,10 @@ export function Omnibar({
 			: rows.length - 1
 	const selected = pinned === null ? defaultIndex : Math.min(pinned, rows.length - 1)
 
-	// Coexistence rule: while the conversation window is open, the sheet stays in
-	// launcher mode — no duplicated live transcript. The pill still sends to the
-	// session; replies land in the window.
-	const agentWindowOpen = useOsStore((s) => !!s.windows[AGENT_WINDOW_ID])
-	const agentWindowFocused = useOsStore(
-		(s) => s.focusStack[s.focusStack.length - 1] === AGENT_WINDOW_ID
-	)
 	const focusedAppId = useOsStore(selectFocusedAppId)
 	const { entries, active, queued, unread } = useNotifications()
-	// When the window closes, hand the transcript back to the sheet so the pill
-	// stays the way back into the conversation.
-	const hadWindow = useRef(agentWindowOpen)
-	useEffect(() => {
-		if (hadWindow.current && !agentWindowOpen && session.messages.length > 0) setChatOpen(true)
-		hadWindow.current = agentWindowOpen
-	}, [agentWindowOpen, session.messages.length])
-	// the Mac app's fall-through: a query that matches no app means you're talking to
-	// the agent, so the sheet slides straight into the transcript instead of a lone
-	// "Ask" row. The conversation window preempts it (coexistence rule) — there the
-	// row stays and just implies the send lands over in the window.
-	const noAppMatch =
-		!catalogLoading &&
-		text !== '' &&
-		matches.length === 0 &&
-		storeMatches.length === 0 &&
-		heldUpdates.length === 0
-	const expanded =
-		focused || showNotifications || (chatOpen && session.isStreaming && !agentWindowOpen)
-	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
-	const showList = (text !== '' || browsing) && !showTranscript
-
-	// Every message: see the note on the sheet cap above.
-	const tail = session.messages
+	const expanded = focused || showNotifications
+	const showList = text !== '' || browsing
 
 	// The center lists everything, newest-first, grouped by source (agent / app).
 	const grouped = useMemo(() => {
@@ -336,17 +298,9 @@ export function Omnibar({
 		return [...bySource.entries()]
 	}, [entries])
 
-	// The conversation window is being faded out, so nothing here opens one; a window
-	// restored from a previous session still works and still preempts the sheet.
-	// The conversation is reachable on demand, not only as a fall-through: the
-	// pill's chat button opens the transcript (or focuses the window when it owns
-	// the conversation), so a dismissed session is never stranded with no way back.
 	const openConversation = () => {
-		if (agentWindowOpen) dispatch({ type: 'window.focus', id: AGENT_WINDOW_ID })
-		else {
-			setChatOpen(true)
-			inputRef.current?.focus()
-		}
+		onOpenChat()
+		inputRef.current?.blur()
 	}
 
 	// A notification click routes through the OS store — the same dispatches the
@@ -387,10 +341,9 @@ export function Omnibar({
 	// click. Focus suppresses the banner when its target is already in front (chat
 	// focused ⇒ an agent info/question just updates the transcript) — `error` ignores
 	// focus. Either way the item still lands in the center.
-	const chatInFront = agentWindowFocused || (chatOpen && focused && !agentWindowOpen)
 	const targetInFront = (route?: Route): boolean => {
 		if (!route) return false
-		if (route.kind === 'chat') return chatInFront
+		if (route.kind === 'chat') return chatOpen
 		if (route.kind === 'app') return focusedAppId === route.id
 		return false
 	}
@@ -428,8 +381,9 @@ export function Omnibar({
 	const ask = (prompt: string) => {
 		if (!prompt || !ready || session.isStreaming) return
 		agent.prompt(prompt)
-		setChatOpen(true)
+		onOpenChat()
 		setQuery('')
+		inputRef.current?.blur()
 	}
 
 	const run = (index: number) => {
@@ -439,7 +393,6 @@ export function Omnibar({
 		if (row.kind === 'app') {
 			launchApp(row.app)
 			setQuery('')
-			setChatOpen(false)
 			inputRef.current?.blur()
 		} else if (row.kind === 'store') {
 			setConsent({ app: row.app, mode: 'install' })
@@ -483,7 +436,6 @@ export function Omnibar({
 			if (showNotifications) setShowNotifications(false)
 			else if (browseStore) setBrowseStore(false)
 			else if (text !== '') setQuery('')
-			else if (chatOpen) setChatOpen(false)
 			else inputRef.current?.blur()
 			return
 		}
@@ -520,11 +472,6 @@ export function Omnibar({
 			className="frn-omnibar"
 			data-expanded={expanded}
 			data-agent={agentState}
-			/* Where the agent's face sits: a chip inside the pill at rest, the panel's
-			   shoulder once the transcript is actually on screen (`expanded` gates it — a
-			   collapsed pill has no shoulder to sit on). One element travels between the
-			   two (design/07); it never appears or disappears. */
-			data-face={expanded && showTranscript ? 'shoulder' : 'idle'}
 			onMouseEnter={() => setBannerHovered(true)}
 			onMouseLeave={() => setBannerHovered(false)}
 		>
@@ -584,32 +531,6 @@ export function Omnibar({
 									))}
 								</ul>
 							)}
-						</div>
-					) : showTranscript ? (
-						<div className="frn-omnibar-chat">
-							{/* The shoulder band: reserved space under the face's lower half, so no
-							    message ever sits beneath it. Space, not a header — no divider. */}
-							<div className="frn-omnibar-shoulder">
-								<button
-									type="button"
-									className="frn-omnibar-chat-identity"
-									title="Personalize"
-									onClick={onPersonalize}
-								>
-									{session.agentName}
-								</button>
-								{/* Dev-only readout of the expression channel (see MessagesPanel). */}
-								{import.meta.env.DEV && session.expression ? (
-									<span className="frn-agent-status">{session.expression}</span>
-								) : null}
-							</div>
-							<Transcript
-								messages={tail}
-								isStreaming={session.isStreaming}
-								onOption={(label) => ask(label)}
-								resolveImage={resolveTranscriptImage}
-							/>
-							{session.personalized ? null : <Whisper onPersonalize={onPersonalize} />}
 						</div>
 					) : showList ? (
 						<ul className="frn-omnibar-list">
@@ -712,11 +633,7 @@ export function Omnibar({
 											<span className="frn-omnibar-row-label">
 												Ask {session.agentName}: <em>“{text}”</em>
 											</span>
-											{agentWindowOpen ? (
-												<span className="frn-omnibar-row-hint">
-													in conversation <ArrowsOutIcon />
-												</span>
-											) : null}
+											<span className="frn-omnibar-row-hint">opens side panel</span>
 										</button>
 									</li>
 								)
@@ -811,8 +728,7 @@ export function Omnibar({
 							active?.notification.kind === 'question' &&
 							active.notification.threadId !== MIGRATION_THREAD
 						) {
-							if (agentWindowOpen) dispatch({ type: 'window.focus', id: AGENT_WINDOW_ID })
-							else setChatOpen(true)
+							openConversation()
 						}
 					}}
 					onBlur={() => {
