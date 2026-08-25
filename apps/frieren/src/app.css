@@ -375,6 +375,7 @@
 }
 .frn-chat-panel {
 	position: relative;
+	z-index: 9001;
 	flex: 0 0 auto;
 	min-width: 280px;
 	max-width: 720px;

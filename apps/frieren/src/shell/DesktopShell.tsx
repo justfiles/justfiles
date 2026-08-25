@@ -148,8 +148,13 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 	const [chatOpen, setChatOpen] = useState(false)
-	const [chatWidth, setChatWidth] = useState(420)
+	const [chatWidth, setChatWidth] = useState(() => clampChatWidth(420))
 	const [resizingChat, setResizingChat] = useState(false)
+	useEffect(() => {
+		const resize = () => setChatWidth(clampChatWidth)
+		window.addEventListener('resize', resize)
+		return () => window.removeEventListener('resize', resize)
+	}, [])
 
 	const windows = useOsStore(
 		(state) => (state.booted ? selectOpenWindows(state) : []),
