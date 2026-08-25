@@ -1,6 +1,6 @@
 {
-	"apps/frieren": "0.17.0",
-	"packages/fs": "0.7.0",
+	"apps/frieren": "0.18.0",
+	"packages/fs": "0.7.1",
 	"packages/design": "0.1.1",
-	"packages/app": "0.9.0"
+	"packages/app": "0.9.1"
 }

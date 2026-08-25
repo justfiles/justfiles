@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.7.0...fs-v0.7.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **mac:** complete backend sync recovery ([#579](https://github.com/xiaoxinghu/justfiles/issues/579)) ([345628b](https://github.com/xiaoxinghu/justfiles/commit/345628b491407afcfd7d770e845995cf770866bf))
+
 ## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.6.0...fs-v0.7.0) (2026-08-22)
 
 
