@@ -16,6 +16,7 @@ docs redesign the three pieces that change most under that reframe.
 | 3 | [`03-undo-history.md`](./03-undo-history.md) | Whether/how undo changes our state model (snapshot timeline vs. inverse ops vs. event log vs. CRDT). | app-framework state layer |
 | 4 | [`04-summoning-ritual.md`](./04-summoning-ritual.md) | Opt-in agent personalization: the permanent "default persona" whisper + a JRPG character-creation ritual for `soul.md` / `user.md` / the avatar. | 1 (omnibar/chat surfaces), 5 (paths) |
 | 5 | [`05-system-layout.md`](./05-system-layout.md) | The `/system` tree: root = shared knowledge of the user, `agents/<id>/` = one agent's perspective. Moves `soul.md`, `user.md`, `MEMORY.md` — changes existing code paths. | nothing — apply first |
+| 6 | [`06-app-agents.md`](./06-app-agents.md) | Per-app agents: a window footer, one panel in two modes (sheet / sidebar), and the keyed session that gives a window its own thread. | 2 (keyable session), 5 (paths) |
 
 **Order of attack:** 1 first (additive, low-risk, doesn't touch the window
 model). 2 is a layer above windows and can wait. 3 is the deepest — it may touch
