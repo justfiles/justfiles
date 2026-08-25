@@ -7,10 +7,9 @@ import { CATALOG_SCHEMA } from './shared/appstore.ts'
 
 // Dev-only sideload: extra `packages/<dir>` apps to fold into the LOCAL catalog
 // so you can launch an in-repo app that isn't a shipped built-in. Driven by the
-// `FRIEREN_DEV_APPS` env var (comma-separated dir names) and applied ONLY while
-// serving (see `appstore()` below) — a production `vite build` always emits
-// `BUILTIN_DIRS` alone, so a sideloaded app can never ship as a built-in. Build
-// the app first (`pnpm --filter <pkg> build`) so its `dist/` exists.
+// `FRIEREN_DEV_APPS` env var (comma-separated dir names) and applied only while
+// serving. A production build emits an empty bundled catalog, so a sideloaded app
+// cannot ship as a built-in. Build the app first so its `dist/` exists.
 //   e.g. FRIEREN_DEV_APPS=app-pixel pnpm dev
 const DEV_DIRS = (process.env.FRIEREN_DEV_APPS ?? '')
 	.split(',')
