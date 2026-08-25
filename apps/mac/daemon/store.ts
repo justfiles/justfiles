@@ -1,7 +1,6 @@
 import { installApp } from '@justfiles/app/appstore'
 import type { CapabilityDecl, Kernel } from '@justfiles/app/runtime'
 import { type RunnerCatalogApp, runnerAppStore } from '../../shared/justapps'
-import { PACKAGED_IDS } from './builtins'
 
 // The App Store seam for the launcher. The daemon browses and installs — not the
 // webview — because the kernel and the Volume live here; the tile only renders what
@@ -32,14 +31,12 @@ export interface StoreApp {
 // handle in the route: tasks/mac-store-consent-binding.md.
 let offered = new Map<string, RunnerCatalogApp>()
 
-// Every app JustApps publishes, minus the ones this Mac packages itself — a packaged app is
-// authoritative, so a published entry under its id is not ours to offer. Installed-or-not is
-// the launcher's call: it already holds the catalog the daemon pushes, so this stays a plain
-// listing.
+// Every app JustApps publishes. Installed-or-not is the launcher's call: it already holds the
+// catalog the daemon pushes, so this stays a plain listing.
 export async function storeCatalog(): Promise<StoreApp[]> {
 	const store = await runnerAppStore()
 	if (!store) throw new Error('app store unavailable')
-	const apps = (await store.catalog()).filter((app) => !PACKAGED_IDS.includes(app.id))
+	const apps = await store.catalog()
 	offered = new Map(apps.map((app) => [app.id, app]))
 	return apps.map(({ id, name, version, description, iconUrl, repository, capabilities }) => ({
 		id,
@@ -56,7 +53,6 @@ export async function storeCatalog(): Promise<StoreApp[]> {
 // being the release the consent sheet showed, so a page holding an older listing than the
 // daemon's is refused rather than installed.
 export async function installStoreApp(kernel: Kernel, id: string, version: string): Promise<void> {
-	if (PACKAGED_IDS.includes(id)) throw new Error(`packaged with this Mac: ${id}`)
 	const app = offered.get(id)
 	if (!app || app.version !== version)
 		throw new Error(`${id} ${version} is not what the App Store lists — reopen it and try again`)

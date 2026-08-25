@@ -205,8 +205,6 @@ test('/app socket pushes initial state and round-trips a dispatch', async () => 
 const TASKS = 'com.example.tasks'
 const RELEASE = 'https://com-example-tasks.justapps.run/v/1.0.0/'
 const POINTER = 'https://com-example-tasks.justapps.run/manifest.json'
-// JustApps also publishing an id this Mac packages itself (Files) — the packaged app wins, so
-// the store neither lists nor installs this one.
 const CLASH_POINTER = 'https://justfiles-files.justapps.run/manifest.json'
 // A second published app, whose release the registry SWAPS after the catalog is listed: same
 // version, more access. What the listing showed is what an install must land.
@@ -287,14 +285,14 @@ async function withRegistry<T>(run: () => Promise<T>): Promise<T> {
 	}
 }
 
-test('/store lists what JustApps publishes, without the file manifests or a packaged id', async () => {
+test('/store lists what JustApps publishes without file manifests', async () => {
 	const apps = await withRegistry(async () => {
 		const res = await fetch(`http://127.0.0.1:${port}/store`)
 		expect(res.status).toBe(200)
 		return ((await res.json()) as { apps: Record<string, unknown>[] }).apps
 	})
 
-	expect(apps.map((app) => app.id)).toEqual([TASKS, PINNED])
+	expect(apps.map((app) => app.id)).toEqual([TASKS, PINNED, FILES])
 	expect(apps[0]).toEqual({
 		id: TASKS,
 		name: 'Tasks',
@@ -310,7 +308,7 @@ const install = (path: string, init?: RequestInit): Promise<Response> =>
 
 // Order matters: this runs before the install test below, so a refused install is observable
 // as Tasks still being absent from the kernel's catalog.
-test('POST /store/:id refuses a foreign origin, a moved pointer, and a packaged app', async () => {
+test('POST /store/:id refuses a foreign origin and a moved pointer', async () => {
 	await withRegistry(async () => {
 		// Loopback is reachable from any page in any browser here; only ours may install.
 		const foreign = await install(`/store/${TASKS}?version=1.0.0`, {
@@ -325,11 +323,6 @@ test('POST /store/:id refuses a foreign origin, a moved pointer, and a packaged 
 		const moved = await install(`/store/${TASKS}?version=0.9.0`)
 		expect(moved.status).toBe(502)
 		expect(await moved.text()).toContain('not what the App Store lists')
-
-		// A published entry may not replace the app this Mac packages.
-		const packaged = await install(`/store/${FILES}?version=9.9.9`)
-		expect(packaged.status).toBe(502)
-		expect(await packaged.text()).toContain('packaged')
 
 		const kernel = await getKernel()
 		expect((await kernel.list()).map((app) => app.id)).not.toContain(TASKS)

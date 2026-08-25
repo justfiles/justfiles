@@ -6,16 +6,13 @@
 // WORKER_SPEC) branches on SHIPPED for its own path.
 //
 // The daemon serves its browser surfaces from Vite (ui/dist/client), so it needs no
-// assets/design roots here — just SHIPPED, the builtins root, and the agent docs root.
+// assets/design roots here — just SHIPPED and the agent docs root.
 
 import { dirname, join } from 'node:path'
 
 export const SHIPPED = process.env.FRIEREN_SHIPPED === '1'
 
-// Shipped: Contents/MacOS/daemon -> ../Resources/builtins. Dev: the daemon source dir
-// (unused — builtins.ts resolves each app's package dist dir directly in dev).
 const ROOT = SHIPPED ? join(dirname(process.execPath), '..', 'Resources') : import.meta.dirname
-export const BUILTINS_DIR = join(ROOT, 'builtins')
 
 // The agent's project docs — the @justfiles/agent DOCS catalogue points at repo-root
 // docs/*.md, which the `read_doc` tool loads by id. Shipped: copied flat under

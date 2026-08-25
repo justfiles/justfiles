@@ -15,8 +15,6 @@
 	"dependencies": {
 		"@justfiles/agent": "workspace:*",
 		"@justfiles/app": "workspace:*",
-		"@justfiles/app-files": "workspace:*",
-		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
 		"@justfiles/ui": "workspace:*",
