@@ -373,24 +373,92 @@
 	flex-direction: column;
 	min-width: 0;
 }
+/* The chat panel is a drawer in a slot UNDER the desktop, not a sheet over it.
+   The desktop is the flex sibling that squishes to make room, so all that sells
+   "underneath" is the material at the seam: the edge of the desktop's slab, the
+   cast falling off it into the drawer, and a shaded lip top and bottom.
+
+   The panel paints every bit of that itself. It has to stay above the dock and
+   fullscreen windows (z 9001), so the desktop cannot cast onto it from the other
+   side — and with no open/close travel, an inset shadow at the panel's left edge
+   lands on the same pixels a cast one would.
+
+   Dark mode does not just deepen the shadows. Next to a near-black drawer a
+   darker shadow has nowhere to go, and the wallpaper would meet the panel in one
+   flat cut. So there the slab's edge catches light instead, and the groove
+   behind it carries the depth. light-dark() reads the color-scheme design.css
+   already sets. */
 .frn-chat-panel {
+	--seam-edge: light-dark(rgb(0 0 0 / 0.16), rgb(255 255 255 / 0.2));
+	--seam-groove: light-dark(rgb(0 0 0 / 0.1), rgb(0 0 0 / 0.45));
+	--seam-cast: light-dark(rgb(0 0 0 / 0.3), rgb(0 0 0 / 0.45));
+	--drawer-lip: light-dark(rgb(0 0 0 / 0.38), rgb(0 0 0 / 0.5));
+	--drawer-ease: cubic-bezier(0.32, 0.72, 0, 1);
 	position: relative;
 	z-index: 9001;
+	/* Width is the drawer's travel, set inline; clampChatWidth() is the only place
+	   the open width is bounded, so no min/max fights it down from 0 when shut. */
 	flex: 0 0 auto;
-	min-width: 280px;
-	max-width: 720px;
 	height: 100vh;
-	border-left: 1px solid var(--rule);
-	background: var(--surface);
-	box-shadow: -12px 0 32px rgba(0, 0, 0, 0.2);
+	overflow: hidden;
+	transition: width 460ms var(--drawer-ease);
+	/* Sunk below the chrome it sits under, off --surface so a re-pointed palette
+	   carries. Dark mode sinks further: the same step barely reads there. */
+	background: light-dark(
+		color-mix(in srgb, var(--surface) 90%, black),
+		color-mix(in srgb, var(--surface) 84%, black)
+	);
+	box-shadow:
+		inset 1px 0 0 var(--seam-edge),
+		inset 2px 0 0 var(--seam-groove),
+		inset 12px 0 18px -10px var(--seam-cast),
+		inset 0 16px 20px -16px var(--drawer-lip),
+		inset 0 -16px 20px -16px var(--drawer-lip);
 	user-select: text;
 	-webkit-user-select: text;
+}
+/* Dragging the edge sets the width every pointermove; easing each one would make
+   the panel lag the cursor. */
+.frn-chat-panel[data-resizing="true"] {
+	transition: none;
+}
+/* Pinned at the open width and anchored right, so opening uncovers it rather
+   than stretching it, and the desktop's edge sweeps back across it on close.
+   The lag is the whole trick: contents that arrive a beat after the drawer read
+   as having been under the desktop, not as a panel growing out of the side. */
+.frn-chat-body {
+	position: absolute;
+	inset: 0 0 0 auto;
+	width: var(--chat-w);
+	animation:
+		frn-drawer-slide 460ms var(--drawer-ease) 40ms both,
+		frn-drawer-fade 280ms ease 40ms both;
+}
+@keyframes frn-drawer-slide {
+	from {
+		transform: translateX(22px);
+	}
+}
+@keyframes frn-drawer-fade {
+	from {
+		opacity: 0;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.frn-chat-panel,
+	.frn-chat-body {
+		transition-duration: 1ms;
+		animation-duration: 1ms;
+		animation-delay: 0ms;
+	}
 }
 .frn-chat-resizer {
 	position: absolute;
 	top: 0;
 	bottom: 0;
-	left: -5px;
+	/* Inside the panel: the drawer clips its contents, so an edge hanging over the
+	   desktop would be cut off. The seam is where you grab it anyway. */
+	left: 0;
 	z-index: 2;
 	width: 10px;
 	margin: 0;
