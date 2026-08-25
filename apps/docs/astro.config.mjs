@@ -7,21 +7,10 @@ import { defineConfig } from 'astro/config'
 export default defineConfig({
 	integrations: [
 		starlight({
-			title: 'Ghostore Docs',
-			sidebar: [
-				{
-					label: 'Start',
-					items: ['overview']
-				},
-				{
-					label: 'System',
-					items: ['app', 'fs', 'design']
-				},
-				{
-					label: 'Hosts',
-					items: ['frieren', 'quay']
-				}
-			]
+			title: 'Ghostore Docs'
+			// No `sidebar`: Starlight generates it from the collection, which is a
+			// symlink to the repo's `docs/`. A hand-written list breaks the build the
+			// day a doc is deleted — that is what it did.
 		})
 	]
 })
