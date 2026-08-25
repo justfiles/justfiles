@@ -1,13 +1,20 @@
-# 6 · App-attached agents
+# App-attached agents
 
 > Status: **design — no code yet.** Additive over the window model
-> (`src/os/state.ts`) and the agent session (`packages/agent`). Adds one piece of
+> (`apps/frieren/src/os/state.ts`) and the agent session (`packages/agent`). Adds one piece of
 > window chrome (a **footer**), one panel with two modes (**sheet** /
 > **sidebar**), and keys the agent session so a window can own a thread. The
 > global agent and the omnibar are untouched.
 >
 > Depends on doc 2 (the session must not be a hard singleton) and doc 5 (the
 > `/system/agents/<id>/` layout this fills in for the first time).
+
+Source design set: [`apps/frieren/design/`](../../apps/frieren/design/) — read its
+[README](../../apps/frieren/design/README.md) for the shared principles, and
+[doc 2](../../apps/frieren/design/02-workspaces.md) and
+[doc 5](../../apps/frieren/design/05-system-layout.md) for what this builds on.
+Visual mockups of both modes: [`mockups.html`](./mockups.html) — open it in a
+browser.
 
 ## The problem
 
@@ -139,7 +146,7 @@ they are in.
 - **The thread is lazy.** No session is built when a window opens, only when you
   first send something. Opening ten apps costs nothing.
 - **Acting is visible.** The agent dispatches the app's own actions, so the
-  window re-renders in front of you (README principle 3). No ghost cursor, no
+  window re-renders in front of you (design README, principle 3). No ghost cursor, no
   confirmation theatre.
 - **A reply in flight holds the surface open.** The omnibar already works this
   way; an accidental click must not throw away an answer you are waiting for.
@@ -156,7 +163,8 @@ Keystrokes inside the app's sandboxed iframe never reach the shell —
 `allow-scripts` without `allow-same-origin` means the parent document sees
 nothing. So `⌘/` works only while the chrome has focus, and the footer button is
 the **primary** control, not a fallback. (The same limit already applies to
-`Window.tsx`'s Escape-exits-fullscreen handler.) One bonus: the sheet's scrim
+`apps/frieren/src/components/Window.tsx`'s Escape-exits-fullscreen
+handler.) One bonus: the sheet's scrim
 takes focus off the app, so Esc is always reliable there.
 
 ## Session data
@@ -215,7 +223,7 @@ walk. Not worth it while the roster is small.
 
 Keying on the **app** rather than the window is deliberate and currently free:
 the reducer already uses the app id as the window id, and one-window-per-app is
-*"policy, not identity"* (`src/os/reducer.ts`). If a second window per app ever
+*"policy, not identity"* (`apps/frieren/src/os/reducer.ts`). If a second window per app ever
 arrives, one thread per app is still the answer you want.
 
 ### One character, many rooms
