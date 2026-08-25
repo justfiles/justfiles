@@ -28,6 +28,7 @@ export function Stickies() {
 	const [focusId, setFocusId] = useState<string | null>(null)
 	const stickiesRef = useRef(stickies)
 	const writesRef = useRef(new Map<string, Pending>())
+	const refreshRef = useRef<() => void>(() => {})
 	const readyRef = useRef(false)
 	const focusRef = useRef<HTMLTextAreaElement>(null)
 	const layerRef = useRef<HTMLDivElement>(null)
@@ -36,19 +37,50 @@ export function Stickies() {
 		.map(({ id }) => pathFor(id))
 		.sort()
 		.join('\n')
+	const show = (next: Sticky[]) => {
+		stickiesRef.current = next
+		setStickies(next)
+	}
 
 	useEffect(() => {
 		let cancelled = false
 		let unwatch: (() => void) | undefined
 		void volume.then(async (fs) => {
 			if (cancelled) return
+			let refreshing = false
+			let again = false
 			const refresh = async () => {
-				await splitIndex(fs)
-				const loaded = await loadVisible(fs, layerRef.current)
 				if (cancelled) return
-				stickiesRef.current = loaded
-				setStickies(loaded)
+				if (refreshing) {
+					again = true
+					return
+				}
+				refreshing = true
+				try {
+					do {
+						again = false
+						const dirty = new Set(writesRef.current.keys())
+						await splitIndex(fs)
+						const loaded = await load(fs)
+						if (cancelled) return
+						for (const id of writesRef.current.keys()) dirty.add(id)
+						const local = stickiesRef.current.filter(({ id }) => dirty.has(id))
+						const merged = [...loaded.filter(({ id }) => !dirty.has(id)), ...local]
+						const next = fit(merged, layerRef.current)
+						stickiesRef.current = next
+						setStickies(next)
+						next.forEach((sticky, index) => {
+							if (sticky !== merged[index])
+								queue(writesRef.current, sticky.id, () => write(fs, sticky, false))
+						})
+					} while (again && !cancelled)
+				} catch {
+					return
+				} finally {
+					refreshing = false
+				}
 			}
+			refreshRef.current = () => void refresh()
 			const stop = await fs.watch(
 				DIR,
 				(event) => {
@@ -66,6 +98,7 @@ export function Stickies() {
 		})
 		return () => {
 			cancelled = true
+			refreshRef.current = () => {}
 			unwatch?.()
 		}
 	}, [volume])
@@ -82,11 +115,7 @@ export function Stickies() {
 					.map((path) =>
 						fs.watch(path, (event) => {
 							if (event.source !== 'remote') return
-							void loadVisible(fs, layerRef.current).then((loaded) => {
-								if (cancelled) return
-								stickiesRef.current = loaded
-								setStickies(loaded)
-							})
+							refreshRef.current()
 						})
 					)
 			)
@@ -107,31 +136,6 @@ export function Stickies() {
 		if (focusId) focusRef.current?.focus()
 	}, [focusId])
 
-	const show = (next: Sticky[]) => {
-		stickiesRef.current = next
-		setStickies(next)
-	}
-	// Keep one active write and only the latest waiting write per sticky. This keeps
-	// typing in one note from delaying another note.
-	const queue = (id: string, task: Task) => {
-		const active = writesRef.current.get(id)
-		if (active) {
-			active.next = task
-			return
-		}
-		const pending: Pending = {}
-		writesRef.current.set(id, pending)
-		void (async () => {
-			let next: Task | undefined = task
-			while (next) {
-				await next().catch(() => {})
-				next = pending.next
-				pending.next = undefined
-			}
-			writesRef.current.delete(id)
-		})()
-	}
-
 	const add = (event: MouseEvent<HTMLDivElement>) => {
 		if (!readyRef.current) return
 		if (event.target instanceof Element && event.target.closest('.frn-sticky')) return
@@ -145,7 +149,7 @@ export function Stickies() {
 		const visible = clamp(sticky, box.width, box.height)
 		setFocusId(sticky.id)
 		show([...stickiesRef.current, visible])
-		queue(visible.id, () => write(volume, visible, true))
+		queue(writesRef.current, visible.id, () => write(volume, visible, true))
 	}
 
 	const startDrag = (event: PointerEvent<HTMLDivElement>, sticky: Sticky) => {
@@ -179,18 +183,18 @@ export function Stickies() {
 		if (event.currentTarget.hasPointerCapture(event.pointerId))
 			event.currentTarget.releasePointerCapture(event.pointerId)
 		const sticky = stickiesRef.current.find((item) => item.id === id)
-		if (sticky) queue(id, () => write(volume, sticky, false))
+		if (sticky) queue(writesRef.current, id, () => write(volume, sticky, false))
 	}
 
 	const edit = (sticky: Sticky, text: string) => {
 		const next = { ...sticky, text }
 		show(stickiesRef.current.map((item) => (item.id === sticky.id ? next : item)))
-		queue(sticky.id, () => write(volume, next, false))
+		queue(writesRef.current, sticky.id, () => write(volume, next, false))
 	}
 
 	const remove = (id: string) => {
 		show(stickiesRef.current.filter((sticky) => sticky.id !== id))
-		queue(id, async () => (await volume).rm(pathFor(id), { force: true }))
+		queue(writesRef.current, id, async () => (await volume).rm(pathFor(id), { force: true }))
 	}
 
 	return (
@@ -224,6 +228,26 @@ export function Stickies() {
 			))}
 		</div>
 	)
+}
+
+// Keep one active write and only the latest waiting write per sticky.
+function queue(writes: Map<string, Pending>, id: string, task: Task): void {
+	const active = writes.get(id)
+	if (active) {
+		active.next = task
+		return
+	}
+	const pending: Pending = {}
+	writes.set(id, pending)
+	void (async () => {
+		let next: Task | undefined = task
+		while (next) {
+			await next().catch(() => {})
+			next = pending.next
+			pending.next = undefined
+		}
+		writes.delete(id)
+	})()
 }
 
 async function splitIndex(volume: Volume): Promise<void> {
@@ -263,17 +287,10 @@ async function load(volume: Volume): Promise<Sticky[]> {
 	return stickies.filter((sticky): sticky is Sticky => sticky !== null)
 }
 
-async function loadVisible(volume: Volume, layer: HTMLDivElement | null): Promise<Sticky[]> {
-	const loaded = await load(volume)
-	if (!layer) return loaded
+function fit(stickies: Sticky[], layer: HTMLDivElement | null): Sticky[] {
+	if (!layer) return stickies
 	const box = layer.getBoundingClientRect()
-	const visible = loaded.map((sticky) => clamp(sticky, box.width, box.height))
-	await Promise.all(
-		visible.map((sticky, index) =>
-			sticky === loaded[index] ? Promise.resolve() : write(volume, sticky, false)
-		)
-	)
-	return visible
+	return stickies.map((sticky) => clamp(sticky, box.width, box.height))
 }
 
 function clamp(sticky: Sticky, width: number, height: number): Sticky {
