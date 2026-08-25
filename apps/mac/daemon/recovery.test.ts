@@ -42,10 +42,14 @@ function child(
 	supportDir: string,
 	env: Record<string, string> = {}
 ): ChildProcessWithoutNullStreams {
-	const process = spawn('bun', ['--eval', script], {
-		cwd: import.meta.dirname,
-		env: { ...globalThis.process.env, FRIEREN_SUPPORT_DIR: supportDir, ...env }
-	})
+	const process = spawn(
+		globalThis.process.execPath,
+		['--import', 'tsx', '--input-type=module', '--eval', script],
+		{
+			cwd: import.meta.dirname,
+			env: { ...globalThis.process.env, FRIEREN_SUPPORT_DIR: supportDir, ...env }
+		}
+	)
 	children.push(process)
 	return process
 }
@@ -310,7 +314,11 @@ test.skipIf(process.platform !== 'darwin')(
 			socket.onclose = () => console.log('__APP_CLOSED__')
 			await new Promise(() => {})
 		`
-		const process = child(script, support)
+		const process = spawn('bun', ['--eval', script], {
+			cwd: import.meta.dirname,
+			env: { ...globalThis.process.env, FRIEREN_SUPPORT_DIR: support }
+		})
+		children.push(process)
 		await output(process, '__APP_OPEN__')
 		const finishing = output(process, '__TERMINATED__')
 		process.kill('SIGUSR1')
