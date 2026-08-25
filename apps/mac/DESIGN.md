@@ -200,7 +200,7 @@ install (local *or* synced-in) → write bundle; uninstall → remove; update �
 desktop analogue of frieren's `catalog:changed`. Because it is one-directional, there is no two-store
 coherence problem — the Volume always wins.
 
-> A fresh device starts with packaged Code, Files, and Settings plus trusted hosted JustApps entries.
+> A fresh device starts with trusted hosted JustApps entries.
 > Code remains the bootstrap for local apps. A local Code app keeps its full bundle because it has no
 > immutable source URL.
 

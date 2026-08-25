@@ -71,7 +71,7 @@ const FLATTEN = true
 const RESTING = 'resting'
 const COLUMNS: readonly (typeof RESTING | Expression)[] = [RESTING, ...EXPRESSIONS]
 
-// The three natures the summoning offers (packages/app-settings), plus the one a user who
+// The three natures the summoning offers (justfiles/app-settings), plus the one a user who
 // never personalised is already wearing. No gender variants: the character has no gender
 // signifiers to vary, and the accessory carries the archetype on its own.
 //

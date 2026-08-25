@@ -39,24 +39,13 @@
 			"cache": false,
 			"persistent": true
 		},
-		// The daemon reads each built-in's `dist/manifest.json` at boot and throws
-		// ("build the app first") if it is missing, so dev needs the same `^build` as the
-		// ship build — otherwise a fresh checkout cannot start the dev daemon at all.
 		"@justfiles/frieren-mac#dev": {
 			"dependsOn": ["^build", "transit"],
 			"cache": false,
 			"persistent": true
 		},
 		"frieren#dev": {
-		// Every built-in in `apps/frieren/vite-appstore.ts`'s BUILTIN_DIRS, because
-			// the appstore plugin reads each one's `dist` at `buildStart` and throws
-			// ENOENT on a fresh checkout otherwise. Keep in step with that list and with
-			// frieren's `build-apps` script.
-			"dependsOn": [
-				"@justfiles/app-files#build",
-				"@justfiles/app-settings#build",
-				"transit"
-			],
+			"dependsOn": ["transit"],
 			"env": ["FRIEREN_DEV_APPS", "VITE_FRIEREN_DEV_APP_STORE"],
 			"cache": false,
 			"persistent": true

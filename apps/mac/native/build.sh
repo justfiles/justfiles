@@ -120,30 +120,12 @@ build_booter() { # Name
 	echo "built $app (booter, id=$id)"
 }
 
-copy_builtin() { # resources_dir app_id package_dir
-	dst="$1/builtins/$2"
-	src="../../../packages/$3/dist"
-	[ -f "$src/manifest.json" ] || {
-		echo "build.sh: missing $src/manifest.json (build workspace apps first)" >&2
-		exit 1
-	}
-	rm -rf "$dst"
-	mkdir -p "$dst"
-	cp -R "$src/." "$dst/"
-	rm -f "$dst/bundle.js" "$dst/bundle.d.ts"
-}
-
-copy_builtins() { # resources_dir
-	copy_builtin "$1" justfiles.files app-files
-	copy_builtin "$1" justfiles.settings app-settings
-}
-
 # A self-contained, shippable Kodama.app backed by the daemon (apps/mac/daemon): the
 # launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
 # daemon reads, under Resources/. The daemon does zero frontend bundling: Vite builds the
 # browser surfaces (launcher / chat / app shell + assets) into
-# ui/dist/client, which rides on disk beside the exe as Resources/client; the builtin app
-# roots ride alongside it. All are resolved via FRIEREN_SHIPPED.
+# ui/dist/client, which rides on disk beside the exe as Resources/client. Paths resolve
+# through FRIEREN_SHIPPED.
 build_ship_daemon() {
 	app="Kodama.app"
 	make_bundle "$app" "Kodama" "app.justfiles.frieren.host" "" "1"
@@ -158,19 +140,17 @@ build_ship_daemon() {
 	#    empties dist/client) so a stale or absent tree can never ship.
 	(cd .. && pnpm run ui:build >/dev/null)
 	mkdir -p "$res/client" && cp -R ../ui/dist/client/. "$res/client/"
-	# 3. Built-in app bundle roots (the daemon seeds these into the Volume) → Resources/builtins.
-	copy_builtins "$res"
-	# 4. The shared booter binary + icon tool → Resources/build. materialize.ts copies the
+	# 3. The shared booter binary + icon tool → Resources/build. materialize.ts copies the
 	#    booter into each projected ~/Applications/Kodama Apps/*.app; without it the daemon logs
 	#    "booter missing" and skips projection entirely (resources.ts resolves BUILD_DIR here
 	#    when shipped).
 	mkdir -p "$res/build" && cp "$BIN" "$res/build/shell"
 	[ -n "$ICON" ] && cp "$ICON" "$res/build/makeicon"
-	# 5. The agent's project docs (repo-root docs/*.md) → Resources/docs, where the daemon's
+	# 4. The agent's project docs (repo-root docs/*.md) → Resources/docs, where the daemon's
 	#    DOCS_DIR resolves them for the `read_doc` tool with no repo at runtime. Flat copy of
 	#    every .md; the @justfiles/agent DOCS catalogue decides which ids are surfaced.
 	mkdir -p "$res/docs" && cp ../../../docs/*.md "$res/docs/"
-	# 6. Spawn the embedded exe verbatim — no runtime, no args, no script. DaemonRuntime is
+	# 5. Spawn the embedded exe verbatim — no runtime, no args, no script. DaemonRuntime is
 	#    bundle-relative ("daemon"), resolved by Daemon.spawn against the launcher's MacOS
 	#    dir, so the app stays relocatable.
 	plist="$app/Contents/Info.plist"

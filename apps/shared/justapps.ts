@@ -11,10 +11,15 @@ export const RUNNER_STORE_URL = 'https://justapps.run/store.json'
 export { MANIFEST_SCHEMA as RUNNER_MANIFEST_SCHEMA, STORE_SCHEMA as RUNNER_STORE_SCHEMA }
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-// Hosted apps this release seeds. `justfiles.code` is here rather than packaged
-// because its bundle carries the devkit sysroot — 238 files — and mounting them
-// from an immutable release keeps them out of every host's own artifact.
-const BUILTIN_IDS = ['justfiles.code', 'justfiles.notes', 'justfiles.paint', 'justfiles.dictionary']
+// Hosted apps this release seeds.
+const BUILTIN_IDS = [
+	'justfiles.code',
+	'justfiles.files',
+	'justfiles.settings',
+	'justfiles.notes',
+	'justfiles.paint',
+	'justfiles.dictionary'
+]
 const REQUEST_TIMEOUT_MS = 10_000
 
 export interface RunnerCatalogApp extends CatalogApp, StoreApp {

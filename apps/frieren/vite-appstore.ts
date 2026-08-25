@@ -5,15 +5,6 @@ import type { Catalog, CatalogApp } from '@justfiles/app/appstore'
 import type { Plugin } from 'vite'
 import { CATALOG_SCHEMA } from './shared/appstore.ts'
 
-// Built-in app packages, by workspace dir. Their `dist` (built by the monorepo
-// before frieren — they're workspace deps) is the source of truth; we copy the
-// app files out as static assets and emit a catalog. Adding a built-in: build
-// it, then add its dir here. This list drives the shipped catalog; two build
-// entries must stay in step with it or a fresh checkout has no `dist` to read —
-// `frieren#dev`'s `dependsOn` in `turbo.json` (dev) and the `build-apps` script
-// in `package.json` (CI/prod).
-const BUILTIN_DIRS = ['app-files', 'app-settings']
-
 // Dev-only sideload: extra `packages/<dir>` apps to fold into the LOCAL catalog
 // so you can launch an in-repo app that isn't a shipped built-in. Driven by the
 // `FRIEREN_DEV_APPS` env var (comma-separated dir names) and applied ONLY while
@@ -105,10 +96,9 @@ export function appstore(): Plugin {
 		// static handler (and the dev `ASSETS` binding) serve fresh bytes on every
 		// start; on build, Vite then copies `public/appstore` into `dist/client`.
 		// Dev-sideloaded apps (`DEV_DIRS`) are folded in ONLY while serving, so a
-		// production build always emits `BUILTIN_DIRS` alone.
+		// production build emits an empty bundled catalog.
 		buildStart() {
-			const dirs = serving ? [...BUILTIN_DIRS, ...DEV_DIRS] : BUILTIN_DIRS
-			emit(root, path.resolve(root, 'public'), dirs)
+			emit(root, path.resolve(root, 'public'), serving ? DEV_DIRS : [])
 		}
 	}
 }

@@ -92,12 +92,6 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
-      '@justfiles/app-files':
-        specifier: workspace:*
-        version: link:../../packages/app-files
-      '@justfiles/app-settings':
-        specifier: workspace:*
-        version: link:../../packages/app-settings
       '@justfiles/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -219,12 +213,6 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
-      '@justfiles/app-files':
-        specifier: workspace:*
-        version: link:../../packages/app-files
-      '@justfiles/app-settings':
-        specifier: workspace:*
-        version: link:../../packages/app-settings
       '@justfiles/design':
         specifier: workspace:*
         version: link:../../packages/design
@@ -608,43 +596,6 @@ importers:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
 
-  packages/app-files:
-    dependencies:
-      '@justfiles/app':
-        specifier: workspace:*
-        version: link:../app
-      '@pierre/trees':
-        specifier: 1.0.0-beta.4
-        version: 1.0.0-beta.4(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      valibot:
-        specifier: ^1.1.0
-        version: 1.4.0(typescript@6.0.3)
-    devDependencies:
-      '@justfiles/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/react':
-        specifier: ^19
-        version: 19.2.7
-      '@types/react-dom':
-        specifier: ^19
-        version: 19.2.3(@types/react@19.2.7)
-      '@vitejs/plugin-react':
-        specifier: ^5
-        version: 5.1.1(vite@8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0))
-      react:
-        specifier: ^19
-        version: 19.2.5
-      react-dom:
-        specifier: ^19
-        version: 19.2.5(react@19.2.5)
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vite:
-        specifier: ^8.0.0-beta.13
-        version: 8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
-
   packages/app-pixel:
     dependencies:
       '@justfiles/app':
@@ -678,40 +629,6 @@ importers:
       vite:
         specifier: ^8.0.12
         version: 8.1.0(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
-
-  packages/app-settings:
-    dependencies:
-      '@justfiles/app':
-        specifier: workspace:*
-        version: link:../app
-      valibot:
-        specifier: ^1.1.0
-        version: 1.4.0(typescript@6.0.3)
-    devDependencies:
-      '@justfiles/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/react':
-        specifier: ^19
-        version: 19.2.7
-      '@types/react-dom':
-        specifier: ^19
-        version: 19.2.3(@types/react@19.2.7)
-      '@vitejs/plugin-react':
-        specifier: ^5
-        version: 5.1.1(vite@8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0))
-      react:
-        specifier: ^19
-        version: 19.2.5
-      react-dom:
-        specifier: ^19
-        version: 19.2.5(react@19.2.5)
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vite:
-        specifier: ^8.0.0-beta.13
-        version: 8.0.12(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/core:
     dependencies:
@@ -3062,12 +2979,6 @@ packages:
     peerDependencies:
       react: '>= 16.8'
       react-dom: '>= 16.8'
-
-  '@pierre/trees@1.0.0-beta.4':
-    resolution: {integrity: sha512-OfT1yk9ne8Te5+GB5zUY8yqE6B8BqjBHQJleH4lu8ltwNpoocZl4vXt1AzlEExpxI/pp+AFX5QG+lR3JjtTEag==}
-    peerDependencies:
-      react: ^18.3.1 || ^19.0.0
-      react-dom: ^18.3.1 || ^19.0.0
 
   '@playwright/cli@0.1.13':
     resolution: {integrity: sha512-ntG80HgWp9y5HUDApoucNXx1Ny6YlCaRJdGpZZeY43Oh8Q+Iivs0hlEcGhnW/bEwsTkw72JxxlzEMOLwH42a9g==}
@@ -5548,6 +5459,7 @@ packages:
   eslint@9.39.2:
     resolution: {integrity: sha512-LEyamqS7W5HB3ujJyvi0HQK/dtVINZvd5mAAp9eT5S/ujByGjiZLCzPcHVzuXbpJDJF/cxwHlfceVUDZ2lnSTw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -7054,14 +6966,6 @@ packages:
   postcss@8.5.15:
     resolution: {integrity: sha512-FfR8sjd4em2T6fb3I2MwAJU7HWVMr9zba+enmQeeWFfCbm+UOC/0X4DS8XtpUTMwWMGbjKYP7xjfNekzyGmB3A==}
     engines: {node: ^10 || ^12 || >=14}
-
-  preact-render-to-string@6.6.5:
-    resolution: {integrity: sha512-O6MHzYNIKYaiSX3bOw0gGZfEbOmlIDtDfWwN1JJdc/T3ihzRT6tGGSEWE088dWrEDGa1u7101q+6fzQnO9XCPA==}
-    peerDependencies:
-      preact: '>=10 || >= 11.0.0-0'
-
-  preact@11.0.0-beta.0:
-    resolution: {integrity: sha512-IcODoASASYwJ9kxz7+MJeiJhvLriwSb4y4mHIyxdgaRZp6kPUud7xytrk/6GZw8U3y6EFJaRb5wi9SrEK+8+lg==}
 
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
@@ -10939,13 +10843,6 @@ snapshots:
 
   '@phosphor-icons/react@2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
-      react: 19.2.5
-      react-dom: 19.2.5(react@19.2.5)
-
-  '@pierre/trees@1.0.0-beta.4(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
-    dependencies:
-      preact: 11.0.0-beta.0
-      preact-render-to-string: 6.6.5(preact@11.0.0-beta.0)
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
 
@@ -15349,12 +15246,6 @@ snapshots:
       nanoid: 3.3.12
       picocolors: 1.1.1
       source-map-js: 1.2.1
-
-  preact-render-to-string@6.6.5(preact@11.0.0-beta.0):
-    dependencies:
-      preact: 11.0.0-beta.0
-
-  preact@11.0.0-beta.0: {}
 
   prebuild-install@7.1.3:
     dependencies:

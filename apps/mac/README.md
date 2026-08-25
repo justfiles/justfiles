@@ -14,12 +14,8 @@ the Node→Bun runtime migration in [BUN-MIGRATION-PLAN.md](./BUN-MIGRATION-PLAN
 
 ## Scripts
 
-Run from `apps/mac`. `turbo run …` here is **auto-scoped** to this package, and
-`turbo.json` declares `^build` for both `build` and `dev` — so turbo builds the workspace
-app dependencies (every built-in the daemon seeds, derived from this package's
-`workspace:*` deps) and the browser surfaces first, cached. A single command leaves you
-with a runnable app; there is no separate `assets`/`reseed` step, and no prebuild script —
-the dependency lives in the task graph.
+Run from `apps/mac`. `turbo run …` here is auto-scoped to this package. Turbo builds the
+workspace dependencies and browser surfaces first.
 
 | Command                | What it does                                                                                                                     |
 |------------------------|----------------------------------------------------------------------------------------------------------------------------------|
@@ -28,10 +24,8 @@ the dependency lives in the task graph.
 | `pnpm start`           | `open` the built `native/Kodama.app` (no rebuild, no kill).                                                                        |
 | `pnpm install:app`     | `build`, then replace `/Applications/Kodama.app` and open it. Kills the running copy first.                                        |
 
-> `pnpm dev` / `pnpm build` still work but are **leaf** scripts — they do this package's own
-> work only and assume the built-in apps' `dist` trees already exist. Go through `turbo` (or
-> the root `pnpm build`) unless you know they are current; the daemon and `native/build.sh`
-> both fail loudly with "build the app first" if they are not.
+> `pnpm dev` and `pnpm build` are leaf scripts. Use `turbo` or the root `pnpm build` to
+> build workspace dependencies first.
 
 > `install:app`, not `install`: a script named `install` is an npm/pnpm lifecycle hook and
 > would fire on every `pnpm install`.
@@ -55,9 +49,8 @@ the launcher's `Info.plist` to spawn the daemon from source under **bun** (`bun
 daemon/main.ts`). The daemon is Bun-only (`Bun.serve` / pub-sub / `Bun.file`), so there is no
 node escape hatch here. `Daemon.spawn()` (Launcher.swift) execs the stamped `DaemonRuntime` /
 `DaemonArgs` / `DaemonScript` verbatim — the runtime choice lives in the plist, never in Swift.
-The daemon reconciles the packaged apps from their freshly built `dist` files on every boot, so a
-relaunch always shows current Files and Settings code. It also reconciles the hosted apps it seeds
-from JustApps. Editing only `daemon/*` needs just the relaunch.
+The daemon reconciles the hosted apps it seeds from JustApps on every boot. Editing only
+`daemon/*` needs just the relaunch.
 
 ## App storage
 
@@ -76,8 +69,8 @@ The thin bundles in `~/Applications/Kodama Apps/` are also derived data. They co
 
 ### What a fresh Volume starts with
 
-Two packaged apps — **Files** and **Settings** — plus the hosted apps `daemon/builtins.ts` names in
-`SEEDED`: **Notes** and **Paint**. The packaged store wins when it and JustApps carry the same app ID.
+The hosted apps `daemon/builtins.ts` names in `SEEDED`: **Files**, **Settings**, **Notes**, and
+**Paint**.
 
 Everything else JustApps publishes, **Code** and **Draw** included, installs from the App Store tile.
 A seeded app is also a trusted one (`reconcile` updates it without asking), so the seed list stays the
@@ -85,10 +78,9 @@ smallest set this Mac wants on day one.
 
 ### The App Store tile
 
-The launcher's last grid tile browses everything JustApps publishes, minus the packaged apps —
-those are authoritative, so a published entry under one of their IDs is never offered. The daemon
-owns both ends — `GET /store` lists the catalog (index plus each published manifest, no file
-lists), and `POST /store/<id>?version=<v>` installs one app — so no app bytes pass through the
+The launcher's last grid tile browses everything JustApps publishes. The daemon owns both ends:
+`GET /store` lists the catalog (index plus each published manifest, no file lists), and
+`POST /store/<id>?version=<v>` installs one app, so no app bytes pass through the
 webview. A row asks for consent first, showing the access the published manifest declares, and the
 install lands the release that listing resolved rather than re-resolving the registry: a publisher
 who moves the pointer after the sheet renders — even to a different release under the same version
@@ -130,7 +122,6 @@ node/bun and no repo. It assembles:
   `Bun.build` is in-process, install-time devkit compiles need no external toolchain.
 - **`Contents/Resources/client/`** — the Vite-built browser surfaces (launcher / chat / app
   shell + hashed `/assets/*` + the shared React `/vendor/*` bundles), served via `CLIENT_DIR`.
-- **`Contents/Resources/builtins/`** — the packaged Code, Files, and Settings fallback roots.
 - **`Contents/Resources/build/`** — the shared booter binary + icon tool that the daemon copies
   per app when projecting `.app`s.
 

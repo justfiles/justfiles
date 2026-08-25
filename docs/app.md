@@ -11,7 +11,7 @@ Frieren and Kodama for Mac. The best examples are:
 - `packages/create-app/template` — minimum app, framework-free GUI
 - `packages/app-pixel` — rich public action surface
 - `packages/app-crossword` — AI procedure committing one atomic result
-- `packages/app-files` — recursive file watching and command coalescing
+- [`justfiles/app-files`](https://github.com/justfiles/app-files) — recursive file watching and command coalescing
 
 This is the app-author API. Do not use kernel, sandbox, transport, app-store, or host internals from an
 app.
@@ -92,7 +92,8 @@ export default defineConfig(({ mode }) => ({
 ```
 
 A React GUI adds `react()` from `@vitejs/plugin-react`, `resolve: { dedupe: ['react',
-'react-dom'] }`, and a `.tsx` `gui` entry — see `packages/app-settings`.
+'react-dom'] }`, and a `.tsx` `gui` entry — see
+[`justfiles/app-settings`](https://github.com/justfiles/app-settings).
 
 `kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
 host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to
