@@ -1,5 +1,6 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import {
+	type CSSProperties,
 	type KeyboardEvent as ReactKeyboardEvent,
 	type MouseEvent as ReactMouseEvent,
 	type PointerEvent as ReactPointerEvent,
@@ -148,8 +149,17 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 	const [chatOpen, setChatOpen] = useState(false)
+	// The drawer travels, so its contents outlive `chatOpen` by one slide: unmounting
+	// on close would empty the drawer while it is still sliding back under the
+	// desktop. It must not mount any earlier either — MessagesPanel takes focus when
+	// it mounts, which at boot would steal the caret from the desktop.
+	const [chatMounted, setChatMounted] = useState(false)
 	const [chatWidth, setChatWidth] = useState(() => clampChatWidth(420))
 	const [resizingChat, setResizingChat] = useState(false)
+	const openChat = () => {
+		setChatMounted(true)
+		setChatOpen(true)
+	}
 	useEffect(() => {
 		const resize = () => setChatWidth(clampChatWidth)
 		window.addEventListener('resize', resize)
@@ -302,7 +312,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					{fullscreenId ? null : (
 						<Omnibar
 							chatOpen={chatOpen}
-							onOpenChat={() => setChatOpen(true)}
+							onOpenChat={openChat}
 							onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
 						/>
 					)}
@@ -312,7 +322,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				<button
 					type="button"
 					className="frn-agent-launcher"
-					onClick={() => setChatOpen(true)}
+					onClick={openChat}
 					aria-label={`Open conversation with ${agent.agentName}`}
 					title={`Open conversation with ${agent.agentName}`}
 				>
@@ -326,8 +336,21 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					/>
 				</button>
 			)}
-			{chatOpen ? (
-				<aside className="frn-chat-panel" aria-label="Agent chat" style={{ width: chatWidth }}>
+			{/* Always mounted at width 0, so opening is travel rather than an appearance.
+			    --chat-w holds the open width for the contents, which stay pinned at it
+			    while the panel narrows — reflowing the transcript on every frame of the
+			    slide would cost far more than the slide itself. */}
+			<aside
+				className="frn-chat-panel"
+				aria-label="Agent chat"
+				aria-hidden={!chatMounted}
+				data-resizing={resizingChat}
+				style={{ width: chatOpen ? chatWidth : 0, '--chat-w': `${chatWidth}px` } as CSSProperties}
+				onTransitionEnd={(event) => {
+					if (event.target === event.currentTarget && !chatOpen) setChatMounted(false)
+				}}
+			>
+				{chatOpen ? (
 					<hr
 						className="frn-chat-resizer"
 						aria-label="Resize chat panel"
@@ -339,9 +362,16 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						onPointerDown={startChatResize}
 						onKeyDown={resizeChatWithKey}
 					/>
-					<MessagesPanel onClose={() => setChatOpen(false)} onPersonalize={() => openSettings()} />
-				</aside>
-			) : null}
+				) : null}
+				{chatMounted ? (
+					<div className="frn-chat-body">
+						<MessagesPanel
+							onClose={() => setChatOpen(false)}
+							onPersonalize={() => openSettings()}
+						/>
+					</div>
+				) : null}
+			</aside>
 			{resizingChat ? (
 				<div
 					className="frn-chat-resize-layer"
