@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.18.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.17.0...frieren-v0.18.0) (2026-08-25)
+
+
+### Features
+
+* **frieren:** add agent chat side panel ([#583](https://github.com/xiaoxinghu/justfiles/issues/583)) ([8ebc6da](https://github.com/xiaoxinghu/justfiles/commit/8ebc6da396b53e07a6a46d8859b1e2c20d29e23f))
+* **frieren:** add desktop stickies ([#581](https://github.com/xiaoxinghu/justfiles/issues/581)) ([d3208ad](https://github.com/xiaoxinghu/justfiles/commit/d3208ad680e0646e98c6f30ea9a2279a76f81513))
+* **frieren:** slide the chat panel out from under the desktop ([#584](https://github.com/xiaoxinghu/justfiles/issues/584)) ([e9e9220](https://github.com/xiaoxinghu/justfiles/commit/e9e92202afb76310f12efe72e08462270af181f7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.9.1
+    * @justfiles/fs bumped to 0.7.1
+
 ## [0.17.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.16.0...frieren-v0.17.0) (2026-08-24)
 
 
