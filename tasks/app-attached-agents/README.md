@@ -6,12 +6,11 @@
 > **sidebar**), and keys the agent session so a window can own a thread. The
 > global agent and the omnibar are untouched.
 >
-> Depends on doc 2 (the session must not be a hard singleton) and doc 5 (the
-> `/system/agents/<id>/` layout this fills in for the first time).
+> Depends on doc 5 (the `/system/agents/<id>/` layout this fills in for the
+> first time).
 
 Source design set: [`apps/frieren/design/`](../../apps/frieren/design/) — read its
 [README](../../apps/frieren/design/README.md) for the shared principles, and
-[doc 2](../../apps/frieren/design/02-workspaces.md) and
 [doc 5](../../apps/frieren/design/05-system-layout.md) for what this builds on.
 Visual mockups of both modes: [`mockups.html`](./mockups.html) — open it in a
 browser.
@@ -150,6 +149,9 @@ they are in.
   confirmation theatre.
 - **A reply in flight holds the surface open.** The omnibar already works this
   way; an accidental click must not throw away an answer you are waiting for.
+- **Window blur does not close the panel.** The user closes it with Esc, the
+  scrim, the close button or the footer button. Moving to another window must
+  not dismiss a conversation.
 - **Esc closes the panel, never the window.** Reliable in sheet mode — the scrim
   holds focus. See the keyboard note below for the sidebar.
 - **Selection is never a prerequisite.** The panel is attached to the *app*, not
@@ -211,8 +213,6 @@ the complete roster.
     sessions/                    ← the ONLY thing a per-app agent owns
   app.justfiles.files/
     sessions/
-  ws.q3-report/                  later (doc 2): a workspace room, same shape
-    sessions/
 ```
 
 App ids are already dotted (`justfiles.dictionary`), so `app.<appId>` reads
@@ -226,26 +226,30 @@ the reducer already uses the app id as the window id, and one-window-per-app is
 *"policy, not identity"* (`apps/frieren/src/os/reducer.ts`). If a second window per app ever
 arrives, one thread per app is still the answer you want.
 
-### One character, many rooms
+### The same agent in another session
 
-A per-app agent directory holds `sessions/` and nothing else. **No soul, no
-avatar** — identity resolves to `main`, so it is the same face and the same name
-in every window, remembering a different conversation. This matches doc 2's rule
-(the persona is shared) and doc 5's layout (if per-room personas ever earn their
-keep, the directory is already the right place and nothing moves).
+A per-app agent directory holds `sessions/` and nothing else. The app agent is
+not a smaller or separate assistant. It uses the same soul, user profile,
+memory, system-prompt blocks and tools as `main`. The implementation reuses the
+same prompt builder and runtime setup. It does not copy identity files into the
+app directory.
+
+The only separate data is the session history. After building the same system
+prompt as `main`, the host adds one short app-context block. It names the app
+and tells the agent to inspect that app before it answers. This makes the app
+agent the same companion in a different session, with a clear subject.
 
 ### Four rules that keep it from sprawling
 
 1. **Maintenance is main's job.** `scheduleDailyAlarm` and memory consolidation
    stay pinned to `main`. Ten app threads must not mean ten daily alarms.
 2. **One socket.** A thread is a tag on a frame, not a connection.
-3. **No per-app tool sandbox.** The app thread gets the same `app` command plus a
-   system-prompt line naming its window. It is a thread with a subject, not a
-   permission boundary — that is a much larger design and is out of scope here.
-4. **The journal question is now due.** Doc 5 flagged it: any agent may append to
-   `memory/daily/`, only main curates `core.md`. With several agents writing,
-   entries need an agent-id prefix (or per-agent daily files) *before* this
-   ships.
+3. **The tools stay the same.** The app thread gets every tool available to
+   `main`, with no per-app sandbox. We can narrow the tool set later if a real
+   problem calls for it.
+4. **App sessions grow and compact.** They do not use `main`'s six-hour idle
+   retirement or create a journal summary. Normal context compaction keeps each
+   session usable. Keep this policy isolated so it is easy to change later.
 
 ## Shell state
 
@@ -274,9 +278,9 @@ asked for.
 
 | File | Change |
 |------|--------|
-| `packages/agent/assistant.ts` | Delete the `agentId` constant; take it as a prop defaulted to `'main'`. |
-| `packages/agent/session.ts` | One optional `agentId` on `AgentSessionOptions`, passed down. |
-| `apps/frieren/worker/frieren.ts` | `this.session` → `Map<agentId, AgentSession>`; `getSession(agentId = 'main')`, built lazily. Hibernation evicts the map, which is the right lifecycle — a thread costs a directory, not a process. Pin `scheduleDailyAlarm` to `main`. |
+| `packages/agent/assistant.ts` | Delete the `agentId` constant; take it as a prop defaulted to `'main'`. Reuse the full `main` system-prompt builder for every agent id, then append an optional context block. |
+| `packages/agent/session.ts` | Add optional `agentId` and context prompt fields to `AgentSessionOptions`. Pass both down. Keep app sessions on grow-and-compact lifecycle policy. |
+| `apps/frieren/worker/frieren.ts` | `this.session` → `Map<agentId, AgentSession>`; `getSession(agentId = 'main')`, built lazily. Give app sessions the same runtime and tools as `main`, plus the app-context prompt. Hibernation evicts the map, which is the right lifecycle — a thread costs a directory, not a process. Pin `scheduleDailyAlarm` to `main`. |
 | `apps/frieren/worker/frieren.ts` (protocol) | `agent?: string` on `prompt`/`abort`, and on the `history`/`event` frames going back. Absent means `main`, so existing clients keep working. |
 | `apps/frieren/src/os/client.ts` | The single block of agent state (messages / streaming / expression) becomes one entry per agent id; `client.agent` → `client.agent(id)`. |
 | `apps/frieren/src/agent/MessagesPanel.tsx` | Takes an agent id; reused verbatim by both surfaces. |
@@ -301,9 +305,11 @@ asked for.
    fallback, the in-header swap control, the Settings default. *Done when
    swapping modes moves the panel and changes nothing else — same thread, same
    scroll position, same draft.*
-5. **Teach the agent where it is.** One line of system prompt naming the attached
-   app, so it reaches for `app state` before anything else. *Done when "what am I
-   looking at?" is answered without the app being named.*
+5. **Teach the agent where it is.** Reuse the full `main` system prompt and tool
+   setup, then add one context block that names the attached app and tells the
+   agent to inspect its state. *Done when the app agent has the same soul and
+   user information as `main`, and "what am I looking at?" is answered without
+   the app being named.*
 
 Steps 1–4 are plumbing and geometry. **Step 5 is where this succeeds or
 disappoints** — what makes an attached agent feel attached is whether it
@@ -321,21 +327,3 @@ panel. Budget real time for it.
   mean?" sharper; it is not what makes the panel work.
 - **A third mode** — undocked: the panel as its own leashed window, for output
   too big for either dock or a second display. `mode` has room for the value.
-- **Per-workspace rooms** — `ws.<id>` needs nothing new from the session layer.
-  That is the point of keying it now.
-
-## Open questions
-
-- **Where does a workspace agent's panel live?** A workspace has no window to
-  attach to. Probably the omnibar, which is already desktop-level — but that
-  makes the omnibar a third surface for the same component.
-- **Does the per-app agent see the other apps?** Today's `app` command lists and
-  drives everything. Scoping it to the attached app would be a real boundary and
-  a real cost (a second tool surface); leaving it open means "the Dictionary
-  agent" can quietly edit your notes. Left open, deliberately, until it bites.
-- **What retires an app thread?** `main`'s six-hour idle rule archives a session
-  and journals a summary. Ten app threads doing that is ten summaries a day. Do
-  app threads archive at all, or just grow and compact?
-- **Does the sheet dismiss on window blur**, or only on Esc / scrim click?
-  Blur-dismiss is tidier and risks eating a conversation when you tab away to
-  check something.
