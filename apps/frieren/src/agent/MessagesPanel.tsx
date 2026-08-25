@@ -1,19 +1,21 @@
 import { Transcript } from '@justfiles/ui/Transcript'
-import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
-import { useRef } from 'react'
+import { ArrowUpIcon, StopIcon, XIcon } from '@phosphor-icons/react'
+import { useEffect, useRef } from 'react'
 import { useAutoResize } from '../components/useAutoResize'
 import { AgentAvatar } from './AgentAvatar'
 import { useAgentConnection, useAgentSession } from './hooks'
 import { resolveTranscriptImage } from './images'
 import { Whisper } from './Whisper'
 
-// OS-level agent surface — invoked from the menubar, not the app launcher.
-// The agent is part of the OS, not an app, so this component consumes the
-// agent session directly. Wrap it in a window (or whatever shell the host
-// decides) at the caller; the panel itself is presentation-only. The scrolling
-// transcript is the shared @justfiles/ui component; the header and composer
-// below are frieren's own web chrome.
-export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) {
+// The desktop chat panel reads the OS-level agent session directly. The agent
+// is not an app and does not run in an app window.
+export function MessagesPanel({
+	onClose,
+	onPersonalize
+}: {
+	onClose: () => void
+	onPersonalize: () => void
+}) {
 	const session = useAgentSession()
 	const connection = useAgentConnection()
 	const {
@@ -31,6 +33,7 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 	} = session
 	const ready = connection.state === 'ready'
 	const inputRef = useRef<HTMLTextAreaElement>(null)
+	useEffect(() => inputRef.current?.focus(), [])
 	// Grow the composer with wrapped lines, then scroll past ~6 (128px).
 	useAutoResize(inputRef, input, 128)
 
@@ -54,6 +57,7 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 		>
 			<header
 				style={{
+					position: 'relative',
 					display: 'flex',
 					flex: 'none',
 					flexDirection: 'column',
@@ -63,6 +67,15 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 					borderBottom: '1px solid var(--rule)'
 				}}
 			>
+				<button
+					type="button"
+					className="frn-agent-close"
+					onClick={onClose}
+					aria-label="Close chat"
+					title="Close chat"
+				>
+					<XIcon />
+				</button>
 				<button
 					type="button"
 					className="frn-agent-identity"
@@ -104,6 +117,7 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 				<Transcript
 					messages={messages}
 					isStreaming={isStreaming}
+					assistantStyle="plain"
 					resolveImage={resolveTranscriptImage}
 				/>
 			)}

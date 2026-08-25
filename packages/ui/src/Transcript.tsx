@@ -38,7 +38,7 @@ export interface AgentMessage {
 	toolCalls?: ToolCallInfo[]
 	// A failed agent turn: rendered as an error-styled block, not a normal bubble.
 	error?: true
-	// A multiple-choice question: rendered as clickable rows under the bubble. A pick
+	// A multiple-choice question: rendered as clickable rows under the reply. A pick
 	// calls `onOption` (the host sends it as the next prompt).
 	options?: { label: string }[]
 }
@@ -46,6 +46,7 @@ export interface AgentMessage {
 export interface TranscriptProps {
 	messages: AgentMessage[]
 	isStreaming: boolean
+	assistantStyle?: 'bubble' | 'plain'
 	// Invoked when the user clicks an option row. Omitted hosts render the labels
 	// as plain (non-clickable) rows.
 	onOption?: (label: string) => void
@@ -74,7 +75,7 @@ const css = `
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
 }
 .js-transcript-copy { opacity: 0; transition: opacity 120ms ease, background 120ms ease; }
-.js-transcript-bubble:hover .js-transcript-copy { opacity: 1; }
+.js-transcript-message:hover .js-transcript-copy { opacity: 1; }
 .js-transcript-copy:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
 .js-transcript-copy:focus-visible {
 	opacity: 1;
@@ -129,15 +130,21 @@ const css = `
 .js-transcript-md th, .js-transcript-md td { padding: 3px 8px; border: 1px solid var(--rule); }
 .js-transcript-md hr { margin: 0.6em 0; border: none; border-top: 1px solid var(--rule); }
 .js-transcript-md img { max-width: 100%; border-radius: 6px; }
+.js-transcript-wrap { overflow-wrap: anywhere; }
+.js-transcript-wrap .js-transcript-md code { overflow-wrap: anywhere; }
+.js-transcript-wrap .js-transcript-md pre { overflow-x: hidden; }
+.js-transcript-wrap .js-transcript-md pre code { white-space: pre-wrap; }
+.js-transcript-wrap .js-transcript-md table { width: 100%; table-layout: fixed; }
 `
 
-// Presentation-only agent transcript: a scrolling message history with bubbles,
-// collapsible thinking / tool-call rows, and a streaming caret. Transport-
+// Presentation-only agent transcript: a scrolling message history with
+// collapsible thinking / tool-call rows and a streaming caret. Transport-
 // agnostic — the host owns the session, header, and composer. Styled on
 // @justfiles/design tokens (no Tailwind) so it renders in any token-aware shell.
 export function Transcript({
 	messages,
 	isStreaming,
+	assistantStyle = 'bubble',
 	onOption,
 	leading,
 	resolveImage
@@ -191,10 +198,16 @@ export function Transcript({
 		<div
 			ref={viewportRef}
 			onScroll={onScroll}
-			className="js-transcript"
+			className={`js-transcript${assistantStyle === 'plain' ? ' js-transcript-wrap' : ''}`}
 			// Disable browser scroll anchoring: we manage scrollTop ourselves, and an
 			// anchoring nudge would register as a spurious upward scroll above.
-			style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowAnchor: 'none' }}
+			style={{
+				flex: 1,
+				minHeight: 0,
+				overflowX: assistantStyle === 'plain' ? 'hidden' : 'auto',
+				overflowY: 'auto',
+				overflowAnchor: 'none'
+			}}
 		>
 			<style>{css}</style>
 			<div
@@ -212,6 +225,7 @@ export function Transcript({
 						key={m.id}
 						message={m}
 						isStreaming={isStreaming}
+						assistantStyle={assistantStyle}
 						onOption={onOption}
 						resolveImage={resolveImage}
 					/>
@@ -224,11 +238,13 @@ export function Transcript({
 function MessageItem({
 	message,
 	isStreaming,
+	assistantStyle,
 	onOption,
 	resolveImage
 }: {
 	message: AgentMessage
 	isStreaming: boolean
+	assistantStyle: 'bubble' | 'plain'
 	onOption?: (label: string) => void
 	resolveImage?: (image: TranscriptImage) => Promise<string | null>
 }) {
@@ -237,18 +253,23 @@ function MessageItem({
 	}
 
 	if (message.role === 'user') {
-		return <Bubble side="right" content={message.content} streaming={false} />
+		return <MessageText side="right" content={message.content} streaming={false} />
 	}
 
 	if (message.error) {
-		return <ErrorBlock body={message.content} />
+		return <ErrorBlock body={message.content} plain={assistantStyle === 'plain'} />
 	}
 
 	const showCursor = isStreaming && !message.content && !message.toolCalls?.length
 	return (
 		<div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
 			{message.content || showCursor ? (
-				<Bubble side="left" content={message.content} streaming={showCursor} />
+				<MessageText
+					side="left"
+					content={message.content}
+					streaming={showCursor}
+					plain={assistantStyle === 'plain'}
+				/>
 			) : null}
 			{message.thinking ? (
 				<SystemRow label="Thinking" body={message.thinking} mono={false} />
@@ -276,9 +297,9 @@ function MessageItem({
 }
 
 // A multiple-choice question's answers, rendered as a column of native-style push
-// buttons under the assistant bubble. They sit on the opaque control surface (not
-// the translucent bubble surface) so they read as controls, not messages; hover/
-// active/focus states come from `.js-transcript-option` in the scoped sheet above.
+// buttons under the assistant reply. They sit on the opaque control surface so
+// they read as controls, not messages. Hover, active, and focus states come from
+// `.js-transcript-option` in the scoped sheet above.
 // Picking one calls `onOption` (the host sends it as the next prompt); with no
 // handler the rows still render, just inert.
 function OptionRows(props: { options: { label: string }[]; onOption?: (label: string) => void }) {
@@ -319,23 +340,30 @@ function OptionRows(props: { options: { label: string }[]; onOption?: (label: st
 	)
 }
 
-function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boolean }) {
-	const { side, content, streaming } = props
+function MessageText(props: {
+	side: 'left' | 'right'
+	content: string
+	streaming: boolean
+	plain?: boolean
+}) {
+	const { side, content, streaming, plain = false } = props
 	const isUser = side === 'right'
 	return (
 		<div style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
 			<div
-				className="js-transcript-bubble"
+				className={`js-transcript-message${plain ? '' : ' js-transcript-bubble'}`}
 				style={{
 					position: 'relative',
-					maxWidth: '78%',
+					boxSizing: 'border-box',
+					width: plain ? '100%' : undefined,
+					maxWidth: plain ? '100%' : '78%',
 					// Assistant text is markdown (its blocks own their spacing); user text is
 					// shown verbatim, so its newlines are preserved.
 					whiteSpace: isUser ? 'pre-wrap' : 'normal',
-					overflowWrap: 'break-word',
-					padding: '6px 12px',
-					borderRadius: '14px',
-					background: isUser ? 'var(--focus)' : 'var(--surface-subtle)',
+					overflowWrap: 'anywhere',
+					padding: plain ? '4px 28px 4px 0' : '6px 12px',
+					borderRadius: plain ? 0 : '14px',
+					background: plain ? 'transparent' : isUser ? 'var(--focus)' : 'var(--surface-subtle)',
 					color: isUser ? 'var(--on-focus)' : 'var(--text)'
 				}}
 			>
@@ -359,7 +387,7 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 	)
 }
 
-// Assistant bubbles render their text as Markdown — LLM output is Markdown by
+// Assistant replies render their text as Markdown — LLM output is Markdown by
 // convention (fenced code, lists, tables), and plain prose is valid Markdown
 // that renders unchanged, so no "is this Markdown?" detection is needed. Raw
 // HTML is not enabled (no rehype-raw), so agent output can't inject markup.
@@ -465,11 +493,10 @@ function ImageCard({
 	)
 }
 
-// Hover-revealed copy control in the bubble's top-right corner. Visibility is
+// Hover-revealed copy control in the message's top-right corner. Visibility is
 // driven by `.js-transcript-copy` in the scoped sheet above (hidden until the
 // bubble is hovered or the button is focused). The icon inherits the bubble's
-// text colour via currentColor, so it contrasts on both the user and assistant
-// surfaces without per-side styling.
+// text colour via currentColor, so it contrasts on both message styles.
 function CopyButton({ content }: { content: string }) {
 	const [copied, setCopied] = useState(false)
 	const copy = () => {
@@ -547,19 +574,21 @@ function CheckIcon() {
 // A failed agent turn: an error-tinted block in the assistant's column. Reuses the
 // same #dc2626 hue as a failed tool call so error state reads consistently on both
 // themes (it's a literal, not a token, like the traffic-light controls).
-function ErrorBlock({ body }: { body: string }) {
+function ErrorBlock({ body, plain }: { body: string; plain: boolean }) {
 	return (
 		<div style={{ display: 'flex', justifyContent: 'flex-start' }}>
 			<div
 				style={{
-					maxWidth: '78%',
+					boxSizing: 'border-box',
+					width: plain ? '100%' : undefined,
+					maxWidth: plain ? '100%' : '78%',
 					whiteSpace: 'pre-wrap',
-					overflowWrap: 'break-word',
-					padding: '6px 12px',
-					borderRadius: '14px',
-					background: 'color-mix(in srgb, #dc2626 14%, var(--surface))',
-					border: '1px solid color-mix(in srgb, #dc2626 40%, var(--rule))',
-					color: 'var(--text)'
+					overflowWrap: 'anywhere',
+					padding: plain ? '4px 28px 4px 0' : '6px 12px',
+					borderRadius: plain ? 0 : '14px',
+					background: plain ? 'transparent' : 'color-mix(in srgb, #dc2626 14%, var(--surface))',
+					border: plain ? 0 : '1px solid color-mix(in srgb, #dc2626 40%, var(--rule))',
+					color: plain ? '#dc2626' : 'var(--text)'
 				}}
 			>
 				{body}
@@ -570,7 +599,7 @@ function ErrorBlock({ body }: { body: string }) {
 
 function SystemRow(props: { label: string; body: string; mono?: boolean }) {
 	return (
-		<details style={{ alignSelf: 'center', fontSize: '11px', opacity: 0.6 }}>
+		<details style={{ alignSelf: 'center', maxWidth: '100%', fontSize: '11px', opacity: 0.6 }}>
 			<summary style={{ padding: '2px 8px' }}>
 				<span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{props.label}</span>
 			</summary>
@@ -579,9 +608,10 @@ function SystemRow(props: { label: string; body: string; mono?: boolean }) {
 					margin: '4px 0 0',
 					maxHeight: '12rem',
 					maxWidth: '80ch',
-					overflow: 'auto',
+					overflowX: 'hidden',
+					overflowY: 'auto',
 					whiteSpace: 'pre-wrap',
-					overflowWrap: 'break-word',
+					overflowWrap: 'anywhere',
 					borderRadius: '4px',
 					padding: '4px 8px',
 					background: 'var(--surface)',
@@ -605,9 +635,10 @@ function ToolCallRow(props: { call: ToolCallInfo }) {
 	const preStyle: CSSProperties = {
 		margin: 0,
 		maxHeight: '8rem',
-		overflow: 'auto',
+		overflowX: 'hidden',
+		overflowY: 'auto',
 		whiteSpace: 'pre-wrap',
-		overflowWrap: 'break-word',
+		overflowWrap: 'anywhere',
 		borderRadius: '4px',
 		padding: '4px 8px',
 		fontFamily: 'var(--font-mono)',
@@ -615,7 +646,7 @@ function ToolCallRow(props: { call: ToolCallInfo }) {
 		border: '1px solid var(--rule)'
 	}
 	return (
-		<details style={{ alignSelf: 'center', fontSize: '11px', opacity: 0.7 }}>
+		<details style={{ alignSelf: 'center', maxWidth: '100%', fontSize: '11px', opacity: 0.7 }}>
 			<summary style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 8px' }}>
 				<span
 					role="img"

@@ -1,12 +1,15 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import {
+	type KeyboardEvent as ReactKeyboardEvent,
 	type MouseEvent as ReactMouseEvent,
+	type PointerEvent as ReactPointerEvent,
 	useEffect,
 	useState,
 	useSyncExternalStore
 } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
+import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
 import type { ConnectionState } from '../agent/types'
@@ -35,6 +38,18 @@ const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
 	connecting: '#f59e0b',
 	disconnected: '#ef4444'
+}
+
+const MIN_CHAT_WIDTH = 280
+const MAX_CHAT_WIDTH = 720
+const MIN_DESKTOP_WIDTH = 320
+
+function maxChatWidth(): number {
+	return Math.max(MIN_CHAT_WIDTH, Math.min(MAX_CHAT_WIDTH, window.innerWidth - MIN_DESKTOP_WIDTH))
+}
+
+function clampChatWidth(width: number): number {
+	return Math.min(maxChatWidth(), Math.max(MIN_CHAT_WIDTH, width))
 }
 
 // macOS-style menubar clock: short weekday + locale time, next to the avatar.
@@ -129,9 +144,17 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const installedApps = useInstalledApps()
 	const { launchApp, openSettings, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
-	const { agentName } = useAgentSession()
+	const agent = useAgentSession()
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
+	const [chatOpen, setChatOpen] = useState(false)
+	const [chatWidth, setChatWidth] = useState(() => clampChatWidth(420))
+	const [resizingChat, setResizingChat] = useState(false)
+	useEffect(() => {
+		const resize = () => setChatWidth(clampChatWidth)
+		window.addEventListener('resize', resize)
+		return () => window.removeEventListener('resize', resize)
+	}, [])
 
 	const windows = useOsStore(
 		(state) => (state.booted ? selectOpenWindows(state) : []),
@@ -202,85 +225,131 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	// The focused app labels the menubar (macOS-style); the desktop falls back to
 	// the shell name. Version rides alongside in muted text when the app declares one.
 	const focusedApp = focusedAppId ? installedApps.find((app) => app.id === focusedAppId) : undefined
+	const startChatResize = (event: ReactPointerEvent<HTMLHRElement>) => {
+		event.preventDefault()
+		event.currentTarget.focus()
+		setResizingChat(true)
+	}
+	const resizeChatWithKey = (event: ReactKeyboardEvent<HTMLHRElement>) => {
+		if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+		event.preventDefault()
+		const step = event.shiftKey ? 40 : 16
+		setChatWidth((width) => clampChatWidth(width + (event.key === 'ArrowLeft' ? step : -step)))
+	}
 
 	return (
 		<div className="frn-shell">
-			{fullscreenId ? null : (
-				<Menubar>
-					<div className="frn-menubar-group">
-						<span className="frn-menubar-title">
-							{focusedApp?.name ?? 'Kodama'}
-							{focusedApp?.version ? (
-								<span className="frn-menubar-version">{focusedApp.version}</span>
-							) : null}
-						</span>
-					</div>
-					<div className="frn-menubar-group">
-						<BackendStatus onOpenMenu={(event) => menu.open(event, syncMenuItems)} />
-						<span
-							className="frn-status-dot"
-							style={{ background: statusDotColor[connection.state] }}
-							title={connection.state}
-						/>
-						<MenubarClock />
-						{isSignedIn ? (
-							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
-						) : (
-							<SignInButton>
-								<button type="button" className="frn-menubar-btn">
-									Sign in
-								</button>
-							</SignInButton>
+			<div className="frn-desktop-frame">
+				{fullscreenId ? null : (
+					<Menubar>
+						<div className="frn-menubar-group">
+							<span className="frn-menubar-title">
+								{focusedApp?.name ?? 'Kodama'}
+								{focusedApp?.version ? (
+									<span className="frn-menubar-version">{focusedApp.version}</span>
+								) : null}
+							</span>
+						</div>
+						<div className="frn-menubar-group">
+							<BackendStatus onOpenMenu={(event) => menu.open(event, syncMenuItems)} />
+							<span
+								className="frn-status-dot"
+								style={{ background: statusDotColor[connection.state] }}
+								title={connection.state}
+							/>
+							<MenubarClock />
+							{isSignedIn ? (
+								<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+							) : (
+								<SignInButton>
+									<button type="button" className="frn-menubar-btn">
+										Sign in
+									</button>
+								</SignInButton>
+							)}
+						</div>
+					</Menubar>
+				)}
+
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
+				<div
+					className="frn-desktop"
+					style={
+						wallpaper
+							? {
+									backgroundImage: `url(${wallpaper})`,
+									backgroundSize: 'cover',
+									backgroundPosition: 'center'
+								}
+							: undefined
+					}
+					onContextMenu={(event) => menu.open(event, desktopMenuItems)}
+				>
+					<div className="frn-desktop-windows">
+						<Stickies />
+						{windows.map((window) =>
+							window.appId ? (
+								<AppWindow
+									key={window.id}
+									id={window.id}
+									title={resolveAppTitle(installedApps, window.appId, window.title)}
+								>
+									<AppViewport id={window.id} />
+								</AppWindow>
+							) : null
 						)}
 					</div>
-				</Menubar>
-			)}
-
-			{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
-			<div
-				className="frn-desktop"
-				style={
-					wallpaper
-						? {
-								backgroundImage: `url(${wallpaper})`,
-								backgroundSize: 'cover',
-								backgroundPosition: 'center'
-							}
-						: undefined
-				}
-				onContextMenu={(event) => menu.open(event, desktopMenuItems)}
-			>
-				{/* Windows live in their own layer so the desktop can dim + recede behind
-				    the omnibar's expanded sheet without transforming the omnibar itself.
-				    The body is picked by window kind: app windows present their stage,
-				    the agent window views the conversation session. */}
-				<div className="frn-desktop-windows">
-					<Stickies />
-					{windows.map((window) => (
-						<AppWindow
-							key={window.id}
-							id={window.id}
-							title={
-								window.appId
-									? resolveAppTitle(installedApps, window.appId, window.title)
-									: agentName
-							}
-						>
-							{window.appId ? (
-								<AppViewport id={window.id} />
-							) : (
-								<MessagesPanel onPersonalize={() => openSettings()} />
-							)}
-						</AppWindow>
-					))}
+					{fullscreenId ? null : (
+						<Omnibar
+							chatOpen={chatOpen}
+							onOpenChat={() => setChatOpen(true)}
+							onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
+						/>
+					)}
 				</div>
-				{fullscreenId ? null : (
-					<Omnibar
-						onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
-						onPersonalize={() => openSettings()}
-					/>
-				)}
 			</div>
+			{chatOpen ? null : (
+				<button
+					type="button"
+					className="frn-agent-launcher"
+					onClick={() => setChatOpen(true)}
+					aria-label={`Open conversation with ${agent.agentName}`}
+					title={`Open conversation with ${agent.agentName}`}
+				>
+					<AgentAvatar
+						url={agent.avatarUrl}
+						faces={agent.avatarFaces}
+						expression={agent.expression}
+						streaming={agent.isStreaming}
+						personalized={agent.personalized}
+						size={56}
+					/>
+				</button>
+			)}
+			{chatOpen ? (
+				<aside className="frn-chat-panel" aria-label="Agent chat" style={{ width: chatWidth }}>
+					<hr
+						className="frn-chat-resizer"
+						aria-label="Resize chat panel"
+						aria-orientation="vertical"
+						aria-valuemin={MIN_CHAT_WIDTH}
+						aria-valuemax={maxChatWidth()}
+						aria-valuenow={chatWidth}
+						tabIndex={0}
+						onPointerDown={startChatResize}
+						onKeyDown={resizeChatWithKey}
+					/>
+					<MessagesPanel onClose={() => setChatOpen(false)} onPersonalize={() => openSettings()} />
+				</aside>
+			) : null}
+			{resizingChat ? (
+				<div
+					className="frn-chat-resize-layer"
+					onPointerMove={(event) => setChatWidth(clampChatWidth(window.innerWidth - event.clientX))}
+					onPointerUp={() => setResizingChat(false)}
+					onPointerCancel={() => setResizingChat(false)}
+				/>
+			) : null}
 			<ContextMenu state={menu.state} onClose={menu.close} />
 		</div>
 	)
