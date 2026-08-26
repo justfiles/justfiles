@@ -26,6 +26,9 @@ type AssistantProps = {
 	volume: Volume
 	agent: Agent
 	text: LLMText
+	agentId: string
+	kind: 'main' | 'app'
+	appContext?: string
 	compaction: CompactionSettings
 	getTimezone?: () => Promise<string> | string
 	// How the host reads a doc body by id (disk on quay, asset fetch on frieren). WHICH docs
@@ -85,6 +88,9 @@ export async function createAssistant({
 	volume,
 	agent,
 	text,
+	agentId,
+	kind,
+	appContext,
 	compaction,
 	getTimezone,
 	readDoc,
@@ -104,8 +110,7 @@ export async function createAssistant({
 		agent.state.tools = [...agent.state.tools, createReadDocTool(readDoc)]
 	}
 
-	const agentId = 'main'
-	let session = await route({ agentId }, volume, text)
+	let session = await route({ agentId, kind }, volume, text)
 	await initSession()
 
 	return {
@@ -125,7 +130,7 @@ export async function createAssistant({
 	}
 
 	async function newSession() {
-		session = await createSession({ agentId }, volume)
+		session = await createSession(agentId, volume)
 		await initSession()
 	}
 
@@ -187,9 +192,9 @@ export async function createAssistant({
 			// `firstKeptEntryId` would point into a lineage the summary is not about.
 			const branch = await session.walkActiveBranch(session.activeLeafId)
 			const prepared = prepareCompaction(branch, compaction)
-			const notes = await text.takeNotes(prepared.content)
-			if (notes) {
-				await file(volume, paths.daily()).append(`\n\n${notes}`)
+			if (kind === 'main') {
+				const notes = await text.takeNotes(prepared.content)
+				if (notes) await file(volume, paths.daily()).append(`\n\n${notes}`)
 			}
 			const result = await compact(text, prepared)
 			// Awaited, unlike before: `initSession` below now recomputes the active leaf from
@@ -255,6 +260,7 @@ export async function createAssistant({
 		}
 
 		if (appsPrompt) prompt.add('# apps', appsPrompt)
+		if (appContext) prompt.add('# attached app', appContext)
 
 		const skillsBlock = await skillRegistry.index()
 		if (skillsBlock) prompt.add('# skills', skillsBlock)
@@ -481,15 +487,15 @@ const SIX_HOURS = 6 * 60 * 60 * 1000
 
 type MessageContext = {
 	agentId: string
+	kind: 'main' | 'app'
 }
 
 // Which session this host is in is DERIVED from the transcripts, never recorded: the one
 // whose newest entry is newest. Open the iPad and it resumes the Mac's conversation, with no
 // pointer file for two hosts to clobber (#300).
 //
-// The idle clock is conversation time (the newest ENTRY) rather than a `lastActive` field
-// each device rewrote on every turn — which is also the RIGHT clock: a peer's turn arriving
-// by sync keeps the session alive, exactly as if it had happened here.
+// App sessions always resume that thread. Main retires it after six idle hours, measured from
+// the newest entry so a peer's synced turn keeps the conversation alive.
 async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promise<SessionManager> {
 	const now = new Date()
 	const current = await currentSession(volume, ctx.agentId)
@@ -501,7 +507,8 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 			deviceId: await deviceId(volume)
 		})
 
-	if (current && now.getTime() - Date.parse(current.newestTs) < SIX_HOURS) return open(current)
+	if (current && (ctx.kind === 'app' || now.getTime() - Date.parse(current.newestTs) < SIX_HOURS))
+		return open(current)
 
 	// Archiving a retired conversation is a ONE-TIME, cross-device side effect: an LLM call plus
 	// a journal append. It has to be CLAIMED, not merely guarded, because until the fresh session
@@ -520,7 +527,7 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 		}
 	}
 
-	return createSession(ctx, volume, now)
+	return createSession(ctx.agentId, volume, now)
 }
 
 // The claim is `writeFile({ exclusive: true })` — atomic create, no replace, on every backend
@@ -576,12 +583,12 @@ async function claimArchive(volume: Volume, agentId: string, sessionId: string):
 // a restart. Fixing it needs a guard so `newSession()` does not become a no-op, and #334 first
 // so the scan is not paid per turn.
 async function createSession(
-	ctx: MessageContext,
+	agentId: string,
 	volume: Volume,
 	now: Date = new Date()
 ): Promise<SessionManager> {
 	return session(volume, {
-		agentId: ctx.agentId,
+		agentId,
 		sessionId: crypto.randomUUID().slice(0, 8),
 		startTs: now,
 		deviceId: await deviceId(volume)
