@@ -17,7 +17,9 @@ import { openrouterImagesProvider } from '@earendil-works/pi-ai/providers/openro
 import {
 	type AgentBackend,
 	type AgentSession,
-	createAgentSession,
+	type AgentSessionOptions,
+	type AgentSessions,
+	createAgentSessions,
 	generateSoul as generateAgentSoul,
 	type LLMText,
 	modelsBackend,
@@ -199,7 +201,8 @@ export class Frieren extends DurableObject<Env> {
 	// Filesystem-derived resources, built on first use and kept for the instance's lifetime.
 	private accounts?: HostAccounts
 	private apps?: FrierenApps
-	private session?: AgentSession
+	private readonly agents: AgentSessions
+	private agentSubscription?: () => void
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -251,6 +254,7 @@ export class Frieren extends DurableObject<Env> {
 		this.model = model
 		this.generateImage = generateImage
 		this.platformText = text(this.meteredBackend(models, model))
+		this.agents = createAgentSessions(() => this.agentOptions())
 		this.app = new Hono()
 			.post('/api/agent/face', async (c) => {
 				const body = await c.req.json<{ avatar?: string; expression?: string; hash?: string }>()
@@ -468,14 +472,22 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private getSession(): AgentSession {
-		if (this.session) return this.session
+		const session = this.agents.main()
+		if (!this.agentSubscription)
+			this.agentSubscription = session.subscribe((event) => {
+				if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
+			})
+		return session
+	}
+
+	private agentOptions(): AgentSessionOptions {
 		const apps = this.getApps()
 		const image = this.getAccounts().image
 		// No image engine (local dev) ⇒ no image tools, rather than tools that always fail.
 		const capabilities = this.generateImage
 			? { invoke: capabilityRegistry({ image }).invoke, tools: [imageAgentTools] }
 			: undefined
-		const session = createAgentSession({
+		return {
 			volume: this.volume,
 			capabilities,
 			backend: async () => {
@@ -490,12 +502,7 @@ export class Frieren extends DurableObject<Env> {
 			timezone: () => resolveTimezone(this.volume, this.cfTimezone),
 			notify: (notification) => this.broadcast({ type: 'notification', notification }),
 			expressions: true
-		})
-		session.subscribe((event) => {
-			if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
-		})
-		this.session = session
-		return session
+		}
 	}
 
 	// The platform backend, cap-gated + metered through `this.meter` (quota.ts) — the same seam
