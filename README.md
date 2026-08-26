@@ -70,6 +70,12 @@ Run pnpm commands from the repository root. The root workspace replaces every
 `@justfiles/app` dependency with the local `packages/app`. The app repositories
 keep their published version ranges when you use them on their own.
 
+`pnpm dev` builds the apps present under `apps/`, serves their artifacts from one
+local app store, and rebuilds them when their source changes. Frieren seeds its
+built-ins from that store and uses it in place of justapps.run for other apps that
+are already installed. Set `VITE_FRIEREN_DEV_APP_STORE` to keep using an external
+development store instead.
+
 Turbo builds and type-checks local packages and submodules together. Root format,
 lint, and test commands check only source owned by this repository. Each submodule
 keeps its own format, lint, and test rules.

@@ -11,14 +11,13 @@ const code = new TextEncoder().encode('// local app')
 afterEach(() => vi.restoreAllMocks())
 
 describe('reconcileLocalStore', () => {
-	test('installs an app outside the production built-in list', async () => {
+	test('does not install an app that is not installed', async () => {
 		const { kernel, installs } = testKernel()
 		vi.spyOn(globalThis, 'fetch').mockImplementation(localStore('com.example.app'))
 
 		await reconcileLocalStore(kernel, storeUrl)
 
-		expect(installs).toHaveLength(1)
-		expect(installs[0]).toMatchObject({ id: 'com.example.app', version: '1.0.0' })
+		expect(installs).toHaveLength(0)
 	})
 
 	test('replaces a newer installed version with the local build', async () => {

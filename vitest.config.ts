@@ -7,6 +7,7 @@ export default defineConfig({
 			'apps/doom/**/*.test.ts',
 			'apps/pixel/**/*.test.ts',
 			'platform/shared/**/*.test.ts',
+			'platform/frieren/scripts/**/*.test.ts',
 			'platform/frieren/worker/**/*.test.ts',
 			'platform/frieren/shared/**/*.test.ts',
 			'platform/frieren/src/os/**/*.test.ts',
