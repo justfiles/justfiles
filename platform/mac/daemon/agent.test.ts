@@ -25,11 +25,27 @@ test('classifyFailure routes auth errors to Accounts', () => {
 })
 
 test('classifyFailure routes token-limit errors to a fresh chat', () => {
-	for (const raw of ['context length exceeded', '429 rate limit']) {
+	for (const raw of ['context length exceeded', 'token limit']) {
 		const failure = classifyFailure(new Error(raw))
 		expect(failure.route).toEqual({ kind: 'chat' })
 		expect(failure.body).toMatch(/new chat/)
 	}
+})
+
+test('classifyFailure keeps provider rate limits separate from token limits', () => {
+	const failure = classifyFailure(new Error('429 rate limit'))
+	expect(failure.route).toEqual({ kind: 'chat' })
+	expect(failure.body).toMatch(/busy/i)
+})
+
+test('classifyFailure distinguishes Kodama quota and network failures', () => {
+	const quota = classifyFailure(new Error('429 {"error":{"code":"quota_exceeded"}}'))
+	expect(quota.route).toEqual({ kind: 'settings', pane: 'accounts' })
+	expect(quota.body).toMatch(/limit reached/i)
+
+	const offline = classifyFailure(new Error('fetch failed: ECONNREFUSED'))
+	expect(offline.route).toEqual({ kind: 'chat' })
+	expect(offline.body).toMatch(/offline/i)
 })
 
 test('classifyFailure falls back to a generic chat error', () => {

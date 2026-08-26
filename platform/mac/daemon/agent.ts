@@ -8,7 +8,6 @@ import {
 	type SessionEvent
 } from '@justfiles/agent'
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
-import { codexBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
 import { identity } from './identity'
@@ -77,10 +76,10 @@ async function buildSession(): Promise<AgentSession> {
 		// the next prompt without restarting the daemon (the mint rotates near-expiry tokens;
 		// the session keys its build on model + revision and rebuilds losslessly).
 		backend: async () => {
-			const llm = await accounts.resolveAi(codexBackend)
+			const llm = await accounts.resolveBackend()
 			// Worded to match `classifyFailure`'s no-AI branch, so the chat shows "enable an AI
 			// provider" with a route into Settings → Accounts instead of a raw stack trace. This is
-			// the state a freshly signed-in Mac is in until C2 (#298) gives it the platform backend.
+			// the state a signed-out Mac is in when no local AI account is selected.
 			if (!llm) throw new Error('No AI provider is turned on for this Mac')
 			return llm
 		},

@@ -555,7 +555,7 @@ Availability differs by host and user configuration:
 | Capability | Import/factory | Frieren | Kodama for Mac | App Code import |
 | --- | --- | --- | --- | --- |
 | Files | `capabilities/volume`: `volume` | Yes | Yes | Yes |
-| Text AI | `capabilities/ai`: `ai` | Yes | Account-dependent | Yes |
+| Text AI | `capabilities/ai`: `ai` | Yes | Kodama when signed in; local account otherwise | Yes |
 | Image generation | `capabilities/image`: `image` | Provider-dependent | No | No |
 | Email | `capabilities/email`: `email` | Account-dependent | Account-dependent | Yes |
 | Calendar | `capabilities/calendar`: `calendar` | Account-dependent | Account-dependent | Yes |

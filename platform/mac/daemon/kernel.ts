@@ -1,5 +1,11 @@
 import { hostname } from 'node:os'
-import { aiCapability, generateSoul, type SoulGenerationInput, text } from '@justfiles/agent'
+import {
+	type AgentBackend,
+	aiCapability,
+	generateSoul,
+	type SoulGenerationInput,
+	text
+} from '@justfiles/agent'
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
@@ -22,50 +28,68 @@ import { appAssets } from './app-assets'
 import { builtinStore } from './builtins'
 import { chatgptProvider, codexBackend } from './chatgpt'
 import { coalesce } from './coalesce'
-import { getStorage, getVolume } from './fs'
+import { getStorage, getVolume, kodamaOrigin } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { identity } from './identity'
 import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
+import { createKodamaAi } from './platform-ai'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
-let accountsOnce: Promise<HostAccounts> | undefined
+let accountsOnce: Promise<DaemonAccounts> | undefined
 let appBoot: Promise<void> | undefined
 let appCheck: ReturnType<typeof setInterval> | undefined
 let kernelClosed = false
 
 const systemAllowlist = ['justfiles.files']
 
-// The daemon's account providers: the shared Google/iCloud modules wired to the
-// loopback auth flow + env OAuth client, plus the daemon-local ChatGPT provider
-// (which rides pi-ai's Codex runtime). No builtin AI here — this Mac has no platform
-// floor, so with nothing selected there is simply no AI.
-const accountsProviders = () => [
+const accountProviders = () => [
 	googleProvider({ flow: loopbackAuthFlow(), client: googleClient() }),
 	icloudProvider(),
 	chatgptProvider()
 ]
 
+interface DaemonAccounts extends HostAccounts {
+	resolveBackend(): Promise<AgentBackend | null>
+}
+
 // One account module over a Volume. `getAccounts` memoises this for the daemon process;
 // tests build a throwaway one over a temp Volume. `secretCodec` seals the creds lane at
 // rest — the default stays the pre-A4 clear codec, so a test that never opts in is hermetic
 // (it mints no Keychain item on the machine running it).
-export function daemonAccounts(fs: Volume, opts: { secretCodec?: SecretCodec } = {}): HostAccounts {
-	return hostAccounts(accountsProviders(), fs, {
+export function daemonAccounts(
+	fs: Volume,
+	opts: {
+		secretCodec?: SecretCodec
+		getToken?: () => Promise<string | null>
+		origin?: string
+	} = {}
+): DaemonAccounts {
+	const kodama = createKodamaAi({
+		origin: opts.origin ?? kodamaOrigin(),
+		getToken: opts.getToken ?? (() => identity.getToken())
+	})
+	const accounts = hostAccounts([...accountProviders(), kodama.provider], fs, {
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
 		// hostname so Settings can tell two Macs apart once E1/E2 land.
 		origin: { kind: 'device', label: hostname() },
-		...opts
+		...(opts.secretCodec && { secretCodec: opts.secretCodec })
+	})
+	return Object.assign(accounts, {
+		resolveBackend: () =>
+			accounts.resolveAi((lease) =>
+				lease.providerId === kodama.provider.id ? kodama.backend(lease) : codexBackend(lease)
+			)
 	})
 }
 
 // The daemon's ONE account module. Settings, the `ai` capability, soul generation and the
 // agent's own backend all resolve through this instance, so a credential write can never
 // race a read taken from a second store over the same files.
-export function getAccounts(): Promise<HostAccounts> {
+export function getAccounts(): Promise<DaemonAccounts> {
 	// The Keychain key lives behind `accountsSecretCodec`, which resolves it on first USE — so
 	// boot never touches the Keychain, and a Keychain this daemon cannot read costs the
 	// credential lane (A2 lists the record as "re-connect") rather than the whole daemon.
@@ -117,13 +141,13 @@ export async function closeKernel(): Promise<void> {
 // the seeded builtin catalog. `getKernel` memoises this over the process Volume; tests build
 // a throwaway kernel over a temp Volume (so they never touch the real support tree or share
 // the daemon's singleton).
-export async function buildKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
+export async function buildKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel> {
 	const k = await makeKernel(fs, accounts)
 	await bootKernel(k, fs)
 	return k
 }
 
-async function makeKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
+async function makeKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel> {
 	const fetchAsset = await appAssets(fs)
 	// The text `ai` capability is host-owned (not an accounts concern): it generates
 	// over the active AI account's model — resolved lazily per call, so a signed-out
@@ -132,7 +156,7 @@ async function makeKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
 	const ai = aiCapability({
 		volume: fs,
 		generate: async ({ system, prompt }) => {
-			const backend = await accounts.resolveAi(codexBackend)
+			const backend = await accounts.resolveBackend()
 			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return text(backend).gen(system, prompt)
 		}
@@ -178,7 +202,7 @@ async function makeKernel(fs: Volume, accounts: HostAccounts): Promise<Kernel> {
 					// daemon's own bundle, so a picker here needs nothing from the cloud.
 					builtins: BUILTIN_AVATARS,
 					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-						const backend = await accounts.resolveAi(codexBackend)
+						const backend = await accounts.resolveBackend()
 						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')
 						return generateSoul(backend, {
 							agentName: name,

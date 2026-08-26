@@ -385,9 +385,8 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 
 // Classify a failed turn into a user-facing message + a fix-it route. pi-ai surfaces provider
 // failures as plain `Error` messages (not typed codes), so we match on the text: an
-// expired/unauthorised token → reconnect in Settings → Accounts; a blown context window / rate
-// limit → back to chat (start fresh); anything else → a generic error that opens chat. Stingy
-// by design — two actionable cases, then a catch-all.
+// expired/unauthorised token → reconnect in Settings → Accounts; a spent platform quota → the
+// account pane; a blown context window → back to chat; a network failure → retry from chat.
 export function classifyFailure(error: unknown): { body: string; route: Route } {
 	const raw = error instanceof Error ? error.message : String(error)
 	if (/no ai (backend|provider)|ai is turned off|enable an ai provider/i.test(raw)) {
@@ -402,13 +401,27 @@ export function classifyFailure(error: unknown): { body: string; route: Route } 
 			route: { kind: 'settings', pane: 'accounts' }
 		}
 	}
-	if (
-		/context[_ ]?(length|window)|token limit|maximum context|too many tokens|\b429\b|rate limit/i.test(
-			raw
-		)
-	) {
+	if (/quota[_ ]?exceeded|usage limit/i.test(raw)) {
+		return {
+			body: 'Your Kodama AI limit reached. Wait for it to reset or upgrade your plan.',
+			route: { kind: 'settings', pane: 'accounts' }
+		}
+	}
+	if (/context[_ ]?(length|window)|token limit|maximum context|too many tokens/i.test(raw)) {
 		return {
 			body: 'The model hit its token limit. Start a new chat or shorten your request.',
+			route: { kind: 'chat' }
+		}
+	}
+	if (/\b429\b|rate limit/i.test(raw)) {
+		return {
+			body: 'The AI provider is busy. Try again shortly.',
+			route: { kind: 'chat' }
+		}
+	}
+	if (/fetch failed|failed to fetch|econnrefused|network error|\boffline\b/i.test(raw)) {
+		return {
+			body: 'Kodama AI is offline. Check your connection and try again.',
 			route: { kind: 'chat' }
 		}
 	}
