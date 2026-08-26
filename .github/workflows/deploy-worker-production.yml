@@ -86,4 +86,4 @@ jobs:
           wranglerVersion: 4.71.0
           command: deploy
           packageManager: pnpm
-          workingDirectory: apps/worker
+          workingDirectory: platform/worker

@@ -247,7 +247,7 @@ setEnabled: <span class="k">async</span> (_ctx, { accountId, capability, enabled
   <span class="k">else</span>
     <span class="k">await</span> <span class="f">grantScope</span>(accountId, capability, enabled)   <span class="c">// widen (incremental consent) / drop the scope</span>
 }</code></pre>
-<p class="legend">Because <code>AccountInfo</code>/<code>ProviderInfo</code> and the RPC methods are untouched, <code>packages/app-settings</code> compiles and runs <b>as-is</b>.</p>
+<p class="legend">Because <code>AccountInfo</code>/<code>ProviderInfo</code> and the RPC methods are untouched, <code>apps/settings</code> compiles and runs <b>as-is</b>.</p>
 
 <h2 id="cardinality">Where “single-active” goes</h2>
 <p>The single-active-AI sweep in <code>setEnabled</code> <b>disappears</b>. Cardinality is now expressed by <em>where the truth lives</em>:</p>
@@ -261,7 +261,7 @@ setEnabled: <span class="k">async</span> (_ctx, { accountId, capability, enabled
 <table>
 	<tr><th>Area</th><th>Status</th><th>Why</th></tr>
 	<tr><td>Capability contracts (<code>Email</code>/<code>Calendar</code>/<code>Ai</code>) + the <code>accounts</code> admin contract</td><td class="keep">unchanged</td><td>Apps + Settings UI keep their exact API.</td></tr>
-	<tr><td><code>packages/app-settings</code> (Internet-Accounts screen)</td><td class="keep">unchanged</td><td>Reads the same <code>AccountInfo</code>/<code>ProviderInfo</code> from the façade.</td></tr>
+	<tr><td><code>apps/settings</code> (Internet-Accounts screen)</td><td class="keep">unchanged</td><td>Reads the same <code>AccountInfo</code>/<code>ProviderInfo</code> from the façade.</td></tr>
 	<tr><td>Gmail / CalDAV client code (<code>createGmailEmail</code>, <code>authedFetch</code>, iCloud CalDAV)</td><td class="keep">unchanged</td><td>Imported directly now instead of via <code>mint</code>.</td></tr>
 	<tr><td>Volume as substrate; <code>creds</code> as the encryptable lane (<code>secretCodec</code>)</td><td class="keep">unchanged</td><td>Only the record shape changes.</td></tr>
 	<tr><td>Persisted agent session format</td><td class="keep">unchanged</td><td>Independent of this; our own zod schema.</td></tr>

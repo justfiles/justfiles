@@ -24,22 +24,22 @@ After creating a worktree, seed the git-ignored local dev files — `git worktre
 only checks out tracked files, so these are missing and local runs break without
 them. Copy each from the main checkout into the same path in the new worktree:
 
-- apps/frieren/.env
-- apps/frieren/.dev.vars
-- apps/frieren/.agent
-- apps/worker/.env
-- apps/worker/.dev.vars
-- apps/worker/.agent
+- platform/frieren/.env
+- platform/frieren/.dev.vars
+- platform/frieren/.agent
+- platform/worker/.env
+- platform/worker/.dev.vars
+- platform/worker/.agent
 
 ## About Pull Requests
 After addressed a PR feedback left by @codex, tag codex for re-review at the end of the comment, like so: "@codex review".
 
 # Building an app
 
-The app should follow this path convention: packages/app-<name>. see existing apps as example.
+The app should follow this path convention: apps/<name>. See existing apps as examples.
 If trying to create a new app, use the packages/create-app/ template.
 ```
-node packages/create-app/index.js packages/app-<name>
+node packages/create-app/index.js apps/<name>
 ```
 
 Before making changes to the app, read docs/app.md to learn how to make an app.

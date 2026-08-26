@@ -6,7 +6,7 @@ Status: **proposed. Nothing shipped.** Four directions, each a live mockup under
 ## The brief
 
 An app on the runner owns its whole subdomain, and the page that serves it —
-[`apps/runner/src/app.tsx`](../../apps/runner/src/app.tsx) — gives it the whole viewport: the document
+[`platform/runner/src/app.tsx`](../../platform/runner/src/app.tsx) — gives it the whole viewport: the document
 is a `#app` div and the app's GUI mounts into it. That is the point, and it should stay the point.
 
 Installed to a home screen it owns more than that. The web app manifest declares
@@ -66,7 +66,7 @@ four that is obvious the moment the app opens and gone by the second paragraph.
 
 The way out belongs to the **host**, not to the app: rendered by the runner into the document beside
 the `#app` mount point, so no app has to add it, no app can remove it, and nothing about it reaches
-the SDK. [`apps/runner/src/client/main.ts`](../../apps/runner/src/client/main.ts) does not change.
+the SDK. [`platform/runner/src/client/main.ts`](../../platform/runner/src/client/main.ts) does not change.
 
 The tap needs no client code at all — it is a link off this origin to `ROOT_DOMAIN`. The idle dim is
 a class and a timer, and only d3 needs more than that (a scroll listener on a node the host does not

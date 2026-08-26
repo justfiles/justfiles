@@ -24,7 +24,7 @@ Review changes from `format` and `lint:fix`. Fix each failure, then run the fail
 
 ## Check the Frieren UI
 
-For a visible change in `apps/frieren`, use a short Playwright CLI smoke check. Do not add a full end-to-end test unless the user asks for one.
+For a visible change in `platform/frieren`, use a short Playwright CLI smoke check. Do not add a full end-to-end test unless the user asks for one.
 
 Start the app from the repository root:
 
@@ -51,7 +51,7 @@ Use `fill` and `click` as needed.
 
 ## Check the sandbox reducer frame
 
-After a change to `sandboxWorkerSource` in `packages/app/sandbox.ts` or the reducer frame in `apps/frieren/src/apps/sandbox.worker.ts`, run:
+After a change to `sandboxWorkerSource` in `packages/app/sandbox.ts` or the reducer frame in `platform/frieren/src/apps/sandbox.worker.ts`, run:
 
 ```sh
 pnpm --filter frieren run verify:sandbox

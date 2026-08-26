@@ -2,20 +2,20 @@
 
 A focused memory service for humans and AI agents.
 
-This is a monorepo with three packages:
+The workspace has three top-level groups:
 
-| Package         | Description                                                |
-|-----------------|------------------------------------------------------------|
-| `apps/worker`   | Cloudflare Worker — filesystem API and React web UI        |
-| `apps/cli`      | Agent-friendly CLI for interacting with the backend        |
-| `packages/core` | Shared filesystem API, SQLite migrations, and storage      |
+| Directory | Contents |
+| --- | --- |
+| `platform/` | JustFiles hosts, services, CLI, and documentation |
+| `apps/` | Installable apps, stored locally or as Git submodules |
+| `packages/` | Shared libraries and tooling, stored locally or as Git submodules |
 
 ## Creating an app package
 
 Use the local create package with Node from the repo root:
 
 ```sh
-node packages/create-app/index.js packages/my-new-app
+node packages/create-app/index.js apps/my-new-app
 pnpm install
 ```
 
@@ -24,13 +24,13 @@ This uses `packages/create-app` from the working tree, not npm. Avoid `pnpm crea
 If the target directory already exists and is non-empty:
 
 ```sh
-node packages/create-app/index.js packages/my-new-app --force
+node packages/create-app/index.js apps/my-new-app --force
 ```
 
 Then run it with:
 
 ```sh
-cd packages/my-new-app
+cd apps/my-new-app
 pnpm dev
 ```
 
@@ -61,9 +61,18 @@ Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet
 ## Development
 
 ```sh
+git submodule update --init --recursive
 pnpm install
 pnpm dev
 ```
+
+Run pnpm commands from the repository root. The root workspace replaces every
+`@justfiles/app` dependency with the local `packages/app`. The app repositories
+keep their published version ranges when you use them on their own.
+
+Turbo builds and type-checks local packages and submodules together. Root format,
+lint, and test commands check only source owned by this repository. Each submodule
+keeps its own format, lint, and test rules.
 
 ### Environment and secrets
 
@@ -100,7 +109,7 @@ Use one of the local flows:
   CLOUDFLARE_ENV=dev vite
   ```
 
-`apps/worker/wrangler.jsonc` provides the local Worker runtime `CLERK_PUBLISHABLE_KEY` for the `dev` environment. `apps/worker/.env` provides the frontend build-time `VITE_CLERK_PUBLISHABLE_KEY`. Keep them pointed at the same Clerk project.
+`platform/worker/wrangler.jsonc` provides the local Worker runtime `CLERK_PUBLISHABLE_KEY` for the `dev` environment. `platform/worker/.env` provides the frontend build-time `VITE_CLERK_PUBLISHABLE_KEY`. Keep them pointed at the same Clerk project.
 
 The dev server starts a local Cloudflare Worker with a Durable Object backed by a persisted SQLite file at `.wrangler/state/v3/do/`.
 

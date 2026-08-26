@@ -1,0 +1,119 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "frieren",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-04-10",
+	"assets": {
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*", "/fs", "/fs/*", "/store", "/store/*", "/ws"]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"compatibility_flags": ["nodejs_compat"],
+	"secrets": {
+		"required": ["CLERK_SECRET_KEY", "OPENROUTER_API_KEY", "ENCRYPTION_KEY"]
+	},
+	"vars": {
+		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsubXlrb2RhbWEuYXBwJA"
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "FRIEREN",
+				"class_name": "Frieren"
+			}
+		]
+	},
+	"worker_loaders": [
+		{
+			"binding": "LOADER"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "FS_BLOBS",
+			"bucket_name": "frieren-fs-blobs"
+		}
+	],
+	// Keep this empty list. The app-store indexer moved to `platform/runner` (#420), which
+	// took its `scheduled()` handler with it — but deleting the key does NOT unregister
+	// the schedule, because wrangler only syncs triggers when the key is present. The
+	// hourly cron kept firing at a worker that could no longer answer it, one
+	// `Handler does not export a scheduled() function` per hour. An empty list unregisters.
+	"triggers": {
+		"crons": []
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["Frieren"]
+		}
+	],
+	"routes": [
+		{
+			"pattern": "mykodama.app",
+			"custom_domain": true
+		}
+	],
+	"env": {
+		"staging": {
+			"name": "frieren-staging",
+			"vars": {
+				"CLERK_PUBLISHABLE_KEY": "pk_test_Y2FwYWJsZS1zcGlkZXItNzkuY2xlcmsuYWNjb3VudHMuZGV2JA"
+			},
+			"observability": {
+				"enabled": true
+			},
+			"secrets": {
+				"required": ["CLERK_SECRET_KEY", "OPENROUTER_API_KEY", "ENCRYPTION_KEY"]
+			},
+			"routes": [
+				{
+					"pattern": "staging.mykodama.app",
+					"custom_domain": true
+				}
+			],
+			"assets": {
+				"binding": "ASSETS",
+				"not_found_handling": "single-page-application",
+				"run_worker_first": ["/api/*", "/fs", "/fs/*", "/store", "/store/*", "/ws"]
+			},
+			// Same as prod: staging carries the same orphaned hourly cron.
+			"triggers": {
+				"crons": []
+			},
+			"r2_buckets": [
+				{
+					"binding": "FS_BLOBS",
+					"bucket_name": "frieren-staging-fs-blobs"
+				}
+			],
+			// Repeated on purpose: wrangler does NOT inherit bindings into a named
+			// environment. Without this, `env.LOADER` is undefined on staging and every
+			// kernel call — the agent's `app list` included — fails with
+			// "LOADER binding unavailable".
+			"worker_loaders": [
+				{
+					"binding": "LOADER"
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "FRIEREN",
+						"class_name": "Frieren"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": ["Frieren"]
+				}
+			]
+		}
+	}
+}

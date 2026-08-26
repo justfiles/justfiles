@@ -66,8 +66,8 @@ them outside the replicated main tree. The daemon owns both stores, the sync wra
 their shutdown order.
 
 The backend already provides the Store routes in
-[`apps/frieren/worker/index.ts`](../../apps/frieren/worker/index.ts). Frieren provides the
-working browser composition in [`apps/frieren/src/fs.ts`](../../apps/frieren/src/fs.ts).
+[`platform/frieren/worker/index.ts`](../../platform/frieren/worker/index.ts). Frieren provides the
+working browser composition in [`platform/frieren/src/fs.ts`](../../platform/frieren/src/fs.ts).
 Use these as references. Do not add a second wire protocol.
 
 ## Work rules

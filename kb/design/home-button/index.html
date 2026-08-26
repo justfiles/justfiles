@@ -213,7 +213,7 @@ code { font-family: var(--mono); font-size: .92em; }
 	<p class="then"><b>It is also nearly free to build.</b> The way out belongs to the host, so it is rendered
 		by the runner beside the mount point, where no app can reach it &mdash; and the tap needs no client code
 		at all, just a link off this origin.</p>
-	<pre>// apps/runner/src/app.tsx &mdash; in the body, after &lt;div id="app"&gt;
+	<pre>// platform/runner/src/app.tsx &mdash; in the body, after &lt;div id="app"&gt;
 &lt;a class="beacon" href={`https://${c.env.ROOT_DOMAIN}/`} aria-label="All apps"&gt;&hellip;&lt;/a&gt;</pre>
 	<p class="then"><b>One prerequisite either way.</b> The app document renders no
 		<code>&lt;meta name="viewport"&gt;</code> today, so a phone lays it out at 980&thinsp;px and scales down.

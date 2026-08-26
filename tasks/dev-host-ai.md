@@ -123,7 +123,7 @@ token. Pass nothing and let pi use `defaultProvider`/`defaultModel` from
 `~/.pi/agent/settings.json`, or pass a full `provider/id`. Never pass `--provider` alone.
 
 Reuse the login the developer already has. Do not port the Codex browser OAuth from
-`apps/mac/daemon/chatgpt.ts`. `pi auth check --provider openai-codex --json` already reports
+`platform/mac/daemon/chatgpt.ts`. `pi auth check --provider openai-codex --json` already reports
 `{"status":"ready","authType":"oauth"}` on a machine where `codex login` has run, so `pi-cli`
 delivers the ChatGPT subscription with no OAuth code on our side. Porting it would mean pi-ai
 (~35 MB of transitive SDKs) inside a package published to npm as the app SDK, maintained
@@ -243,10 +243,10 @@ No new dependency in `@justfiles/app`.
 1. Write `capabilities/ai/dev.ts`: the types, the three CLI adapters, the one OpenAI-compatible
    adapter, the spec resolver, and the capability. No probes yet.
 2. Add `devAi` to `vite.ts` and the descriptor read plus registry entry to `dev-server.ts`.
-   Verify with an explicit `devAi('pi-cli')` against `packages/app-crossword`, which needs no
+   Verify with an explicit `devAi('pi-cli')` against `apps/crossword`, which needs no
    scope.
 3. Add probes and the `auto` order. Verify `devAi()` picks `pi-cli` here.
-4. Verify against `packages/app-dictionary`, which exercises the `context:learning` path.
+4. Verify against `apps/dictionary`, which exercises the `context:learning` path.
 5. Add the two status lines and the missing-backend hint.
 6. Update the template, `docs/app.md`, and the `create-app` README.
 

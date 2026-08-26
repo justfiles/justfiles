@@ -2,10 +2,13 @@
 	"$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
 	"files": {
 		"includes": [
-			"apps/**",
+			"platform/**",
+			"apps/crossword/**",
+			"apps/doom/**",
+			"apps/pixel/**",
 			"packages/**",
 			"!**/worker-configuration.d.ts",
-			"!packages/app-doom/public/doom-runtime.js",
+			"!apps/doom/public/doom-runtime.js",
 			"!packages/app/dev-server.html"
 		]
 	},

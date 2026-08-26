@@ -48,6 +48,6 @@ jobs:
           command: deploy
           environment: staging
           packageManager: pnpm
-          workingDirectory: apps/frieren
+          workingDirectory: platform/frieren
         env:
           CLOUDFLARE_ENV: staging

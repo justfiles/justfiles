@@ -48,6 +48,6 @@ jobs:
           command: deploy
           environment: staging
           packageManager: pnpm
-          workingDirectory: apps/worker
+          workingDirectory: platform/worker
         env:
           CLOUDFLARE_ENV: staging

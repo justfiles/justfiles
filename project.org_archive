@@ -119,7 +119,7 @@ the first-party Settings app can reach.
 :ARCHIVE_CATEGORY: project
 :ARCHIVE_TODO: DONE
 :END:
-Investigate how macOS remember app's last open location and size, I would like the apps in @apps/quay to remember it's last location and size. research on that, see if there's a nature way to do it on macOS, if not, what are my options? maybe we do the same as Frieren, save that info in volume. no code change, research and report back.
+Investigate how macOS remember app's last open location and size, I would like the apps in @platform/quay to remember it's last location and size. research on that, see if there's a nature way to do it on macOS, if not, what are my options? maybe we do the same as Frieren, save that info in volume. no code change, research and report back.
 
 * DONE proper build script (makefile? justfile?) for quay native app
 :PROPERTIES:

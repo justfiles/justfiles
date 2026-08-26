@@ -1,6 +1,6 @@
 # The runner index: a springboard
 
-Status: **v1 Daylight shipped.** It is the page [`apps/runner/src/home.tsx`](../../apps/runner/src/home.tsx)
+Status: **v1 Daylight shipped.** It is the page [`platform/runner/src/home.tsx`](../../platform/runner/src/home.tsx)
 serves at the root domain. The other four directions did not ship and are kept here as studies —
 they answer the same brief differently, and some of their parts are worth lifting into other
 surfaces.

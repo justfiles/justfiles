@@ -1,6 +1,6 @@
 {
 	"packages": {
-		"apps/frieren": {
+		"platform/frieren": {
 			"release-type": "node",
 			"component": "frieren"
 		},

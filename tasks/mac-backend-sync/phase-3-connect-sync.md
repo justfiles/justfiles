@@ -7,7 +7,7 @@ Depends on: Phase 2
 Size: large
 
 Read [README.md](README.md) and [`docs/app.md`](../../docs/app.md) first. Read the sync setup
-in [`apps/frieren/src/fs.ts`](../../apps/frieren/src/fs.ts) before changing Mac.
+in [`platform/frieren/src/fs.ts`](../../platform/frieren/src/fs.ts) before changing Mac.
 
 ## Outcome
 

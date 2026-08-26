@@ -14,7 +14,7 @@
 think about emacs
 
 ** TODO notification adv
-[[file:apps/quay/NOTIFICATIONS-PLAN.md][Phase 2 of notification]]
+[[file:platform/quay/NOTIFICATIONS-PLAN.md][Phase 2 of notification]]
 
 ** TODO build tool for app-code to check the code
 finished 1,2,3, quay is working

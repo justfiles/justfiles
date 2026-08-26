@@ -846,7 +846,7 @@ describe('synced: take mine', () => {
 
 	// Both destructive bodies over one store would interleave their passes and
 	// their flags, and the app offers them from a menu with no in-flight gate
-	// (`apps/frieren/src/shell/DesktopShell.tsx`).
+	// (`platform/frieren/src/shell/DesktopShell.tsx`).
 	it('refuses a second reset while one is running', async () => {
 		const hub = authorityPeer()
 		const { vol } = await replica(hub.store, { reset: hub.reset })
@@ -996,9 +996,9 @@ describe('synced: lazy content', () => {
 })
 
 describe('synced: the surface', () => {
-	// Read out of `apps/frieren/src/fs.ts`: every member the app calls on what
+	// Read out of `platform/frieren/src/fs.ts`: every member the app calls on what
 	// `synced()` hands it. Listed here so a drift fails loudly now rather than at
-	// the swap. `apps/worker/src/react-app/useVolume.ts` is the other consumer and
+	// the swap. `platform/worker/src/react-app/useVolume.ts` is the other consumer and
 	// asks for nothing beyond `Volume`.
 	const CONSUMED = [
 		'readFile',

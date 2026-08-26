@@ -13,8 +13,8 @@ minted operation.
 Two gaps remain after `ACCOUNTS-PLAN.md`:
 
 1. **`AccountsStore` is exposed and reimplemented per platform.** quay implements it
-   over the Volume (`apps/quay/quayd/accounts.ts`), frieren over encrypted KV
-   (`apps/frieren/worker/accounts/store.ts`). But the Volume is the syncable substrate
+   over the Volume (`platform/quay/quayd/accounts.ts`), frieren over encrypted KV
+   (`platform/frieren/worker/accounts/store.ts`). But the Volume is the syncable substrate
    present on **every** platform — the eventual aim is to sync quay's Volume with
    frieren's, so accounts ride it everywhere anyway. The volume-backed store is the
    *universal* one; each native host shouldn't re-derive it, and the interface
@@ -93,9 +93,9 @@ already accepts a `streamFn`). These edits are in place:
 - **`packages/agent/llm.agent.ts` / `llm.text.ts`** — `createAgent`/`text` accept
   `LLMConfig | AgentBackend`, both via `toBackend`. Dropped `getApiKey` —
   `streamFn`/`completeFn` are the sole auth seam.
-- **`apps/quay/quayd/chatgpt.ts`** — `resolveAi` (returned the raw token) →
+- **`platform/quay/quayd/chatgpt.ts`** — `resolveAi` (returned the raw token) →
   **`resolveAgentBackend`** (returns a token-sealed `AgentBackend`).
-- **`apps/quay/quayd/agent.ts`** — `llmConfig` returns an `AgentBackend`; runtime cache
+- **`platform/quay/quayd/agent.ts`** — `llmConfig` returns an `AgentBackend`; runtime cache
   keyed on `revision`.
 
 > ⚠️ The spike's `resolveAgentBackend` still reads `host.accounts` (the `AccountsStore`)
@@ -133,7 +133,7 @@ additive (old surface stays); every deletion lands in Phase 4 so each phase ship
 ### Phase 2 — migrate quay
 
 - **2.1 — Volume store via the factory.** quay → `accountsCapabilities(providers, fs, { firstParty })`.
-  **Delete `apps/quay/quayd/accounts.ts`.** Drop `Host.accounts: AccountsStore` (keep
+  **Delete `platform/quay/quayd/accounts.ts`.** Drop `Host.accounts: AccountsStore` (keep
   `Host.fs`).
   *Verify:* quay tests; Settings connect/list/toggle/disconnect works against a Volume.
 - **2.2 — Finalize the agent backend on the borrow seam.** Repoint
@@ -157,7 +157,7 @@ for the agent**.
   tools, end-to-end, with CLI commands still present.
 - **3.2 — Cut over storage + delete the creds path.** frieren →
   `accountsCapabilities(providers, vol, { firstParty })`. **Delete**
-  `apps/frieren/worker/accounts/store.ts` (KV) + its accounts crypto use,
+  `platform/frieren/worker/accounts/store.ts` (KV) + its accounts crypto use,
   `accounts/commands.ts` (`activatingStore` + `CommandActivator`), the per-account CLI
   commands, and `CommandFactories` in `accounts/providers.ts` (keep the provider
   `registry`). Accounts now ride the Volume in the clear (encryption deferred via 1.1).
@@ -220,7 +220,7 @@ export function accountsCapabilities(
 quay's caller (Phase 2.2), showing the token sealed into the backend:
 
 ```ts
-// apps/quay/quayd/chatgpt.ts
+// platform/quay/quayd/chatgpt.ts
 export function resolveAgentBackend(fs: Volume): Promise<AgentBackend | null> {
 	return resolveAiAccount(fs, async ({ creds, config, providerId, persist }) => {
 		// providerId === 'chatgpt' today; branch here when more ai providers land

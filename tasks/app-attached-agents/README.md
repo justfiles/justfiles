@@ -1,7 +1,7 @@
 # App-attached agents
 
 > Status: **design — no code yet.** Additive over the window model
-> (`apps/frieren/src/os/state.ts`) and the agent session (`packages/agent`). Adds one piece of
+> (`platform/frieren/src/os/state.ts`) and the agent session (`packages/agent`). Adds one piece of
 > window chrome (a **footer**), one panel with two modes (**sheet** /
 > **sidebar**), and keys the agent session so a window can own a thread. The
 > global agent and the omnibar are untouched.
@@ -9,9 +9,9 @@
 > Depends on doc 5 (the `/system/agents/<id>/` layout this fills in for the
 > first time).
 
-Source design set: [`apps/frieren/design/`](../../apps/frieren/design/) — read its
-[README](../../apps/frieren/design/README.md) for the shared principles, and
-[doc 5](../../apps/frieren/design/05-system-layout.md) for what this builds on.
+Source design set: [`platform/frieren/design/`](../../platform/frieren/design/) — read its
+[README](../../platform/frieren/design/README.md) for the shared principles, and
+[doc 5](../../platform/frieren/design/05-system-layout.md) for what this builds on.
 Visual mockups of both modes: [`mockups.html`](./mockups.html) — open it in a
 browser.
 
@@ -165,7 +165,7 @@ Keystrokes inside the app's sandboxed iframe never reach the shell —
 `allow-scripts` without `allow-same-origin` means the parent document sees
 nothing. So `⌘/` works only while the chrome has focus, and the footer button is
 the **primary** control, not a fallback. (The same limit already applies to
-`apps/frieren/src/components/Window.tsx`'s Escape-exits-fullscreen
+`platform/frieren/src/components/Window.tsx`'s Escape-exits-fullscreen
 handler.) One bonus: the sheet's scrim
 takes focus off the app, so Esc is always reliable there.
 
@@ -223,7 +223,7 @@ walk. Not worth it while the roster is small.
 
 Keying on the **app** rather than the window is deliberate and currently free:
 the reducer already uses the app id as the window id, and one-window-per-app is
-*"policy, not identity"* (`apps/frieren/src/os/reducer.ts`). If a second window per app ever
+*"policy, not identity"* (`platform/frieren/src/os/reducer.ts`). If a second window per app ever
 arrives, one thread per app is still the answer you want.
 
 ### The same agent in another session
@@ -280,15 +280,15 @@ asked for.
 |------|--------|
 | `packages/agent/assistant.ts` | Delete the `agentId` constant; take it as a prop defaulted to `'main'`. Reuse the full `main` system-prompt builder for every agent id, then append an optional context block. |
 | `packages/agent/session.ts` | Add optional `agentId` and context prompt fields to `AgentSessionOptions`. Pass both down. Keep app sessions on grow-and-compact lifecycle policy. |
-| `apps/frieren/worker/frieren.ts` | `this.session` → `Map<agentId, AgentSession>`; `getSession(agentId = 'main')`, built lazily. Give app sessions the same runtime and tools as `main`, plus the app-context prompt. Hibernation evicts the map, which is the right lifecycle — a thread costs a directory, not a process. Pin `scheduleDailyAlarm` to `main`. |
-| `apps/frieren/worker/frieren.ts` (protocol) | `agent?: string` on `prompt`/`abort`, and on the `history`/`event` frames going back. Absent means `main`, so existing clients keep working. |
-| `apps/frieren/src/os/client.ts` | The single block of agent state (messages / streaming / expression) becomes one entry per agent id; `client.agent` → `client.agent(id)`. |
-| `apps/frieren/src/agent/MessagesPanel.tsx` | Takes an agent id; reused verbatim by both surfaces. |
+| `platform/frieren/worker/frieren.ts` | `this.session` → `Map<agentId, AgentSession>`; `getSession(agentId = 'main')`, built lazily. Give app sessions the same runtime and tools as `main`, plus the app-context prompt. Hibernation evicts the map, which is the right lifecycle — a thread costs a directory, not a process. Pin `scheduleDailyAlarm` to `main`. |
+| `platform/frieren/worker/frieren.ts` (protocol) | `agent?: string` on `prompt`/`abort`, and on the `history`/`event` frames going back. Absent means `main`, so existing clients keep working. |
+| `platform/frieren/src/os/client.ts` | The single block of agent state (messages / streaming / expression) becomes one entry per agent id; `client.agent` → `client.agent(id)`. |
+| `platform/frieren/src/agent/MessagesPanel.tsx` | Takes an agent id; reused verbatim by both surfaces. |
 | `packages/design/design.css` | `ds-window-footer` + the panel/scrim/seam chrome. |
-| `apps/frieren/src/components/Window.tsx` | A `footer` slot. |
-| `apps/frieren/src/os/AppWindow.tsx` | Render the footer + panel for `kind === 'app'`. |
-| `apps/frieren/src/os/state.ts` | The `assistant` slice + its actions. |
-| `packages/app-settings` | Appearance: the default mode. |
+| `platform/frieren/src/components/Window.tsx` | A `footer` slot. |
+| `platform/frieren/src/os/AppWindow.tsx` | Render the footer + panel for `kind === 'app'`. |
+| `platform/frieren/src/os/state.ts` | The `assistant` slice + its actions. |
+| `apps/settings` | Appearance: the default mode. |
 
 ## Build order
 

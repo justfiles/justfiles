@@ -28,17 +28,17 @@ Clerk)**. No data migration, no id rename, no migrator, no backups.
   Objects. Only its *domain* changes.
 
 Keeping these stable is the whole reason a rebrand stays cheap. A static test
-(`apps/frieren/shared/no-legacy-names.test.ts`) already rejects a retired brand or id prefix
+(`platform/frieren/shared/no-legacy-names.test.ts`) already rejects a retired brand or id prefix
 leaking back into code/config — keep it, and add the newly retired name to it.
 
 ## What a rebrand actually changes
 
-1. **Public copy and discovery**: `apps/frieren/index.html` `<title>`, PWA manifest, the App
+1. **Public copy and discovery**: `platform/frieren/index.html` `<title>`, PWA manifest, the App
    Store npm keyword and indexer user-agent, the AI provider display name
    (`packages/app/capabilities/accounts/providers/platform.ts` → `name`), the default agent
    persona (`packages/agent/agent-defaults.ts`), the macOS product name (`Kodama.app`,
    `~/Applications/Kodama Apps/`, `~/Library/Application Support/Kodama` — see
-   `apps/mac/native/build.sh`), onboarding / marketing / legal / email / social copy.
+   `platform/mac/native/build.sh`), onboarding / marketing / legal / email / social copy.
    Every *id* behind that copy is already brand-free (`frieren`), so none of it moves.
 2. **The public domain** (`mykodama.app` → `newname.tld`): a Cloudflare Custom Domain on the
    worker **and** the Clerk production instance's domain.
@@ -97,7 +97,7 @@ The client's Clerk key is `VITE_CLERK_PUBLISHABLE_KEY`, injected at build from t
 - Change the public copy and App Store discovery metadata (see "What a rebrand changes" #1).
 - Add the new domain as an **additional** Custom Domain: `newname.tld` to the top-level
   (prod) `routes` and `staging.newname.tld` to `env.staging.routes` in
-  `apps/frieren/wrangler.jsonc` — keep the old domains for now (add → verify, no flip).
+  `platform/frieren/wrangler.jsonc` — keep the old domains for now (add → verify, no flip).
 - `pnpm format && pnpm typecheck && pnpm lint:fix && pnpm test`. Merge → staging auto-deploys
   and provisions `staging.newname.tld`.
 

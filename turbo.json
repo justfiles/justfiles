@@ -1,5 +1,9 @@
 {
 	"$schema": "https://turborepo.com/schema.json",
+	"globalPassThroughEnv": [
+		"PNPM_CONFIG_PM_ON_FAIL",
+		"PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN"
+	],
 	"tasks": {
 		"transit": {
 			"dependsOn": ["^transit"]
@@ -19,7 +23,7 @@
 		// `^build` is the whole dependency story for the Mac app: every built-in the
 		// daemon seeds (daemon/builtins.ts) is a `workspace:*` dep, so turbo derives the
 		// list from package.json and there is nothing to keep in step by hand. The
-		// scripts are leaves — run `turbo run build` / `turbo run dev` from apps/mac
+		// scripts are leaves — run `turbo run build` / `turbo run dev` from platform/mac
 		// (auto-scoped) and turbo, not a prebuild step, orders the dep builds.
 		"@justfiles/frieren-mac#build": {
 			"dependsOn": ["^build"],

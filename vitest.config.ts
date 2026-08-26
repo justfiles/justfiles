@@ -3,16 +3,19 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
 	test: {
 		include: [
-			'apps/shared/**/*.test.ts',
-			'apps/frieren/worker/**/*.test.ts',
-			'apps/frieren/shared/**/*.test.ts',
-			'apps/frieren/src/os/**/*.test.ts',
-			'apps/frieren/src/apps/**/*.test.ts',
-			'apps/frieren/src/agent/**/*.test.ts',
-			'apps/frieren/src/notifications/**/*.test.ts',
-			'apps/worker/**/*.test.ts',
-			'apps/mac/**/*.test.ts',
-			'apps/runner/**/*.test.ts',
+			'apps/crossword/**/*.test.ts',
+			'apps/doom/**/*.test.ts',
+			'apps/pixel/**/*.test.ts',
+			'platform/shared/**/*.test.ts',
+			'platform/frieren/worker/**/*.test.ts',
+			'platform/frieren/shared/**/*.test.ts',
+			'platform/frieren/src/os/**/*.test.ts',
+			'platform/frieren/src/apps/**/*.test.ts',
+			'platform/frieren/src/agent/**/*.test.ts',
+			'platform/frieren/src/notifications/**/*.test.ts',
+			'platform/worker/**/*.test.ts',
+			'platform/mac/**/*.test.ts',
+			'platform/runner/**/*.test.ts',
 			'packages/*/**/*.test.ts',
 			'packages/*/**/*.test.tsx'
 		],
@@ -22,7 +25,7 @@ export default defineConfig({
 			'**/node_modules/**',
 			'**/dist/**',
 			'**/*.bun.test.ts',
-			'apps/frieren/src/!(os|apps|agent|notifications)/**'
+			'platform/frieren/src/!(os|apps|agent|notifications)/**'
 		]
 	}
 })

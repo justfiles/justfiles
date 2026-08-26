@@ -1,5 +1,5 @@
 ---
-project: apps/runner, apps/frieren, packages/app-settings
+project: platform/runner, platform/frieren, apps/settings
 status: todo
 ---
 
@@ -251,7 +251,7 @@ Make local work use staging without extra shell flags:
 After the one-time `.dev.vars` setup for `GITHUB_TOKEN` and `TOKEN_SEAL_KEY_V1`, this must work:
 
 ```sh
-cd apps/runner
+cd platform/runner
 pnpm dev
 ```
 
@@ -326,7 +326,7 @@ Keep focused tests for these boundaries:
 - only `justfiles.files` can receive system volume access;
 - signed-out apps keep their IndexedDB data and offline behavior;
 - connected Store and AI failures do not fall back to local data; and
-- `pnpm dev` in `apps/runner` selects staging, applies local migrations, and needs no callback port.
+- `pnpm dev` in `platform/runner` selects staging, applies local migrations, and needs no callback port.
 
 Run the repository checks after each code change:
 
@@ -363,7 +363,7 @@ and the existing Store and AI HTTP routes.
 - AI uses the same Frieren user and budget.
 - Clerk has no Runner client or callback configuration.
 - Signed-out apps still work offline with their old local data.
-- `pnpm dev` under `apps/runner` connects to staging without a local Frieren process.
+- `pnpm dev` under `platform/runner` connects to staging without a local Frieren process.
 
 ## Not in this task
 
