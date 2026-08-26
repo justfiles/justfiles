@@ -4,6 +4,7 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
+		"./AttachedAgent": "./src/AttachedAgent.tsx",
 		"./FileTreeView": "./src/FileTreeView.tsx",
 		"./Transcript": "./src/Transcript.tsx"
 	},

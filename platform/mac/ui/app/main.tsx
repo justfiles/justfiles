@@ -1,8 +1,11 @@
 import '@justfiles/design/design.css'
 import '@justfiles/design/mac.css'
+import { AttachedAgent } from '@justfiles/ui/AttachedAgent'
+import { useEffect, useRef } from 'react'
+import { createRoot } from 'react-dom/client'
 
-const root = document.getElementById('root')
-if (!root) throw new Error('Missing #root')
+const host = document.getElementById('host')
+if (!host) throw new Error('Missing #host')
 
 const appId = decodeURIComponent(location.pathname.split('/').at(-1) ?? '')
 
@@ -71,4 +74,21 @@ const { transport, first } = connect(appId)
 // The gui.js is served by the daemon at this absolute URL at runtime; @vite-ignore stops
 // Vite from trying to statically analyze (and warn about) the dynamic specifier.
 const [app, state] = await Promise.all([import(/* @vite-ignore */ `/app/${appId}/gui.js`), first])
-app.gui.mount(root, state, { transport })
+
+function AppRoot() {
+	const root = useRef<HTMLDivElement>(null)
+
+	useEffect(() => {
+		if (!root.current) return
+		const mounted = app.gui.mount(root.current, state, { transport })
+		return () => void mounted.unmount()
+	}, [])
+
+	return <div id="root" ref={root} />
+}
+
+createRoot(host).render(
+	<AttachedAgent>
+		<AppRoot />
+	</AttachedAgent>
+)
