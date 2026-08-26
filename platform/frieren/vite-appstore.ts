@@ -5,12 +5,12 @@ import type { Catalog, CatalogApp } from '@justfiles/app/appstore'
 import type { Plugin } from 'vite'
 import { CATALOG_SCHEMA } from './shared/appstore.ts'
 
-// Dev-only sideload: extra `packages/<dir>` apps to fold into the LOCAL catalog
+// Dev-only sideload: extra `apps/<dir>` apps to fold into the LOCAL catalog
 // so you can launch an in-repo app that isn't a shipped built-in. Driven by the
 // `FRIEREN_DEV_APPS` env var (comma-separated dir names) and applied only while
 // serving. A production build emits an empty bundled catalog, so a sideloaded app
 // cannot ship as a built-in. Build the app first so its `dist/` exists.
-//   e.g. FRIEREN_DEV_APPS=app-pixel pnpm dev
+//   e.g. FRIEREN_DEV_APPS=pixel pnpm dev
 const DEV_DIRS = (process.env.FRIEREN_DEV_APPS ?? '')
 	.split(',')
 	.map((s) => s.trim())
@@ -47,7 +47,7 @@ function emit(root: string, outDir: string, dirs: string[]): void {
 	rmSync(appstore, { recursive: true, force: true })
 	const apps: CatalogApp[] = []
 	for (const dir of dirs) {
-		const dist = path.resolve(root, '..', '..', 'packages', dir, 'dist')
+		const dist = path.resolve(root, '..', '..', 'apps', dir, 'dist')
 		const files = new Map<string, Uint8Array>()
 		walk(dist, dist, files)
 		const manifestBytes = files.get('manifest.json')
