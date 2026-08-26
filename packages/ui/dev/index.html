@@ -3,20 +3,8 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>Transcript harness</title>
+		<title>Attached agent playground</title>
 		<style>
-			:root {
-				--surface: #ffffff;
-				--surface-subtle: #f1f3f5;
-				--text: #1a1a1a;
-				--rule: #d7dbe0;
-				--focus: #2563eb;
-				--on-focus: #ffffff;
-				--control-bg: #f8f9fa;
-				--control-bg-hover: #eceef1;
-				--control-bg-active: #e2e5e9;
-				--font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-			}
 			html,
 			body,
 			#root {
@@ -25,8 +13,121 @@
 			}
 			body {
 				font-family: system-ui, sans-serif;
+				background: #30384c;
+			}
+			button,
+			input {
+				font: inherit;
+			}
+			.demo {
+				display: flex;
+				flex-direction: column;
+				height: 100%;
 				color: var(--text);
+				background: linear-gradient(145deg, #3f4a68, #292f42);
+			}
+			.demo-controls {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 10px 12px;
 				background: var(--surface);
+				border-bottom: 1px solid var(--rule);
+			}
+			.demo-controls button {
+				padding: 4px 8px;
+				border: 1px solid var(--rule);
+				border-radius: 5px;
+				background: var(--control-bg);
+				color: var(--text);
+			}
+			.demo-controls output {
+				margin-left: auto;
+				opacity: 0.6;
+			}
+			.demo-stage {
+				display: grid;
+				flex: 1;
+				place-items: center;
+				min-height: 0;
+				padding: 24px;
+			}
+			.demo-window {
+				position: relative;
+				height: min(560px, 82vh);
+				transition: width 160ms ease;
+			}
+			.demo-app {
+				height: 100%;
+				box-sizing: border-box;
+				padding: 22px 26px;
+				background: var(--window-bg);
+				overflow: auto;
+			}
+			.demo-search {
+				padding: 6px 8px;
+				border: 1px solid var(--rule);
+				border-radius: 5px;
+				opacity: 0.65;
+			}
+			.demo-app h1 {
+				margin: 24px 0 4px;
+				font-size: 28px;
+			}
+			.demo-app p {
+				font-size: 16px;
+				line-height: 1.6;
+			}
+			.demo-similar {
+				opacity: 0.7;
+			}
+			.demo-face {
+				display: grid;
+				place-items: center;
+				width: 17px;
+				height: 17px;
+				border: 1px solid currentColor;
+				border-radius: 999px;
+				font-size: 8px;
+			}
+			.demo-panel {
+				display: flex;
+				flex-direction: column;
+				height: 100%;
+			}
+			.demo-panel-title {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				padding: 8px 100px 8px 10px;
+				border-bottom: 1px solid var(--rule);
+				font-weight: 500;
+			}
+			.demo-app-icon {
+				display: grid;
+				place-items: center;
+				width: 18px;
+				height: 18px;
+				border-radius: 4px;
+				background: var(--focus);
+				color: white;
+				font-size: 10px;
+			}
+			.demo-composer {
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+				padding: 8px 10px;
+				border-top: 1px solid var(--rule);
+				font-size: 10px;
+				opacity: 0.8;
+			}
+			.demo-composer input {
+				padding: 7px 9px;
+				border: 1px solid var(--rule);
+				border-radius: 999px;
+				background: var(--window-bg);
+				color: var(--text);
 			}
 		</style>
 	</head>
