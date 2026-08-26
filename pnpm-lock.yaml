@@ -12,9 +12,6 @@ catalogs:
 
 overrides:
   '@justfiles/app': link:./packages/app
-  app-dictionary>typescript: 6.0.3
-  app-files>typescript: 6.0.3
-  app-settings>typescript: 6.0.3
 
 importers:
 
