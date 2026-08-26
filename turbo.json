@@ -1,9 +1,6 @@
 {
 	"$schema": "https://turborepo.com/schema.json",
-	"globalPassThroughEnv": [
-		"PNPM_CONFIG_PM_ON_FAIL",
-		"PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN"
-	],
+	"globalPassThroughEnv": ["PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN"],
 	"tasks": {
 		"transit": {
 			"dependsOn": ["^transit"]
