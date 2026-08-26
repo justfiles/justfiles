@@ -1,3 +1,4 @@
+import { AttachedAgent } from '@justfiles/ui/AttachedAgent'
 import type { ReactNode } from 'react'
 import { Window } from '../components/Window'
 import { useOsDispatch, useOsStore } from './hooks'
@@ -45,7 +46,7 @@ export function AppWindow({
 				})
 			}}
 		>
-			{children}
+			<AttachedAgent>{children}</AttachedAgent>
 		</Window>
 	)
 }
