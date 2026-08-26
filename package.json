@@ -2,7 +2,7 @@
 	"name": "app-icon",
 	"version": "0.1.2",
 	"private": true,
-	"packageManager": "pnpm@11.2.2",
+	"packageManager": "pnpm@11.24.0",
 	"description": "A focused 1024px icon creator backed by Excalidraw.",
 	"type": "module",
 	"license": "MIT",
