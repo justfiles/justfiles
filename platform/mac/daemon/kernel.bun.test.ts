@@ -83,7 +83,7 @@ test('Files reads the real volume through the system-scoped volume capability', 
 
 test('soul preview keeps the capability error when no AI account is enabled', async () => {
 	const fs = volume(fsStore(await tempRoot('no-ai')))
-	const offline = await buildKernel(fs, daemonAccounts(fs))
+	const offline = await buildKernel(fs, daemonAccounts(fs, { getToken: async () => null }))
 
 	await expect(
 		offline.dispatch(SETTINGS, {

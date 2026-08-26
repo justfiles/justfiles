@@ -153,7 +153,9 @@ to whichever runtime is now serving.
 `/sign-in` in the launcher opens the browser on **Clerk's** own sign-in page and catches the
 redirect on 127.0.0.1: the daemon is an OAuth 2.0 public client of our Clerk instance (PKCE,
 no client secret — see `daemon/identity.ts` and #304). The refresh token lives in the
-Keychain; every request to our API carries a short-lived access token minted from it.
+Keychain; every request to our API carries a short-lived access token minted from it. Signing in
+also turns on the plan-backed Kodama AI for app capabilities and launcher chat; a local ChatGPT
+account can still be selected instead in Settings.
 
 ```sh
 # the stored grant — one item per Clerk instance, so a source daemon and a shipped app

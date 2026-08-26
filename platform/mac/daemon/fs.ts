@@ -25,6 +25,8 @@ const VOLUME = 'volume-v2'
 const SYNC_STATE = 'sync.json'
 const PROD_ORIGIN = 'https://mykodama.app'
 const DEV_ORIGIN = 'https://staging.mykodama.app'
+export const kodamaOrigin = (): string =>
+	process.env.KODAMA_STORE_ORIGIN ?? (SHIPPED ? PROD_ORIGIN : DEV_ORIGIN)
 const SHUTDOWN_FLUSH_MS = 5_000
 
 // macOS O_EXLOCK. Node and Bun pass numeric open flags through but do not publish this constant.
@@ -248,7 +250,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 
 function remoteStore(
 	getToken: () => Promise<string | null>,
-	origin = process.env.KODAMA_STORE_ORIGIN ?? (SHIPPED ? PROD_ORIGIN : DEV_ORIGIN),
+	origin = kodamaOrigin(),
 	send: Send = fetch
 ): { store: Store; abort(): void } {
 	const controller = new AbortController()
