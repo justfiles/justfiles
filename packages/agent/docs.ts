@@ -2,7 +2,7 @@
  * Docs — the project documentation the agent can read. NOT skills: a doc is just a line in
  * the system prompt plus a `read_doc` tool to load its body. The catalogue below is
  * hand-maintained (à la pi's system-prompt docs block), so a doc is opt-in: files under
- * `docs/` exist for the website (apps/docs) and carry whatever frontmatter Starlight wants;
+ * `docs/` exist for the website (platform/docs) and carry whatever frontmatter Starlight wants;
  * a doc is invisible to the agent until it is listed here. Forgetting to list one fails safe
  * (skipped), never the reverse.
  *

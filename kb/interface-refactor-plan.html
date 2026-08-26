@@ -457,7 +457,7 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<span class="small">deletes host orchestration; adds a per-turn streaming seam to the session</span>
 </div>
 
-<div class="ba-label before">apps/frieren/worker/frieren.ts — ~120 lines of hand-wiring (abridged)</div>
+<div class="ba-label before">platform/frieren/worker/frieren.ts — ~120 lines of hand-wiring (abridged)</div>
 <pre><code><span class="c-kw">private buildAgent</span>(caps) {
 	<span class="c-kw">const</span> bash = <span class="c-fn">createJustBashTool</span>({ volume: <span class="c-kw">this</span>.vol, commands: [<span class="c-fn">createAppShellCommand</span>(...)] })
 	<span class="c-kw">const</span> agent = <span class="c-fn">createAgent</span>(<span class="c-kw">this</span>.<span class="c-fn">getBackendConfig</span>())
@@ -469,7 +469,7 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 <span class="c-com">// … + /debug special-case, + generateSoul() prompt lines, + loadParticipants()</span>
 </code></pre>
 
-<div class="ba-label after">apps/frieren/worker/frieren.ts — what actually shipped</div>
+<div class="ba-label after">platform/frieren/worker/frieren.ts — what actually shipped</div>
 <pre><code><span class="c-kw">this</span>.session = <span class="c-fn">createAgentSession</span>({
 	volume: <span class="c-kw">this</span>.vol,
 	backend: <span class="c-fn">apiKeyBackend</span>({ model, apiKey }),   <span class="c-com">// env key today; a resolver later, no host change</span>

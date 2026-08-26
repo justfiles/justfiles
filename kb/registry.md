@@ -254,7 +254,7 @@ Losing it costs one re-scan and nothing else. It is written by phase A.
 
 The browse index: one thin entry per app we host — display metadata, its live version, and the
 URLs to ask for the rest. Public, and the successor to
-`apps/frieren/worker/appstore/feed.ts`'s output.
+`platform/frieren/worker/appstore/feed.ts`'s output.
 
 ```jsonc
 {

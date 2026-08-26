@@ -21,7 +21,7 @@ comments. No code has to move with it.
 
 ### Nine packages depend on it
 
-`apps/{cli,frieren,mac,worker}` and `packages/{agent,app,core,tasks}`, all via
+`platform/{cli,frieren,mac,worker}` and `packages/{agent,app,core,tasks}`, all via
 `workspace:*`. All of them consume it as **source** (its `exports` map points at
 `./index.ts`, not `dist`), including `packages/app`'s devkit, which force-inlines
 it (`noExternal: ['@justfiles/fs']` + `dts.eager`). No tsconfig `paths` entry and

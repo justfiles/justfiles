@@ -92,7 +92,7 @@ offline you fall back to the browser toolchain. The only function genuinely lost
 is **`typecheck`** (the one 8 MB dep); it degrades via the existing
 `CAPABILITY_UNAVAILABLE` mechanism (same as volume `system` scope), so the agent skips
 it offline and the GUI grays out the Problems panel — no all-or-nothing cliff. (See
-`apps/frieren/LOCAL_FIRST_PLAN.md`.)
+`platform/frieren/LOCAL_FIRST_PLAN.md`.)
 
 **Discipline that keeps the seam clean:** the `Toolchain` interface stays
 implementation-agnostic — pure data in/out, no fs, no subprocess, no slug-reading

@@ -1300,7 +1300,7 @@ td .mono { color: var(--ink-2); }
 						<td>One new optional field on <code>AgentSessionOptions</code>, passed straight down. Everything else in the assembly is agent-agnostic already.</td>
 					</tr>
 					<tr>
-						<td>The Durable Object<div class="mono">apps/frieren/worker/frieren.ts</div></td>
+						<td>The Durable Object<div class="mono">platform/frieren/worker/frieren.ts</div></td>
 						<td><code>this.session</code> becomes a <code>Map&lt;agentId, AgentSession&gt;</code>; <code>getSession(agentId = 'main')</code> builds lazily. Hibernation evicts the map, which is the right lifecycle — a thread costs a directory, not a process.</td>
 					</tr>
 					<tr>
@@ -1308,7 +1308,7 @@ td .mono { color: var(--ink-2); }
 						<td>Add <code>agent?: string</code> to <code>prompt</code> and <code>abort</code>, and to the <code>history</code> and <code>event</code> frames going back. Absent means <code>main</code>, so every existing client keeps working untouched. <strong>One socket</strong> — a thread is a tag, not a connection.</td>
 					</tr>
 					<tr>
-						<td>The browser client<div class="mono">apps/frieren/src/os/client.ts</div></td>
+						<td>The browser client<div class="mono">platform/frieren/src/os/client.ts</div></td>
 						<td>The single block of agent state (messages / streaming / expression) becomes one entry per agent id; <code>client.agent</code> becomes <code>client.agent(id)</code>. <code>MessagesPanel</code> takes an id and is reused verbatim by both surfaces.</td>
 					</tr>
 				</tbody>

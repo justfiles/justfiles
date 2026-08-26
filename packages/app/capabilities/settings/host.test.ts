@@ -204,7 +204,7 @@ test('accounts.listAccounts unions the local list with the remote one when both 
 })
 
 // The Mac's own catalog never carries the cloud's built-in AI provider (its
-// `accountsProviders()` is google/icloud/chatgpt — see `apps/mac/daemon/kernel.ts`).
+// `accountsProviders()` is google/icloud/chatgpt — see `platform/mac/daemon/kernel.ts`).
 // Without this, a merged built-in account has no local `ProviderInfo`, so
 // `provider?.builtin` reads as `undefined` in the GUI and it renders a Disconnect
 // button for the platform's floor AI account — clicking it would delete it (routed

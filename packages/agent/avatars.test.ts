@@ -57,7 +57,7 @@ describe('the built-in art', () => {
 		])
 	})
 
-	// avatars.ts is baked from avatars/** (`pnpm run avatars` in apps/frieren), because no
+	// avatars.ts is baked from avatars/** (`pnpm run avatars` in platform/frieren), because no
 	// bundler-agnostic way to import a PNG exists. Two representations, so this keeps them one.
 	test('the baked modules are exactly the art on disk', async () => {
 		const onDisk = readdirSync(ART, { withFileTypes: true })
@@ -72,7 +72,7 @@ describe('the built-in art', () => {
 				const bytes = readFileSync(path.join(ART, id, name))
 				// PNG by decision, not by inference: the bundled art is checked in for human
 				// review, and the bake only ever reads `*.png`.
-				expect(baked, `run \`pnpm run avatars\` in apps/frieren: ${id}/${name} is stale`).toBe(
+				expect(baked, `run \`pnpm run avatars\` in platform/frieren: ${id}/${name} is stale`).toBe(
 					`data:image/png;base64,${bytes.toString('base64')}`
 				)
 			}

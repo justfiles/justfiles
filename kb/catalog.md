@@ -737,7 +737,7 @@ review.
 ## Effect on the existing store
 
 The shipped community store discovers apps by npm keyword search and resolves bytes from
-jsDelivr (`apps/frieren/worker/appstore/feed.ts`, `indexer.ts`). Under this design, discovery
+jsDelivr (`platform/frieren/worker/appstore/feed.ts`, `indexer.ts`). Under this design, discovery
 becomes catalog-driven: read the catalog tarball, resolve each entry's ladder, snapshot to R2.
 
 That is a net simplification. Open-admission keyword discovery is what forced the denylist, the

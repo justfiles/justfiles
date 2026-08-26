@@ -9,8 +9,8 @@ Use this guide when creating or changing an app. The framework is in `packages/a
 Frieren and Kodama for Mac. The best examples are:
 
 - `packages/create-app/template` — minimum app, framework-free GUI
-- `packages/app-pixel` — rich public action surface
-- `packages/app-crossword` — AI procedure committing one atomic result
+- `apps/pixel` — rich public action surface
+- `apps/crossword` — AI procedure committing one atomic result
 - [`justfiles/app-files`](https://github.com/justfiles/app-files) — recursive file watching and command coalescing
 
 This is the app-author API. Do not use kernel, sandbox, transport, app-store, or host internals from an
@@ -42,15 +42,15 @@ backward-compatible.
 
 ## Choose an authoring environment
 
-### Normal `app-*` package
+### Normal app package
 
 Create new apps from the repository template:
 
 ```sh
-node packages/create-app/index.js packages/app-<name>
+node packages/create-app/index.js apps/<name>
 ```
 
-Read the generated files, then use existing `packages/app-*` apps for the nearest advanced pattern.
+Read the generated files, then use existing apps for the nearest advanced pattern.
 A normal package has no dependency allowlist: add npm or workspace dependencies with `pnpm`. Reducer
 dependencies must work in a headless worker and GUI dependencies in a browser. Vite bundles them into
 the app artifact. The generated GUI is framework-free (plain DOM through `defineGUI`); bring a
@@ -58,7 +58,7 @@ framework by adding it and its Vite plugin. Whatever you bring is bundled into `
 serves no framework bytes, so an app runs on any host and pays only for what it uses.
 
 ```text
-packages/app-foo/
+apps/foo/
 	src/app.ts
 	src/gui.ts
 	vite.config.ts

@@ -1,5 +1,5 @@
 ---
-project: packages/app, apps/frieren
+project: packages/app, platform/frieren
 status: todo
 ---
 
@@ -62,7 +62,7 @@ Frieren Devkit capability
 App Code has no Worker API and no worker lifecycle code. It only calls the Devkit capability.
 
 The shared Devkit host in `packages/app` stays neutral. It accepts `compile` and `typecheck`
-functions. Frieren creates the real browser worker in `apps/frieren`, gives its client
+functions. Frieren creates the real browser worker in `platform/frieren`, gives its client
 functions to the shared Devkit host, and terminates the worker when the Frieren session ends.
 
 Frieren creates one toolchain worker per client session, not one per project. The worker starts
@@ -287,7 +287,7 @@ worker and add the browser TypeScript backend.
 ## Stage 4: add the Frieren toolchain worker
 
 Create a Frieren worker entry, for example
-`apps/frieren/src/apps/devkit.toolchain.worker.ts`. It binds browser implementations to
+`platform/frieren/src/apps/devkit.toolchain.worker.ts`. It binds browser implementations to
 `serveToolchain` from `packages/app/capabilities/devkit/toolchain.worker.ts`.
 
 The worker owns:
@@ -444,9 +444,9 @@ contract.
 | `packages/app/capabilities/devkit/toolchain.typescript.ts` | Load browser standard libraries and package declarations. |
 | `packages/app/capabilities/devkit/toolchain.worker.ts` | Keep the shared worker protocol. Change it only if measurements require one-time initialization. |
 | `packages/app/capabilities/devkit/host.ts` | Resolve each project's imports and merge them with its installed sysroot. |
-| `apps/frieren/src/apps/devkit.client.ts` | Own the browser worker client and lifecycle. |
-| `apps/frieren/src/apps/devkit.toolchain.worker.ts` | New worker entry with esbuild-wasm and TypeScript backends. |
-| `apps/frieren/src/apps/capabilities.client.ts` | Give worker-backed functions to the Devkit capability. |
+| `platform/frieren/src/apps/devkit.client.ts` | Own the browser worker client and lifecycle. |
+| `platform/frieren/src/apps/devkit.toolchain.worker.ts` | New worker entry with esbuild-wasm and TypeScript backends. |
+| `platform/frieren/src/apps/capabilities.client.ts` | Give worker-backed functions to the Devkit capability. |
 | `docs/app.md` | Document the supported browser package model. |
 
 ## Pull request order

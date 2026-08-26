@@ -553,7 +553,7 @@ Reached separately, by a project with third-party apps actually in production.
 ### Where we are deliberately stricter
 
 - **They pass the token in the URL query string.** `frieren` rejected that
-  explicitly — `apps/frieren/worker/index.ts` moved the caps socket to a `bearer.<token>`
+  explicitly — `platform/frieren/worker/index.ts` moved the caps socket to a `bearer.<token>`
   subprotocol because query-string credentials leak into proxy and access logs
   and browser history. Scoping limits the blast radius; it does not stop the leak.
 - **Permissive sandbox flags** — `allow-popups-to-escape-sandbox` and
@@ -581,7 +581,7 @@ Reached separately, by a project with third-party apps actually in production.
 
 1. **Registry and publication contract** — immutable bundles in R2, authenticated
    publishing against catalog-proven ids, limits and validation, an atomic active
-   version pointer, and `hostedAppStore()` in `apps/frieren/shared/appstore.ts`. Install one
+   version pointer, and `hostedAppStore()` in `platform/frieren/shared/appstore.ts`. Install one
    published app into the desktop from a link. No slug allocation step: the hostname is
    derived, and the catalog entry is already the permanent tombstone.
 2. **One app origin, anonymous** — complete the routing worker, static shell, IDB volume,

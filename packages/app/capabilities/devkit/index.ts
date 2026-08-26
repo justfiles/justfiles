@@ -14,7 +14,7 @@ export type {
 	Range
 } from './toolchain.ts'
 
-// Grant-gated, browser-local capability (see `apps/frieren` devkit impl). It
+// Grant-gated, browser-local capability (see `platform/frieren` devkit impl). It
 // runs code and can write `/applications`, so the host only routes it for
 // allowlisted apps.
 export const devkit = defineCapability<'devkit', DevkitCapability>('devkit')

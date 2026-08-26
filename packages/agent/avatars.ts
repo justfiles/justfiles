@@ -1,4 +1,4 @@
-// GENERATED from ./avatars/** by apps/frieren/scripts/bake-avatars.ts. Do not edit.
+// GENERATED from ./avatars/** by platform/frieren/scripts/bake-avatars.ts. Do not edit.
 //
 // The art the platform ships: one directory per built-in avatar, one file per state it can be
 // in. Data URLs, because every runtime that renders an avatar has to read them with no loader

@@ -498,7 +498,7 @@ test('an eviction that fails does not fail the uninstall', async () => {
 })
 
 test('a host with no evict hook uninstalls cleanly', async () => {
-	// The DO and apps/mac pass a plain fetcher — they have no browser cache to sweep.
+	// The DO and platform/mac pass a plain fetcher — they have no browser cache to sweep.
 	const vol = volume(memStore())
 	const s = apps(vol, origin({ 'gui.js': 'GUI' }).fetchAsset)
 	const id = await s.install(await hostedBundle({ app: 'REDUCER', gui: 'GUI' }))

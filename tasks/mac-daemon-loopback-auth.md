@@ -1,5 +1,5 @@
 ---
-project: apps/mac
+project: platform/mac
 status: todo
 ---
 

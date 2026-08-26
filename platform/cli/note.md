@@ -1,0 +1,29 @@
+# CLI Development Setup
+
+To use the CLI directly from source during development:
+
+```sh
+cd platform/cli
+bun run build
+bun link
+```
+
+This creates a global symlink so `files` is available system-wide and points to the local `dist/index.mjs`.
+
+After making changes, rebuild:
+
+```sh
+bun run build
+```
+
+Or watch mode for automatic rebuilds:
+
+```sh
+bunx tsdown --watch
+```
+
+To unlink:
+
+```sh
+bun unlink
+```

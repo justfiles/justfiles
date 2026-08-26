@@ -1,4 +1,4 @@
-// GENERATED from ./*.png by apps/frieren/scripts/bake-avatars.ts. Do not edit.
+// GENERATED from ./*.png by platform/frieren/scripts/bake-avatars.ts. Do not edit.
 //
 // vanilla's face for every expression the agent can tag, keyed by state. Loaded only when
 // this built-in is the one being worn (see ../../avatars.ts).

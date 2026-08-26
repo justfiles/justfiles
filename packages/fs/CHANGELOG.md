@@ -35,7 +35,7 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **fs:** `Volume.rename` no longer takes `{ exclusive }`, and `caps.atomicMove` has no `noReplace`. Callers that must not overwrite a destination check it themselves and order their own claims — see `claimPath` in packages/app-notes.
+* **fs:** `Volume.rename` no longer takes `{ exclusive }`, and `caps.atomicMove` has no `noReplace`. Callers that must not overwrite a destination check it themselves and order their own claims — see `claimPath` in apps/notes.
 
 ### Features
 
