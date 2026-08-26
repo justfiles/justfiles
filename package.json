@@ -2,7 +2,7 @@
 	"name": "app-draw",
 	"version": "0.4.4",
 	"private": true,
-	"packageManager": "pnpm@11.2.2",
+	"packageManager": "pnpm@11.24.0",
 	"description": "A freeform sketchpad backed by Excalidraw.",
 	"type": "module",
 	"license": "MIT",
