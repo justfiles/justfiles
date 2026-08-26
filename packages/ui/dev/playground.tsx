@@ -1,75 +1,143 @@
-// Dev playground for @justfiles/ui. Renders the real components against ad-hoc
-// state so they can be developed in isolation with HMR. Add demos by importing
-// another component below and dropping it into <App/>.
-import { useRef, useState } from 'react'
+import '../../design/design.css'
+import { type CSSProperties, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import {
+	AttachedAgent,
+	type AttachedAgentMode,
+	type AttachedAgentSize
+} from '../src/AttachedAgent.tsx'
 import { type AgentMessage, Transcript } from '../src/Transcript.tsx'
 
-const LOREM =
-	'The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. ' +
-	'How vexingly quick daft zebras jump! Sphinx of black quartz, judge my vow. '
+let panelMounts = 0
 
-function block(n: number): string {
-	let s = ''
-	for (let i = 0; i < n; i++) s += LOREM
-	return s.trim()
+const messages: AgentMessage[] = [
+	{ id: 'question', role: 'user', content: 'Which synonym is closest?' },
+	{
+		id: 'answer',
+		role: 'assistant',
+		content: 'Token. Both mean the gesture was made only to have made it. Desultory means aimless.'
+	}
+]
+
+type ThemeStyle = CSSProperties & Record<`--${string}`, string>
+
+const themes: Record<'light' | 'dark', ThemeStyle> = {
+	light: {
+		'--surface': '#f5f5f4',
+		'--window-bg': '#ffffff',
+		'--text': '#1c1c1c',
+		'--rule': '#d0d0cd',
+		'--focus': '#0a84ff',
+		'--control-bg': '#ffffff'
+	},
+	dark: {
+		'--surface': '#2c2c2e',
+		'--window-bg': '#1e1e1e',
+		'--text': '#ebebf0',
+		'--rule': '#3a3a3c',
+		'--focus': '#0a84ff',
+		'--control-bg': '#48484a'
+	}
+}
+
+function FakePanel() {
+	const [mount] = useState(() => ++panelMounts)
+	const [draft, setDraft] = useState('')
+	return (
+		<div className="demo-panel">
+			<div className="demo-panel-title">
+				<span className="demo-app-icon">D</span>
+				<span>Frieren · Dictionary</span>
+			</div>
+			<Transcript messages={messages} isStreaming={false} assistantStyle="plain" />
+			<label className="demo-composer">
+				<span>Draft · mount {mount}</span>
+				<input
+					data-testid="draft"
+					value={draft}
+					onChange={(event) => setDraft(event.target.value)}
+					placeholder="Ask about Dictionary"
+				/>
+			</label>
+		</div>
+	)
+}
+
+function FakeApp() {
+	return (
+		<div className="demo-app">
+			<div className="demo-search">⌕ perfunctory · 1 entry</div>
+			<h1>per·func·to·ry</h1>
+			<em>adjective</em>
+			<p>Done routinely and with little interest or care.</p>
+			<p className="demo-similar">Similar: cursory · desultory · token · offhand</p>
+		</div>
+	)
 }
 
 function App() {
-	const [messages, setMessages] = useState<AgentMessage[]>([])
-	const [isStreaming, setIsStreaming] = useState(false)
-	const idRef = useRef(0)
-	const nextId = () => `m${idRef.current++}`
-
-	// Append a finished user+assistant exchange (the "new message lands" case).
-	const addBlock = () => {
-		setMessages((m) => [
-			...m,
-			{ id: nextId(), role: 'user', content: `Question ${m.length}` },
-			{ id: nextId(), role: 'assistant', content: block(2 + Math.floor(Math.random() * 4)) }
-		])
-	}
-
-	// Simulate token streaming: push an empty assistant bubble, then grow it in
-	// chunks. This is the case that was scrolling off-screen.
-	const stream = () => {
-		if (isStreaming) return
-		const id = nextId()
-		setMessages((m) => [...m, { id, role: 'assistant', content: '' }])
-		setIsStreaming(true)
-		const words = block(8).split(' ')
-		let i = 0
-		const tick = () => {
-			// Big chunk (>32px tall) to exercise the mid-stream detach race.
-			i = Math.min(words.length, i + 12)
-			const content = words.slice(0, i).join(' ')
-			setMessages((m) => m.map((x) => (x.id === id ? { ...x, content } : x)))
-			if (i < words.length) setTimeout(tick, 250)
-			else setIsStreaming(false)
-		}
-		setTimeout(tick, 250)
-	}
+	const [mode, setMode] = useState<AttachedAgentMode>('sheet')
+	const [open, setOpen] = useState(true)
+	const [size, setSize] = useState<AttachedAgentSize>({ sheet: 280, sidebar: 300 })
+	const [width, setWidth] = useState(760)
+	const [focused, setFocused] = useState(true)
+	const [theme, setTheme] = useState<keyof typeof themes>('light')
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-			<div style={{ display: 'flex', gap: 8, padding: 12, borderBottom: '1px solid var(--rule)' }}>
-				<button type="button" onClick={addBlock} data-testid="add">
-					Add block
+		<main className="demo" style={themes[theme]}>
+			<nav className="demo-controls" aria-label="Attached agent playground controls">
+				<button type="button" onClick={() => setOpen((value) => !value)}>
+					{open ? 'Close' : 'Open'}
 				</button>
-				<button type="button" onClick={stream} data-testid="stream">
-					Stream
+				<button type="button" onClick={() => setMode(mode === 'sheet' ? 'sidebar' : 'sheet')}>
+					Prefer {mode === 'sheet' ? 'sidebar' : 'sheet'}
 				</button>
-				<button type="button" onClick={() => setMessages([])} data-testid="reset">
-					Reset
+				<button type="button" onClick={() => setWidth(width === 760 ? 520 : 760)}>
+					{width === 760 ? 'Narrow' : 'Wide'}
 				</button>
-				<span data-testid="count" style={{ alignSelf: 'center', opacity: 0.6 }}>
-					{messages.length} msgs {isStreaming ? '· streaming' : ''}
-				</span>
+				<button type="button" onClick={() => setFocused((value) => !value)}>
+					{focused ? 'Deactivate' : 'Focus'}
+				</button>
+				<button type="button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
+					{theme === 'light' ? 'Dark' : 'Light'}
+				</button>
+				<output data-testid="state">
+					{width}px · {mode} preferred · {theme} · {focused ? 'focused' : 'inactive'}
+				</output>
+			</nav>
+			<div className="demo-stage">
+				<section
+					className="ds-window ds-window-framed demo-window"
+					data-focused={focused}
+					style={{ width }}
+				>
+					<header className="ds-window-titlebar">
+						<span className="ds-window-controls">
+							<i className="ds-window-control ds-window-control-close" />
+							<i className="ds-window-control ds-window-control-fullscreen" />
+						</span>
+						<span className="ds-window-title">Dictionary</span>
+						<span className="ds-window-spacer" />
+					</header>
+					<div className="ds-window-body">
+						<AttachedAgent
+							agent={{
+								mode,
+								open,
+								size,
+								footer: <span className="demo-face">•‿•</span>,
+								panel: <FakePanel />,
+								onModeChange: setMode,
+								onOpenChange: setOpen,
+								onSizeChange: setSize
+							}}
+						>
+							<FakeApp />
+						</AttachedAgent>
+					</div>
+				</section>
 			</div>
-			<div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-				<Transcript messages={messages} isStreaming={isStreaming} />
-			</div>
-		</div>
+		</main>
 	)
 }
 
