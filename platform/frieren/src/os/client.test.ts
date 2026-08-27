@@ -22,10 +22,6 @@ class FakeSocket implements SocketLike {
 
 	emit(frame: object): void {
 		const value = frame as { type?: string; turnId?: string; event?: { type?: string } }
-		if (value.type === 'history') {
-			this.push({ ...frame, type: 'snapshot', activeTurn: null })
-			return
-		}
 		if (value.type === 'event' && !value.turnId) {
 			if (value.event?.type === 'agent_start' || !this.activeTurnId) {
 				this.activeTurnId = `test-turn-${++this.turn}`
@@ -81,9 +77,10 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 
 		socket.emit({
-			type: 'history',
+			type: 'snapshot',
 			participants: { userName: 'Stark', agentName: 'Fern' },
-			messages: [{ role: 'user', content: 'hello' }]
+			transcript: [{ role: 'user', content: 'hello' }],
+			activeTurn: null
 		})
 		socket.emit({ type: 'ready', participants: { userName: 'Stark', agentName: 'Fern' }, apps: [] })
 
@@ -314,14 +311,15 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 
 		socket.emit({
-			type: 'history',
-			messages: [
+			type: 'snapshot',
+			transcript: [
 				{
 					role: 'assistant',
 					content: '',
 					toolCalls: [{ name: 'generate_image', args: undefined, result: 'saved', images }]
 				}
-			]
+			],
+			activeTurn: null
 		})
 		socket.emit({ type: 'ready', apps: [] })
 		expect(client.agent.snapshot().messages[0]?.toolCalls?.[0]?.images).toEqual(images)
@@ -385,6 +383,37 @@ describe('FrierenClient agent', () => {
 		])
 	})
 
+	test('replaces a rejected prompt with the turn the server already owns', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+
+		const accepted = client.agent.prompt('my prompt')
+		const activeTurn = {
+			id: 'other-turn',
+			input: { text: 'already running', source: 'user' }
+		}
+		socket.emit({ type: 'prompt_result', accepted: false, activeTurn })
+
+		expect(await accepted).toBe(false)
+		expect(client.agent.snapshot()).toMatchObject({
+			isStreaming: true,
+			messages: [expect.objectContaining({ id: 'other-turn', content: 'already running' })]
+		})
+	})
+
+	test('an ignored debug prompt returns the client to idle', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+
+		const accepted = client.agent.prompt('/debug')
+		socket.emit({ type: 'debug', message: 'system prompt' })
+
+		expect(await accepted).toBe(false)
+		expect(client.agent.snapshot().isStreaming).toBe(false)
+	})
+
 	test('hydrates a late tab with the active app turn', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
@@ -393,7 +422,7 @@ describe('FrierenClient agent', () => {
 		socket.emit({
 			type: 'snapshot',
 			agentId: 'notes',
-			messages: [{ role: 'user', content: 'older question' }],
+			transcript: [{ role: 'user', content: 'older question' }],
 			activeTurn: { id: 'active-1', input: { text: 'running now', source: 'user' } }
 		})
 
@@ -423,7 +452,7 @@ describe('FrierenClient agent', () => {
 			agentId: 'notes',
 			turnId: 'old-turn',
 			status: 'completed',
-			messages: []
+			transcript: []
 		})
 
 		expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
@@ -447,7 +476,7 @@ describe('FrierenClient agent', () => {
 			messages: []
 		})
 
-		socket.emit({ type: 'snapshot', agentId: 'notes', messages: [], activeTurn: null })
+		socket.emit({ type: 'snapshot', agentId: 'notes', transcript: [], activeTurn: null })
 		expect(client.agent.snapshot('notes').isLoadingHistory).toBe(false)
 		expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
 			type: 'snapshot',

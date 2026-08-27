@@ -1,28 +1,20 @@
+import type { ActiveTurn, SessionEntry } from '@justfiles/agent'
+import {
+	type AgentFrame,
+	type AgentRequest,
+	applyAgentFrame,
+	type RemoteAgentState
+} from '@justfiles/agent/protocol'
 import type { AgentMessage } from '@justfiles/ui/Transcript'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 // The launcher's agent transport: a plain WebSocket to the daemon's `/agent` socket, which
 // is a LIVE VIEW of the shared session. The daemon pushes the whole transcript on every
-// change (its own turns, or a `/skill` dispatched over `/system`), plus a busy flag and
-// turn errors; the client only sends prompts. Shared by the in-page launcher chat
+// change, including turns started by `/skill`. Shared by the in-page launcher chat
 // (main.tsx) and the native chat surface (chat.tsx). Commands are NOT sent here — they ride
 // `/system` and reach the agent (if at all) as a skill, surfacing naturally in the push.
 
 type Connection = 'connecting' | 'ready' | 'disconnected'
-
-// Server→client on `/agent` (mirrors the daemon's AgentEvent).
-type AgentEvent =
-	| { type: 'history'; entries: SessionEntry[] }
-	| { type: 'busy'; value: boolean }
-	| { type: 'error'; message: string }
-
-type SessionEntry =
-	| { id: string; type: 'message'; role: 'user'; content: string; source?: 'user' | 'app' }
-	| { id: string; type: 'message'; role: 'assistant' | 'assistant_thinking'; content: string }
-	| { id: string; type: 'message'; role: 'tool_call'; tool_name: string; input: unknown }
-	| { id: string; type: 'message'; role: 'tool_result'; tool_name: string; content: string }
-	| { id: string; type: 'compaction'; summary: string }
-	| { id: string; type: 'branch_summary' | 'label' }
 
 export function useAgentChat() {
 	const [messages, setMessages] = useState<AgentMessage[]>([])
@@ -30,10 +22,31 @@ export function useAgentChat() {
 	const [connection, setConnection] = useState<Connection>('connecting')
 	const [error, setError] = useState<string | null>(null)
 	const socketRef = useRef<WebSocket | null>(null)
+	const remoteRef = useRef<RemoteAgentState>({ phase: 'idle', activeTurn: null })
+
+	const setRemote = useCallback((remote: RemoteAgentState) => {
+		remoteRef.current = remote
+		setIsStreaming(remote.phase !== 'idle')
+	}, [])
+
+	const showTurn = useCallback((turn: ActiveTurn) => {
+		setMessages((messages) =>
+			messages.some((message) => message.id === turn.id)
+				? messages
+				: [
+						...messages,
+						{
+							id: turn.id,
+							role: 'user',
+							content: turn.input.text,
+							source: turn.input.source
+						}
+					]
+		)
+	}, [])
 
 	// Subscribe to the live session, reconnecting on drop (a daemon restart re-pushes the
-	// snapshot on the new socket). Every `history` frame is the authoritative transcript, so
-	// it replaces local state — including any optimistic bubble `send` added.
+	// snapshot on the new socket). Every snapshot or finish replaces the local transcript.
 	useEffect(() => {
 		let stopped = false
 		let retry: ReturnType<typeof setTimeout> | undefined
@@ -45,21 +58,41 @@ export function useAgentChat() {
 			)
 			socketRef.current = socket
 			socket.onmessage = (ev) => {
-				const event = JSON.parse(String(ev.data)) as AgentEvent
-				if (event.type === 'history') {
-					setMessages(sessionEntriesToMessages(event.entries))
+				const event = JSON.parse(String(ev.data)) as AgentFrame
+				if (event.type === 'snapshot') {
+					setMessages(sessionEntriesToMessages(event.transcript))
+					setRemote(applyAgentFrame(remoteRef.current, event))
+					if (event.activeTurn) showTurn(event.activeTurn)
 					setConnection('ready')
 					setError(null)
-				} else if (event.type === 'busy') {
-					setIsStreaming(event.value)
-				} else if (event.type === 'error') {
-					setError(event.message)
+				} else if (event.type === 'turn_started') {
+					setRemote(applyAgentFrame(remoteRef.current, event))
+					showTurn(event.turn)
+				} else if (event.type === 'prompt_result') {
+					const remote = applyAgentFrame(remoteRef.current, event)
+					setRemote(remote)
+					const turn = remote.activeTurn
+					if (turn) showTurn(turn)
+				} else if (event.type === 'turn_finished') {
+					const remote = applyAgentFrame(remoteRef.current, event)
+					if (remote === remoteRef.current) return
+					const next = sessionEntriesToMessages(event.transcript)
+					if (event.error)
+						next.push({
+							id: crypto.randomUUID(),
+							role: 'assistant',
+							content: event.error.message,
+							error: true
+						})
+					setMessages(next)
+					setRemote(remote)
 				}
 			}
 			socket.onerror = () => socket?.close()
 			socket.onclose = () => {
 				if (stopped) return
 				socketRef.current = null
+				setRemote({ phase: 'idle', activeTurn: null })
 				setConnection('disconnected')
 				retry = setTimeout(connect, 1000)
 			}
@@ -70,31 +103,32 @@ export function useAgentChat() {
 			clearTimeout(retry)
 			socket?.close()
 		}
-	}, [])
+	}, [setRemote, showTurn])
 
-	// Send a chat message. Optimistic user bubble + empty assistant placeholder (which shows
-	// the streaming caret) until the turn's `history` push replaces the whole transcript.
-	const send = useCallback((text: string) => {
-		const trimmed = text.trim()
-		const socket = socketRef.current
-		if (!trimmed || !socket || socket.readyState !== WebSocket.OPEN) return
-		setMessages((prev) => [
-			...prev,
-			{ id: crypto.randomUUID(), role: 'user', content: trimmed },
-			{ id: crypto.randomUUID(), role: 'assistant', content: '' }
-		])
-		setIsStreaming(true)
-		setError(null)
-		socket.send(JSON.stringify({ type: 'prompt', text: trimmed }))
-	}, [])
+	const send = useCallback(
+		(text: string) => {
+			const trimmed = text.trim()
+			const socket = socketRef.current
+			if (
+				!trimmed ||
+				!socket ||
+				socket.readyState !== WebSocket.OPEN ||
+				remoteRef.current.phase !== 'idle'
+			)
+				return
+			setRemote({ phase: 'submitting', activeTurn: null })
+			setError(null)
+			socket.send(JSON.stringify({ type: 'prompt', text: trimmed } satisfies AgentRequest))
+		},
+		[setRemote]
+	)
 
-	// Cancel the in-flight turn (the native Stop button, via chat.tsx's `native.abort`). The
-	// daemon aborts the shared session; the turn's outcome (a `busy:false` + `error` push)
-	// flows back over the socket, so we don't touch local state here.
+	// Stop names the turn it observed, so a late click cannot cancel newer work.
 	const abort = useCallback(() => {
 		const socket = socketRef.current
-		if (!socket || socket.readyState !== WebSocket.OPEN) return
-		socket.send(JSON.stringify({ type: 'abort' }))
+		const turnId = remoteRef.current.activeTurn?.id
+		if (!turnId || !socket || socket.readyState !== WebSocket.OPEN) return
+		socket.send(JSON.stringify({ type: 'abort', turnId } satisfies AgentRequest))
 	}, [])
 
 	return { messages, isStreaming, connection, error, send, abort }

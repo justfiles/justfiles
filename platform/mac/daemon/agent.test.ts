@@ -9,7 +9,7 @@ import { abortAgent, classifyFailure } from './agent'
 // it must be a no-op rather than building an agent (which needs a backend) just to cancel
 // nothing. The "session exists" branch runs the real assistant, so it's exercised live.
 test('abort with no built session is a no-op', () => {
-	expect(() => abortAgent()).not.toThrow()
+	expect(() => abortAgent('missing-turn')).not.toThrow()
 })
 
 // Turn failures reach the user classified, not raw: an expired/unauthorised token routes to

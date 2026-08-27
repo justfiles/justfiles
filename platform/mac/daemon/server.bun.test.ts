@@ -4,8 +4,8 @@
 // touches ~/Applications. It exercises the HTTP routes (per-app gui.js/icon + their 404s +
 // the serveClient guard, the App Store's `/store` browse + install over a faked JustApps
 // registry) and the wire protocol on all three sockets: `/system` (catalog + command
-// dispatch), `/agent` (live transcript + a prompt turn), and `/app/:id` (initial state + a
-// dispatch round-trip). Offline-safe: with no ai account the agent can't build, so history is
+// dispatch), `/agent` (session snapshot + a prompt turn), and `/app/:id` (initial state + a
+// dispatch round-trip). Offline-safe: with no ai account the agent can't build, so its snapshot is
 // empty and a prompt turn surfaces a classified error — both observable here. One server per
 // process, because the daemon's kernel/Volume are module singletons.
 // Bun-only (`bun test`): Bun.serve + pub/sub + blob-URL reducer workers.
@@ -56,9 +56,13 @@ interface Frame {
 	id?: string
 	ok?: boolean
 	result?: { show: string; body?: string }
-	entries?: unknown[]
-	value?: boolean
+	transcript?: unknown[]
+	activeTurn?: { id: string } | null
+	turn?: { id: string }
+	turnId?: string
+	accepted?: boolean
 	message?: string
+	error?: { message: string }
 	state?: {
 		count?: number
 		currentViewing?: string | null
@@ -167,19 +171,25 @@ test('/system dispatches a command and replies with what to show', async () => {
 	client.close()
 })
 
-test('/agent snapshots history + busy on connect, and a prompt runs a turn', async () => {
+test('/agent snapshots state and correlates a prompt with its finish', async () => {
 	const client = await connect('/agent')
 	// Offline the shared session can't build, so the snapshot is an empty transcript.
-	const history = await client.waitFor((m) => m.type === 'history')
-	expect(history.entries).toEqual([])
-	await client.waitFor((m) => m.type === 'busy' && m.value === false)
+	const snapshot = await client.waitFor((m) => m.type === 'snapshot')
+	expect(snapshot.transcript).toEqual([])
+	expect(snapshot.activeTurn).toBeNull()
 
 	// A prompt drives a turn on the shared session; with no backend it fails, so the turn
-	// broadcasts busy → a classified error → busy:false. We observe the error frame.
+	// still has one id from admission through the classified finish.
 	client.send({ type: 'prompt', text: 'hello' })
-	const error = await client.waitFor((m) => m.type === 'error')
-	expect(typeof error.message).toBe('string')
-	expect((error.message ?? '').length).toBeGreaterThan(0)
+	const started = await client.waitFor((m) => m.type === 'turn_started')
+	const admitted = await client.waitFor((m) => m.type === 'prompt_result')
+	expect(admitted).toMatchObject({ accepted: true, turn: started.turn })
+	const finished = await client.waitFor(
+		(m) => m.type === 'turn_finished' && m.turnId === started.turn?.id
+	)
+	expect(finished.transcript).toEqual([])
+	expect(typeof finished.error?.message).toBe('string')
+	expect((finished.error?.message ?? '').length).toBeGreaterThan(0)
 	client.close()
 })
 

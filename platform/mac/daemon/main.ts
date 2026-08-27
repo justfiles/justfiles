@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
+import type { AgentFrame, AgentRequest } from '@justfiles/agent/protocol'
 import type { AppManifest } from '@justfiles/app/runtime'
 import type { Server, ServerWebSocket } from 'bun'
 import {
@@ -23,7 +24,7 @@ import { type Identity, identity } from './identity'
 import { closeKernel, getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
-import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './protocol'
+import type { ClientMessage, ServerMessage } from './protocol'
 import { type RuntimeRefresh, runtimeRefresh } from './refresh'
 import { SHIPPED } from './resources'
 import { sandboxes } from './sandbox'
@@ -79,10 +80,10 @@ const crossOrigin = (req: Request): boolean => {
 }
 
 // Typed send helpers — routing every frame through a union keeps the wire protocol
-// compile-checked. `/system` speaks `ServerMessage`; `/agent` its own `AgentEvent`.
+// compile-checked. `/system` speaks `ServerMessage`; `/agent` the shared `AgentFrame`.
 const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 	ws.send(JSON.stringify(message))
-const sendAgent = (ws: ServerWebSocket<Context>, event: AgentEvent) =>
+const sendAgent = (ws: ServerWebSocket<Context>, event: AgentFrame) =>
 	ws.send(JSON.stringify(event))
 
 export interface ServerOptions {
@@ -201,9 +202,7 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					// Live view of the one shared session: subscribe to the `agent` topic, then
 					// send the current snapshot so the chat mounts on it.
 					ws.subscribe('agent')
-					const snapshot = await agentSnapshot()
-					sendAgent(ws, { type: 'history', entries: [...snapshot.entries] })
-					sendAgent(ws, { type: 'busy', value: Boolean(snapshot.activeTurn) })
+					sendAgent(ws, await agentSnapshot())
 					return
 				}
 				if (ws.data.type === 'app') {
@@ -226,12 +225,13 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 			},
 			async message(ws, message) {
 				if (ws.data.type === 'agent') {
-					// The chat only sends prompts/abort; results come back on the `agent` topic.
+					// Admission replies to this socket. Session events publish to every chat.
 					const req = JSON.parse(
 						typeof message === 'string' ? message : message.toString()
 					) as AgentRequest
-					if (req.type === 'prompt') promptAgent(req.text)
-					else if (req.type === 'abort') abortAgent()
+					if (req.type === 'prompt') sendAgent(ws, await promptAgent(req.text))
+					else if (req.type === 'abort') abortAgent(req.turnId)
+					else if (req.type === 'snapshot') sendAgent(ws, await agentSnapshot())
 					return
 				}
 				if (ws.data.type === 'app') {
@@ -284,9 +284,8 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 		)
 	)
 
-	// Every agent turn publishes its transcript + busy/error to the `agent` topic each chat
-	// subscribes to — so a daemon-driven `/skill` turn surfaces live without polling.
-	setAgentBroadcast((event) => server.publish('agent', JSON.stringify(event satisfies AgentEvent)))
+	// Every agent turn publishes the shared lifecycle frames to each subscribed chat.
+	setAgentBroadcast((event) => server.publish('agent', JSON.stringify(event satisfies AgentFrame)))
 
 	// Project the catalog into ~/Applications/Kodama Apps/*.app (real macOS apps). One-way, the
 	// Volume wins; previews stay out. Fire-and-forget — a projection failure never takes the

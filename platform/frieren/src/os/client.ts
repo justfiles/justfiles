@@ -1,6 +1,12 @@
-import type { ActiveTurn, TurnStatus } from '@justfiles/agent'
+import type { ActiveTurn } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
+import {
+	type AgentFrame,
+	type AgentRequest,
+	applyAgentFrame,
+	type RemoteAgentState
+} from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState } from '../agent/types'
@@ -127,31 +133,25 @@ function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
 	return Array.isArray(images) && images.length > 0 ? images : undefined
 }
 
-interface ServerFrame {
-	type?: string
-	agentId?: string
-	participants?: { userName?: string; agentName?: string }
-	apps?: unknown
-	messages?: HistoryMessage[]
-	activeTurn?: ActiveTurn | null
-	turn?: ActiveTurn
-	turnId?: string
-	accepted?: boolean
-	status?: TurnStatus
-	error?: string
-	message?: string
-	value?: boolean
-	id?: string
-	event?: AgentEventFrame
-	notification?: Notification
-}
-
-type AgentPhase = 'idle' | 'submitting' | 'active'
+type ServerFrame =
+	| (AgentFrame<HistoryMessage> & {
+			participants?: { userName?: string; agentName?: string }
+	  })
+	| {
+			type: 'ready'
+			participants?: { userName?: string; agentName?: string }
+			apps?: unknown
+	  }
+	| { type: 'error'; message: string }
+	| { type: 'debug'; message: string; agentId?: string }
+	| { type: 'app_open'; id: string }
+	| { type: 'app_close'; id: string }
+	| { type: 'notification'; notification: Notification }
+	| { type: 'sync' }
 
 interface AgentState {
 	messages: AgentMessage[]
-	phase: AgentPhase
-	activeTurnId: string | null
+	remote: RemoteAgentState
 	loadingHistory: boolean
 	pendingPrompt: ((accepted: boolean) => void) | null
 	currentAssistantId: string | null
@@ -196,8 +196,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (state) return state
 		state = {
 			messages: [],
-			phase: 'idle',
-			activeTurnId: null,
+			remote: { phase: 'idle', activeTurn: null },
 			loadingHistory: false,
 			pendingPrompt: null,
 			currentAssistantId: null,
@@ -220,7 +219,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			userName,
 			agentName,
 			messages: state.messages,
-			isStreaming: state.phase !== 'idle',
+			isStreaming: state.remote.phase !== 'idle',
 			isLoadingHistory: state.loadingHistory,
 			expression: state.expression
 		}
@@ -239,8 +238,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		for (const state of agentStates.values()) {
 			state.pendingPrompt?.(false)
 			state.pendingPrompt = null
-			state.phase = 'idle'
-			state.activeTurnId = null
+			state.remote = { phase: 'idle', activeTurn: null }
 			state.loadingHistory = false
 			state.currentAssistantId = null
 		}
@@ -252,7 +250,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		emitAgent(state)
 	}
 
-	function restoreMessages(messages: HistoryMessage[]): AgentMessage[] {
+	function restoreMessages(messages: readonly HistoryMessage[]): AgentMessage[] {
 		return messages.map((message) => ({
 			id: crypto.randomUUID(),
 			role: message.role as 'user' | 'assistant',
@@ -485,27 +483,22 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'turn_started' && data.turn) {
+		if (data.type === 'turn_started') {
 			const state = getAgentState(data.agentId)
-			state.phase = 'active'
-			state.activeTurnId = data.turn.id
+			state.remote = applyAgentFrame(state.remote, data)
 			addTurnInput(state, data.turn)
 			emitAgent(state)
 			return
 		}
 
-		if (data.type === 'prompt_result' && typeof data.accepted === 'boolean') {
+		if (data.type === 'prompt_result') {
 			const state = getAgentState(data.agentId)
 			state.pendingPrompt?.(data.accepted)
 			state.pendingPrompt = null
-			const turn = data.accepted ? data.turn : data.activeTurn
+			state.remote = applyAgentFrame(state.remote, data)
+			const turn = state.remote.activeTurn
 			if (turn) {
-				state.phase = 'active'
-				state.activeTurnId = turn.id
 				addTurnInput(state, turn)
-			} else {
-				state.phase = 'idle'
-				state.activeTurnId = null
 			}
 			emitAgent(state)
 			return
@@ -517,27 +510,26 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
-			state.messages = restoreMessages(data.messages ?? [])
+			state.messages = restoreMessages(data.transcript)
 			state.loadingHistory = false
-			state.phase = data.activeTurn ? 'active' : 'idle'
-			state.activeTurnId = data.activeTurn?.id ?? null
+			state.remote = applyAgentFrame(state.remote, data)
 			if (data.activeTurn) addTurnInput(state, data.activeTurn)
 			emitAgents()
 			return
 		}
 
-		if (data.type === 'turn_finished' && data.turnId) {
+		if (data.type === 'turn_finished') {
 			const state = getAgentState(data.agentId)
-			if (state.activeTurnId !== data.turnId) return
-			state.messages = restoreMessages(data.messages ?? [])
-			state.phase = 'idle'
-			state.activeTurnId = null
+			const remote = applyAgentFrame(state.remote, data)
+			if (remote === state.remote) return
+			state.remote = remote
+			state.messages = restoreMessages(data.transcript)
 			state.currentAssistantId = null
 			if (data.error)
 				state.messages.push({
 					id: crypto.randomUUID(),
 					role: 'assistant',
-					content: data.error,
+					content: data.error.message,
 					error: true
 				})
 			emitAgent(state)
@@ -546,6 +538,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 		// TODO: remove later
 		if (data.type === 'debug') {
+			const state = getAgentState(data.agentId)
+			state.pendingPrompt?.(false)
+			state.pendingPrompt = null
+			state.remote = { phase: 'idle', activeTurn: null }
+			emitAgent(state)
 			console.log(String(data.message ?? ''))
 			return
 		}
@@ -572,9 +569,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'event' && data.event && data.turnId) {
+		if (data.type === 'event') {
 			const state = getAgentState(data.agentId)
-			if (state.activeTurnId === data.turnId) handleAgentEvent(data.event, data.agentId)
+			if (state.remote.activeTurn?.id === data.turnId) handleAgentEvent(data.event, data.agentId)
 		}
 	}
 
@@ -654,27 +651,44 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready')
 				return Promise.resolve(false)
 			const state = getAgentState(agentId)
-			if (state.phase !== 'idle' || state.loadingHistory) return Promise.resolve(false)
-			state.phase = 'submitting'
+			if (state.remote.phase !== 'idle' || state.loadingHistory) return Promise.resolve(false)
+			state.remote = { phase: 'submitting', activeTurn: null }
 			emitAgent(state)
 			const accepted = new Promise<boolean>((resolve) => {
 				state.pendingPrompt = resolve
 			})
-			socket.send(JSON.stringify({ type: 'prompt', text, ...(agentId ? { agentId } : {}) }))
+			socket.send(
+				JSON.stringify({
+					type: 'prompt',
+					text,
+					...(agentId ? { agentId } : {})
+				} satisfies AgentRequest)
+			)
 			return accepted
 		},
 		abort(agentId) {
-			const turnId = getAgentState(agentId).activeTurnId
+			const turnId = getAgentState(agentId).remote.activeTurn?.id
 			if (!turnId) return
-			socket?.send(JSON.stringify({ type: 'abort', turnId, ...(agentId ? { agentId } : {}) }))
+			socket?.send(
+				JSON.stringify({
+					type: 'abort',
+					turnId,
+					...(agentId ? { agentId } : {})
+				} satisfies AgentRequest)
+			)
 		},
 		loadHistory(agentId) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
 			const state = getAgentState(agentId)
-			if (state.phase !== 'idle' || state.loadingHistory) return
+			if (state.remote.phase !== 'idle' || state.loadingHistory) return
 			state.loadingHistory = true
 			emitAgent(state)
-			socket.send(JSON.stringify({ type: 'snapshot', ...(agentId ? { agentId } : {}) }))
+			socket.send(
+				JSON.stringify({
+					type: 'snapshot',
+					...(agentId ? { agentId } : {})
+				} satisfies AgentRequest)
+			)
 		},
 		subscribe(listener, agentId) {
 			const state = getAgentState(agentId)

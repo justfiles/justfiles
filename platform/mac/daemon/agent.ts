@@ -2,11 +2,16 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
 	type AgentSession,
-	type AgentSessionSnapshot,
 	type AgentSessions,
 	createAgentSessions,
 	resolveTimezone
 } from '@justfiles/agent'
+import {
+	type AgentFrame,
+	type AgentPromptResult,
+	promptResult,
+	sessionEventFrame
+} from '@justfiles/agent/protocol'
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
@@ -14,7 +19,6 @@ import { identity } from './identity'
 import { getAccounts, getKernel } from './kernel'
 import { scheduleDailyMaintenance } from './maintenance'
 import { notificationChannel } from './notify'
-import type { AgentEvent } from './protocol'
 import { DOCS_DIR } from './resources'
 
 // The turn runner, tool wiring, backend rebuild-on-rotate, error classification, and
@@ -96,23 +100,7 @@ async function buildAgents(): Promise<AgentSessions> {
 	})
 	const session = agents.main()
 	// Fan the session's events out to every connected chat via the sink main.ts wired.
-	session.subscribe((event) => {
-		if (event.type === 'turn_started') {
-			activeTurnId = event.turn.id
-			broadcast({ type: 'busy', value: true })
-			return
-		}
-		if (event.type === 'turn_finished') {
-			if (activeTurnId === event.turnId) activeTurnId = null
-			broadcast({ type: 'history', entries: event.entries })
-			if (event.error) broadcast({ type: 'error', message: event.error.message })
-			broadcast({ type: 'busy', value: false })
-			return
-		}
-		activeTurnId = event.snapshot.activeTurn?.id ?? null
-		broadcast({ type: 'history', entries: [...event.snapshot.entries] })
-		broadcast({ type: 'busy', value: Boolean(event.snapshot.activeTurn) })
-	})
+	session.subscribe((event) => broadcast(sessionEventFrame(event)))
 	void scheduleDailyMaintenance(session).catch((error) =>
 		console.error('[agent] maintenance alarm failed:', error)
 	)
@@ -122,35 +110,32 @@ async function buildAgents(): Promise<AgentSessions> {
 // The daemon injects a sink that publishes `/agent` events to every connected chat (main.ts
 // wires it to the `agent` pub/sub topic). The no-op default keeps the session usable before
 // the server binds it.
-let broadcast: (event: AgentEvent) => void = () => {}
-let activeTurnId: string | null = null
-export function setAgentBroadcast(sink: (event: AgentEvent) => void): void {
+let broadcast: (event: AgentFrame) => void = () => {}
+export function setAgentBroadcast(sink: (event: AgentFrame) => void): void {
 	broadcast = sink
 }
 
 // The current transcript, for the snapshot a chat gets on connect. Empty when the session
 // can't build (no backend), so the chat shows an empty transcript rather than erroring.
-export async function agentSnapshot(): Promise<AgentSessionSnapshot> {
-	return (await getSession()).snapshot()
+export async function agentSnapshot(): Promise<AgentFrame> {
+	const snapshot = await (await getSession()).snapshot()
+	return sessionEventFrame({ type: 'snapshot', snapshot })
 }
 
-// A chat message from the user. Fire-and-observe: the turn runs and its result reaches the
-// chat through the broadcast, so callers don't await it.
-export function promptAgent(message: string): void {
-	void getSession()
-		.then((session) => {
-			const result = session.start(message)
-			if (result.accepted) void result.done
-		})
-		.catch((err) => console.error('[agent] prompt failed:', err))
+// Start the turn now and return its admission result to the requesting chat. Completion
+// reaches every chat through the session subscription above.
+export async function promptAgent(message: string): Promise<AgentPromptResult> {
+	const result = (await getSession()).start(message)
+	if (result.accepted) void result.done
+	return promptResult(result)
 }
 
 // Cancel the in-flight turn, leaving the session intact so later prompts still work. Guards
 // on the memoised session so a cold daemon never builds an agent just to cancel nothing.
-export function abortAgent(): void {
+export function abortAgent(turnId: string): void {
 	if (!agentsPromise) return
 	void agentsPromise
-		.then((agents) => activeTurnId && agents.main().abort(activeTurnId))
+		.then((agents) => agents.main().abort(turnId))
 		.catch((err) => console.error('[agent] abort failed:', err))
 }
 
@@ -172,7 +157,7 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 		else void session.applySkill(name)
 	} catch (err) {
 		console.error(`[agent] /${name} failed:`, err)
-		if (name === 'new') broadcast({ type: 'history', entries: [] })
+		if (name === 'new') broadcast({ type: 'snapshot', transcript: [], activeTurn: null })
 	}
 	return { show: 'chat' }
 }

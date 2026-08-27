@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import {
 	type Api,
 	type CredentialStore,
@@ -15,7 +14,6 @@ import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter'
 import { openrouterImagesProvider } from '@earendil-works/pi-ai/providers/openrouter-images'
 import {
-	type ActiveTurn,
 	type AgentBackend,
 	type AgentSession,
 	type AgentSessionOptions,
@@ -27,7 +25,6 @@ import {
 	parseFrontmatter,
 	resolveTimezone,
 	type SoulGenerationInput,
-	type TurnStatus,
 	text
 } from '@justfiles/agent'
 import {
@@ -37,6 +34,12 @@ import {
 	readProfile
 } from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
+import {
+	type AgentFrame,
+	type AgentRequest,
+	promptResult,
+	sessionEventFrame
+} from '@justfiles/agent/protocol'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	aesGcmSecretCodec,
@@ -100,13 +103,10 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 	}
 }
 
-interface ClientMessage {
-	type: 'prompt' | 'abort' | 'snapshot' | 'app_open' | 'app_close'
-	text?: string
-	id?: string
-	agentId?: string
-	turnId?: string
-}
+type ClientMessage =
+	| AgentRequest
+	| { type: 'app_open'; id: string }
+	| { type: 'app_close'; id?: string }
 
 import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
 
@@ -116,43 +116,15 @@ interface DisplayParticipants {
 }
 
 type ServerMessage =
+	| (AgentFrame<DisplayMessage> & { participants?: DisplayParticipants })
 	| {
 			type: 'ready'
 			participants?: DisplayParticipants
 			apps?: Awaited<ReturnType<FrierenApps['list']>>
 	  }
-	| {
-			type: 'snapshot'
-			messages: ReadonlyArray<DisplayMessage>
-			activeTurn: ActiveTurn | null
-			participants?: DisplayParticipants
-			agentId?: string
-	  }
-	| {
-			type: 'prompt_result'
-			accepted: true
-			turn: ActiveTurn
-			agentId?: string
-	  }
-	| {
-			type: 'prompt_result'
-			accepted: false
-			activeTurn: ActiveTurn | null
-			agentId?: string
-	  }
-	| { type: 'turn_started'; turn: ActiveTurn; agentId?: string }
-	| {
-			type: 'turn_finished'
-			turnId: string
-			status: TurnStatus
-			messages: ReadonlyArray<DisplayMessage>
-			error?: string
-			agentId?: string
-	  }
-	| { type: 'event'; turnId: string; event: AgentEvent; agentId?: string }
 	| { type: 'error'; message: string }
 	// TODO: remove debug
-	| { type: 'debug'; message: string }
+	| { type: 'debug'; message: string; agentId?: string }
 	| { type: 'app_open'; id: string }
 	| { type: 'app_close'; id: string }
 	// The frieren notification channel: the agent's turn pings / classified errors /
@@ -510,24 +482,10 @@ export class Frieren extends DurableObject<Env> {
 				key,
 				session.subscribe((event) => {
 					const scope = agentId ? { agentId } : {}
-					if (event.type === 'turn_started')
-						this.broadcast({ type: 'turn_started', turn: event.turn, ...scope })
-					else if (event.type === 'turn_finished')
-						this.broadcast({
-							type: 'turn_finished',
-							turnId: event.turnId,
-							status: event.status,
-							messages: sessionEntries2DisplayMessages(event.entries),
-							...(event.error ? { error: event.error.message } : {}),
-							...scope
-						})
-					else
-						this.broadcast({
-							type: 'snapshot',
-							messages: sessionEntries2DisplayMessages(event.snapshot.entries),
-							activeTurn: event.snapshot.activeTurn,
-							...scope
-						})
+					this.broadcast({
+						...sessionEventFrame(event, sessionEntries2DisplayMessages),
+						...scope
+					})
 				})
 			)
 		return session
@@ -720,9 +678,11 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		const text = parsed.type === 'prompt' ? parsed.text : undefined
+		const agentId = 'agentId' in parsed ? parsed.agentId : undefined
 		const trimmed = text?.trim() ?? ''
-		const session = parsed.type === 'abort' || text ? this.getSession(parsed.agentId) : null
-		if (parsed.type === 'abort' && parsed.turnId) session?.abort(parsed.turnId)
+		const session =
+			parsed.type === 'abort' || parsed.type === 'prompt' ? this.getSession(agentId) : null
+		if (parsed.type === 'abort') session?.abort(parsed.turnId)
 		// Start before the first await so a following abort cannot overtake setup.
 		let turnId = ''
 		const result =
@@ -732,35 +692,18 @@ export class Frieren extends DurableObject<Env> {
 							type: 'event',
 							turnId,
 							event,
-							...(parsed.agentId ? { agentId: parsed.agentId } : {})
+							...(agentId ? { agentId } : {})
 						})
 					)
 				: null
 		if (result?.accepted) turnId = result.turn.id
 		if (result) {
-			const reply: ServerMessage = result.accepted
-				? {
-						type: 'prompt_result',
-						accepted: true,
-						turn: result.turn,
-						...(parsed.agentId ? { agentId: parsed.agentId } : {})
-					}
-				: {
-						type: 'prompt_result',
-						accepted: false,
-						activeTurn: result.activeTurn,
-						...(parsed.agentId ? { agentId: parsed.agentId } : {})
-					}
+			const reply: ServerMessage = {
+				...promptResult(result),
+				...(agentId ? { agentId } : {})
+			}
 			ws.send(JSON.stringify(reply))
-		} else if (text && trimmed === DEBUG_COMMAND)
-			ws.send(
-				JSON.stringify({
-					type: 'prompt_result',
-					accepted: false,
-					activeTurn: null,
-					...(parsed.agentId ? { agentId: parsed.agentId } : {})
-				} satisfies ServerMessage)
-			)
+		}
 
 		await scheduleDailyAlarm(this.ctx, this.getSession())
 
@@ -769,13 +712,11 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'snapshot') {
-			const snapshot = await this.getSession(parsed.agentId).snapshot()
+			const snapshot = await this.getSession(agentId).snapshot()
 			ws.send(
 				JSON.stringify({
-					type: 'snapshot',
-					messages: sessionEntries2DisplayMessages(snapshot.entries),
-					activeTurn: snapshot.activeTurn,
-					...(parsed.agentId ? { agentId: parsed.agentId } : {})
+					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
+					...(agentId ? { agentId } : {})
 				} satisfies ServerMessage)
 			)
 			return
@@ -796,7 +737,8 @@ export class Frieren extends DurableObject<Env> {
 				ws.send(
 					JSON.stringify({
 						type: 'debug',
-						message: await session.systemPrompt()
+						message: await session.systemPrompt(),
+						...(agentId ? { agentId } : {})
 					} satisfies ServerMessage)
 				)
 				return
@@ -871,9 +813,7 @@ export class Frieren extends DurableObject<Env> {
 			const snapshot = await this.getSession().snapshot()
 			server.send(
 				JSON.stringify({
-					type: 'snapshot',
-					messages: sessionEntries2DisplayMessages(snapshot.entries),
-					activeTurn: snapshot.activeTurn,
+					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
 					participants
 				} satisfies ServerMessage)
 			)
