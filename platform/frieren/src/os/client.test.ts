@@ -428,6 +428,7 @@ describe('FrierenClient agent', () => {
 			}
 		])
 			socket.emit({ type: 'event', agentId: 'notes', event })
+		socket.emit({ type: 'event', agentId: 'notes', event: { type: 'agent_end' } })
 
 		expect(client.agent.snapshot('notes')).toMatchObject({
 			isStreaming: true,
@@ -437,6 +438,53 @@ describe('FrierenClient agent', () => {
 				expect.objectContaining({ role: 'assistant', content: 'Live reply' })
 			]
 		})
+
+		socket.emit({
+			type: 'transcript',
+			agentId: 'notes',
+			messages: [
+				{ role: 'user', content: 'app question' },
+				{ role: 'assistant', content: 'Saved reply' }
+			]
+		})
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			messages: [
+				expect.objectContaining({ role: 'user', content: 'app question' }),
+				expect.objectContaining({ role: 'assistant', content: 'Saved reply' })
+			]
+		})
+		socket.emit({ type: 'busy', agentId: 'notes', value: false })
+		expect(client.agent.snapshot('notes').isStreaming).toBe(false)
+	})
+
+	test('follows another tab through keyed busy and transcript frames', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+
+		socket.emit({ type: 'busy', agentId: 'notes', value: true })
+		expect(client.agent.snapshot('notes').isStreaming).toBe(true)
+		expect(client.agent.prompt('overlap', 'notes')).toBe(false)
+
+		socket.emit({
+			type: 'transcript',
+			agentId: 'notes',
+			messages: [
+				{ role: 'user', content: 'question from another tab' },
+				{ role: 'assistant', content: 'shared reply' }
+			]
+		})
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			messages: [
+				expect.objectContaining({ role: 'user', content: 'question from another tab' }),
+				expect.objectContaining({ role: 'assistant', content: 'shared reply' })
+			]
+		})
+
+		socket.emit({ type: 'busy', agentId: 'notes', value: false })
+		expect(client.agent.snapshot('notes').isStreaming).toBe(false)
 	})
 
 	test('does not submit a turn while app history loads', async () => {

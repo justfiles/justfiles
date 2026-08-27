@@ -160,6 +160,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	let revision = 0
 	let active: { key: string; revision: number; built: Promise<Built> } | null = null
 	let watching: Promise<void> | null = null
+	let running: { aborted: boolean } | null = null
 
 	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
 	// become the system prompt, the agent's name becomes the banner title — and they change
@@ -307,9 +308,17 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		run: (assistant: Assistant) => Promise<string>,
 		onEvent?: TurnListener
 	): Promise<string> {
+		if (running) return ''
+		const turn = { aborted: false }
+		running = turn
 		emit({ type: 'busy', value: true })
+		let built: Built | null = null
 		try {
-			const built = await getBuilt()
+			built = await getBuilt()
+			if (turn.aborted) {
+				emit({ type: 'transcript', entries: [...(await built.assistant.history())] })
+				return ''
+			}
 			// Stream the raw turn events to a streaming host for this turn only; unsubscribed in
 			// the inner `finally` so events never leak across turns.
 			const unsubscribe = onEvent ? built.assistant.subscribe(onEvent) : undefined
@@ -318,25 +327,33 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 				const answer = await run(built.assistant)
 				const asked = built.takePending()
 				emit({ type: 'transcript', entries: [...(await built.assistant.history())] })
+				if (turn.aborted) return ''
 				ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
 				return answer
 			} finally {
 				unsubscribe?.()
 			}
 		} catch (error) {
+			if (turn.aborted) {
+				if (built) emit({ type: 'transcript', entries: [...(await built.assistant.history())] })
+				return ''
+			}
 			const failure = classifyFailure(error)
 			console.error('[agent] turn failed:', error)
 			emit({ type: 'error', message: failure.body, route: failure.route })
 			ping('error', failure.body, failure.route)
 			return ''
 		} finally {
+			if (running === turn) running = null
 			emit({ type: 'busy', value: false })
 		}
 	}
 
-	// Cancel the in-flight turn, leaving the session intact. Guards on the cached runtime so
-	// an abort never builds a runtime just to cancel nothing.
+	// Keep the request while the runtime builds. Once built, abort the assistant too in case
+	// the turn has moved past setup and reached the model.
 	function abort(): void {
+		if (!running) return
+		running.aborted = true
 		if (!active) return
 		void active.built
 			.then(({ assistant }) => assistant.abort())

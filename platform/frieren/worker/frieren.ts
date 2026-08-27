@@ -124,6 +124,8 @@ type ServerMessage =
 			participants?: DisplayParticipants
 			agentId?: string
 	  }
+	| { type: 'busy'; value: boolean; agentId?: string }
+	| { type: 'transcript'; messages: ReadonlyArray<DisplayMessage>; agentId?: string }
 	| { type: 'event'; event: AgentEvent; agentId?: string }
 	| { type: 'error'; message: string; agentId?: string }
 	// TODO: remove debug
@@ -484,11 +486,19 @@ export class Frieren extends DurableObject<Env> {
 			this.agentSubscriptions.set(
 				key,
 				session.subscribe((event) => {
-					if (event.type === 'error')
+					const scope = agentId ? { agentId } : {}
+					if (event.type === 'busy') this.broadcast({ type: 'busy', value: event.value, ...scope })
+					else if (event.type === 'transcript')
+						this.broadcast({
+							type: 'transcript',
+							messages: sessionEntries2DisplayMessages(event.entries),
+							...scope
+						})
+					else
 						this.broadcast({
 							type: 'error',
 							message: event.message,
-							...(agentId ? { agentId } : {})
+							...scope
 						})
 				})
 			)
@@ -666,7 +676,6 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		await scheduleDailyAlarm(this.ctx, this.getSession())
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -682,8 +691,27 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		const text = parsed.type === 'prompt' ? parsed.text : undefined
+		const trimmed = text?.trim() ?? ''
+		const session = parsed.type === 'abort' || text ? this.getSession(parsed.agentId) : null
+		if (parsed.type === 'abort') session?.abort()
+		// Start before the first await so a following abort cannot overtake setup.
+		const work =
+			text && session && trimmed !== DEBUG_COMMAND
+				? session.prompt(text, 'user', (event) =>
+						ws.send(
+							JSON.stringify({
+								type: 'event',
+								event,
+								...(parsed.agentId ? { agentId: parsed.agentId } : {})
+							} satisfies ServerMessage)
+						)
+					)
+				: null
+
+		await scheduleDailyAlarm(this.ctx, this.getSession())
+
 		if (parsed.type === 'abort') {
-			this.getSession(parsed.agentId).abort()
 			return
 		}
 
@@ -708,9 +736,7 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'prompt' && parsed.text) {
-			const session = this.getSession(parsed.agentId)
-			const trimmed = parsed.text.trim()
+		if (text && session) {
 			if (trimmed === DEBUG_COMMAND) {
 				ws.send(
 					JSON.stringify({
@@ -720,19 +746,7 @@ export class Frieren extends DurableObject<Env> {
 				)
 				return
 			}
-
-			// Stream the raw turn events (live token/tool deltas) to this socket. The session's
-			// turn runner catches + classifies failures (surfaced via the `error` subscription
-			// wired where the session is built), so this never rejects.
-			await session.prompt(parsed.text, 'user', (event) =>
-				ws.send(
-					JSON.stringify({
-						type: 'event',
-						event,
-						...(parsed.agentId ? { agentId: parsed.agentId } : {})
-					} satisfies ServerMessage)
-				)
-			)
+			await work
 		}
 	}
 

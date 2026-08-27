@@ -112,6 +112,7 @@ export async function createAssistant({
 
 	let session = await route({ agentId, kind }, volume, text)
 	await initSession()
+	let running: { aborted: boolean } | null = null
 
 	return {
 		prompt,
@@ -126,6 +127,7 @@ export async function createAssistant({
 	}
 
 	async function abort() {
+		if (running) running.aborted = true
 		agent.abort()
 	}
 
@@ -144,20 +146,28 @@ export async function createAssistant({
 	}
 
 	async function prompt(message: string, source: PromptSource = 'user') {
-		// The turn boundary, and the point where a peer's turns join this device's conversation:
-		// `agent.state.messages` is a CACHE of the transcript, not the source of truth, and sync
-		// may have delivered a shard since the last turn. Rehydrating here also refreshes the
-		// session's active leaf, so this turn parents onto the merged lineage instead of forking
-		// off whatever was newest when this host booted (#300).
-		await rehydrate()
-		if (appContext) agent.state.systemPrompt = await resolveSystemPrompt()
-		const offset = agent.state.messages.length
+		const turn = { aborted: false }
+		running = turn
+		let offset = 0
 		let promptError: unknown
 		try {
-			await agent.prompt(message)
-			await retryEmptyAssistant(offset)
-		} catch (error) {
-			promptError = error
+			// The turn boundary, and the point where a peer's turns join this device's conversation:
+			// `agent.state.messages` is a CACHE of the transcript, not the source of truth, and sync
+			// may have delivered a shard since the last turn. Rehydrating here also refreshes the
+			// session's active leaf, so this turn parents onto the merged lineage instead of forking
+			// off whatever was newest when this host booted (#300).
+			await rehydrate()
+			if (appContext) agent.state.systemPrompt = await resolveSystemPrompt()
+			if (turn.aborted) return ''
+			offset = agent.state.messages.length
+			try {
+				await agent.prompt(message)
+				await retryEmptyAssistant(offset)
+			} catch (error) {
+				promptError = error
+			}
+		} finally {
+			if (running === turn) running = null
 		}
 
 		const newMessages = agent.state.messages.slice(offset)
@@ -172,6 +182,7 @@ export async function createAssistant({
 		}
 
 		const answer = assistantText(newMessages)
+		if (turn.aborted) return answer
 		const diagnostic = promptError
 			? { message: errorMessage(promptError) }
 			: newMessages

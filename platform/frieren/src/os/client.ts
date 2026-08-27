@@ -134,6 +134,7 @@ interface ServerFrame {
 	apps?: unknown
 	messages?: HistoryMessage[]
 	message?: string
+	value?: boolean
 	id?: string
 	event?: AgentEventFrame
 	notification?: Notification
@@ -331,7 +332,6 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				break
 
 			case 'agent_end':
-				state.phase = 'idle'
 				state.currentAssistantId = null
 				emitAgent(state)
 				break
@@ -441,11 +441,23 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'history') {
+		if (data.type === 'busy') {
+			const state = getAgentState(data.agentId)
+			state.phase = data.value ? 'working' : 'idle'
+			if (!data.value) state.currentAssistantId = null
+			emitAgent(state)
+			return
+		}
+
+		if (data.type === 'history' || data.type === 'transcript') {
 			const state = getAgentState(data.agentId)
 			// App history is request/response. Ignore an old response after another tab starts a
 			// turn. Main history is pushed once on connect, so it has no loading phase to match.
-			if (state.phase === 'working' || (data.agentId && state.phase !== 'loadingHistory')) return
+			if (
+				data.type === 'history' &&
+				(state.phase === 'working' || (data.agentId && state.phase !== 'loadingHistory'))
+			)
+				return
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
@@ -467,7 +479,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				}))
 			}))
 			state.messages = restored
-			state.phase = 'idle'
+			if (data.type === 'history') state.phase = 'idle'
 			emitAgents()
 			return
 		}
@@ -475,7 +487,6 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (data.type === 'error') {
 			const state = getAgentState(data.agentId)
 			console.error('Server error:', data.message)
-			state.phase = 'idle'
 			state.currentAssistantId = null
 			// Surface the failure in the transcript (an error-styled block), not just the
 			// console — e.g. "turn on an AI provider in Settings" when no AI is enabled.

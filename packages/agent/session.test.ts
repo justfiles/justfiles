@@ -12,7 +12,12 @@ import { DEFAULT_AGENT_NAME, PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
 import type { SessionEntry } from './session.manager.ts'
-import { classifyFailure, createAgentSession, type SessionEvent } from './session.ts'
+import {
+	classifyFailure,
+	createAgentSession,
+	createAppAgentSession,
+	type SessionEvent
+} from './session.ts'
 
 const encoder = new TextEncoder()
 
@@ -133,6 +138,96 @@ describe('createAgentSession', () => {
 			{ role: 'user', content: 'hello' },
 			{ role: 'assistant', content: 'Hi there' }
 		])
+	})
+
+	test('an abort during backend setup prevents the turn', async () => {
+		const gate = deferred()
+		const seen: unknown[] = []
+		const events: SessionEvent[] = []
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				await gate.promise
+				return scriptedBackend([assistant([{ type: 'text', text: 'too late' }])], '', { seen })
+			},
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		const turn = session.prompt('do the thing')
+		session.abort()
+		gate.resolve()
+
+		await expect(turn).resolves.toBe('')
+		expect(seen).toEqual([])
+		expect(events).toEqual([
+			{ type: 'busy', value: true },
+			{ type: 'transcript', entries: [] },
+			{ type: 'busy', value: false }
+		])
+	})
+
+	test('an abort during app prompt setup prevents the turn', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const seen: unknown[] = []
+		let blocked = false
+		const session = createAppAgentSession(
+			{
+				volume: volume(memStore()),
+				backend: scriptedBackend([assistant([{ type: 'text', text: 'too late' }])], '', { seen }),
+				compaction: NO_COMPACTION
+			},
+			'app.notes',
+			async () => {
+				if (blocked) {
+					entered.resolve()
+					await gate.promise
+				}
+				return 'Notes app'
+			}
+		)
+		await session.history()
+		blocked = true
+
+		const turn = session.prompt('delete everything')
+		await entered.promise
+		session.abort()
+		gate.resolve()
+
+		await expect(turn).resolves.toBe('')
+		expect(seen).toEqual([])
+	})
+
+	test('an aborted model request does not report an error', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const events: SessionEvent[] = []
+		const notifications: unknown[] = []
+		const base = scriptedBackend([])
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: {
+				...base,
+				streamFn: async () => {
+					entered.resolve()
+					await gate.promise
+					throw new Error('Request was aborted')
+				}
+			},
+			compaction: NO_COMPACTION,
+			notify: (notification) => notifications.push(notification)
+		})
+		session.subscribe((event) => events.push(event))
+
+		const turn = session.prompt('do the thing')
+		await entered.promise
+		session.abort()
+		gate.resolve()
+
+		await expect(turn).resolves.toBe('')
+		expect(events.map((event) => event.type)).toEqual(['busy', 'transcript', 'busy'])
+		expect(notifications).toEqual([])
 	})
 
 	test('an ask_user turn pings a question notification', async () => {
