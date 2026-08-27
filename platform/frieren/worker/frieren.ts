@@ -99,9 +99,10 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 }
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_open' | 'app_close'
+	type: 'prompt' | 'abort' | 'history' | 'app_open' | 'app_close'
 	text?: string
 	id?: string
+	agentId?: string
 }
 
 import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
@@ -117,9 +118,14 @@ type ServerMessage =
 			participants?: DisplayParticipants
 			apps?: Awaited<ReturnType<FrierenApps['list']>>
 	  }
-	| { type: 'history'; messages: ReadonlyArray<DisplayMessage>; participants?: DisplayParticipants }
-	| { type: 'event'; event: AgentEvent }
-	| { type: 'error'; message: string }
+	| {
+			type: 'history'
+			messages: ReadonlyArray<DisplayMessage>
+			participants?: DisplayParticipants
+			agentId?: string
+	  }
+	| { type: 'event'; event: AgentEvent; agentId?: string }
+	| { type: 'error'; message: string; agentId?: string }
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
 	| { type: 'app_open'; id: string }
@@ -202,7 +208,7 @@ export class Frieren extends DurableObject<Env> {
 	private accounts?: HostAccounts
 	private apps?: FrierenApps
 	private readonly agents: AgentSessions
-	private agentSubscription?: () => void
+	private readonly agentSubscriptions = new Map<string, () => void>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -471,12 +477,21 @@ export class Frieren extends DurableObject<Env> {
 		return this.apps
 	}
 
-	private getSession(): AgentSession {
-		const session = this.agents.main()
-		if (!this.agentSubscription)
-			this.agentSubscription = session.subscribe((event) => {
-				if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
-			})
+	private getSession(agentId?: string): AgentSession {
+		const session = agentId ? this.agents.app(agentId) : this.agents.main()
+		const key = agentId ?? ''
+		if (!this.agentSubscriptions.has(key))
+			this.agentSubscriptions.set(
+				key,
+				session.subscribe((event) => {
+					if (event.type === 'error')
+						this.broadcast({
+							type: 'error',
+							message: event.message,
+							...(agentId ? { agentId } : {})
+						})
+				})
+			)
 		return session
 	}
 
@@ -668,7 +683,18 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'abort') {
-			this.getSession().abort()
+			this.getSession(parsed.agentId).abort()
+			return
+		}
+
+		if (parsed.type === 'history') {
+			ws.send(
+				JSON.stringify({
+					type: 'history',
+					messages: sessionEntries2DisplayMessages(await this.getSession(parsed.agentId).history()),
+					...(parsed.agentId ? { agentId: parsed.agentId } : {})
+				} satisfies ServerMessage)
+			)
 			return
 		}
 
@@ -683,12 +709,13 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'prompt' && parsed.text) {
+			const session = this.getSession(parsed.agentId)
 			const trimmed = parsed.text.trim()
 			if (trimmed === DEBUG_COMMAND) {
 				ws.send(
 					JSON.stringify({
 						type: 'debug',
-						message: await this.getSession().systemPrompt()
+						message: await session.systemPrompt()
 					} satisfies ServerMessage)
 				)
 				return
@@ -697,8 +724,14 @@ export class Frieren extends DurableObject<Env> {
 			// Stream the raw turn events (live token/tool deltas) to this socket. The session's
 			// turn runner catches + classifies failures (surfaced via the `error` subscription
 			// wired where the session is built), so this never rejects.
-			await this.getSession().prompt(parsed.text, 'user', (event) =>
-				ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
+			await session.prompt(parsed.text, 'user', (event) =>
+				ws.send(
+					JSON.stringify({
+						type: 'event',
+						event,
+						...(parsed.agentId ? { agentId: parsed.agentId } : {})
+					} satisfies ServerMessage)
+				)
 			)
 		}
 	}

@@ -221,14 +221,13 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		// Read where the rest of the identity is read, so the watch above refreshes it too.
 		const builtTitle = options.title ?? (await readAgentName(volume))
 		const text = createText(llm)
-		const appContext = await target.appContext?.()
 		const assistant = await createAssistant({
 			volume,
 			agent: createAgent(llm),
 			text,
 			agentId: target.agentId,
 			kind: target.kind,
-			appContext,
+			appContext: target.appContext,
 			compaction,
 			getTimezone: timezone,
 			readDoc,

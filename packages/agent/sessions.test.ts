@@ -70,7 +70,8 @@ describe('app sessions', () => {
 		expect(model.calls).toHaveLength(2)
 		expect(model.calls[1]?.systemPrompt).toContain('# attached app')
 		expect(model.calls[1]?.systemPrompt).toContain('Dictionary (`justfiles.dictionary`)')
-		expect(model.calls[1]?.systemPrompt).toContain('app inspect justfiles.dictionary')
+		expect(model.calls[1]?.systemPrompt).toContain('Current reducer state:\n{}')
+		expect(model.calls[1]?.systemPrompt).toContain('app actions justfiles.dictionary')
 		expect(model.calls[1]?.tools).toEqual(model.calls[0]?.tools)
 		expect(model.calls[1]?.tools).toContain('bash')
 
@@ -112,6 +113,25 @@ describe('app sessions', () => {
 		expect(await app.nextMaintenanceAt(new Date())).toBeNull()
 		await app.runMaintenance()
 		expect(model.completions).toBe(1)
+	})
+
+	test('refreshes attached app state before each turn', async () => {
+		let state: unknown = { query: 'first' }
+		const model = backend(['first reply', 'second reply'])
+		const app = createAgentSessions({
+			volume: volume(memStore()),
+			backend: model.value,
+			apps: controller(() => state),
+			compaction: NO_COMPACTION
+		}).app('justfiles.dictionary')
+
+		await app.prompt('first question')
+		state = { query: 'second' }
+		await app.prompt('second question')
+
+		expect(model.calls[0]?.systemPrompt).toContain('"query": "first"')
+		expect(model.calls[1]?.systemPrompt).toContain('"query": "second"')
+		expect(model.calls[1]?.systemPrompt).not.toContain('"query": "first"')
 	})
 
 	test('compact without writing app-thread notes to the daily journal', async () => {
@@ -191,12 +211,12 @@ function assistant(text: string, tokens = 0): AssistantMessage {
 	}
 }
 
-function controller(): AppController {
+function controller(readState: () => unknown = () => ({})): AppController {
 	const inspect = async (id: string) => ({
 		id,
 		name: id === 'justfiles.dictionary' ? 'Dictionary' : 'Files',
 		description: '',
-		state: {},
+		state: readState(),
 		actions: {}
 	})
 	return {
@@ -205,7 +225,7 @@ function controller(): AppController {
 		close: async () => {},
 		current: async () => undefined,
 		inspect,
-		state: async () => ({}),
+		state: async () => readState(),
 		run: async () => undefined
 	}
 }

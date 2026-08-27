@@ -22,8 +22,10 @@ export interface AgentSession {
 	personalized: boolean
 	refreshIdentity: () => Promise<void>
 	isStreaming: boolean
+	isLoadingHistory: boolean
 	sendMessage: () => void
 	abort: () => void
+	loadHistory: () => void
 }
 
 export interface AgentConnection {

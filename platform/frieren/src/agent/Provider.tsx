@@ -27,7 +27,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	const agent = useAgentClient()
 	const snapshot = useSyncExternalStore(agent.subscribe, agent.snapshot)
 	const { getToken } = useAuth()
-	const [input, setInput] = useState('')
+	const [inputs, setInputs] = useState<Record<string, string>>({})
 	const [identity, setIdentity] = useState({
 		agentName: undefined as string | undefined,
 		// Until the first read lands, the default built-in: it is in the bundle, so there is
@@ -112,30 +112,17 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		})().catch(() => {})
 	}, [expression, avatar, hash, faces, getToken, refreshIdentity])
 
-	const sendMessage = () => {
-		const text = input.trim()
-		if (!text || snapshot.connectionState !== 'ready') return
-		agent.prompt(text)
-		setInput('')
-	}
-
 	const value: AgentContextValue = {
-		session: {
-			messages: snapshot.messages,
-			input,
-			setInput,
-			userName: snapshot.userName,
-			agentName: identity.agentName ?? snapshot.agentName,
+		agent,
+		inputs,
+		setInput: (agentId, value) => setInputs((current) => ({ ...current, [agentId ?? '']: value })),
+		identity: {
+			agentName: identity.agentName,
 			avatarUrl: identity.avatarUrl,
-			avatarFaces: identity.faces,
-			expression: snapshot.expression,
-			personalized: identity.personalized,
-			refreshIdentity,
-			isStreaming: snapshot.isStreaming,
-			sendMessage,
-			abort: () => agent.abort()
+			faces: identity.faces,
+			personalized: identity.personalized
 		},
-		connection: { state: snapshot.connectionState }
+		refreshIdentity
 	}
 
 	return <AgentContext.Provider value={value}>{children}</AgentContext.Provider>

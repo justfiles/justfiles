@@ -1,9 +1,19 @@
-import { createContext, useContext } from 'react'
+import type { Expression } from '@justfiles/agent/expression'
+import { createContext, useCallback, useContext, useSyncExternalStore } from 'react'
+import type { AgentClient } from '../os/client'
 import type { AgentConnection, AgentSession } from './types'
 
 export interface AgentContextValue {
-	session: AgentSession
-	connection: AgentConnection
+	agent: AgentClient
+	inputs: Record<string, string>
+	setInput: (agentId: string | undefined, value: string) => void
+	identity: {
+		agentName?: string
+		avatarUrl: string
+		faces: Partial<Record<Expression, string>>
+		personalized: boolean
+	}
+	refreshIdentity: () => Promise<void>
 }
 
 export const AgentContext = createContext<AgentContextValue | null>(null)
@@ -14,10 +24,41 @@ function useAgentContext(): AgentContextValue {
 	return value
 }
 
-export function useAgentSession(): AgentSession {
-	return useAgentContext().session
+export function useAgentSession(agentId?: string): AgentSession {
+	const { agent, inputs, setInput, identity, refreshIdentity } = useAgentContext()
+	const subscribe = useCallback(
+		(listener: () => void) => agent.subscribe(listener, agentId),
+		[agent, agentId]
+	)
+	const snapshot = useSyncExternalStore(subscribe, () => agent.snapshot(agentId))
+	const loadHistory = useCallback(() => agent.loadHistory(agentId), [agent, agentId])
+	const input = inputs[agentId ?? ''] ?? ''
+	return {
+		messages: snapshot.messages,
+		input,
+		setInput: (value) => setInput(agentId, value),
+		userName: snapshot.userName,
+		agentName: identity.agentName ?? snapshot.agentName,
+		avatarUrl: identity.avatarUrl,
+		avatarFaces: identity.faces,
+		expression: snapshot.expression,
+		personalized: identity.personalized,
+		refreshIdentity,
+		isStreaming: snapshot.isStreaming,
+		isLoadingHistory: snapshot.isLoadingHistory,
+		sendMessage: () => {
+			const text = input.trim()
+			if (!text || snapshot.connectionState !== 'ready') return
+			agent.prompt(text, agentId)
+			setInput(agentId, '')
+		},
+		abort: () => agent.abort(agentId),
+		loadHistory
+	}
 }
 
 export function useAgentConnection(): AgentConnection {
-	return useAgentContext().connection
+	const { agent } = useAgentContext()
+	const snapshot = useSyncExternalStore(agent.subscribe, agent.snapshot)
+	return { state: snapshot.connectionState }
 }

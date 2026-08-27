@@ -28,7 +28,7 @@ type AssistantProps = {
 	text: LLMText
 	agentId: string
 	kind: 'main' | 'app'
-	appContext?: string
+	appContext?: () => Promise<string>
 	compaction: CompactionSettings
 	getTimezone?: () => Promise<string> | string
 	// How the host reads a doc body by id (disk on quay, asset fetch on frieren). WHICH docs
@@ -150,6 +150,7 @@ export async function createAssistant({
 		// session's active leaf, so this turn parents onto the merged lineage instead of forking
 		// off whatever was newest when this host booted (#300).
 		await rehydrate()
+		if (appContext) agent.state.systemPrompt = await resolveSystemPrompt()
 		const offset = agent.state.messages.length
 		let promptError: unknown
 		try {
@@ -260,7 +261,7 @@ export async function createAssistant({
 		}
 
 		if (appsPrompt) prompt.add('# apps', appsPrompt)
-		if (appContext) prompt.add('# attached app', appContext)
+		if (appContext) prompt.add('# attached app', await appContext())
 
 		const skillsBlock = await skillRegistry.index()
 		if (skillsBlock) prompt.add('# skills', skillsBlock)

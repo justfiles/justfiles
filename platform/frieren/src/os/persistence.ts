@@ -1,5 +1,11 @@
 import type { Volume } from '../fs'
-import { initialState, type OsState, type OsWindow, type WindowRect } from './state'
+import {
+	initialAttachedAgentState,
+	initialState,
+	type OsState,
+	type OsWindow,
+	type WindowRect
+} from './state'
 
 const PATH = '/system/os-state.json'
 
@@ -30,7 +36,16 @@ function normalize(state: OsState): OsState {
 		if (rect && !placements[id]) placements[id] = rect
 		windows[id] = rest.kind ? rest : { ...rest, kind: 'app' as const, appId: rest.appId ?? id }
 	}
-	return { ...state, windows, placements }
+	const saved = (state as Partial<OsState>).assistant
+	const assistant = {
+		mode: saved?.mode === 'sidebar' ? 'sidebar' : 'sheet',
+		size: {
+			sheet: saved?.size?.sheet ?? initialAttachedAgentState.size.sheet,
+			sidebar: saved?.size?.sidebar ?? initialAttachedAgentState.size.sidebar
+		},
+		open: saved?.open ?? {}
+	} as const
+	return { ...state, windows, placements, assistant }
 }
 
 // Read the persisted snapshot. Any failure falls back to a fresh state rather
@@ -71,11 +86,14 @@ export function serializeOsState(state: OsState): string {
 	const placements: OsState['placements'] = {}
 	for (const [id, rect] of Object.entries(state.placements))
 		if (persistable(id)) placements[id] = rect
+	const open: OsState['assistant']['open'] = {}
+	for (const id of Object.keys(state.assistant.open)) if (persistable(id)) open[id] = true
 	return JSON.stringify({
 		...state,
 		windows,
 		openOrder: state.openOrder.filter(persistable),
 		focusStack: state.focusStack.filter(persistable),
-		placements
+		placements,
+		assistant: { ...state.assistant, open }
 	})
 }

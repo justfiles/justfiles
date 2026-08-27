@@ -355,6 +355,46 @@ describe('FrierenClient agent', () => {
 		})
 	})
 
+	test('keeps app sessions separate and tags their frames', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+		socket.emit({
+			type: 'history',
+			agentId: 'notes',
+			messages: [{ role: 'user', content: 'app history' }]
+		})
+		socket.emit({
+			type: 'event',
+			agentId: 'notes',
+			event: { type: 'agent_start' }
+		})
+
+		client.agent.prompt('main turn')
+		client.agent.prompt('app turn', 'notes')
+		client.agent.abort('notes')
+		client.agent.loadHistory('notes')
+
+		expect(client.agent.snapshot().messages).toEqual([
+			expect.objectContaining({ role: 'user', content: 'main turn' })
+		])
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			messages: [
+				expect.objectContaining({ role: 'user', content: 'app history' }),
+				expect.objectContaining({ role: 'user', content: 'app turn' })
+			]
+		})
+		expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual(
+			expect.arrayContaining([
+				{ type: 'prompt', text: 'main turn' },
+				{ type: 'prompt', text: 'app turn', agentId: 'notes' },
+				{ type: 'abort', agentId: 'notes' },
+				{ type: 'history', agentId: 'notes' }
+			])
+		)
+	})
+
 	test('prompt is a no-op before the connection is ready', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()

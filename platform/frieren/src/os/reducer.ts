@@ -125,5 +125,32 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 				windows: { ...state.windows, [action.id]: { ...window, mode: action.mode } }
 			}
 		}
+
+		case 'assistant.setMode':
+			if (state.assistant.mode === action.mode) return state
+			return { ...state, assistant: { ...state.assistant, mode: action.mode } }
+
+		case 'assistant.setSize':
+			if (
+				state.assistant.size.sheet === action.size.sheet &&
+				state.assistant.size.sidebar === action.size.sidebar
+			)
+				return state
+			return { ...state, assistant: { ...state.assistant, size: action.size } }
+
+		case 'assistant.setOpen': {
+			const open = Boolean(state.assistant.open[action.id])
+			if (open === action.open) return state
+			if (action.open)
+				return {
+					...state,
+					assistant: {
+						...state.assistant,
+						open: { ...state.assistant.open, [action.id]: true }
+					}
+				}
+			const { [action.id]: _closed, ...rest } = state.assistant.open
+			return { ...state, assistant: { ...state.assistant, open: rest } }
+		}
 	}
 }

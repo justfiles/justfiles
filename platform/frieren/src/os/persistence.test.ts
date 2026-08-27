@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { Volume } from '../fs'
 import { loadSnapshot, serializeOsState } from './persistence'
-import type { OsState } from './state'
+import { initialAttachedAgentState, type OsState } from './state'
 
 const PATH = '/system/os-state.json'
 
@@ -19,7 +19,8 @@ const base: OsState = {
 	windows: { files: { id: 'files', kind: 'app', appId: 'files', mode: 'floating' } },
 	openOrder: ['files'],
 	focusStack: ['files'],
-	placements: { files: { x: 10, y: 20, w: 300, h: 200 } }
+	placements: { files: { x: 10, y: 20, w: 300, h: 200 } },
+	assistant: initialAttachedAgentState
 }
 
 describe('serializeOsState', () => {
@@ -49,6 +50,19 @@ describe('serializeOsState', () => {
 		expect(parsed.placements['.preview.x']).toBeUndefined()
 		expect(parsed.openOrder).toEqual(['files'])
 	})
+
+	test('drops ephemeral attached panels', () => {
+		const parsed = JSON.parse(
+			serializeOsState({
+				...base,
+				assistant: {
+					...base.assistant,
+					open: { files: true, '.preview.x': true }
+				}
+			})
+		)
+		expect(parsed.assistant.open).toEqual({ files: true })
+	})
 })
 
 describe('loadSnapshot', () => {
@@ -71,6 +85,7 @@ describe('loadSnapshot', () => {
 		const state = await loadSnapshot(fakeVolume({ [PATH]: legacy }))
 		expect(state.placements.files).toEqual({ x: 1, y: 2, w: 3, h: 4 })
 		expect((state.windows.files as { rect?: unknown }).rect).toBeUndefined()
+		expect(state.assistant).toEqual(initialAttachedAgentState)
 	})
 
 	test('round-trips a placements snapshot without clobbering placements', async () => {
