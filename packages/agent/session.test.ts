@@ -390,14 +390,21 @@ describe('createAgentSession', () => {
 		})
 	})
 
-	test('a history read failure keeps the last known transcript', async () => {
+	test.each([
+		'readFile',
+		'readdir'
+	] as const)('a %s history failure keeps the last known transcript', async (failure) => {
 		let failReads = false
 		const base = volume(memStore())
 		const vol = {
 			...base,
 			readFile: async (path: string) => {
-				if (failReads) throw new Error('EIO: temporary read failure')
+				if (failReads && failure === 'readFile') throw new Error('EIO: temporary read failure')
 				return base.readFile(path)
+			},
+			readdir: async (path: string) => {
+				if (failReads && failure === 'readdir') throw new Error('EIO: temporary read failure')
+				return base.readdir(path)
 			}
 		} satisfies Volume
 		const session = createAgentSession({

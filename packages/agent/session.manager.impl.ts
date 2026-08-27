@@ -80,8 +80,9 @@ async function listShards(volume: Volume, dir: string) {
 	let names: string[]
 	try {
 		names = (await volume.readdir(dir)).map((d) => d.name)
-	} catch {
-		return []
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith('ENOENT')) return []
+		throw error
 	}
 	return names.flatMap((name) => {
 		const parsed = parseSessionShard(name)
