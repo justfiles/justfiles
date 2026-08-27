@@ -110,6 +110,12 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 	const projectApps = options.projectApps ?? reconcileProjection
 	const port = options.port ?? (process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000)
 	let refresh!: RuntimeRefresh
+	let agentFrames = Promise.resolve()
+	const serializeAgentFrame = (send: () => void | Promise<void>): Promise<void> => {
+		const result = agentFrames.then(send)
+		agentFrames = result.catch((error) => console.error('[agent] frame failed:', error))
+		return result
+	}
 
 	const server = Bun.serve({
 		// Loopback only (never Bun's default 0.0.0.0, which would expose us to the LAN).
@@ -199,10 +205,12 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 
 			async open(ws) {
 				if (ws.data.type === 'agent') {
-					// Live view of the one shared session: subscribe to the `agent` topic, then
-					// send the current snapshot so the chat mounts on it.
+					// Subscribe before queuing the snapshot. Lifecycle publishes use the same
+					// queue, so none can overtake the snapshot while it is being captured.
 					ws.subscribe('agent')
-					sendAgent(ws, await agentSnapshot())
+					await serializeAgentFrame(async () => {
+						sendAgent(ws, await agentSnapshot())
+					})
 					return
 				}
 				if (ws.data.type === 'app') {
@@ -231,7 +239,10 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					) as AgentRequest
 					if (req.type === 'prompt') sendAgent(ws, await promptAgent(req.text))
 					else if (req.type === 'abort') abortAgent(req.turnId)
-					else if (req.type === 'snapshot') sendAgent(ws, await agentSnapshot())
+					else if (req.type === 'snapshot')
+						await serializeAgentFrame(async () => {
+							sendAgent(ws, await agentSnapshot())
+						})
 					return
 				}
 				if (ws.data.type === 'app') {
@@ -285,7 +296,11 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 	)
 
 	// Every agent turn publishes the shared lifecycle frames to each subscribed chat.
-	setAgentBroadcast((event) => server.publish('agent', JSON.stringify(event satisfies AgentFrame)))
+	setAgentBroadcast((event) => {
+		void serializeAgentFrame(() => {
+			server.publish('agent', JSON.stringify(event satisfies AgentFrame))
+		})
+	})
 
 	// Project the catalog into ~/Applications/Kodama Apps/*.app (real macOS apps). One-way, the
 	// Volume wins; previews stay out. Fire-and-forget — a projection failure never takes the
