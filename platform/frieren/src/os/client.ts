@@ -45,6 +45,8 @@ export interface AgentSnapshot {
 	userName: string
 	agentName: string
 	messages: AgentMessage[]
+	// True from local prompt acceptance through agent_end, including backend setup before the
+	// server emits agent_start.
 	isStreaming: boolean
 	isLoadingHistory: boolean
 	// The emotion the agent last tagged, or null until it tags one — and null again once it has
@@ -55,7 +57,8 @@ export interface AgentSnapshot {
 }
 
 export interface AgentClient {
-	prompt(text: string, agentId?: string): void
+	// True when the keyed session was idle and accepted the turn.
+	prompt(text: string, agentId?: string): boolean
 	abort(agentId?: string): void
 	loadHistory(agentId?: string): void
 	subscribe(listener: () => void, agentId?: string): () => void
@@ -136,10 +139,11 @@ interface ServerFrame {
 	notification?: Notification
 }
 
+type AgentPhase = 'idle' | 'loadingHistory' | 'working'
+
 interface AgentState {
 	messages: AgentMessage[]
-	isStreaming: boolean
-	isLoadingHistory: boolean
+	phase: AgentPhase
 	currentAssistantId: string | null
 	expressionParser: ReturnType<typeof createExpressionParser>
 	expression: Expression | null
@@ -182,8 +186,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (state) return state
 		state = {
 			messages: [],
-			isStreaming: false,
-			isLoadingHistory: false,
+			phase: 'idle',
 			currentAssistantId: null,
 			expressionParser: createExpressionParser(),
 			expression: null,
@@ -204,8 +207,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			userName,
 			agentName,
 			messages: state.messages,
-			isStreaming: state.isStreaming,
-			isLoadingHistory: state.isLoadingHistory,
+			isStreaming: state.phase === 'working',
+			isLoadingHistory: state.phase === 'loadingHistory',
 			expression: state.expression
 		}
 	}
@@ -221,8 +224,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	function stopAgentWork(): void {
 		for (const state of agentStates.values()) {
-			state.isStreaming = false
-			state.isLoadingHistory = false
+			state.phase = 'idle'
+			state.currentAssistantId = null
 		}
 		emitAgents()
 	}
@@ -318,20 +321,17 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		const state = getAgentState(agentId)
 		switch (event.type) {
 			case 'agent_start':
-				// A new turn starts from a clean face. This has to happen HERE, not at the first
-				// assistant message: `isStreaming` flips on now, which un-rests the avatar, and the
-				// model's first token is a second or more away — long enough to flash the previous
-				// reply's emotion. "Omit the tag to continue" holds WITHIN a turn (across tool
-				// calls), never across turns. Going through `showExpression` is what keeps the
-				// previous emotion from being cut short by an eager follow-up prompt: it rests now if
-				// the minimum has been served, and as soon as it has otherwise.
+				// A new turn starts from a clean face. Do this at agent_start rather than the first
+				// assistant message because the model's first token may take a second or more. Going
+				// through showExpression keeps the prior emotion on screen for its minimum time.
 				showExpression(state, null)
-				state.isStreaming = true
+				state.phase = 'working'
+				state.currentAssistantId = null
 				emitAgent(state)
 				break
 
 			case 'agent_end':
-				state.isStreaming = false
+				state.phase = 'idle'
 				state.currentAssistantId = null
 				emitAgent(state)
 				break
@@ -443,6 +443,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 		if (data.type === 'history') {
 			const state = getAgentState(data.agentId)
+			// App history is request/response. Ignore an old response after another tab starts a
+			// turn. Main history is pushed once on connect, so it has no loading phase to match.
+			if (state.phase === 'working' || (data.agentId && state.phase !== 'loadingHistory')) return
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
@@ -464,7 +467,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				}))
 			}))
 			state.messages = restored
-			state.isLoadingHistory = false
+			state.phase = 'idle'
 			emitAgents()
 			return
 		}
@@ -472,7 +475,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (data.type === 'error') {
 			const state = getAgentState(data.agentId)
 			console.error('Server error:', data.message)
-			state.isStreaming = false
+			state.phase = 'idle'
+			state.currentAssistantId = null
 			// Surface the failure in the transcript (an error-styled block), not just the
 			// console — e.g. "turn on an AI provider in Settings" when no AI is enabled.
 			const body = typeof data.message === 'string' ? data.message : 'Something went wrong.'
@@ -587,13 +591,16 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	const agent: AgentClient = {
 		prompt(text, agentId) {
-			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
+			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return false
 			const state = getAgentState(agentId)
+			if (state.phase !== 'idle') return false
+			state.phase = 'working'
 			setMessages(state, [
 				...state.messages,
 				{ id: crypto.randomUUID(), role: 'user', content: text }
 			])
 			socket.send(JSON.stringify({ type: 'prompt', text, ...(agentId ? { agentId } : {}) }))
+			return true
 		},
 		abort(agentId) {
 			socket?.send(JSON.stringify({ type: 'abort', ...(agentId ? { agentId } : {}) }))
@@ -601,8 +608,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		loadHistory(agentId) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
 			const state = getAgentState(agentId)
-			if (state.isLoadingHistory || state.isStreaming) return
-			state.isLoadingHistory = true
+			if (state.phase !== 'idle') return
+			state.phase = 'loadingHistory'
 			emitAgent(state)
 			socket.send(JSON.stringify({ type: 'history', ...(agentId ? { agentId } : {}) }))
 		},

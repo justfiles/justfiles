@@ -50,9 +50,7 @@ export function useAgentSession(agentId?: string): AgentSession {
 		isLoadingHistory: snapshot.isLoadingHistory,
 		sendMessage: () => {
 			const text = input.trim()
-			if (!text || snapshot.connectionState !== 'ready') return
-			agent.prompt(text, agentId)
-			setInput(agentId, '')
+			if (text && agent.prompt(text, agentId)) setInput(agentId, '')
 		},
 		abort: () => agent.abort(agentId),
 		loadHistory

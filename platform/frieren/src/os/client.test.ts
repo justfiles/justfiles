@@ -344,11 +344,13 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 
-		client.agent.prompt('do the thing')
+		expect(client.agent.prompt('do the thing')).toBe(true)
 
-		expect(client.agent.snapshot().messages).toEqual([
-			expect.objectContaining({ role: 'user', content: 'do the thing' })
-		])
+		expect(client.agent.snapshot()).toMatchObject({
+			isStreaming: true,
+			messages: [expect.objectContaining({ role: 'user', content: 'do the thing' })]
+		})
+		expect(client.agent.prompt('do something else')).toBe(false)
 		expect(socket.sent.map((s) => JSON.parse(s))).toContainEqual({
 			type: 'prompt',
 			text: 'do the thing'
@@ -365,14 +367,13 @@ describe('FrierenClient agent', () => {
 			agentId: 'notes',
 			messages: [{ role: 'user', content: 'app history' }]
 		})
+		client.agent.prompt('main turn')
+		client.agent.prompt('app turn', 'notes')
 		socket.emit({
 			type: 'event',
 			agentId: 'notes',
 			event: { type: 'agent_start' }
 		})
-
-		client.agent.prompt('main turn')
-		client.agent.prompt('app turn', 'notes')
 		client.agent.abort('notes')
 
 		expect(client.agent.snapshot().messages).toEqual([
@@ -396,10 +397,28 @@ describe('FrierenClient agent', () => {
 		)
 	})
 
-	test('does not replace a live app turn with history', async () => {
+	test('marks a submitted app turn working before agent_start', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
+		expect(client.agent.prompt('app question', 'notes')).toBe(true)
+		client.agent.loadHistory('notes')
+
+		expect(socket.sent.map((frame) => JSON.parse(frame))).not.toContainEqual({
+			type: 'history',
+			agentId: 'notes'
+		})
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			isLoadingHistory: false,
+			messages: [expect.objectContaining({ role: 'user', content: 'app question' })]
+		})
+		socket.emit({
+			type: 'history',
+			agentId: 'notes',
+			messages: [{ role: 'user', content: 'stale history' }]
+		})
+
 		for (const event of [
 			{ type: 'agent_start' },
 			{ type: 'message_start', message: { role: 'assistant' } },
@@ -410,16 +429,35 @@ describe('FrierenClient agent', () => {
 		])
 			socket.emit({ type: 'event', agentId: 'notes', event })
 
-		client.agent.loadHistory('notes')
-
-		expect(socket.sent.map((frame) => JSON.parse(frame))).not.toContainEqual({
-			type: 'history',
-			agentId: 'notes'
-		})
 		expect(client.agent.snapshot('notes')).toMatchObject({
 			isStreaming: true,
 			isLoadingHistory: false,
-			messages: [expect.objectContaining({ role: 'assistant', content: 'Live reply' })]
+			messages: [
+				expect.objectContaining({ role: 'user', content: 'app question' }),
+				expect.objectContaining({ role: 'assistant', content: 'Live reply' })
+			]
+		})
+	})
+
+	test('does not submit a turn while app history loads', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+		client.agent.loadHistory('notes')
+
+		expect(client.agent.prompt('too soon', 'notes')).toBe(false)
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: false,
+			isLoadingHistory: true,
+			messages: []
+		})
+
+		socket.emit({ type: 'history', agentId: 'notes', messages: [] })
+		expect(client.agent.prompt('now ready', 'notes')).toBe(true)
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			isLoadingHistory: false,
+			messages: [expect.objectContaining({ role: 'user', content: 'now ready' })]
 		})
 	})
 
@@ -427,7 +465,7 @@ describe('FrierenClient agent', () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 
-		client.agent.prompt('too early')
+		expect(client.agent.prompt('too early')).toBe(false)
 
 		expect(client.agent.snapshot().messages).toEqual([])
 		expect(socket.sent).toEqual([])
@@ -437,7 +475,7 @@ describe('FrierenClient agent', () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		socket.emit({ type: 'event', event: { type: 'agent_start' } })
+		expect(client.agent.prompt('pending')).toBe(true)
 
 		socket.close()
 
