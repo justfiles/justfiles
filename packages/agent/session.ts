@@ -405,7 +405,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		try {
 			return await built.assistant.history()
 		} catch {
-			return []
+			return transcript
 		}
 	}
 

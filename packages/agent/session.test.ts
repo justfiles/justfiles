@@ -390,6 +390,49 @@ describe('createAgentSession', () => {
 		})
 	})
 
+	test('a history read failure keeps the last known transcript', async () => {
+		let failReads = false
+		const base = volume(memStore())
+		const vol = {
+			...base,
+			readFile: async (path: string) => {
+				if (failReads) throw new Error('EIO: temporary read failure')
+				return base.readFile(path)
+			}
+		} satisfies Volume
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend(
+				[
+					assistant([{ type: 'text', text: 'first answer' }]),
+					assistant([{ type: 'text', text: 'second answer' }])
+				],
+				'',
+				{
+					beforeStream: async (call) => {
+						failReads = call === 2
+					}
+				}
+			),
+			compaction: NO_COMPACTION
+		})
+
+		await prompt(session, 'first question')
+		const transcript = (await session.snapshot()).entries
+		const events: SessionEvent[] = []
+		session.subscribe((event) => events.push(event))
+
+		await prompt(session, 'second question')
+		expect(events.at(-1)).toMatchObject({
+			type: 'turn_finished',
+			status: 'completed',
+			entries: transcript
+		})
+
+		failReads = false
+		expect((await session.snapshot()).entries).toHaveLength(4)
+	})
+
 	test('newSession clears the transcript', async () => {
 		const vol = volume(memStore())
 		const session = createAgentSession({
