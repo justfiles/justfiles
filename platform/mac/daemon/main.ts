@@ -237,7 +237,12 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					const req = JSON.parse(
 						typeof message === 'string' ? message : message.toString()
 					) as AgentRequest
-					if (req.type === 'prompt') sendAgent(ws, await promptAgent(req.text))
+					if (req.type === 'prompt')
+						await promptAgent(req.text, (result) => {
+							void serializeAgentFrame(() => {
+								sendAgent(ws, result)
+							})
+						})
 					else if (req.type === 'abort') abortAgent(req.turnId)
 					else if (req.type === 'snapshot')
 						await serializeAgentFrame(async () => {

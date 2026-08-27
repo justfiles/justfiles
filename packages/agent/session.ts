@@ -127,6 +127,12 @@ interface PendingQuestion {
 	options: string[]
 }
 
+interface RunningTurn {
+	turn: ActiveTurn
+	aborted: boolean
+	done: Promise<string> | null
+}
+
 // The lazily-built runtime: the composed Assistant, the text helper (for maintenance), and
 // a read-and-clear for the pending `ask_user` question.
 interface Built {
@@ -177,7 +183,8 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	let revision = 0
 	let active: { key: string; revision: number; built: Promise<Built> } | null = null
 	let watching: Promise<void> | null = null
-	let running: { turn: ActiveTurn; aborted: boolean } | null = null
+	let running: RunningTurn | null = null
+	let resetting: Promise<void> | null = null
 	let transcript: readonly SessionEntry[] = []
 
 	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
@@ -328,14 +335,21 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	): StartTurnResult {
 		if (running) return { accepted: false, activeTurn: running.turn }
 		const turn = { id: crypto.randomUUID(), input }
-		const runState = { turn, aborted: false }
+		const runState: RunningTurn = { turn, aborted: false, done: null }
 		running = runState
+		// Let subscribers observe admission before backend or skill setup starts.
+		const reset = resetting
+		const done = Promise.resolve().then(async () => {
+			if (reset) await reset
+			return runTurn(runState, run, onEvent)
+		})
+		runState.done = done
 		emit({ type: 'turn_started', turn })
-		return { accepted: true, turn, done: runTurn(runState, run, onEvent) }
+		return { accepted: true, turn, done }
 	}
 
 	async function runTurn(
-		state: { turn: ActiveTurn; aborted: boolean },
+		state: RunningTurn,
 		run: (assistant: Assistant) => Promise<string>,
 		onEvent?: TurnListener
 	): Promise<string> {
@@ -409,24 +423,42 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		}
 	}
 
-	// Start a fresh session and reset every subscriber (an empty transcript). Best-effort: a
-	// build failure still emits the empty transcript so the UI clears.
-	async function newSession(): Promise<void> {
-		try {
-			const built = await getBuilt()
-			built.takePending()
-			await built.assistant.newSession()
-		} catch (error) {
-			console.error('[agent] newSession failed:', error)
+	// Stop the old turn before replacing its session. A turn admitted during the reset waits
+	// at the run boundary, so it cannot write through the session swap.
+	function newSession(): Promise<void> {
+		if (resetting) return resetting
+		const reset = Promise.resolve().then(async () => {
+			const activeTurn = running
+			if (activeTurn) {
+				abort(activeTurn.turn.id)
+				await activeTurn.done
+			}
+			try {
+				const built = await getBuilt()
+				built.takePending()
+				await built.assistant.newSession()
+			} catch (error) {
+				console.error('[agent] newSession failed:', error)
+			}
+			transcript = []
+			emit({
+				type: 'snapshot',
+				snapshot: { entries: transcript, activeTurn: running?.turn ?? null }
+			})
+		})
+		resetting = reset
+		const clearReset = () => {
+			if (resetting === reset) resetting = null
 		}
-		transcript = []
-		emit({ type: 'snapshot', snapshot: { entries: transcript, activeTurn: running?.turn ?? null } })
+		void reset.then(clearReset, clearReset)
+		return reset
 	}
 
-	async function applySkill(id: string): Promise<string> {
-		const body = await (await getBuilt()).assistant.readSkill(id)
-		const result = startTurn({ text: body, source: 'user' }, (assistant) => assistant.prompt(body))
-		return result.accepted ? result.done : ''
+	function applySkill(id: string): Promise<string> {
+		const result = startTurn({ text: `/${id}`, source: 'user' }, (assistant) =>
+			assistant.applySkill(id)
+		)
+		return result.accepted ? result.done : Promise.resolve('')
 	}
 
 	// Only the main session rolls yesterday's daily notes into permanent memory.

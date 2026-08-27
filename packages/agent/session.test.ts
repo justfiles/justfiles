@@ -461,6 +461,80 @@ describe('createAgentSession', () => {
 		expect(await history(session)).toEqual([])
 	})
 
+	test('newSession stops an active turn before clearing it', async () => {
+		const gate = deferred()
+		const events: SessionEvent[] = []
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				await gate.promise
+				return scriptedBackend([assistant([{ type: 'text', text: 'too late' }])])
+			},
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		const turn = start(session, 'old question')
+		const fresh = session.newSession()
+		gate.resolve()
+		await Promise.all([turn.done, fresh])
+
+		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished', 'snapshot'])
+		expect(events[1]).toMatchObject({ status: 'interrupted' })
+		expect(await history(session)).toEqual([])
+	})
+
+	test('a turn admitted during newSession waits for the reset', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const base = volume(memStore())
+		let holdRead = false
+		let calls = 0
+		const vol = {
+			...base,
+			readdir: async (path: string) => {
+				if (holdRead) {
+					holdRead = false
+					entered.resolve()
+					await gate.promise
+				}
+				return base.readdir(path)
+			}
+		} satisfies Volume
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend(
+				[
+					assistant([{ type: 'text', text: 'old answer' }]),
+					assistant([{ type: 'text', text: 'new answer' }])
+				],
+				'',
+				{
+					beforeStream: async (call) => {
+						calls = call
+					}
+				}
+			),
+			compaction: NO_COMPACTION
+		})
+
+		await prompt(session, 'old question')
+		holdRead = true
+		const fresh = session.newSession()
+		await entered.promise
+		const next = start(session, 'new question')
+		await Promise.resolve()
+		expect(calls).toBe(1)
+
+		gate.resolve()
+		await Promise.all([fresh, next.done])
+		expect(calls).toBe(2)
+		expect(await history(session)).toMatchObject([
+			{ role: 'user', content: 'new question' },
+			{ role: 'assistant', content: 'new answer' }
+		])
+	})
+
 	test('applySkill loads a Volume skill and runs it as a turn', async () => {
 		const vol = volume(memStore())
 		await vol.mkdir('/system/skills', { recursive: true })
@@ -476,6 +550,34 @@ describe('createAgentSession', () => {
 
 		expect((await session.listSkills()).map((skill) => skill.id)).toEqual(['greet'])
 		await expect(session.applySkill('greet')).resolves.toBe('Hello!')
+	})
+
+	test.each([
+		'backend',
+		'skill'
+	] as const)('applySkill admits before a %s failure', async (failure) => {
+		const gate = deferred()
+		const events: SessionEvent[] = []
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend:
+				failure === 'backend'
+					? async () => {
+							await gate.promise
+							throw new Error('AI is turned off')
+						}
+					: scriptedBackend([]),
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		const result = session.applySkill('gone')
+		expect(events).toMatchObject([
+			{ type: 'turn_started', turn: { input: { text: '/gone', source: 'user' } } }
+		])
+		gate.resolve()
+		await expect(result).resolves.toBe('')
+		expect(events.at(-1)).toMatchObject({ type: 'turn_finished', status: 'failed' })
 	})
 
 	test('runMaintenance consolidates yesterday notes into memory', async () => {

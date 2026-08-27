@@ -122,12 +122,15 @@ export async function agentSnapshot(): Promise<AgentFrame> {
 	return sessionEventFrame({ type: 'snapshot', snapshot })
 }
 
-// Start the turn now and return its admission result to the requesting chat. Completion
-// reaches every chat through the session subscription above.
-export async function promptAgent(message: string): Promise<AgentPromptResult> {
+// Start the turn and report admission before its async setup can finish. Completion reaches
+// every chat through the session subscription above.
+export async function promptAgent(
+	message: string,
+	reply: (result: AgentPromptResult) => void
+): Promise<void> {
 	const result = (await getSession()).start(message)
+	reply(promptResult(result))
 	if (result.accepted) void result.done
-	return promptResult(result)
 }
 
 // Cancel the in-flight turn, leaving the session intact so later prompts still work. Guards

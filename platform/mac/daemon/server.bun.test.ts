@@ -74,6 +74,7 @@ interface Frame {
 interface Client {
 	send(value: unknown): void
 	waitFor(pred: (m: Frame) => boolean, timeoutMs?: number): Promise<Frame>
+	frames(): readonly Frame[]
 	close(): void
 }
 
@@ -110,6 +111,7 @@ function connect(path: string): Promise<Client> {
 						})
 					})
 				},
+				frames: () => messages,
 				close: () => ws.close()
 			})
 		)
@@ -190,6 +192,14 @@ test('/agent snapshots state and correlates a prompt with its finish', async () 
 	expect(finished.transcript).toEqual([])
 	expect(typeof finished.error?.message).toBe('string')
 	expect((finished.error?.message ?? '').length).toBeGreaterThan(0)
+	expect(
+		client
+			.frames()
+			.filter((frame) =>
+				['turn_started', 'prompt_result', 'turn_finished'].includes(frame.type ?? '')
+			)
+			.map((frame) => frame.type)
+	).toEqual(['turn_started', 'prompt_result', 'turn_finished'])
 	client.close()
 })
 
