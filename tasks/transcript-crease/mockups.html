@@ -1,0 +1,1087 @@
+<!doctype html>
+<title>The Crease</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+	--bg: #f2f3f5;
+	--sheet: #ffffff;
+	--sheet-2: #fafbfb;
+	--ink: #17181c;
+	--ink-soft: #5c6069;
+	--ink-faint: #8b9099;
+	--rule: #dfe1e5;
+	--rule-soft: #ebedef;
+	--accent: #1f5f55;
+	--accent-wash: #e6efec;
+	--warn: #8a5a00;
+	--warn-wash: #f8f0dd;
+	--shadow: 0 1px 2px rgba(23, 24, 28, .05), 0 10px 30px -18px rgba(23, 24, 28, .22);
+	--crease: rgba(23, 24, 28, .30);
+
+	/* packages/design/design.css, reproduced inside the mockups */
+	--f-window: #ffffff;
+	--f-surface: #f5f5f4;
+	--f-text: #1c1c1c;
+	--f-rule: #d0d0cd;
+	--f-focus: #0a84ff;
+	--f-onfocus: #ffffff;
+	--f-control: #ffffff;
+	--f-run: #b06f00;
+	--f-danger: #d70015;
+
+	--display: "Bricolage Grotesque", "Helvetica Neue", sans-serif;
+	--body: "IBM Plex Sans", system-ui, sans-serif;
+	--mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--bg: #131417; --sheet: #1b1d21; --sheet-2: #202329;
+		--ink: #e8e9ec; --ink-soft: #9aa0a9; --ink-faint: #6d737d;
+		--rule: #2c2f35; --rule-soft: #24272c;
+		--accent: #4fb3a1; --accent-wash: #17302c;
+		--warn: #e0b055; --warn-wash: #2e2716;
+		--shadow: 0 1px 2px rgba(0,0,0,.4), 0 14px 34px -20px rgba(0,0,0,.8);
+		--crease: rgba(0, 0, 0, .55);
+		--f-window: #1e1e1e; --f-surface: #2c2c2e; --f-text: #ebebf0;
+		--f-rule: #3a3a3c; --f-control: #48484a; --f-run: #f0a52a; --f-danger: #ff453a;
+	}
+}
+:root[data-theme="dark"] {
+	--bg: #131417; --sheet: #1b1d21; --sheet-2: #202329;
+	--ink: #e8e9ec; --ink-soft: #9aa0a9; --ink-faint: #6d737d;
+	--rule: #2c2f35; --rule-soft: #24272c;
+	--accent: #4fb3a1; --accent-wash: #17302c;
+	--warn: #e0b055; --warn-wash: #2e2716;
+	--shadow: 0 1px 2px rgba(0,0,0,.4), 0 14px 34px -20px rgba(0,0,0,.8);
+	--crease: rgba(0, 0, 0, .55);
+	--f-window: #1e1e1e; --f-surface: #2c2c2e; --f-text: #ebebf0;
+	--f-rule: #3a3a3c; --f-control: #48484a; --f-run: #f0a52a; --f-danger: #ff453a;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; line-height: 1.15; }
+p { margin: 0; }
+code, kbd { font-family: var(--mono); }
+a { color: var(--accent); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.wrap { max-width: 940px; margin: 0 auto; padding: 44px 24px 96px; display: flex; flex-direction: column; gap: 52px; }
+@media (max-width: 640px) { .wrap { padding: 32px 16px 72px; } }
+
+.eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+hr.rule { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+.lede { color: var(--ink-soft); max-width: 66ch; }
+
+.hero { display: flex; flex-direction: column; gap: 18px; }
+.hero h1 { font-size: clamp(38px, 6.5vw, 58px); font-weight: 800; letter-spacing: -.03em; }
+.hero .deck { font-size: 18px; color: var(--ink-soft); max-width: 64ch; }
+
+.callout { border-left: 3px solid var(--accent); background: var(--accent-wash); padding: 16px 20px; border-radius: 0 4px 4px 0; font-size: 14.5px; }
+.callout.warn { border-left-color: var(--warn); background: var(--warn-wash); }
+.callout h3 { font-family: var(--body); font-size: 14.5px; font-weight: 600; margin-bottom: 6px; }
+
+/* ══════════════════════════════════════════════════════════════
+   THE CHAT FRAME
+   ══════════════════════════════════════════════════════════════ */
+.frame {
+	position: relative; background: var(--f-window); color: var(--f-text);
+	border: 1px solid var(--f-rule); border-radius: 8px; overflow: hidden;
+	font-size: 13px; display: flex; flex-direction: column;
+}
+.frame-bar {
+	flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+	padding: 7px 10px; background: var(--f-surface); border-bottom: 1px solid var(--f-rule);
+	font-size: 11px; color: var(--f-text);
+}
+.lights { display: flex; gap: 5px; }
+.lights i { width: 9px; height: 9px; border-radius: 999px; display: block; }
+.lights i:nth-child(1) { background: #ff5f57; }
+.lights i:nth-child(2) { background: #febc2e; }
+.lights i:nth-child(3) { background: #28c840; }
+.frame-bar .title { font-weight: 500; opacity: .8; }
+.frame-bar .spacer { flex: 1; }
+
+.thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; scrollbar-width: thin; }
+.msg { display: flex; }
+.msg.user { justify-content: flex-end; }
+.msg.user > span { max-width: 78%; padding: 6px 12px; border-radius: 14px; background: var(--f-focus); color: var(--f-onfocus); }
+.msg.bot > div { max-width: 100%; padding: 4px 0; }
+.msg.bot code { font-size: .9em; padding: .1em .35em; border-radius: 4px; background: color-mix(in srgb, currentColor 12%, transparent); }
+.caret { display: inline-block; width: 2px; height: 1em; margin-left: 1px; vertical-align: text-bottom; background: currentColor; animation: caret 1s step-end infinite; }
+@keyframes caret { 0%, 100% { opacity: 1 } 50% { opacity: 0 } }
+
+.frame-foot { flex: none; border-top: 1px solid var(--f-rule); padding: 7px 10px; display: flex; align-items: center; gap: 8px; color: color-mix(in srgb, var(--f-text) 45%, transparent); font-size: 11px; }
+
+.play { font: inherit; font-size: 11px; font-family: var(--mono); padding: 3px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--f-rule); background: var(--f-control); color: var(--f-text); transition: background 120ms ease, opacity 120ms ease; }
+.play:hover { background: color-mix(in srgb, currentColor 8%, var(--f-control)); }
+.play:disabled { opacity: .4; cursor: default; }
+
+.seg { display: flex; border: 1px solid var(--f-rule); border-radius: 999px; overflow: hidden; font-family: var(--mono); font-size: 10px; }
+.seg button { font: inherit; padding: 3px 9px; border: 0; cursor: pointer; background: var(--f-control); color: var(--f-text); opacity: .5; transition: background 140ms ease, opacity 140ms ease; }
+.seg button[data-on="true"] { background: var(--f-focus); color: var(--f-onfocus); opacity: 1; }
+.seg-label { font-family: var(--mono); font-size: 10px; opacity: .45; letter-spacing: .05em; text-transform: uppercase; }
+
+/* ══════════════════════════════════════════════════════════════
+   THE CREASE — one element, two phases, any interior kind.
+   ══════════════════════════════════════════════════════════════ */
+.crease { display: flex; flex-direction: column; }
+
+.crease-head {
+	display: flex; align-items: center; gap: 7px;
+	width: 100%; padding: 3px 0; margin: 0;
+	background: none; border: 0; color: inherit;
+	font-family: var(--mono); font-size: 11px; text-align: left;
+	transition: opacity 260ms ease, background 160ms ease;
+}
+.crease[data-phase="running"] .crease-head { opacity: .58; cursor: default; }
+.crease[data-phase="settled"] .crease-head { opacity: .34; cursor: pointer; }
+.crease[data-phase="settled"] .crease-head:hover,
+.crease[data-open="true"] .crease-head { opacity: .8; }
+
+.mark { position: relative; flex: none; width: 11px; height: 11px; display: grid; place-items: center; }
+.mark > * { grid-area: 1 / 1; transition: opacity 200ms ease, transform 300ms cubic-bezier(.2, .9, .25, 1); }
+.spin { width: 9px; height: 9px; border-radius: 999px; border: 1.5px solid color-mix(in srgb, var(--f-run) 28%, transparent); border-top-color: var(--f-run); animation: spin .7s linear infinite; }
+.foldmark { opacity: 0; transform: scale(.5); }
+.crease[data-phase="settled"] .spin { opacity: 0; transform: scale(.5); animation: none; }
+.crease[data-phase="settled"] .foldmark { opacity: 1; transform: none; }
+.crease[data-open="true"] .foldmark { transform: rotate(90deg); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.label { display: grid; min-width: 0; }
+.label > span { grid-area: 1 / 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity 200ms ease; }
+.crease[data-phase="running"] .rest, .crease[data-phase="settled"] .live { opacity: 0; }
+.live .swap { transition: opacity 130ms ease; }
+.crease[data-swap="true"] .live .swap { opacity: 0; }
+.elapsed { opacity: .55; font-variant-numeric: tabular-nums; }
+
+.crease-rule { flex: 1; height: 1px; min-width: 0; background: currentColor; opacity: 0; transform: scaleX(0); transform-origin: left; transition: opacity 240ms ease 60ms, transform 320ms cubic-bezier(.2, .9, .25, 1) 60ms; }
+.crease[data-phase="settled"] .crease-rule { opacity: .3; transform: none; }
+.chev { flex: none; opacity: 0; transition: opacity 200ms ease; }
+.crease[data-phase="settled"] .chev { opacity: .55; }
+
+.crease-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 320ms cubic-bezier(.2, .9, .25, 1); }
+.crease[data-open="true"] .crease-body { grid-template-rows: 1fr; }
+.crease-body > .clip { overflow: hidden; }
+
+.crease-sheet {
+	transform-origin: top center;
+	transform: perspective(760px) rotateX(-74deg);
+	opacity: 0;
+	transition: transform 340ms cubic-bezier(.2, .9, .25, 1), opacity 200ms ease;
+	border: 1px solid var(--f-rule); border-radius: 5px; background: var(--f-window);
+	box-shadow: inset 0 9px 11px -9px var(--crease);
+	margin: 3px 0 2px; overflow: hidden;
+}
+.crease[data-open="true"] .crease-sheet { transform: perspective(760px) rotateX(0deg); opacity: 1; }
+
+.crease[data-failed="true"] .crease-head { opacity: .75; color: var(--f-danger); }
+.crease[data-failed="true"] .crease-sheet { border-color: color-mix(in srgb, var(--f-danger) 45%, var(--f-rule)); }
+
+/* ── rows: uniform shell, kind-owned body ── */
+.trace { position: relative; padding-left: 9px; display: flex; flex-direction: column; }
+.trace::before { content: ""; position: absolute; left: 3px; top: 4px; bottom: 4px; width: 3px; border-radius: 2px; background: color-mix(in srgb, currentColor 14%, transparent); }
+.trow { border-bottom: 1px solid color-mix(in srgb, var(--f-rule) 55%, transparent); }
+.trow:last-child { border-bottom: 0; }
+.trow-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: none; border: 0; cursor: pointer; color: inherit; font: inherit; font-family: var(--mono); font-size: 11px; text-align: left; transition: background 120ms ease; }
+.trow-head:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+.trow-head .tname { font-weight: 500; flex: none; min-width: 42px; }
+.trow-head .targ { flex: 1; min-width: 0; opacity: .55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow-head .tms { flex: none; opacity: .4; font-variant-numeric: tabular-nums; }
+.tdot { width: 5px; height: 5px; border-radius: 999px; background: currentColor; opacity: .45; flex: none; }
+.tdot[data-err="true"] { background: var(--f-danger); opacity: 1; }
+.trow-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 220ms ease; }
+.trow[data-open="true"] .trow-body { grid-template-rows: 1fr; }
+.trow-body > div { overflow: hidden; }
+
+/* kind: tool → machine text */
+.trow-body pre { margin: 0 8px 8px; padding: 6px 8px; border-radius: 4px; background: var(--f-surface); border: 1px solid var(--f-rule); font-family: var(--mono); font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* kind: think / compact → natural language, never mono */
+.prose {
+	margin: 0 8px 8px; padding: 2px 0 2px 10px;
+	border-left: 2px solid color-mix(in srgb, currentColor 18%, transparent);
+	font-family: var(--body); font-size: 12px; line-height: 1.65;
+	opacity: .72;
+}
+.prose p + p { margin-top: .5em; }
+
+/* kind: delegate → the crease recurses */
+.nested { margin: 0 8px 8px; }
+.nested .trace { padding-left: 9px; }
+
+/* ══ the morph breakdown ══ */
+.morph { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; }
+.morph figure { margin: 0; display: flex; flex-direction: column; gap: 9px; }
+.morph .cell { background: var(--f-window); border: 1px solid var(--f-rule); border-radius: 6px; padding: 10px 12px; color: var(--f-text); }
+.morph .cell .crease-head, .morph .cell .crease-rule, .morph .cell .mark > *, .morph .cell .label > span, .morph .cell .chev { transition: none; }
+.morph figcaption { font-size: 13px; color: var(--ink-soft); }
+.morph figcaption b { display: block; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 3px; }
+
+/* ══ kinds table ══ */
+.tbl-scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); }
+table.kinds { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 620px; }
+table.kinds th, table.kinds td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+table.kinds thead th { font-family: var(--mono); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; background: var(--sheet-2); border-bottom: 1px solid var(--rule); }
+table.kinds tbody tr:last-child td { border-bottom: 0; }
+table.kinds td:first-child { font-family: var(--mono); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+table.kinds td:nth-child(2) { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); white-space: nowrap; }
+table.kinds .now { color: var(--ink-soft); }
+table.kinds .bad { color: var(--warn); font-weight: 500; }
+table.kinds tbody tr[data-future="true"] td { opacity: .62; }
+table.kinds tbody tr[data-future="true"] td:first-child::after { content: " ·"; color: var(--ink-faint); }
+
+/* ══ uniform / varies ══ */
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 22px; }
+.split > div { display: flex; flex-direction: column; gap: 10px; }
+.split h3 { font-family: var(--body); font-size: 13px; font-weight: 600; }
+.split h3 em { font-style: normal; font-family: var(--mono); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
+.split ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; color: var(--ink-soft); }
+.split ol li::marker { color: var(--ink-faint); font-family: var(--mono); font-size: 11px; }
+.split .demo { background: var(--f-window); color: var(--f-text); border: 1px solid var(--f-rule); border-radius: 6px; padding: 8px; }
+
+/* ══ edge cases ══ */
+.edges { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+.edge { display: flex; flex-direction: column; gap: 10px; }
+.edge .thread { padding: 10px 12px; }
+.edge h3 { font-family: var(--body); font-size: 14px; font-weight: 600; }
+.edge p { font-size: 13.5px; color: var(--ink-soft); }
+
+.build { display: flex; flex-direction: column; gap: 12px; }
+.build details { border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); overflow: hidden; }
+.build summary { cursor: pointer; padding: 13px 18px; font-weight: 600; font-size: 14px; list-style: none; display: flex; align-items: center; gap: 10px; }
+.build summary::-webkit-details-marker { display: none; }
+.build summary::before { content: "+"; font-family: var(--mono); color: var(--accent); font-weight: 400; }
+.build details[open] summary::before { content: "–"; }
+.build details[open] summary { border-bottom: 1px solid var(--rule-soft); }
+.build .inner { padding: 16px 18px 18px 38px; display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; color: var(--ink-soft); }
+.build .inner strong { color: var(--ink); font-weight: 600; }
+.build pre { margin: 0; padding: 12px 14px; border-radius: 4px; overflow-x: auto; background: var(--sheet-2); border: 1px solid var(--rule-soft); font-size: 12px; line-height: 1.6; color: var(--ink); }
+.build .cmt { color: var(--ink-faint); }
+.build .kw { color: var(--accent); }
+.build .del { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+	.crease-sheet { transform: none !important; }
+	.crease-rule { transform: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+	<header class="hero">
+		<span class="eyebrow">packages/ui/Transcript.tsx · design language</span>
+		<h1>The Crease</h1>
+		<p class="deck">
+			One fold for everything the agent does that isn't addressed to you. Thinking and tool calls
+			today; planning, delegation and retrieval later. The crease was never really about tool
+			calls — it's about the difference between <b>the response</b> and <b>the interior</b>.
+		</p>
+		<div class="callout warn">
+			<h3>The codebase already agrees with you — and it's already costing something</h3>
+			<code>SessionEntry</code> in <code>packages/agent/session.manager.ts</code> is exactly the
+			unified stream you're describing: an ordered list of typed entries where
+			<code>assistant_thinking</code>, <code>tool_call</code>, <code>compaction</code>,
+			<code>branch_summary</code> and <code>label</code> all sit side by side. The flattening
+			happens in <code>sessionEntries2DisplayMessages</code>, and three of those five kinds
+			currently come out the other side <b>rendered as if the agent said them out loud</b>.
+			Details below.
+		</div>
+	</header>
+
+	<hr class="rule">
+
+	<!-- ═══ THE LINE ═══ -->
+	<section style="display:flex;flex-direction:column;gap:20px">
+		<div>
+			<span class="eyebrow">Where the line goes</span>
+			<h2 style="font-size:26px;margin:8px 0 10px">Response, or interior</h2>
+			<p class="lede">
+				A design language needs one test, not a list. This one holds up for every kind that
+				exists today and every kind I can think of adding: <b>does it invite or require the
+				user's attention?</b> If yes it's the response and it renders plainly. If no it's
+				interior and it folds. Note that this puts <em>options</em> and permission prompts firmly
+				on the response side — they block — while everything the agent does on its own initiative
+				folds away.
+			</p>
+		</div>
+
+		<div class="tbl-scroll">
+			<table class="kinds">
+				<thead>
+					<tr><th>Kind</th><th>SessionEntry</th><th>Folded label</th><th>Body renders as</th><th>Today</th></tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>think</td><td>assistant_thinking</td>
+						<td>Thought for 6.2s</td><td>Prose</td>
+						<td class="now">Collapsed row, but <b>below</b> the reply</td>
+					</tr>
+					<tr>
+						<td>tool</td><td>tool_call + tool_result</td>
+						<td>Reading Transcript.tsx</td><td>Mono, args + result</td>
+						<td class="now">Always-open row, below the reply</td>
+					</tr>
+					<tr>
+						<td>compact</td><td>compaction</td>
+						<td>Compacted 40 messages</td><td>Prose</td>
+						<td class="bad">Rendered as assistant speech</td>
+					</tr>
+					<tr>
+						<td>branch</td><td>branch_summary</td>
+						<td>Summarised a branch</td><td>Prose</td>
+						<td class="bad">Rendered as assistant speech</td>
+					</tr>
+					<tr>
+						<td>label</td><td>label</td>
+						<td>Marked "before refactor"</td><td>One line</td>
+						<td class="bad">Rendered as <code>[label]</code> speech</td>
+					</tr>
+					<tr data-future="true">
+						<td>delegate</td><td>—</td>
+						<td>Ran a subagent · 12 steps</td><td>A nested crease</td>
+						<td class="now">Doesn't exist yet</td>
+					</tr>
+					<tr data-future="true">
+						<td>recall</td><td>—</td>
+						<td>Recalled 3 notes</td><td>List of hits</td>
+						<td class="now">Doesn't exist yet</td>
+					</tr>
+					<tr data-future="true">
+						<td>wait</td><td>—</td>
+						<td>Waited on CI · 4m 12s</td><td>Poll log</td>
+						<td class="now">Doesn't exist yet</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<p style="color:var(--ink-faint);font-size:12.5px;font-family:var(--mono)">
+			Rows marked · are speculative, included to prove the language stretches.
+		</p>
+	</section>
+
+	<hr class="rule">
+
+	<!-- ═══ MAIN MOCKUP ═══ -->
+	<section>
+		<span class="eyebrow">Live</span>
+		<h2 style="font-size:26px;margin:8px 0 10px">One seam, mixed kinds</h2>
+		<p class="lede" style="margin-bottom:20px">
+			The played turn thinks twice and calls four tools. The turn above it delegates to a subagent
+			— open that one to see the crease nest. Both switches change real decisions, not styling.
+		</p>
+		<div class="frame" data-demo data-group="merged" data-think="stream">
+			<div class="frame-bar">
+				<span class="lights"><i></i><i></i><i></i></span>
+				<span class="title">Frieren · Agent</span>
+				<span class="spacer"></span>
+				<span class="seg-label">Group</span>
+				<span class="seg" data-sw="group" role="group" aria-label="Grouping">
+					<button type="button" data-v="merged" data-on="true">Merged</button>
+					<button type="button" data-v="split">By kind</button>
+				</span>
+				<span class="seg-label">Thinking</span>
+				<span class="seg" data-sw="think" role="group" aria-label="Live thinking">
+					<button type="button" data-v="stream" data-on="true">Streamed</button>
+					<button type="button" data-v="quiet">Quiet</button>
+				</span>
+				<button class="play" type="button" data-play>Play turn</button>
+			</div>
+			<div class="thread" data-thread style="height:400px"></div>
+			<div class="frame-foot"><span style="flex:1">Message the agent…</span></div>
+		</div>
+	</section>
+
+	<hr class="rule">
+
+	<!-- ═══ UNIFORM / VARIES ═══ -->
+	<section style="display:flex;flex-direction:column;gap:24px">
+		<div>
+			<span class="eyebrow">The language itself</span>
+			<h2 style="font-size:26px;margin:8px 0 10px">Uniform shell, kind-owned content</h2>
+			<p class="lede">
+				A design language is only useful if it says what a new kind <em>may not</em> change. Five
+				things are fixed for every kind, forever. Three things belong to the kind — and the third
+				is the one that matters, because natural language and machine output should never be set
+				the same way.
+			</p>
+		</div>
+
+		<div class="split">
+			<div>
+				<h3><em>Fixed · the crease owns it</em>What a new kind cannot change</h3>
+				<ol>
+					<li>Chronological position — in the thread, above the response it produced.</li>
+					<li>The two phases, and the settle animation between them.</li>
+					<li>The seam: same hairline, same grammar, same fold.</li>
+					<li>Row chrome: status dot, kind word, one line, duration.</li>
+					<li>Disclosure: a row opens on click, a failure opens itself.</li>
+				</ol>
+				<p style="font-size:13.5px;color:var(--ink-soft)">
+					The status dot carries <em>status</em> only — running, done, failed. The kind is a
+					lowercase word in mono. That's deliberate: at 5px, glyphs turn to mud, and a word needs
+					no legend and no icon design for every future kind.
+				</p>
+			</div>
+			<div>
+				<h3><em>Kind-owned · three functions</em>What a new kind supplies</h3>
+				<ol>
+					<li><b>A present-tense phrase</b> for the live line — "Reading Transcript.tsx", "Thinking about the seam".</li>
+					<li><b>A one-line rest label</b> for its row once settled.</li>
+					<li><b>A body</b>, rendered however that kind's content actually wants to be read.</li>
+				</ol>
+				<div class="demo">
+					<div class="trace">
+						<div class="trow" data-open="true">
+							<span class="trow-head"><span class="tdot"></span><span class="tname">bash</span><span class="targ">pnpm test</span><span class="tms">1.2s</span></span>
+							<div class="trow-body"><div><pre>$ pnpm --filter @justfiles/ui test
+
+✓ 19 passed (1.3s)</pre></div></div>
+						</div>
+						<div class="trow" data-open="true">
+							<span class="trow-head"><span class="tdot"></span><span class="tname">think</span><span class="targ">Where the seam goes</span><span class="tms">2.1s</span></span>
+							<div class="trow-body"><div><div class="prose">The tool calls happen before the reply, so a seam underneath would read backwards. Above it, the turn is just chronological — and it survives the interleaved case, where the agent narrates, works, then narrates again.</div></div></div>
+						</div>
+					</div>
+				</div>
+				<p style="font-size:13px;color:var(--ink-faint)">
+					Same shell, same dot, same word column. Mono for machine output, prose for language.
+				</p>
+			</div>
+		</div>
+	</section>
+
+	<hr class="rule">
+
+	<!-- ═══ THE MORPH ═══ -->
+	<section>
+		<span class="eyebrow">The moment that matters</span>
+		<h2 style="font-size:26px;margin:8px 0 10px">Settling, not swapping</h2>
+		<p class="lede" style="margin-bottom:22px">
+			The seam ends up exactly where the status line was, so nothing is destroyed and nothing is
+			created. Three properties animate on one node and the reply grows in underneath. This is why
+			the seam belongs above the reply — you were right, and it made the component simpler.
+		</p>
+		<div class="morph">
+			<figure>
+				<div class="cell">
+					<div class="crease" data-phase="running" data-open="false">
+						<span class="crease-head">
+							<span class="mark"><span class="spin"></span><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4"><path d="M9 6l6 6-6 6"/></svg></span>
+							<span class="label"><span class="live">Thinking about the seam</span><span class="rest">6 steps · 7.4s</span></span>
+							<span class="crease-rule"></span><span class="chev"></span>
+						</span>
+					</div>
+				</div>
+				<figcaption><b>While running</b> Spinner, a plain-words phrase from whichever kind is active, no rule, 58% opacity. Always the last thing in the thread.</figcaption>
+			</figure>
+			<figure>
+				<div class="cell">
+					<div class="crease" data-phase="settled" data-open="false">
+						<span class="crease-head" style="opacity:.46">
+							<span class="mark"><span class="spin" style="opacity:.4"></span><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" style="opacity:.6"><path d="M9 6l6 6-6 6"/></svg></span>
+							<span class="label"><span class="live" style="opacity:.45">Thinking about the seam</span><span class="rest" style="opacity:.45">6 steps · 7.4s</span></span>
+							<span class="crease-rule" style="opacity:.15;transform:scaleX(.45)"></span><span class="chev"></span>
+						</span>
+					</div>
+				</div>
+				<figcaption><b>Mid-settle · 160ms</b> Spinner shrinks out as the fold mark scales in, the labels cross-fade, the rule sweeps right from the text.</figcaption>
+			</figure>
+			<figure>
+				<div class="cell">
+					<div class="crease" data-phase="settled" data-open="false">
+						<span class="crease-head">
+							<span class="mark"><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4"><path d="M9 6l6 6-6 6"/></svg></span>
+							<span class="label"><span class="rest">6 steps · 7.4s</span></span>
+							<span class="crease-rule"></span>
+							<span class="chev"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg></span>
+						</span>
+					</div>
+				</div>
+				<figcaption><b>Settled</b> Down to 34% — quieter than body text, present enough to notice. Now a button, and the reply streams in below.</figcaption>
+			</figure>
+		</div>
+	</section>
+
+	<hr class="rule">
+
+	<!-- ═══ EDGE CASES ═══ -->
+	<section>
+		<span class="eyebrow">Stress tests</span>
+		<h2 style="font-size:26px;margin:8px 0 10px">Four turns that break the simple case</h2>
+		<p class="lede" style="margin-bottom:24px">
+			The first is the case that proved the placement. The last is the one that proved the
+			metaphor — a fold is the only one of the five directions that recurses without inventing
+			anything new.
+		</p>
+		<div class="edges">
+
+			<div class="edge">
+				<div class="frame">
+					<div class="thread">
+						<div class="msg user"><span>Why is the panel flickering?</span></div>
+						<div class="msg bot"><div>Let me look at the resize observer.</div></div>
+						<div class="crease" data-phase="settled" data-open="false">
+							<span class="crease-head">
+								<span class="mark"><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4"><path d="M9 6l6 6-6 6"/></svg></span>
+								<span class="label"><span class="rest">3 steps · 2.4s</span></span>
+								<span class="crease-rule"></span>
+								<span class="chev"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg></span>
+							</span>
+						</div>
+						<div class="msg bot"><div>It re-pins on every content change. Fixed by tracking scroll direction.</div></div>
+					</div>
+				</div>
+				<div>
+					<h3>Interleaved turn</h3>
+					<p>
+						Agents narrate, work, then narrate again. Below the reply there'd be nowhere sensible
+						to put this seam. Above it, the turn just reads in order. <b>One seam per contiguous
+						run of interior activity; a text block breaks the run.</b>
+					</p>
+				</div>
+			</div>
+
+			<div class="edge">
+				<div class="frame">
+					<div class="thread">
+						<div class="msg user"><span>Run the tests</span></div>
+						<div class="crease" data-phase="settled" data-open="true" data-failed="true">
+							<span class="crease-head">
+								<span class="mark"><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" style="transform:rotate(90deg)"><path d="M9 6l6 6-6 6"/></svg></span>
+								<span class="label"><span class="rest">2 steps · 1 failed</span></span>
+								<span class="crease-rule"></span>
+								<span class="chev"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="transform:rotate(180deg)"><path d="M6 9l6 6 6-6"/></svg></span>
+							</span>
+							<div class="crease-body"><div class="clip"><div class="crease-sheet"><div class="trace">
+								<div class="trow"><span class="trow-head"><span class="tdot"></span><span class="tname">read</span><span class="targ">vitest.config.ts</span><span class="tms">90ms</span></span></div>
+								<div class="trow"><span class="trow-head"><span class="tdot" data-err="true"></span><span class="tname">bash</span><span class="targ">pnpm test — exit 1</span><span class="tms">2.1s</span></span></div>
+							</div></div></div></div>
+						</div>
+						<div class="msg bot"><div>Two suites failed — the config points at a stale path.</div></div>
+					</div>
+				</div>
+				<div>
+					<h3>A step failed</h3>
+					<p>
+						The one exception to folding: a run containing a failure opens by default and tints
+						with <code>--danger</code>. Hiding a failure is the only way this change makes the
+						product worse instead of quieter.
+					</p>
+				</div>
+			</div>
+
+			<div class="edge">
+				<div class="frame">
+					<div class="thread">
+						<div class="msg user"><span>Is this worth doing at all?</span></div>
+						<div class="crease" data-phase="settled" data-open="false">
+							<span class="crease-head">
+								<span class="mark"><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4"><path d="M9 6l6 6-6 6"/></svg></span>
+								<span class="label"><span class="rest">Thought for 8.4s</span></span>
+								<span class="crease-rule"></span>
+								<span class="chev"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg></span>
+							</span>
+						</div>
+						<div class="msg bot"><div>Yes — but only after the status line ships on its own. That's the part users feel.</div></div>
+					</div>
+				</div>
+				<div>
+					<h3>Thinking, no tools</h3>
+					<p>
+						A homogeneous run should say what it was, not count itself. "Thought for 8.4s" beats
+						"1 step". The label specialises when every entry shares a kind — the same rule that
+						made a single tool call name itself.
+					</p>
+				</div>
+			</div>
+
+			<div class="edge">
+				<div class="frame">
+					<div class="thread">
+						<div class="msg user"><span>Audit the whole package</span></div>
+						<div class="crease" data-phase="settled" data-open="true">
+							<span class="crease-head">
+								<span class="mark"><svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" style="transform:rotate(90deg)"><path d="M9 6l6 6-6 6"/></svg></span>
+								<span class="label"><span class="rest">2 steps · 41.0s</span></span>
+								<span class="crease-rule"></span>
+								<span class="chev"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="transform:rotate(180deg)"><path d="M6 9l6 6 6-6"/></svg></span>
+							</span>
+							<div class="crease-body"><div class="clip"><div class="crease-sheet"><div class="trace">
+								<div class="trow"><span class="trow-head"><span class="tdot"></span><span class="tname">think</span><span class="targ">Splitting the audit in two</span><span class="tms">3.0s</span></span></div>
+								<div class="trow" data-open="true">
+									<span class="trow-head"><span class="tdot"></span><span class="tname">delegate</span><span class="targ">Explore · 6 steps</span><span class="tms">38s</span></span>
+									<div class="trow-body"><div><div class="nested"><div class="trace">
+										<div class="trow"><span class="trow-head"><span class="tdot"></span><span class="tname">grep</span><span class="targ">"export" in packages/ui</span><span class="tms">210ms</span></span></div>
+										<div class="trow"><span class="trow-head"><span class="tdot"></span><span class="tname">read</span><span class="targ">index.ts</span><span class="tms">80ms</span></span></div>
+										<div class="trow"><span class="trow-head"><span class="tdot"></span><span class="tname">think</span><span class="targ">Four public entry points</span><span class="tms">1.9s</span></span></div>
+									</div></div></div></div>
+								</div>
+							</div></div></div></div>
+						</div>
+						<div class="msg bot"><div>Four public entry points, all re-exported from <code>index.ts</code>.</div></div>
+					</div>
+				</div>
+				<div>
+					<h3>A subagent ran</h3>
+					<p>
+						<b>The crease recurses.</b> A delegated run is just another interior kind whose body
+						is another crease, and the depth ribbon does what Xcode's does with nested braces.
+						None of the other four directions survive this without inventing a new surface.
+					</p>
+				</div>
+			</div>
+
+		</div>
+	</section>
+
+	<hr class="rule">
+
+	<!-- ═══ BUILD ═══ -->
+	<section>
+		<span class="eyebrow">Implementation</span>
+		<h2 style="font-size:26px;margin:8px 0 18px">What actually changes</h2>
+
+		<div class="callout" style="margin-bottom:22px">
+			Unifying makes <code>TranscriptProps</code> <em>smaller</em>. Two fields become one, and the
+			one that replaces them is ordered — which is the only reason chronological placement is
+			possible at all. Adding a kind later touches one record, not the component.
+		</div>
+
+		<div class="build">
+			<details open>
+				<summary>Two fields become one ordered list</summary>
+				<div class="inner">
+					<p>
+						<code>thinking?: string</code> and <code>toolCalls?: ToolCallInfo[]</code> are separate
+						buckets, so nothing records that the agent thought, called a tool, then thought again.
+						One discriminated union in message order fixes the ordering and shrinks the surface:
+					</p>
+					<pre><span class="cmt">// packages/ui/src/Transcript.tsx</span>
+<span class="kw">export type</span> Activity =
+  | { id: string; kind: <span class="kw">'think'</span>; text: string; status: Status }
+  | { id: string; kind: <span class="kw">'tool'</span>; name: string; args: unknown; result?: unknown
+      isError?: boolean; images?: TranscriptImage[]; status: Status }
+  | { id: string; kind: <span class="kw">'compact'</span> | <span class="kw">'branch'</span> | <span class="kw">'label'</span>; text: string; status: Status }
+
+<span class="kw">export interface</span> AgentMessage {
+  <span class="cmt">/* … */</span>
+<span class="del">-  thinking?: string</span>
+<span class="del">-  toolCalls?: ToolCallInfo[]</span>
+<span class="kw">+  activity?: Activity[]</span>   <span class="cmt">// ordered, interleaved with content</span>
+}</pre>
+					<p>
+						Keep exporting <code>ToolCallInfo</code> as an alias of the <code>'tool'</code> member —
+						<code>platform/frieren/src/agent/types.ts</code> re-exports it and
+						<code>images.ts</code> depends on the shape, so nothing outside the package has to
+						move on day one.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>The lossy step is sessionEntries2DisplayMessages</summary>
+				<div class="inner">
+					<p>
+						<code>SessionEntry</code> is already an ordered, typed, append-only stream — it is the
+						model you're asking for, and it's upstream of the UI. The information is destroyed in
+						the projection at <code>platform/frieren/worker/display.ts</code>, which sorts entries
+						into per-message buckets:
+					</p>
+					<pre><span class="cmt">// display.ts — the flattening</span>
+<span class="kw">case</span> 'assistant_thinking':
+  <span class="kw">return</span> { role: 'assistant', content: '', thinking: entry.content }</pre>
+					<p>
+						With an ordered <code>activity[]</code> the projection gets simpler, not harder: append
+						in entry order and stop reconstructing which bucket a thing belongs in.
+						<strong>Do this in the projection, not the component</strong> — the mac launcher's
+						<code>agentChat.tsx:132</code> does the same flattening independently and will need the
+						same one-line change.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>Three kinds are currently rendered as agent speech</summary>
+				<div class="inner">
+					<p>
+						This is the concrete cost of not having the category. In <code>display.ts</code>:
+					</p>
+					<pre><span class="kw">case</span> 'compaction':      <span class="kw">return</span> { role: 'assistant', content: entry.summary }
+<span class="kw">case</span> 'branch_summary':  <span class="kw">return</span> { role: 'assistant', content: entry.summary }
+<span class="kw">case</span> 'label':           <span class="kw">return</span> { role: 'assistant', content: `[${entry.label}]` }</pre>
+					<p>
+						A user scrolling back sees the agent apparently announce a compaction summary, or say
+						<code>[before refactor]</code>, in the same voice it answers questions in. These are
+						interior events wearing the response's clothes. <strong>Three of the five kinds that
+						exist today are mis-rendered</strong>, which is the strongest argument for fixing the
+						category rather than special-casing thinking.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>Live and replay currently disagree</summary>
+				<div class="inner">
+					<p>
+						Worth fixing in the same pass, because the unified list fixes it for free. During
+						streaming, <code>platform/frieren/src/os/client.ts:298</code> seeds one message with
+						both <code>thinking: ''</code> and <code>toolCalls: []</code> and accumulates deltas
+						onto it. On replay, <code>display.ts</code> gives thinking its <em>own</em> message.
+					</p>
+					<p>
+						<strong>So the same turn renders differently live than it does after a reload.</strong>
+						One ordered <code>activity[]</code>, appended to in both paths, removes the divergence
+						by construction.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>A kind is three functions</summary>
+				<div class="inner">
+					<p>
+						The whole extension point. Adding <code>recall</code> or <code>delegate</code> later
+						means one entry here and nothing else:
+					</p>
+					<pre><span class="cmt">// The crease owns position, phase, seam, row chrome, disclosure.</span>
+<span class="cmt">// A kind owns only what it says and how its body reads.</span>
+<span class="kw">const</span> kinds: Record&lt;Activity['kind'], {
+  live(a): string          <span class="cmt">// "Reading Transcript.tsx" — for the status line</span>
+  rest(a): string          <span class="cmt">// "Transcript.tsx"        — for the settled row</span>
+  body(a): ReactNode       <span class="cmt">// &lt;pre&gt; for tools, prose for thinking, a crease for delegate</span>
+}&gt; = { <span class="cmt">/* … */</span> }</pre>
+					<p>
+						<strong>Never render thinking in mono.</strong> It's natural language; <code>&lt;pre&gt;</code>
+						makes it look like a log and reads badly. Today's code already knows this —
+						<code>Transcript.tsx:275</code> passes <code>mono={false}</code> — which is exactly the
+						kind-specific body rule, discovered the hard way and hardcoded in one place.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>Grouping, labels, and the two switches above</summary>
+				<div class="inner">
+					<p>
+						<strong>Merged.</strong> One crease per contiguous run, regardless of kind. Fewer seams,
+						and a mixed run reads as one unit of work — which is what it was. Switching to
+						<em>By kind</em> in the mockup shows the cost: four seams where one would do, and the
+						thread starts to look striped. Merged is the default.
+					</p>
+					<p>
+						<strong>Labels specialise when a run is homogeneous.</strong> All thinking →
+						"Thought for 8.4s". One tool → that tool's own phrase. Mixed → "6 steps · 7.4s".
+						Terse stays the default; the narrated variant remains a setting.
+					</p>
+					<p>
+						<strong>Streamed thinking.</strong> Showing the live thought fragment is the most
+						alive the agent ever looks, and it costs nothing — the text is already streaming. But
+						it's the one place raw model output reaches the user unmediated, so it wants a hard
+						truncation and a setting. Quiet mode ("Thinking · 6.2s") is the safe default for a
+						shipped app; streamed is right for your own machine.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>Scroll, and one thing that gets easier</summary>
+				<div class="inner">
+					<p>
+						<strong>Free:</strong> during a turn the seam is the last thing in the thread, so the
+						stick-to-bottom in <code>Transcript.tsx:186</code> keeps it visible with no extra work,
+						and settling doesn't change the node's height.
+					</p>
+					<p>
+						<strong>Still needed:</strong> unfolding grows content below the seam. The
+						<code>ResizeObserver</code> re-pins while <code>stuckRef.current</code> is true, so
+						opening an older turn yanks the view to the bottom. Set
+						<code>stuckRef.current = false</code> in the toggle, before the growth lands. A nested
+						crease makes this worse, not better — the growth can be large.
+					</p>
+				</div>
+			</details>
+
+			<details>
+				<summary>Accessibility</summary>
+				<div class="inner">
+					<p>
+						Running phase: <code>role="status"</code>, <code>aria-live="polite"</code>,
+						<code>aria-atomic</code> — so each phrase is announced rather than the thread re-read.
+						Settled: a real <code>&lt;button aria-expanded&gt;</code> with the label as its
+						accessible name. Nested creases nest the buttons; nothing special is needed.
+					</p>
+					<p>
+						Under <code>prefers-reduced-motion</code>, drop the <code>rotateX</code> hinge and the
+						rule sweep, keep plain fades. The hinge is decorative; the disclosure is not.
+					</p>
+				</div>
+			</details>
+		</div>
+	</section>
+
+</div>
+
+<script>
+(() => {
+	"use strict";
+
+	const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
+	const sleep = (ms) => new Promise((r) => setTimeout(r, RM ? Math.min(ms, 90) : ms));
+	const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+	const el = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstElementChild; };
+	const secs = (ms) => (ms / 1000).toFixed(1) + "s";
+
+	const CHEV = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+	const FOLD = '<svg class="foldmark" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+
+	// ── one turn, mixed kinds ───────────────────────────────────
+	const PROMPT = "Make the transcript quieter";
+	const REPLY = "Thinking and tool calls now share one fold above each reply. Adding a kind later is one record entry — the crease owns everything else. Nineteen tests pass.";
+
+	// Every entry supplies: a present-tense phrase (live), a rest label, a body.
+	const RUN = [
+		{ kind: "think", live: "Weighing two approaches", rest: "Weighing two approaches", ms: 1500, body: { as: "prose",
+		  text: "Two options. Filter interior activity out entirely and give power users a global switch — cheapest, but nothing hints the work happened. Or fold it per turn, which keeps the thread honest and costs one quiet row." } },
+		{ kind: "read", live: "Reading Transcript.tsx", rest: "packages/ui/src/Transcript.tsx", ms: 740, body: { as: "mono",
+		  text: '{ "path": "packages/ui/src/Transcript.tsx" }\n\n→ 612 lines · ToolCallRow at 588, SystemRow at 560' } },
+		{ kind: "think", live: "Deciding where the seam goes", rest: "Where the seam goes", ms: 2100, body: { as: "prose",
+		  text: "Below the reply reads backwards — the work happened first. Above it, the turn is chronological, and it survives the interleaved case where the agent narrates, works, then narrates again." } },
+		{ kind: "grep", live: "Looking for other callers", rest: '"ToolCallRow" in packages/**', ms: 460, body: { as: "mono",
+		  text: '{ "pattern": "ToolCallRow", "glob": "packages/**" }\n\n→ 3 matches, all in Transcript.tsx' } },
+		{ kind: "edit", live: "Editing Transcript.tsx", rest: "+96 −41", ms: 620, body: { as: "mono",
+		  text: '{ "path": "packages/ui/src/Transcript.tsx",\n  "added": 96, "removed": 41 }\n\n→ applied' } },
+		{ kind: "bash", live: "Running the UI tests", rest: "pnpm --filter @justfiles/ui test", ms: 1180, body: { as: "mono",
+		  text: "$ pnpm --filter @justfiles/ui test\n\n✓ transcript-crease      19 passed (1.3s)" } }
+	];
+
+	// Fragments the live line ticks through while a think entry runs.
+	const THOUGHTS = {
+		"Weighing two approaches": ["a global switch would be cheapest", "but nothing would hint the work happened", "folding per turn keeps the thread honest"],
+		"Deciding where the seam goes": ["below the reply reads backwards", "the work happened first", "above it the turn is chronological"]
+	};
+
+	const IS_THINK = (k) => k === "think";
+
+	// Seeded turns already in the thread.
+	const SEEDED = [
+		{
+			prompt: "Where does the transcript live?",
+			reply: "In <code>packages/ui/src/Transcript.tsx</code> — consumed by frieren's MessagesPanel and the mac launcher.",
+			run: [{ kind: "grep", live: "Searching for Transcript", rest: '"Transcript" in packages/**', ms: 380,
+			        body: { as: "mono", text: '{ "pattern": "Transcript" }\n\n→ packages/ui/src/Transcript.tsx' } }]
+		},
+		{
+			prompt: "Audit the whole package",
+			reply: "Four public entry points, all re-exported from <code>index.ts</code>.",
+			run: [
+				{ kind: "think", live: "Splitting the audit in two", rest: "Splitting the audit in two", ms: 3000,
+				  body: { as: "prose", text: "Too much surface to read in one pass. Send a subagent at the exports while I look at the consumers." } },
+				{ kind: "delegate", live: "Running a subagent", rest: "Explore · 3 steps", ms: 38000, body: { as: "nested", rows: [
+					{ kind: "grep", rest: '"export" in packages/ui', ms: 210 },
+					{ kind: "read", rest: "index.ts", ms: 80 },
+					{ kind: "think", rest: "Four public entry points", ms: 1900 }
+				] } }
+			]
+		}
+	];
+
+	// ── labels: specialise when a run is homogeneous ────────────
+	function label(run) {
+		const total = run.reduce((n, s) => n + s.ms, 0);
+		const kinds = new Set(run.map((s) => s.kind));
+		if (kinds.size === 1 && IS_THINK(run[0].kind)) return `Thought for ${secs(total)}`;
+		if (run.length === 1) return `${run[0].live} · ${secs(total)}`;
+		return `${run.length} steps · ${secs(total)}`;
+	}
+
+	// ── grouping: merged (one run) vs split (by kind) ───────────
+	function groups(run, mode) {
+		if (mode === "merged") return [run];
+		const out = [];
+		for (const s of run) {
+			const last = out[out.length - 1];
+			const same = last && IS_THINK(last[0].kind) === IS_THINK(s.kind);
+			if (same) last.push(s); else out.push([s]);
+		}
+		return out;
+	}
+
+	// ── markup ──────────────────────────────────────────────────
+	function bodyHTML(b) {
+		if (!b) return "";
+		if (b.as === "prose") return `<div class="prose">${esc(b.text)}</div>`;
+		if (b.as === "nested") return `<div class="nested"><div class="trace">${b.rows.map(rowHTML).join("")}</div></div>`;
+		return `<pre>${esc(b.text)}</pre>`;
+	}
+
+	function rowHTML(s) {
+		const ms = s.ms >= 1000 ? secs(s.ms) : s.ms + "ms";
+		const body = bodyHTML(s.body);
+		return `<div class="trow" data-open="false">
+			<${body ? "button" : "span"} class="trow-head" type="button"${body ? ' aria-expanded="false"' : ""}>
+				<span class="tdot"></span><span class="tname">${s.kind}</span>
+				<span class="targ">${esc(s.rest)}</span><span class="tms">${ms}</span>
+			</${body ? "button" : "span"}>
+			${body ? `<div class="trow-body"><div>${body}</div></div>` : ""}
+		</div>`;
+	}
+
+	// The single node that is the status line and then the seam.
+	function crease(run, phase) {
+		const node = el(`<div class="crease" data-phase="${phase}" data-open="false">
+			<button class="crease-head" type="button" aria-expanded="false">
+				<span class="mark"><span class="spin"></span>${FOLD}</span>
+				<span class="label">
+					<span class="live"><span class="swap"></span> <span class="elapsed"></span></span>
+					<span class="rest">${esc(label(run))}</span>
+				</span>
+				<span class="crease-rule"></span>
+				<span class="chev">${CHEV}</span>
+			</button>
+			<div class="crease-body"><div class="clip"><div class="crease-sheet">
+				<div class="trace">${run.map(rowHTML).join("")}</div>
+			</div></div></div>
+		</div>`);
+		if (phase === "settled") node.querySelector(".live").remove();
+		return node;
+	}
+
+	// One delegated handler drives every crease on the page — the played ones and
+	// the static illustrations alike.
+	document.addEventListener("click", (e) => {
+		const head = e.target.closest(".crease-head");
+		if (!head) return;
+		const node = head.parentElement;
+		if (node.dataset.phase !== "settled") return;
+		if (!node.querySelector(".crease-body")) return;   // nothing to unfold
+		const open = node.dataset.open !== "true";
+		node.dataset.open = String(open);
+		head.setAttribute("aria-expanded", String(open));
+		// In Transcript.tsx this is where stuckRef.current = false goes.
+		if (open) revealAfter(node);
+	});
+
+	// After the unfold lands, bring the sheet's bottom into view — never move the seam.
+	function revealAfter(node) {
+		const thread = node.closest(".thread");
+		const sheet = node.querySelector(".crease-sheet");
+		if (!thread || !sheet) return;
+		setTimeout(() => {
+			const over = sheet.getBoundingClientRect().bottom - thread.getBoundingClientRect().bottom + 10;
+			if (over > 0) thread.scrollTop += over;
+		}, RM ? 0 : 360);
+	}
+
+	// Trace rows: one delegated handler for the page. Rows without a body are spans.
+	document.addEventListener("click", (e) => {
+		const head = e.target.closest(".trow-head");
+		if (!head || head.tagName !== "BUTTON") return;
+		const row = head.parentElement;
+		const open = row.dataset.open !== "true";
+		row.dataset.open = String(open);
+		head.setAttribute("aria-expanded", String(open));
+	});
+
+	const userMsg = (t) => el(`<div class="msg user"><span>${esc(t)}</span></div>`);
+	const botMsg = (html) => el(`<div class="msg bot"><div><span data-txt>${html || ""}</span>${html ? "" : '<span class="caret"></span>'}</div></div>`);
+
+	// ── the demo ────────────────────────────────────────────────
+	const frame = document.querySelector("[data-demo]");
+	const thread = frame.querySelector("[data-thread]");
+	const btn = frame.querySelector("[data-play]");
+	const state = { played: false };
+
+	function render() {
+		const mode = frame.dataset.group;
+		thread.textContent = "";
+		for (const t of SEEDED) {
+			thread.append(userMsg(t.prompt));
+			for (const g of groups(t.run, mode)) thread.append(crease(g, "settled"));
+			thread.append(botMsg(t.reply));
+		}
+		if (state.played) {
+			thread.append(userMsg(PROMPT));
+			for (const g of groups(RUN, mode)) thread.append(crease(g, "settled"));
+			thread.append(botMsg(REPLY));
+		}
+		thread.scrollTop = thread.scrollHeight;
+	}
+	render();
+
+	let busy = false;
+	btn.addEventListener("click", async () => {
+		if (busy) return;
+		busy = true; btn.disabled = true; btn.textContent = "Running…";
+		try {
+			state.played = false;
+			render();
+			thread.append(userMsg(PROMPT));
+
+			// Each group starts as a status line and settles in place into its seam.
+			for (const g of groups(RUN, frame.dataset.group)) {
+				const node = crease(g, "running");
+				thread.append(node);
+				thread.scrollTop = thread.scrollHeight;
+
+				const swap = node.querySelector(".swap");
+				const elapsed = node.querySelector(".elapsed");
+				const t0 = performance.now();
+				const tick = setInterval(() => { elapsed.textContent = secs(performance.now() - t0); }, 100);
+
+				for (const s of g) {
+					// A kind supplies its own live phrase. Thinking can stream fragments.
+					const streamThought = IS_THINK(s.kind) && frame.dataset.think === "stream" && THOUGHTS[s.live];
+					const phrases = streamThought ? THOUGHTS[s.live] : [IS_THINK(s.kind) ? "Thinking" : s.live];
+					const each = s.ms / phrases.length;
+					for (const p of phrases) {
+						if (swap.textContent) { node.dataset.swap = "true"; await sleep(130); }
+						swap.textContent = p;
+						node.dataset.swap = "false";
+						thread.scrollTop = thread.scrollHeight;
+						await sleep(Math.max(each - 130, 260));
+					}
+				}
+				clearInterval(tick);
+
+				node.dataset.phase = "settled";
+				await sleep(320);
+				// The faded-out live phrase shares a grid cell with the rest label and would
+				// keep padding it to its width. React would simply stop rendering it.
+				node.querySelector(".live")?.remove();
+			}
+
+			const bot = botMsg();
+			thread.append(bot);
+			thread.scrollTop = thread.scrollHeight;
+			const txt = bot.querySelector("[data-txt]");
+			for (let i = 0; i <= REPLY.length; i += 3) {
+				txt.textContent = REPLY.slice(0, i);
+				thread.scrollTop = thread.scrollHeight;
+				await sleep(14);
+			}
+			txt.textContent = REPLY;
+			bot.querySelector(".caret")?.remove();
+			state.played = true;
+		} finally {
+			busy = false; btn.disabled = false; btn.textContent = "Play again";
+		}
+	});
+
+	// ── switches ────────────────────────────────────────────────
+	for (const group of frame.querySelectorAll(".seg[data-sw]")) {
+		group.addEventListener("click", (e) => {
+			const b = e.target.closest("[data-v]");
+			if (!b || busy) return;
+			for (const x of group.querySelectorAll("[data-v]")) x.dataset.on = String(x === b);
+			frame.dataset[group.dataset.sw] = b.dataset.v;
+			if (group.dataset.sw === "group") render();
+		});
+	}
+})();
+</script>
