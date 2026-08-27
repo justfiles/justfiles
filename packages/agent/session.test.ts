@@ -361,6 +361,35 @@ describe('createAgentSession', () => {
 		expect(notifications).toEqual([{ kind: 'error' }])
 	})
 
+	test('a backend setup failure keeps the last known transcript', async () => {
+		let offline = false
+		const events: SessionEvent[] = []
+		const backend = scriptedBackend([assistant([{ type: 'text', text: 'first answer' }])])
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				if (offline) throw new Error('AI is turned off')
+				return backend
+			},
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		await prompt(session, 'first question')
+		const transcript = (await session.snapshot()).entries
+		offline = true
+
+		expect((await session.snapshot()).entries).toEqual(transcript)
+		await start(session, 'second question').done
+
+		const finished = events.at(-1)
+		expect(finished).toMatchObject({
+			type: 'turn_finished',
+			status: 'failed',
+			entries: transcript
+		})
+	})
+
 	test('newSession clears the transcript', async () => {
 		const vol = volume(memStore())
 		const session = createAgentSession({

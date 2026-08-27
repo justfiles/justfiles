@@ -206,6 +206,7 @@ export class Frieren extends DurableObject<Env> {
 	private apps?: FrierenApps
 	private readonly agents: AgentSessions
 	private readonly agentSubscriptions = new Map<string, () => void>()
+	private readonly agentFrames = new Map<string, Promise<void>>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -481,14 +482,44 @@ export class Frieren extends DurableObject<Env> {
 			this.agentSubscriptions.set(
 				key,
 				session.subscribe((event) => {
-					const scope = agentId ? { agentId } : {}
-					this.broadcast({
-						...sessionEventFrame(event, sessionEntries2DisplayMessages),
-						...scope
+					void this.queueAgentFrame(agentId, () => {
+						this.broadcast({
+							...sessionEventFrame(event, sessionEntries2DisplayMessages),
+							...(agentId ? { agentId } : {})
+						})
 					})
 				})
 			)
 		return session
+	}
+
+	// A snapshot and its session's lifecycle frames must leave in queue order.
+	private queueAgentFrame(agentId: string | undefined, send: () => void | Promise<void>) {
+		const key = agentId ?? ''
+		const result = (this.agentFrames.get(key) ?? Promise.resolve()).then(send)
+		this.agentFrames.set(
+			key,
+			result.catch((error) => console.error('[agent] frame failed:', error))
+		)
+		return result
+	}
+
+	private sendAgentSnapshot(
+		ws: WebSocket,
+		agentId?: string,
+		participants?: DisplayParticipants
+	): Promise<void> {
+		const session = this.getSession(agentId)
+		return this.queueAgentFrame(agentId, async () => {
+			const snapshot = await session.snapshot()
+			ws.send(
+				JSON.stringify({
+					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
+					...(agentId ? { agentId } : {}),
+					...(participants ? { participants } : {})
+				} satisfies ServerMessage)
+			)
+		})
 	}
 
 	private agentOptions(): AgentSessionOptions {
@@ -712,13 +743,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'snapshot') {
-			const snapshot = await this.getSession(agentId).snapshot()
-			ws.send(
-				JSON.stringify({
-					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
-					...(agentId ? { agentId } : {})
-				} satisfies ServerMessage)
-			)
+			await this.sendAgentSnapshot(ws, agentId)
 			return
 		}
 
@@ -810,13 +835,7 @@ export class Frieren extends DurableObject<Env> {
 			await scheduleDailyAlarm(this.ctx, this.getSession())
 
 			const participants = await this.loadParticipants(this.volume)
-			const snapshot = await this.getSession().snapshot()
-			server.send(
-				JSON.stringify({
-					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
-					participants
-				} satisfies ServerMessage)
-			)
+			await this.sendAgentSnapshot(server, undefined, participants)
 
 			// Send ready signal
 			server.send(

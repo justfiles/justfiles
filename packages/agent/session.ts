@@ -368,7 +368,8 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			return ''
 		} finally {
 			if (state.aborted) status = 'interrupted'
-			const entries = built ? [...(await readHistory(built))] : []
+			// Setup failed before it could change history, so keep the last transcript.
+			const entries = built ? [...(await readHistory(built))] : [...transcript]
 			transcript = entries
 			if (running === state) running = null
 			emit({
@@ -393,10 +394,10 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		return true
 	}
 
-	// The transcript for a connect snapshot; empty when the runtime can't build (no backend),
-	// so a UI shows an empty transcript rather than erroring.
+	// Refresh an idle snapshot when possible. A failed build keeps the last transcript;
+	// a cold session still starts empty.
 	async function snapshot(): Promise<AgentSessionSnapshot> {
-		if (!running) transcript = await getBuilt().then(readHistory, () => [])
+		if (!running) transcript = await getBuilt().then(readHistory, () => transcript)
 		return { entries: transcript, activeTurn: running?.turn ?? null }
 	}
 
