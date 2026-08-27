@@ -71,7 +71,7 @@ describe('app sessions', () => {
 		expect(model.calls[1]?.systemPrompt).toContain('# attached app')
 		expect(model.calls[1]?.systemPrompt).toContain('Dictionary (`justfiles.dictionary`)')
 		expect(model.calls[1]?.systemPrompt).toContain('Current reducer state:\n{}')
-		expect(model.calls[1]?.systemPrompt).toContain('app actions justfiles.dictionary')
+		expect(model.calls[1]?.systemPrompt).toContain('app actions --id justfiles.dictionary')
 		expect(model.calls[1]?.tools).toEqual(model.calls[0]?.tools)
 		expect(model.calls[1]?.tools).toContain('bash')
 

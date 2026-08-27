@@ -1,12 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import {
-	type ReactNode,
-	useCallback,
-	useEffect,
-	useRef,
-	useState,
-	useSyncExternalStore
-} from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
 import { requestFace } from './faces'
@@ -25,7 +18,6 @@ const FACE_RETRY_MS = 5 * 60_000
 // provider adds the only UI-local state the client can't hold: the draft input.
 export function AgentProvider({ children }: { children: ReactNode }) {
 	const agent = useAgentClient()
-	const snapshot = useSyncExternalStore(agent.subscribe, agent.snapshot)
 	const { getToken } = useAuth()
 	const [inputs, setInputs] = useState<Record<string, string>>({})
 	const [identity, setIdentity] = useState({
@@ -92,25 +84,27 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	// from asking on every turn.
 	const askedAt = useRef(new Map<string, number>())
 	const { avatar, hash, faces } = identity
-	const expression = snapshot.expression
-	useEffect(() => {
-		if (!expression || !avatar || !hash || faces[expression]) return
-		const key = `${hash}:${expression}`
-		const now = Date.now()
-		if (now - (askedAt.current.get(key) ?? -FACE_RETRY_MS) < FACE_RETRY_MS) return
-		askedAt.current.set(key, now)
-		void (async () => {
-			const volume = await openProfile()
-			// `identity.faces` is a snapshot, and sync can land a face another device generated
-			// without anything refreshing it. Re-read before paying for an image: a face already
-			// on the volume just needs to be picked up.
-			if ((await readAvatar(volume, avatar)).faces[expression]) {
-				await refreshIdentity()
-				return
-			}
-			if (await requestFace(volume, getToken, avatar, expression, hash)) await refreshIdentity()
-		})().catch(() => {})
-	}, [expression, avatar, hash, faces, getToken, refreshIdentity])
+	const ensureFace = useCallback<AgentContextValue['ensureFace']>(
+		(expression) => {
+			if (!expression || !avatar || !hash || faces[expression]) return
+			const key = `${hash}:${expression}`
+			const now = Date.now()
+			if (now - (askedAt.current.get(key) ?? -FACE_RETRY_MS) < FACE_RETRY_MS) return
+			askedAt.current.set(key, now)
+			void (async () => {
+				const volume = await openProfile()
+				// `identity.faces` is a snapshot, and sync can land a face another device generated
+				// without anything refreshing it. Re-read before paying for an image: a face already
+				// on the volume just needs to be picked up.
+				if ((await readAvatar(volume, avatar)).faces[expression]) {
+					await refreshIdentity()
+					return
+				}
+				if (await requestFace(volume, getToken, avatar, expression, hash)) await refreshIdentity()
+			})().catch(() => {})
+		},
+		[avatar, hash, faces, getToken, refreshIdentity]
+	)
 
 	const value: AgentContextValue = {
 		agent,
@@ -122,6 +116,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 			faces: identity.faces,
 			personalized: identity.personalized
 		},
+		ensureFace,
 		refreshIdentity
 	}
 

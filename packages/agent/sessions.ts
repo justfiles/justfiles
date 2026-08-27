@@ -51,6 +51,6 @@ async function appContext(
 		'Current reducer state:',
 		JSON.stringify(app.state, null, 2),
 		'',
-		`Run \`app actions ${app.id}\` to read its actions. Run \`app state ${app.id}\` if its state may have changed during this turn.`
+		`Run \`app actions --id ${app.id}\` to read its actions. Run \`app state --id ${app.id}\` if its state may have changed during this turn.`
 	].join('\n')
 }

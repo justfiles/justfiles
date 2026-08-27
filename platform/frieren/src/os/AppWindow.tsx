@@ -30,13 +30,26 @@ export function AppWindow({
 	const assistant = useOsStore((s) => s.assistant)
 	const agent = useAgentSession(id)
 	const [sheetOpen, setSheetOpen] = useState(false)
+	const [panelMode, setPanelMode] = useState<AttachedAgentMode>('sheet')
+	// Restore a saved sidebar only after this window has fit one. Keep the flag once set so an
+	// open sidebar stays open when a later resize falls back to a sheet.
 	const [sidebarReady, setSidebarReady] = useState(false)
+	const sidebarOpen = Boolean(assistant.open[id])
 	const requestedOpen =
-		assistant.mode === 'sidebar' ? sidebarReady && Boolean(assistant.open[id]) : sheetOpen
+		panelMode === 'sidebar' ? sidebarOpen : sheetOpen || (sidebarReady && sidebarOpen)
 	const agentOpen = requestedOpen || agent.isStreaming
-	const markSidebarReady = useCallback((mode: AttachedAgentMode) => {
-		if (mode === 'sidebar') setSidebarReady(true)
-	}, [])
+	const trackMode = useCallback(
+		(mode: AttachedAgentMode) => {
+			setPanelMode(mode)
+			if (mode !== 'sidebar') return
+			setSidebarReady(true)
+			if (sheetOpen) {
+				setSheetOpen(false)
+				dispatch({ type: 'assistant.setOpen', id, open: true })
+			}
+		},
+		[dispatch, id, sheetOpen]
+	)
 
 	// An open window always has a placement (seeded on open), so a missing rect
 	// means the window isn't really open — render nothing rather than guess.
@@ -83,6 +96,7 @@ export function AppWindow({
 									<MessagesPanel agentId={id} onPersonalize={onPersonalize} />
 								) : null,
 								onModeChange: (mode) => {
+									setPanelMode(mode)
 									if (mode === 'sheet') {
 										setSheetOpen(agentOpen)
 										dispatch({ type: 'assistant.setOpen', id, open: false })
@@ -92,12 +106,14 @@ export function AppWindow({
 									}
 									dispatch({ type: 'assistant.setMode', mode })
 								},
-								onEffectiveModeChange: markSidebarReady,
+								onEffectiveModeChange: trackMode,
 								onOpenChange: (open) => {
 									if (!open && agent.isStreaming) return
-									if (assistant.mode === 'sidebar')
-										dispatch({ type: 'assistant.setOpen', id, open })
-									else setSheetOpen(open)
+									if (panelMode === 'sidebar') dispatch({ type: 'assistant.setOpen', id, open })
+									else {
+										setSheetOpen(open)
+										if (sidebarReady) dispatch({ type: 'assistant.setOpen', id, open })
+									}
 								},
 								onSizeChange: (size) => dispatch({ type: 'assistant.setSize', size })
 							}

@@ -1,5 +1,5 @@
 import type { Expression } from '@justfiles/agent/expression'
-import { createContext, useCallback, useContext, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from 'react'
 import type { AgentClient } from '../os/client'
 import type { AgentConnection, AgentSession } from './types'
 
@@ -13,6 +13,7 @@ export interface AgentContextValue {
 		faces: Partial<Record<Expression, string>>
 		personalized: boolean
 	}
+	ensureFace: (expression: Expression | null) => void
 	refreshIdentity: () => Promise<void>
 }
 
@@ -25,12 +26,13 @@ function useAgentContext(): AgentContextValue {
 }
 
 export function useAgentSession(agentId?: string): AgentSession {
-	const { agent, inputs, setInput, identity, refreshIdentity } = useAgentContext()
+	const { agent, inputs, setInput, identity, ensureFace, refreshIdentity } = useAgentContext()
 	const subscribe = useCallback(
 		(listener: () => void) => agent.subscribe(listener, agentId),
 		[agent, agentId]
 	)
 	const snapshot = useSyncExternalStore(subscribe, () => agent.snapshot(agentId))
+	useEffect(() => ensureFace(snapshot.expression), [ensureFace, snapshot.expression])
 	const loadHistory = useCallback(() => agent.loadHistory(agentId), [agent, agentId])
 	const input = inputs[agentId ?? ''] ?? ''
 	return {
