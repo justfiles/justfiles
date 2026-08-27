@@ -10,12 +10,22 @@ import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
 import type { AgentBackend } from './llm.ts'
-import type { AgentSessionOptions } from './session.ts'
+import type { AgentSession, AgentSessionOptions } from './session.ts'
 import { createAgentSessions } from './sessions.ts'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const NO_COMPACTION = { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+
+async function prompt(session: AgentSession, message: string): Promise<string> {
+	const result = session.start(message)
+	if (!result.accepted) throw new Error('expected the turn to start')
+	return result.done
+}
+
+async function history(session: AgentSession) {
+	return (await session.snapshot()).entries
+}
 
 test('builds the main session once on first use', () => {
 	let builds = 0
@@ -64,13 +74,14 @@ describe('app sessions', () => {
 		}
 		const sessions = createAgentSessions(options)
 
-		await sessions.main().prompt('main question')
-		await sessions.app('justfiles.dictionary').prompt('dictionary question')
+		await prompt(sessions.main(), 'main question')
+		await prompt(sessions.app('justfiles.dictionary'), 'dictionary question')
 
 		expect(model.calls).toHaveLength(2)
 		expect(model.calls[1]?.systemPrompt).toContain('# attached app')
 		expect(model.calls[1]?.systemPrompt).toContain('Dictionary (`justfiles.dictionary`)')
-		expect(model.calls[1]?.systemPrompt).toContain('app inspect justfiles.dictionary')
+		expect(model.calls[1]?.systemPrompt).toContain('Current reducer state:\n{}')
+		expect(model.calls[1]?.systemPrompt).toContain('app actions --id justfiles.dictionary')
 		expect(model.calls[1]?.tools).toEqual(model.calls[0]?.tools)
 		expect(model.calls[1]?.tools).toContain('bash')
 
@@ -78,8 +89,8 @@ describe('app sessions', () => {
 		expect(await sessionFiles(vol, 'app.justfiles.dictionary')).toHaveLength(1)
 
 		const fresh = createAgentSessions(options)
-		expect(messages(await fresh.main().history())).toEqual(['main question', 'main reply'])
-		expect(messages(await fresh.app('justfiles.dictionary').history())).toEqual([
+		expect(messages(await history(fresh.main()))).toEqual(['main question', 'main reply'])
+		expect(messages(await history(fresh.app('justfiles.dictionary')))).toEqual([
 			'dictionary question',
 			'dictionary reply'
 		])
@@ -97,8 +108,8 @@ describe('app sessions', () => {
 			compaction: NO_COMPACTION
 		})
 
-		expect(await sessions.main().history()).toEqual([])
-		expect(messages(await sessions.app('justfiles.dictionary').history())).toEqual([
+		expect(await history(sessions.main())).toEqual([])
+		expect(messages(await history(sessions.app('justfiles.dictionary')))).toEqual([
 			'old dictionary question'
 		])
 		expect(model.completions).toBe(1)
@@ -114,6 +125,25 @@ describe('app sessions', () => {
 		expect(model.completions).toBe(1)
 	})
 
+	test('refreshes attached app state before each turn', async () => {
+		let state: unknown = { query: 'first' }
+		const model = backend(['first reply', 'second reply'])
+		const app = createAgentSessions({
+			volume: volume(memStore()),
+			backend: model.value,
+			apps: controller(() => state),
+			compaction: NO_COMPACTION
+		}).app('justfiles.dictionary')
+
+		await prompt(app, 'first question')
+		state = { query: 'second' }
+		await prompt(app, 'second question')
+
+		expect(model.calls[0]?.systemPrompt).toContain('"query": "first"')
+		expect(model.calls[1]?.systemPrompt).toContain('"query": "second"')
+		expect(model.calls[1]?.systemPrompt).not.toContain('"query": "first"')
+	})
+
 	test('compact without writing app-thread notes to the daily journal', async () => {
 		const vol = volume(memStore())
 		const model = backend(['first reply', 'second reply'], 'compact summary', 5000)
@@ -125,8 +155,8 @@ describe('app sessions', () => {
 		})
 		const app = sessions.app('justfiles.dictionary')
 
-		await app.prompt('first question')
-		await app.prompt('second question')
+		await prompt(app, 'first question')
+		await prompt(app, 'second question')
 
 		const [file] = await sessionFiles(vol, 'app.justfiles.dictionary')
 		const transcript = decoder.decode(
@@ -191,12 +221,12 @@ function assistant(text: string, tokens = 0): AssistantMessage {
 	}
 }
 
-function controller(): AppController {
+function controller(readState: () => unknown = () => ({})): AppController {
 	const inspect = async (id: string) => ({
 		id,
 		name: id === 'justfiles.dictionary' ? 'Dictionary' : 'Files',
 		description: '',
-		state: {},
+		state: readState(),
 		actions: {}
 	})
 	return {
@@ -205,7 +235,7 @@ function controller(): AppController {
 		close: async () => {},
 		current: async () => undefined,
 		inspect,
-		state: async () => ({}),
+		state: async () => readState(),
 		run: async () => undefined
 	}
 }

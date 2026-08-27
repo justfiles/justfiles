@@ -379,11 +379,13 @@ export function Omnibar({
 	useDismissTimer(active, notificationStore.dismiss, bannerHovered)
 
 	const ask = (prompt: string) => {
-		if (!prompt || !ready || session.isStreaming) return
-		agent.prompt(prompt)
-		onOpenChat()
-		setQuery('')
-		inputRef.current?.blur()
+		if (!prompt || !ready) return
+		void agent.prompt(prompt).then((accepted) => {
+			if (!accepted) return
+			onOpenChat()
+			setQuery('')
+			inputRef.current?.blur()
+		})
 	}
 
 	const run = (index: number) => {

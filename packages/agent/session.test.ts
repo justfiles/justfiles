@@ -12,7 +12,13 @@ import { DEFAULT_AGENT_NAME, PROFILE_PATH, SOUL_PATH } from './agent-defaults.ts
 import type { AgentBackend } from './llm.ts'
 import { parseSessionShard, sessionShard } from './paths.ts'
 import type { SessionEntry } from './session.manager.ts'
-import { classifyFailure, createAgentSession, type SessionEvent } from './session.ts'
+import {
+	type AgentSession,
+	classifyFailure,
+	createAgentSession,
+	createAppAgentSession,
+	type SessionEvent
+} from './session.ts'
 
 const encoder = new TextEncoder()
 
@@ -113,8 +119,22 @@ function scriptedBackend(
 
 const NO_COMPACTION = { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
 
+function start(session: AgentSession, message: string) {
+	const result = session.start(message)
+	if (!result.accepted) throw new Error('expected the turn to start')
+	return result
+}
+
+async function prompt(session: AgentSession, message: string): Promise<string> {
+	return start(session, message).done
+}
+
+async function history(session: AgentSession): Promise<readonly SessionEntry[]> {
+	return (await session.snapshot()).entries
+}
+
 describe('createAgentSession', () => {
-	test('runs a turn: broadcasts busy + transcript and returns the answer', async () => {
+	test('runs a named turn and publishes its final transcript', async () => {
 		const events: SessionEvent[] = []
 		const session = createAgentSession({
 			volume: volume(memStore()),
@@ -123,16 +143,136 @@ describe('createAgentSession', () => {
 		})
 		session.subscribe((event) => events.push(event))
 
-		await expect(session.prompt('hello')).resolves.toBe('Hi there')
+		await expect(prompt(session, 'hello')).resolves.toBe('Hi there')
 
-		expect(events.map((event) => event.type)).toEqual(['busy', 'transcript', 'busy'])
-		expect(events[0]).toEqual({ type: 'busy', value: true })
-		expect(events.at(-1)).toEqual({ type: 'busy', value: false })
-		const transcript = events.find((event) => event.type === 'transcript')
-		expect(transcript?.type === 'transcript' && transcript.entries).toMatchObject([
+		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished'])
+		const started = events[0]
+		expect(started?.type === 'turn_started' && started.turn.input).toEqual({
+			text: 'hello',
+			source: 'user'
+		})
+		const finished = events[1]
+		expect(finished?.type === 'turn_finished' && finished.status).toBe('completed')
+		expect(finished?.type === 'turn_finished' && finished.entries).toMatchObject([
 			{ role: 'user', content: 'hello' },
 			{ role: 'assistant', content: 'Hi there' }
 		])
+	})
+
+	test('snapshots and admission share the active turn', async () => {
+		const gate = deferred()
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				await gate.promise
+				return scriptedBackend([assistant([{ type: 'text', text: 'done' }])])
+			},
+			compaction: NO_COMPACTION
+		})
+
+		const first = start(session, 'first')
+		expect(await session.snapshot()).toMatchObject({
+			entries: [],
+			activeTurn: { id: first.turn.id, input: { text: 'first', source: 'user' } }
+		})
+		const second = session.start('second')
+		expect(second).toEqual({ accepted: false, activeTurn: first.turn })
+		expect(session.abort('old-turn')).toBe(false)
+		expect(session.abort(first.turn.id)).toBe(true)
+
+		gate.resolve()
+		await first.done
+		expect((await session.snapshot()).activeTurn).toBeNull()
+	})
+
+	test('an abort during backend setup prevents the turn', async () => {
+		const gate = deferred()
+		const seen: unknown[] = []
+		const events: SessionEvent[] = []
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				await gate.promise
+				return scriptedBackend([assistant([{ type: 'text', text: 'too late' }])], '', { seen })
+			},
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		const turn = start(session, 'do the thing')
+		session.abort(turn.turn.id)
+		gate.resolve()
+
+		await expect(turn.done).resolves.toBe('')
+		expect(seen).toEqual([])
+		expect(events).toMatchObject([
+			{ type: 'turn_started', turn: { input: { text: 'do the thing', source: 'user' } } },
+			{ type: 'turn_finished', turnId: turn.turn.id, status: 'interrupted', entries: [] }
+		])
+	})
+
+	test('an abort during app prompt setup prevents the turn', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const seen: unknown[] = []
+		let blocked = false
+		const session = createAppAgentSession(
+			{
+				volume: volume(memStore()),
+				backend: scriptedBackend([assistant([{ type: 'text', text: 'too late' }])], '', { seen }),
+				compaction: NO_COMPACTION
+			},
+			'app.notes',
+			async () => {
+				if (blocked) {
+					entered.resolve()
+					await gate.promise
+				}
+				return 'Notes app'
+			}
+		)
+		await history(session)
+		blocked = true
+
+		const turn = start(session, 'delete everything')
+		await entered.promise
+		session.abort(turn.turn.id)
+		gate.resolve()
+
+		await expect(turn.done).resolves.toBe('')
+		expect(seen).toEqual([])
+	})
+
+	test('an aborted model request does not report an error', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const events: SessionEvent[] = []
+		const notifications: unknown[] = []
+		const base = scriptedBackend([])
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: {
+				...base,
+				streamFn: async () => {
+					entered.resolve()
+					await gate.promise
+					throw new Error('Request was aborted')
+				}
+			},
+			compaction: NO_COMPACTION,
+			notify: (notification) => notifications.push(notification)
+		})
+		session.subscribe((event) => events.push(event))
+
+		const turn = start(session, 'do the thing')
+		await entered.promise
+		session.abort(turn.turn.id)
+		gate.resolve()
+
+		await expect(turn.done).resolves.toBe('')
+		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished'])
+		expect(events[1]).toMatchObject({ type: 'turn_finished', status: 'interrupted' })
+		expect(notifications).toEqual([])
 	})
 
 	test('an ask_user turn pings a question notification', async () => {
@@ -154,7 +294,7 @@ describe('createAgentSession', () => {
 			notify: (n) => notifications.push({ kind: n.kind, body: n.body, route: n.route })
 		})
 
-		await session.prompt('help me choose')
+		await prompt(session, 'help me choose')
 
 		expect(notifications).toHaveLength(1)
 		expect(notifications[0]).toMatchObject({ kind: 'question', body: 'Tea or coffee?' })
@@ -172,7 +312,7 @@ describe('createAgentSession', () => {
 			notify: (n) => notifications.push({ kind: n.kind, body: n.body })
 		})
 
-		await session.prompt('I dropped the table')
+		await prompt(session, 'I dropped the table')
 
 		expect(notifications[0]).toMatchObject({
 			kind: 'info',
@@ -193,7 +333,7 @@ describe('createAgentSession', () => {
 			notify: (n) => notifications.push({ body: n.body })
 		})
 
-		await session.prompt('which tag means reflection?')
+		await prompt(session, 'which tag means reflection?')
 
 		expect(notifications[0]?.body).toBe('[thinking] is the tag you asked about.')
 	})
@@ -211,11 +351,93 @@ describe('createAgentSession', () => {
 		})
 		session.subscribe((event) => events.push(event))
 
-		await expect(session.prompt('hello')).resolves.toBe('')
+		await expect(prompt(session, 'hello')).resolves.toBe('')
 
-		const error = events.find((event) => event.type === 'error')
-		expect(error?.type === 'error' && error.route).toEqual({ kind: 'settings', pane: 'accounts' })
+		const finished = events.find((event) => event.type === 'turn_finished')
+		expect(finished?.type === 'turn_finished' && finished.error?.route).toEqual({
+			kind: 'settings',
+			pane: 'accounts'
+		})
 		expect(notifications).toEqual([{ kind: 'error' }])
+	})
+
+	test('a backend setup failure keeps the last known transcript', async () => {
+		let offline = false
+		const events: SessionEvent[] = []
+		const backend = scriptedBackend([assistant([{ type: 'text', text: 'first answer' }])])
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				if (offline) throw new Error('AI is turned off')
+				return backend
+			},
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		await prompt(session, 'first question')
+		const transcript = (await session.snapshot()).entries
+		offline = true
+
+		expect((await session.snapshot()).entries).toEqual(transcript)
+		await start(session, 'second question').done
+
+		const finished = events.at(-1)
+		expect(finished).toMatchObject({
+			type: 'turn_finished',
+			status: 'failed',
+			entries: transcript
+		})
+	})
+
+	test.each([
+		'readFile',
+		'readdir'
+	] as const)('a %s history failure keeps the last known transcript', async (failure) => {
+		let failReads = false
+		const base = volume(memStore())
+		const vol = {
+			...base,
+			readFile: async (path: string) => {
+				if (failReads && failure === 'readFile') throw new Error('EIO: temporary read failure')
+				return base.readFile(path)
+			},
+			readdir: async (path: string) => {
+				if (failReads && failure === 'readdir') throw new Error('EIO: temporary read failure')
+				return base.readdir(path)
+			}
+		} satisfies Volume
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend(
+				[
+					assistant([{ type: 'text', text: 'first answer' }]),
+					assistant([{ type: 'text', text: 'second answer' }])
+				],
+				'',
+				{
+					beforeStream: async (call) => {
+						failReads = call === 2
+					}
+				}
+			),
+			compaction: NO_COMPACTION
+		})
+
+		await prompt(session, 'first question')
+		const transcript = (await session.snapshot()).entries
+		const events: SessionEvent[] = []
+		session.subscribe((event) => events.push(event))
+
+		await prompt(session, 'second question')
+		expect(events.at(-1)).toMatchObject({
+			type: 'turn_finished',
+			status: 'completed',
+			entries: transcript
+		})
+
+		failReads = false
+		expect((await session.snapshot()).entries).toHaveLength(4)
 	})
 
 	test('newSession clears the transcript', async () => {
@@ -225,15 +447,92 @@ describe('createAgentSession', () => {
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'first' }])]),
 			compaction: NO_COMPACTION
 		})
-		await session.prompt('hello')
-		expect((await session.history()).length).toBeGreaterThan(0)
+		await prompt(session, 'hello')
+		expect((await history(session)).length).toBeGreaterThan(0)
 
 		const events: SessionEvent[] = []
 		session.subscribe((event) => events.push(event))
 		await session.newSession()
 
-		expect(events).toContainEqual({ type: 'transcript', entries: [] })
-		expect(await session.history()).toEqual([])
+		expect(events).toContainEqual({
+			type: 'snapshot',
+			snapshot: { entries: [], activeTurn: null }
+		})
+		expect(await history(session)).toEqual([])
+	})
+
+	test('newSession stops an active turn before clearing it', async () => {
+		const gate = deferred()
+		const events: SessionEvent[] = []
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				await gate.promise
+				return scriptedBackend([assistant([{ type: 'text', text: 'too late' }])])
+			},
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		const turn = start(session, 'old question')
+		const fresh = session.newSession()
+		gate.resolve()
+		await Promise.all([turn.done, fresh])
+
+		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished', 'snapshot'])
+		expect(events[1]).toMatchObject({ status: 'interrupted' })
+		expect(await history(session)).toEqual([])
+	})
+
+	test('a turn admitted during newSession waits for the reset', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const base = volume(memStore())
+		let holdRead = false
+		let calls = 0
+		const vol = {
+			...base,
+			readdir: async (path: string) => {
+				if (holdRead) {
+					holdRead = false
+					entered.resolve()
+					await gate.promise
+				}
+				return base.readdir(path)
+			}
+		} satisfies Volume
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend(
+				[
+					assistant([{ type: 'text', text: 'old answer' }]),
+					assistant([{ type: 'text', text: 'new answer' }])
+				],
+				'',
+				{
+					beforeStream: async (call) => {
+						calls = call
+					}
+				}
+			),
+			compaction: NO_COMPACTION
+		})
+
+		await prompt(session, 'old question')
+		holdRead = true
+		const fresh = session.newSession()
+		await entered.promise
+		const next = start(session, 'new question')
+		await Promise.resolve()
+		expect(calls).toBe(1)
+
+		gate.resolve()
+		await Promise.all([fresh, next.done])
+		expect(calls).toBe(2)
+		expect(await history(session)).toMatchObject([
+			{ role: 'user', content: 'new question' },
+			{ role: 'assistant', content: 'new answer' }
+		])
 	})
 
 	test('applySkill loads a Volume skill and runs it as a turn', async () => {
@@ -251,6 +550,34 @@ describe('createAgentSession', () => {
 
 		expect((await session.listSkills()).map((skill) => skill.id)).toEqual(['greet'])
 		await expect(session.applySkill('greet')).resolves.toBe('Hello!')
+	})
+
+	test.each([
+		'backend',
+		'skill'
+	] as const)('applySkill admits before a %s failure', async (failure) => {
+		const gate = deferred()
+		const events: SessionEvent[] = []
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend:
+				failure === 'backend'
+					? async () => {
+							await gate.promise
+							throw new Error('AI is turned off')
+						}
+					: scriptedBackend([]),
+			compaction: NO_COMPACTION
+		})
+		session.subscribe((event) => events.push(event))
+
+		const result = session.applySkill('gone')
+		expect(events).toMatchObject([
+			{ type: 'turn_started', turn: { input: { text: '/gone', source: 'user' } } }
+		])
+		gate.resolve()
+		await expect(result).resolves.toBe('')
+		expect(events.at(-1)).toMatchObject({ type: 'turn_finished', status: 'failed' })
 	})
 
 	test('runMaintenance consolidates yesterday notes into memory', async () => {
@@ -292,7 +619,7 @@ describe('createAgentSession', () => {
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
 			compaction: NO_COMPACTION
 		})
-		await session.prompt('hello')
+		await prompt(session, 'hello')
 
 		const names = (await vol.readdir('/system/agents/main/sessions'))
 			.map((entry) => entry.name)
@@ -328,7 +655,7 @@ describe('createAgentSession', () => {
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
 			compaction: NO_COMPACTION
 		})
-		expect((await session.history()).map((entry) => 'content' in entry && entry.content)).toContain(
+		expect((await history(session)).map((entry) => 'content' in entry && entry.content)).toContain(
 			'earlier question'
 		)
 	})
@@ -356,7 +683,7 @@ describe('createAgentSession', () => {
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
 			compaction: NO_COMPACTION
 		})
-		await session.prompt('hello')
+		await prompt(session, 'hello')
 
 		expect(await vol.readFile(`${dir}/sessions.json`)).toEqual(stale)
 		// The turn went to a real shard, not to the path the stale map named.
@@ -394,7 +721,7 @@ describe('createAgentSession', () => {
 			compaction: NO_COMPACTION
 		})
 
-		expect((await session.history()).map((e) => 'content' in e && e.content)).toEqual(['aaaa'])
+		expect((await history(session)).map((e) => 'content' in e && e.content)).toEqual(['aaaa'])
 	})
 
 	// The live half of #300, and the one the automated suite nearly missed: a host is
@@ -424,7 +751,7 @@ describe('createAgentSession', () => {
 			),
 			compaction: NO_COMPACTION
 		})
-		await session.prompt('my first question')
+		await prompt(session, 'my first question')
 
 		// The sync tick, landing mid-life: a peer continues the conversation from our reply.
 		const dir = '/system/agents/main/sessions'
@@ -458,7 +785,7 @@ describe('createAgentSession', () => {
 			)
 		)
 
-		await session.prompt('my second question')
+		await prompt(session, 'my second question')
 
 		// What the MODEL was given on the second turn — not merely what the transcript holds.
 		// A peer's whole turn, in place, between this device's two turns.
@@ -475,7 +802,7 @@ describe('createAgentSession', () => {
 		])
 
 		// And the merged lineage is one conversation, in order.
-		expect((await session.history()).map((e) => ('content' in e ? e.content : e.type))).toEqual([
+		expect((await history(session)).map((e) => ('content' in e ? e.content : e.type))).toEqual([
 			'my first question',
 			'first reply',
 			'asked from the other device',
@@ -496,7 +823,7 @@ describe('createAgentSession', () => {
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'answered here' }])]),
 			compaction: NO_COMPACTION
 		})
-		await session.prompt('asked here')
+		await prompt(session, 'asked here')
 
 		const dir = '/system/agents/main/sessions'
 		const mine = (await vol.readdir(dir)).map((e) => e.name).find((n) => n.endsWith('.jsonl'))
@@ -520,7 +847,7 @@ describe('createAgentSession', () => {
 			)
 		)
 
-		expect((await session.history()).map((e) => ('content' in e ? e.content : e.type))).toEqual([
+		expect((await history(session)).map((e) => ('content' in e ? e.content : e.type))).toEqual([
 			'asked here',
 			'answered here',
 			'a peer turn, arriving by sync'
@@ -578,8 +905,8 @@ describe('createAgentSession', () => {
 			compaction: { enabled: true, reserveTokens: 0, keepRecentTokens: 0 }
 		})
 
-		await session.prompt('first question')
-		await session.prompt('second question')
+		await prompt(session, 'first question')
+		await prompt(session, 'second question')
 
 		const mine = (await vol.readdir(dir))
 			.map((e) => e.name)
@@ -627,10 +954,10 @@ describe('createAgentSession', () => {
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'continued here' }])]),
 			compaction: NO_COMPACTION
 		})
-		await session.prompt('following up on the ipad')
+		await prompt(session, 'following up on the ipad')
 
 		// One lineage, spanning both shards.
-		expect((await session.history()).map((e) => 'content' in e && e.content)).toEqual([
+		expect((await history(session)).map((e) => 'content' in e && e.content)).toEqual([
 			'asked on the mac',
 			'answered on the mac',
 			'following up on the ipad',
@@ -698,14 +1025,14 @@ describe('retiring a session on rollover', () => {
 			})
 
 		// First host: retires the idle session and journals it.
-		await open().history()
+		await open().snapshot()
 		const afterFirst = new TextDecoder().decode(await vol.readFile(DAILY))
 		expect(afterFirst).toContain('a note about the old conversation')
 		expect(completions).toBe(1)
 
 		// A second host over the same Volume — an eviction, a rebuild, or just a reconnect that
 		// only wanted history. The retired session is still the newest thing on disk.
-		await open().history()
+		await open().snapshot()
 
 		const afterSecond = new TextDecoder().decode(await vol.readFile(DAILY))
 		expect(afterSecond).toBe(afterFirst)
@@ -728,7 +1055,7 @@ describe('retiring a session on rollover', () => {
 				compaction: NO_COMPACTION
 			})
 
-		await Promise.all([open().history(), open().history()])
+		await Promise.all([open().snapshot(), open().snapshot()])
 
 		expect(completions).toBe(1)
 		expect(new TextDecoder().decode(await vol.readFile(DAILY)).match(/a note about/g)).toHaveLength(
@@ -767,7 +1094,7 @@ describe('retiring a session on rollover', () => {
 				return { vol, session }
 			})
 		)
-		await Promise.all(hosts.map((h) => h.session.history()))
+		await Promise.all(hosts.map((h) => h.session.snapshot()))
 
 		// Both did the work: two LLM calls, and each replica holds one summary.
 		expect(completions).toBe(2)

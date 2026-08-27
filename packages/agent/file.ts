@@ -8,8 +8,9 @@ export function file(volume: Volume, path: string) {
 		let raw: Uint8Array
 		try {
 			raw = await volume.readFile(path)
-		} catch {
-			return null
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith('ENOENT')) return null
+			throw error
 		}
 		if (!raw) return null
 		return new TextDecoder().decode(raw)

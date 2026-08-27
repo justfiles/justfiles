@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import {
 	type Api,
 	type CredentialStore,
@@ -35,6 +34,12 @@ import {
 	readProfile
 } from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
+import {
+	type AgentFrame,
+	type AgentRequest,
+	promptResult,
+	sessionEventFrame
+} from '@justfiles/agent/protocol'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	aesGcmSecretCodec,
@@ -98,11 +103,10 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 	}
 }
 
-interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_open' | 'app_close'
-	text?: string
-	id?: string
-}
+type ClientMessage =
+	| AgentRequest
+	| { type: 'app_open'; id: string }
+	| { type: 'app_close'; id?: string }
 
 import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
 
@@ -112,16 +116,15 @@ interface DisplayParticipants {
 }
 
 type ServerMessage =
+	| (AgentFrame<DisplayMessage> & { participants?: DisplayParticipants })
 	| {
 			type: 'ready'
 			participants?: DisplayParticipants
 			apps?: Awaited<ReturnType<FrierenApps['list']>>
 	  }
-	| { type: 'history'; messages: ReadonlyArray<DisplayMessage>; participants?: DisplayParticipants }
-	| { type: 'event'; event: AgentEvent }
 	| { type: 'error'; message: string }
 	// TODO: remove debug
-	| { type: 'debug'; message: string }
+	| { type: 'debug'; message: string; agentId?: string }
 	| { type: 'app_open'; id: string }
 	| { type: 'app_close'; id: string }
 	// The frieren notification channel: the agent's turn pings / classified errors /
@@ -202,7 +205,8 @@ export class Frieren extends DurableObject<Env> {
 	private accounts?: HostAccounts
 	private apps?: FrierenApps
 	private readonly agents: AgentSessions
-	private agentSubscription?: () => void
+	private readonly agentSubscriptions = new Map<string, () => void>()
+	private readonly agentFrames = new Map<string, Promise<void>>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -471,13 +475,51 @@ export class Frieren extends DurableObject<Env> {
 		return this.apps
 	}
 
-	private getSession(): AgentSession {
-		const session = this.agents.main()
-		if (!this.agentSubscription)
-			this.agentSubscription = session.subscribe((event) => {
-				if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
-			})
+	private getSession(agentId?: string): AgentSession {
+		const session = agentId ? this.agents.app(agentId) : this.agents.main()
+		const key = agentId ?? ''
+		if (!this.agentSubscriptions.has(key))
+			this.agentSubscriptions.set(
+				key,
+				session.subscribe((event) => {
+					void this.queueAgentFrame(agentId, () => {
+						this.broadcast({
+							...sessionEventFrame(event, sessionEntries2DisplayMessages),
+							...(agentId ? { agentId } : {})
+						})
+					})
+				})
+			)
 		return session
+	}
+
+	// A snapshot and its session's lifecycle frames must leave in queue order.
+	private queueAgentFrame(agentId: string | undefined, send: () => void | Promise<void>) {
+		const key = agentId ?? ''
+		const result = (this.agentFrames.get(key) ?? Promise.resolve()).then(send)
+		this.agentFrames.set(
+			key,
+			result.catch((error) => console.error('[agent] frame failed:', error))
+		)
+		return result
+	}
+
+	private sendAgentSnapshot(
+		ws: WebSocket,
+		agentId?: string,
+		participants?: DisplayParticipants
+	): Promise<void> {
+		const session = this.getSession(agentId)
+		return this.queueAgentFrame(agentId, async () => {
+			const snapshot = await session.snapshot()
+			ws.send(
+				JSON.stringify({
+					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
+					...(agentId ? { agentId } : {}),
+					...(participants ? { participants } : {})
+				} satisfies ServerMessage)
+			)
+		})
 	}
 
 	private agentOptions(): AgentSessionOptions {
@@ -651,7 +693,6 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		await scheduleDailyAlarm(this.ctx, this.getSession())
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -667,8 +708,42 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		const text = parsed.type === 'prompt' ? parsed.text : undefined
+		const agentId = 'agentId' in parsed ? parsed.agentId : undefined
+		const trimmed = text?.trim() ?? ''
+		const session =
+			parsed.type === 'abort' || parsed.type === 'prompt' ? this.getSession(agentId) : null
+		if (parsed.type === 'abort') session?.abort(parsed.turnId)
+		// Start before the first await so a following abort cannot overtake setup.
+		let turnId = ''
+		const result =
+			text && session && trimmed !== DEBUG_COMMAND
+				? session.start(text, 'user', (event) =>
+						this.broadcast({
+							type: 'event',
+							turnId,
+							event,
+							...(agentId ? { agentId } : {})
+						})
+					)
+				: null
+		if (result?.accepted) turnId = result.turn.id
+		if (result) {
+			const reply: ServerMessage = {
+				...promptResult(result),
+				...(agentId ? { agentId } : {})
+			}
+			ws.send(JSON.stringify(reply))
+		}
+
+		await scheduleDailyAlarm(this.ctx, this.getSession())
+
 		if (parsed.type === 'abort') {
-			this.getSession().abort()
+			return
+		}
+
+		if (parsed.type === 'snapshot') {
+			await this.sendAgentSnapshot(ws, agentId)
 			return
 		}
 
@@ -682,24 +757,18 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'prompt' && parsed.text) {
-			const trimmed = parsed.text.trim()
+		if (text && session) {
 			if (trimmed === DEBUG_COMMAND) {
 				ws.send(
 					JSON.stringify({
 						type: 'debug',
-						message: await this.getSession().systemPrompt()
+						message: await session.systemPrompt(),
+						...(agentId ? { agentId } : {})
 					} satisfies ServerMessage)
 				)
 				return
 			}
-
-			// Stream the raw turn events (live token/tool deltas) to this socket. The session's
-			// turn runner catches + classifies failures (surfaced via the `error` subscription
-			// wired where the session is built), so this never rejects.
-			await this.getSession().prompt(parsed.text, 'user', (event) =>
-				ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
-			)
+			if (result?.accepted) await result.done
 		}
 	}
 
@@ -766,16 +835,7 @@ export class Frieren extends DurableObject<Env> {
 			await scheduleDailyAlarm(this.ctx, this.getSession())
 
 			const participants = await this.loadParticipants(this.volume)
-			const history = sessionEntries2DisplayMessages(await this.getSession().history())
-			if (history.length > 0) {
-				server.send(
-					JSON.stringify({
-						type: 'history',
-						messages: history,
-						participants
-					} satisfies ServerMessage)
-				)
-			}
+			await this.sendAgentSnapshot(server, undefined, participants)
 
 			// Send ready signal
 			server.send(

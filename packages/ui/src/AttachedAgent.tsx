@@ -23,6 +23,7 @@ export interface AttachedAgentConfig {
 	footer: ReactNode
 	panel: ReactNode
 	onModeChange: (mode: AttachedAgentMode) => void
+	onEffectiveModeChange?: (mode: AttachedAgentMode) => void
 	onOpenChange: (open: boolean) => void
 	onSizeChange: (size: AttachedAgentSize) => void
 }
@@ -41,18 +42,29 @@ export function AttachedAgent({
 		y: number
 		size: number
 	} | null>(null)
-	const [bounds, setBounds] = useState({ width: Number.POSITIVE_INFINITY, height: 0 })
+	const [bounds, setBounds] = useState({
+		width: Number.POSITIVE_INFINITY,
+		height: 0,
+		measured: false
+	})
 	const configured = agent !== undefined
 
 	useLayoutEffect(() => {
 		if (!configured || !rootRef.current) return
 		const root = rootRef.current
-		const read = () => setBounds({ width: root.clientWidth, height: root.clientHeight })
+		const read = () =>
+			setBounds({ width: root.clientWidth, height: root.clientHeight, measured: true })
 		read()
 		const observer = new ResizeObserver(read)
 		observer.observe(root)
 		return () => observer.disconnect()
 	}, [configured])
+
+	const mode = agent ? effectiveMode(agent.mode, bounds.width, agent.size.sidebar) : 'sheet'
+	const onEffectiveModeChange = agent?.onEffectiveModeChange
+	useLayoutEffect(() => {
+		if (bounds.measured) onEffectiveModeChange?.(mode)
+	}, [bounds.measured, mode, onEffectiveModeChange])
 
 	if (!agent)
 		return (
@@ -61,7 +73,6 @@ export function AttachedAgent({
 			</div>
 		)
 
-	const mode = effectiveMode(agent.mode, bounds.width, agent.size.sidebar)
 	const extent = mode === 'sheet' ? bounds.height : bounds.width
 	const size = clampPanelSize(mode, agent.size[mode], extent)
 	const sidebarAvailable = effectiveMode('sidebar', bounds.width, agent.size.sidebar) === 'sidebar'

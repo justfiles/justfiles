@@ -7,16 +7,17 @@ import { useAgentConnection, useAgentSession } from './hooks'
 import { resolveTranscriptImage } from './images'
 import { Whisper } from './Whisper'
 
-// The desktop chat panel reads the OS-level agent session directly. The agent
-// is not an app and does not run in an app window.
+// Missing agentId selects the main conversation; an app id selects its attached one.
 export function MessagesPanel({
+	agentId,
 	onClose,
 	onPersonalize
 }: {
-	onClose: () => void
+	agentId?: string
+	onClose?: () => void
 	onPersonalize: () => void
 }) {
-	const session = useAgentSession()
+	const session = useAgentSession(agentId)
 	const connection = useAgentConnection()
 	const {
 		messages,
@@ -28,12 +29,17 @@ export function MessagesPanel({
 		expression,
 		personalized,
 		isStreaming,
+		isLoadingHistory,
 		sendMessage,
-		abort
+		abort,
+		loadHistory
 	} = session
-	const ready = connection.state === 'ready'
+	const ready = connection.state === 'ready' && !isLoadingHistory
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	useEffect(() => inputRef.current?.focus(), [])
+	useEffect(() => {
+		if (agentId && connection.state === 'ready') loadHistory()
+	}, [agentId, connection.state, loadHistory])
 	// Grow the composer with wrapped lines, then scroll past ~6 (128px).
 	useAutoResize(inputRef, input, 128)
 
@@ -67,15 +73,17 @@ export function MessagesPanel({
 					borderBottom: '1px solid var(--rule)'
 				}}
 			>
-				<button
-					type="button"
-					className="frn-agent-close"
-					onClick={onClose}
-					aria-label="Close chat"
-					title="Close chat"
-				>
-					<XIcon />
-				</button>
+				{onClose ? (
+					<button
+						type="button"
+						className="frn-agent-close"
+						onClick={onClose}
+						aria-label="Close chat"
+						title="Close chat"
+					>
+						<XIcon />
+					</button>
+				) : null}
 				<button
 					type="button"
 					className="frn-agent-identity"

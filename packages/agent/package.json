@@ -6,7 +6,8 @@
 		".": "./index.ts",
 		"./defaults": "./agent-defaults.ts",
 		"./expression": "./expression.ts",
-		"./avatars": "./avatars.ts"
+		"./avatars": "./avatars.ts",
+		"./protocol": "./protocol.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -27,6 +28,10 @@
 			"./avatars": {
 				"types": "./dist/avatars.d.ts",
 				"default": "./dist/avatars.js"
+			},
+			"./protocol": {
+				"types": "./dist/protocol.d.ts",
+				"default": "./dist/protocol.js"
 			}
 		}
 	},

@@ -33,24 +33,24 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   `listSkills`, no assistant/backend — works offline); native `Launcher` dispatches over
   `CatalogClient.runCommand` and acts on the `CommandResult`.
 - [x] Subscription-based chat. The `/agent` socket is a **live view of one shared session**
-  (plain WebSocket + Bun `agent` pub/sub topic, no capnweb): every turn broadcasts the full
-  transcript (`history`) plus `busy`/`error`; the client only sends `{ prompt }`. Because a
+  (plain WebSocket + Bun `agent` pub/sub topic, no capnweb): Mac and Frieren use the same
+  `AgentFrame` contract from `@justfiles/agent`. A connect receives `snapshot`; a prompt gets
+  a direct admission result; lifecycle broadcasts carry the active turn id and transcript. Because a
   `/skill` dispatched over `/system` runs on the same shared `Assistant`, its turn surfaces
   in every open chat naturally — no deliberate daemon→UI push per action, just the session
   the transcript observes. `AgentImpl`/`agentRpcTarget` are gone; the daemon keeps one
   memoised session (`getAgent`, reset on failure) driven by `promptAgent`/`dispatchCommand`.
-- [x] `abort` support. The `/agent` socket now carries an `{ type: 'abort' }` request
+- [x] `abort` support. The `/agent` socket carries an `{ type: 'abort', turnId }` request
   (`AgentRequest`) alongside `prompt`; `main.ts` routes it to `abortAgent`, which cancels the
   in-flight turn on the shared session via `Assistant.abort` (guarded on the memoised session
   so a cold daemon never builds an agent just to cancel nothing). The native Stop button
   already called `window.quayAbort` — `chat.tsx` now defines it, wired to `useAgentChat.abort`,
-  which sends the frame. The aborted turn's `busy:false`/`error` push flows back over the
-  socket as usual.
+  which sends the id it observed. The matching `turn_finished` frame clears the client.
 - [x] User-facing error classification (auth-expired / token-limit routes). `daemon/agent.ts`
   now ports quayd's `classifyFailure`: a failed turn's raw error is mapped to a user-facing
   body + a fix-it `Route` (401/expired → “reconnect in Settings → Accounts”, context/token-
   limit/429 → “start a new chat”, else a generic chat error). `runTurn`'s catch broadcasts the
-  classified body on the `/agent` `error` frame (the raw error still hits `quayd.log`) and
+  classified body on the `/agent` `turn_finished.error` field (the raw error still hits `quayd.log`) and
   pings the notification channel with it — so the in-page launcher (`ui/launcher/main.tsx`)
   status line already shows the friendly message, and the native chat surface
   (`ui/launcher/chat.tsx`), which used to drop the error, now appends it as a trailing error

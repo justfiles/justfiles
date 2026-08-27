@@ -303,6 +303,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 									key={window.id}
 									id={window.id}
 									title={resolveAppTitle(installedApps, window.appId, window.title)}
+									onPersonalize={() => openSettings()}
 								>
 									<AppViewport id={window.id} />
 								</AppWindow>

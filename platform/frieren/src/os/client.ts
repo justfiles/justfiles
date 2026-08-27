@@ -1,5 +1,12 @@
+import type { ActiveTurn } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
+import {
+	type AgentFrame,
+	type AgentRequest,
+	applyAgentFrame,
+	type RemoteAgentState
+} from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState } from '../agent/types'
@@ -45,7 +52,10 @@ export interface AgentSnapshot {
 	userName: string
 	agentName: string
 	messages: AgentMessage[]
+	// True from local prompt acceptance through agent_end, including backend setup before the
+	// server emits agent_start.
 	isStreaming: boolean
+	isLoadingHistory: boolean
 	// The emotion the agent last tagged, or null until it tags one — and null again once it has
 	// been on screen long enough, because calm is not a tag but where the face rests. The last
 	// emotion wins, paced so each one is seen (see HOLD_MS). The tags themselves never reach
@@ -54,10 +64,11 @@ export interface AgentSnapshot {
 }
 
 export interface AgentClient {
-	prompt(text: string): void
-	abort(): void
-	subscribe(listener: () => void): () => void
-	snapshot(): AgentSnapshot
+	prompt(text: string, agentId?: string): Promise<boolean>
+	abort(agentId?: string): void
+	loadHistory(agentId?: string): void
+	subscribe(listener: () => void, agentId?: string): () => void
+	snapshot(agentId?: string): AgentSnapshot
 }
 
 export interface FrierenClient {
@@ -122,15 +133,35 @@ function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
 	return Array.isArray(images) && images.length > 0 ? images : undefined
 }
 
-interface ServerFrame {
-	type?: string
-	participants?: { userName?: string; agentName?: string }
-	apps?: unknown
-	messages?: HistoryMessage[]
-	message?: string
-	id?: string
-	event?: AgentEventFrame
-	notification?: Notification
+type ServerFrame =
+	| (AgentFrame<HistoryMessage> & {
+			participants?: { userName?: string; agentName?: string }
+	  })
+	| {
+			type: 'ready'
+			participants?: { userName?: string; agentName?: string }
+			apps?: unknown
+	  }
+	| { type: 'error'; message: string }
+	| { type: 'debug'; message: string; agentId?: string }
+	| { type: 'app_open'; id: string }
+	| { type: 'app_close'; id: string }
+	| { type: 'notification'; notification: Notification }
+	| { type: 'sync' }
+
+interface AgentState {
+	messages: AgentMessage[]
+	remote: RemoteAgentState
+	loadingHistory: boolean
+	pendingPrompt: ((accepted: boolean) => void) | null
+	currentAssistantId: string | null
+	expressionParser: ReturnType<typeof createExpressionParser>
+	expression: Expression | null
+	heldUntil: number
+	pending: Expression | null | undefined
+	holdTimer: ReturnType<typeof setTimeout> | null
+	listeners: Set<() => void>
+	snapshot: AgentSnapshot
 }
 
 function defaultCreateSocket(token: string): SocketLike {
@@ -153,64 +184,127 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 	let reconnectAttempts = 0
 
-	// --- agent session (BehaviorSubject) ---
+	// --- agent sessions (one keyed state block over one socket) ---
 	let connectionState: ConnectionState = 'disconnected'
 	let userName = 'You'
 	let agentName = DEFAULT_AGENT_NAME
-	let messages: AgentMessage[] = []
-	let isStreaming = false
-	let currentAssistantId: string | null = null
-	// Per-message tag stripper: a tag can straddle two token deltas, so the leftover is
-	// held inside the parser until the next delta (or `flush` at end of message).
-	let expressionParser = createExpressionParser()
-	let expression: Expression | null = null
-	let heldUntil = 0
-	// `undefined` is nothing waiting; `null` is a rest waiting its turn.
-	let pending: Expression | null | undefined
-	let holdTimer: ReturnType<typeof setTimeout> | null = null
-	const agentListeners = new Set<() => void>()
-	let agentSnapshot: AgentSnapshot = buildAgentSnapshot()
+	const agentStates = new Map<string, AgentState>()
 
-	function buildAgentSnapshot(): AgentSnapshot {
-		return { connectionState, userName, agentName, messages, isStreaming, expression }
+	function getAgentState(agentId?: string): AgentState {
+		const key = agentId ?? ''
+		let state = agentStates.get(key)
+		if (state) return state
+		state = {
+			messages: [],
+			remote: { phase: 'idle', activeTurn: null },
+			loadingHistory: false,
+			pendingPrompt: null,
+			currentAssistantId: null,
+			expressionParser: createExpressionParser(),
+			expression: null,
+			heldUntil: 0,
+			pending: undefined,
+			holdTimer: null,
+			listeners: new Set(),
+			snapshot: {} as AgentSnapshot
+		}
+		state.snapshot = buildAgentSnapshot(state)
+		agentStates.set(key, state)
+		return state
 	}
 
-	function emitAgent(): void {
-		agentSnapshot = buildAgentSnapshot()
-		for (const listener of agentListeners) listener()
+	function buildAgentSnapshot(state: AgentState): AgentSnapshot {
+		return {
+			connectionState,
+			userName,
+			agentName,
+			messages: state.messages,
+			isStreaming: state.remote.phase !== 'idle',
+			isLoadingHistory: state.loadingHistory,
+			expression: state.expression
+		}
 	}
 
-	function setMessages(next: AgentMessage[]): void {
-		messages = next
-		emitAgent()
+	function emitAgent(state: AgentState): void {
+		state.snapshot = buildAgentSnapshot(state)
+		for (const listener of state.listeners) listener()
 	}
 
-	function mapMessages(fn: (message: AgentMessage) => AgentMessage): void {
-		setMessages(messages.map(fn))
+	function emitAgents(): void {
+		for (const state of agentStates.values()) emitAgent(state)
 	}
 
-	// Show an emotion (or `null` to rest) as soon as whatever is on screen has served its
-	// minimum — immediately, when nothing is being held.
-	function showExpression(next: Expression | null): void {
-		if (next === expression && pending === undefined) return
-		const wait = heldUntil - Date.now()
+	function stopAgentWork(): void {
+		for (const state of agentStates.values()) {
+			state.pendingPrompt?.(false)
+			state.pendingPrompt = null
+			state.remote = { phase: 'idle', activeTurn: null }
+			state.loadingHistory = false
+			state.currentAssistantId = null
+		}
+		emitAgents()
+	}
+
+	function setMessages(state: AgentState, next: AgentMessage[]): void {
+		state.messages = next
+		emitAgent(state)
+	}
+
+	function restoreMessages(messages: readonly HistoryMessage[]): AgentMessage[] {
+		return messages.map((message) => ({
+			id: crypto.randomUUID(),
+			role: message.role as 'user' | 'assistant',
+			content: message.content,
+			source: message.source,
+			thinking: message.thinking,
+			toolCalls: message.toolCalls?.map((call) => ({
+				id: crypto.randomUUID(),
+				name: call.name,
+				args: call.args,
+				result: call.result,
+				isError: call.isError,
+				status: 'done' as const,
+				images: call.images
+			}))
+		}))
+	}
+
+	function addTurnInput(state: AgentState, turn: ActiveTurn): void {
+		if (state.messages.some((message) => message.id === turn.id)) return
+		state.messages.push({
+			id: turn.id,
+			role: 'user',
+			content: turn.input.text,
+			source: turn.input.source
+		})
+	}
+
+	function mapMessages(state: AgentState, fn: (message: AgentMessage) => AgentMessage): void {
+		setMessages(state, state.messages.map(fn))
+	}
+
+	function showExpression(state: AgentState, next: Expression | null): void {
+		if (next === state.expression && state.pending === undefined) return
+		const wait = state.heldUntil - Date.now()
 		if (wait > 0) {
-			pending = next
-			if (!holdTimer) {
-				holdTimer = setTimeout(() => {
-					holdTimer = null
-					const waiting = pending
-					pending = undefined
-					if (waiting !== undefined) showExpression(waiting)
+			state.pending = next
+			if (!state.holdTimer) {
+				state.holdTimer = setTimeout(() => {
+					state.holdTimer = null
+					const waiting = state.pending
+					state.pending = undefined
+					if (waiting !== undefined) showExpression(state, waiting)
 				}, wait)
 			}
 			return
 		}
-		pending = undefined
-		expression = next
-		heldUntil = next ? Date.now() + HOLD_MS : 0
-		emitAgent()
+		state.pending = undefined
+		state.expression = next
+		state.heldUntil = next ? Date.now() + HOLD_MS : 0
+		emitAgent(state)
 	}
+
+	getAgentState()
 
 	// --- installed-app catalog ---
 	let apps: InstalledApp[] = []
@@ -267,34 +361,30 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// --- server-pushed volume poke (pull now) ---
 	let syncSink: (() => void) | null = null
 
-	function handleAgentEvent(event: AgentEventFrame): void {
+	function handleAgentEvent(event: AgentEventFrame, agentId?: string): void {
+		const state = getAgentState(agentId)
 		switch (event.type) {
 			case 'agent_start':
-				// A new turn starts from a clean face. This has to happen HERE, not at the first
-				// assistant message: `isStreaming` flips on now, which un-rests the avatar, and the
-				// model's first token is a second or more away — long enough to flash the previous
-				// reply's emotion. "Omit the tag to continue" holds WITHIN a turn (across tool
-				// calls), never across turns. Going through `showExpression` is what keeps the
-				// previous emotion from being cut short by an eager follow-up prompt: it rests now if
-				// the minimum has been served, and as soon as it has otherwise.
-				showExpression(null)
-				isStreaming = true
-				emitAgent()
+				// A new turn starts from a clean face. Do this at agent_start rather than the first
+				// assistant message because the model's first token may take a second or more. Going
+				// through showExpression keeps the prior emotion on screen for its minimum time.
+				showExpression(state, null)
+				state.currentAssistantId = null
+				emitAgent(state)
 				break
 
 			case 'agent_end':
-				isStreaming = false
-				currentAssistantId = null
-				emitAgent()
+				state.currentAssistantId = null
+				emitAgent(state)
 				break
 
 			case 'message_start': {
 				if (event.message?.role === 'assistant') {
 					const id = crypto.randomUUID()
-					currentAssistantId = id
-					expressionParser = createExpressionParser()
-					setMessages([
-						...messages,
+					state.currentAssistantId = id
+					state.expressionParser = createExpressionParser()
+					setMessages(state, [
+						...state.messages,
 						{ id, role: 'assistant', content: '', thinking: '', toolCalls: [] }
 					])
 				}
@@ -302,21 +392,21 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			}
 
 			case 'message_update': {
-				const id = currentAssistantId
+				const id = state.currentAssistantId
 				if (!id) break
 				const delta = event.assistantMessageEvent
 				if (delta?.type === 'text_delta' && delta.delta) {
-					const { text, expression: tagged } = expressionParser.push(delta.delta)
+					const { text, expression: tagged } = state.expressionParser.push(delta.delta)
 					// Only emotions can reach here: there is no tag for calm, because calm is where the
 					// face rests rather than something the agent claims.
-					if (tagged) showExpression(tagged)
-					mapMessages((message) =>
+					if (tagged) showExpression(state, tagged)
+					mapMessages(state, (message) =>
 						message.id === id ? { ...message, content: message.content + text } : message
 					)
 				}
 				if (delta?.type === 'thinking_delta' && delta.delta) {
 					const text = delta.delta
-					mapMessages((message) =>
+					mapMessages(state, (message) =>
 						message.id === id ? { ...message, thinking: (message.thinking ?? '') + text } : message
 					)
 				}
@@ -324,23 +414,23 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			}
 
 			case 'message_end': {
-				const id = currentAssistantId
+				const id = state.currentAssistantId
 				if (!id) break
 				// Whatever the parser is still holding was never a tag — render it.
-				const rest = expressionParser.flush()
+				const rest = state.expressionParser.flush()
 				if (rest)
-					mapMessages((message) =>
+					mapMessages(state, (message) =>
 						message.id === id ? { ...message, content: message.content + rest } : message
 					)
 				break
 			}
 
 			case 'tool_execution_start': {
-				const id = currentAssistantId
+				const id = state.currentAssistantId
 				if (!id || !event.toolCallId || !event.toolName) break
 				const toolCallId = event.toolCallId
 				const toolName = event.toolName
-				mapMessages((message) =>
+				mapMessages(state, (message) =>
 					message.id === id
 						? {
 								...message,
@@ -355,9 +445,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			}
 
 			case 'tool_execution_end': {
-				const id = currentAssistantId
+				const id = state.currentAssistantId
 				if (!id) break
-				mapMessages((message) =>
+				mapMessages(state, (message) =>
 					message.id === id
 						? {
 								...message,
@@ -388,52 +478,71 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
 			connectionState = 'ready'
-			emitAgent()
+			emitAgents()
 			loadLocalApps(Array.isArray(data.apps) ? (data.apps as InstalledApp[]) : [])
 			return
 		}
 
-		if (data.type === 'history') {
+		if (data.type === 'turn_started') {
+			const state = getAgentState(data.agentId)
+			state.remote = applyAgentFrame(state.remote, data)
+			addTurnInput(state, data.turn)
+			emitAgent(state)
+			return
+		}
+
+		if (data.type === 'prompt_result') {
+			const state = getAgentState(data.agentId)
+			state.pendingPrompt?.(data.accepted)
+			state.pendingPrompt = null
+			state.remote = applyAgentFrame(state.remote, data)
+			const turn = state.remote.activeTurn
+			if (turn) {
+				addTurnInput(state, turn)
+			}
+			emitAgent(state)
+			return
+		}
+
+		if (data.type === 'snapshot') {
+			const state = getAgentState(data.agentId)
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
-			const restored: AgentMessage[] = (data.messages ?? []).map((m) => ({
-				id: crypto.randomUUID(),
-				role: m.role as 'user' | 'assistant',
-				content: m.content,
-				source: m.source,
-				thinking: m.thinking,
-				toolCalls: m.toolCalls?.map((tc) => ({
-					id: crypto.randomUUID(),
-					name: tc.name,
-					args: tc.args,
-					result: tc.result,
-					isError: tc.isError,
-					status: 'done' as const,
-					images: tc.images
-				}))
-			}))
-			if (restored.length > 0) messages = restored
-			emitAgent()
+			state.messages = restoreMessages(data.transcript)
+			state.loadingHistory = false
+			state.remote = applyAgentFrame(state.remote, data)
+			if (data.activeTurn) addTurnInput(state, data.activeTurn)
+			emitAgents()
 			return
 		}
 
-		if (data.type === 'error') {
-			console.error('Server error:', data.message)
-			isStreaming = false
-			// Surface the failure in the transcript (an error-styled block), not just the
-			// console — e.g. "turn on an AI provider in Settings" when no AI is enabled.
-			const body = typeof data.message === 'string' ? data.message : 'Something went wrong.'
-			setMessages([
-				...messages,
-				{ id: crypto.randomUUID(), role: 'assistant', content: body, error: true }
-			])
+		if (data.type === 'turn_finished') {
+			const state = getAgentState(data.agentId)
+			const remote = applyAgentFrame(state.remote, data)
+			if (remote === state.remote) return
+			state.remote = remote
+			state.messages = restoreMessages(data.transcript)
+			state.currentAssistantId = null
+			if (data.error)
+				state.messages.push({
+					id: crypto.randomUUID(),
+					role: 'assistant',
+					content: data.error.message,
+					error: true
+				})
+			emitAgent(state)
 			return
 		}
 
 		// TODO: remove later
 		if (data.type === 'debug') {
+			const state = getAgentState(data.agentId)
+			state.pendingPrompt?.(false)
+			state.pendingPrompt = null
+			state.remote = { phase: 'idle', activeTurn: null }
+			emitAgent(state)
 			console.log(String(data.message ?? ''))
 			return
 		}
@@ -460,7 +569,10 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'event' && data.event) handleAgentEvent(data.event)
+		if (data.type === 'event') {
+			const state = getAgentState(data.agentId)
+			if (state.remote.activeTurn?.id === data.turnId) handleAgentEvent(data.event, data.agentId)
+		}
 	}
 
 	function attach(ws: SocketLike): void {
@@ -477,16 +589,14 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (socket !== ws) return
 			socket = null
 			connectionState = 'disconnected'
-			isStreaming = false
-			emitAgent()
+			stopAgentWork()
 			loadLocalApps()
 			scheduleReconnect()
 		}
 		ws.onerror = () => {
 			if (socket !== ws) return
 			connectionState = 'disconnected'
-			isStreaming = false
-			emitAgent()
+			stopAgentWork()
 			loadLocalApps()
 		}
 	}
@@ -513,14 +623,13 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		const gen = ++generation
 		closeSocket()
 		connectionState = 'connecting'
-		isStreaming = false
-		emitAgent()
+		stopAgentWork()
 		void (async () => {
 			const token = await options.getToken().catch(() => null)
 			if (gen !== generation) return
 			if (!token) {
 				connectionState = 'disconnected'
-				emitAgent()
+				emitAgents()
 				loadLocalApps()
 				scheduleReconnect()
 				return
@@ -538,22 +647,58 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	}
 
 	const agent: AgentClient = {
-		prompt(text) {
+		prompt(text, agentId) {
+			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready')
+				return Promise.resolve(false)
+			const state = getAgentState(agentId)
+			if (state.remote.phase !== 'idle' || state.loadingHistory) return Promise.resolve(false)
+			state.remote = { phase: 'submitting', activeTurn: null }
+			emitAgent(state)
+			const accepted = new Promise<boolean>((resolve) => {
+				state.pendingPrompt = resolve
+			})
+			socket.send(
+				JSON.stringify({
+					type: 'prompt',
+					text,
+					...(agentId ? { agentId } : {})
+				} satisfies AgentRequest)
+			)
+			return accepted
+		},
+		abort(agentId) {
+			const turnId = getAgentState(agentId).remote.activeTurn?.id
+			if (!turnId) return
+			socket?.send(
+				JSON.stringify({
+					type: 'abort',
+					turnId,
+					...(agentId ? { agentId } : {})
+				} satisfies AgentRequest)
+			)
+		},
+		loadHistory(agentId) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
-			setMessages([...messages, { id: crypto.randomUUID(), role: 'user', content: text }])
-			socket.send(JSON.stringify({ type: 'prompt', text }))
+			const state = getAgentState(agentId)
+			if (state.remote.phase !== 'idle' || state.loadingHistory) return
+			state.loadingHistory = true
+			emitAgent(state)
+			socket.send(
+				JSON.stringify({
+					type: 'snapshot',
+					...(agentId ? { agentId } : {})
+				} satisfies AgentRequest)
+			)
 		},
-		abort() {
-			socket?.send(JSON.stringify({ type: 'abort' }))
-		},
-		subscribe(listener) {
-			agentListeners.add(listener)
+		subscribe(listener, agentId) {
+			const state = getAgentState(agentId)
+			state.listeners.add(listener)
 			return () => {
-				agentListeners.delete(listener)
+				state.listeners.delete(listener)
 			}
 		},
-		snapshot() {
-			return agentSnapshot
+		snapshot(agentId) {
+			return getAgentState(agentId).snapshot
 		}
 	}
 
@@ -569,15 +714,14 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				clearTimeout(reconnectTimer)
 				reconnectTimer = null
 			}
-			if (holdTimer) {
-				clearTimeout(holdTimer)
-				holdTimer = null
+			for (const state of agentStates.values()) {
+				if (state.holdTimer) clearTimeout(state.holdTimer)
+				state.holdTimer = null
 			}
 			generation++
 			closeSocket()
 			connectionState = 'disconnected'
-			isStreaming = false
-			emitAgent()
+			stopAgentWork()
 			loadLocalApps()
 		},
 

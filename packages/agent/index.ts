@@ -24,11 +24,14 @@ export type { SoulGenerationInput } from './prompts.ts'
 export type { ImageRef, SessionEntry } from './session.manager.ts'
 // ── The agent product ──────────────────────────────────────────────
 export {
+	type ActiveTurn,
 	type AgentSession,
 	type AgentSessionOptions,
+	type AgentSessionSnapshot,
 	classifyFailure,
 	createAgentSession,
-	type SessionEvent
+	type SessionEvent,
+	type TurnStatus
 } from './session.ts'
 export { type AgentSessions, createAgentSessions } from './sessions.ts'
 // The UI builds its "/" menu from session.listSkills() — a skill, never a "command".

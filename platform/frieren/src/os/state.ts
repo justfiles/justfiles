@@ -2,6 +2,18 @@ export type WindowRect = { x: number; y: number; w: number; h: number }
 
 export type WindowMode = 'floating' | 'minimized' | 'fullscreen'
 
+export type AttachedAgentState = {
+	mode: 'sheet' | 'sidebar'
+	size: { sheet: number; sidebar: number }
+	open: Record<string, true>
+}
+
+export const initialAttachedAgentState: AttachedAgentState = {
+	mode: 'sheet',
+	size: { sheet: 280, sidebar: 300 },
+	open: {}
+}
+
 // A window is a view, not necessarily an app: `kind` picks the body the shell
 // renders. App windows carry the `appId` they present; the agent window views
 // the (kernel-owned) conversation session and has none. Geometry is NOT here —
@@ -29,6 +41,7 @@ export type OsState = {
 	// AGENT_WINDOW_ID for the agent). Survives close so a relaunched app resumes
 	// its last position/size. The single source of truth for a window's rect.
 	placements: Record<string, WindowRect>
+	assistant: AttachedAgentState
 }
 
 export type OsAction =
@@ -42,6 +55,9 @@ export type OsAction =
 	| { type: 'window.focus'; id: string }
 	| { type: 'window.rectUpdated'; id: string; rect: WindowRect }
 	| { type: 'window.setMode'; id: string; mode: WindowMode }
+	| { type: 'assistant.setMode'; mode: AttachedAgentState['mode'] }
+	| { type: 'assistant.setSize'; size: AttachedAgentState['size'] }
+	| { type: 'assistant.setOpen'; id: string; open: boolean }
 
 export const initialState: OsState = {
 	version: 1,
@@ -49,7 +65,8 @@ export const initialState: OsState = {
 	windows: {},
 	openOrder: [],
 	focusStack: [],
-	placements: {}
+	placements: {},
+	assistant: initialAttachedAgentState
 }
 
 // Cascade new windows so they don't stack exactly on top of one another.

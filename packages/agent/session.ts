@@ -65,27 +65,44 @@ export interface AgentSessionOptions {
 	expressions?: boolean
 }
 
-// One broad event stream the UI subscribes to — busy/transcript/error — so every open
-// surface (a second tab, the native launcher) converges with no polling. `newSession`
-// re-emits an empty transcript, which is all a UI needs to reset.
+export interface ActiveTurn {
+	id: string
+	input: { text: string; source: PromptSource }
+}
+
+export interface AgentSessionSnapshot {
+	entries: readonly SessionEntry[]
+	activeTurn: ActiveTurn | null
+}
+
+export type TurnStatus = 'completed' | 'interrupted' | 'failed'
+
+export type StartTurnResult =
+	| { accepted: true; turn: ActiveTurn; done: Promise<string> }
+	| { accepted: false; activeTurn: ActiveTurn }
+
+// Every event names its turn, so a delayed finish or abort cannot affect newer work.
 export type SessionEvent =
-	| { type: 'busy'; value: boolean }
-	| { type: 'transcript'; entries: SessionEntry[] }
-	| { type: 'error'; message: string; route?: Route }
+	| { type: 'turn_started'; turn: ActiveTurn }
+	| {
+			type: 'turn_finished'
+			turnId: string
+			status: TurnStatus
+			entries: SessionEntry[]
+			error?: { message: string; route?: Route }
+	  }
+	| { type: 'snapshot'; snapshot: AgentSessionSnapshot }
 
 // A per-turn observer of the RAW agent event stream (token/tool deltas), for a host that
 // renders live streaming (frieren) rather than transcript snapshots (the Mac app). Subscribed
-// only for the turn's duration (see `prompt`); matches the Assistant's listener shape.
+// only for the turn's duration; matches the Assistant's listener shape.
 export type TurnListener = (event: AgentEvent, signal: AbortSignal) => void
 
 export interface AgentSession {
 	// --- conversation ---
-	// `onEvent` streams the raw agent events (token/tool deltas) for THIS turn only — a host
-	// that renders live streaming passes it; one that renders transcript snapshots omits it and
-	// reads `subscribe` instead. Either way the turn's outcome also lands on `subscribe`.
-	prompt(message: string, source?: PromptSource, onEvent?: TurnListener): Promise<string>
-	abort(): void
-	history(): Promise<readonly SessionEntry[]>
+	start(message: string, source?: PromptSource, onEvent?: TurnListener): StartTurnResult
+	abort(turnId: string): boolean
+	snapshot(): Promise<AgentSessionSnapshot>
 	subscribe(fn: (event: SessionEvent) => void): () => void
 	// --- semantic actions a UI slash-command maps to ---
 	newSession(): Promise<void>
@@ -108,6 +125,12 @@ const DEFAULT_COMPACTION: CompactionSettings = {
 interface PendingQuestion {
 	question: string
 	options: string[]
+}
+
+interface RunningTurn {
+	turn: ActiveTurn
+	aborted: boolean
+	done: Promise<string> | null
 }
 
 // The lazily-built runtime: the composed Assistant, the text helper (for maintenance), and
@@ -160,6 +183,9 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	let revision = 0
 	let active: { key: string; revision: number; built: Promise<Built> } | null = null
 	let watching: Promise<void> | null = null
+	let running: RunningTurn | null = null
+	let resetting: Promise<void> | null = null
+	let transcript: readonly SessionEntry[] = []
 
 	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
 	// become the system prompt, the agent's name becomes the banner title — and they change
@@ -174,14 +200,18 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	// a session must not touch storage before its host's migration barrier has completed.
 
 	return {
-		prompt: (message, source, onEvent) =>
-			runTurn((assistant) => assistant.prompt(message, source), onEvent),
+		start: (message, source = 'user', onEvent) =>
+			startTurn(
+				{ text: message, source },
+				(assistant) => assistant.prompt(message, source),
+				onEvent
+			),
 		abort,
-		history,
+		snapshot,
 		subscribe,
 		newSession,
 		listSkills: () => listSkills(volume),
-		applySkill: (id) => runTurn((assistant) => assistant.applySkill(id)),
+		applySkill,
 		runMaintenance,
 		nextMaintenanceAt,
 		systemPrompt
@@ -221,14 +251,13 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		// Read where the rest of the identity is read, so the watch above refreshes it too.
 		const builtTitle = options.title ?? (await readAgentName(volume))
 		const text = createText(llm)
-		const appContext = await target.appContext?.()
 		const assistant = await createAssistant({
 			volume,
 			agent: createAgent(llm),
 			text,
 			agentId: target.agentId,
 			kind: target.kind,
-			appContext,
+			appContext: target.appContext,
 			compaction,
 			getTimezone: timezone,
 			readDoc,
@@ -299,18 +328,38 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		for (const fn of listeners) fn(event)
 	}
 
-	// Run one turn on the shared session: broadcast busy + the resulting transcript (or a
-	// classified error) to every subscriber and ping the notification channel. `ask_user`
-	// ends a turn with a question that already lands in the session (the transcript renders
-	// it); we only swap the banner ping to `question`. Never rejects — a failed turn surfaces
-	// through the event stream + notification, so a host can `void session.prompt(...)`.
+	function startTurn(
+		input: ActiveTurn['input'],
+		run: (assistant: Assistant) => Promise<string>,
+		onEvent?: TurnListener
+	): StartTurnResult {
+		if (running) return { accepted: false, activeTurn: running.turn }
+		const turn = { id: crypto.randomUUID(), input }
+		const runState: RunningTurn = { turn, aborted: false, done: null }
+		running = runState
+		// Let subscribers observe admission before backend or skill setup starts.
+		const reset = resetting
+		const done = Promise.resolve().then(async () => {
+			if (reset) await reset
+			return runTurn(runState, run, onEvent)
+		})
+		runState.done = done
+		emit({ type: 'turn_started', turn })
+		return { accepted: true, turn, done }
+	}
+
 	async function runTurn(
+		state: RunningTurn,
 		run: (assistant: Assistant) => Promise<string>,
 		onEvent?: TurnListener
 	): Promise<string> {
-		emit({ type: 'busy', value: true })
+		const { turn } = state
+		let built: Built | null = null
+		let status: TurnStatus = 'completed'
+		let failure: ReturnType<typeof classifyFailure> | undefined
 		try {
-			const built = await getBuilt()
+			built = await getBuilt()
+			if (state.aborted) return ''
 			// Stream the raw turn events to a streaming host for this turn only; unsubscribed in
 			// the inner `finally` so events never leak across turns.
 			const unsubscribe = onEvent ? built.assistant.subscribe(onEvent) : undefined
@@ -318,53 +367,98 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			try {
 				const answer = await run(built.assistant)
 				const asked = built.takePending()
-				emit({ type: 'transcript', entries: [...(await built.assistant.history())] })
+				if (state.aborted) return ''
 				ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
 				return answer
 			} finally {
 				unsubscribe?.()
 			}
 		} catch (error) {
-			const failure = classifyFailure(error)
+			if (state.aborted) return ''
+			failure = classifyFailure(error)
+			status = 'failed'
 			console.error('[agent] turn failed:', error)
-			emit({ type: 'error', message: failure.body, route: failure.route })
 			ping('error', failure.body, failure.route)
 			return ''
 		} finally {
-			emit({ type: 'busy', value: false })
+			if (state.aborted) status = 'interrupted'
+			// Setup failed before it could change history, so keep the last transcript.
+			const entries = built ? [...(await readHistory(built))] : [...transcript]
+			transcript = entries
+			if (running === state) running = null
+			emit({
+				type: 'turn_finished',
+				turnId: turn.id,
+				status,
+				entries,
+				...(failure ? { error: { message: failure.body, route: failure.route } } : {})
+			})
 		}
 	}
 
-	// Cancel the in-flight turn, leaving the session intact. Guards on the cached runtime so
-	// an abort never builds a runtime just to cancel nothing.
-	function abort(): void {
-		if (!active) return
+	// Keep the request while the runtime builds. Once built, abort the assistant too in case
+	// the turn has moved past setup and reached the model.
+	function abort(turnId: string): boolean {
+		if (!running || running.turn.id !== turnId) return false
+		running.aborted = true
+		if (!active) return true
 		void active.built
 			.then(({ assistant }) => assistant.abort())
 			.catch((error) => console.error('[agent] abort failed:', error))
+		return true
 	}
 
-	// The transcript for a connect snapshot; empty when the runtime can't build (no backend),
-	// so a UI shows an empty transcript rather than erroring.
-	async function history(): Promise<readonly SessionEntry[]> {
+	// Refresh an idle snapshot when possible. A failed build keeps the last transcript;
+	// a cold session still starts empty.
+	async function snapshot(): Promise<AgentSessionSnapshot> {
+		if (!running) transcript = await getBuilt().then(readHistory, () => transcript)
+		return { entries: transcript, activeTurn: running?.turn ?? null }
+	}
+
+	async function readHistory(built: Built): Promise<readonly SessionEntry[]> {
 		try {
-			return await (await getBuilt()).assistant.history()
+			return await built.assistant.history()
 		} catch {
-			return []
+			return transcript
 		}
 	}
 
-	// Start a fresh session and reset every subscriber (an empty transcript). Best-effort: a
-	// build failure still emits the empty transcript so the UI clears.
-	async function newSession(): Promise<void> {
-		try {
-			const built = await getBuilt()
-			built.takePending()
-			await built.assistant.newSession()
-		} catch (error) {
-			console.error('[agent] newSession failed:', error)
+	// Stop the old turn before replacing its session. A turn admitted during the reset waits
+	// at the run boundary, so it cannot write through the session swap.
+	function newSession(): Promise<void> {
+		if (resetting) return resetting
+		const reset = Promise.resolve().then(async () => {
+			const activeTurn = running
+			if (activeTurn) {
+				abort(activeTurn.turn.id)
+				await activeTurn.done
+			}
+			try {
+				const built = await getBuilt()
+				built.takePending()
+				await built.assistant.newSession()
+			} catch (error) {
+				console.error('[agent] newSession failed:', error)
+			}
+			transcript = []
+			emit({
+				type: 'snapshot',
+				snapshot: { entries: transcript, activeTurn: running?.turn ?? null }
+			})
+		})
+		resetting = reset
+		const clearReset = () => {
+			if (resetting === reset) resetting = null
 		}
-		emit({ type: 'transcript', entries: [] })
+		void reset.then(clearReset, clearReset)
+		return reset
+	}
+
+	function applySkill(id: string): Promise<string> {
+		const result = startTurn({ text: `/${id}`, source: 'user' }, (assistant) =>
+			assistant.applySkill(id)
+		)
+		return result.accepted ? result.done : Promise.resolve('')
 	}
 
 	// Only the main session rolls yesterday's daily notes into permanent memory.
