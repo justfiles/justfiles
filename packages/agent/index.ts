@@ -30,6 +30,7 @@ export {
 	createAgentSession,
 	type SessionEvent
 } from './session.ts'
+export { type AgentSessions, createAgentSessions } from './sessions.ts'
 // The UI builds its "/" menu from session.listSkills() — a skill, never a "command".
 export type { SkillMeta } from './skills.ts'
 export { resolveTimezone } from './timezone.ts'

@@ -2,7 +2,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
 	type AgentSession,
-	createAgentSession,
+	type AgentSessions,
+	createAgentSessions,
 	resolveTimezone,
 	type SessionEntry,
 	type SessionEvent
@@ -51,26 +52,26 @@ const nativeWindows: AppControllerPorts['windows'] = {
 		})
 }
 
-// ── The shared agent session ──────────────────────────────────────────────
+// ── The shared agent sessions ─────────────────────────────────────────────
 //
-// The daemon runs ONE agent session (built lazily, memoised): every chat subscribes to its
+// The manager builds and memoises the main session lazily. Every chat subscribes to its
 // transcript and the `/system` command handler drives the same session, so a `/skill` turn
 // shows up live in an open chat. The turn runner, tool wiring, backend rebuild-on-rotate,
 // error classification, and notification pings all live in `createAgentSession`
 // (@justfiles/agent) — the daemon supplies only its ports (a Volume, the ChatGPT-resolved
 // backend, the native AppController, the notify channel, a docs reader) and maps its own
 // slash commands onto the session's semantic methods (`newSession` / `applySkill`).
-let sessionPromise: Promise<AgentSession> | null = null
+let agentsPromise: Promise<AgentSessions> | null = null
 
 function getSession(): Promise<AgentSession> {
-	if (!sessionPromise) sessionPromise = buildSession()
-	return sessionPromise
+	if (!agentsPromise) agentsPromise = buildAgents()
+	return agentsPromise.then((agents) => agents.main())
 }
 
-async function buildSession(): Promise<AgentSession> {
+async function buildAgents(): Promise<AgentSessions> {
 	const fs = await getVolume()
 	const accounts = await getAccounts()
-	const session = createAgentSession({
+	const agents = createAgentSessions({
 		volume: fs,
 		// Re-resolve every turn so a model switch / reconnect / OAuth refresh takes effect on
 		// the next prompt without restarting the daemon (the mint rotates near-expiry tokens;
@@ -94,13 +95,14 @@ async function buildSession(): Promise<AgentSession> {
 		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text(),
 		timezone: () => resolveTimezone(fs, undefined)
 	})
+	const session = agents.main()
 	// Fan the session's events out to every connected chat via the sink main.ts wired (the
 	// `agent` pub/sub topic). `transcript` becomes the daemon's `history` frame.
 	session.subscribe((event) => broadcast(toAgentEvent(event)))
 	void scheduleDailyMaintenance(session).catch((error) =>
 		console.error('[agent] maintenance alarm failed:', error)
 	)
-	return session
+	return agents
 }
 
 // The session's broad event union → the daemon's `/agent` wire (protocol.ts). An error's
@@ -141,9 +143,9 @@ export function promptAgent(message: string): void {
 // Cancel the in-flight turn, leaving the session intact so later prompts still work. Guards
 // on the memoised session so a cold daemon never builds an agent just to cancel nothing.
 export function abortAgent(): void {
-	if (!sessionPromise) return
-	void sessionPromise
-		.then((session) => session.abort())
+	if (!agentsPromise) return
+	void agentsPromise
+		.then((agents) => agents.main().abort())
 		.catch((err) => console.error('[agent] abort failed:', err))
 }
 

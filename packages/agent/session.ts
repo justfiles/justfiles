@@ -120,6 +120,24 @@ interface Built {
 }
 
 export function createAgentSession(options: AgentSessionOptions): AgentSession {
+	return makeSession(options, { agentId: 'main', kind: 'main' })
+}
+
+export function createAppAgentSession(
+	options: AgentSessionOptions,
+	agentId: string,
+	appContext: () => Promise<string>
+): AgentSession {
+	return makeSession(options, { agentId, kind: 'app', appContext })
+}
+
+interface SessionTarget {
+	agentId: string
+	kind: 'main' | 'app'
+	appContext?: () => Promise<string>
+}
+
+function makeSession(options: AgentSessionOptions, target: SessionTarget): AgentSession {
 	const { volume, apps, notify, readDoc, timezone } = options
 	// The banner name. Re-read from the soul on every build (see below) unless the host
 	// insists on branding of its own, so a rename reaches notifications too.
@@ -203,10 +221,14 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		// Read where the rest of the identity is read, so the watch above refreshes it too.
 		const builtTitle = options.title ?? (await readAgentName(volume))
 		const text = createText(llm)
+		const appContext = await target.appContext?.()
 		const assistant = await createAssistant({
 			volume,
 			agent: createAgent(llm),
 			text,
+			agentId: target.agentId,
+			kind: target.kind,
+			appContext,
 			compaction,
 			getTimezone: timezone,
 			readDoc,
@@ -345,8 +367,9 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		emit({ type: 'transcript', entries: [] })
 	}
 
-	// Roll yesterday's daily notes into permanent memory. No-op when the runtime can't build.
+	// Only the main session rolls yesterday's daily notes into permanent memory.
 	async function runMaintenance(): Promise<void> {
+		if (target.kind !== 'main') return
 		try {
 			await consolidateMemory(volume, (await getBuilt()).text)
 		} catch (error) {
@@ -354,9 +377,9 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		}
 	}
 
-	// When the host's cron should next run maintenance (4am in the user's timezone), so it can
-	// schedule its alarm. Independent of the backend.
+	// App sessions return null because only main owns the daily maintenance alarm.
 	async function nextMaintenanceAt(now: Date): Promise<number | null> {
+		if (target.kind !== 'main') return null
 		const tz = (timezone ? await timezone() : DEFAULT_TIMEZONE) || DEFAULT_TIMEZONE
 		return nextFourAmInTimezone(now, tz)
 	}

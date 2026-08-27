@@ -9,6 +9,7 @@ import type { LLMText } from './llm.text.ts'
 import { filesystemPrompt, systemPrompt } from './prompts.ts'
 
 const encoder = new TextEncoder()
+const MAIN = { agentId: 'main', kind: 'main' } as const
 
 function testTool(name: string): AgentTool {
 	const parameters = Type.Object({})
@@ -72,6 +73,7 @@ function scriptedAgent(messages: AssistantMessage[]): Agent {
 describe('assistant prompt', () => {
 	test('retries an empty assistant response before persisting', async () => {
 		const rt = await createAssistant({
+			...MAIN,
 			volume: volume(memStore()),
 			agent: scriptedAgent([assistant([]), assistant([{ type: 'text', text: 'Recovered' }])]),
 			text: testText(),
@@ -104,6 +106,7 @@ describe('assistant prompt', () => {
 		])
 		agent.state.tools = [imageTool]
 		const rt = await createAssistant({
+			...MAIN,
 			volume: volume(memStore()),
 			agent,
 			text: testText(),
@@ -130,6 +133,7 @@ describe('assistant tool API', () => {
 	test('adds tools to the agent tool list', async () => {
 		const agent = new Agent()
 		const rt = await createAssistant({
+			...MAIN,
 			volume: volume(memStore()),
 			agent,
 			text: testText(),
@@ -154,6 +158,7 @@ describe('assistant tool API', () => {
 
 		const agent = new Agent()
 		const rt = await createAssistant({
+			...MAIN,
 			volume: vol,
 			agent,
 			text: testText(),
@@ -188,6 +193,7 @@ describe('assistant tool API', () => {
 			encoder.encode('---\nname: Ada\nbirth_date: 1990-06-15\n---\n')
 		)
 		const rt = await createAssistant({
+			...MAIN,
 			volume: vol,
 			agent: new Agent(),
 			text: testText(),
@@ -198,6 +204,7 @@ describe('assistant tool API', () => {
 
 	test('adds the apps block from appsPrompt', async () => {
 		const rt = await createAssistant({
+			...MAIN,
 			volume: volume(memStore()),
 			agent: new Agent(),
 			text: testText(),
@@ -211,6 +218,7 @@ describe('assistant tool API', () => {
 	test('orients the agent on the filesystem, and mentions `os windows` only with an os port', async () => {
 		const make = (os: boolean) =>
 			createAssistant({
+				...MAIN,
 				volume: volume(memStore()),
 				agent: new Agent(),
 				text: testText(),
