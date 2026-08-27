@@ -2,11 +2,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
 	type AgentSession,
+	type AgentSessionSnapshot,
 	type AgentSessions,
 	createAgentSessions,
-	resolveTimezone,
-	type SessionEntry,
-	type SessionEvent
+	resolveTimezone
 } from '@justfiles/agent'
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
@@ -96,47 +95,53 @@ async function buildAgents(): Promise<AgentSessions> {
 		timezone: () => resolveTimezone(fs, undefined)
 	})
 	const session = agents.main()
-	// Fan the session's events out to every connected chat via the sink main.ts wired (the
-	// `agent` pub/sub topic). `transcript` becomes the daemon's `history` frame.
-	session.subscribe((event) => broadcast(toAgentEvent(event)))
+	// Fan the session's events out to every connected chat via the sink main.ts wired.
+	session.subscribe((event) => {
+		if (event.type === 'turn_started') {
+			activeTurnId = event.turn.id
+			broadcast({ type: 'busy', value: true })
+			return
+		}
+		if (event.type === 'turn_finished') {
+			if (activeTurnId === event.turnId) activeTurnId = null
+			broadcast({ type: 'history', entries: event.entries })
+			if (event.error) broadcast({ type: 'error', message: event.error.message })
+			broadcast({ type: 'busy', value: false })
+			return
+		}
+		activeTurnId = event.snapshot.activeTurn?.id ?? null
+		broadcast({ type: 'history', entries: [...event.snapshot.entries] })
+		broadcast({ type: 'busy', value: Boolean(event.snapshot.activeTurn) })
+	})
 	void scheduleDailyMaintenance(session).catch((error) =>
 		console.error('[agent] maintenance alarm failed:', error)
 	)
 	return agents
 }
 
-// The session's broad event union → the daemon's `/agent` wire (protocol.ts). An error's
-// fix-it `route` is consumed by the session's own notification ping, so the wire drops it.
-function toAgentEvent(event: SessionEvent): AgentEvent {
-	switch (event.type) {
-		case 'transcript':
-			return { type: 'history', entries: event.entries }
-		case 'busy':
-			return { type: 'busy', value: event.value }
-		case 'error':
-			return { type: 'error', message: event.message }
-	}
-}
-
 // The daemon injects a sink that publishes `/agent` events to every connected chat (main.ts
 // wires it to the `agent` pub/sub topic). The no-op default keeps the session usable before
 // the server binds it.
 let broadcast: (event: AgentEvent) => void = () => {}
+let activeTurnId: string | null = null
 export function setAgentBroadcast(sink: (event: AgentEvent) => void): void {
 	broadcast = sink
 }
 
 // The current transcript, for the snapshot a chat gets on connect. Empty when the session
 // can't build (no backend), so the chat shows an empty transcript rather than erroring.
-export async function agentHistory(): Promise<readonly SessionEntry[]> {
-	return (await getSession()).history()
+export async function agentSnapshot(): Promise<AgentSessionSnapshot> {
+	return (await getSession()).snapshot()
 }
 
 // A chat message from the user. Fire-and-observe: the turn runs and its result reaches the
 // chat through the broadcast, so callers don't await it.
 export function promptAgent(message: string): void {
 	void getSession()
-		.then((session) => session.prompt(message))
+		.then((session) => {
+			const result = session.start(message)
+			if (result.accepted) void result.done
+		})
 		.catch((err) => console.error('[agent] prompt failed:', err))
 }
 
@@ -145,7 +150,7 @@ export function promptAgent(message: string): void {
 export function abortAgent(): void {
 	if (!agentsPromise) return
 	void agentsPromise
-		.then((agents) => agents.main().abort())
+		.then((agents) => activeTurnId && agents.main().abort(activeTurnId))
 		.catch((err) => console.error('[agent] abort failed:', err))
 }
 
@@ -202,7 +207,7 @@ async function signOutReport(): Promise<string> {
 async function debugReport(): Promise<string> {
 	try {
 		const session = await getSession()
-		const history = await session.history()
+		const history = (await session.snapshot()).entries
 		const report = [
 			'agent diagnostics',
 			`session entries: ${history.length}`,

@@ -15,6 +15,7 @@ import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter'
 import { openrouterImagesProvider } from '@earendil-works/pi-ai/providers/openrouter-images'
 import {
+	type ActiveTurn,
 	type AgentBackend,
 	type AgentSession,
 	type AgentSessionOptions,
@@ -26,6 +27,7 @@ import {
 	parseFrontmatter,
 	resolveTimezone,
 	type SoulGenerationInput,
+	type TurnStatus,
 	text
 } from '@justfiles/agent'
 import {
@@ -99,10 +101,11 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 }
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'history' | 'app_open' | 'app_close'
+	type: 'prompt' | 'abort' | 'snapshot' | 'app_open' | 'app_close'
 	text?: string
 	id?: string
 	agentId?: string
+	turnId?: string
 }
 
 import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
@@ -119,15 +122,35 @@ type ServerMessage =
 			apps?: Awaited<ReturnType<FrierenApps['list']>>
 	  }
 	| {
-			type: 'history'
+			type: 'snapshot'
 			messages: ReadonlyArray<DisplayMessage>
+			activeTurn: ActiveTurn | null
 			participants?: DisplayParticipants
 			agentId?: string
 	  }
-	| { type: 'busy'; value: boolean; agentId?: string }
-	| { type: 'transcript'; messages: ReadonlyArray<DisplayMessage>; agentId?: string }
-	| { type: 'event'; event: AgentEvent; agentId?: string }
-	| { type: 'error'; message: string; agentId?: string }
+	| {
+			type: 'prompt_result'
+			accepted: true
+			turn: ActiveTurn
+			agentId?: string
+	  }
+	| {
+			type: 'prompt_result'
+			accepted: false
+			activeTurn: ActiveTurn | null
+			agentId?: string
+	  }
+	| { type: 'turn_started'; turn: ActiveTurn; agentId?: string }
+	| {
+			type: 'turn_finished'
+			turnId: string
+			status: TurnStatus
+			messages: ReadonlyArray<DisplayMessage>
+			error?: string
+			agentId?: string
+	  }
+	| { type: 'event'; turnId: string; event: AgentEvent; agentId?: string }
+	| { type: 'error'; message: string }
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
 	| { type: 'app_open'; id: string }
@@ -487,17 +510,22 @@ export class Frieren extends DurableObject<Env> {
 				key,
 				session.subscribe((event) => {
 					const scope = agentId ? { agentId } : {}
-					if (event.type === 'busy') this.broadcast({ type: 'busy', value: event.value, ...scope })
-					else if (event.type === 'transcript')
+					if (event.type === 'turn_started')
+						this.broadcast({ type: 'turn_started', turn: event.turn, ...scope })
+					else if (event.type === 'turn_finished')
 						this.broadcast({
-							type: 'transcript',
+							type: 'turn_finished',
+							turnId: event.turnId,
+							status: event.status,
 							messages: sessionEntries2DisplayMessages(event.entries),
+							...(event.error ? { error: event.error.message } : {}),
 							...scope
 						})
 					else
 						this.broadcast({
-							type: 'error',
-							message: event.message,
+							type: 'snapshot',
+							messages: sessionEntries2DisplayMessages(event.snapshot.entries),
+							activeTurn: event.snapshot.activeTurn,
 							...scope
 						})
 				})
@@ -694,20 +722,45 @@ export class Frieren extends DurableObject<Env> {
 		const text = parsed.type === 'prompt' ? parsed.text : undefined
 		const trimmed = text?.trim() ?? ''
 		const session = parsed.type === 'abort' || text ? this.getSession(parsed.agentId) : null
-		if (parsed.type === 'abort') session?.abort()
+		if (parsed.type === 'abort' && parsed.turnId) session?.abort(parsed.turnId)
 		// Start before the first await so a following abort cannot overtake setup.
-		const work =
+		let turnId = ''
+		const result =
 			text && session && trimmed !== DEBUG_COMMAND
-				? session.prompt(text, 'user', (event) =>
-						ws.send(
-							JSON.stringify({
-								type: 'event',
-								event,
-								...(parsed.agentId ? { agentId: parsed.agentId } : {})
-							} satisfies ServerMessage)
-						)
+				? session.start(text, 'user', (event) =>
+						this.broadcast({
+							type: 'event',
+							turnId,
+							event,
+							...(parsed.agentId ? { agentId: parsed.agentId } : {})
+						})
 					)
 				: null
+		if (result?.accepted) turnId = result.turn.id
+		if (result) {
+			const reply: ServerMessage = result.accepted
+				? {
+						type: 'prompt_result',
+						accepted: true,
+						turn: result.turn,
+						...(parsed.agentId ? { agentId: parsed.agentId } : {})
+					}
+				: {
+						type: 'prompt_result',
+						accepted: false,
+						activeTurn: result.activeTurn,
+						...(parsed.agentId ? { agentId: parsed.agentId } : {})
+					}
+			ws.send(JSON.stringify(reply))
+		} else if (text && trimmed === DEBUG_COMMAND)
+			ws.send(
+				JSON.stringify({
+					type: 'prompt_result',
+					accepted: false,
+					activeTurn: null,
+					...(parsed.agentId ? { agentId: parsed.agentId } : {})
+				} satisfies ServerMessage)
+			)
 
 		await scheduleDailyAlarm(this.ctx, this.getSession())
 
@@ -715,11 +768,13 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'history') {
+		if (parsed.type === 'snapshot') {
+			const snapshot = await this.getSession(parsed.agentId).snapshot()
 			ws.send(
 				JSON.stringify({
-					type: 'history',
-					messages: sessionEntries2DisplayMessages(await this.getSession(parsed.agentId).history()),
+					type: 'snapshot',
+					messages: sessionEntries2DisplayMessages(snapshot.entries),
+					activeTurn: snapshot.activeTurn,
 					...(parsed.agentId ? { agentId: parsed.agentId } : {})
 				} satisfies ServerMessage)
 			)
@@ -746,7 +801,7 @@ export class Frieren extends DurableObject<Env> {
 				)
 				return
 			}
-			await work
+			if (result?.accepted) await result.done
 		}
 	}
 
@@ -813,16 +868,15 @@ export class Frieren extends DurableObject<Env> {
 			await scheduleDailyAlarm(this.ctx, this.getSession())
 
 			const participants = await this.loadParticipants(this.volume)
-			const history = sessionEntries2DisplayMessages(await this.getSession().history())
-			if (history.length > 0) {
-				server.send(
-					JSON.stringify({
-						type: 'history',
-						messages: history,
-						participants
-					} satisfies ServerMessage)
-				)
-			}
+			const snapshot = await this.getSession().snapshot()
+			server.send(
+				JSON.stringify({
+					type: 'snapshot',
+					messages: sessionEntries2DisplayMessages(snapshot.entries),
+					activeTurn: snapshot.activeTurn,
+					participants
+				} satisfies ServerMessage)
+			)
 
 			// Send ready signal
 			server.send(

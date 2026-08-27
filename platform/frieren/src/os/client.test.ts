@@ -9,6 +9,8 @@ class FakeSocket implements SocketLike {
 	onmessage: ((event: { data: string }) => void) | null = null
 	onclose: (() => void) | null = null
 	onerror: (() => void) | null = null
+	private turn = 0
+	private activeTurnId: string | null = null
 
 	send(data: string): void {
 		this.sent.push(data)
@@ -19,6 +21,29 @@ class FakeSocket implements SocketLike {
 	}
 
 	emit(frame: object): void {
+		const value = frame as { type?: string; turnId?: string; event?: { type?: string } }
+		if (value.type === 'history') {
+			this.push({ ...frame, type: 'snapshot', activeTurn: null })
+			return
+		}
+		if (value.type === 'event' && !value.turnId) {
+			if (value.event?.type === 'agent_start' || !this.activeTurnId) {
+				this.activeTurnId = `test-turn-${++this.turn}`
+				this.push({
+					type: 'turn_started',
+					turn: {
+						id: this.activeTurnId,
+						input: { text: 'test input', source: 'user' }
+					}
+				})
+			}
+			this.push({ ...frame, turnId: this.activeTurnId })
+			return
+		}
+		this.push(frame)
+	}
+
+	private push(frame: object): void {
 		this.onmessage?.({ data: JSON.stringify(frame) })
 	}
 }
@@ -339,152 +364,74 @@ describe('FrierenClient agent', () => {
 		expect(client.agent.snapshot()).not.toBe(first)
 	})
 
-	test('prompt appends the user message and sends a prompt frame', async () => {
+	test('waits for server admission before adding the prompt', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 
-		expect(client.agent.prompt('do the thing')).toBe(true)
-
+		const accepted = client.agent.prompt('do the thing')
 		expect(client.agent.snapshot()).toMatchObject({
 			isStreaming: true,
-			messages: [expect.objectContaining({ role: 'user', content: 'do the thing' })]
+			messages: []
 		})
-		expect(client.agent.prompt('do something else')).toBe(false)
-		expect(socket.sent.map((s) => JSON.parse(s))).toContainEqual({
-			type: 'prompt',
-			text: 'do the thing'
-		})
+		expect(await client.agent.prompt('overlap')).toBe(false)
+
+		const turn = { id: 'turn-1', input: { text: 'do the thing', source: 'user' } }
+		socket.emit({ type: 'turn_started', turn })
+		socket.emit({ type: 'prompt_result', accepted: true, turn })
+		expect(await accepted).toBe(true)
+		expect(client.agent.snapshot().messages).toEqual([
+			expect.objectContaining({ id: 'turn-1', role: 'user', content: 'do the thing' })
+		])
 	})
 
-	test('keeps app sessions separate and tags their frames', async () => {
+	test('hydrates a late tab with the active app turn', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 		client.agent.loadHistory('notes')
 		socket.emit({
-			type: 'history',
+			type: 'snapshot',
 			agentId: 'notes',
-			messages: [{ role: 'user', content: 'app history' }]
+			messages: [{ role: 'user', content: 'older question' }],
+			activeTurn: { id: 'active-1', input: { text: 'running now', source: 'user' } }
 		})
-		client.agent.prompt('main turn')
-		client.agent.prompt('app turn', 'notes')
+
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			isLoadingHistory: false,
+			messages: [
+				expect.objectContaining({ content: 'older question' }),
+				expect.objectContaining({ id: 'active-1', content: 'running now' })
+			]
+		})
+		expect(await client.agent.prompt('overlap', 'notes')).toBe(false)
+	})
+
+	test('uses the active turn id for stop and ignores an old finish', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
 		socket.emit({
-			type: 'event',
+			type: 'turn_started',
 			agentId: 'notes',
-			event: { type: 'agent_start' }
+			turn: { id: 'new-turn', input: { text: 'new work', source: 'user' } }
 		})
 		client.agent.abort('notes')
-
-		expect(client.agent.snapshot().messages).toEqual([
-			expect.objectContaining({ role: 'user', content: 'main turn' })
-		])
-		expect(client.agent.snapshot('notes')).toMatchObject({
-			isStreaming: true,
-			messages: [
-				expect.objectContaining({ role: 'user', content: 'app history' }),
-				expect.objectContaining({ role: 'user', content: 'app turn' })
-			]
+		socket.emit({
+			type: 'turn_finished',
+			agentId: 'notes',
+			turnId: 'old-turn',
+			status: 'completed',
+			messages: []
 		})
 
-		expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual(
-			expect.arrayContaining([
-				{ type: 'prompt', text: 'main turn' },
-				{ type: 'prompt', text: 'app turn', agentId: 'notes' },
-				{ type: 'abort', agentId: 'notes' },
-				{ type: 'history', agentId: 'notes' }
-			])
-		)
-	})
-
-	test('marks a submitted app turn working before agent_start', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-		expect(client.agent.prompt('app question', 'notes')).toBe(true)
-		client.agent.loadHistory('notes')
-
-		expect(socket.sent.map((frame) => JSON.parse(frame))).not.toContainEqual({
-			type: 'history',
+		expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
+			type: 'abort',
+			turnId: 'new-turn',
 			agentId: 'notes'
 		})
-		expect(client.agent.snapshot('notes')).toMatchObject({
-			isStreaming: true,
-			isLoadingHistory: false,
-			messages: [expect.objectContaining({ role: 'user', content: 'app question' })]
-		})
-		socket.emit({
-			type: 'history',
-			agentId: 'notes',
-			messages: [{ role: 'user', content: 'stale history' }]
-		})
-
-		for (const event of [
-			{ type: 'agent_start' },
-			{ type: 'message_start', message: { role: 'assistant' } },
-			{
-				type: 'message_update',
-				assistantMessageEvent: { type: 'text_delta', delta: 'Live reply' }
-			}
-		])
-			socket.emit({ type: 'event', agentId: 'notes', event })
-		socket.emit({ type: 'event', agentId: 'notes', event: { type: 'agent_end' } })
-
-		expect(client.agent.snapshot('notes')).toMatchObject({
-			isStreaming: true,
-			isLoadingHistory: false,
-			messages: [
-				expect.objectContaining({ role: 'user', content: 'app question' }),
-				expect.objectContaining({ role: 'assistant', content: 'Live reply' })
-			]
-		})
-
-		socket.emit({
-			type: 'transcript',
-			agentId: 'notes',
-			messages: [
-				{ role: 'user', content: 'app question' },
-				{ role: 'assistant', content: 'Saved reply' }
-			]
-		})
-		expect(client.agent.snapshot('notes')).toMatchObject({
-			isStreaming: true,
-			messages: [
-				expect.objectContaining({ role: 'user', content: 'app question' }),
-				expect.objectContaining({ role: 'assistant', content: 'Saved reply' })
-			]
-		})
-		socket.emit({ type: 'busy', agentId: 'notes', value: false })
-		expect(client.agent.snapshot('notes').isStreaming).toBe(false)
-	})
-
-	test('follows another tab through keyed busy and transcript frames', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-
-		socket.emit({ type: 'busy', agentId: 'notes', value: true })
 		expect(client.agent.snapshot('notes').isStreaming).toBe(true)
-		expect(client.agent.prompt('overlap', 'notes')).toBe(false)
-
-		socket.emit({
-			type: 'transcript',
-			agentId: 'notes',
-			messages: [
-				{ role: 'user', content: 'question from another tab' },
-				{ role: 'assistant', content: 'shared reply' }
-			]
-		})
-		expect(client.agent.snapshot('notes')).toMatchObject({
-			isStreaming: true,
-			messages: [
-				expect.objectContaining({ role: 'user', content: 'question from another tab' }),
-				expect.objectContaining({ role: 'assistant', content: 'shared reply' })
-			]
-		})
-
-		socket.emit({ type: 'busy', agentId: 'notes', value: false })
-		expect(client.agent.snapshot('notes').isStreaming).toBe(false)
 	})
 
 	test('does not submit a turn while app history loads', async () => {
@@ -493,19 +440,18 @@ describe('FrierenClient agent', () => {
 		socket.emit({ type: 'ready', apps: [] })
 		client.agent.loadHistory('notes')
 
-		expect(client.agent.prompt('too soon', 'notes')).toBe(false)
+		expect(await client.agent.prompt('too soon', 'notes')).toBe(false)
 		expect(client.agent.snapshot('notes')).toMatchObject({
 			isStreaming: false,
 			isLoadingHistory: true,
 			messages: []
 		})
 
-		socket.emit({ type: 'history', agentId: 'notes', messages: [] })
-		expect(client.agent.prompt('now ready', 'notes')).toBe(true)
-		expect(client.agent.snapshot('notes')).toMatchObject({
-			isStreaming: true,
-			isLoadingHistory: false,
-			messages: [expect.objectContaining({ role: 'user', content: 'now ready' })]
+		socket.emit({ type: 'snapshot', agentId: 'notes', messages: [], activeTurn: null })
+		expect(client.agent.snapshot('notes').isLoadingHistory).toBe(false)
+		expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
+			type: 'snapshot',
+			agentId: 'notes'
 		})
 	})
 
@@ -513,7 +459,7 @@ describe('FrierenClient agent', () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 
-		expect(client.agent.prompt('too early')).toBe(false)
+		expect(await client.agent.prompt('too early')).toBe(false)
 
 		expect(client.agent.snapshot().messages).toEqual([])
 		expect(socket.sent).toEqual([])
@@ -523,12 +469,13 @@ describe('FrierenClient agent', () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		expect(client.agent.prompt('pending')).toBe(true)
+		const accepted = client.agent.prompt('pending')
 
 		socket.close()
 
 		expect(client.agent.snapshot().connectionState).toBe('disconnected')
 		expect(client.agent.snapshot().isStreaming).toBe(false)
+		expect(await accepted).toBe(false)
 	})
 })
 

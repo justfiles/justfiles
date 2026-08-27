@@ -1,3 +1,4 @@
+import type { ActiveTurn, TurnStatus } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
 import type { Notification } from '@justfiles/app/capabilities/notify'
@@ -57,8 +58,7 @@ export interface AgentSnapshot {
 }
 
 export interface AgentClient {
-	// True when the keyed session was idle and accepted the turn.
-	prompt(text: string, agentId?: string): boolean
+	prompt(text: string, agentId?: string): Promise<boolean>
 	abort(agentId?: string): void
 	loadHistory(agentId?: string): void
 	subscribe(listener: () => void, agentId?: string): () => void
@@ -133,6 +133,12 @@ interface ServerFrame {
 	participants?: { userName?: string; agentName?: string }
 	apps?: unknown
 	messages?: HistoryMessage[]
+	activeTurn?: ActiveTurn | null
+	turn?: ActiveTurn
+	turnId?: string
+	accepted?: boolean
+	status?: TurnStatus
+	error?: string
 	message?: string
 	value?: boolean
 	id?: string
@@ -140,11 +146,14 @@ interface ServerFrame {
 	notification?: Notification
 }
 
-type AgentPhase = 'idle' | 'loadingHistory' | 'working'
+type AgentPhase = 'idle' | 'submitting' | 'active'
 
 interface AgentState {
 	messages: AgentMessage[]
 	phase: AgentPhase
+	activeTurnId: string | null
+	loadingHistory: boolean
+	pendingPrompt: ((accepted: boolean) => void) | null
 	currentAssistantId: string | null
 	expressionParser: ReturnType<typeof createExpressionParser>
 	expression: Expression | null
@@ -188,6 +197,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		state = {
 			messages: [],
 			phase: 'idle',
+			activeTurnId: null,
+			loadingHistory: false,
+			pendingPrompt: null,
 			currentAssistantId: null,
 			expressionParser: createExpressionParser(),
 			expression: null,
@@ -208,8 +220,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			userName,
 			agentName,
 			messages: state.messages,
-			isStreaming: state.phase === 'working',
-			isLoadingHistory: state.phase === 'loadingHistory',
+			isStreaming: state.phase !== 'idle',
+			isLoadingHistory: state.loadingHistory,
 			expression: state.expression
 		}
 	}
@@ -225,7 +237,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	function stopAgentWork(): void {
 		for (const state of agentStates.values()) {
+			state.pendingPrompt?.(false)
+			state.pendingPrompt = null
 			state.phase = 'idle'
+			state.activeTurnId = null
+			state.loadingHistory = false
 			state.currentAssistantId = null
 		}
 		emitAgents()
@@ -234,6 +250,35 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	function setMessages(state: AgentState, next: AgentMessage[]): void {
 		state.messages = next
 		emitAgent(state)
+	}
+
+	function restoreMessages(messages: HistoryMessage[]): AgentMessage[] {
+		return messages.map((message) => ({
+			id: crypto.randomUUID(),
+			role: message.role as 'user' | 'assistant',
+			content: message.content,
+			source: message.source,
+			thinking: message.thinking,
+			toolCalls: message.toolCalls?.map((call) => ({
+				id: crypto.randomUUID(),
+				name: call.name,
+				args: call.args,
+				result: call.result,
+				isError: call.isError,
+				status: 'done' as const,
+				images: call.images
+			}))
+		}))
+	}
+
+	function addTurnInput(state: AgentState, turn: ActiveTurn): void {
+		if (state.messages.some((message) => message.id === turn.id)) return
+		state.messages.push({
+			id: turn.id,
+			role: 'user',
+			content: turn.input.text,
+			source: turn.input.source
+		})
 	}
 
 	function mapMessages(state: AgentState, fn: (message: AgentMessage) => AgentMessage): void {
@@ -326,7 +371,6 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				// assistant message because the model's first token may take a second or more. Going
 				// through showExpression keeps the prior emotion on screen for its minimum time.
 				showExpression(state, null)
-				state.phase = 'working'
 				state.currentAssistantId = null
 				emitAgent(state)
 				break
@@ -441,60 +485,62 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'busy') {
+		if (data.type === 'turn_started' && data.turn) {
 			const state = getAgentState(data.agentId)
-			state.phase = data.value ? 'working' : 'idle'
-			if (!data.value) state.currentAssistantId = null
+			state.phase = 'active'
+			state.activeTurnId = data.turn.id
+			addTurnInput(state, data.turn)
 			emitAgent(state)
 			return
 		}
 
-		if (data.type === 'history' || data.type === 'transcript') {
+		if (data.type === 'prompt_result' && typeof data.accepted === 'boolean') {
 			const state = getAgentState(data.agentId)
-			// App history is request/response. Ignore an old response after another tab starts a
-			// turn. Main history is pushed once on connect, so it has no loading phase to match.
-			if (
-				data.type === 'history' &&
-				(state.phase === 'working' || (data.agentId && state.phase !== 'loadingHistory'))
-			)
-				return
+			state.pendingPrompt?.(data.accepted)
+			state.pendingPrompt = null
+			const turn = data.accepted ? data.turn : data.activeTurn
+			if (turn) {
+				state.phase = 'active'
+				state.activeTurnId = turn.id
+				addTurnInput(state, turn)
+			} else {
+				state.phase = 'idle'
+				state.activeTurnId = null
+			}
+			emitAgent(state)
+			return
+		}
+
+		if (data.type === 'snapshot') {
+			const state = getAgentState(data.agentId)
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
-			const restored: AgentMessage[] = (data.messages ?? []).map((m) => ({
-				id: crypto.randomUUID(),
-				role: m.role as 'user' | 'assistant',
-				content: m.content,
-				source: m.source,
-				thinking: m.thinking,
-				toolCalls: m.toolCalls?.map((tc) => ({
-					id: crypto.randomUUID(),
-					name: tc.name,
-					args: tc.args,
-					result: tc.result,
-					isError: tc.isError,
-					status: 'done' as const,
-					images: tc.images
-				}))
-			}))
-			state.messages = restored
-			if (data.type === 'history') state.phase = 'idle'
+			state.messages = restoreMessages(data.messages ?? [])
+			state.loadingHistory = false
+			state.phase = data.activeTurn ? 'active' : 'idle'
+			state.activeTurnId = data.activeTurn?.id ?? null
+			if (data.activeTurn) addTurnInput(state, data.activeTurn)
 			emitAgents()
 			return
 		}
 
-		if (data.type === 'error') {
+		if (data.type === 'turn_finished' && data.turnId) {
 			const state = getAgentState(data.agentId)
-			console.error('Server error:', data.message)
+			if (state.activeTurnId !== data.turnId) return
+			state.messages = restoreMessages(data.messages ?? [])
+			state.phase = 'idle'
+			state.activeTurnId = null
 			state.currentAssistantId = null
-			// Surface the failure in the transcript (an error-styled block), not just the
-			// console — e.g. "turn on an AI provider in Settings" when no AI is enabled.
-			const body = typeof data.message === 'string' ? data.message : 'Something went wrong.'
-			setMessages(state, [
-				...state.messages,
-				{ id: crypto.randomUUID(), role: 'assistant', content: body, error: true }
-			])
+			if (data.error)
+				state.messages.push({
+					id: crypto.randomUUID(),
+					role: 'assistant',
+					content: data.error,
+					error: true
+				})
+			emitAgent(state)
 			return
 		}
 
@@ -526,7 +572,10 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'event' && data.event) handleAgentEvent(data.event, data.agentId)
+		if (data.type === 'event' && data.event && data.turnId) {
+			const state = getAgentState(data.agentId)
+			if (state.activeTurnId === data.turnId) handleAgentEvent(data.event, data.agentId)
+		}
 	}
 
 	function attach(ws: SocketLike): void {
@@ -602,27 +651,30 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	const agent: AgentClient = {
 		prompt(text, agentId) {
-			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return false
+			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready')
+				return Promise.resolve(false)
 			const state = getAgentState(agentId)
-			if (state.phase !== 'idle') return false
-			state.phase = 'working'
-			setMessages(state, [
-				...state.messages,
-				{ id: crypto.randomUUID(), role: 'user', content: text }
-			])
+			if (state.phase !== 'idle' || state.loadingHistory) return Promise.resolve(false)
+			state.phase = 'submitting'
+			emitAgent(state)
+			const accepted = new Promise<boolean>((resolve) => {
+				state.pendingPrompt = resolve
+			})
 			socket.send(JSON.stringify({ type: 'prompt', text, ...(agentId ? { agentId } : {}) }))
-			return true
+			return accepted
 		},
 		abort(agentId) {
-			socket?.send(JSON.stringify({ type: 'abort', ...(agentId ? { agentId } : {}) }))
+			const turnId = getAgentState(agentId).activeTurnId
+			if (!turnId) return
+			socket?.send(JSON.stringify({ type: 'abort', turnId, ...(agentId ? { agentId } : {}) }))
 		},
 		loadHistory(agentId) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
 			const state = getAgentState(agentId)
-			if (state.phase !== 'idle') return
-			state.phase = 'loadingHistory'
+			if (state.phase !== 'idle' || state.loadingHistory) return
+			state.loadingHistory = true
 			emitAgent(state)
-			socket.send(JSON.stringify({ type: 'history', ...(agentId ? { agentId } : {}) }))
+			socket.send(JSON.stringify({ type: 'snapshot', ...(agentId ? { agentId } : {}) }))
 		},
 		subscribe(listener, agentId) {
 			const state = getAgentState(agentId)

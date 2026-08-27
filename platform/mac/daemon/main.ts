@@ -5,7 +5,7 @@ import type { Server, ServerWebSocket } from 'bun'
 import {
 	abortAgent,
 	agentCommands,
-	agentHistory,
+	agentSnapshot,
 	dispatchCommand,
 	promptAgent,
 	setAgentBroadcast
@@ -201,8 +201,9 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					// Live view of the one shared session: subscribe to the `agent` topic, then
 					// send the current snapshot so the chat mounts on it.
 					ws.subscribe('agent')
-					sendAgent(ws, { type: 'history', entries: [...(await agentHistory())] })
-					sendAgent(ws, { type: 'busy', value: false })
+					const snapshot = await agentSnapshot()
+					sendAgent(ws, { type: 'history', entries: [...snapshot.entries] })
+					sendAgent(ws, { type: 'busy', value: Boolean(snapshot.activeTurn) })
 					return
 				}
 				if (ws.data.type === 'app') {
