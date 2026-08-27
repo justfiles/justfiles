@@ -359,6 +359,7 @@ describe('FrierenClient agent', () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
+		client.agent.loadHistory('notes')
 		socket.emit({
 			type: 'history',
 			agentId: 'notes',
@@ -373,7 +374,6 @@ describe('FrierenClient agent', () => {
 		client.agent.prompt('main turn')
 		client.agent.prompt('app turn', 'notes')
 		client.agent.abort('notes')
-		client.agent.loadHistory('notes')
 
 		expect(client.agent.snapshot().messages).toEqual([
 			expect.objectContaining({ role: 'user', content: 'main turn' })
@@ -385,6 +385,7 @@ describe('FrierenClient agent', () => {
 				expect.objectContaining({ role: 'user', content: 'app turn' })
 			]
 		})
+
 		expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual(
 			expect.arrayContaining([
 				{ type: 'prompt', text: 'main turn' },
@@ -393,6 +394,33 @@ describe('FrierenClient agent', () => {
 				{ type: 'history', agentId: 'notes' }
 			])
 		)
+	})
+
+	test('does not replace a live app turn with history', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+		for (const event of [
+			{ type: 'agent_start' },
+			{ type: 'message_start', message: { role: 'assistant' } },
+			{
+				type: 'message_update',
+				assistantMessageEvent: { type: 'text_delta', delta: 'Live reply' }
+			}
+		])
+			socket.emit({ type: 'event', agentId: 'notes', event })
+
+		client.agent.loadHistory('notes')
+
+		expect(socket.sent.map((frame) => JSON.parse(frame))).not.toContainEqual({
+			type: 'history',
+			agentId: 'notes'
+		})
+		expect(client.agent.snapshot('notes')).toMatchObject({
+			isStreaming: true,
+			isLoadingHistory: false,
+			messages: [expect.objectContaining({ role: 'assistant', content: 'Live reply' })]
+		})
 	})
 
 	test('prompt is a no-op before the connection is ready', async () => {

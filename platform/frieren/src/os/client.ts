@@ -601,7 +601,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		loadHistory(agentId) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
 			const state = getAgentState(agentId)
-			if (state.isLoadingHistory) return
+			if (state.isLoadingHistory || state.isStreaming) return
 			state.isLoadingHistory = true
 			emitAgent(state)
 			socket.send(JSON.stringify({ type: 'history', ...(agentId ? { agentId } : {}) }))
