@@ -86,8 +86,7 @@ settled projector or live-status projector.
 - The shared transcript renders one settled crease per activity item. It lazily
   reads detail on open, renders notes and thinking as prose, keeps tool bodies in
   monospace, and shows an expired state when the sidecar is gone.
-- Failed runs open by default. Hosts can map their `expandTools` preference to
-  the shared `expandByDefault` option.
+- Failed runs open by default. All other settled activity starts folded.
 - Opening a disclosure detaches bottom pinning before content grows, then reveals
   only the overflow while keeping the disclosure button visible.
 - Daily Frieren maintenance deletes detail older than 30 days, then deletes the
@@ -481,7 +480,6 @@ same session connection. Detail reads do not affect history or `SessionStatus`.
 
 ```ts
 activity?: {
-	expandByDefault?: boolean
 	loadDetail?: (id: string) => Promise<
 		| { status: 'available'; detail: ActivityDetail }
 		| { status: 'expired' }
@@ -489,8 +487,7 @@ activity?: {
 }
 ```
 
-The host maps `expandTools` to `expandByDefault`. Open state stays inside the
-component.
+Open state stays inside the component.
 
 ### Status detail is disposable
 
@@ -672,7 +669,7 @@ are implemented and tested.
 - `tool` → mono `<pre>`, args and result, as today.
 - `think` and `note` → prose. Body font, ~72% opacity, a left rule. Never `<pre>`.
 - A run containing a failure opens by default and tints with `--danger`.
-- Persist `expandTools` as the default-open preference.
+- Keep normal settled runs folded by default.
 - Fix the scroll interaction below.
 - Add the daily age and storage-limit eviction pass. Test age eviction, oldest
   first eviction and expired detail reads.
@@ -729,8 +726,8 @@ thread bottom.
 Four directions were mocked up before this one. The others, and why not:
 
 - **Reader Switch:** no per-turn affordance at all; one global control flips the
-  whole transcript. It survives as rule 1's
-  `expandTools`, which is a preference rather than a layout.
+  whole transcript. This adds a preference for something each crease already
+  controls in place.
 - **Ribbon Rail:** a gutter in the left margin, hover to peek, click to pin. The
   only direction with a genuinely untouched text column, and the prettiest. Loses
   on discoverability (an unlabelled stripe) and does not survive touch.

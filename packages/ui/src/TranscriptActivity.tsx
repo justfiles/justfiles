@@ -2,7 +2,6 @@ import type { ActivityDetailResult, TranscriptItem } from '@justfiles/agent/prot
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
 export interface TranscriptActivityConfig {
-	expandByDefault?: boolean
 	loadDetail?: (id: string) => Promise<ActivityDetailResult>
 }
 
@@ -23,9 +22,7 @@ export function ActivityCrease({
 }) {
 	const hasDetail = item.items.some((part) => part.kind !== 'note')
 	const hasBody = hasDetail || item.items.some((part) => part.kind === 'note' && Boolean(part.body))
-	const [open, setOpen] = useState(
-		() => hasBody && (Boolean(item.failed) || Boolean(activity?.expandByDefault))
-	)
+	const [open, setOpen] = useState(() => hasBody && Boolean(item.failed))
 	const [detail, setDetail] = useState<ActivityDetailResult | null>(null)
 	const loadingRef = useRef(false)
 	const headRef = useRef<HTMLButtonElement>(null)
@@ -73,7 +70,13 @@ export function ActivityCrease({
 			{hasBody ? (
 				<div className="js-transcript-crease-body">
 					<div className="js-transcript-crease-clip">
-						<div ref={sheetRef} id={panelId} className="js-transcript-crease-sheet">
+						<div
+							ref={sheetRef}
+							id={panelId}
+							className="js-transcript-crease-sheet"
+							aria-hidden={open ? undefined : true}
+							inert={!open}
+						>
 							<ActivityTrace
 								item={item}
 								detail={detail}
@@ -188,7 +191,13 @@ function ActivityTraceRow({
 				<div className="js-transcript-trace-head">{heading}</div>
 			)}
 			{hasBody ? (
-				<div ref={bodyRef} id={panelId} className="js-transcript-trace-body">
+				<div
+					ref={bodyRef}
+					id={panelId}
+					className="js-transcript-trace-body"
+					aria-hidden={open ? undefined : true}
+					inert={!open}
+				>
 					<div>
 						<ActivityBody item={item} detail={detail} />
 					</div>

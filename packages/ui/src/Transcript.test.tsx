@@ -32,23 +32,17 @@ describe('Transcript activity creases', () => {
 		expect(html.indexOf('2 steps · 1.4s')).toBeLessThan(html.indexOf('Done'))
 		expect(html).toContain('data-open="false"')
 		expect(html).toContain('aria-expanded="false"')
+		expect(html).toContain('aria-hidden="true"')
+		expect(html).toContain('inert=""')
 	})
 
-	it('opens failed runs and the configured default without loading during render', () => {
+	it('opens failed runs without loading during render', () => {
 		const loadDetail = vi.fn()
 		const failed = renderToStaticMarkup(
 			<Transcript messages={[activity(true)]} isStreaming={false} activity={{ loadDetail }} />
 		)
-		const preferred = renderToStaticMarkup(
-			<Transcript
-				messages={[activity()]}
-				isStreaming={false}
-				activity={{ expandByDefault: true, loadDetail }}
-			/>
-		)
 
 		expect(failed).toContain('data-open="true" data-failed="true"')
-		expect(preferred).toContain('data-open="true"')
 		expect(loadDetail).not.toHaveBeenCalled()
 	})
 
