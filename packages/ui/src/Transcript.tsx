@@ -173,6 +173,7 @@ export function Transcript({
 	// Last seen scrollTop, used to tell a user's upward scroll (the only thing that
 	// detaches) apart from the downward moves that growth and auto-scroll cause.
 	const lastTopRef = useRef(0)
+	const revealScrollRef = useRef(false)
 	useLayoutEffect(() => {
 		const viewport = viewportRef.current
 		const content = contentRef.current
@@ -203,7 +204,8 @@ export function Transcript({
 		if (!el) return
 		const top = el.scrollTop
 		if (top < lastTopRef.current) stuckRef.current = false
-		if (el.scrollHeight - top - el.clientHeight < 32) stuckRef.current = true
+		if (!revealScrollRef.current && el.scrollHeight - top - el.clientHeight < 32)
+			stuckRef.current = true
 		lastTopRef.current = top
 	}
 	const beforeActivityOpen = () => {
@@ -221,7 +223,13 @@ export function Transcript({
 		const headRoom = head.getBoundingClientRect().top - viewportBox.top
 		const top = Math.min(overflow, headRoom)
 		if (top <= 0) return false
+		// A short reveal can land inside the bottom slop. Its scroll event must not
+		// look like the user returned to the bottom and reattach the transcript.
+		revealScrollRef.current = true
 		viewport.scrollTop += top
+		requestAnimationFrame(() => {
+			revealScrollRef.current = false
+		})
 		return true
 	}
 
