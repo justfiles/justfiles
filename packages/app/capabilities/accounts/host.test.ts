@@ -634,6 +634,7 @@ describe('resolveAi', () => {
 // secret-codec.test.ts for that).
 describe('secretCodec wiring', () => {
 	const codec = aesGcmSecretCodec('host-key')
+	const sealedCredentials = { v: 1, alg: 'A256GCM', ct: expect.any(String) }
 
 	test('what the admin surface writes sealed, the AI lease still reads', async () => {
 		const vol = volume(memStore())
@@ -641,7 +642,7 @@ describe('secretCodec wiring', () => {
 		await caps.admin.connect({ providerId: 'chatgpt' })
 		await caps.admin.setEnabled({ accountId: 'u@openai', capability: 'ai', enabled: true })
 		const raw = new TextDecoder().decode(await vol.readFile('/private/accounts/u%40openai.json'))
-		expect(raw).not.toContain('tok')
+		expect(JSON.parse(raw).creds).toEqual(sealedCredentials)
 		await expect(caps.resolveAi((l) => l.creds)).resolves.toEqual({ access: 'tok' })
 	})
 
@@ -671,12 +672,13 @@ describe('secretCodec wiring', () => {
 	describe('sealing what is already on disk', () => {
 		const sealedRecord = async (vol: Volume) =>
 			new TextDecoder().decode(await vol.readFile('/private/accounts/u%40me.com.json'))
+		const storedCredentials = async (vol: Volume) => JSON.parse(await sealedRecord(vol)).creds
 
 		test('a plaintext record is sealed without any caller asking', async () => {
 			const vol = volume(memStore())
 			await put(volumeAccountStore(vol), { id: 'u@me.com', provider: 'icloud', creds: { p: 'PW' } })
 			hostAccounts(testProviders(), vol, { secretCodec: codec })
-			await until(async () => expect(await sealedRecord(vol)).not.toContain('PW'))
+			await until(async () => expect(await storedCredentials(vol)).toEqual(sealedCredentials))
 			expect(await volumeAccountStore(vol, { secretCodec: codec }).get('u@me.com')).toMatchObject({
 				creds: { p: 'PW' }
 			})
@@ -697,7 +699,7 @@ describe('secretCodec wiring', () => {
 			// Settled, not raw: a failed sweep is a warning, never an unhandled rejection riding
 			// out on the host's event.
 			await expect(retained[0]).resolves.toBeUndefined()
-			expect(await sealedRecord(vol)).not.toContain('PW')
+			expect(await storedCredentials(vol)).toEqual(sealedCredentials)
 		})
 
 		test('with no key there is nothing to seal with, so the record is left as it was', async () => {
@@ -727,12 +729,12 @@ describe('secretCodec wiring', () => {
 
 			// The platform AI answers while the sweep is failing, and the credential survives.
 			await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
-			expect(await sealedRecord(vol)).toContain('PW')
+			expect(await storedCredentials(vol)).toEqual({ p: 'PW' })
 
 			locked = false
 			await until(async () => {
 				await caps.admin.listAccounts({})
-				expect(await sealedRecord(vol)).not.toContain('PW')
+				expect(await storedCredentials(vol)).toEqual(sealedCredentials)
 			})
 		})
 	})

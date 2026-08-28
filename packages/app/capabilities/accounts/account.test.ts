@@ -64,12 +64,9 @@ describe('volumeAccountStore', () => {
 		const bytes = new TextDecoder().decode(
 			await fs.readFile('/private/accounts/u%40openai.com.json')
 		)
-		expect(bytes).not.toContain('ref')
-		expect(bytes).not.toContain('tok')
-		expect(JSON.parse(bytes)).toMatchObject({
-			provider: 'chatgpt',
-			creds: { v: 1, alg: 'A256GCM' }
-		})
+		const onDisk = JSON.parse(bytes)
+		expect(onDisk.provider).toBe('chatgpt')
+		expect(onDisk.creds).toEqual({ v: 1, alg: 'A256GCM', ct: expect.any(String) })
 		expect(await store.get('u@openai.com')).toEqual(a)
 	})
 
@@ -116,8 +113,11 @@ describe('volumeAccountStore', () => {
 		await store.reseal()
 
 		const icloud = new TextDecoder().decode(await fs.readFile('/private/accounts/u%40me.com.json'))
-		expect(icloud).not.toContain('APPSPEC')
-		expect(JSON.parse(icloud).creds).toMatchObject({ v: 1, alg: 'A256GCM' })
+		expect(JSON.parse(icloud).creds).toEqual({
+			v: 1,
+			alg: 'A256GCM',
+			ct: expect.any(String)
+		})
 		expect(await store.get('u@me.com')).toMatchObject({ creds: { password: 'APPSPEC' } })
 		// An already-sealed record is left byte-identical: a boot with nothing to do writes nothing.
 		expect(await fs.readFile(path)).toEqual(sealedBefore)
@@ -256,7 +256,6 @@ describe('one account at a time', () => {
 		await expect(put(store, account({ creds: { access: 'NEVER-IN-THE-CLEAR' } }))).rejects.toThrow(
 			'locked'
 		)
-		expect(new TextDecoder().decode(await fs.readFile(PATH))).not.toContain('NEVER-IN-THE-CLEAR')
 		expect(await fs.readFile(PATH)).toEqual(before)
 	})
 
@@ -273,7 +272,8 @@ describe('one account at a time', () => {
 		])
 
 		expect((await store.get('u@openai.com'))?.creds).toEqual({ access: 'NEW' })
-		expect(new TextDecoder().decode(await fs.readFile(PATH))).not.toContain('NEW')
+		const onDisk = JSON.parse(new TextDecoder().decode(await fs.readFile(PATH)))
+		expect(onDisk.creds).toEqual({ v: 1, alg: 'A256GCM', ct: expect.any(String) })
 	})
 
 	test('one record it cannot seal does not strand the rest of the sweep', async () => {
@@ -294,11 +294,17 @@ describe('one account at a time', () => {
 		await expect(volumeAccountStore(fs, { secretCodec: codec }).reseal()).rejects.toThrow(
 			'this one will not seal'
 		)
-		const read = async (id: string) =>
-			new TextDecoder().decode(
-				await fs.readFile(`/private/accounts/${encodeURIComponent(id)}.json`)
-			)
-		expect(await read('b@x')).not.toContain('B-PW')
-		expect(await read('a@x')).toContain('A-PW')
+		const readCredentials = async (id: string) =>
+			JSON.parse(
+				new TextDecoder().decode(
+					await fs.readFile(`/private/accounts/${encodeURIComponent(id)}.json`)
+				)
+			).creds
+		expect(await readCredentials('b@x')).toEqual({
+			v: 1,
+			alg: 'A256GCM',
+			ct: expect.any(String)
+		})
+		expect(await readCredentials('a@x')).toEqual({ p: 'A-PW' })
 	})
 })
