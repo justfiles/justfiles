@@ -21,7 +21,6 @@ class FakeSocket implements SocketLike {
 	emit(frame: object): void {
 		const value = frame as {
 			type?: string
-			agentId?: string
 			event?: { type?: string; assistantMessageEvent?: { type?: string } }
 		}
 		if (value.type === 'event' && value.event) {
@@ -32,8 +31,7 @@ class FakeSocket implements SocketLike {
 					: 'thinking'
 			this.push({
 				type: 'status',
-				status: { state, detail: value.event },
-				...(value.agentId ? { agentId: value.agentId } : {})
+				status: { state, detail: value.event }
 			})
 			return
 		}
@@ -45,25 +43,66 @@ class FakeSocket implements SocketLike {
 	}
 }
 
+class FakeConnections {
+	private readonly sockets = new Map<string, FakeSocket>()
+
+	add(path: string): FakeSocket {
+		const socket = new FakeSocket()
+		this.sockets.set(path, socket)
+		return socket
+	}
+
+	agent(agentId?: string): FakeSocket {
+		const path = `/api/agents/${encodeURIComponent(agentId ?? 'main')}/connect`
+		const socket = this.sockets.get(path)
+		if (!socket) throw new Error(`socket not created: ${path}`)
+		return socket
+	}
+
+	emit(frame: object): void {
+		const value = frame as { type?: string; agentId?: string }
+		if (
+			value.type === 'ready' ||
+			value.type === 'app_open' ||
+			value.type === 'app_close' ||
+			value.type === 'notification' ||
+			value.type === 'sync'
+		) {
+			const socket = this.sockets.get('/ws')
+			if (!socket) throw new Error('control socket not created')
+			socket.emit(frame)
+			return
+		}
+		const { agentId, ...message } = value
+		this.agent(agentId).emit(message)
+	}
+
+	get sent(): string[] {
+		return [...this.sockets.values()].flatMap((socket) => socket.sent)
+	}
+
+	close(): void {
+		this.agent().close()
+	}
+}
+
 // Flush the async token resolution inside connect().
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 function setup() {
-	let socket: FakeSocket | null = null
+	const sockets = new FakeConnections()
 	const client = createFrierenClient({
 		getToken: async () => 'tok',
-		createSocket: () => {
-			socket = new FakeSocket()
-			return socket
-		}
+		createSocket: (_token, path) => sockets.add(path)
 	})
 	return {
 		client,
-		async connect(): Promise<FakeSocket> {
+		async connect(): Promise<FakeConnections> {
 			client.connect()
+			client.agent().connect()
 			await flush()
-			if (!socket) throw new Error('socket not created')
-			return socket
+			sockets.agent().emit({ type: 'snapshot', history: [], status: { state: 'idle' } })
+			return sockets
 		}
 	}
 }
@@ -79,13 +118,12 @@ describe('FrierenClient agent', () => {
 
 		socket.emit({
 			type: 'snapshot',
-			participants: { userName: 'Stark', agentName: 'Fern' },
 			history: [{ role: 'user', content: 'hello' }],
 			status: { state: 'idle' }
 		})
 		socket.emit({ type: 'ready', participants: { userName: 'Stark', agentName: 'Fern' }, apps: [] })
 
-		const snapshot = client.agent.snapshot()
+		const snapshot = client.agent().snapshot()
 		expect(snapshot.connectionState).toBe('ready')
 		expect(snapshot.userName).toBe('Stark')
 		expect(snapshot.agentName).toBe('Fern')
@@ -99,7 +137,7 @@ describe('FrierenClient agent', () => {
 		socket.emit({ type: 'ready', apps: [] })
 
 		const listener = vi.fn()
-		client.agent.subscribe(listener)
+		client.agent().subscribe(listener)
 
 		socket.emit({ type: 'event', event: { type: 'agent_start' } })
 		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
@@ -116,7 +154,7 @@ describe('FrierenClient agent', () => {
 		})
 
 		expect(listener).toHaveBeenCalled()
-		const snapshot = client.agent.snapshot()
+		const snapshot = client.agent().snapshot()
 		expect(snapshot.isStreaming).toBe(true)
 		expect(snapshot.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Hi there' })
 	})
@@ -141,15 +179,15 @@ describe('FrierenClient agent', () => {
 			}
 			socket.emit({ type: 'event', event: { type: 'message_end' } })
 
-			expect(client.agent.snapshot().messages.at(-1)).toMatchObject({
+			expect(client.agent().snapshot().messages.at(-1)).toMatchObject({
 				role: 'assistant',
 				content: 'Found it. Table is gone.'
 			})
 			// Both beats landed in the same instant, so the second is waiting rather than erasing
 			// the first (see HOLD_MS).
-			expect(client.agent.snapshot().expression).toBe('pleased')
+			expect(client.agent().snapshot().expression).toBe('pleased')
 			vi.advanceTimersByTime(3_000)
-			expect(client.agent.snapshot().expression).toBe('concerned')
+			expect(client.agent().snapshot().expression).toBe('concerned')
 		} finally {
 			vi.useRealTimers()
 		}
@@ -170,7 +208,7 @@ describe('FrierenClient agent', () => {
 			}
 		})
 		socket.emit({ type: 'event', event: { type: 'agent_end' } })
-		expect(client.agent.snapshot().expression).toBe('concerned')
+		expect(client.agent().snapshot().expression).toBe('concerned')
 
 		// ...must not lend it to the next one just because that one had no feeling to report.
 		// There is no tag for calm: a plain sentence is how the agent stays quiet, and the rest
@@ -191,7 +229,7 @@ describe('FrierenClient agent', () => {
 			})
 			socket.emit({ type: 'event', event: { type: 'agent_end' } })
 			vi.advanceTimersByTime(5_000)
-			expect(client.agent.snapshot().expression).toBe(null)
+			expect(client.agent().snapshot().expression).toBe(null)
 		} finally {
 			vi.useRealTimers()
 		}
@@ -217,9 +255,9 @@ describe('FrierenClient agent', () => {
 				vi.advanceTimersByTime(300)
 			}
 			// The first beat is still up: the second is waiting its turn, not overwriting it.
-			expect(client.agent.snapshot().expression).toBe('curious')
+			expect(client.agent().snapshot().expression).toBe('curious')
 			vi.advanceTimersByTime(3_000)
-			expect(client.agent.snapshot().expression).toBe('pleased')
+			expect(client.agent().snapshot().expression).toBe('pleased')
 		} finally {
 			vi.useRealTimers()
 		}
@@ -247,9 +285,9 @@ describe('FrierenClient agent', () => {
 			// The user fires off another prompt half a second later.
 			vi.advanceTimersByTime(500)
 			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			expect(client.agent.snapshot().expression).toBe('apologetic')
+			expect(client.agent().snapshot().expression).toBe('apologetic')
 			vi.advanceTimersByTime(3_000)
-			expect(client.agent.snapshot().expression).toBe(null)
+			expect(client.agent().snapshot().expression).toBe(null)
 		} finally {
 			vi.useRealTimers()
 		}
@@ -276,7 +314,7 @@ describe('FrierenClient agent', () => {
 		}
 
 		reply(['[apologetic]That failed.'])
-		expect(client.agent.snapshot().expression).toBe('apologetic')
+		expect(client.agent().snapshot().expression).toBe('apologetic')
 
 		// The face must be clean from `agent_start` on, not from the first token: streaming
 		// (which un-rests the avatar) begins a second or more before the model answers. The
@@ -286,7 +324,7 @@ describe('FrierenClient agent', () => {
 		try {
 			vi.advanceTimersByTime(HELD_LONG_ENOUGH)
 			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			expect(client.agent.snapshot().expression).toBe(null)
+			expect(client.agent().snapshot().expression).toBe(null)
 
 			// And a model that ignores the contract on this turn must not wear the old face.
 			socket.emit({
@@ -300,7 +338,7 @@ describe('FrierenClient agent', () => {
 					assistantMessageEvent: { type: 'text_delta', delta: 'Retried and it worked.' }
 				}
 			})
-			expect(client.agent.snapshot().expression).toBe(null)
+			expect(client.agent().snapshot().expression).toBe(null)
 		} finally {
 			vi.useRealTimers()
 		}
@@ -323,7 +361,7 @@ describe('FrierenClient agent', () => {
 			status: { state: 'idle' }
 		})
 		socket.emit({ type: 'ready', apps: [] })
-		expect(client.agent.snapshot().messages[0]?.toolCalls?.[0]?.images).toEqual(images)
+		expect(client.agent().snapshot().messages[0]?.toolCalls?.[0]?.images).toEqual(images)
 
 		socket.emit({ type: 'event', event: { type: 'agent_start' } })
 		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
@@ -347,7 +385,7 @@ describe('FrierenClient agent', () => {
 			}
 		})
 
-		const live = client.agent.snapshot().messages.at(-1)?.toolCalls?.[0]
+		const live = client.agent().snapshot().messages.at(-1)?.toolCalls?.[0]
 		expect(live).toMatchObject({ status: 'done', images })
 	})
 
@@ -356,11 +394,11 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 
-		const first = client.agent.snapshot()
-		expect(client.agent.snapshot()).toBe(first)
+		const first = client.agent().snapshot()
+		expect(client.agent().snapshot()).toBe(first)
 
 		socket.emit({ type: 'event', event: { type: 'agent_start' } })
-		expect(client.agent.snapshot()).not.toBe(first)
+		expect(client.agent().snapshot()).not.toBe(first)
 	})
 
 	test('waits for server admission before adding the prompt', async () => {
@@ -368,20 +406,20 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 
-		const accepted = client.agent.prompt('do the thing')
-		expect(client.agent.snapshot()).toMatchObject({
+		const accepted = client.agent().prompt('do the thing')
+		expect(client.agent().snapshot()).toMatchObject({
 			isStreaming: true,
 			messages: []
 		})
-		expect(await client.agent.prompt('overlap')).toBe(false)
+		expect(await client.agent().prompt('overlap')).toBe(false)
 
 		socket.emit({ type: 'status', status: { state: 'thinking' } })
 		socket.emit({ type: 'accepted' })
 		expect(await accepted).toBe(true)
-		expect(client.agent.snapshot()).toMatchObject({ isStreaming: true, messages: [] })
+		expect(client.agent().snapshot()).toMatchObject({ isStreaming: true, messages: [] })
 
 		socket.emit({ type: 'item', item: { role: 'user', content: 'do the thing' } })
-		expect(client.agent.snapshot().messages).toEqual([
+		expect(client.agent().snapshot().messages).toEqual([
 			expect.objectContaining({ role: 'user', content: 'do the thing' })
 		])
 	})
@@ -391,13 +429,13 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 
-		const accepted = client.agent.prompt('my prompt')
+		const accepted = client.agent().prompt('my prompt')
 		socket.emit({ type: 'item', item: { role: 'user', content: 'already running' } })
 		socket.emit({ type: 'status', status: { state: 'thinking' } })
 		socket.emit({ type: 'rejected', reason: 'busy' })
 
 		expect(await accepted).toBe(false)
-		expect(client.agent.snapshot()).toMatchObject({
+		expect(client.agent().snapshot()).toMatchObject({
 			isStreaming: true,
 			messages: [expect.objectContaining({ content: 'already running' })]
 		})
@@ -408,18 +446,19 @@ describe('FrierenClient agent', () => {
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 
-		const accepted = client.agent.prompt('/debug')
+		const accepted = client.agent().prompt('/debug')
 		socket.emit({ type: 'debug', message: 'system prompt' })
 
 		expect(await accepted).toBe(false)
-		expect(client.agent.snapshot().isStreaming).toBe(false)
+		expect(client.agent().snapshot().isStreaming).toBe(false)
 	})
 
 	test('hydrates a late tab with the active app turn', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		client.agent.loadHistory('notes')
+		client.agent('notes').connect()
+		await flush()
 		socket.emit({
 			type: 'snapshot',
 			agentId: 'notes',
@@ -430,7 +469,7 @@ describe('FrierenClient agent', () => {
 			status: { state: 'thinking' }
 		})
 
-		expect(client.agent.snapshot('notes')).toMatchObject({
+		expect(client.agent('notes').snapshot()).toMatchObject({
 			isStreaming: true,
 			isLoadingHistory: false,
 			messages: [
@@ -438,41 +477,43 @@ describe('FrierenClient agent', () => {
 				expect.objectContaining({ content: 'running now' })
 			]
 		})
-		expect(await client.agent.prompt('overlap', 'notes')).toBe(false)
+		expect(await client.agent('notes').prompt('overlap')).toBe(false)
 	})
 
 	test('stop targets the current session without a turn id', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
+		client.agent('notes').connect()
+		await flush()
 		socket.emit({
 			type: 'snapshot',
 			agentId: 'notes',
 			history: [{ role: 'user', content: 'new work' }],
 			status: { state: 'thinking' }
 		})
-		client.agent.abort('notes')
+		client.agent('notes').abort()
 		socket.emit({
 			type: 'event',
 			agentId: 'notes',
 			event: { type: 'message_start', message: { role: 'assistant' } }
 		})
 
-		expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
-			type: 'abort',
-			agentId: 'notes'
+		expect(socket.agent('notes').sent.map((frame) => JSON.parse(frame))).toContainEqual({
+			type: 'abort'
 		})
-		expect(client.agent.snapshot('notes').isStreaming).toBe(true)
+		expect(client.agent('notes').snapshot().isStreaming).toBe(true)
 	})
 
 	test('does not submit a turn while app history loads', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		client.agent.loadHistory('notes')
+		client.agent('notes').connect()
+		await flush()
 
-		expect(await client.agent.prompt('too soon', 'notes')).toBe(false)
-		expect(client.agent.snapshot('notes')).toMatchObject({
+		expect(await client.agent('notes').prompt('too soon')).toBe(false)
+		expect(client.agent('notes').snapshot()).toMatchObject({
 			isStreaming: false,
 			isLoadingHistory: true,
 			messages: []
@@ -484,34 +525,47 @@ describe('FrierenClient agent', () => {
 			history: [],
 			status: { state: 'idle' }
 		})
-		expect(client.agent.snapshot('notes').isLoadingHistory).toBe(false)
-		expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
-			type: 'snapshot',
-			agentId: 'notes'
-		})
+		expect(client.agent('notes').snapshot().isLoadingHistory).toBe(false)
+		expect(socket.agent('notes').sent).toEqual([])
 	})
 
 	test('prompt is a no-op before the connection is ready', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
+		const { client } = setup()
+		client.connect()
 
-		expect(await client.agent.prompt('too early')).toBe(false)
+		expect(await client.agent().prompt('too early')).toBe(false)
 
-		expect(client.agent.snapshot().messages).toEqual([])
-		expect(socket.sent).toEqual([])
+		expect(client.agent().snapshot().messages).toEqual([])
 	})
 
 	test('disconnect on socket close clears streaming', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		const accepted = client.agent.prompt('pending')
+		const accepted = client.agent().prompt('pending')
 
 		socket.close()
 
-		expect(client.agent.snapshot().connectionState).toBe('disconnected')
-		expect(client.agent.snapshot().isStreaming).toBe(false)
+		expect(client.agent().snapshot().connectionState).toBe('disconnected')
+		expect(client.agent().snapshot().isStreaming).toBe(false)
 		expect(await accepted).toBe(false)
+	})
+
+	test('closes a session socket when its last client disconnects', async () => {
+		const sockets = new FakeConnections()
+		const client = createFrierenClient({
+			getToken: async () => 'tok',
+			createSocket: (_token, path) => sockets.add(path)
+		})
+		client.connect()
+		const disconnect = client.agent('notes').connect()
+		await flush()
+		const socket = sockets.agent('notes')
+
+		disconnect()
+
+		expect(socket.readyState).toBe(3)
+		expect(client.agent('notes').snapshot().connectionState).toBe('disconnected')
 	})
 })
 
@@ -528,7 +582,7 @@ describe('FrierenClient apps + windows', () => {
 		await flush()
 
 		expect(seen.at(-1)).toEqual(['paint'])
-		expect(client.agent.snapshot().connectionState).toBe('disconnected')
+		expect(client.agent().snapshot().connectionState).toBe('disconnected')
 	})
 
 	test('subscribeApps replays the current catalog and receives ready updates', async () => {
@@ -547,13 +601,13 @@ describe('FrierenClient apps + windows', () => {
 	})
 
 	test('ready prefers the local catalog when available', async () => {
-		const sockets: FakeSocket[] = []
+		const sockets = new Map<string, FakeSocket>()
 		const client = createFrierenClient({
 			getToken: async () => 'tok',
 			listLocalApps: async () => [{ id: 'local', name: 'Local', description: '' }],
-			createSocket: () => {
+			createSocket: (_token, path) => {
 				const socket = new FakeSocket()
-				sockets.push(socket)
+				sockets.set(path, socket)
 				return socket
 			}
 		})
@@ -562,7 +616,7 @@ describe('FrierenClient apps + windows', () => {
 
 		client.connect()
 		await flush()
-		const socket = sockets[0]
+		const socket = sockets.get('/ws')
 		if (!socket) throw new Error('socket not created')
 		socket.emit({ type: 'ready', apps: [{ id: 'server', name: 'Server', description: '' }] })
 		await flush()
@@ -645,26 +699,27 @@ describe('FrierenClient sync poke', () => {
 })
 
 describe('FrierenClient reconnection', () => {
-	test('reconnects the session socket after an unexpected close', async () => {
+	test('reconnects an agent socket after an unexpected close', async () => {
 		vi.useFakeTimers()
 		try {
-			const sockets: FakeSocket[] = []
+			const sockets: { path: string; socket: FakeSocket }[] = []
 			const client = createFrierenClient({
 				getToken: async () => 'tok',
-				createSocket: () => {
+				createSocket: (_token, path) => {
 					const s = new FakeSocket()
-					sockets.push(s)
+					sockets.push({ path, socket: s })
 					return s
 				}
 			})
 			client.connect()
+			client.agent().connect()
 			await vi.advanceTimersByTimeAsync(0)
-			expect(sockets).toHaveLength(1)
+			expect(sockets).toHaveLength(2)
 
 			// A transient drop (not an explicit client.close()) must self-heal.
-			sockets[0].close()
+			sockets.find(({ path }) => path === '/api/agents/main/connect')?.socket.close()
 			await vi.advanceTimersByTimeAsync(5_000)
-			expect(sockets.length).toBeGreaterThan(1)
+			expect(sockets.filter(({ path }) => path === '/api/agents/main/connect')).toHaveLength(2)
 
 			// An explicit close stops reconnecting.
 			const count = sockets.length

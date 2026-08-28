@@ -217,11 +217,11 @@ therefore either included in the snapshot or delivered after it. No revision is
 needed for one ordered WebSocket with no replay. Errors stay transient on the
 idle status and are not added to history.
 
-The shared session messages contain no agent ID. Mac's `/agent` socket already
-represents one session. Frieren still multiplexes main and attached-agent traffic
-over its existing socket, so its host envelope adds `agentId` for routing. Moving
-those streams onto one socket per session is a transport refactor, not part of
-the crease feature.
+The shared session messages contain no agent ID. Mac's `/agent` socket represents
+one session. Frieren keeps `/ws` for control traffic and opens one
+`/api/agents/:agentId/connect` socket per agent session. The Worker binds the
+agent ID during upgrade, sends a snapshot, then routes every message on that
+socket to the same session.
 
 ### The payload projection still drifts
 
@@ -357,9 +357,8 @@ UUIDs. There is no settled `running` state and no promise that a temporary row
 keeps its DOM identity when history replaces it.
 
 Opening a crease sends an `activity_detail` request with `requestId` and opaque
-`detailId`. The matching message returns either the full run or `expired`. The
-outer `agentId` selects the main or app-attached agent. Detail reads do not affect
-history or `SessionStatus`.
+`detailId`. The matching message returns either the full run or `expired` on the
+same session connection. Detail reads do not affect history or `SessionStatus`.
 
 `Transcript` takes one activity configuration prop:
 
