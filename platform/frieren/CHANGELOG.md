@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.19.0...frieren-v0.19.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **frieren:** retire legacy rebrand routes ([#604](https://github.com/xiaoxinghu/justfiles/issues/604)) ([0b81917](https://github.com/xiaoxinghu/justfiles/commit/0b819178a9123f782a35c2fa111faf2e3273187f))
+
 ## [0.19.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.18.0...frieren-v0.19.0) (2026-08-28)
 
 
