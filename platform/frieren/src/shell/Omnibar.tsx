@@ -109,7 +109,7 @@ export function Omnibar({
 	const [browseStore, setBrowseStore] = useState(false)
 	const [consent, setConsent] = useState<ConsentTarget | null>(null)
 	const [migrateOpen, setMigrateOpen] = useState(false)
-	const [rowCount, setRowCount] = useState(3)
+	const [rowCount, setRowCount] = useState(1)
 	// Hold one ranked snapshot while the sheet is open so the grid cannot move under the pointer.
 	const [gridApps, setGridApps] = useState<InstalledApp[]>([])
 	const dockRef = useRef<HTMLDivElement>(null)
@@ -184,7 +184,7 @@ export function Omnibar({
 			: rows.length - 1
 	const selected = pinned === null ? defaultIndex : Math.min(pinned, rows.length - 1)
 
-	const recentIds = useOsStore(
+	const activeIds = useOsStore(
 		(state) =>
 			state.focusStack.flatMap((id) => {
 				const appId = state.windows[id]?.appId
@@ -192,6 +192,7 @@ export function Omnibar({
 			}),
 		sameIds
 	)
+	const [recentIds, setRecentIds] = useState(activeIds)
 	const runningIds = useOsStore(
 		(state) =>
 			state.openOrder.flatMap((id) => {
@@ -222,12 +223,20 @@ export function Omnibar({
 	}, [entries])
 
 	useEffect(() => {
+		setRecentIds((current) => {
+			const active = new Set(activeIds)
+			const next = [...current.filter((id) => !active.has(id)), ...activeIds]
+			return sameIds(current, next) ? current : next
+		})
+	}, [activeIds])
+
+	useEffect(() => {
 		const desktop = dockRef.current?.parentElement
 		if (!desktop) return
 		const resize = () => {
 			const available = desktop.clientWidth * 0.7
 			setRowCount(
-				Math.min(10, Math.max(3, Math.floor((available - DOCK_FIXED_WIDTH) / DOCK_APP_STEP)))
+				Math.min(10, Math.max(1, Math.floor((available - DOCK_FIXED_WIDTH) / DOCK_APP_STEP)))
 			)
 		}
 		resize()
