@@ -217,7 +217,7 @@ test('accounts.listProviders unions the catalog, deduped by id (this side wins)'
 	// Mac daemon.
 	const { admin: accounts } = hostAccounts([icloudProvider()], vol)
 	const cloudProviders = [
-		{ id: 'frieren', name: 'Kodama', authKind: 'none', builtin: true, capabilities: ['ai'] },
+		{ id: 'frieren', name: 'Just Computer', authKind: 'none', builtin: true, capabilities: ['ai'] },
 		// Same id as the local catalog's — the collision case.
 		{ id: 'icloud', name: 'iCloud (cloud copy)', authKind: 'form', capabilities: ['calendar'] }
 	]
@@ -336,7 +336,7 @@ const PATHS = {
 // Volume, so absence is the built-in identity — the pane opens on the same agent that is
 // answering, not on an empty form.
 const DEFAULTS = {
-	soul: '---\nagent_name: Kodama\nseeded: true\n---\n\nYou are Kodama.\n',
+	soul: '---\nagent_name: Computer\nseeded: true\n---\n\nYou are Computer.\n',
 	profile: '---\nseeded: true\n---\n'
 }
 
@@ -396,12 +396,12 @@ test('the built-in default reads as unbound, so the pane can send you to the sum
 	await vol.writeFile(
 		PATHS.soul,
 		encode(
-			'---\nschema: frieren/agent-soul/v1\nagent_name: Kodama\nseeded: true\n---\n\nYou are Kodama.\n'
+			'---\nschema: frieren/agent-soul/v1\nagent_name: Computer\nseeded: true\n---\n\nYou are Computer.\n'
 		)
 	)
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
-		name: 'Kodama',
-		body: 'You are Kodama.',
+		name: 'Computer',
+		body: 'You are Computer.',
 		seeded: true
 	})
 	// NO FILE IS THE SAME STATE, down to the name and prose the pane shows: nothing seeds
@@ -409,8 +409,8 @@ test('the built-in default reads as unbound, so the pane can send you to the sum
 	// — otherwise a rename typed into a fresh account would write a soul with no persona in it.
 	const virgin = agentHost()
 	expect(await virgin.caps.invoke(call('agent.readSoul'))).toMatchObject({
-		name: 'Kodama',
-		body: 'You are Kodama.',
+		name: 'Computer',
+		body: 'You are Computer.',
 		seeded: true
 	})
 })
@@ -422,10 +422,10 @@ test('a rename against a volume with no soul keeps the built-in prose', async ()
 
 	await caps.invoke(call('agent.writeSoul', { name: 'Fern' }))
 
-	expect(decode(await vol.readFile(PATHS.soul))).toContain('You are Kodama.')
+	expect(decode(await vol.readFile(PATHS.soul))).toContain('You are Computer.')
 	expect(await caps.invoke(call('agent.readSoul'))).toMatchObject({
 		name: 'Fern',
-		body: 'You are Kodama.',
+		body: 'You are Computer.',
 		// Written by the user now, whatever it still says.
 		seeded: false
 	})

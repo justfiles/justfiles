@@ -6,7 +6,7 @@ description: 'Agent guide for building apps with @justfiles/app.'
 # Building Apps
 
 Use this guide when creating or changing an app. The framework is in `packages/app`; apps run in
-Frieren and Kodama for Mac. The best examples are:
+Frieren and Just Computer for Mac. The best examples are:
 
 - `packages/create-app/template` — minimum app, framework-free GUI
 - `apps/pixel` — rich public action surface
@@ -121,7 +121,7 @@ the supported separate launcher asset.
 Apps do not select their storage shape. A store with an immutable download source adds `baseUrl` to
 the canonical installed manifest. The Volume then keeps the manifest and reducer, while the host
 mounts the GUI, icon, and other files through `FetchAsset` and checks their pinned hashes. Frieren uses
-its service-worker cache. Kodama uses the Bun daemon cache under `/private/cache/apps`.
+its service-worker cache. Just Computer uses the Bun daemon cache under `/private/cache/apps`.
 
 A local bundle has no `baseUrl`, so the Volume keeps every file. This is the required shape for App
 Code installs and ZIP imports because no server can restore their missing files. Do not add or trust a
@@ -552,10 +552,10 @@ CAPABILITY_OFFLINE
 
 Availability differs by host and user configuration:
 
-| Capability | Import/factory | Frieren | Kodama for Mac | App Code import |
+| Capability | Import/factory | Frieren | Just Computer for Mac | App Code import |
 | --- | --- | --- | --- | --- |
 | Files | `capabilities/volume`: `volume` | Yes | Yes | Yes |
-| Text AI | `capabilities/ai`: `ai` | Yes | Kodama when signed in; local account otherwise | Yes |
+| Text AI | `capabilities/ai`: `ai` | Yes | Just Computer when signed in; local account otherwise | Yes |
 | Image generation | `capabilities/image`: `image` | Provider-dependent | No | No |
 | Email | `capabilities/email`: `email` | Account-dependent | Account-dependent | Yes |
 | Calendar | `capabilities/calendar`: `calendar` | Account-dependent | Account-dependent | Yes |
@@ -567,7 +567,7 @@ The standalone Vite development host always implements `volume`. It implements `
 declares it and `vite.config.ts` includes `devAi()`. It also implements `devkit` when the app declares
 it and ships its sysroot through `include`. This gives App Code native esbuild, TypeScript checking,
 a Node worker for generated reducers, and a local URL preview. Test other capabilities inside Frieren
-or Kodama for Mac, or unit-test the pure logic behind them.
+or Just Computer for Mac, or unit-test the pure logic behind them.
 
 ### `volume`
 

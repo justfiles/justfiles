@@ -205,8 +205,8 @@ function Consent({
 				<h2>{kind === 'update' ? `${app.name} wants more access` : `Install ${app.name}?`}</h2>
 				<p>
 					{firstParty
-						? 'A first-party app from Kodama.'
-						: 'Community app — not reviewed by Kodama. It runs with the access it declares below.'}
+						? 'A first-party app from Just Computer.'
+						: 'Community app — not reviewed by Just Computer. It runs with the access it declares below.'}
 				</p>
 				{caps.length ? (
 					<>

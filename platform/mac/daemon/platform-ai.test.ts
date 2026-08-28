@@ -5,13 +5,13 @@ import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, describe, expect, test } from 'vitest'
 import { daemonAccounts } from './kernel.ts'
-import { createKodamaAi } from './platform-ai.ts'
+import { createPlatformAi } from './platform-ai.ts'
 
 type Request = { path: string; authorization: string | undefined; body?: unknown }
 
 const descriptor = {
 	id: 'test/model',
-	name: 'Kodama AI',
+	name: 'Just Computer AI',
 	reasoning: false,
 	input: ['text'] as const,
 	contextWindow: 128_000,
@@ -75,7 +75,7 @@ async function gateway(
 	return `http://127.0.0.1:${address.port}`
 }
 
-describe('Kodama AI', () => {
+describe('Just Computer AI', () => {
 	test('is the daemon fallback without replacing a selected ChatGPT account', async () => {
 		const requests: Request[] = []
 		const origin = await gateway(requests)
@@ -113,7 +113,7 @@ describe('Kodama AI', () => {
 		const requests: Request[] = []
 		const origin = await gateway(requests)
 		let token = 0
-		const kodama = createKodamaAi({
+		const kodama = createPlatformAi({
 			origin,
 			getToken: async () => `token-${++token}`
 		})
@@ -141,7 +141,7 @@ describe('Kodama AI', () => {
 	})
 
 	test('has no backend while signed out', async () => {
-		const kodama = createKodamaAi({
+		const kodama = createPlatformAi({
 			origin: 'http://127.0.0.1:1',
 			getToken: async () => null
 		})
@@ -153,7 +153,7 @@ describe('Kodama AI', () => {
 	test('keeps the last model when a later descriptor refresh fails', async () => {
 		const requests: Request[] = []
 		const origin = await gateway(requests)
-		const kodama = createKodamaAi({ origin, getToken: async () => 'token' })
+		const kodama = createPlatformAi({ origin, getToken: async () => 'token' })
 		const accounts = hostAccounts([kodama.provider], volume(memStore()))
 
 		expect((await accounts.resolveAi(kodama.backend))?.model.id).toBe(descriptor.id)
@@ -180,7 +180,7 @@ describe('Kodama AI', () => {
 		}
 	])('classifies a $status gateway response', async ({ status, body, message, route }) => {
 		const origin = await gateway([], () => ({ status, body }))
-		const kodama = createKodamaAi({ origin, getToken: async () => 'token' })
+		const kodama = createPlatformAi({ origin, getToken: async () => 'token' })
 		const accounts = hostAccounts([kodama.provider], volume(memStore()))
 		const backend = await accounts.resolveAi(kodama.backend)
 		const response = await backend!.completeFn(backend!.model, {

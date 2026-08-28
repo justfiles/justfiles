@@ -1,7 +1,7 @@
 // Custody for the daemon's secrets: macOS Keychain generic passwords, read and written
 // through the `security` CLI — no native binding, so this survives a `bun build --compile`
 // binary, and the items stay scoped to the user's login keychain. Two items today: A2's
-// creds-at-rest key (`getOrCreateKey`, minted on first use) and E1's Kodama OAuth refresh
+// creds-at-rest key (`getOrCreateKey`, minted on first use) and E1's platform OAuth refresh
 // token (`keychainStore`, written by the sign-in flow). Never written to the Volume: deleting the
 // volume must not delete this, and deleting this must not resurrect plaintext (A2's
 // `clearSecretCodec` refuses a sealed record with no key rather than reading it as-is).
@@ -138,7 +138,7 @@ export async function getOrCreateKey(
 	)
 }
 
-// One named Keychain item, read/written as a string — E1's custody of the Kodama OAuth
+// One named Keychain item, read/written as a string — E1's custody of the platform OAuth
 // refresh token. `write` READS THE ITEM BACK and fails if it doesn't match: the caller
 // rotates a refresh token and must not proceed on a write that silently stored nothing
 // (`security`'s prompt form exits 0 having stored an empty password if its stdin is partial

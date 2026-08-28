@@ -50,7 +50,7 @@ export function Launcher() {
 	return (
 		<main className="launcher-page">
 			<style>{styles}</style>
-			<section className="launcher-panel" aria-label="Kodama launcher">
+			<section className="launcher-panel" aria-label="Just Computer launcher">
 				<div className="app-surface">
 					{showChat ? (
 						<ChatSurface chat={chat} />
@@ -79,7 +79,7 @@ export function Launcher() {
 							) : null}
 						</div>
 					) : (
-						<div className="empty-state">Connecting to Kodama…</div>
+						<div className="empty-state">Connecting to Just Computer…</div>
 					)}
 				</div>
 				<form className="composer" onSubmit={submit}>

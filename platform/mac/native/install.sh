@@ -1,11 +1,11 @@
 #!/bin/sh
 # Install the built prod bundle into /Applications. Assumes `pnpm build` (--ship-daemon)
-# already produced native/Kodama.app; kills any running copy (you can't replace a running
-# .app), replaces /Applications/Kodama.app, then opens it from there.
+# already produced native/Just Computer.app; kills any running copy (you can't replace a running
+# .app), replaces /Applications/Just Computer.app, then opens it from there.
 set -e
 cd "$(dirname "$0")"
 
-[ -d Kodama.app ] || { echo "install.sh: native/Kodama.app missing — run 'pnpm build' first" >&2; exit 1; }
+[ -d "Just Computer.app" ] || { echo "install.sh: native/Just Computer.app missing — run 'pnpm build' first" >&2; exit 1; }
 
 # Same kill as relaunch.sh: the booter windows + launcher would respawn the daemon, so
 # stop them first, then the daemon itself — in both its dev-script and shipped-exe process
@@ -17,12 +17,12 @@ kill_wait() {
 	done
 }
 
-kill_wait 'Kodama.app/Contents/MacOS/Kodama'
-kill_wait 'Kodama Apps/.*/Contents/MacOS/'
+kill_wait 'Just Computer.app/Contents/MacOS/Just Computer'
+kill_wait 'Just Computer Apps/.*/Contents/MacOS/'
 kill_wait 'daemon/main.ts'
-kill_wait 'Kodama.app/Contents/MacOS/daemon'
+kill_wait 'Just Computer.app/Contents/MacOS/daemon'
 
-rm -rf /Applications/Kodama.app
-cp -R Kodama.app /Applications/Kodama.app
-echo "installed → /Applications/Kodama.app"
-open -n /Applications/Kodama.app
+rm -rf "/Applications/Just Computer.app"
+cp -R "Just Computer.app" "/Applications/Just Computer.app"
+echo "installed → /Applications/Just Computer.app"
+open -n "/Applications/Just Computer.app"

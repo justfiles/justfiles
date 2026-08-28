@@ -205,7 +205,7 @@ private func nativeAppIcon(_ app: CatalogApp) -> NSImage? {
 		return ws.icon(forFile: url.path)
 	}
 	let path = FileManager.default.homeDirectoryForCurrentUser
-		.appendingPathComponent("Applications/Kodama Apps/\(execName(app.name)).app")
+		.appendingPathComponent("Applications/Just Computer Apps/\(execName(app.name)).app")
 	return hasAppIcon(path) ? ws.icon(forFile: path.path) : nil
 }
 

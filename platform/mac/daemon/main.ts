@@ -313,7 +313,7 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 		})
 	})
 
-	// Project the catalog into ~/Applications/Kodama Apps/*.app (real macOS apps). One-way, the
+	// Project the catalog into ~/Applications/Just Computer Apps/*.app (real macOS apps). One-way, the
 	// Volume wins; previews stay out. Fire-and-forget — a projection failure never takes the
 	// daemon down.
 	async function project(installed: AppManifest[]): Promise<void> {

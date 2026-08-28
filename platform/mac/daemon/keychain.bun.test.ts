@@ -134,7 +134,7 @@ test('an add that exits 0 while storing something else never returns the bytes w
 	)
 })
 
-// The string-item store (E1's custody of the Kodama OAuth refresh token). The end-to-end
+// The string-item store (E1's custody of the platform OAuth refresh token). The end-to-end
 // custody path runs in identity.bun.test.ts against the real CLI; these two pin the contract
 // that identity.ts leans on, and both are `security` behaviours a fake has to be told about.
 describe('keychainStore', () => {

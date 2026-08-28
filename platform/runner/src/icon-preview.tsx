@@ -365,7 +365,8 @@ export const iconPreview: Handler<Env> = async (c) => {
 								</span>
 							</span>
 							<span class="sheet-desc">
-								Community app — not reviewed by Kodama. It runs with the access it declares below.
+								Community app — not reviewed by Just Computer. It runs with the access it declares
+								below.
 							</span>
 						</div>
 					</div>

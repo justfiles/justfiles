@@ -6,7 +6,7 @@ description: How to rebrand the public product — a new name and a new domain �
 # Rebrand runbook (rename + new domain)
 
 How to rebrand the public product again — a new name and a new domain — with minimal
-downtime. Written after the Spud → Kodama rebrand, distilled to what still matters.
+downtime. Updated after the Kodama → Just Computer rebrand, distilled to what still matters.
 
 **A future rebrand is small.** The Spud → Kodama migration was large only because the old
 public brand had leaked into the app bundle IDs (`computer.spud.* → justfiles.*`),
@@ -28,19 +28,19 @@ Clerk)**. No data migration, no id rename, no migrator, no backups.
   Objects. Only its *domain* changes.
 
 Keeping these stable is the whole reason a rebrand stays cheap. A static test
-(`platform/frieren/shared/no-legacy-names.test.ts`) already rejects a retired brand or id prefix
-leaking back into code/config — keep it, and add the newly retired name to it.
+(`platform/frieren/shared/no-legacy-names.test.ts`) already rejects retired brands or id prefixes
+leaking back into code/config — keep it, and add each newly retired name to it.
 
 ## What a rebrand actually changes
 
 1. **Public copy and discovery**: `platform/frieren/index.html` `<title>`, PWA manifest, the App
    Store npm keyword and indexer user-agent, the AI provider display name
    (`packages/app/capabilities/accounts/providers/platform.ts` → `name`), the default agent
-   persona (`packages/agent/agent-defaults.ts`), the macOS product name (`Kodama.app`,
-   `~/Applications/Kodama Apps/`, `~/Library/Application Support/Kodama` — see
+   persona (`packages/agent/agent-defaults.ts`), the macOS product name (`Just Computer.app`,
+   `~/Applications/Just Computer Apps/`, `~/Library/Application Support/Just Computer` — see
    `platform/mac/native/build.sh`), onboarding / marketing / legal / email / social copy.
    Every *id* behind that copy is already brand-free (`frieren`), so none of it moves.
-2. **The public domain** (`mykodama.app` → `newname.tld`): a Cloudflare Custom Domain on the
+2. **The public domain** (`justcomputer.app` → `newname.tld`): a Cloudflare Custom Domain on the
    worker **and** the Clerk production instance's domain.
 3. **Optionally** a new Google Cloud OAuth project (cosmetic; the existing one can be reused).
 

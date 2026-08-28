@@ -40,7 +40,10 @@ function deferred() {
 	return { promise, resolve }
 }
 
-async function seedIdentity(vol: Volume, soul = '---\nagent_name: Kodama\n---\n\nYou are Kodama.') {
+async function seedIdentity(
+	vol: Volume,
+	soul = '---\nagent_name: Computer\n---\n\nYou are Computer.'
+) {
 	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(PROFILE_PATH, encoder.encode('---\nseeded: true\n---'))
 	await vol.writeFile(SOUL_PATH, encoder.encode(soul))
@@ -1191,13 +1194,16 @@ test('a soul arriving on a volume that had none replaces the built-in default', 
 test('a soul written under a live session reaches the next turn', async () => {
 	const vol = volume(memStore())
 	await vol.mkdir('/system/agents/main', { recursive: true })
-	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Kodama\n---\n\nYou are Kodama.'))
+	await vol.writeFile(
+		SOUL_PATH,
+		encoder.encode('---\nagent_name: Computer\n---\n\nYou are Computer.')
+	)
 	const session = createAgentSession({
 		volume: vol,
 		backend: scriptedBackend([assistant([{ type: 'text', text: 'ok' }])]),
 		compaction: NO_COMPACTION
 	})
-	expect(await session.systemPrompt()).toContain('You are Kodama.')
+	expect(await session.systemPrompt()).toContain('You are Computer.')
 
 	await vol.writeFile(SOUL_PATH, encoder.encode('---\nagent_name: Fern\n---\n\nYou are Fern.'))
 	// The watch fires on the commit; the drop is what the next build reads through.
@@ -1205,7 +1211,7 @@ test('a soul written under a live session reaches the next turn', async () => {
 
 	const prompt = await session.systemPrompt()
 	expect(prompt).toContain('You are Fern.')
-	expect(prompt).not.toContain('You are Kodama.')
+	expect(prompt).not.toContain('You are Computer.')
 })
 
 test('construction does not register watches before storage is migrated', async () => {
@@ -1295,8 +1301,8 @@ test('concurrent callers share the current build', async () => {
 	release.resolve()
 
 	await expect(Promise.all([first, second])).resolves.toEqual([
-		expect.stringContaining('You are Kodama.'),
-		expect.stringContaining('You are Kodama.')
+		expect.stringContaining('You are Computer.'),
+		expect.stringContaining('You are Computer.')
 	])
 	expect(soulReads).toBe(2)
 })
@@ -1322,5 +1328,5 @@ test('a failed build is evicted so later access retries', async () => {
 	})
 
 	await expect(session.systemPrompt()).rejects.toThrow('build failed')
-	await expect(session.systemPrompt()).resolves.toContain('You are Kodama.')
+	await expect(session.systemPrompt()).resolves.toContain('You are Computer.')
 })

@@ -1,6 +1,6 @@
 # @justfiles/app-pixel
 
-An indexed pixel-art editor for the [Kodama](https://mykodama.app) App Store,
+An indexed pixel-art editor for the [Just Computer](https://justcomputer.app) App Store,
 built on [`@justfiles/app`](https://www.npmjs.com/package/@justfiles/app). The
 artwork lives in reducer state as a palette-indexed char grid, so an agent can
 read and edit the picture directly.

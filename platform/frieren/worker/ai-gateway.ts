@@ -72,7 +72,7 @@ const STRIPPED_FIELDS = ['models', 'fallbacks', 'provider', 'plugins', 'transfor
 
 // What the platform AI is CALLED, whatever it currently runs on. The real model id still rides
 // on `id` (and in every response body) — identity is visible, it just isn't selectable.
-const PLATFORM_MODEL_NAME = 'Kodama AI'
+const PLATFORM_MODEL_NAME = 'Just Computer AI'
 
 // The `/model` wire shape: pi's own model config minus the fields the CLIENT owns — `provider`
 // and `baseUrl` (its local provider id + this gateway's URL) and `api` (always

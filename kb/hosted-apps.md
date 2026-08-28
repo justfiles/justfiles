@@ -61,7 +61,7 @@ listing can be gated later without reopening it. See
 What makes that posture *fair* is origin isolation: a hostile app can only reach
 its own origin's data, so "you took the risk" is true. It stops being true the
 moment apps share an origin with the desktop's credentials — which is why apps
-never live on `mykodama.app`.
+never live on `justcomputer.app`.
 
 ### What the capability model does and does not cover
 

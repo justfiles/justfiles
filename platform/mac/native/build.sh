@@ -3,8 +3,8 @@
 # Command Line Tools only (no full Xcode): SwiftPM compiles, this script bundles.
 #
 #   ./build.sh Code          # a booter bundle ./Code.app (mock target, own identity)
-#   ./build.sh --launcher    # dev launcher ./Kodama.app — spawns the daemon from source
-#   ./build.sh --ship-daemon # prod ./Kodama.app — self-contained daemon exe + Vite client
+#   ./build.sh --launcher    # dev launcher ./Just Computer.app — spawns the daemon from source
+#   ./build.sh --ship-daemon # prod ./Just Computer.app — self-contained daemon exe + Vite client
 #   ./build.sh --release …   # optimise the binaries for shipping (default: debug)
 #
 # --launcher and --ship-daemon build the Vite client (ui/dist/client, the daemon's browser
@@ -99,8 +99,8 @@ stamp_daemon() { # plist
 }
 
 build_launcher() {
-	app="Kodama.app"
-	make_bundle "$app" "Kodama" "app.justfiles.frieren.host" "" "1"
+	app="Just Computer.app"
+	make_bundle "$app" "Just Computer" "app.justfiles.frieren.host" "" "1"
 	# The daemon serves its browser surfaces straight from Vite's ui/dist/client (no ship-time
 	# bundling), so build that tree — the dev daemon reads it via CLIENT_DIR (main.ts).
 	(cd .. && pnpm run ui:build >/dev/null)
@@ -120,15 +120,15 @@ build_booter() { # Name
 	echo "built $app (booter, id=$id)"
 }
 
-# A self-contained, shippable Kodama.app backed by the daemon (platform/mac/daemon): the
+# A self-contained, shippable Just Computer.app backed by the daemon (platform/mac/daemon): the
 # launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
 # daemon reads, under Resources/. The daemon does zero frontend bundling: Vite builds the
 # browser surfaces (launcher / chat / app shell + assets) into
 # ui/dist/client, which rides on disk beside the exe as Resources/client. Paths resolve
 # through FRIEREN_SHIPPED.
 build_ship_daemon() {
-	app="Kodama.app"
-	make_bundle "$app" "Kodama" "app.justfiles.frieren.host" "" "1"
+	app="Just Computer.app"
+	make_bundle "$app" "Just Computer" "app.justfiles.frieren.host" "" "1"
 	res="$app/Contents/Resources"
 	exe="$(pwd)/$app/Contents/MacOS/daemon"
 
@@ -141,7 +141,7 @@ build_ship_daemon() {
 	(cd .. && pnpm run ui:build >/dev/null)
 	mkdir -p "$res/client" && cp -R ../ui/dist/client/. "$res/client/"
 	# 3. The shared booter binary + icon tool → Resources/build. materialize.ts copies the
-	#    booter into each projected ~/Applications/Kodama Apps/*.app; without it the daemon logs
+	#    booter into each projected ~/Applications/Just Computer Apps/*.app; without it the daemon logs
 	#    "booter missing" and skips projection entirely (resources.ts resolves BUILD_DIR here
 	#    when shipped).
 	mkdir -p "$res/build" && cp "$BIN" "$res/build/shell"

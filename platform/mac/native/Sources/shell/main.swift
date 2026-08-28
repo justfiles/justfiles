@@ -26,7 +26,7 @@ struct Config {
 		let id = (raw?.isEmpty == false) ? raw : nil
 
 		let urlStr = arg("--url") ?? env["FRIEREN_TARGET_URL"] ?? (info["TargetURL"] as? String)
-		let name = (info["CFBundleName"] as? String) ?? id?.capitalized ?? "Kodama"
+		let name = (info["CFBundleName"] as? String) ?? id?.capitalized ?? "Just Computer"
 		return Config(appId: id, appName: name, targetURL: urlStr.flatMap { URL(string: $0) })
 	}
 }

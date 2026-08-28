@@ -69,9 +69,9 @@ export default defineConfig({
 			registerType: 'prompt',
 			injectRegister: false,
 			manifest: {
-				name: 'Frieren',
-				short_name: 'Frieren',
-				description: 'Local-first Frieren workspace',
+				name: 'Just Computer',
+				short_name: 'Just Computer',
+				description: 'Your local-first computer',
 				start_url: '/',
 				scope: '/',
 				display: 'standalone',

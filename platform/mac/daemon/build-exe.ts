@@ -1,7 +1,7 @@
 // Production build: compile the daemon into ONE self-contained Bun executable. The exe
 // embeds Bun + the bundled daemon graph (server/kernel/capabilities/agent). The browser
 // surfaces are NOT embedded — Vite builds them into ui/dist/client and they ship beside the
-// exe under Kodama.app/Contents/Resources/client (native/build.sh copies them; see Step 2 of
+// exe under Just Computer.app/Contents/Resources/client (native/build.sh copies them; see Step 2 of
 // the migration), read from disk at request time. FRIEREN_SHIPPED tells the runtime to resolve
 // resources next to the exe rather than the bunfs root (see daemon/resources.ts and
 // daemon/main.ts CLIENT_DIR).
@@ -54,7 +54,7 @@ const result = await Bun.build({
 	target: 'bun',
 	plugins: [rawText],
 	// Tell the standalone it is shipped, so resources resolve from
-	// Kodama.app/Contents/Resources next to the exe — not the bunfs root.
+	// Just Computer.app/Contents/Resources next to the exe — not the bunfs root.
 	define: { 'process.env.FRIEREN_SHIPPED': '"1"' },
 	compile: (target ? { outfile, target } : { outfile }) as { outfile: string }
 })

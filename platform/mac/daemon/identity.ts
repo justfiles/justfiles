@@ -1,7 +1,7 @@
-// The daemon's Kodama identity. The Mac is an OAuth 2.0 **public client** of our own Clerk
+// The daemon's platform identity. The Mac is an OAuth 2.0 **public client** of our own Clerk
 // instance (the "installed app" shape, RFC 8252): sign-in opens the default browser on
 // Clerk's own `/oauth/authorize`, catches the redirect on 127.0.0.1, and exchanges the code
-// with PKCE and no client secret. There is no Kodama-side sign-in page, no pairing route and
+// with PKCE and no client secret. There is no product-side sign-in page, no pairing route and
 // no server-held device record — the whole flow is Clerk's, and the worker just accepts a
 // second kind of token (`acceptsToken: ['session_token', 'oauth_token']`).
 //
@@ -301,7 +301,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 		}, opts)
 		const code = callback.searchParams.get('code')
 		if (!code || callback.searchParams.get('state') !== oauthState) {
-			throw new Error('Kodama sign-in failed or was cancelled')
+			throw new Error('Just Computer sign-in failed or was cancelled')
 		}
 		const res = await form(
 			{
@@ -313,10 +313,10 @@ export function createIdentity(deps: IdentityDeps): Identity {
 			},
 			'/oauth/token'
 		)
-		if (!res.ok) throw new Error(`Kodama sign-in failed (${res.status})`)
+		if (!res.ok) throw new Error(`Just Computer sign-in failed (${res.status})`)
 		const profile = await adopt((await res.json()) as TokenResponse, at)
 		// A sign-out landed while the browser was open. The last explicit instruction wins.
-		if (!profile) throw new Error('Kodama sign-in was superseded by a sign-out')
+		if (!profile) throw new Error('Just Computer sign-in was superseded by a sign-out')
 		return profile
 	}
 
@@ -434,7 +434,7 @@ export function createIdentity(deps: IdentityDeps): Identity {
 // point of PKCE), so it lives in source rather than in an env var nobody sets; the env vars
 // exist for pointing a dev daemon at a different instance.
 const INSTANCE = SHIPPED
-	? { fapi: 'https://clerk.mykodama.app', clientId: 'XRdrHVsy0Fa1P8qq' }
+	? { fapi: 'https://clerk.justcomputer.app', clientId: 'XRdrHVsy0Fa1P8qq' }
 	: { fapi: 'https://capable-spider-79.clerk.accounts.dev', clientId: 'DQfbAd3ksCt3Rjs1' }
 
 // Custody is per INSTANCE, because a source daemon and a shipped app run under the same macOS

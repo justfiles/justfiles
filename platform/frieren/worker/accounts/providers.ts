@@ -22,7 +22,7 @@ export interface ProviderDeps {
 	generateImage?: (prompt: string) => Promise<GeneratedImage[]>
 }
 
-const DESKTOP_MESSAGE = 'Sign in to this account from Kodama for Mac — it will sync here.'
+const DESKTOP_MESSAGE = 'Sign in to this account from Just Computer for Mac — it will sync here.'
 
 // The Worker has no browser/loopback to run an interactive flow; refuse before the
 // provider even builds its authorize URL.
@@ -57,7 +57,7 @@ function chatgptOnDesktop(): Provider {
 		capabilities: {
 			ai: {
 				bind: () => {
-					throw new Error('ChatGPT is used from Kodama for Mac')
+					throw new Error('ChatGPT is used from Just Computer for Mac')
 				}
 			}
 		}
