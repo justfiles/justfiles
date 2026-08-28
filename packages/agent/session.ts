@@ -2,13 +2,9 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
+import { readActivityDetail } from './activity-detail.ts'
 import { PROFILE_PATH, readAgentName, SOUL_PATH } from './agent-defaults.ts'
-import {
-	type Assistant,
-	consolidateMemory,
-	createAssistant,
-	type PromptSource
-} from './assistant.ts'
+import { type Assistant, consolidateMemory, createAssistant } from './assistant.ts'
 import { type CapabilityToolSet, capabilityTools } from './capability-tools.ts'
 import type { CompactionSettings } from './compaction.ts'
 import { stripExpressions } from './expression.ts'
@@ -18,10 +14,11 @@ import { createOsCommand, type OsState } from './justbash/os.ts'
 import { createAgent } from './llm.agent.ts'
 import { text as createText, type LLMText } from './llm.text.ts'
 import type { AgentBackend } from './llm.ts'
-import type { SessionEntry } from './session.manager.ts'
+import { currentSession, type SessionEntry, session } from './session.manager.ts'
 import { listSkills, type SkillMeta } from './skills.ts'
 import { DEFAULT_TIMEZONE, nextFourAmInTimezone } from './timezone.ts'
 import { createAskUserTool, createFetchTool, createSearchTool } from './tools/index.ts'
+import type { ActivityDetailResult } from './transcript.ts'
 
 // The agent PRODUCT: one correct assembly of the pi-agent-core loop + our tools + the
 // turn runner + error classification + notifications. A host injects its ports (a Volume,
@@ -90,9 +87,10 @@ export type StartTurnResult = { accepted: true; done: Promise<string> } | { acce
 
 export interface AgentSession {
 	// --- conversation ---
-	start(message: string, source?: PromptSource): StartTurnResult
+	start(message: string): StartTurnResult
 	abort(): boolean
 	snapshot(): Promise<SessionSnapshot>
+	activityDetail(detailId: string): Promise<ActivityDetailResult>
 	subscribe(fn: (update: SessionUpdate) => void): () => void
 	// --- semantic actions a UI slash-command maps to ---
 	newSession(): Promise<void>
@@ -174,6 +172,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	let watching: Promise<void> | null = null
 	let running: RunningTurn | null = null
 	let resetting: Promise<void> | null = null
+	let historyReader: Assistant | null = null
 	let history: readonly SessionEntry[] = []
 	let historyLoaded = false
 	let status: SessionStatus = { state: 'idle' }
@@ -191,10 +190,10 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	// a session must not touch storage before its host's migration barrier has completed.
 
 	return {
-		start: (message, source = 'user') =>
-			startTurn((assistant) => assistant.prompt(message, source)),
+		start: (message) => startTurn((assistant) => assistant.prompt(message)),
 		abort,
 		snapshot,
+		activityDetail,
 		subscribe,
 		newSession,
 		listSkills: () => listSkills(volume),
@@ -202,6 +201,25 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		runMaintenance,
 		nextMaintenanceAt,
 		systemPrompt
+	}
+
+	async function activityDetail(detailId: string): Promise<ActivityDetailResult> {
+		if (historyReader) return historyReader.activityDetail(detailId)
+		const current = await currentSession(volume, target.agentId)
+		if (!current) return { status: 'expired' }
+		const manager = session(volume, {
+			agentId: target.agentId,
+			sessionId: current.sessionId,
+			startTs: current.startTs,
+			deviceId: 'read0000'
+		})
+		return readActivityDetail(
+			volume,
+			target.agentId,
+			current.sessionId,
+			await manager.walkActiveBranch(),
+			detailId
+		)
 	}
 
 	async function getBuilt(): Promise<Built> {
@@ -225,6 +243,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 				const built = await selected.built
 				if (selected.revision !== revision) continue
 				title = built.title
+				historyReader = built.assistant
 				return built
 			} catch (error) {
 				if (selected.revision !== revision) continue

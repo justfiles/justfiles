@@ -54,7 +54,8 @@ interface Message {
 	commands?: { name: string }[]
 	id?: string
 	ok?: boolean
-	result?: { show: string; body?: string }
+	result?: { show?: string; body?: string; status?: 'available' | 'expired'; detail?: unknown }
+	requestId?: string
 	accepted?: boolean
 	history?: unknown[]
 	status?: { state: string }
@@ -197,6 +198,17 @@ test('/agent sends a snapshot, then publishes items and status', async () => {
 			.filter((message) => ['status', 'accepted'].includes(message.type ?? ''))
 			.map((message) => message.type)
 	).toEqual(['status', 'accepted', 'status'])
+	client.close()
+})
+
+test('/agent returns expired for a missing activity detail', async () => {
+	const client = await connect('/agent')
+	await client.waitFor((message) => message.type === 'snapshot')
+	client.send({ type: 'activity_detail', requestId: 'detail-request', detailId: 'missing' })
+	const result = await client.waitFor(
+		(message) => message.type === 'activity_detail' && message.requestId === 'detail-request'
+	)
+	expect(result.result).toEqual({ status: 'expired' })
 	client.close()
 })
 

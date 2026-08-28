@@ -5,6 +5,7 @@ import type { AppManifest } from '@justfiles/app/runtime'
 import type { Server, ServerWebSocket } from 'bun'
 import {
 	abortAgent,
+	agentActivityDetail,
 	agentCommands,
 	agentSnapshot,
 	dispatchCommand,
@@ -246,6 +247,12 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					else if (req.type === 'snapshot')
 						await serializeAgentMessage(async () => {
 							sendAgent(ws, await agentSnapshot())
+						})
+					else if (req.type === 'activity_detail')
+						sendAgent(ws, {
+							type: 'activity_detail',
+							requestId: req.requestId,
+							result: await agentActivityDetail(req.detailId)
 						})
 					return
 				}

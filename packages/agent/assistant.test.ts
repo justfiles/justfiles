@@ -203,6 +203,11 @@ describe('assistant prompt', () => {
 		expect(await readDetail(vol, activity)).toEqual({
 			items: [{ kind: 'think', content: 'Recovered attempt' }]
 		})
+		expect(await rt.activityDetail(activity.detailId ?? '')).toEqual({
+			status: 'available',
+			detail: { items: [{ kind: 'think', content: 'Recovered attempt' }] }
+		})
+		expect(await rt.activityDetail('missing')).toEqual({ status: 'expired' })
 	})
 
 	test('records mixed activity runs in their original order', async () => {

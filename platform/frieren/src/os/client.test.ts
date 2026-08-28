@@ -353,15 +353,25 @@ describe('FrierenClient agent', () => {
 			type: 'snapshot',
 			history: [
 				{
-					role: 'assistant',
-					content: '',
-					toolCalls: [{ name: 'generate_image', args: undefined, result: 'saved', images }]
+					id: 'activity-1',
+					type: 'activity',
+					label: 'Generate image · 0.1s',
+					items: []
+				},
+				{
+					id: 'activity-1:image:0',
+					type: 'image',
+					image: images[0]
 				}
 			],
 			status: { state: 'idle' }
 		})
 		socket.emit({ type: 'ready', apps: [] })
-		expect(client.agent().snapshot().messages[0]?.toolCalls?.[0]?.images).toEqual(images)
+		expect(client.agent().snapshot().messages[1]).toEqual({
+			id: 'activity-1:image:0',
+			type: 'image',
+			image: images[0]
+		})
 
 		socket.emit({ type: 'event', event: { type: 'agent_start' } })
 		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
@@ -385,7 +395,8 @@ describe('FrierenClient agent', () => {
 			}
 		})
 
-		const live = client.agent().snapshot().messages.at(-1)?.toolCalls?.[0]
+		const message = client.agent().snapshot().messages.at(-1)
+		const live = message && !('type' in message) ? message.toolCalls?.[0] : undefined
 		expect(live).toMatchObject({ status: 'done', images })
 	})
 
@@ -403,6 +414,30 @@ describe('FrierenClient agent', () => {
 		expect(client.agent().snapshot().messages[0]).toMatchObject({
 			content: 'Tea or coffee?',
 			options
+		})
+	})
+
+	test('matches activity detail replies to their request', async () => {
+		const { client, connect } = setup()
+		const sockets = await connect()
+		const pending = client.agent().loadActivityDetail('detail-1')
+		const request = JSON.parse(sockets.agent().sent.at(-1) ?? '') as {
+			requestId: string
+			detailId: string
+		}
+		expect(request.detailId).toBe('detail-1')
+
+		sockets.agent().emit({
+			type: 'activity_detail',
+			requestId: request.requestId,
+			result: {
+				status: 'available',
+				detail: { items: [{ kind: 'think', content: 'Checked it.' }] }
+			}
+		})
+		await expect(pending).resolves.toEqual({
+			status: 'available',
+			detail: { items: [{ kind: 'think', content: 'Checked it.' }] }
 		})
 	})
 
@@ -435,7 +470,10 @@ describe('FrierenClient agent', () => {
 		expect(await accepted).toBe(true)
 		expect(client.agent().snapshot()).toMatchObject({ isStreaming: true, messages: [] })
 
-		socket.emit({ type: 'item', item: { role: 'user', content: 'do the thing' } })
+		socket.emit({
+			type: 'item',
+			item: { id: 'prompt-1', type: 'message', role: 'user', content: 'do the thing' }
+		})
 		expect(client.agent().snapshot().messages).toEqual([
 			expect.objectContaining({ role: 'user', content: 'do the thing' })
 		])
@@ -447,7 +485,10 @@ describe('FrierenClient agent', () => {
 		socket.emit({ type: 'ready', apps: [] })
 
 		const accepted = client.agent().prompt('my prompt')
-		socket.emit({ type: 'item', item: { role: 'user', content: 'already running' } })
+		socket.emit({
+			type: 'item',
+			item: { id: 'prompt-2', type: 'message', role: 'user', content: 'already running' }
+		})
 		socket.emit({ type: 'status', status: { state: 'thinking' } })
 		socket.emit({ type: 'rejected', reason: 'busy' })
 

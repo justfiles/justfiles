@@ -1,6 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
 import { createActivityRecorder } from './activity.ts'
+import { readActivityDetail } from './activity-detail.ts'
 import { ageCalibration } from './age-calibration'
 import { readProfile, readSoul } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
@@ -20,6 +21,7 @@ import {
 } from './session.manager'
 import { createReadSkillTool, createVolumeSkillRegistry } from './skills'
 import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
+import type { ActivityDetailResult } from './transcript.ts'
 
 type AssistantProps = {
 	volume: Volume
@@ -50,18 +52,16 @@ type AssistantProps = {
 	onEntriesAppended?: (entries: readonly SessionEntry[]) => Promise<void> | void
 }
 
-// Who authored a turn: the user typing, or an app acting on their behalf.
-export type PromptSource = 'user' | 'app'
-
 type AssistantEventListener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void
 
 // The host-agnostic agent: the raw pi-agent-core loop (the `Agent`) wrapped with
 // persona, memory, sessions, skills and docs. Created via `createAssistant`.
 export interface Assistant {
 	// --- conversation ---
-	prompt: (message: string, source?: PromptSource) => Promise<string>
+	prompt: (message: string) => Promise<string>
 	subscribe: (listener: AssistantEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
+	activityDetail: (detailId: string) => Promise<ActivityDetailResult>
 
 	// --- session lifecycle ---
 	// Start a fresh session: mint + register a new session file (the old one stays on
@@ -121,12 +121,18 @@ export async function createAssistant({
 		prompt,
 		subscribe,
 		history: () => session.walkActiveBranch(),
+		activityDetail,
 		newSession,
 		abort,
 		addTools,
 		applySkill,
 		readSkill: (id) => skillRegistry.read(id),
 		systemPrompt: () => agent.state.systemPrompt
+	}
+
+	async function activityDetail(detailId: string): Promise<ActivityDetailResult> {
+		const history = await session.walkActiveBranch()
+		return readActivityDetail(volume, agentId, session.sessionId, history, detailId)
 	}
 
 	async function abort() {
@@ -145,10 +151,10 @@ export async function createAssistant({
 
 	// Load a skill body and run it as a normal turn (its result lands in the session).
 	async function applySkill(id: string): Promise<string> {
-		return prompt(await skillRegistry.read(id), 'user')
+		return prompt(await skillRegistry.read(id))
 	}
 
-	async function prompt(message: string, source: PromptSource = 'user') {
+	async function prompt(message: string) {
 		const turn = { aborted: false }
 		const activity = createActivityRecorder()
 		running = turn
@@ -164,9 +170,7 @@ export async function createAssistant({
 			if (appContext) agent.state.systemPrompt = await resolveSystemPrompt()
 			if (turn.aborted) return ''
 			offset = agent.state.messages.length
-			const input = await session.append([
-				{ type: 'message', role: 'user', content: message, source }
-			])
+			const input = await session.append([{ type: 'message', role: 'user', content: message }])
 			await onEntriesAppended?.(input.entries)
 			const unsubscribe = agent.subscribe(activity.onEvent)
 			try {
@@ -208,7 +212,6 @@ export async function createAssistant({
 					.find((value) => value !== undefined)
 		if (diagnostic) {
 			console.error('[frieren-agent-failure]', {
-				source,
 				message: diagnostic.message,
 				persistedMessages: newMessages.length
 			})

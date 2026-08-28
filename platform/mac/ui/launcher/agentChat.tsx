@@ -1,6 +1,11 @@
-import type { SessionEntry, SessionStatus } from '@justfiles/agent'
-import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
-import type { AgentMessage } from '@justfiles/ui/Transcript'
+import type { SessionStatus } from '@justfiles/agent'
+import type {
+	ActivityDetailResult,
+	SessionClientMessage,
+	SessionServerMessage,
+	TranscriptItem
+} from '@justfiles/agent/protocol'
+import type { TranscriptRow } from '@justfiles/ui/Transcript'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 // The launcher's agent transport: a plain WebSocket to the daemon's `/agent` socket, which
@@ -12,15 +17,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 type Connection = 'connecting' | 'ready' | 'disconnected'
 
 export function useAgentChat() {
-	const [messages, setMessages] = useState<AgentMessage[]>([])
+	const [messages, setMessages] = useState<TranscriptRow[]>([])
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connection, setConnection] = useState<Connection>('connecting')
 	const [error, setError] = useState<string | null>(null)
 	const socketRef = useRef<WebSocket | null>(null)
-	const historyRef = useRef<readonly SessionEntry[]>([])
+	const historyRef = useRef<readonly TranscriptItem[]>([])
 	const statusRef = useRef<SessionStatus>({ state: 'idle' })
 	const submittingRef = useRef(false)
 	const pendingMessageRef = useRef<string | null>(null)
+	const pendingDetailsRef = useRef(new Map<string, (result: ActivityDetailResult) => void>())
 
 	const setStatus = useCallback((status: SessionStatus) => {
 		statusRef.current = status
@@ -32,9 +38,9 @@ export function useAgentChat() {
 		setIsStreaming(submitting || statusRef.current.state !== 'idle')
 	}, [])
 
-	const replaceHistory = useCallback((history: readonly SessionEntry[]) => {
+	const replaceHistory = useCallback((history: readonly TranscriptItem[]) => {
 		historyRef.current = history
-		setMessages(sessionEntriesToMessages(history))
+		setMessages([...history])
 	}, [])
 
 	// Subscribe to the live session, reconnecting on drop. A daemon restart sends fresh state.
@@ -52,7 +58,10 @@ export function useAgentChat() {
 			nextSocket.onmessage = (ev) => {
 				if (socketRef.current !== nextSocket) return
 				const message = JSON.parse(String(ev.data)) as SessionServerMessage
-				if (message.type === 'snapshot') {
+				if (message.type === 'activity_detail') {
+					pendingDetailsRef.current.get(message.requestId)?.(message.result)
+					pendingDetailsRef.current.delete(message.requestId)
+				} else if (message.type === 'snapshot') {
 					replaceHistory(message.history)
 					setSubmitting(false)
 					setStatus(message.status)
@@ -91,6 +100,8 @@ export function useAgentChat() {
 				setSubmitting(false)
 				setStatus({ state: 'idle' })
 				replaceHistory(historyRef.current)
+				for (const resolve of pendingDetailsRef.current.values()) resolve({ status: 'expired' })
+				pendingDetailsRef.current.clear()
 				setConnection('disconnected')
 				retry = setTimeout(connect, 1000)
 			}
@@ -100,6 +111,8 @@ export function useAgentChat() {
 			stopped = true
 			clearTimeout(retry)
 			socket?.close()
+			for (const resolve of pendingDetailsRef.current.values()) resolve({ status: 'expired' })
+			pendingDetailsRef.current.clear()
 		}
 	}, [replaceHistory, setStatus, setSubmitting])
 
@@ -124,8 +137,7 @@ export function useAgentChat() {
 				{
 					id,
 					role: 'user',
-					content: trimmed,
-					source: 'user'
+					content: trimmed
 				}
 			])
 			socket.send(JSON.stringify({ type: 'prompt', text: trimmed } satisfies SessionClientMessage))
@@ -140,116 +152,23 @@ export function useAgentChat() {
 		socket.send(JSON.stringify({ type: 'abort' } satisfies SessionClientMessage))
 	}, [])
 
-	return { messages, isStreaming, connection, error, send, abort }
-}
-
-function sessionEntriesToMessages(entries: readonly SessionEntry[]): AgentMessage[] {
-	const messages: AgentMessage[] = []
-	for (const entry of entries) {
-		if (entry.type === 'activity') {
-			if (entry.images?.length) {
-				const tool = entry.items.findLast((item) => item.kind === 'tool')
-				messages.push({
-					id: entry.id,
-					role: 'assistant',
-					content: '',
-					toolCalls: [
-						{
-							id: entry.id,
-							name: tool?.name ?? 'image',
-							args: undefined,
-							status: 'done',
-							images: entry.images
-						}
-					]
-				})
-			}
-			continue
-		}
-		if (entry.type !== 'message') continue
-		// An ask_user call renders as a question bubble with clickable options (below),
-		// so its paired result carries no user-facing content — drop it.
-		if (entry.role === 'tool_result' && entry.tool_name === 'ask_user') continue
-		if (entry.role === 'tool_result') {
-			const call = findPendingToolCall(messages, entry.tool_name)
-			if (call) {
-				call.result = parseToolResult(entry.content)
-				call.status = 'done'
-				continue
-			}
-		}
-		const message = sessionEntryToMessage(entry)
-		if (message) messages.push(message)
-	}
-	return messages
-}
-
-function sessionEntryToMessage(
-	entry: Extract<SessionEntry, { type: 'message' }>
-): AgentMessage | null {
-	switch (entry.role) {
-		case 'user':
-			return { id: entry.id, role: 'user', content: entry.content, source: entry.source }
-		case 'assistant':
-			return {
-				id: entry.id,
-				role: 'assistant',
-				content: entry.content,
-				...(entry.options ? { options: entry.options } : {})
-			}
-		case 'assistant_thinking':
-			return { id: entry.id, role: 'assistant', content: '', thinking: entry.content }
-		case 'tool_call':
-			// ask_user is a question, not mechanical work: render the agent's question as
-			// an assistant bubble whose options are clickable rows (a pick is the next
-			// prompt), rather than a collapsed tool row.
-			if (entry.tool_name === 'ask_user') {
-				const input = entry.input as { question?: string; options?: string[] }
-				return {
-					id: entry.id,
-					role: 'assistant',
-					content: input.question ?? '',
-					options: (input.options ?? []).map((label) => ({ label }))
-				}
-			}
-			return {
-				id: entry.id,
-				role: 'assistant',
-				content: '',
-				toolCalls: [{ id: entry.id, name: entry.tool_name, args: entry.input, status: 'running' }]
-			}
-		case 'tool_result':
-			return {
-				id: entry.id,
-				role: 'assistant',
-				content: '',
-				toolCalls: [
-					{
-						id: entry.id,
-						name: entry.tool_name,
-						args: {},
-						result: parseToolResult(entry.content),
-						status: 'done'
-					}
-				]
-			}
-	}
-}
-
-function findPendingToolCall(messages: AgentMessage[], name: string) {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const call = messages[i].toolCalls?.findLast(
-			(call) => call.name === name && call.result === undefined
+	const loadActivityDetail = useCallback((detailId: string): Promise<ActivityDetailResult> => {
+		const socket = socketRef.current
+		if (!socket || socket.readyState !== WebSocket.OPEN)
+			return Promise.resolve({ status: 'expired' })
+		const requestId = crypto.randomUUID()
+		const result = new Promise<ActivityDetailResult>((resolve) => {
+			pendingDetailsRef.current.set(requestId, resolve)
+		})
+		socket.send(
+			JSON.stringify({
+				type: 'activity_detail',
+				requestId,
+				detailId
+			} satisfies SessionClientMessage)
 		)
-		if (call) return call
-	}
-	return null
-}
+		return result
+	}, [])
 
-function parseToolResult(content: string): unknown {
-	try {
-		return JSON.parse(content)
-	} catch {
-		return content
-	}
+	return { messages, isStreaming, connection, error, send, abort, loadActivityDetail }
 }

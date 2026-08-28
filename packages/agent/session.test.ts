@@ -134,6 +134,21 @@ async function history(session: AgentSession): Promise<readonly SessionEntry[]> 
 }
 
 describe('createAgentSession', () => {
+	test('reads missing activity detail without building the agent', async () => {
+		let backendCalls = 0
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: async () => {
+				backendCalls++
+				throw new Error('offline')
+			},
+			compaction: NO_COMPACTION
+		})
+
+		await expect(session.activityDetail('missing')).resolves.toEqual({ status: 'expired' })
+		expect(backendCalls).toBe(0)
+	})
+
 	test('publishes status separately from durable items', async () => {
 		const updates: SessionUpdate[] = []
 		const session = createAgentSession({

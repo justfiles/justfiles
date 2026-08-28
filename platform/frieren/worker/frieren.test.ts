@@ -1,17 +1,16 @@
 import type { SessionEntry } from '@justfiles/agent'
+import { sessionEntriesToTranscriptItems } from '@justfiles/agent/protocol'
 import { describe, expect, test } from 'vitest'
-import { sessionEntries2DisplayMessages } from './display'
 
 const ts = '2026-05-23T05:02:17.578Z'
 
-describe('sessionEntries2DisplayMessages', () => {
+describe('Frieren transcript projection', () => {
 	test('projects user.gov session without leaking tool_result as plain text', () => {
 		const entries: SessionEntry[] = [
 			{
 				type: 'message',
 				role: 'user',
 				content: 'can you increase the counter to 15',
-				source: 'user',
 				id: 'b17bdee2',
 				parentId: null,
 				ts
@@ -28,7 +27,6 @@ describe('sessionEntries2DisplayMessages', () => {
 				type: 'message',
 				role: 'user',
 				content: 'the counter is the current running app',
-				source: 'user',
 				id: '53ede100',
 				parentId: '234ec2c0',
 				ts
@@ -106,19 +104,20 @@ describe('sessionEntries2DisplayMessages', () => {
 			}
 		]
 
-		const display = sessionEntries2DisplayMessages(entries)
+		const display = sessionEntriesToTranscriptItems(entries, { expressions: true })
 
 		for (const m of display) {
-			expect(m.content.startsWith('[')).toBe(false)
+			if (m.type === 'message') expect(m.content.startsWith('[')).toBe(false)
 		}
 
-		const finalAssistant = display.find((m) => m.content === 'Done — the counter is now 15.')
+		const finalAssistant = display.find(
+			(m) => m.type === 'message' && m.content === 'Done — the counter is now 15.'
+		)
 		expect(finalAssistant).toBeDefined()
 
-		const toolHost = display.find((m) => (m.toolCalls?.length ?? 0) > 0)
+		const toolHost = display.find((m) => m.type === 'activity')
 		expect(toolHost).toBeDefined()
-		expect(toolHost?.toolCalls?.length).toBe(4)
-		expect(toolHost?.toolCalls?.every((tc) => tc.result !== undefined)).toBe(true)
+		expect(toolHost?.type === 'activity' && toolHost.items).toHaveLength(4)
 	})
 
 	test('carries image refs from a tool_result entry onto its tool call', () => {
@@ -145,7 +144,7 @@ describe('sessionEntries2DisplayMessages', () => {
 			}
 		]
 
-		const [message] = sessionEntries2DisplayMessages(entries)
-		expect(message?.toolCalls?.[0]?.images).toEqual(images)
+		const projected = sessionEntriesToTranscriptItems(entries, { expressions: true })
+		expect(projected[1]).toEqual({ id: 'a2:image:0', type: 'image', image: images[0] })
 	})
 })

@@ -1,3 +1,4 @@
+import type { TranscriptItem } from '@justfiles/agent/protocol'
 import {
 	type CSSProperties,
 	type ReactNode,
@@ -33,7 +34,6 @@ export interface AgentMessage {
 	id: string
 	role: 'user' | 'assistant'
 	content: string
-	source?: 'user' | 'app'
 	thinking?: string
 	toolCalls?: ToolCallInfo[]
 	// A failed agent turn: rendered as an error-styled block, not a normal bubble.
@@ -43,8 +43,10 @@ export interface AgentMessage {
 	options?: { label: string }[]
 }
 
+export type TranscriptRow = AgentMessage | TranscriptItem
+
 export interface TranscriptProps {
-	messages: AgentMessage[]
+	messages: TranscriptRow[]
 	isStreaming: boolean
 	assistantStyle?: 'bubble' | 'plain'
 	// Invoked when the user clicks an option row. Omitted hosts render the labels
@@ -220,10 +222,10 @@ export function Transcript({
 				}}
 			>
 				{leading}
-				{messages.map((m) => (
-					<MessageItem
-						key={m.id}
-						message={m}
+				{messages.map((item) => (
+					<TranscriptRowItem
+						key={item.id}
+						item={item}
 						isStreaming={isStreaming}
 						assistantStyle={assistantStyle}
 						onOption={onOption}
@@ -235,6 +237,35 @@ export function Transcript({
 	)
 }
 
+function TranscriptRowItem({
+	item,
+	isStreaming,
+	assistantStyle,
+	onOption,
+	resolveImage
+}: {
+	item: TranscriptRow
+	isStreaming: boolean
+	assistantStyle: 'bubble' | 'plain'
+	onOption?: (label: string) => void
+	resolveImage?: (image: TranscriptImage) => Promise<string | null>
+}) {
+	if ('type' in item) {
+		if (item.type === 'activity') return null
+		if (item.type === 'image')
+			return resolveImage ? <ImageCard image={item.image} resolveImage={resolveImage} /> : null
+	}
+	return (
+		<MessageItem
+			message={item}
+			isStreaming={isStreaming}
+			assistantStyle={assistantStyle}
+			onOption={onOption}
+			resolveImage={resolveImage}
+		/>
+	)
+}
+
 function MessageItem({
 	message,
 	isStreaming,
@@ -242,25 +273,22 @@ function MessageItem({
 	onOption,
 	resolveImage
 }: {
-	message: AgentMessage
+	message: AgentMessage | Extract<TranscriptItem, { type: 'message' }>
 	isStreaming: boolean
 	assistantStyle: 'bubble' | 'plain'
 	onOption?: (label: string) => void
 	resolveImage?: (image: TranscriptImage) => Promise<string | null>
 }) {
-	if (message.source === 'app') {
-		return <SystemRow label="From app" body={message.content} />
-	}
-
+	const live = 'type' in message ? undefined : message
 	if (message.role === 'user') {
 		return <MessageText side="right" content={message.content} streaming={false} />
 	}
 
-	if (message.error) {
+	if (live?.error) {
 		return <ErrorBlock body={message.content} plain={assistantStyle === 'plain'} />
 	}
 
-	const showCursor = isStreaming && !message.content && !message.toolCalls?.length
+	const showCursor = isStreaming && !message.content && !live?.toolCalls?.length
 	return (
 		<div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
 			{message.content || showCursor ? (
@@ -271,14 +299,12 @@ function MessageItem({
 					plain={assistantStyle === 'plain'}
 				/>
 			) : null}
-			{message.thinking ? (
-				<SystemRow label="Thinking" body={message.thinking} mono={false} />
-			) : null}
-			{message.toolCalls?.map((tc) => (
+			{live?.thinking ? <SystemRow label="Thinking" body={live.thinking} mono={false} /> : null}
+			{live?.toolCalls?.map((tc) => (
 				<ToolCallRow key={tc.id} call={tc} />
 			))}
 			{resolveImage
-				? message.toolCalls?.flatMap(
+				? live?.toolCalls?.flatMap(
 						(tc) =>
 							tc.images?.map((image) => (
 								<ImageCard

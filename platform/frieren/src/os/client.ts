@@ -1,10 +1,15 @@
 import type { SessionStatus } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
-import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
+import type {
+	ActivityDetailResult,
+	SessionClientMessage,
+	SessionServerMessage,
+	TranscriptItem
+} from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
-import type { AgentMessage, ConnectionState } from '../agent/types'
+import type { AgentMessage, ConnectionState, TranscriptRow } from '../agent/types'
 import type { InstalledApp } from '../apps/types'
 import type { OsAction } from './state'
 
@@ -45,7 +50,7 @@ export interface AgentSnapshot {
 	connectionState: ConnectionState
 	userName: string
 	agentName: string
-	messages: AgentMessage[]
+	messages: TranscriptRow[]
 	// True from local prompt acceptance through agent_end, including backend setup before the
 	// server emits agent_start.
 	isStreaming: boolean
@@ -61,6 +66,7 @@ export interface AgentClient {
 	connect(): () => void
 	prompt(text: string): Promise<boolean>
 	abort(): void
+	loadActivityDetail(detailId: string): Promise<ActivityDetailResult>
 	subscribe(listener: () => void): () => void
 	snapshot(): AgentSnapshot
 }
@@ -105,21 +111,6 @@ interface AgentEventDetail {
 	isError?: boolean
 }
 
-interface HistoryMessage {
-	role: string
-	content: string
-	source?: 'user' | 'app'
-	thinking?: string
-	options?: { label: string }[]
-	toolCalls?: {
-		name: string
-		args: unknown
-		result?: unknown
-		isError?: boolean
-		images?: TranscriptImage[]
-	}[]
-}
-
 // Image refs ride out-of-band on a tool result's `details` (see #194); pull them
 // onto the tool call so the transcript can promote them to inline cards.
 function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
@@ -129,7 +120,7 @@ function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
 }
 
 type AgentServerMessage =
-	| SessionServerMessage<HistoryMessage>
+	| SessionServerMessage
 	| { type: 'error'; message: string }
 	| { type: 'debug'; message: string }
 
@@ -153,12 +144,13 @@ interface SessionView {
 	reconnectTimer: ReturnType<typeof setTimeout> | null
 	reconnectAttempts: number
 	connectionState: ConnectionState
-	messages: AgentMessage[]
-	history: HistoryMessage[]
+	messages: TranscriptRow[]
+	history: TranscriptItem[]
 	status: SessionStatus
 	submitting: boolean
 	loadingHistory: boolean
 	pendingPrompt: ((accepted: boolean) => void) | null
+	pendingDetails: Map<string, (result: ActivityDetailResult) => void>
 	currentAssistantId: string | null
 	expressionParser: ReturnType<typeof createExpressionParser>
 	expression: Expression | null
@@ -217,6 +209,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			submitting: false,
 			loadingHistory: false,
 			pendingPrompt: null,
+			pendingDetails: new Map(),
 			currentAssistantId: null,
 			expressionParser: createExpressionParser(),
 			expression: null,
@@ -259,37 +252,22 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		state.submitting = false
 		state.loadingHistory = false
 		state.currentAssistantId = null
-		state.messages = restoreMessages(state.history)
+		state.messages = [...state.history]
+		for (const resolve of state.pendingDetails.values()) resolve({ status: 'expired' })
+		state.pendingDetails.clear()
 		emitAgent(state)
 	}
 
-	function setMessages(state: SessionView, next: AgentMessage[]): void {
+	function setMessages(state: SessionView, next: TranscriptRow[]): void {
 		state.messages = next
 		emitAgent(state)
 	}
 
-	function restoreMessages(messages: readonly HistoryMessage[]): AgentMessage[] {
-		return messages.map((message) => ({
-			id: crypto.randomUUID(),
-			role: message.role as 'user' | 'assistant',
-			content: message.content,
-			source: message.source,
-			thinking: message.thinking,
-			options: message.options,
-			toolCalls: message.toolCalls?.map((call) => ({
-				id: crypto.randomUUID(),
-				name: call.name,
-				args: call.args,
-				result: call.result,
-				isError: call.isError,
-				status: 'done' as const,
-				images: call.images
-			}))
-		}))
-	}
-
 	function mapMessages(state: SessionView, fn: (message: AgentMessage) => AgentMessage): void {
-		setMessages(state, state.messages.map(fn))
+		setMessages(
+			state,
+			state.messages.map((message) => ('type' in message ? message : fn(message)))
+		)
 	}
 
 	function showExpression(state: SessionView, next: Expression | null): void {
@@ -506,6 +484,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	}
 
 	function handleAgentMessage(data: AgentServerMessage, state: SessionView): void {
+		if (data.type === 'activity_detail') {
+			state.pendingDetails.get(data.requestId)?.(data.result)
+			state.pendingDetails.delete(data.requestId)
+			return
+		}
 		if (data.type === 'accepted' || data.type === 'rejected') {
 			state.pendingPrompt?.(data.type === 'accepted')
 			state.pendingPrompt = null
@@ -520,7 +503,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			state.history = [...data.history]
 			state.status = data.status
 			state.submitting = false
-			state.messages = restoreMessages(data.history)
+			state.messages = [...data.history]
 			state.loadingHistory = false
 			state.currentAssistantId = null
 			emitAgent(state)
@@ -529,8 +512,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 		if (data.type === 'item') {
 			state.history = [...state.history, data.item]
-			if (state.status.state === 'idle' || data.item.role === 'user')
-				state.messages = restoreMessages(state.history)
+			if (
+				state.status.state === 'idle' ||
+				(data.item.type === 'message' && data.item.role === 'user')
+			)
+				state.messages = [...state.history]
 			emitAgent(state)
 			return
 		}
@@ -541,7 +527,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (data.status.state === 'idle') {
 				state.submitting = false
 				state.currentAssistantId = null
-				state.messages = restoreMessages(state.history)
+				state.messages = [...state.history]
 				if (data.error)
 					state.messages.push({
 						id: crypto.randomUUID(),
@@ -748,6 +734,22 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			abort() {
 				if (state.status.state === 'idle') return
 				state.socket?.send(JSON.stringify({ type: 'abort' } satisfies SessionClientMessage))
+			},
+			loadActivityDetail(detailId) {
+				if (!state.socket || state.socket.readyState !== SOCKET_OPEN)
+					return Promise.resolve({ status: 'expired' })
+				const requestId = crypto.randomUUID()
+				const result = new Promise<ActivityDetailResult>((resolve) => {
+					state.pendingDetails.set(requestId, resolve)
+				})
+				state.socket.send(
+					JSON.stringify({
+						type: 'activity_detail',
+						requestId,
+						detailId
+					} satisfies SessionClientMessage)
+				)
+				return result
 			},
 			subscribe(listener) {
 				state.listeners.add(listener)
