@@ -34,6 +34,8 @@ export interface AgentMessage {
 	id: string
 	role: 'user' | 'assistant'
 	content: string
+	// The worker replaces this live phrase. Settled history has no status field.
+	status?: string
 	thinking?: string
 	toolCalls?: ToolCallInfo[]
 	// A failed agent turn: rendered as an error-styled block, not a normal bubble.
@@ -68,6 +70,7 @@ const css = `
 .js-transcript summary { list-style: none; cursor: pointer; }
 .js-transcript summary::-webkit-details-marker { display: none; }
 @keyframes js-transcript-caret { 0%, 100% { opacity: 1 } 50% { opacity: 0 } }
+@keyframes js-transcript-spin { to { transform: rotate(360deg) } }
 .js-transcript-option { transition: background 120ms ease, border-color 120ms ease; }
 .js-transcript-option:hover { background: var(--control-bg-hover); border-color: var(--focus); }
 .js-transcript-option:active { background: var(--control-bg-active); }
@@ -288,9 +291,10 @@ function MessageItem({
 		return <ErrorBlock body={message.content} plain={assistantStyle === 'plain'} />
 	}
 
-	const showCursor = isStreaming && !message.content && !live?.toolCalls?.length
+	const showCursor = isStreaming && !message.content && !live?.status && !live?.toolCalls?.length
 	return (
 		<div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+			{live?.status ? <LiveStatusRow label={live.status} /> : null}
 			{message.content || showCursor ? (
 				<MessageText
 					side="left"
@@ -318,6 +322,37 @@ function MessageItem({
 			{message.options?.length ? (
 				<OptionRows options={message.options} onOption={onOption} />
 			) : null}
+		</div>
+	)
+}
+
+function LiveStatusRow({ label }: { label: string }) {
+	return (
+		<div
+			role="status"
+			aria-live="polite"
+			style={{
+				alignSelf: 'center',
+				display: 'flex',
+				alignItems: 'center',
+				gap: '6px',
+				padding: '2px 8px',
+				fontSize: '11px',
+				opacity: 0.6
+			}}
+		>
+			<span
+				aria-hidden="true"
+				style={{
+					width: '8px',
+					height: '8px',
+					border: '1px solid currentColor',
+					borderRightColor: 'transparent',
+					borderRadius: '50%',
+					animation: 'js-transcript-spin 700ms linear infinite'
+				}}
+			/>
+			<span>{label}</span>
 		</div>
 	)
 }

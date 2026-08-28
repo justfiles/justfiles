@@ -1,14 +1,13 @@
-import type { SessionStatus } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
-import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
+import type { Expression } from '@justfiles/agent/expression'
 import type {
 	ActivityDetailResult,
 	SessionClientMessage,
 	SessionServerMessage,
-	TranscriptItem
+	TranscriptItem,
+	TranscriptStatus
 } from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
-import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState, TranscriptRow } from '../agent/types'
 import type { InstalledApp } from '../apps/types'
 import type { OsAction } from './state'
@@ -99,28 +98,9 @@ export interface FrierenClientOptions {
 	createSocket?: (token: string, path: string) => SocketLike
 }
 
-// Raw stream detail carried by a running session status.
-interface AgentEventDetail {
-	type: string
-	message?: { role: string }
-	assistantMessageEvent?: { type: string; delta?: string }
-	toolCallId?: string
-	toolName?: string
-	args?: unknown
-	result?: unknown
-	isError?: boolean
-}
-
-// Image refs ride out-of-band on a tool result's `details` (see #194); pull them
-// onto the tool call so the transcript can promote them to inline cards.
-function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
-	const images = (result as { details?: { images?: TranscriptImage[] } } | undefined)?.details
-		?.images
-	return Array.isArray(images) && images.length > 0 ? images : undefined
-}
-
 type AgentServerMessage =
 	| SessionServerMessage
+	| { type: 'expression'; expression: Expression | null }
 	| { type: 'error'; message: string }
 	| { type: 'debug'; message: string }
 
@@ -146,13 +126,12 @@ interface SessionView {
 	connectionState: ConnectionState
 	messages: TranscriptRow[]
 	history: TranscriptItem[]
-	status: SessionStatus
+	status: TranscriptStatus
 	submitting: boolean
 	loadingHistory: boolean
 	pendingPrompt: ((accepted: boolean) => void) | null
 	pendingDetails: Map<string, (result: ActivityDetailResult) => void>
-	currentAssistantId: string | null
-	expressionParser: ReturnType<typeof createExpressionParser>
+	liveId: string | null
 	expression: Expression | null
 	heldUntil: number
 	pending: Expression | null | undefined
@@ -210,8 +189,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			loadingHistory: false,
 			pendingPrompt: null,
 			pendingDetails: new Map(),
-			currentAssistantId: null,
-			expressionParser: createExpressionParser(),
+			liveId: null,
 			expression: null,
 			heldUntil: 0,
 			pending: undefined,
@@ -251,23 +229,26 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		state.status = { state: 'idle' }
 		state.submitting = false
 		state.loadingHistory = false
-		state.currentAssistantId = null
+		state.liveId = null
 		state.messages = [...state.history]
 		for (const resolve of state.pendingDetails.values()) resolve({ status: 'expired' })
 		state.pendingDetails.clear()
 		emitAgent(state)
 	}
 
-	function setMessages(state: SessionView, next: TranscriptRow[]): void {
-		state.messages = next
-		emitAgent(state)
-	}
-
-	function mapMessages(state: SessionView, fn: (message: AgentMessage) => AgentMessage): void {
-		setMessages(
-			state,
-			state.messages.map((message) => ('type' in message ? message : fn(message)))
-		)
+	function showStatus(state: SessionView): void {
+		if (state.status.state === 'idle') {
+			state.liveId = null
+			state.messages = [...state.history]
+			return
+		}
+		state.liveId ??= crypto.randomUUID()
+		const id = state.liveId
+		const temporary: AgentMessage =
+			state.status.state === 'responding'
+				? { id, role: 'assistant', content: state.status.text }
+				: { id, role: 'assistant', content: '', status: state.status.label }
+		state.messages = [...state.history, temporary]
 	}
 
 	function showExpression(state: SessionView, next: Expression | null): void {
@@ -348,114 +329,6 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// --- server-pushed volume poke (pull now) ---
 	let syncSink: (() => void) | null = null
 
-	function handleAgentEvent(event: AgentEventDetail, state: SessionView): void {
-		switch (event.type) {
-			case 'agent_start':
-				// A new turn starts from a clean face. Do this at agent_start rather than the first
-				// assistant message because the model's first token may take a second or more. Going
-				// through showExpression keeps the prior emotion on screen for its minimum time.
-				showExpression(state, null)
-				state.currentAssistantId = null
-				emitAgent(state)
-				break
-
-			case 'agent_end':
-				state.currentAssistantId = null
-				emitAgent(state)
-				break
-
-			case 'message_start': {
-				if (event.message?.role === 'assistant') {
-					const id = crypto.randomUUID()
-					state.currentAssistantId = id
-					state.expressionParser = createExpressionParser()
-					setMessages(state, [
-						...state.messages,
-						{ id, role: 'assistant', content: '', thinking: '', toolCalls: [] }
-					])
-				}
-				break
-			}
-
-			case 'message_update': {
-				const id = state.currentAssistantId
-				if (!id) break
-				const delta = event.assistantMessageEvent
-				if (delta?.type === 'text_delta' && delta.delta) {
-					const { text, expression: tagged } = state.expressionParser.push(delta.delta)
-					// Only emotions can reach here: there is no tag for calm, because calm is where the
-					// face rests rather than something the agent claims.
-					if (tagged) showExpression(state, tagged)
-					mapMessages(state, (message) =>
-						message.id === id ? { ...message, content: message.content + text } : message
-					)
-				}
-				if (delta?.type === 'thinking_delta' && delta.delta) {
-					const text = delta.delta
-					mapMessages(state, (message) =>
-						message.id === id ? { ...message, thinking: (message.thinking ?? '') + text } : message
-					)
-				}
-				break
-			}
-
-			case 'message_end': {
-				const id = state.currentAssistantId
-				if (!id) break
-				// Whatever the parser is still holding was never a tag — render it.
-				const rest = state.expressionParser.flush()
-				if (rest)
-					mapMessages(state, (message) =>
-						message.id === id ? { ...message, content: message.content + rest } : message
-					)
-				break
-			}
-
-			case 'tool_execution_start': {
-				const id = state.currentAssistantId
-				if (!id || !event.toolCallId || !event.toolName) break
-				const toolCallId = event.toolCallId
-				const toolName = event.toolName
-				mapMessages(state, (message) =>
-					message.id === id
-						? {
-								...message,
-								toolCalls: [
-									...(message.toolCalls ?? []),
-									{ id: toolCallId, name: toolName, args: event.args, status: 'running' as const }
-								]
-							}
-						: message
-				)
-				break
-			}
-
-			case 'tool_execution_end': {
-				const id = state.currentAssistantId
-				if (!id) break
-				mapMessages(state, (message) =>
-					message.id === id
-						? {
-								...message,
-								toolCalls: message.toolCalls?.map((toolCall) =>
-									toolCall.id === event.toolCallId
-										? {
-												...toolCall,
-												result: event.result,
-												isError: event.isError,
-												status: 'done' as const,
-												images: imagesFromResult(event.result)
-											}
-										: toolCall
-								)
-							}
-						: message
-				)
-				break
-			}
-		}
-	}
-
 	function handleControlMessage(data: ControlServerMessage): void {
 		if (data.type === 'ready') {
 			controlReconnectAttempts = 0
@@ -484,6 +357,10 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	}
 
 	function handleAgentMessage(data: AgentServerMessage, state: SessionView): void {
+		if (data.type === 'expression') {
+			showExpression(state, data.expression)
+			return
+		}
 		if (data.type === 'activity_detail') {
 			state.pendingDetails.get(data.requestId)?.(data.result)
 			state.pendingDetails.delete(data.requestId)
@@ -505,29 +382,25 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			state.submitting = false
 			state.messages = [...data.history]
 			state.loadingHistory = false
-			state.currentAssistantId = null
+			state.liveId = null
+			showStatus(state)
 			emitAgent(state)
 			return
 		}
 
 		if (data.type === 'item') {
 			state.history = [...state.history, data.item]
-			if (
-				state.status.state === 'idle' ||
-				(data.item.type === 'message' && data.item.role === 'user')
-			)
-				state.messages = [...state.history]
+			if (state.status.state === 'idle') state.messages = [...state.history]
+			else if (data.item.type === 'message' && data.item.role === 'user') showStatus(state)
 			emitAgent(state)
 			return
 		}
 
 		if (data.type === 'status') {
-			const wasIdle = state.status.state === 'idle'
 			state.status = data.status
 			if (data.status.state === 'idle') {
 				state.submitting = false
-				state.currentAssistantId = null
-				state.messages = [...state.history]
+				showStatus(state)
 				if (data.error)
 					state.messages.push({
 						id: crypto.randomUUID(),
@@ -535,13 +408,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 						content: data.error.message,
 						error: true
 					})
-			} else {
-				if (wasIdle) {
-					showExpression(state, null)
-					state.currentAssistantId = null
-				}
-				if (data.status.detail) handleAgentEvent(data.status.detail, state)
-			}
+			} else showStatus(state)
 			emitAgent(state)
 			return
 		}

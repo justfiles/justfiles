@@ -32,7 +32,7 @@ describe('session protocol', () => {
 		).toEqual({
 			type: 'snapshot',
 			history: [{ id: 'a1', type: 'message', role: 'assistant', content: 'Done.' }],
-			status: { state: 'thinking' }
+			status: { state: 'thinking', label: 'Working' }
 		})
 	})
 
@@ -92,6 +92,36 @@ describe('session protocol', () => {
 		}
 
 		expect(updateMessages(update)).toEqual([update])
+	})
+
+	test('projects raw status detail before it reaches a browser', () => {
+		const update = {
+			type: 'status',
+			status: {
+				state: 'calling_tool',
+				detail: {
+					type: 'tool_execution_start',
+					toolCallId: 'call-1',
+					toolName: 'read_doc',
+					args: { id: 'fs', secret: 'never send this' }
+				}
+			}
+		} satisfies SessionUpdate
+
+		expect(updateMessages(update)).toEqual([
+			{ type: 'status', status: { state: 'thinking', label: 'Working' } }
+		])
+		expect(
+			updateMessages(update, sessionEntriesToTranscriptItems, () => ({
+				state: 'calling_tool',
+				label: 'Reading documentation'
+			}))
+		).toEqual([
+			{
+				type: 'status',
+				status: { state: 'calling_tool', label: 'Reading documentation' }
+			}
+		])
 	})
 })
 

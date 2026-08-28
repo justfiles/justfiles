@@ -12,8 +12,11 @@ export {
 import {
 	type ActivityDetailResult,
 	sessionEntriesToTranscriptItems,
-	type TranscriptItem
+	type TranscriptItem,
+	type TranscriptStatus
 } from './transcript.ts'
+
+type ProjectStatus = (status: SessionStatus) => TranscriptStatus
 
 export type SessionClientMessage =
 	| { type: 'prompt'; text: string }
@@ -22,9 +25,13 @@ export type SessionClientMessage =
 	| { type: 'activity_detail'; requestId: string; detailId: string }
 
 export type SessionServerMessage =
-	| { type: 'snapshot'; history: readonly TranscriptItem[]; status: SessionStatus }
+	| { type: 'snapshot'; history: readonly TranscriptItem[]; status: TranscriptStatus }
 	| { type: 'item'; item: TranscriptItem }
-	| Extract<SessionUpdate, { type: 'status' }>
+	| {
+			type: 'status'
+			status: TranscriptStatus
+			error?: Extract<SessionUpdate, { type: 'status' }>['error']
+	  }
 	| { type: 'accepted' }
 	| { type: 'rejected'; reason: 'busy' }
 	| {
@@ -43,12 +50,13 @@ export function snapshotMessage(
 	snapshot: SessionSnapshot,
 	mapEntries: (
 		entries: SessionSnapshot['history']
-	) => readonly TranscriptItem[] = sessionEntriesToTranscriptItems
+	) => readonly TranscriptItem[] = sessionEntriesToTranscriptItems,
+	mapStatus: ProjectStatus = projectBusyStatus
 ): SessionServerMessage {
 	return {
 		type: 'snapshot',
 		history: mapEntries(snapshot.history),
-		status: snapshot.status
+		status: mapStatus(snapshot.status)
 	}
 }
 
@@ -56,14 +64,19 @@ export function updateMessages(
 	update: SessionUpdate,
 	mapEntries: (
 		entries: SessionSnapshot['history']
-	) => readonly TranscriptItem[] = sessionEntriesToTranscriptItems
+	) => readonly TranscriptItem[] = sessionEntriesToTranscriptItems,
+	mapStatus: ProjectStatus = projectBusyStatus
 ): readonly SessionServerMessage[] {
 	switch (update.type) {
 		case 'items':
 			return mapEntries(update.items).map((item) => ({ type: 'item', item }))
 		case 'snapshot':
-			return [snapshotMessage(update.snapshot, mapEntries)]
+			return [snapshotMessage(update.snapshot, mapEntries, mapStatus)]
 		case 'status':
-			return [update]
+			return [{ ...update, status: mapStatus(update.status) }]
 	}
+}
+
+function projectBusyStatus(status: SessionStatus): TranscriptStatus {
+	return status.state === 'idle' ? status : { state: 'thinking', label: 'Working' }
 }
