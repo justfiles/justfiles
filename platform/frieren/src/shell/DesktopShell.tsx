@@ -10,8 +10,7 @@ import {
 } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
-import { AgentAvatar } from '../agent/AgentAvatar'
-import { useAgentConnection, useAgentSession } from '../agent/hooks'
+import { useAgentConnection } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
 import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
@@ -145,7 +144,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const installedApps = useInstalledApps()
 	const { launchApp, openSettings, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
-	const agent = useAgentSession()
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 	const [chatOpen, setChatOpen] = useState(false)
@@ -159,6 +157,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const openChat = () => {
 		setChatMounted(true)
 		setChatOpen(true)
+		requestAnimationFrame(() =>
+			document.querySelector<HTMLTextAreaElement>('.frn-chat-panel .frn-chat-input')?.focus()
+		)
 	}
 	useEffect(() => {
 		const resize = () => setChatWidth(clampChatWidth)
@@ -319,24 +320,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					)}
 				</div>
 			</div>
-			{chatOpen ? null : (
-				<button
-					type="button"
-					className="frn-agent-launcher"
-					onClick={openChat}
-					aria-label={`Open conversation with ${agent.agentName}`}
-					title={`Open conversation with ${agent.agentName}`}
-				>
-					<AgentAvatar
-						url={agent.avatarUrl}
-						faces={agent.avatarFaces}
-						expression={agent.expression}
-						streaming={agent.isStreaming}
-						personalized={agent.personalized}
-						size={56}
-					/>
-				</button>
-			)}
 			{/* Always mounted at width 0, so opening is travel rather than an appearance.
 			    --chat-w holds the open width for the contents, which stay pinned at it
 			    while the panel narrows — reflowing the transcript on every frame of the

@@ -13,11 +13,10 @@ const MIN_H = 200
 // Approximate menubar height; the desktop sits below it, so clamp y against
 // (innerHeight - TOP_INSET) to keep the titlebar grabbable.
 const TOP_INSET = 32
-// Omnibar pill work-area strut: bottom:20px + .frn-omnibar-bar height:48px + a
-// small breathing gap. Kept in sync with .frn-omnibar / .frn-omnibar-bar in
-// app.css. Windows are never *placed* under the pill (drag may transiently
+// Dock work-area strut: bottom:20px + .frn-dock-bar height:62px + a small
+// breathing gap. Windows are never *placed* under the dock (drag may transiently
 // float over it, snapping back on release — mirroring the macOS Dock).
-const BOTTOM_INSET = 80
+const BOTTOM_INSET = 90
 
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 
