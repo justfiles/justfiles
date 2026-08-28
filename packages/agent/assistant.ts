@@ -1,5 +1,6 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
+import { createActivityRecorder } from './activity.ts'
 import { ageCalibration } from './age-calibration'
 import { readProfile, readSoul } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
@@ -11,10 +12,8 @@ import type { LLMText } from './llm.text'
 import * as paths from './paths.ts'
 import { filesystemPrompt, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
 import {
-	type AppendPayload,
 	type ContextMessage,
 	currentSession,
-	type ImageRef,
 	type SessionEntry,
 	type SessionManager,
 	session
@@ -151,6 +150,7 @@ export async function createAssistant({
 
 	async function prompt(message: string, source: PromptSource = 'user') {
 		const turn = { aborted: false }
+		const activity = createActivityRecorder()
 		running = turn
 		let offset = 0
 		let promptError: unknown
@@ -168,11 +168,14 @@ export async function createAssistant({
 				{ type: 'message', role: 'user', content: message, source }
 			])
 			await onEntriesAppended?.(input.entries)
+			const unsubscribe = agent.subscribe(activity.onEvent)
 			try {
 				await agent.prompt(message)
-				await retryEmptyAssistant(offset)
+				await retryEmptyAssistant(offset, activity.dropLastMessage)
 			} catch (error) {
 				promptError = error
+			} finally {
+				unsubscribe()
 			}
 		} finally {
 			if (running === turn) running = null
@@ -182,13 +185,18 @@ export async function createAssistant({
 		const turnHasToolCall = newMessages.some(hasToolCall)
 		const output = newMessages.slice(1)
 		if (output.length > 0) {
-			const appended = await session.append(
-				output.flatMap((message) => {
-					const entry = transform(message, 'user', turnHasToolCall)
-					return entry ? [entry] : []
-				})
-			)
-			await onEntriesAppended?.(appended.entries)
+			const payloads = await activity.write({
+				volume,
+				agentId,
+				sessionId: session.sessionId,
+				messages: output,
+				agentTools: agent.state.tools,
+				diagnostic: (message) => assistantDiagnostic(message, turnHasToolCall)?.message
+			})
+			if (payloads.length) {
+				const appended = await session.append(payloads)
+				await onEntriesAppended?.(appended.entries)
+			}
 		}
 
 		const answer = assistantText(newMessages)
@@ -236,11 +244,12 @@ export async function createAssistant({
 		return answer
 	}
 
-	async function retryEmptyAssistant(offset: number) {
+	async function retryEmptyAssistant(offset: number, dropLast: () => void) {
 		const messages = agent.state.messages
 		const last = messages[messages.length - 1]
 		if (messages.length <= offset || !isEmptyAssistant(last)) return
 
+		dropLast()
 		agent.state.messages = messages.slice(0, -1)
 		await agent.continue()
 	}
@@ -409,76 +418,6 @@ function isEmptyAssistant(message: AgentMessage | undefined): boolean {
 				(block.type !== 'text' || block.text.trim().length === 0) && block.type !== 'toolCall'
 		)
 	)
-}
-
-function transform(
-	message: AgentMessage,
-	source: PromptSource,
-	turnHasToolCall = false
-): AppendPayload | null {
-	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)
-	switch (message.role) {
-		case 'user': {
-			const content =
-				typeof message.content === 'string'
-					? message.content
-					: message.content
-							.filter((b) => b.type === 'text')
-							.map((b) => b.text)
-							.join('\n')
-			return { type: 'message', role: 'user', content, source }
-		}
-		case 'assistant': {
-			const diagnostic = assistantDiagnostic(message, turnHasToolCall)
-			if (diagnostic) {
-				return {
-					type: 'message',
-					role: 'assistant',
-					content: `[Agent error: ${diagnostic.message}]`
-				}
-			}
-
-			const texts: string[] = []
-			const toolCalls: { tool_name: string; input: Record<string, unknown> }[] = []
-			for (const block of message.content) {
-				if (block.type === 'text') texts.push(block.text)
-				if (block.type === 'toolCall')
-					toolCalls.push({
-						tool_name: block.name,
-						input: block.arguments as Record<string, unknown>
-					})
-			}
-			const firstToolCall = toolCalls[0]
-			if (firstToolCall)
-				return {
-					type: 'message',
-					role: 'tool_call',
-					tool_name: firstToolCall.tool_name,
-					input: firstToolCall.input
-				}
-			const content = texts.join('\n')
-			if (!content.trim() && turnHasToolCall) return null
-			return { type: 'message', role: 'assistant', content }
-		}
-		case 'toolResult': {
-			// Image refs ride in `details` (pi's out-of-band channel — never model
-			// context); persist them so the transcript can render inline (#194).
-			const images = (message.details as { images?: ImageRef[] } | undefined)?.images
-			return {
-				type: 'message',
-				role: 'tool_result',
-				tool_name: message.toolName,
-				content: message.content
-					.filter((b) => b.type === 'text')
-					.map((b) => b.text)
-					.join('\n'),
-				...(images?.length ? { images } : {})
-			}
-		}
-		default: {
-			throw new Error('unsupported role')
-		}
-	}
 }
 
 function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {

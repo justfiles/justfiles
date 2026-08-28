@@ -60,6 +60,12 @@ describe('paths', () => {
 		)
 	})
 
+	test('activity detail is local and scoped by agent and session', () => {
+		expect(paths.activityDetail('app/example', 'session one', 'detail-1')).toBe(
+			'/private/cache/agent-activity/app%2Fexample/session%20one/detail-1.json'
+		)
+	})
+
 	// Every shard of one conversation must group under the SAME name, on every device, or
 	// merge-on-read has nothing to merge. So the stamp has to survive a round trip: parse a
 	// shard name, hand the Date back to the writer, get the identical name.

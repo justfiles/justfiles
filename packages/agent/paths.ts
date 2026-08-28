@@ -30,6 +30,10 @@ export const soul = (agentId = 'main') => `${agentDir(agentId)}/soul.md`
 // of needing a filename parser to tell orphans from current art.
 export const avatarsDir = (agentId = 'main') => `${agentDir(agentId)}/avatars`
 export const sessionsDir = (agentId = 'main') => `${agentDir(agentId)}/sessions`
+export const activityDetailsDir = (agentId: string, sessionId: string) =>
+	`/private/cache/agent-activity/${encodeURIComponent(agentId)}/${encodeURIComponent(sessionId)}`
+export const activityDetail = (agentId: string, sessionId: string, detailId: string) =>
+	`${activityDetailsDir(agentId, sessionId)}/${encodeURIComponent(detailId)}.json`
 
 // One shard per device, so a transcript file only ever has ONE writer and whole-file LWW
 // during sync can never destroy a peer's appends. Readers union every shard sharing a

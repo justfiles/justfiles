@@ -52,7 +52,8 @@ const AssistantThinkingMessage = EntryBase.extend({
 const AssistantMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('assistant'),
-	content: z.string()
+	content: z.string(),
+	options: z.array(z.object({ label: z.string() })).optional()
 })
 
 const ToolCallMessage = EntryBase.extend({
@@ -115,11 +116,54 @@ export const LabelEntrySchema = EntryBase.extend({
 
 export type LabelEntry = z.infer<typeof LabelEntrySchema>
 
+export const ActivitySummarySchema = z.discriminatedUnion('kind', [
+	z.object({
+		kind: z.literal('think'),
+		durationMs: z.number()
+	}),
+	z.object({
+		kind: z.literal('tool'),
+		name: z.string(),
+		label: z.string(),
+		durationMs: z.number(),
+		failed: z.literal(true).optional()
+	})
+])
+
+export type ActivitySummary = z.infer<typeof ActivitySummarySchema>
+
+export const ActivityDetailSchema = z.object({
+	items: z.array(
+		z.discriminatedUnion('kind', [
+			z.object({ kind: z.literal('think'), content: z.string() }),
+			z.object({
+				kind: z.literal('tool'),
+				name: z.string(),
+				input: z.unknown(),
+				result: z.unknown(),
+				failed: z.literal(true).optional()
+			})
+		])
+	)
+})
+
+export type ActivityDetail = z.infer<typeof ActivityDetailSchema>
+
+export const ActivityRunEntrySchema = EntryBase.extend({
+	type: z.literal('activity'),
+	items: z.array(ActivitySummarySchema),
+	detailId: z.string().optional(),
+	images: z.array(ImageRefSchema).optional()
+})
+
+export type ActivityRunEntry = z.infer<typeof ActivityRunEntrySchema>
+
 export const SessionEntrySchema = z.union([
 	MessageEntrySchema,
 	CompactionEntrySchema,
 	BranchSummaryEntrySchema,
-	LabelEntrySchema
+	LabelEntrySchema,
+	ActivityRunEntrySchema
 ])
 
 export type SessionEntry = z.infer<typeof SessionEntrySchema>
@@ -128,7 +172,7 @@ export type SessionEntry = z.infer<typeof SessionEntrySchema>
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 export type AppendPayload = DistributiveOmit<
-	MessageEntry | CompactionEntry,
+	MessageEntry | CompactionEntry | ActivityRunEntry,
 	'id' | 'parentId' | 'ts'
 >
 

@@ -146,6 +146,26 @@ export function useAgentChat() {
 function sessionEntriesToMessages(entries: readonly SessionEntry[]): AgentMessage[] {
 	const messages: AgentMessage[] = []
 	for (const entry of entries) {
+		if (entry.type === 'activity') {
+			if (entry.images?.length) {
+				const tool = entry.items.findLast((item) => item.kind === 'tool')
+				messages.push({
+					id: entry.id,
+					role: 'assistant',
+					content: '',
+					toolCalls: [
+						{
+							id: entry.id,
+							name: tool?.name ?? 'image',
+							args: undefined,
+							status: 'done',
+							images: entry.images
+						}
+					]
+				})
+			}
+			continue
+		}
 		if (entry.type !== 'message') continue
 		// An ask_user call renders as a question bubble with clickable options (below),
 		// so its paired result carries no user-facing content — drop it.
@@ -171,7 +191,12 @@ function sessionEntryToMessage(
 		case 'user':
 			return { id: entry.id, role: 'user', content: entry.content, source: entry.source }
 		case 'assistant':
-			return { id: entry.id, role: 'assistant', content: entry.content }
+			return {
+				id: entry.id,
+				role: 'assistant',
+				content: entry.content,
+				...(entry.options ? { options: entry.options } : {})
+			}
 		case 'assistant_thinking':
 			return { id: entry.id, role: 'assistant', content: '', thinking: entry.content }
 		case 'tool_call':

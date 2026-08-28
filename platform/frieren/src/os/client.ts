@@ -110,6 +110,7 @@ interface HistoryMessage {
 	content: string
 	source?: 'user' | 'app'
 	thinking?: string
+	options?: { label: string }[]
 	toolCalls?: {
 		name: string
 		args: unknown
@@ -274,6 +275,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			content: message.content,
 			source: message.source,
 			thinking: message.thinking,
+			options: message.options,
 			toolCalls: message.toolCalls?.map((call) => ({
 				id: crypto.randomUUID(),
 				name: call.name,

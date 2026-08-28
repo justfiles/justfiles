@@ -15,6 +15,7 @@ export interface DisplayMessage {
 	readonly source?: 'user' | 'app'
 	readonly thinking?: string
 	readonly toolCalls?: ReadonlyArray<DisplayToolCall>
+	readonly options?: ReadonlyArray<{ label: string }>
 }
 
 export function sessionEntries2DisplayMessages(entries: readonly SessionEntry[]): DisplayMessage[] {
@@ -77,7 +78,11 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null
 				case 'assistant':
 					// Replayed history goes straight to the transcript, so the expression tags the
 					// live stream strips (client.ts) have to come off here too.
-					return { role: 'assistant', content: stripExpressions(entry.content).text }
+					return {
+						role: 'assistant',
+						content: stripExpressions(entry.content).text,
+						options: entry.options
+					}
 				case 'assistant_thinking':
 					return { role: 'assistant', content: '', thinking: entry.content }
 				case 'tool_call':
@@ -108,5 +113,20 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null
 			return { role: 'assistant', content: entry.summary }
 		case 'label':
 			return { role: 'assistant', content: `[${entry.label}]` }
+		case 'activity': {
+			if (!entry.images?.length) return null
+			const tool = entry.items.findLast((item) => item.kind === 'tool')
+			return {
+				role: 'assistant',
+				content: '',
+				toolCalls: [
+					{
+						name: tool?.name ?? 'image',
+						args: undefined,
+						images: entry.images
+					}
+				]
+			}
+		}
 	}
 }

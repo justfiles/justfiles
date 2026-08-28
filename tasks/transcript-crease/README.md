@@ -1,21 +1,23 @@
 # The crease: folding the agent's interior
 
-> Status: **design, with the session-message refactor implemented separately.** No
-> crease, activity, projection or detail-storage feature has been added. The
-> proposed UI still replaces permanent tool-call rows with a live status line and
-> one fold per run of activity. The visual design stays as mocked.
+> Status: **Phase 1 implemented.** New turns persist one small receipt and one
+> optional local detail file for each contiguous activity run. Projection, detail
+> reads, the crease UI and retention remain unimplemented. The visual design stays
+> as mocked.
 >
 > The implemented transport starts with one `snapshot` containing durable history
 > and the current `SessionStatus`. Durable additions then arrive as `item`
 > messages; `status` replaces only what the agent is doing now. Live activity
-> remains disposable and settled history remains authoritative.
+> remains disposable and settled history remains authoritative. The wire still
+> carries storage entries rather than the shared presentation model.
 
-## Handoff after PR #597
+## Handoff after Phase 1
 
 PR [#597](https://github.com/xiaoxinghu/justfiles/pull/597) merged the
-foundation on 2026-08-28 at `29184047`. It was a refactor of existing behavior,
-not the first crease feature. Start new work from that merged contract. Do not
-rebuild the lifecycle again.
+session-message foundation on 2026-08-28 at `29184047`. PR
+[#599](https://github.com/xiaoxinghu/justfiles/pull/599) implements Phase 1 on
+that contract by recording completed activity runs. Start new work at Phase 2.
+Do not rebuild the lifecycle or the recorder.
 
 ### What has landed
 
@@ -35,21 +37,43 @@ rebuild the lifecycle again.
 - Snapshot, item and status sends are serialized per session. Prompt admission
   is sent before unrelated alarm storage work, so `accepted` cannot arrive
   behind a fast terminal status.
+- `ActivityRunEntry`, `ActivitySummary` and `ActivityDetail` now describe the
+  durable receipt and disposable body. Legacy thinking, tool-call and
+  tool-result entries remain in the read union.
+- `packages/agent/activity.ts` consumes a completed turn in chronological order.
+  Text, questions, user messages and tool-produced images close the current run.
+  Repeated tools and mixed thinking/tool runs keep their original order.
+- Thinking and tool durations come from raw `AgentEvent`s inside
+  `@justfiles/agent`. Clients do not rebuild durable activity from live events.
+- Detail files live at
+  `/private/cache/agent-activity/<agent>/<session>/<detail>.json`. The path is
+  local, agent-scoped and session-scoped, outside synced session shards.
+- The recorder writes each detail file before session history references it. If
+  the detail write fails, it appends the receipt without a `detailId` and still
+  persists the conversation.
+- `ask_user` now persists as an assistant message with inline options. Its tool
+  result is omitted from activity. Tool-produced image references stay on the
+  activity receipt, outside the detail body.
+- `buildSessionContext()` and `prepareCompaction()` ignore activity entries.
+  Daily-note extraction and memory consolidation continue to consume their
+  filtered conversation inputs and never read activity detail.
 
 ### What has not landed
 
-- No `ActivityRunEntry`, detail sidecar or retention sweep exists.
-- Thinking is still live-only. New history still stores legacy tool call and
-  tool result entries, and the current transform keeps only the first tool call
-  in an assistant message.
 - There is no shared `TranscriptItem` projector. Frieren still projects in
   `platform/frieren/worker/display.ts`; Mac still projects in
   `platform/mac/ui/launcher/agentChat.tsx`.
+- Both hosts accept the new entry variant but do not render settled activity
+  receipts yet. Image-bearing receipts keep a temporary tool-row fallback so
+  generated images do not disappear before the shared projector lands.
 - The wire still carries each host's current history payload. It does not yet
   carry the presentation model proposed below.
+- There is no `activity_detail` request. Detail files are write-only until Phase
+  2 adds on-demand reads.
 - Frieren still builds its temporary response and tool-call view from raw
   `SessionStatus.detail`. The crease, live status row, disclosure UI, scroll fix
   and detail loader are all unimplemented.
+- Detail retention and expired-detail handling remain Phase 4 work.
 
 ### Decisions that are closed
 
@@ -76,45 +100,36 @@ rebuild the lifecycle again.
 
 ### Next implementation slice
 
-Implement **Phase 1 only: record completed activity runs**. Do not combine it
-with wire projection or UI work. The goal is one small durable receipt plus one
-optional detail file for each contiguous run of thinking and tools, while the
-current product behaves the same.
+Implement **Phase 2 only: project settled history once on the backend**. Do not
+combine it with disposable live-status rendering or the crease UI. The goal is
+one shared presentation model for both hosts plus on-demand detail reads.
 
 Start at these seams:
 
 | File | Why it matters |
 | --- | --- |
-| `packages/agent/session.manager.ts` | Add the `ActivityRunEntry` schema and append payload. Keep all legacy entry shapes in the read union. |
-| `packages/agent/assistant.ts` | This is the durable turn boundary. It appends the user before `agent.prompt()`, then persists output through the currently lossy `transform()`. Put completed-run persistence here or behind a package-internal recorder used here. |
-| `packages/agent/session.ts` | This sees raw `AgentEvent`s and derives disposable status. Do not make clients reconstruct durable activity from these events. If the recorder needs raw events, keep that handoff inside `@justfiles/agent`. |
-| `packages/agent/paths.ts` | Add the sidecar cache path once its layout is chosen. Keep detail out of session JSONL shards. |
-| `packages/agent/assistant.test.ts` | Prove ordering for thinking, repeated tools, mixed runs, `ask_user` and images. |
-| `packages/agent/session.manager.test.ts` | Prove new entries round-trip while legacy JSONL still loads and model context excludes activity. |
+| `packages/agent/protocol.ts` | Add `TranscriptItem`, `TranscriptStatus`, the shared projector and detail request/result messages. |
+| `packages/agent/session.manager.ts` | Project new receipts and keep grouping legacy inline activity without rewriting old shards. |
+| `platform/frieren/worker/display.ts` | Replace the host-specific projection, then delete it. |
+| `platform/mac/ui/launcher/agentChat.tsx` | Stop projecting raw `SessionEntry` in the client. |
+| Frieren and Mac session sockets | Project `snapshot` and `item` payloads before sending and serve detail reads on the same session connection. |
 
 Recommended order:
 
-1. Add `ActivityRunEntry` and `ActivityDetail` types without changing any wire
-   type or host renderer.
-2. Add a package-internal recorder that consumes one turn in chronological
-   order. Text, questions and images close the current activity run.
-3. Write the detail file first, then append its receipt. An interrupted write
-   may leave an orphan file or lose the unfinished run; it must not damage the
-   conversation.
-4. Keep question text and options inline. Keep image references on the receipt,
-   outside the detail body.
-5. Prove `buildSessionContext()`, `prepareCompaction()`, daily-note extraction
-   and memory consolidation never dereference or include activity detail.
+1. Add the pure `sessionEntriesToTranscriptItems()` projector beside the shared
+   protocol types.
+2. Project `snapshot` and incremental `item` payloads before either host sends
+   them. Keep the existing send queues and prompt admission messages.
+3. Group legacy thinking and tool entries into the same activity shape as new
+   receipts. Project `ask_user`, notes and images according to the rules below.
+4. Add request-scoped activity-detail reads with `available` and `expired`
+   results. A missing sidecar is not a session error.
+5. Move both hosts to `TranscriptItem`, then delete their local history
+   projectors. Keep live `SessionStatus.detail` unchanged for Phase 3.
 
-Phase 1 is done when a reload can recover the ordered activity receipts, legacy
-history remains readable, and all existing host UI and wire behavior is
-unchanged. The next agent should then begin Phase 2 below, which introduces the
-shared backend projector and removes the two host-specific projections.
-
-One implementation choice remains for Phase 1: the exact sidecar directory and
-file name. Keep it scoped by agent and session, outside the synced JSONL shard,
-opaque to clients, and safe to delete independently. TTL and total-size limits
-belong to Phase 4 after real payload sizes have been measured.
+Phase 2 is done when both hosts receive the same settled items, detail loads only
+when requested, legacy history still projects correctly and no browser receives
+raw `SessionEntry`.
 
 Visual mockups, interactive: [`mockups.html`](./mockups.html). Open it in a
 browser. Press **Play turn**; the two switches in the frame header change real
@@ -607,11 +622,12 @@ further and treats that detail as disposable.
 
 ### Phase 1: record completed activity runs
 
+Status: complete. The implementation and tests live in `@justfiles/agent`.
+
 - Add `ActivityRunEntry` and keep legacy inline activity entries readable.
 - Collect thinking, tool arguments and tool results during a turn. Flush one
   receipt and one sidecar per contiguous run.
-- Preserve text, activity, questions and images in their original order. The
-  current transform keeps only the first tool call.
+- Preserve text, activity, questions and images in their original order.
 - Keep `ask_user` question text and options inline as conversation.
 - Prove that model context, compaction and both memory paths never read detail
   files.
