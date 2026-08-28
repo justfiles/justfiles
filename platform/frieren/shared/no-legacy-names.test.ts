@@ -18,10 +18,8 @@ const RETIRED =
 	/(spud|kodama|computer\.spud\.|app\.spud\.|app\.frieren\.|app\.justfiles\.frieren\.(?!host\b|ext\.))/i
 const SCAN_EXT = /\.(tsx?|jsx?|mjs|cjs|json|jsonc|swift|sh|css|yaml|yml|plist)$/
 
-// These values predate the public rebrand but are persisted integration ids. The two domains
-// remain only during the add-verify-cutover window; removing the old routes removes that entry.
+// These values predate the public rebrand but are persisted integration ids.
 const STABLE_LEGACY = new Map<string, RegExp>([
-	['platform/frieren/wrangler.jsonc', /(?:staging\.)?mykodama\.app/g],
 	['platform/mac/daemon/fs.ts', /KODAMA_STORE_ORIGIN/g],
 	['platform/mac/daemon/identity.ts', /kodama-oauth|KODAMA_CLERK_(?:FAPI|CLIENT_ID)/g],
 	['platform/mac/daemon/keychain.ts', /app\.justfiles\.kodama/g],
