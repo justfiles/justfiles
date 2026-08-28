@@ -38,6 +38,7 @@ import {
 	promptReply,
 	type SessionClientMessage,
 	type SessionServerMessage,
+	sessionEntriesToTranscriptItems,
 	snapshotMessage,
 	updateMessages
 } from '@justfiles/agent/protocol'
@@ -106,15 +107,13 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 
 type ControlClientMessage = { type: 'app_open'; id: string } | { type: 'app_close'; id?: string }
 
-import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
-
 interface DisplayParticipants {
 	readonly userName: string
 	readonly agentName: string
 }
 
 type AgentServerMessage =
-	| SessionServerMessage<DisplayMessage>
+	| SessionServerMessage
 	| { type: 'debug'; message: string }
 	| { type: 'error'; message: string }
 
@@ -482,7 +481,7 @@ export class Frieren extends DurableObject<Env> {
 				key,
 				session.subscribe((update) => {
 					void this.queueAgentMessage(agentId, () => {
-						for (const message of updateMessages(update, sessionEntries2DisplayMessages))
+						for (const message of updateMessages(update, projectTranscript))
 							this.broadcastAgent(agentId, message)
 					})
 				})
@@ -507,7 +506,7 @@ export class Frieren extends DurableObject<Env> {
 			const snapshot = await session.snapshot()
 			ws.send(
 				JSON.stringify({
-					...snapshotMessage(snapshot, sessionEntries2DisplayMessages)
+					...snapshotMessage(snapshot, projectTranscript)
 				} satisfies AgentServerMessage)
 			)
 		})
@@ -719,6 +718,16 @@ export class Frieren extends DurableObject<Env> {
 			)
 		await scheduleDailyAlarm(this.ctx, this.getSession())
 		if (parsed.type === 'abort') return
+		if (parsed.type === 'activity_detail') {
+			ws.send(
+				JSON.stringify({
+					type: 'activity_detail',
+					requestId: parsed.requestId,
+					result: await session.activityDetail(parsed.detailId)
+				} satisfies AgentServerMessage)
+			)
+			return
+		}
 
 		if (parsed.type === 'snapshot') {
 			await this.sendAgentSnapshot(ws, agentId)
@@ -861,3 +870,6 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 }
+
+const projectTranscript = (entries: Parameters<typeof sessionEntriesToTranscriptItems>[0]) =>
+	sessionEntriesToTranscriptItems(entries, { expressions: true })

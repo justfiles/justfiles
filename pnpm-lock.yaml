@@ -640,6 +640,9 @@ importers:
       '@dnd-kit/react':
         specifier: ^0.3.2
         version: 0.3.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@justfiles/agent':
+        specifier: workspace:*
+        version: link:../agent
       react:
         specifier: 19.2.5
         version: 19.2.5

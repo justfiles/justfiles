@@ -1,30 +1,31 @@
 # The crease: folding the agent's interior
 
-> Status: **Phase 1 implemented.** New turns persist one small receipt and one
-> optional local detail file for each contiguous activity run. Projection, detail
-> reads, the crease UI and retention remain unimplemented. The visual design stays
-> as mocked.
+> Status: **Phase 2 implemented.** Both hosts now receive the same settled
+> `TranscriptItem`s, and activity detail is read only through a request-scoped
+> session message. Disposable live-status projection, the crease UI and retention
+> remain unimplemented. The visual design stays as mocked.
 >
 > The implemented transport starts with one `snapshot` containing durable history
 > and the current `SessionStatus`. Durable additions then arrive as `item`
 > messages; `status` replaces only what the agent is doing now. Live activity
-> remains disposable and settled history remains authoritative. The wire still
-> carries storage entries rather than the shared presentation model.
+> remains disposable and settled history remains authoritative. The wire carries
+> the shared presentation model, never raw session storage entries.
 
-## Handoff after Phase 1
+## Handoff after Phase 2
 
 PR [#597](https://github.com/xiaoxinghu/justfiles/pull/597) merged the
 session-message foundation on 2026-08-28 at `29184047`. PR
 [#599](https://github.com/xiaoxinghu/justfiles/pull/599) implements Phase 1 on
-that contract by recording completed activity runs. Start new work at Phase 2.
-Do not rebuild the lifecycle or the recorder.
+that contract by recording completed activity runs. Phase 2 builds the shared
+settled projection and detail reads on top. Start new work at Phase 3. Do not
+rebuild the lifecycle, recorder or settled projector.
 
 ### What has landed
 
 - `packages/agent/session.ts` now owns one `SessionStatus`, durable history and
   prompt admission. It publishes `snapshot`, `items` and `status` updates.
-- `packages/agent/protocol.ts` maps those updates to five small application
-  messages: `snapshot`, `item`, `status`, `accepted` and `rejected`.
+- `packages/agent/protocol.ts` maps session updates and prompt admission to five
+  small messages: `snapshot`, `item`, `status`, `accepted` and `rejected`.
 - A user entry is appended and published before model work. Completed output
   entries are published before the final idle status.
 - Frieren uses one WebSocket per agent session at
@@ -57,23 +58,31 @@ Do not rebuild the lifecycle or the recorder.
 - `buildSessionContext()` and `prepareCompaction()` ignore activity entries.
   Daily-note extraction and memory consolidation continue to consume their
   filtered conversation inputs and never read activity detail.
+- `@justfiles/agent/protocol` owns `TranscriptItem`, `TranscriptActivity`,
+  `TranscriptStatus` and `sessionEntriesToTranscriptItems()`.
+- Snapshot and incremental item messages have one fixed `TranscriptItem` payload.
+  `SessionServerMessage` can no longer be instantiated with raw `SessionEntry`.
+- The projector keeps settled entry IDs, strips expression tags only for Frieren,
+  projects questions and notes, groups legacy thinking and tools, and emits images
+  as stable plain image items after their activity run.
+- Legacy inline activity gets an opaque synthetic detail ID. Detail reads rebuild
+  its body from the old shard without rewriting it.
+- `activity_detail` requests and results use the existing session socket and a
+  caller-owned request ID. Missing, corrupt and unknown details return `expired`.
+- Frieren and Mac project before sending. Their clients retain the received
+  transcript items directly, and both host-specific history projectors are gone.
+- The shared `Transcript` accepts settled items alongside the temporary live
+  `AgentMessage` shape. It renders messages and images now, but deliberately skips
+  activity rows until Phase 4.
 
 ### What has not landed
 
-- There is no shared `TranscriptItem` projector. Frieren still projects in
-  `platform/frieren/worker/display.ts`; Mac still projects in
-  `platform/mac/ui/launcher/agentChat.tsx`.
-- Both hosts accept the new entry variant but do not render settled activity
-  receipts yet. Image-bearing receipts keep a temporary tool-row fallback so
-  generated images do not disappear before the shared projector lands.
-- The wire still carries each host's current history payload. It does not yet
-  carry the presentation model proposed below.
-- There is no `activity_detail` request. Detail files are write-only until Phase
-  2 adds on-demand reads.
+- Neither host renders settled activity receipts yet. The clients have a detail
+  loader, but nothing calls it until the disclosure UI lands.
 - Frieren still builds its temporary response and tool-call view from raw
   `SessionStatus.detail`. The crease, live status row, disclosure UI, scroll fix
-  and detail loader are all unimplemented.
-- Detail retention and expired-detail handling remain Phase 4 work.
+  and detail-loader integration are all unimplemented.
+- Detail retention and expired-detail UI remain Phase 4 work.
 
 ### Decisions that are closed
 
@@ -100,36 +109,33 @@ Do not rebuild the lifecycle or the recorder.
 
 ### Next implementation slice
 
-Implement **Phase 2 only: project settled history once on the backend**. Do not
-combine it with disposable live-status rendering or the crease UI. The goal is
-one shared presentation model for both hosts plus on-demand detail reads.
+Implement **Phase 3 only: use disposable live updates**. Do not combine it with
+the crease UI or retention. The goal is to stop sending raw `AgentEvent` detail
+to browsers while keeping the same history-plus-status lifecycle.
 
 Start at these seams:
 
 | File | Why it matters |
 | --- | --- |
-| `packages/agent/protocol.ts` | Add `TranscriptItem`, `TranscriptStatus`, the shared projector and detail request/result messages. |
-| `packages/agent/session.manager.ts` | Project new receipts and keep grouping legacy inline activity without rewriting old shards. |
-| `platform/frieren/worker/display.ts` | Replace the host-specific projection, then delete it. |
-| `platform/mac/ui/launcher/agentChat.tsx` | Stop projecting raw `SessionEntry` in the client. |
-| Frieren and Mac session sockets | Project `snapshot` and `item` payloads before sending and serve detail reads on the same session connection. |
+| `packages/agent/protocol.ts` | Use the existing `TranscriptStatus` type; do not change settled items. |
+| `platform/frieren/worker/frieren.ts` | Map `SessionStatus.detail` to the small disposable status before sending. |
+| `platform/frieren/src/os/client.ts` | Replace raw event assembly with one current phrase or partial response. |
+| `platform/mac/ui/launcher/agentChat.tsx` | Keep idle versus busy; Mac token streaming stays out of scope. |
 
 Recommended order:
 
-1. Add the pure `sessionEntriesToTranscriptItems()` projector beside the shared
-   protocol types.
-2. Project `snapshot` and incremental `item` payloads before either host sends
-   them. Keep the existing send queues and prompt admission messages.
-3. Group legacy thinking and tool entries into the same activity shape as new
-   receipts. Project `ask_user`, notes and images according to the rules below.
-4. Add request-scoped activity-detail reads with `available` and `expired`
-   results. A missing sidecar is not a session error.
-5. Move both hosts to `TranscriptItem`, then delete their local history
-   projectors. Keep live `SessionStatus.detail` unchanged for Phase 3.
+1. Map raw status detail in Frieren's worker, including accumulated response text
+   and expression stripping.
+2. Send only `TranscriptStatus` to browsers while keeping the existing per-session
+   send queues and prompt admission messages.
+3. Keep one replaceable temporary status view in the Frieren client. Idle drops it;
+   settled `item` messages remain authoritative.
+4. Keep avatar expression pacing as a separate Frieren signal.
+5. Leave Mac on busy versus idle without adding token streaming.
 
-Phase 2 is done when both hosts receive the same settled items, detail loads only
-when requested, legacy history still projects correctly and no browser receives
-raw `SessionEntry`.
+Phase 3 is done when no browser receives raw `AgentEvent`, reconnect still blocks
+prompts while a session is busy, and settling uses the Phase 2 transcript without
+rebuilding activity in either client.
 
 Visual mockups, interactive: [`mockups.html`](./mockups.html). Open it in a
 browser. Press **Play turn**; the two switches in the frame header change real
@@ -299,12 +305,13 @@ export type SessionStatus =
 			detail?: AgentEvent
 	  }
 
-export type SessionServerMessage<T = SessionEntry> =
-	| { type: 'snapshot'; history: readonly T[]; status: SessionStatus }
-	| { type: 'item'; item: T }
+export type SessionServerMessage =
+	| { type: 'snapshot'; history: readonly TranscriptItem[]; status: SessionStatus }
+	| { type: 'item'; item: TranscriptItem }
 	| { type: 'status'; status: SessionStatus; error?: AgentError }
 	| { type: 'accepted' }
 	| { type: 'rejected'; reason: 'busy' }
+	| { type: 'activity_detail'; requestId: string; result: ActivityDetailResult }
 ```
 
 These are application messages, not WebSocket frames. The shared types therefore
@@ -344,9 +351,9 @@ one session. Frieren keeps `/ws` for control traffic and opens one
 agent ID during upgrade, sends a snapshot, then routes every message on that
 socket to the same session.
 
-### The payload projection still drifts
+### Before Phase 2, the payload projection drifted
 
-The flattening happens twice, independently, and the copies no longer agree:
+The old flattening happened twice, independently, and the copies did not agree:
 
 | | `platform/frieren/worker/display.ts` | `platform/mac/ui/launcher/agentChat.tsx` |
 | --- | --- | --- |
@@ -358,19 +365,17 @@ The flattening happens twice, independently, and the copies no longer agree:
 | `branch_summary` | `{ role: 'assistant', content: summary }` | dropped |
 | `label` | `` { content: `[${label}]` } `` | dropped |
 
-So on frieren a user scrolling back sees the agent apparently announce a
+So on Frieren a user scrolling back saw the agent apparently announce a
 compaction summary, or say `[before refactor]`, in the voice it answers questions
-in. On mac those events vanish. Both are wrong, in opposite directions, and
-neither is a rendering bug. The presentation model lacks a category.
+in. On Mac those events vanished. Both were wrong, in opposite directions, and
+neither was a rendering bug. The presentation model lacked a category.
 
-There is a third divergence inside frieren alone. During streaming,
+Phase 2 removed both projectors and fixed settled IDs. One divergence remains in
+Frieren until Phase 3. During streaming,
 `platform/frieren/src/os/client.ts` seeds one message with both `thinking: ''`
 and `toolCalls: []` (`message_start`) and accumulates deltas onto it. On replay,
-`display.ts` would give a persisted thinking entry its *own* message. Frieren's
-history response also discards session entry IDs and replaces them with random
-IDs in the browser, so every history replacement can remount settled rows. The
-shared projector keeps `SessionEntry.id` for settled history. Remounting the
-temporary row when the turn ends remains allowed.
+settled history contains a shared activity item instead. Phase 4 will render that
+item as a crease. Remounting the temporary row when the turn ends remains allowed.
 
 ## Storage, context and presentation are separate
 
@@ -456,10 +461,14 @@ export type TranscriptItem =
 	| {
 			id: string
 			type: 'message'
-			role: 'user' | 'assistant'
+			role: 'user'
 			content: string
-			source?: 'user' | 'app'
-			error?: true
+	  }
+	| {
+			id: string
+			type: 'message'
+			role: 'assistant'
+			content: string
 			options?: { label: string }[]
 	  }
 	| {
@@ -634,6 +643,9 @@ Status: complete. The implementation and tests live in `@justfiles/agent`.
 - Accept that a process crash may lose an unfinished run or leave a cache file.
 
 ### Phase 2: project once on the backend
+
+Status: complete. The shared protocol projection and both host migrations are
+implemented.
 
 - Add protocol-owned `TranscriptItem`, `TranscriptStatus` and one shared
   `sessionEntriesToTranscriptItems()` projector.

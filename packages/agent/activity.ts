@@ -118,7 +118,7 @@ export function createActivityRecorder(now: () => number = Date.now) {
 								.filter((block) => block.type === 'text')
 								.map((block) => block.text)
 								.join('\n')
-				output.push({ type: 'message', role: 'user', content, source: 'user' })
+				output.push({ type: 'message', role: 'user', content })
 				continue
 			}
 			if (message.role === 'assistant') {

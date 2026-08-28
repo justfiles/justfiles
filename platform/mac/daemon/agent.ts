@@ -122,6 +122,10 @@ export async function agentSnapshot(): Promise<SessionServerMessage> {
 	return snapshotMessage(await (await getSession()).snapshot())
 }
 
+export async function agentActivityDetail(detailId: string) {
+	return (await getSession()).activityDetail(detailId)
+}
+
 // Start the turn and report admission before its async setup can finish. Completion reaches
 // every chat through the session subscription above.
 export async function promptAgent(

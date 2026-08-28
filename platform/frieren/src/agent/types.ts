@@ -2,14 +2,14 @@
 // transcript); re-export them so existing imports of '../agent/types' keep
 // working. The session / connection types below stay host-specific.
 import type { Expression } from '@justfiles/agent/expression'
-import type { AgentMessage } from '@justfiles/ui/Transcript'
+import type { TranscriptRow } from '@justfiles/ui/Transcript'
 
-export type { AgentMessage, ToolCallInfo } from '@justfiles/ui/Transcript'
+export type { AgentMessage, ToolCallInfo, TranscriptRow } from '@justfiles/ui/Transcript'
 
 export type ConnectionState = 'connecting' | 'ready' | 'disconnected'
 
 export interface AgentSession {
-	messages: AgentMessage[]
+	messages: TranscriptRow[]
 	input: string
 	setInput: (value: string) => void
 	userName: string

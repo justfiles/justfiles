@@ -2,7 +2,7 @@
 	"extends": "@justfiles/tsconfig/base.json",
 	"compilerOptions": {
 		"lib": ["ES2023", "DOM"],
-		"types": ["react"],
+		"types": ["react", "vite/client"],
 		"jsx": "react-jsx",
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
