@@ -39,7 +39,6 @@ const MIGRATION_THREAD = 'local-migration'
 const APP_UPDATES_THREAD = 'held-app-updates'
 const DOCK_FIXED_WIDTH = 213
 const DOCK_APP_STEP = 52
-const GRID_LIMIT = 12
 
 type Row =
 	| { kind: 'app'; app: InstalledApp }
@@ -207,10 +206,7 @@ export function Omnibar({
 	const expanded = focused || showNotifications
 	const showList = text !== '' || browsing
 	const rowApps = apps.slice(0, rowCount)
-	const shownGridApps = gridApps.slice(0, GRID_LIMIT - 1)
-	const shownInstalling = installing
-		.filter((app) => !installedById.has(app.id))
-		.slice(0, GRID_LIMIT - 1 - shownGridApps.length)
+	const shownInstalling = installing.filter((app) => !installedById.has(app.id))
 
 	const grouped = useMemo(() => {
 		const bySource = new Map<string, NotificationEntry[]>()
@@ -598,57 +594,45 @@ export function Omnibar({
 							})}
 						</ul>
 					) : (
-						<>
-							<div className="frn-dock-section">Recent</div>
-							<div className="frn-dock-grid">
-								{shownGridApps.map((app) => (
-									<button
-										key={app.id}
-										type="button"
-										className="frn-dock-tile"
-										title={app.description || app.name}
-										onClick={() => {
-											launchApp(app)
-											collapse()
-										}}
-										onContextMenu={onAppMenu ? (event) => onAppMenu(event, app) : undefined}
-									>
-										<span data-running={running.has(app.id)}>
-											<AppIcon app={app} />
-										</span>
-										<span>{app.name}</span>
-									</button>
-								))}
-								{shownInstalling.map((app) => (
-									<div
-										key={`installing:${app.id}`}
-										className="frn-dock-tile"
-										data-installing="true"
-									>
-										<span className="frn-dock-icon">
-											{app.iconUrl ? (
-												<img src={app.iconUrl} alt="" />
-											) : (
-												app.name.slice(0, 1).toUpperCase()
-											)}
-											<span className="frn-dock-spinner" />
-										</span>
-										<span>{app.name}</span>
-									</div>
-								))}
+						<div className="frn-dock-grid">
+							{gridApps.map((app) => (
 								<button
+									key={app.id}
 									type="button"
 									className="frn-dock-tile"
-									data-store="true"
-									onClick={openStore}
+									title={app.description || app.name}
+									onClick={() => {
+										launchApp(app)
+										collapse()
+									}}
+									onContextMenu={onAppMenu ? (event) => onAppMenu(event, app) : undefined}
 								>
-									<span className="frn-dock-icon">
-										<img src={appStoreIcon} alt="" />
+									<span data-running={running.has(app.id)}>
+										<AppIcon app={app} />
 									</span>
-									<span>App Store</span>
+									<span>{app.name}</span>
 								</button>
-							</div>
-						</>
+							))}
+							{shownInstalling.map((app) => (
+								<div key={`installing:${app.id}`} className="frn-dock-tile" data-installing="true">
+									<span className="frn-dock-icon">
+										{app.iconUrl ? (
+											<img src={app.iconUrl} alt="" />
+										) : (
+											app.name.slice(0, 1).toUpperCase()
+										)}
+										<span className="frn-dock-spinner" />
+									</span>
+									<span>{app.name}</span>
+								</div>
+							))}
+							<button type="button" className="frn-dock-tile" data-store="true" onClick={openStore}>
+								<span className="frn-dock-icon">
+									<img src={appStoreIcon} alt="" />
+								</span>
+								<span>App Store</span>
+							</button>
+						</div>
 					)}
 				</div>
 			) : null}
