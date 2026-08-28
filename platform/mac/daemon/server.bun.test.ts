@@ -33,7 +33,7 @@ beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), 'daemon-server-'))
 	// Sandbox the daemon's Volume/agent singletons to the temp dir before the first use.
 	process.env.FRIEREN_SUPPORT_DIR = root
-	// Ephemeral port; a no-op projection so the run never writes ~/Applications/Kodama Apps.
+	// Ephemeral port; a no-op projection so the run never writes ~/Applications/Just Computer Apps.
 	server = createServer({ port: 0, projectApps: async () => {} })
 	if (server.port === undefined) throw new Error('server has no TCP port')
 	port = server.port

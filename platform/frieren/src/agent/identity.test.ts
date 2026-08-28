@@ -29,7 +29,7 @@ async function seeded() {
 	await vol.writeFile(
 		SOUL_PATH,
 		encode(
-			'---\nschema: frieren/agent-soul/v1\nagent_name: Kodama\nseeded: true\n---\n\nYou are Kodama.\n'
+			'---\nschema: frieren/agent-soul/v1\nagent_name: Computer\nseeded: true\n---\n\nYou are Computer.\n'
 		)
 	)
 	return vol

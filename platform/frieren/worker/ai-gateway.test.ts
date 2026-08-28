@@ -185,7 +185,7 @@ describe('createAiGateway', () => {
 		expect(await res.json()).toEqual({
 			// The id is the real upstream model — visible on the wire, just not selectable.
 			id: 'openai/gpt-5.4-mini',
-			name: 'Kodama AI',
+			name: 'Just Computer AI',
 			reasoning: false,
 			input: ['text'],
 			contextWindow: 128000,

@@ -14,7 +14,7 @@
 		},
 		"build": {
 			"dependsOn": ["transit"],
-			"outputs": ["dist/**", "out/**", "native/build/**", "native/Kodama.app/**"],
+			"outputs": ["dist/**", "out/**", "native/build/**", "native/Just Computer.app/**"],
 			"outputLogs": "new-only"
 		},
 		// `^build` is the whole dependency story for the Mac app: every built-in the
@@ -32,7 +32,7 @@
 				"native/Sources/**",
 				"native/build.sh"
 			],
-			"outputs": ["native/build/**", "native/Kodama.app/**"],
+			"outputs": ["native/build/**", "native/Just Computer.app/**"],
 			"outputLogs": "new-only"
 		},
 		"dev": {

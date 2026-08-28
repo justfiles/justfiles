@@ -1,5 +1,5 @@
 // Project the kernel catalog into the OS. For each app the kernel lists, the daemon
-// materialises a thin `.app` into ~/Applications/Kodama Apps/ — the shared booter binary
+// materialises a thin `.app` into ~/Applications/Just Computer Apps/ — the shared booter binary
 // + a per-app Info.plist + a generated icon, and *no app code* (the bytes stay in the
 // Volume; the daemon serves them over http). The bundle is ad-hoc signed (`codesign -s
 // -`, locally created ⟹ no quarantine ⟹ Gatekeeper-clean) and registered with
@@ -24,10 +24,10 @@ export interface ProjectionApp {
 	iconBytes?: Uint8Array
 }
 
-const APPS_DIR = join(homedir(), 'Applications', 'Kodama Apps')
+const APPS_DIR = join(homedir(), 'Applications', 'Just Computer Apps')
 // The shared booter binary + icon tool that materialize stamps into each .app. Dev reads
 // the SwiftPM build output (native/build); shipped reads the copies build.sh drops beside
-// the exe (Kodama.app/Contents/Resources/build).
+// the exe (Just Computer.app/Contents/Resources/build).
 const BUILD_DIR = SHIPPED
 	? join(dirname(process.execPath), '..', 'Resources', 'build')
 	: join(import.meta.dirname, '..', 'native', 'build')
@@ -39,14 +39,14 @@ const LSREGISTER =
 // How a cold-launched .app respawns the daemon: when no daemon is running, the booter
 // (shell) reads these from the projected bundle's OWN plist (Daemon.ensure → spawn
 // in Launcher.swift) and execs them, so the bundle spawns the daemon exactly as it runs
-// now. The runtime path must be ABSOLUTE — a projected bundle under ~/Applications/Kodama
+// now. The runtime path must be ABSOLUTE — a projected bundle under ~/Applications/Just Computer
 // Apps holds only the booter, so the keys point back at the real daemon. Shipped:
-// process.execPath is Kodama.app/Contents/MacOS/daemon, run verbatim (no script). Dev:
+// process.execPath is Just Computer.app/Contents/MacOS/daemon, run verbatim (no script). Dev:
 // the current bun on daemon/main.ts. Bun runs TS natively, so there are never any args.
 const DAEMON_RUNTIME = process.execPath
 const DAEMON_SCRIPT = SHIPPED ? '' : join(import.meta.dirname, 'main.ts')
 
-// Reconcile ~/Applications/Kodama Apps/ to exactly the kernel's catalog. Idempotent:
+// Reconcile ~/Applications/Just Computer Apps/ to exactly the kernel's catalog. Idempotent:
 // each bundle carries a signature marker, so an unchanged app is skipped (no
 // re-sign/re-register churn on every boot).
 export async function reconcileProjection(apps: ProjectionApp[]): Promise<void> {

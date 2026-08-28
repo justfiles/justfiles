@@ -9,7 +9,7 @@
 		"ui:build": "vite build -c ui/vite.config.ts",
 		"ui:watch": "vite build -c ui/vite.config.ts --watch",
 		"build": "native/build.sh --ship-daemon",
-		"start": "open -n native/Kodama.app",
+		"start": "open -n 'native/Just Computer.app'",
 		"install:app": "turbo run build && native/install.sh"
 	},
 	"dependencies": {

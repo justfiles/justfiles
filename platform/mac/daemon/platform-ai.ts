@@ -8,20 +8,20 @@ const ID = 'kodama'
 
 type ModelDescriptor = Omit<Model<'openai-completions'>, 'api' | 'provider' | 'baseUrl'>
 
-export function createKodamaAi(deps: { origin: string; getToken: () => Promise<string | null> }) {
+export function createPlatformAi(deps: { origin: string; getToken: () => Promise<string | null> }) {
 	const baseUrl = new URL('/api/ai/v1', deps.origin).toString().replace(/\/$/, '')
 	const models = createModels()
 	models.setProvider(
 		createProvider({
 			id: ID,
-			name: 'Kodama',
+			name: 'Just Computer',
 			baseUrl,
 			auth: {
 				apiKey: {
-					name: 'Kodama',
+					name: 'Just Computer',
 					resolve: async () => {
 						const token = await deps.getToken()
-						return token ? { auth: { apiKey: token }, source: 'Kodama' } : undefined
+						return token ? { auth: { apiKey: token }, source: 'Just Computer' } : undefined
 					}
 				}
 			},
@@ -41,10 +41,10 @@ export function createKodamaAi(deps: { origin: string; getToken: () => Promise<s
 		})
 	)
 
-	const getBackend = () => kodamaBackend(models)
+	const getBackend = () => platformBackend(models)
 	const provider: Provider = {
 		id: ID,
-		name: 'Kodama',
+		name: 'Just Computer',
 		builtin: true,
 		auth: {
 			ui: { kind: 'none' },
@@ -71,7 +71,7 @@ export function createKodamaAi(deps: { origin: string; getToken: () => Promise<s
 	}
 }
 
-async function kodamaBackend(models: Models): Promise<AgentBackend | null> {
+async function platformBackend(models: Models): Promise<AgentBackend | null> {
 	const refreshed = await models.refresh()
 	const model = models.getModels(ID)[0]
 	if (model) return modelsBackend(models, model)
@@ -82,5 +82,5 @@ async function kodamaBackend(models: Models): Promise<AgentBackend | null> {
 
 async function responseError(response: Response): Promise<Error> {
 	const body = await response.text().catch(() => '')
-	return new Error(`Kodama AI request failed (${response.status})${body ? `: ${body}` : ''}`)
+	return new Error(`Just Computer AI request failed (${response.status})${body ? `: ${body}` : ''}`)
 }

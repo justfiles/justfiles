@@ -256,7 +256,7 @@ export function Omnibar({
 	const [migrateOpen, setMigrateOpen] = useState(false)
 
 	// One flat, keyboard-navigable list, laid out visually top→bottom: weaker app
-	// matches up top, the best match just above the pinned "Ask Frieren" row, which
+	// matches up top, the best match just above the pinned agent row, which
 	// sits directly above the input as the universal fall-through.
 	const rows = useMemo<Row[]>(
 		() =>
@@ -274,7 +274,7 @@ export function Omnibar({
 		[matches, storeMatches, held, heldUpdates, browsing]
 	)
 	// Default target: in browse mode the bottom row (nearest the input); otherwise
-	// the best app match when something matched, else "Ask Frieren".
+	// the best app match when something matched, else the agent.
 	const defaultIndex = browsing
 		? Math.max(0, rows.length - 1)
 		: matches.length
@@ -742,7 +742,7 @@ export function Omnibar({
 					placeholder={placeholder}
 					/* The banner rides in this slot and must not wrap (see `oneLine`). */
 					data-banner={!focused && banner ? 'true' : undefined}
-					aria-label="Search apps or talk to Frieren"
+					aria-label={`Search apps or talk to ${session.agentName}`}
 					autoComplete="off"
 					spellCheck={false}
 				/>

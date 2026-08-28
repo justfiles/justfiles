@@ -1,8 +1,8 @@
-# Kodama for Mac
+# Just Computer for Mac
 
 The native macOS shell + the daemon (`daemon/`). The AppKit launcher (`native/`) spawns
 the daemon, which serves every app's UI over http and projects each installed app into a
-thin `.app` under `~/Applications/Kodama Apps/`. Architecture lives in [DESIGN.md](./DESIGN.md);
+thin `.app` under `~/Applications/Just Computer Apps/`. Architecture lives in [DESIGN.md](./DESIGN.md);
 the Node→Bun runtime migration in [BUN-MIGRATION-PLAN.md](./BUN-MIGRATION-PLAN.md).
 
 ## Prerequisites
@@ -20,9 +20,9 @@ workspace dependencies and browser surfaces first.
 | Command                | What it does                                                                                                                     |
 |------------------------|----------------------------------------------------------------------------------------------------------------------------------|
 | `turbo run dev`        | Vite watch (`ui/dist/client`) + `bun --watch daemon/main.ts` — the daemon headless on `:3000`, no native window. The inner loop; open a browser, or run the launcher (below). |
-| `turbo run build`      | Build the **production** self-contained `native/Kodama.app` (bun exe + Vite client).                                            |
-| `pnpm start`           | `open` the built `native/Kodama.app` (no rebuild, no kill).                                                                        |
-| `pnpm install:app`     | `build`, then replace `/Applications/Kodama.app` and open it. Kills the running copy first.                                        |
+| `turbo run build`      | Build the **production** self-contained `native/Just Computer.app` (bun exe + Vite client).                                            |
+| `pnpm start`           | `open` the built `native/Just Computer.app` (no rebuild, no kill).                                                                        |
+| `pnpm install:app`     | `build`, then replace `/Applications/Just Computer.app` and open it. Kills the running copy first.                                        |
 
 > `pnpm dev` and `pnpm build` are leaf scripts. Use `turbo` or the root `pnpm build` to
 > build workspace dependencies first.
@@ -65,7 +65,7 @@ shapes:
 
 The shared install and reconcile paths prefetch hosted files. A hosted app therefore works offline
 after the prefetch succeeds. The cache is local, derived data under `/private`, so it does not sync.
-The thin bundles in `~/Applications/Kodama Apps/` are also derived data. They contain no app code.
+The thin bundles in `~/Applications/Just Computer Apps/` are also derived data. They contain no app code.
 
 ### What a fresh Volume starts with
 
@@ -106,14 +106,14 @@ and this list is the only place on this Mac where one surfaces.
 ### Production build & install
 
 ```sh
-turbo run build   # → native/Kodama.app (self-contained, arm64)
+turbo run build   # → native/Just Computer.app (self-contained, arm64)
 pnpm install:app  # build + install to /Applications
 
 # For an actual release, optimise the native shell too:
 native/build.sh --release --ship-daemon
 ```
 
-`turbo run build` produces a **self-contained, relocatable** `Kodama.app` that needs no system
+`turbo run build` produces a **self-contained, relocatable** `Just Computer.app` that needs no system
 node/bun and no repo. It assembles:
 
 - **`Contents/MacOS/daemon`** — the daemon compiled into one Mach-O exe that embeds Bun +
@@ -140,27 +140,27 @@ bundle-relative `DaemonRuntime=daemon` (no args, no script), so the bundle stays
 Prove the bundle is self-contained by relocating it away from the repo and node/bun:
 
 ```sh
-cp -R native/Kodama.app /tmp/Kodama.app
-open -n /tmp/Kodama.app    # boots; serves /vendor + /design from Contents/Resources via execPath
+cp -R "native/Just Computer.app" "/tmp/Just Computer.app"
+open -n "/tmp/Just Computer.app"    # boots; serves /vendor + /design from Contents/Resources via execPath
 ```
 
 After running a prod build, `pnpm dev` returns you to the dev launcher; the projected
-`~/Applications/Kodama Apps/*.app` booters self-heal on the next daemon boot — they re-stamp
+`~/Applications/Just Computer Apps/*.app` booters self-heal on the next daemon boot — they re-stamp
 to whichever runtime is now serving.
 
-## Signing in to Kodama
+## Signing in to Just Computer
 
 `/sign-in` in the launcher opens the browser on **Clerk's** own sign-in page and catches the
 redirect on 127.0.0.1: the daemon is an OAuth 2.0 public client of our Clerk instance (PKCE,
 no client secret — see `daemon/identity.ts` and #304). The refresh token lives in the
 Keychain; every request to our API carries a short-lived access token minted from it. Signing in
-also turns on the plan-backed Kodama AI for app capabilities and launcher chat; a local ChatGPT
+also turns on the plan-backed Just Computer AI for app capabilities and launcher chat; a local ChatGPT
 account can still be selected instead in Settings.
 
 ```sh
 # the stored grant — one item per Clerk instance, so a source daemon and a shipped app
 # never share (or destroy) each other's:
-security find-generic-password -s app.justfiles.kodama -a kodama-oauth.clerk.mykodama.app
+security find-generic-password -s app.justfiles.kodama -a kodama-oauth.clerk.justcomputer.app
 security find-generic-password -s app.justfiles.kodama \
   -a kodama-oauth.capable-spider-79.clerk.accounts.dev   # …the dev instance's
 ```
@@ -173,7 +173,7 @@ OAuth applications already exist; this is how they were created, and how to recr
 
 ```sh
 clerk api -X POST /oauth_applications --instance dev \
-  -d '{"name":"Kodama for Mac","public":true,"scopes":"profile email",
+  -d '{"name":"Just Computer for Mac","public":true,"scopes":"profile email",
        "redirect_uris":["http://127.0.0.1:1455/auth/callback"]}'
 clerk api -X PATCH /oauth_applications/<id> --instance dev \
   -d '{"pkce_required":true,"consent_screen_enabled":false}'

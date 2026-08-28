@@ -73,7 +73,9 @@ export function ConsentSheet({
 		>
 			<div className="frn-onb-form">
 				<div className="frn-card">
-					<span className="frn-badge">{firstParty ? 'by Kodama' : 'Verified by justapps.run'}</span>
+					<span className="frn-badge">
+						{firstParty ? 'by Just Computer' : 'Verified by justapps.run'}
+					</span>
 					<h2 className="frn-card-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
 						{icon ? (
 							<img src={icon} alt="" style={{ width: 28, height: 28, borderRadius: 6 }} />
@@ -83,8 +85,8 @@ export function ConsentSheet({
 
 					<p className="frn-card-desc">
 						{firstParty
-							? 'A first-party app from Kodama.'
-							: 'Community app — not reviewed by Kodama. It runs with the access it declares below; review before installing.'}
+							? 'A first-party app from Just Computer.'
+							: 'Community app — not reviewed by Just Computer. It runs with the access it declares below; review before installing.'}
 					</p>
 
 					{app.repository ? (

@@ -557,7 +557,7 @@ export function classifyFailure(error: unknown): { body: string; route: Route } 
 	}
 	if (/quota[_ ]?exceeded|usage limit/i.test(raw)) {
 		return {
-			body: 'Your Kodama AI limit reached. Wait for it to reset or upgrade your plan.',
+			body: 'Your Just Computer AI limit reached. Wait for it to reset or upgrade your plan.',
 			route: { kind: 'settings', pane: 'accounts' }
 		}
 	}
@@ -575,7 +575,7 @@ export function classifyFailure(error: unknown): { body: string; route: Route } 
 	}
 	if (/fetch failed|failed to fetch|econnrefused|network error|\boffline\b/i.test(raw)) {
 		return {
-			body: 'Kodama AI is offline. Check your connection and try again.',
+			body: 'Just Computer AI is offline. Check your connection and try again.',
 			route: { kind: 'chat' }
 		}
 	}

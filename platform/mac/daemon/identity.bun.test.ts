@@ -1,4 +1,4 @@
-// E1: the daemon's Kodama identity — an OAuth public client of our Clerk instance.
+// E1: the daemon's platform identity — an OAuth public client of our Clerk instance.
 // Bun-only (`Bun.serve` for the stub authorization server, and the real `security` CLI for
 // the one custody test), like the daemon's other `*.bun.test.ts` files.
 //
@@ -675,7 +675,7 @@ test('no token of any kind reaches the support dir', async () => {
 // The one test that really goes to the Keychain, under a test-scoped service name so it can
 // never touch the daemon's own `app.justfiles.kodama` items.
 const SERVICE = `app.justfiles.kodama.test.${Date.now()}`
-const PROD = custodyAccount('https://clerk.mykodama.app')
+const PROD = custodyAccount('https://clerk.justcomputer.app')
 const DEV = custodyAccount('https://capable-spider-79.clerk.accounts.dev')
 afterAll(() => {
 	for (const account of ['kodama-oauth', PROD, DEV]) {
@@ -685,9 +685,9 @@ afterAll(() => {
 
 test('custody is namespaced per Clerk instance, and the host is legible in the name', () => {
 	expect(PROD).not.toBe(DEV)
-	expect(PROD).toContain('clerk.mykodama.app')
+	expect(PROD).toContain('clerk.justcomputer.app')
 	// Stable across runs — it IS the lookup key for a grant that must survive restarts.
-	expect(custodyAccount('https://clerk.mykodama.app')).toBe(PROD)
+	expect(custodyAccount('https://clerk.justcomputer.app')).toBe(PROD)
 })
 
 test('a dev daemon cannot delete the production grant it is not entitled to read', async () => {

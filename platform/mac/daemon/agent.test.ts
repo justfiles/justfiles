@@ -38,7 +38,7 @@ test('classifyFailure keeps provider rate limits separate from token limits', ()
 	expect(failure.body).toMatch(/busy/i)
 })
 
-test('classifyFailure distinguishes Kodama quota and network failures', () => {
+test('classifyFailure distinguishes platform quota and network failures', () => {
 	const quota = classifyFailure(new Error('429 {"error":{"code":"quota_exceeded"}}'))
 	expect(quota.route).toEqual({ kind: 'settings', pane: 'accounts' })
 	expect(quota.body).toMatch(/limit reached/i)

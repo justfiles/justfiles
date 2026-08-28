@@ -532,7 +532,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		}
 		// Dev fallback: the generated bundle on disk if it isn't registered yet.
 		let path = FileManager.default.homeDirectoryForCurrentUser
-			.appendingPathComponent("Applications/Kodama Apps/\(id.capitalized).app")
+			.appendingPathComponent("Applications/Just Computer Apps/\(id.capitalized).app")
 		if FileManager.default.fileExists(atPath: path.path) {
 			ws.openApplication(at: path, configuration: cfg)
 		} else {
@@ -558,7 +558,7 @@ enum Daemon {
 	static var ownerPid: Int?
 
 	static let supportDir = FileManager.default.homeDirectoryForCurrentUser
-		.appendingPathComponent("Library/Application Support/Kodama")
+		.appendingPathComponent("Library/Application Support/Just Computer")
 	static var runtimePath: URL { supportDir.appendingPathComponent("runtime.json") }
 
 	static func read() -> Runtime? {

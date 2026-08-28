@@ -1,6 +1,6 @@
 // The one place that knows the daemon's dev vs. shipped layout. In DEV the daemon runs from
 // the source tree (`bun --watch daemon/main.ts`); SHIPPED it's a self-contained Bun exe at
-// Kodama.app/Contents/MacOS/daemon with resources flat under ../Resources. build-exe.ts
+// Just Computer.app/Contents/MacOS/daemon with resources flat under ../Resources. build-exe.ts
 // injects FRIEREN_SHIPPED into the standalone so paths resolve next to the exe rather than the
 // bunfs root, and each use site (main.ts CLIENT_DIR, materialize.ts BUILD_DIR, toolchain.ts
 // WORKER_SPEC) branches on SHIPPED for its own path.

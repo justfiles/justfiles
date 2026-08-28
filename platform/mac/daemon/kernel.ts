@@ -28,12 +28,12 @@ import { appAssets } from './app-assets'
 import { builtinStore } from './builtins'
 import { chatgptProvider, codexBackend } from './chatgpt'
 import { coalesce } from './coalesce'
-import { getStorage, getVolume, kodamaOrigin } from './fs'
+import { getStorage, getVolume, platformOrigin } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { identity } from './identity'
 import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
-import { createKodamaAi } from './platform-ai'
+import { createPlatformAi } from './platform-ai'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
 
@@ -67,11 +67,11 @@ export function daemonAccounts(
 		origin?: string
 	} = {}
 ): DaemonAccounts {
-	const kodama = createKodamaAi({
-		origin: opts.origin ?? kodamaOrigin(),
+	const platform = createPlatformAi({
+		origin: opts.origin ?? platformOrigin(),
 		getToken: opts.getToken ?? (() => identity.getToken())
 	})
-	const accounts = hostAccounts([...accountProviders(), kodama.provider], fs, {
+	const accounts = hostAccounts([...accountProviders(), platform.provider], fs, {
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
 		// hostname so Settings can tell two Macs apart once E1/E2 land.
@@ -81,7 +81,7 @@ export function daemonAccounts(
 	return Object.assign(accounts, {
 		resolveBackend: () =>
 			accounts.resolveAi((lease) =>
-				lease.providerId === kodama.provider.id ? kodama.backend(lease) : codexBackend(lease)
+				lease.providerId === platform.provider.id ? platform.backend(lease) : codexBackend(lease)
 			)
 	})
 }
@@ -186,7 +186,7 @@ async function makeKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel>
 			},
 			// The host admin surface, reachable only by the first-party Settings app. No
 			// usage meter here (its pane hides itself); `host.user` answers the daemon's own
-			// Kodama identity (E1) — null, i.e. "Local user", until someone runs `/sign-in`.
+			// Platform identity (E1) — null, i.e. "Local user", until someone runs `/sign-in`.
 			// `agent.*` is where this Mac finally gets personalization: the identity files are
 			// on the native Volume, and the soul generator is the active AI account's model —
 			// absent (signed out, or nothing turned on) makes only Rewrite UNAVAILABLE, so the

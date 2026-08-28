@@ -31,13 +31,13 @@ export { classifyFailure } from '@justfiles/agent'
 // SAME kernel the windows subscribe to (createAppController lives in @justfiles/app),
 // so an open window updates live the moment the agent runs an action.
 
-// The materialised bundle (in ~/Applications/Kodama Apps, projected by the daemon)
+// The materialised bundle (in ~/Applications/Just Computer Apps, projected by the daemon)
 // and a `pkill -f` pattern matching its running booter (argv[0] is the bundle's
 // executable path) — used to `open`/quit real windows. The filesystem-safe name
 // mirrors the daemon's exec() in materialize.ts.
 const execName = (name: string): string => name.replace(/[^A-Za-z0-9._-]/g, '') || 'App'
 const bundlePath = (name: string): string =>
-	join(homedir(), 'Applications', 'Kodama Apps', `${execName(name)}.app`)
+	join(homedir(), 'Applications', 'Just Computer Apps', `${execName(name)}.app`)
 const bundleProcessPattern = (name: string): string =>
 	`${execName(name)}.app/Contents/MacOS/${execName(name)}`
 

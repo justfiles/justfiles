@@ -22,10 +22,10 @@ devAi('http://localhost:11434/v1')
 devAi(async ({ system, prompt }) => generate(system, prompt))
 ```
 
-## Publish to the Kodama App Store
+## Publish to the Just Computer App Store
 
-The [Kodama](https://mykodama.app) App Store is a search index over npm — there is no
-submission form, no review queue, and no account with Kodama. **Publishing to npm
+The [Just Computer](https://justcomputer.app) App Store is a search index over npm — there is no
+submission form, no review queue, and no account with Just Computer. **Publishing to npm
 is the submission.** Clients download your built bytes straight from npm's CDN
 (jsDelivr) and verify them against hashes the indexer pinned at publish time.
 
@@ -36,7 +36,7 @@ is the submission.** Clients download your built bytes straight from npm's CDN
    versions.
 2. `pnpm build` — the tarball ships the built `dist/` only (`files: ["dist"]`),
    and `prepublishOnly` rebuilds it for you on publish.
-3. `npm publish` — the `kodama-app` keyword makes the indexer find you. Publish a
+3. `npm publish` — the `justcomputer-app` keyword makes the indexer find you. Publish a
    new version to ship an update.
 
 Notes:
@@ -45,5 +45,5 @@ Notes:
   `"publishConfig": { "access": "public" }` so the store can fetch your bytes.
 - The indexer binds your app id to your npm package name on first publish
   (first claim wins), so keep both stable.
-- Community apps are not reviewed by Kodama; users see your declared capabilities
+- Community apps are not reviewed by Just Computer; users see your declared capabilities
   and npm publisher on an install-consent sheet.

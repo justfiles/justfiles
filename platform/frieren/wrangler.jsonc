@@ -56,6 +56,10 @@
 		{
 			"pattern": "mykodama.app",
 			"custom_domain": true
+		},
+		{
+			"pattern": "justcomputer.app",
+			"custom_domain": true
 		}
 	],
 	"env": {
@@ -73,6 +77,10 @@
 			"routes": [
 				{
 					"pattern": "staging.mykodama.app",
+					"custom_domain": true
+				},
+				{
+					"pattern": "staging.justcomputer.app",
 					"custom_domain": true
 				}
 			],

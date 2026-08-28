@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kill every running Kodama process, then reopen the freshly built dev bundle. Used by
+# Kill every running Just Computer process, then reopen the freshly built dev bundle. Used by
 # `pnpm dev` after a rebuild so you always land on a clean daemon serving new code.
 set -e
 cd "$(dirname "$0")"
@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 # but kill the daemon directly anyway: it's immediate, and catches a booter-spawned
 # ownerless daemon that would otherwise keep serving stale code across a rebuild. Two
 # process shapes: dev runs the script (`bun …/daemon/main.ts`), the shipped bundle runs the
-# embedded exe (Kodama.app/Contents/MacOS/daemon) with no script arg — kill them all.
+# embedded exe (Just Computer.app/Contents/MacOS/daemon) with no script arg — kill them all.
 kill_wait() {
 	pkill -f "$1" 2>/dev/null || true
 	while pgrep -f "$1" >/dev/null; do
@@ -18,9 +18,9 @@ kill_wait() {
 	done
 }
 
-kill_wait 'Kodama.app/Contents/MacOS/Kodama'
-kill_wait 'Kodama Apps/.*/Contents/MacOS/'
+kill_wait 'Just Computer.app/Contents/MacOS/Just Computer'
+kill_wait 'Just Computer Apps/.*/Contents/MacOS/'
 kill_wait 'daemon/main.ts'
-kill_wait 'Kodama.app/Contents/MacOS/daemon'
+kill_wait 'Just Computer.app/Contents/MacOS/daemon'
 
-open -n Kodama.app
+open -n "Just Computer.app"

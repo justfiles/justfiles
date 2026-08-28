@@ -17,15 +17,16 @@ import {
 import { SHIPPED } from './resources'
 
 const supportDir = (): string =>
-	process.env.FRIEREN_SUPPORT_DIR ?? join(homedir(), 'Library', 'Application Support', 'Kodama')
+	process.env.FRIEREN_SUPPORT_DIR ??
+	join(homedir(), 'Library', 'Application Support', 'Just Computer')
 const runtimePath = (): string => join(supportDir(), 'runtime.json')
 const lockPath = (): string => join(supportDir(), 'daemon.lock')
 const PRIVATE = 'private'
 const VOLUME = 'volume-v2'
 const SYNC_STATE = 'sync.json'
-const PROD_ORIGIN = 'https://mykodama.app'
-const DEV_ORIGIN = 'https://staging.mykodama.app'
-export const kodamaOrigin = (): string =>
+const PROD_ORIGIN = 'https://justcomputer.app'
+const DEV_ORIGIN = 'https://staging.justcomputer.app'
+export const platformOrigin = (): string =>
 	process.env.KODAMA_STORE_ORIGIN ?? (SHIPPED ? PROD_ORIGIN : DEV_ORIGIN)
 const SHUTDOWN_FLUSH_MS = 5_000
 
@@ -250,7 +251,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 
 function remoteStore(
 	getToken: () => Promise<string | null>,
-	origin = kodamaOrigin(),
+	origin = platformOrigin(),
 	send: Send = fetch
 ): { store: Store; abort(): void } {
 	const controller = new AbortController()
