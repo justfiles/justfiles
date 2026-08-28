@@ -1,7 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { openProfile } from '../fs'
-import { useAgentClient } from '../os/hooks'
+import { useOsClient } from '../os/hooks'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
 import { DEFAULT_AVATAR, readAgentSoul, readAvatar, watchIdentity } from './identity'
@@ -17,7 +17,7 @@ const FACE_RETRY_MS = 5 * 60_000
 // frame parsing and the session snapshot (BehaviorSubject pattern). This
 // provider adds the only UI-local state the client can't hold: the draft input.
 export function AgentProvider({ children }: { children: ReactNode }) {
-	const agent = useAgentClient()
+	const agent = useOsClient().agent
 	const { getToken } = useAuth()
 	const [inputs, setInputs] = useState<Record<string, string>>({})
 	const [identity, setIdentity] = useState({

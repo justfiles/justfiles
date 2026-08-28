@@ -34,23 +34,25 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   `CatalogClient.runCommand` and acts on the `CommandResult`.
 - [x] Subscription-based chat. The `/agent` socket is a **live view of one shared session**
   (plain WebSocket + Bun `agent` pub/sub topic, no capnweb): Mac and Frieren use the same
-  `AgentFrame` contract from `@justfiles/agent`. A connect receives `snapshot`; a prompt gets
-  a direct admission result; lifecycle broadcasts carry the active turn id and transcript. Because a
+  `SessionServerMessage` contract from `@justfiles/agent`. A connect receives `snapshot`
+  with durable history and the current `SessionStatus`; later `item` messages extend history
+  and `status` messages replace only the ephemeral status. A prompt gets a direct admission
+  result. Because a
   `/skill` dispatched over `/system` runs on the same shared `Assistant`, its turn surfaces
   in every open chat naturally — no deliberate daemon→UI push per action, just the session
   the transcript observes. `AgentImpl`/`agentRpcTarget` are gone; the daemon keeps one
   memoised session (`getAgent`, reset on failure) driven by `promptAgent`/`dispatchCommand`.
-- [x] `abort` support. The `/agent` socket carries an `{ type: 'abort', turnId }` request
-  (`AgentRequest`) alongside `prompt`; `main.ts` routes it to `abortAgent`, which cancels the
+- [x] `abort` support. The `/agent` socket carries an `{ type: 'abort' }` request
+  (`SessionClientMessage`) alongside `prompt`; `main.ts` routes it to `abortAgent`, which cancels the
   in-flight turn on the shared session via `Assistant.abort` (guarded on the memoised session
   so a cold daemon never builds an agent just to cancel nothing). The native Stop button
   already called `window.quayAbort` — `chat.tsx` now defines it, wired to `useAgentChat.abort`,
-  which sends the id it observed. The matching `turn_finished` frame clears the client.
+  which targets the current work in that session. Idle status clears the client.
 - [x] User-facing error classification (auth-expired / token-limit routes). `daemon/agent.ts`
   now ports quayd's `classifyFailure`: a failed turn's raw error is mapped to a user-facing
   body + a fix-it `Route` (401/expired → “reconnect in Settings → Accounts”, context/token-
   limit/429 → “start a new chat”, else a generic chat error). `runTurn`'s catch broadcasts the
-  classified body on the `/agent` `turn_finished.error` field (the raw error still hits `quayd.log`) and
+  classified body on the `/agent` idle `status.error` field (the raw error still hits `quayd.log`) and
   pings the notification channel with it — so the in-page launcher (`ui/launcher/main.tsx`)
   status line already shows the friendly message, and the native chat surface
   (`ui/launcher/chat.tsx`), which used to drop the error, now appends it as a trailing error
@@ -97,7 +99,7 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   over a temp Volume (`QUAY_SUPPORT_DIR`, ephemeral port) and drives the HTTP routes
   (per-app `gui.js`/`icon` + their 404s + the serveClient guard) and the wire protocol on
   every socket: `/system` (catalog + command menu on connect, `/debug`+`/new` dispatch),
-  `/agent` (empty-transcript snapshot + a prompt turn surfacing a classified error offline),
+  `/agent` (empty-history snapshot + a prompt surfacing a classified error offline),
   and `/app/:id` (initial state push + an increment dispatch round-trip with the state
   fan-out). This drove out a parity bug: the `gui.js` route 500'd on an unknown app id where
   the icon route (and quayd) 404 — now fixed to 404.

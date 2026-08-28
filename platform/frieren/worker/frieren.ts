@@ -35,10 +35,11 @@ import {
 } from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import {
-	type AgentFrame,
-	type AgentRequest,
-	promptResult,
-	sessionEventFrame
+	promptReply,
+	type SessionClientMessage,
+	type SessionServerMessage,
+	snapshotMessage,
+	updateMessages
 } from '@justfiles/agent/protocol'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -103,10 +104,7 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 	}
 }
 
-type ClientMessage =
-	| AgentRequest
-	| { type: 'app_open'; id: string }
-	| { type: 'app_close'; id?: string }
+type ControlClientMessage = { type: 'app_open'; id: string } | { type: 'app_close'; id?: string }
 
 import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
 
@@ -115,25 +113,31 @@ interface DisplayParticipants {
 	readonly agentName: string
 }
 
-type ServerMessage =
-	| (AgentFrame<DisplayMessage> & { participants?: DisplayParticipants })
+type AgentServerMessage =
+	| SessionServerMessage<DisplayMessage>
+	| { type: 'debug'; message: string }
+	| { type: 'error'; message: string }
+
+type ControlServerMessage =
 	| {
 			type: 'ready'
 			participants?: DisplayParticipants
 			apps?: Awaited<ReturnType<FrierenApps['list']>>
 	  }
 	| { type: 'error'; message: string }
-	// TODO: remove debug
-	| { type: 'debug'; message: string; agentId?: string }
 	| { type: 'app_open'; id: string }
 	| { type: 'app_close'; id: string }
 	// The frieren notification channel: the agent's turn pings / classified errors /
 	// questions, broadcast to every open tab (the browser projects them onto the
 	// omnibar pill + center). Producer code is shared; only this delivery is frieren's.
 	| { type: 'notification'; notification: Notification }
-	// Server->client volume poke: "the server volume changed, pull now" — delivered
-	// to the always-on session sockets (not the lazy `_caps` capability socket).
+	// Server->client volume poke: "the server volume changed, pull now".
 	| { type: 'sync' }
+
+type SocketAttachment = { caps: true } | { type: 'control' } | { type: 'agent'; agentId?: string }
+
+const CONTROL_SOCKET_TAG = 'control'
+const agentSocketTag = (agentId?: string): string => `agent:${agentId ?? 'main'}`
 
 const DEBUG_COMMAND = '/debug'
 
@@ -206,7 +210,7 @@ export class Frieren extends DurableObject<Env> {
 	private apps?: FrierenApps
 	private readonly agents: AgentSessions
 	private readonly agentSubscriptions = new Map<string, () => void>()
-	private readonly agentFrames = new Map<string, Promise<void>>()
+	private readonly agentMessages = new Map<string, Promise<void>>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -224,12 +228,7 @@ export class Frieren extends DurableObject<Env> {
 		// tab to pull now. Coalesced so a burst folds into one poke. Registered per
 		// instance — the in-memory listener dies on hibernation and re-arms on wake.
 		const poke = createServerPoke(() => {
-			const payload = JSON.stringify({ type: 'sync' } satisfies ServerMessage)
-			for (const ws of this.ctx.getWebSockets()) {
-				const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
-				// `_caps` speaks Cap'n Web and may not be open; sync pokes use session sockets.
-				if (!attachment?.caps) ws.send(payload)
-			}
+			this.broadcastControl({ type: 'sync' })
 		})
 
 		// TWO stores over the one database, and the whole of what keeps `/private` off
@@ -449,7 +448,7 @@ export class Frieren extends DurableObject<Env> {
 			loader: this.env.LOADER,
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.platformText,
-			broadcast: (msg) => this.broadcast(msg),
+			broadcast: (msg) => this.broadcastControl(msg),
 			image: caps.image,
 			email: guardCapability(caps.email, { capability: 'email', audit, rateLimit }),
 			calendar: guardCapability(caps.calendar, { capability: 'calendar', audit, rateLimit }),
@@ -481,43 +480,35 @@ export class Frieren extends DurableObject<Env> {
 		if (!this.agentSubscriptions.has(key))
 			this.agentSubscriptions.set(
 				key,
-				session.subscribe((event) => {
-					void this.queueAgentFrame(agentId, () => {
-						this.broadcast({
-							...sessionEventFrame(event, sessionEntries2DisplayMessages),
-							...(agentId ? { agentId } : {})
-						})
+				session.subscribe((update) => {
+					void this.queueAgentMessage(agentId, () => {
+						for (const message of updateMessages(update, sessionEntries2DisplayMessages))
+							this.broadcastAgent(agentId, message)
 					})
 				})
 			)
 		return session
 	}
 
-	// A snapshot and its session's lifecycle frames must leave in queue order.
-	private queueAgentFrame(agentId: string | undefined, send: () => void | Promise<void>) {
+	// State reads and pushes must leave in queue order.
+	private queueAgentMessage(agentId: string | undefined, send: () => void | Promise<void>) {
 		const key = agentId ?? ''
-		const result = (this.agentFrames.get(key) ?? Promise.resolve()).then(send)
-		this.agentFrames.set(
+		const result = (this.agentMessages.get(key) ?? Promise.resolve()).then(send)
+		this.agentMessages.set(
 			key,
-			result.catch((error) => console.error('[agent] frame failed:', error))
+			result.catch((error) => console.error('[agent] message failed:', error))
 		)
 		return result
 	}
 
-	private sendAgentSnapshot(
-		ws: WebSocket,
-		agentId?: string,
-		participants?: DisplayParticipants
-	): Promise<void> {
+	private sendAgentSnapshot(ws: WebSocket, agentId?: string): Promise<void> {
 		const session = this.getSession(agentId)
-		return this.queueAgentFrame(agentId, async () => {
+		return this.queueAgentMessage(agentId, async () => {
 			const snapshot = await session.snapshot()
 			ws.send(
 				JSON.stringify({
-					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
-					...(agentId ? { agentId } : {}),
-					...(participants ? { participants } : {})
-				} satisfies ServerMessage)
+					...snapshotMessage(snapshot, sessionEntries2DisplayMessages)
+				} satisfies AgentServerMessage)
 			)
 		})
 	}
@@ -542,7 +533,7 @@ export class Frieren extends DurableObject<Env> {
 			apps: apps.controller,
 			osState: async () => ({ windows: await apps.windows() }),
 			timezone: () => resolveTimezone(this.volume, this.cfTimezone),
-			notify: (notification) => this.broadcast({ type: 'notification', notification }),
+			notify: (notification) => this.broadcastControl({ type: 'notification', notification }),
 			expressions: true
 		}
 	}
@@ -685,96 +676,92 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		// The shared capability-proxy socket carries {caps:true}; agent sockets
-		// carry neither.
-		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
-		if (attachment?.caps) {
+		const attachment = ws.deserializeAttachment() as SocketAttachment | null
+		if (attachment && 'caps' in attachment) {
 			await this.getApps().handleMessage(ws, undefined, message)
 			return
 		}
+		if (typeof message !== 'string' || !attachment) return
+		if (attachment.type === 'agent') {
+			await this.handleAgentMessage(ws, attachment.agentId, message)
+			return
+		}
+		if (attachment.type === 'control') await this.handleControlMessage(ws, message)
+	}
 
-		if (typeof message !== 'string') return
-
-		let parsed: ClientMessage
+	private async handleAgentMessage(
+		ws: WebSocket,
+		agentId: string | undefined,
+		message: string
+	): Promise<void> {
+		let parsed: SessionClientMessage
 		try {
 			parsed = JSON.parse(message)
 		} catch {
 			ws.send(
-				JSON.stringify({
-					type: 'error',
-					message: 'Invalid JSON'
-				} satisfies ServerMessage)
+				JSON.stringify({ type: 'error', message: 'Invalid JSON' } satisfies AgentServerMessage)
 			)
 			return
 		}
 
-		const text = parsed.type === 'prompt' ? parsed.text : undefined
-		const agentId = 'agentId' in parsed ? parsed.agentId : undefined
-		const trimmed = text?.trim() ?? ''
-		const session =
-			parsed.type === 'abort' || parsed.type === 'prompt' ? this.getSession(agentId) : null
-		if (parsed.type === 'abort') session?.abort(parsed.turnId)
-		// Start before the first await so a following abort cannot overtake setup.
-		let turnId = ''
+		const session = this.getSession(agentId)
+		const text = parsed.type === 'prompt' ? parsed.text : ''
+		const trimmed = text.trim()
+		if (parsed.type === 'abort') session.abort()
 		const result =
-			text && session && trimmed !== DEBUG_COMMAND
-				? session.start(text, 'user', (event) =>
-						this.broadcast({
-							type: 'event',
-							turnId,
-							event,
-							...(agentId ? { agentId } : {})
-						})
-					)
+			parsed.type === 'prompt' && trimmed.length > 0 && trimmed !== DEBUG_COMMAND
+				? session.start(text)
 				: null
-		if (result?.accepted) turnId = result.turn.id
-		if (result) {
-			const reply: ServerMessage = {
-				...promptResult(result),
-				...(agentId ? { agentId } : {})
-			}
-			ws.send(JSON.stringify(reply))
-		}
-
+		// Admission must precede terminal status; the client holds one pending prompt callback.
+		if (result)
+			await this.queueAgentMessage(agentId, () =>
+				ws.send(JSON.stringify(promptReply(result) satisfies AgentServerMessage))
+			)
 		await scheduleDailyAlarm(this.ctx, this.getSession())
-
-		if (parsed.type === 'abort') {
-			return
-		}
+		if (parsed.type === 'abort') return
 
 		if (parsed.type === 'snapshot') {
 			await this.sendAgentSnapshot(ws, agentId)
 			return
 		}
 
-		if (parsed.type === 'app_open' && parsed.id) {
-			await this.getApps().open(parsed.id)
+		if (trimmed === DEBUG_COMMAND) {
+			ws.send(
+				JSON.stringify({
+					type: 'debug',
+					message: await session.systemPrompt()
+				} satisfies AgentServerMessage)
+			)
 			return
 		}
 
-		if (parsed.type === 'app_close') {
-			await this.getApps().close(parsed.id)
-			return
-		}
-
-		if (text && session) {
-			if (trimmed === DEBUG_COMMAND) {
-				ws.send(
-					JSON.stringify({
-						type: 'debug',
-						message: await session.systemPrompt(),
-						...(agentId ? { agentId } : {})
-					} satisfies ServerMessage)
-				)
-				return
-			}
-			if (result?.accepted) await result.done
-		}
+		if (result?.accepted) await result.done
 	}
 
-	private broadcast(message: ServerMessage): void {
+	private async handleControlMessage(ws: WebSocket, message: string): Promise<void> {
+		let parsed: ControlClientMessage
+		try {
+			parsed = JSON.parse(message)
+		} catch {
+			ws.send(
+				JSON.stringify({ type: 'error', message: 'Invalid JSON' } satisfies ControlServerMessage)
+			)
+			return
+		}
+
+		await scheduleDailyAlarm(this.ctx, this.getSession())
+		if (parsed.type === 'app_open') await this.getApps().open(parsed.id)
+		else await this.getApps().close(parsed.id)
+	}
+
+	private broadcastAgent(agentId: string | undefined, message: AgentServerMessage): void {
 		const payload = JSON.stringify(message)
-		for (const client of this.ctx.getWebSockets()) client.send(payload)
+		for (const client of this.ctx.getWebSockets(agentSocketTag(agentId))) client.send(payload)
+	}
+
+	private broadcastControl(message: ControlServerMessage): void {
+		const payload = JSON.stringify(message)
+		for (const client of this.ctx.getWebSockets(CONTROL_SOCKET_TAG)) client.send(payload)
 	}
 
 	// NO `webSocketClose`. Our compatibility date (2026-04-10) enables
@@ -819,31 +806,41 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
-			const appRoute = new URL(request.url).pathname.match(/^\/api\/apps\/([^/]+)\/ws$/)
+			const path = new URL(request.url).pathname
+			const appRoute = path.match(/^\/api\/apps\/([^/]+)\/ws$/)
 			if (appRoute)
 				return this.getApps().acceptWebSocket(
 					appRoute[1],
 					request.headers.get('Sec-WebSocket-Protocol')
 				)
 
-			// Agent is long-lived — transformContext re-reads soul.md every turn,
-			// so there is no need to recreate the agent on reconnect.
+			const agentRoute = path.match(/^\/api\/agents\/([^/]+)\/connect$/)
+			if (agentRoute) {
+				const id = decodeURIComponent(agentRoute[1])
+				const agentId = id === 'main' ? undefined : id
+				const pair = new WebSocketPair()
+				const [client, server] = Object.values(pair)
+				server.serializeAttachment({ type: 'agent', agentId } satisfies SocketAttachment)
+				this.ctx.acceptWebSocket(server, [agentSocketTag(agentId)])
+				await scheduleDailyAlarm(this.ctx, this.getSession())
+				await this.sendAgentSnapshot(server, agentId)
+				return new Response(null, { status: 101, webSocket: client })
+			}
+
+			if (path !== '/ws') return this.app.fetch(request)
 			const pair = new WebSocketPair()
 			const [client, server] = Object.values(pair)
-
-			this.ctx.acceptWebSocket(server)
+			server.serializeAttachment({ type: 'control' } satisfies SocketAttachment)
+			this.ctx.acceptWebSocket(server, [CONTROL_SOCKET_TAG])
 			await scheduleDailyAlarm(this.ctx, this.getSession())
 
 			const participants = await this.loadParticipants(this.volume)
-			await this.sendAgentSnapshot(server, undefined, participants)
-
-			// Send ready signal
 			server.send(
 				JSON.stringify({
 					type: 'ready',
 					participants,
 					apps: await this.getApps().list()
-				} satisfies ServerMessage)
+				} satisfies ControlServerMessage)
 			)
 
 			return new Response(null, {

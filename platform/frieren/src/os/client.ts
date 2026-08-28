@@ -1,12 +1,7 @@
-import type { ActiveTurn } from '@justfiles/agent'
+import type { SessionStatus } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
-import {
-	type AgentFrame,
-	type AgentRequest,
-	applyAgentFrame,
-	type RemoteAgentState
-} from '@justfiles/agent/protocol'
+import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState } from '../agent/types'
@@ -17,9 +12,8 @@ import type { OsAction } from './state'
 // browser global being present (tests run under node).
 const SOCKET_OPEN = 1
 
-// Backoff for transient `/ws` drops. `/ws` is the always-on session socket and the
-// sole proactive sync-poke channel, so it must self-heal (the removed `_caps` path
-// reconnected on next use). Caps at 30s; reset on a healthy `ready`.
+// Backoff for transient control or agent socket drops. Caps at 30s and resets when
+// the connection receives its first complete state message.
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 15_000, 30_000] as const
 
 // Expression pacing. An emotion earns a minimum time on screen: tags arrive far faster than a
@@ -64,11 +58,11 @@ export interface AgentSnapshot {
 }
 
 export interface AgentClient {
-	prompt(text: string, agentId?: string): Promise<boolean>
-	abort(agentId?: string): void
-	loadHistory(agentId?: string): void
-	subscribe(listener: () => void, agentId?: string): () => void
-	snapshot(agentId?: string): AgentSnapshot
+	connect(): () => void
+	prompt(text: string): Promise<boolean>
+	abort(): void
+	subscribe(listener: () => void): () => void
+	snapshot(): AgentSnapshot
 }
 
 export interface FrierenClient {
@@ -76,18 +70,18 @@ export interface FrierenClient {
 	close(): void
 	// Re-list installed apps from the local profile volume (e.g. after install).
 	refresh(): void
-	send(frame: object): void
-	agent: AgentClient
+	send(message: object): void
+	agent(agentId?: string): AgentClient
 	subscribeApps(listener: (apps: InstalledApp[]) => void): () => void
 	// Drop an app from the catalog optimistically (uninstall); refresh() is authoritative.
 	removeApp(id: string): void
 	onRemoteWindow(handler: (action: OsAction) => void): () => void
-	// The frieren notification channel: agent/cron notification frames arrive here and
+	// The frieren notification channel: agent/cron notification messages arrive here and
 	// are handed to the notification store (mirrors `onRemoteWindow`).
 	onNotification(handler: (notification: Notification) => void): () => void
-	// The server->client volume poke: a `sync` frame says "the server volume changed,
+	// The server->client volume poke: a `sync` message says "the server volume changed,
 	// pull now" (agent turn, cron, or another device's push). The app wires this to
-	// flush the active sync volume. Rides the always-on session socket.
+	// flush the active sync volume. Rides the always-on control socket.
 	onSync(handler: () => void): () => void
 }
 
@@ -95,12 +89,12 @@ export interface FrierenClientOptions {
 	getToken: () => Promise<string | null>
 	// Local catalog fallback for offline boot; online `ready` remains authoritative.
 	listLocalApps?: () => Promise<InstalledApp[]>
-	// Inject the transport for tests; defaults to a browser WebSocket on /ws.
-	createSocket?: (token: string) => SocketLike
+	// Inject the transport for tests.
+	createSocket?: (token: string, path: string) => SocketLike
 }
 
-// Streaming agent payload carried by `event` frames from the worker.
-interface AgentEventFrame {
+// Raw stream detail carried by a running session status.
+interface AgentEventDetail {
 	type: string
 	message?: { role: string }
 	assistantMessageEvent?: { type: string; delta?: string }
@@ -133,25 +127,35 @@ function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
 	return Array.isArray(images) && images.length > 0 ? images : undefined
 }
 
-type ServerFrame =
-	| (AgentFrame<HistoryMessage> & {
-			participants?: { userName?: string; agentName?: string }
-	  })
+type AgentServerMessage =
+	| SessionServerMessage<HistoryMessage>
+	| { type: 'error'; message: string }
+	| { type: 'debug'; message: string }
+
+type ControlServerMessage =
 	| {
 			type: 'ready'
 			participants?: { userName?: string; agentName?: string }
 			apps?: unknown
 	  }
 	| { type: 'error'; message: string }
-	| { type: 'debug'; message: string; agentId?: string }
 	| { type: 'app_open'; id: string }
 	| { type: 'app_close'; id: string }
 	| { type: 'notification'; notification: Notification }
 	| { type: 'sync' }
 
-interface AgentState {
+interface SessionView {
+	agentId?: string
+	socket: SocketLike | null
+	generation: number
+	users: number
+	reconnectTimer: ReturnType<typeof setTimeout> | null
+	reconnectAttempts: number
+	connectionState: ConnectionState
 	messages: AgentMessage[]
-	remote: RemoteAgentState
+	history: HistoryMessage[]
+	status: SessionStatus
+	submitting: boolean
 	loadingHistory: boolean
 	pendingPrompt: ((accepted: boolean) => void) | null
 	currentAssistantId: string | null
@@ -164,39 +168,52 @@ interface AgentState {
 	snapshot: AgentSnapshot
 }
 
-function defaultCreateSocket(token: string): SocketLike {
+function defaultCreateSocket(token: string, path: string): SocketLike {
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 	return new WebSocket(
-		`${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`
+		`${protocol}//${window.location.host}${path}?token=${encodeURIComponent(token)}`
 	) as unknown as SocketLike
+}
+
+function agentPath(agentId?: string): string {
+	return `/api/agents/${encodeURIComponent(agentId ?? 'main')}/connect`
 }
 
 export function createFrierenClient(options: FrierenClientOptions): FrierenClient {
 	const createSocket = options.createSocket ?? defaultCreateSocket
 
-	let socket: SocketLike | null = null
+	let controlSocket: SocketLike | null = null
 	// Bumped on every (re)connect/close so a stale async token resolution from a
 	// superseded connect attempt is ignored.
-	let generation = 0
+	let controlGeneration = 0
 	// Whether the client should hold a connection open — set between connect() and
 	// close(). A transient drop reconnects while true; an explicit close clears it.
-	let wantConnection = false
-	let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-	let reconnectAttempts = 0
+	let online = false
+	let controlReconnectTimer: ReturnType<typeof setTimeout> | null = null
+	let controlReconnectAttempts = 0
 
-	// --- agent sessions (one keyed state block over one socket) ---
-	let connectionState: ConnectionState = 'disconnected'
+	// --- agent sessions ---
 	let userName = 'You'
 	let agentName = DEFAULT_AGENT_NAME
-	const agentStates = new Map<string, AgentState>()
+	const agentStates = new Map<string, SessionView>()
+	const agentClients = new Map<string, AgentClient>()
 
-	function getAgentState(agentId?: string): AgentState {
+	function getAgentState(agentId?: string): SessionView {
 		const key = agentId ?? ''
 		let state = agentStates.get(key)
 		if (state) return state
 		state = {
+			agentId,
+			socket: null,
+			generation: 0,
+			users: 0,
+			reconnectTimer: null,
+			reconnectAttempts: 0,
+			connectionState: 'disconnected',
 			messages: [],
-			remote: { phase: 'idle', activeTurn: null },
+			history: [],
+			status: { state: 'idle' },
+			submitting: false,
 			loadingHistory: false,
 			pendingPrompt: null,
 			currentAssistantId: null,
@@ -213,19 +230,19 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		return state
 	}
 
-	function buildAgentSnapshot(state: AgentState): AgentSnapshot {
+	function buildAgentSnapshot(state: SessionView): AgentSnapshot {
 		return {
-			connectionState,
+			connectionState: state.connectionState,
 			userName,
 			agentName,
 			messages: state.messages,
-			isStreaming: state.remote.phase !== 'idle',
+			isStreaming: state.submitting || state.status.state !== 'idle',
 			isLoadingHistory: state.loadingHistory,
 			expression: state.expression
 		}
 	}
 
-	function emitAgent(state: AgentState): void {
+	function emitAgent(state: SessionView): void {
 		state.snapshot = buildAgentSnapshot(state)
 		for (const listener of state.listeners) listener()
 	}
@@ -234,18 +251,18 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		for (const state of agentStates.values()) emitAgent(state)
 	}
 
-	function stopAgentWork(): void {
-		for (const state of agentStates.values()) {
-			state.pendingPrompt?.(false)
-			state.pendingPrompt = null
-			state.remote = { phase: 'idle', activeTurn: null }
-			state.loadingHistory = false
-			state.currentAssistantId = null
-		}
-		emitAgents()
+	function stopAgentWork(state: SessionView): void {
+		state.pendingPrompt?.(false)
+		state.pendingPrompt = null
+		state.status = { state: 'idle' }
+		state.submitting = false
+		state.loadingHistory = false
+		state.currentAssistantId = null
+		state.messages = restoreMessages(state.history)
+		emitAgent(state)
 	}
 
-	function setMessages(state: AgentState, next: AgentMessage[]): void {
+	function setMessages(state: SessionView, next: AgentMessage[]): void {
 		state.messages = next
 		emitAgent(state)
 	}
@@ -269,21 +286,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		}))
 	}
 
-	function addTurnInput(state: AgentState, turn: ActiveTurn): void {
-		if (state.messages.some((message) => message.id === turn.id)) return
-		state.messages.push({
-			id: turn.id,
-			role: 'user',
-			content: turn.input.text,
-			source: turn.input.source
-		})
-	}
-
-	function mapMessages(state: AgentState, fn: (message: AgentMessage) => AgentMessage): void {
+	function mapMessages(state: SessionView, fn: (message: AgentMessage) => AgentMessage): void {
 		setMessages(state, state.messages.map(fn))
 	}
 
-	function showExpression(state: AgentState, next: Expression | null): void {
+	function showExpression(state: SessionView, next: Expression | null): void {
 		if (next === state.expression && state.pending === undefined) return
 		const wait = state.heldUntil - Date.now()
 		if (wait > 0) {
@@ -361,8 +368,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// --- server-pushed volume poke (pull now) ---
 	let syncSink: (() => void) | null = null
 
-	function handleAgentEvent(event: AgentEventFrame, agentId?: string): void {
-		const state = getAgentState(agentId)
+	function handleAgentEvent(event: AgentEventDetail, state: SessionView): void {
 		switch (event.type) {
 			case 'agent_start':
 				// A new turn starts from a clean face. Do this at agent_start rather than the first
@@ -470,263 +476,318 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		}
 	}
 
-	function handleFrame(data: ServerFrame): void {
+	function handleControlMessage(data: ControlServerMessage): void {
 		if (data.type === 'ready') {
-			reconnectAttempts = 0
+			controlReconnectAttempts = 0
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
-			connectionState = 'ready'
 			emitAgents()
 			loadLocalApps(Array.isArray(data.apps) ? (data.apps as InstalledApp[]) : [])
 			return
 		}
-
-		if (data.type === 'turn_started') {
-			const state = getAgentState(data.agentId)
-			state.remote = applyAgentFrame(state.remote, data)
-			addTurnInput(state, data.turn)
-			emitAgent(state)
+		if (data.type === 'app_open') {
+			const title = apps.find((app) => app.id === data.id)?.name
+			remoteWindow?.({ type: 'app.open', appId: data.id, title, remote: true })
 			return
 		}
+		if (data.type === 'app_close') {
+			remoteWindow?.({ type: 'window.close', id: data.id, remote: true })
+			return
+		}
+		if (data.type === 'notification') {
+			notificationSink?.(data.notification)
+			return
+		}
+		if (data.type === 'sync') syncSink?.()
+	}
 
-		if (data.type === 'prompt_result') {
-			const state = getAgentState(data.agentId)
-			state.pendingPrompt?.(data.accepted)
+	function handleAgentMessage(data: AgentServerMessage, state: SessionView): void {
+		if (data.type === 'accepted' || data.type === 'rejected') {
+			state.pendingPrompt?.(data.type === 'accepted')
 			state.pendingPrompt = null
-			state.remote = applyAgentFrame(state.remote, data)
-			const turn = state.remote.activeTurn
-			if (turn) {
-				addTurnInput(state, turn)
-			}
+			state.submitting = false
 			emitAgent(state)
 			return
 		}
 
 		if (data.type === 'snapshot') {
-			const state = getAgentState(data.agentId)
-			if (data.participants) {
-				userName = data.participants.userName || 'You'
-				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
-			}
-			state.messages = restoreMessages(data.transcript)
+			state.reconnectAttempts = 0
+			state.connectionState = 'ready'
+			state.history = [...data.history]
+			state.status = data.status
+			state.submitting = false
+			state.messages = restoreMessages(data.history)
 			state.loadingHistory = false
-			state.remote = applyAgentFrame(state.remote, data)
-			if (data.activeTurn) addTurnInput(state, data.activeTurn)
-			emitAgents()
+			state.currentAssistantId = null
+			emitAgent(state)
 			return
 		}
 
-		if (data.type === 'turn_finished') {
-			const state = getAgentState(data.agentId)
-			const remote = applyAgentFrame(state.remote, data)
-			if (remote === state.remote) return
-			state.remote = remote
-			state.messages = restoreMessages(data.transcript)
-			state.currentAssistantId = null
-			if (data.error)
-				state.messages.push({
-					id: crypto.randomUUID(),
-					role: 'assistant',
-					content: data.error.message,
-					error: true
-				})
+		if (data.type === 'item') {
+			state.history = [...state.history, data.item]
+			if (state.status.state === 'idle' || data.item.role === 'user')
+				state.messages = restoreMessages(state.history)
+			emitAgent(state)
+			return
+		}
+
+		if (data.type === 'status') {
+			const wasIdle = state.status.state === 'idle'
+			state.status = data.status
+			if (data.status.state === 'idle') {
+				state.submitting = false
+				state.currentAssistantId = null
+				state.messages = restoreMessages(state.history)
+				if (data.error)
+					state.messages.push({
+						id: crypto.randomUUID(),
+						role: 'assistant',
+						content: data.error.message,
+						error: true
+					})
+			} else {
+				if (wasIdle) {
+					showExpression(state, null)
+					state.currentAssistantId = null
+				}
+				if (data.status.detail) handleAgentEvent(data.status.detail, state)
+			}
 			emitAgent(state)
 			return
 		}
 
 		// TODO: remove later
 		if (data.type === 'debug') {
-			const state = getAgentState(data.agentId)
 			state.pendingPrompt?.(false)
 			state.pendingPrompt = null
-			state.remote = { phase: 'idle', activeTurn: null }
+			state.status = { state: 'idle' }
+			state.submitting = false
 			emitAgent(state)
 			console.log(String(data.message ?? ''))
 			return
 		}
-
-		if (data.type === 'app_open') {
-			const id = data.id as string
-			const title = apps.find((app) => app.id === id)?.name
-			remoteWindow?.({ type: 'app.open', appId: id, title, remote: true })
-			return
-		}
-
-		if (data.type === 'app_close') {
-			remoteWindow?.({ type: 'window.close', id: data.id as string, remote: true })
-			return
-		}
-
-		if (data.type === 'notification' && data.notification) {
-			notificationSink?.(data.notification)
-			return
-		}
-
-		if (data.type === 'sync') {
-			syncSink?.()
-			return
-		}
-
-		if (data.type === 'event') {
-			const state = getAgentState(data.agentId)
-			if (state.remote.activeTurn?.id === data.turnId) handleAgentEvent(data.event, data.agentId)
-		}
 	}
 
-	function attach(ws: SocketLike): void {
+	function attachControl(ws: SocketLike): void {
 		ws.onmessage = (event) => {
-			let data: ServerFrame
+			if (controlSocket !== ws) return
+			let data: ControlServerMessage
 			try {
-				data = JSON.parse(event.data) as ServerFrame
+				data = JSON.parse(event.data) as ControlServerMessage
 			} catch {
 				return
 			}
-			handleFrame(data)
+			handleControlMessage(data)
 		}
 		ws.onclose = () => {
-			if (socket !== ws) return
-			socket = null
-			connectionState = 'disconnected'
-			stopAgentWork()
+			if (controlSocket !== ws) return
+			controlSocket = null
 			loadLocalApps()
-			scheduleReconnect()
+			scheduleControlReconnect()
 		}
 		ws.onerror = () => {
-			if (socket !== ws) return
-			connectionState = 'disconnected'
-			stopAgentWork()
+			if (controlSocket !== ws) return
 			loadLocalApps()
 		}
 	}
 
-	function closeSocket(): void {
-		const ws = socket
-		socket = null
+	function closeControlSocket(): void {
+		const ws = controlSocket
+		controlSocket = null
 		ws?.close()
 	}
 
-	// Re-open after a transient drop, backing off. A no-op once an explicit close
-	// cleared `wantConnection` or while an attempt is already scheduled.
-	function scheduleReconnect(): void {
-		if (!wantConnection || reconnectTimer) return
-		const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)]
-		reconnectAttempts++
-		reconnectTimer = setTimeout(() => {
-			reconnectTimer = null
-			if (wantConnection) openSocket()
+	function scheduleControlReconnect(): void {
+		if (!online || controlReconnectTimer) return
+		const delay =
+			RECONNECT_DELAYS_MS[Math.min(controlReconnectAttempts, RECONNECT_DELAYS_MS.length - 1)]
+		controlReconnectAttempts++
+		controlReconnectTimer = setTimeout(() => {
+			controlReconnectTimer = null
+			if (online) openControlSocket()
 		}, delay)
 	}
 
-	function openSocket(): void {
-		const gen = ++generation
-		closeSocket()
-		connectionState = 'connecting'
-		stopAgentWork()
+	function openControlSocket(): void {
+		const gen = ++controlGeneration
+		closeControlSocket()
 		void (async () => {
 			const token = await options.getToken().catch(() => null)
-			if (gen !== generation) return
+			if (gen !== controlGeneration) return
 			if (!token) {
-				connectionState = 'disconnected'
-				emitAgents()
 				loadLocalApps()
-				scheduleReconnect()
+				scheduleControlReconnect()
 				return
 			}
-			const ws = createSocket(token)
-			socket = ws
-			attach(ws)
+			const ws = createSocket(token, '/ws')
+			controlSocket = ws
+			attachControl(ws)
 		})()
 	}
 
-	function connect(): void {
-		wantConnection = true
-		reconnectAttempts = 0
-		openSocket()
-	}
-
-	const agent: AgentClient = {
-		prompt(text, agentId) {
-			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready')
-				return Promise.resolve(false)
-			const state = getAgentState(agentId)
-			if (state.remote.phase !== 'idle' || state.loadingHistory) return Promise.resolve(false)
-			state.remote = { phase: 'submitting', activeTurn: null }
-			emitAgent(state)
-			const accepted = new Promise<boolean>((resolve) => {
-				state.pendingPrompt = resolve
-			})
-			socket.send(
-				JSON.stringify({
-					type: 'prompt',
-					text,
-					...(agentId ? { agentId } : {})
-				} satisfies AgentRequest)
-			)
-			return accepted
-		},
-		abort(agentId) {
-			const turnId = getAgentState(agentId).remote.activeTurn?.id
-			if (!turnId) return
-			socket?.send(
-				JSON.stringify({
-					type: 'abort',
-					turnId,
-					...(agentId ? { agentId } : {})
-				} satisfies AgentRequest)
-			)
-		},
-		loadHistory(agentId) {
-			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
-			const state = getAgentState(agentId)
-			if (state.remote.phase !== 'idle' || state.loadingHistory) return
-			state.loadingHistory = true
-			emitAgent(state)
-			socket.send(
-				JSON.stringify({
-					type: 'snapshot',
-					...(agentId ? { agentId } : {})
-				} satisfies AgentRequest)
-			)
-		},
-		subscribe(listener, agentId) {
-			const state = getAgentState(agentId)
-			state.listeners.add(listener)
-			return () => {
-				state.listeners.delete(listener)
+	function attachAgent(ws: SocketLike, state: SessionView): void {
+		ws.onmessage = (event) => {
+			if (state.socket !== ws) return
+			let data: AgentServerMessage
+			try {
+				data = JSON.parse(event.data) as AgentServerMessage
+			} catch {
+				return
 			}
-		},
-		snapshot(agentId) {
-			return getAgentState(agentId).snapshot
+			handleAgentMessage(data, state)
+		}
+		ws.onclose = () => {
+			if (state.socket !== ws) return
+			state.socket = null
+			state.connectionState = 'disconnected'
+			stopAgentWork(state)
+			scheduleAgentReconnect(state)
+		}
+		ws.onerror = () => {
+			if (state.socket !== ws) return
+			state.connectionState = 'disconnected'
+			stopAgentWork(state)
 		}
 	}
 
+	function closeAgentSocket(state: SessionView): void {
+		const ws = state.socket
+		state.socket = null
+		ws?.close()
+	}
+
+	function scheduleAgentReconnect(state: SessionView): void {
+		if (!online || state.users === 0 || state.reconnectTimer) return
+		const delay =
+			RECONNECT_DELAYS_MS[Math.min(state.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)]
+		state.reconnectAttempts++
+		state.reconnectTimer = setTimeout(() => {
+			state.reconnectTimer = null
+			if (online && state.users > 0) openAgentSocket(state)
+		}, delay)
+	}
+
+	function openAgentSocket(state: SessionView): void {
+		const gen = ++state.generation
+		closeAgentSocket(state)
+		state.connectionState = 'connecting'
+		stopAgentWork(state)
+		state.loadingHistory = true
+		emitAgent(state)
+		void (async () => {
+			const token = await options.getToken().catch(() => null)
+			if (gen !== state.generation) return
+			if (!token) {
+				state.connectionState = 'disconnected'
+				stopAgentWork(state)
+				scheduleAgentReconnect(state)
+				return
+			}
+			const ws = createSocket(token, agentPath(state.agentId))
+			state.socket = ws
+			attachAgent(ws, state)
+		})()
+	}
+
+	function connectAgent(agentId?: string): () => void {
+		const state = getAgentState(agentId)
+		state.users++
+		if (online && state.connectionState === 'disconnected') {
+			state.reconnectAttempts = 0
+			openAgentSocket(state)
+		}
+		return () => {
+			state.users--
+			if (state.users > 0) return
+			if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
+			state.reconnectTimer = null
+			state.generation++
+			closeAgentSocket(state)
+			state.connectionState = 'disconnected'
+			stopAgentWork(state)
+		}
+	}
+
+	function connect(): void {
+		online = true
+		controlReconnectAttempts = 0
+		openControlSocket()
+		for (const state of agentStates.values()) {
+			if (state.users > 0 && state.connectionState === 'disconnected') openAgentSocket(state)
+		}
+	}
+
+	function getAgentClient(agentId?: string): AgentClient {
+		const key = agentId ?? ''
+		const cached = agentClients.get(key)
+		if (cached) return cached
+		const state = getAgentState(agentId)
+		const client: AgentClient = {
+			connect: () => connectAgent(agentId),
+			prompt(text) {
+				if (
+					!state.socket ||
+					state.socket.readyState !== SOCKET_OPEN ||
+					state.connectionState !== 'ready'
+				)
+					return Promise.resolve(false)
+				if (state.submitting || state.status.state !== 'idle' || state.loadingHistory)
+					return Promise.resolve(false)
+				state.submitting = true
+				emitAgent(state)
+				const accepted = new Promise<boolean>((resolve) => {
+					state.pendingPrompt = resolve
+				})
+				state.socket.send(JSON.stringify({ type: 'prompt', text } satisfies SessionClientMessage))
+				return accepted
+			},
+			abort() {
+				if (state.status.state === 'idle') return
+				state.socket?.send(JSON.stringify({ type: 'abort' } satisfies SessionClientMessage))
+			},
+			subscribe(listener) {
+				state.listeners.add(listener)
+				return () => {
+					state.listeners.delete(listener)
+				}
+			},
+			snapshot: () => state.snapshot
+		}
+		agentClients.set(key, client)
+		return client
+	}
+
 	return {
-		agent,
+		agent: getAgentClient,
 
 		connect,
 		refresh: () => loadLocalApps(),
 
 		close() {
-			wantConnection = false
-			if (reconnectTimer) {
-				clearTimeout(reconnectTimer)
-				reconnectTimer = null
+			online = false
+			if (controlReconnectTimer) {
+				clearTimeout(controlReconnectTimer)
+				controlReconnectTimer = null
 			}
+			controlGeneration++
+			closeControlSocket()
 			for (const state of agentStates.values()) {
+				if (state.reconnectTimer) clearTimeout(state.reconnectTimer)
+				state.reconnectTimer = null
 				if (state.holdTimer) clearTimeout(state.holdTimer)
 				state.holdTimer = null
+				state.generation++
+				closeAgentSocket(state)
+				state.connectionState = 'disconnected'
+				stopAgentWork(state)
 			}
-			generation++
-			closeSocket()
-			connectionState = 'disconnected'
-			stopAgentWork()
 			loadLocalApps()
 		},
 
-		send(frame) {
-			if (socket && socket.readyState === SOCKET_OPEN) socket.send(JSON.stringify(frame))
+		send(message) {
+			if (controlSocket?.readyState === SOCKET_OPEN) controlSocket.send(JSON.stringify(message))
 		},
 
 		subscribeApps(listener) {

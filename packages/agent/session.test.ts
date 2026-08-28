@@ -17,7 +17,7 @@ import {
 	classifyFailure,
 	createAgentSession,
 	createAppAgentSession,
-	type SessionEvent
+	type SessionUpdate
 } from './session.ts'
 
 const encoder = new TextEncoder()
@@ -130,36 +130,59 @@ async function prompt(session: AgentSession, message: string): Promise<string> {
 }
 
 async function history(session: AgentSession): Promise<readonly SessionEntry[]> {
-	return (await session.snapshot()).entries
+	return (await session.snapshot()).history
 }
 
 describe('createAgentSession', () => {
-	test('runs a named turn and publishes its final transcript', async () => {
-		const events: SessionEvent[] = []
+	test('publishes status separately from durable items', async () => {
+		const updates: SessionUpdate[] = []
 		const session = createAgentSession({
 			volume: volume(memStore()),
 			backend: scriptedBackend([assistant([{ type: 'text', text: 'Hi there' }])]),
 			compaction: NO_COMPACTION
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		await expect(prompt(session, 'hello')).resolves.toBe('Hi there')
 
-		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished'])
-		const started = events[0]
-		expect(started?.type === 'turn_started' && started.turn.input).toEqual({
-			text: 'hello',
-			source: 'user'
+		expect(updates[0]).toEqual({ type: 'status', status: { state: 'thinking' } })
+		expect(updates).toContainEqual({
+			type: 'items',
+			items: [expect.objectContaining({ role: 'user', content: 'hello' })]
 		})
-		const finished = events[1]
-		expect(finished?.type === 'turn_finished' && finished.status).toBe('completed')
-		expect(finished?.type === 'turn_finished' && finished.entries).toMatchObject([
-			{ role: 'user', content: 'hello' },
-			{ role: 'assistant', content: 'Hi there' }
-		])
+		expect(updates).toContainEqual({
+			type: 'items',
+			items: [expect.objectContaining({ role: 'assistant', content: 'Hi there' })]
+		})
+		expect(updates.at(-1)).toEqual({ type: 'status', status: { state: 'idle' } })
 	})
 
-	test('snapshots and admission share the active turn', async () => {
+	test('persists the user item before waiting for the model', async () => {
+		const entered = deferred()
+		const gate = deferred()
+		const session = createAgentSession({
+			volume: volume(memStore()),
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'done' }])], '', {
+				beforeStream: async () => {
+					entered.resolve()
+					await gate.promise
+				}
+			}),
+			compaction: NO_COMPACTION
+		})
+
+		const running = start(session, 'save this first')
+		await entered.promise
+		expect((await session.snapshot()).history).toMatchObject([
+			{ role: 'user', content: 'save this first' }
+		])
+		expect((await session.snapshot()).status.state).not.toBe('idle')
+
+		gate.resolve()
+		await running.done
+	})
+
+	test('status reports admission and abort targets the current work', async () => {
 		const gate = deferred()
 		const session = createAgentSession({
 			volume: volume(memStore()),
@@ -171,24 +194,21 @@ describe('createAgentSession', () => {
 		})
 
 		const first = start(session, 'first')
-		expect(await session.snapshot()).toMatchObject({
-			entries: [],
-			activeTurn: { id: first.turn.id, input: { text: 'first', source: 'user' } }
-		})
+		expect(await session.snapshot()).toMatchObject({ history: [], status: { state: 'thinking' } })
 		const second = session.start('second')
-		expect(second).toEqual({ accepted: false, activeTurn: first.turn })
-		expect(session.abort('old-turn')).toBe(false)
-		expect(session.abort(first.turn.id)).toBe(true)
+		expect(second).toEqual({ accepted: false })
+		expect(session.abort()).toBe(true)
+		expect(session.abort()).toBe(true)
 
 		gate.resolve()
 		await first.done
-		expect((await session.snapshot()).activeTurn).toBeNull()
+		expect((await session.snapshot()).status).toEqual({ state: 'idle' })
 	})
 
 	test('an abort during backend setup prevents the turn', async () => {
 		const gate = deferred()
 		const seen: unknown[] = []
-		const events: SessionEvent[] = []
+		const updates: SessionUpdate[] = []
 		const session = createAgentSession({
 			volume: volume(memStore()),
 			backend: async () => {
@@ -197,17 +217,17 @@ describe('createAgentSession', () => {
 			},
 			compaction: NO_COMPACTION
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		const turn = start(session, 'do the thing')
-		session.abort(turn.turn.id)
+		session.abort()
 		gate.resolve()
 
 		await expect(turn.done).resolves.toBe('')
 		expect(seen).toEqual([])
-		expect(events).toMatchObject([
-			{ type: 'turn_started', turn: { input: { text: 'do the thing', source: 'user' } } },
-			{ type: 'turn_finished', turnId: turn.turn.id, status: 'interrupted', entries: [] }
+		expect(updates).toEqual([
+			{ type: 'status', status: { state: 'thinking' } },
+			{ type: 'status', status: { state: 'idle' } }
 		])
 	})
 
@@ -236,7 +256,7 @@ describe('createAgentSession', () => {
 
 		const turn = start(session, 'delete everything')
 		await entered.promise
-		session.abort(turn.turn.id)
+		session.abort()
 		gate.resolve()
 
 		await expect(turn.done).resolves.toBe('')
@@ -246,7 +266,7 @@ describe('createAgentSession', () => {
 	test('an aborted model request does not report an error', async () => {
 		const entered = deferred()
 		const gate = deferred()
-		const events: SessionEvent[] = []
+		const updates: SessionUpdate[] = []
 		const notifications: unknown[] = []
 		const base = scriptedBackend([])
 		const session = createAgentSession({
@@ -262,16 +282,15 @@ describe('createAgentSession', () => {
 			compaction: NO_COMPACTION,
 			notify: (notification) => notifications.push(notification)
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		const turn = start(session, 'do the thing')
 		await entered.promise
-		session.abort(turn.turn.id)
+		session.abort()
 		gate.resolve()
 
 		await expect(turn.done).resolves.toBe('')
-		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished'])
-		expect(events[1]).toMatchObject({ type: 'turn_finished', status: 'interrupted' })
+		expect(updates.at(-1)).toEqual({ type: 'status', status: { state: 'idle' } })
 		expect(notifications).toEqual([])
 	})
 
@@ -338,8 +357,8 @@ describe('createAgentSession', () => {
 		expect(notifications[0]?.body).toBe('[thinking] is the tag you asked about.')
 	})
 
-	test('a classified failure emits an error event routed to Accounts', async () => {
-		const events: SessionEvent[] = []
+	test('a classified failure publishes an error routed to Accounts', async () => {
+		const updates: SessionUpdate[] = []
 		const notifications: { kind: string }[] = []
 		const session = createAgentSession({
 			volume: volume(memStore()),
@@ -349,12 +368,12 @@ describe('createAgentSession', () => {
 			compaction: NO_COMPACTION,
 			notify: (n) => notifications.push({ kind: n.kind })
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		await expect(prompt(session, 'hello')).resolves.toBe('')
 
-		const finished = events.find((event) => event.type === 'turn_finished')
-		expect(finished?.type === 'turn_finished' && finished.error?.route).toEqual({
+		const finished = updates.at(-1)
+		expect(finished?.type === 'status' && finished.error?.route).toEqual({
 			kind: 'settings',
 			pane: 'accounts'
 		})
@@ -363,7 +382,7 @@ describe('createAgentSession', () => {
 
 	test('a backend setup failure keeps the last known transcript', async () => {
 		let offline = false
-		const events: SessionEvent[] = []
+		const updates: SessionUpdate[] = []
 		const backend = scriptedBackend([assistant([{ type: 'text', text: 'first answer' }])])
 		const session = createAgentSession({
 			volume: volume(memStore()),
@@ -373,27 +392,27 @@ describe('createAgentSession', () => {
 			},
 			compaction: NO_COMPACTION
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		await prompt(session, 'first question')
-		const transcript = (await session.snapshot()).entries
+		const transcript = (await session.snapshot()).history
 		offline = true
 
-		expect((await session.snapshot()).entries).toEqual(transcript)
+		expect((await session.snapshot()).history).toEqual(transcript)
 		await start(session, 'second question').done
 
-		const finished = events.at(-1)
-		expect(finished).toMatchObject({
-			type: 'turn_finished',
-			status: 'failed',
-			entries: transcript
+		expect(updates.at(-1)).toMatchObject({
+			type: 'status',
+			status: { state: 'idle' },
+			error: { message: expect.any(String) }
 		})
+		expect((await session.snapshot()).history).toEqual(transcript)
 	})
 
 	test.each([
 		'readFile',
 		'readdir'
-	] as const)('a %s history failure keeps the last known transcript', async (failure) => {
+	] as const)('a %s history failure keeps newly persisted items', async (failure) => {
 		let failReads = false
 		const base = volume(memStore())
 		const vol = {
@@ -425,19 +444,20 @@ describe('createAgentSession', () => {
 		})
 
 		await prompt(session, 'first question')
-		const transcript = (await session.snapshot()).entries
-		const events: SessionEvent[] = []
-		session.subscribe((event) => events.push(event))
+		const transcript = (await session.snapshot()).history
+		const updates: SessionUpdate[] = []
+		session.subscribe((update) => updates.push(update))
 
 		await prompt(session, 'second question')
-		expect(events.at(-1)).toMatchObject({
-			type: 'turn_finished',
-			status: 'completed',
-			entries: transcript
-		})
+		expect(updates.at(-1)).toEqual({ type: 'status', status: { state: 'idle' } })
+		expect((await session.snapshot()).history).toMatchObject([
+			...transcript,
+			{ role: 'user', content: 'second question' },
+			{ role: 'assistant', content: 'second answer' }
+		])
 
 		failReads = false
-		expect((await session.snapshot()).entries).toHaveLength(4)
+		expect((await session.snapshot()).history).toHaveLength(4)
 	})
 
 	test('newSession clears the transcript', async () => {
@@ -450,20 +470,20 @@ describe('createAgentSession', () => {
 		await prompt(session, 'hello')
 		expect((await history(session)).length).toBeGreaterThan(0)
 
-		const events: SessionEvent[] = []
-		session.subscribe((event) => events.push(event))
+		const updates: SessionUpdate[] = []
+		session.subscribe((update) => updates.push(update))
 		await session.newSession()
 
-		expect(events).toContainEqual({
+		expect(updates).toContainEqual({
 			type: 'snapshot',
-			snapshot: { entries: [], activeTurn: null }
+			snapshot: { history: [], status: { state: 'idle' } }
 		})
 		expect(await history(session)).toEqual([])
 	})
 
 	test('newSession stops an active turn before clearing it', async () => {
 		const gate = deferred()
-		const events: SessionEvent[] = []
+		const updates: SessionUpdate[] = []
 		const session = createAgentSession({
 			volume: volume(memStore()),
 			backend: async () => {
@@ -472,15 +492,19 @@ describe('createAgentSession', () => {
 			},
 			compaction: NO_COMPACTION
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		const turn = start(session, 'old question')
 		const fresh = session.newSession()
 		gate.resolve()
 		await Promise.all([turn.done, fresh])
 
-		expect(events.map((event) => event.type)).toEqual(['turn_started', 'turn_finished', 'snapshot'])
-		expect(events[1]).toMatchObject({ status: 'interrupted' })
+		expect(updates[0]).toEqual({ type: 'status', status: { state: 'thinking' } })
+		expect(updates).toContainEqual({ type: 'status', status: { state: 'idle' } })
+		expect(updates.at(-1)).toEqual({
+			type: 'snapshot',
+			snapshot: { history: [], status: { state: 'idle' } }
+		})
 		expect(await history(session)).toEqual([])
 	})
 
@@ -557,7 +581,7 @@ describe('createAgentSession', () => {
 		'skill'
 	] as const)('applySkill admits before a %s failure', async (failure) => {
 		const gate = deferred()
-		const events: SessionEvent[] = []
+		const updates: SessionUpdate[] = []
 		const session = createAgentSession({
 			volume: volume(memStore()),
 			backend:
@@ -569,15 +593,17 @@ describe('createAgentSession', () => {
 					: scriptedBackend([]),
 			compaction: NO_COMPACTION
 		})
-		session.subscribe((event) => events.push(event))
+		session.subscribe((update) => updates.push(update))
 
 		const result = session.applySkill('gone')
-		expect(events).toMatchObject([
-			{ type: 'turn_started', turn: { input: { text: '/gone', source: 'user' } } }
-		])
+		expect(updates).toEqual([{ type: 'status', status: { state: 'thinking' } }])
 		gate.resolve()
 		await expect(result).resolves.toBe('')
-		expect(events.at(-1)).toMatchObject({ type: 'turn_finished', status: 'failed' })
+		expect(updates.at(-1)).toMatchObject({
+			type: 'status',
+			status: { state: 'idle' },
+			error: {}
+		})
 	})
 
 	test('runMaintenance consolidates yesterday notes into memory', async () => {

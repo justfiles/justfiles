@@ -65,45 +65,35 @@ export interface AgentSessionOptions {
 	expressions?: boolean
 }
 
-export interface ActiveTurn {
-	id: string
-	input: { text: string; source: PromptSource }
-}
-
-export interface AgentSessionSnapshot {
-	entries: readonly SessionEntry[]
-	activeTurn: ActiveTurn | null
-}
-
-export type TurnStatus = 'completed' | 'interrupted' | 'failed'
-
-export type StartTurnResult =
-	| { accepted: true; turn: ActiveTurn; done: Promise<string> }
-	| { accepted: false; activeTurn: ActiveTurn }
-
-// Every event names its turn, so a delayed finish or abort cannot affect newer work.
-export type SessionEvent =
-	| { type: 'turn_started'; turn: ActiveTurn }
+export type SessionStatus =
+	| { state: 'idle' }
 	| {
-			type: 'turn_finished'
-			turnId: string
-			status: TurnStatus
-			entries: SessionEntry[]
+			state: 'thinking' | 'calling_tool' | 'responding'
+			detail?: AgentEvent
+	  }
+
+export interface SessionSnapshot {
+	history: readonly SessionEntry[]
+	status: SessionStatus
+}
+
+export type SessionUpdate =
+	| { type: 'items'; items: readonly SessionEntry[] }
+	| { type: 'snapshot'; snapshot: SessionSnapshot }
+	| {
+			type: 'status'
+			status: SessionStatus
 			error?: { message: string; route?: Route }
 	  }
-	| { type: 'snapshot'; snapshot: AgentSessionSnapshot }
 
-// A per-turn observer of the RAW agent event stream (token/tool deltas), for a host that
-// renders live streaming (frieren) rather than transcript snapshots (the Mac app). Subscribed
-// only for the turn's duration; matches the Assistant's listener shape.
-export type TurnListener = (event: AgentEvent, signal: AbortSignal) => void
+export type StartTurnResult = { accepted: true; done: Promise<string> } | { accepted: false }
 
 export interface AgentSession {
 	// --- conversation ---
-	start(message: string, source?: PromptSource, onEvent?: TurnListener): StartTurnResult
-	abort(turnId: string): boolean
-	snapshot(): Promise<AgentSessionSnapshot>
-	subscribe(fn: (event: SessionEvent) => void): () => void
+	start(message: string, source?: PromptSource): StartTurnResult
+	abort(): boolean
+	snapshot(): Promise<SessionSnapshot>
+	subscribe(fn: (update: SessionUpdate) => void): () => void
 	// --- semantic actions a UI slash-command maps to ---
 	newSession(): Promise<void>
 	listSkills(): Promise<SkillMeta[]>
@@ -128,7 +118,6 @@ interface PendingQuestion {
 }
 
 interface RunningTurn {
-	turn: ActiveTurn
 	aborted: boolean
 	done: Promise<string> | null
 }
@@ -170,7 +159,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	const resolveBackend: () => Promise<AgentBackend> =
 		typeof backend === 'function' ? backend : async () => backend
 
-	const listeners = new Set<(event: SessionEvent) => void>()
+	const listeners = new Set<(update: SessionUpdate) => void>()
 
 	// Re-resolve the backend on every use and cache the built runtime keyed on `model +
 	// revision`, so a model switch or a token refresh takes effect on the next turn without a
@@ -185,7 +174,9 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	let watching: Promise<void> | null = null
 	let running: RunningTurn | null = null
 	let resetting: Promise<void> | null = null
-	let transcript: readonly SessionEntry[] = []
+	let history: readonly SessionEntry[] = []
+	let historyLoaded = false
+	let status: SessionStatus = { state: 'idle' }
 
 	// THE IDENTITY FILES ARE READ WHEN THE RUNTIME IS BUILT — the soul and the user profile
 	// become the system prompt, the agent's name becomes the banner title — and they change
@@ -200,12 +191,8 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	// a session must not touch storage before its host's migration barrier has completed.
 
 	return {
-		start: (message, source = 'user', onEvent) =>
-			startTurn(
-				{ text: message, source },
-				(assistant) => assistant.prompt(message, source),
-				onEvent
-			),
+		start: (message, source = 'user') =>
+			startTurn((assistant) => assistant.prompt(message, source)),
 		abort,
 		snapshot,
 		subscribe,
@@ -263,7 +250,8 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			readDoc,
 			appsPrompt: apps ? APPS_PROMPT : undefined,
 			expressions: options.expressions,
-			os: Boolean(options.osState)
+			os: Boolean(options.osState),
+			onEntriesAppended: publishItems
 		})
 
 		let pending: PendingQuestion | null = null
@@ -319,78 +307,74 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		}
 	}
 
-	function subscribe(fn: (event: SessionEvent) => void): () => void {
+	function subscribe(fn: (update: SessionUpdate) => void): () => void {
 		listeners.add(fn)
 		return () => listeners.delete(fn)
 	}
 
-	function emit(event: SessionEvent): void {
-		for (const fn of listeners) fn(event)
+	function emit(update: SessionUpdate): void {
+		for (const fn of listeners) fn(update)
 	}
 
-	function startTurn(
-		input: ActiveTurn['input'],
-		run: (assistant: Assistant) => Promise<string>,
-		onEvent?: TurnListener
-	): StartTurnResult {
-		if (running) return { accepted: false, activeTurn: running.turn }
-		const turn = { id: crypto.randomUUID(), input }
-		const runState: RunningTurn = { turn, aborted: false, done: null }
+	function startTurn(run: (assistant: Assistant) => Promise<string>): StartTurnResult {
+		if (running) return { accepted: false }
+		const runState: RunningTurn = { aborted: false, done: null }
 		running = runState
-		// Let subscribers observe admission before backend or skill setup starts.
+		status = { state: 'thinking' }
+		emit({ type: 'status', status })
 		const reset = resetting
 		const done = Promise.resolve().then(async () => {
 			if (reset) await reset
-			return runTurn(runState, run, onEvent)
+			return runTurn(runState, run)
 		})
 		runState.done = done
-		emit({ type: 'turn_started', turn })
-		return { accepted: true, turn, done }
+		return { accepted: true, done }
 	}
 
 	async function runTurn(
 		state: RunningTurn,
-		run: (assistant: Assistant) => Promise<string>,
-		onEvent?: TurnListener
+		run: (assistant: Assistant) => Promise<string>
 	): Promise<string> {
-		const { turn } = state
 		let built: Built | null = null
-		let status: TurnStatus = 'completed'
 		let failure: ReturnType<typeof classifyFailure> | undefined
 		try {
-			built = await getBuilt()
+			const ready = await getBuilt()
+			built = ready
 			if (state.aborted) return ''
-			// Stream the raw turn events to a streaming host for this turn only; unsubscribed in
-			// the inner `finally` so events never leak across turns.
-			const unsubscribe = onEvent ? built.assistant.subscribe(onEvent) : undefined
-			built.takePending() // drop any stale question before the turn
+			if (!historyLoaded) {
+				history = await readHistory(ready)
+				historyLoaded = true
+			}
+			const unsubscribe = ready.assistant.subscribe((event) => {
+				if (running !== state) return
+				status = eventStatus(event, status)
+				emit({ type: 'status', status })
+			})
+			ready.takePending() // drop any stale question before the turn
 			try {
-				const answer = await run(built.assistant)
-				const asked = built.takePending()
+				const answer = await run(ready.assistant)
+				const asked = ready.takePending()
 				if (state.aborted) return ''
 				ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
 				return answer
 			} finally {
-				unsubscribe?.()
+				unsubscribe()
 			}
 		} catch (error) {
 			if (state.aborted) return ''
 			failure = classifyFailure(error)
-			status = 'failed'
 			console.error('[agent] turn failed:', error)
 			ping('error', failure.body, failure.route)
 			return ''
 		} finally {
-			if (state.aborted) status = 'interrupted'
 			// Setup failed before it could change history, so keep the last transcript.
-			const entries = built ? [...(await readHistory(built))] : [...transcript]
-			transcript = entries
+			const entries = built ? await readHistory(built) : history
+			publishHistory(entries)
 			if (running === state) running = null
+			status = { state: 'idle' }
 			emit({
-				type: 'turn_finished',
-				turnId: turn.id,
+				type: 'status',
 				status,
-				entries,
 				...(failure ? { error: { message: failure.body, route: failure.route } } : {})
 			})
 		}
@@ -398,8 +382,8 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 
 	// Keep the request while the runtime builds. Once built, abort the assistant too in case
 	// the turn has moved past setup and reached the model.
-	function abort(turnId: string): boolean {
-		if (!running || running.turn.id !== turnId) return false
+	function abort(): boolean {
+		if (!running) return false
 		running.aborted = true
 		if (!active) return true
 		void active.built
@@ -408,19 +392,37 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 		return true
 	}
 
-	// Refresh an idle snapshot when possible. A failed build keeps the last transcript;
-	// a cold session still starts empty.
-	async function snapshot(): Promise<AgentSessionSnapshot> {
-		if (!running) transcript = await getBuilt().then(readHistory, () => transcript)
-		return { entries: transcript, activeTurn: running?.turn ?? null }
+	async function snapshot(): Promise<SessionSnapshot> {
+		if (!running) history = await getBuilt().then(readHistory, () => history)
+		historyLoaded = true
+		return { history, status }
 	}
 
 	async function readHistory(built: Built): Promise<readonly SessionEntry[]> {
 		try {
 			return await built.assistant.history()
 		} catch {
-			return transcript
+			return history
 		}
+	}
+
+	async function publishItems(items: readonly SessionEntry[]): Promise<void> {
+		if (items.length === 0) return
+		history = [...history, ...items]
+		emit({ type: 'items', items })
+	}
+
+	function publishHistory(next: readonly SessionEntry[]): void {
+		if (sameEntries(history, next)) return
+		const appended = next.slice(history.length)
+		if (history.every((entry, index) => entry.id === next[index]?.id)) {
+			history = next
+			if (appended.length > 0) emit({ type: 'items', items: appended })
+			return
+		}
+		history = next
+		historyLoaded = true
+		emit({ type: 'snapshot', snapshot: { history, status } })
 	}
 
 	// Stop the old turn before replacing its session. A turn admitted during the reset waits
@@ -428,10 +430,10 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	function newSession(): Promise<void> {
 		if (resetting) return resetting
 		const reset = Promise.resolve().then(async () => {
-			const activeTurn = running
-			if (activeTurn) {
-				abort(activeTurn.turn.id)
-				await activeTurn.done
+			const current = running
+			if (current) {
+				abort()
+				await current.done
 			}
 			try {
 				const built = await getBuilt()
@@ -440,11 +442,9 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			} catch (error) {
 				console.error('[agent] newSession failed:', error)
 			}
-			transcript = []
-			emit({
-				type: 'snapshot',
-				snapshot: { entries: transcript, activeTurn: running?.turn ?? null }
-			})
+			history = []
+			historyLoaded = true
+			emit({ type: 'snapshot', snapshot: { history, status } })
 		})
 		resetting = reset
 		const clearReset = () => {
@@ -455,9 +455,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 	}
 
 	function applySkill(id: string): Promise<string> {
-		const result = startTurn({ text: `/${id}`, source: 'user' }, (assistant) =>
-			assistant.applySkill(id)
-		)
+		const result = startTurn((assistant) => assistant.applySkill(id))
 		return result.accepted ? result.done : Promise.resolve('')
 	}
 
@@ -498,6 +496,26 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			route
 		})
 	}
+}
+
+function eventStatus(event: AgentEvent, current: SessionStatus): SessionStatus {
+	if (event.type.startsWith('tool_execution_')) return { state: 'calling_tool', detail: event }
+	if (event.type === 'message_update') {
+		if (event.assistantMessageEvent.type === 'thinking_delta')
+			return { state: 'thinking', detail: event }
+		if (event.assistantMessageEvent.type === 'text_delta')
+			return { state: 'responding', detail: event }
+	}
+	if (event.type === 'message_start' && event.message.role === 'assistant')
+		return { state: 'thinking', detail: event }
+	return {
+		state: current.state === 'idle' ? 'thinking' : current.state,
+		detail: event
+	}
+}
+
+function sameEntries(left: readonly SessionEntry[], right: readonly SessionEntry[]): boolean {
+	return left.length === right.length && left.every((entry, index) => entry.id === right[index]?.id)
 }
 
 // Classify a failed turn into a user-facing message + a fix-it route. pi-ai surfaces provider

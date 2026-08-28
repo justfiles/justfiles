@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
-import type { AgentFrame, AgentRequest } from '@justfiles/agent/protocol'
+import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
 import type { AppManifest } from '@justfiles/app/runtime'
 import type { Server, ServerWebSocket } from 'bun'
 import {
@@ -79,12 +79,11 @@ const crossOrigin = (req: Request): boolean => {
 	return origin !== null && origin !== new URL(req.url).origin
 }
 
-// Typed send helpers — routing every frame through a union keeps the wire protocol
-// compile-checked. `/system` speaks `ServerMessage`; `/agent` the shared `AgentFrame`.
+// Typed send helpers keep both application protocols compile-checked.
 const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 	ws.send(JSON.stringify(message))
-const sendAgent = (ws: ServerWebSocket<Context>, event: AgentFrame) =>
-	ws.send(JSON.stringify(event))
+const sendAgent = (ws: ServerWebSocket<Context>, message: SessionServerMessage) =>
+	ws.send(JSON.stringify(message))
 
 export interface ServerOptions {
 	// TCP port; default OS-ephemeral shipped (0) / a fixed 3000 in dev, honoring PORT.
@@ -110,10 +109,10 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 	const projectApps = options.projectApps ?? reconcileProjection
 	const port = options.port ?? (process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000)
 	let refresh!: RuntimeRefresh
-	let agentFrames = Promise.resolve()
-	const serializeAgentFrame = (send: () => void | Promise<void>): Promise<void> => {
-		const result = agentFrames.then(send)
-		agentFrames = result.catch((error) => console.error('[agent] frame failed:', error))
+	let agentMessages = Promise.resolve()
+	const serializeAgentMessage = (send: () => void | Promise<void>): Promise<void> => {
+		const result = agentMessages.then(send)
+		agentMessages = result.catch((error) => console.error('[agent] message failed:', error))
 		return result
 	}
 
@@ -205,10 +204,10 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 
 			async open(ws) {
 				if (ws.data.type === 'agent') {
-					// Subscribe before queuing the snapshot. Lifecycle publishes use the same
-					// queue, so none can overtake the snapshot while it is being captured.
+					// Subscribe before queuing the snapshot. Session messages use the same
+					// queue, so none can overtake it.
 					ws.subscribe('agent')
-					await serializeAgentFrame(async () => {
+					await serializeAgentMessage(async () => {
 						sendAgent(ws, await agentSnapshot())
 					})
 					return
@@ -236,16 +235,16 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					// Admission replies to this socket. Session events publish to every chat.
 					const req = JSON.parse(
 						typeof message === 'string' ? message : message.toString()
-					) as AgentRequest
+					) as SessionClientMessage
 					if (req.type === 'prompt')
 						await promptAgent(req.text, (result) => {
-							void serializeAgentFrame(() => {
+							void serializeAgentMessage(() => {
 								sendAgent(ws, result)
 							})
 						})
-					else if (req.type === 'abort') abortAgent(req.turnId)
+					else if (req.type === 'abort') abortAgent()
 					else if (req.type === 'snapshot')
-						await serializeAgentFrame(async () => {
+						await serializeAgentMessage(async () => {
 							sendAgent(ws, await agentSnapshot())
 						})
 					return
@@ -300,10 +299,10 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 		)
 	)
 
-	// Every agent turn publishes the shared lifecycle frames to each subscribed chat.
-	setAgentBroadcast((event) => {
-		void serializeAgentFrame(() => {
-			server.publish('agent', JSON.stringify(event satisfies AgentFrame))
+	// Every agent turn publishes session messages to each subscribed chat.
+	setAgentBroadcast((message) => {
+		void serializeAgentMessage(() => {
+			server.publish('agent', JSON.stringify(message satisfies SessionServerMessage))
 		})
 	})
 

@@ -38,6 +38,6 @@ export function useOsRuntime(): Pick<OsContextValue, 'localKernel' | 'volume'> {
 	return { localKernel, volume }
 }
 
-export function useAgentClient(): AgentClient {
-	return useOsContext().client.agent
+export function useAgentClient(agentId?: string): AgentClient {
+	return useOsContext().client.agent(agentId)
 }

@@ -18,7 +18,7 @@ export function MessagesPanel({
 	onPersonalize: () => void
 }) {
 	const session = useAgentSession(agentId)
-	const connection = useAgentConnection()
+	const connection = useAgentConnection(agentId)
 	const {
 		messages,
 		input,
@@ -31,15 +31,11 @@ export function MessagesPanel({
 		isStreaming,
 		isLoadingHistory,
 		sendMessage,
-		abort,
-		loadHistory
+		abort
 	} = session
 	const ready = connection.state === 'ready' && !isLoadingHistory
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	useEffect(() => inputRef.current?.focus(), [])
-	useEffect(() => {
-		if (agentId && connection.state === 'ready') loadHistory()
-	}, [agentId, connection.state, loadHistory])
 	// Grow the composer with wrapped lines, then scroll past ~6 (128px).
 	useAutoResize(inputRef, input, 128)
 

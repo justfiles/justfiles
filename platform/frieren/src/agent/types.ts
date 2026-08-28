@@ -25,7 +25,6 @@ export interface AgentSession {
 	isLoadingHistory: boolean
 	sendMessage: () => void
 	abort: () => void
-	loadHistory: () => void
 }
 
 export interface AgentConnection {

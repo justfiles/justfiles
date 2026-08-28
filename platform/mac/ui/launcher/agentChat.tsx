@@ -1,17 +1,12 @@
-import type { ActiveTurn, SessionEntry } from '@justfiles/agent'
-import {
-	type AgentFrame,
-	type AgentRequest,
-	applyAgentFrame,
-	type RemoteAgentState
-} from '@justfiles/agent/protocol'
+import type { SessionEntry, SessionStatus } from '@justfiles/agent'
+import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
 import type { AgentMessage } from '@justfiles/ui/Transcript'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 // The launcher's agent transport: a plain WebSocket to the daemon's `/agent` socket, which
-// is a LIVE VIEW of the shared session. The daemon pushes the whole transcript on every
-// change, including turns started by `/skill`. Shared by the in-page launcher chat
-// (main.tsx) and the native chat surface (chat.tsx). Commands are NOT sent here — they ride
+// is a live view of the shared session. The daemon sends a snapshot, then pushes durable
+// items and current status, including work started by `/skill`. Shared by the in-page
+// launcher chat (main.tsx) and the native chat surface (chat.tsx). Commands are NOT sent here — they ride
 // `/system` and reach the agent (if at all) as a skill, surfacing naturally in the push.
 
 type Connection = 'connecting' | 'ready' | 'disconnected'
@@ -22,77 +17,80 @@ export function useAgentChat() {
 	const [connection, setConnection] = useState<Connection>('connecting')
 	const [error, setError] = useState<string | null>(null)
 	const socketRef = useRef<WebSocket | null>(null)
-	const remoteRef = useRef<RemoteAgentState>({ phase: 'idle', activeTurn: null })
+	const historyRef = useRef<readonly SessionEntry[]>([])
+	const statusRef = useRef<SessionStatus>({ state: 'idle' })
+	const submittingRef = useRef(false)
+	const pendingMessageRef = useRef<string | null>(null)
 
-	const setRemote = useCallback((remote: RemoteAgentState) => {
-		remoteRef.current = remote
-		setIsStreaming(remote.phase !== 'idle')
+	const setStatus = useCallback((status: SessionStatus) => {
+		statusRef.current = status
+		setIsStreaming(submittingRef.current || status.state !== 'idle')
 	}, [])
 
-	const showTurn = useCallback((turn: ActiveTurn) => {
-		setMessages((messages) =>
-			messages.some((message) => message.id === turn.id)
-				? messages
-				: [
-						...messages,
-						{
-							id: turn.id,
-							role: 'user',
-							content: turn.input.text,
-							source: turn.input.source
-						}
-					]
-		)
+	const setSubmitting = useCallback((submitting: boolean) => {
+		submittingRef.current = submitting
+		setIsStreaming(submitting || statusRef.current.state !== 'idle')
 	}, [])
 
-	// Subscribe to the live session, reconnecting on drop (a daemon restart re-pushes the
-	// snapshot on the new socket). Every snapshot or finish replaces the local transcript.
+	const replaceHistory = useCallback((history: readonly SessionEntry[]) => {
+		historyRef.current = history
+		setMessages(sessionEntriesToMessages(history))
+	}, [])
+
+	// Subscribe to the live session, reconnecting on drop. A daemon restart sends fresh state.
 	useEffect(() => {
 		let stopped = false
 		let retry: ReturnType<typeof setTimeout> | undefined
 		let socket: WebSocket | undefined
 		const connect = () => {
 			setConnection('connecting')
-			socket = new WebSocket(
+			const nextSocket = new WebSocket(
 				`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/agent`
 			)
-			socketRef.current = socket
-			socket.onmessage = (ev) => {
-				const event = JSON.parse(String(ev.data)) as AgentFrame
-				if (event.type === 'snapshot') {
-					setMessages(sessionEntriesToMessages(event.transcript))
-					setRemote(applyAgentFrame(remoteRef.current, event))
-					if (event.activeTurn) showTurn(event.activeTurn)
+			socket = nextSocket
+			socketRef.current = nextSocket
+			nextSocket.onmessage = (ev) => {
+				if (socketRef.current !== nextSocket) return
+				const message = JSON.parse(String(ev.data)) as SessionServerMessage
+				if (message.type === 'snapshot') {
+					replaceHistory(message.history)
+					setSubmitting(false)
+					setStatus(message.status)
 					setConnection('ready')
 					setError(null)
-				} else if (event.type === 'turn_started') {
-					setRemote(applyAgentFrame(remoteRef.current, event))
-					showTurn(event.turn)
-				} else if (event.type === 'prompt_result') {
-					const remote = applyAgentFrame(remoteRef.current, event)
-					setRemote(remote)
-					const turn = remote.activeTurn
-					if (turn) showTurn(turn)
-				} else if (event.type === 'turn_finished') {
-					const remote = applyAgentFrame(remoteRef.current, event)
-					if (remote === remoteRef.current) return
-					const next = sessionEntriesToMessages(event.transcript)
-					if (event.error)
-						next.push({
-							id: crypto.randomUUID(),
-							role: 'assistant',
-							content: event.error.message,
-							error: true
-						})
-					setMessages(next)
-					setRemote(remote)
+				} else if (message.type === 'item') {
+					replaceHistory([...historyRef.current, message.item])
+				} else if (message.type === 'status') {
+					setStatus(message.status)
+					if (message.status.state === 'idle') replaceHistory(historyRef.current)
+					if (message.error) {
+						const error = message.error
+						setMessages((messages) => [
+							...messages,
+							{
+								id: crypto.randomUUID(),
+								role: 'assistant',
+								content: error.message,
+								error: true
+							}
+						])
+					}
+				} else if (message.type === 'accepted' || message.type === 'rejected') {
+					setSubmitting(false)
+					if (message.type === 'rejected' && pendingMessageRef.current) {
+						const id = pendingMessageRef.current
+						setMessages((messages) => messages.filter((message) => message.id !== id))
+					}
+					pendingMessageRef.current = null
 				}
 			}
-			socket.onerror = () => socket?.close()
-			socket.onclose = () => {
-				if (stopped) return
+			nextSocket.onerror = () => nextSocket.close()
+			nextSocket.onclose = () => {
+				if (stopped || socketRef.current !== nextSocket) return
 				socketRef.current = null
-				setRemote({ phase: 'idle', activeTurn: null })
+				setSubmitting(false)
+				setStatus({ state: 'idle' })
+				replaceHistory(historyRef.current)
 				setConnection('disconnected')
 				retry = setTimeout(connect, 1000)
 			}
@@ -103,7 +101,7 @@ export function useAgentChat() {
 			clearTimeout(retry)
 			socket?.close()
 		}
-	}, [setRemote, showTurn])
+	}, [replaceHistory, setStatus, setSubmitting])
 
 	const send = useCallback(
 		(text: string) => {
@@ -113,22 +111,33 @@ export function useAgentChat() {
 				!trimmed ||
 				!socket ||
 				socket.readyState !== WebSocket.OPEN ||
-				remoteRef.current.phase !== 'idle'
+				submittingRef.current ||
+				statusRef.current.state !== 'idle'
 			)
 				return
-			setRemote({ phase: 'submitting', activeTurn: null })
+			setSubmitting(true)
 			setError(null)
-			socket.send(JSON.stringify({ type: 'prompt', text: trimmed } satisfies AgentRequest))
+			const id = crypto.randomUUID()
+			pendingMessageRef.current = id
+			setMessages((messages) => [
+				...messages,
+				{
+					id,
+					role: 'user',
+					content: trimmed,
+					source: 'user'
+				}
+			])
+			socket.send(JSON.stringify({ type: 'prompt', text: trimmed } satisfies SessionClientMessage))
 		},
-		[setRemote]
+		[setSubmitting]
 	)
 
-	// Stop names the turn it observed, so a late click cannot cancel newer work.
 	const abort = useCallback(() => {
 		const socket = socketRef.current
-		const turnId = remoteRef.current.activeTurn?.id
-		if (!turnId || !socket || socket.readyState !== WebSocket.OPEN) return
-		socket.send(JSON.stringify({ type: 'abort', turnId } satisfies AgentRequest))
+		if (statusRef.current.state === 'idle' || !socket || socket.readyState !== WebSocket.OPEN)
+			return
+		socket.send(JSON.stringify({ type: 'abort' } satisfies SessionClientMessage))
 	}, [])
 
 	return { messages, isStreaming, connection, error, send, abort }

@@ -7,10 +7,10 @@ import {
 	resolveTimezone
 } from '@justfiles/agent'
 import {
-	type AgentFrame,
-	type AgentPromptResult,
-	promptResult,
-	sessionEventFrame
+	promptReply,
+	type SessionServerMessage,
+	snapshotMessage,
+	updateMessages
 } from '@justfiles/agent/protocol'
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
@@ -99,46 +99,46 @@ async function buildAgents(): Promise<AgentSessions> {
 		timezone: () => resolveTimezone(fs, undefined)
 	})
 	const session = agents.main()
-	// Fan the session's events out to every connected chat via the sink main.ts wired.
-	session.subscribe((event) => broadcast(sessionEventFrame(event)))
+	// Fan session changes out to every connected chat via the sink main.ts wired.
+	session.subscribe((update) => {
+		for (const message of updateMessages(update)) broadcast(message)
+	})
 	void scheduleDailyMaintenance(session).catch((error) =>
 		console.error('[agent] maintenance alarm failed:', error)
 	)
 	return agents
 }
 
-// The daemon injects a sink that publishes `/agent` events to every connected chat (main.ts
+// The daemon injects a sink that publishes `/agent` messages to every connected chat (main.ts
 // wires it to the `agent` pub/sub topic). The no-op default keeps the session usable before
 // the server binds it.
-let broadcast: (event: AgentFrame) => void = () => {}
-export function setAgentBroadcast(sink: (event: AgentFrame) => void): void {
+let broadcast: (message: SessionServerMessage) => void = () => {}
+export function setAgentBroadcast(sink: (message: SessionServerMessage) => void): void {
 	broadcast = sink
 }
 
-// The current transcript, for the snapshot a chat gets on connect. Empty when the session
-// can't build (no backend), so the chat shows an empty transcript rather than erroring.
-export async function agentSnapshot(): Promise<AgentFrame> {
-	const snapshot = await (await getSession()).snapshot()
-	return sessionEventFrame({ type: 'snapshot', snapshot })
+// The current history and status for a chat that connects.
+export async function agentSnapshot(): Promise<SessionServerMessage> {
+	return snapshotMessage(await (await getSession()).snapshot())
 }
 
 // Start the turn and report admission before its async setup can finish. Completion reaches
 // every chat through the session subscription above.
 export async function promptAgent(
 	message: string,
-	reply: (result: AgentPromptResult) => void
+	reply: (result: SessionServerMessage) => void
 ): Promise<void> {
 	const result = (await getSession()).start(message)
-	reply(promptResult(result))
+	reply(promptReply(result))
 	if (result.accepted) void result.done
 }
 
 // Cancel the in-flight turn, leaving the session intact so later prompts still work. Guards
 // on the memoised session so a cold daemon never builds an agent just to cancel nothing.
-export function abortAgent(turnId: string): void {
+export function abortAgent(): void {
 	if (!agentsPromise) return
 	void agentsPromise
-		.then((agents) => agents.main().abort(turnId))
+		.then((agents) => agents.main().abort())
 		.catch((err) => console.error('[agent] abort failed:', err))
 }
 
@@ -160,7 +160,7 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 		else void session.applySkill(name)
 	} catch (err) {
 		console.error(`[agent] /${name} failed:`, err)
-		if (name === 'new') broadcast({ type: 'snapshot', transcript: [], activeTurn: null })
+		if (name === 'new') broadcast({ type: 'snapshot', history: [], status: { state: 'idle' } })
 	}
 	return { show: 'chat' }
 }
@@ -195,7 +195,7 @@ async function signOutReport(): Promise<string> {
 async function debugReport(): Promise<string> {
 	try {
 		const session = await getSession()
-		const history = (await session.snapshot()).entries
+		const history = (await session.snapshot()).history
 		const report = [
 			'agent diagnostics',
 			`session entries: ${history.length}`,
