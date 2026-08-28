@@ -14,7 +14,8 @@
 ## Handoff after Phase 1
 
 PR [#597](https://github.com/xiaoxinghu/justfiles/pull/597) merged the
-session-message foundation on 2026-08-28 at `29184047`. Phase 1 now builds on
+session-message foundation on 2026-08-28 at `29184047`. PR
+[#599](https://github.com/xiaoxinghu/justfiles/pull/599) implements Phase 1 on
 that contract by recording completed activity runs. Start new work at Phase 2.
 Do not rebuild the lifecycle or the recorder.
 
