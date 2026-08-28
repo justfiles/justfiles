@@ -146,6 +146,26 @@ export function useAgentChat() {
 function sessionEntriesToMessages(entries: readonly SessionEntry[]): AgentMessage[] {
 	const messages: AgentMessage[] = []
 	for (const entry of entries) {
+		if (entry.type === 'activity') {
+			if (entry.images?.length) {
+				const tool = entry.items.findLast((item) => item.kind === 'tool')
+				messages.push({
+					id: entry.id,
+					role: 'assistant',
+					content: '',
+					toolCalls: [
+						{
+							id: entry.id,
+							name: tool?.name ?? 'image',
+							args: undefined,
+							status: 'done',
+							images: entry.images
+						}
+					]
+				})
+			}
+			continue
+		}
 		if (entry.type !== 'message') continue
 		// An ask_user call renders as a question bubble with clickable options (below),
 		// so its paired result carries no user-facing content — drop it.

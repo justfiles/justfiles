@@ -64,7 +64,8 @@ Do not rebuild the lifecycle or the recorder.
   `platform/frieren/worker/display.ts`; Mac still projects in
   `platform/mac/ui/launcher/agentChat.tsx`.
 - Both hosts accept the new entry variant but do not render settled activity
-  receipts yet. That belongs to the shared projector and crease work.
+  receipts yet. Image-bearing receipts keep a temporary tool-row fallback so
+  generated images do not disappear before the shared projector lands.
 - The wire still carries each host's current history payload. It does not yet
   carry the presentation model proposed below.
 - There is no `activity_detail` request. Detail files are write-only until Phase

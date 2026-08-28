@@ -19,21 +19,26 @@ type ToolItem = {
 }
 
 export function createActivityRecorder(now: () => number = Date.now) {
-	const thinking: number[] = []
+	const thinking: number[][] = []
 	const tools = new Map<string, ToolTime>()
+	let currentThoughts: number[] | null = null
 	let thoughtStarted: number | null = null
 
-	return { onEvent, write }
+	return { onEvent, dropLastMessage, write }
 
 	function onEvent(event: AgentEvent): void {
+		if (event.type === 'message_start' && event.message.role === 'assistant') {
+			currentThoughts = []
+		}
 		if (event.type === 'message_update') {
 			const update = event.assistantMessageEvent
 			if (update.type === 'thinking_start' || update.type === 'thinking_delta') {
+				currentThoughts ??= []
 				thoughtStarted ??= now()
 			}
 			if (update.type === 'thinking_end') finishThought()
 		}
-		if (event.type === 'message_end') finishThought()
+		if (event.type === 'message_end' && event.message.role === 'assistant') finishMessage()
 		if (event.type === 'tool_execution_start') {
 			tools.set(event.toolCallId, { started: now() })
 		}
@@ -47,8 +52,19 @@ export function createActivityRecorder(now: () => number = Date.now) {
 
 	function finishThought(): void {
 		if (thoughtStarted === null) return
-		thinking.push(elapsed(thoughtStarted))
+		currentThoughts ??= []
+		currentThoughts.push(elapsed(thoughtStarted))
 		thoughtStarted = null
+	}
+
+	function finishMessage(): void {
+		finishThought()
+		thinking.push(currentThoughts ?? [])
+		currentThoughts = null
+	}
+
+	function dropLastMessage(): void {
+		thinking.pop()
 	}
 
 	function elapsed(started: number): number {
@@ -70,12 +86,12 @@ export function createActivityRecorder(now: () => number = Date.now) {
 		agentTools: readonly AgentTool[]
 		diagnostic: (message: AgentMessage) => string | undefined
 	}): Promise<AppendPayload[]> {
-		finishThought()
+		if (currentThoughts !== null) finishMessage()
 		const labels = new Map(agentTools.map((tool) => [tool.name, tool.label]))
 		const output: (AppendPayload | Run)[] = []
 		const calls = new Map<string, ToolItem>()
 		let run: Run | null = null
-		let thoughtIndex = 0
+		let answerIndex = 0
 
 		const currentRun = () => {
 			run ??= { items: [], detail: { items: [] }, images: [] }
@@ -106,6 +122,8 @@ export function createActivityRecorder(now: () => number = Date.now) {
 				continue
 			}
 			if (message.role === 'assistant') {
+				const times = thinking[answerIndex++] ?? []
+				let thoughtIndex = 0
 				const error = diagnostic(message)
 				if (error) {
 					addText(`[Agent error: ${error}]`)
@@ -127,7 +145,7 @@ export function createActivityRecorder(now: () => number = Date.now) {
 						const active = currentRun()
 						active.items.push({
 							kind: 'think',
-							durationMs: thinking[thoughtIndex++] ?? 0
+							durationMs: times[thoughtIndex++] ?? 0
 						})
 						active.detail.items.push({ kind: 'think', content: block.thinking })
 						continue

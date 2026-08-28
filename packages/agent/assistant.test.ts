@@ -84,9 +84,35 @@ async function readDetail(vol: Volume, entry: ActivityRunEntry) {
 
 describe('assistant prompt', () => {
 	test('records thinking and failed tool durations from agent events', async () => {
-		let now = 100
+		let now = 0
 		const recorder = createActivityRecorder(() => now)
-		const thought = assistant([{ type: 'thinking', thinking: 'Check it.' }])
+		const discarded = assistant([{ type: 'thinking', thinking: 'Discard this.' }])
+		recorder.onEvent({ type: 'message_start', message: discarded })
+		recorder.onEvent({
+			type: 'message_update',
+			message: discarded,
+			assistantMessageEvent: { type: 'thinking_start', contentIndex: 0, partial: discarded }
+		})
+		now = 25
+		recorder.onEvent({
+			type: 'message_update',
+			message: discarded,
+			assistantMessageEvent: {
+				type: 'thinking_end',
+				contentIndex: 0,
+				content: 'Discard this.',
+				partial: discarded
+			}
+		})
+		recorder.onEvent({ type: 'message_end', message: discarded })
+		recorder.dropLastMessage()
+
+		now = 100
+		const thought = assistant([
+			{ type: 'thinking', thinking: 'Check it.' },
+			{ type: 'toolCall', id: 'tc1', name: 'read', arguments: {} }
+		])
+		recorder.onEvent({ type: 'message_start', message: thought })
 		recorder.onEvent({
 			type: 'message_update',
 			message: thought,
@@ -103,6 +129,7 @@ describe('assistant prompt', () => {
 				partial: thought
 			}
 		})
+		recorder.onEvent({ type: 'message_end', message: thought })
 		recorder.onEvent({
 			type: 'tool_execution_start',
 			toolCallId: 'tc1',
@@ -118,10 +145,7 @@ describe('assistant prompt', () => {
 			isError: true
 		})
 		const messages: AgentMessage[] = [
-			assistant([
-				{ type: 'thinking', thinking: 'Check it.' },
-				{ type: 'toolCall', id: 'tc1', name: 'read', arguments: {} }
-			]),
+			thought,
 			{
 				role: 'toolResult',
 				toolCallId: 'tc1',
@@ -152,19 +176,33 @@ describe('assistant prompt', () => {
 	})
 
 	test('retries an empty assistant response before persisting', async () => {
+		const vol = volume(memStore())
 		const rt = await createAssistant({
 			...MAIN,
-			volume: volume(memStore()),
-			agent: scriptedAgent([assistant([]), assistant([{ type: 'text', text: 'Recovered' }])]),
+			volume: vol,
+			agent: scriptedAgent([
+				assistant([{ type: 'thinking', thinking: 'Discarded attempt' }]),
+				assistant([
+					{ type: 'thinking', thinking: 'Recovered attempt' },
+					{ type: 'text', text: 'Recovered' }
+				])
+			]),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
 		})
 
 		await expect(rt.prompt('hello')).resolves.toBe('Recovered')
-		expect(await rt.history()).toMatchObject([
+		const history = await rt.history()
+		expect(history).toMatchObject([
 			{ type: 'message', role: 'user', content: 'hello' },
+			{ type: 'activity', items: [{ kind: 'think' }] },
 			{ type: 'message', role: 'assistant', content: 'Recovered' }
 		])
+		const activity = history[1]
+		if (activity?.type !== 'activity') throw new Error('expected an activity entry')
+		expect(await readDetail(vol, activity)).toEqual({
+			items: [{ kind: 'think', content: 'Recovered attempt' }]
+		})
 	})
 
 	test('records mixed activity runs in their original order', async () => {

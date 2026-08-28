@@ -108,7 +108,20 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null
 			return { role: 'assistant', content: entry.summary }
 		case 'label':
 			return { role: 'assistant', content: `[${entry.label}]` }
-		case 'activity':
-			return null
+		case 'activity': {
+			if (!entry.images?.length) return null
+			const tool = entry.items.findLast((item) => item.kind === 'tool')
+			return {
+				role: 'assistant',
+				content: '',
+				toolCalls: [
+					{
+						name: tool?.name ?? 'image',
+						args: undefined,
+						images: entry.images
+					}
+				]
+			}
+		}
 	}
 }

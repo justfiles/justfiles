@@ -171,7 +171,7 @@ export async function createAssistant({
 			const unsubscribe = agent.subscribe(activity.onEvent)
 			try {
 				await agent.prompt(message)
-				await retryEmptyAssistant(offset)
+				await retryEmptyAssistant(offset, activity.dropLastMessage)
 			} catch (error) {
 				promptError = error
 			} finally {
@@ -244,11 +244,12 @@ export async function createAssistant({
 		return answer
 	}
 
-	async function retryEmptyAssistant(offset: number) {
+	async function retryEmptyAssistant(offset: number, dropLast: () => void) {
 		const messages = agent.state.messages
 		const last = messages[messages.length - 1]
 		if (messages.length <= offset || !isEmptyAssistant(last)) return
 
+		dropLast()
 		agent.state.messages = messages.slice(0, -1)
 		await agent.continue()
 	}

@@ -20,4 +20,33 @@ describe('sessionEntries2DisplayMessages', () => {
 		const messages = sessionEntries2DisplayMessages([assistant('see [the docs](https://x.dev)')])
 		expect(messages[0].content).toBe('see [the docs](https://x.dev)')
 	})
+
+	test('keeps receipt images visible before the shared activity projector lands', () => {
+		const images = [{ src: '/pictures/red-panda.png', mimeType: 'image/png', alt: 'red panda' }]
+		const messages = sessionEntries2DisplayMessages([
+			{
+				type: 'activity',
+				id: 'activity-1',
+				parentId: null,
+				ts: '2026-08-28T00:00:00.000Z',
+				items: [
+					{
+						kind: 'tool',
+						name: 'generate_image',
+						label: 'Generate image',
+						durationMs: 100
+					}
+				],
+				images
+			}
+		])
+
+		expect(messages).toEqual([
+			{
+				role: 'assistant',
+				content: '',
+				toolCalls: [{ name: 'generate_image', args: undefined, images }]
+			}
+		])
+	})
 })
