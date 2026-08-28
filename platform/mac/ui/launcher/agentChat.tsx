@@ -1,9 +1,9 @@
-import type { SessionStatus } from '@justfiles/agent'
 import type {
 	ActivityDetailResult,
 	SessionClientMessage,
 	SessionServerMessage,
-	TranscriptItem
+	TranscriptItem,
+	TranscriptStatus
 } from '@justfiles/agent/protocol'
 import type { TranscriptRow } from '@justfiles/ui/Transcript'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -23,12 +23,12 @@ export function useAgentChat() {
 	const [error, setError] = useState<string | null>(null)
 	const socketRef = useRef<WebSocket | null>(null)
 	const historyRef = useRef<readonly TranscriptItem[]>([])
-	const statusRef = useRef<SessionStatus>({ state: 'idle' })
+	const statusRef = useRef<TranscriptStatus>({ state: 'idle' })
 	const submittingRef = useRef(false)
 	const pendingMessageRef = useRef<string | null>(null)
 	const pendingDetailsRef = useRef(new Map<string, (result: ActivityDetailResult) => void>())
 
-	const setStatus = useCallback((status: SessionStatus) => {
+	const setStatus = useCallback((status: TranscriptStatus) => {
 		statusRef.current = status
 		setIsStreaming(submittingRef.current || status.state !== 'idle')
 	}, [])

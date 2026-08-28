@@ -24,6 +24,7 @@ import {
 	modelsBackend,
 	parseFrontmatter,
 	resolveTimezone,
+	type SessionStatus,
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
@@ -33,7 +34,7 @@ import {
 	readAgentName,
 	readProfile
 } from '@justfiles/agent/defaults'
-import { EXPRESSIONS } from '@justfiles/agent/expression'
+import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
 import {
 	promptReply,
 	type SessionClientMessage,
@@ -91,6 +92,7 @@ import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { type AiMeter, createAiMeter, evaluate, readTier } from './quota.ts'
 import { commitReset } from './reset-instance.ts'
+import { createTranscriptStatusProjector } from './transcript-status.ts'
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -114,6 +116,7 @@ interface DisplayParticipants {
 
 type AgentServerMessage =
 	| SessionServerMessage
+	| { type: 'expression'; expression: Expression | null }
 	| { type: 'debug'; message: string }
 	| { type: 'error'; message: string }
 
@@ -210,6 +213,10 @@ export class Frieren extends DurableObject<Env> {
 	private readonly agents: AgentSessions
 	private readonly agentSubscriptions = new Map<string, () => void>()
 	private readonly agentMessages = new Map<string, Promise<void>>()
+	private readonly statusProjectors = new Map<
+		string,
+		ReturnType<typeof createTranscriptStatusProjector>
+	>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -480,13 +487,33 @@ export class Frieren extends DurableObject<Env> {
 			this.agentSubscriptions.set(
 				key,
 				session.subscribe((update) => {
+					const messages: AgentServerMessage[] = []
+					const updates = updateMessages(update, projectTranscript, (status) =>
+						this.projectAgentStatus(agentId, status, (expression) =>
+							messages.push({ type: 'expression', expression })
+						)
+					)
+					messages.push(...updates)
 					void this.queueAgentMessage(agentId, () => {
-						for (const message of updateMessages(update, projectTranscript))
-							this.broadcastAgent(agentId, message)
+						for (const message of messages) this.broadcastAgent(agentId, message)
 					})
 				})
 			)
 		return session
+	}
+
+	private projectAgentStatus(
+		agentId: string | undefined,
+		status: SessionStatus,
+		onExpression?: (expression: Expression | null) => void
+	) {
+		const key = agentId ?? ''
+		let projector = this.statusProjectors.get(key)
+		if (!projector) {
+			projector = createTranscriptStatusProjector()
+			this.statusProjectors.set(key, projector)
+		}
+		return projector(status, onExpression)
 	}
 
 	// State reads and pushes must leave in queue order.
@@ -506,7 +533,9 @@ export class Frieren extends DurableObject<Env> {
 			const snapshot = await session.snapshot()
 			ws.send(
 				JSON.stringify({
-					...snapshotMessage(snapshot, projectTranscript)
+					...snapshotMessage(snapshot, projectTranscript, (status) =>
+						this.projectAgentStatus(agentId, status)
+					)
 				} satisfies AgentServerMessage)
 			)
 		})

@@ -1,24 +1,25 @@
 # The crease: folding the agent's interior
 
-> Status: **Phase 2 implemented.** Both hosts now receive the same settled
-> `TranscriptItem`s, and activity detail is read only through a request-scoped
-> session message. Disposable live-status projection, the crease UI and retention
-> remain unimplemented. The visual design stays as mocked.
+> Status: **Phase 3 implemented.** Both hosts now receive the same settled
+> `TranscriptItem`s and disposable `TranscriptStatus`. Browsers no longer receive
+> raw `AgentEvent` detail. The crease UI and retention remain unimplemented. The
+> visual design stays as mocked.
 >
 > The implemented transport starts with one `snapshot` containing durable history
-> and the current `SessionStatus`. Durable additions then arrive as `item`
+> and the current `TranscriptStatus`. Durable additions then arrive as `item`
 > messages; `status` replaces only what the agent is doing now. Live activity
 > remains disposable and settled history remains authoritative. The wire carries
 > the shared presentation model, never raw session storage entries.
 
-## Handoff after Phase 2
+## Handoff after Phase 3
 
 PR [#597](https://github.com/xiaoxinghu/justfiles/pull/597) merged the
 session-message foundation on 2026-08-28 at `29184047`. PR
 [#599](https://github.com/xiaoxinghu/justfiles/pull/599) implements Phase 1 on
 that contract by recording completed activity runs. Phase 2 builds the shared
-settled projection and detail reads on top. Start new work at Phase 3. Do not
-rebuild the lifecycle, recorder or settled projector.
+settled projection and detail reads on top. Phase 3 replaces raw browser events
+with disposable live status. Start new work at Phase 4. Do not rebuild the
+lifecycle, recorder, settled projector or live-status projector.
 
 ### What has landed
 
@@ -72,16 +73,22 @@ rebuild the lifecycle, recorder or settled projector.
 - Frieren and Mac project before sending. Their clients retain the received
   transcript items directly, and both host-specific history projectors are gone.
 - The shared `Transcript` accepts settled items alongside the temporary live
-  `AgentMessage` shape. It renders messages and images now, but deliberately skips
-  activity rows until Phase 4.
+  `AgentMessage` shape. It renders messages, images and the disposable live row
+  now, but deliberately skips settled activity rows until Phase 4.
+- `SessionServerMessage` carries `TranscriptStatus`, never `SessionStatus` or raw
+  `AgentEvent`. Mac maps all non-idle work to one busy status.
+- Frieren's worker accumulates stripped response text and maps tools to short
+  phrases. Expression changes use a separate Frieren-only message so browser
+  pacing stays independent of transcript status.
+- Frieren keeps one client-owned temporary row while work runs. Each status
+  replaces it, idle drops it, and settled items remain authoritative.
 
 ### What has not landed
 
 - Neither host renders settled activity receipts yet. The clients have a detail
   loader, but nothing calls it until the disclosure UI lands.
-- Frieren still builds its temporary response and tool-call view from raw
-  `SessionStatus.detail`. The crease, live status row, disclosure UI, scroll fix
-  and detail-loader integration are all unimplemented.
+- The crease, disclosure UI, scroll fix and detail-loader integration are all
+  unimplemented.
 - Detail retention and expired-detail UI remain Phase 4 work.
 
 ### Decisions that are closed
@@ -109,33 +116,29 @@ rebuild the lifecycle, recorder or settled projector.
 
 ### Next implementation slice
 
-Implement **Phase 3 only: use disposable live updates**. Do not combine it with
-the crease UI or retention. The goal is to stop sending raw `AgentEvent` detail
-to browsers while keeping the same history-plus-status lifecycle.
+Implement **Phase 4 only: render and retain**. The transport, recorder, settled
+projection and disposable live row are complete. Do not redesign them.
 
 Start at these seams:
 
 | File | Why it matters |
 | --- | --- |
-| `packages/agent/protocol.ts` | Use the existing `TranscriptStatus` type; do not change settled items. |
-| `platform/frieren/worker/frieren.ts` | Map `SessionStatus.detail` to the small disposable status before sending. |
-| `platform/frieren/src/os/client.ts` | Replace raw event assembly with one current phrase or partial response. |
-| `platform/mac/ui/launcher/agentChat.tsx` | Keep idle versus busy; Mac token streaming stays out of scope. |
+| `packages/ui/src/Transcript.tsx` | Render settled activity runs as the mocked crease and load detail on open. |
+| `platform/frieren/src/agent/MessagesPanel.tsx` | Map `expandTools` and pass the existing detail loader. |
+| `platform/mac/ui/launcher/agentChat.tsx` | Pass the same activity configuration without adding live token streaming. |
+| `platform/frieren/worker/daily-maintenance.ts` | Add bounded age and size eviction for activity detail files. |
 
 Recommended order:
 
-1. Map raw status detail in Frieren's worker, including accumulated response text
-   and expression stripping.
-2. Send only `TranscriptStatus` to browsers while keeping the existing per-session
-   send queues and prompt admission messages.
-3. Keep one replaceable temporary status view in the Frieren client. Idle drops it;
-   settled `item` messages remain authoritative.
-4. Keep avatar expression pacing as a separate Frieren signal.
-5. Leave Mac on busy versus idle without adding token streaming.
+1. Render one crease per projected activity run and keep image items outside it.
+2. Load detail only when a crease opens. Show an expired state when the body is gone.
+3. Apply `expandTools` as the default-open preference. Failed runs open by default.
+4. Fix transcript scrolling for content inserted above the current viewport.
+5. Evict detail by age, then oldest first until the cache is within its size limit.
 
-Phase 3 is done when no browser receives raw `AgentEvent`, reconnect still blocks
-prompts while a session is busy, and settling uses the Phase 2 transcript without
-rebuilding activity in either client.
+Phase 4 is done when both hosts render the same settled creases, opening one reads
+its detail on demand, expired detail degrades cleanly, reload preserves the fold,
+and the daily sweep bounds the cache.
 
 Visual mockups, interactive: [`mockups.html`](./mockups.html). Open it in a
 browser. Press **Play turn**; the two switches in the frame header change real
@@ -306,9 +309,9 @@ export type SessionStatus =
 	  }
 
 export type SessionServerMessage =
-	| { type: 'snapshot'; history: readonly TranscriptItem[]; status: SessionStatus }
+	| { type: 'snapshot'; history: readonly TranscriptItem[]; status: TranscriptStatus }
 	| { type: 'item'; item: TranscriptItem }
-	| { type: 'status'; status: SessionStatus; error?: AgentError }
+	| { type: 'status'; status: TranscriptStatus; error?: AgentError }
 	| { type: 'accepted' }
 	| { type: 'rejected'; reason: 'busy' }
 	| { type: 'activity_detail'; requestId: string; result: ActivityDetailResult }
@@ -329,11 +332,10 @@ placeholder. When the model finishes, the session publishes the persisted output
 items, then idle status. A reset sends an empty snapshot. Storage reconciliation
 also sends a snapshot when the change cannot be expressed as an append.
 
-`status.detail` carries the latest raw agent update only to preserve today's live
-Frieren rendering. It is current, in-memory data. It is not session history and
-does not survive a process restart. A reconnect can always use `status.state` to
-block another prompt; it may use the latest detail to restore a partial live view.
-The crease work can later map that detail to its smaller presentation shape.
+Internal `SessionStatus.detail` carries the latest raw agent update to the host.
+It is current, in-memory data, not session history. Frieren maps it to
+`TranscriptStatus` before sending, while Mac maps every non-idle state to one busy
+status. A reconnect still uses `status.state` to block another prompt.
 
 Prompt admission is command traffic. The sender receives `accepted` or
 `rejected`; every client receives the same session status and durable items.
@@ -370,12 +372,10 @@ compaction summary, or say `[before refactor]`, in the voice it answers question
 in. On Mac those events vanished. Both were wrong, in opposite directions, and
 neither was a rendering bug. The presentation model lacked a category.
 
-Phase 2 removed both projectors and fixed settled IDs. One divergence remains in
-Frieren until Phase 3. During streaming,
-`platform/frieren/src/os/client.ts` seeds one message with both `thinking: ''`
-and `toolCalls: []` (`message_start`) and accumulates deltas onto it. On replay,
-settled history contains a shared activity item instead. Phase 4 will render that
-item as a crease. Remounting the temporary row when the turn ends remains allowed.
+Phase 2 removed both projectors and fixed settled IDs. Phase 3 removed the live
+divergence. Frieren now keeps one temporary phrase or partial response, then drops
+it when settled history arrives. Phase 4 will render the settled activity item as
+a crease. Remounting the temporary row when the turn ends remains allowed.
 
 ## Storage, context and presentation are separate
 
@@ -530,9 +530,7 @@ Frieren's avatar signal separately. Mac may ignore status detail and only use
 idle versus non-idle. Both hosts use the same settled projection.
 
 Each client stores history, the latest status and one local `submitting` boolean.
-There is no remote phase union, turn ID or separate live-event message. Frieren's
-existing live renderer consumes the optional status detail until Phase 3 replaces
-it with `TranscriptStatus`.
+There is no remote phase union, turn ID or separate live-event message.
 
 The turn recorder measures duration internally and writes it with the completed
 run. Session entry timestamps are not suitable because one append batch gives
@@ -663,6 +661,9 @@ implemented.
   socket replacement and abort.
 
 ### Phase 3: use disposable live updates
+
+Status: complete. Browsers receive only `TranscriptStatus`; Frieren projects
+partial responses and tool phrases in its worker, and Mac keeps busy versus idle.
 
 - Map raw status detail to `TranscriptStatus` in the Frieren worker.
 - Keep one temporary status phrase in the browser. Do not build live activity

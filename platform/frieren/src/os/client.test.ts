@@ -19,22 +19,6 @@ class FakeSocket implements SocketLike {
 	}
 
 	emit(frame: object): void {
-		const value = frame as {
-			type?: string
-			event?: { type?: string; assistantMessageEvent?: { type?: string } }
-		}
-		if (value.type === 'event' && value.event) {
-			const state = value.event.type?.startsWith('tool_execution_')
-				? 'calling_tool'
-				: value.event.assistantMessageEvent?.type === 'text_delta'
-					? 'responding'
-					: 'thinking'
-			this.push({
-				type: 'status',
-				status: { state, detail: value.event }
-			})
-			return
-		}
 		this.push(frame)
 	}
 
@@ -108,10 +92,6 @@ function setup() {
 }
 
 describe('FrierenClient agent', () => {
-	// Long enough that an emotion has served its minimum time on screen (client.ts HOLD_MS), so
-	// a test about turn boundaries is not really a test about pacing.
-	const HELD_LONG_ENOUGH = 5_000
-
 	test('snapshot hydrates history received before any subscriber', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
@@ -131,7 +111,7 @@ describe('FrierenClient agent', () => {
 		expect(snapshot.messages[0]).toMatchObject({ role: 'user', content: 'hello' })
 	})
 
-	test('subscribe is notified of future streaming events and snapshot reflects them', async () => {
+	test('replaces one temporary status row with the accumulated response', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
@@ -139,52 +119,37 @@ describe('FrierenClient agent', () => {
 		const listener = vi.fn()
 		client.agent().subscribe(listener)
 
-		socket.emit({ type: 'event', event: { type: 'agent_start' } })
-		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
-		socket.emit({
-			type: 'event',
-			event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } }
+		socket.emit({ type: 'status', status: { state: 'thinking', label: 'Thinking' } })
+		const temporaryId = client.agent().snapshot().messages.at(-1)?.id
+		expect(client.agent().snapshot().messages.at(-1)).toMatchObject({
+			content: '',
+			status: 'Thinking'
 		})
-		socket.emit({
-			type: 'event',
-			event: {
-				type: 'message_update',
-				assistantMessageEvent: { type: 'text_delta', delta: ' there' }
-			}
+		socket.emit({ type: 'status', status: { state: 'calling_tool', label: 'Reading docs' } })
+		expect(client.agent().snapshot().messages.at(-1)).toMatchObject({
+			id: temporaryId,
+			status: 'Reading docs'
 		})
+		socket.emit({ type: 'status', status: { state: 'responding', text: 'Hi there' } })
 
 		expect(listener).toHaveBeenCalled()
 		const snapshot = client.agent().snapshot()
 		expect(snapshot.isStreaming).toBe(true)
-		expect(snapshot.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Hi there' })
+		expect(snapshot.messages.at(-1)).toMatchObject({
+			id: temporaryId,
+			role: 'assistant',
+			content: 'Hi there'
+		})
 	})
 
-	test('strips expression tags off the token stream, and paces the beats', async () => {
+	test('paces expression updates sent on their separate channel', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 		vi.useFakeTimers()
 		try {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			// The tag straddles two deltas, as it does on a real stream.
-			for (const delta of ['[ple', 'ased]Found it. ', '[concerned]Table is gone.']) {
-				socket.emit({
-					type: 'event',
-					event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } }
-				})
-			}
-			socket.emit({ type: 'event', event: { type: 'message_end' } })
-
-			expect(client.agent().snapshot().messages.at(-1)).toMatchObject({
-				role: 'assistant',
-				content: 'Found it. Table is gone.'
-			})
-			// Both beats landed in the same instant, so the second is waiting rather than erasing
-			// the first (see HOLD_MS).
+			socket.emit({ type: 'expression', expression: 'pleased' })
+			socket.emit({ type: 'expression', expression: 'concerned' })
 			expect(client.agent().snapshot().expression).toBe('pleased')
 			vi.advanceTimersByTime(3_000)
 			expect(client.agent().snapshot().expression).toBe('concerned')
@@ -193,41 +158,16 @@ describe('FrierenClient agent', () => {
 		}
 	})
 
-	test('an untagged reply rests, rather than wearing the last turn', async () => {
+	test('a new turn returns the face to rest after the current expression has been held', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		// A turn that earned an emotion...
-		socket.emit({ type: 'event', event: { type: 'agent_start' } })
-		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
-		socket.emit({
-			type: 'event',
-			event: {
-				type: 'message_update',
-				assistantMessageEvent: { type: 'text_delta', delta: '[concerned]That would drop it.' }
-			}
-		})
-		socket.emit({ type: 'event', event: { type: 'agent_end' } })
+		socket.emit({ type: 'expression', expression: 'concerned' })
 		expect(client.agent().snapshot().expression).toBe('concerned')
 
-		// ...must not lend it to the next one just because that one had no feeling to report.
-		// There is no tag for calm: a plain sentence is how the agent stays quiet, and the rest
-		// lands once the emotion has served its minimum on screen.
 		vi.useFakeTimers()
 		try {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			socket.emit({
-				type: 'event',
-				event: {
-					type: 'message_update',
-					assistantMessageEvent: { type: 'text_delta', delta: 'Done.' }
-				}
-			})
-			socket.emit({ type: 'event', event: { type: 'agent_end' } })
+			socket.emit({ type: 'expression', expression: null })
 			vi.advanceTimersByTime(5_000)
 			expect(client.agent().snapshot().expression).toBe(null)
 		} finally {
@@ -235,56 +175,15 @@ describe('FrierenClient agent', () => {
 		}
 	})
 
-	test('an emotion is not replaced before it has been on screen long enough', async () => {
+	test('a face survives an eager follow-up until its minimum display time', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
 		vi.useFakeTimers()
 		try {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			// Two beats inside the same second, as a fast reply delivers them.
-			for (const delta of ['[curious]Who’s there? ', '[pleased]Ha, good one.']) {
-				socket.emit({
-					type: 'event',
-					event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } }
-				})
-				vi.advanceTimersByTime(300)
-			}
-			// The first beat is still up: the second is waiting its turn, not overwriting it.
-			expect(client.agent().snapshot().expression).toBe('curious')
-			vi.advanceTimersByTime(3_000)
-			expect(client.agent().snapshot().expression).toBe('pleased')
-		} finally {
-			vi.useRealTimers()
-		}
-	})
-
-	test('a face the user never registered survives an eager follow-up prompt', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-		vi.useFakeTimers()
-		try {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			socket.emit({
-				type: 'event',
-				event: {
-					type: 'message_update',
-					assistantMessageEvent: { type: 'text_delta', delta: '[apologetic]That failed twice.' }
-				}
-			})
-			socket.emit({ type: 'event', event: { type: 'agent_end' } })
-			// The user fires off another prompt half a second later.
+			socket.emit({ type: 'expression', expression: 'apologetic' })
 			vi.advanceTimersByTime(500)
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
+			socket.emit({ type: 'expression', expression: null })
 			expect(client.agent().snapshot().expression).toBe('apologetic')
 			vi.advanceTimersByTime(3_000)
 			expect(client.agent().snapshot().expression).toBe(null)
@@ -293,58 +192,24 @@ describe('FrierenClient agent', () => {
 		}
 	})
 
-	test('a new reply starts from a clean face, so a tag cannot outlive its turn', async () => {
+	test('a settled item replaces the temporary response when idle arrives', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
-		const reply = (deltas: string[]) => {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			for (const delta of deltas) {
-				socket.emit({
-					type: 'event',
-					event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } }
-				})
-			}
-			socket.emit({ type: 'event', event: { type: 'message_end' } })
-			socket.emit({ type: 'event', event: { type: 'agent_end' } })
-		}
-
-		reply(['[apologetic]That failed.'])
-		expect(client.agent().snapshot().expression).toBe('apologetic')
-
-		// The face must be clean from `agent_start` on, not from the first token: streaming
-		// (which un-rests the avatar) begins a second or more before the model answers. The
-		// emotion's minimum on screen is the one thing that can delay it (covered separately);
-		// here it has long since been served.
-		vi.useFakeTimers()
-		try {
-			vi.advanceTimersByTime(HELD_LONG_ENOUGH)
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			expect(client.agent().snapshot().expression).toBe(null)
-
-			// And a model that ignores the contract on this turn must not wear the old face.
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			socket.emit({
-				type: 'event',
-				event: {
-					type: 'message_update',
-					assistantMessageEvent: { type: 'text_delta', delta: 'Retried and it worked.' }
-				}
-			})
-			expect(client.agent().snapshot().expression).toBe(null)
-		} finally {
-			vi.useRealTimers()
-		}
+		socket.emit({ type: 'status', status: { state: 'responding', text: 'Done.' } })
+		const temporaryId = client.agent().snapshot().messages.at(-1)?.id
+		socket.emit({
+			type: 'item',
+			item: { id: 'answer-1', type: 'message', role: 'assistant', content: 'Done.' }
+		})
+		expect(client.agent().snapshot().messages.at(-1)?.id).toBe(temporaryId)
+		socket.emit({ type: 'status', status: { state: 'idle' } })
+		expect(client.agent().snapshot().messages).toEqual([
+			{ id: 'answer-1', type: 'message', role: 'assistant', content: 'Done.' }
+		])
 	})
 
-	test('promotes tool-result image refs onto the tool call, live and from history', async () => {
+	test('keeps tool payloads out of the temporary status and images in settled history', async () => {
 		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
 		const { client, connect } = setup()
 		const socket = await connect()
@@ -373,31 +238,15 @@ describe('FrierenClient agent', () => {
 			image: images[0]
 		})
 
-		socket.emit({ type: 'event', event: { type: 'agent_start' } })
-		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
 		socket.emit({
-			type: 'event',
-			event: {
-				type: 'tool_execution_start',
-				toolCallId: 'tc1',
-				toolName: 'generate_image',
-				args: { prompt: 'a red panda' }
-			}
+			type: 'status',
+			status: { state: 'calling_tool', label: 'Generating an image' }
 		})
-		socket.emit({
-			type: 'event',
-			event: {
-				type: 'tool_execution_end',
-				toolCallId: 'tc1',
-				toolName: 'generate_image',
-				result: { content: [{ type: 'text', text: 'saved' }], details: { images } },
-				isError: false
-			}
+		expect(client.agent().snapshot().messages.at(-1)).toMatchObject({
+			content: '',
+			status: 'Generating an image'
 		})
-
-		const message = client.agent().snapshot().messages.at(-1)
-		const live = message && !('type' in message) ? message.toolCalls?.[0] : undefined
-		expect(live).toMatchObject({ status: 'done', images })
+		expect(client.agent().snapshot().messages.at(-1)).not.toHaveProperty('toolCalls')
 	})
 
 	test('restores ask_user options from history', async () => {
@@ -449,7 +298,7 @@ describe('FrierenClient agent', () => {
 		const first = client.agent().snapshot()
 		expect(client.agent().snapshot()).toBe(first)
 
-		socket.emit({ type: 'event', event: { type: 'agent_start' } })
+		socket.emit({ type: 'status', status: { state: 'thinking', label: 'Thinking' } })
 		expect(client.agent().snapshot()).not.toBe(first)
 	})
 
@@ -465,17 +314,21 @@ describe('FrierenClient agent', () => {
 		})
 		expect(await client.agent().prompt('overlap')).toBe(false)
 
-		socket.emit({ type: 'status', status: { state: 'thinking' } })
+		socket.emit({ type: 'status', status: { state: 'thinking', label: 'Thinking' } })
 		socket.emit({ type: 'accepted' })
 		expect(await accepted).toBe(true)
-		expect(client.agent().snapshot()).toMatchObject({ isStreaming: true, messages: [] })
+		expect(client.agent().snapshot()).toMatchObject({
+			isStreaming: true,
+			messages: [expect.objectContaining({ status: 'Thinking' })]
+		})
 
 		socket.emit({
 			type: 'item',
 			item: { id: 'prompt-1', type: 'message', role: 'user', content: 'do the thing' }
 		})
 		expect(client.agent().snapshot().messages).toEqual([
-			expect.objectContaining({ role: 'user', content: 'do the thing' })
+			expect.objectContaining({ role: 'user', content: 'do the thing' }),
+			expect.objectContaining({ status: 'Thinking' })
 		])
 	})
 
@@ -489,13 +342,16 @@ describe('FrierenClient agent', () => {
 			type: 'item',
 			item: { id: 'prompt-2', type: 'message', role: 'user', content: 'already running' }
 		})
-		socket.emit({ type: 'status', status: { state: 'thinking' } })
+		socket.emit({ type: 'status', status: { state: 'thinking', label: 'Thinking' } })
 		socket.emit({ type: 'rejected', reason: 'busy' })
 
 		expect(await accepted).toBe(false)
 		expect(client.agent().snapshot()).toMatchObject({
 			isStreaming: true,
-			messages: [expect.objectContaining({ content: 'already running' })]
+			messages: [
+				expect.objectContaining({ content: 'already running' }),
+				expect.objectContaining({ status: 'Thinking' })
+			]
 		})
 	})
 
@@ -524,7 +380,7 @@ describe('FrierenClient agent', () => {
 				{ role: 'user', content: 'older question' },
 				{ role: 'user', content: 'running now' }
 			],
-			status: { state: 'thinking' }
+			status: { state: 'thinking', label: 'Thinking' }
 		})
 
 		expect(client.agent('notes').snapshot()).toMatchObject({
@@ -532,7 +388,8 @@ describe('FrierenClient agent', () => {
 			isLoadingHistory: false,
 			messages: [
 				expect.objectContaining({ content: 'older question' }),
-				expect.objectContaining({ content: 'running now' })
+				expect.objectContaining({ content: 'running now' }),
+				expect.objectContaining({ status: 'Thinking' })
 			]
 		})
 		expect(await client.agent('notes').prompt('overlap')).toBe(false)
@@ -548,14 +405,9 @@ describe('FrierenClient agent', () => {
 			type: 'snapshot',
 			agentId: 'notes',
 			history: [{ role: 'user', content: 'new work' }],
-			status: { state: 'thinking' }
+			status: { state: 'thinking', label: 'Thinking' }
 		})
 		client.agent('notes').abort()
-		socket.emit({
-			type: 'event',
-			agentId: 'notes',
-			event: { type: 'message_start', message: { role: 'assistant' } }
-		})
 
 		expect(socket.agent('notes').sent.map((frame) => JSON.parse(frame))).toContainEqual({
 			type: 'abort'
