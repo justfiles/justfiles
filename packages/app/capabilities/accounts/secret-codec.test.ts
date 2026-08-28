@@ -13,9 +13,8 @@ describe('aesGcmSecretCodec', () => {
 	test('the envelope carries no plaintext, and repeats differ (random iv)', async () => {
 		const one = await codec.encode(creds, 'a')
 		const two = await codec.encode(creds, 'a')
-		expect(JSON.stringify(one)).not.toContain('SEKRIT')
-		expect(one).toMatchObject({ v: 1, alg: 'A256GCM' })
-		expect(JSON.stringify(one)).not.toEqual(JSON.stringify(two))
+		expect(one).toEqual({ v: 1, alg: 'A256GCM', ct: expect.any(String) })
+		expect(one).not.toEqual(two)
 	})
 
 	test('the account id is bound in: another account cannot open this envelope', async () => {
