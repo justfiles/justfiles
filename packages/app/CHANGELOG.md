@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.9.1...app-v0.10.0) (2026-08-28)
+
+
+### Features
+
+* **frieren:** rebrand to Just Computer ([#603](https://github.com/xiaoxinghu/justfiles/issues/603)) ([3f11dfc](https://github.com/xiaoxinghu/justfiles/commit/3f11dfc099034881147e8dfead7f31bfd0052ebe))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/design bumped to 0.2.0
+
 ## [0.9.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.9.0...app-v0.9.1) (2026-08-25)
 
 
