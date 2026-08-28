@@ -17,7 +17,7 @@
 		"required": ["CLERK_SECRET_KEY", "OPENROUTER_API_KEY", "ENCRYPTION_KEY"]
 	},
 	"vars": {
-		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsubXlrb2RhbWEuYXBwJA"
+		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuanVzdGNvbXB1dGVyLmFwcCQ"
 	},
 	"durable_objects": {
 		"bindings": [
@@ -54,10 +54,6 @@
 	],
 	"routes": [
 		{
-			"pattern": "mykodama.app",
-			"custom_domain": true
-		},
-		{
 			"pattern": "justcomputer.app",
 			"custom_domain": true
 		}
@@ -75,10 +71,6 @@
 				"required": ["CLERK_SECRET_KEY", "OPENROUTER_API_KEY", "ENCRYPTION_KEY"]
 			},
 			"routes": [
-				{
-					"pattern": "staging.mykodama.app",
-					"custom_domain": true
-				},
 				{
 					"pattern": "staging.justcomputer.app",
 					"custom_domain": true
