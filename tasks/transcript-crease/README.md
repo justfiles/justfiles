@@ -90,7 +90,8 @@ settled projector or live-status projector.
 - Opening a disclosure detaches bottom pinning before content grows, then reveals
   only the overflow while keeping the disclosure button visible.
 - Daily Frieren maintenance deletes detail older than 30 days, then deletes the
-  oldest remaining files until the cache is at most 100 MiB.
+  oldest remaining files until the cache is at most 100 MiB. Large sweeps resume
+  in bounded alarm slices.
 
 ### What has not landed
 
@@ -697,7 +698,8 @@ keeps it visible. This bug only affects opening settled history.
 
 After the unfold transition, if the sheet's bottom is below the viewport, scroll
 by the overflow only. Keep the disclosure button visible; never jump to the
-thread bottom.
+thread bottom. Closing before the transition ends restores the pin state captured
+when opening began.
 
 ## Accessibility
 

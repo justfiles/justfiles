@@ -827,6 +827,7 @@ export class Frieren extends DurableObject<Env> {
 		const { daily } = await runDailyMaintenance(
 			[this.store, this.local],
 			this.volume,
+			this.local,
 			this.ctx.storage
 		)
 		if (daily) await this.getSession().runMaintenance()
