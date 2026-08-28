@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.19.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.18.0...frieren-v0.19.0) (2026-08-28)
+
+
+### Features
+
+* **agent:** record completed activity runs ([b1fb639](https://github.com/xiaoxinghu/justfiles/commit/b1fb6396c42c47ad0a92e076dc69074da1886f8c))
+* **agent:** record completed activity runs ([8d2bdda](https://github.com/xiaoxinghu/justfiles/commit/8d2bdda4f738aaa5418a299f83b531d7bc623a0c))
+* **agent:** render transcript activity creases ([0a255df](https://github.com/xiaoxinghu/justfiles/commit/0a255dfbad9dd7f3c4c62ef3441c9bbdab9d2846))
+* **agent:** render transcript activity creases ([c14f5b8](https://github.com/xiaoxinghu/justfiles/commit/c14f5b87c7254ae412cb2890a52ef50082ff72c2))
+* **agent:** share settled transcript projection ([4504c6d](https://github.com/xiaoxinghu/justfiles/commit/4504c6d8db9c2eb1362154c5382d9e3212e367e3))
+* **agent:** share settled transcript projection ([41d4d9a](https://github.com/xiaoxinghu/justfiles/commit/41d4d9a01f1896f29b76b377c2e4b180bdb9f185))
+* **agent:** use disposable transcript status ([acd6935](https://github.com/xiaoxinghu/justfiles/commit/acd6935c60a2becf06ff62441d120399090829dc))
+* **frieren:** connect app-attached agents ([7c814a6](https://github.com/xiaoxinghu/justfiles/commit/7c814a6bbf4cad2d7c9f68f592b2a7349530cc7b))
+* **frieren:** connect app-attached agents ([684c09e](https://github.com/xiaoxinghu/justfiles/commit/684c09e9617dfb1da42257e1278627dc91e5ba28))
+* **frieren:** rebrand to Just Computer ([#603](https://github.com/xiaoxinghu/justfiles/issues/603)) ([3f11dfc](https://github.com/xiaoxinghu/justfiles/commit/3f11dfc099034881147e8dfead7f31bfd0052ebe))
+* **frieren:** serve workspace apps in local development ([c5f8f94](https://github.com/xiaoxinghu/justfiles/commit/c5f8f94694db0a4b3f2a49fc8b7cf873e3d238be))
+* **frieren:** serve workspace apps in local development ([13dc158](https://github.com/xiaoxinghu/justfiles/commit/13dc158c4e4190abe5e1f0f0abed02866de29ab6))
+
+
+### Bug Fixes
+
+* **agent:** bound activity detail maintenance ([8c45411](https://github.com/xiaoxinghu/justfiles/commit/8c4541154cfd444f7eefb068f3bd22cdeb9d76e7))
+* **agent:** make active turns authoritative ([ab1e116](https://github.com/xiaoxinghu/justfiles/commit/ab1e116b144a96ad7582b1c5746ee86ced854d61))
+* **agent:** preserve ordered session state ([7ae969b](https://github.com/xiaoxinghu/justfiles/commit/7ae969b2c8959d487e9322cd4b0d025cda2126ce))
+* **agent:** preserve settled activity state ([715e861](https://github.com/xiaoxinghu/justfiles/commit/715e861b6d0de43181a81097cd5b1e7da63409ef))
+* align app workspace tooling ([dfab314](https://github.com/xiaoxinghu/justfiles/commit/dfab314025537a06ad3ff65c7cc9dd5950fc201e))
+* **frieren:** address attached agent review ([4ba32bb](https://github.com/xiaoxinghu/justfiles/commit/4ba32bbb3d8e4135eb96835a3d0274b92cd305f8))
+* **frieren:** keep live app turns during history load ([dc8c0e8](https://github.com/xiaoxinghu/justfiles/commit/dc8c0e8c9a0aade16dc69f702b4b03b33f99a0f0))
+* **frieren:** model keyed agent work as one phase ([4a38fa0](https://github.com/xiaoxinghu/justfiles/commit/4a38fa02089ddca72519521a362207a273ddac11))
+* **frieren:** restore question options ([c44deb4](https://github.com/xiaoxinghu/justfiles/commit/c44deb46463b8e60fa01b30990efac5bcf7dadb1))
+* **frieren:** send prompt admission before alarm ([5be4a77](https://github.com/xiaoxinghu/justfiles/commit/5be4a77635882530812f890f346f68e65c7e54b3))
+* **frieren:** synchronize attached agent turns ([edf6e4e](https://github.com/xiaoxinghu/justfiles/commit/edf6e4e5afc17db97bf2d225587914571f845a6e))
+* **ui:** address transcript crease review ([d576735](https://github.com/xiaoxinghu/justfiles/commit/d576735a81f23a97d30542ecf465dcc788e82e32))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.10.0
+    * @justfiles/design bumped to 0.2.0
+
 ## [0.18.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.17.0...frieren-v0.18.0) (2026-08-25)
 
 
