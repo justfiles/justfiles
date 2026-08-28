@@ -9,6 +9,11 @@ const SWEEP_RESUME_KEY = 'fs:sweep:resume'
 // Long enough that a resumed sweep is not a hot loop, short enough that a large
 // backlog drains in minutes rather than days.
 const SWEEP_RESUME_DELAY_MS = 60_000
+const ACTIVITY_DETAIL_ROOT = '/private/cache/agent-activity'
+const ACTIVITY_DETAIL_TTL_MS = 30 * 24 * 60 * 60 * 1_000
+const ACTIVITY_DETAIL_STORE_LIMIT = 100 * 1_024 * 1_024
+
+type ActivityDetailLimits = { ttlMs: number; storeLimit: number }
 
 /** The slice of Durable Object storage this routine drives (see `runDailyMaintenance`). */
 interface SweepState {
@@ -43,6 +48,7 @@ export async function runDailyMaintenance(
 	const resuming = (await state.get<boolean>(SWEEP_RESUME_KEY)) === true
 	// Cheap and idempotent (a readdir of /trash), so a continuation may re-run it.
 	await sweepTrash(volume).catch(() => {})
+	if (!resuming) await sweepActivityDetails(volume, now).catch(() => {})
 	// A failed (or absent) sweep reports nothing: it retries on the next daily alarm,
 	// and a backend that cannot sweep has nothing to come back for.
 	const swept = await Promise.all(stores.map((store) => store.gc?.().catch(() => undefined)))
@@ -53,6 +59,48 @@ export async function runDailyMaintenance(
 		await state.put(SWEEP_RESUME_KEY, true)
 	} else if (resuming) await state.delete(SWEEP_RESUME_KEY)
 	return { daily: !resuming }
+}
+
+export async function sweepActivityDetails(
+	volume: Volume,
+	now = Date.now(),
+	limits: ActivityDetailLimits = {
+		ttlMs: ACTIVITY_DETAIL_TTL_MS,
+		storeLimit: ACTIVITY_DETAIL_STORE_LIMIT
+	}
+): Promise<void> {
+	if (!(await volume.exists(ACTIVITY_DETAIL_ROOT))) return
+	const files: { path: string; size: bigint; mtimeNs: bigint }[] = []
+	await volume.scan(ACTIVITY_DETAIL_ROOT, async (path, stat) => {
+		if (stat.type === 0) files.push({ path, size: stat.size, mtimeNs: stat.mtimeNs })
+	})
+
+	const cutoff = BigInt(now - limits.ttlMs) * 1_000_000n
+	const remaining: typeof files = []
+	for (const detail of files) {
+		if (detail.mtimeNs < cutoff) {
+			try {
+				await volume.rm(detail.path)
+				continue
+			} catch {}
+		}
+		remaining.push(detail)
+	}
+
+	let total = remaining.reduce((size, detail) => size + detail.size, 0n)
+	const limit = BigInt(limits.storeLimit)
+	if (total <= limit) return
+	remaining.sort((left, right) => {
+		if (left.mtimeNs === right.mtimeNs) return left.path.localeCompare(right.path)
+		return left.mtimeNs < right.mtimeNs ? -1 : 1
+	})
+	for (const detail of remaining) {
+		if (total <= limit) break
+		try {
+			await volume.rm(detail.path)
+			total -= detail.size
+		} catch {}
+	}
 }
 
 // NO AVATAR SWEEP. Derived faces live in `<avatar>/.gen/<hash of resting>/`, so replacing an

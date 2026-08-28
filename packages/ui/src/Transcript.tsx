@@ -9,6 +9,13 @@ import {
 } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import {
+	ActivityCrease,
+	type TranscriptActivityConfig,
+	transcriptActivityCss
+} from './TranscriptActivity'
+
+export type { TranscriptActivityConfig } from './TranscriptActivity'
 
 // A tool-produced image, referenced by a host-meaningful `src` (a Volume path on
 // frieren, a daemon route on quay) — never inline bytes. The host's `resolveImage`
@@ -51,6 +58,7 @@ export interface TranscriptProps {
 	messages: TranscriptRow[]
 	isStreaming: boolean
 	assistantStyle?: 'bubble' | 'plain'
+	activity?: TranscriptActivityConfig
 	// Invoked when the user clicks an option row. Omitted hosts render the labels
 	// as plain (non-clickable) rows.
 	onOption?: (label: string) => void
@@ -150,6 +158,7 @@ export function Transcript({
 	messages,
 	isStreaming,
 	assistantStyle = 'bubble',
+	activity,
 	onOption,
 	leading,
 	resolveImage
@@ -198,6 +207,18 @@ export function Transcript({
 		if (el.scrollHeight - top - el.clientHeight < 32) stuckRef.current = true
 		lastTopRef.current = top
 	}
+	const beforeActivityOpen = () => {
+		stuckRef.current = false
+	}
+	const revealActivity = (head: HTMLElement, sheet: HTMLElement) => {
+		const viewport = viewportRef.current
+		if (!viewport) return
+		const viewportBox = viewport.getBoundingClientRect()
+		const overflow = sheet.getBoundingClientRect().bottom - viewportBox.bottom + 10
+		const headRoom = head.getBoundingClientRect().top - viewportBox.top
+		const top = Math.min(overflow, headRoom)
+		if (top > 0) viewport.scrollTop += top
+	}
 
 	return (
 		<div
@@ -214,7 +235,7 @@ export function Transcript({
 				overflowAnchor: 'none'
 			}}
 		>
-			<style>{css}</style>
+			<style>{css + transcriptActivityCss}</style>
 			<div
 				ref={contentRef}
 				style={{
@@ -231,8 +252,11 @@ export function Transcript({
 						item={item}
 						isStreaming={isStreaming}
 						assistantStyle={assistantStyle}
+						activity={activity}
 						onOption={onOption}
 						resolveImage={resolveImage}
+						onBeforeActivityOpen={beforeActivityOpen}
+						onActivityOpened={revealActivity}
 					/>
 				))}
 			</div>
@@ -244,17 +268,31 @@ function TranscriptRowItem({
 	item,
 	isStreaming,
 	assistantStyle,
+	activity,
 	onOption,
-	resolveImage
+	resolveImage,
+	onBeforeActivityOpen,
+	onActivityOpened
 }: {
 	item: TranscriptRow
 	isStreaming: boolean
 	assistantStyle: 'bubble' | 'plain'
+	activity?: TranscriptActivityConfig
 	onOption?: (label: string) => void
 	resolveImage?: (image: TranscriptImage) => Promise<string | null>
+	onBeforeActivityOpen: () => void
+	onActivityOpened: (head: HTMLElement, sheet: HTMLElement) => void
 }) {
 	if ('type' in item) {
-		if (item.type === 'activity') return null
+		if (item.type === 'activity')
+			return (
+				<ActivityCrease
+					item={item}
+					activity={activity}
+					onBeforeOpen={onBeforeActivityOpen}
+					onOpened={onActivityOpened}
+				/>
+			)
 		if (item.type === 'image')
 			return resolveImage ? <ImageCard image={item.image} resolveImage={resolveImage} /> : null
 	}
@@ -329,8 +367,6 @@ function MessageItem({
 function LiveStatusRow({ label }: { label: string }) {
 	return (
 		<div
-			role="status"
-			aria-live="polite"
 			style={{
 				alignSelf: 'center',
 				display: 'flex',
@@ -352,7 +388,9 @@ function LiveStatusRow({ label }: { label: string }) {
 					animation: 'js-transcript-spin 700ms linear infinite'
 				}}
 			/>
-			<span>{label}</span>
+			<span role="status" aria-live="polite" aria-atomic="true">
+				{label}
+			</span>
 		</div>
 	)
 }

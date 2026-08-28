@@ -122,6 +122,7 @@ function ChatSurface({ chat }: { chat: ReturnType<typeof useAgentChat> }) {
 			<Transcript
 				messages={chat.messages}
 				isStreaming={chat.isStreaming}
+				activity={{ loadDetail: chat.loadActivityDetail }}
 				onOption={(label) => void chat.send(label)}
 			/>
 		</div>

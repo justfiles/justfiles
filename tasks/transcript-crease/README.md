@@ -1,9 +1,9 @@
 # The crease: folding the agent's interior
 
-> Status: **Phase 3 implemented.** Both hosts now receive the same settled
-> `TranscriptItem`s and disposable `TranscriptStatus`. Browsers no longer receive
-> raw `AgentEvent` detail. The crease UI and retention remain unimplemented. The
-> visual design stays as mocked.
+> Status: **Phase 4 implemented.** Both hosts render the same settled activity
+> creases and load disposable detail only when opened. Missing detail expires
+> cleanly, transcript scrolling stays with the opened disclosure, and daily
+> maintenance bounds the detail cache by age and size.
 >
 > The implemented transport starts with one `snapshot` containing durable history
 > and the current `TranscriptStatus`. Durable additions then arrive as `item`
@@ -11,15 +11,16 @@
 > remains disposable and settled history remains authoritative. The wire carries
 > the shared presentation model, never raw session storage entries.
 
-## Handoff after Phase 3
+## Handoff after Phase 4
 
 PR [#597](https://github.com/xiaoxinghu/justfiles/pull/597) merged the
 session-message foundation on 2026-08-28 at `29184047`. PR
 [#599](https://github.com/xiaoxinghu/justfiles/pull/599) implements Phase 1 on
 that contract by recording completed activity runs. Phase 2 builds the shared
 settled projection and detail reads on top. Phase 3 replaces raw browser events
-with disposable live status. Start new work at Phase 4. Do not rebuild the
-lifecycle, recorder, settled projector or live-status projector.
+with disposable live status. Phase 4 renders and retains that presentation model.
+All four planned phases are implemented. Do not rebuild the lifecycle, recorder,
+settled projector or live-status projector.
 
 ### What has landed
 
@@ -82,14 +83,20 @@ lifecycle, recorder, settled projector or live-status projector.
   pacing stays independent of transcript status.
 - Frieren keeps one client-owned temporary row while work runs. Each status
   replaces it, idle drops it, and settled items remain authoritative.
+- The shared transcript renders one settled crease per activity item. It lazily
+  reads detail on open, renders notes and thinking as prose, keeps tool bodies in
+  monospace, and shows an expired state when the sidecar is gone.
+- Failed runs open by default. Hosts can map their `expandTools` preference to
+  the shared `expandByDefault` option.
+- Opening a disclosure detaches bottom pinning before content grows, then reveals
+  only the overflow while keeping the disclosure button visible.
+- Daily Frieren maintenance deletes detail older than 30 days, then deletes the
+  oldest remaining files until the cache is at most 100 MiB.
 
 ### What has not landed
 
-- Neither host renders settled activity receipts yet. The clients have a detail
-  loader, but nothing calls it until the disclosure UI lands.
-- The crease, disclosure UI, scroll fix and detail-loader integration are all
-  unimplemented.
-- Detail retention and expired-detail UI remain Phase 4 work.
+- Multiple selectable sessions, older-history pagination and richer detail
+  inspectors remain separate work.
 
 ### Decisions that are closed
 
@@ -114,31 +121,11 @@ lifecycle, recorder, settled projector or live-status projector.
 - One agent still has one selected session. Multiple selectable sessions and
   older-history pagination are separate work.
 
-### Next implementation slice
+### Implementation status
 
-Implement **Phase 4 only: render and retain**. The transport, recorder, settled
-projection and disposable live row are complete. Do not redesign them.
-
-Start at these seams:
-
-| File | Why it matters |
-| --- | --- |
-| `packages/ui/src/Transcript.tsx` | Render settled activity runs as the mocked crease and load detail on open. |
-| `platform/frieren/src/agent/MessagesPanel.tsx` | Map `expandTools` and pass the existing detail loader. |
-| `platform/mac/ui/launcher/agentChat.tsx` | Pass the same activity configuration without adding live token streaming. |
-| `platform/frieren/worker/daily-maintenance.ts` | Add bounded age and size eviction for activity detail files. |
-
-Recommended order:
-
-1. Render one crease per projected activity run and keep image items outside it.
-2. Load detail only when a crease opens. Show an expired state when the body is gone.
-3. Apply `expandTools` as the default-open preference. Failed runs open by default.
-4. Fix transcript scrolling for content inserted above the current viewport.
-5. Evict detail by age, then oldest first until the cache is within its size limit.
-
-Phase 4 is done when both hosts render the same settled creases, opening one reads
-its detail on demand, expired detail degrades cleanly, reload preserves the fold,
-and the daily sweep bounds the cache.
+The four planned phases are complete. New work should treat the session protocol,
+settled projection, disposable status, crease UI and detail retention as the
+current contract.
 
 Visual mockups, interactive: [`mockups.html`](./mockups.html). Open it in a
 browser. Press **Play turn**; the two switches in the frame header change real
@@ -674,6 +661,9 @@ partial responses and tool phrases in its worker, and Mac keeps busy versus idle
 - Keep Mac on history and status messages. Token streaming on Mac is out of scope.
 
 ### Phase 4: render and retain
+
+Status: complete. The shared crease, both host integrations and cache retention
+are implemented and tested.
 
 - Render one crease per projected activity run.
 - **Render nothing for zero activity.** A turn that just answers must look

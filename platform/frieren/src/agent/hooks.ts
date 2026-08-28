@@ -53,6 +53,7 @@ export function useAgentSession(agentId?: string): AgentSession {
 		refreshIdentity,
 		isStreaming: snapshot.isStreaming,
 		isLoadingHistory: snapshot.isLoadingHistory,
+		loadActivityDetail: agent.loadActivityDetail,
 		sendMessage: () => {
 			const text = input.trim()
 			if (text) void agent.prompt(text).then((accepted) => accepted && setInput(agentId, ''))

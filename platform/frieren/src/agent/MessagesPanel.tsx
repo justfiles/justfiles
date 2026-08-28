@@ -10,10 +10,12 @@ import { Whisper } from './Whisper'
 // Missing agentId selects the main conversation; an app id selects its attached one.
 export function MessagesPanel({
 	agentId,
+	expandTools = false,
 	onClose,
 	onPersonalize
 }: {
 	agentId?: string
+	expandTools?: boolean
 	onClose?: () => void
 	onPersonalize: () => void
 }) {
@@ -30,6 +32,7 @@ export function MessagesPanel({
 		personalized,
 		isStreaming,
 		isLoadingHistory,
+		loadActivityDetail,
 		sendMessage,
 		abort
 	} = session
@@ -122,6 +125,7 @@ export function MessagesPanel({
 					messages={messages}
 					isStreaming={isStreaming}
 					assistantStyle="plain"
+					activity={{ expandByDefault: expandTools, loadDetail: loadActivityDetail }}
 					resolveImage={resolveTranscriptImage}
 				/>
 			)}

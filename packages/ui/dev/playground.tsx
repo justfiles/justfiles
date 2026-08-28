@@ -6,17 +6,38 @@ import {
 	type AttachedAgentMode,
 	type AttachedAgentSize
 } from '../src/AttachedAgent.tsx'
-import { type AgentMessage, Transcript } from '../src/Transcript.tsx'
+import { Transcript, type TranscriptRow } from '../src/Transcript.tsx'
 
 let panelMounts = 0
 
-const messages: AgentMessage[] = [
+const messages: TranscriptRow[] = [
 	{ id: 'question', role: 'user', content: 'Which synonym is closest?' },
+	{
+		id: 'activity',
+		type: 'activity',
+		label: '2 steps · 1.4s',
+		items: [
+			{ kind: 'think', durationMs: 400 },
+			{ kind: 'tool', name: 'dictionary', label: 'Looking up perfunctory', durationMs: 1_000 }
+		],
+		detailId: 'activity-detail'
+	},
 	{
 		id: 'answer',
 		role: 'assistant',
 		content: 'Token. Both mean the gesture was made only to have made it. Desultory means aimless.'
-	}
+	},
+	{ id: 'follow-up', role: 'user', content: 'What about cursory?' },
+	{ id: 'follow-up-answer', role: 'assistant', content: 'Cursory means hurried or incomplete.' },
+	{ id: 'last-question', role: 'user', content: 'And desultory?' },
+	{
+		id: 'expired-activity',
+		type: 'activity',
+		label: 'Read old note · 0.2s',
+		items: [{ kind: 'tool', name: 'read', label: 'Reading an old note', durationMs: 200 }],
+		detailId: 'expired-detail'
+	},
+	{ id: 'last-answer', role: 'assistant', content: 'Desultory means lacking a plan or purpose.' }
 ]
 
 type ThemeStyle = CSSProperties & Record<`--${string}`, string>
@@ -49,7 +70,30 @@ function FakePanel() {
 				<span className="demo-app-icon">D</span>
 				<span>Frieren · Dictionary</span>
 			</div>
-			<Transcript messages={messages} isStreaming={false} assistantStyle="plain" />
+			<Transcript
+				messages={messages}
+				isStreaming={false}
+				assistantStyle="plain"
+				activity={{
+					loadDetail: async (id) =>
+						id === 'expired-detail'
+							? { status: 'expired' }
+							: {
+									status: 'available',
+									detail: {
+										items: [
+											{ kind: 'think', content: 'Token is the closest match in this sentence.' },
+											{
+												kind: 'tool',
+												name: 'dictionary',
+												input: { word: 'perfunctory' },
+												result: { synonyms: ['token', 'cursory', 'desultory'] }
+											}
+										]
+									}
+								}
+				}}
+			/>
 			<label className="demo-composer">
 				<span>Draft · mount {mount}</span>
 				<input
