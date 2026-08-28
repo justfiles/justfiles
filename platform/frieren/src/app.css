@@ -671,6 +671,9 @@
 	font-family: var(--font-ui);
 	font-size: var(--text-ui);
 }
+.frn-desktop[data-fullscreen="true"] > .frn-dock {
+	display: none;
+}
 .frn-dock-bar,
 .frn-dock-sheet,
 .frn-dock-banner {

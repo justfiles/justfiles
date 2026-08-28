@@ -285,6 +285,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
 				<div
 					className="frn-desktop"
+					data-fullscreen={fullscreenId ? 'true' : undefined}
 					style={
 						wallpaper
 							? {
@@ -311,13 +312,11 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							) : null
 						)}
 					</div>
-					{fullscreenId ? null : (
-						<Omnibar
-							chatOpen={chatOpen}
-							onOpenChat={openChat}
-							onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
-						/>
-					)}
+					<Omnibar
+						chatOpen={chatOpen}
+						onOpenChat={openChat}
+						onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
+					/>
 				</div>
 			</div>
 			{/* Always mounted at width 0, so opening is travel rather than an appearance.
