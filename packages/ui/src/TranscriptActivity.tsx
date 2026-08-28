@@ -7,8 +7,8 @@ export interface TranscriptActivityConfig {
 
 type ActivityItem = Extract<TranscriptItem, { type: 'activity' }>
 type ActivityDetail = Extract<ActivityDetailResult, { status: 'available' }>['detail']
-type Restore = { current: (() => void) | null }
-type Reveal = (head: HTMLElement, body: HTMLElement) => boolean
+type Release = { current: (() => void) | null }
+type Reveal = (head: HTMLElement, body: HTMLElement) => void
 
 export function ActivityCrease({
 	item,
@@ -28,7 +28,7 @@ export function ActivityCrease({
 	const loadingRef = useRef(false)
 	const headRef = useRef<HTMLButtonElement>(null)
 	const sheetRef = useRef<HTMLDivElement>(null)
-	const restoreRef = useRef<(() => void) | null>(null)
+	const releaseRef = useRef<(() => void) | null>(null)
 	const panelId = useId()
 
 	useEffect(() => {
@@ -44,11 +44,11 @@ export function ActivityCrease({
 		)
 	}, [activity?.loadDetail, hasDetail, item.detailId, open])
 
-	useReveal(open, detail ?? true, 360, headRef, sheetRef, restoreRef, onOpened)
+	useReveal(open, detail ?? true, 360, headRef, sheetRef, releaseRef, onOpened)
 
 	const toggle = () => {
-		if (!open) restoreRef.current = onBeforeOpen()
-		else cancelReveal(restoreRef)
+		if (!open) releaseRef.current = onBeforeOpen()
+		else finishReveal(releaseRef)
 		setOpen((value) => !value)
 	}
 
@@ -155,7 +155,7 @@ function ActivityTraceRow({
 	const [open, setOpen] = useState(false)
 	const headRef = useRef<HTMLButtonElement>(null)
 	const bodyRef = useRef<HTMLDivElement>(null)
-	const restoreRef = useRef<(() => void) | null>(null)
+	const releaseRef = useRef<(() => void) | null>(null)
 	const panelId = useId()
 	const failed = item.kind === 'tool' && Boolean(item.failed)
 	const label = item.kind === 'think' ? 'Thinking' : item.label
@@ -164,7 +164,7 @@ function ActivityTraceRow({
 		(item.kind === 'note' && item.body) || detail?.kind === 'think' || detail?.kind === 'tool'
 	)
 
-	useReveal(open, hasBody, 240, headRef, bodyRef, restoreRef, onOpened)
+	useReveal(open, hasBody, 240, headRef, bodyRef, releaseRef, onOpened)
 
 	const heading = (
 		<>
@@ -185,8 +185,8 @@ function ActivityTraceRow({
 					aria-expanded={open}
 					aria-controls={panelId}
 					onClick={() => {
-						if (!open) restoreRef.current = onBeforeOpen()
-						else cancelReveal(restoreRef)
+						if (!open) releaseRef.current = onBeforeOpen()
+						else finishReveal(releaseRef)
 						setOpen((value) => !value)
 					}}
 				>
@@ -238,7 +238,7 @@ function useReveal(
 	delay: number,
 	headRef: { current: HTMLElement | null },
 	bodyRef: { current: HTMLElement | null },
-	restoreRef: Restore,
+	releaseRef: Release,
 	onOpened: Reveal
 ) {
 	useEffect(() => {
@@ -247,18 +247,19 @@ function useReveal(
 			() => {
 				const head = headRef.current
 				const body = bodyRef.current
-				if (head && body && onOpened(head, body)) restoreRef.current = null
-				else cancelReveal(restoreRef)
+				if (head && body) onOpened(head, body)
+				finishReveal(releaseRef)
 			},
 			globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : delay
 		)
 		return () => clearTimeout(timeout)
-	}, [bodyRef, content, delay, headRef, onOpened, open, restoreRef])
+	}, [bodyRef, content, delay, headRef, onOpened, open, releaseRef])
+	useEffect(() => () => finishReveal(releaseRef), [releaseRef])
 }
 
-function cancelReveal(restoreRef: Restore) {
-	restoreRef.current?.()
-	restoreRef.current = null
+function finishReveal(releaseRef: Release) {
+	releaseRef.current?.()
+	releaseRef.current = null
 }
 
 function TraceMessage({ children }: { children: ReactNode }) {

@@ -2,6 +2,7 @@ import type { TranscriptItem } from '@justfiles/agent/protocol'
 import {
 	type CSSProperties,
 	type ReactNode,
+	useCallback,
 	useEffect,
 	useLayoutEffect,
 	useRef,
@@ -173,7 +174,8 @@ export function Transcript({
 	// Last seen scrollTop, used to tell a user's upward scroll (the only thing that
 	// detaches) apart from the downward moves that growth and auto-scroll cause.
 	const lastTopRef = useRef(0)
-	const scrollAwayRef = useRef(0)
+	// Creases can open together. Pause resize-driven scrolling until all reveals end.
+	const revealsRef = useRef(0)
 	const revealScrollRef = useRef(false)
 	useLayoutEffect(() => {
 		const viewport = viewportRef.current
@@ -189,7 +191,7 @@ export function Transcript({
 		// the content box (not message count) is what keeps streaming pinned, since
 		// the array length is stable while the last message grows.
 		const ro = new ResizeObserver(() => {
-			if (stuckRef.current) toBottom()
+			if (stuckRef.current && revealsRef.current === 0) toBottom()
 		})
 		ro.observe(content)
 		return () => ro.disconnect()
@@ -204,39 +206,34 @@ export function Transcript({
 		const el = viewportRef.current
 		if (!el) return
 		const top = el.scrollTop
-		if (top < lastTopRef.current) {
-			stuckRef.current = false
-			scrollAwayRef.current++
-		}
+		if (top < lastTopRef.current) stuckRef.current = false
 		if (!revealScrollRef.current && el.scrollHeight - top - el.clientHeight < 32)
 			stuckRef.current = true
 		lastTopRef.current = top
 	}
-	const beforeActivityOpen = () => {
-		const stuck = stuckRef.current
-		const scrollAway = scrollAwayRef.current
-		stuckRef.current = false
+	const beforeActivityOpen = useCallback(() => {
+		revealsRef.current++
 		return () => {
-			if (scrollAwayRef.current === scrollAway) stuckRef.current = stuck
+			revealsRef.current--
 		}
-	}
-	const revealActivity = (head: HTMLElement, sheet: HTMLElement) => {
+	}, [])
+	const revealActivity = useCallback((head: HTMLElement, sheet: HTMLElement) => {
 		const viewport = viewportRef.current
-		if (!viewport) return false
+		if (!viewport) return
 		const viewportBox = viewport.getBoundingClientRect()
 		const overflow = sheet.getBoundingClientRect().bottom - viewportBox.bottom + 10
 		const headRoom = head.getBoundingClientRect().top - viewportBox.top
 		const top = Math.min(overflow, headRoom)
-		if (top <= 0) return false
+		if (top <= 0) return
 		// A short reveal can land inside the bottom slop. Its scroll event must not
 		// look like the user returned to the bottom and reattach the transcript.
+		stuckRef.current = false
 		revealScrollRef.current = true
 		viewport.scrollTop += top
 		requestAnimationFrame(() => {
 			revealScrollRef.current = false
 		})
-		return true
-	}
+	}, [])
 
 	return (
 		<div
@@ -299,7 +296,7 @@ function TranscriptRowItem({
 	onOption?: (label: string) => void
 	resolveImage?: (image: TranscriptImage) => Promise<string | null>
 	onBeforeActivityOpen: () => () => void
-	onActivityOpened: (head: HTMLElement, sheet: HTMLElement) => boolean
+	onActivityOpened: (head: HTMLElement, sheet: HTMLElement) => void
 }) {
 	if ('type' in item) {
 		if (item.type === 'activity')
