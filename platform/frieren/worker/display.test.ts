@@ -21,6 +21,15 @@ describe('sessionEntries2DisplayMessages', () => {
 		expect(messages[0].content).toBe('see [the docs](https://x.dev)')
 	})
 
+	test('keeps ask_user options in replayed history', () => {
+		const options = [{ label: 'Tea' }, { label: 'Coffee' }]
+		const messages = sessionEntries2DisplayMessages([
+			{ ...assistant('Tea or coffee?'), options } as SessionEntry
+		])
+
+		expect(messages).toEqual([{ role: 'assistant', content: 'Tea or coffee?', options }])
+	})
+
 	test('keeps receipt images visible before the shared activity projector lands', () => {
 		const images = [{ src: '/pictures/red-panda.png', mimeType: 'image/png', alt: 'red panda' }]
 		const messages = sessionEntries2DisplayMessages([

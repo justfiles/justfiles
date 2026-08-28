@@ -389,6 +389,23 @@ describe('FrierenClient agent', () => {
 		expect(live).toMatchObject({ status: 'done', images })
 	})
 
+	test('restores ask_user options from history', async () => {
+		const options = [{ label: 'Tea' }, { label: 'Coffee' }]
+		const { client, connect } = setup()
+		const socket = await connect()
+
+		socket.emit({
+			type: 'snapshot',
+			history: [{ role: 'assistant', content: 'Tea or coffee?', options }],
+			status: { state: 'idle' }
+		})
+
+		expect(client.agent().snapshot().messages[0]).toMatchObject({
+			content: 'Tea or coffee?',
+			options
+		})
+	})
+
 	test('snapshot returns a stable reference until state changes', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
