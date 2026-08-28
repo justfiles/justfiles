@@ -119,7 +119,7 @@ teaching.
 
 - **Grid order** — a grid, ranked by recency, capped at twelve. Keeps the grid
   shape but lands on recents without a second list.
-- **Row length** — derived from the viewport, clamped 3–10. Truncates rather
+- **Row length** — derived from the viewport, clamped 1–10. Truncates rather
   than re-orders.
 - **App Store** — out of the bar, last tile in the grid. iOS doesn't put it in
   the dock, because the dock is for what you use daily. Buys back 51px and lets

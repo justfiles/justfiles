@@ -3,12 +3,16 @@ import {
 	ArrowClockwiseIcon,
 	ArrowSquareOutIcon,
 	BellIcon,
-	ChatCircleIcon,
 	DownloadSimpleIcon,
-	SparkleIcon,
+	MagnifyingGlassIcon,
 	TrashIcon
 } from '@phosphor-icons/react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import type {
+	CSSProperties,
+	FormEvent,
+	KeyboardEvent as ReactKeyboardEvent,
+	MouseEvent as ReactMouseEvent
+} from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import appStoreIcon from '../../../../packages/design/assets/app_store.svg'
@@ -22,7 +26,6 @@ import {
 	useRunnerCatalog
 } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
-import { useAutoResize } from '../components/useAutoResize'
 import { useNotifications } from '../notifications/hooks'
 import { useDismissTimer } from '../notifications/lifetime'
 import { type NotificationEntry, notificationStore, type Route } from '../notifications/store'
@@ -31,16 +34,12 @@ import { selectFocusedAppId } from '../os/selectors'
 import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
 import { MigrationSheet } from './MigrationSheet'
 
-// The omnibar: one intent surface at the bottom of the desktop. You type, and it
-// routes — an installed app match launches, anything else asks the agent. The
-// input is fixed at the bottom; everything grows upward from it, most-relevant
-// nearest the input (see design/01-omnibar.md). This replaces the dock: the app
-// grid it shows at rest is where launching now lives.
-
-// The composer grows with wrapped input like iMessage, then scrolls once it
-// hits ~5 lines so a pasted wall of text can't shove the sheet open (5 × 20px
-// line-height + 14px vertical padding).
-const MAX_INPUT_HEIGHT = 114
+const SETTINGS_APP_ID = 'justfiles.settings'
+const MIGRATION_THREAD = 'local-migration'
+const APP_UPDATES_THREAD = 'held-app-updates'
+const DOCK_FIXED_WIDTH = 213
+const DOCK_APP_STEP = 52
+const GRID_LIMIT = 12
 
 type Row =
 	| { kind: 'app'; app: InstalledApp }
@@ -48,34 +47,26 @@ type Row =
 	| { kind: 'update'; app: RunnerCatalogApp }
 	| { kind: 'ask' }
 
-// The pill is ONE line at rest, so the banner it carries (typically the agent's last
-// reply) is flattened and cut rather than wrapped. 72 characters is what fits the
-// widest pill (640px at 16px, measured); `white-space: nowrap` in app.css is the hard
-// guarantee for narrower viewports and wide glyphs, where the cut still clips.
-const ONE_LINE_CHARS = 72
-
-function oneLine(text: string): string {
-	const flat = text.replace(/\s+/g, ' ').trim()
-	return flat.length > ONE_LINE_CHARS ? `${flat.slice(0, ONE_LINE_CHARS - 1)}…` : flat
+function matchesQuery(query: string, ...fields: (string | undefined)[]): boolean {
+	const needle = query.toLowerCase()
+	return fields.some((field) => (field ?? '').toLowerCase().includes(needle))
 }
 
-// The first-party Settings app — a `settings` route (e.g. accounts → reconnect)
-// opens it, reusing the ordinary `app.open` dispatch.
-const SETTINGS_APP_ID = 'justfiles.settings'
+function sameIds(a: string[], b: string[]): boolean {
+	return a.length === b.length && a.every((id, index) => id === b[index])
+}
 
-// The one-time "bring your local work into this account" offer rides a `system`
-// question on this thread; engaging it opens the migration sheet (handled locally
-// below) rather than routing like an ordinary notification.
-const MIGRATION_THREAD = 'local-migration'
+function rankApps(apps: InstalledApp[], recentIds: string[]): InstalledApp[] {
+	const rank = new Map(recentIds.map((id, index) => [id, index]))
+	return [...apps].sort((a, b) => (rank.get(b.id) ?? -1) - (rank.get(a.id) ?? -1))
+}
 
-// The pill action button's label, derived from where a click routes.
 function routeLabel(route: Route): string {
 	if (route.kind === 'settings') return 'Open Settings'
 	if (route.kind === 'app') return 'Open'
 	return 'Open chat'
 }
 
-// Compact relative time for center rows.
 function formatTime(at: number): string {
 	const diff = Date.now() - at
 	if (diff < 60_000) return 'now'
@@ -84,77 +75,12 @@ function formatTime(at: number): string {
 	return `${Math.floor(diff / 86_400_000)}d`
 }
 
-function matchesQuery(query: string, ...fields: (string | undefined)[]): boolean {
-	const needle = query.toLowerCase()
-	if (!needle) return true
-	return fields.some((f) => (f ?? '').toLowerCase().includes(needle))
-}
-
-function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
-	return apps.filter((app) => matchesQuery(query, app.name, app.id, app.description))
-}
-
-function storeIconUrl(app: RunnerCatalogApp): string | undefined {
-	return app.iconUrl
-}
-
-// Which *visual* line the caret sits on. Result-navigation arrows only fire at
-// the top/bottom edge so a wrapped draft (soft wrap or an explicit Shift+Enter
-// newline) stays vertically editable; a single visual line counts as both first
-// and last, so short queries still navigate on the first press. A hidden mirror
-// reproduces the textarea's wrapping to locate the caret's row.
-function caretVisualEdge(
-	el: HTMLTextAreaElement,
-	caret: number
-): { first: boolean; last: boolean } {
-	const cs = getComputedStyle(el)
-	const mirror = document.createElement('div')
-	const ms = mirror.style
-	ms.position = 'absolute'
-	ms.left = '-9999px'
-	ms.top = '0'
-	ms.visibility = 'hidden'
-	ms.whiteSpace = 'pre-wrap'
-	ms.overflowWrap = 'break-word'
-	ms.boxSizing = 'border-box'
-	ms.width = `${el.clientWidth}px`
-	for (const p of [
-		'fontFamily',
-		'fontSize',
-		'fontWeight',
-		'fontStyle',
-		'letterSpacing',
-		'lineHeight',
-		'textIndent',
-		'textTransform',
-		'wordSpacing',
-		'paddingLeft',
-		'paddingRight',
-		'paddingTop',
-		'paddingBottom'
-	] as const) {
-		ms[p] = cs[p]
-	}
-	const value = el.value
-	mirror.textContent = value.slice(0, caret)
-	const marker = document.createElement('span')
-	// The rest of the text starts exactly at the caret, so the marker's top is the
-	// caret's row; a fallback glyph gives the last (empty) position a line box.
-	marker.textContent = value.slice(caret) || '.'
-	mirror.appendChild(marker)
-	document.body.appendChild(mirror)
-	const lineHeight = Number.parseFloat(cs.lineHeight) || Number.parseFloat(cs.fontSize) * 1.2
-	const padTop = Number.parseFloat(cs.paddingTop) || 0
-	const padBottom = Number.parseFloat(cs.paddingBottom) || 0
-	const caretTop = marker.offsetTop - padTop
-	const contentHeight = mirror.scrollHeight - padTop - padBottom
-	mirror.remove()
-	// Half-line thresholds absorb sub-pixel rounding without spilling into a
-	// neighbouring row.
-	return {
-		first: caretTop < lineHeight * 0.5,
-		last: caretTop > contentHeight - lineHeight * 1.5
-	}
+function AppIcon({ app, className = 'frn-dock-icon' }: { app: InstalledApp; className?: string }) {
+	return (
+		<span className={className}>
+			{app.iconUrl ? <img src={app.iconUrl} alt="" /> : app.name.slice(0, 1).toUpperCase()}
+		</span>
+	)
 }
 
 export function Omnibar({
@@ -164,8 +90,6 @@ export function Omnibar({
 }: {
 	chatOpen: boolean
 	onOpenChat: () => void
-	// Right-click on an app tile reuses the desktop's shared context menu
-	// (Open / Uninstall), so deleting the dock doesn't strand uninstall.
 	onAppMenu?: (event: ReactMouseEvent, app: InstalledApp) => void
 }) {
 	const apps = useInstalledApps()
@@ -178,86 +102,66 @@ export function Omnibar({
 	const ready = connection.state === 'ready'
 
 	const [query, setQuery] = useState('')
-	// Engagement gates the surface: at rest the omnibar is just the pill. Focus
-	// (click, ⌘K, or just typing) expands the sheet above it; blur collapses it.
 	const [focused, setFocused] = useState(false)
-	// null means "follow the default target"; an arrow/hover pins an explicit row.
 	const [pinned, setPinned] = useState<number | null>(null)
-	// The dropup's notification-center mode, and a hover flag that pauses the
-	// active banner's dismiss timer.
 	const [showNotifications, setShowNotifications] = useState(false)
 	const [bannerHovered, setBannerHovered] = useState(false)
-	// Store-browse mode: the empty-focused grid's "App Store" tile flips the sheet
-	// into a discovery list of not-installed catalog apps — this is where "browse
-	// all apps" lives (design/01-omnibar.md open question). Transient like the rest
-	// of the sheet: blur, Esc, or typing a query leaves it.
 	const [browseStore, setBrowseStore] = useState(false)
-	const { apps: catalog, loading: catalogLoading } = useRunnerCatalog(
-		browseStore || query.trim() !== ''
-	)
-	const inputRef = useRef<HTMLTextAreaElement>(null)
+	const [consent, setConsent] = useState<ConsentTarget | null>(null)
+	const [migrateOpen, setMigrateOpen] = useState(false)
+	const [rowCount, setRowCount] = useState(1)
+	// Hold one ranked snapshot while the sheet is open so the grid cannot move under the pointer.
+	const [gridApps, setGridApps] = useState<InstalledApp[]>([])
+	const dockRef = useRef<HTMLDivElement>(null)
+	const inputRef = useRef<HTMLInputElement>(null)
 
 	const text = query.trim()
-	const matches = useMemo(() => filterApps(apps, text), [apps, text])
-	useAutoResize(inputRef, query, MAX_INPUT_HEIGHT)
-
-	// Runner discovery. Store rows are
-	// catalog apps not already installed; held-update rows are installed apps whose
-	// catalog version declares MORE access than what's installed (Step 4 held it).
-	// Store rows appear while searching or browsing; held updates also lead the
-	// browse list and badge the store tile, since nothing else surfaces them.
-	const installedById = useMemo(() => new Map(apps.map((a) => [a.id, a])), [apps])
-	const installingById = useMemo(() => new Map(installing.map((a) => [a.id, a])), [installing])
-	// Catalog apps not already installed/installing — the discovery candidates,
-	// shared by the store tile's visibility and browse mode's list.
+	const matches = useMemo(
+		() => apps.filter((app) => matchesQuery(text, app.name, app.id, app.description)),
+		[apps, text]
+	)
+	// Held updates need a resting-state banner, so the dock loads the catalog at rest.
+	const { apps: catalog, loading: catalogLoading } = useRunnerCatalog(true)
+	const installedById = useMemo(() => new Map(apps.map((app) => [app.id, app])), [apps])
+	const installingById = useMemo(
+		() => new Map(installing.map((app) => [app.id, app])),
+		[installing]
+	)
 	const storeCandidates = useMemo(
-		() => catalog.filter((a) => !installedById.has(a.id) && !installingById.has(a.id)),
+		() => catalog.filter((app) => !installedById.has(app.id) && !installingById.has(app.id)),
 		[catalog, installedById, installingById]
 	)
-	// Every held update, regardless of the query: an installed app whose catalog
-	// version is NEWER than what's installed and declares MORE access, so reconcile
-	// skipped it pending re-consent. Auto-updates need no surface; these do, so they
-	// lead the store list and badge its tile — otherwise the only way to find one is
-	// to happen to type the app's name. The version direction matters: accepting a
-	// row installs the catalog entry outright (no monotonic guard on that path), so an
-	// older catalog than the installed app — a rollback, or this tab on a stale
-	// deployment — must never be offered as an "update".
 	const held = useMemo(
 		() =>
-			catalog.filter((a) => {
-				const installed = installedById.get(a.id)
+			catalog.filter((app) => {
+				const installed = installedById.get(app.id)
 				if (!installed) return false
 				const version = installed.version ?? '0.0.0'
 				return (
-					a.version !== version &&
-					semverGte(a.version, version) &&
-					escalatesCapabilities(installed.capabilities, a.capabilities)
+					app.version !== version &&
+					semverGte(app.version, version) &&
+					escalatesCapabilities(installed.capabilities, app.capabilities)
 				)
 			}),
 		[catalog, installedById]
 	)
-	// Browse holds while the input is empty; the list shows the held updates then the
-	// not-installed catalog apps (or an all-installed empty state). The tile stays
-	// discoverable in the grid regardless, so the store is reachable even after
-	// installing them all.
+	const heldCount = held.length
 	const browsing = browseStore && text === ''
 	const storeMatches = useMemo(
 		() =>
 			text === '' && !browsing
 				? []
-				: storeCandidates.filter((a) => matchesQuery(text, a.name, a.id, a.description)),
+				: storeCandidates.filter((app) => matchesQuery(text, app.name, app.id, app.description)),
 		[storeCandidates, text, browsing]
 	)
 	const heldUpdates = useMemo(
-		() => (text === '' ? [] : held.filter((a) => matchesQuery(text, a.name, a.id, a.description))),
+		() =>
+			text === ''
+				? []
+				: held.filter((app) => matchesQuery(text, app.name, app.id, app.description)),
 		[held, text]
 	)
-	const [consent, setConsent] = useState<ConsentTarget | null>(null)
-	const [migrateOpen, setMigrateOpen] = useState(false)
 
-	// One flat, keyboard-navigable list, laid out visually top→bottom: weaker app
-	// matches up top, the best match just above the pinned agent row, which
-	// sits directly above the input as the universal fall-through.
 	const rows = useMemo<Row[]>(
 		() =>
 			browsing
@@ -273,8 +177,6 @@ export function Omnibar({
 					],
 		[matches, storeMatches, held, heldUpdates, browsing]
 	)
-	// Default target: in browse mode the bottom row (nearest the input); otherwise
-	// the best app match when something matched, else the agent.
 	const defaultIndex = browsing
 		? Math.max(0, rows.length - 1)
 		: matches.length
@@ -282,12 +184,34 @@ export function Omnibar({
 			: rows.length - 1
 	const selected = pinned === null ? defaultIndex : Math.min(pinned, rows.length - 1)
 
+	const activeIds = useOsStore(
+		(state) =>
+			state.focusStack.flatMap((id) => {
+				const appId = state.windows[id]?.appId
+				return appId ? [appId] : []
+			}),
+		sameIds
+	)
+	const [recentIds, setRecentIds] = useState(activeIds)
+	const runningIds = useOsStore(
+		(state) =>
+			state.openOrder.flatMap((id) => {
+				const appId = state.windows[id]?.appId
+				return appId ? [appId] : []
+			}),
+		sameIds
+	)
+	const running = useMemo(() => new Set(runningIds), [runningIds])
 	const focusedAppId = useOsStore(selectFocusedAppId)
 	const { entries, active, queued, unread } = useNotifications()
 	const expanded = focused || showNotifications
 	const showList = text !== '' || browsing
+	const rowApps = apps.slice(0, rowCount)
+	const shownGridApps = gridApps.slice(0, GRID_LIMIT - 1)
+	const shownInstalling = installing
+		.filter((app) => !installedById.has(app.id))
+		.slice(0, GRID_LIMIT - 1 - shownGridApps.length)
 
-	// The center lists everything, newest-first, grouped by source (agent / app).
 	const grouped = useMemo(() => {
 		const bySource = new Map<string, NotificationEntry[]>()
 		for (const entry of [...entries].reverse()) {
@@ -298,122 +222,48 @@ export function Omnibar({
 		return [...bySource.entries()]
 	}, [entries])
 
-	const openConversation = () => {
-		onOpenChat()
-		inputRef.current?.blur()
-	}
+	useEffect(() => {
+		setRecentIds((current) => {
+			const active = new Set(activeIds)
+			const next = [...current.filter((id) => !active.has(id)), ...activeIds]
+			return sameIds(current, next) ? current : next
+		})
+	}, [activeIds])
 
-	// A notification click routes through the OS store — the same dispatches the
-	// omnibar already uses, so the click resolves in place: chat focuses/opens the
-	// conversation, app launches/focuses, settings opens the Settings app.
-	const dispatchRoute = (route: Route) => {
-		if (route.kind === 'chat') openConversation()
-		else if (route.kind === 'app') dispatch({ type: 'app.open', appId: route.id })
-		else dispatch({ type: 'app.open', appId: SETTINGS_APP_ID })
-	}
-	const runNotification = (entry: NotificationEntry) => {
-		if (entry.notification.threadId === MIGRATION_THREAD) {
-			setMigrateOpen(true)
-			notificationStore.dismiss(entry.notification.id)
+	useEffect(() => {
+		const desktop = dockRef.current?.parentElement
+		if (!desktop) return
+		const resize = () => {
+			const available = desktop.clientWidth * 0.7
+			setRowCount(
+				Math.min(10, Math.max(1, Math.floor((available - DOCK_FIXED_WIDTH) / DOCK_APP_STEP)))
+			)
+		}
+		resize()
+		const observer = new ResizeObserver(resize)
+		observer.observe(desktop)
+		return () => observer.disconnect()
+	}, [])
+
+	useEffect(() => {
+		if (catalogLoading) return
+		if (heldCount === 0) {
+			notificationStore.dismiss(APP_UPDATES_THREAD)
 			return
 		}
-		if (entry.notification.route) dispatchRoute(entry.notification.route)
-		notificationStore.dismiss(entry.notification.id)
-	}
-	// The pill's action label: the migration offer opens the sheet; everything else
-	// routes. Null hides the button (nothing actionable).
-	const pillActionLabel = (n: NotificationEntry['notification']): string | null =>
-		n.threadId === MIGRATION_THREAD ? 'Bring over' : n.route ? routeLabel(n.route) : null
-	// The bell toggles the center; opening it marks history seen (clears the badge)
-	// and focuses the input so a blur/Esc collapses it like any other sheet mode.
-	const openNotifications = () => {
-		const next = !showNotifications
-		setShowNotifications(next)
-		if (next) {
-			notificationStore.markSeen()
-			inputRef.current?.focus()
-		} else inputRef.current?.blur()
-	}
-
-	// Presence and notifications are one model. The pill surfaces the single active
-	// notification: its glow carries urgency (`error` an urgent ring, `question` the
-	// needs-you pulse), its text slot the title/body, and an action button routes a
-	// click. Focus suppresses the banner when its target is already in front (chat
-	// focused ⇒ an agent info/question just updates the transcript) — `error` ignores
-	// focus. Either way the item still lands in the center.
-	const targetInFront = (route?: Route): boolean => {
-		if (!route) return false
-		if (route.kind === 'chat') return chatOpen
-		if (route.kind === 'app') return focusedAppId === route.id
-		return false
-	}
-	const suppressed =
-		!!active && active.notification.kind !== 'error' && targetInFront(active.notification.route)
-	const banner = suppressed ? null : active
-	const bannerKind = banner?.notification.kind
-	const agentState = session.isStreaming
-		? 'working'
-		: bannerKind === 'error'
-			? 'error'
-			: bannerKind === 'question'
-				? 'needs-you'
-				: 'idle'
-	// Who a notification is from: the agent shows its (personalized) name; other
-	// sources fall back to the producer-set title.
-	const notificationWho = (n: NotificationEntry['notification']): string =>
-		n.source === 'agent' ? session.agentName : n.title
-	// The text slot only holds the banner while the input is empty + unfocused; the
-	// first keystroke/focus hands it back (the shipped placeholder rule). The pill is
-	// ONE line at rest, so a reply is flattened and cut rather than wrapped.
-	const placeholder =
-		!focused && banner
-			? oneLine(
-					`${notificationWho(banner.notification)}: ${banner.notification.body}${
-						queued > 0 ? ` (+${queued})` : ''
-					}`
-				)
-			: `Search apps, or talk to ${session.agentName}…`
-
-	// Auto-recede `info` after its lifetime; `error`/`question` are sticky. Paused on
-	// hover and while the tab is hidden.
-	useDismissTimer(active, notificationStore.dismiss, bannerHovered)
-
-	const ask = (prompt: string) => {
-		if (!prompt || !ready) return
-		void agent.prompt(prompt).then((accepted) => {
-			if (!accepted) return
-			onOpenChat()
-			setQuery('')
-			inputRef.current?.blur()
+		notificationStore.notify({
+			id: APP_UPDATES_THREAD,
+			source: 'system',
+			kind: 'info',
+			threadId: APP_UPDATES_THREAD,
+			title: 'App Store',
+			body:
+				heldCount === 1
+					? '1 app update needs your review.'
+					: `${heldCount} app updates need your review.`
 		})
-	}
+	}, [catalogLoading, heldCount])
 
-	const run = (index: number) => {
-		const row = rows[index]
-		if (!row) return
-		if (catalogLoading && row.kind === 'ask') return
-		if (row.kind === 'app') {
-			launchApp(row.app)
-			setQuery('')
-			inputRef.current?.blur()
-		} else if (row.kind === 'store') {
-			setConsent({ app: row.app, mode: 'install' })
-		} else if (row.kind === 'update') {
-			setConsent({ app: row.app, mode: 'update' })
-		} else {
-			ask(text)
-		}
-	}
-
-	const submit = (event: React.FormEvent) => {
-		event.preventDefault()
-		if (text === '' && !browsing) return
-		run(selected)
-	}
-
-	// Just start typing anywhere on the desktop to focus the bar; ⌘K / ⌘Space
-	// summon it over a full-screen app. The bar is the door — the shortcut is only
-	// the accelerator.
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			const summon = (event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === ' ')
@@ -422,8 +272,7 @@ export function Omnibar({
 				inputRef.current?.focus()
 				return
 			}
-			if (event.metaKey || event.ctrlKey || event.altKey) return
-			if (event.key.length !== 1) return
+			if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return
 			const target = event.target as HTMLElement | null
 			const tag = target?.tagName
 			if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
@@ -433,7 +282,104 @@ export function Omnibar({
 		return () => window.removeEventListener('keydown', onKey)
 	}, [])
 
-	const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+	useDismissTimer(active, notificationStore.dismiss, bannerHovered)
+
+	const collapse = () => {
+		setQuery('')
+		setFocused(false)
+		setPinned(null)
+		setShowNotifications(false)
+		setBrowseStore(false)
+		inputRef.current?.blur()
+	}
+	const openConversation = () => {
+		collapse()
+		onOpenChat()
+	}
+	const openStore = () => {
+		setShowNotifications(false)
+		setBrowseStore(true)
+		inputRef.current?.focus()
+	}
+	const dispatchRoute = (route: Route) => {
+		if (route.kind === 'chat') openConversation()
+		else if (route.kind === 'app') dispatch({ type: 'app.open', appId: route.id })
+		else dispatch({ type: 'app.open', appId: SETTINGS_APP_ID })
+	}
+	const runNotification = (entry: NotificationEntry) => {
+		if (entry.notification.threadId === MIGRATION_THREAD) {
+			setMigrateOpen(true)
+		} else if (entry.notification.threadId === APP_UPDATES_THREAD) {
+			openStore()
+		} else if (entry.notification.route) {
+			dispatchRoute(entry.notification.route)
+		}
+		notificationStore.dismiss(entry.notification.id)
+	}
+	const notificationAction = (entry: NotificationEntry): string | null => {
+		if (entry.notification.threadId === MIGRATION_THREAD) return 'Bring over'
+		if (entry.notification.threadId === APP_UPDATES_THREAD) return 'Review'
+		return entry.notification.route ? routeLabel(entry.notification.route) : null
+	}
+	const openNotifications = () => {
+		const next = !showNotifications
+		setShowNotifications(next)
+		if (next) {
+			notificationStore.markSeen()
+			inputRef.current?.focus()
+		} else {
+			inputRef.current?.blur()
+		}
+	}
+
+	const targetInFront = (route?: Route): boolean => {
+		if (!route) return false
+		if (route.kind === 'chat') return chatOpen
+		if (route.kind === 'app') return focusedAppId === route.id
+		return false
+	}
+	const suppressed =
+		!!active && active.notification.kind !== 'error' && targetInFront(active.notification.route)
+	const banner = suppressed || expanded ? null : active
+	const bannerKind = active?.notification.kind
+	const agentState = session.isStreaming
+		? 'working'
+		: bannerKind === 'error'
+			? 'error'
+			: bannerKind === 'question'
+				? 'needs-you'
+				: 'idle'
+	const notificationWho = (entry: NotificationEntry): string =>
+		entry.notification.source === 'agent' ? session.agentName : entry.notification.title
+	const bannerAction = banner ? notificationAction(banner) : null
+
+	const ask = (prompt: string) => {
+		if (!prompt || !ready) return
+		void agent.prompt(prompt).then((accepted) => {
+			if (!accepted) return
+			openConversation()
+		})
+	}
+	const run = (index: number) => {
+		const row = rows[index]
+		if (!row || (catalogLoading && row.kind === 'ask')) return
+		if (row.kind === 'app') {
+			launchApp(row.app)
+			collapse()
+		} else if (row.kind === 'store') {
+			setConsent({ app: row.app, mode: 'install' })
+		} else if (row.kind === 'update') {
+			setConsent({ app: row.app, mode: 'update' })
+		} else {
+			ask(text)
+		}
+	}
+	const submit = (event: FormEvent) => {
+		event.preventDefault()
+		if (text === '' && !browsing) return
+		run(selected)
+	}
+	const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
 		if (event.key === 'Escape') {
 			if (showNotifications) setShowNotifications(false)
 			else if (browseStore) setBrowseStore(false)
@@ -441,91 +387,103 @@ export function Omnibar({
 			else inputRef.current?.blur()
 			return
 		}
-		// While an IME composition is active, Enter confirms the candidate and the
-		// arrows move within it — leave those to the composer, don't submit/navigate.
 		if (event.nativeEvent.isComposing) return
-		// Enter sends/launches; Shift+Enter drops a newline (the textarea grows).
-		if (event.key === 'Enter' && !event.shiftKey) {
+		if (event.key === 'Enter') {
 			event.preventDefault()
-			if (text === '' && !browsing) return
-			run(selected)
+			if (text !== '' || browsing) run(selected)
 			return
 		}
 		if (text === '' && !browsing) return
-		// Arrows navigate results, but only at the caret's top/bottom visual line so a
-		// wrapped multiline query stays editable vertically.
-		const el = event.currentTarget
 		if (event.key === 'ArrowUp') {
-			if (!caretVisualEdge(el, el.selectionStart).first) return
 			event.preventDefault()
 			setPinned(Math.max(0, selected - 1))
 		} else if (event.key === 'ArrowDown') {
-			if (!caretVisualEdge(el, el.selectionEnd).last) return
 			event.preventDefault()
 			setPinned(Math.min(rows.length - 1, selected + 1))
 		}
 	}
 
+	const rootStyle = {
+		'--frn-dock-width': `${DOCK_FIXED_WIDTH + rowApps.length * DOCK_APP_STEP}px`
+	} as CSSProperties
+
 	return (
-		/* biome-ignore lint/a11y/noStaticElementInteractions: hover pauses the active
-		   banner's dismiss timer (dunst pause_on_mouse_over); the pill is an ambient
-		   container, not itself a control. */
+		/* biome-ignore lint/a11y/noStaticElementInteractions: hover pauses an ambient banner's timer. */
 		<div
-			className="frn-omnibar"
+			ref={dockRef}
+			className="frn-dock"
 			data-expanded={expanded}
-			data-agent={agentState}
+			style={rootStyle}
 			onMouseEnter={() => setBannerHovered(true)}
 			onMouseLeave={() => setBannerHovered(false)}
 		>
-			<AgentAvatar
-				url={session.avatarUrl}
-				faces={session.avatarFaces}
-				expression={session.expression}
-				streaming={session.isStreaming}
-				personalized={session.personalized}
-				size={96}
-				className="frn-omnibar-face"
-			/>
+			{banner ? (
+				<div
+					className="frn-dock-banner"
+					data-kind={banner.notification.kind}
+					role={banner.notification.kind === 'error' ? 'alert' : 'status'}
+				>
+					<AgentAvatar
+						url={session.avatarUrl}
+						faces={session.avatarFaces}
+						expression={session.expression}
+						streaming={session.isStreaming}
+						personalized={session.personalized}
+						size={22}
+					/>
+					<span className="frn-dock-banner-copy">
+						<strong>{notificationWho(banner)}</strong>
+						<span>
+							{' · '}
+							{banner.notification.body}
+							{queued > 0 ? ` (+${queued})` : ''}
+						</span>
+					</span>
+					{bannerAction ? (
+						<button
+							type="button"
+							className="frn-dock-banner-action"
+							onClick={() => runNotification(banner)}
+						>
+							<ArrowSquareOutIcon />
+							{bannerAction}
+						</button>
+					) : null}
+				</div>
+			) : null}
+
 			{expanded ? (
-				/* biome-ignore lint/a11y/noStaticElementInteractions: mousedown-preventDefault keeps
-				   focus in the input so surface clicks don't collapse the sheet mid-click. Inline
-				   text selection is sacrificed; expand-to-window is the copy escape hatch. */
-				<div className="frn-omnibar-surface" onMouseDown={(event) => event.preventDefault()}>
+				/* biome-ignore lint/a11y/noStaticElementInteractions: keep the field focused while a sheet control handles the click. */
+				<div className="frn-dock-sheet" onMouseDown={(event) => event.preventDefault()}>
 					{showNotifications ? (
-						<div className="frn-omnibar-center">
-							<div className="frn-omnibar-center-head">
+						<div className="frn-dock-center">
+							<div className="frn-dock-center-head">
 								<span>Notifications</span>
 								{entries.length > 0 ? (
-									<button
-										type="button"
-										className="frn-omnibar-center-clear"
-										onClick={() => notificationStore.clear()}
-									>
+									<button type="button" onClick={() => notificationStore.clear()}>
 										<TrashIcon /> Clear
 									</button>
 								) : null}
 							</div>
 							{entries.length === 0 ? (
-								<p className="frn-omnibar-center-empty">Nothing here yet.</p>
+								<p className="frn-dock-empty">Nothing here yet.</p>
 							) : (
-								<ul className="frn-omnibar-center-list">
+								<ul className="frn-dock-center-list">
 									{grouped.map(([source, items]) => (
 										<Fragment key={source}>
-											<li className="frn-omnibar-section">
-												{items[0] ? notificationWho(items[0].notification) : source}
+											<li className="frn-dock-section">
+												{items[0] ? notificationWho(items[0]) : source}
 											</li>
 											{items.map((entry) => (
 												<li key={entry.notification.id}>
 													<button
 														type="button"
-														className="frn-omnibar-center-row"
+														className="frn-dock-center-row"
 														data-kind={entry.notification.kind}
 														onClick={() => runNotification(entry)}
 													>
-														<span className="frn-omnibar-center-body">
-															{entry.notification.body}
-														</span>
-														<span className="frn-omnibar-center-time">{formatTime(entry.at)}</span>
+														<span>{entry.notification.body}</span>
+														<time>{formatTime(entry.at)}</time>
 													</button>
 												</li>
 											))}
@@ -535,9 +493,9 @@ export function Omnibar({
 							)}
 						</div>
 					) : showList ? (
-						<ul className="frn-omnibar-list">
+						<ul className="frn-dock-list">
 							{browsing && rows.length === 0 ? (
-								<li className="frn-omnibar-center-empty">
+								<li className="frn-dock-empty">
 									{catalogLoading ? 'Loading App Store…' : "You've installed every App Store app."}
 								</li>
 							) : null}
@@ -548,31 +506,22 @@ export function Omnibar({
 									return (
 										<Fragment key={row.app.id}>
 											{startsSection ? (
-												<li className="frn-omnibar-section">On this computer</li>
+												<li className="frn-dock-section">On this computer</li>
 											) : null}
 											<li>
 												<button
 													type="button"
-													className="frn-omnibar-row"
+													className="frn-dock-row"
 													data-selected={isSelected}
 													onMouseMove={() => setPinned(index)}
 													onClick={() => run(index)}
 												>
-													<span className="frn-omnibar-icon frn-omnibar-icon-sm">
-														{row.app.iconUrl ? (
-															<img src={row.app.iconUrl} alt="" />
-														) : (
-															row.app.name.slice(0, 1).toUpperCase()
-														)}
+													<AppIcon app={row.app} className="frn-dock-icon frn-dock-icon-small" />
+													<span className="frn-dock-row-copy">
+														<span>{row.app.name}</span>
+														{row.app.description ? <small>{row.app.description}</small> : null}
 													</span>
-													<span className="frn-omnibar-row-copy">
-														<span className="frn-omnibar-row-label">{row.app.name}</span>
-														{row.app.description ? (
-															<span className="frn-omnibar-row-description">
-																{row.app.description}
-															</span>
-														) : null}
-													</span>
+													<span className="frn-dock-row-hint">↩ open</span>
 												</button>
 											</li>
 										</Fragment>
@@ -580,39 +529,38 @@ export function Omnibar({
 								}
 								if (row.kind === 'store' || row.kind === 'update') {
 									const isUpdate = row.kind === 'update'
-									const icon = storeIconUrl(row.app)
 									const startsSection = rows[index - 1]?.kind !== row.kind
 									return (
 										<Fragment key={`${row.kind}:${row.app.id}`}>
 											{startsSection ? (
-												<li className="frn-omnibar-section">
+												<li className="frn-dock-section">
 													{isUpdate ? 'Updates from the App Store' : 'App Store · Not installed'}
 												</li>
 											) : null}
 											<li>
 												<button
 													type="button"
-													className="frn-omnibar-row"
+													className="frn-dock-row"
 													data-selected={isSelected}
 													onMouseMove={() => setPinned(index)}
 													onClick={() => run(index)}
 												>
-													<span className="frn-omnibar-icon frn-omnibar-icon-sm">
-														{icon ? (
-															<img src={icon} alt="" />
+													<span className="frn-dock-icon frn-dock-icon-small">
+														{row.app.iconUrl ? (
+															<img src={row.app.iconUrl} alt="" />
 														) : isUpdate ? (
 															<ArrowClockwiseIcon />
 														) : (
 															<DownloadSimpleIcon />
 														)}
 													</span>
-													<span className="frn-omnibar-row-copy">
-														<span className="frn-omnibar-row-label">{row.app.name}</span>
-														<span className="frn-omnibar-row-description">
+													<span className="frn-dock-row-copy">
+														<span>{row.app.name}</span>
+														<small>
 															{row.app.description || 'No description provided by the publisher.'}
-														</span>
+														</small>
 													</span>
-													<span className="frn-omnibar-row-hint" data-action="true">
+													<span className="frn-dock-row-hint">
 														{isUpdate ? 'Review update' : 'Install'}
 													</span>
 												</button>
@@ -621,176 +569,169 @@ export function Omnibar({
 									)
 								}
 								return (
-									<li key="ask" data-divider={rows.length > 1}>
-										<button
-											type="button"
-											className="frn-omnibar-row"
-											data-selected={isSelected}
-											onMouseMove={() => setPinned(index)}
-											onClick={() => run(index)}
-										>
-											<span className="frn-omnibar-icon frn-omnibar-icon-sm">
-												<SparkleIcon />
-											</span>
-											<span className="frn-omnibar-row-label">
-												Ask {session.agentName}: <em>“{text}”</em>
-											</span>
-											<span className="frn-omnibar-row-hint">opens side panel</span>
-										</button>
-									</li>
+									<Fragment key="ask">
+										<li className="frn-dock-section">Ask</li>
+										<li>
+											<button
+												type="button"
+												className="frn-dock-row"
+												data-selected={isSelected}
+												onMouseMove={() => setPinned(index)}
+												onClick={() => run(index)}
+											>
+												<AgentAvatar
+													url={session.avatarUrl}
+													faces={session.avatarFaces}
+													expression={session.expression}
+													streaming={session.isStreaming}
+													personalized={session.personalized}
+													size={26}
+												/>
+												<span>
+													Ask {session.agentName}: “{text}”
+												</span>
+												<span className="frn-dock-row-hint">opens the drawer</span>
+											</button>
+										</li>
+									</Fragment>
 								)
 							})}
 						</ul>
 					) : (
-						<div className="frn-omnibar-grid">
-							{apps.map((app) => (
-								<button
-									key={app.id}
-									type="button"
-									className="frn-omnibar-tile"
-									title={app.description || app.name}
-									onClick={() => {
-										launchApp(app)
-										inputRef.current?.blur()
-									}}
-									onContextMenu={onAppMenu ? (event) => onAppMenu(event, app) : undefined}
-								>
-									<span className="frn-omnibar-icon">
-										{app.iconUrl ? (
-											<img src={app.iconUrl} alt="" />
-										) : (
-											app.name.slice(0, 1).toUpperCase()
-										)}
-									</span>
-									<span className="frn-omnibar-tile-name">{app.name}</span>
-								</button>
-							))}
-							{installing
-								.filter((app) => !installedById.has(app.id))
-								.map((app) => (
+						<>
+							<div className="frn-dock-section">Recent</div>
+							<div className="frn-dock-grid">
+								{shownGridApps.map((app) => (
+									<button
+										key={app.id}
+										type="button"
+										className="frn-dock-tile"
+										title={app.description || app.name}
+										onClick={() => {
+											launchApp(app)
+											collapse()
+										}}
+										onContextMenu={onAppMenu ? (event) => onAppMenu(event, app) : undefined}
+									>
+										<span data-running={running.has(app.id)}>
+											<AppIcon app={app} />
+										</span>
+										<span>{app.name}</span>
+									</button>
+								))}
+								{shownInstalling.map((app) => (
 									<div
 										key={`installing:${app.id}`}
-										className="frn-omnibar-tile"
+										className="frn-dock-tile"
 										data-installing="true"
-										title={`Installing ${app.name}…`}
 									>
-										<span className="frn-omnibar-icon">
+										<span className="frn-dock-icon">
 											{app.iconUrl ? (
 												<img src={app.iconUrl} alt="" />
 											) : (
 												app.name.slice(0, 1).toUpperCase()
 											)}
-											<span className="frn-omnibar-tile-spinner" />
+											<span className="frn-dock-spinner" />
 										</span>
-										<span className="frn-omnibar-tile-name">{app.name}</span>
+										<span>{app.name}</span>
 									</div>
 								))}
-							<button
-								type="button"
-								className="frn-omnibar-tile"
-								data-store="true"
-								title={
-									held.length === 1
-										? '1 app update needs your review'
-										: held.length
-											? `${held.length} app updates need your review`
-											: 'Browse the App Store'
-								}
-								onClick={() => setBrowseStore(true)}
-							>
-								<span className="frn-omnibar-icon">
-									<img src={appStoreIcon} alt="" />
-									{held.length ? (
-										<span className="frn-omnibar-tile-badge">{held.length}</span>
-									) : null}
-								</span>
-								<span className="frn-omnibar-tile-name">App Store</span>
-							</button>
-						</div>
+								<button
+									type="button"
+									className="frn-dock-tile"
+									data-store="true"
+									onClick={openStore}
+								>
+									<span className="frn-dock-icon">
+										<img src={appStoreIcon} alt="" />
+									</span>
+									<span>App Store</span>
+								</button>
+							</div>
+						</>
 					)}
 				</div>
 			) : null}
-			<form className="frn-omnibar-bar" onSubmit={submit}>
-				<textarea
-					ref={inputRef}
-					rows={1}
-					value={query}
-					onChange={(event) => {
-						setQuery(event.currentTarget.value)
-						setPinned(null)
-						setShowNotifications(false)
-						setBrowseStore(false)
-					}}
-					onFocus={() => {
-						setFocused(true)
-						// Engaging while the agent waits on a question lands on the
-						// question: in the window if it's open, else the sheet transcript. The
-						// migration offer is a `system` question with its own sheet, not chat.
-						if (
-							active?.notification.kind === 'question' &&
-							active.notification.threadId !== MIGRATION_THREAD
-						) {
-							openConversation()
-						}
-					}}
-					onBlur={() => {
-						setFocused(false)
-						setShowNotifications(false)
-						setBrowseStore(false)
-					}}
-					onKeyDown={onKeyDown}
-					placeholder={placeholder}
-					/* The banner rides in this slot and must not wrap (see `oneLine`). */
-					data-banner={!focused && banner ? 'true' : undefined}
-					aria-label={`Search apps or talk to ${session.agentName}`}
-					autoComplete="off"
-					spellCheck={false}
-				/>
-				{!focused && banner && pillActionLabel(banner.notification) ? (
-					/* The banner's action button, on the pill's right edge: a click runs the
-					   route dispatch (or opens the migration sheet) and recedes the item. */
+
+			<form className="frn-dock-bar" onSubmit={submit}>
+				<span className="frn-dock-field-slot" aria-hidden="true" />
+				<label className="frn-dock-field">
+					<MagnifyingGlassIcon aria-hidden="true" />
+					<input
+						ref={inputRef}
+						value={query}
+						onChange={(event) => {
+							setQuery(event.currentTarget.value)
+							setPinned(null)
+							setShowNotifications(false)
+							setBrowseStore(false)
+						}}
+						onFocus={() => {
+							if (!focused) setGridApps(rankApps(apps, recentIds))
+							setFocused(true)
+						}}
+						onBlur={() => {
+							setFocused(false)
+							setShowNotifications(false)
+							setBrowseStore(false)
+						}}
+						onKeyDown={onKeyDown}
+						placeholder={focused ? `Search apps, or ask ${session.agentName}…` : 'Search'}
+						aria-label={`Search apps or ask ${session.agentName}`}
+						autoComplete="off"
+						spellCheck={false}
+					/>
+				</label>
+				<div className="frn-dock-apps" aria-hidden={expanded} inert={expanded}>
+					{rowApps.map((app) => (
+						<button
+							key={app.id}
+							type="button"
+							className="frn-dock-app"
+							data-running={running.has(app.id)}
+							title={app.name}
+							aria-label={`Open ${app.name}`}
+							onClick={() => launchApp(app)}
+							onContextMenu={onAppMenu ? (event) => onAppMenu(event, app) : undefined}
+						>
+							<AppIcon app={app} />
+						</button>
+					))}
+				</div>
+				<span className="frn-dock-separator" aria-hidden="true" />
+				<div className="frn-dock-agent" data-agent={agentState}>
 					<button
 						type="button"
-						className="frn-omnibar-action"
-						title={pillActionLabel(banner.notification) ?? undefined}
-						onMouseDown={(event) => event.preventDefault()}
-						onClick={() => runNotification(banner)}
-					>
-						<ArrowSquareOutIcon />
-						<span>{pillActionLabel(banner.notification)}</span>
-					</button>
-				) : null}
-				{unread > 0 || showNotifications ? (
-					/* Contextual bell-badge: appears when there's unread history, opens the
-					   center. mousedown-preventDefault keeps focus so the toggle is stable. */
-					<button
-						type="button"
-						className="frn-omnibar-bell"
-						data-open={showNotifications}
-						title="Notifications"
-						aria-label="Notifications"
-						onMouseDown={(event) => event.preventDefault()}
-						onClick={openNotifications}
-					>
-						<BellIcon />
-						{unread > 0 ? <span className="frn-omnibar-bell-badge">{unread}</span> : null}
-					</button>
-				) : null}
-				{session.messages.length > 0 ? (
-					/* Discoverable way back into the conversation — mousedown-preventDefault
-					   keeps the input focused so the click doesn't collapse the sheet. */
-					<button
-						type="button"
-						className="frn-omnibar-chat-toggle"
-						title={`Open conversation with ${session.agentName}`}
-						aria-label="Open conversation"
-						onMouseDown={(event) => event.preventDefault()}
+						className="frn-dock-agent-button"
 						onClick={openConversation}
+						aria-label={`Open conversation with ${session.agentName}`}
+						title={`Open conversation with ${session.agentName}`}
 					>
-						<ChatCircleIcon />
+						<AgentAvatar
+							url={session.avatarUrl}
+							faces={session.avatarFaces}
+							expression={session.expression}
+							streaming={session.isStreaming}
+							personalized={session.personalized}
+							size={40}
+							className="frn-dock-face"
+						/>
 					</button>
-				) : null}{' '}
+					{unread > 0 || showNotifications ? (
+						<button
+							type="button"
+							className="frn-dock-notification-badge"
+							title="Notifications"
+							aria-label="Notifications"
+							onMouseDown={(event) => event.preventDefault()}
+							onClick={openNotifications}
+						>
+							{unread > 0 ? unread : <BellIcon />}
+						</button>
+					) : null}
+				</div>
 			</form>
+
 			{consent
 				? createPortal(
 						<ConsentSheet
