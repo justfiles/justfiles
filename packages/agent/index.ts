@@ -21,7 +21,13 @@ export { type AgentBackend, modelsBackend } from './llm.ts'
 // ── Onboarding building blocks ─────────────────────────────────────
 export { parseFrontmatter } from './markdown.ts'
 export type { SoulGenerationInput } from './prompts.ts'
-export type { ImageRef, SessionEntry } from './session.manager.ts'
+export type {
+	ActivityDetail,
+	ActivityRunEntry,
+	ActivitySummary,
+	ImageRef,
+	SessionEntry
+} from './session.manager.ts'
 // ── The agent product ──────────────────────────────────────────────
 export {
 	type AgentSession,

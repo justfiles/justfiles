@@ -108,5 +108,7 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null
 			return { role: 'assistant', content: entry.summary }
 		case 'label':
 			return { role: 'assistant', content: `[${entry.label}]` }
+		case 'activity':
+			return null
 	}
 }

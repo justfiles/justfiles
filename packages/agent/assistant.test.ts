@@ -1,12 +1,14 @@
-import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
+import { Agent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import { type AssistantMessage, createAssistantMessageEventStream } from '@earendil-works/pi-ai'
-import { volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import Type from 'typebox'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
+import { createActivityRecorder } from './activity.ts'
 import { createAssistant } from './assistant.ts'
 import type { LLMText } from './llm.text.ts'
 import { filesystemPrompt, systemPrompt } from './prompts.ts'
+import { ActivityDetailSchema, type ActivityRunEntry } from './session.manager.ts'
 
 const encoder = new TextEncoder()
 const MAIN = { agentId: 'main', kind: 'main' } as const
@@ -70,7 +72,85 @@ function scriptedAgent(messages: AssistantMessage[]): Agent {
 	})
 }
 
+async function readDetail(vol: Volume, entry: ActivityRunEntry) {
+	const sessions = await vol.readdir('/private/cache/agent-activity/main')
+	const session = sessions[0]
+	if (!session || !entry.detailId) throw new Error('expected an activity detail')
+	const raw = await vol.readFile(
+		`/private/cache/agent-activity/main/${session.name}/${entry.detailId}.json`
+	)
+	return ActivityDetailSchema.parse(JSON.parse(new TextDecoder().decode(raw)))
+}
+
 describe('assistant prompt', () => {
+	test('records thinking and failed tool durations from agent events', async () => {
+		let now = 100
+		const recorder = createActivityRecorder(() => now)
+		const thought = assistant([{ type: 'thinking', thinking: 'Check it.' }])
+		recorder.onEvent({
+			type: 'message_update',
+			message: thought,
+			assistantMessageEvent: { type: 'thinking_start', contentIndex: 0, partial: thought }
+		})
+		now = 140
+		recorder.onEvent({
+			type: 'message_update',
+			message: thought,
+			assistantMessageEvent: {
+				type: 'thinking_end',
+				contentIndex: 0,
+				content: 'Check it.',
+				partial: thought
+			}
+		})
+		recorder.onEvent({
+			type: 'tool_execution_start',
+			toolCallId: 'tc1',
+			toolName: 'read',
+			args: {}
+		})
+		now = 220
+		recorder.onEvent({
+			type: 'tool_execution_end',
+			toolCallId: 'tc1',
+			toolName: 'read',
+			result: null,
+			isError: true
+		})
+		const messages: AgentMessage[] = [
+			assistant([
+				{ type: 'thinking', thinking: 'Check it.' },
+				{ type: 'toolCall', id: 'tc1', name: 'read', arguments: {} }
+			]),
+			{
+				role: 'toolResult',
+				toolCallId: 'tc1',
+				toolName: 'read',
+				content: [{ type: 'text', text: 'failed' }],
+				isError: true,
+				timestamp: now
+			}
+		]
+
+		const payloads = await recorder.write({
+			volume: volume(memStore()),
+			agentId: 'main',
+			sessionId: 'session',
+			messages,
+			agentTools: [testTool('read')],
+			diagnostic: () => undefined
+		})
+		expect(payloads).toMatchObject([
+			{
+				type: 'activity',
+				items: [
+					{ kind: 'think', durationMs: 40 },
+					{ kind: 'tool', durationMs: 80, failed: true }
+				]
+			}
+		])
+	})
+
 	test('retries an empty assistant response before persisting', async () => {
 		const rt = await createAssistant({
 			...MAIN,
@@ -87,7 +167,175 @@ describe('assistant prompt', () => {
 		])
 	})
 
-	test('persists image refs from a tool result details onto the session entry', async () => {
+	test('records mixed activity runs in their original order', async () => {
+		const vol = volume(memStore())
+		const agent = scriptedAgent([
+			assistant([
+				{ type: 'thinking', thinking: 'Check the files.' },
+				{ type: 'toolCall', id: 'tc1', name: 'read', arguments: { path: 'one' } },
+				{ type: 'toolCall', id: 'tc2', name: 'read', arguments: { path: 'two' } }
+			]),
+			assistant([
+				{ type: 'text', text: 'I found the first clue.' },
+				{ type: 'thinking', thinking: 'Check one more file.' },
+				{ type: 'toolCall', id: 'tc3', name: 'read', arguments: { path: 'three' } }
+			]),
+			assistant([{ type: 'text', text: 'Done' }])
+		])
+		agent.state.tools = [testTool('read')]
+		const rt = await createAssistant({
+			...MAIN,
+			volume: vol,
+			agent,
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+
+		await expect(rt.prompt('inspect')).resolves.toBe('I found the first clue.\nDone')
+		const history = await rt.history()
+		expect(history).toMatchObject([
+			{ type: 'message', role: 'user', content: 'inspect' },
+			{
+				type: 'activity',
+				items: [
+					{ kind: 'think' },
+					{ kind: 'tool', name: 'read', label: 'read' },
+					{ kind: 'tool', name: 'read', label: 'read' }
+				]
+			},
+			{ type: 'message', role: 'assistant', content: 'I found the first clue.' },
+			{
+				type: 'activity',
+				items: [{ kind: 'think' }, { kind: 'tool', name: 'read', label: 'read' }]
+			},
+			{ type: 'message', role: 'assistant', content: 'Done' }
+		])
+
+		const runs = history.filter((entry): entry is ActivityRunEntry => entry.type === 'activity')
+		expect(await Promise.all(runs.map((entry) => readDetail(vol, entry)))).toEqual([
+			{
+				items: [
+					{ kind: 'think', content: 'Check the files.' },
+					{ kind: 'tool', name: 'read', input: { path: 'one' }, result: 'ok' },
+					{ kind: 'tool', name: 'read', input: { path: 'two' }, result: 'ok' }
+				]
+			},
+			{
+				items: [
+					{ kind: 'think', content: 'Check one more file.' },
+					{ kind: 'tool', name: 'read', input: { path: 'three' }, result: 'ok' }
+				]
+			}
+		])
+	})
+
+	test('writes activity detail before appending its receipt', async () => {
+		const backing = volume(memStore())
+		const writes: string[] = []
+		const vol: Volume = {
+			...backing,
+			async writeFile(path, data) {
+				writes.push(`write:${path}`)
+				return backing.writeFile(path, data)
+			},
+			async appendFile(path, data) {
+				writes.push(`append:${path}`)
+				return backing.appendFile(path, data)
+			}
+		}
+		const agent = scriptedAgent([
+			assistant([{ type: 'toolCall', id: 'tc1', name: 'read', arguments: {} }]),
+			assistant([{ type: 'text', text: 'Done' }])
+		])
+		agent.state.tools = [testTool('read')]
+		const rt = await createAssistant({
+			...MAIN,
+			volume: vol,
+			agent,
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+
+		await rt.prompt('inspect')
+		const detail = writes.findIndex((write) => write.includes('/private/cache/agent-activity/'))
+		const receipt = writes.findLastIndex((write) => write.includes('/sessions/'))
+		expect(detail).toBeGreaterThan(-1)
+		expect(receipt).toBeGreaterThan(detail)
+	})
+
+	test('keeps the conversation when an activity detail write fails', async () => {
+		const backing = volume(memStore())
+		const vol: Volume = {
+			...backing,
+			async writeFile(path, data) {
+				if (path.startsWith('/private/cache/agent-activity/')) throw new Error('disk full')
+				return backing.writeFile(path, data)
+			}
+		}
+		const agent = scriptedAgent([
+			assistant([{ type: 'toolCall', id: 'tc1', name: 'read', arguments: {} }]),
+			assistant([{ type: 'text', text: 'Done' }])
+		])
+		agent.state.tools = [testTool('read')]
+		const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+		try {
+			const rt = await createAssistant({
+				...MAIN,
+				volume: vol,
+				agent,
+				text: testText(),
+				compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+			})
+
+			await expect(rt.prompt('inspect')).resolves.toBe('Done')
+			expect(await rt.history()).toMatchObject([
+				{ type: 'message', role: 'user', content: 'inspect' },
+				{ type: 'activity', items: [{ kind: 'tool', name: 'read' }] },
+				{ type: 'message', role: 'assistant', content: 'Done' }
+			])
+			const receipt = (await rt.history())[1]
+			expect(receipt).not.toHaveProperty('detailId')
+		} finally {
+			error.mockRestore()
+		}
+	})
+
+	test('keeps ask_user inline and out of activity detail', async () => {
+		const agent = scriptedAgent([
+			assistant([
+				{ type: 'thinking', thinking: 'The user needs to choose.' },
+				{
+					type: 'toolCall',
+					id: 'tc1',
+					name: 'ask_user',
+					arguments: { question: 'Tea or coffee?', options: ['Tea', 'Coffee'] }
+				}
+			]),
+			assistant([])
+		])
+		agent.state.tools = [testTool('ask_user')]
+		const rt = await createAssistant({
+			...MAIN,
+			volume: volume(memStore()),
+			agent,
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+
+		await rt.prompt('help me choose')
+		expect(await rt.history()).toMatchObject([
+			{ type: 'message', role: 'user', content: 'help me choose' },
+			{ type: 'activity', items: [{ kind: 'think' }] },
+			{
+				type: 'message',
+				role: 'assistant',
+				content: 'Tea or coffee?',
+				options: [{ label: 'Tea' }, { label: 'Coffee' }]
+			}
+		])
+	})
+
+	test('keeps tool-produced images on the activity receipt', async () => {
 		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
 		const parameters = Type.Object({})
 		const imageTool: AgentTool = {
@@ -105,27 +353,31 @@ describe('assistant prompt', () => {
 			assistant([{ type: 'text', text: 'There you go' }])
 		])
 		agent.state.tools = [imageTool]
+		const vol = volume(memStore())
 		const rt = await createAssistant({
 			...MAIN,
-			volume: volume(memStore()),
+			volume: vol,
 			agent,
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
 		})
 
 		await expect(rt.prompt('draw a red panda')).resolves.toBe('There you go')
-		expect(await rt.history()).toMatchObject([
+		const history = await rt.history()
+		expect(history).toMatchObject([
 			{ type: 'message', role: 'user', content: 'draw a red panda' },
-			{ type: 'message', role: 'tool_call', tool_name: 'generate_image' },
 			{
-				type: 'message',
-				role: 'tool_result',
-				tool_name: 'generate_image',
-				content: 'saved',
+				type: 'activity',
+				items: [{ kind: 'tool', name: 'generate_image' }],
 				images
 			},
 			{ type: 'message', role: 'assistant', content: 'There you go' }
 		])
+		const entry = history[1]
+		if (entry?.type !== 'activity') throw new Error('expected an activity entry')
+		expect(await readDetail(vol, entry)).toEqual({
+			items: [{ kind: 'tool', name: 'generate_image', input: {}, result: 'saved' }]
+		})
 	})
 })
 

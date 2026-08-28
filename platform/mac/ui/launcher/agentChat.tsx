@@ -171,7 +171,12 @@ function sessionEntryToMessage(
 		case 'user':
 			return { id: entry.id, role: 'user', content: entry.content, source: entry.source }
 		case 'assistant':
-			return { id: entry.id, role: 'assistant', content: entry.content }
+			return {
+				id: entry.id,
+				role: 'assistant',
+				content: entry.content,
+				...(entry.options ? { options: entry.options } : {})
+			}
 		case 'assistant_thinking':
 			return { id: entry.id, role: 'assistant', content: '', thinking: entry.content }
 		case 'tool_call':

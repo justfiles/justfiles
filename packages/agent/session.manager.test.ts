@@ -1,6 +1,7 @@
 import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { describe, expect, test } from 'vitest'
+import { prepareCompaction } from './compaction.ts'
 import {
 	type AppendPayload,
 	type ContextMessage,
@@ -30,6 +31,17 @@ function compactionPayload(summary: string, firstKeptEntryId: string): AppendPay
 		summary,
 		firstKeptEntryId,
 		tokensBefore: 42
+	}
+}
+
+function activity(): AppendPayload {
+	return {
+		type: 'activity',
+		items: [
+			{ kind: 'think', durationMs: 120 },
+			{ kind: 'tool', name: 'search', label: 'Search', durationMs: 80 }
+		],
+		detailId: 'detail-1'
 	}
 }
 
@@ -157,6 +169,47 @@ describe('session manager', () => {
 			{ role: 'user', content: 'Follow-up question' },
 			{ role: 'assistant', content: 'Follow-up answer' }
 		])
+	})
+
+	test('round-trips activity alongside legacy entries without adding it to model context', async () => {
+		const vol = volume(memStore())
+		const manager = await makeManager(vol)
+		await manager.append([
+			user('Find the train.'),
+			toolCall('legacy_search', { q: 'train' }),
+			toolResult('legacy_search', 'old result'),
+			activity(),
+			assistant('The next train is at noon.')
+		])
+
+		const reopened = await makeManager(vol)
+		const branch = await reopened.walkActiveBranch()
+		expect(branch.map((item) => (item.type === 'message' ? item.role : item.type))).toEqual([
+			'user',
+			'tool_call',
+			'tool_result',
+			'activity',
+			'assistant'
+		])
+		expect(branch[3]).toMatchObject({
+			type: 'activity',
+			detailId: 'detail-1',
+			items: [
+				{ kind: 'think', durationMs: 120 },
+				{ kind: 'tool', name: 'search', label: 'Search', durationMs: 80 }
+			]
+		})
+		expect(stripContext(await reopened.buildSessionContext())).toEqual([
+			{ role: 'user', content: 'Find the train.' },
+			{ role: 'assistant', content: 'The next train is at noon.' }
+		])
+		expect(
+			prepareCompaction(branch, {
+				enabled: true,
+				reserveTokens: 0,
+				keepRecentTokens: 0
+			}).content
+		).toBe('user: Find the train.')
 	})
 })
 
