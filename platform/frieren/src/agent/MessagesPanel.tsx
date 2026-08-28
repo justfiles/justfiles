@@ -30,6 +30,7 @@ export function MessagesPanel({
 		personalized,
 		isStreaming,
 		isLoadingHistory,
+		loadActivityDetail,
 		sendMessage,
 		abort
 	} = session
@@ -122,6 +123,7 @@ export function MessagesPanel({
 					messages={messages}
 					isStreaming={isStreaming}
 					assistantStyle="plain"
+					activity={{ loadDetail: loadActivityDetail }}
 					resolveImage={resolveTranscriptImage}
 				/>
 			)}

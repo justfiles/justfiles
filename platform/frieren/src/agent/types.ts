@@ -2,6 +2,7 @@
 // transcript); re-export them so existing imports of '../agent/types' keep
 // working. The session / connection types below stay host-specific.
 import type { Expression } from '@justfiles/agent/expression'
+import type { ActivityDetailResult } from '@justfiles/agent/protocol'
 import type { TranscriptRow } from '@justfiles/ui/Transcript'
 
 export type { AgentMessage, ToolCallInfo, TranscriptRow } from '@justfiles/ui/Transcript'
@@ -23,6 +24,7 @@ export interface AgentSession {
 	refreshIdentity: () => Promise<void>
 	isStreaming: boolean
 	isLoadingHistory: boolean
+	loadActivityDetail: (detailId: string) => Promise<ActivityDetailResult>
 	sendMessage: () => void
 	abort: () => void
 }

@@ -74,6 +74,7 @@ function ChatApp() {
 		<Transcript
 			messages={messages}
 			isStreaming={chat.isStreaming}
+			activity={{ loadDetail: chat.loadActivityDetail }}
 			onOption={(label) => void chat.send(label)}
 		/>
 	)

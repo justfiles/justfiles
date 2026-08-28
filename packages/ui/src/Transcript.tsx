@@ -2,6 +2,7 @@ import type { TranscriptItem } from '@justfiles/agent/protocol'
 import {
 	type CSSProperties,
 	type ReactNode,
+	useCallback,
 	useEffect,
 	useLayoutEffect,
 	useRef,
@@ -9,6 +10,13 @@ import {
 } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import {
+	ActivityCrease,
+	type TranscriptActivityConfig,
+	transcriptActivityCss
+} from './TranscriptActivity'
+
+export type { TranscriptActivityConfig } from './TranscriptActivity'
 
 // A tool-produced image, referenced by a host-meaningful `src` (a Volume path on
 // frieren, a daemon route on quay) — never inline bytes. The host's `resolveImage`
@@ -51,6 +59,7 @@ export interface TranscriptProps {
 	messages: TranscriptRow[]
 	isStreaming: boolean
 	assistantStyle?: 'bubble' | 'plain'
+	activity?: TranscriptActivityConfig
 	// Invoked when the user clicks an option row. Omitted hosts render the labels
 	// as plain (non-clickable) rows.
 	onOption?: (label: string) => void
@@ -150,6 +159,7 @@ export function Transcript({
 	messages,
 	isStreaming,
 	assistantStyle = 'bubble',
+	activity,
 	onOption,
 	leading,
 	resolveImage
@@ -164,7 +174,9 @@ export function Transcript({
 	// Last seen scrollTop, used to tell a user's upward scroll (the only thing that
 	// detaches) apart from the downward moves that growth and auto-scroll cause.
 	const lastTopRef = useRef(0)
-
+	// Creases can open together. Pause resize-driven scrolling until all reveals end.
+	const revealsRef = useRef(0)
+	const revealScrollRef = useRef(false)
 	useLayoutEffect(() => {
 		const viewport = viewportRef.current
 		const content = contentRef.current
@@ -179,7 +191,7 @@ export function Transcript({
 		// the content box (not message count) is what keeps streaming pinned, since
 		// the array length is stable while the last message grows.
 		const ro = new ResizeObserver(() => {
-			if (stuckRef.current) toBottom()
+			if (stuckRef.current && revealsRef.current === 0) toBottom()
 		})
 		ro.observe(content)
 		return () => ro.disconnect()
@@ -195,9 +207,33 @@ export function Transcript({
 		if (!el) return
 		const top = el.scrollTop
 		if (top < lastTopRef.current) stuckRef.current = false
-		if (el.scrollHeight - top - el.clientHeight < 32) stuckRef.current = true
+		if (!revealScrollRef.current && el.scrollHeight - top - el.clientHeight < 32)
+			stuckRef.current = true
 		lastTopRef.current = top
 	}
+	const beforeActivityOpen = useCallback(() => {
+		revealsRef.current++
+		return () => {
+			revealsRef.current--
+		}
+	}, [])
+	const revealActivity = useCallback((head: HTMLElement, sheet: HTMLElement) => {
+		const viewport = viewportRef.current
+		if (!viewport) return
+		const viewportBox = viewport.getBoundingClientRect()
+		const overflow = sheet.getBoundingClientRect().bottom - viewportBox.bottom + 10
+		const headRoom = head.getBoundingClientRect().top - viewportBox.top
+		const top = Math.min(overflow, headRoom)
+		if (top <= 0) return
+		// A short reveal can land inside the bottom slop. Its scroll event must not
+		// look like the user returned to the bottom and reattach the transcript.
+		stuckRef.current = false
+		revealScrollRef.current = true
+		viewport.scrollTop += top
+		requestAnimationFrame(() => {
+			revealScrollRef.current = false
+		})
+	}, [])
 
 	return (
 		<div
@@ -214,7 +250,7 @@ export function Transcript({
 				overflowAnchor: 'none'
 			}}
 		>
-			<style>{css}</style>
+			<style>{css + transcriptActivityCss}</style>
 			<div
 				ref={contentRef}
 				style={{
@@ -231,8 +267,11 @@ export function Transcript({
 						item={item}
 						isStreaming={isStreaming}
 						assistantStyle={assistantStyle}
+						activity={activity}
 						onOption={onOption}
 						resolveImage={resolveImage}
+						onBeforeActivityOpen={beforeActivityOpen}
+						onActivityOpened={revealActivity}
 					/>
 				))}
 			</div>
@@ -244,17 +283,31 @@ function TranscriptRowItem({
 	item,
 	isStreaming,
 	assistantStyle,
+	activity,
 	onOption,
-	resolveImage
+	resolveImage,
+	onBeforeActivityOpen,
+	onActivityOpened
 }: {
 	item: TranscriptRow
 	isStreaming: boolean
 	assistantStyle: 'bubble' | 'plain'
+	activity?: TranscriptActivityConfig
 	onOption?: (label: string) => void
 	resolveImage?: (image: TranscriptImage) => Promise<string | null>
+	onBeforeActivityOpen: () => () => void
+	onActivityOpened: (head: HTMLElement, sheet: HTMLElement) => void
 }) {
 	if ('type' in item) {
-		if (item.type === 'activity') return null
+		if (item.type === 'activity')
+			return (
+				<ActivityCrease
+					item={item}
+					activity={activity}
+					onBeforeOpen={onBeforeActivityOpen}
+					onOpened={onActivityOpened}
+				/>
+			)
 		if (item.type === 'image')
 			return resolveImage ? <ImageCard image={item.image} resolveImage={resolveImage} /> : null
 	}
@@ -329,8 +382,6 @@ function MessageItem({
 function LiveStatusRow({ label }: { label: string }) {
 	return (
 		<div
-			role="status"
-			aria-live="polite"
 			style={{
 				alignSelf: 'center',
 				display: 'flex',
@@ -352,7 +403,9 @@ function LiveStatusRow({ label }: { label: string }) {
 					animation: 'js-transcript-spin 700ms linear infinite'
 				}}
 			/>
-			<span>{label}</span>
+			<span role="status" aria-live="polite" aria-atomic="true">
+				{label}
+			</span>
 		</div>
 	)
 }
