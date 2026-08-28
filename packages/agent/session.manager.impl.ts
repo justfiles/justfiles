@@ -209,7 +209,7 @@ export function session(volume: Volume, ref: SessionRef): SessionManager {
 			await appendEntries(newEntries)
 			const lastEntry = newEntries.at(-1)
 			if (lastEntry) cursor = lastEntry.id
-			return { compacted: false }
+			return { compacted: false, entries: newEntries }
 		},
 
 		// The turn boundary, and the ONE place the cursor adopts the derived leaf: this is what

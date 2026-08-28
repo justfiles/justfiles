@@ -1,94 +1,47 @@
-import type { AgentEvent } from '@earendil-works/pi-agent-core'
-import type { Route } from '@justfiles/app/capabilities/notify'
 import type { SessionEntry } from './session.manager.ts'
-import type { ActiveTurn, SessionEvent, StartTurnResult, TurnStatus } from './session.ts'
+import type { SessionSnapshot, SessionStatus, SessionUpdate, StartTurnResult } from './session.ts'
 
-export type AgentRequest = { agentId?: string } & (
+export type SessionClientMessage =
 	| { type: 'prompt'; text: string }
-	| { type: 'abort'; turnId: string }
+	| { type: 'abort' }
 	| { type: 'snapshot' }
-)
 
-export type AgentPromptResult =
-	| { type: 'prompt_result'; accepted: true; turn: ActiveTurn }
-	| { type: 'prompt_result'; accepted: false; activeTurn: ActiveTurn }
+export type SessionServerMessage<T = SessionEntry> =
+	| { type: 'snapshot'; history: readonly T[]; status: SessionStatus }
+	| { type: 'item'; item: T }
+	| Extract<SessionUpdate, { type: 'status' }>
+	| { type: 'accepted' }
+	| { type: 'rejected'; reason: 'busy' }
 
-export type AgentFrame<T = SessionEntry> = { agentId?: string } & (
-	| AgentPromptResult
-	| { type: 'turn_started'; turn: ActiveTurn }
-	| {
-			type: 'turn_finished'
-			turnId: string
-			status: TurnStatus
-			transcript: readonly T[]
-			error?: { message: string; route?: Route }
-	  }
-	| { type: 'snapshot'; transcript: readonly T[]; activeTurn: ActiveTurn | null }
-	| { type: 'event'; turnId: string; event: AgentEvent }
-)
+type PromptReply = Extract<SessionServerMessage, { type: 'accepted' | 'rejected' }>
 
-export type RemoteAgentState =
-	| { phase: 'idle'; activeTurn: null }
-	| { phase: 'submitting'; activeTurn: null }
-	| { phase: 'active'; activeTurn: ActiveTurn }
+export function promptReply(result: StartTurnResult): PromptReply {
+	return result.accepted ? { type: 'accepted' } : { type: 'rejected', reason: 'busy' }
+}
 
-export function applyAgentFrame<T>(
-	state: RemoteAgentState,
-	frame: AgentFrame<T>
-): RemoteAgentState {
-	switch (frame.type) {
-		case 'turn_started':
-			return { phase: 'active', activeTurn: frame.turn }
-		case 'prompt_result': {
-			const activeTurn = frame.accepted ? frame.turn : frame.activeTurn
-			return activeTurn ? { phase: 'active', activeTurn } : { phase: 'idle', activeTurn: null }
-		}
-		case 'snapshot':
-			return frame.activeTurn
-				? { phase: 'active', activeTurn: frame.activeTurn }
-				: { phase: 'idle', activeTurn: null }
-		case 'turn_finished':
-			// Keep object identity for a stale finish so clients can drop its transcript too.
-			return state.activeTurn?.id === frame.turnId ? { phase: 'idle', activeTurn: null } : state
-		case 'event':
-			return state
+export function snapshotMessage<T = SessionEntry>(
+	snapshot: SessionSnapshot,
+	mapEntries: (entries: readonly SessionEntry[]) => readonly T[] = (entries) =>
+		entries as readonly T[]
+): SessionServerMessage<T> {
+	return {
+		type: 'snapshot',
+		history: mapEntries(snapshot.history),
+		status: snapshot.status
 	}
 }
 
-export function promptResult(result: StartTurnResult): AgentPromptResult {
-	return result.accepted
-		? { type: 'prompt_result', accepted: true, turn: result.turn }
-		: { type: 'prompt_result', accepted: false, activeTurn: result.activeTurn }
-}
-
-export function sessionEventFrame(event: SessionEvent): AgentFrame
-export function sessionEventFrame<T>(
-	event: SessionEvent,
-	mapEntries: (entries: readonly SessionEntry[]) => readonly T[]
-): AgentFrame<T>
-export function sessionEventFrame<T>(
-	event: SessionEvent,
-	mapEntries?: (entries: readonly SessionEntry[]) => readonly T[]
-): AgentFrame<T> {
-	const transcript = (entries: readonly SessionEntry[]): readonly T[] =>
-		mapEntries ? mapEntries(entries) : (entries as readonly T[])
-
-	switch (event.type) {
-		case 'turn_started':
-			return event
-		case 'turn_finished':
-			return {
-				type: event.type,
-				turnId: event.turnId,
-				status: event.status,
-				transcript: transcript(event.entries),
-				...(event.error ? { error: event.error } : {})
-			}
+export function updateMessages<T = SessionEntry>(
+	update: SessionUpdate,
+	mapEntries: (entries: readonly SessionEntry[]) => readonly T[] = (entries) =>
+		entries as readonly T[]
+): readonly SessionServerMessage<T>[] {
+	switch (update.type) {
+		case 'items':
+			return mapEntries(update.items).map((item) => ({ type: 'item', item }))
 		case 'snapshot':
-			return {
-				type: event.type,
-				transcript: transcript(event.snapshot.entries),
-				activeTurn: event.snapshot.activeTurn
-			}
+			return [snapshotMessage(update.snapshot, mapEntries)]
+		case 'status':
+			return [update]
 	}
 }

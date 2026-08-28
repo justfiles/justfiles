@@ -24,7 +24,7 @@ async function prompt(session: AgentSession, message: string): Promise<string> {
 }
 
 async function history(session: AgentSession) {
-	return (await session.snapshot()).entries
+	return (await session.snapshot()).history
 }
 
 test('builds the main session once on first use', () => {

@@ -151,6 +151,7 @@ export type ContextMessage =
 export type AppendResult = {
 	compacted: boolean
 	notes?: string
+	entries: readonly SessionEntry[]
 }
 
 // ── SessionManager ────────────────────────────────────────────────────────

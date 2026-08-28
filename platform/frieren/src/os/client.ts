@@ -1,12 +1,7 @@
-import type { ActiveTurn } from '@justfiles/agent'
+import type { SessionStatus } from '@justfiles/agent'
 import { DEFAULT_AGENT_NAME } from '@justfiles/agent/defaults'
 import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
-import {
-	type AgentFrame,
-	type AgentRequest,
-	applyAgentFrame,
-	type RemoteAgentState
-} from '@justfiles/agent/protocol'
+import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState } from '../agent/types'
@@ -76,16 +71,16 @@ export interface FrierenClient {
 	close(): void
 	// Re-list installed apps from the local profile volume (e.g. after install).
 	refresh(): void
-	send(frame: object): void
+	send(message: object): void
 	agent: AgentClient
 	subscribeApps(listener: (apps: InstalledApp[]) => void): () => void
 	// Drop an app from the catalog optimistically (uninstall); refresh() is authoritative.
 	removeApp(id: string): void
 	onRemoteWindow(handler: (action: OsAction) => void): () => void
-	// The frieren notification channel: agent/cron notification frames arrive here and
+	// The frieren notification channel: agent/cron notification messages arrive here and
 	// are handed to the notification store (mirrors `onRemoteWindow`).
 	onNotification(handler: (notification: Notification) => void): () => void
-	// The server->client volume poke: a `sync` frame says "the server volume changed,
+	// The server->client volume poke: a `sync` message says "the server volume changed,
 	// pull now" (agent turn, cron, or another device's push). The app wires this to
 	// flush the active sync volume. Rides the always-on session socket.
 	onSync(handler: () => void): () => void
@@ -99,8 +94,8 @@ export interface FrierenClientOptions {
 	createSocket?: (token: string) => SocketLike
 }
 
-// Streaming agent payload carried by `event` frames from the worker.
-interface AgentEventFrame {
+// Raw stream detail carried by a running session status.
+interface AgentEventDetail {
 	type: string
 	message?: { role: string }
 	assistantMessageEvent?: { type: string; delta?: string }
@@ -133,8 +128,9 @@ function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
 	return Array.isArray(images) && images.length > 0 ? images : undefined
 }
 
-type ServerFrame =
-	| (AgentFrame<HistoryMessage> & {
+type ServerMessage =
+	| (SessionServerMessage<HistoryMessage> & {
+			agentId?: string
 			participants?: { userName?: string; agentName?: string }
 	  })
 	| {
@@ -149,9 +145,11 @@ type ServerFrame =
 	| { type: 'notification'; notification: Notification }
 	| { type: 'sync' }
 
-interface AgentState {
+interface SessionView {
 	messages: AgentMessage[]
-	remote: RemoteAgentState
+	history: HistoryMessage[]
+	status: SessionStatus
+	submitting: boolean
 	loadingHistory: boolean
 	pendingPrompt: ((accepted: boolean) => void) | null
 	currentAssistantId: string | null
@@ -188,15 +186,17 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	let connectionState: ConnectionState = 'disconnected'
 	let userName = 'You'
 	let agentName = DEFAULT_AGENT_NAME
-	const agentStates = new Map<string, AgentState>()
+	const agentStates = new Map<string, SessionView>()
 
-	function getAgentState(agentId?: string): AgentState {
+	function getAgentState(agentId?: string): SessionView {
 		const key = agentId ?? ''
 		let state = agentStates.get(key)
 		if (state) return state
 		state = {
 			messages: [],
-			remote: { phase: 'idle', activeTurn: null },
+			history: [],
+			status: { state: 'idle' },
+			submitting: false,
 			loadingHistory: false,
 			pendingPrompt: null,
 			currentAssistantId: null,
@@ -213,19 +213,19 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		return state
 	}
 
-	function buildAgentSnapshot(state: AgentState): AgentSnapshot {
+	function buildAgentSnapshot(state: SessionView): AgentSnapshot {
 		return {
 			connectionState,
 			userName,
 			agentName,
 			messages: state.messages,
-			isStreaming: state.remote.phase !== 'idle',
+			isStreaming: state.submitting || state.status.state !== 'idle',
 			isLoadingHistory: state.loadingHistory,
 			expression: state.expression
 		}
 	}
 
-	function emitAgent(state: AgentState): void {
+	function emitAgent(state: SessionView): void {
 		state.snapshot = buildAgentSnapshot(state)
 		for (const listener of state.listeners) listener()
 	}
@@ -238,14 +238,16 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		for (const state of agentStates.values()) {
 			state.pendingPrompt?.(false)
 			state.pendingPrompt = null
-			state.remote = { phase: 'idle', activeTurn: null }
+			state.status = { state: 'idle' }
+			state.submitting = false
 			state.loadingHistory = false
 			state.currentAssistantId = null
+			state.messages = restoreMessages(state.history)
 		}
 		emitAgents()
 	}
 
-	function setMessages(state: AgentState, next: AgentMessage[]): void {
+	function setMessages(state: SessionView, next: AgentMessage[]): void {
 		state.messages = next
 		emitAgent(state)
 	}
@@ -269,21 +271,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		}))
 	}
 
-	function addTurnInput(state: AgentState, turn: ActiveTurn): void {
-		if (state.messages.some((message) => message.id === turn.id)) return
-		state.messages.push({
-			id: turn.id,
-			role: 'user',
-			content: turn.input.text,
-			source: turn.input.source
-		})
-	}
-
-	function mapMessages(state: AgentState, fn: (message: AgentMessage) => AgentMessage): void {
+	function mapMessages(state: SessionView, fn: (message: AgentMessage) => AgentMessage): void {
 		setMessages(state, state.messages.map(fn))
 	}
 
-	function showExpression(state: AgentState, next: Expression | null): void {
+	function showExpression(state: SessionView, next: Expression | null): void {
 		if (next === state.expression && state.pending === undefined) return
 		const wait = state.heldUntil - Date.now()
 		if (wait > 0) {
@@ -361,7 +353,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// --- server-pushed volume poke (pull now) ---
 	let syncSink: (() => void) | null = null
 
-	function handleAgentEvent(event: AgentEventFrame, agentId?: string): void {
+	function handleAgentEvent(event: AgentEventDetail, agentId?: string): void {
 		const state = getAgentState(agentId)
 		switch (event.type) {
 			case 'agent_start':
@@ -470,7 +462,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		}
 	}
 
-	function handleFrame(data: ServerFrame): void {
+	function handleMessage(data: ServerMessage): void {
 		if (data.type === 'ready') {
 			reconnectAttempts = 0
 			if (data.participants) {
@@ -483,23 +475,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		if (data.type === 'turn_started') {
+		if (data.type === 'accepted' || data.type === 'rejected') {
 			const state = getAgentState(data.agentId)
-			state.remote = applyAgentFrame(state.remote, data)
-			addTurnInput(state, data.turn)
-			emitAgent(state)
-			return
-		}
-
-		if (data.type === 'prompt_result') {
-			const state = getAgentState(data.agentId)
-			state.pendingPrompt?.(data.accepted)
+			state.pendingPrompt?.(data.type === 'accepted')
 			state.pendingPrompt = null
-			state.remote = applyAgentFrame(state.remote, data)
-			const turn = state.remote.activeTurn
-			if (turn) {
-				addTurnInput(state, turn)
-			}
+			state.submitting = false
 			emitAgent(state)
 			return
 		}
@@ -510,28 +490,47 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || DEFAULT_AGENT_NAME
 			}
-			state.messages = restoreMessages(data.transcript)
+			state.history = [...data.history]
+			state.status = data.status
+			state.submitting = false
+			state.messages = restoreMessages(data.history)
 			state.loadingHistory = false
-			state.remote = applyAgentFrame(state.remote, data)
-			if (data.activeTurn) addTurnInput(state, data.activeTurn)
+			state.currentAssistantId = null
 			emitAgents()
 			return
 		}
 
-		if (data.type === 'turn_finished') {
+		if (data.type === 'item') {
 			const state = getAgentState(data.agentId)
-			const remote = applyAgentFrame(state.remote, data)
-			if (remote === state.remote) return
-			state.remote = remote
-			state.messages = restoreMessages(data.transcript)
-			state.currentAssistantId = null
-			if (data.error)
-				state.messages.push({
-					id: crypto.randomUUID(),
-					role: 'assistant',
-					content: data.error.message,
-					error: true
-				})
+			state.history = [...state.history, data.item]
+			if (state.status.state === 'idle' || data.item.role === 'user')
+				state.messages = restoreMessages(state.history)
+			emitAgent(state)
+			return
+		}
+
+		if (data.type === 'status') {
+			const state = getAgentState(data.agentId)
+			const wasIdle = state.status.state === 'idle'
+			state.status = data.status
+			if (data.status.state === 'idle') {
+				state.submitting = false
+				state.currentAssistantId = null
+				state.messages = restoreMessages(state.history)
+				if (data.error)
+					state.messages.push({
+						id: crypto.randomUUID(),
+						role: 'assistant',
+						content: data.error.message,
+						error: true
+					})
+			} else {
+				if (wasIdle) {
+					showExpression(state, null)
+					state.currentAssistantId = null
+				}
+				if (data.status.detail) handleAgentEvent(data.status.detail, data.agentId)
+			}
 			emitAgent(state)
 			return
 		}
@@ -541,7 +540,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			const state = getAgentState(data.agentId)
 			state.pendingPrompt?.(false)
 			state.pendingPrompt = null
-			state.remote = { phase: 'idle', activeTurn: null }
+			state.status = { state: 'idle' }
+			state.submitting = false
 			emitAgent(state)
 			console.log(String(data.message ?? ''))
 			return
@@ -568,22 +568,18 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			syncSink?.()
 			return
 		}
-
-		if (data.type === 'event') {
-			const state = getAgentState(data.agentId)
-			if (state.remote.activeTurn?.id === data.turnId) handleAgentEvent(data.event, data.agentId)
-		}
 	}
 
 	function attach(ws: SocketLike): void {
 		ws.onmessage = (event) => {
-			let data: ServerFrame
+			if (socket !== ws) return
+			let data: ServerMessage
 			try {
-				data = JSON.parse(event.data) as ServerFrame
+				data = JSON.parse(event.data) as ServerMessage
 			} catch {
 				return
 			}
-			handleFrame(data)
+			handleMessage(data)
 		}
 		ws.onclose = () => {
 			if (socket !== ws) return
@@ -651,8 +647,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready')
 				return Promise.resolve(false)
 			const state = getAgentState(agentId)
-			if (state.remote.phase !== 'idle' || state.loadingHistory) return Promise.resolve(false)
-			state.remote = { phase: 'submitting', activeTurn: null }
+			if (state.submitting || state.status.state !== 'idle' || state.loadingHistory)
+				return Promise.resolve(false)
+			state.submitting = true
 			emitAgent(state)
 			const accepted = new Promise<boolean>((resolve) => {
 				state.pendingPrompt = resolve
@@ -662,32 +659,30 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 					type: 'prompt',
 					text,
 					...(agentId ? { agentId } : {})
-				} satisfies AgentRequest)
+				} satisfies SessionClientMessage & { agentId?: string })
 			)
 			return accepted
 		},
 		abort(agentId) {
-			const turnId = getAgentState(agentId).remote.activeTurn?.id
-			if (!turnId) return
+			if (getAgentState(agentId).status.state === 'idle') return
 			socket?.send(
 				JSON.stringify({
 					type: 'abort',
-					turnId,
 					...(agentId ? { agentId } : {})
-				} satisfies AgentRequest)
+				} satisfies SessionClientMessage & { agentId?: string })
 			)
 		},
 		loadHistory(agentId) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
 			const state = getAgentState(agentId)
-			if (state.remote.phase !== 'idle' || state.loadingHistory) return
+			if (state.submitting || state.status.state !== 'idle' || state.loadingHistory) return
 			state.loadingHistory = true
 			emitAgent(state)
 			socket.send(
 				JSON.stringify({
 					type: 'snapshot',
 					...(agentId ? { agentId } : {})
-				} satisfies AgentRequest)
+				} satisfies SessionClientMessage & { agentId?: string })
 			)
 		},
 		subscribe(listener, agentId) {
@@ -725,8 +720,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			loadLocalApps()
 		},
 
-		send(frame) {
-			if (socket && socket.readyState === SOCKET_OPEN) socket.send(JSON.stringify(frame))
+		send(message) {
+			if (socket && socket.readyState === SOCKET_OPEN) socket.send(JSON.stringify(message))
 		},
 
 		subscribeApps(listener) {

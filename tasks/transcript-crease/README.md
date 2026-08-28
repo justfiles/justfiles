@@ -1,15 +1,16 @@
 # The crease: folding the agent's interior
 
-> Status: **design, no code yet.** Changes one shared component
-> (`packages/ui/src/Transcript.tsx`), one shared type, and the three places that
-> build messages for it. Replaces the permanent tool-call rows with a live status
-> line and one fold per turn. Nets **fewer** fields on `AgentMessage`, not more.
+> Status: **design, with the session-message refactor implemented separately.** No
+> crease, activity, projection or detail-storage feature has been added. The
+> proposed UI still replaces permanent tool-call rows with a live status line and
+> one fold per run of activity. The visual design stays as mocked.
 >
-> Along the way it fixes an existing drift: frieren and mac project the same
-> `SessionEntry` stream into messages independently, and the two projections
-> already disagree about three things.
+> The implemented transport starts with one `snapshot` containing durable history
+> and the current `SessionStatus`. Durable additions then arrive as `item`
+> messages; `status` replaces only what the agent is doing now. Live activity
+> remains disposable and settled history remains authoritative.
 
-Visual mockups, interactive: [`mockups.html`](./mockups.html) — open it in a
+Visual mockups, interactive: [`mockups.html`](./mockups.html). Open it in a
 browser. Press **Play turn**; the two switches in the frame header change real
 decisions, not styling.
 
@@ -18,11 +19,11 @@ decisions, not styling.
 Every tool call is a permanent row in the thread. A five-step turn buries the one
 sentence the user asked for under five rows of scaffolding that were only ever
 interesting while they were running. Thinking has the same shape and the same
-problem, and `compaction`, `branch_summary` and `label` are worse — they reach
+problem. `compaction`, `branch_summary` and `label` are worse because they reach
 the transcript wearing the agent's voice.
 
 The end user should see the answer. The person debugging should be able to see
-everything. Those are not in tension; they are two states of the same thing.
+everything. Those are two views of the same turn.
 
 ## The line: response, or interior
 
@@ -30,81 +31,73 @@ A design language needs one test, not a list of cases. This one holds for every
 kind that exists today and every kind worth adding:
 
 > **Does it invite or require the user's attention?**
-> Yes — it is the **response**, and it renders plainly.
-> No — it is **interior**, and it folds.
+> Yes: it is the **response**, and it renders plainly.
+> No: it is **interior**, and it folds.
 
 The test earns its keep immediately, because it settles `ask_user`. An
-`ask_user` tool call blocks on a human, so it is a response, and it should render
-as a question with clickable options — never as a tool row. Mac already does
-this (`platform/mac/ui/launcher/agentChat.tsx`); frieren does not. The rule
-predicts the host that got it right.
+`ask_user` tool call asks for the user's next response, so it is a response, and
+it should render as a question with clickable options, never as a tool row. Mac
+already does this (`platform/mac/ui/launcher/agentChat.tsx`); frieren does not.
+The rule predicts the host that got it right.
 
 ### Kinds
 
 Three UI kinds cover everything the session model has today. `compaction`,
-`branch_summary` and `label` collapse into one `note` kind — they differ in what
+`branch_summary` and `label` collapse into one `note` kind. They differ in what
 produced them, not in how they read.
 
-| Kind | SessionEntry | Folded label | Body |
+| Kind | Persisted input | Folded label | Body |
 | --- | --- | --- | --- |
-| `think` | `assistant_thinking` | Thought for 6.2s | Prose |
-| `tool` | `tool_call` + `tool_result` | Reading Transcript.tsx | Mono — args, result |
+| `think` | activity summary; legacy `assistant_thinking` | Thought for 6.2s | Prose |
+| `tool` | activity summary; legacy `tool_call` + `tool_result` | Reading Transcript.tsx | Mono, args and result |
 | `note` | `compaction`, `branch_summary`, `label` | Compacted 40 messages | Prose, or nothing |
-
-Speculative kinds — `delegate`, `recall`, `wait` — are in
-[Growth surfaces](#growth-surfaces). They are not built now, but the language is
-checked against them in the mockups, and `delegate` is the one that justifies
-picking a fold over the alternatives.
 
 ## The shape
 
-The status line and the seam are the same element in two phases, sitting in
-chronological order — **above the reply the work produced**.
+The status line and the seam occupy the same place in chronological order,
+**above the reply the work produced**.
 
 ```text
 [user message]
-⟳ Reading Transcript.tsx    2.3s        ← phase: running
+⟳ Reading Transcript.tsx    2.3s        ← live row
                                           (spinner, plain-words phrase, 58%)
-                ↓  settles in place, no remount
+                ↓  turn finishes; history replaces the live row
 
-─── 6 steps · 7.4s ──────────────  ⌄     ← phase: settled
+─── 6 steps · 7.4s ──────────────  ⌄     ← history crease
                                           (fold mark, summary, rule, 34%)
 [assistant reply]
 ```
 
 Position is the whole reason this works. The tool calls happen *before* the
 reply, so a seam underneath reads backwards. Above it, the turn is chronological
-— and the seam ends up exactly where the status line already was, so nothing has
-to be destroyed and nothing has to be created.
+and the seam appears where the status line was.
 
 It also survives the case that breaks the naive design: an **interleaved** turn,
 where the agent narrates, works, then narrates again. Below the reply there is
 nowhere sensible to put that seam. Above it, the turn just reads in order.
 
-### One node, two phases
+### Two small views
 
-Everything in the transition is CSS keyed off `data-phase`. There is no animation
-code:
+The running row and settled crease share typography and position, but they are
+independent views. The running row has a spinner, phrase and elapsed time. The
+settled crease has a fold mark, summary and hairline rule. The next session state
+removes the first and inserts the second with authoritative history.
 
-- the spinner shrinks out as the fold mark scales in,
-- the live phrase and the settled label cross-fade in one grid cell,
-- the hairline rule sweeps right from the text,
-- opacity drops 58% → 34%.
-
-Settling does not change the node's height, so nothing jumps. React keeps the
-node across the phase change as long as the key is stable — key it on the first
-activity's id.
+Do not preserve a React node across that replacement. The settled crease uses
+its `SessionEntry.id`; the temporary row uses a client-owned ID. This may skip
+the mockup's settle animation, which is preferable to adding a live item state
+machine for a decorative transition.
 
 The unfold is two properties animating together. Height alone reads as an
 accordion; the hinge is what makes it paper:
 
 ```css
-/* clip — animatable height without measuring */
+/* clip: animatable height without measuring */
 .crease-body { display: grid; grid-template-rows: 0fr;
   transition: grid-template-rows 320ms cubic-bezier(.2,.9,.25,1); }
 .crease[data-open="true"] .crease-body { grid-template-rows: 1fr; }
 
-/* hinge — top origin, plus the crease's own shadow */
+/* hinge: top origin, plus the crease's own shadow */
 .crease-sheet {
   transform-origin: top center;
   transform: perspective(760px) rotateX(-74deg);
@@ -117,35 +110,14 @@ fades. The hinge is decorative; the disclosure is not.
 
 ### Uniform shell, kind-owned content
 
-The language is only useful if it says what a new kind **may not** change. Five
-things are fixed forever:
+The crease owns chronological position, the hairline, disclosure and row layout.
+Each settled item supplies a label and body. Tools use mono for arguments and
+results. Thinking and notes use prose. A failed tool marks the run as failed and
+opens it by default.
 
-1. Chronological position — in the thread, above the response it produced.
-2. The two phases and the settle between them.
-3. The seam: same hairline, same label grammar, same fold.
-4. Row chrome: status dot, kind word, one line, duration.
-5. Disclosure: a row opens on click; a failure opens itself.
-
-A kind supplies exactly three things:
-
-```ts
-// The Crease owns position, phase, seam, row chrome, disclosure.
-// A kind owns only what it says and how its body reads.
-interface KindView<A> {
-	live(a: A): string     // "Reading Transcript.tsx" — present tense, status line
-	rest(a: A): string     // "Transcript.tsx"         — one line, settled row
-	body(a: A): ReactNode  // <pre> for tools, prose for think and note
-}
-```
-
-The third is the one that matters. **Thinking must never render in mono.** It is
-natural language; `<pre>` makes it read like a log. The current code already
-knows this — `Transcript.tsx` passes `mono={false}` to `SystemRow` for thinking —
-which is the kind-specific body rule, discovered once and hardcoded in one place.
-
-The status dot carries **status only** (running / done / failed). The kind is a
-lowercase word in mono: `think`, `read`, `bash`, `note`. At 5px a glyph turns to
-mud, and a word needs no legend and no icon design for every kind added later.
+The live row is smaller still. The worker sends a plain phrase such as `Thinking`
+or `Reading Transcript.tsx`; the client shows the phrase with a spinner. It does
+not receive or assemble a partially complete activity item.
 
 ### Grouping and labels
 
@@ -160,36 +132,106 @@ the rule:
 | Run | Label |
 | --- | --- |
 | All `think` | `Thought for 8.4s` |
-| One entry | That entry's own phrase — `Listed packages/ui · 0.2s` |
+| One entry | That entry's own phrase, `Listed packages/ui · 0.2s` |
 | Mixed | `6 steps · 7.4s` |
 
-`1 step · 0.2s` says nothing the phrase does not say better, and the phrase is
-free — the kind already produced it for the status line.
+`1 step · 0.2s` says nothing the phrase does not say better. The kind already
+produced the phrase for the status line.
 
 **Hold each running phrase ~400ms minimum.** A burst of fast tools otherwise
 strobes the line into something less readable than the rows it replaced.
 
 ## What the codebase already has
 
-`SessionEntry` in `packages/agent/session.manager.ts` is already the ordered,
-typed, append-only stream this design wants. `assistant_thinking`, `tool_call`,
-`tool_result`, `compaction`, `branch_summary` and `label` all sit side by side in
-one union, in order.
+`SessionEntry` in `packages/agent/session.manager.ts` is the ordered, typed,
+append-only history. It already has `tool_call`, `tool_result`, `compaction`,
+`branch_summary` and `label` entries. Its schema also admits
+`assistant_thinking`, but the persistence path in `packages/agent/assistant.ts`
+does not write that entry today. Thinking only exists in live
+`thinking_delta` events and disappears on reload.
 
-The information is destroyed on the way to the UI. `AgentMessage` has
-`thinking?: string` and `toolCalls?: ToolCallInfo[]` — two separate buckets — so
-nothing can record that the agent thought, called a tool, then thought again.
-Chronological placement is impossible against that shape. **This is the only
-blocking change.**
+The current storage model gets one important thing right. Model context,
+compaction and daily-note extraction do not consume raw tool calls or results:
 
-### Two projections that have drifted
+- `buildSessionContext()` emits user and assistant text plus the latest
+  compaction summary.
+- `prepareCompaction()` counts and summarises user and assistant text only.
+- session retirement calls `takeNotes()` with that filtered context.
+
+Keep those filters. Persisting enough activity for the transcript must not make
+tool output part of model context or memory extraction.
+
+### History and status are different things
+
+The old lifecycle mixed durable history with the state of current work. Starting
+or finishing a prompt replaced both values, even though history usually only grew
+by one or two items. It also exposed `ActiveTurn`, turn IDs, start and finish
+events, plus a client reducer that reconstructed whether the session was busy.
+
+The implemented contract has one durable value and one ephemeral value:
+
+```ts
+export type SessionStatus =
+	| { state: 'idle' }
+	| {
+			state: 'thinking' | 'calling_tool' | 'responding'
+			detail?: AgentEvent
+	  }
+
+export type SessionServerMessage<T = SessionEntry> =
+	| { type: 'snapshot'; history: readonly T[]; status: SessionStatus }
+	| { type: 'item'; item: T }
+	| { type: 'status'; status: SessionStatus; error?: AgentError }
+	| { type: 'accepted' }
+	| { type: 'rejected'; reason: 'busy' }
+```
+
+These are application messages, not WebSocket frames. The shared types therefore
+use `Message`, never `Frame`.
+
+`snapshot` is the one complete read. It is sent on connect and in response to an
+explicit history request, catching the client up with settled history and what
+the agent is doing now. After that, `item` extends history and `status` replaces
+the current status. `{ state: 'idle' }` is the completion signal; there is no
+separate `done` message.
+
+The session persists the user's entry before asking the model and publishes it as
+an item. Connected clients therefore see the prompt without an `ActiveTurn`
+placeholder. When the model finishes, the session publishes the persisted output
+items, then idle status. A reset sends an empty snapshot. Storage reconciliation
+also sends a snapshot when the change cannot be expressed as an append.
+
+`status.detail` carries the latest raw agent update only to preserve today's live
+Frieren rendering. It is current, in-memory data. It is not session history and
+does not survive a process restart. A reconnect can always use `status.state` to
+block another prompt; it may use the latest detail to restore a partial live view.
+The crease work can later map that detail to its smaller presentation shape.
+
+Prompt admission is command traffic. The sender receives `accepted` or
+`rejected`; every client receives the same session status and durable items.
+Abort targets the current work in that session, so it carries no turn ID. This
+deliberately gives up stale-abort protection in exchange for a smaller contract.
+
+Each host serializes snapshot, item and status sends per session. An update is
+therefore either included in the snapshot or delivered after it. No revision is
+needed for one ordered WebSocket with no replay. Errors stay transient on the
+idle status and are not added to history.
+
+The shared session messages contain no agent ID. Mac's `/agent` socket already
+represents one session. Frieren still multiplexes main and attached-agent traffic
+over its existing socket, so its host envelope adds `agentId` for routing. Moving
+those streams onto one socket per session is a transport refactor, not part of
+the crease feature.
+
+### The payload projection still drifts
 
 The flattening happens twice, independently, and the copies no longer agree:
 
 | | `platform/frieren/worker/display.ts` | `platform/mac/ui/launcher/agentChat.tsx` |
 | --- | --- | --- |
 | function | `sessionEntries2DisplayMessages` | `sessionEntriesToMessages` |
-| runs | worker-side, on history replay | client-side, on entry push |
+| `SessionServerMessage` payload | projected `DisplayMessage` | raw `SessionEntry` |
+| runs | worker-side before `updateMessages` | client-side after receipt |
 | `ask_user` | a raw tool row | a question bubble with options |
 | `compaction` | `{ role: 'assistant', content: summary }` | dropped |
 | `branch_summary` | `{ role: 'assistant', content: summary }` | dropped |
@@ -198,133 +240,319 @@ The flattening happens twice, independently, and the copies no longer agree:
 So on frieren a user scrolling back sees the agent apparently announce a
 compaction summary, or say `[before refactor]`, in the voice it answers questions
 in. On mac those events vanish. Both are wrong, in opposite directions, and
-neither is a rendering bug — it is a missing category.
+neither is a rendering bug. The presentation model lacks a category.
 
 There is a third divergence inside frieren alone. During streaming,
 `platform/frieren/src/os/client.ts` seeds one message with both `thinking: ''`
 and `toolCalls: []` (`message_start`) and accumulates deltas onto it. On replay,
-`display.ts` gives thinking its *own* message. **The same turn renders
-differently live than it does after a reload.** One ordered list removes the
-divergence by construction.
+`display.ts` would give a persisted thinking entry its *own* message. Frieren's
+history response also discards session entry IDs and replaces them with random
+IDs in the browser, so every history replacement can remount settled rows. The
+shared projector keeps `SessionEntry.id` for settled history. Remounting the
+temporary row when the turn ends remains allowed.
 
-## The data model
+## Storage, context and presentation are separate
 
-Two fields become one ordered list. This is a net reduction in
-`TranscriptProps`' surface, which is the point.
+The durable history stays small. Full detail is a cache, and the wire carries a
+presentation model:
+
+```text
+SessionEntry receipt + optional detail file
+                 |
+                 +-- model context: user/assistant text + compaction
+                 +-- memory input: user/assistant text only
+                 +-- history projection: TranscriptItem[]
+                 +-- detail read: full body or expired
+```
+
+### One receipt per crease
+
+The persistence transform collects each contiguous run of thinking and tools,
+then writes one completed entry when the run ends:
 
 ```ts
-// packages/ui/src/Transcript.tsx
+type ActivitySummary =
+	| { kind: 'think'; durationMs: number }
+	| { kind: 'tool'; name: string; label: string; durationMs: number; failed?: true }
 
-export type ActivityStatus = 'running' | 'done'
-
-/** Anything the agent did that was not addressed to the user. */
-export type Activity =
-	| { id: string; kind: 'think'; status: ActivityStatus; text: string }
-	| {
-			id: string
-			kind: 'tool'
-			status: ActivityStatus
-			name: string
-			args: unknown
-			result?: unknown
-			isError?: boolean
-			images?: TranscriptImage[]
-	  }
-	| {
-			id: string
-			kind: 'note'
-			status: ActivityStatus
-			label: string   // "Compacted 40 messages"
-			text?: string   // the summary, when there is one
-	  }
-
-export interface AgentMessage {
-	id: string
-	role: 'user' | 'assistant'
-	content: string
-	source?: 'user' | 'app'
--	thinking?: string
--	toolCalls?: ToolCallInfo[]
-+	activity?: Activity[]   // ordered; interleaves with content
-	error?: true
-	options?: { label: string }[]
+type ActivityRunEntry = EntryBase & {
+	type: 'activity'
+	items: ActivitySummary[]
+	detailId?: string
+	images?: ImageRef[]
 }
-
-/** Back-compat: frieren's agent/types.ts re-exports this, and images.ts
- *  depends on the shape. Nothing outside the package moves on day one. */
-export type ToolCallInfo = Extract<Activity, { kind: 'tool' }>
 ```
 
-One new prop, and only one:
+The sidecar contains the full ordered body for that crease:
 
 ```ts
-// The user's preference — the only thing the component cannot know.
-// Per-turn open state stays internal; hosts have no business knowing
-// which crease is open.
-expandTools?: boolean
+type ActivityDetail = {
+	items: (
+		| { kind: 'think'; content: string }
+		| { kind: 'tool'; name: string; input: unknown; result: unknown; failed?: true }
+	)[]
+}
 ```
 
-Resist a `renderActivity` escape hatch until a second host actually needs one.
+One crease therefore has one graph entry, one detail ID and at most one file.
+Provider tool-call IDs may help the turn recorder assemble repeated or parallel
+calls, but they stay inside that recorder. They are not session or wire concepts.
+
+A message, question or image closes the current activity run. The turn recorder
+writes the sidecar before appending its small receipt. A crash can leave an
+unreferenced file or lose an unfinished activity run. Both are acceptable: the
+conversation remains durable, and cache eviction eventually removes the file.
+
+`ask_user` remains ordinary user-facing conversation. Add optional question
+options to the assistant message entry and keep them inline, outside activity
+detail. Tool-produced `ImageRef`s stay on the run receipt; the projector emits
+them after the crease as ordinary image items.
+
+Keep the old `assistant_thinking`, `tool_call` and `tool_result` shapes in the
+read union. The projector groups those legacy entries into activity runs. New
+writes use `ActivityRunEntry`; do not rewrite synced JSONL files.
+
+### One settled projection
+
+Both hosts call the same pure `sessionEntriesToTranscriptItems()` function before
+sending history. Put the wire types and projector with `@justfiles/agent/protocol`,
+without React or host imports. It owns these rules:
+
+- `ask_user` becomes an assistant question with options; its result is omitted.
+- legacy thinking and tools are grouped into activity runs.
+- `compaction`, `branch_summary` and `label` become `note` runs.
+- expression tags are stripped only when the session requested them.
+- tool-produced images become plain image items.
+
+The wire model is settled-only:
+
+```ts
+export type TranscriptActivity =
+	| ActivitySummary
+	| { kind: 'note'; label: string; body?: string }
+
+export type TranscriptItem =
+	| {
+			id: string
+			type: 'message'
+			role: 'user' | 'assistant'
+			content: string
+			source?: 'user' | 'app'
+			error?: true
+			options?: { label: string }[]
+	  }
+	| {
+			id: string
+			type: 'activity'
+			label: string
+			items: TranscriptActivity[]
+			failed?: true
+			detailId?: string
+	  }
+	| { id: string; type: 'image'; image: TranscriptImage }
+```
+
+`SessionEntry.id` is the settled item ID. History restore never invents browser
+UUIDs. There is no settled `running` state and no promise that a temporary row
+keeps its DOM identity when history replaces it.
+
+Opening a crease sends an `activity_detail` request with `requestId` and opaque
+`detailId`. The matching message returns either the full run or `expired`. The
+outer `agentId` selects the main or app-attached agent. Detail reads do not affect
+history or `SessionStatus`.
+
+`Transcript` takes one activity configuration prop:
+
+```ts
+activity?: {
+	expandByDefault?: boolean
+	loadDetail?: (id: string) => Promise<
+		| { status: 'available'; detail: ActivityDetail }
+		| { status: 'expired' }
+	>
+}
+```
+
+The host maps `expandTools` to `expandByDefault`. Open state stays inside the
+component.
+
+### Status detail is disposable
+
+The lifecycle refactor already sends each raw `AgentEvent` as the optional detail
+of a complete `SessionStatus`. For the crease, Frieren's worker maps that detail
+to the current phrase or accumulated partial response before it crosses the wire:
+
+```ts
+export type TranscriptStatus =
+	| { state: 'idle' }
+	| { state: 'thinking'; label: string }
+	| { state: 'calling_tool'; label: string }
+	| { state: 'responding'; text: string }
+```
+
+Each `status` message replaces the previous value. `calling_tool` starts or
+replaces the temporary status phrase. `responding` clears that phrase and shows
+the accumulated partial response. The browser does not assemble tool arguments,
+thinking bodies or activity receipts. Idle status discards the temporary view;
+the durable `item` messages already hold the settled transcript.
+
+The worker consumes expression tags before sending response text and emits
+Frieren's avatar signal separately. Mac may ignore status detail and only use
+idle versus non-idle. Both hosts use the same settled projection.
+
+Each client stores history, the latest status and one local `submitting` boolean.
+There is no remote phase union, turn ID or separate live-event message. Frieren's
+existing live renderer consumes the optional status detail until Phase 3 replaces
+it with `TranscriptStatus`.
+
+The turn recorder measures duration internally and writes it with the completed
+run. Session entry timestamps are not suitable because one append batch gives
+all entries the same timestamp.
+
+### Ownership
+
+| Concern | Owner |
+| --- | --- |
+| prompt admission and abort | agent session |
+| durable history | snapshot and item messages |
+| current agent status | one replaceable status message |
+| reconnect | snapshot from the new socket |
+| raw provider events and completed activity runs | backend turn recorder |
+| session history to transcript meaning | shared projector |
+| temporary text and status phrase | Frieren worker and client |
+| detail expiry | daily cache sweep |
+| disclosure and body rendering | `Transcript` |
+
+No client rebuilds durable activity from streamed events. Compaction never
+decides whether detail survives. The cache never changes session history.
+
+## Detail retention
+
+Full detail is a cache, not part of the session graph. Two limits govern it:
+
+```text
+delete files older than DETAIL_TTL
+if total detail exceeds DETAIL_STORE_LIMIT, delete oldest files first
+```
+
+The existing daily maintenance job applies both limits across main and
+app-attached agents. The exact constants stay server-owned and should be chosen
+after measuring real sessions. They are not user settings.
+
+Compaction, branching and session retirement do not participate. There are no
+cleanup candidates, reachability checks, orphan classes or grace periods. A
+sidecar-first crash simply leaves a cache entry that age or storage pressure will
+remove. Cleanup is idempotent. A missing file returns `expired`, not a generic
+server error.
+
+The durable `ActivityRunEntry` remains after eviction, so history still shows
+what ran, how long it took and whether it failed. Only the expandable body is
+gone.
+
+Neither compaction, `buildSessionContext()`, daily-note extraction nor memory
+consolidation may dereference an activity sidecar. This is the hard boundary that
+keeps a large terminal dump out of the user's memory.
+
+### Precedent
+
+AG-UI and the Vercel AI SDK use start, delta and end events for messages,
+reasoning and tool calls. That supports inspecting partially streamed objects.
+The crease does not need that capability, so its live protocol carries only text
+and a status phrase. See [AG-UI events](https://docs.ag-ui.com/concepts/events)
+and the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol).
+
+Codex separates its detailed internal rollout from typed, pageable app-server
+history. See the
+[rollout persistence policy](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/policy.rs)
+and [app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+
+OpenCode persists reasoning and tool parts, then marks older tool output as
+compacted when building model context. The payload remains in storage, which is
+the failure this plan avoids with separately prunable detail files. See its
+[message model](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/message.ts)
+and [compaction path](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/compaction.ts).
+
+Hermes stores full history in SQLite but selects and prunes a separate request
+copy. Its history search excludes tool output by default because it is usually
+noise. See its [session storage](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/sessions.md)
+and [context engine](https://github.com/NousResearch/hermes-agent/blob/main/agent/context_engine.py).
+
+Phoenix LiveView keeps server state authoritative and sends a view derived from
+that state. The crease uses the smaller version of that pattern: replace the
+current status and append settled items.
+See the [LiveView lifecycle](https://hexdocs.pm/phoenix_live_view/Phoenix.LiveView.html).
+
+Kubernetes uses `resourceVersion` because its watch API is a retained,
+distributed change stream that clients may resume. This protocol has one ordered
+WebSocket, per-session send queues and a fresh snapshot after reconnect, so a
+revision would protect a topology the product does not have. See
+[Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)
+and [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html).
+
+S3 expires cached objects by age, and journald vacuums archived logs by age or
+total size. Those policies fit disposable detail better than graph-aware garbage
+collection. See [S3 lifecycle management](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html)
+and [journalctl vacuuming](https://www.freedesktop.org/software/systemd/man/255/journalctl.html).
+
+The shared lesson is separation. Full detail does not belong in model context,
+memory input or the initial transcript response. This design goes one step
+further and treats that detail as disposable.
 
 ## Delivery plan
 
-### Phase 1: the status line, on the existing data model
+### Phase 1: record completed activity runs
 
-Ship the perceived win by itself, before touching any types.
+- Add `ActivityRunEntry` and keep legacy inline activity entries readable.
+- Collect thinking, tool arguments and tool results during a turn. Flush one
+  receipt and one sidecar per contiguous run.
+- Preserve text, activity, questions and images in their original order. The
+  current transform keeps only the first tool call.
+- Keep `ask_user` question text and options inline as conversation.
+- Prove that model context, compaction and both memory paths never read detail
+  files.
+- Accept that a process crash may lose an unfinished run or leave a cache file.
 
-- In `MessageItem`, stop rendering `ToolCallRow` and the thinking `SystemRow`
-  when `expandTools` is false (the default).
-- Derive one live row from the tail of the thread and render it after
-  `messages.map`, not inside a message — inside, it leaves a hole when it goes.
-- Add the tool-name → phrase table. Unknown tools fall back to
-  `` `Running ${name}` ``, never a raw JSON blob.
-- `expandTools` restores today's rows, unchanged, in today's position.
+### Phase 2: project once on the backend
 
-Small diff, fully reversible, and it makes the rest concrete instead of
-theoretical.
+- Add protocol-owned `TranscriptItem`, `TranscriptStatus` and one shared
+  `sessionEntriesToTranscriptItems()` projector.
+- Project `snapshot` and `item` payloads before sending them. Keep
+  prompt admission and activity-detail reads as command traffic.
+- Keep the existing per-session send queues. Ignore messages from an old
+  WebSocket after a replacement connection becomes current.
+- Use the shared projector in Frieren and Mac. Delete both host-specific history
+  projections and stop sending raw `SessionEntry` to browsers.
+- Add `activity_detail` request/result variants. Fetch a body only when its
+  crease opens.
+- Test `ask_user`, notes, legacy history, repeated tools, images and an
+  interleaved `think -> tool -> think` run.
+- Test snapshots, incremental items, accepted and rejected admission, reconnect,
+  socket replacement and abort.
 
-### Phase 2: one ordered `activity[]`
+### Phase 3: use disposable live updates
 
-The blocking change, and the only risky one. No visual change beyond ordering.
+- Map raw status detail to `TranscriptStatus` in the Frieren worker.
+- Keep one temporary status phrase in the browser. Do not build live activity
+  items or preserve their identity at settlement.
+- Strip expression tags in the worker and keep avatar pacing in Frieren.
+- When status becomes idle, discard the temporary view. Durable items already
+  contain the settled transcript.
+- Keep Mac on history and status messages. Token streaming on Mac is out of scope.
 
-- Add the `Activity` union to `packages/ui`; keep `ToolCallInfo` as an alias.
-- `display.ts`: append in entry order instead of sorting into buckets. Map
-  `compaction` / `branch_summary` / `label` to `kind: 'note'` — they stop being
-  assistant speech.
-- `agentChat.tsx`: same change. Stop dropping the three note kinds.
-- **Port mac's `ask_user` handling to `display.ts`** while both files are open.
-  It is the one place the two projections disagree that is a plain bug.
-- `os/client.ts`: `message_start` seeds `activity: []`; `thinking_delta` appends
-  or extends a trailing `think` entry; `tool_execution_start` / `_end` push and
-  patch a `tool` entry. The history restore at the bottom of the file maps to the
-  same shape.
-- `display.test.ts` and `frieren.test.ts` already cover the projection — extend
-  them with an interleaved turn (`think → tool → think`) that asserts order.
+### Phase 4: render and retain
 
-### Phase 3: the Crease
-
-- One component, phase-driven, keyed on `calls[0].id` so the node survives
-  running → settled.
-- Group consecutive activity into runs; a text block breaks a run. If the message
-  model does not preserve interleaving yet, one crease per assistant message is a
-  fine first cut — the interleaved case degrades to the simple case and no markup
-  changes when the model catches up.
+- Render one crease per projected activity run.
 - **Render nothing for zero activity.** A turn that just answers must look
   exactly as it does today.
-- Fix the scroll interaction (below).
-
-### Phase 4: kind-owned bodies
-
+- Keep image items outside the crease.
 - `tool` → mono `<pre>`, args and result, as today.
 - `think` and `note` → prose. Body font, ~72% opacity, a left rule. Never `<pre>`.
 - A run containing a failure opens by default and tints with `--danger`.
-
-### Phase 5: preference and parity
-
-- Persist `expandTools`. Setting it opens every crease by default — that is a
-  stored boolean, not a second design.
-- Check both hosts render the same turn identically, live and after reload. That
-  is the regression this whole change is supposed to make impossible.
+- Persist `expandTools` as the default-open preference.
+- Fix the scroll interaction below.
+- Add the daily age and storage-limit eviction pass. Test age eviction, oldest
+  first eviction and expired detail reads.
+- Check both hosts render settled turns identically and reload preserves them.
 
 ## The scroll bug this creates
 
@@ -338,71 +566,57 @@ const ro = new ResizeObserver(() => {
 ```
 
 Opening a crease halfway up the thread grows the content, the observer fires, and
-the view yanks to the bottom — away from the thing the user just chose to look
-at. **Set `stuckRef.current = false` in the toggle, before the growth lands.**
+the view yanks to the bottom, away from the thing the user just chose to look
+at. The transcript passes an internal `onBeforeOpen` callback to each crease. It
+sets `stuckRef.current = false` before the growth lands; this is not a public
+component prop.
 
-Two notes. During a turn the seam is the last thing in the thread, so the
-stick-to-bottom keeps it visible for free — this only bites on unfold. And a
-nested crease makes it worse, not better, because the growth can be large.
+During a turn the status row is the last thing in the thread, so stick-to-bottom
+keeps it visible. This bug only affects opening settled history.
 
 After the unfold transition, if the sheet's bottom is below the viewport, scroll
-just enough to bring it in — never more. The seam itself must not move.
+by the overflow only. Keep the disclosure button visible; never jump to the
+thread bottom.
 
 ## Accessibility
 
-- Running phase: `role="status"`, `aria-live="polite"`, `aria-atomic` — each
-  phrase is announced, rather than the thread re-read.
-- Settled: a real `<button aria-expanded>` with the label as its accessible name.
-- Nested creases nest the buttons; nothing special is needed.
+- Live row: put `role="status"`, `aria-live="polite"` and `aria-atomic` on
+  the changing phrase only. Keep the elapsed timer outside that live region and
+  mark it `aria-hidden`; otherwise every timer tick re-announces the whole row.
+- Hold each live phrase for the same 400ms minimum used by the visual status.
+- Settled: use a real `<button aria-expanded aria-controls>` with the label as
+  its accessible name.
+- A disclosure button is a sibling of its panel.
 - Reduced motion: drop the hinge and the rule sweep, keep the fades.
 
-## Four rules that keep it from sprawling
+## Four rules that keep it small
 
-1. **One new prop.** `expandTools`. Per-turn open state is internal.
-2. **A kind is three functions.** No kind may change position, phase, seam, row
-   chrome, or disclosure. If a kind needs to, the language is wrong — fix the
-   language, not the kind.
+1. **One activity config prop.** It carries the default-open preference and
+   detail loader. Per-crease open state is internal.
+2. **History plus status.** Durable items append. One status value is replaced.
+   Only `submitting` is local UI state.
 3. **Interior never blocks.** Anything that requires or invites the user's
    attention is a response and renders plainly. That is the `ask_user` test.
-4. **A failure never folds silently.** Hiding a failure is the only way this
-   change makes the product worse instead of quieter.
+4. **Detail is optional.** The receipt renders without its sidecar. Missing
+   detail means expired, not corrupt history.
 
 ## What was rejected
 
-Five directions were mocked up before this one. The others, and why not:
+Four directions were mocked up before this one. The others, and why not:
 
-- **Reader Switch** — no per-turn affordance at all; one global control flips the
-  whole transcript. Not rejected so much as *absorbed*: it is rule 1's
+- **Reader Switch:** no per-turn affordance at all; one global control flips the
+  whole transcript. It survives as rule 1's
   `expandTools`, which is a preference rather than a layout.
-- **Ribbon Rail** — a gutter in the left margin, hover to peek, click to pin. The
+- **Ribbon Rail:** a gutter in the left margin, hover to peek, click to pin. The
   only direction with a genuinely untouched text column, and the prettiest. Loses
   on discoverability (an unlabelled stripe) and does not survive touch.
-- **Receipt Drawer** — a footnote chip that opens an inspector over the thread.
-  Never reflows, and the trace gets real room. Held in reserve: the moment a
+- **Receipt Drawer:** a footnote chip that opens an inspector over the thread.
+  Never reflows, and the trace gets real room. If a
   trace needs a diff, a screenshot, or 200 lines of JSON, the crease is too
-  small and this becomes right rather than over-built.
-- **Told, Then Shown** — the status line settles into a past-tense sentence that
-  expands into a timeline. The best default state, because it teaches without a
-  click. Absorbed as the *narrated label* variant; it stays a setting because a
-  one-line label truncates on a busy turn.
+  small and the drawer becomes a separate feature.
+- **Told, Then Shown:** the status line settles into a past-tense sentence that
+  expands into a timeline. It needs live and settled identity, so this design
+  drops it.
 
-The crease won on one argument the others cannot answer: **it recurses.** A
-delegated subagent is just another interior kind whose body is another crease,
-and the depth ribbon does what Xcode's fold ribbon does with nested braces. Every
-other direction needs a new surface to show a subagent's work.
-
-## Growth surfaces
-
-- **`delegate`** — a subagent's run, body rendered as a nested crease. The
-  strongest reason the fold was chosen; see the last mockup.
-- **`recall`** — memory or context retrieval, body a list of hits.
-- **`wait`** — polling something external, body a poll log. The one kind whose
-  duration is the interesting part.
-- **Narrated labels** — `Read 2 files · ran tests twice · edited 1 file`,
-  grouped mechanically with no model call. Already implemented in the mockup;
-  gated on solving one-line truncation.
-- **Streamed thinking** — showing the live thought fragment is the most alive the
-  agent ever looks and costs nothing, since the text is already streaming. It is
-  also the one place raw model output reaches the user unmediated, so it wants a
-  hard truncation and a setting. Quiet (`Thinking · 6.2s`) is the safe default
-  for a shipped app.
+The crease keeps activity in chronological order and gives detailed history one
+local disclosure. That is enough reason to use it.

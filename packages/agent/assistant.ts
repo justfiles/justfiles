@@ -46,6 +46,9 @@ type AssistantProps = {
 	// Whether the host wired the `os` command (an `osState` port): the filesystem block then
 	// points at `os windows` for "what is the user looking at" instead of leaving it unanswerable.
 	os?: boolean
+	// Publishes entries after their session append succeeds. The outer AgentSession uses this
+	// to push durable items without making each prompt carry persistence plumbing.
+	onEntriesAppended?: (entries: readonly SessionEntry[]) => Promise<void> | void
 }
 
 // Who authored a turn: the user typing, or an app acting on their behalf.
@@ -96,7 +99,8 @@ export async function createAssistant({
 	readDoc,
 	appsPrompt,
 	expressions,
-	os = false
+	os = false,
+	onEntriesAppended
 }: AssistantProps): Promise<Assistant> {
 	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
 	// only when there is something to read, so a host with no skills sees no dead tool.
@@ -121,7 +125,7 @@ export async function createAssistant({
 		newSession,
 		abort,
 		addTools,
-		applySkill: (id) => applySkill(id),
+		applySkill,
 		readSkill: (id) => skillRegistry.read(id),
 		systemPrompt: () => agent.state.systemPrompt
 	}
@@ -142,7 +146,7 @@ export async function createAssistant({
 
 	// Load a skill body and run it as a normal turn (its result lands in the session).
 	async function applySkill(id: string): Promise<string> {
-		return prompt(await skillRegistry.read(id))
+		return prompt(await skillRegistry.read(id), 'user')
 	}
 
 	async function prompt(message: string, source: PromptSource = 'user') {
@@ -160,6 +164,10 @@ export async function createAssistant({
 			if (appContext) agent.state.systemPrompt = await resolveSystemPrompt()
 			if (turn.aborted) return ''
 			offset = agent.state.messages.length
+			const input = await session.append([
+				{ type: 'message', role: 'user', content: message, source }
+			])
+			await onEntriesAppended?.(input.entries)
 			try {
 				await agent.prompt(message)
 				await retryEmptyAssistant(offset)
@@ -172,13 +180,15 @@ export async function createAssistant({
 
 		const newMessages = agent.state.messages.slice(offset)
 		const turnHasToolCall = newMessages.some(hasToolCall)
-		if (newMessages.length > 0) {
-			await session.append(
-				newMessages.flatMap((message, index) => {
-					const entry = transform(message, index === 0 ? source : 'user', turnHasToolCall)
+		const output = newMessages.slice(1)
+		if (output.length > 0) {
+			const appended = await session.append(
+				output.flatMap((message) => {
+					const entry = transform(message, 'user', turnHasToolCall)
 					return entry ? [entry] : []
 				})
 			)
+			await onEntriesAppended?.(appended.entries)
 		}
 
 		const answer = assistantText(newMessages)
@@ -212,7 +222,7 @@ export async function createAssistant({
 			// Awaited, unlike before: `initSession` below now recomputes the active leaf from
 			// disk, so an in-flight append would race it — the leaf could come back as the
 			// pre-compaction tip and then be overwritten when the append lands.
-			await session.append([
+			const appended = await session.append([
 				{
 					type: 'compaction',
 					summary: result.summary,
@@ -220,6 +230,7 @@ export async function createAssistant({
 					tokensBefore: result.tokensBefore
 				}
 			])
+			await onEntriesAppended?.(appended.entries)
 			await initSession()
 		}
 		return answer

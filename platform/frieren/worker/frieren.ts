@@ -35,10 +35,11 @@ import {
 } from '@justfiles/agent/defaults'
 import { EXPRESSIONS } from '@justfiles/agent/expression'
 import {
-	type AgentFrame,
-	type AgentRequest,
-	promptResult,
-	sessionEventFrame
+	promptReply,
+	type SessionClientMessage,
+	type SessionServerMessage,
+	snapshotMessage,
+	updateMessages
 } from '@justfiles/agent/protocol'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
@@ -104,7 +105,7 @@ function apiKeyStore(providerId: string, key: string): CredentialStore {
 }
 
 type ClientMessage =
-	| AgentRequest
+	| (SessionClientMessage & { agentId?: string })
 	| { type: 'app_open'; id: string }
 	| { type: 'app_close'; id?: string }
 
@@ -116,7 +117,10 @@ interface DisplayParticipants {
 }
 
 type ServerMessage =
-	| (AgentFrame<DisplayMessage> & { participants?: DisplayParticipants })
+	| (SessionServerMessage<DisplayMessage> & {
+			agentId?: string
+			participants?: DisplayParticipants
+	  })
 	| {
 			type: 'ready'
 			participants?: DisplayParticipants
@@ -206,7 +210,7 @@ export class Frieren extends DurableObject<Env> {
 	private apps?: FrierenApps
 	private readonly agents: AgentSessions
 	private readonly agentSubscriptions = new Map<string, () => void>()
-	private readonly agentFrames = new Map<string, Promise<void>>()
+	private readonly agentMessages = new Map<string, Promise<void>>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -481,25 +485,23 @@ export class Frieren extends DurableObject<Env> {
 		if (!this.agentSubscriptions.has(key))
 			this.agentSubscriptions.set(
 				key,
-				session.subscribe((event) => {
-					void this.queueAgentFrame(agentId, () => {
-						this.broadcast({
-							...sessionEventFrame(event, sessionEntries2DisplayMessages),
-							...(agentId ? { agentId } : {})
-						})
+				session.subscribe((update) => {
+					void this.queueAgentMessage(agentId, () => {
+						for (const message of updateMessages(update, sessionEntries2DisplayMessages))
+							this.broadcast({ ...message, ...(agentId ? { agentId } : {}) })
 					})
 				})
 			)
 		return session
 	}
 
-	// A snapshot and its session's lifecycle frames must leave in queue order.
-	private queueAgentFrame(agentId: string | undefined, send: () => void | Promise<void>) {
+	// State reads and pushes must leave in queue order.
+	private queueAgentMessage(agentId: string | undefined, send: () => void | Promise<void>) {
 		const key = agentId ?? ''
-		const result = (this.agentFrames.get(key) ?? Promise.resolve()).then(send)
-		this.agentFrames.set(
+		const result = (this.agentMessages.get(key) ?? Promise.resolve()).then(send)
+		this.agentMessages.set(
 			key,
-			result.catch((error) => console.error('[agent] frame failed:', error))
+			result.catch((error) => console.error('[agent] message failed:', error))
 		)
 		return result
 	}
@@ -510,11 +512,11 @@ export class Frieren extends DurableObject<Env> {
 		participants?: DisplayParticipants
 	): Promise<void> {
 		const session = this.getSession(agentId)
-		return this.queueAgentFrame(agentId, async () => {
+		return this.queueAgentMessage(agentId, async () => {
 			const snapshot = await session.snapshot()
 			ws.send(
 				JSON.stringify({
-					...sessionEventFrame({ type: 'snapshot', snapshot }, sessionEntries2DisplayMessages),
+					...snapshotMessage(snapshot, sessionEntries2DisplayMessages),
 					...(agentId ? { agentId } : {}),
 					...(participants ? { participants } : {})
 				} satisfies ServerMessage)
@@ -713,27 +715,15 @@ export class Frieren extends DurableObject<Env> {
 		const trimmed = text?.trim() ?? ''
 		const session =
 			parsed.type === 'abort' || parsed.type === 'prompt' ? this.getSession(agentId) : null
-		if (parsed.type === 'abort') session?.abort(parsed.turnId)
+		if (parsed.type === 'abort') session?.abort()
 		// Start before the first await so a following abort cannot overtake setup.
-		let turnId = ''
-		const result =
-			text && session && trimmed !== DEBUG_COMMAND
-				? session.start(text, 'user', (event) =>
-						this.broadcast({
-							type: 'event',
-							turnId,
-							event,
-							...(agentId ? { agentId } : {})
-						})
-					)
-				: null
-		if (result?.accepted) turnId = result.turn.id
+		const result = text && session && trimmed !== DEBUG_COMMAND ? session.start(text) : null
 		if (result) {
 			const reply: ServerMessage = {
-				...promptResult(result),
+				...promptReply(result),
 				...(agentId ? { agentId } : {})
 			}
-			ws.send(JSON.stringify(reply))
+			await this.queueAgentMessage(agentId, () => ws.send(JSON.stringify(reply)))
 		}
 
 		await scheduleDailyAlarm(this.ctx, this.getSession())
@@ -743,7 +733,16 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'snapshot') {
-			await this.sendAgentSnapshot(ws, agentId)
+			const session = this.getSession(agentId)
+			await this.queueAgentMessage(agentId, async () => {
+				const snapshot = await session.snapshot()
+				ws.send(
+					JSON.stringify({
+						...snapshotMessage(snapshot, sessionEntries2DisplayMessages),
+						...(agentId ? { agentId } : {})
+					} satisfies ServerMessage)
+				)
+			})
 			return
 		}
 

@@ -4,8 +4,8 @@
 // touches ~/Applications. It exercises the HTTP routes (per-app gui.js/icon + their 404s +
 // the serveClient guard, the App Store's `/store` browse + install over a faked JustApps
 // registry) and the wire protocol on all three sockets: `/system` (catalog + command
-// dispatch), `/agent` (session snapshot + a prompt turn), and `/app/:id` (initial state + a
-// dispatch round-trip). Offline-safe: with no ai account the agent can't build, so its snapshot is
+// dispatch), `/agent` (session state + a prompt turn), and `/app/:id` (initial state + a
+// dispatch round-trip). Offline-safe: with no ai account the agent can't build, so its state is
 // empty and a prompt turn surfaces a classified error — both observable here. One server per
 // process, because the daemon's kernel/Volume are module singletons.
 // Bun-only (`bun test`): Bun.serve + pub/sub + blob-URL reducer workers.
@@ -46,44 +46,42 @@ afterAll(async () => {
 	await rm(root, { recursive: true, force: true })
 })
 
-// A socket wrapper that buffers every frame (so a message that lands before a waiter is
-// attached is never missed — the /system + /agent sockets push on connect) and lets a test
-// await the first frame matching a predicate.
-interface Frame {
+// A socket wrapper that buffers every message so a push that lands before a waiter is
+// attached is never missed.
+interface Message {
 	type?: string
 	apps?: { id: string }[]
 	commands?: { name: string }[]
 	id?: string
 	ok?: boolean
 	result?: { show: string; body?: string }
-	transcript?: unknown[]
-	activeTurn?: { id: string } | null
-	turn?: { id: string }
-	turnId?: string
 	accepted?: boolean
+	history?: unknown[]
+	status?: { state: string }
 	message?: string
 	error?: { message: string }
 	state?: {
 		count?: number
 		currentViewing?: string | null
 		revision?: number
-		error?: string | null
 	}
 }
 
 interface Client {
 	send(value: unknown): void
-	waitFor(pred: (m: Frame) => boolean, timeoutMs?: number): Promise<Frame>
-	frames(): readonly Frame[]
+	waitFor(pred: (m: Message) => boolean, timeoutMs?: number): Promise<Message>
+	messages(): readonly Message[]
 	close(): void
 }
 
 function connect(path: string): Promise<Client> {
 	const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`)
-	const messages: Frame[] = []
-	const waiters: { pred: (m: Frame) => boolean; resolve: (m: Frame) => void }[] = []
+	const messages: Message[] = []
+	const waiters: { pred: (m: Message) => boolean; resolve: (m: Message) => void }[] = []
 	ws.addEventListener('message', (event) => {
-		const m = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data)) as Frame
+		const m = JSON.parse(
+			typeof event.data === 'string' ? event.data : String(event.data)
+		) as Message
 		messages.push(m)
 		for (let i = waiters.length - 1; i >= 0; i--) {
 			if (waiters[i].pred(m)) {
@@ -111,7 +109,7 @@ function connect(path: string): Promise<Client> {
 						})
 					})
 				},
-				frames: () => messages,
+				messages: () => messages,
 				close: () => ws.close()
 			})
 		)
@@ -173,33 +171,32 @@ test('/system dispatches a command and replies with what to show', async () => {
 	client.close()
 })
 
-test('/agent snapshots state and correlates a prompt with its finish', async () => {
+test('/agent sends a snapshot, then publishes items and status', async () => {
 	const client = await connect('/agent')
-	// Offline the shared session can't build, so the snapshot is an empty transcript.
-	const snapshot = await client.waitFor((m) => m.type === 'snapshot')
-	expect(snapshot.transcript).toEqual([])
-	expect(snapshot.activeTurn).toBeNull()
+	// Offline the shared session can't build, so the snapshot has empty history.
+	const initial = await client.waitFor((m) => m.type === 'snapshot')
+	expect(initial.history).toEqual([])
+	expect(initial.status).toEqual({ state: 'idle' })
 
-	// A prompt drives a turn on the shared session; with no backend it fails, so the turn
-	// still has one id from admission through the classified finish.
+	// A prompt publishes status, admission, then an idle status with the classified error.
 	client.send({ type: 'prompt', text: 'hello' })
-	const started = await client.waitFor((m) => m.type === 'turn_started')
-	const admitted = await client.waitFor((m) => m.type === 'prompt_result')
-	expect(admitted).toMatchObject({ accepted: true, turn: started.turn })
+	await client.waitFor((m) => m.type === 'status' && m.status?.state === 'thinking')
+	await client.waitFor((m) => m.type === 'accepted')
 	const finished = await client.waitFor(
-		(m) => m.type === 'turn_finished' && m.turnId === started.turn?.id
+		(m) =>
+			m.type === 'status' &&
+			m.status?.state === 'idle' &&
+			m.error !== null &&
+			typeof m.error === 'object'
 	)
-	expect(finished.transcript).toEqual([])
-	expect(typeof finished.error?.message).toBe('string')
-	expect((finished.error?.message ?? '').length).toBeGreaterThan(0)
+	expect(finished.error?.message.length).toBeGreaterThan(0)
 	expect(
 		client
-			.frames()
-			.filter((frame) =>
-				['turn_started', 'prompt_result', 'turn_finished'].includes(frame.type ?? '')
-			)
-			.map((frame) => frame.type)
-	).toEqual(['turn_started', 'prompt_result', 'turn_finished'])
+			.messages()
+			.slice(1)
+			.filter((message) => ['status', 'accepted'].includes(message.type ?? ''))
+			.map((message) => message.type)
+	).toEqual(['status', 'accepted', 'status'])
 	client.close()
 })
 
