@@ -173,6 +173,7 @@ export function Transcript({
 	// Last seen scrollTop, used to tell a user's upward scroll (the only thing that
 	// detaches) apart from the downward moves that growth and auto-scroll cause.
 	const lastTopRef = useRef(0)
+	const scrollAwayRef = useRef(0)
 	const revealScrollRef = useRef(false)
 	useLayoutEffect(() => {
 		const viewport = viewportRef.current
@@ -203,16 +204,20 @@ export function Transcript({
 		const el = viewportRef.current
 		if (!el) return
 		const top = el.scrollTop
-		if (top < lastTopRef.current) stuckRef.current = false
+		if (top < lastTopRef.current) {
+			stuckRef.current = false
+			scrollAwayRef.current++
+		}
 		if (!revealScrollRef.current && el.scrollHeight - top - el.clientHeight < 32)
 			stuckRef.current = true
 		lastTopRef.current = top
 	}
 	const beforeActivityOpen = () => {
 		const stuck = stuckRef.current
+		const scrollAway = scrollAwayRef.current
 		stuckRef.current = false
 		return () => {
-			stuckRef.current = stuck
+			if (scrollAwayRef.current === scrollAway) stuckRef.current = stuck
 		}
 	}
 	const revealActivity = (head: HTMLElement, sheet: HTMLElement) => {

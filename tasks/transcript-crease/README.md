@@ -699,8 +699,8 @@ keeps it visible. This bug only affects opening settled history.
 After the unfold transition, if the sheet's bottom is below the viewport, scroll
 by the overflow only. Keep the disclosure button visible; never jump to the
 thread bottom. Closing before the transition ends restores the pin state captured
-when opening began. A completed reveal scroll stays detached even when it lands
-inside the bottom-pin slop.
+when opening began unless the user has scrolled upward since. A completed reveal
+scroll stays detached even when it lands inside the bottom-pin slop.
 
 ## Accessibility
 
