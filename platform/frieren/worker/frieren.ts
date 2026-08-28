@@ -712,6 +712,11 @@ export class Frieren extends DurableObject<Env> {
 			parsed.type === 'prompt' && trimmed.length > 0 && trimmed !== DEBUG_COMMAND
 				? session.start(text)
 				: null
+		// Admission must precede terminal status; the client holds one pending prompt callback.
+		if (result)
+			await this.queueAgentMessage(agentId, () =>
+				ws.send(JSON.stringify(promptReply(result) satisfies AgentServerMessage))
+			)
 		await scheduleDailyAlarm(this.ctx, this.getSession())
 		if (parsed.type === 'abort') return
 
@@ -730,12 +735,7 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (result) {
-			await this.queueAgentMessage(agentId, () =>
-				ws.send(JSON.stringify(promptReply(result) satisfies AgentServerMessage))
-			)
-			if (result.accepted) await result.done
-		}
+		if (result?.accepted) await result.done
 	}
 
 	private async handleControlMessage(ws: WebSocket, message: string): Promise<void> {
