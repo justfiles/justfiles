@@ -38,6 +38,7 @@ function connect(appId: string) {
 	let onState: ((state: unknown) => void) | undefined
 	let onAssistant: ((state: AttachedAgentState) => void) | undefined
 	let onNotice: ((notice: Notification) => void) | undefined
+	let pendingNotice: Notification | undefined
 	let last: unknown
 	let got = false
 	let lastAssistant = initialAttachedAgentState
@@ -60,7 +61,9 @@ function connect(appId: string) {
 			return
 		}
 		if ('notice' in msg) {
-			onNotice?.((msg as Extract<AttachedAgentServerMessage, { notice: unknown }>).notice)
+			const notice = (msg as Extract<AttachedAgentServerMessage, { notice: unknown }>).notice
+			if (onNotice) onNotice(notice)
+			else pendingNotice = notice
 			return
 		}
 		if (msg.reload === true) {
@@ -115,6 +118,11 @@ function connect(appId: string) {
 		},
 		subscribeNotice(cb: (notice: Notification) => void) {
 			onNotice = cb
+			if (pendingNotice) {
+				const notice = pendingNotice
+				pendingNotice = undefined
+				cb(notice)
+			}
 			return () => {
 				if (onNotice === cb) onNotice = undefined
 			}

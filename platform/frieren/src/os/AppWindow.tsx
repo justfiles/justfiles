@@ -33,10 +33,11 @@ export function AppWindow({
 	const sidebarOpen = Boolean(assistant.open[id])
 	const [panelMode, setPanelMode] = useState<AttachedAgentMode>(sidebarOpen ? 'sidebar' : 'sheet')
 	const agentOpen = sidebarOpen || sheetOpen || agent.isStreaming
+	const panelVisible = Boolean(window && window.mode !== 'minimized' && agentOpen)
 
 	useEffect(() => {
-		if (agentOpen && agent.notice) agent.clearNotice()
-	}, [agent.clearNotice, agent.notice, agentOpen])
+		if (panelVisible && agent.notice) agent.clearNotice()
+	}, [agent.clearNotice, agent.notice, panelVisible])
 
 	// An open window always has a placement (seeded on open), so a missing rect
 	// means the window isn't really open — render nothing rather than guess.
