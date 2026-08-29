@@ -14,8 +14,8 @@ import type { TypePaths, TypesBundle } from './toolchain.ts'
 // shipped with the OS." Every spec devkit can resolve is built once here (with Node
 // esbuild) from `sdkRuntimeSpecs`. Devkit feeds these to the bundler as source, so a
 // draft's `app.js`/`gui.js` inlines everything it uses and no host serves framework
-// bytes. There is no UI framework in the sysroot: a draft's GUI is plain DOM through
-// `defineGUI`.
+// bytes. The optional React adapter keeps its framework imports bare so the project's
+// pinned import map supplies them.
 //
 // This is the one Node-only piece of the devkit pipeline (it imports the native
 // esbuild engine), kept in its own subpath so the browser-safe `@justfiles/app/
@@ -41,7 +41,8 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 			bundle: true,
 			write: false,
 			format: 'esm',
-			platform: 'browser'
+			platform: 'browser',
+			external: spec === '@justfiles/app/react' ? ['react', 'react-dom/client'] : []
 		})
 		const output = result.outputFiles[0]
 		if (!output) throw new Error(`devkit-runtime: no output for ${spec}`)
@@ -161,7 +162,8 @@ async function buildTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
 			outExtensions: () => ({ js: '.js', dts: '.d.ts' }),
 			// `@justfiles/fs` is force-INLINED (tsdown auto-externalizes deps; this overrides).
 			// valibot / @standard-schema stay external (vendored, node resolution).
-			external: ['valibot', '@standard-schema/spec'],
+			// React types come from the project's pinned import graph when it uses the adapter.
+			external: ['valibot', '@standard-schema/spec', 'react', 'react-dom'],
 			noExternal: ['@justfiles/fs'],
 			clean: true,
 			logLevel: 'silent',

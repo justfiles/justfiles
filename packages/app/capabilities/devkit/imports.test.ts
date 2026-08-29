@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild'
 import * as ts from 'typescript'
 import { describe, expect, test, vi } from 'vitest'
+import { buildRuntime } from './devkit-runtime.ts'
 import {
 	type CachedImport,
 	type ImportCache,
@@ -127,6 +128,26 @@ describe('Devkit import resolver', () => {
 		expect(output).toContain('react dom client marker')
 		expect(output).not.toMatch(/(?:from\s*|import\()["']https:\/\/esm\.sh/)
 	})
+
+	test('bundles the React GUI adapter against declared React imports', async () => {
+		const imports = await resolveImports(
+			{ react, 'react-dom/client': reactDom },
+			{ cache: memoryCache(), fetch: fakeFetch(graph()) }
+		)
+		const input = project(
+			"import { defineReactGUI } from '@justfiles/app/react'; export const gui = defineReactGUI(() => null)"
+		)
+		input.files = { 'gui.ts': input.files['app.ts']! }
+		input.entries = { gui: 'gui.ts' }
+
+		const result = await esbuildCompile(input, esbuild.build, await buildRuntime(), imports)
+
+		expect(result.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+		const output = result.outputs[0]?.text ?? ''
+		expect(output).toContain('react create element marker')
+		expect(output).toContain('react dom client marker')
+		expect(output).not.toMatch(/from\s*["'](?:@justfiles\/app|react)/)
+	}, 60_000)
 
 	test('does not enable JSX for every TSX file', async () => {
 		const input = project('export const gui = <main>no implicit JSX</main>')
@@ -405,7 +426,9 @@ function graph(): Record<string, Fixture> {
 			text: JSON.stringify({ module: '/unused@1.0.0/es2022/unused.mjs' })
 		},
 		[reactCode]: {
-			text: 'import { dependency } from "/dependency@1.0.0/es2022/dependency.mjs"; export default dependency'
+			text: `import { dependency } from "/dependency@1.0.0/es2022/dependency.mjs";
+export const createElement = (type, props) => ({ type, props, marker: 'react create element marker' });
+export default dependency`
 		},
 		[reactJsxCode]: {
 			text: `export const Fragment = Symbol();
@@ -417,7 +440,10 @@ export const jsxs = jsx`
 		},
 		[dependencyCode]: { text: 'export const dependency = "remote value"' },
 		[reactTypes]: {
-			text: "export interface RemoteValue { label: string }; export type NestedValue = import('./nested.d.ts').NestedValue"
+			text: `export interface RemoteValue { label: string }
+export type NestedValue = import('./nested.d.ts').NestedValue
+export type ReactNode = unknown
+export declare function createElement(type: unknown, props: unknown): ReactNode`
 		},
 		[reactJsxTypes]: {
 			text: `export namespace JSX { export interface IntrinsicElements { [name: string]: unknown } }

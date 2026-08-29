@@ -70,8 +70,10 @@ test('loadTypes reassembles the exact overlay bakeTypes produced', async () => {
 test('bakeTypes maps @justfiles/app subpaths through the paths import-map', async () => {
 	// SDK headers are tsdown rollups (no /dist/ tree), resolved via the paths import-map.
 	expect(baked.files['node_modules/@justfiles/app/index.d.ts']).toBeDefined()
+	expect(baked.files['node_modules/@justfiles/app/react.d.ts']).toBeDefined()
 	expect(baked.files['node_modules/@justfiles/app/capabilities/volume.d.ts']).toBeDefined()
 	expect(baked.paths['@justfiles/app']).toEqual(['node_modules/@justfiles/app/index.d.ts'])
+	expect(baked.paths['@justfiles/app/react']).toEqual(['node_modules/@justfiles/app/react.d.ts'])
 	expect(baked.paths['@justfiles/app/capabilities/volume']).toEqual([
 		'node_modules/@justfiles/app/capabilities/volume.d.ts'
 	])

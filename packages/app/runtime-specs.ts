@@ -2,9 +2,9 @@
 //
 // An app artifact bundles everything it uses into `app.js`/`gui.js`. No host serves
 // framework bytes; the only thing a host injects is the platform stylesheet (see
-// Frieren's `gui-frame.ts`). A draft gets the platform SDK and nothing else — its
-// GUI is plain DOM through `defineGUI`. An author who wants React (or anything else
-// off npm) uses `packages/create-app`, where the app's own bundler inlines it.
+// Frieren's `gui-frame.ts`). A draft gets the platform SDK, including the optional
+// React GUI adapter. The adapter's React imports still come from the draft's pinned
+// import map, so no framework bytes live in the SDK.
 
 // The platform SDK + valibot modules app-code ships in its `devkit/runtime/**` sysroot.
 // Hosts load those bytes and feed them to devkit compilers as bundle-able source, so SDK
@@ -17,6 +17,7 @@
 export const sdkRuntimeSpecs: readonly string[] = [
 	'@justfiles/app',
 	'@justfiles/app/browser',
+	'@justfiles/app/react',
 	'@justfiles/app/capabilities/volume',
 	'@justfiles/app/capabilities/notify',
 	'@justfiles/app/capabilities/email',

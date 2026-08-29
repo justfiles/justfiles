@@ -10,16 +10,20 @@
 // below); Node-side modules never import this one, so they don't see it.
 /// <reference types="bun" />
 
+import type { ResolvedImports } from './imports.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
 import {
 	compileVfs,
 	cssModule,
 	loaderFor,
 	RUNTIME,
+	rejectComputedImports,
 	resolveRelative,
 	unsupportedImport,
 	VFS
 } from './toolchain.vfs.ts'
+
+const REMOTE = 'devkit-remote'
 
 // Bundle each named entry of a draft with `Bun.build`, reading bytes back from the
 // in-memory `result.outputs` (no temp dir). `throw: false` so a failed pass
@@ -27,7 +31,8 @@ import {
 // them, exactly as the esbuild adapter does.
 export function bunCompile(
 	input: ProjectInput,
-	runtime: Record<string, string>
+	runtime: Record<string, string>,
+	imports?: ResolvedImports
 ): Promise<CompileResult> {
 	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
 		const result = await Bun.build({
@@ -42,7 +47,7 @@ export function bunCompile(
 			// the root to a real, always-present dir so that probe succeeds; outputs are
 			// read back by their `.js`/`.css` suffix, so the relativised path is moot.
 			root: process.cwd(),
-			plugins: [vfs(sources, rt, input.tsconfig.compilerOptions?.jsx === 'react-jsx')]
+			plugins: [vfs(sources, rt, imports, input.tsconfig.compilerOptions?.jsx === 'react-jsx')]
 		})
 		if (!result.success) {
 			return { diagnostics: result.logs.map((log) => logDiagnostic(log, 'error')) }
@@ -60,20 +65,36 @@ export function bunCompile(
 function vfs(
 	files: Record<string, string>,
 	runtime: Record<string, string>,
-	jsx: boolean
+	imports?: ResolvedImports,
+	jsx = false
 ): BunPlugin {
 	return {
 		name: 'devkit-vfs',
 		setup(build) {
-			build.onResolve({ filter: /.*/ }, (args) => {
+			const depths = new Map<string, number>()
+			const remote = async (url: string, depth: number) => {
+				if (!imports) return
+				if (depth > imports.limits.depth) throw new Error('Import graph is too deep')
+				const file = await imports.load(url)
+				const prior = depths.get(file.url)
+				if (prior === undefined || depth < prior) depths.set(file.url, depth)
+				return { path: file.url, namespace: REMOTE }
+			}
+			build.onResolve({ filter: /.*/ }, async (args) => {
 				// No `kind` check needed: Bun runs plugins on entrypoints (1.2.22+) and
 				// the entry path is always in `files`, so the first branch catches it.
 				if (args.path in files) return { path: args.path, namespace: VFS }
+				if (args.namespace === REMOTE && imports) {
+					const url = imports.resolve(args.path, args.importer, 'code')
+					return remote(url, (depths.get(args.importer) ?? 0) + 1)
+				}
 				if (args.path.startsWith('.')) {
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME }
+				const entry = imports?.code[args.path]
+				if (entry) return remote(entry, 0)
 				// Nothing else is resolvable. Bun's `OnResolveResult` has no `errors` field,
 				// so THROW — with `throw: false` Bun captures it into `result.logs` (an
 				// error-level BuildMessage at the import site), same as esbuild's error.
@@ -90,6 +111,12 @@ function vfs(
 				contents: runtime[args.path] ?? '',
 				loader: 'js'
 			}))
+			build.onLoad({ filter: /.*/, namespace: REMOTE }, async (args) => {
+				const contents = (await imports?.load(args.path))?.text ?? ''
+				const loader = args.path.endsWith('.json') ? 'json' : 'js'
+				if (loader === 'js') await rejectComputedImports(contents)
+				return { contents, loader }
+			})
 		}
 	}
 }
