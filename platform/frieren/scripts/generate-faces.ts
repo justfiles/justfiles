@@ -1,6 +1,6 @@
 // The built-in face matrix: `pnpm run faces`.
 //
-// Every built-in avatar the summoning offers, in every expression the agent can tag,
+// Every built-in image avatar the wardrobe offers, in every expression the agent can tag,
 // baked at build time and checked in — so a user who never uploads a photo has a full
 // expression set and the runtime image engine is never asked to derive one (worker/faces.ts
 // then only serves genuinely unknown art: an uploaded photo).
@@ -71,9 +71,9 @@ const FLATTEN = true
 const RESTING = 'resting'
 const COLUMNS: readonly (typeof RESTING | Expression)[] = [RESTING, ...EXPRESSIONS]
 
-// The three natures the summoning offers (justfiles/app-settings), plus the one a user who
-// never personalised is already wearing. No gender variants: the character has no gender
-// signifiers to vary, and the accessory carries the archetype on its own.
+// The three nature-themed wardrobe choices, plus the legacy image default. No gender
+// variants: the character has no gender signifiers to vary, and the accessory carries the
+// archetype on its own.
 //
 // Each accessory sits in a different zone of the silhouette — on the face, past the left
 // edge, past the right — so they stay apart at favicon size, where a detail is three pixels.

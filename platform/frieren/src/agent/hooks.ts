@@ -1,6 +1,7 @@
 import type { Expression } from '@justfiles/agent/expression'
 import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from 'react'
 import type { AgentClient } from '../os/client'
+import type { AvatarAppearance } from './avatarAppearance'
 import type { AgentConnection, AgentSession } from './types'
 
 export interface AgentContextValue {
@@ -9,8 +10,7 @@ export interface AgentContextValue {
 	setInput: (agentId: string | undefined, value: string) => void
 	identity: {
 		agentName?: string
-		avatarUrl: string
-		faces: Partial<Record<Expression, string>>
+		appearance: AvatarAppearance
 		personalized: boolean
 	}
 	ensureFace: (expression: Expression | null) => void
@@ -46,8 +46,7 @@ export function useAgentSession(agentId?: string): AgentSession {
 		setInput: (value) => setInput(agentId, value),
 		userName: snapshot.userName,
 		agentName: identity.agentName ?? snapshot.agentName,
-		avatarUrl: identity.avatarUrl,
-		avatarFaces: identity.faces,
+		avatar: identity.appearance,
 		expression: snapshot.expression,
 		personalized: identity.personalized,
 		refreshIdentity,

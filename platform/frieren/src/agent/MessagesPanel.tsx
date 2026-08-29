@@ -24,8 +24,7 @@ export function MessagesPanel({
 		input,
 		setInput,
 		agentName,
-		avatarUrl,
-		avatarFaces,
+		avatar,
 		expression,
 		personalized,
 		isStreaming,
@@ -88,8 +87,7 @@ export function MessagesPanel({
 					title="Personalize"
 				>
 					<AgentAvatar
-						url={avatarUrl}
-						faces={avatarFaces}
+						appearance={avatar}
 						expression={expression}
 						streaming={isStreaming}
 						personalized={personalized}

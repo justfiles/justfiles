@@ -420,8 +420,7 @@ export function Omnibar({
 					role={banner.notification.kind === 'error' ? 'alert' : 'status'}
 				>
 					<AgentAvatar
-						url={session.avatarUrl}
-						faces={session.avatarFaces}
+						appearance={session.avatar}
 						expression={session.expression}
 						streaming={session.isStreaming}
 						personalized={session.personalized}
@@ -576,8 +575,7 @@ export function Omnibar({
 												onClick={() => run(index)}
 											>
 												<AgentAvatar
-													url={session.avatarUrl}
-													faces={session.avatarFaces}
+													appearance={session.avatar}
 													expression={session.expression}
 													streaming={session.isStreaming}
 													personalized={session.personalized}
@@ -692,12 +690,11 @@ export function Omnibar({
 						title={`Open conversation with ${session.agentName}`}
 					>
 						<AgentAvatar
-							url={session.avatarUrl}
-							faces={session.avatarFaces}
+							appearance={session.avatar}
 							expression={session.expression}
 							streaming={session.isStreaming}
 							personalized={session.personalized}
-							size={40}
+							size={46}
 							className="frn-dock-face"
 						/>
 					</button>

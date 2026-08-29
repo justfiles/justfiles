@@ -1,0 +1,98 @@
+:root {
+	color-scheme: dark;
+	font-family: "SFMono-Regular", Consolas, monospace;
+	background: #20261c;
+	color: #d9d8c3;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	display: grid;
+	min-height: 100vh;
+	margin: 0;
+	place-items: center;
+	background: radial-gradient(circle at 50% 42%, #39412f 0, #20261c 48%, #151910 100%);
+}
+
+main {
+	display: grid;
+	width: min(92vw, 720px);
+	gap: 28px;
+	justify-items: center;
+	padding: 32px 16px;
+}
+
+canvas {
+	display: block;
+	image-rendering: pixelated;
+	filter: drop-shadow(5px 7px 4px rgb(8 10 6 / 30%));
+}
+
+#preview {
+	width: 192px;
+	height: 192px;
+}
+
+#dock {
+	width: 46px;
+	height: 46px;
+}
+
+.avatar-stage {
+	display: grid;
+	min-height: 320px;
+	place-items: center;
+}
+
+.avatar-controls {
+	display: grid;
+	gap: 20px;
+	justify-items: center;
+}
+
+.avatar-moods {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 8px;
+}
+
+button {
+	padding: 8px 10px;
+	border: 2px solid #6d705d;
+	background: #cbc9b4;
+	box-shadow: 3px 3px 0 #10130c;
+	color: #171a11;
+	font: inherit;
+	cursor: pointer;
+}
+
+button[data-selected="true"] {
+	border-color: #15190f;
+	background: #9cc900;
+	box-shadow: 1px 1px 0 #10130c;
+	transform: translate(2px, 2px);
+}
+
+label {
+	display: grid;
+	grid-template-columns: auto minmax(180px, 1fr) 56px;
+	gap: 12px;
+	align-items: center;
+	font-size: 13px;
+}
+
+output {
+	color: #9cc900;
+}
+
+.avatar-dock-size {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	font-size: 12px;
+	opacity: 0.8;
+}

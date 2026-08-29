@@ -1,0 +1,12 @@
+{
+	"extends": "@justfiles/tsconfig/library.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": "./src",
+		"lib": ["ES2023", "DOM"],
+		"types": ["react"],
+		"jsx": "react-jsx"
+	},
+	"include": ["src"],
+	"exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

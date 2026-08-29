@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
+		"dev:avatar": "vite --config scripts/avatar.vite.ts",
 		"build": "tsc -b && vite build",
 		"lint": "eslint .",
 		"auth:token": "tsx scripts/frieren-auth.ts token",
@@ -29,6 +30,7 @@
 		"@hono/clerk-auth": "^3.1.1",
 		"@justfiles/agent": "workspace:*",
 		"@justfiles/app": "workspace:*",
+		"@justfiles/avatar": "workspace:*",
 		"@justfiles/core": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",

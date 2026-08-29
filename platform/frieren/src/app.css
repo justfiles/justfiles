@@ -209,7 +209,14 @@
 	padding: 0;
 }
 .frn-agent-avatar {
+	display: block;
 	box-sizing: border-box;
+	transition:
+		filter 220ms ease,
+		transform 220ms ease;
+}
+.frn-agent-avatar[data-renderer="image"] {
+	overflow: hidden;
 	border: 2px solid var(--focus);
 	border-radius: 50%;
 	object-fit: cover;
@@ -217,6 +224,10 @@
 		filter 220ms ease,
 		transform 220ms ease,
 		border-color 220ms ease;
+}
+.frn-agent-avatar[data-renderer="canvas"] {
+	image-rendering: pixelated;
+	filter: drop-shadow(0 2px 2px rgb(7 9 5 / 28%));
 }
 /* Standing in for art that isn't there yet: an uploaded photo is ONE image until the engine
    derives its faces, so the expression reads as a whisper of a treatment. Scoped to that
@@ -241,7 +252,7 @@
 }
 /* Not summoned yet. The dashed ring is the invitation; the face itself is real art now (a
    full built-in expression set), so it is no longer greyed out and pixellated to say so. */
-.frn-agent-avatar[data-personalized="false"] {
+.frn-agent-avatar[data-renderer="image"][data-personalized="false"] {
 	border-style: dashed;
 }
 .frn-agent-status {
@@ -875,11 +886,19 @@
 .frn-dock-agent-button {
 	z-index: 1;
 	border-radius: 50%;
+	transition: transform 180ms ease-out;
 }
 .frn-dock-face {
-	width: 40px;
-	height: 40px;
+	width: 46px;
+	height: 46px;
 	border-width: 1.5px;
+}
+.frn-dock-agent-button:hover {
+	transform: translateY(-2px);
+	animation: frn-dock-agent-bounce 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.frn-dock-agent-button:hover .frn-dock-face {
+	transform: scale(1.18);
 }
 .frn-dock-notification-badge {
 	position: absolute;
@@ -913,6 +932,17 @@
 	50% {
 		opacity: 0.38;
 		transform: scale(1.08);
+	}
+}
+@keyframes frn-dock-agent-bounce {
+	38% {
+		transform: translateY(-4px);
+	}
+	68% {
+		transform: translateY(-1px);
+	}
+	100% {
+		transform: translateY(-2px);
 	}
 }
 .frn-dock-sheet {
@@ -1195,8 +1225,19 @@
 	}
 	.frn-dock-sheet,
 	.frn-dock-agent::before,
+	.frn-dock-agent-button,
 	.frn-dock-spinner {
 		animation: none;
+	}
+	.frn-dock-agent-button {
+		transition: none;
+	}
+	.frn-dock-agent-button:hover {
+		animation: none;
+		transform: none;
+	}
+	.frn-dock-face {
+		transition: none;
 	}
 }
 /* ── PWA update toast ───────────────────────────────────────────────────── */

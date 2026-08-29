@@ -48,7 +48,7 @@ describe('the built-in art', () => {
 		expect(await builtinFaces('from-the-future')).toEqual({})
 	})
 
-	test('the four the summoning offers are all here', () => {
+	test('the four built-in image avatars are all here', () => {
 		expect(Object.keys(BUILTIN_AVATARS).sort()).toEqual([
 			'assistant',
 			'companion',
