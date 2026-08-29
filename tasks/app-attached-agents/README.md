@@ -1,6 +1,7 @@
 # App-attached agents
 
-> Status: **Phases 1-6 implemented; parity is next.** The shared browser
+> Status: **Phases 1-6 implemented; adaptive placement, local notifications and
+> parity are next.** The shared browser
 > component lives in `packages/ui`, the keyed session manager lives in
 > `packages/agent`, and both hosts attach keyed conversations to app windows.
 >
@@ -33,9 +34,12 @@ modes:
 - **Sidebar** — opens beside the app, changes nothing about it, stays until you
   close it. *"Let me work on this with you."*
 
-Same component, same thread, same session. The mode is a preference with a
-default, and the footer is the constant affordance in both — the way the DevTools
-toggle stays in the browser toolbar no matter where the panel is parked.
+Same component, same thread, same session. Each time the user opens the panel,
+the host chooses the layout that fits the current window. Window size is the
+first signal; screen work area and window position can refine the choice where a
+host has them. There is no saved default. The footer is the constant affordance
+in both layouts, the way the DevTools toggle stays in the browser toolbar no
+matter where the panel is parked.
 
 ### One browser component, two window systems
 
@@ -86,8 +90,9 @@ the same fade while the window is not focused.
 ```
 
 - **Trailing:** the agent button — the face plus a chevron pointing where the
-  panel will appear. No label, no badge, no count. It takes the accent tint while
-  the panel is open and the chevron reverses.
+  panel will appear. It takes the accent tint while the panel is open and the
+  chevron reverses. When a closed panel has a new result, a short notice may sit
+  beside the button. The notice has no durable count or inbox.
 - **Leading:** deliberately empty. This is the **growth surface** — the slot an
   app's own status line (word count, sync state, cursor position) lands in when
   an app actually wants one. It needs an SDK surface, so it is documented here
@@ -145,20 +150,27 @@ in the app and come back to say what happened.
 
 **One floor.** The sidebar can still break an app — by pushing it past a mobile
 breakpoint mid-session, so the layout jumps to a stacked view. The app keeps a
-minimum width; if the window is too narrow to give the sidebar its room without
-crushing the app, the button opens the **sheet** instead. The mode is a
-preference, not a promise.
+minimum width. If the current window cannot give both the app and sidebar enough
+room, the button opens the **sheet**. A host may also consider free screen space
+beside the window, but it must never resize or move the app merely to make a
+sidebar fit. The narrow-width fallback remains active while the panel is open.
 
 **Swapping.** The panel header carries one control — `⇥ side` in the sheet,
 `⌄ sheet` in the sidebar — that hands the conversation over with the thread,
-scroll position and composer draft intact. Settings → Appearance sets the
-default; this control is how people find the other mode, by outgrowing the one
-they are in.
+scroll position and composer draft intact. A manual switch applies to this
+opening only. After the panel closes, the next open evaluates the current
+geometry again.
 
 ## Behaviour
 
 - **It never opens itself.** The agent's face may change expression — that
-  channel already exists — but the panel appears because you pressed something.
+  channel already exists — and a finished turn may leave a notice in the app
+  footer, but the panel appears because you pressed something.
+- **Notifications stay in their app.** A per-app agent never sends its result to
+  global notifications. If the owning app window is open, its footer
+  may show a transient notice that opens the attached thread when pressed. If the
+  app window is closed, discard the notice. Do not reopen the app and do not keep
+  an unread queue for later.
 - **The thread is lazy.** No session is built when a window opens, only when you
   first send something. Opening ten apps costs nothing.
 - **Acting is visible.** The agent dispatches the app's own actions, so the
@@ -307,13 +319,13 @@ the app agent the same companion in a different session, with a clear subject.
 
 ## Shell state
 
-The shared component is controlled. Mode preference, size and what is open are
-shell facts, not UI or agent facts. Each platform adapter owns and persists this
-shape:
+The shared component is controlled. Panel size and restored sidebars are shell
+facts, not UI or agent facts. Placement is a runtime decision. Each platform
+adapter chooses it when the user opens the panel and keeps a manual override only
+until that panel closes. The persisted shape is:
 
 ```ts
 type AttachedAgentState = {
-	mode: 'sheet' | 'sidebar'                 // one preference, whole desktop
 	size: { sheet: number; sidebar: number }  // px, remembered per mode
 	open: Record<string, true>                // SIDEBAR only — a sheet is never restored
 }
@@ -327,9 +339,9 @@ receives values and callbacks.
 
 `size` is two numbers rather than one on purpose: a comfortable sheet height and a
 comfortable sidebar width are different numbers, and collapsing them means every
-mode switch hands you a size that feels wrong once. `open` is sidebar-only
-because restoring a sheet on boot would put a window back behind a scrim nobody
-asked for.
+mode switch hands you a size that feels wrong once. There is no persisted mode.
+`open` is sidebar-only because restoring a sheet on boot would put a window back
+behind a scrim nobody asked for.
 
 ## Delivery plan
 
@@ -341,7 +353,7 @@ feature on one host at a time.
 ```
 1. shared app host ──> 3. shared chrome ──┐
                                           ├──> 5. Frieren ──┐
-2. shared main agent -> 4. app sessions ──┤                 ├──> 7. parity
+2. shared main agent -> 4. app sessions ──┤                 ├──> 7. adapt + parity
                                           └──> 6. mac ──────┘
 ```
 
@@ -394,8 +406,8 @@ Grow `AttachedAgent` without enabling it in either production host.
 - Keep one panel DOM node and change its layout with CSS. Moving between sheet
   and sidebar must not remount it, because that would lose scroll position and
   composer draft.
-- Compute an effective mode from the preferred mode and available width. A
-  narrow window falls back to sheet without overwriting the preference.
+- Compute an effective mode from the requested mode and available width. A
+  narrow window falls back to sheet.
 - Implement pointer resizing, keyboard resizing, Escape for the sheet and the
   minimum app width.
 - Exercise the component in `packages/ui/dev` with a fake app and fake
@@ -437,8 +449,8 @@ manager, and follow their respective retirement policies.
   id. Keep the existing global provider and omnibar bound to `main`.
 - Let `MessagesPanel` take an agent id and pass it as the panel node to
   `AttachedAgent`.
-- Add the `assistant` slice to Frieren OS state. Persist preferred mode, both
-  sizes and restored sidebar-open windows. Never restore a sheet open.
+- Add the `assistant` slice to Frieren OS state. Persist both sizes and restored
+  sidebar-open windows. Never restore a sheet open.
 - Enable the controlled configuration only for app windows. Hold it open while
   its session is streaming.
 - Keep alarm scheduling and daily memory maintenance pinned to
@@ -455,8 +467,8 @@ narrow-width fallback, mode switching and reload restoration.
   the launcher and its native composer do not change.
 - Publish agent events by id and update `useAgentChat` to select one id. Do not
   give the app GUI's `mount` context an agent transport; the web host owns it.
-- Add daemon-owned shell state for preferred mode, both sizes and restored
-  sidebar-open app ids. Leave native window geometry in AppKit autosave.
+- Add daemon-owned shell state for both sizes and restored sidebar-open app ids.
+  Leave native window geometry in AppKit autosave.
 - Pass the keyed conversation adapter and controlled state into the shared
   component installed in Phase 1.
 - Keep the native booter unchanged. Footer, sheet and sidebar all render inside
@@ -466,13 +478,20 @@ Done when the launcher still shows `main`, two native app windows keep separate
 threads, mode switching preserves panel state, and restarting an app restores
 only its sidebar. Daemon protocol tests and a shipped mac build must pass.
 
-### Phase 7: settings and cross-platform parity
+### Phase 7: adaptive placement, local notifications and parity
 
-- Add the default mode to Settings -> Appearance through the settings
-  capability. Each host adapter reads and writes its own shell state; the
-  Settings app does not learn either storage path.
-- Route attached-agent notifications back to the owning app and thread. A user
-  click may reveal the panel; background work may not open it by itself.
+- Remove the stored mode preference introduced while connecting the two hosts.
+  On every explicit open, choose sheet or sidebar from the current app viewport.
+  Prefer the sidebar only when the app can keep its minimum width beside the
+  remembered sidebar size. Otherwise use the sheet.
+- Keep placement policy in a shared pure function. Window size is required.
+  Screen work area and app-window position are optional host inputs that may
+  improve the decision. Neither host adds a Settings control or persists the
+  result. A manual mode switch lasts until the panel closes.
+- Keep per-app agent notifications inside the owning open app. The footer is the
+  place for a notice when the panel is closed; pressing it reveals the
+  attached thread. Do not publish these notices to the global notification
+  channel, persist them or open an app that is no longer running.
 - Verify that the footer follows focus styling, a reply in flight cannot be
   dismissed, sheet state is never restored and sidebar state is restored.
 - Run the same scripted conversation against Frieren and mac. Compare the
@@ -480,10 +499,11 @@ only its sidebar. Daemon protocol tests and a shipped mac build must pass.
   differences caused by injected adapters, such as host-only capabilities,
   rather than requiring byte-identical complete prompts.
 
-Done when both hosts use the same `AttachedAgent` component and
-`createAgentSessions` implementation, with platform code limited to adapters,
-protocol delivery and persistence. The orientation test is the final product
-check: "what am I looking at?" must work without naming the app.
+Done when both hosts make the same placement decision for the same geometry,
+keep app-agent notices inside a live app window, and use the same `AttachedAgent`
+component and `createAgentSessions` implementation. Platform code stays limited
+to adapters, protocol delivery and persistence. The orientation test is the
+final product check: "what am I looking at?" must work without naming the app.
 
 ## Growth surfaces
 

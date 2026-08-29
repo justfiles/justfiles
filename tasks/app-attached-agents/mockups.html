@@ -853,8 +853,9 @@ td .mono { color: var(--ink-2); }
 		<p class="standfirst">
 			Every app window grows a footer. In its trailing corner sits the agent, in one of two
 			modes: a <em>sheet</em> that rises over the app for a quick question, or a
-			<em>sidebar</em> that opens beside it to work alongside for an hour. Underneath, a session
-			store that is already generic enough for all of it.
+			<em>sidebar</em> that opens beside it to work alongside for an hour. The shell chooses the
+			one that fits when you open it. Underneath, a session store that is already generic
+			enough for all of it.
 		</p>
 		<div class="mast-meta eyebrow">
 			<span>Supersedes the five-direction sketch</span>
@@ -1071,8 +1072,8 @@ td .mono { color: var(--ink-2); }
 			</p>
 			<p>
 				One floor: the app keeps a minimum width. If the window is too narrow to give the
-				sidebar its room without crushing the app, the button opens the <em>sheet</em> instead
-				— the mode is a preference, not a promise, and a cramped split serves nobody.
+				sidebar its room without crushing the app, the button opens the <em>sheet</em> instead.
+				The shell chooses from the current geometry, and a cramped split serves nobody.
 			</p>
 		</div>
 
@@ -1184,10 +1185,10 @@ td .mono { color: var(--ink-2); }
 				</div>
 				<div class="detail-note">
 					<b>At rest, focused</b>
-					The face and a chevron pointing where the panel will appear. No label, no badge, no
-					count. The
-					leading two-thirds is empty and stays empty in v1 — it is the slot an app's own
-					status line grows into later.
+					The face and a chevron pointing where the panel will appear. There is no durable
+					badge or count. A finished turn may put a short-lived notice beside the button while
+					this app window remains open. The leading space stays available for the app's own
+					status line later.
 				</div>
 			</div>
 
@@ -1214,7 +1215,8 @@ td .mono { color: var(--ink-2); }
 		</div>
 
 		<ul class="rules">
-			<li><b>It never opens itself.</b> The agent's face may change expression — that channel already exists — but the panel appears because you pressed something.</li>
+			<li><b>It never opens itself.</b> The agent's face may change expression and its footer may show a result, but the panel appears because you pressed something.</li>
+			<li><b>Notifications stay here.</b> A per-app result lives only in this open window. Closing the app discards it; global notifications never receive it.</li>
 			<li><b>Esc closes the panel, never the window.</b> Reliable for the sheet (the scrim holds focus); for the sidebar, only while the chrome has focus — see decision 04.</li>
 			<li><b>The thread is lazy.</b> No session is built when a window opens — only when you first send something. Opening ten apps costs nothing.</li>
 			<li><b>A reply in flight holds the surface open.</b> The omnibar already works this way; an accidental click must not throw away an answer you are waiting for.</li>
@@ -1305,7 +1307,7 @@ td .mono { color: var(--ink-2); }
 					</tr>
 					<tr>
 						<td>The socket protocol<div class="mono">ClientMessage / ServerMessage</div></td>
-						<td>Add <code>agent?: string</code> to <code>prompt</code> and <code>abort</code>, and to the <code>history</code> and <code>event</code> frames going back. Absent means <code>main</code>, so every existing client keeps working untouched. <strong>One socket</strong> — a thread is a tag, not a connection.</td>
+						<td>Give each active thread its own keyed connection URL. Absent means <code>main</code>, so the existing global client keeps working untouched. Frames stay untagged inside the selected connection.</td>
 					</tr>
 					<tr>
 						<td>The browser client<div class="mono">platform/frieren/src/os/client.ts</div></td>
@@ -1326,15 +1328,15 @@ td .mono { color: var(--ink-2); }
 		<h3 style="margin-top: 40px">Shell state</h3>
 		<div class="prose">
 			<p>
-				The mode preference and what is open are shell facts, so they belong in
+				Panel sizes and restored sidebars are shell facts, so they belong in
 				<code>os-state.json</code> beside <code>placements</code> — already synced, already keyed
 				by window id, already tolerant of new fields (the loader validates a handful of keys and
-				normalizes the rest, so an older client ignores what it doesn't know).
+				normalizes the rest, so an older client ignores what it doesn't know). Placement is
+				chosen from the current geometry each time the panel opens and is not persisted.
 			</p>
 		</div>
 		<pre>placements: Record&lt;string, WindowRect&gt;
 <span class="k">assistant</span>: {
-  mode: <span class="c">'sheet' | 'sidebar'</span>        <span class="c">// one preference, whole desktop</span>
   size: { sheet: number; sidebar: number }  <span class="c">// px, remembered per mode</span>
   open: Record&lt;string, true&gt;         <span class="c">// SIDEBAR only — a sheet is never restored</span>
 }</pre>
@@ -1342,7 +1344,7 @@ td .mono { color: var(--ink-2); }
 			<p>
 				<code>size</code> is two numbers rather than one on purpose: a comfortable sheet height
 				and a comfortable sidebar width are different numbers, and collapsing them means every
-				mode switch hands you a size that feels wrong once. And <code>open</code> is deliberately
+				mode switch hands you a size that feels wrong once. There is no saved mode. <code>open</code> is deliberately
 				sidebar-only — restoring a sheet on boot would put a window back behind a scrim nobody
 				asked for.
 			</p>
@@ -1365,7 +1367,7 @@ td .mono { color: var(--ink-2); }
 						The thread-through above, end to end, with no UI at all. The global agent keeps
 						working because an absent id means <code>main</code>.
 					</p>
-					<span class="phase-check"><b>Done when</b> two threads run over one socket and land in two directories.</span>
+					<span class="phase-check"><b>Done when</b> two threads run over separate keyed sockets and land in two directories.</span>
 				</div>
 			</div>
 			<div class="phase">
@@ -1398,8 +1400,8 @@ td .mono { color: var(--ink-2); }
 					<h3>Add the sidebar</h3>
 					<p>
 						The real split: <code>data-mode="sidebar"</code> on the body, a draggable seam, a
-						minimum app width with sheet fallback, and the in-header swap control. A Settings →
-						Appearance control sets the default; the header control is how people find it.
+						minimum app width with sheet fallback, and the in-header swap control. The shell
+						chooses from current geometry when opening; the header control changes this opening only.
 					</p>
 					<span class="phase-check"><b>Done when</b> swapping modes moves the panel and changes nothing else — same thread, same scroll position, same draft in the composer.</span>
 				</div>
