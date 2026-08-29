@@ -6,6 +6,7 @@
 // hand `compileVfs` a single `buildOne` strategy. One home for the substance; the
 // per-bundler glue stays tens of lines each.
 
+import { init, parse } from 'es-module-lexer'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
 // Devkit bundles every bare specifier it supports into the emitted entry from the
@@ -30,6 +31,14 @@ export function loaderFor(path: string, jsx = false): VfsLoader {
 	if (path.endsWith('.json')) return 'json'
 	if (path.endsWith('.css')) return 'css'
 	return 'ts'
+}
+
+export async function rejectComputedImports(source: string): Promise<void> {
+	await init
+	const [imports] = parse(source)
+	if (imports.some((item) => item.d >= 0 && item.n === undefined)) {
+		throw new Error('Dynamic import must use a string literal')
+	}
 }
 
 // Compile a `.css` import into a JS side-effect module that injects the CSS at
@@ -71,13 +80,8 @@ export function resolveRelative(
 	return candidates.find((candidate) => candidate in files)
 }
 
-// Why devkit can't resolve this BARE specifier — both compile paths call this in their
-// `onResolve` terminal branch, after the `runtime` map has had its chance. The map is
-// complete by the time a compile runs (`loadRuntime` checks it against the SDK's own
-// list), so anything left here is an npm package app-code deliberately doesn't support:
-// it's a built-in authoring tool, not an npm dev environment — authors who need arbitrary
-// packages use create-app. A clear message in BOTH compile paths (and the browser
-// esbuild-wasm fallback) beats the bundler's opaque "Could not resolve".
+// Both compile paths use this after checking the SDK runtime and declared import map.
+// Keep their error clearer than each bundler's generic resolution failure.
 export function unsupportedImport(spec: string): string {
 	return `External npm package "${spec}" is not supported in app-code. Use packages/create-app for a full package project.`
 }

@@ -6,7 +6,6 @@
 // injects its own `build`; the Bun sibling lives in `toolchain.bun.ts` behind the
 // same vfs rules.
 
-import { init, parse } from 'es-module-lexer'
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
 import type { ResolvedImports } from './imports.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
@@ -15,6 +14,7 @@ import {
 	cssModule,
 	loaderFor,
 	RUNTIME,
+	rejectComputedImports,
 	resolveRelative,
 	unsupportedImport,
 	VFS
@@ -121,14 +121,6 @@ function vfs(
 				return { contents, loader }
 			})
 		}
-	}
-}
-
-async function rejectComputedImports(source: string): Promise<void> {
-	await init
-	const [imports] = parse(source)
-	if (imports.some((item) => item.d >= 0 && item.n === undefined)) {
-		throw new Error('Dynamic import must use a string literal')
 	}
 }
 

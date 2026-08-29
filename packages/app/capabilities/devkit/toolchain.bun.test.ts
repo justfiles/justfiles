@@ -7,6 +7,7 @@
 import { expect, test } from 'bun:test'
 import * as esbuild from 'esbuild'
 import { buildRuntime } from './devkit-runtime.ts'
+import { type ImportGraph, type ResolvedImports, resolveImport } from './imports.ts'
 import { bunCompile } from './toolchain.bun.ts'
 import { esbuildCompile } from './toolchain.esbuild.ts'
 import type { ProjectInput } from './toolchain.ts'
@@ -20,8 +21,7 @@ export const app = defineApp({
 	})
 })`
 
-// A plain-DOM GUI through `defineGUI` — the only GUI shape a draft has, now that the
-// sysroot ships the SDK and no UI framework.
+// A framework-free GUI through `defineGUI`.
 const GUI = `import { defineGUI } from '@justfiles/app/browser'
 export const gui = defineGUI({
 	mount(el, state) {
@@ -71,6 +71,42 @@ test('shape parity with the esbuild toolchain', async () => {
 	expect(bun.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	expect(bundlesSdk(es.outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
 	expect(bundlesSdk(bun.outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
+})
+
+test('bundles the React GUI adapter against declared imports', async () => {
+	const react = 'https://esm.sh/react@19.1.1/es2022/react.mjs'
+	const reactDom = 'https://esm.sh/react-dom@19.1.1/es2022/client.mjs'
+	const graph: ImportGraph = {
+		code: { react, 'react-dom/client': reactDom },
+		declarations: {},
+		limits: { depth: 20, files: 100, fileBytes: 1_000, totalBytes: 2_000, timeoutMs: 100 }
+	}
+	const sources: Record<string, string> = {
+		[react]:
+			"export const createElement = (type, props) => ({ type, props, marker: 'react marker' })",
+		[reactDom]:
+			"export const createRoot = () => ({ render: () => 'react dom marker', unmount() {} })"
+	}
+	const imports: ResolvedImports = {
+		...graph,
+		load: async (url) => ({ url, text: sources[url] ?? '' }),
+		resolve: (specifier, importer, kind) => resolveImport(graph, specifier, importer, kind),
+		lock: () => ({ version: 1, redirects: {}, remote: {} }),
+		diagnostics: []
+	}
+	const gui = `import { defineReactGUI } from '@justfiles/app/react'
+export const gui = defineReactGUI(() => null)`
+	const { outputs, diagnostics } = await bunCompile(
+		project({ 'app.ts': APP, 'gui.ts': gui }, 'gui.ts'),
+		runtime,
+		imports
+	)
+
+	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+	const output = outputs.find((item) => item.path === 'gui.js')?.text ?? ''
+	expect(output).toContain('react marker')
+	expect(output).toContain('react dom marker')
+	expect(output).not.toMatch(/from\s*["'](?:@justfiles\/app|react)/)
 })
 
 test('CSS: import folds into gui.js (no sidecar)', async () => {
@@ -134,9 +170,7 @@ export const app = defineApp({ init: {}, update: () => (void _, {}) })`
 	expect(errors.some((d) => d.message.includes('"lodash" is not supported in app-code'))).toBe(true)
 })
 
-// React is no longer in the sysroot: a draft that reaches for it must get the same
-// clear "not supported" diagnostic as any other npm package.
-test('a React import is rejected like any other npm package', async () => {
+test('an undeclared React import is rejected like any other npm package', async () => {
 	const src = `import { useState } from 'react'
 export const gui = useState`
 	const { diagnostics } = await bunCompile(
