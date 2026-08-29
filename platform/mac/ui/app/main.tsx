@@ -161,6 +161,7 @@ function AppHost() {
 	const [sheetOpen, setSheetOpen] = useState(false)
 	const restored = Boolean(savedAssistant.open[appId])
 	const [panelMode, setPanelMode] = useState<AttachedAgentMode>(restored ? 'sidebar' : 'sheet')
+	const [sidebarReady, setSidebarReady] = useState(false)
 	const [streaming, setStreaming] = useState(false)
 	const [notice, setNotice] = useState<Notification | null>(null)
 
@@ -172,7 +173,10 @@ function AppHost() {
 		connection.changeAssistant(change)
 	}, [])
 	const savedSidebarOpen = Boolean(assistant.open[appId])
-	const open = savedSidebarOpen || sheetOpen || streaming
+	const open = (sidebarReady && savedSidebarOpen) || sheetOpen || streaming
+	const trackMode = useCallback((mode: AttachedAgentMode) => {
+		if (mode === 'sidebar') setSidebarReady(true)
+	}, [])
 
 	useEffect(() => {
 		if (open && notice) setNotice(null)
@@ -205,6 +209,7 @@ function AppHost() {
 						save({ open })
 					}
 				},
+				onEffectiveModeChange: trackMode,
 				onOpenChange: (next, mode) => {
 					if (!next && streaming) return
 					setPanelMode(mode)

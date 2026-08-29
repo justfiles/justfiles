@@ -1,5 +1,5 @@
 import { AttachedAgent, type AttachedAgentMode } from '@justfiles/ui/AttachedAgent'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentSession } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
@@ -32,8 +32,12 @@ export function AppWindow({
 	const [sheetOpen, setSheetOpen] = useState(false)
 	const sidebarOpen = Boolean(assistant.open[id])
 	const [panelMode, setPanelMode] = useState<AttachedAgentMode>(sidebarOpen ? 'sidebar' : 'sheet')
-	const agentOpen = sidebarOpen || sheetOpen || agent.isStreaming
+	const [sidebarReady, setSidebarReady] = useState(false)
+	const agentOpen = (sidebarReady && sidebarOpen) || sheetOpen || agent.isStreaming
 	const panelVisible = Boolean(window && window.mode !== 'minimized' && agentOpen)
+	const trackMode = useCallback((mode: AttachedAgentMode) => {
+		if (mode === 'sidebar') setSidebarReady(true)
+	}, [])
 
 	useEffect(() => {
 		if (panelVisible && agent.notice) agent.clearNotice()
@@ -94,6 +98,7 @@ export function AppWindow({
 										dispatch({ type: 'assistant.setOpen', id, open: agentOpen })
 									}
 								},
+								onEffectiveModeChange: trackMode,
 								onOpenChange: (open, mode) => {
 									if (!open && agent.isStreaming) return
 									setPanelMode(mode)

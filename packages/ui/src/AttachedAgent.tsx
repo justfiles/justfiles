@@ -24,6 +24,7 @@ export interface AttachedAgentConfig {
 	notice?: string
 	panel: ReactNode
 	onModeChange: (mode: AttachedAgentMode) => void
+	onEffectiveModeChange?: (mode: AttachedAgentMode) => void
 	onOpenChange: (open: boolean, mode: AttachedAgentMode) => void
 	onSizeChange: (size: AttachedAgentSize) => void
 }
@@ -44,14 +45,16 @@ export function AttachedAgent({
 	} | null>(null)
 	const [bounds, setBounds] = useState({
 		width: Number.POSITIVE_INFINITY,
-		height: 0
+		height: 0,
+		measured: false
 	})
 	const configured = agent !== undefined
 
 	useLayoutEffect(() => {
 		if (!configured || !rootRef.current) return
 		const root = rootRef.current
-		const read = () => setBounds({ width: root.clientWidth, height: root.clientHeight })
+		const read = () =>
+			setBounds({ width: root.clientWidth, height: root.clientHeight, measured: true })
 		read()
 		const observer = new ResizeObserver(read)
 		observer.observe(root)
@@ -59,6 +62,10 @@ export function AttachedAgent({
 	}, [configured])
 
 	const mode = agent ? effectiveMode(agent.mode, bounds.width, agent.size.sidebar) : 'sheet'
+	const onEffectiveModeChange = agent?.onEffectiveModeChange
+	useLayoutEffect(() => {
+		if (bounds.measured) onEffectiveModeChange?.(mode)
+	}, [bounds.measured, mode, onEffectiveModeChange])
 
 	if (!agent)
 		return (
