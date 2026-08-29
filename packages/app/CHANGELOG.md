@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.10.0...app-v0.11.0) (2026-08-29)
+
+
+### Features
+
+* **app:** map browser imports to CDN URLs ([#614](https://github.com/xiaoxinghu/justfiles/issues/614)) ([d1c6638](https://github.com/xiaoxinghu/justfiles/commit/d1c663858f2666e8f7b2aeec9ae796712d8a6574))
+* **avatar:** add shared avatar rendering package ([#613](https://github.com/xiaoxinghu/justfiles/issues/613)) ([440265c](https://github.com/xiaoxinghu/justfiles/commit/440265c8ac7352a49022be1c4bd042312de247cb))
+
+
+### Bug Fixes
+
+* **accounts:** remove ciphertext assertion flakes ([#608](https://github.com/xiaoxinghu/justfiles/issues/608)) ([806e907](https://github.com/xiaoxinghu/justfiles/commit/806e907e693ba6610523e90b145b9be1d0dfd246))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/design bumped to 0.3.0
+
 ## [0.10.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.9.1...app-v0.10.0) (2026-08-28)
 
 

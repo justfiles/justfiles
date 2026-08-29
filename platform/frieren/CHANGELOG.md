@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.20.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.19.1...frieren-v0.20.0) (2026-08-29)
+
+
+### Features
+
+* **app:** map browser imports to CDN URLs ([#614](https://github.com/xiaoxinghu/justfiles/issues/614)) ([d1c6638](https://github.com/xiaoxinghu/justfiles/commit/d1c663858f2666e8f7b2aeec9ae796712d8a6574))
+* **avatar:** add shared avatar rendering package ([#613](https://github.com/xiaoxinghu/justfiles/issues/613)) ([440265c](https://github.com/xiaoxinghu/justfiles/commit/440265c8ac7352a49022be1c4bd042312de247cb))
+* finish app-attached agents phase 7 ([#612](https://github.com/xiaoxinghu/justfiles/issues/612)) ([02a3d2f](https://github.com/xiaoxinghu/justfiles/commit/02a3d2fe44b7827c1f7073ddfc58bdbf3e7d03ed))
+* **frieren:** add expanding app dock ([#606](https://github.com/xiaoxinghu/justfiles/issues/606)) ([2d903ad](https://github.com/xiaoxinghu/justfiles/commit/2d903ad450ae89d147cc1974f5b10aacaebeb2b0))
+* **frieren:** refine liquid glass dock ([#609](https://github.com/xiaoxinghu/justfiles/issues/609)) ([fdde1d1](https://github.com/xiaoxinghu/justfiles/commit/fdde1d1512b01d07b36cc6ded6787adb5359acf0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.11.0
+    * @justfiles/design bumped to 0.3.0
+
 ## [0.19.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.19.0...frieren-v0.19.1) (2026-08-28)
 
 
