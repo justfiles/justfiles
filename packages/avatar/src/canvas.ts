@@ -36,11 +36,9 @@ export const canvasRenderer: AvatarRenderer<CanvasSkin> = {
 		let previousExpression = initial.expression
 		let expressionChangedAt = startedAt
 		let request = 0
-		let lastPaint = -FRAME_MS
+		let lastPaint = startedAt
 
-		const paint = (now: number) => {
-			request = requestAnimationFrame(paint)
-			if (now - lastPaint < FRAME_MS) return
+		const draw = (now: number) => {
 			lastPaint = now
 			skin.draw(context, {
 				time: now - startedAt,
@@ -51,20 +49,32 @@ export const canvasRenderer: AvatarRenderer<CanvasSkin> = {
 			})
 		}
 
-		const syncVisibility = () => {
-			cancelAnimationFrame(request)
-			request = document.hidden ? 0 : requestAnimationFrame(paint)
+		const paint = (now: number) => {
+			request = 0
+			if (now - lastPaint >= FRAME_MS) draw(now)
+			if (!document.hidden && !motion.matches) request = requestAnimationFrame(paint)
 		}
 
-		skin.draw(context, {
-			time: 0,
-			expression,
-			previousExpression,
-			expressionChangedAt: 0,
-			reducedMotion: motion.matches
-		})
-		syncVisibility()
+		const schedule = () => {
+			cancelAnimationFrame(request)
+			request = 0
+			if (!document.hidden && !motion.matches) request = requestAnimationFrame(paint)
+		}
+
+		const syncVisibility = () => {
+			if (!document.hidden && motion.matches) draw(performance.now())
+			schedule()
+		}
+
+		const syncMotion = () => {
+			if (!document.hidden) draw(performance.now())
+			schedule()
+		}
+
+		draw(startedAt)
+		schedule()
 		document.addEventListener('visibilitychange', syncVisibility)
+		motion.addEventListener('change', syncMotion)
 
 		return {
 			update(state) {
@@ -72,10 +82,12 @@ export const canvasRenderer: AvatarRenderer<CanvasSkin> = {
 				previousExpression = expression
 				expression = state.expression
 				expressionChangedAt = performance.now()
+				if (motion.matches && !document.hidden) draw(expressionChangedAt)
 			},
 			destroy() {
 				cancelAnimationFrame(request)
 				document.removeEventListener('visibilitychange', syncVisibility)
+				motion.removeEventListener('change', syncMotion)
 				canvas.remove()
 			}
 		}
