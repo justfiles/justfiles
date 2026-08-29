@@ -1,6 +1,6 @@
 {
 	"name": "@justfiles/app",
-	"version": "0.10.0",
+	"version": "0.11.0",
 	"description": "Kernel app SDK for JustFiles apps.",
 	"type": "module",
 	"sideEffects": false,

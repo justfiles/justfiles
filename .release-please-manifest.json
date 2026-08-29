@@ -1,7 +1,7 @@
 {
-	"platform/frieren": "0.19.1",
+	"platform/frieren": "0.20.0",
 	"packages/fs": "0.7.1",
-	"packages/design": "0.2.0",
-	"packages/app": "0.10.0",
+	"packages/design": "0.3.0",
+	"packages/app": "0.11.0",
 	"packages/avatar": "0.1.0"
 }

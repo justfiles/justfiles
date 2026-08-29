@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/design-v0.2.0...design-v0.3.0) (2026-08-29)
+
+
+### Features
+
+* finish app-attached agents phase 7 ([#612](https://github.com/xiaoxinghu/justfiles/issues/612)) ([02a3d2f](https://github.com/xiaoxinghu/justfiles/commit/02a3d2fe44b7827c1f7073ddfc58bdbf3e7d03ed))
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/design-v0.1.1...design-v0.2.0) (2026-08-28)
 
 
