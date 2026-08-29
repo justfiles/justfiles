@@ -417,9 +417,6 @@ importers:
       '@justfiles/app':
         specifier: link:../../packages/app
         version: link:../../packages/app
-      '@justfiles/avatar':
-        specifier: ^0.1.0
-        version: link:../../packages/avatar
       valibot:
         specifier: ^1.4.2
         version: 1.4.2(typescript@6.0.3)
