@@ -91,10 +91,9 @@ export interface AgentSoul {
 	// default built-in. Opaque everywhere but the two functions that resolve it: nobody
 	// parses a ref, so there is no ref type, no parser and no formatter in this contract.
 	//
-	// NOTE THE ABSENCE OF AN ARCHETYPE. The three natures are a seed for the FIRST draft
-	// and nothing after it: once the prose exists, the prose is the character, and a word
-	// in the frontmatter saying "teacher" only invites code to disagree with what the soul
-	// actually says. What the summoning leaves behind is a face, not a category.
+	// NOTE THE ABSENCE OF AN ARCHETYPE. The three natures seed the first draft and nothing
+	// after it: once the prose exists, the prose is the character. The summoning leaves the
+	// avatar unset so the host can use its default.
 	avatar: string | null
 	// The prose: the system prompt the agent wakes up with.
 	body: string
