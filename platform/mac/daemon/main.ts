@@ -87,7 +87,8 @@ const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 	ws.send(JSON.stringify(message))
 const sendAgent = (ws: ServerWebSocket<Context>, message: SessionServerMessage) =>
 	ws.send(JSON.stringify(message))
-const agentTopic = (appId?: string): string => `agent:${appId ?? 'main'}`
+const agentTopic = (appId?: string): string =>
+	appId === undefined ? 'agent:main' : `agent:app:${appId}`
 
 export interface ServerOptions {
 	// TCP port; default OS-ephemeral shipped (0) / a fixed 3000 in dev, honoring PORT.

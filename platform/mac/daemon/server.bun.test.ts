@@ -227,6 +227,25 @@ test('keyed agent sockets publish only their app session', async () => {
 	dictionary.close()
 })
 
+test('an app named main does not share the main agent topic', async () => {
+	const main = await connect('/agent')
+	const app = await connect('/agent/main')
+	await Promise.all([
+		main.waitFor((message) => message.type === 'snapshot'),
+		app.waitFor((message) => message.type === 'snapshot')
+	])
+
+	main.send({ type: 'prompt', text: 'hello' })
+	await main.waitFor((message) => message.type === 'status' && message.status?.state === 'thinking')
+	await main.waitFor(
+		(message) => message.type === 'status' && message.status?.state === 'idle' && !!message.error
+	)
+
+	expect(app.messages().map((message) => message.type)).toEqual(['snapshot'])
+	main.close()
+	app.close()
+})
+
 test('/agent returns expired for a missing activity detail', async () => {
 	const client = await connect('/agent')
 	await client.waitFor((message) => message.type === 'snapshot')
