@@ -2,6 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { openProfile } from '../fs'
 import { useOsClient } from '../os/hooks'
+import { type AvatarAppearance, GAMEBOY_AVATAR } from './avatarAppearance'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
 import { DEFAULT_AVATAR, readAgentSoul, readAvatar, watchIdentity } from './identity'
@@ -22,12 +23,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	const [inputs, setInputs] = useState<Record<string, string>>({})
 	const [identity, setIdentity] = useState({
 		agentName: undefined as string | undefined,
-		// Until the first read lands, the default built-in: it is in the bundle, so there is
-		// nothing to wait for and no hole where a face goes.
+		// The canvas avatar is ready before the first identity read lands.
 		avatar: undefined as string | undefined,
-		avatarUrl: DEFAULT_AVATAR.url,
-		// Null on built-in art — there is nothing to derive faces FROM, and nothing to derive:
-		// the set arrives complete.
+		appearance: GAMEBOY_AVATAR as AvatarAppearance,
+		// Null means there is no source image to derive faces from.
 		hash: null as string | null,
 		faces: DEFAULT_AVATAR.faces,
 		personalized: false
@@ -46,12 +45,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		const ref = soul?.frontmatter.avatar
 		// Every await is done before the guard — including the faces, which are the slow part and
 		// the whole reason the reads can finish out of order.
-		const avatar = await readAvatar(volume, ref)
+		const avatar = ref ? await readAvatar(volume, ref) : DEFAULT_AVATAR
 		if (mine !== reading.current) return
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
 			avatar: ref,
-			avatarUrl: avatar.url,
+			appearance: ref
+				? { renderer: 'image', url: avatar.url, faces: avatar.faces }
+				: GAMEBOY_AVATAR,
 			hash: avatar.hash,
 			faces: avatar.faces,
 			personalized: soul?.frontmatter.seeded !== 'true' && soul !== null
@@ -112,8 +113,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		setInput: (agentId, value) => setInputs((current) => ({ ...current, [agentId ?? '']: value })),
 		identity: {
 			agentName: identity.agentName,
-			avatarUrl: identity.avatarUrl,
-			faces: identity.faces,
+			appearance: identity.appearance,
 			personalized: identity.personalized
 		},
 		ensureFace,

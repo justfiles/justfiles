@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
+		"dev:avatar": "vite --config scripts/avatar.vite.ts",
 		"build": "tsc -b && vite build",
 		"lint": "eslint .",
 		"auth:token": "tsx scripts/frieren-auth.ts token",

@@ -77,8 +77,7 @@ export function AppWindow({
 								notice: agent.notice?.body,
 								footer: (
 									<AgentAvatar
-										url={agent.avatarUrl}
-										faces={agent.avatarFaces}
+										appearance={agent.avatar}
 										expression={agent.expression}
 										streaming={agent.isStreaming}
 										personalized={agent.personalized}

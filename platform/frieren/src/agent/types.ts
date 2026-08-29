@@ -5,6 +5,7 @@ import type { Expression } from '@justfiles/agent/expression'
 import type { ActivityDetailResult } from '@justfiles/agent/protocol'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptRow } from '@justfiles/ui/Transcript'
+import type { AvatarAppearance } from './avatarAppearance'
 
 export type { AgentMessage, ToolCallInfo, TranscriptRow } from '@justfiles/ui/Transcript'
 
@@ -16,9 +17,7 @@ export interface AgentSession {
 	setInput: (value: string) => void
 	userName: string
 	agentName: string
-	avatarUrl: string
-	// Per-expression faces found on the volume (may be empty — then the base avatar is used).
-	avatarFaces: Partial<Record<Expression, string>>
+	avatar: AvatarAppearance
 	// The agent's latest expression tag this turn; drives which face is shown.
 	expression: Expression | null
 	personalized: boolean

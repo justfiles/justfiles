@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<link rel="icon" href="data:," />
+		<title>Avatar dev</title>
+	</head>
+	<body>
+		<main>
+			<section class="avatar-stage">
+				<canvas id="preview" width="256" height="256"></canvas>
+			</section>
+
+			<section class="avatar-controls">
+				<div id="moods" class="avatar-moods"></div>
+
+				<label>
+					<span>Preview size</span>
+					<input id="size" type="range" min="46" max="320" value="192" />
+					<output id="size-output">192px</output>
+				</label>
+			</section>
+
+			<section class="avatar-dock-size">
+				<span>Dock size</span>
+				<canvas id="dock" width="256" height="256"></canvas>
+			</section>
+		</main>
+		<script type="module" src="/main.ts"></script>
+	</body>
+</html>
