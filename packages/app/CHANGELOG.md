@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.11.0...app-v0.12.0) (2026-08-29)
+
+
+### Features
+
+* **app:** add React GUI helper ([#615](https://github.com/xiaoxinghu/justfiles/issues/615)) ([b2007bd](https://github.com/xiaoxinghu/justfiles/commit/b2007bdd514dabe2062ce02d8c8dcea430c1e99b))
+
 ## [0.11.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.10.0...app-v0.11.0) (2026-08-29)
 
 

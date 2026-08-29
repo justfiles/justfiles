@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.20.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.20.0...frieren-v0.20.1) (2026-08-29)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.12.0
+
 ## [0.20.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.19.1...frieren-v0.20.0) (2026-08-29)
 
 
