@@ -164,9 +164,16 @@ function AppHost() {
 	const [sidebarReady, setSidebarReady] = useState(false)
 	const [streaming, setStreaming] = useState(false)
 	const [notice, setNotice] = useState<Notification | null>(null)
+	const [visible, setVisible] = useState(!document.hidden)
 
 	useEffect(() => connection.subscribeAssistant(setAssistant), [])
 	useEffect(() => connection.subscribeNotice(setNotice), [])
+	useEffect(() => {
+		const read = () => setVisible(!document.hidden)
+		document.addEventListener('visibilitychange', read)
+		read()
+		return () => document.removeEventListener('visibilitychange', read)
+	}, [])
 
 	const save = useCallback((change: AttachedAgentChange) => {
 		setAssistant((state) => changeAttachedAgentState(state, appId, change))
@@ -179,8 +186,8 @@ function AppHost() {
 	}, [])
 
 	useEffect(() => {
-		if (open && notice) setNotice(null)
-	}, [notice, open])
+		if (visible && open && notice) setNotice(null)
+	}, [notice, open, visible])
 
 	return (
 		<AttachedAgent
