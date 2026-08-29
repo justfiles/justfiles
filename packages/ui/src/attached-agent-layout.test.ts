@@ -1,5 +1,15 @@
 import { describe, expect, test } from 'vitest'
-import { effectiveMode } from './attached-agent-layout.ts'
+import { chooseMode, effectiveMode } from './attached-agent-layout.ts'
+
+describe('chooseMode', () => {
+	test('chooses a sidebar when the app keeps its minimum width', () => {
+		expect(chooseMode(621, 300)).toBe('sidebar')
+	})
+
+	test('chooses a sheet when the sidebar would make the app too narrow', () => {
+		expect(chooseMode(620, 300)).toBe('sheet')
+	})
+})
 
 describe('effectiveMode', () => {
 	test('keeps sheet mode at every width', () => {

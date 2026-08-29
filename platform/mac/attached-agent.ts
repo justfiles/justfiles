@@ -1,19 +1,18 @@
+import type { Notification } from '@justfiles/app/capabilities/notify'
+
 export type AttachedAgentMode = 'sheet' | 'sidebar'
 
 export type AttachedAgentState = {
-	mode: AttachedAgentMode
 	size: { sheet: number; sidebar: number }
 	open: Record<string, true>
 }
 
 export type AttachedAgentChange = {
-	mode?: AttachedAgentMode
 	size?: AttachedAgentState['size']
 	open?: boolean
 }
 
 export const initialAttachedAgentState: AttachedAgentState = {
-	mode: 'sheet',
 	size: { sheet: 280, sidebar: 300 },
 	open: {}
 }
@@ -25,7 +24,6 @@ export function readAttachedAgentState(value: unknown): AttachedAgentState {
 	if (saved.open && typeof saved.open === 'object')
 		for (const [id, value] of Object.entries(saved.open)) if (value === true) open[id] = true
 	return {
-		mode: saved.mode === 'sidebar' ? 'sidebar' : 'sheet',
 		size: {
 			sheet: numberOr(saved.size?.sheet, initialAttachedAgentState.size.sheet),
 			sidebar: numberOr(saved.size?.sidebar, initialAttachedAgentState.size.sidebar)
@@ -46,7 +44,6 @@ export function changeAttachedAgentState(
 		open = rest
 	}
 	return {
-		mode: change.mode === 'sheet' || change.mode === 'sidebar' ? change.mode : state.mode,
 		size: change.size
 			? {
 					sheet: numberOr(change.size.sheet, state.size.sheet),
@@ -66,6 +63,6 @@ export type AttachedAgentClientMessage = {
 	change: AttachedAgentChange
 }
 
-export type AttachedAgentServerMessage = {
-	assistant: AttachedAgentState
-}
+export type AttachedAgentServerMessage =
+	| { assistant: AttachedAgentState }
+	| { notice: Notification }

@@ -1,5 +1,5 @@
 import { AttachedAgent, type AttachedAgentMode } from '@justfiles/ui/AttachedAgent'
-import { type ReactNode, useCallback, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentSession } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
@@ -30,26 +30,18 @@ export function AppWindow({
 	const assistant = useOsStore((s) => s.assistant)
 	const agent = useAgentSession(id)
 	const [sheetOpen, setSheetOpen] = useState(false)
-	const [panelMode, setPanelMode] = useState<AttachedAgentMode>('sheet')
-	// Restore a saved sidebar only after this window has fit one. Keep the flag once set so an
-	// open sidebar stays open when a later resize falls back to a sheet.
-	const [sidebarReady, setSidebarReady] = useState(false)
 	const sidebarOpen = Boolean(assistant.open[id])
-	const requestedOpen =
-		panelMode === 'sidebar' ? sidebarOpen : sheetOpen || (sidebarReady && sidebarOpen)
-	const agentOpen = requestedOpen || agent.isStreaming
-	const trackMode = useCallback(
-		(mode: AttachedAgentMode) => {
-			setPanelMode(mode)
-			if (mode !== 'sidebar') return
-			setSidebarReady(true)
-			if (sheetOpen) {
-				setSheetOpen(false)
-				dispatch({ type: 'assistant.setOpen', id, open: true })
-			}
-		},
-		[dispatch, id, sheetOpen]
-	)
+	const [panelMode, setPanelMode] = useState<AttachedAgentMode>(sidebarOpen ? 'sidebar' : 'sheet')
+	const [sidebarReady, setSidebarReady] = useState(false)
+	const agentOpen = (sidebarReady && sidebarOpen) || sheetOpen || agent.isStreaming
+	const panelVisible = Boolean(window && window.mode !== 'minimized' && agentOpen)
+	const trackMode = useCallback((mode: AttachedAgentMode) => {
+		if (mode === 'sidebar') setSidebarReady(true)
+	}, [])
+
+	useEffect(() => {
+		if (panelVisible && agent.notice) agent.clearNotice()
+	}, [agent.clearNotice, agent.notice, panelVisible])
 
 	// An open window always has a placement (seeded on open), so a missing rect
 	// means the window isn't really open — render nothing rather than guess.
@@ -79,9 +71,10 @@ export function AppWindow({
 					id.startsWith('.')
 						? undefined
 						: {
-								mode: assistant.mode,
+								mode: panelMode,
 								open: agentOpen,
 								size: assistant.size,
+								notice: agent.notice?.body,
 								footer: (
 									<AgentAvatar
 										url={agent.avatarUrl}
@@ -104,15 +97,17 @@ export function AppWindow({
 										setSheetOpen(false)
 										dispatch({ type: 'assistant.setOpen', id, open: agentOpen })
 									}
-									dispatch({ type: 'assistant.setMode', mode })
 								},
 								onEffectiveModeChange: trackMode,
-								onOpenChange: (open) => {
+								onOpenChange: (open, mode) => {
 									if (!open && agent.isStreaming) return
-									if (panelMode === 'sidebar') dispatch({ type: 'assistant.setOpen', id, open })
-									else {
-										setSheetOpen(open)
-										if (sidebarReady) dispatch({ type: 'assistant.setOpen', id, open })
+									setPanelMode(mode)
+									if (open && mode === 'sheet') {
+										setSheetOpen(true)
+										dispatch({ type: 'assistant.setOpen', id, open: false })
+									} else {
+										setSheetOpen(false)
+										dispatch({ type: 'assistant.setOpen', id, open })
 									}
 								},
 								onSizeChange: (size) => dispatch({ type: 'assistant.setSize', size })

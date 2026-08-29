@@ -38,7 +38,6 @@ function normalize(state: OsState): OsState {
 	}
 	const saved = (state as Partial<OsState>).assistant
 	const assistant = {
-		mode: saved?.mode === 'sidebar' ? 'sidebar' : 'sheet',
 		size: {
 			sheet: saved?.size?.sheet ?? initialAttachedAgentState.size.sheet,
 			sidebar: saved?.size?.sidebar ?? initialAttachedAgentState.size.sidebar

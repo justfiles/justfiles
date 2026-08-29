@@ -144,6 +144,65 @@ describe('app sessions', () => {
 		expect(model.calls[1]?.systemPrompt).not.toContain('"query": "first"')
 	})
 
+	test('routes turn notices back to the attached app', async () => {
+		const notices: { threadId?: string; route?: unknown }[] = []
+		const app = createAgentSessions({
+			volume: volume(memStore()),
+			backend: backend(['done']).value,
+			apps: controller(),
+			notify: (notice) => notices.push(notice),
+			compaction: NO_COMPACTION
+		}).app('justfiles.dictionary')
+
+		await prompt(app, 'look this up')
+
+		expect(notices).toEqual([
+			expect.objectContaining({
+				threadId: 'app.justfiles.dictionary',
+				route: { kind: 'app', id: 'justfiles.dictionary' }
+			})
+		])
+	})
+
+	test('keeps app orientation and transcript paths in host parity', async () => {
+		const frierenVolume = volume(memStore())
+		const macVolume = volume(memStore())
+		const frierenModel = backend(['Files is open.'])
+		const macModel = backend(['Files is open.'])
+		const frieren = createAgentSessions({
+			volume: frierenVolume,
+			backend: frierenModel.value,
+			apps: controller(),
+			osState: async () => ({ windows: [] }),
+			expressions: true,
+			compaction: NO_COMPACTION
+		})
+		const mac = createAgentSessions({
+			volume: macVolume,
+			backend: macModel.value,
+			apps: controller(),
+			readDoc: async () => '',
+			compaction: NO_COMPACTION
+		})
+
+		await Promise.all([
+			prompt(frieren.app('justfiles.files'), 'what am I looking at?'),
+			prompt(mac.app('justfiles.files'), 'what am I looking at?')
+		])
+
+		const frierenPrompt = frierenModel.calls[0]?.systemPrompt ?? ''
+		const macPrompt = macModel.calls[0]?.systemPrompt ?? ''
+		expect(promptSection(frierenPrompt, 'attached app')).toBe(
+			promptSection(macPrompt, 'attached app')
+		)
+		expect(frierenPrompt).toContain('# expression')
+		expect(macPrompt).toContain('# docs')
+		expect(frierenModel.calls[0]?.tools).not.toContain('read_doc')
+		expect(macModel.calls[0]?.tools).toContain('read_doc')
+		expect(await sessionFiles(frierenVolume, 'app.justfiles.files')).toHaveLength(1)
+		expect(await sessionFiles(macVolume, 'app.justfiles.files')).toHaveLength(1)
+	})
+
 	test('compact without writing app-thread notes to the daily journal', async () => {
 		const vol = volume(memStore())
 		const model = backend(['first reply', 'second reply'], 'compact summary', 5000)
@@ -268,4 +327,11 @@ function messages(entries: readonly { type: string; content?: string }[]): strin
 	return entries.flatMap((entry) =>
 		entry.type === 'message' && entry.content ? [entry.content] : []
 	)
+}
+
+function promptSection(prompt: string, heading: string): string {
+	const start = prompt.indexOf(`# ${heading}\n`)
+	if (start < 0) return ''
+	const next = prompt.indexOf('\n# ', start + 1)
+	return prompt.slice(start, next < 0 ? undefined : next)
 }

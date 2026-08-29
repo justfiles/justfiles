@@ -6,6 +6,10 @@ const MIN_SIDEBAR_SIZE = 240
 const MIN_SHEET_SIZE = 160
 const SEAM_SIZE = 1
 
+export function chooseMode(width: number, sidebarSize: number): Mode {
+	return effectiveMode('sidebar', width, sidebarSize)
+}
+
 export function effectiveMode(mode: Mode, width: number, sidebarSize: number): Mode {
 	if (
 		mode === 'sidebar' &&

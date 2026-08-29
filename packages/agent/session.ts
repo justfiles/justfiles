@@ -138,14 +138,13 @@ export function createAppAgentSession(
 	agentId: string,
 	appContext: () => Promise<string>
 ): AgentSession {
-	return makeSession(options, { agentId, kind: 'app', appContext })
+	const appId = agentId.startsWith('app.') ? agentId.slice(4) : agentId
+	return makeSession(options, { agentId, kind: 'app', appId, appContext })
 }
 
-interface SessionTarget {
-	agentId: string
-	kind: 'main' | 'app'
-	appContext?: () => Promise<string>
-}
+type SessionTarget =
+	| { agentId: string; kind: 'main' }
+	| { agentId: string; kind: 'app'; appId: string; appContext: () => Promise<string> }
 
 function makeSession(options: AgentSessionOptions, target: SessionTarget): AgentSession {
 	const { volume, apps, notify, readDoc, timezone } = options
@@ -263,7 +262,7 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			text,
 			agentId: target.agentId,
 			kind: target.kind,
-			appContext: target.appContext,
+			appContext: target.kind === 'app' ? target.appContext : undefined,
 			compaction,
 			getTimezone: timezone,
 			readDoc,
@@ -511,8 +510,8 @@ function makeSession(options: AgentSessionOptions, target: SessionTarget): Agent
 			// vocabulary is ordinary English, so stripping unconditionally would delete a
 			// legitimate `[thinking]` from a reply nobody asked to be tagged.
 			body: summarize(options.expressions ? stripExpressions(body).text : body),
-			threadId: 'agent',
-			route
+			threadId: target.kind === 'app' ? target.agentId : 'agent',
+			route: target.kind === 'app' ? { kind: 'app', id: target.appId } : route
 		})
 	}
 }

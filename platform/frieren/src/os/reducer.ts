@@ -126,10 +126,6 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 			}
 		}
 
-		case 'assistant.setMode':
-			if (state.assistant.mode === action.mode) return state
-			return { ...state, assistant: { ...state.assistant, mode: action.mode } }
-
 		case 'assistant.setSize':
 			if (
 				state.assistant.size.sheet === action.size.sheet &&
