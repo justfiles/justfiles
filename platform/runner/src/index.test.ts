@@ -212,6 +212,7 @@ test('the app shell keeps a shelf back to the store above the app', async () => 
 	expect(page).toContain('<nav id="runner-shelf" aria-label="App navigation">')
 	expect(page).toContain('src="/v/1.2.0/icon.png"')
 	expect(page).toContain('<span class="runner-shelf-name">Notes</span>')
+	expect(page).toContain('<span class="runner-shelf-version">v1.2.0</span>')
 	expect(page).toContain('<span class="runner-shelf-host">example.com</span>')
 	expect(page).toContain(
 		'class="runner-shelf-home" href="https://example.com/" aria-label="All apps"'

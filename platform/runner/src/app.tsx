@@ -80,6 +80,7 @@ body { display: flex; flex-direction: column; overflow: hidden }
 #runner-shelf .runner-shelf-icon img { display: block; height: 100%; object-fit: cover; width: 100% }
 #runner-shelf .runner-shelf-name { font-size: 12.5px; font-weight: 550 }
 #runner-shelf .runner-shelf-name, #runner-shelf .runner-shelf-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+#runner-shelf .runner-shelf-version { color: var(--dim); flex: none; font-size: 11.5px; font-variant-numeric: tabular-nums }
 #runner-shelf .runner-shelf-dot { background: var(--dim); border-radius: 50%; flex: none; height: 3px; opacity: .5; width: 3px }
 #runner-shelf .runner-shelf-host { color: var(--dim); font-size: 11.5px }
 #runner-shelf .runner-shelf-home { align-items: center; border-radius: 999px; color: var(--mark); display: flex;
@@ -303,6 +304,7 @@ route.get('/', async (c) => {
 						{app.icon ? <img src={`${base}${app.icon}`} alt="" /> : app.name.slice(0, 1)}
 					</span>
 					<span class="runner-shelf-name">{app.name}</span>
+					<span class="runner-shelf-version">v{app.version}</span>
 					<span class="runner-shelf-dot"></span>
 					<span class="runner-shelf-host">{c.env.ROOT_DOMAIN}</span>
 					<a class="runner-shelf-home" href={home} aria-label="All apps">
