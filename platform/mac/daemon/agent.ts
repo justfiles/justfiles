@@ -65,10 +65,22 @@ const nativeWindows: AppControllerPorts['windows'] = {
 // backend, the native AppController, the notify channel, a docs reader) and maps its own
 // slash commands onto the session's semantic methods (`newSession` / `applySkill`).
 let agentsPromise: Promise<AgentSessions> | null = null
+const sessions = new Map<string, AgentSession>()
 
-function getSession(): Promise<AgentSession> {
+async function getSession(appId?: string): Promise<AgentSession> {
 	if (!agentsPromise) agentsPromise = buildAgents()
-	return agentsPromise.then((agents) => agents.main())
+	const key = appId ?? ''
+	const active = sessions.get(key)
+	if (active) return active
+	const agents = await agentsPromise
+	const connected = sessions.get(key)
+	if (connected) return connected
+	const session = appId ? agents.app(appId) : agents.main()
+	session.subscribe((update) => {
+		for (const message of updateMessages(update)) broadcast(appId, message)
+	})
+	sessions.set(key, session)
+	return session
 }
 
 async function buildAgents(): Promise<AgentSessions> {
@@ -99,51 +111,44 @@ async function buildAgents(): Promise<AgentSessions> {
 		timezone: () => resolveTimezone(fs, undefined)
 	})
 	const session = agents.main()
-	// Fan session changes out to every connected chat via the sink main.ts wired.
-	session.subscribe((update) => {
-		for (const message of updateMessages(update)) broadcast(message)
-	})
 	void scheduleDailyMaintenance(session).catch((error) =>
 		console.error('[agent] maintenance alarm failed:', error)
 	)
 	return agents
 }
 
-// The daemon injects a sink that publishes `/agent` messages to every connected chat (main.ts
-// wires it to the `agent` pub/sub topic). The no-op default keeps the session usable before
-// the server binds it.
-let broadcast: (message: SessionServerMessage) => void = () => {}
-export function setAgentBroadcast(sink: (message: SessionServerMessage) => void): void {
+// The daemon maps each session to its keyed pub/sub topic.
+let broadcast: (appId: string | undefined, message: SessionServerMessage) => void = () => {}
+export function setAgentBroadcast(
+	sink: (appId: string | undefined, message: SessionServerMessage) => void
+): void {
 	broadcast = sink
 }
 
 // The current history and status for a chat that connects.
-export async function agentSnapshot(): Promise<SessionServerMessage> {
-	return snapshotMessage(await (await getSession()).snapshot())
+export async function agentSnapshot(appId?: string): Promise<SessionServerMessage> {
+	return snapshotMessage(await (await getSession(appId)).snapshot())
 }
 
-export async function agentActivityDetail(detailId: string) {
-	return (await getSession()).activityDetail(detailId)
+export async function agentActivityDetail(appId: string | undefined, detailId: string) {
+	return (await getSession(appId)).activityDetail(detailId)
 }
 
 // Start the turn and report admission before its async setup can finish. Completion reaches
 // every chat through the session subscription above.
 export async function promptAgent(
+	appId: string | undefined,
 	message: string,
 	reply: (result: SessionServerMessage) => void
 ): Promise<void> {
-	const result = (await getSession()).start(message)
+	const result = (await getSession(appId)).start(message)
 	reply(promptReply(result))
 	if (result.accepted) void result.done
 }
 
-// Cancel the in-flight turn, leaving the session intact so later prompts still work. Guards
-// on the memoised session so a cold daemon never builds an agent just to cancel nothing.
-export function abortAgent(): void {
-	if (!agentsPromise) return
-	void agentsPromise
-		.then((agents) => agents.main().abort())
-		.catch((err) => console.error('[agent] abort failed:', err))
+// A cold abort stays a no-op rather than building a session just to cancel nothing.
+export function abortAgent(appId?: string): void {
+	sessions.get(appId ?? '')?.abort()
 }
 
 // Dispatch a slash command by name. Commands are a DAEMON concept (see commands.ts) — the
@@ -164,7 +169,8 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 		else void session.applySkill(name)
 	} catch (err) {
 		console.error(`[agent] /${name} failed:`, err)
-		if (name === 'new') broadcast({ type: 'snapshot', history: [], status: { state: 'idle' } })
+		if (name === 'new')
+			broadcast(undefined, { type: 'snapshot', history: [], status: { state: 'idle' } })
 	}
 	return { show: 'chat' }
 }

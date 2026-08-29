@@ -1,11 +1,8 @@
 # App-attached agents
 
-> Status: **design, no code yet.** Adds a shared browser component in
-> `packages/ui` and a shared keyed session manager in `packages/agent`.
-> Frieren and mac supply adapters for their own windows, transports, storage and
-> model providers. The feature adds one piece of window chrome (a **footer**),
-> one panel with two modes (**sheet** / **sidebar**), and lets an app own a
-> thread. The global agent and its existing launchers are untouched.
+> Status: **Phases 1-6 implemented; parity is next.** The shared browser
+> component lives in `packages/ui`, the keyed session manager lives in
+> `packages/agent`, and both hosts attach keyed conversations to app windows.
 >
 > Depends on doc 5 (the `/system/agents/<id>/` layout this fills in for the
 > first time).
@@ -297,7 +294,9 @@ the app agent the same companion in a different session, with a clear subject.
    stay pinned to `agents.main()`. The timer itself remains platform code because
    Cloudflare alarms and native timers are different. Ten app threads must not
    mean ten daily alarms.
-2. **One socket.** A thread is a tag on a frame, not a connection.
+2. **One socket per active thread.** Each host gives a keyed agent its own
+   WebSocket. The agent id lives in the connection URL, so frames keep the
+   existing untagged session protocol and inactive app threads hold no connection.
 3. **The tools stay the same.** The app thread gets every tool available to
    `main`, with no per-app sandbox. We can narrow the tool set later if a real
    problem calls for it.
@@ -431,8 +430,9 @@ manager, and follow their respective retirement policies.
 
 ### Phase 5: connect Frieren
 
-- Add the optional agent id to prompt and abort frames, plus history and event
-  frames. Missing means `main`.
+- Give every agent id its own connection URL. Keep the existing untagged prompt,
+  abort, history and event frames inside that connection; omitting the id selects
+  `main`.
 - Change the browser client from one agent state block to state keyed by agent
   id. Keep the existing global provider and omnibar bound to `main`.
 - Let `MessagesPanel` take an agent id and pass it as the panel node to
@@ -444,15 +444,15 @@ manager, and follow their respective retirement policies.
 - Keep alarm scheduling and daily memory maintenance pinned to
   `agents.main()`.
 
-Done when two app panels and the global chat can run concurrent turns over one
-socket, reload into their own histories, and update their app windows visibly.
+Done when two app panels and the global chat can run concurrent turns over their
+keyed sockets, reload into their own histories, and update their app windows visibly.
 The Frieren browser smoke check must cover sheet dismissal, sidebar resizing,
 narrow-width fallback, mode switching and reload restoration.
 
 ### Phase 6: connect mac
 
-- Tag mac agent requests and events the same way. Keep absent as `main` so the
-  launcher and its native composer do not change.
+- Add keyed agent connection URLs to mac while keeping `/agent` as `main`, so
+  the launcher and its native composer do not change.
 - Publish agent events by id and update `useAgentChat` to select one id. Do not
   give the app GUI's `mount` context an agent transport; the web host owns it.
 - Add daemon-owned shell state for preferred mode, both sizes and restored

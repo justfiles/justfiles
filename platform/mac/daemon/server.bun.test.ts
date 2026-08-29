@@ -61,6 +61,11 @@ interface Message {
 	status?: { state: string }
 	message?: string
 	error?: { message: string }
+	assistant?: {
+		mode: 'sheet' | 'sidebar'
+		size: { sheet: number; sidebar: number }
+		open: Record<string, true>
+	}
 	state?: {
 		count?: number
 		currentViewing?: string | null
@@ -201,6 +206,46 @@ test('/agent sends a snapshot, then publishes items and status', async () => {
 	client.close()
 })
 
+test('keyed agent sockets publish only their app session', async () => {
+	const files = await connect(`/agent/${FILES}`)
+	const dictionary = await connect('/agent/justfiles.dictionary')
+	await Promise.all([
+		files.waitFor((message) => message.type === 'snapshot'),
+		dictionary.waitFor((message) => message.type === 'snapshot')
+	])
+
+	files.send({ type: 'prompt', text: 'what app is this?' })
+	await files.waitFor(
+		(message) => message.type === 'status' && message.status?.state === 'thinking'
+	)
+	await files.waitFor(
+		(message) => message.type === 'status' && message.status?.state === 'idle' && !!message.error
+	)
+
+	expect(dictionary.messages().map((message) => message.type)).toEqual(['snapshot'])
+	files.close()
+	dictionary.close()
+})
+
+test('an app named main does not share the main agent topic', async () => {
+	const main = await connect('/agent')
+	const app = await connect('/agent/main')
+	await Promise.all([
+		main.waitFor((message) => message.type === 'snapshot'),
+		app.waitFor((message) => message.type === 'snapshot')
+	])
+
+	main.send({ type: 'prompt', text: 'hello' })
+	await main.waitFor((message) => message.type === 'status' && message.status?.state === 'thinking')
+	await main.waitFor(
+		(message) => message.type === 'status' && message.status?.state === 'idle' && !!message.error
+	)
+
+	expect(app.messages().map((message) => message.type)).toEqual(['snapshot'])
+	main.close()
+	app.close()
+})
+
 test('/agent returns expired for a missing activity detail', async () => {
 	const client = await connect('/agent')
 	await client.waitFor((message) => message.type === 'snapshot')
@@ -214,6 +259,12 @@ test('/agent returns expired for a missing activity detail', async () => {
 
 test('/app socket pushes initial state and round-trips a dispatch', async () => {
 	const client = await connect(`/app/${FILES}/connect`)
+	const assistant = await client.waitFor((message) => message.assistant !== undefined)
+	expect(assistant.assistant).toEqual({
+		mode: 'sheet',
+		size: { sheet: 280, sidebar: 300 },
+		open: {}
+	})
 	const initial = await client.waitFor((m) => m.state !== undefined)
 	// What's under test is the socket pushing Files' initial state, not Files' full state.
 	expect(initial.state).toMatchObject({ currentViewing: null, revision: 0 })
@@ -225,6 +276,33 @@ test('/app socket pushes initial state and round-trips a dispatch', async () => 
 	const pushed = await client.waitFor((m) => m.state?.currentViewing === '/hello.txt')
 	expect(pushed.state).toMatchObject({ currentViewing: '/hello.txt' })
 	client.close()
+})
+
+test('/app socket persists attached-agent state and restores only saved sidebars', async () => {
+	const client = await connect(`/app/${FILES}/connect`)
+	await client.waitFor((message) => message.assistant !== undefined)
+	client.send({
+		shell: 'attached-agent',
+		change: { mode: 'sidebar', size: { sheet: 260, sidebar: 360 }, open: true }
+	})
+	const changed = await client.waitFor((message) => message.assistant?.open[FILES] === true)
+	expect(changed.assistant).toEqual({
+		mode: 'sidebar',
+		size: { sheet: 260, sidebar: 360 },
+		open: { [FILES]: true }
+	})
+	client.close()
+
+	const restored = await connect(`/app/${FILES}/connect`)
+	expect((await restored.waitFor((message) => message.assistant !== undefined)).assistant).toEqual(
+		changed.assistant
+	)
+	restored.send({ shell: 'attached-agent', change: { mode: 'sheet', open: false } })
+	const sheet = await restored.waitFor(
+		(message) => message.assistant?.mode === 'sheet' && !message.assistant.open[FILES]
+	)
+	expect(sheet.assistant?.open).toEqual({})
+	restored.close()
 })
 
 // A fake JustApps registry: one published app, served from an immutable release URL. The
