@@ -8,15 +8,12 @@ import type {
 import type { TranscriptRow } from '@justfiles/ui/Transcript'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-// The launcher's agent transport: a plain WebSocket to the daemon's `/agent` socket, which
-// is a live view of the shared session. The daemon sends a snapshot, then pushes durable
-// items and current status, including work started by `/skill`. Shared by the in-page
-// launcher chat (main.tsx) and the native chat surface (chat.tsx). Commands are NOT sent here — they ride
-// `/system` and reach the agent (if at all) as a skill, surfacing naturally in the push.
+// The agent transport. `/agent` selects main; `/agent/:appId` selects one attached thread.
+// Each connection gets the same untagged session frames.
 
 type Connection = 'connecting' | 'ready' | 'disconnected'
 
-export function useAgentChat() {
+export function useAgentChat(agentId?: string) {
 	const [messages, setMessages] = useState<TranscriptRow[]>([])
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connection, setConnection] = useState<Connection>('connecting')
@@ -50,8 +47,9 @@ export function useAgentChat() {
 		let socket: WebSocket | undefined
 		const connect = () => {
 			setConnection('connecting')
+			const path = agentId ? `/agent/${encodeURIComponent(agentId)}` : '/agent'
 			const nextSocket = new WebSocket(
-				`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/agent`
+				`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`
 			)
 			socket = nextSocket
 			socketRef.current = nextSocket
@@ -114,7 +112,7 @@ export function useAgentChat() {
 			for (const resolve of pendingDetailsRef.current.values()) resolve({ status: 'expired' })
 			pendingDetailsRef.current.clear()
 		}
-	}, [replaceHistory, setStatus, setSubmitting])
+	}, [agentId, replaceHistory, setStatus, setSubmitting])
 
 	const send = useCallback(
 		(text: string) => {

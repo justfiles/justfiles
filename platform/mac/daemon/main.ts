@@ -3,6 +3,7 @@ import { dirname, resolve, sep } from 'node:path'
 import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
 import type { AppManifest } from '@justfiles/app/runtime'
 import type { Server, ServerWebSocket } from 'bun'
+import type { AttachedAgentClientMessage, AttachedAgentServerMessage } from '../attached-agent'
 import {
 	abortAgent,
 	agentActivityDetail,
@@ -12,6 +13,7 @@ import {
 	promptAgent,
 	setAgentBroadcast
 } from './agent'
+import { createAttachedAgentStore } from './attached-agent'
 import {
 	acquireDaemonLock,
 	clearRuntime,
@@ -59,7 +61,7 @@ function imageContentType(path: string, bytes: Uint8Array): string {
 	return 'application/octet-stream'
 }
 
-type Context = { type: 'system' } | { type: 'agent' } | { type: 'app'; id: string }
+type Context = { type: 'system' } | { type: 'agent'; appId?: string } | { type: 'app'; id: string }
 
 const runtimes = new WeakMap<Server<Context>, RuntimeRefresh>()
 
@@ -85,6 +87,7 @@ const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 	ws.send(JSON.stringify(message))
 const sendAgent = (ws: ServerWebSocket<Context>, message: SessionServerMessage) =>
 	ws.send(JSON.stringify(message))
+const agentTopic = (appId?: string): string => `agent:${appId ?? 'main'}`
 
 export interface ServerOptions {
 	// TCP port; default OS-ephemeral shipped (0) / a fixed 3000 in dev, honoring PORT.
@@ -100,7 +103,7 @@ interface IdentityCommands {
 }
 
 // Build the HTTP + WebSocket server: static client tree, per-app gui.js/icon routes, and
-// the three sockets (`/system`, `/agent`, `/app/:id`). Pulls everything from the module
+// the system, keyed agent, and app sockets. Pulls everything from the module
 // singletons, so a test stands it up over a temp Volume with a no-op `projectApps`.
 export function createServer(options: ServerOptions = {}): Server<Context> {
 	return serve(options)
@@ -110,10 +113,18 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 	const projectApps = options.projectApps ?? reconcileProjection
 	const port = options.port ?? (process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000)
 	let refresh!: RuntimeRefresh
-	let agentMessages = Promise.resolve()
-	const serializeAgentMessage = (send: () => void | Promise<void>): Promise<void> => {
-		const result = agentMessages.then(send)
-		agentMessages = result.catch((error) => console.error('[agent] message failed:', error))
+	const assistant = createAttachedAgentStore(getVolume())
+	const agentMessages = new Map<string, Promise<void>>()
+	const serializeAgentMessage = (
+		appId: string | undefined,
+		send: () => void | Promise<void>
+	): Promise<void> => {
+		const key = appId ?? ''
+		const result = (agentMessages.get(key) ?? Promise.resolve()).then(send)
+		agentMessages.set(
+			key,
+			result.catch((error) => console.error('[agent] message failed:', error))
+		)
 		return result
 	}
 
@@ -194,7 +205,11 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 				return new Response('Expected WebSocket upgrade', { status: 426 })
 			},
 			'/agent': (req, server) => {
-				if (server.upgrade(req, { data: { type: 'agent' } })) return undefined
+				if (server.upgrade(req, { data: { type: 'agent', appId: undefined } })) return undefined
+				return new Response('Expected WebSocket upgrade', { status: 426 })
+			},
+			'/agent/:id': (req, server) => {
+				if (server.upgrade(req, { data: { type: 'agent', appId: req.params.id } })) return undefined
 				return new Response('Expected WebSocket upgrade', { status: 426 })
 			},
 			// Catch-all for the hashed Vite assets (/assets/*); specific routes win.
@@ -205,11 +220,12 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 
 			async open(ws) {
 				if (ws.data.type === 'agent') {
+					const appId = ws.data.appId
 					// Subscribe before queuing the snapshot. Session messages use the same
 					// queue, so none can overtake it.
-					ws.subscribe('agent')
-					await serializeAgentMessage(async () => {
-						sendAgent(ws, await agentSnapshot())
+					ws.subscribe(agentTopic(appId))
+					await serializeAgentMessage(appId, async () => {
+						sendAgent(ws, await agentSnapshot(appId))
 					})
 					return
 				}
@@ -218,6 +234,12 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 					// subscribe before refresh publishes the first state frame.
 					sandboxes.retain(ws.data.id)
 					ws.subscribe(`app:${ws.data.id}`)
+					ws.subscribe('assistant')
+					ws.send(
+						JSON.stringify({
+							assistant: await assistant.read()
+						} satisfies AttachedAgentServerMessage)
+					)
 					await refresh.openApp(ws.data.id)
 					return
 				}
@@ -233,35 +255,49 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 			},
 			async message(ws, message) {
 				if (ws.data.type === 'agent') {
+					const appId = ws.data.appId
 					// Admission replies to this socket. Session events publish to every chat.
 					const req = JSON.parse(
 						typeof message === 'string' ? message : message.toString()
 					) as SessionClientMessage
 					if (req.type === 'prompt')
-						await promptAgent(req.text, (result) => {
-							void serializeAgentMessage(() => {
+						await promptAgent(appId, req.text, (result) => {
+							void serializeAgentMessage(appId, () => {
 								sendAgent(ws, result)
 							})
 						})
-					else if (req.type === 'abort') abortAgent()
+					else if (req.type === 'abort') abortAgent(appId)
 					else if (req.type === 'snapshot')
-						await serializeAgentMessage(async () => {
-							sendAgent(ws, await agentSnapshot())
+						await serializeAgentMessage(appId, async () => {
+							sendAgent(ws, await agentSnapshot(appId))
 						})
 					else if (req.type === 'activity_detail')
 						sendAgent(ws, {
 							type: 'activity_detail',
 							requestId: req.requestId,
-							result: await agentActivityDetail(req.detailId)
+							result: await agentActivityDetail(appId, req.detailId)
 						})
 					return
 				}
 				if (ws.data.type === 'app') {
+					const parsed = JSON.parse(typeof message === 'string' ? message : message.toString()) as
+						| AttachedAgentClientMessage
+						| { id: string; type: string; params: unknown }
+					if ('shell' in parsed && parsed.shell === 'attached-agent') {
+						const next = await assistant.change(ws.data.id, parsed.change)
+						server.publish(
+							'assistant',
+							JSON.stringify({ assistant: next } satisfies AttachedAgentServerMessage)
+						)
+						return
+					}
 					// Request/response: dispatch the flat `{id,type,params}` and reply keyed by
 					// `id`. State changes flow back separately as `app:<id>` pushes.
-					const { id, type, params } = JSON.parse(
-						typeof message === 'string' ? message : message.toString()
-					)
+					const { id, type, params } = parsed as {
+						id: string
+						type: string
+						params: unknown
+					}
 					const kernel = await getKernel()
 					try {
 						const value = await kernel.dispatch(ws.data.id, { type, params })
@@ -306,10 +342,10 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 		)
 	)
 
-	// Every agent turn publishes session messages to each subscribed chat.
-	setAgentBroadcast((message) => {
-		void serializeAgentMessage(() => {
-			server.publish('agent', JSON.stringify(message satisfies SessionServerMessage))
+	// Publish each turn only to chats attached to that session.
+	setAgentBroadcast((appId, message) => {
+		void serializeAgentMessage(appId, () => {
+			server.publish(agentTopic(appId), JSON.stringify(message satisfies SessionServerMessage))
 		})
 	})
 

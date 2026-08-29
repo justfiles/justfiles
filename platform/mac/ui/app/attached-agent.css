@@ -1,0 +1,47 @@
+.mac-attached-agent-face {
+	display: block;
+	border-radius: 4px;
+	object-fit: cover;
+}
+
+.mac-attached-chat {
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+	height: 100%;
+	padding-top: 35px;
+}
+
+.mac-attached-chat-history {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+}
+
+.mac-attached-chat-history > p {
+	margin: 0;
+	padding: 24px 16px;
+	opacity: 0.55;
+	text-align: center;
+}
+
+.mac-attached-chat-composer {
+	display: flex;
+	flex: none;
+	gap: 6px;
+	padding: 8px;
+	border-top: 1px solid var(--rule);
+}
+
+.mac-attached-chat-composer textarea {
+	flex: 1;
+	min-width: 0;
+	resize: none;
+}
+
+.mac-attached-chat-composer button {
+	align-self: flex-end;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+}
