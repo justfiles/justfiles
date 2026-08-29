@@ -1,6 +1,5 @@
-// A framework-free GUI: plain DOM through `defineGUI`. The platform ships no
-// framework bytes, so whatever you render with is bundled into your own gui.js —
-// reach for a framework when the UI earns it, not before.
+// A framework-free GUI: plain DOM through `defineGUI`. Packages are bundled into
+// gui.js by default; kernelHost can map browser packages to pinned esm.sh URLs.
 //
 // Build the chrome ONCE in `mount` and mutate it on each state push. Rebuilding
 // the subtree instead would drop focus, caret, and selection; that persistence is

@@ -1,7 +1,6 @@
 // No framework: the GUI is plain DOM through `defineGUI` (see `src/gui.ts`), so
 // there is no UI plugin and no JSX. Bring your own — add the framework and its
-// Vite plugin here and it bundles into `gui.js`; the platform serves no framework
-// bytes either way.
+// Vite plugin here. It bundles into `gui.js` unless kernelHost maps it to esm.sh.
 // biome-ignore lint/correctness/noUnusedImports: The commented template line uses devAi.
 import { devAi, kernelHost } from '@justfiles/app/vite'
 import { defineConfig } from 'vite'

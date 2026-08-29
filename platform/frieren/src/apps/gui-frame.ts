@@ -6,7 +6,7 @@ import macCss from '@justfiles/design/mac.css?inline'
 // to the GUI, and treat all state and capability results as publisher-visible.
 const CSP = [
 	"default-src 'none'",
-	"script-src 'unsafe-inline' blob:",
+	"script-src 'unsafe-inline' blob: https://esm.sh",
 	"style-src 'unsafe-inline'",
 	'img-src data: blob:',
 	'font-src data: https://esm.sh',
