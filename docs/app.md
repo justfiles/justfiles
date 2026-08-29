@@ -8,7 +8,7 @@ description: 'Agent guide for building apps with @justfiles/app.'
 Use this guide when creating or changing an app. The framework is in `packages/app`; apps run in
 Frieren and Just Computer for Mac. The best examples are:
 
-- `packages/create-app/template` — minimum app, framework-free GUI
+- `packages/create-app/templates` — vanilla and React starter apps
 - `apps/pixel` — rich public action surface
 - `apps/crossword` — AI procedure committing one atomic result
 - [`justfiles/app-files`](https://github.com/justfiles/app-files) — recursive file watching and command coalescing
@@ -48,13 +48,14 @@ Create new apps from the repository template:
 
 ```sh
 node packages/create-app/index.js apps/<name>
+node packages/create-app/index.js apps/<name> --template react
 ```
 
-Read the generated files, then use existing apps for the nearest advanced pattern.
+The default `vanilla` template uses `defineGUI`. Pass `--template react` for a `.tsx` GUI built with
+`defineReactGUI`. Read the generated files, then use existing apps for the nearest advanced pattern.
 A normal package has no dependency allowlist: add npm or workspace dependencies with `pnpm`. Reducer
 dependencies must work in a headless worker and GUI dependencies in a browser. Vite bundles them into
-the app artifact. The generated GUI is framework-free (plain DOM through `defineGUI`); bring a
-framework by adding it and its Vite plugin. By default, whatever you bring is bundled into `gui.js`.
+the app artifact. By default, GUI packages are bundled into `gui.js`.
 
 ```text
 apps/foo/

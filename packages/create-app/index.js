@@ -5,17 +5,33 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const args = process.argv.slice(2)
-const force = args.includes('--force')
-const help = args.includes('--help') || args.includes('-h')
-const targetArg = args.find((arg) => !arg.startsWith('-')) ?? 'justfiles-app'
+let force = false
+let help = false
+let targetArg
+let template = 'vanilla'
+
+for (let i = 0; i < args.length; i++) {
+	const arg = args[i]
+	if (arg === '--force') force = true
+	else if (arg === '--help' || arg === '-h') help = true
+	else if (arg === '--template') template = args[++i]
+	else if (arg.startsWith('--template=')) template = arg.slice('--template='.length)
+	else if (arg.startsWith('-')) exit(`Unknown option: ${arg}`)
+	else if (targetArg) exit(`Unexpected argument: ${arg}`)
+	else targetArg = arg
+}
 
 if (help) {
-	console.log('Usage: create-app [directory] [--force]')
+	console.log('Usage: create-app [directory] [--template vanilla|react] [--force]')
 	process.exit(0)
 }
 
-const templateDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'template')
-const targetDir = path.resolve(process.cwd(), targetArg)
+if (template !== 'vanilla' && template !== 'react') {
+	exit(`Unknown template: ${template ?? '(missing)'}. Choose vanilla or react.`)
+}
+
+const templateDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates', template)
+const targetDir = path.resolve(process.cwd(), targetArg ?? 'justfiles-app')
 
 if (fs.existsSync(targetDir) && !isEmpty(targetDir)) {
 	if (!force) {
@@ -90,4 +106,9 @@ function packageManager() {
 function runCommand(pm, script) {
 	if (pm === 'npm') return `npm run ${script}`
 	return `${pm} ${script}`
+}
+
+function exit(message) {
+	console.error(message)
+	process.exit(1)
 }

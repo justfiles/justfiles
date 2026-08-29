@@ -1,0 +1,33 @@
+{
+	"name": "justfiles-app",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "./dist/manifest.json",
+	"keywords": [
+		"justcomputer-app"
+	],
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"typecheck": "tsc --noEmit",
+		"preview": "vite preview",
+		"prepublishOnly": "pnpm build"
+	},
+	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"react": "^19",
+		"react-dom": "^19",
+		"valibot": "^1.1.0"
+	},
+	"devDependencies": {
+		"@justfiles/tsconfig": "workspace:*",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"@vitejs/plugin-react": "^6",
+		"typescript": "catalog:",
+		"vite": "^8.0.12"
+	}
+}
