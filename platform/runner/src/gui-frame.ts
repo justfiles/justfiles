@@ -6,7 +6,7 @@ import { guiFrameScript } from '@justfiles/app/iframe'
 export const guestCsp = (release: string) =>
 	[
 		"default-src 'none'",
-		`script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: ${release}`,
+		`script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: ${release} https://esm.sh`,
 		"style-src 'unsafe-inline'",
 		`img-src data: blob: ${release}`,
 		`font-src data: ${release}`,

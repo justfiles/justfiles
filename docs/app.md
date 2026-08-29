@@ -54,8 +54,7 @@ Read the generated files, then use existing apps for the nearest advanced patter
 A normal package has no dependency allowlist: add npm or workspace dependencies with `pnpm`. Reducer
 dependencies must work in a headless worker and GUI dependencies in a browser. Vite bundles them into
 the app artifact. The generated GUI is framework-free (plain DOM through `defineGUI`); bring a
-framework by adding it and its Vite plugin. Whatever you bring is bundled into `gui.js` — the host
-serves no framework bytes, so an app runs on any host and pays only for what it uses.
+framework by adding it and its Vite plugin. By default, whatever you bring is bundled into `gui.js`.
 
 ```text
 apps/foo/
@@ -95,8 +94,27 @@ A React GUI adds `react()` from `@vitejs/plugin-react`, `resolve: { dedupe: ['re
 'react-dom'] }`, and a `.tsx` `gui` entry — see
 [`justfiles/app-settings`](https://github.com/justfiles/app-settings).
 
-`kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
-host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to
+To load a browser dependency from esm.sh instead, declare each bare import in `kernelHost`:
+
+```ts
+kernelHost({
+	// ...
+	imports: {
+		react: 'https://esm.sh/react@19.2.8',
+		'react/jsx-runtime': 'https://esm.sh/react@19.2.8/jsx-runtime',
+		'react-dom/client':
+			'https://esm.sh/react-dom@19.2.8/client?deps=react@19.2.8'
+	}
+})
+```
+
+The production build leaves those packages out of `gui.js` and writes their URLs into its ESM
+imports. Local development still uses the installed packages through Vite. Each URL must use an
+exact version on `https://esm.sh`, and each imported subpath needs its own entry. A mapped app needs
+network access the first time the browser loads those modules.
+
+`kernelHost({ id, name, app, gui, description?, version?, icon?, include?, imports? })` runs a local
+development host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to
 `package.json#version`. `include` is only for extra bundle files needed by a host; prefer a
 self-contained `gui.js`.
 
@@ -112,9 +130,8 @@ It tries `pi`, Claude Code, Codex, Ollama, and LM Studio in that order. You can 
 `claude-cli`, `codex-cli`, an OpenAI-compatible base URL, or a `GenerateText` function. The Codex
 backend runs the full agent and can use about 9,400 tokens for a short request.
 
-The host imports `gui.js` as one blob module. Avoid emitted chunks and URL-loaded assets in portable
-apps: inline dynamic imports and import small assets so the GUI bundle is self-contained. The icon is
-the supported separate launcher asset.
+The host imports `gui.js` as one blob module. Avoid emitted chunks and undeclared URL-loaded assets:
+inline dynamic imports and import small assets. The icon is the supported separate launcher asset.
 
 ### Install storage is a host concern
 
@@ -830,7 +847,7 @@ type Diagnostic = {
 - Async work lives in procedures; capability effects from edges use commands.
 - Every used capability is declared and its host availability is handled.
 - High-frequency interaction and large payloads stay out of reducer state.
-- GUI code is self-contained and does not depend on direct network or host access.
+- GUI code has no direct host access. Only declared browser imports may need the network.
 - App Code drafts use platform imports and declared pinned esm.sh imports. Normal packages may use
   pnpm dependencies.
 - Package changes pass `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test`.

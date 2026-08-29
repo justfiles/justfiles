@@ -5,6 +5,7 @@ import type { Plugin, PluginOption } from 'vite'
 import { build, createRunnableDevEnvironment } from 'vite'
 import type { AppManifest } from './app.ts'
 import type { AiBackend } from './capabilities/ai/dev.ts'
+import { validateImportMap } from './capabilities/devkit/imports.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
 import { localStore } from './vite.local-store.ts'
 
@@ -146,6 +147,7 @@ if (import.meta.hot) {
 
 export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
+	const imports = validateImportMap(opts.imports, 'kernelHost()')
 	const appEntry = resolve(root, opts.app)
 	const guiEntry = resolve(root, opts.gui)
 	const guiPath = relative(root, guiEntry).split('\\').join('/')
@@ -181,24 +183,25 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				}
 				return {
 					base: './',
-					// The framework, if the GUI uses one, ships INSIDE the artifact, so the
-					// artifact decides which build of it ships. Much of npm picks its dev/prod
-					// branch off `process.env.NODE_ENV` at require time, and a dev build is
-					// bytes for warnings no end user reads.
+					// Bundled packages often pick a dev or production branch from NODE_ENV.
+					// Do not ship their development checks and warnings in gui.js.
 					define: { 'process.env.NODE_ENV': JSON.stringify('production') },
 					build: {
 						outDir: 'dist',
 						emptyOutDir: true,
 						// Library mode: preserve the entry's `export { gui }` (an app
 						// build tree-shakes it away — the sdk is sideEffects:false).
-						// Nothing is external: the SDK and whatever framework the GUI uses are
-						// both inlined into gui.js, matching app.js. Hosts serve no framework
-						// bytes, so an app that ships React or plain DOM pays only for itself.
+						// The SDK and unmapped packages stay in gui.js. Mapped browser packages
+						// remain ESM imports whose specifiers Rollup rewrites to pinned URLs.
 						lib: {
 							entry: guiEntry,
 							formats: ['es'],
 							fileName: () => 'gui.js'
-						}
+						},
+						rollupOptions:
+							Object.keys(imports).length > 0
+								? { external: Object.keys(imports), output: { paths: imports } }
+								: undefined
 					}
 				}
 			},

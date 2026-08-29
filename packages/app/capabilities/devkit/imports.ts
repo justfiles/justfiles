@@ -57,19 +57,19 @@ const LIMITS: ImportLimits = {
 }
 const encoder = new TextEncoder()
 
-export function validateImportMap(value: unknown): ImportMap {
+export function validateImportMap(value: unknown, owner = 'project.json'): ImportMap {
 	if (value === undefined) return {}
-	if (!isRecord(value)) throw new Error('project.json "imports" must be an object')
+	if (!isRecord(value)) throw new Error(`${owner} "imports" must be an object`)
 	const imports: ImportMap = {}
 	for (const [specifier, source] of Object.entries(value)) {
 		if (!isBareSpecifier(specifier)) {
-			throw new Error(`project.json import key must be a bare specifier: ${specifier}`)
+			throw new Error(`${owner} import key must be a bare specifier: ${specifier}`)
 		}
 		if (isSdkSpecifier(specifier)) {
-			throw new Error(`project.json cannot replace platform import: ${specifier}`)
+			throw new Error(`${owner} cannot replace platform import: ${specifier}`)
 		}
 		if (typeof source !== 'string' || !isPinnedEsmUrl(source)) {
-			throw new Error(`project.json import must use a pinned https://esm.sh URL: ${specifier}`)
+			throw new Error(`${owner} import must use a pinned https://esm.sh URL: ${specifier}`)
 		}
 		imports[specifier] = source
 	}

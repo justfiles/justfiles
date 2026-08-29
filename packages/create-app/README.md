@@ -4,7 +4,7 @@ Minimal create package for `@justfiles/app`.
 
 It generates a headless `src/app.ts`, a framework-free `src/gui.ts` (plain DOM through `defineGUI`), and `vite.config.ts`. Builds emit `dist/manifest.json`, `dist/app.js`, `dist/gui.js`, and copied public assets.
 
-The platform serves no framework bytes, so a framework is yours to bring: add it plus its Vite plugin to the generated project and it bundles into `gui.js`. React is a special case today — `kernelHost()` still externalizes it and wraps a default-exported component from a `.tsx` GUI entry, so a React GUI only runs on a host that vendors React.
+A framework is yours to bring. Add it and its Vite plugin to bundle it into `gui.js`, or declare exact-version esm.sh URLs with `kernelHost({ imports })` to load browser packages at runtime.
 
 ```sh
 npm create @justfiles/app my-app

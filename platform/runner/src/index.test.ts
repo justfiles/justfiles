@@ -236,7 +236,7 @@ test('the app GUI handles submit events but blocks native form requests', async 
 	expect(guestCsp).toContain("default-src 'none'")
 	expect(guestCsp).toContain('connect-src https://alice-notes.example.com/v/')
 	expect(guestCsp).toContain(
-		"script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: https://alice-notes.example.com/v/"
+		"script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: https://alice-notes.example.com/v/ https://esm.sh"
 	)
 	expect(guestCsp).not.toContain('https://example.com/v/')
 	expect(guestCsp).toContain("form-action 'none'")

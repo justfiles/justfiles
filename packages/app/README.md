@@ -101,7 +101,7 @@ export default defineConfig({
 })
 ```
 
-Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Nothing is external — the SDK, and whatever UI framework the GUI uses, are bundled into `app.js`/`gui.js`. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
+Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. The SDK and GUI dependencies are bundled by default. `kernelHost({ imports })` can map browser-only packages to exact-version `https://esm.sh` URLs; the build leaves those packages out of `gui.js`. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
 
 `pnpm build --watch` also serves the built app at `http://localhost:4173/store.json`. The URL uses
 the same store and manifest format as JustApps, so a local Frieren host can install each rebuild.
@@ -136,19 +136,16 @@ GUI code as disclosed to the publisher.
 
 ## App-authoring discipline
 
-### Self-contained artifacts
+### GUI dependencies
 
-`kernelHost` externalises nothing. A GUI carries its own framework — one
-copy of React, or Svelte, or no framework at all — and a host serves no
-framework bytes at all, only the platform stylesheet it injects into the
-frame. So an app pays for exactly what it uses, and the platform is not
-betting on one framework.
+`kernelHost` bundles GUI dependencies unless the app maps them with `imports`.
+A mapped dependency loads from its pinned esm.sh URL at runtime and is not part
+of `gui.js`. This keeps common frameworks out of each app artifact, but the app
+needs network access on its first load.
 
-Whatever the GUI uses must resolve to a SINGLE copy inside `gui.js`;
-two Reacts in one bundle is the classic "Invalid hook call". That is your
-app's business, not the platform's: set `resolve.dedupe` in your own Vite
-config (the in-repo React apps do), and watch for a dependency that pulls
-its own major version.
+Whatever the GUI uses must resolve to one React instance. For a bundled GUI,
+set `resolve.dedupe` in the app's Vite config. For a mapped GUI, pin React,
+its JSX runtime, and React DOM to the same version.
 
 In standalone dev (`pnpm dev`), the GUI is served as ordinary Vite
 browser modules — Vite owns the transform, HMR, source maps, and CSS, and

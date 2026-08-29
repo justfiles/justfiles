@@ -30,6 +30,41 @@ test('dev scans the GUI hidden behind the generated page', async () => {
 	expect(config.optimizeDeps.entries).toEqual(['src/gui.tsx'])
 })
 
+test('build maps declared browser imports to pinned URLs', async () => {
+	const imports = {
+		react: 'https://esm.sh/react@19.2.8',
+		'react/jsx-runtime': 'https://esm.sh/react@19.2.8/jsx-runtime'
+	}
+	const config = await resolveConfig(
+		{
+			configFile: false,
+			plugins: kernelHost({
+				id: 'app.test',
+				name: 'Test',
+				app: 'src/app.ts',
+				gui: 'src/gui.tsx',
+				imports
+			})
+		},
+		'build'
+	)
+
+	expect(config.build.rollupOptions.external).toEqual(Object.keys(imports))
+	expect(config.build.rollupOptions.output).toMatchObject({ paths: imports })
+})
+
+test('kernelHost rejects unpinned browser imports', () => {
+	expect(() =>
+		kernelHost({
+			id: 'app.test',
+			name: 'Test',
+			app: 'src/app.ts',
+			gui: 'src/gui.tsx',
+			imports: { react: 'https://esm.sh/react' }
+		})
+	).toThrow('kernelHost() import must use a pinned https://esm.sh URL: react')
+})
+
 test('dev closes its host through the Vite lifecycle', async () => {
 	const close = vi.fn()
 	const middleware = Object.assign(vi.fn(), { close })
