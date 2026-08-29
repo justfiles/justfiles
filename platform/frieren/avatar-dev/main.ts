@@ -1,5 +1,5 @@
 import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
-import type { CanvasFrame } from '../src/agent/CanvasAvatar'
+import type { CanvasFrame } from '@justfiles/avatar'
 import { drawGameboy } from '../src/agent/skins/gameboy'
 import './style.css'
 

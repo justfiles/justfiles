@@ -216,6 +216,7 @@
 		transform 220ms ease;
 }
 .frn-agent-avatar[data-renderer="image"] {
+	overflow: hidden;
 	border: 2px solid var(--focus);
 	border-radius: 50%;
 	object-fit: cover;

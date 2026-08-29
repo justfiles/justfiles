@@ -1,3 +1,4 @@
+import { imageRenderer } from '@justfiles/avatar'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
@@ -14,9 +15,12 @@ test('renders the selected avatar renderer', () => {
 	const image = renderToStaticMarkup(
 		createElement(AgentAvatar, {
 			appearance: {
-				renderer: 'image',
-				url: 'resting.png',
-				faces: { pleased: 'pleased.png' }
+				renderer: imageRenderer,
+				skin: {
+					id: 'portrait',
+					src: 'resting.png',
+					faces: { pleased: 'pleased.png' }
+				}
 			},
 			...common
 		})
@@ -25,8 +29,8 @@ test('renders the selected avatar renderer', () => {
 		createElement(AgentAvatar, { appearance: GAMEBOY_AVATAR, ...common })
 	)
 
-	expect(image).toContain('src="pleased.png"')
+	expect(image).toContain('data-skin="portrait"')
 	expect(image).toContain('data-renderer="image"')
-	expect(canvas).toContain('<canvas')
+	expect(canvas).toContain('<span')
 	expect(canvas).toContain('data-skin="gameboy"')
 })

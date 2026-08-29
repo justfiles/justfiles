@@ -1,8 +1,7 @@
 import type { Expression } from '@justfiles/agent/expression'
+import { Avatar } from '@justfiles/avatar/react'
 import { useEffect, useState } from 'react'
 import type { AvatarAppearance } from './avatarAppearance'
-import { CanvasAvatar } from './CanvasAvatar'
-import { ImageAvatar } from './ImageAvatar'
 
 // After the reply lands, the face drifts back to rest. The delay is a READING window, not an
 // animation beat: the expression belongs to the sentence the user is still reading, so it has
@@ -36,11 +35,15 @@ export function AgentAvatar({
 	className
 }: AgentAvatarProps) {
 	const shown = useRestingExpression(expression, streaming)
-	const props = { expression: shown, personalized, size, className }
-	return appearance.renderer === 'image' ? (
-		<ImageAvatar appearance={appearance} {...props} />
-	) : (
-		<CanvasAvatar appearance={appearance} {...props} />
+	return (
+		<Avatar
+			avatar={appearance}
+			expression={shown}
+			className={className ? `frn-agent-avatar ${className}` : 'frn-agent-avatar'}
+			data-personalized={personalized}
+			style={{ width: size, height: size }}
+			title={shown ?? undefined}
+		/>
 	)
 }
 

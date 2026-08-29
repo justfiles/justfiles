@@ -1,17 +1,5 @@
-import type { Expression } from '@justfiles/agent/expression'
+import { type Avatar, type CanvasSkin, gameboyAvatar, type ImageSkin } from '@justfiles/avatar'
 
-export type AvatarAppearance =
-	| {
-			renderer: 'image'
-			url: string
-			faces: Partial<Record<Expression, string>>
-	  }
-	| {
-			renderer: 'canvas'
-			skin: 'gameboy'
-	  }
+export type AvatarAppearance = Avatar<ImageSkin> | Avatar<CanvasSkin>
 
-export const GAMEBOY_AVATAR = {
-	renderer: 'canvas',
-	skin: 'gameboy'
-} as const satisfies AvatarAppearance
+export const GAMEBOY_AVATAR = gameboyAvatar satisfies AvatarAppearance
