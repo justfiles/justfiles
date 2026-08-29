@@ -61,8 +61,8 @@ interface Message {
 	status?: { state: string }
 	message?: string
 	error?: { message: string }
+	notice?: { body: string; route?: { kind: string; id?: string } }
 	assistant?: {
-		mode: 'sheet' | 'sidebar'
 		size: { sheet: number; sidebar: number }
 		open: Record<string, true>
 	}
@@ -209,9 +209,13 @@ test('/agent sends a snapshot, then publishes items and status', async () => {
 test('keyed agent sockets publish only their app session', async () => {
 	const files = await connect(`/agent/${FILES}`)
 	const dictionary = await connect('/agent/justfiles.dictionary')
+	const appWindow = await connect(`/app/${FILES}/connect`)
+	const system = await connect('/system')
 	await Promise.all([
 		files.waitFor((message) => message.type === 'snapshot'),
-		dictionary.waitFor((message) => message.type === 'snapshot')
+		dictionary.waitFor((message) => message.type === 'snapshot'),
+		appWindow.waitFor((message) => message.assistant !== undefined),
+		system.waitFor((message) => message.type === 'commands')
 	])
 
 	files.send({ type: 'prompt', text: 'what app is this?' })
@@ -221,10 +225,15 @@ test('keyed agent sockets publish only their app session', async () => {
 	await files.waitFor(
 		(message) => message.type === 'status' && message.status?.state === 'idle' && !!message.error
 	)
+	const notice = await appWindow.waitFor((message) => message.notice !== undefined)
 
 	expect(dictionary.messages().map((message) => message.type)).toEqual(['snapshot'])
+	expect(notice.notice?.route).toEqual({ kind: 'app', id: FILES })
+	expect(system.messages().some((message) => message.type === 'notification')).toBe(false)
 	files.close()
 	dictionary.close()
+	appWindow.close()
+	system.close()
 })
 
 test('an app named main does not share the main agent topic', async () => {
@@ -261,7 +270,6 @@ test('/app socket pushes initial state and round-trips a dispatch', async () => 
 	const client = await connect(`/app/${FILES}/connect`)
 	const assistant = await client.waitFor((message) => message.assistant !== undefined)
 	expect(assistant.assistant).toEqual({
-		mode: 'sheet',
 		size: { sheet: 280, sidebar: 300 },
 		open: {}
 	})
@@ -283,11 +291,10 @@ test('/app socket persists attached-agent state and restores only saved sidebars
 	await client.waitFor((message) => message.assistant !== undefined)
 	client.send({
 		shell: 'attached-agent',
-		change: { mode: 'sidebar', size: { sheet: 260, sidebar: 360 }, open: true }
+		change: { size: { sheet: 260, sidebar: 360 }, open: true }
 	})
 	const changed = await client.waitFor((message) => message.assistant?.open[FILES] === true)
 	expect(changed.assistant).toEqual({
-		mode: 'sidebar',
 		size: { sheet: 260, sidebar: 360 },
 		open: { [FILES]: true }
 	})
@@ -297,9 +304,9 @@ test('/app socket persists attached-agent state and restores only saved sidebars
 	expect((await restored.waitFor((message) => message.assistant !== undefined)).assistant).toEqual(
 		changed.assistant
 	)
-	restored.send({ shell: 'attached-agent', change: { mode: 'sheet', open: false } })
+	restored.send({ shell: 'attached-agent', change: { open: false } })
 	const sheet = await restored.waitFor(
-		(message) => message.assistant?.mode === 'sheet' && !message.assistant.open[FILES]
+		(message) => message.assistant !== undefined && !message.assistant.open[FILES]
 	)
 	expect(sheet.assistant?.open).toEqual({})
 	restored.close()

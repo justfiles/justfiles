@@ -3,6 +3,7 @@
 // working. The session / connection types below stay host-specific.
 import type { Expression } from '@justfiles/agent/expression'
 import type { ActivityDetailResult } from '@justfiles/agent/protocol'
+import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptRow } from '@justfiles/ui/Transcript'
 
 export type { AgentMessage, ToolCallInfo, TranscriptRow } from '@justfiles/ui/Transcript'
@@ -24,6 +25,8 @@ export interface AgentSession {
 	refreshIdentity: () => Promise<void>
 	isStreaming: boolean
 	isLoadingHistory: boolean
+	notice: Notification | null
+	clearNotice: () => void
 	loadActivityDetail: (detailId: string) => Promise<ActivityDetailResult>
 	sendMessage: () => void
 	abort: () => void

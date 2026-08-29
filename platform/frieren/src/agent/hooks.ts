@@ -53,6 +53,8 @@ export function useAgentSession(agentId?: string): AgentSession {
 		refreshIdentity,
 		isStreaming: snapshot.isStreaming,
 		isLoadingHistory: snapshot.isLoadingHistory,
+		notice: snapshot.notice,
+		clearNotice: agent.clearNotice,
 		loadActivityDetail: agent.loadActivityDetail,
 		sendMessage: () => {
 			const text = input.trim()

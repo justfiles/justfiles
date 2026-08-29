@@ -7,7 +7,7 @@ import {
 	useRef,
 	useState
 } from 'react'
-import { clampPanelSize, effectiveMode, type Mode } from './attached-agent-layout.ts'
+import { chooseMode, clampPanelSize, effectiveMode, type Mode } from './attached-agent-layout.ts'
 
 export type AttachedAgentMode = Mode
 
@@ -21,10 +21,10 @@ export interface AttachedAgentConfig {
 	open: boolean
 	size: AttachedAgentSize
 	footer: ReactNode
+	notice?: string
 	panel: ReactNode
 	onModeChange: (mode: AttachedAgentMode) => void
-	onEffectiveModeChange?: (mode: AttachedAgentMode) => void
-	onOpenChange: (open: boolean) => void
+	onOpenChange: (open: boolean, mode: AttachedAgentMode) => void
 	onSizeChange: (size: AttachedAgentSize) => void
 }
 
@@ -44,16 +44,14 @@ export function AttachedAgent({
 	} | null>(null)
 	const [bounds, setBounds] = useState({
 		width: Number.POSITIVE_INFINITY,
-		height: 0,
-		measured: false
+		height: 0
 	})
 	const configured = agent !== undefined
 
 	useLayoutEffect(() => {
 		if (!configured || !rootRef.current) return
 		const root = rootRef.current
-		const read = () =>
-			setBounds({ width: root.clientWidth, height: root.clientHeight, measured: true })
+		const read = () => setBounds({ width: root.clientWidth, height: root.clientHeight })
 		read()
 		const observer = new ResizeObserver(read)
 		observer.observe(root)
@@ -61,10 +59,6 @@ export function AttachedAgent({
 	}, [configured])
 
 	const mode = agent ? effectiveMode(agent.mode, bounds.width, agent.size.sidebar) : 'sheet'
-	const onEffectiveModeChange = agent?.onEffectiveModeChange
-	useLayoutEffect(() => {
-		if (bounds.measured) onEffectiveModeChange?.(mode)
-	}, [bounds.measured, mode, onEffectiveModeChange])
 
 	if (!agent)
 		return (
@@ -75,8 +69,10 @@ export function AttachedAgent({
 
 	const extent = mode === 'sheet' ? bounds.height : bounds.width
 	const size = clampPanelSize(mode, agent.size[mode], extent)
-	const sidebarAvailable = effectiveMode('sidebar', bounds.width, agent.size.sidebar) === 'sidebar'
+	const openMode = chooseMode(bounds.width, agent.size.sidebar)
+	const sidebarAvailable = openMode === 'sidebar'
 	const panelStyle = { '--ds-attached-agent-size': `${size}px` } as CSSProperties
+	const setOpen = (open: boolean) => agent.onOpenChange(open, open ? openMode : mode)
 
 	const resize = (next: number, resizeMode: AttachedAgentMode) => {
 		const nextExtent = resizeMode === 'sheet' ? bounds.height : bounds.width
@@ -108,7 +104,8 @@ export function AttachedAgent({
 		event.preventDefault()
 		resize(size + (grows ? 1 : -1) * (event.shiftKey ? 40 : 16), mode)
 	}
-	const chevron = mode === 'sheet' ? (agent.open ? '⌄' : '⌃') : agent.open ? '‹' : '›'
+	const buttonMode = agent.open ? mode : openMode
+	const chevron = buttonMode === 'sheet' ? (agent.open ? '⌄' : '⌃') : agent.open ? '‹' : '›'
 
 	return (
 		<div
@@ -120,7 +117,7 @@ export function AttachedAgent({
 			onKeyDownCapture={(event) => {
 				if (event.key === 'Escape' && agent.open && mode === 'sheet') {
 					event.preventDefault()
-					agent.onOpenChange(false)
+					setOpen(false)
 				}
 			}}
 		>
@@ -130,7 +127,7 @@ export function AttachedAgent({
 					type="button"
 					className="ds-attached-agent-scrim"
 					aria-label="Close agent"
-					onClick={() => agent.onOpenChange(false)}
+					onClick={() => setOpen(false)}
 				/>
 				<hr
 					className="ds-attached-agent-seam"
@@ -147,7 +144,7 @@ export function AttachedAgent({
 				<section
 					className="ds-attached-agent-panel"
 					aria-label="Agent conversation"
-					aria-hidden={!agent.open}
+					inert={!agent.open}
 				>
 					<header className="ds-attached-agent-panel-controls">
 						<button
@@ -162,7 +159,7 @@ export function AttachedAgent({
 							type="button"
 							aria-label="Close agent"
 							title="Close agent"
-							onClick={() => agent.onOpenChange(false)}
+							onClick={() => setOpen(false)}
 						>
 							×
 						</button>
@@ -172,14 +169,24 @@ export function AttachedAgent({
 			</div>
 			<footer className="ds-window-footer">
 				<span className="ds-window-footer-leading" />
+				{!agent.open && agent.notice ? (
+					<button
+						type="button"
+						className="ds-attached-agent-notice"
+						title={agent.notice}
+						onClick={() => setOpen(true)}
+					>
+						{agent.notice}
+					</button>
+				) : null}
 				<button
 					type="button"
 					className="ds-attached-agent-toggle"
 					data-open={agent.open}
 					aria-expanded={agent.open}
-					aria-label={agent.open ? 'Close agent' : `Open agent ${mode}`}
-					title={agent.open ? 'Close agent' : `Open agent ${mode}`}
-					onClick={() => agent.onOpenChange(!agent.open)}
+					aria-label={agent.open ? 'Close agent' : `Open agent ${buttonMode}`}
+					title={agent.open ? 'Close agent' : `Open agent ${buttonMode}`}
+					onClick={() => setOpen(!agent.open)}
 				>
 					{agent.footer}
 					<span className="ds-attached-agent-chevron" aria-hidden="true">

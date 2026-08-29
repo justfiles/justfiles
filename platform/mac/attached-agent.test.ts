@@ -15,7 +15,6 @@ describe('attached agent state', () => {
 				open: { notes: true, files: false }
 			})
 		).toEqual({
-			mode: 'sidebar',
 			size: { sheet: 280, sidebar: 360 },
 			open: { notes: true }
 		})
@@ -23,14 +22,12 @@ describe('attached agent state', () => {
 
 	test('updates one app without dropping another open sidebar', () => {
 		const open = changeAttachedAgentState(initialAttachedAgentState, 'notes', {
-			mode: 'sidebar',
 			size: { sheet: 260, sidebar: 340 },
 			open: true
 		})
 		const both = changeAttachedAgentState(open, 'files', { open: true })
 
 		expect(changeAttachedAgentState(both, 'notes', { open: false })).toEqual({
-			mode: 'sidebar',
 			size: { sheet: 260, sidebar: 340 },
 			open: { files: true }
 		})

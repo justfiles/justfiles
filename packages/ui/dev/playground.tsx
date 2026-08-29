@@ -172,7 +172,10 @@ function App() {
 								footer: <span className="demo-face">•‿•</span>,
 								panel: <FakePanel />,
 								onModeChange: setMode,
-								onOpenChange: setOpen,
+								onOpenChange: (open, nextMode) => {
+									if (open) setMode(nextMode)
+									setOpen(open)
+								},
 								onSizeChange: setSize
 							}}
 						>

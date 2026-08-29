@@ -1,7 +1,6 @@
 # App-attached agents
 
-> Status: **Phases 1-6 implemented; adaptive placement, local notifications and
-> parity are next.** The shared browser
+> Status: **Phases 1-7 implemented.** The shared browser
 > component lives in `packages/ui`, the keyed session manager lives in
 > `packages/agent`, and both hosts attach keyed conversations to app windows.
 >
@@ -479,6 +478,9 @@ threads, mode switching preserves panel state, and restarting an app restores
 only its sidebar. Daemon protocol tests and a shipped mac build must pass.
 
 ### Phase 7: adaptive placement, local notifications and parity
+
+Parity results and the expected host-only prompt differences are recorded in
+[`PARITY.md`](./PARITY.md).
 
 - Remove the stored mode preference introduced while connecting the two hosts.
   On every explicit open, choose sheet or sidebar from the current app viewport.

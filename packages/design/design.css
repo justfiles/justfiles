@@ -419,6 +419,7 @@
 }
 
 .ds-attached-agent-toggle,
+.ds-attached-agent-notice,
 .ds-attached-agent-panel-controls button {
 	display: inline-flex;
 	align-items: center;
@@ -429,6 +430,18 @@
 	font: inherit;
 }
 
+.ds-attached-agent-notice {
+	max-width: min(260px, 55%);
+	margin-right: 3px;
+	padding: 1px 5px;
+	overflow: hidden;
+	border-radius: 4px;
+	font-size: 11px;
+	opacity: 0.7;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .ds-attached-agent-toggle {
 	gap: 3px;
 	height: 20px;
@@ -437,6 +450,7 @@
 }
 
 .ds-attached-agent-toggle:hover,
+.ds-attached-agent-notice:hover,
 .ds-attached-agent-panel-controls button:hover:not(:disabled) {
 	background: color-mix(in srgb, var(--text) 7%, transparent);
 }

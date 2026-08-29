@@ -1,6 +1,7 @@
 import '@justfiles/design/design.css'
 import '@justfiles/design/mac.css'
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
+import type { Notification } from '@justfiles/app/capabilities/notify'
 import { AttachedAgent, type AttachedAgentMode } from '@justfiles/ui/AttachedAgent'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -36,6 +37,7 @@ function connect(appId: string) {
 	let seq = 0
 	let onState: ((state: unknown) => void) | undefined
 	let onAssistant: ((state: AttachedAgentState) => void) | undefined
+	let onNotice: ((notice: Notification) => void) | undefined
 	let last: unknown
 	let got = false
 	let lastAssistant = initialAttachedAgentState
@@ -49,12 +51,16 @@ function connect(appId: string) {
 	ws.onmessage = (e) => {
 		const msg = JSON.parse(String(e.data)) as Record<string, unknown>
 		if ('assistant' in msg) {
-			lastAssistant = (msg as AttachedAgentServerMessage).assistant
+			lastAssistant = (msg as Extract<AttachedAgentServerMessage, { assistant: unknown }>).assistant
 			if (!gotAssistant) {
 				gotAssistant = true
 				resolveAssistant(lastAssistant)
 			}
 			onAssistant?.(lastAssistant)
+			return
+		}
+		if ('notice' in msg) {
+			onNotice?.((msg as Extract<AttachedAgentServerMessage, { notice: unknown }>).notice)
 			return
 		}
 		if (msg.reload === true) {
@@ -107,6 +113,12 @@ function connect(appId: string) {
 				if (onAssistant === cb) onAssistant = undefined
 			}
 		},
+		subscribeNotice(cb: (notice: Notification) => void) {
+			onNotice = cb
+			return () => {
+				if (onNotice === cb) onNotice = undefined
+			}
+		},
 		changeAssistant(change: AttachedAgentChange) {
 			ws.send(
 				JSON.stringify({ shell: 'attached-agent', change } satisfies AttachedAgentClientMessage)
@@ -139,39 +151,32 @@ function AppRoot() {
 function AppHost() {
 	const [assistant, setAssistant] = useState(savedAssistant)
 	const [sheetOpen, setSheetOpen] = useState(false)
-	const [panelMode, setPanelMode] = useState<AttachedAgentMode>('sheet')
-	const [sidebarReady, setSidebarReady] = useState(false)
+	const restored = Boolean(savedAssistant.open[appId])
+	const [panelMode, setPanelMode] = useState<AttachedAgentMode>(restored ? 'sidebar' : 'sheet')
 	const [streaming, setStreaming] = useState(false)
+	const [notice, setNotice] = useState<Notification | null>(null)
 
 	useEffect(() => connection.subscribeAssistant(setAssistant), [])
+	useEffect(() => connection.subscribeNotice(setNotice), [])
 
 	const save = useCallback((change: AttachedAgentChange) => {
 		setAssistant((state) => changeAttachedAgentState(state, appId, change))
 		connection.changeAssistant(change)
 	}, [])
-	const sidebarOpen = Boolean(assistant.open[appId])
-	const requestedOpen =
-		panelMode === 'sidebar' ? sidebarOpen : sheetOpen || (sidebarReady && sidebarOpen)
-	const open = requestedOpen || streaming
-	const trackMode = useCallback(
-		(mode: AttachedAgentMode) => {
-			setPanelMode(mode)
-			if (mode !== 'sidebar') return
-			setSidebarReady(true)
-			if (sheetOpen) {
-				setSheetOpen(false)
-				save({ open: true })
-			}
-		},
-		[save, sheetOpen]
-	)
+	const savedSidebarOpen = Boolean(assistant.open[appId])
+	const open = savedSidebarOpen || sheetOpen || streaming
+
+	useEffect(() => {
+		if (open && notice) setNotice(null)
+	}, [notice, open])
 
 	return (
 		<AttachedAgent
 			agent={{
-				mode: assistant.mode,
+				mode: panelMode,
 				open,
 				size: assistant.size,
+				notice: notice?.body,
 				footer: (
 					<img
 						className="mac-attached-agent-face"
@@ -186,19 +191,21 @@ function AppHost() {
 					setPanelMode(mode)
 					if (mode === 'sheet') {
 						setSheetOpen(open)
-						save({ mode, open: false })
+						save({ open: false })
 					} else {
 						setSheetOpen(false)
-						save({ mode, open })
+						save({ open })
 					}
 				},
-				onEffectiveModeChange: trackMode,
-				onOpenChange: (next) => {
+				onOpenChange: (next, mode) => {
 					if (!next && streaming) return
-					if (panelMode === 'sidebar') save({ open: next })
-					else {
-						setSheetOpen(next)
-						if (sidebarReady) save({ open: next })
+					setPanelMode(mode)
+					if (next && mode === 'sheet') {
+						setSheetOpen(true)
+						save({ open: false })
+					} else {
+						setSheetOpen(false)
+						save({ open: next })
 					}
 				},
 				onSizeChange: (size) => save({ size })

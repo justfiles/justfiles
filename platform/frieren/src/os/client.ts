@@ -54,6 +54,7 @@ export interface AgentSnapshot {
 	// server emits agent_start.
 	isStreaming: boolean
 	isLoadingHistory: boolean
+	notice: Notification | null
 	// The emotion the agent last tagged, or null until it tags one — and null again once it has
 	// been on screen long enough, because calm is not a tag but where the face rests. The last
 	// emotion wins, paced so each one is seen (see HOLD_MS). The tags themselves never reach
@@ -65,6 +66,7 @@ export interface AgentClient {
 	connect(): () => void
 	prompt(text: string): Promise<boolean>
 	abort(): void
+	clearNotice(): void
 	loadActivityDetail(detailId: string): Promise<ActivityDetailResult>
 	subscribe(listener: () => void): () => void
 	snapshot(): AgentSnapshot
@@ -101,6 +103,7 @@ export interface FrierenClientOptions {
 type AgentServerMessage =
 	| SessionServerMessage
 	| { type: 'expression'; expression: Expression | null }
+	| { type: 'notification'; notification: Notification }
 	| { type: 'error'; message: string }
 	| { type: 'debug'; message: string }
 
@@ -133,6 +136,7 @@ interface SessionView {
 	pendingDetails: Map<string, (result: ActivityDetailResult) => void>
 	liveId: string | null
 	expression: Expression | null
+	notice: Notification | null
 	heldUntil: number
 	pending: Expression | null | undefined
 	holdTimer: ReturnType<typeof setTimeout> | null
@@ -191,6 +195,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			pendingDetails: new Map(),
 			liveId: null,
 			expression: null,
+			notice: null,
 			heldUntil: 0,
 			pending: undefined,
 			holdTimer: null,
@@ -210,7 +215,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			messages: state.messages,
 			isStreaming: state.submitting || state.status.state !== 'idle',
 			isLoadingHistory: state.loadingHistory,
-			expression: state.expression
+			expression: state.expression,
+			notice: state.notice
 		}
 	}
 
@@ -361,6 +367,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			showExpression(state, data.expression)
 			return
 		}
+		if (data.type === 'notification') {
+			state.notice = data.notification
+			emitAgent(state)
+			return
+		}
 		if (data.type === 'activity_detail') {
 			state.pendingDetails.get(data.requestId)?.(data.result)
 			state.pendingDetails.delete(data.requestId)
@@ -497,6 +508,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (state.socket !== ws) return
 			state.socket = null
 			state.connectionState = 'disconnected'
+			state.notice = null
 			stopAgentWork(state)
 			scheduleAgentReconnect(state)
 		}
@@ -561,6 +573,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			state.generation++
 			closeAgentSocket(state)
 			state.connectionState = 'disconnected'
+			state.notice = null
 			stopAgentWork(state)
 		}
 	}
@@ -601,6 +614,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			abort() {
 				if (state.status.state === 'idle') return
 				state.socket?.send(JSON.stringify({ type: 'abort' } satisfies SessionClientMessage))
+			},
+			clearNotice() {
+				if (!state.notice) return
+				state.notice = null
+				emitAgent(state)
 			},
 			loadActivityDetail(detailId) {
 				if (!state.socket || state.socket.readyState !== SOCKET_OPEN)

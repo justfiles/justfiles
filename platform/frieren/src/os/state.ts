@@ -3,13 +3,11 @@ export type WindowRect = { x: number; y: number; w: number; h: number }
 export type WindowMode = 'floating' | 'minimized' | 'fullscreen'
 
 export type AttachedAgentState = {
-	mode: 'sheet' | 'sidebar'
 	size: { sheet: number; sidebar: number }
 	open: Record<string, true>
 }
 
 export const initialAttachedAgentState: AttachedAgentState = {
-	mode: 'sheet',
 	size: { sheet: 280, sidebar: 300 },
 	open: {}
 }
@@ -55,7 +53,6 @@ export type OsAction =
 	| { type: 'window.focus'; id: string }
 	| { type: 'window.rectUpdated'; id: string; rect: WindowRect }
 	| { type: 'window.setMode'; id: string; mode: WindowMode }
-	| { type: 'assistant.setMode'; mode: AttachedAgentState['mode'] }
 	| { type: 'assistant.setSize'; size: AttachedAgentState['size'] }
 	| { type: 'assistant.setOpen'; id: string; open: boolean }
 

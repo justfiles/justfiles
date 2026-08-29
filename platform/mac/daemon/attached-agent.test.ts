@@ -10,12 +10,11 @@ test('persists panel state and serializes changes from separate windows', async 
 
 	expect(await store.read()).toEqual(initialAttachedAgentState)
 	await Promise.all([
-		store.change('notes', { mode: 'sidebar', open: true }),
+		store.change('notes', { open: true }),
 		store.change('files', { size: { sheet: 260, sidebar: 360 }, open: true })
 	])
 
 	expect(await createAttachedAgentStore(fs).read()).toEqual({
-		mode: 'sidebar',
 		size: { sheet: 260, sidebar: 360 },
 		open: { notes: true, files: true }
 	})

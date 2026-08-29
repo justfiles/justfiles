@@ -163,14 +163,12 @@ describe('osReducer', () => {
 		expect(state.openOrder).toEqual(['a'])
 	})
 
-	test('updates attached-agent mode, size, and restored sidebar windows', () => {
+	test('updates attached-agent size and restored sidebar windows', () => {
 		const sized = run([
-			{ type: 'assistant.setMode', mode: 'sidebar' },
 			{ type: 'assistant.setSize', size: { sheet: 260, sidebar: 340 } },
 			{ type: 'assistant.setOpen', id: 'a', open: true }
 		])
 		expect(sized.assistant).toEqual({
-			mode: 'sidebar',
 			size: { sheet: 260, sidebar: 340 },
 			open: { a: true }
 		})

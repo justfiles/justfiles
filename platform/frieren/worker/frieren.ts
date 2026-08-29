@@ -117,6 +117,7 @@ interface DisplayParticipants {
 type AgentServerMessage =
 	| SessionServerMessage
 	| { type: 'expression'; expression: Expression | null }
+	| { type: 'notification'; notification: Notification }
 	| { type: 'debug'; message: string }
 	| { type: 'error'; message: string }
 
@@ -561,7 +562,12 @@ export class Frieren extends DurableObject<Env> {
 			apps: apps.controller,
 			osState: async () => ({ windows: await apps.windows() }),
 			timezone: () => resolveTimezone(this.volume, this.cfTimezone),
-			notify: (notification) => this.broadcastControl({ type: 'notification', notification }),
+			notify: (notification) => {
+				const route = notification.route
+				if (notification.source === 'agent' && route?.kind === 'app')
+					this.broadcastAgent(route.id, { type: 'notification', notification })
+				else this.broadcastControl({ type: 'notification', notification })
+			},
 			expressions: true
 		}
 	}

@@ -395,6 +395,32 @@ describe('FrierenClient agent', () => {
 		expect(await client.agent('notes').prompt('overlap')).toBe(false)
 	})
 
+	test('keeps a notice on its app session until it is opened or closed', async () => {
+		const { client, connect } = setup()
+		const sockets = await connect()
+		client.agent('notes').connect()
+		await flush()
+		sockets.agent('notes').emit({
+			type: 'snapshot',
+			history: [],
+			status: { state: 'idle' }
+		})
+		const notice = {
+			id: 'notice-1',
+			source: 'agent',
+			kind: 'info',
+			title: 'Fern',
+			body: 'Done.',
+			route: { kind: 'app', id: 'notes' }
+		}
+
+		sockets.agent('notes').emit({ type: 'notification', notification: notice })
+		expect(client.agent('notes').snapshot().notice).toEqual(notice)
+
+		client.agent('notes').clearNotice()
+		expect(client.agent('notes').snapshot().notice).toBeNull()
+	})
+
 	test('stop targets the current session without a turn id', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()

@@ -334,14 +334,22 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 		}
 	})
 
-	// Fan `notify` capability calls + agent pings out to every launcher `/system` socket. A
-	// notification raised before this / with no launcher connected is dropped (transient).
-	setNotificationChannel((notification) =>
+	// App-agent pings stay in the live app window. All other notifications use the
+	// launcher channel. Publishing to an app with no socket drops the notice.
+	setNotificationChannel((notification) => {
+		const route = notification.route
+		if (notification.source === 'agent' && route?.kind === 'app') {
+			server.publish(
+				`app:${route.id}`,
+				JSON.stringify({ notice: notification } satisfies AttachedAgentServerMessage)
+			)
+			return
+		}
 		server.publish(
 			'notify',
 			JSON.stringify({ type: 'notification', notification } satisfies ServerMessage)
 		)
-	)
+	})
 
 	// Publish each turn only to chats attached to that session.
 	setAgentBroadcast((appId, message) => {
