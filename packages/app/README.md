@@ -53,34 +53,23 @@ export const gui = defineGUI<typeof app>({
 })
 ```
 
-The platform ships no UI framework and the plugin does no framework-specific
-codegen. To use React (or Svelte, or anything else), add it and its Vite plugin to
-your own app and mount it inside `defineGUI`:
+The platform ships no UI framework. To use React, add React and React DOM to your app and use the
+small React adapter:
 
 ```tsx
-import { defineGUI } from '@justfiles/app/browser'
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import { type CounterApp, type CounterState, initialState } from './app'
-import Counter from './Counter'
+import { defineReactGUI } from '@justfiles/app/react'
+import type { app } from './app'
 
-export const gui = defineGUI<CounterApp>({
-	mount(el, state, ctx) {
-		const root = createRoot(el)
-		const render = (next: CounterState | null) =>
-			root.render(
-				<StrictMode>
-					<Counter state={next ?? initialState} actions={ctx.client} />
-				</StrictMode>
-			)
-		render(state)
-		return { update: render, unmount: () => root.unmount() }
-	}
-})
+export const gui = defineReactGUI<typeof app>(({ state, client }) => (
+	<button type="button" onClick={() => void client.increment({ amount: 1 })}>
+		count: {state?.count ?? 0}
+	</button>
+))
 ```
 
 `state` is nullable: the host may mount before the kernel has persisted state for
-this app, so fall back to the reducer's `init`.
+this app, so fall back to the reducer's `init`. Use `defineGUI` directly for plain DOM, another UI
+framework, or a custom rendering lifecycle.
 
 ## Build
 
@@ -118,6 +107,7 @@ import { ai } from '@justfiles/app/capabilities/ai'
 
 - `@justfiles/app` — platform-agnostic author SDK plus runtime types.
 - `@justfiles/app/browser` — browser GUI SDK (`defineGUI`, `injectStyle`).
+- `@justfiles/app/react` — React GUI adapter (`defineReactGUI`, `GUIProps`).
 - `@justfiles/app/iframe` — host utilities for running a GUI in a sandboxed iframe.
 - `@justfiles/app/runtime` — kernel runtime host API.
 - `@justfiles/app/vite` — Vite build/dev plugin.

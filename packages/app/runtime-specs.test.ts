@@ -1,13 +1,14 @@
 // The host builds ONE runtime map (`buildRuntime`) for devkit to bundle into draft
-// outputs. These lock the invariants: it covers exactly the specs devkit can resolve,
-// it ships no UI framework, and every module in it is self-contained — nothing is
-// external, so a draft is never left with a bare specifier to resolve at link time.
+// outputs. These lock the invariants: it covers exactly the specs devkit can resolve
+// and ships no framework bytes. Only the optional React adapter keeps bare imports;
+// the project's pinned import map resolves those when the adapter is used.
 
 import { expect, test } from 'vitest'
 import { buildRuntime } from './capabilities/devkit/devkit-runtime.ts'
 import { sdkRuntimeSpecs } from './runtime-specs.ts'
 
 const REACT_FAMILY = /^react(-dom)?(\/|$)/
+const REACT_ADAPTER_IMPORTS = ['react', 'react-dom/client']
 const importSpecifiers = (source: string): string[] =>
 	[...source.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)].map((m) => m[1] as string)
 
@@ -15,18 +16,15 @@ test('the spec list is unique', () => {
 	expect(new Set(sdkRuntimeSpecs).size).toBe(sdkRuntimeSpecs.length)
 })
 
-// App Code is a built-in authoring tool, not an npm dev environment: a draft gets the
-// platform SDK and writes its GUI as plain DOM through `defineGUI`. Shipping a
-// framework here would put the platform back in the business of choosing one.
-test('the sysroot ships no UI framework', () => {
+test('the sysroot lists no UI framework as a platform module', () => {
 	expect(sdkRuntimeSpecs.filter((spec) => REACT_FAMILY.test(spec))).toEqual([])
 })
 
-test('buildRuntime covers every spec and inlines everything it uses', async () => {
+test('buildRuntime covers every spec and leaves only adapter imports external', async () => {
 	const runtime = await buildRuntime()
 	expect(Object.keys(runtime).sort()).toEqual([...sdkRuntimeSpecs].sort())
-	// Nothing is external, so a bundled module has no import left to resolve. A
-	// leftover bare specifier would surface as an unresolvable import in a draft.
-	for (const spec of sdkRuntimeSpecs)
-		expect(importSpecifiers(runtime[spec] as string), `${spec} must inline its deps`).toEqual([])
+	for (const spec of sdkRuntimeSpecs) {
+		const expected = spec === '@justfiles/app/react' ? REACT_ADAPTER_IMPORTS : []
+		expect(importSpecifiers(runtime[spec] as string).sort(), spec).toEqual(expected)
+	}
 }, 60_000)

@@ -74,6 +74,7 @@ test('bakes the SDK type surface (incl. transitive deps)', () => {
 	// our SDK headers are tsdown rollups (no /dist/ tree), resolved via paths.
 	expect(keys).toContain('node_modules/@justfiles/app/index.d.ts')
 	expect(keys).toContain('node_modules/@justfiles/app/browser.d.ts')
+	expect(keys).toContain('node_modules/@justfiles/app/react.d.ts')
 	expect(keys.some((k) => k.startsWith('node_modules/valibot/'))).toBe(true)
 	// tagged-tag is a transitive dep of type-fest — only present if the BFS walked deps.
 	expect(keys.some((k) => k.startsWith('node_modules/tagged-tag/'))).toBe(true)
@@ -83,6 +84,7 @@ test('bakes the SDK type surface (incl. transitive deps)', () => {
 	expect(baked.paths['@justfiles/app/browser']).toEqual([
 		'node_modules/@justfiles/app/browser.d.ts'
 	])
+	expect(baked.paths['@justfiles/app/react']).toEqual(['node_modules/@justfiles/app/react.d.ts'])
 })
 
 test('type-checks the starter project cleanly from the baked bundle', async () => {

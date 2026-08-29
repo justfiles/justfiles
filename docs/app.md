@@ -183,6 +183,7 @@ The platform supplies these bare imports:
 ```text
 @justfiles/app
 @justfiles/app/browser
+@justfiles/app/react
 @justfiles/app/capabilities/volume
 @justfiles/app/capabilities/notify
 @justfiles/app/capabilities/email
@@ -232,23 +233,14 @@ Its GUI uses the declared React packages. Devkit puts their code in `gui.js`:
 
 ```tsx
 // src/gui.tsx
-import { defineGUI } from '@justfiles/app/browser'
-import { createRoot } from 'react-dom/client'
-import type { CounterApp } from './app'
+import { defineReactGUI } from '@justfiles/app/react'
+import type { app } from './app'
 
-export const gui = defineGUI<CounterApp>({
-	mount(element, state, { client }) {
-		const root = createRoot(element)
-		const render = (next: { count: number } | null) =>
-			root.render(
-				<button type="button" onClick={() => void client.increment({})}>
-					Count: {next?.count ?? 0}
-				</button>
-			)
-		render(state)
-		return { update: render, unmount: () => root.unmount() }
-	}
-})
+export const gui = defineReactGUI<typeof app>(({ state, client }) => (
+	<button type="button" onClick={() => void client.increment({})}>
+		Count: {state?.count ?? 0}
+	</button>
+))
 ```
 
 For a framework-free project, omit `compiler` and `imports`. Use plain DOM code through `defineGUI`,
@@ -484,31 +476,23 @@ and render the pushed state rather than depending on its immediate return.
 
 ### A React GUI
 
-The platform ships no UI framework and does no framework-specific codegen, so React is an ordinary
-dependency of your package. Add `@vitejs/plugin-react` to your own Vite config and mount a root
-inside `defineGUI`:
+The platform ships no UI framework, so React is an ordinary dependency of your package. Add React,
+React DOM, and `@vitejs/plugin-react` to your own package, then export a GUI with `defineReactGUI`:
 
 ```tsx
-import { defineGUI } from '@justfiles/app/browser'
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import { type FooApp, type FooState, initialState } from './app'
-import Foo from './Foo'
+import { defineReactGUI, type GUIProps } from '@justfiles/app/react'
+import type { app } from './app'
 import './gui.css'
 
-export const gui = defineGUI<FooApp>({
-	mount(el, state, ctx) {
-		const root = createRoot(el)
-		const render = (next: FooState | null) =>
-			root.render(
-				<StrictMode>
-					<Foo state={next ?? initialState} actions={ctx.client} />
-				</StrictMode>
-			)
-		render(state)
-		return { update: render, unmount: () => root.unmount() }
-	}
-})
+function Foo({ state, client }: GUIProps<typeof app>) {
+	return (
+		<button type="button" onClick={() => void client.increment({ amount: 1 })}>
+			{state?.count ?? 0}
+		</button>
+	)
+}
+
+export const gui = defineReactGUI<typeof app>(Foo)
 ```
 
 React, React DOM, and the JSX runtimes are bundled into `gui.js`. A normal package may use
@@ -519,9 +503,9 @@ config (every in-repo React app does); a dependency pinning its own React major 
 If a dependency emits chunks, set `build.rollupOptions.output.codeSplitting` to `false` to keep the
 resulting `gui.js` single-file.
 
-
-Here the initial `state` is nullable. `mount` returns `{ update(state), unmount() }`; both methods may
-be async. The context supplies the typed `client`.
+`defineReactGUI` supplies nullable reducer `state` and the typed `client` as component props. It owns
+the root lifecycle and does not add `StrictMode`. Use `defineGUI` directly for plain DOM, another UI
+framework, or a custom rendering lifecycle.
 
 `injectStyle(css, key?)` from `@justfiles/app/browser` injects CSS once. A normal CSS side-effect import
 is preferred; both package and draft builds fold it into `gui.js`.
