@@ -23,6 +23,7 @@ export const sdkRuntimeSpecs: readonly string[] = [
 	'@justfiles/app/capabilities/email',
 	'@justfiles/app/capabilities/calendar',
 	'@justfiles/app/capabilities/ai',
+	'@justfiles/app/capabilities/reader',
 	'@justfiles/app/capabilities/devkit',
 	'@justfiles/app/capabilities/settings',
 	'valibot'
