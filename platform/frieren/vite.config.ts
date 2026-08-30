@@ -77,7 +77,7 @@ export default defineConfig({
 				display: 'standalone',
 				background_color: '#020617',
 				theme_color: '#020617',
-				// PNGs generated from icon.png (see scripts/generate-icons.ts): square
+				// PNGs generated from the built-in avatar (see scripts/generate-icons.ts): square
 				// `any` icons plus a maskable one carrying its own safe-zone padding.
 				icons: [
 					{ src: '/pwa-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
