@@ -337,8 +337,8 @@
 	height: 100vh;
 	/* The shell is OS chrome, not a text document. Pressing on the empty desktop
 	   and dragging must not start a native text selection — that marquee tinted
-	   window bodies and app iframes blue as it swept across them. Real text opts
-	   back in on .ds-window-body below (form controls select regardless). */
+	   window bodies and app iframes blue as it swept across them. Text fields,
+	   stickies, and chat transcripts opt back in where needed. */
 	user-select: none;
 	-webkit-user-select: none;
 }
@@ -463,11 +463,6 @@
 	z-index: 9002;
 	cursor: col-resize;
 	touch-action: none;
-}
-/* App windows contain real documents, so let users select their text. */
-.ds-window-body {
-	user-select: text;
-	-webkit-user-select: text;
 }
 .frn-menubar {
 	justify-content: space-between;
