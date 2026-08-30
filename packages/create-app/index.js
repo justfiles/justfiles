@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 const packageDir = path.dirname(fileURLToPath(import.meta.url))
 const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
 const appVersion = manifest.devDependencies['@justfiles/app']
-const tsconfigVersion = manifest.devDependencies['@justfiles/tsconfig']
 const args = process.argv.slice(2)
 let force = false
 let help = false
@@ -64,7 +63,6 @@ function patchPackageJson(dir) {
 	const pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
 	pkg.name = toPackageName(path.basename(dir))
 	pkg.dependencies['@justfiles/app'] = appVersion
-	pkg.devDependencies['@justfiles/tsconfig'] = tsconfigVersion
 	fs.writeFileSync(file, `${JSON.stringify(pkg, null, '\t')}\n`)
 }
 

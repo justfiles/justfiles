@@ -31,12 +31,6 @@
 			"package-name": "@justfiles/create-app",
 			"component": "create-app",
 			"bump-minor-pre-major": true
-		},
-		"packages/tsconfig": {
-			"release-type": "node",
-			"package-name": "@justfiles/tsconfig",
-			"component": "tsconfig",
-			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]

@@ -49,11 +49,13 @@ test.each(['vanilla', 'react'])('creates an installable %s package', (template) 
 	const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
 	const tsconfig = JSON.parse(readFileSync(join(dir, 'tsconfig.json'), 'utf8'))
 	expect(pkg.dependencies['@justfiles/app']).toBe(cliPackage.devDependencies['@justfiles/app'])
-	expect(pkg.devDependencies['@justfiles/tsconfig']).toBe(
-		cliPackage.devDependencies['@justfiles/tsconfig']
-	)
 	expect(JSON.stringify({ pkg, tsconfig })).not.toMatch(/(?:workspace|catalog):/)
-	expect(tsconfig.extends).toBe('@justfiles/tsconfig/dom.json')
+	expect(JSON.stringify({ pkg, tsconfig })).not.toContain('@justfiles/tsconfig')
+	expect(tsconfig.compilerOptions).toMatchObject({
+		lib: ['ES2023', 'DOM'],
+		moduleResolution: 'bundler',
+		strict: true
+	})
 })
 
 function run(args: string[]) {

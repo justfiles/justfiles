@@ -598,9 +598,6 @@ importers:
       '@justfiles/app':
         specifier: link:../app
         version: link:../app
-      '@justfiles/tsconfig':
-        specifier: ^0.1.0
-        version: link:../tsconfig
 
   packages/design: {}
 

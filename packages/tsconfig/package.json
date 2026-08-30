@@ -1,18 +1,10 @@
 {
 	"name": "@justfiles/tsconfig",
-	"version": "0.1.0",
-	"description": "Shared TypeScript configurations for JustFiles packages.",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
-		"directory": "packages/tsconfig"
-	},
+	"version": "0.0.0",
+	"private": true,
 	"files": [
 		"base.json",
 		"dom.json",
 		"library.json"
-	],
-	"publishConfig": {
-		"access": "public"
-	}
+	]
 }
