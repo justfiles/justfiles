@@ -412,6 +412,52 @@ importers:
         specifier: ^8.0.12
         version: 8.1.0(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0)
 
+  apps/read:
+    dependencies:
+      '@justfiles/app':
+        specifier: link:../../packages/app
+        version: link:../../packages/app
+      fast-sha256:
+        specifier: ^1.3.0
+        version: 1.3.0
+      react-markdown:
+        specifier: ^9.1.0
+        version: 9.1.0(@types/react@19.2.7)(react@19.2.5)
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1(supports-color@10.2.2)
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.0(typescript@6.0.3)
+    devDependencies:
+      '@justfiles/fs':
+        specifier: workspace:*
+        version: link:../../packages/fs
+      '@justfiles/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/react':
+        specifier: ^19
+        version: 19.2.7
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.3(@types/react@19.2.7)
+      '@vitejs/plugin-react':
+        specifier: ^6
+        version: 6.0.2(vite@8.1.0(@types/node@25.7.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0))
+      react:
+        specifier: ^19
+        version: 19.2.5
+      react-dom:
+        specifier: ^19
+        version: 19.2.5(react@19.2.5)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.16
+        version: 8.1.0(@types/node@25.7.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0)
+
   apps/settings:
     dependencies:
       '@justfiles/app':

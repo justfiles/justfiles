@@ -24,6 +24,7 @@ test('serves and refreshes built apps', async () => {
 
 	const manifestUrl = index.apps[0].manifestUrl as string
 	const before = await json<ReleaseManifest>(manifestUrl)
+	expect(index.apps[0].hash).toBe(before.hash)
 	expect(await fetch(new URL('app.js', manifestUrl)).then((response) => response.text())).toBe(
 		'FIRST'
 	)
@@ -33,9 +34,11 @@ test('serves and refreshes built apps', async () => {
 	const future = new Date(Date.now() + 1_000)
 	await utimes(manifest, future, future)
 	await fetch(store.url)
+	const nextIndex = await json<StoreIndex>(store.url)
 	const after = await json<ReleaseManifest>(manifestUrl)
 
 	expect(after.hash).not.toBe(before.hash)
+	expect(nextIndex.apps[0].hash).toBe(after.hash)
 	expect(await fetch(new URL('app.js', manifestUrl)).then((response) => response.text())).toBe(
 		'UPDATED'
 	)

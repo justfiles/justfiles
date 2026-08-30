@@ -8,6 +8,7 @@ import { appBundleFromMemory } from './app.ts'
 import { type AiBackend, devAiForApp } from './capabilities/ai/dev.ts'
 import type { ImportMap } from './capabilities/devkit/imports.ts'
 import { capabilityRegistry } from './capabilities/index.ts'
+import { readerHost } from './capabilities/reader/host.ts'
 import { volumeCapability } from './capabilities/volume/host.ts'
 import { devkitHost, kernelEndpoint } from './dev-server.devkit.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
@@ -144,6 +145,7 @@ export async function createDevServer(
 		// since a dev host has no other tenant.
 		capabilities: capabilityRegistry({
 			volume: volumeCapability(fs, { systemAllowlist: [opts.id] }),
+			reader: readerHost(),
 			devkit: devkit.capability,
 			...(devAi.capability ? { ai: devAi.capability } : {})
 		})

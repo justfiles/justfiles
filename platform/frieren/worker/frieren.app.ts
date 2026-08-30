@@ -35,6 +35,7 @@ interface FrierenAppsDeps {
 	image: Capability
 	email: Capability
 	calendar: Capability
+	reader: Capability
 	// The host admin surface (the first-party Settings app's back-channel).
 	settings: Capability
 }
@@ -78,6 +79,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
+		reader: deps.reader,
 		settings: deps.settings
 	})
 	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
@@ -91,6 +93,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
+		reader: deps.reader,
 		settings: deps.settings
 	})
 

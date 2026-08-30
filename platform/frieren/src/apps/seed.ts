@@ -32,9 +32,13 @@ export async function reconcileLocalStore(kernel: Kernel, storeUrl: string): Pro
 	const store = await runnerAppStore((path) => fetch(path), storeUrl)
 	if (!store) return
 	const installed = new Map((await kernel.list()).map((manifest) => [manifest.id, manifest]))
-	for (const app of await store.catalog()) {
-		const current = installed.get(app.id)
-		if (!current || (current.hash === app.hash && current.baseUrl === app.baseUrl)) continue
+	for (const entry of store.entries()) {
+		const current = installed.get(entry.id)
+		if (!current) continue
+		const baseUrl = new URL('.', entry.manifestUrl).href
+		if (entry.hash && current.hash === entry.hash && current.baseUrl === baseUrl) continue
+		const app = await store.latest(entry.id)
+		if (!app || (current.hash === app.hash && current.baseUrl === app.baseUrl)) continue
 		await installApp(kernel, store, app)
 	}
 }

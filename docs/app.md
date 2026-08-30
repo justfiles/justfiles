@@ -190,6 +190,7 @@ The platform supplies these bare imports:
 @justfiles/app/capabilities/email
 @justfiles/app/capabilities/calendar
 @justfiles/app/capabilities/ai
+@justfiles/app/capabilities/reader
 @justfiles/app/capabilities/devkit
 @justfiles/app/capabilities/settings
 valibot
@@ -558,6 +559,7 @@ Availability differs by host and user configuration:
 | --- | --- | --- | --- | --- |
 | Files | `capabilities/volume`: `volume` | Yes | Yes | Yes |
 | Text AI | `capabilities/ai`: `ai` | Yes | Just Computer when signed in; local account otherwise | Yes |
+| Web page reading | `capabilities/reader`: `reader` | Yes | No | Yes |
 | Image generation | `capabilities/image`: `image` | Provider-dependent | No | No |
 | Email | `capabilities/email`: `email` | Account-dependent | Account-dependent | Yes |
 | Calendar | `capabilities/calendar`: `calendar` | Account-dependent | Account-dependent | Yes |
@@ -661,6 +663,18 @@ generateText(input: {
 generateImage(input: { prompt: string }): Promise<{
 	images: { data: string; mimeType: string }[]
 }>
+
+// reader
+read(input: { url: string }): Promise<{
+	url: string
+	title: string
+	markdown: string
+	siteName?: string
+	byline?: string
+	publishedAt?: number
+	wordCount: number
+}>
+open(input: { url: string }): Promise<void>
 
 // email
 listUnread(input: {

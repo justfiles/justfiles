@@ -41,6 +41,8 @@
 		"./capabilities/devkit/host": "./capabilities/devkit/host.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
 		"./capabilities/ai/dev": "./capabilities/ai/dev.ts",
+		"./capabilities/reader": "./capabilities/reader/index.ts",
+		"./capabilities/reader/host": "./capabilities/reader/host.ts",
 		"./capabilities/image": "./capabilities/image/index.ts",
 		"./capabilities/accounts/host": "./capabilities/accounts/host.ts",
 		"./capabilities/accounts/providers": "./capabilities/accounts/providers/index.ts",
@@ -166,6 +168,14 @@
 			"./capabilities/ai/dev": {
 				"types": "./dist/capabilities/ai/dev.d.ts",
 				"default": "./dist/capabilities/ai/dev.js"
+			},
+			"./capabilities/reader": {
+				"types": "./dist/capabilities/reader/index.d.ts",
+				"default": "./dist/capabilities/reader/index.js"
+			},
+			"./capabilities/reader/host": {
+				"types": "./dist/capabilities/reader/host.d.ts",
+				"default": "./dist/capabilities/reader/host.js"
 			},
 			"./capabilities/image": {
 				"types": "./dist/capabilities/image/index.d.ts",

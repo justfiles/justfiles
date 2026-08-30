@@ -6,12 +6,14 @@ import {
 	type CapabilityCall,
 	CapabilityError,
 	capabilityRegistry,
+	implementCapability,
 	proxyCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
 import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devkit/host'
 import type { Channel } from '@justfiles/app/capabilities/notify'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
+import { type ReaderCapability, reader } from '@justfiles/app/capabilities/reader'
 import { type GetUser, settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Kernel } from '@justfiles/app/runtime'
@@ -46,8 +48,9 @@ const browserNotifyChannel: Channel = (notification) =>
 	})
 
 // The browser kernel's capability seam. `volume`, `devkit`, `settings` and `notify`
-// run locally on this thread; everything else (ai/email/calendar/image) proxies to the
-// server through the network fallback over ONE shared WebSocket. `settings` is local
+// run locally on this thread. `reader.open` is local because only this thread can open
+// a tab, while `reader.read` uses the same server fallback as ai/email/calendar/image.
+// `settings` is local
 // so identity comes from where the session is (Clerk in the browser) with no
 // round-trip; its `accounts.*`/`host.usage` methods have no dep here, so they ride the
 // same fallback to the DO — credentials live under `/private/**`, which never
@@ -65,6 +68,7 @@ export function clientCapabilities(
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }),
+			reader: browserReader(fallback),
 			settings: settingsHost({
 				user: getUser,
 				// Served here for the same reason `user` is: the build the user is running is
@@ -91,6 +95,31 @@ export function clientCapabilities(
 		},
 		{ fallback }
 	)
+}
+
+function browserReader(remote: Capabilities): Capability {
+	return implementCapability(reader, {
+		read: (ctx, input) =>
+			remote.invoke({
+				appId: ctx.appId,
+				capability: 'reader',
+				method: 'read',
+				args: [input],
+				scopes: ctx.scopes,
+				...(ctx.actor ? { actor: ctx.actor } : {})
+			}) as ReturnType<ReaderCapability['read']>,
+		open: (_ctx, { url }) => {
+			let target: URL
+			try {
+				target = new URL(url)
+			} catch {
+				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'reader', 'open')
+			}
+			if (target.protocol !== 'http:' && target.protocol !== 'https:')
+				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'reader', 'open')
+			window.open(target.href, '_blank', 'noopener,noreferrer')
+		}
+	})
 }
 
 // devkit runs locally (it compiles + mounts on this thread, never the server) and

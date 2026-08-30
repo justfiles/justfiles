@@ -52,6 +52,7 @@ import {
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
+import { readerHost } from '@justfiles/app/capabilities/reader/host'
 import type { UsageSnapshot } from '@justfiles/app/capabilities/settings'
 import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import {
@@ -459,6 +460,7 @@ export class Frieren extends DurableObject<Env> {
 			image: caps.image,
 			email: guardCapability(caps.email, { capability: 'email', audit, rateLimit }),
 			calendar: guardCapability(caps.calendar, { capability: 'calendar', audit, rateLimit }),
+			reader: readerHost(),
 			settings: settingsHost({
 				accounts: caps.admin,
 				usage: () => this.usageSnapshot(),
