@@ -121,6 +121,7 @@ function storeIndex(snapshot: Snapshot, request: IncomingMessage): StoreIndex {
 			name: release.name,
 			description: release.description,
 			version: release.version,
+			hash: release.hash,
 			iconUrl: release.icon ? `${origin}/apps/${release.id}/${release.icon}` : undefined,
 			manifestUrl: `${origin}/apps/${release.id}/manifest.json`
 		}))

@@ -29,6 +29,7 @@ export interface StoreApp {
 	name: string
 	description?: string
 	version: string
+	hash?: string
 	iconUrl?: string
 	manifestUrl: string
 	repository?: string

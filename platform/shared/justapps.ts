@@ -18,7 +18,8 @@ const BUILTIN_IDS = [
 	'justfiles.settings',
 	'justfiles.notes',
 	'justfiles.paint',
-	'justfiles.dictionary'
+	'justfiles.dictionary',
+	'justfiles.reading'
 ]
 const REQUEST_TIMEOUT_MS = 10_000
 
@@ -29,6 +30,7 @@ export interface RunnerCatalogApp extends CatalogApp, StoreApp {
 
 interface RunnerAppStore extends AppStore {
 	catalog(): Promise<RunnerCatalogApp[]>
+	entries(): readonly StoreApp[]
 }
 
 // Primary apps win when IDs match. Keep each result tied to the store that supplied it.
@@ -88,6 +90,9 @@ export async function runnerAppStore(
 		return app
 	}
 	return {
+		entries() {
+			return entries
+		},
 		async catalog() {
 			return (await Promise.all(entries.map(load))).filter(
 				(app): app is RunnerCatalogApp => app !== null
@@ -128,7 +133,8 @@ function isStoreEntry(value: unknown): value is StoreApp {
 		typeof value.manifestUrl === 'string' &&
 		(value.description === undefined || typeof value.description === 'string') &&
 		(value.iconUrl === undefined || typeof value.iconUrl === 'string') &&
-		(value.repository === undefined || typeof value.repository === 'string')
+		(value.repository === undefined || typeof value.repository === 'string') &&
+		(value.hash === undefined || typeof value.hash === 'string')
 	)
 }
 

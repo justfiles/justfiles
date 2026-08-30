@@ -20,6 +20,25 @@ describe('reconcileLocalStore', () => {
 		expect(installs).toHaveLength(0)
 	})
 
+	test('does not load a manifest when the installed hash matches the index', async () => {
+		const installed = {
+			id: 'com.example.app',
+			name: 'Local',
+			app: 'app.js',
+			version: '1.0.0',
+			hash: 'local',
+			baseUrl: 'http://localhost:4173/'
+		}
+		const { kernel, installs } = testKernel([installed])
+		const request = vi.spyOn(globalThis, 'fetch').mockImplementation(localStore(installed.id))
+
+		await reconcileLocalStore(kernel, storeUrl)
+
+		expect(request).toHaveBeenCalledTimes(1)
+		expect(request).toHaveBeenCalledWith(storeUrl)
+		expect(installs).toHaveLength(0)
+	})
+
 	test('replaces a newer installed version with the local build', async () => {
 		const installed = {
 			id: 'justfiles.code',
@@ -62,7 +81,7 @@ function localStore(id: string): (url: string | URL | Request) => Promise<Respon
 			return json(
 				{
 					schema: RUNNER_STORE_SCHEMA,
-					apps: [{ id, name: id, version: '1.0.0', manifestUrl }]
+					apps: [{ id, name: id, version: '1.0.0', hash: 'local', manifestUrl }]
 				},
 				storeUrl
 			)

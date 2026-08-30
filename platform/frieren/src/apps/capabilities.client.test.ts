@@ -7,7 +7,7 @@ import {
 } from '@justfiles/app/capabilities'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { notificationStore } from '../notifications/store.ts'
 import { capsProxyOverSocket, clientCapabilities } from './capabilities.client.ts'
 
@@ -20,6 +20,8 @@ const call = (capability: string, method: string, input: unknown): CapabilityCal
 })
 
 const echo: Capability = { invoke: async (c) => c.args[0], subscribe: async () => () => {} }
+
+afterEach(() => vi.unstubAllGlobals())
 
 // A minimal in-memory WebSocket-shaped duplex — just enough for the caps wire:
 // addEventListener('message'|'close') + send. send() reaches the peer's message
@@ -78,6 +80,27 @@ test('a socket close rejects an in-flight invoke so the caller can self-heal', a
 	clientWs.close()
 
 	await expect(pending).rejects.toMatchObject({ code: 'CAPABILITY_OFFLINE' })
+})
+
+test('reader opens web URLs in the browser host', async () => {
+	const open = vi.fn()
+	vi.stubGlobal('window', { open })
+	const caps = clientCapabilities(
+		undefined as unknown as Volume,
+		async () => null
+	)(undefined as unknown as Kernel)
+
+	await expect(
+		caps.invoke(call('reader', 'open', { url: 'https://example.com/article' }))
+	).resolves.toBeUndefined()
+	expect(open).toHaveBeenCalledWith('https://example.com/article', '_blank', 'noopener,noreferrer')
+	await expect(
+		caps.invoke(call('reader', 'open', { url: 'file:///etc/passwd' }))
+	).rejects.toMatchObject({
+		code: 'CAPABILITY_INVALID_INPUT',
+		capability: 'reader',
+		method: 'open'
+	})
 })
 
 // notify runs locally on the browser kernel (no server round-trip). The host stamps
