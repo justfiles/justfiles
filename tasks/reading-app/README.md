@@ -1,6 +1,6 @@
 # Reading — a read-later app over a shared `/reading` volume
 
-> Status: **design, no code yet.** Adds one app (`apps/reading`) and one new
+> Status: **implemented.** Adds one app (`apps/read`) and one new
 > platform capability (`reader`). The app is a viewer over a folder; the folder
 > is the state. No `ai` capability — the host's assistant panel reads app state
 > directly.
@@ -51,7 +51,7 @@ should not become one. So URL→markdown is a host capability:
 // packages/app/capabilities/reader/contract.ts
 export interface ReaderCapability {
 	read(input: { url: string }): Promise<{
-		url: string          // final URL, after redirects
+		url: string          // normalized requested URL
 		title: string
 		markdown: string
 		siteName?: string
@@ -59,76 +59,39 @@ export interface ReaderCapability {
 		publishedAt?: number
 		wordCount: number
 	}>
+	open(input: { url: string }): Promise<void>
 }
 ```
 
-One method, and it is deliberately stingy: every field returned is a field
-somebody will depend on. The app declares it as
-`reader: reader({ scopes: [] })`, calls it from a procedure (it takes seconds),
-and commits one result.
+The app declares `reader: reader({ scopes: [] })`. `read` runs from a procedure
+and commits one result. `open` asks the browser host to open an HTTP or HTTPS URL
+outside the sandboxed app frame.
 
 ### The host implementation
 
-Two tiers, both Cloudflare. The app cannot tell which one answered — that is the
-point of the seam, and it is what lets this be replaced later (a caching wrapper,
-readable.page, anything) with no app change.
+The host calls the Readable service through its public Markdown endpoint:
 
-1. **`fetch()` + Workers AI `toMarkdown()`.** ~200ms, free for HTML, handles most
-   of the web. `toMarkdown` also takes PDF, docx and images, so a URL that *is* a
-   PDF routes here too. Image conversion runs object-detection and vision models
-   and can consume Workers AI neurons ($0.011 / 1,000 neurons, 10,000/day free);
-   HTML conversion does not.
-2. **Browser Rendering `/markdown`.** A real headless browser, for SPAs and
-   anything tier 1 returns thin. Escalate only on failure.
-
-```
-POST https://api.cloudflare.com/client/v4/accounts/<id>/browser-rendering/markdown
-{
-  "url": "https://example.com/article",
-  "gotoOptions": { "waitUntil": "networkidle0" },
-  "rejectRequestPattern": ["/^.*\\.(css)/"]
-}
-→ { "success": true, "result": "---\ntitle: …\n---\n\n# Title\n\nBody…" }
+```sh
+curl -sG --data-urlencode "url=https://example.com/article" https://readable.page/md
 ```
 
-The response is markdown **prefixed with YAML frontmatter (`title`, and whatever
-else the page exposes)** when the page provides that metadata, so the host has a
-title without a second render. Byline and date are best-effort.
+Readable first extracts static HTML with Readability and converts it to
+Markdown. When that fails, the service renders the page in a browser and tries
+again. Frieren does not need Cloudflare AI or Browser bindings, and the app does
+not know how the service produced the Markdown.
 
-Prefer the **Workers binding** over REST from the host worker: no API token, no
-egress hop.
-
-### What it costs
-
-Quick Actions bill **duration only** — $0.09 per browser hour, no concurrency
-charge (that applies to Puppeteer/Playwright sessions, at $2.00 per concurrent
-browser above 10). Workers Paid includes 10 browser-hours/month; the free plan's
-10 minutes/day is dev-only. Duration is totalled daily in seconds and rounded at
-month end: ≥1,800s rounds up to the next hour, ≤1,799s rounds **down**. Failed
-`waitForTimeout` requests are not charged.
-
-| Scenario | Render | Articles / browser-hour | Cost / 1,000 |
-| --- | --- | --- | --- |
-| Typical article | ~5s | 720 | **$0.13** |
-| Heavy SPA, `networkidle0` | ~15s | 240 | $0.38 |
-| **20 saves/day** | ~5s | ~3,000s/month ≈ 0.83h | **$0.00** — inside the included 10h |
-
-For comparison: Firecrawl is ~$5.33/1,000 (credit-based, from $83/mo), Jina
-Reader ~$0.15/1,000 (token-billed at $0.045–0.05/1M tokens). Cloudflare wins on
-price, but the real reason is that the host already runs on Workers — this is a
-binding, not a vendor.
+The endpoint returns `text/markdown`. The host keeps the normalized requested
+URL, reads optional YAML frontmatter when present, and otherwise derives a title
+from the first Markdown heading or URL. Responses are capped at 20 MB before
+they cross the capability boundary.
 
 ### Three things that bite
 
-- **Bot walls are permanent.** Cloudflare sends non-configurable headers
-  identifying Browser Rendering traffic. Paywalled and bot-protected pages fail
-  and stay failed. This is why pasting markdown is a **core** v1 feature and not
-  a nice-to-have: it is the recovery path.
-- **No durable cache.** `cacheTTL` on `/markdown` defaults to 5s and caps at
-  86,400s (24h), keyed on exact URL + params. Re-saving a URL next month
-  re-renders and re-bills, and two apps saving the same page pay twice. Fine at
-  personal volumes. When it matters, a content-addressed cache goes in the host
-  behind the same `read(url)` and no app changes.
+- **Bot walls still fail.** Paywalled and bot-protected pages may remain
+  unreadable after the browser fallback. Pasting Markdown is the recovery path.
+- **Readable owns fetching and rendering policy.** Cache behavior, browser
+  escalation, and extraction fixes stay behind the same endpoint and need no
+  app release.
 - **Latency is seconds.** Saving cannot block on it. See `pending` below.
 
 <a id="disk"></a>
@@ -141,6 +104,10 @@ first-class user substrate that survives the app.
 
 ```
 /reading/
+	.index/
+		url/<sha256>.json    ← points to a readable item folder
+		text/<sha256>.json
+		pdf/<sha256>.json
 	attention-and-the-open-tab/
 		content.md          ← the document
 		info.json
@@ -149,8 +116,9 @@ first-class user substrate that survives the app.
 		info.json
 ```
 
-**Every child of `/reading` is one item.** The folder name is the identity (the
-slug). `info.json`:
+Every non-hidden child of `/reading` is one item. The folder name is a readable
+title slug. Identity lives in the hidden hash index, whose small JSON entries
+point back to these folders. `info.json`:
 
 ```json
 {
@@ -159,7 +127,9 @@ slug). `info.json`:
 	"source": "https://longform.example/attention-and-the-open-tab",
 	"savedAt": 1756345200000,
 	"read": false,
-	"words": 1740
+	"words": 1740,
+	"kind": "url",
+	"key": "c4a78b…"
 }
 ```
 
@@ -210,13 +180,15 @@ root-relative paths and never writes the `/reading` prefix.
 
 ```ts
 type Item = {
-	slug: string        // folder name; identity
+	slug: string        // readable folder name
 	title: string
 	doc: string         // 'content.md' | 'paper.pdf'
 	source: string | null   // null when pasted
 	savedAt: number
 	read: boolean
 	words: number
+	kind?: 'url' | 'text' | 'pdf'
+	key?: string        // full SHA-256 identity; optional for old state
 }
 
 type ReadingState = {
@@ -230,12 +202,13 @@ type ReadingState = {
 }
 ```
 
-`items` is a **derived index that is also the persisted state**. The kernel
+`items` is a **derived list that is also persisted state**. The kernel
 writes the whole reducer state to `/state/<app-id>.json` after every commit and
 loads it verbatim on boot, so the list is on screen before any scan runs. The
-scan is a background reconcile, never a cold start. This is the index — there is
-no hand-maintained `/reading/.index.json`, and there must not be: a second copy
-invalidated by every writer that is not us buys ~36ms (§7).
+scan is a background reconcile, never a cold start. There is no aggregate
+`/reading/.index.json`. Instead, deterministic files under `/.index/<kind>/`
+map one hash to one readable folder. A lookup verifies the target `info.json`,
+and `refresh` fills missing entries while it already walks the library.
 
 ### Edges
 
@@ -254,10 +227,11 @@ edge stays pure and the command carries the effect.
 
 ### Procedures
 
-- **`save({ input })`** — the only interesting one. If `input` is a URL: push to
-  `pending`, `await app.invoke('reader', 'read', …)`, write `content.md` and
-  `info.json`, commit. Otherwise treat it as markdown, derive a title from the
-  first heading, and write immediately with `source: null`.
+- **`save({ input })`** — hash the normalized URL or processed Markdown first
+  and check its deterministic index entry. If it is new and is a URL: push to
+  `pending`, `await app.invoke('reader', 'read', …)`, write `content.md`,
+  `info.json`, and the index pointer, then commit. Otherwise derive a title from
+  the first heading and write immediately with `source: null`.
 - **`refresh({})`** — one recursive `scan`, parallel `info.json` reads, one
   `t.commit`. Called on the coalesced tree wake.
 
