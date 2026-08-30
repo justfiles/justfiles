@@ -124,6 +124,7 @@ function Read({ state, client }: GUIProps<typeof app>) {
 		inputRef.current?.focus()
 	}
 	const open = (event: MouseEvent<HTMLAnchorElement>, url: string) => {
+		if (window.parent === window) return
 		event.preventDefault()
 		void client.openUrl({ url })
 	}
@@ -241,6 +242,8 @@ function Read({ state, client }: GUIProps<typeof app>) {
 									<a
 										className="button"
 										href={current.source}
+										target="_blank"
+										rel="noreferrer"
 										onClick={(event) => open(event, current.source!)}
 									>
 										Open original ↗
@@ -286,7 +289,12 @@ function Read({ state, client }: GUIProps<typeof app>) {
 												a: ({ children, href }) => {
 													const url = linkUrl(href, current.source)
 													return url ? (
-														<a href={url} onClick={(event) => open(event, url)}>
+														<a
+															href={url}
+															target="_blank"
+															rel="noreferrer"
+															onClick={(event) => open(event, url)}
+														>
 															{children}
 														</a>
 													) : (

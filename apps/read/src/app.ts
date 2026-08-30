@@ -119,11 +119,12 @@ export const app = defineApp({
 			(state, { slug }) => {
 				const current = stateOf(state)
 				const found = current.items.find((item) => item.slug === slug)
+				if (!found) return current
 				const removeFolder = t
 					.cmd('volume', 'rm', `/${slug}`, { recursive: true, force: true })
 					.to('fileRemoved')
 				const command =
-					found?.kind && found.key
+					found.kind && found.key
 						? {
 								kind: 'batch' as const,
 								commands: [
@@ -293,9 +294,7 @@ export const app = defineApp({
 					const savedMarkdown = markdown ?? stripImages(read.markdown)
 					const kind: ItemKind = source ? 'url' : 'text'
 					const key = source ? sha256(source) : textKey!
-					slug = await uniqueSlug(read.title, (path) =>
-						handle.invoke('volume', 'exists', path)
-					)
+					slug = await claimSlug(handle, read.title)
 					const item: Item = {
 						slug,
 						title: read.title,
@@ -307,8 +306,16 @@ export const app = defineApp({
 						kind,
 						key
 					}
-					await handle.invoke('volume', 'writeFile', `/${slug}/content.md`, encode(savedMarkdown))
-					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)))
+					await handle.invoke(
+						'volume',
+						'writeFile',
+						`/${slug}/content.md`,
+						encode(savedMarkdown),
+						{ parents: false }
+					)
+					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
+						parents: false
+					})
 					await ensureIndex(handle, item)
 					const { seq } = await handle.dispatch({
 						type: 'saved',
@@ -351,7 +358,7 @@ export const app = defineApp({
 					const { seq } = await handle.dispatch({ type: 'saved', params: { item: existing } })
 					return handle.settled(seq)
 				}
-				const slug = await uniqueSlug(title, (path) => handle.invoke('volume', 'exists', path))
+				const slug = await claimSlug(handle, title)
 				const item: Item = {
 					slug,
 					title,
@@ -364,8 +371,12 @@ export const app = defineApp({
 					key
 				}
 				try {
-					await handle.invoke('volume', 'writeFile', `/${slug}/${doc}`, bytes)
-					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)))
+					await handle.invoke('volume', 'writeFile', `/${slug}/${doc}`, bytes, {
+						parents: false
+					})
+					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
+						parents: false
+					})
 					await ensureIndex(handle, item)
 					const { seq } = await handle.dispatch({ type: 'saved', params: { item } })
 					return handle.settled(seq)
@@ -385,11 +396,6 @@ export const app = defineApp({
 					await handle.dispatch({ type: 'pendingFailed', params: {} })
 
 				let entries = await handle.invoke('volume', 'scan', { path: '/', recursive: true })
-				const dirs = new Set(
-					entries
-						.filter((entry) => entry.type === 'dir' && /^\/[^/]+$/.test(entry.path))
-						.map((entry) => entry.path.slice(1))
-				)
 				const loose = entries.filter(
 					(entry) => entry.type === 'file' && /^\/[^/]+$/.test(entry.path)
 				)
@@ -397,8 +403,7 @@ export const app = defineApp({
 					const doc = entry.path.slice(1)
 					if (!supported(doc)) continue
 					const stat = await handle.invoke('volume', 'stat', entry.path)
-					const slug = unusedSlug(fileTitle(doc), dirs)
-					dirs.add(slug)
+					const slug = await claimSlug(handle, fileTitle(doc))
 					const item: Item = {
 						slug,
 						title: fileTitle(doc),
@@ -409,7 +414,9 @@ export const app = defineApp({
 						words: 0
 					}
 					try {
-						await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)))
+						await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
+							parents: false
+						})
 						await handle.invoke('volume', 'rename', entry.path, `/${slug}/${doc}`)
 					} catch {
 						await handle
@@ -769,19 +776,16 @@ function sha256(value: string | Uint8Array): string {
 	return Array.from(hash(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function uniqueSlug(title: string, exists: (path: string) => Promise<boolean>): Promise<string> {
+async function claimSlug(handle: ReadHandle, title: string): Promise<string> {
 	const base = slugify(title) || 'reading'
 	for (let index = 1; ; index++) {
 		const slug = index === 1 ? base : `${base}-${index}`
-		if (!(await exists(`/${slug}`))) return slug
-	}
-}
-
-function unusedSlug(title: string, used: Set<string>): string {
-	const base = slugify(title) || 'reading'
-	for (let index = 1; ; index++) {
-		const slug = index === 1 ? base : `${base}-${index}`
-		if (!used.has(slug)) return slug
+		try {
+			await handle.invoke('volume', 'mkdir', `/${slug}`)
+			return slug
+		} catch (error) {
+			if (!errorText(error).startsWith('EEXIST')) throw error
+		}
 	}
 }
 

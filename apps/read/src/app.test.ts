@@ -194,6 +194,37 @@ test('opens an existing item when the URL is saved again', async () => {
 	expect(reads).toEqual(['https://example.com/article'])
 })
 
+test('claims distinct folders when saves with the same title overlap', async () => {
+	const { fs, instance, appId } = await start()
+
+	await Promise.all([
+		instance.dispatch(appId, {
+			type: 'save',
+			params: { input: 'https://example.com/first' }
+		}),
+		instance.dispatch(appId, {
+			type: 'save',
+			params: { input: 'https://example.com/second' }
+		})
+	])
+
+	const state = (await instance.state(appId)) as ReadState
+	expect(state.items.map((item) => item.slug).sort()).toEqual([
+		'a-useful-article',
+		'a-useful-article-2'
+	])
+	const sources = await Promise.all(
+		state.items.map(async ({ slug }) => {
+			const info = JSON.parse(decoder.decode(await fs.readFile(`/reading/${slug}/info.json`)))
+			return info.source
+		})
+	)
+	expect(sources.sort()).toEqual([
+		'https://example.com/first',
+		'https://example.com/second'
+	])
+})
+
 test('removes an item and its index entry together', async () => {
 	const { fs, instance, appId } = await start()
 	const markdown = '# Remove me\n\nTemporary.'
@@ -206,6 +237,16 @@ test('removes an item and its index entry together', async () => {
 	expect(await fs.exists('/reading/remove-me')).toBe(false)
 	expect(await fs.exists(`/reading/.index/text/${key}.json`)).toBe(false)
 	expect(((await instance.state(appId)) as ReadState).items).toEqual([])
+})
+
+test('does not delete folders absent from state', async () => {
+	const { fs, instance, appId } = await start()
+	await fs.mkdir('/reading/unlisted', { recursive: true })
+	await fs.writeFile('/reading/unlisted/private.txt', new TextEncoder().encode('keep'))
+
+	await instance.dispatch(appId, { type: 'remove', params: { slug: 'unlisted' } })
+
+	expect(await fs.exists('/reading/unlisted/private.txt')).toBe(true)
 })
 
 test('uses the URL index without loading the reading list first', async () => {
