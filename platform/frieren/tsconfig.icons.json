@@ -1,0 +1,11 @@
+{
+	"extends": "@justfiles/tsconfig/base.json",
+	"compilerOptions": {
+		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.icons.tsbuildinfo",
+		"lib": ["ES2023", "DOM"],
+		"types": ["node"],
+		"noUnusedParameters": true,
+		"noUncheckedSideEffectImports": true
+	},
+	"include": ["scripts/generate-icons.ts"]
+}
