@@ -215,45 +215,9 @@
 		filter 220ms ease,
 		transform 220ms ease;
 }
-.frn-agent-avatar[data-renderer="image"] {
-	overflow: hidden;
-	border: 2px solid var(--focus);
-	border-radius: 50%;
-	object-fit: cover;
-	transition:
-		filter 220ms ease,
-		transform 220ms ease,
-		border-color 220ms ease;
-}
-.frn-agent-avatar[data-renderer="canvas"] {
+.frn-agent-avatar[data-avatar="gameboy"] {
 	image-rendering: pixelated;
 	filter: drop-shadow(0 2px 2px rgb(7 9 5 / 28%));
-}
-/* Standing in for art that isn't there yet: an uploaded photo is ONE image until the engine
-   derives its faces, so the expression reads as a whisper of a treatment. Scoped to that
-   case — over a real per-expression face it would say the expression twice. */
-.frn-agent-avatar[data-art="fallback"][data-expression="thinking"] {
-	filter: saturate(0.8);
-	opacity: 0.85;
-}
-.frn-agent-avatar[data-art="fallback"][data-expression="pleased"] {
-	filter: saturate(1.15) brightness(1.06);
-	transform: scale(1.04);
-}
-.frn-agent-avatar[data-art="fallback"][data-expression="curious"] {
-	transform: rotate(-4deg);
-}
-.frn-agent-avatar[data-art="fallback"][data-expression="concerned"] {
-	filter: saturate(0.9) brightness(0.94);
-}
-.frn-agent-avatar[data-art="fallback"][data-expression="apologetic"] {
-	filter: saturate(0.75) brightness(0.92);
-	transform: scale(0.96);
-}
-/* Not summoned yet. The dashed ring is the invitation; the face itself is real art now (a
-   full built-in expression set), so it is no longer greyed out and pixellated to say so. */
-.frn-agent-avatar[data-renderer="image"][data-personalized="false"] {
-	border-style: dashed;
 }
 .frn-agent-status {
 	font-size: 11px;

@@ -1,7 +1,7 @@
 {
 	"name": "@justfiles/avatar",
 	"version": "0.1.0",
-	"description": "Avatar renderers and skins for JustFiles.",
+	"description": "Mount and render avatars for JustFiles.",
 	"type": "module",
 	"sideEffects": false,
 	"repository": {

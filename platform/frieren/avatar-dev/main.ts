@@ -1,5 +1,5 @@
 import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
-import type { CanvasFrame } from '@justfiles/avatar'
+import type { AvatarFrame } from '@justfiles/avatar'
 import { drawGameboy } from '../src/agent/skins/gameboy'
 import './style.css'
 
@@ -55,7 +55,7 @@ function paint(time: number) {
 	requestAnimationFrame(paint)
 	if (time - lastPaint < FRAME_MS) return
 	lastPaint = time
-	const frame: CanvasFrame = {
+	const frame: AvatarFrame = {
 		time,
 		expression: mood === 'resting' ? null : mood,
 		previousExpression: previousMood === 'resting' ? null : previousMood,

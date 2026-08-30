@@ -1,7 +1,7 @@
-import type { Avatar } from './avatar.js'
-import { type CanvasFrame, type CanvasSkin, canvasRenderer } from './canvas.js'
+import type { AvatarFrame } from './avatar.js'
+import { avatar } from './canvas.js'
 
-export const GAMEBOY_RESOLUTION = 256
+const GAMEBOY_RESOLUTION = 256
 
 type Mood = 'resting' | 'thinking' | 'pleased' | 'curious' | 'concerned' | 'apologetic'
 type Pose = { y: number; turn: number; screen: number }
@@ -87,7 +87,7 @@ const glyphs: Record<string, string[]> = {
 	';': ['00110', '00110', '00000', '00110', '00110', '00100', '01000']
 }
 
-export function drawGameboy(context: CanvasRenderingContext2D, frame: CanvasFrame) {
+export function drawGameboy(context: CanvasRenderingContext2D, frame: AvatarFrame) {
 	const mood = toMood(frame.expression)
 	const previousMood = toMood(frame.previousExpression)
 	const seconds = frame.time / 1000
@@ -128,7 +128,7 @@ function drawShadow(context: CanvasRenderingContext2D, bob: number, current: Pos
 
 function drawComputer(
 	context: CanvasRenderingContext2D,
-	frame: CanvasFrame,
+	frame: AvatarFrame,
 	mood: Mood,
 	current: Pose
 ) {
@@ -188,7 +188,7 @@ function drawComputer(
 	if (mood === 'thinking') drawThought(context, frame)
 }
 
-function drawFace(context: CanvasRenderingContext2D, frame: CanvasFrame, mood: Mood) {
+function drawFace(context: CanvasRenderingContext2D, frame: AvatarFrame, mood: Mood) {
 	const blinking =
 		!frame.reducedMotion &&
 		(frame.time + timing.blinkOffsetMs) % timing.blinkCycleMs < timing.blinkMs
@@ -251,7 +251,7 @@ function drawScanlines(context: CanvasRenderingContext2D) {
 	for (let y = 67; y < 189; y += 5) context.fillRect(46, y, 149, 1)
 }
 
-function drawThought(context: CanvasRenderingContext2D, frame: CanvasFrame) {
+function drawThought(context: CanvasRenderingContext2D, frame: AvatarFrame) {
 	// Three pixels climb away from the bezel one at a time.
 	const step = frame.reducedMotion ? 2 : Math.floor(frame.time / timing.thoughtMs) % 3
 	context.fillStyle = palette.screen
@@ -280,14 +280,11 @@ function toMood(expression: string | null): Mood {
 	return expression && expression in motions ? (expression as Mood) : 'resting'
 }
 
-export const gameboySkin = {
+const gameboy = {
 	id: 'gameboy',
 	width: GAMEBOY_RESOLUTION,
 	height: GAMEBOY_RESOLUTION,
 	draw: drawGameboy
-} as const satisfies CanvasSkin
+} as const
 
-export const gameboyAvatar = {
-	renderer: canvasRenderer,
-	skin: gameboySkin
-} as const satisfies Avatar<CanvasSkin>
+export const gameboyAvatar = avatar(gameboy)
