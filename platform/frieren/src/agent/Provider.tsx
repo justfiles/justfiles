@@ -52,7 +52,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		}
 	}, [refreshIdentity])
 
-	// Canvas skins draw every expression themselves, so there is no face file to fill in.
+	// The built-in avatar draws every expression, so there is no face file to fill in.
 	const ensureFace = useCallback<AgentContextValue['ensureFace']>(() => {}, [])
 
 	const value: AgentContextValue = {

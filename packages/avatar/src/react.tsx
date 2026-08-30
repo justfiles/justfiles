@@ -1,14 +1,9 @@
 import { type HTMLAttributes, useEffect, useRef } from 'react'
-import {
-	type AvatarHandle,
-	type AvatarSkin,
-	type Avatar as AvatarSpec,
-	mountAvatar
-} from './avatar.js'
+import type { AvatarHandle, Avatar as AvatarSpec } from './avatar.js'
 import { gameboyAvatar } from './gameboy.js'
 
 export interface AvatarProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'children'> {
-	avatar: AvatarSpec<AvatarSkin>
+	avatar: AvatarSpec
 	expression?: string | null
 }
 
@@ -20,7 +15,7 @@ export function Avatar({ avatar, expression = null, ...props }: AvatarProps) {
 
 	useEffect(() => {
 		if (!host.current) return
-		handle.current = mountAvatar(host.current, avatar, {
+		handle.current = avatar.mount(host.current, {
 			expression: currentExpression.current
 		})
 		return () => {
@@ -32,13 +27,7 @@ export function Avatar({ avatar, expression = null, ...props }: AvatarProps) {
 	useEffect(() => handle.current?.update({ expression }), [expression])
 
 	return (
-		<span
-			{...props}
-			ref={host}
-			data-renderer={avatar.renderer.id}
-			data-skin={avatar.skin.id}
-			data-expression={expression ?? 'resting'}
-		/>
+		<span {...props} ref={host} data-avatar={avatar.id} data-expression={expression ?? 'resting'} />
 	)
 }
 
