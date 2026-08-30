@@ -593,7 +593,14 @@ importers:
         specifier: ^6.2.5
         version: 6.2.5
 
-  packages/create-app: {}
+  packages/create-app:
+    devDependencies:
+      '@justfiles/app':
+        specifier: link:../app
+        version: link:../app
+      '@justfiles/tsconfig':
+        specifier: ^0.1.0
+        version: link:../tsconfig
 
   packages/design: {}
 

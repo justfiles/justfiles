@@ -3,5 +3,7 @@
 	"packages/fs": "0.7.1",
 	"packages/design": "0.3.0",
 	"packages/app": "0.12.0",
-	"packages/avatar": "0.1.0"
+	"packages/avatar": "0.1.0",
+	"packages/create-app": "0.1.0",
+	"packages/tsconfig": "0.1.0"
 }

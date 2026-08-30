@@ -4,6 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const packageDir = path.dirname(fileURLToPath(import.meta.url))
+const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
+const appVersion = manifest.devDependencies['@justfiles/app']
+const tsconfigVersion = manifest.devDependencies['@justfiles/tsconfig']
 const args = process.argv.slice(2)
 let force = false
 let help = false
@@ -30,7 +34,7 @@ if (template !== 'vanilla' && template !== 'react') {
 	exit(`Unknown template: ${template ?? '(missing)'}. Choose vanilla or react.`)
 }
 
-const templateDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates', template)
+const templateDir = path.join(packageDir, 'templates', template)
 const targetDir = path.resolve(process.cwd(), targetArg ?? 'justfiles-app')
 
 if (fs.existsSync(targetDir) && !isEmpty(targetDir)) {
@@ -59,6 +63,8 @@ function patchPackageJson(dir) {
 	const file = path.join(dir, 'package.json')
 	const pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
 	pkg.name = toPackageName(path.basename(dir))
+	pkg.dependencies['@justfiles/app'] = appVersion
+	pkg.devDependencies['@justfiles/tsconfig'] = tsconfigVersion
 	fs.writeFileSync(file, `${JSON.stringify(pkg, null, '\t')}\n`)
 }
 

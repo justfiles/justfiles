@@ -1,16 +1,32 @@
 {
 	"name": "@justfiles/create-app",
 	"version": "0.1.0",
+	"description": "Create a JustFiles app from a vanilla or React template.",
 	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
+		"directory": "packages/create-app"
+	},
 	"bin": {
 		"create-app": "./index.js"
+	},
+	"engines": {
+		"node": "^20.19.0 || >=22.12.0"
 	},
 	"files": [
 		"index.js",
 		"templates",
 		"README.md"
 	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"start": "node ./index.js"
+	},
+	"devDependencies": {
+		"@justfiles/app": "^0.12.0",
+		"@justfiles/tsconfig": "^0.1.0"
 	}
 }
