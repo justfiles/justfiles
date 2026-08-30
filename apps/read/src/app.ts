@@ -437,14 +437,11 @@ export const app = defineApp({
 				if (loose.length)
 					entries = await handle.invoke('volume', 'scan', { path: '/', recursive: true })
 
-				const paths = new Set(
-					entries.filter((entry) => entry.type === 'file').map((entry) => entry.path)
-				)
 				const folders = entries
 					.filter((entry) => entry.type === 'dir' && /^\/[^/]+$/.test(entry.path))
 					.map((entry) => entry.path.slice(1))
 					.filter((slug) => slug !== '.index')
-				const items = (
+				const found = (
 					await Promise.all(
 						folders.map(async (slug): Promise<Item | null> => {
 							const files = entries
@@ -489,11 +486,11 @@ export const app = defineApp({
 									`/${slug}/info.json`,
 									encode(info(item))
 								)
-							if (!paths.has(indexPath(item.kind!, item.key!))) await claimIdentity(handle, item)
-							return item
+							return claimIdentity(handle, item)
 						})
 					)
 				).filter((item): item is Item => item !== null)
+				const items = [...new Map(found.map((item) => [item.slug, item])).values()]
 				items.sort((a, b) => b.savedAt - a.savedAt)
 				const { seq } = await handle.dispatch({ type: 'indexed', params: { items } })
 				return handle.settled(seq)

@@ -343,6 +343,25 @@ test('indexes existing readable folders during refresh', async () => {
 	expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
 })
 
+test('refresh adopts one identity winner for duplicate unindexed folders', async () => {
+	const { fs, instance, appId } = await start()
+	const markdown = '# Same content\n\nOnly one item.'
+	const key = await sha256(markdown)
+	for (const slug of ['first-copy', 'second-copy']) {
+		await fs.mkdir(`/reading/${slug}`, { recursive: true })
+		await fs.writeFile(`/reading/${slug}/content.md`, new TextEncoder().encode(markdown))
+	}
+
+	await instance.dispatch(appId, { type: 'refresh', params: {} })
+
+	const state = (await instance.state(appId)) as ReadState
+	expect(state.items).toHaveLength(1)
+	expect(state.items[0]).toMatchObject({ kind: 'text', key })
+	expect(
+		JSON.parse(decoder.decode(await fs.readFile(`/reading/.index/text/${key}.json`))).slug
+	).toBe(state.items[0]?.slug)
+})
+
 test('repairs an index after a readable folder is renamed', async () => {
 	const { fs, instance, appId } = await start()
 	const markdown = '# Rename me\n\nStill the same text.'
