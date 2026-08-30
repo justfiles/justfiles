@@ -1,4 +1,4 @@
-# Reading
+# Read
 
 A read-later viewer over the shared `/reading` folder. The folder owns the documents and
 `info.json` sidecars. The app keeps only a derived list, the open item, and the current text

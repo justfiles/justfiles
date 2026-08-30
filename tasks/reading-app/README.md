@@ -1,4 +1,4 @@
-# Reading — a read-later app over a shared `/reading` volume
+# Read — a read-later app over a shared `/reading` volume
 
 > Status: **implemented.** Adds one app (`apps/read`) and one new
 > platform capability (`reader`). The app is a viewer over a folder; the folder
@@ -6,7 +6,7 @@
 > directly.
 
 Read [`docs/app.md`](../../docs/app.md) first — this doc only covers what is
-specific to Reading. Framework idioms (edges, procedures, capabilities, the
+specific to Read. Framework idioms (edges, procedures, capabilities, the
 two-faces model) are assumed. Interactive mockup: [`mockups.html`](./mockups.html),
 open it in a browser.
 
@@ -191,7 +191,7 @@ type Item = {
 	key?: string        // full SHA-256 identity; optional for old state
 }
 
-type ReadingState = {
+type ReadState = {
 	items: Item[]                              // derived index, persisted
 	current: string | null                     // open slug
 	showRead: boolean                          // default false

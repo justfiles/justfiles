@@ -10,8 +10,8 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'justfiles.reading',
-						name: 'Reading',
+						id: 'justfiles.read',
+						name: 'Read',
 						description: 'Save clean copies of articles and documents to read later.',
 						icon: 'icon.svg',
 						app: 'src/app.ts',

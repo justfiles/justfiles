@@ -2,11 +2,11 @@ import { defineReactGUI, type GUIProps } from '@justfiles/app/react'
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { Item, ReadingDocument, ReadingState } from './app.ts'
+import type { Item, ReadDocument, ReadState } from './app.ts'
 import { app } from './app.ts'
 import './gui.css'
 
-const initial: ReadingState = {
+const initial: ReadState = {
 	items: [],
 	current: null,
 	showRead: false,
@@ -18,11 +18,11 @@ const initial: ReadingState = {
 
 const PASTE_TEXT_MIN = 200
 
-function Reading({ state, client }: GUIProps<typeof app>) {
+function Read({ state, client }: GUIProps<typeof app>) {
 	const model = state ?? initial
 	const [input, setInput] = useState('')
 	const [saving, setSaving] = useState(false)
-	const [document, setDocument] = useState<ReadingDocument | null>(null)
+	const [document, setDocument] = useState<ReadDocument | null>(null)
 	const [loadError, setLoadError] = useState('')
 	const [showList, setShowList] = useState(false)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -129,11 +129,11 @@ function Reading({ state, client }: GUIProps<typeof app>) {
 	}
 
 	return (
-		<main className={`reading-app ${current ? 'has-current' : ''} ${!current || showList ? 'show-list' : ''}`}>
+		<main className={`read-app ${current ? 'has-current' : ''} ${!current || showList ? 'show-list' : ''}`}>
 			<aside className="list-pane">
 				<header className="list-head">
 					<div className="list-title">
-						<strong>Reading</strong>
+						<strong>Read</strong>
 						<span>{unread.length} unread</span>
 						{read > 0 && (
 							<button
@@ -232,7 +232,7 @@ function Reading({ state, client }: GUIProps<typeof app>) {
 					<>
 						<header className="doc-bar">
 							<button type="button" className="back-button" onClick={() => setShowList(true)}>
-								‹ Reading
+								‹ Read
 							</button>
 							{current.source ? <span className="source">{host(current.source)}</span> : <span />}
 							{hidden && <span className="hidden-note">hidden from list</span>}
@@ -438,4 +438,4 @@ function bodyMarkdown(markdown: string, title: string): string {
 	return plain === title ? markdown.slice(heading[0].length) : markdown
 }
 
-export const gui = defineReactGUI<typeof app>(Reading)
+export const gui = defineReactGUI<typeof app>(Read)

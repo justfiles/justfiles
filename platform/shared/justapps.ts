@@ -19,7 +19,7 @@ const BUILTIN_IDS = [
 	'justfiles.notes',
 	'justfiles.paint',
 	'justfiles.dictionary',
-	'justfiles.reading'
+	'justfiles.read'
 ]
 const REQUEST_TIMEOUT_MS = 10_000
 

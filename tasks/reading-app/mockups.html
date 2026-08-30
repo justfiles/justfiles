@@ -445,7 +445,7 @@ footer p { margin: 0; max-width: 64ch; }
 
 <header class="masthead">
 	<div class="wrap masthead-inner">
-		<p class="eyebrow">Settled design &middot; apps/reading</p>
+		<p class="eyebrow">Settled design &middot; apps/read</p>
 		<h1>Reader in <em>three views</em></h1>
 		<p class="standfirst">
 			One app, shown three ways at once: the GUI you touch, the folder it writes, and the state the
@@ -474,7 +474,7 @@ footer p { margin: 0; max-width: 64ch; }
 		<div class="window">
 			<div class="titlebar">
 				<span class="dots"><i></i><i></i><i></i></span>
-				<span class="win-name">Reader</span>
+				<span class="win-name">Read</span>
 				<span class="host-tag" id="host-tag">host chrome &middot; the app stops at the border</span>
 				<button class="btn" id="agent-toggle" style="margin-left:.5rem">Assistant</button>
 			</div>
@@ -483,7 +483,7 @@ footer p { margin: 0; max-width: 64ch; }
 					<div class="list-pane">
 						<div class="list-head">
 							<div class="list-title">
-								<b>Reading</b>
+								<b>Read</b>
 								<span id="count"></span>
 								<button class="read-toggle" id="read-toggle" aria-pressed="false"></button>
 							</div>
@@ -517,7 +517,7 @@ footer p { margin: 0; max-width: 64ch; }
 			<div class="inspector">
 				<div class="inspector-head">
 					<b>Reducer state &mdash; what the agent reads</b>
-					<span>/state/reading.json</span>
+					<span>/state/read.json</span>
 				</div>
 				<div class="inspector-body" id="state"></div>
 			</div>
@@ -927,11 +927,11 @@ subscriptions: (state, sub) =&gt; [
 			</div>
 			<div class="agent-body">
 				<div class="ctx">
-					<span class="ctx-label">reading.current</span>
+					<span class="ctx-label">read.current</span>
 					<span class="ctx-val ${d ? '' : 'none'}">${d ? esc(d.title) : 'nothing open'}</span>
 				</div>
 				<div class="ctx">
-					<span class="ctx-label">reading.selection</span>
+					<span class="ctx-label">read.selection</span>
 					<span class="ctx-val ${S.selection ? 'quote' : 'none'}">${S.selection ? '“' + esc(S.selection.text.slice(0, 120)) + (S.selection.text.length > 120 ? '…' : '') + '”' : 'nothing selected'}</span>
 				</div>
 				${agentLog.join('')}

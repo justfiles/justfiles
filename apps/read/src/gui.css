@@ -64,7 +64,7 @@ a:focus-visible {
 	outline-offset: 2px;
 }
 
-.reading-app {
+.read-app {
 	display: grid;
 	grid-template-columns: 18rem minmax(0, 1fr);
 	height: 100vh;
@@ -622,7 +622,7 @@ a:focus-visible {
 }
 
 @media (max-width: 799px) {
-	.reading-app {
+	.read-app {
 		display: block;
 	}
 
@@ -631,8 +631,8 @@ a:focus-visible {
 		height: 100%;
 	}
 
-	.reading-app.has-current:not(.show-list) .list-pane,
-	.reading-app.show-list .doc-pane {
+	.read-app.has-current:not(.show-list) .list-pane,
+	.read-app.show-list .doc-pane {
 		display: none;
 	}
 

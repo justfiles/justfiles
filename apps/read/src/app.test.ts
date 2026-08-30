@@ -5,7 +5,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, expect, test } from 'vitest'
-import { app, type ReadingState } from './app.ts'
+import { app, type ReadState } from './app.ts'
 
 const decoder = new TextDecoder()
 const open: ReturnType<typeof kernel>[] = []
@@ -31,7 +31,7 @@ async function start() {
 		capabilities: async () => app.capabilities,
 		runProcedure: (name, params, handle) =>
 			app.runProcedure(name, params, handle as Parameters<typeof app.runProcedure>[2]),
-		subscriptions: async (state) => app.subscriptions(state as ReadingState)
+		subscriptions: async (state) => app.subscriptions(state as ReadState)
 	})
 	const readerCap = implementCapability(reader, {
 		read: async (_ctx, { url }) => {
@@ -56,7 +56,7 @@ async function start() {
 	})
 	open.push(instance)
 	const appId = await instance.install(
-		appBundleFromMemory({ id: 'justfiles.reading', name: 'Reading', app: '// test' })
+		appBundleFromMemory({ id: 'justfiles.read', name: 'Read', app: '// test' })
 	)
 	return { fs, instance, appId, reads, opened }
 }
@@ -77,7 +77,7 @@ test('saves pasted markdown and persists read state beside it', async () => {
 	const { fs, instance, appId } = await start()
 	await instance.dispatch(appId, { type: 'save', params: { input: '# Hello world\n\nA note.' } })
 
-	let state = (await instance.state(appId)) as ReadingState
+	let state = (await instance.state(appId)) as ReadState
 	expect(state.items[0]).toMatchObject({
 		slug: 'hello-world',
 		title: 'Hello world',
@@ -108,7 +108,7 @@ test('saves pasted markdown and persists read state beside it', async () => {
 		params: { slug: 'hello-world', read: true },
 		actor: 'agent'
 	})
-	state = (await instance.state(appId)) as ReadingState
+	state = (await instance.state(appId)) as ReadState
 	expect(state.items[0]?.read).toBe(true)
 	expect(JSON.parse(decoder.decode(await fs.readFile('/reading/hello-world/info.json')))).toMatchObject({
 		read: true,
@@ -118,7 +118,7 @@ test('saves pasted markdown and persists read state beside it', async () => {
 	})
 
 	await instance.dispatch(appId, { type: 'save', params: { input: '# Hello world\n\nA note.' } })
-	state = (await instance.state(appId)) as ReadingState
+	state = (await instance.state(appId)) as ReadState
 	expect(state.items).toHaveLength(1)
 	expect(await fs.exists('/reading/hello-world-2')).toBe(false)
 })
@@ -156,13 +156,13 @@ test('saves URLs without remote images and records failures without files', asyn
 		})
 	).toBe('# A useful article\n\nWorth reading.')
 	expect(reads).toEqual(['https://example.com/article', 'https://example.com/new'])
-	expect(((await instance.state(appId)) as ReadingState).items).toHaveLength(1)
+	expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
 
 	await instance.dispatch(appId, {
 		type: 'save',
 		params: { input: 'https://blocked.example/article' }
 	})
-	const state = (await instance.state(appId)) as ReadingState
+	const state = (await instance.state(appId)) as ReadState
 	expect(state.failed).toEqual([
 		{ url: 'https://blocked.example/article', error: 'Blocked by the site' }
 	])
@@ -188,7 +188,7 @@ test('opens an existing item when the URL is saved again', async () => {
 		params: { input: 'https://example.com/article#end' }
 	})
 
-	const state = (await instance.state(appId)) as ReadingState
+	const state = (await instance.state(appId)) as ReadState
 	expect(state.items).toHaveLength(2)
 	expect(state.current).toBe('a-useful-article')
 	expect(reads).toEqual(['https://example.com/article'])
@@ -205,7 +205,7 @@ test('removes an item and its index entry together', async () => {
 
 	expect(await fs.exists('/reading/remove-me')).toBe(false)
 	expect(await fs.exists(`/reading/.index/text/${key}.json`)).toBe(false)
-	expect(((await instance.state(appId)) as ReadingState).items).toEqual([])
+	expect(((await instance.state(appId)) as ReadState).items).toEqual([])
 })
 
 test('uses the URL index without loading the reading list first', async () => {
@@ -237,7 +237,7 @@ test('uses the URL index without loading the reading list first', async () => {
 
 	await instance.dispatch(appId, { type: 'save', params: { input: source } })
 
-	const state = (await instance.state(appId)) as ReadingState
+	const state = (await instance.state(appId)) as ReadState
 	expect(state.items).toMatchObject([{ slug: 'already-here', source }])
 	expect(state.current).toBe('already-here')
 	expect(reads).toEqual([])
@@ -272,7 +272,7 @@ test('indexes existing readable folders during refresh', async () => {
 		JSON.parse(decoder.decode(await fs.readFile(`/reading/.index/text/${key}.json`)))
 	).toEqual({ slug: 'existing-note', identity: key })
 	await instance.dispatch(appId, { type: 'save', params: { input: markdown } })
-	expect(((await instance.state(appId)) as ReadingState).items).toHaveLength(1)
+	expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
 })
 
 test('repairs an index after a readable folder is renamed', async () => {
@@ -285,7 +285,7 @@ test('repairs an index after a readable folder is renamed', async () => {
 
 	await instance.dispatch(appId, { type: 'save', params: { input: markdown } })
 
-	const state = (await instance.state(appId)) as ReadingState
+	const state = (await instance.state(appId)) as ReadState
 	expect(state.items).toMatchObject([{ slug: 'a-better-name', key }])
 	expect(state.current).toBe('a-better-name')
 	expect(
@@ -298,7 +298,7 @@ test('adopts a loose PDF during refresh', async () => {
 	await fs.writeFile('/reading/paper.pdf', new Uint8Array([37, 80, 68, 70]))
 
 	await instance.dispatch(appId, { type: 'refresh', params: {} })
-	const state = (await instance.state(appId)) as ReadingState
+	const state = (await instance.state(appId)) as ReadState
 	expect(state.items).toMatchObject([
 		{ slug: 'paper', title: 'paper', doc: 'paper.pdf', read: false }
 	])
@@ -313,7 +313,7 @@ test('saves a PDF from the clipboard', async () => {
 		params: { name: 'A Paper.pdf', data: btoa('%PDF') }
 	})
 
-	const state = (await instance.state(appId)) as ReadingState
+	const state = (await instance.state(appId)) as ReadState
 	expect(state.items).toMatchObject([
 		{ slug: 'a-paper', title: 'A Paper', doc: 'A Paper.pdf', read: false }
 	])
@@ -323,6 +323,6 @@ test('saves a PDF from the clipboard', async () => {
 		type: 'savePdf',
 		params: { name: 'A Different Name.pdf', data: btoa('%PDF') }
 	})
-	expect(((await instance.state(appId)) as ReadingState).items).toHaveLength(1)
+	expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
 	expect(await fs.exists('/reading/a-different-name')).toBe(false)
 })

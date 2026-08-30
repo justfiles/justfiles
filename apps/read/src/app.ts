@@ -18,7 +18,7 @@ export type Item = {
 	key?: string
 }
 
-export type ReadingState = {
+export type ReadState = {
 	items: Item[]
 	current: string | null
 	showRead: boolean
@@ -28,7 +28,7 @@ export type ReadingState = {
 	revision: number
 }
 
-export type ReadingDocument =
+export type ReadDocument =
 	| { kind: 'markdown'; text: string }
 	| { kind: 'pdf'; bytes: Uint8Array }
 
@@ -49,7 +49,7 @@ const capabilities = {
 	volume: volume({ scopes: ['/reading'] }),
 	reader: reader({ scopes: [] })
 }
-type ReadingHandle = AppHandle<ReadingState, typeof capabilities>
+type ReadHandle = AppHandle<ReadState, typeof capabilities>
 
 const slugSchema = v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]*$/))
 const kindSchema = v.picklist(['url', 'text', 'pdf'])
@@ -65,7 +65,7 @@ const itemSchema = v.object({
 	kind: v.optional(kindSchema),
 	key: v.optional(keySchema)
 })
-const empty = (): ReadingState => ({
+const empty = (): ReadState => ({
 	items: [],
 	current: null,
 	showRead: false,
@@ -512,7 +512,7 @@ export const app = defineApp({
 		load: p.procedure({
 			audience: 'gui',
 			schema: v.object({ slug: slugSchema }),
-			async run({ slug }, handle): Promise<ReadingDocument> {
+			async run({ slug }, handle): Promise<ReadDocument> {
 				const item = itemFor(stateOf(handle.state), slug)
 				const bytes = await handle.invoke('volume', 'readFile', `/${slug}/${item.doc}`)
 				return item.doc.toLowerCase().endsWith('.pdf')
@@ -534,10 +534,10 @@ export const app = defineApp({
 	]
 })
 
-export type ReadingApp = typeof app
+export type ReadApp = typeof app
 
-function stateOf(value: ReadingState): ReadingState {
-	const state = value as Partial<ReadingState>
+function stateOf(value: ReadState): ReadState {
+	const state = value as Partial<ReadState>
 	return {
 		items: Array.isArray(state.items) ? state.items.filter(isItem) : [],
 		current: typeof state.current === 'string' ? state.current : null,
@@ -562,7 +562,7 @@ function stateOf(value: ReadingState): ReadingState {
 	}
 }
 
-function itemFor(state: ReadingState, slug?: string): Item {
+function itemFor(state: ReadState, slug?: string): Item {
 	const wanted = slug ?? state.current
 	if (!wanted) throw new Error('No reading item is open; pass a slug from the reading list')
 	const item = state.items.find((entry) => entry.slug === wanted)
@@ -631,7 +631,7 @@ function itemByUrl(items: Item[], url: string): Item | null {
 }
 
 async function itemByIndexedUrl(
-	handle: ReadingHandle,
+	handle: ReadHandle,
 	items: Item[],
 	url: string
 ): Promise<Item | null> {
@@ -648,7 +648,7 @@ async function itemByIndexedUrl(
 }
 
 async function itemByIndexedKey(
-	handle: ReadingHandle,
+	handle: ReadHandle,
 	items: Item[],
 	kind: 'text' | 'pdf',
 	key: string
@@ -663,7 +663,7 @@ async function itemByIndexedKey(
 }
 
 async function indexedItem(
-	handle: ReadingHandle,
+	handle: ReadHandle,
 	kind: ItemKind,
 	key: string,
 	identity: string
@@ -693,7 +693,7 @@ async function indexedItem(
 	return { slug: entry.slug, ...sidecar }
 }
 
-async function identifyItem(handle: ReadingHandle, item: Item): Promise<Item> {
+async function identifyItem(handle: ReadHandle, item: Item): Promise<Item> {
 	const source = item.source ? asUrl(item.source) : null
 	if (source) return { ...item, source, kind: 'url', key: sha256(source) }
 
@@ -703,7 +703,7 @@ async function identifyItem(handle: ReadingHandle, item: Item): Promise<Item> {
 	return { ...item, kind, key: sha256(bytes) }
 }
 
-async function ensureIndex(handle: ReadingHandle, item: Item): Promise<void> {
+async function ensureIndex(handle: ReadHandle, item: Item): Promise<void> {
 	if (!item.kind || !item.key) return
 	const identity = item.kind === 'url' ? asUrl(item.source ?? '') : item.key
 	if (!identity) return
