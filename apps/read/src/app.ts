@@ -316,10 +316,15 @@ export const app = defineApp({
 					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
 						parents: false
 					})
-					await ensureIndex(handle, item)
+					const saved = await claimIdentity(handle, item)
+					if (saved.slug !== item.slug)
+						await handle.invoke('volume', 'rm', `/${item.slug}`, {
+							recursive: true,
+							force: true
+						})
 					const { seq } = await handle.dispatch({
 						type: 'saved',
-						params: { item, ...(url ? { startedAt } : {}) }
+						params: { item: saved, ...(url ? { startedAt } : {}) }
 					})
 					return handle.settled(seq)
 				} catch (error) {
@@ -377,8 +382,13 @@ export const app = defineApp({
 					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
 						parents: false
 					})
-					await ensureIndex(handle, item)
-					const { seq } = await handle.dispatch({ type: 'saved', params: { item } })
+					const saved = await claimIdentity(handle, item)
+					if (saved.slug !== item.slug)
+						await handle.invoke('volume', 'rm', `/${item.slug}`, {
+							recursive: true,
+							force: true
+						})
+					const { seq } = await handle.dispatch({ type: 'saved', params: { item: saved } })
 					return handle.settled(seq)
 				} catch (error) {
 					await handle
@@ -479,7 +489,7 @@ export const app = defineApp({
 									`/${slug}/info.json`,
 									encode(info(item))
 								)
-							if (!paths.has(indexPath(item.kind!, item.key!))) await ensureIndex(handle, item)
+							if (!paths.has(indexPath(item.kind!, item.key!))) await claimIdentity(handle, item)
 							return item
 						})
 					)
@@ -650,8 +660,7 @@ async function itemByIndexedUrl(
 	if (!old || !(await handle.invoke('volume', 'exists', `/${old.slug}/${old.doc}`))) return null
 	const item = { ...old, source: url, kind: 'url' as const, key }
 	await handle.invoke('volume', 'writeFile', `/${item.slug}/info.json`, encode(info(item)))
-	await ensureIndex(handle, item)
-	return item
+	return claimIdentity(handle, item)
 }
 
 async function itemByIndexedKey(
@@ -665,8 +674,7 @@ async function itemByIndexedKey(
 
 	const old = items.find((item) => item.kind === kind && item.key === key)
 	if (!old || !(await handle.invoke('volume', 'exists', `/${old.slug}/${old.doc}`))) return null
-	await ensureIndex(handle, old)
-	return old
+	return claimIdentity(handle, old)
 }
 
 async function indexedItem(
@@ -676,11 +684,15 @@ async function indexedItem(
 	identity: string
 ): Promise<Item | null> {
 	const path = indexPath(kind, key)
-	const entry = await handle
+	const bytes = await handle
 		.invoke('volume', 'readFile', path)
-		.then((bytes) => parseIndex(decode(bytes)))
 		.catch(() => null)
-	if (!entry) return null
+	if (!bytes) return null
+	const entry = parseIndex(decode(bytes))
+	if (!entry) {
+		await handle.invoke('volume', 'rm', path, { force: true }).catch(() => {})
+		return null
+	}
 	if (entry.identity !== identity) throw new Error(`Hash collision in ${path}`)
 
 	const sidecar = await handle
@@ -710,24 +722,24 @@ async function identifyItem(handle: ReadHandle, item: Item): Promise<Item> {
 	return { ...item, kind, key: sha256(bytes) }
 }
 
-async function ensureIndex(handle: ReadHandle, item: Item): Promise<void> {
-	if (!item.kind || !item.key) return
+// The exclusive index write claims the identity. A loser returns the item that
+// won so a save can drop its extra folder before committing state.
+async function claimIdentity(handle: ReadHandle, item: Item): Promise<Item> {
+	if (!item.kind || !item.key) return item
 	const identity = item.kind === 'url' ? asUrl(item.source ?? '') : item.key
-	if (!identity) return
+	if (!identity) return item
 	const path = indexPath(item.kind, item.key)
-	const entry = await handle
-		.invoke('volume', 'readFile', path)
-		.then((bytes) => parseIndex(decode(bytes)))
-		.catch(() => null)
-	if (entry?.identity !== undefined && entry.identity !== identity)
-		throw new Error(`Hash collision in ${path}`)
-	if (entry) return
-	await handle.invoke(
-		'volume',
-		'writeFile',
-		path,
-		encode(`${JSON.stringify({ slug: item.slug, identity }, null, '\t')}\n`)
-	)
+	const data = encode(`${JSON.stringify({ slug: item.slug, identity }, null, '\t')}\n`)
+	for (;;) {
+		try {
+			await handle.invoke('volume', 'writeFile', path, data, { exclusive: true })
+			return item
+		} catch (error) {
+			if (!errorText(error).startsWith('EEXIST')) throw error
+			const existing = await indexedItem(handle, item.kind, item.key, identity)
+			if (existing) return existing
+		}
+	}
 }
 
 function sameInfo(sidecar: Info | null, item: Item): boolean {

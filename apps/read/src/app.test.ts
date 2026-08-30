@@ -225,6 +225,33 @@ test('claims distinct folders when saves with the same title overlap', async () 
 	])
 })
 
+test('deduplicates overlapping saves by URL and text identity', async () => {
+	for (const input of ['https://example.com/same', '# Same text\n\nKeep one copy.']) {
+		const { fs, instance, appId } = await start()
+
+		await Promise.all([
+			instance.dispatch(appId, { type: 'save', params: { input } }),
+			instance.dispatch(appId, { type: 'save', params: { input } })
+		])
+
+		expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
+		expect((await fs.readdir('/reading')).filter(({ name }) => name !== '.index')).toHaveLength(1)
+	}
+})
+
+test('deduplicates overlapping PDF saves by content identity', async () => {
+	const { fs, instance, appId } = await start()
+	const action = {
+		type: 'savePdf' as const,
+		params: { name: 'Same.pdf', data: btoa('%PDF same') }
+	}
+
+	await Promise.all([instance.dispatch(appId, action), instance.dispatch(appId, action)])
+
+	expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
+	expect((await fs.readdir('/reading')).filter(({ name }) => name !== '.index')).toHaveLength(1)
+})
+
 test('removes an item and its index entry together', async () => {
 	const { fs, instance, appId } = await start()
 	const markdown = '# Remove me\n\nTemporary.'
