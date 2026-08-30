@@ -25,6 +25,12 @@
 			"package-name": "@justfiles/avatar",
 			"component": "avatar",
 			"bump-minor-pre-major": true
+		},
+		"packages/create-app": {
+			"release-type": "node",
+			"package-name": "@justfiles/create-app",
+			"component": "create-app",
+			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]

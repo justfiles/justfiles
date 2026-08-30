@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
 
 const cli = fileURLToPath(new URL('./index.js', import.meta.url))
+const cliPackage = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 const roots: string[] = []
 
 afterEach(() => {
@@ -38,6 +39,23 @@ test('rejects an unknown template', () => {
 	expect(result.status).toBe(1)
 	expect(result.stderr).toContain('Unknown template: vue. Choose vanilla or react.')
 	expect(existsSync(join(root, 'counter'))).toBe(false)
+})
+
+test.each(['vanilla', 'react'])('creates an installable %s package', (template) => {
+	const { root, result } = run(['counter', '--template', template])
+	const dir = join(root, 'counter')
+
+	expect(result.status).toBe(0)
+	const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+	const tsconfig = JSON.parse(readFileSync(join(dir, 'tsconfig.json'), 'utf8'))
+	expect(pkg.dependencies['@justfiles/app']).toBe(cliPackage.devDependencies['@justfiles/app'])
+	expect(JSON.stringify({ pkg, tsconfig })).not.toMatch(/(?:workspace|catalog):/)
+	expect(JSON.stringify({ pkg, tsconfig })).not.toContain('@justfiles/tsconfig')
+	expect(tsconfig.compilerOptions).toMatchObject({
+		lib: ['ES2023', 'DOM'],
+		moduleResolution: 'bundler',
+		strict: true
+	})
 })
 
 function run(args: string[]) {

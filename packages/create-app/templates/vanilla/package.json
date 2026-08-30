@@ -17,12 +17,10 @@
 		"prepublishOnly": "pnpm build"
 	},
 	"dependencies": {
-		"@justfiles/app": "workspace:*",
 		"valibot": "^1.1.0"
 	},
 	"devDependencies": {
-		"@justfiles/tsconfig": "workspace:*",
-		"typescript": "catalog:",
+		"typescript": "^5.9.3",
 		"vite": "^8.0.12"
 	}
 }

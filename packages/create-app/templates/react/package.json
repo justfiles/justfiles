@@ -17,17 +17,15 @@
 		"prepublishOnly": "pnpm build"
 	},
 	"dependencies": {
-		"@justfiles/app": "workspace:*",
 		"react": "^19",
 		"react-dom": "^19",
 		"valibot": "^1.1.0"
 	},
 	"devDependencies": {
-		"@justfiles/tsconfig": "workspace:*",
 		"@types/react": "^19",
 		"@types/react-dom": "^19",
 		"@vitejs/plugin-react": "^6",
-		"typescript": "catalog:",
+		"typescript": "^5.9.3",
 		"vite": "^8.0.12"
 	}
 }
