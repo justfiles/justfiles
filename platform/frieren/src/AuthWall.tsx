@@ -56,7 +56,7 @@ export function AuthWall({ onDismiss }: { onDismiss?: () => void } = {}) {
 					</div>
 
 					{onDismiss ? (
-						<button type="button" onClick={onDismiss} className="frn-auth-cancel">
+						<button type="button" data-ghost onClick={onDismiss} className="frn-auth-cancel">
 							Cancel
 						</button>
 					) : null}
