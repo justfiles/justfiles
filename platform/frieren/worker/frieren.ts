@@ -84,6 +84,7 @@ import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { createAiGateway } from './ai-gateway.ts'
+import { createAppActionsGateway } from './app-actions-gateway.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
 import { generateFace } from './faces.ts'
@@ -267,6 +268,10 @@ export class Frieren extends DurableObject<Env> {
 		this.platformText = text(this.meteredBackend(models, model))
 		this.agents = createAgentSessions(() => this.agentOptions())
 		this.app = new Hono()
+			.route(
+				'/api/v1/apps',
+				createAppActionsGateway({ controller: () => this.getApps().controller })
+			)
 			.post('/api/agent/face', async (c) => {
 				const body = await c.req.json<{ avatar?: string; expression?: string; hash?: string }>()
 				const expression = EXPRESSIONS.find((name) => name === body?.expression)

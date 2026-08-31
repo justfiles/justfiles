@@ -95,7 +95,12 @@ app.use('/api/*', clerkMiddleware())
 // browser's path) while everything else — an API key, an M2M token — is still refused.
 const routeToOwner = (c: Ctx) => {
 	const userId = actingUserId(getAuth(c, { acceptsToken: ACCEPTED_TOKENS }))
-	if (!userId) return new Response('Unauthorized', { status: 401 })
+	if (!userId) {
+		const path = c.req.path
+		if (path === '/api/v1/apps' || path.startsWith('/api/v1/apps/'))
+			return c.json({ error: { code: 'unauthorized', message: 'authentication is required' } }, 401)
+		return new Response('Unauthorized', { status: 401 })
+	}
 	return forwardToFrieren(c, userId)
 }
 app.all('/store/*', routeToOwner)
