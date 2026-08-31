@@ -31,6 +31,7 @@ jobs:
       frieren: ${{ steps.deploy.outputs.frieren }}
       worker: ${{ steps.deploy.outputs.worker }}
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@v6
@@ -53,11 +54,12 @@ jobs:
         id: deploy
         if: github.event_name == 'push'
         env:
-          BASE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+          BASE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')
+          if [[ -z "$BASE_SHA" ]]; then
             echo "frieren=true" >> "$GITHUB_OUTPUT"
             echo "worker=true" >> "$GITHUB_OUTPUT"
             exit 0
