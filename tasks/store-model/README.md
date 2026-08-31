@@ -132,6 +132,12 @@ without them.
 | --- | --- | --- | --- |
 | T19 | [The sidecar stops being one file](t19-sidecar-write-amplification.md) | T14 | optional |
 
+### Follow-up — self-healing
+
+| # | Task | Depends on | Status |
+| --- | --- | --- | --- |
+| T20 | [Self-heal rejected sync pages](t20-rejection-recovery.md) | T10, T11, T15 | todo |
+
 ## Dependency map
 
 ```
@@ -143,6 +149,7 @@ T1..T3 → T12 (SQLite)  T13 (HTTP) T14 (native FS)
 T6 + T13 → T15 (mounts)
 T12 + T4 → T16 (migration)
 T11 + T13 + T15 + T16 → T17 (swap) → T18 (retire)
+T10 + T11 + T15 → T20 (self-heal rejected pages)
 ```
 
 ## The seam, for reference
