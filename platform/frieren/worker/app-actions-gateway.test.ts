@@ -122,6 +122,20 @@ describe('app actions gateway', () => {
 		})
 	})
 
+	test.each([
+		['foo_bar', 'foo_bar'],
+		['foo%2Fbar', 'foo/bar']
+	])('maps invalid app id %s to invalid_request', async (path, appId) => {
+		const { app, controller } = setup()
+		vi.mocked(controller.inspect).mockRejectedValueOnce(new Error(`invalid app id: ${appId}`))
+		const response = await app.request(`/${path}`)
+		expect(response.status).toBe(400)
+		expect(await json(response)).toEqual({
+			error: { code: 'invalid_request', message: 'invalid app id' }
+		})
+		expect(controller.inspect).toHaveBeenCalledWith(appId)
+	})
+
 	test('rejects absent and inherited action names without calling run', async () => {
 		for (const action of ['missing', 'toString']) {
 			const { app, controller } = setup()

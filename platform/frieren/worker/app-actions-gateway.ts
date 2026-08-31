@@ -138,6 +138,8 @@ function publicError(error: unknown): { status: number; code: ErrorCode; message
 	const message = error instanceof Error ? error.message : ''
 	if (message.startsWith('invalid request:'))
 		return { status: 400, code: 'invalid_request', message: message.slice(17).trim() }
+	if (message.startsWith('invalid app id:'))
+		return { status: 400, code: 'invalid_request', message: 'invalid app id' }
 	if (message.startsWith('invalid params')) return { status: 400, code: 'invalid_params', message }
 	if (message.startsWith('app not found'))
 		return { status: 404, code: 'app_not_installed', message: 'app is not installed' }
