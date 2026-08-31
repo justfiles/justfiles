@@ -23,9 +23,19 @@ p {
 	margin: 0;
 }
 
+#page {
+	margin-top: 8px;
+	color: #4b5563;
+	overflow-wrap: anywhere;
+}
+
 button {
 	margin-top: 16px;
 	padding: 8px 12px;
 	font: inherit;
 	cursor: pointer;
+}
+
+button:disabled {
+	cursor: default;
 }

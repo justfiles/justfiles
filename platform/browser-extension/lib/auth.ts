@@ -1,5 +1,3 @@
-import { createClerkClient } from '@clerk/chrome-extension/client'
-
 export type AuthStatus = { status: 'signed_in' } | { status: 'signed_out' }
 
 function required(value: string | undefined, name: string): string {
@@ -8,6 +6,7 @@ function required(value: string | undefined, name: string): string {
 }
 
 export async function getSessionToken(): Promise<string | null> {
+	const { createClerkClient } = await import('@clerk/chrome-extension/client')
 	const clerk = await createClerkClient({
 		publishableKey: required(
 			import.meta.env.WXT_CLERK_PUBLISHABLE_KEY,
