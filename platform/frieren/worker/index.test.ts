@@ -35,8 +35,22 @@ describe('authenticated app action routing', () => {
 			{} as never
 		)
 		expect(response.status).toBe(401)
+		expect(await response.json()).toEqual({
+			error: { code: 'unauthorized', message: 'authentication is required' }
+		})
 		expect(namespace.idFromName).not.toHaveBeenCalled()
 		expect(ownerFetch).not.toHaveBeenCalled()
+	})
+
+	test('keeps the existing plain-text 401 for unrelated API routes', async () => {
+		const { bindings } = env()
+		const response = await worker.fetch(
+			new Request('https://example.test/api/ai/model'),
+			bindings,
+			{} as never
+		)
+		expect(response.status).toBe(401)
+		expect(await response.text()).toBe('Unauthorized')
 	})
 
 	test("forwards a valid session token to that Clerk user's Durable Object", async () => {
