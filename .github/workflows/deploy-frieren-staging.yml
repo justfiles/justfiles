@@ -1,9 +1,7 @@
 name: Deploy Frieren Staging
 
 on:
-  push:
-    branches:
-      - main
+  workflow_call:
   workflow_dispatch:
 
 jobs:
@@ -13,7 +11,7 @@ jobs:
     timeout-minutes: 30
     concurrency:
       group: deploy-frieren-staging
-      cancel-in-progress: false
+      cancel-in-progress: true
     environment: staging
     permissions:
       contents: read
@@ -35,8 +33,7 @@ jobs:
           test -n "${CLOUDFLARE_API_TOKEN}"
           test -n "${CLOUDFLARE_ACCOUNT_ID}"
           test -n "${FRIEREN_CLERK_PUBLISHABLE_KEY}"
-      - run: pnpm typecheck
-      - run: pnpm --filter frieren... build
+      - run: pnpm --filter frieren build
         env:
           CLOUDFLARE_ENV: staging
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}

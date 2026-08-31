@@ -1,5 +1,6 @@
 {
 	"$schema": "https://turborepo.com/schema.json",
+	"globalDependencies": [".node-version", ".npmrc", "pnpm-workspace.yaml", "platform/shared/**"],
 	"globalPassThroughEnv": ["PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN"],
 	"tasks": {
 		"transit": {

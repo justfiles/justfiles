@@ -3,6 +3,15 @@ name: release-please
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'tasks/**'
+      - '*.md'
+      - '*.org'
+      - '*.org_archive'
+      - '*.png'
+      - 'platform/frieren/*.md'
+      - 'packages/*/CHANGELOG.md'
   workflow_dispatch:
 
 permissions:

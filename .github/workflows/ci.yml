@@ -7,6 +7,15 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'docs/**'
+      - 'tasks/**'
+      - '*.md'
+      - '*.org'
+      - '*.org_archive'
+      - '*.png'
+      - 'platform/frieren/*.md'
+      - 'packages/*/CHANGELOG.md'
   workflow_dispatch:
 
 concurrency:
@@ -18,18 +27,58 @@ jobs:
     runs-on: ubuntu-latest
     name: Check
     timeout-minutes: 20
+    outputs:
+      frieren: ${{ steps.deploy.outputs.frieren }}
+      worker: ${{ steps.deploy.outputs.worker }}
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           submodules: recursive
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: pnpm
+      - uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-
       - run: pnpm install --frozen-lockfile
+      - name: Find deploys
+        id: deploy
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          BASE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')
+          if [[ -z "$BASE_SHA" ]]; then
+            echo "frieren=true" >> "$GITHUB_OUTPUT"
+            echo "worker=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mark() {
+            local name=$1
+            local package=$2
+            local result
+            result=$(pnpm turbo run build --filter="$package...[$BASE_SHA]" --dry=json)
+            if jq -e '.packages | length > 0' <<< "$result" > /dev/null; then
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          mark frieren frieren
+          mark worker @justfiles/worker
       - run: pnpm typecheck
       - run: pnpm lint
       # Three devkit tests each load the full TypeScript compiler, and vitest runs
@@ -38,3 +87,17 @@ jobs:
       - run: pnpm test
         env:
           NODE_OPTIONS: --max-old-space-size=4096
+
+  deploy-frieren:
+    name: Deploy Frieren Staging
+    needs: check
+    if: needs.check.outputs.frieren == 'true'
+    uses: ./.github/workflows/deploy-frieren-staging.yml
+    secrets: inherit
+
+  deploy-worker:
+    name: Deploy Worker Staging
+    needs: check
+    if: needs.check.outputs.worker == 'true'
+    uses: ./.github/workflows/deploy-worker-staging.yml
+    secrets: inherit

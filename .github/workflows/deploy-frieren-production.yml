@@ -73,8 +73,7 @@ jobs:
               ;;
           esac
 
-      - run: pnpm typecheck
-      - run: pnpm --filter frieren... build
+      - run: pnpm --filter frieren build
         env:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
 
