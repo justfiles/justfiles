@@ -63,7 +63,7 @@ Status values: `todo`, `in progress`, `done`, `later`.
 
 | # | Task | Depends on | Status | Milestone |
 | --- | --- | --- | --- | --- |
-| T1 | [Prepare Clerk extension authentication](01-clerk-extension-auth.md) | Design | todo | 1 |
+| T1 | [Prepare Clerk extension authentication](01-clerk-extension-auth.md) | Design | done | 1 |
 | T2 | [Add the generic action gateway](02-action-gateway.md) | Design | todo | 1 |
 | T3 | [Build the Just Computer browser extension](03-browser-extension.md) | T1, T2 | todo | 1 |
 | T4 | [Prove Read end to end](04-read-e2e.md) | T3 | todo | 1 |

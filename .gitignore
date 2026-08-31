@@ -195,6 +195,8 @@ dist
 .wrangler/
 .env*
 !.env.example
+!platform/browser-extension/.env.development
+!platform/browser-extension/.env.production
 .dev.vars*
 !.dev.vars.example
 .agent

@@ -1,0 +1,4 @@
+{
+	"extends": "@justfiles/tsconfig/dom.json",
+	"include": [".wxt/wxt.d.ts", "entrypoints", "lib", "wxt.config.ts"]
+}
