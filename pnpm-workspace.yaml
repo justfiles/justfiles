@@ -11,12 +11,16 @@ verifyDepsBeforeRun: false
 catalog:
   typescript: 6.0.3
 allowBuilds:
+  browser-tabs-lock: false
+  bufferutil: false
   '@clerk/shared': true
   '@google/genai': true
   '@mongodb-js/zstd': false
+  core-js: false
   esbuild: true
   msw: true
   node-liblzma: false
   protobufjs: true
   sharp: true
+  utf-8-validate: false
   workerd: true
