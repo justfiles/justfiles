@@ -758,15 +758,20 @@ test('a non-allowlisted app is refused every agent.* method', async () => {
 })
 
 // ── appearance.* ──────────────────────────────────────────────────────────
-// A wallpaper is ONE file on the Volume, read and written whole. What is asserted here is
-// the host's only judgement — the bytes must be an image — plus the two shapes of null:
-// unset reads as null, and writing null puts the desktop back on the shell's default.
+// Appearance settings are one file each. Wallpaper bytes must be an image; dock material
+// must be one known word. An absent setting and an unknown material read as null.
 
 const WALLPAPER = '/system/wallpaper'
+const DOCK_MATERIAL = '/system/dock-material'
 
 function appearanceHost() {
 	const vol = volume(memStore())
-	return { vol, caps: settingsHost({ appearance: { volume: vol, wallpaper: WALLPAPER } }) }
+	return {
+		vol,
+		caps: settingsHost({
+			appearance: { volume: vol, wallpaper: WALLPAPER, dockMaterial: DOCK_MATERIAL }
+		})
+	}
 }
 
 test('appearance.* round-trips the wallpaper bytes at the path the host was handed', async () => {
@@ -799,9 +804,29 @@ test('bytes that are not an image are refused, so a desktop cannot be broken by 
 	expect(await vol.exists(WALLPAPER)).toBe(false)
 })
 
+test('appearance.* stores one validated dock material word', async () => {
+	const { vol, caps } = appearanceHost()
+	expect(await caps.invoke(call('appearance.readDockMaterial'))).toBeNull()
+
+	await caps.invoke(call('appearance.writeDockMaterial', { material: 'frosted' }))
+	expect(new TextDecoder().decode(await vol.readFile(DOCK_MATERIAL))).toBe('frosted')
+	expect(await caps.invoke(call('appearance.readDockMaterial'))).toBe('frosted')
+
+	await vol.writeFile(DOCK_MATERIAL, encode('unknown'))
+	expect(await caps.invoke(call('appearance.readDockMaterial'))).toBeNull()
+	await expect(
+		caps.invoke(call('appearance.writeDockMaterial', { material: 'unknown' }))
+	).rejects.toMatchObject({ code: 'CAPABILITY_INVALID_INPUT' })
+})
+
 test('no wallpaper on this shell: appearance.* is UNAVAILABLE, not half-served', async () => {
 	const caps = host()
-	for (const method of ['appearance.readWallpaper', 'appearance.writeWallpaper']) {
+	for (const method of [
+		'appearance.readWallpaper',
+		'appearance.writeWallpaper',
+		'appearance.readDockMaterial',
+		'appearance.writeDockMaterial'
+	]) {
 		await expect(caps.invoke(call(method, { bytes: null }))).rejects.toMatchObject({
 			code: 'CAPABILITY_UNAVAILABLE'
 		})

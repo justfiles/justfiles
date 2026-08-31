@@ -33,6 +33,7 @@ import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
 import { selectFocusedAppId } from '../os/selectors'
 import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
 import { MigrationSheet } from './MigrationSheet'
+import { useDockMaterial } from './wallpaper'
 
 const SETTINGS_APP_ID = 'justfiles.settings'
 const MIGRATION_THREAD = 'local-migration'
@@ -99,6 +100,7 @@ export function Omnibar({
 	const connection = useAgentConnection()
 	const dispatch = useOsDispatch()
 	const ready = connection.state === 'ready'
+	const material = useDockMaterial()
 
 	const [query, setQuery] = useState('')
 	const [focused, setFocused] = useState(false)
@@ -408,6 +410,7 @@ export function Omnibar({
 		<div
 			ref={dockRef}
 			className="frn-dock"
+			data-material={material}
 			data-expanded={expanded}
 			style={rootStyle}
 			onMouseEnter={() => setBannerHovered(true)}
@@ -415,7 +418,7 @@ export function Omnibar({
 		>
 			{banner ? (
 				<div
-					className="frn-dock-banner"
+					className="frn-dock-banner ds-raised"
 					data-kind={banner.notification.kind}
 					role={banner.notification.kind === 'error' ? 'alert' : 'status'}
 				>
@@ -449,7 +452,7 @@ export function Omnibar({
 
 			{expanded ? (
 				/* biome-ignore lint/a11y/noStaticElementInteractions: keep the field focused while a sheet control handles the click. */
-				<div className="frn-dock-sheet" onMouseDown={(event) => event.preventDefault()}>
+				<div className="frn-dock-sheet ds-raised" onMouseDown={(event) => event.preventDefault()}>
 					{showNotifications ? (
 						<div className="frn-dock-center">
 							<div className="frn-dock-center-head">
@@ -635,7 +638,7 @@ export function Omnibar({
 				</div>
 			) : null}
 
-			<form className="frn-dock-bar" onSubmit={submit}>
+			<form className="frn-dock-bar ds-slot" onSubmit={submit}>
 				<span className="frn-dock-field-slot" aria-hidden="true" />
 				<label className="frn-dock-field">
 					<MagnifyingGlassIcon aria-hidden="true" />

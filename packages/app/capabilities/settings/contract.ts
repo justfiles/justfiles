@@ -144,6 +144,9 @@ export interface GeneratedSoul {
 	firstWords?: string
 }
 
+export const DOCK_MATERIAL_NAMES = ['clear', 'frosted', 'smoked', 'solid'] as const
+export type DockMaterial = (typeof DOCK_MATERIAL_NAMES)[number]
+
 export interface SettingsCapability {
 	// Connected provider accounts: the macOS "Internet Accounts" shape — connect a
 	// provider once, then toggle which capabilities that account backs.
@@ -241,4 +244,8 @@ export interface SettingsCapability {
 	// then says so, the way the Usage pane does with no meter.
 	'appearance.readWallpaper'(input: Record<string, never>): Promise<Uint8Array | null>
 	'appearance.writeWallpaper'(input: { bytes: Uint8Array | null }): Promise<void>
+	// The dock material is one validated word at the path the shell watches. A missing or
+	// unreadable value is null, which the shell and Settings both read as Smoked.
+	'appearance.readDockMaterial'(input: Record<string, never>): Promise<DockMaterial | null>
+	'appearance.writeDockMaterial'(input: { material: DockMaterial }): Promise<void>
 }

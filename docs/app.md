@@ -512,6 +512,11 @@ framework, or a custom rendering lifecycle.
 `injectStyle(css, key?)` from `@justfiles/app/browser` injects CSS once. A normal CSS side-effect import
 is preferred; both package and draft builds fold it into `gui.js`.
 
+The host styles bare command buttons. Use `data-primary`, `data-danger`, `data-ghost`, and
+`data-size="sm"` for the shared variants. Use `class="ds-button"` when a link or a button with a
+layout class should keep the same appearance. Give choice tiles and other specialized controls their
+own class so they do not inherit the keycap press motion.
+
 `Client<A>`, `createClient<A>(transport)`, and `Transport` are exported from `@justfiles/app` for
 low-level adapters. Regular GUIs should use the client supplied by `defineGUI`.
 
@@ -774,6 +779,10 @@ Privileged capability signatures:
 // wallpaper (the Mac app today).
 'appearance.readWallpaper'(input: {}): Promise<Uint8Array | null>
 'appearance.writeWallpaper'(input: { bytes: Uint8Array | null }): Promise<void>
+'appearance.readDockMaterial'(input: {}): Promise<'clear' | 'frosted' | 'smoked' | 'solid' | null>
+'appearance.writeDockMaterial'(input: {
+	material: 'clear' | 'frosted' | 'smoked' | 'solid'
+}): Promise<void>
 
 type UsageResource = {
 	used: number

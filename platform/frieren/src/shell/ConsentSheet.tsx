@@ -113,12 +113,18 @@ export function ConsentSheet({
 					</div>
 
 					<div className="frn-card-footer">
-						<button type="button" className="frn-btn-block" disabled={busy} onClick={onClose}>
+						<button
+							type="button"
+							className="ds-button frn-btn-block"
+							disabled={busy}
+							onClick={onClose}
+						>
 							Cancel
 						</button>
 						<button
 							type="button"
-							className="frn-btn-primary frn-btn-block"
+							className="frn-btn-block"
+							data-primary
 							disabled={busy}
 							onClick={confirm}
 						>

@@ -12,6 +12,7 @@
 	--control-bg: #ffffff; /* bare buttons/inputs (see mac.css) */
 	--control-bg-hover: #fafafa;
 	--control-bg-active: #ececec;
+	--keycap-edge: #c6c6c0;
 	--space: 4px;
 	--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
 	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -62,6 +63,7 @@
 		--control-bg: #48484a;
 		--control-bg-hover: #545458;
 		--control-bg-active: #3a3a3c;
+		--keycap-edge: #232325;
 		/* A deep red goes muddy on a dark ground; lift it the way macOS does. */
 		--danger: #ff453a;
 
@@ -70,6 +72,86 @@
 		--menu-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
 		--menu-item-disabled-fg: rgba(255, 255, 255, 0.35);
 		--menu-separator: rgba(255, 255, 255, 0.12);
+	}
+}
+
+/* Dock material. A slot is cut into the desktop; a raised surface sits above
+   windows. Both use the same material recipe with opposite lighting. */
+[data-material] {
+	--dock-ground: 8 11 16;
+	--dock-scale: 1;
+}
+
+[data-material="clear"] {
+	--dock-blur: 10px;
+	--dock-sat: 210%;
+	--dock-bright: 0.64;
+	--dock-tint: 0.08;
+	--dock-sheet-tint: 0.26;
+}
+
+[data-material="frosted"] {
+	--dock-blur: 28px;
+	--dock-sat: 130%;
+	--dock-bright: 0.65;
+	--dock-tint: 0.16;
+	--dock-sheet-tint: 0.3;
+}
+
+[data-material="smoked"] {
+	--dock-blur: 20px;
+	--dock-sat: 200%;
+	--dock-bright: 0.58;
+	--dock-tint: 0.1;
+	--dock-sheet-tint: 0.2;
+}
+
+[data-material="solid"] {
+	--dock-ground: 22 26 31;
+	--dock-blur: 0px;
+	--dock-sat: 100%;
+	--dock-bright: 1;
+	--dock-tint: 1;
+	--dock-sheet-tint: 1;
+}
+
+.ds-slot,
+.ds-raised {
+	color: #f2f5f9;
+	backdrop-filter: blur(calc(var(--dock-blur) * var(--dock-scale))) saturate(var(--dock-sat))
+		brightness(var(--dock-bright));
+	-webkit-backdrop-filter: blur(calc(var(--dock-blur) * var(--dock-scale)))
+		saturate(var(--dock-sat)) brightness(var(--dock-bright));
+}
+
+.ds-slot {
+	border: 1px solid rgb(0 0 0 / 0.34);
+	border-bottom-color: rgb(255 255 255 / 0.16);
+	background: rgb(var(--dock-ground) / var(--dock-tint));
+	box-shadow:
+		inset 0 4px 8px -2px rgb(0 0 0 / 0.5),
+		inset 0 1px 0 rgb(0 0 0 / 0.3),
+		inset 0 -1px 0 rgb(255 255 255 / 0.12);
+}
+
+.ds-raised {
+	border: 1px solid rgb(255 255 255 / 0.14);
+	background: rgb(var(--dock-ground) / var(--dock-sheet-tint));
+	box-shadow:
+		0 2px 8px rgb(0 0 0 / 0.26),
+		0 22px 50px rgb(0 0 0 / 0.46);
+}
+
+[data-material="solid"] :is(.ds-slot, .ds-raised) {
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+	:is(:root, [data-material]) :is(.ds-slot, .ds-raised) {
+		background: rgb(22 26 31);
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
 	}
 }
 
