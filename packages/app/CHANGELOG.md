@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.12.0...app-v0.13.0) (2026-08-31)
+
+
+### Features
+
+* add persistent Read app ([#620](https://github.com/xiaoxinghu/justfiles/issues/620)) ([3b24c51](https://github.com/xiaoxinghu/justfiles/commit/3b24c513ce9d29cdc6047f80524b639533c56d35))
+* implement dock material design ([#629](https://github.com/xiaoxinghu/justfiles/issues/629)) ([8056baf](https://github.com/xiaoxinghu/justfiles/commit/8056baf1940a0ab5f0673fced1d25505d21d8c92))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/design bumped to 0.4.0
+
 ## [0.12.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.11.0...app-v0.12.0) (2026-08-29)
 
 
