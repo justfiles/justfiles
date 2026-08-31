@@ -1,0 +1,22 @@
+{
+	"name": "@justfiles/browser-extension",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wxt",
+		"build": "wxt build",
+		"build:firefox": "wxt build -b firefox",
+		"postinstall": "wxt prepare",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@clerk/chrome-extension": "^3.1.77"
+	},
+	"devDependencies": {
+		"@justfiles/tsconfig": "workspace:*",
+		"typescript": "catalog:",
+		"vite": "^8.2.2",
+		"wxt": "^0.21.4"
+	}
+}

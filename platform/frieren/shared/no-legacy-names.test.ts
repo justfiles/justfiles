@@ -29,7 +29,7 @@ const STABLE_LEGACY = new Map<string, RegExp>([
 // The built-in avatar art, baked to base64 (`pnpm run avatars`): 200 KB of the base64
 // alphabet spells words, and none of them are a name anyone wrote.
 const BAKED_ART = /^packages\/agent\/avatars(\.ts$|\/)/
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.wrangler', 'out'])
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.output', '.wxt', '.wrangler', 'out'])
 const EXEMPT_FILES = new Set([
 	'platform/shared/migrate-app-ids.ts',
 	'platform/mac/daemon/materialize.ts',
