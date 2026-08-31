@@ -163,7 +163,7 @@ function Read({ state, client }: GUIProps<typeof app>) {
 						/>
 						<button
 							type="button"
-							className="button primary"
+							data-primary
 							disabled={!input.trim() || saving}
 							onClick={() => void save()}
 						>
@@ -240,7 +240,7 @@ function Read({ state, client }: GUIProps<typeof app>) {
 							<div className="doc-actions">
 								{current.source ? (
 									<a
-										className="button"
+									className="ds-button"
 										href={current.source}
 										target="_blank"
 										rel="noreferrer"
@@ -249,13 +249,13 @@ function Read({ state, client }: GUIProps<typeof app>) {
 										Open original ↗
 									</a>
 								) : (
-									<button type="button" className="button" disabled>
+								<button type="button" disabled>
 										Open original ↗
 									</button>
 								)}
 								<button
 									type="button"
-									className="button primary"
+									data-primary
 									onClick={() =>
 										void client.setRead({ slug: current.slug, read: !current.read })
 									}
@@ -332,7 +332,7 @@ function DeleteItem({
 		return (
 			<button
 				type="button"
-				className="button remove"
+				data-danger
 				onClick={() => setConfirming(true)}
 				aria-label="Delete item"
 			>
@@ -343,10 +343,10 @@ function DeleteItem({
 	return (
 		<span className="delete-confirm" role="group" aria-label={`Delete ${title}?`}>
 			<span>Delete this item?</span>
-			<button type="button" className="button" onClick={() => setConfirming(false)}>
+			<button type="button" onClick={() => setConfirming(false)}>
 				Cancel
 			</button>
-			<button type="button" className="button danger" onClick={() => void onDelete()}>
+			<button type="button" data-danger onClick={() => void onDelete()}>
 				Delete
 			</button>
 		</span>

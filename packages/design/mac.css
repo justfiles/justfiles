@@ -21,70 +21,105 @@
 	line-height: 1.4;
 }
 
-:where(button) {
+:where(
+	button:is(:not([class]), [data-primary], [data-danger], [data-ghost], [data-size]),
+	.ds-button
+) {
+	--button-edge: var(--keycap-edge);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 13px;
+	border: 1px solid var(--rule);
+	border-radius: 7px;
 	font: inherit;
+	font-weight: 550;
+	line-height: 1.45;
+	white-space: nowrap;
+	text-decoration: none;
 	color: var(--text);
 	background: var(--control-bg);
-	border: 1px solid var(--rule);
-	border-radius: 5px;
-	padding: 2px 11px;
+	box-shadow: 0 1.5px 0 var(--button-edge);
 	cursor: default;
+	appearance: none;
+	transition:
+		transform 70ms ease,
+		box-shadow 70ms ease,
+		background-color 90ms ease;
 }
 
-:where(button:hover) {
+:where(
+	button:is(:not([class]), [data-primary], [data-danger], [data-ghost], [data-size]):hover:not(
+		:disabled
+	),
+	.ds-button:hover:not(:disabled)
+) {
 	background: var(--control-bg-hover);
 }
 
-:where(button:active) {
+:where(
+	button:is(:not([class]), [data-primary], [data-danger], [data-ghost], [data-size]):active:not(
+		:disabled
+	),
+	.ds-button:active:not(:disabled)
+) {
 	background: var(--control-bg-active);
+	box-shadow: 0 0 0 var(--button-edge);
+	transform: translateY(1.5px);
 }
 
-:where(button:disabled) {
-	color: var(--menu-item-disabled-fg);
+:where(
+	button:is(:not([class]), [data-primary], [data-danger], [data-ghost], [data-size]):disabled,
+	.ds-button:disabled
+) {
+	opacity: 0.42;
 }
 
-/* The default button: `<button data-primary>` — Aqua's blue push button, the one
-   Return fires. Written after the plain-button states so it wins on source order
-   (every rule here is :where(), so nothing has specificity to fight over), and
-   derived from --accent alone: a lighter top for the gloss, a darker edge, a
-   hairline inset highlight. Presence-matched, so `data-primary` and
-   `data-primary="true"` both work. */
-:where(button[data-primary]) {
+:where(
+	button:is(:not([class]), [data-primary], [data-danger], [data-ghost], [data-size]):focus-visible,
+	.ds-button:focus-visible
+) {
+	outline: none;
+	box-shadow:
+		0 1.5px 0 var(--button-edge),
+		0 0 0 3px color-mix(in srgb, var(--focus) 28%, transparent);
+}
+
+:where(button[data-primary], .ds-button[data-primary]) {
+	--button-edge: color-mix(in srgb, var(--accent) 62%, black);
 	color: var(--on-accent);
-	background: linear-gradient(
-		to bottom,
-		color-mix(in srgb, var(--accent) 74%, white),
-		var(--accent)
-	);
-	border-color: color-mix(in srgb, var(--accent) 72%, black);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
-	text-shadow: 0 1px 0 color-mix(in srgb, black 22%, transparent);
+	border-color: color-mix(in srgb, var(--accent) 80%, black);
+	background: var(--accent);
 }
 
-:where(button[data-primary]:hover) {
-	background: linear-gradient(
-		to bottom,
-		color-mix(in srgb, var(--accent) 66%, white),
-		color-mix(in srgb, var(--accent) 94%, white)
-	);
+:where(button[data-primary]:hover:not(:disabled), .ds-button[data-primary]:hover:not(:disabled)) {
+	background: color-mix(in srgb, var(--accent) 92%, white);
 }
 
-/* Pressed: the gloss inverts, the way an Aqua button pushes in. */
-:where(button[data-primary]:active) {
-	background: linear-gradient(
-		to bottom,
-		color-mix(in srgb, var(--accent) 88%, black),
-		color-mix(in srgb, var(--accent) 96%, black)
-	);
-	box-shadow: inset 0 1px 2px color-mix(in srgb, black 28%, transparent);
+:where(button[data-danger], .ds-button[data-danger]) {
+	--button-edge: color-mix(in srgb, var(--danger) 26%, var(--keycap-edge));
+	border-color: color-mix(in srgb, var(--danger) 36%, var(--rule));
+	color: var(--danger);
 }
 
-:where(button[data-primary]:disabled) {
-	background: color-mix(in srgb, var(--accent) 38%, var(--control-bg));
-	border-color: color-mix(in srgb, var(--accent) 38%, var(--rule));
-	color: color-mix(in srgb, var(--on-accent) 65%, transparent);
+:where(button[data-ghost], .ds-button[data-ghost]) {
+	border-color: transparent;
+	background: transparent;
 	box-shadow: none;
-	text-shadow: none;
+}
+
+:where(button[data-ghost]:hover:not(:disabled), .ds-button[data-ghost]:hover:not(:disabled)) {
+	background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+:where(button[data-ghost]:focus-visible, .ds-button[data-ghost]:focus-visible) {
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 28%, transparent);
+}
+
+:where(button[data-size="sm"], .ds-button[data-size="sm"]) {
+	padding: 3px 10px;
+	border-radius: 6px;
+	font-size: 11px;
 }
 
 :where(input, textarea, select) {
@@ -100,4 +135,10 @@
 	outline: none;
 	border-color: var(--focus);
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	:where(button, .ds-button) {
+		transition-duration: 0s;
+	}
 }

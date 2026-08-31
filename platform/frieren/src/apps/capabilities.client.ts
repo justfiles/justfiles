@@ -21,7 +21,7 @@ import type { Volume } from '@justfiles/fs'
 import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { notificationStore } from '../notifications/store.ts'
-import { WALLPAPER_PATH } from '../shell/wallpaper.ts'
+import { DOCK_MATERIAL_PATH, WALLPAPER_PATH } from '../shell/wallpaper.ts'
 import {
 	frierenCompile,
 	frierenImports,
@@ -87,7 +87,11 @@ export function clientCapabilities(
 				// thread's Volume, at the path the desktop already watches — so Settings writing a
 				// colour or a photo repaints the desktop through the watch, offline, with no
 				// round-trip and no second way for a wallpaper to arrive.
-				appearance: { volume: fs, wallpaper: WALLPAPER_PATH },
+				appearance: {
+					volume: fs,
+					wallpaper: WALLPAPER_PATH,
+					dockMaterial: DOCK_MATERIAL_PATH
+				},
 				remote: fallback
 			}),
 			notify: notifyHost(browserNotifyChannel),

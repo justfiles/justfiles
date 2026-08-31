@@ -71,12 +71,18 @@ export function MigrationSheet({ onClose }: { onClose: () => void }) {
 						</p>
 					) : null}
 					<div className="frn-card-footer">
-						<button type="button" className="frn-btn-block" disabled={busy} onClick={startFresh}>
+						<button
+							type="button"
+							className="ds-button frn-btn-block"
+							disabled={busy}
+							onClick={startFresh}
+						>
 							Start fresh
 						</button>
 						<button
 							type="button"
-							className="frn-btn-primary frn-btn-block"
+							className="frn-btn-block"
+							data-primary
 							disabled={busy}
 							onClick={() => void bringOver()}
 						>

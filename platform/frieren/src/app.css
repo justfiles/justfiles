@@ -124,16 +124,7 @@
 	gap: 8px;
 }
 
-/* ── Buttons (bare <button> gets the mac look; these are variants) ──────── */
-.frn-btn-primary {
-	background: var(--focus);
-	color: var(--on-focus);
-	border-color: var(--focus);
-	padding: 4px 14px;
-}
-.frn-btn-primary:hover:not(:disabled) {
-	background: color-mix(in srgb, var(--focus) 88%, black);
-}
+/* ── Button layout (appearance comes from @justfiles/design) ───────────── */
 .frn-btn-block {
 	width: 100%;
 	justify-content: center;
@@ -627,12 +618,7 @@
 
 /* ── Expanding dock ─────────────────────────────────────────────────────── */
 .frn-dock {
-	--glass-tint: light-dark(rgb(255 255 255 / 0.18), rgb(18 18 20 / 0.3));
-	--glass-sheen: light-dark(rgb(255 255 255 / 0.24), rgb(255 255 255 / 0.08));
-	--glass-rim: light-dark(rgb(255 255 255 / 0.64), rgb(255 255 255 / 0.24));
-	--glass-bounce: light-dark(rgb(255 255 255 / 0.24), rgb(255 255 255 / 0.08));
-	--glass-edge: light-dark(rgb(255 255 255 / 0.46), rgb(255 255 255 / 0.16));
-	--glass-shadow: light-dark(rgb(24 38 52 / 0.2), rgb(0 0 0 / 0.42));
+	--text: #f2f5f9;
 	position: absolute;
 	left: 50%;
 	bottom: 20px;
@@ -649,19 +635,6 @@
 }
 .frn-desktop[data-fullscreen="true"] > .frn-dock {
 	display: none;
-}
-.frn-dock-bar,
-.frn-dock-sheet,
-.frn-dock-banner {
-	border: 1px solid var(--glass-edge);
-	background: linear-gradient(180deg, var(--glass-sheen), transparent 34%), var(--glass-tint);
-	box-shadow:
-		inset 0 1px 0 var(--glass-rim),
-		inset 0 -1px 0 var(--glass-bounce),
-		0 1px 2px rgb(0 0 0 / 0.1),
-		0 12px 32px var(--glass-shadow);
-	backdrop-filter: blur(22px) saturate(180%);
-	-webkit-backdrop-filter: blur(22px) saturate(180%);
 }
 .frn-dock-bar {
 	position: relative;
@@ -689,12 +662,11 @@
 	gap: 6px;
 	padding: 0 12px;
 	overflow: hidden;
-	border: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+	border: 1px solid rgb(0 0 0 / 0.3);
+	border-bottom-color: rgb(255 255 255 / 0.12);
 	border-radius: 11px;
-	background: color-mix(in srgb, var(--surface) 18%, transparent);
-	box-shadow:
-		inset 0 1px 2px rgb(0 0 0 / 0.1),
-		inset 0 -1px 0 var(--glass-bounce);
+	background: rgb(0 0 0 / 0.26);
+	box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.34);
 	transition:
 		right 380ms cubic-bezier(0.32, 0.72, 0, 1),
 		border-color 180ms ease,
@@ -704,7 +676,7 @@
 	right: 70px;
 	border-color: color-mix(in srgb, var(--focus) 48%, transparent);
 	box-shadow:
-		inset 0 1px 2px rgb(0 0 0 / 0.1),
+		inset 0 2px 4px rgb(0 0 0 / 0.34),
 		0 0 0 2px color-mix(in srgb, var(--focus) 24%, transparent);
 }
 .frn-dock-field > svg {
@@ -905,7 +877,6 @@
 	}
 }
 .frn-dock-sheet {
-	--glass-tint: light-dark(rgb(255 255 255 / 0.3), rgb(18 18 20 / 0.38));
 	min-height: 0;
 	max-height: min(55vh, 360px);
 	overflow: auto;

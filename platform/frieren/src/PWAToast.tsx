@@ -6,7 +6,7 @@ export function PWAToast() {
 	return (
 		<div className="frn-toast" role="status">
 			<span>A new version is available.</span>
-			<button type="button" className="frn-btn-primary" onClick={() => void updateSW(true)}>
+			<button type="button" data-primary onClick={() => void updateSW(true)}>
 				Reload
 			</button>
 		</div>

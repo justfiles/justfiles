@@ -1,3 +1,4 @@
+import { DOCK_MATERIAL_NAMES, type DockMaterial } from '@justfiles/app/capabilities/settings'
 import { imageType } from '@justfiles/app/image-type'
 import { useEffect, useState } from 'react'
 import type { Volume } from '../fs'
@@ -13,6 +14,7 @@ import { useOsRuntime } from '../os/hooks'
 // `appearance.writeWallpaper`, so there is one writer, one validation of what an
 // image is, and one place a wallpaper can come from — Settings, on every device.
 export const WALLPAPER_PATH = '/system/wallpaper'
+export const DOCK_MATERIAL_PATH = '/system/dock-material'
 
 // The wallpaper as a blob URL (bytes come straight from the local replica — no
 // network, works offline), or null when unset. Bytes that are not an image this
@@ -59,4 +61,34 @@ export function useWallpaper(): string | null {
 	}, [volume])
 
 	return url
+}
+
+export function useDockMaterial(): DockMaterial {
+	const { volume } = useOsRuntime()
+	const [material, setMaterial] = useState<DockMaterial>('smoked')
+
+	useEffect(() => {
+		let cancelled = false
+		let unwatch: (() => void) | undefined
+		const load = async (vol: Volume) => {
+			try {
+				if (!(await vol.exists(DOCK_MATERIAL_PATH))) return setMaterial('smoked')
+				const value = new TextDecoder().decode(await vol.readFile(DOCK_MATERIAL_PATH)).trim()
+				if (!cancelled) setMaterial(DOCK_MATERIAL_NAMES.find((name) => name === value) ?? 'smoked')
+			} catch {
+				if (!cancelled) setMaterial('smoked')
+			}
+		}
+		void volume.then(async (vol) => {
+			if (cancelled) return
+			unwatch = await vol.watch(DOCK_MATERIAL_PATH, () => void load(vol))
+			void load(vol)
+		})
+		return () => {
+			cancelled = true
+			unwatch?.()
+		}
+	}, [volume])
+
+	return material
 }

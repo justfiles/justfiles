@@ -9,6 +9,7 @@ export type {
 	CapabilityId,
 	CredentialField,
 	CredentialsSchema,
+	DockMaterial,
 	GeneratedSoul,
 	ProviderInfo,
 	SettingsCapability,
@@ -18,6 +19,7 @@ export type {
 	UserFacts,
 	UserProfile
 } from './contract.ts'
+export { DOCK_MATERIAL_NAMES } from './contract.ts'
 
 // The `settings` capability: the host admin surface, reachable only by the
 // first-party Settings app. Declared with NO scopes — the gate is app identity,

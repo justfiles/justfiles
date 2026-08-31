@@ -171,66 +171,6 @@ a:focus-visible {
 	outline: none;
 }
 
-.button {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	padding: 2px 11px;
-	border: 1px solid var(--read-rule);
-	border-radius: 5px;
-	background: var(--read-control);
-	color: var(--read-ink);
-	font-size: 12px;
-	line-height: 20px;
-	text-decoration: none;
-	cursor: pointer;
-	white-space: nowrap;
-}
-
-.button:hover:not(:disabled) {
-	background: var(--read-control-hover);
-}
-
-.button:active:not(:disabled) {
-	background: var(--read-control-active);
-}
-
-.button.primary {
-	border-color: color-mix(in srgb, var(--read-accent) 72%, black);
-	background: linear-gradient(
-		to bottom,
-		color-mix(in srgb, var(--read-accent) 74%, white),
-		var(--read-accent)
-	);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
-	color: white;
-	text-shadow: 0 1px 0 color-mix(in srgb, black 22%, transparent);
-}
-
-.button.primary:hover:not(:disabled) {
-	background: linear-gradient(
-		to bottom,
-		color-mix(in srgb, var(--read-accent) 66%, white),
-		color-mix(in srgb, var(--read-accent) 94%, white)
-	);
-}
-
-.button.remove:hover {
-	border-color: color-mix(in srgb, var(--read-danger) 55%, var(--read-rule));
-	color: var(--read-danger);
-}
-
-.button.danger {
-	border-color: color-mix(in srgb, var(--read-danger) 65%, var(--read-rule));
-	background: var(--read-danger-soft);
-	color: var(--read-danger);
-}
-
-.button:disabled {
-	opacity: 0.45;
-	cursor: default;
-}
-
 .item-list {
 	min-height: 0;
 	overflow-y: auto;

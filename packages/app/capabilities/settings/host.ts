@@ -51,6 +51,7 @@ import type {
 	UserFacts,
 	UserProfile
 } from './contract.ts'
+import { DOCK_MATERIAL_NAMES } from './contract.ts'
 
 // The one identity gate. Not a scope: a declared scope would hand the host admin
 // surface to any sideloaded app that declares `settings`.
@@ -135,6 +136,7 @@ export interface AgentDeps {
 export interface AppearanceDeps {
 	volume: HostVolume
 	wallpaper: string
+	dockMaterial: string
 }
 
 export interface SettingsHostDeps {
@@ -328,15 +330,13 @@ function age(birthDate: string, now: string): number | undefined {
 }
 
 // ── the desktop's look ───────────────────────────────────────────────
-// One file, read and written whole. The only judgement here is that the bytes must BE an
-// image (`imageType`, from their own first bytes — a name proves nothing): the shell points
-// an image at them, so anything else would render as a broken desktop with no way to tell
-// why. A flat colour passes because SVG is an image; the app is what knows it wrote one.
+// Each setting is one file. Wallpaper bytes must be an image, and the dock file must hold
+// one known material name; an invalid material reads as unset so the shell uses its default.
 //
 // The write is a plain overwrite, not the staged rename `putAvatarFile` needs — a wallpaper
 // claims no state and has no siblings, so the worst a torn write can cost is one repaint,
 // which the shell's own watch fixes on the next event.
-function appearanceMethods({ volume: vol, wallpaper }: AppearanceDeps): Served {
+function appearanceMethods({ volume: vol, wallpaper, dockMaterial }: AppearanceDeps): Served {
 	return {
 		'appearance.readWallpaper': async () =>
 			(await vol.exists(wallpaper)) ? vol.readFile(wallpaper) : null,
@@ -349,6 +349,20 @@ function appearanceMethods({ volume: vol, wallpaper }: AppearanceDeps): Served {
 					'appearance.writeWallpaper'
 				)
 			await writeTo(vol, wallpaper, bytes)
+		},
+		'appearance.readDockMaterial': async () => {
+			if (!(await vol.exists(dockMaterial))) return null
+			const value = decoder.decode(await vol.readFile(dockMaterial)).trim()
+			return DOCK_MATERIAL_NAMES.find((name) => name === value) ?? null
+		},
+		'appearance.writeDockMaterial': async ({ material }) => {
+			if (!DOCK_MATERIAL_NAMES.some((name) => name === material))
+				throw new CapabilityError(
+					'CAPABILITY_INVALID_INPUT',
+					'settings',
+					'appearance.writeDockMaterial'
+				)
+			await writeTo(vol, dockMaterial, encoder.encode(material))
 		}
 	}
 }
