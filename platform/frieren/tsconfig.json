@@ -8,6 +8,9 @@
 			"path": "./tsconfig.worker.json"
 		},
 		{
+			"path": "./tsconfig.worker-tests.json"
+		},
+		{
 			"path": "./tsconfig.icons.json"
 		},
 		{
