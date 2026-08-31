@@ -1,0 +1,1213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+	:root { color-scheme: light dark; }
+	body { margin: 0; font: 14px system-ui, sans-serif; background: #fbfbf9; }
+	img { max-width: 100%; }
+	[hidden] { display: none !important; }
+</style>
+<title>The Keycap Dock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+
+<style>
+/* ───────────────────────── page chrome ───────────────────────── */
+:root {
+	color-scheme: light dark;
+	--paper: #eceeea;
+	--panel: #f8faf7;
+	--panel-2: #e3e7e1;
+	--ink: #171a18;
+	--ink-2: #5b625c;
+	--ink-3: #868d86;
+	--rule-pg: #d3d9d2;
+	--mark: #2c5145;
+	--mark-soft: #e0eae4;
+	--shadow: 0 1px 2px rgb(20 30 24 / .05), 0 12px 32px rgb(20 30 24 / .07);
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--paper: #101312;
+		--panel: #1a1e1c;
+		--panel-2: #242a26;
+		--ink: #e7ece8;
+		--ink-2: #9aa39c;
+		--ink-3: #6e766f;
+		--rule-pg: #2b322d;
+		--mark: #79b79e;
+		--mark-soft: #1e2b26;
+		--shadow: 0 1px 2px rgb(0 0 0 / .4), 0 12px 32px rgb(0 0 0 / .35);
+	}
+}
+:root[data-theme="dark"] {
+	--paper: #101312;
+	--panel: #1a1e1c;
+	--panel-2: #242a26;
+	--ink: #e7ece8;
+	--ink-2: #9aa39c;
+	--ink-3: #6e766f;
+	--rule-pg: #2b322d;
+	--mark: #79b79e;
+	--mark-soft: #1e2b26;
+	--shadow: 0 1px 2px rgb(0 0 0 / .4), 0 12px 32px rgb(0 0 0 / .35);
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	background: var(--paper);
+	color: var(--ink);
+	font-family: "IBM Plex Sans", system-ui, sans-serif;
+	font-size: 15px;
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, .axis-stop .n, .law-no strong, .law-yes strong {
+	font-family: Archivo, system-ui, sans-serif;
+	font-variation-settings: "wdth" 112;
+	text-wrap: balance;
+}
+
+code, .mono, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+a { color: var(--mark); }
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+
+/* ───────────────────────── topbar ───────────────────────── */
+.topbar {
+	position: sticky;
+	top: 0;
+	z-index: 50;
+	background: color-mix(in srgb, var(--paper) 88%, transparent);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	border-bottom: 1px solid var(--rule-pg);
+}
+.topbar-in {
+	display: flex;
+	align-items: center;
+	gap: 18px;
+	height: 46px;
+	max-width: 1180px;
+	margin: 0 auto;
+	padding: 0 28px;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.topbar-in::-webkit-scrollbar { display: none; }
+.topbar strong {
+	font-family: Archivo, system-ui, sans-serif;
+	font-variation-settings: "wdth" 118;
+	font-weight: 600;
+	font-size: 13px;
+	white-space: nowrap;
+}
+.topnav { display: flex; gap: 2px; margin-left: auto; }
+.topnav a {
+	padding: 3px 9px;
+	border-radius: 999px;
+	color: var(--ink-2);
+	font-size: 12.5px;
+	text-decoration: none;
+	white-space: nowrap;
+}
+.topnav a:hover { background: var(--panel-2); color: var(--ink); }
+
+/* ───────────────────────── hero ───────────────────────── */
+.hero { padding: 72px 0 36px; }
+.kicker {
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 11.5px;
+	letter-spacing: .14em;
+	text-transform: uppercase;
+	color: var(--ink-3);
+	margin-bottom: 22px;
+}
+.hero h1 {
+	margin: 0 0 20px;
+	font-size: clamp(36px, 5.8vw, 60px);
+	font-weight: 600;
+	font-variation-settings: "wdth" 100;
+	line-height: 1.05;
+	letter-spacing: -.022em;
+	max-width: 21ch;
+}
+.hero h1 em { font-style: normal; color: var(--mark); }
+.lede { max-width: 64ch; font-size: 17px; color: var(--ink-2); }
+.lede strong { color: var(--ink); font-weight: 500; }
+
+/* ─────────────── the law: what the edge means ─────────────── */
+.law {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1px;
+	margin-top: 40px;
+	background: var(--rule-pg);
+	border: 1px solid var(--rule-pg);
+	border-radius: 13px;
+	overflow: hidden;
+}
+.law > div { background: var(--panel); padding: 22px 24px 24px; }
+.law .tag {
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 10.5px;
+	letter-spacing: .13em;
+	text-transform: uppercase;
+	margin-bottom: 12px;
+}
+.law-yes .tag { color: var(--mark); }
+.law-no .tag { color: var(--ink-3); }
+.law p { margin: 14px 0 0; font-size: 13.5px; color: var(--ink-2); max-width: 46ch; }
+.law strong { color: var(--ink); font-weight: 500; }
+.law-demo { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 44px; }
+@media (max-width: 760px) { .law { grid-template-columns: 1fr; } }
+
+/* ───────────────────────── sections ───────────────────────── */
+section { padding: 50px 0; }
+.sec-head { margin-bottom: 26px; }
+.sec-head .eyebrow {
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 11.5px;
+	letter-spacing: .14em;
+	text-transform: uppercase;
+	color: var(--mark);
+	margin-bottom: 10px;
+}
+.sec-head h2 { margin: 0 0 10px; font-size: 30px; font-weight: 600; letter-spacing: -.012em; }
+.sec-head p { margin: 0 0 12px; max-width: 68ch; color: var(--ink-2); }
+.sec-head p:last-child { margin-bottom: 0; }
+
+/* the object → atmosphere rail */
+.axis { margin-top: 34px; }
+.axis-ends {
+	display: flex;
+	justify-content: space-between;
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 11px;
+	letter-spacing: .1em;
+	text-transform: uppercase;
+	color: var(--ink-3);
+	margin-bottom: 10px;
+}
+.axis-track {
+	height: 2px;
+	border-radius: 2px;
+	background: linear-gradient(90deg, var(--mark), var(--rule-pg));
+}
+.taxo { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 14px; }
+.axis-stop {
+	display: block;
+	padding: 13px 14px 14px;
+	background: var(--panel);
+	border: 1px solid var(--rule-pg);
+	border-radius: 10px;
+	text-decoration: none;
+	color: inherit;
+}
+.axis-stop:hover { border-color: var(--mark); }
+.axis-stop .m {
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 10.5px;
+	letter-spacing: .12em;
+	text-transform: uppercase;
+	color: var(--mark);
+}
+.axis-stop .n {
+	display: block;
+	margin: 4px 0 5px;
+	font-weight: 600;
+	font-size: 15px;
+	font-variation-settings: "wdth" 108;
+	letter-spacing: -.005em;
+}
+.axis-stop .d { font-size: 12px; color: var(--ink-2); line-height: 1.45; }
+@media (max-width: 900px) { .taxo { grid-template-columns: repeat(2, 1fr); } }
+
+/* ───────────────────────── band ───────────────────────── */
+.band { padding: 56px 0; border-top: 1px solid var(--rule-pg); }
+.band-head {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 20px 28px;
+	align-items: end;
+	margin-bottom: 22px;
+}
+.band-head .what {
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 11px;
+	letter-spacing: .13em;
+	text-transform: uppercase;
+	color: var(--mark);
+	margin-bottom: 8px;
+}
+.band-head h2 { margin: 0 0 10px; font-size: 28px; font-weight: 600; letter-spacing: -.015em; }
+.band-head .thesis { margin: 0; max-width: 68ch; font-size: 15.5px; color: var(--ink-2); }
+.band-head .thesis b { color: var(--ink); font-weight: 500; }
+
+.stage-tools { display: flex; gap: 8px; align-items: center; flex: none; }
+.seg { display: inline-flex; padding: 2px; background: var(--panel-2); border-radius: 8px; }
+.seg button {
+	font: inherit;
+	font-size: 12px;
+	padding: 3px 12px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--ink-2);
+	cursor: pointer;
+}
+.seg button[data-on="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.hint { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+@media (max-width: 720px) { .band-head { grid-template-columns: 1fr; align-items: start; } }
+
+/* notes */
+.notes {
+	display: grid;
+	grid-template-columns: 1fr 1fr 1.15fr;
+	gap: 1px;
+	margin-top: 20px;
+	background: var(--rule-pg);
+	border: 1px solid var(--rule-pg);
+	border-radius: 12px;
+	overflow: hidden;
+}
+.notes > div { background: var(--panel); padding: 18px 20px 20px; }
+.notes h4 {
+	margin: 0 0 8px;
+	font-family: "IBM Plex Mono", monospace;
+	font-size: 10.5px;
+	font-weight: 500;
+	letter-spacing: .13em;
+	text-transform: uppercase;
+	color: var(--ink-3);
+}
+.notes p { margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2); }
+.notes p:last-child { margin-bottom: 0; }
+.notes .win-note { color: var(--mark); font-weight: 500; }
+.notes pre { margin: 0; font-size: 11.5px; line-height: 1.65; color: var(--ink-2); white-space: pre; overflow-x: auto; }
+.notes pre .k { color: var(--ink); }
+.notes pre .c { color: var(--ink-3); }
+@media (max-width: 900px) { .notes { grid-template-columns: 1fr; } }
+
+/* ═════════════════════ the stage ═════════════════════ */
+.stage {
+	position: relative;
+	height: 430px;
+	overflow: hidden;
+	border-radius: 14px;
+	border: 1px solid var(--rule-pg);
+	box-shadow: var(--shadow);
+	background: var(--wall);
+	font-family: var(--font-ui);
+	font-size: var(--text-ui);
+	color: var(--text);
+	user-select: none;
+}
+.stage[data-mode="light"] {
+	--surface: #f5f5f4;
+	--window-bg: #ffffff;
+	--text: #1c1c1c;
+	--rule: #d0d0cd;
+	--control-bg: #ffffff;
+	--control-bg-hover: #fafafa;
+	--control-bg-active: #ececec;
+	--accent: #3e7fd6;
+	--on-accent: #ffffff;
+	--focus: #0a84ff;
+	--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+	--text-ui: 13px;
+	--keycap-edge: #c6c6c0;
+	/* container-only tokens */
+	--well: #dedeD9;
+	--well-lip: rgb(255 255 255 / .8);
+	--plane: #f0f0ee;
+	--boundary: rgb(255 255 255 / .72);
+	--scrim: rgb(12 24 34 / .46);
+	--wall: radial-gradient(120% 90% at 12% 6%, #79a8c0 0%, transparent 56%),
+		radial-gradient(100% 80% at 88% 94%, #2a5470 0%, transparent 60%),
+		linear-gradient(160deg, #3a6b8c, #28536e);
+}
+.stage[data-mode="dark"] {
+	--surface: #2c2c2e;
+	--window-bg: #1e1e1e;
+	--text: #ebebf0;
+	--rule: #3a3a3c;
+	--control-bg: #48484a;
+	--control-bg-hover: #545458;
+	--control-bg-active: #3a3a3c;
+	--accent: #3e7fd6;
+	--on-accent: #ffffff;
+	--focus: #0a84ff;
+	--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+	--text-ui: 13px;
+	--keycap-edge: #232325;
+	--well: #131314;
+	--well-lip: rgb(255 255 255 / .07);
+	--plane: #232325;
+	--boundary: rgb(255 255 255 / .34);
+	--scrim: rgb(0 0 0 / .58);
+	--wall: radial-gradient(120% 90% at 12% 6%, #3d6b86 0%, transparent 56%),
+		radial-gradient(100% 80% at 88% 94%, #16303f 0%, transparent 60%),
+		linear-gradient(160deg, #1f3f53, #142c3b);
+}
+
+/* window — carries the locked Keycap buttons */
+.win {
+	position: absolute;
+	top: 30px;
+	left: 34px;
+	width: 316px;
+	border-radius: 8px;
+	overflow: hidden;
+	border: 1px solid var(--rule);
+	background: var(--window-bg);
+	box-shadow: 0 20px 44px rgb(0 0 0 / .34);
+}
+.win-bar {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	height: 28px;
+	padding: 0 9px;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
+	font-size: 11.5px;
+	color: color-mix(in srgb, var(--text) 60%, transparent);
+}
+.lights { display: flex; gap: 5px; }
+.lights i { width: 11px; height: 11px; border-radius: 999px; border: 1px solid rgb(0 0 0 / .16); }
+.lights i:nth-child(1) { background: #ff5f57; }
+.lights i:nth-child(2) { background: #febc2e; }
+.lights i:nth-child(3) { background: #28c940; }
+.win-body { padding: 15px 16px 14px; }
+.win-body b { display: block; font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+.win-body span { font-size: 12px; color: color-mix(in srgb, var(--text) 62%, transparent); }
+.win-foot {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 11px 12px;
+	background: var(--surface);
+	border-top: 1px solid var(--rule);
+}
+
+/* ═════ the Keycap button — unchanged, and the only thing with an edge ═════ */
+.btn {
+	font: inherit;
+	font-family: var(--font-ui, system-ui);
+	font-size: 13px;
+	font-weight: 550;
+	line-height: 1.45;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	white-space: nowrap;
+	cursor: default;
+	-webkit-appearance: none;
+	appearance: none;
+	padding: 5px 13px;
+	border-radius: 7px;
+	color: var(--text);
+	background: var(--control-bg);
+	border: 1px solid var(--rule);
+	box-shadow: 0 1.5px 0 var(--keycap-edge);
+	transition: transform 70ms ease, box-shadow 70ms ease, background-color 90ms ease;
+}
+.btn:hover { background: var(--control-bg-hover); }
+.btn:active { transform: translateY(1.5px); box-shadow: 0 0 0 var(--keycap-edge); background: var(--control-bg-active); }
+.btn:focus-visible {
+	outline: none;
+	box-shadow: 0 1.5px 0 var(--keycap-edge), 0 0 0 3px color-mix(in srgb, var(--focus) 28%, transparent);
+}
+.btn[data-primary] {
+	color: var(--on-accent);
+	background: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 80%, black);
+	box-shadow: 0 1.5px 0 color-mix(in srgb, var(--accent) 62%, black);
+}
+.btn[data-primary]:hover { background: color-mix(in srgb, var(--accent) 92%, white); }
+.btn[data-primary]:active { box-shadow: 0 0 0 color-mix(in srgb, var(--accent) 62%, black); }
+@media (prefers-reduced-motion: reduce) { .btn { transition-duration: 0s; } }
+
+/* the law strip uses the light token set */
+.law-demo {
+	--control-bg: #fff;
+	--control-bg-hover: #fafafa;
+	--control-bg-active: #ececec;
+	--rule: #d0d0cd;
+	--text: #1c1c1c;
+	--accent: #3e7fd6;
+	--on-accent: #fff;
+	--keycap-edge: #c6c6c0;
+	--focus: #0a84ff;
+	--font-ui: system-ui, sans-serif;
+	--surface: #f5f5f4;
+	--window-bg: #fff;
+}
+.law-demo .sample-container {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 44px;
+	padding: 0 12px;
+	border-radius: 12px;
+	background: #fff;
+	border: 1px solid #d0d0cd;
+	box-shadow: 0 8px 20px rgb(0 0 0 / .1);
+	font-family: system-ui, sans-serif;
+	font-size: 12.5px;
+	color: #5b625c;
+}
+
+/* ═════════════════════ dock skeleton ═════════════════════
+   Held constant across all five: only the CONTAINER changes.
+   App icons never take the button's edge — they are pictures you
+   click, not caps you press, so their feedback is a 1px settle. */
+.dock {
+	position: absolute;
+	left: 50%;
+	bottom: 20px;
+	transform: translateX(-50%);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: 556px;
+	max-width: calc(100% - 40px);
+}
+.bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 62px;
+	padding: 9px;
+	cursor: default;
+}
+.field {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	height: 34px;
+	width: 178px;
+	flex: none;
+	padding: 0 11px;
+	overflow: hidden;
+	border-radius: 9px;
+	border: 1px solid var(--rule);
+	background: var(--window-bg);
+	transition: width 340ms cubic-bezier(.32, .72, 0, 1);
+}
+.dock[data-open="true"] .field { width: 100%; flex: 1; }
+.field svg { width: 14px; height: 14px; flex: none; opacity: .5; }
+.field span {
+	font-size: 12.5px;
+	white-space: nowrap;
+	color: color-mix(in srgb, var(--text) 52%, transparent);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.apps { display: flex; gap: 8px; }
+.dock[data-open="true"] .apps,
+.dock[data-open="true"] .sep { display: none; }
+.key {
+	width: 44px;
+	height: 44px;
+	flex: none;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: default;
+}
+.key i,
+.tile i {
+	display: grid;
+	place-items: center;
+	background: var(--k);
+	color: #fff;
+	font-family: var(--font-ui);
+	font-weight: 650;
+	font-style: normal;
+	box-shadow: inset 0 0 0 1px rgb(0 0 0 / .07);
+	transition: transform 70ms ease, filter 70ms ease;
+}
+.key i { width: 40px; height: 40px; border-radius: 11px; font-size: 15px; }
+.key:active i,
+.tile:active i { transform: translateY(1px); filter: brightness(.93); }
+.sep {
+	width: 1px;
+	height: 22px;
+	flex: none;
+	background: linear-gradient(transparent, color-mix(in srgb, var(--text) 24%, transparent), transparent);
+}
+.agent { position: relative; width: 44px; height: 44px; flex: none; display: grid; place-items: center; }
+.agent::before {
+	content: "";
+	position: absolute;
+	inset: -1px;
+	border: 2px solid transparent;
+	border-radius: 50%;
+	pointer-events: none;
+	border-top-color: #fff;
+	border-right-color: #bf5af2;
+	animation: dock-spin 1.1s linear infinite;
+}
+@keyframes dock-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .agent::before { animation: none; } }
+.face {
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	background: #f0e2d0;
+	border: 1.5px solid rgb(0 0 0 / .28);
+	display: grid;
+	place-items: center;
+	padding: 0;
+	cursor: default;
+}
+.face svg { width: 24px; height: 24px; }
+.key:focus-visible,
+.tile:focus-visible,
+.face:focus-visible,
+.seg button:focus-visible { outline: 2px solid var(--focus, #0a84ff); outline-offset: 2px; }
+
+/* sheet */
+.sheet { overflow: hidden; }
+.dock[data-open="false"] .sheet { display: none; }
+.sheet-label {
+	padding: 9px 15px 7px;
+	font-family: var(--font-ui);
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: .09em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, var(--text) 52%, transparent);
+	border-bottom: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+}
+.grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+	gap: 14px 8px;
+	padding: 16px 14px;
+}
+.tile {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 3px;
+	border: 0;
+	border-radius: 10px;
+	background: none;
+	color: inherit;
+	font-family: var(--font-ui);
+	font-size: 11px;
+	cursor: default;
+}
+.tile:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.tile i { width: 42px; height: 42px; border-radius: 12px; font-size: 16px; }
+.tile span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ══════════ ONE · Sheet — an object laid on the desk ══════════ */
+[data-v="1"] .bar,
+[data-v="1"] .sheet {
+	background: var(--window-bg);
+	border: 1px solid var(--rule);
+	border-radius: 13px;
+	/* diffuse only. A hard offset shadow would read as an edge, and an
+	   edge means "press me". */
+	box-shadow: 0 2px 8px rgb(0 0 0 / .1), 0 14px 36px rgb(0 0 0 / .26);
+}
+[data-v="1"] .field { background: color-mix(in srgb, var(--text) 4%, var(--window-bg)); }
+
+/* ══════════ TWO · Tray — a recess in the desk ══════════ */
+[data-v="2"] .bar,
+[data-v="2"] .sheet {
+	background: var(--well);
+	border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+	border-radius: 14px;
+	/* depth goes IN. No outer shadow at all — a hole doesn't float. */
+	box-shadow: inset 0 2px 4px rgb(0 0 0 / .16), inset 0 -1px 0 var(--well-lip);
+}
+[data-v="2"] .field {
+	background: var(--window-bg);
+	border-color: color-mix(in srgb, var(--text) 12%, transparent);
+}
+[data-v="2"] .sheet-label { border-bottom-color: color-mix(in srgb, var(--text) 12%, transparent); }
+
+/* ══════════ THREE · Ledge — a plane of the room ══════════ */
+[data-v="3"] {
+	left: 0;
+	right: 0;
+	bottom: 0;
+	width: auto;
+	max-width: none;
+	transform: none;
+	gap: 0;
+}
+[data-v="3"] .bar {
+	height: 64px;
+	padding: 9px 18px;
+	background: var(--plane);
+	border-top: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+	/* no lift, no lip, no shadow: architecture, not an object */
+}
+[data-v="3"] .sheet {
+	background: var(--plane);
+	border-top: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+}
+[data-v="3"] .grid { padding: 16px 18px; }
+[data-v="3"] .sheet-label { padding-left: 19px; }
+
+/* ══════════ FOUR · Outline — only a boundary ══════════ */
+[data-v="4"] .bar {
+	background: none;
+	border: 1px solid var(--boundary);
+	border-radius: 13px;
+	box-shadow: none;
+}
+[data-v="4"] .field {
+	background: var(--window-bg);
+	border-color: var(--rule);
+}
+/* engaged, it earns a real surface — the ambient state stays a drawing */
+[data-v="4"] .sheet {
+	background: var(--window-bg);
+	border: 1px solid var(--rule);
+	border-radius: 13px;
+	box-shadow: 0 14px 36px rgb(0 0 0 / .26);
+}
+[data-v="4"] .key i { box-shadow: inset 0 0 0 1px rgb(0 0 0 / .07), 0 2px 8px rgb(0 0 0 / .25); }
+[data-v="4"] .face { box-shadow: 0 2px 8px rgb(0 0 0 / .25); }
+
+/* ══════════ FIVE · Underlay — no container at all ══════════ */
+[data-v="5"] .bar { background: none; border: 0; box-shadow: none; }
+[data-v="5"] .sheet {
+	background: none;
+	border: 0;
+	box-shadow: none;
+}
+[data-v="5"] .sheet-label { border-bottom: 0; padding-left: 17px; }
+[data-v="5"] .tile i,
+[data-v="5"] .key i { box-shadow: inset 0 0 0 1px rgb(0 0 0 / .07), 0 3px 10px rgb(0 0 0 / .3); }
+[data-v="5"] .face { box-shadow: 0 3px 10px rgb(0 0 0 / .3); }
+[data-v="5"] .field { box-shadow: 0 3px 10px rgb(0 0 0 / .22); }
+[data-v="5"] .sep { background: linear-gradient(transparent, rgb(255 255 255 / .3), transparent); }
+[data-v="5"] .sheet-label,
+[data-v="5"] .tile { color: #fff; }
+[data-v="5"] .tile:hover { background: rgb(255 255 255 / .14); }
+/* the only "surface" is a flat gradient of the desktop itself */
+.stage[data-underlay="true"]::after {
+	content: "";
+	position: absolute;
+	inset: auto 0 0 0;
+	height: 190px;
+	background: linear-gradient(to top, var(--scrim), transparent);
+	pointer-events: none;
+}
+
+/* ───────────────────────── verdict ───────────────────────── */
+.verdict {
+	display: grid;
+	grid-template-columns: 1.2fr 1fr;
+	gap: 28px;
+	padding: 30px;
+	background: var(--panel);
+	border: 1px solid var(--rule-pg);
+	border-radius: 14px;
+	box-shadow: var(--shadow);
+}
+.verdict h3 { margin: 0 0 12px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.verdict p { margin: 0 0 12px; color: var(--ink-2); font-size: 14.5px; }
+.verdict p:last-child { margin-bottom: 0; }
+.verdict strong { color: var(--ink); font-weight: 500; }
+.picks { display: grid; gap: 9px; align-content: start; }
+.pick {
+	display: grid;
+	grid-template-columns: 76px 1fr;
+	gap: 10px;
+	padding: 11px 13px;
+	border-radius: 9px;
+	background: var(--panel-2);
+	font-size: 13px;
+	color: var(--ink-2);
+}
+.pick b {
+	font-family: "IBM Plex Mono", monospace;
+	font-weight: 500;
+	color: var(--mark);
+	font-size: 11.5px;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+}
+.pick i { font-style: normal; color: var(--ink); font-weight: 500; }
+@media (max-width: 780px) { .verdict { grid-template-columns: 1fr; } .pick { grid-template-columns: 1fr; } }
+
+footer {
+	padding: 40px 0 60px;
+	color: var(--ink-3);
+	font-size: 12.5px;
+	font-family: "IBM Plex Mono", monospace;
+}
+</style>
+
+</head>
+<body>
+<div class="topbar">
+	<div class="topbar-in">
+		<strong>The Keycap Dock</strong>
+		<nav class="topnav">
+			<a href="#law">The rule</a>
+			<a href="#v1">Sheet</a>
+			<a href="#v2">Tray</a>
+			<a href="#v3">Ledge</a>
+			<a href="#v4">Outline</a>
+			<a href="#v5">Underlay</a>
+			<a href="#verdict">Verdict</a>
+		</nav>
+	</div>
+</div>
+
+<div class="wrap">
+
+	<div class="hero">
+		<div class="kicker">platform/frieren · omnibar treatment</div>
+		<h1>The dock holds the controls. It <em>isn't</em> one.</h1>
+		<p class="lede">
+			The keycap's edge is not decoration — it is a <strong>promise that the thing moves when you push
+			it</strong>. Put that edge on the dock and the dock is lying. So the edge stays exclusive to buttons,
+			and the dock has to match by sharing everything <em>else</em>: opaque fills, hairline borders, honest
+			light, no gloss, no blur. Five containers built that way, each one live — click a dock to engage its
+			sheet, flip the theme.
+		</p>
+	</div>
+
+	<div class="law" id="law">
+		<div class="law-yes">
+			<div class="tag">Has an edge — and means it</div>
+			<div class="law-demo">
+				<button class="btn">Cancel</button>
+				<button class="btn" data-primary>Save</button>
+			</div>
+			<p>
+				<strong>A control.</strong> The 1.5px edge under the cap is spent the instant you press:
+				it drops, the edge vanishes, the thing has moved. The edge is the button's whole vocabulary.
+			</p>
+		</div>
+		<div class="law-no">
+			<div class="tag">Never gets one</div>
+			<div class="law-demo">
+				<div class="sample-container">Search apps, or talk to Frieren…</div>
+			</div>
+			<p>
+				<strong>A container.</strong> Nothing happens when you push a dock, so it may not advertise a
+				press. It belongs to the same system through <em>material</em> — flat opaque fill, one hairline,
+				light from above — and through what it refuses.
+			</p>
+		</div>
+	</div>
+
+	<section>
+		<div class="sec-head">
+			<div class="eyebrow">What's held constant</div>
+			<h2>Only the container changes</h2>
+			<p>
+				Everything inside the dock is identical in all five stages, so the comparison is honest. The search
+				field is a solid inset box, the agent keeps its spinning presence ring, and the app icons take a
+				<strong>1px settle and a slight dim</strong> when clicked — never the button's hard edge. They are
+				pictures you click, not caps you press, and the difference should be visible at a glance.
+			</p>
+			<p>
+				Every variant also drops <code>backdrop-filter</code> entirely. Blur is the one thing the keycap
+				language has no answer for: it makes a surface borrow its colour from whatever is behind it, which
+				is the opposite of an object made of something.
+			</p>
+		</div>
+
+		<div class="axis">
+			<div class="axis-ends">
+				<span>The dock is an object</span>
+				<span>The dock is atmosphere</span>
+			</div>
+			<div class="axis-track"></div>
+			<div class="taxo">
+				<a class="axis-stop" href="#v1">
+					<span class="m">It is</span>
+					<span class="n">Sheet</span>
+					<span class="d">Matte stock laid on the desk.</span>
+				</a>
+				<a class="axis-stop" href="#v2">
+					<span class="m">It is</span>
+					<span class="n">Tray</span>
+					<span class="d">A recess cut into the desk.</span>
+				</a>
+				<a class="axis-stop" href="#v3">
+					<span class="m">It is</span>
+					<span class="n">Ledge</span>
+					<span class="d">A plane of the room itself.</span>
+				</a>
+				<a class="axis-stop" href="#v4">
+					<span class="m">It is</span>
+					<span class="n">Outline</span>
+					<span class="d">A boundary drawn, not a thing.</span>
+				</a>
+				<a class="axis-stop" href="#v5">
+					<span class="m">It is</span>
+					<span class="n">Underlay</span>
+					<span class="d">Nothing. Just contents in a field.</span>
+				</a>
+			</div>
+		</div>
+	</section>
+
+	<!-- ═══ 1 ═══ -->
+	<div class="band" id="v1">
+		<div class="band-head">
+			<div>
+				<div class="what">The dock is a sheet</div>
+				<h2>Sheet</h2>
+				<p class="thesis">
+					<b>Same material, different physics.</b> Matte opaque stock, one hairline, and a purely
+					<em>diffuse</em> shadow — the thing floats, so it casts softness, never a hard line. That is the
+					whole separation: a control has a crisp edge because it sits on something; a sheet has a blur
+					because it sits above it. Nothing about it invites a press.
+				</p>
+			</div>
+			<div class="stage-tools" data-tools="1"></div>
+		</div>
+		<div data-stage="1"></div>
+		<div class="notes">
+			<div>
+				<h4>Why it fits</h4>
+				<p><span class="win-note">The safest reading of the brief.</span> It shares the button's palette, hairline and opacity, and differs exactly where it must: hard edge versus soft shadow.</p>
+				<p>Best legibility of the five — the sheet is a real page, so app names, rows and the transcript all sit on solid white or solid near-black.</p>
+			</div>
+			<div>
+				<h4>Where it hurts</h4>
+				<p>Two white rectangles on a desktop: it can read as a second window rather than as chrome, especially when a window sits behind it.</p>
+				<p>It's the least characterful. Correct, calm, and not memorable.</p>
+			</div>
+			<div>
+				<h4>The delta</h4>
+				<pre><span class="c">/* app.css:694 — the shared glass rule */</span>
+- backdrop-filter: blur(22px) saturate(180%)
+- background: linear-gradient(180deg, sheen…)
+- inset rim / bounce / edge
++ <span class="k">background</span>: var(--window-bg);
++ <span class="k">border</span>: 1px solid var(--rule);
++ <span class="k">box-shadow</span>: 0 2px 8px rgb(0 0 0/.1),
++   0 14px 36px rgb(0 0 0/.26);
+
+  <span class="k">--dock-radius</span>: 13px;  <span class="c">/* was 22 */</span>
+<span class="c">   no new tokens</span></pre>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ 2 ═══ -->
+	<div class="band" id="v2">
+		<div class="band-head">
+			<div>
+				<div class="what">The dock is a recess</div>
+				<h2>Tray</h2>
+				<p class="thesis">
+					<b>Invert the depth and the confusion becomes structurally impossible.</b> A button comes
+					<em>out</em> of the surface; the tray goes <em>into</em> it — a shallow well with a shadow along
+					its top wall, a lit lip along the bottom, and no outer shadow at all, because a hole doesn't
+					float. The icons sit in it the way tools sit in a drawer.
+				</p>
+			</div>
+			<div class="stage-tools" data-tools="2"></div>
+		</div>
+		<div data-stage="2"></div>
+		<div class="notes">
+			<div>
+				<h4>Why it fits</h4>
+				<p><span class="win-note">The cleanest answer to your objection.</span> Out means control, in means container — one lighting model, two opposite readings, nothing to learn.</p>
+				<p>It gives the field somewhere to belong: a slot inside a well is coherent, where a slot inside a floating pill was always slightly arbitrary.</p>
+			</div>
+			<div>
+				<h4>Where it hurts</h4>
+				<p>A recess implies a wall to cut into, and the wallpaper is a photograph. The illusion is decent on a gradient and gets weaker on a busy image.</p>
+				<p>The well is darker than the desktop chrome around it, which draws the eye downward more than an ambient element should.</p>
+			</div>
+			<div>
+				<h4>The delta</h4>
+				<pre><span class="c">/* bar + sheet */</span>
++ <span class="k">background</span>: var(--well);
++ <span class="k">box-shadow</span>:
++   inset 0 2px 4px rgb(0 0 0/.16),
++   inset 0 -1px 0 var(--well-lip);
+- box-shadow: 0 12px 32px …   <span class="c">/* no lift */</span>
+
++ --well       <span class="c">/* #dedeD9 / #131314 */</span>
++ --well-lip   <span class="c">/* the far wall catching light */</span></pre>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ 3 ═══ -->
+	<div class="band" id="v3">
+		<div class="band-head">
+			<div>
+				<div class="what">The dock is a plane</div>
+				<h2>Ledge</h2>
+				<p class="thesis">
+					<b>Stop being an object entirely.</b> The dock becomes a plane of the room: flush to the bottom,
+					edge to edge, defined by a single hairline and a flat fill — no rounding, no lift, no shadow.
+					You cannot press a wall, so nobody will try. It is the strongest possible statement that this
+					is architecture and the buttons are furniture.
+				</p>
+			</div>
+			<div class="stage-tools" data-tools="3"></div>
+		</div>
+		<div data-stage="3"></div>
+		<div class="notes">
+			<div>
+				<h4>Why it fits</h4>
+				<p><span class="win-note">Zero object-ness.</span> Nothing here reads as pressable at any size, and the keycap buttons in the window become the only raised things on screen — which is the point.</p>
+				<p>The sheet stops being a separate card: the plane simply grows taller, so engaging has no second shadow, no second border, no stacking.</p>
+			</div>
+			<div>
+				<h4>Where it hurts</h4>
+				<p><span class="win-note">It brings back the dock's tax.</span> The omnibar doc deliberately threw away reserved layout space, and a permanent full-width band argues for it again.</p>
+				<p>It's the most conventional-desktop look of the five — closer to a taskbar than to anything Frieren has been.</p>
+			</div>
+			<div>
+				<h4>The delta</h4>
+				<pre><span class="c">/* .frn-dock — app.css:670 */</span>
+- left: 50%; bottom: 20px;
+- transform: translateX(-50%);
+- width: var(--frn-dock-width);
++ <span class="k">inset</span>: auto 0 0 0;
++ <span class="k">gap</span>: 0;
+
+<span class="c">/* bar + sheet */</span>
++ <span class="k">background</span>: var(--plane);
++ <span class="k">border-top</span>: 1px solid …;
+  <span class="k">border-radius</span>: 0;
+
+<span class="c">   the app-count width calc goes away</span></pre>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ 4 ═══ -->
+	<div class="band" id="v4">
+		<div class="band-head">
+			<div>
+				<div class="what">The dock is a boundary</div>
+				<h2>Outline</h2>
+				<p class="thesis">
+					<b>At rest, the dock is a drawn line and nothing else.</b> No fill, no shadow — just the hairline
+					the button already uses, holding contents that carry their own solidity. Then engaging earns a
+					real surface: the sheet arrives as opaque stock. The engagement model becomes a material fact —
+					<em>ambient is a drawing, engaged is a page.</em>
+				</p>
+			</div>
+			<div class="stage-tools" data-tools="4"></div>
+		</div>
+		<div data-stage="4"></div>
+		<div class="notes">
+			<div>
+				<h4>Why it fits</h4>
+				<p><span class="win-note">The lightest permanent element possible</span> while still being visible — which is exactly what the doc asks of the resting pill.</p>
+				<p>Its one borrowed detail is the hairline, so it matches the button through the button's quietest feature rather than its loudest.</p>
+			</div>
+			<div>
+				<h4>Where it hurts</h4>
+				<p>A hairline over a photograph is fragile. On a light wallpaper the outline needs a darker rule, so the token has to adapt to the desktop, not just the theme.</p>
+				<p>Two visual languages in one component: outline at rest, sheet when open. Defensible, but it is a rule to remember.</p>
+			</div>
+			<div>
+				<h4>The delta</h4>
+				<pre><span class="c">/* bar — the resting pill */</span>
++ <span class="k">background</span>: none;
++ <span class="k">border</span>: 1px solid var(--boundary);
++ <span class="k">box-shadow</span>: none;
+
+<span class="c">/* sheet — the engaged surface */</span>
++ <span class="k">background</span>: var(--window-bg);
++ <span class="k">box-shadow</span>: 0 14px 36px rgb(0 0 0/.26);
+
++ --boundary  <span class="c">/* hairline over wallpaper */</span>
+<span class="c">   icons gain their own drop shadow</span></pre>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ 5 ═══ -->
+	<div class="band" id="v5">
+		<div class="band-head">
+			<div>
+				<div class="what">The dock is atmosphere</div>
+				<h2>Underlay</h2>
+				<p class="thesis">
+					<b>Delete the container.</b> There is no bar — only a field, some icons and the agent, sitting
+					directly on the desktop over a soft darkening of the wallpaper's lower edge. A flat gradient,
+					not a blur: the desktop dims toward the bottom the way a room does, and the contents read
+					against it. Nothing can be mistaken for a control because there is no surface left to mistake.
+				</p>
+			</div>
+			<div class="stage-tools" data-tools="5"></div>
+		</div>
+		<div data-stage="5"></div>
+		<div class="notes">
+			<div>
+				<h4>Why it fits</h4>
+				<p><span class="win-note">The furthest from a button it is possible to get</span> — and it makes the app icons the heroes, which is what a launcher should do.</p>
+				<p>It also frees the sheet to be exactly as tall as its content with no box to fill, and the engaged desktop dim already in the design has somewhere to live.</p>
+			</div>
+			<div>
+				<h4>Where it hurts</h4>
+				<p><span class="win-note">Legibility rests entirely on the scrim.</span> Over a pale wallpaper the app labels need their own treatment, and the current white-on-scrim will not survive every image.</p>
+				<p>Losing the boundary loses the target: the "click anywhere on the pill to focus" affordance has no visible extent any more.</p>
+			</div>
+			<div>
+				<h4>The delta</h4>
+				<pre><span class="c">/* bar + sheet stop being surfaces */</span>
++ <span class="k">background</span>: none; <span class="k">border</span>: 0;
++ <span class="k">box-shadow</span>: none;
+
+<span class="c">/* the desktop carries the scrim */</span>
++ .frn-desktop::after {
++   <span class="k">inset</span>: auto 0 0 0; <span class="k">height</span>: 190px;
++   <span class="k">background</span>: linear-gradient(to top,
++     var(--scrim), transparent);
++ }
++ <span class="k">--scrim</span>; icons take a drop shadow</pre>
+			</div>
+		</div>
+	</div>
+
+	<section id="verdict">
+		<div class="verdict">
+			<div>
+				<h3>If it were mine</h3>
+				<p>
+					<strong>Tray.</strong> It is the only one that solves the problem <em>structurally</em> rather
+					than by avoidance: out is a control, in is a container, and that reading holds at any size, on
+					any surface, for anyone — no convention to learn. It also gives the search field a reason to be
+					inset, which nothing else does. Two new tokens and the shared rule inverts.
+				</p>
+				<p>
+					<strong>Sheet if you want no argument</strong> — it is materially correct, changes nothing about
+					layout, and its only fault is being unmemorable. <strong>Underlay if you're feeling brave:</strong>
+					it is the most beautiful of the five and the most fragile, and it would need real work on
+					legibility over arbitrary wallpaper before it could ship.
+				</p>
+				<p>
+					Whichever wins, the rule is the durable part: <strong>a hard offset edge means it moves when you
+					push it.</strong> Nothing else in the system may borrow it.
+				</p>
+			</div>
+			<div class="picks">
+				<div class="pick"><b>Sheet</b><span>Materially correct. <i>Reads as a window.</i></span></div>
+				<div class="pick"><b>Tray</b><span>Structurally unmistakable. <i>Needs a wall to cut.</i></span></div>
+				<div class="pick"><b>Ledge</b><span>Zero object-ness. <i>Back to a taskbar.</i></span></div>
+				<div class="pick"><b>Outline</b><span>Lightest at rest. <i>Fragile on photos.</i></span></div>
+				<div class="pick"><b>Underlay</b><span>Boldest, icons win. <i>Legibility risk.</i></span></div>
+			</div>
+		</div>
+	</section>
+
+	<footer>
+		Live CSS · real tokens from packages/design + platform/frieren · no code changed
+	</footer>
+</div>
+
+<script>
+const BAR_APPS = [
+	{ n: "Notes", g: "N", k: "#e0a13c" },
+	{ n: "Paint", g: "P", k: "#d9605c" },
+	{ n: "Files", g: "F", k: "#4f8fd6" },
+	{ n: "Code", g: "C", k: "#7a6bd8" }
+];
+const GRID_APPS = [
+	...BAR_APPS,
+	{ n: "Read", g: "R", k: "#3fa08a" },
+	{ n: "Draw", g: "D", k: "#d0743f" },
+	{ n: "Crossword", g: "X", k: "#5b8f5b" },
+	{ n: "Settings", g: "S", k: "#7d8590" }
+];
+
+const SEARCH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>`;
+
+const FACE = `<svg viewBox="0 0 24 24" fill="none" stroke="#3c3228" stroke-width="1.9" stroke-linecap="round">
+	<path d="M8.5 10v1.6M15.5 10v1.6"></path>
+	<path d="M9.6 15.2c1.5 1.1 3.3 1.1 4.8 0"></path>
+</svg>`;
+
+function dockMarkup(v) {
+	const keys = BAR_APPS.map(a =>
+		`<button class="key" title="${a.n}"><i style="--k:${a.k}">${a.g}</i></button>`).join("");
+	const tiles = GRID_APPS.map(a =>
+		`<button class="tile"><i style="--k:${a.k}">${a.g}</i><span>${a.n}</span></button>`).join("");
+
+	return `<div class="dock" data-v="${v}" data-open="false">
+		<div class="sheet">
+			<div class="sheet-label">On this computer</div>
+			<div class="grid">${tiles}</div>
+		</div>
+		<div class="bar">
+			<div class="field">${SEARCH_ICON}<span>Search apps, or talk to Frieren…</span></div>
+			<div class="apps">${keys}</div>
+			<div class="sep"></div>
+			<div class="agent"><button class="face">${FACE}</button></div>
+		</div>
+	</div>`;
+}
+
+function stageMarkup(v) {
+	/* only Underlay paints the desktop scrim */
+	const underlay = v === "5" ? ' data-underlay="true"' : "";
+	return `<div class="stage" data-mode="light"${underlay}>
+		<div class="win">
+			<div class="win-bar"><div class="lights"><i></i><i></i><i></i></div>Notes</div>
+			<div class="win-body">
+				<b>Discard this draft?</b>
+				<span>It hasn't been saved to the volume yet.</span>
+			</div>
+			<div class="win-foot">
+				<button class="btn">Cancel</button>
+				<button class="btn" data-primary>Save</button>
+			</div>
+		</div>
+		${dockMarkup(v)}
+	</div>`;
+}
+
+for (const v of ["1", "2", "3", "4", "5"]) {
+	const host = document.querySelector(`[data-stage="${v}"]`);
+	host.innerHTML = stageMarkup(v);
+	const stage = host.querySelector(".stage");
+	const dock = host.querySelector(".dock");
+
+	dock.querySelector(".bar").addEventListener("click", () => {
+		dock.dataset.open = dock.dataset.open === "true" ? "false" : "true";
+	});
+
+	const tools = document.querySelector(`[data-tools="${v}"]`);
+	tools.innerHTML = `<span class="hint">click the bar</span>
+		<div class="seg">
+			<button data-set="light" data-on="true">Light</button>
+			<button data-set="dark" data-on="false">Dark</button>
+		</div>`;
+	for (const b of tools.querySelectorAll("button")) {
+		b.addEventListener("click", () => {
+			stage.dataset.mode = b.dataset.set;
+			for (const o of tools.querySelectorAll("button")) o.dataset.on = String(o === b);
+		});
+	}
+}
+</script>
+
+</body>
+</html>
