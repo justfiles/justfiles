@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.21.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.20.1...frieren-v0.21.0) (2026-08-31)
+
+
+### Features
+
+* add persistent Read app ([#620](https://github.com/xiaoxinghu/justfiles/issues/620)) ([3b24c51](https://github.com/xiaoxinghu/justfiles/commit/3b24c513ce9d29cdc6047f80524b639533c56d35))
+* **browser-extension:** add Clerk auth shell ([#625](https://github.com/xiaoxinghu/justfiles/issues/625)) ([909378d](https://github.com/xiaoxinghu/justfiles/commit/909378d602e1f41aa94af78e846def1e34debd6c))
+* **frieren:** add app action gateway ([#626](https://github.com/xiaoxinghu/justfiles/issues/626)) ([852237a](https://github.com/xiaoxinghu/justfiles/commit/852237a13b47c8952b6bab207c5904cf1ef8cd6c))
+* implement dock material design ([#629](https://github.com/xiaoxinghu/justfiles/issues/629)) ([8056baf](https://github.com/xiaoxinghu/justfiles/commit/8056baf1940a0ab5f0673fced1d25505d21d8c92))
+
+
+### Bug Fixes
+
+* **frieren:** isolate worker test typecheck ([#627](https://github.com/xiaoxinghu/justfiles/issues/627)) ([269781b](https://github.com/xiaoxinghu/justfiles/commit/269781bd8adf00117cafebf50470446e4468d614))
+* **frieren:** prevent whole-window text selection ([#623](https://github.com/xiaoxinghu/justfiles/issues/623)) ([5852ab8](https://github.com/xiaoxinghu/justfiles/commit/5852ab84a750b572c7fec053471392ae53916e1b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.13.0
+    * @justfiles/design bumped to 0.4.0
+
 ## [0.20.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.20.0...frieren-v0.20.1) (2026-08-29)
 
 

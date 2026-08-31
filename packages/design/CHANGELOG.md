@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/design-v0.3.0...design-v0.4.0) (2026-08-31)
+
+
+### Features
+
+* implement dock material design ([#629](https://github.com/xiaoxinghu/justfiles/issues/629)) ([8056baf](https://github.com/xiaoxinghu/justfiles/commit/8056baf1940a0ab5f0673fced1d25505d21d8c92))
+
 ## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/design-v0.2.0...design-v0.3.0) (2026-08-29)
 
 
