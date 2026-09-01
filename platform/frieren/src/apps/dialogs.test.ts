@@ -40,10 +40,31 @@ test('allows different windows to wait but rejects overlap in one window', async
 	await Promise.all([notes, files])
 })
 
+test('queues overlapping system dialogs', async () => {
+	const first = systemDialog.alert({ title: 'First failure' })
+	const second = systemDialog.alert({ title: 'Second failure' })
+
+	expect(dialogFor(null)?.request.title).toBe('First failure')
+	answerDialog(null, undefined)
+	await first
+	expect(dialogFor(null)?.request.title).toBe('Second failure')
+	answerDialog(null, undefined)
+	await second
+})
+
 test('closing an owner rejects its pending request', async () => {
 	const result = openDialog('notes', { kind: 'alert', title: 'Waiting' })
 	closeDialog('notes')
 	await expect(result).rejects.toThrow('Dialog closed')
+})
+
+test('closing all dialogs rejects queued system requests', async () => {
+	const first = openDialog(null, { kind: 'alert', title: 'First' })
+	const second = openDialog(null, { kind: 'alert', title: 'Second' })
+	closeAllDialogs()
+
+	await expect(first).rejects.toThrow('Dialog closed')
+	await expect(second).rejects.toThrow('Dialog closed')
 })
 
 test('system client maps all three result shapes', async () => {

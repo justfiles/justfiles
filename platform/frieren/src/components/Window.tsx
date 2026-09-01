@@ -45,6 +45,7 @@ export function Window({
 	focused,
 	zIndex,
 	fullscreen = false,
+	escapeBlocked = false,
 	onClose,
 	onFocus,
 	onRectCommit,
@@ -56,6 +57,7 @@ export function Window({
 	focused?: boolean
 	zIndex?: number
 	fullscreen?: boolean
+	escapeBlocked?: boolean
 	onClose: () => void
 	onFocus?: () => void
 	onRectCommit: (rect: WindowRect) => void
@@ -76,14 +78,14 @@ export function Window({
 	useEffect(() => {
 		if (!focused || !fullscreen || !onFullscreenToggle) return
 		const handler = (event: KeyboardEvent) => {
-			if (event.key === 'Escape') {
+			if (event.key === 'Escape' && !escapeBlocked) {
 				event.preventDefault()
 				onFullscreenToggle()
 			}
 		}
 		window.addEventListener('keydown', handler, { capture: true })
 		return () => window.removeEventListener('keydown', handler, { capture: true })
-	}, [focused, fullscreen, onFullscreenToggle])
+	}, [escapeBlocked, focused, fullscreen, onFullscreenToggle])
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
 		if (fullscreen) return

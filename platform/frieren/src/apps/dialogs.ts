@@ -17,10 +17,16 @@ interface PendingDialog extends OpenDialog {
 }
 
 const dialogs = new Map<DialogOwner, PendingDialog>()
+const systemQueue: PendingDialog[] = []
 const listeners = new Set<() => void>()
 
 function emit(): void {
 	for (const listener of listeners) listener()
+}
+
+function showNextSystemDialog(): void {
+	const next = systemQueue.shift()
+	if (next) dialogs.set(null, next)
 }
 
 export function subscribeDialogs(listener: () => void): () => void {
@@ -33,9 +39,14 @@ export function dialogFor(owner: DialogOwner): OpenDialog | null {
 }
 
 export function openDialog(owner: DialogOwner, request: DialogRequest): Promise<unknown> {
-	if (dialogs.has(owner)) return Promise.reject(new Error('A dialog is already open'))
 	return new Promise((resolve, reject) => {
-		dialogs.set(owner, { request, resolve, reject })
+		const dialog = { request, resolve, reject }
+		if (dialogs.has(owner)) {
+			if (owner === null) systemQueue.push(dialog)
+			else reject(new Error('A dialog is already open'))
+			return
+		}
+		dialogs.set(owner, dialog)
 		emit()
 	})
 }
@@ -45,6 +56,7 @@ export function answerDialog(owner: DialogOwner, result: unknown): void {
 	if (!dialog) return
 	dialogs.delete(owner)
 	dialog.resolve(result)
+	if (owner === null) showNextSystemDialog()
 	emit()
 }
 
@@ -53,11 +65,16 @@ export function closeDialog(owner: DialogOwner): void {
 	if (!dialog) return
 	dialogs.delete(owner)
 	dialog.reject(new Error('Dialog closed'))
+	if (owner === null) showNextSystemDialog()
 	emit()
 }
 
 export function closeAllDialogs(): void {
-	for (const owner of [...dialogs.keys()]) closeDialog(owner)
+	const pending = [...dialogs.values(), ...systemQueue]
+	dialogs.clear()
+	systemQueue.length = 0
+	for (const dialog of pending) dialog.reject(new Error('Dialog closed'))
+	if (pending.length > 0) emit()
 }
 
 export const systemDialog: DialogClient = {
