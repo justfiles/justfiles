@@ -136,7 +136,7 @@ without them.
 
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
-| T20 | [Self-heal rejected sync pages](t20-rejection-recovery.md) | T10, T11, T15 | todo |
+| T20 | [Self-heal rejected sync pages](t20-rejection-recovery.md) · [decision graph](t20-rejection-recovery.html) | T10, T11, T15 | todo |
 
 ## Dependency map
 

@@ -61,15 +61,15 @@ work while no Frieren tab is open.
 
 Status values: `todo`, `in progress`, `done`, `later`.
 
-| # | Task | Depends on | Status | Milestone |
-| --- | --- | --- | --- | --- |
-| T1 | [Prepare Clerk extension authentication](01-clerk-extension-auth.md) | Design | done | 1 |
-| T2 | [Add the generic action gateway](02-action-gateway.md) | Design | done | 1 |
-| T3 | [Build the Just Computer browser extension](03-browser-extension.md) | T1, T2 | in progress | 1 |
-| T4 | [Prove Read end to end](04-read-e2e.md) | T3 | todo | 1 |
-| T5 | [Add API-key auth and a CLI](05-api-keys-and-cli.md) | T2, T4 | later | 2 |
-| T6 | [Expose the gateway through MCP](06-mcp.md) | T5 | later | 2 |
-| T7 | [Add deep-link entry points](07-deep-links.md) | T2, T4 | later | n/a |
+| #  | Task                                                                 | Depends on | Status      | Milestone |
+|----|----------------------------------------------------------------------|------------|-------------|-----------|
+| T1 | [Prepare Clerk extension authentication](01-clerk-extension-auth.md) | Design     | done        | 1         |
+| T2 | [Add the generic action gateway](02-action-gateway.md)               | Design     | done        | 1         |
+| T3 | [Build the Just Computer browser extension](03-browser-extension.md) | T1, T2     | in progress | 1         |
+| T4 | [Prove Read end to end](04-read-e2e.md)                              | T3         | todo        | 1         |
+| T5 | [Add API-key auth and a CLI](05-api-keys-and-cli.md)                 | T2, T4     | later       | 2         |
+| T6 | [Expose the gateway through MCP](06-mcp.md)                          | T5         | later       | 2         |
+| T7 | [Add deep-link entry points](07-deep-links.md)                       | T2, T4     | later       | n/a       |
 
 T1 and T2 are independent and may run in parallel. Then run T3 and T4 in
 order. Milestone 1 stops at T4; do not pull T5 through T7 into it.
