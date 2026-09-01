@@ -109,6 +109,7 @@ function renderDialog(
 	}
 
 	panel.addEventListener('keydown', (event) => {
+		event.stopPropagation()
 		if (event.key === 'Escape') {
 			const result = cancelResult(request)
 			if (!result.found) return

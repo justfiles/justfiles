@@ -43,6 +43,7 @@ export function DialogHost({
 	const { request } = dialog
 	const close = (result: unknown) => answerDialog(owner, result)
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		event.stopPropagation()
 		if (event.key === 'Escape') {
 			const dismissed = cancel(request)
 			if (!dismissed.canClose) return
