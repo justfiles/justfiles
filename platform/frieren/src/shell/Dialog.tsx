@@ -72,33 +72,34 @@ export function DialogHost({
 			: -1
 
 	return (
-		<div className="frn-dialog-layer" data-placement={placement}>
+		<div className="ds-dialog-layer" data-placement={placement}>
 			<div
 				ref={panel}
-				className="frn-dialog"
+				className="ds-dialog"
 				role="alertdialog"
 				aria-modal="true"
 				aria-labelledby={titleId}
 				aria-describedby={request.body ? bodyId : undefined}
 				onKeyDown={onKeyDown}
 			>
-				<div className="frn-dialog-head">
-					<span className="frn-dialog-icon" aria-hidden="true">
+				<div className="ds-dialog-head">
+					<span className="ds-dialog-icon" aria-hidden="true">
 						{owner === null ? 'J' : source.slice(0, 1).toUpperCase()}
 					</span>
 					<div>
-						<h2 id={titleId} className="frn-dialog-title">
+						<h2 id={titleId} className="ds-dialog-title">
 							{request.title}
 						</h2>
 						{request.body ? (
-							<p id={bodyId} className="frn-dialog-body">
+							<p id={bodyId} className="ds-dialog-body">
 								{request.body}
 							</p>
 						) : null}
 					</div>
 				</div>
-				<div className="frn-dialog-source">
+				<div className="ds-dialog-source">
 					<svg
+						className="ds-dialog-lock"
 						width="11"
 						height="11"
 						viewBox="0 0 24 24"
@@ -122,7 +123,7 @@ export function DialogHost({
 						)}
 					</span>
 				</div>
-				<div className="frn-dialog-actions">
+				<div className="ds-dialog-actions">
 					{request.kind === 'alert' ? (
 						<button type="button" data-primary data-dialog-default onClick={() => close(undefined)}>
 							OK

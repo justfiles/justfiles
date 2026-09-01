@@ -31,9 +31,14 @@ export function AppWindow({
 	const zIndex = useOsStore((s) => selectWindowZIndex(s, id))
 	const assistant = useOsStore((s) => s.assistant)
 	const agent = useAgentSession(id)
-	const dialogOpen = useSyncExternalStore(
+	const attachedDialogOpen = useSyncExternalStore(
 		subscribeDialogs,
-		() => dialogFor(id) !== null || dialogFor(null) !== null,
+		() => dialogFor(id) !== null,
+		() => false
+	)
+	const systemDialogOpen = useSyncExternalStore(
+		subscribeDialogs,
+		() => dialogFor(null) !== null,
 		() => false
 	)
 	const [sheetOpen, setSheetOpen] = useState(false)
@@ -61,7 +66,8 @@ export function AppWindow({
 			focused={focused}
 			zIndex={zIndex}
 			fullscreen={window.mode === 'fullscreen'}
-			escapeBlocked={dialogOpen}
+			modal={attachedDialogOpen}
+			escapeBlocked={attachedDialogOpen || systemDialogOpen}
 			onClose={() => dispatch({ type: 'window.close', id })}
 			onFocus={() => dispatch({ type: 'window.focus', id })}
 			onRectCommit={(rect) => dispatch({ type: 'window.rectUpdated', id, rect })}

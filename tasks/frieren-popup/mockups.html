@@ -498,8 +498,7 @@ tr:last-child td { border-bottom: 0; }
 	<h2>Why this exists</h2>
 	<p class="note" style="margin-top:8px">
 		An app GUI runs in an opaque-origin iframe without <code>allow-modals</code>, so browser
-		<code>alert()</code> and <code>confirm()</code> are not an app API. The Frieren shell still uses
-		those browser dialogs for uninstall, reset, and install errors. They cannot carry trusted app
+		<code>alert()</code> and <code>confirm()</code> are not an app API. Browser dialogs cannot carry trusted app
 		identity, do not use the design system, and block the browser thread.
 	</p>
 	<p class="note">
@@ -634,7 +633,11 @@ update: (t) => ({
 		</div>
 		<div class="fact">
 			<div class="fact-label">Concurrency</div>
-			<p>Allow one pending dialog per app and one pending system dialog. Reject overlap in v1; add a queue only when a real caller needs it.</p>
+			<p>Allow one pending dialog per app. Queue system dialogs because independent background operations can fail at the same time.</p>
+		</div>
+		<div class="fact">
+			<div class="fact-label">Host coverage</div>
+			<p>Frieren, macOS, Runner, and the standalone dev server all provide dialog chrome. A GUI action never becomes unavailable because its host lacks a transport.</p>
 		</div>
 	</div>
 </div>
@@ -901,7 +904,7 @@ update: (t) => ({
 			<td>2 · Alert</td>
 			<td>everything</td>
 			<td>yes</td>
-			<td>no — reject overlap</td>
+			<td>one visible; the rest queue</td>
 			<td>yes, and for the worst ones</td>
 		</tr>
 	</table>
@@ -911,8 +914,9 @@ update: (t) => ({
 	<div class="variant-head"><h2>Recommended implementation seam</h2></div>
 	<p class="note" style="margin-top:6px">
 		<b>Keep the split sharp:</b> <code>app.ts</code> owns semantic actions; the mounted GUI gets a typed
-		<code>DialogClient</code>; the shell owns one coordinator/component that renders attached dialogs and
-		system alerts.
+		<code>DialogClient</code>; each host owns placement and lifecycle. The framework-neutral browser host
+		and design-system styles are shared by macOS, Runner, and standalone development; Frieren adds its
+		window coordinator for attached and system placement.
 	</p>
 	<p class="note">
 		The GUI bridge sends a typed dialog request over its existing port. The host adapter adds trusted

@@ -2,6 +2,7 @@ import '@justfiles/design/design.css'
 import '@justfiles/design/mac.css'
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import type { Notification } from '@justfiles/app/capabilities/notify'
+import { mountDialogHost } from '@justfiles/app/dialog-host'
 import { AttachedAgent, type AttachedAgentMode } from '@justfiles/ui/AttachedAgent'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -149,8 +150,15 @@ function AppRoot() {
 
 	useEffect(() => {
 		if (!root.current) return
-		const mounted = app.gui.mount(root.current, state, { transport: connection.transport })
-		return () => void mounted.unmount()
+		const dialog = mountDialogHost(document.body, { source: appId, sourceId: appId })
+		const mounted = app.gui.mount(root.current, state, {
+			transport: connection.transport,
+			dialog
+		})
+		return () => {
+			dialog.unmount()
+			void mounted.unmount()
+		}
 	}, [])
 
 	return <div id="root" ref={root} />
