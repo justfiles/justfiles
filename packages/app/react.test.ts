@@ -32,12 +32,16 @@ test('defineReactGUI owns the root and renders state through component props', a
 	const Component = (_props: GUIProps<CounterApp>) => null
 	const element = {} as HTMLElement
 	const initial = { count: 1 }
-	const mounted = defineReactGUI<CounterApp>(Component).mount(element, initial, { transport })
+	const mounted = defineReactGUI<CounterApp>(Component).mount(element, initial, {
+		transport,
+		dialog: { request: async () => undefined }
+	})
 
 	expect(reactRoot.create).toHaveBeenCalledWith(element)
 	const first = reactRoot.render.mock.calls[0]?.[0] as ReactElement<GUIProps<CounterApp>>
 	expect(first.type).toBe(Component)
 	expect(first.props.state).toBe(initial)
+	expect(first.props.dialog).toBeDefined()
 
 	push({ count: 2 })
 	const second = reactRoot.render.mock.calls[1]?.[0] as ReactElement<GUIProps<CounterApp>>

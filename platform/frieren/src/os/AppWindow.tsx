@@ -4,6 +4,7 @@ import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentSession } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
 import { Window } from '../components/Window'
+import { DialogHost } from '../shell/Dialog'
 import { useOsDispatch, useOsStore } from './hooks'
 import { selectFocusedWindowId, selectWindowZIndex } from './selectors'
 
@@ -115,6 +116,7 @@ export function AppWindow({
 			>
 				{children}
 			</AttachedAgent>
+			<DialogHost owner={id} source={title} placement="attached" />
 		</Window>
 	)
 }

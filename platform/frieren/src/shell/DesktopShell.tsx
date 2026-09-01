@@ -15,6 +15,7 @@ import { MessagesPanel } from '../agent/MessagesPanel'
 import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
 import { resolveAppTitle } from '../apps/catalog'
+import { systemDialog } from '../apps/dialogs'
 import { useAppCommands, useInstalledApps } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import {
@@ -30,6 +31,7 @@ import { AppWindow } from '../os/AppWindow'
 import { useOsStore } from '../os/hooks'
 import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow } from '../os/state'
+import { DialogHost } from './Dialog'
 import { Omnibar } from './Omnibar'
 import { Stickies } from './Stickies'
 import { useWallpaper } from './wallpaper'
@@ -191,7 +193,17 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		{
 			label: 'Uninstall',
 			onSelect: () => {
-				if (confirm(`Uninstall "${app.name}"?`)) void uninstallApp(app.id)
+				void systemDialog
+					.confirm({
+						title: `Uninstall “${app.name}”?`,
+						body: 'Its app data on this volume will be removed. This can’t be undone.',
+						confirmLabel: 'Uninstall',
+						destructive: true
+					})
+					.then((confirmed) => {
+						if (confirmed) return uninstallApp(app.id)
+					})
+					.catch(() => {})
 			}
 		}
 	]
@@ -200,16 +212,31 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	// Each confirms first — all three throw data away and can't be undone. "Keep
 	// mine"/"Keep server" need a synced profile; "Reset everything" always works.
 	const syncedProfile = activeProfileHasRemoteUser()
-	const runReset = (confirmMsg: string, op: () => Promise<void>) => () => {
-		if (!confirm(confirmMsg)) return
-		op().catch((e: unknown) => alert(e instanceof Error ? e.message : String(e)))
-	}
+	const runReset =
+		(title: string, body: string, confirmLabel: string, op: () => Promise<void>) => () => {
+			void systemDialog
+				.confirm({ title, body, confirmLabel, destructive: true })
+				.then(async (confirmed) => {
+					if (!confirmed) return
+					try {
+						await op()
+					} catch (error) {
+						await systemDialog.alert({
+							title: 'Reset failed',
+							body: error instanceof Error ? error.message : String(error)
+						})
+					}
+				})
+				.catch(() => {})
+		}
 	const syncMenuItems: ContextMenuItem[] = [
 		{
 			label: 'Keep this device (overwrite server & others)',
 			disabled: !syncedProfile,
 			onSelect: runReset(
-				'Keep this device: overwrite the server with THIS device’s data. Every other device will discard its copy. This can’t be undone. Continue?',
+				'Keep this device?',
+				'Overwrite the server with this device’s data. Every other device will discard its copy. This can’t be undone.',
+				'Keep This Device',
 				() => resetTakeMine()
 			)
 		},
@@ -217,7 +244,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 			label: 'Keep server (discard this device’s changes)',
 			disabled: !syncedProfile,
 			onSelect: runReset(
-				'Keep server: discard THIS device’s local changes and re-download from the server. This can’t be undone. Continue?',
+				'Keep the server copy?',
+				'Discard this device’s local changes and download the server copy. This can’t be undone.',
+				'Keep Server',
 				() => resetTakeTheirs()
 			)
 		},
@@ -225,9 +254,11 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		{
 			label: 'Reset everything (wipe all devices)',
 			onSelect: runReset(
+				'Reset everything?',
 				syncedProfile
-					? 'Reset everything: wipe the server AND every device, then reseed the built-in apps. This deletes everything and can’t be undone. Continue?'
-					: 'Reset everything: wipe this local workspace and reload. This deletes everything and can’t be undone. Continue?',
+					? 'Wipe the server and every device, then restore the built-in apps. This can’t be undone.'
+					: 'Wipe this local workspace and restore the built-in apps. This can’t be undone.',
+				'Reset Everything',
 				() => factoryReset(() => getToken())
 			)
 		}
@@ -364,6 +395,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				/>
 			) : null}
 			<ContextMenu state={menu.state} onClose={menu.close} />
+			<DialogHost owner={null} source="the system" placement="system" />
 		</div>
 	)
 }

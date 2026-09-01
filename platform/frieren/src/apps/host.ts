@@ -11,6 +11,7 @@ import type { Kernel } from '@justfiles/app'
 import { guiHost } from '@justfiles/app/iframe'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
+import { closeAllDialogs, closeDialog, openDialog } from './dialogs'
 import { FRAME_SRCDOC } from './gui-frame'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
@@ -64,6 +65,7 @@ export function subscribeCatalog(fn: () => void): () => void {
 export type WindowRequest =
 	| { type: 'open'; id: string; title: string }
 	| { type: 'close'; id: string }
+	| { type: 'focus'; id: string }
 const windowSubscribers = new Set<(req: WindowRequest) => void>()
 
 export function requestWindow(req: WindowRequest): void {
@@ -112,6 +114,7 @@ export function open(id: string, opts: OpenOptions): void {
 export function close(id: string): void {
 	const stage = stages.get(id)
 	if (!stage) return
+	closeDialog(id)
 	stage.cancelled = true
 	stage.unsubscribe?.()
 	stage.unwatch?.()
@@ -129,6 +132,7 @@ export function close(id: string): void {
 // Also drops the shared reducer frame — the reducers a previous user's apps ran.
 export function closeAll(): void {
 	for (const id of [...stages.keys()]) close(id)
+	closeAllDialogs()
 	teardownReducerFrame()
 }
 
@@ -274,6 +278,10 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				stage.port = port1
 				stage.postState = guiHost(port1, {
 					invoke: (action) => kernel.dispatch(stage.id, action),
+					dialog: (request) => {
+						requestWindow({ type: 'focus', id: stage.id })
+						return openDialog(stage.id, request)
+					},
 					onError: (message) => {
 						if (!stage.cancelled) setError(stage, message)
 					}

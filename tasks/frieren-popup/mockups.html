@@ -2,14 +2,13 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Frieren · Global Popup — four variants</title>
+<title>Frieren · Dialogs — attached and system placements</title>
 
 <style>
 /* ============================================================
-   TOKENS — @justfiles/design (design.css + mac.css), verbatim.
-   Nothing here is re-pointed: the whole point of the exercise is
-   that the popup is built out of what the system already ships.
-   Only the page chrome below adds names, and it adds three.
+   TOKENS — a current snapshot of @justfiles/design. Nothing is
+   re-pointed: the dialog uses what the system already ships. Only
+   the document page below adds names, and it adds three.
    ============================================================ */
 :root {
 	color-scheme: light dark;
@@ -22,6 +21,7 @@
 	--control-bg: #ffffff;
 	--control-bg-hover: #fafafa;
 	--control-bg-active: #ececec;
+	--keycap-edge: #c6c6c0;
 	--space: 4px;
 	--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
 	--font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -56,6 +56,7 @@
 		--control-bg: #48484a;
 		--control-bg-hover: #545458;
 		--control-bg-active: #3a3a3c;
+		--keycap-edge: #232325;
 		--danger: #ff453a;
 
 		--menu-bg: #2c2c2e;
@@ -71,9 +72,8 @@
 * { box-sizing: border-box; }
 
 /* ============================================================
-   PLATFORM DEFAULTS — lifted from mac.css. Every rule is
-   :where(), zero specificity: a component class overrides it
-   without a fight.
+   PLATFORM DEFAULTS — the current button subset from mac.css.
+   Every rule uses :where(), so it adds no specificity.
    ============================================================ */
 :where(html, body) {
 	margin: 0;
@@ -84,53 +84,48 @@
 	line-height: 1.4;
 }
 :where(button) {
+	--button-edge: var(--keycap-edge);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 13px;
+	border: 1px solid var(--rule);
+	border-radius: 7px;
 	font: inherit;
+	font-weight: 550;
+	line-height: 1.45;
+	white-space: nowrap;
 	color: var(--text);
 	background: var(--control-bg);
-	border: 1px solid var(--rule);
-	border-radius: 5px;
-	padding: 2px 11px;
+	box-shadow: 0 1.5px 0 var(--button-edge);
 	cursor: default;
+	appearance: none;
+	transition: transform 70ms ease, box-shadow 70ms ease, background-color 90ms ease;
 }
-:where(button:hover) { background: var(--control-bg-hover); }
-:where(button:active) { background: var(--control-bg-active); }
-:where(button:disabled) { color: var(--menu-item-disabled-fg); }
-
-:where(button[data-primary]) {
-	color: var(--on-accent);
-	background: linear-gradient(to bottom, color-mix(in srgb, var(--accent) 74%, white), var(--accent));
-	border-color: color-mix(in srgb, var(--accent) 72%, black);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
-	text-shadow: 0 1px 0 color-mix(in srgb, black 22%, transparent);
+:where(button:hover:not(:disabled)) { background: var(--control-bg-hover); }
+:where(button:active:not(:disabled)) {
+	background: var(--control-bg-active);
+	box-shadow: 0 0 0 var(--button-edge);
+	transform: translateY(1.5px);
 }
-:where(button[data-primary]:hover) {
-	background: linear-gradient(to bottom, color-mix(in srgb, var(--accent) 66%, white), color-mix(in srgb, var(--accent) 94%, white));
-}
-
-/* PROPOSED addition to mac.css — the destructive default button. Same
-   construction as data-primary (gloss from a lighter top, a darker edge, a
-   hairline inset), derived from --danger instead of --accent. One rule, and
-   every "Delete" in the OS reads as one. */
-:where(button[data-danger]) {
-	color: #fff;
-	background: linear-gradient(to bottom, color-mix(in srgb, var(--danger) 74%, white), var(--danger));
-	border-color: color-mix(in srgb, var(--danger) 72%, black);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
-	text-shadow: 0 1px 0 color-mix(in srgb, black 22%, transparent);
-}
-
-:where(input) {
-	font: inherit;
-	color: var(--text);
-	background: var(--control-bg);
-	border: 1px solid var(--rule);
-	border-radius: 5px;
-	padding: 3px 7px;
-}
-:where(input:focus) {
+:where(button:disabled) { opacity: 0.42; }
+:where(button:focus-visible) {
 	outline: none;
-	border-color: var(--focus);
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
+	box-shadow: 0 1.5px 0 var(--button-edge), 0 0 0 3px color-mix(in srgb, var(--focus) 28%, transparent);
+}
+:where(button[data-primary]) {
+	--button-edge: color-mix(in srgb, var(--accent) 62%, black);
+	color: var(--on-accent);
+	border-color: color-mix(in srgb, var(--accent) 80%, black);
+	background: var(--accent);
+}
+:where(button[data-primary]:hover:not(:disabled)) {
+	background: color-mix(in srgb, var(--accent) 92%, white);
+}
+:where(button[data-danger]) {
+	--button-edge: color-mix(in srgb, var(--danger) 26%, var(--keycap-edge));
+	border-color: color-mix(in srgb, var(--danger) 36%, var(--rule));
+	color: var(--danger);
 }
 
 /* ============================================================
@@ -164,13 +159,7 @@ h2 {
 p { margin: 0 0 10px; max-width: 72ch; }
 
 .note { color: var(--ink-soft); }
-kbd {
-	padding: 0 4px;
-	border: 1px solid var(--rule);
-	border-radius: 3px;
-	background: var(--control-bg);
-	font: 11px/1.6 var(--font-mono);
-}
+a { color: var(--focus); }
 code { font: 12px/1.5 var(--font-mono); }
 
 .panel {
@@ -263,8 +252,6 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 	font-size: var(--text-ui);
 	user-select: none;
 }
-.scene-tall { height: 430px; }
-
 .menubar {
 	display: flex;
 	flex: none;
@@ -297,8 +284,7 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 }
 /* The windows layer, exactly as .frn-desktop-windows: the thing that
    recedes when a surface takes over. */
-.layer { position: absolute; inset: 0; transition: transform .25s ease, filter .25s ease; }
-.layer[data-recede="true"] { transform: scale(.985); filter: brightness(.65) saturate(.85); }
+.layer { position: absolute; inset: 0; }
 
 /* — window — */
 .win {
@@ -380,15 +366,12 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 }
 .tile-40 { width: 40px; height: 40px; font-size: 17px; border-radius: 9px; }
 .tile-28 { width: 28px; height: 28px; font-size: 13px; border-radius: 7px; }
-.tile-20 { width: 20px; height: 20px; font-size: 10px; border-radius: 5px; }
 .notes { background: linear-gradient(160deg, #f5c451, #e0952c); }
 .files { background: linear-gradient(160deg, #6aa9e9, #3e7fd6); }
-.frieren { background: linear-gradient(160deg, #9b8cf0, #6d5bd0); }
 
 /* ============================================================
-   THE POPUP — one panel, drawn four places. Everything below is
-   shared by all four variants; each variant only says WHERE it
-   is anchored and WHAT it dims.
+   THE DIALOG — one panel, drawn in two placements. Everything
+   below is shared; the host alone chooses the anchor and scrim.
    ============================================================ */
 .pop {
 	background: var(--window-bg);
@@ -417,9 +400,6 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 .pop-attr code { font-size: 11px; }
 .pop-attr svg { flex: none; opacity: .7; }
 
-.pop-field { margin-top: 12px; }
-.pop-field input { width: 100%; }
-
 .pop-actions {
 	display: flex;
 	justify-content: flex-end;
@@ -428,29 +408,10 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 }
 .pop-actions button { min-width: 74px; }
 
-/* A choice list, for the two variants that answer with the keyboard. */
-.pop-choices { margin-top: 12px; display: grid; gap: 2px; }
-.choice {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 5px 8px;
-	border: 0;
-	border-radius: 5px;
-	background: transparent;
-	color: inherit;
-	font: inherit;
-	text-align: left;
-	width: 100%;
-}
-.choice[data-active="true"] { background: var(--focus); color: var(--on-focus); }
-.choice[data-active="true"] .hint { color: var(--on-focus); opacity: .8; }
-.hint { margin-left: auto; color: var(--ink-faint); font-size: 11px; }
-
 /* ============================================================
-   1 — WINDOW SHEET
+   1 — ATTACHED DIALOG
    ============================================================ */
-.sheet {
+.attached-dialog {
 	position: absolute;
 	top: 28px;                    /* out from under the titlebar */
 	left: 50%;
@@ -462,7 +423,7 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 	box-shadow: 0 14px 34px rgba(0, 0, 0, .3);
 }
 /* Only the window that asked goes quiet. The desktop keeps working. */
-.sheet-scrim {
+.attached-dialog-scrim {
 	position: absolute;
 	inset: 28px 0 0;
 	z-index: 1;
@@ -487,115 +448,6 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 	box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
 }
 
-/* ============================================================
-   3 — MENUBAR REQUEST STACK
-   ============================================================ */
-.badge {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	height: 20px;
-	padding: 0 7px;
-	border-radius: 5px;
-	background: color-mix(in srgb, var(--focus) 16%, transparent);
-	border: 1px solid color-mix(in srgb, var(--focus) 42%, transparent);
-	color: var(--focus);
-	font-size: 11px;
-}
-.badge b {
-	display: grid;
-	place-items: center;
-	min-width: 15px;
-	height: 15px;
-	padding: 0 3px;
-	border-radius: 999px;
-	background: var(--focus);
-	color: var(--on-focus);
-	font-size: 10px;
-}
-.stack {
-	position: absolute;
-	top: 10px;
-	right: 12px;
-	z-index: 5;
-	display: grid;
-	gap: 8px;
-	width: 310px;
-}
-.card {
-	border-radius: 9px;
-	box-shadow: 0 12px 30px rgba(0, 0, 0, .3);
-}
-.card .pop-inner { padding: 12px 13px; }
-.card .pop-actions { margin-top: 10px; }
-.card .pop-actions button { min-width: 0; }
-/* The third card only shows its edge: a queue, not a wall. */
-.card-peek {
-	height: 12px;
-	margin: -6px 10px 0;
-	border-radius: 0 0 9px 9px;
-	border-top: 0;
-	background: color-mix(in srgb, var(--window-bg) 90%, var(--text));
-	box-shadow: 0 10px 22px rgba(0, 0, 0, .22);
-}
-
-/* ============================================================
-   4 — OMNIBAR PROMPT — the glass of .frn-dock, tokens and all.
-   ============================================================ */
-.glass {
-	--glass-tint: light-dark(rgb(255 255 255 / .18), rgb(18 18 20 / .3));
-	--glass-sheen: light-dark(rgb(255 255 255 / .24), rgb(255 255 255 / .08));
-	--glass-rim: light-dark(rgb(255 255 255 / .64), rgb(255 255 255 / .24));
-	--glass-edge: light-dark(rgb(255 255 255 / .46), rgb(255 255 255 / .16));
-	--glass-shadow: light-dark(rgb(24 38 52 / .2), rgb(0 0 0 / .42));
-	border: 1px solid var(--glass-edge);
-	background: linear-gradient(180deg, var(--glass-sheen), transparent 34%), var(--glass-tint);
-	box-shadow: inset 0 1px 0 var(--glass-rim), 0 18px 40px var(--glass-shadow);
-	backdrop-filter: blur(20px) saturate(180%);
-	-webkit-backdrop-filter: blur(20px) saturate(180%);
-	color: var(--text);
-}
-.omni {
-	position: absolute;
-	left: 50%;
-	bottom: 20px;
-	z-index: 5;
-	width: 440px;
-	transform: translateX(-50%);
-	border-radius: 14px;
-	font-size: var(--text-ui);
-}
-.omni .pop-inner { padding: 14px 15px 12px; }
-.omni .pop-attr { border-top-color: color-mix(in srgb, var(--text) 12%, transparent); }
-.omni .choice[data-active="true"] { background: color-mix(in srgb, var(--focus) 85%, transparent); }
-.omni-pill {
-	position: absolute;
-	left: 50%;
-	bottom: 20px;
-	z-index: 5;
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	height: 34px;
-	padding: 0 14px;
-	transform: translateX(-50%);
-	border-radius: 999px;
-	color: color-mix(in srgb, var(--text) 70%, transparent);
-}
-.pulse {
-	width: 7px;
-	height: 7px;
-	border-radius: 999px;
-	background: var(--focus);
-	box-shadow: 0 0 0 0 color-mix(in srgb, var(--focus) 60%, transparent);
-	animation: pulse 2s ease-out infinite;
-}
-@keyframes pulse {
-	0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--focus) 55%, transparent); }
-	70% { box-shadow: 0 0 0 9px transparent; }
-	100% { box-shadow: 0 0 0 0 transparent; }
-}
-
 /* A caption under a scene fragment */
 .cap { margin: 8px 2px 0; color: var(--ink-faint); font-size: 11px; }
 
@@ -617,6 +469,10 @@ pre .k { color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
 		color-mix(in srgb, var(--surface) 70%, var(--window-bg));
 }
 .state-tile .pop { width: 100%; max-width: 340px; border-radius: 9px; box-shadow: 0 12px 30px rgba(0,0,0,.18); }
+.dialog-form { display: grid; gap: 7px; }
+.dialog-form[data-wide] { grid-column: 1 / -1; }
+.dialog-form[data-wide] .state-tile .pop { max-width: 430px; }
+.dialog-form-label { color: var(--ink-faint); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 
 /* Comparison table */
 table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12px; }
@@ -627,69 +483,254 @@ tr:last-child td { border-bottom: 0; }
 
 @media (max-width: 720px) {
 	.scene { height: 340px; }
-	.omni, .stack { width: min(92%, 310px); }
 }
 </style>
 
 <div class="doc">
 
-<h1>Global popup</h1>
+<h1>Global dialogs</h1>
 <p class="lede">
-	Four places the OS can put a question. The panel itself is the same in all four — the same tokens,
-	the same button row, the same attribution line. What differs is where it is anchored, what it dims,
-	and therefore what kind of question it can carry.
+	One dialog primitive, two placements. An app-owned decision attaches to its window; a system-owned
+	decision blocks the desktop. The placement is host policy, not a caller option.
 </p>
 
 <div class="panel">
 	<h2>Why this exists</h2>
 	<p class="note" style="margin-top:8px">
-		An app GUI runs in <code>sandbox="allow-scripts allow-forms allow-downloads"</code>
-		(<code>src/apps/host.ts:163</code>). No <code>allow-modals</code> — so
-		<code>confirm()</code> inside an app is <em>already</em> ignored by the browser. Apps cannot ask
-		the user anything today. The shell itself still calls the browser's
-		(<code>DesktopShell.tsx:194</code>, <code>apps/hooks.ts:117</code>), which shows the origin
-		instead of the app, cannot be styled, blocks the whole thread, and looks like a phishing box.
+		An app GUI runs in an opaque-origin iframe without <code>allow-modals</code>, so browser
+		<code>alert()</code> and <code>confirm()</code> are not an app API. The Frieren shell still uses
+		those browser dialogs for uninstall, reset, and install errors. They cannot carry trusted app
+		identity, do not use the design system, and block the browser thread.
 	</p>
 	<p class="note">
-		One surface fixes both: the OS draws the panel, outside every iframe, and stamps who asked
-		— the same trust move <code>notify</code> already makes when it stamps
-		<code>source</code> from the kernel's <code>appId</code>.
+		One host-owned component fixes both. It renders outside every iframe and stamps who asked — the
+		same trust move <code>notify</code> already makes when it stamps <code>source</code> from the
+		kernel's <code>appId</code>.
 	</p>
 </div>
 
 <div class="panel" style="margin-top:18px">
-	<h2>The contract — identical across all four</h2>
-	<p class="note" style="margin-top:8px">
-		One method. The app describes the question; the <em>host</em> decides which surface it lands on.
-		No coordinates, no z-index, no modality flag — an app can't be trusted with those anyway.
-	</p>
-<pre><span class="c">// app.ts</span>
-<span class="k">import</span> { dialog } <span class="k">from</span> '@justfiles/app/capabilities/dialog'
-
-capabilities: { dialog }
-
-<span class="c">// in a procedure — one await, and the host draws it</span>
-<span class="k">const</span> answer = <span class="k">await</span> app.invoke('dialog', 'ask', {
-	title: 'Delete "Q3 planning"?',
-	body: 'The note and its 4 revisions leave the volume.',
-	confirm: 'Delete',        <span class="c">// omit → one OK button, informational</span>
-	destructive: <span class="k">true</span>,
-	input: { placeholder: 'New name', value: 'Q3 planning' }  <span class="c">// optional → a prompt</span>
-})
-<span class="c">// → { ok: false } | { ok: true, value?: string }</span></pre>
+	<h2>Two primitives, one for v1</h2>
+	<div class="facts">
+		<div class="fact">
+			<div class="fact-label">Dialog · v1</div>
+			<p>A compact, host-owned message with a constrained action area: alert, boolean confirmation, or a choice of up to three actions. The host owns its chrome, focus, and placement.</p>
+		</div>
+		<div class="fact">
+			<div class="fact-label">Sheet · later</div>
+			<p>App-owned custom content for forms, pickers, validation, and multi-step work. It will be a separate primitive; this proposal does not define its API.</p>
+		</div>
+	</div>
 	<p class="note" style="margin-top:12px; font-size:12px">
-		Deliberately absent from v1: a third button, custom buttons, an icon of the app's choosing, a
-		"don't ask again" checkbox. None has a caller yet. <code>source</code> is never in the payload —
-		the host stamps it, so an app cannot ask a question in another app's name.
+		This follows Apple's boundary: <a href="https://developer.apple.com/design/human-interface-guidelines/alerts">alerts</a>
+		and confirmation dialogs are constrained system presentations, while
+		<a href="https://developer.apple.com/design/human-interface-guidelines/sheets">sheets</a> host
+		richer task-specific interfaces. A dialog has no input fields or custom content; those belong in
+		the future sheet primitive.
 	</p>
 </div>
+
+<div class="panel" style="margin-top:18px">
+	<h2>API decision — a strongly typed GUI service</h2>
+	<p class="note" style="margin-top:8px">
+		A dialog is not app state and not an app capability. <code>app.ts</code> owns the semantic action:
+		delete the note. A human GUI may ask first; an agent or CLI may call the same action directly. The
+		host injects <code>dialog</code> beside the typed app <code>client</code>, only while a GUI is mounted.
+	</p>
+<pre><span class="c">// app.ts — pure app logic, shared by GUI and agent</span>
+update: (t) => ({
+	deleteNote: t.on(deleteSchema, (state, { id }) => removeNote(state, id), {
+		description: 'Delete a note.'
+	})
+})
+
+<span class="c">// gui.tsx — confirmation belongs to the human interface</span>
+<span class="k">import</span> { defineReactGUI, <span class="k">type</span> GUIProps } <span class="k">from</span> '@justfiles/app/react'
+<span class="k">import type</span> { app } <span class="k">from</span> './app'
+
+<span class="k">function</span> Notes({ client, dialog }: GUIProps&lt;<span class="k">typeof</span> app&gt;) {
+	<span class="k">const</span> remove = <span class="k">async</span> (id: string) => {
+		<span class="k">const</span> confirmed = <span class="k">await</span> dialog.confirm({
+			title: 'Delete “Q3 planning”?',
+			body: 'The note and its 4 revisions leave the volume.',
+			confirmLabel: 'Delete',
+			destructive: <span class="k">true</span>
+		})
+		<span class="k">if</span> (confirmed) <span class="k">await</span> client.deleteNote({ id })
+	}
+	<span class="c">// render...</span>
+}
+
+<span class="k">export const</span> gui = defineReactGUI&lt;<span class="k">typeof</span> app&gt;(Notes)</pre>
+	<p class="note" style="margin-top:12px; font-size:12px">
+		<code>GUIProps&lt;typeof app&gt;</code> gives the editor both halves: app-specific action types on
+		<code>client</code>, and the platform-owned dialog contract on <code>dialog</code>. Plain
+		<code>defineGUI</code> gets the same inferred <code>{ client, dialog }</code> mount context.
+	</p>
+<pre><span class="c">// @justfiles/app/browser</span>
+<span class="k">export interface</span> DialogContent {
+	title: string
+	body?: string
+}
+
+<span class="k">export interface</span> DialogAction&lt;Id <span class="k">extends</span> string = string&gt; {
+	id: Id
+	label: string
+	role?: 'cancel' | 'destructive'
+}
+
+<span class="k">export interface</span> ConfirmDialogOptions <span class="k">extends</span> DialogContent {
+	confirmLabel: string
+	destructive?: boolean
+}
+
+<span class="k">export interface</span> DialogClient {
+	alert(options: DialogContent): Promise&lt;void&gt;
+	confirm(options: ConfirmDialogOptions): Promise&lt;boolean&gt;
+	choose&lt;<span class="k">const</span> Actions <span class="k">extends readonly</span> DialogAction[]&gt;(options: DialogContent &amp; {
+		actions: Actions
+	}): Promise&lt;Actions[number]['id']&gt;
+}
+
+<span class="k">export interface</span> GUIContext&lt;A&gt; {
+	<span class="k">readonly</span> client: Client&lt;A&gt;
+	<span class="k">readonly</span> dialog: DialogClient
+}
+
+<span class="c">// @justfiles/app/react</span>
+<span class="k">export interface</span> GUIProps&lt;A&gt; <span class="k">extends</span> GUIContext&lt;A&gt; {
+	<span class="k">readonly</span> state: GUIState&lt;A&gt; | null
+}</pre>
+	<p class="note" style="margin-top:12px; font-size:12px">
+		The three methods are one constrained <code>dialog</code> primitive with three result shapes:
+		<code>alert()</code> completes, the confirmation prompt <code>confirm()</code> returns a boolean,
+		and <code>choose()</code> returns the exact action-id union. The host supplies standard OK and Cancel
+		labels; the caller names the confirming action and every choice. The editor rejects missing fields,
+		invalid roles, and unknown options without asking each app to restate the contract.
+	</p>
+	<p class="note" style="font-size:12px">
+		The client is a typed RPC proxy over the GUI's existing <code>MessagePort</code>, not a raw function
+		object crossing the iframe. The host already knows the mounted frame's app and window, so the
+		request has no source, placement, coordinates, icon, or z-index. The host validates one to three
+		choice actions at runtime. Deliberately absent from v1: input fields, custom content, validation
+		hooks, and “don't ask again.”
+	</p>
+</div>
+
+<div class="panel" style="margin-top:18px">
+	<h2>Placement and lifecycle policy</h2>
+	<div class="facts">
+		<div class="fact">
+			<div class="fact-label">GUI client</div>
+			<p>Every app-GUI call attaches to its own mounted window. The host derives identity and placement from the frame; the app cannot name either.</p>
+		</div>
+		<div class="fact">
+			<div class="fact-label">No app window</div>
+			<p>There is no <code>dialog</code> client to call. Agent and CLI actions continue through the app's semantic API without GUI confirmation.</p>
+		</div>
+		<div class="fact">
+			<div class="fact-label">System caller</div>
+			<p>The trusted shell calls the coordinator directly and may request the system placement for uninstall, reset, or fatal recovery.</p>
+		</div>
+		<div class="fact">
+			<div class="fact-label">Concurrency</div>
+			<p>Allow one pending dialog per app and one pending system dialog. Reject overlap in v1; add a queue only when a real caller needs it.</p>
+		</div>
+	</div>
+</div>
+
+
+<!-- ═══════════════════════ forms ═══════════════════════ -->
+<section class="variant">
+	<div class="variant-head"><h2>Complete v1 dialog set</h2></div>
+	<p class="thesis">
+		These are the only three content shapes. They use the same panel and can appear in either host-chosen
+		placement below; apps choose the semantic operation, never the placement or layout.
+	</p>
+
+	<div class="states">
+		<div class="dialog-form">
+			<div class="dialog-form-label">Alert · alert() → void</div>
+			<div class="state-tile">
+				<div class="pop">
+					<div class="pop-inner">
+						<div class="pop-head">
+							<div class="tile tile-28 files">F</div>
+							<div>
+								<p class="pop-title">Couldn’t install “Pixel”</p>
+								<p class="pop-body">The manifest requires runtime 3.2. This volume runs 3.0.</p>
+							</div>
+						</div>
+						<div class="pop-attr">
+							<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+							Asked by <b>the system</b> · not by an app
+						</div>
+						<div class="pop-actions"><button type="button" data-primary>OK</button></div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="dialog-form">
+			<div class="dialog-form-label">Confirmation prompt · confirm() → boolean</div>
+			<div class="state-tile">
+				<div class="pop">
+					<div class="pop-inner">
+						<div class="pop-head">
+							<div class="tile tile-28 notes">N</div>
+							<div>
+								<p class="pop-title">Delete “Q3 planning”?</p>
+								<p class="pop-body">The note and its 4 revisions leave the volume. This can’t be undone.</p>
+							</div>
+						</div>
+						<div class="pop-attr">
+							<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+							Asked by <b>Notes</b> · <code>justfiles.notes</code>
+						</div>
+						<div class="pop-actions">
+							<button type="button">Cancel</button>
+							<button type="button" data-danger>Delete</button>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="dialog-form" data-wide>
+			<div class="dialog-form-label">Multi-action choice · choose() → 'cancel' | 'replace' | 'keep-both'</div>
+			<div class="state-tile">
+				<div class="pop">
+					<div class="pop-inner">
+						<div class="pop-head">
+							<div class="tile tile-28 files">F</div>
+							<div>
+								<p class="pop-title">“Report.pdf” already exists</p>
+								<p class="pop-body">Choose what Files should do with the incoming document.</p>
+							</div>
+						</div>
+						<div class="pop-attr">
+							<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+							Asked by <b>Files</b> · <code>justfiles.files</code>
+						</div>
+						<div class="pop-actions">
+							<button type="button">Cancel</button>
+							<button type="button" data-danger>Replace</button>
+							<button type="button" data-primary>Keep Both</button>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+	<p class="cap">A confirmation is logically yes/no, but its buttons name the consequences — “Delete” and “Cancel,” not generic “Yes” and “No.” A choice renders each typed action as a button, up to three.</p>
+</section>
 
 
 <!-- ═══════════════════════ 1 ═══════════════════════ -->
 <section class="variant">
 	<div class="variant-head">
 		<span class="num">1</span>
-		<h2>Window sheet</h2>
+		<h2>Attached dialog</h2>
 		<span class="modality">window-modal</span>
 	</div>
 	<p class="thesis">
@@ -719,8 +760,8 @@ capabilities: { dialog }
 					<div class="win-body">
 						<div class="doc-lines"><i class="h"></i><i></i><i class="s"></i><i></i><i></i><i class="t"></i></div>
 					</div>
-					<div class="sheet-scrim"></div>
-					<div class="pop sheet">
+					<div class="attached-dialog-scrim"></div>
+					<div class="pop attached-dialog">
 						<div class="pop-inner">
 							<div class="pop-head">
 								<div class="tile tile-28 notes">N</div>
@@ -744,12 +785,12 @@ capabilities: { dialog }
 			</div>
 		</div>
 	</div>
-	<p class="cap">The sheet is drawn by the OS on top of the app's iframe, inside the window's own frame — the app can neither move it nor forge one.</p>
+	<p class="cap">The dialog is drawn by the OS on top of the app's iframe, inside the window's own frame — the app can neither move it nor forge one.</p>
 
 	<div class="facts">
 		<div class="fact">
 			<div class="fact-label">Reads as</div>
-			<p>AppKit's sheet. Attribution is structural — it is physically attached to the app that asked, so the label is confirmation, not the only evidence.</p>
+			<p>An alert attached to its owning window. Attribution is structural — it is physically attached to the app that asked, so the label is confirmation, not the only evidence.</p>
 		</div>
 		<div class="fact">
 			<div class="fact-label">Best for</div>
@@ -757,11 +798,11 @@ capabilities: { dialog }
 		</div>
 		<div class="fact">
 			<div class="fact-label">Costs</div>
-			<p>Needs a window. A question from the agent, a cron job, or the shell itself has nowhere to hang. Behind another window it is invisible until the OS raises it.</p>
+			<p>Needs that app's window. A headless app call cannot fall back to a global blocker, and a dialog behind another window needs the OS to raise its owner.</p>
 		</div>
 		<div class="fact">
 			<div class="fact-label">Reuses</div>
-			<p><code>ds-attached-agent[data-mode="sheet"]</code> already does exactly this geometry — the scrim, the seam, the rounded top. Same anchor, different payload.</p>
+			<p>The attached-agent panel already proves host-owned scrim and panel composition inside a window. The dialog gets its own top/titlebar anchor.</p>
 		</div>
 	</div>
 </section>
@@ -821,39 +862,6 @@ capabilities: { dialog }
 	</div>
 	<p class="cap">The scrim covers the menubar too — nothing about the machine is reachable until this is answered. That is the point, and the reason to spend it rarely.</p>
 
-	<div class="states">
-		<div class="state-tile">
-			<div class="pop">
-				<div class="pop-inner">
-					<div class="pop-head">
-						<div class="tile tile-28 notes">N</div>
-						<div>
-							<p class="pop-title">Couldn’t install “Pixel”</p>
-							<p class="pop-body">The manifest is signed for a newer runtime (3.2). This volume runs 3.0.</p>
-						</div>
-					</div>
-					<div class="pop-actions"><button type="button" data-primary>OK</button></div>
-				</div>
-			</div>
-		</div>
-		<div class="state-tile">
-			<div class="pop">
-				<div class="pop-inner">
-					<div class="pop-head">
-						<div class="tile tile-28 notes">N</div>
-						<div>
-							<p class="pop-title">Name this note</p>
-							<div class="pop-field"><input value="Q3 planning" style="width:100%"></div>
-						</div>
-					</div>
-					<div class="pop-attr">Asked by <b>Notes</b> · <code>justfiles.notes</code></div>
-					<div class="pop-actions"><button type="button">Cancel</button><button type="button" data-primary>Rename</button></div>
-				</div>
-			</div>
-		</div>
-	</div>
-	<p class="cap">The other two shapes the same panel takes: an informational alert (one button, no attribution needed when the system speaks for itself) and a prompt. Every variant needs these; only variant 2 is drawn with them here.</p>
-
 	<div class="facts">
 		<div class="fact">
 			<div class="fact-label">Reads as</div>
@@ -869,196 +877,7 @@ capabilities: { dialog }
 		</div>
 		<div class="fact">
 			<div class="fact-label">Reuses</div>
-			<p><code>ConsentSheet.tsx</code> plus <code>frn-card</code>. Closest to shipping of the four.</p>
-		</div>
-	</div>
-</section>
-
-
-<!-- ═══════════════════════ 3 ═══════════════════════ -->
-<section class="variant">
-	<div class="variant-head">
-		<span class="num">3</span>
-		<h2>Menubar request stack</h2>
-		<span class="modality">modeless</span>
-	</div>
-	<p class="thesis">
-		Nothing blocks. Questions drop in under the menubar and queue there, each with its source,
-		answerable in any order — or later. The badge is the machine saying “I need three things from you.”
-	</p>
-
-	<div class="scene">
-		<div class="menubar">
-			<strong>Notes</strong>
-			<div class="menubar-right">
-				<span class="badge">Waiting on you <b>3</b></span>
-				<span>Sat 14:32</span>
-			</div>
-		</div>
-		<div class="desk">
-			<div class="layer">
-				<div class="win" data-focused="true" style="left:26px; top:30px; width:360px; height:270px">
-					<div class="titlebar"><div class="lights"><i></i><i></i></div><span class="win-title">Q3 planning — Notes</span><span class="spacer"></span></div>
-					<div class="win-body"><div class="doc-lines"><i class="h"></i><i></i><i class="s"></i><i></i><i></i><i class="t"></i></div></div>
-					<div class="win-footer">Saved 14:31</div>
-				</div>
-			</div>
-
-			<div class="stack">
-				<div class="pop card">
-					<div class="pop-inner">
-						<div class="pop-head">
-							<div class="tile tile-20 files">F</div>
-							<div>
-								<p class="pop-title">Replace “report.pdf”?</p>
-								<p class="pop-body">A newer file with this name is already in <code>/home/docs</code>.</p>
-							</div>
-						</div>
-						<div class="pop-actions">
-							<button type="button">Keep both</button>
-							<button type="button" data-primary>Replace</button>
-						</div>
-					</div>
-				</div>
-				<div class="pop card">
-					<div class="pop-inner">
-						<div class="pop-head">
-							<div class="tile tile-20 frieren">✳</div>
-							<div>
-								<p class="pop-title">Send the draft to Maya?</p>
-								<p class="pop-body">I’ve written the reply. Say the word and it goes.</p>
-							</div>
-						</div>
-						<div class="pop-actions">
-							<button type="button">Not now</button>
-							<button type="button" data-primary>Send</button>
-						</div>
-					</div>
-				</div>
-				<div class="pop card-peek"></div>
-			</div>
-		</div>
-	</div>
-	<p class="cap">The window under it is fully live — you can keep typing while the queue waits. Answer one and the stack collapses up; ignore them all and the badge keeps count.</p>
-
-	<div class="facts">
-		<div class="fact">
-			<div class="fact-label">Reads as</div>
-			<p>Notification Center that can be answered. The one variant where the agent, cron and apps share a single inbox for “I need you.”</p>
-		</div>
-		<div class="fact">
-			<div class="fact-label">Best for</div>
-			<p>The agent's mid-turn questions, background jobs, non-urgent grants — anything that shouldn't seize the machine.</p>
-		</div>
-		<div class="fact">
-			<div class="fact-label">Costs</div>
-			<p>Changes the contract: the app's <code>await</code> may never resolve. Needs a real answer for “user ignored it” — a timeout, or <code>{ ok: false, reason: 'dismissed' }</code>. Too easy to click past for a destructive delete.</p>
-		</div>
-		<div class="fact">
-			<div class="fact-label">Reuses</div>
-			<p>The notification store in <code>src/notifications/</code> — same queue, same lifetime rules, cards that carry actions.</p>
-		</div>
-	</div>
-</section>
-
-
-<!-- ═══════════════════════ 4 ═══════════════════════ -->
-<section class="variant">
-	<div class="variant-head">
-		<span class="num">4</span>
-		<h2>Omnibar prompt</h2>
-		<span class="modality">soft-modal, keyboard-first</span>
-	</div>
-	<p class="thesis">
-		The question comes back out of the surface you talk to. The pill grows into the panel, the desktop
-		recedes exactly as it already does when the omnibar engages, and the answer is a keystroke.
-		One place for intent — in both directions.
-	</p>
-
-	<div class="scene scene-tall">
-		<div class="menubar">
-			<strong>Notes</strong>
-			<div class="menubar-right"><span>Sat 14:32</span></div>
-		</div>
-		<div class="desk">
-			<div class="layer" data-recede="true">
-				<div class="win" data-focused="true" style="left:36px; top:28px; width:400px; height:240px">
-					<div class="titlebar"><div class="lights"><i></i><i></i></div><span class="win-title">Q3 planning — Notes</span><span class="spacer"></span></div>
-					<div class="win-body"><div class="doc-lines"><i class="h"></i><i></i><i class="s"></i><i></i><i class="t"></i></div></div>
-				</div>
-				<div class="win" data-focused="false" style="left:420px; top:120px; width:280px; height:180px">
-					<div class="titlebar"><div class="lights"><i></i><i></i></div><span class="win-title">Files</span><span class="spacer"></span></div>
-					<div class="win-body"><div class="doc-lines"><i class="h"></i><i></i><i class="s"></i></div></div>
-				</div>
-			</div>
-
-			<div class="pop omni glass">
-				<div class="pop-inner">
-					<div class="pop-head">
-						<div class="tile tile-28 notes">N</div>
-						<div style="flex:1">
-							<p class="pop-title">Delete “Q3 planning”?</p>
-							<p class="pop-body">The note and its 4 revisions leave the volume.</p>
-						</div>
-					</div>
-					<div class="pop-choices">
-						<button type="button" class="choice" data-active="true">Delete<span class="hint">⏎</span></button>
-						<button type="button" class="choice">Keep it<span class="hint">esc</span></button>
-					</div>
-					<div class="pop-attr">
-						<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-						Asked by <b>Notes</b> · <code>justfiles.notes</code> · 1 more waiting
-					</div>
-				</div>
-			</div>
-		</div>
-	</div>
-	<p class="cap">Same recede as <code>.frn-desktop-windows</code> under an expanded dock: <code>scale(.985)</code> + <code>brightness(.65)</code>. Occlusion reads as a mode, not as theft.</p>
-
-	<div class="states">
-		<div class="state-tile" style="background:var(--desktop-bg); padding:30px 18px">
-			<div class="pop omni glass" style="position:static; transform:none; width:100%; max-width:340px">
-				<div class="pop-inner">
-					<div class="pop-head">
-						<div class="tile tile-20 frieren">✳</div>
-						<div style="flex:1">
-							<p class="pop-title">Which calendar should this go on?</p>
-							<div class="pop-choices">
-								<button type="button" class="choice" data-active="true">Work<span class="hint">⌘1</span></button>
-								<button type="button" class="choice">Personal<span class="hint">⌘2</span></button>
-								<button type="button" class="choice">Family<span class="hint">⌘3</span></button>
-							</div>
-						</div>
-					</div>
-				</div>
-			</div>
-		</div>
-		<div class="state-tile" style="background:var(--desktop-bg); padding:30px 18px">
-			<div class="omni-pill glass" style="position:static; transform:none">
-				<span class="pulse"></span>
-				<span>Notes is waiting on you</span>
-				<span class="hint">⌘K</span>
-			</div>
-		</div>
-	</div>
-	<p class="cap">A choice question, and the collapsed state: press <kbd>esc</kbd> and the panel folds back into a pulsing pill rather than forcing an answer. The pill already pulses when the agent needs you — this is the same presence signal, one more source.</p>
-
-	<div class="facts">
-		<div class="fact">
-			<div class="fact-label">Reads as</div>
-			<p>The omnibar's own language — one surface routes intent, and now carries the reply. Doc <code>design/01-omnibar.md</code> calls the result list “a growth surface”; this is a branch of it.</p>
-		</div>
-		<div class="fact">
-			<div class="fact-label">Best for</div>
-			<p>Keyboard people, agent questions, anything with more than two answers, prompts that want typing.</p>
-		</div>
-		<div class="fact">
-			<div class="fact-label">Costs</div>
-			<p>Bottom-center is far from the click that caused it — mouse travel on every confirm. Competes with the launcher for one surface and one <kbd>⏎</kbd>. Strictly one question at a time.</p>
-		</div>
-		<div class="fact">
-			<div class="fact-label">Reuses</div>
-			<p>The whole glass stack (<code>.frn-dock</code> tokens), the recede transition, and the pill's existing pulse-for-attention state.</p>
+			<p><code>ConsentSheet.tsx</code> plus <code>frn-card</code>. This is the closest placement to shipping.</p>
 		</div>
 	</div>
 </section>
@@ -1069,10 +888,10 @@ capabilities: { dialog }
 	<div class="variant-head"><h2>Side by side</h2></div>
 	<table>
 		<tr>
-			<th>Variant</th><th>Blocks</th><th>Works with no window</th><th>Several at once</th><th>Right for a delete</th>
+			<th>Placement</th><th>Blocks</th><th>Works with no window</th><th>Several at once</th><th>Right for a delete</th>
 		</tr>
 		<tr>
-			<td>1 · Sheet</td>
+			<td>1 · Attached</td>
 			<td>one window</td>
 			<td>no</td>
 			<td>yes — one per window</td>
@@ -1082,39 +901,24 @@ capabilities: { dialog }
 			<td>2 · Alert</td>
 			<td>everything</td>
 			<td>yes</td>
-			<td>badly</td>
+			<td>no — reject overlap</td>
 			<td>yes, and for the worst ones</td>
-		</tr>
-		<tr>
-			<td>3 · Stack</td>
-			<td>nothing</td>
-			<td>yes</td>
-			<td>yes — that's the shape</td>
-			<td>no</td>
-		</tr>
-		<tr>
-			<td>4 · Omnibar</td>
-			<td>the desktop, softly</td>
-			<td>yes</td>
-			<td>queued, one shown</td>
-			<td>yes</td>
 		</tr>
 	</table>
 </section>
 
 <section class="variant">
-	<div class="variant-head"><h2>If it were one call</h2></div>
+	<div class="variant-head"><h2>Recommended implementation seam</h2></div>
 	<p class="note" style="margin-top:6px">
-		<b>1 and 2 are one feature, not two.</b> Same panel, same <code>ask()</code>; the host picks —
-		the calling app has an open window, so it gets a sheet; the shell, agent or cron has none, so it
-		gets an alert. That kills both browser popups in the shell, gives apps the capability, and adds
-		one component plus one placement rule. Ship that.
+		<b>Keep the split sharp:</b> <code>app.ts</code> owns semantic actions; the mounted GUI gets a typed
+		<code>DialogClient</code>; the shell owns one coordinator/component that renders attached dialogs and
+		system alerts.
 	</p>
 	<p class="note">
-		<b>3 is the second release</b>, once the agent starts asking things mid-turn — and it wants the
-		API change (a dismissable answer), so it is worth not paying for now.
-		<b>4 is the most distinctive</b> and the most opinionated: it makes the omnibar the single place
-		the machine and the user meet. Choose it if that story matters more than mouse travel.
+		The GUI bridge sends a typed dialog request over its existing port. The host adapter adds trusted
+		app/window identity and hands it to the coordinator. The shell calls that coordinator directly for
+		system alerts. Queue, focus, Escape, window-close cancellation, and rendering stay out of app code.
+		Agent approval, if it is ever needed for destructive tools, is a separate agent-runtime concern.
 	</p>
 </section>
 

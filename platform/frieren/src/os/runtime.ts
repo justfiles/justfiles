@@ -177,7 +177,8 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	disposers.push(
 		appHost.subscribeWindows((req) => {
 			if (req.type === 'open') store.dispatch({ type: 'app.open', appId: req.id, title: req.title })
-			else store.dispatch({ type: 'window.close', id: req.id })
+			else if (req.type === 'close') store.dispatch({ type: 'window.close', id: req.id })
+			else store.dispatch({ type: 'window.focus', id: req.id })
 		})
 	)
 
