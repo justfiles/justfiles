@@ -52,7 +52,7 @@ export function DialogHost({
 		}
 		if (event.key !== 'Tab') return
 		const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')]
-		if (buttons.length < 2) return
+		if (buttons.length === 0) return
 		const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
 		const next = event.shiftKey
 			? (current - 1 + buttons.length) % buttons.length
