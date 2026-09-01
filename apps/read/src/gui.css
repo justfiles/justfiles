@@ -383,15 +383,6 @@ a:focus-visible {
 	margin-left: auto;
 }
 
-.delete-confirm {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	color: var(--read-danger);
-	font-size: 11px;
-	white-space: nowrap;
-}
-
 .back-button {
 	display: none;
 }

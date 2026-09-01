@@ -1,6 +1,7 @@
 import { appBundleFromMemory, kernel } from '@justfiles/app'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
+import { mountDialogHost } from '@justfiles/app/dialog-host'
 import { guiHost } from '@justfiles/app/iframe'
 import { sandboxClient } from '@justfiles/app/sandbox'
 import { volume } from '@justfiles/fs'
@@ -101,8 +102,10 @@ const appId = await k.install(
 
 await frameLoaded
 const { port1, port2 } = new MessageChannel()
+const dialog = mountDialogHost(root, { source: name, sourceId: id })
 const postState = guiHost(port1, {
 	invoke: (message) => k.dispatch(appId, message),
+	dialog: (request) => dialog.request(request),
 	onError: (message) => {
 		errorElement.textContent = `Failed to load app: ${message}`
 		errorElement.hidden = false

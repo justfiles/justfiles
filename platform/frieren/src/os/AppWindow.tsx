@@ -1,9 +1,11 @@
 import { AttachedAgent, type AttachedAgentMode } from '@justfiles/ui/AttachedAgent'
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentSession } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
+import { dialogFor, subscribeDialogs } from '../apps/dialogs'
 import { Window } from '../components/Window'
+import { DialogHost } from '../shell/Dialog'
 import { useOsDispatch, useOsStore } from './hooks'
 import { selectFocusedWindowId, selectWindowZIndex } from './selectors'
 
@@ -29,6 +31,16 @@ export function AppWindow({
 	const zIndex = useOsStore((s) => selectWindowZIndex(s, id))
 	const assistant = useOsStore((s) => s.assistant)
 	const agent = useAgentSession(id)
+	const attachedDialogOpen = useSyncExternalStore(
+		subscribeDialogs,
+		() => dialogFor(id) !== null,
+		() => false
+	)
+	const systemDialogOpen = useSyncExternalStore(
+		subscribeDialogs,
+		() => dialogFor(null) !== null,
+		() => false
+	)
 	const [sheetOpen, setSheetOpen] = useState(false)
 	const sidebarOpen = Boolean(assistant.open[id])
 	const [panelMode, setPanelMode] = useState<AttachedAgentMode>(sidebarOpen ? 'sidebar' : 'sheet')
@@ -54,6 +66,8 @@ export function AppWindow({
 			focused={focused}
 			zIndex={zIndex}
 			fullscreen={window.mode === 'fullscreen'}
+			modal={attachedDialogOpen}
+			escapeBlocked={attachedDialogOpen || systemDialogOpen}
 			onClose={() => dispatch({ type: 'window.close', id })}
 			onFocus={() => dispatch({ type: 'window.focus', id })}
 			onRectCommit={(rect) => dispatch({ type: 'window.rectUpdated', id, rect })}
@@ -115,6 +129,7 @@ export function AppWindow({
 			>
 				{children}
 			</AttachedAgent>
+			<DialogHost owner={id} source={title} placement="attached" />
 		</Window>
 	)
 }

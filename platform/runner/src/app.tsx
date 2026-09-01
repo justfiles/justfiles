@@ -294,6 +294,7 @@ route.get('/', async (c) => {
 				<meta name="viewport" content="width=device-width, initial-scale=1" />
 				<title>{app.name}</title>
 				<link rel="manifest" href="/manifest.webmanifest" />
+				<style>{raw(macCss)}</style>
 				<style>{raw(SHELL_STYLE)}</style>
 				<ViteClient />
 				<Script src="/src/client/main.ts" />

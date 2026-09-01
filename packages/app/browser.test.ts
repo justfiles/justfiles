@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defineGUI } from './browser.ts'
+import { type DialogClient, type DialogRequest, defineGUI } from './browser.ts'
 import type { Transport } from './sdk.ts'
 
 // A GUI harness with no DOM: `defineGUI` only forwards the element, so a stub is
@@ -20,9 +20,61 @@ function mountGUI(initial: unknown) {
 			return { update: (next) => void rendered.push(next), unmount: () => {} }
 		}
 	})
-	gui.mount(null as unknown as HTMLElement, initial as never, { transport })
+	gui.mount(null as unknown as HTMLElement, initial as never, {
+		transport,
+		dialog: { request: async () => undefined }
+	})
 	return { rendered, push: (state: unknown) => push(state) }
 }
+
+it('injects the typed dialog client and maps each method to a host request', async () => {
+	const requests: DialogRequest[] = []
+	const results: unknown[] = [undefined, true, 'keep-both']
+	let dialog!: DialogClient
+	const gui = defineGUI<never>({
+		mount: (_el, _state, context) => {
+			dialog = context.dialog
+			return { update() {}, unmount() {} }
+		}
+	})
+	gui.mount(null as unknown as HTMLElement, null, {
+		transport: { invoke: async () => undefined, subscribe: () => () => {} },
+		dialog: {
+			request: async (request) => {
+				requests.push(request)
+				return results[requests.length - 1]
+			}
+		}
+	})
+
+	await dialog.alert({ title: 'Done' })
+	expect(
+		await dialog.confirm({ title: 'Delete?', confirmLabel: 'Delete', destructive: true })
+	).toBe(true)
+	expect(
+		await dialog.choose({
+			title: 'File exists',
+			actions: [
+				{ id: 'cancel', label: 'Cancel', role: 'cancel' },
+				{ id: 'replace', label: 'Replace', role: 'destructive' },
+				{ id: 'keep-both', label: 'Keep Both' }
+			]
+		})
+	).toBe('keep-both')
+	expect(requests).toEqual([
+		{ kind: 'alert', title: 'Done' },
+		{ kind: 'confirm', title: 'Delete?', confirmLabel: 'Delete', destructive: true },
+		{
+			kind: 'choose',
+			title: 'File exists',
+			actions: [
+				{ id: 'cancel', label: 'Cancel', role: 'cancel' },
+				{ id: 'replace', label: 'Replace', role: 'destructive' },
+				{ id: 'keep-both', label: 'Keep Both' }
+			]
+		}
+	])
+})
 
 describe('defineGUI state pushes', () => {
 	it('drops a push that decided nothing, so the app never re-renders', () => {

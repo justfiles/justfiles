@@ -5,6 +5,7 @@ import {
 	UPDATE_CHECK_INTERVAL_MS
 } from '../../../shared/justapps'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
+import { systemDialog } from './dialogs'
 import {
 	beginInstall,
 	endInstall,
@@ -114,7 +115,12 @@ export function useAppCommands(): AppCommands {
 				await installZipApp(await localKernel(), new Uint8Array(await zip.arrayBuffer()))
 				client.refresh()
 			} catch (e) {
-				alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
+				void systemDialog
+					.alert({
+						title: 'Install failed',
+						body: e instanceof Error ? e.message : String(e)
+					})
+					.catch(() => {})
 			} finally {
 				installingRef.current = false
 			}
@@ -134,7 +140,12 @@ export function useAppCommands(): AppCommands {
 			} catch (e) {
 				// The volume still has it — refresh restores the optimistic removal.
 				client.refresh()
-				alert(`Uninstall failed: ${e instanceof Error ? e.message : String(e)}`)
+				void systemDialog
+					.alert({
+						title: 'Uninstall failed',
+						body: e instanceof Error ? e.message : String(e)
+					})
+					.catch(() => {})
 			}
 		}
 
@@ -148,7 +159,12 @@ export function useAppCommands(): AppCommands {
 				try {
 					await installRunnerApp(await localKernel(), app.id)
 				} catch (e) {
-					alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
+					void systemDialog
+						.alert({
+							title: 'Install failed',
+							body: e instanceof Error ? e.message : String(e)
+						})
+						.catch(() => {})
 				} finally {
 					await endInstall(fs, app.id)
 					client.refresh()

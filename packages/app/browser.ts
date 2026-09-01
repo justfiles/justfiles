@@ -1,7 +1,23 @@
 import type { App } from './app.ts'
+import type { DialogAction, DialogClient, DialogContent, DialogTransport } from './dialog.ts'
+import { mountDialogHost } from './dialog-host.ts'
 import { type Client, createClient, type Transport } from './sdk.ts'
 
+export type {
+	ConfirmDialogOptions,
+	DialogAction,
+	DialogClient,
+	DialogContent,
+	DialogRequest,
+	DialogTransport
+} from './dialog.ts'
+
 type GUIState<A> = A extends App<infer State, infer _C, infer _P, infer _E> ? State : never
+
+export interface GUIContext<A> {
+	readonly client: Client<A>
+	readonly dialog: DialogClient
+}
 
 const injected = new Set<string>()
 
@@ -26,7 +42,7 @@ interface GUISpec<A> {
 	mount: (
 		el: HTMLElement,
 		state: GUIState<A> | null,
-		ctx: { readonly client: Client<A> }
+		ctx: GUIContext<A>
 	) => GUIInstance<GUIState<A> | null>
 }
 
@@ -84,16 +100,39 @@ function isBranch(value: unknown): value is Branch {
 	return typeof value === 'object' && value !== null
 }
 
-// `defineGUI<typeof app>`. The host injects only the transport; defineGUI
-// builds the typed client from it (so the host needs no createClient and
-// the GUI needs no transport) and bridges host state pushes into the GUI's
-// `update`. The GUI never reads the action return value — state flows in
-// one direction, from the host through `subscribe`.
+// `defineGUI<typeof app>`. The host injects transport and may supply its own
+// dialog chrome; direct development mounts get the shared browser host. The GUI
+// receives typed clients and never handles either transport itself.
 export function defineGUI<A>(spec: GUISpec<A>) {
 	return {
-		mount(el: HTMLElement, state: GUIState<A> | null, ctx: { transport: Transport }) {
+		mount(
+			el: HTMLElement,
+			state: GUIState<A> | null,
+			ctx: { transport: Transport; dialog?: DialogTransport }
+		) {
 			const client = createClient<A>(ctx.transport)
-			const instance = spec.mount(el, state, { client })
+			const localDialog =
+				ctx.dialog || typeof document === 'undefined'
+					? undefined
+					: mountDialogHost(document.body, {
+							source: document.title || 'this app',
+							placement: 'attached'
+						})
+			const request =
+				ctx.dialog?.request ??
+				localDialog?.request ??
+				(() => Promise.reject(new Error('Dialogs are not available')))
+			const dialog: DialogClient = {
+				async alert(options) {
+					await request({ ...options, kind: 'alert' })
+				},
+				confirm(options) {
+					return request({ ...options, kind: 'confirm' }) as Promise<boolean>
+				},
+				choose: ((options: DialogContent & { actions: readonly DialogAction[] }) =>
+					request({ ...options, kind: 'choose' })) as DialogClient['choose']
+			}
+			const instance = spec.mount(el, state, { client, dialog })
 			// What the GUI is currently showing. Pushes are reconciled against it (see
 			// `share`), so an app renders on CHANGE rather than on arrival.
 			let shown: unknown = state
@@ -107,6 +146,7 @@ export function defineGUI<A>(spec: GUISpec<A>) {
 				update: instance.update,
 				async unmount() {
 					unsubscribe()
+					localDialog?.unmount()
 					await instance.unmount()
 				}
 			}

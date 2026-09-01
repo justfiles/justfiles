@@ -14,6 +14,8 @@
 		"./runtime": "./kernel.ts",
 		"./sandbox": "./sandbox.ts",
 		"./iframe": "./iframe.ts",
+		"./dialog": "./dialog.ts",
+		"./dialog-host": "./dialog-host.ts",
 		"./browser": "./browser.ts",
 		"./react": "./react.ts",
 		"./runtime-specs": "./runtime-specs.ts",
@@ -68,6 +70,14 @@
 			"./iframe": {
 				"types": "./dist/iframe.d.ts",
 				"default": "./dist/iframe.js"
+			},
+			"./dialog": {
+				"types": "./dist/dialog.d.ts",
+				"default": "./dist/dialog.js"
+			},
+			"./dialog-host": {
+				"types": "./dist/dialog-host.d.ts",
+				"default": "./dist/dialog-host.js"
 			},
 			"./browser": {
 				"types": "./dist/browser.d.ts",

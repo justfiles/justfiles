@@ -18,7 +18,7 @@ const initial: ReadState = {
 
 const PASTE_TEXT_MIN = 200
 
-function Read({ state, client }: GUIProps<typeof app>) {
+function Read({ state, client, dialog }: GUIProps<typeof app>) {
 	const model = state ?? initial
 	const [input, setInput] = useState('')
 	const [saving, setSaving] = useState(false)
@@ -127,6 +127,17 @@ function Read({ state, client }: GUIProps<typeof app>) {
 		if (window.parent === window) return
 		event.preventDefault()
 		void client.openUrl({ url })
+	}
+	const remove = async (item: Item) => {
+		const confirmed = await dialog
+			.confirm({
+				title: `Delete “${item.title}”?`,
+				body: 'This removes the item and its saved document. This can’t be undone.',
+				confirmLabel: 'Delete',
+				destructive: true
+			})
+			.catch(() => false)
+		if (confirmed) await client.remove({ slug: item.slug })
 	}
 
 	return (
@@ -262,11 +273,9 @@ function Read({ state, client }: GUIProps<typeof app>) {
 								>
 									{current.read ? 'Mark unread' : 'Mark read'}
 								</button>
-								<DeleteItem
-									key={current.slug}
-									title={current.title}
-									onDelete={() => client.remove({ slug: current.slug })}
-								/>
+								<button type="button" data-danger onClick={() => void remove(current)}>
+									Delete
+								</button>
 							</div>
 						</header>
 						{loadError ? (
@@ -317,39 +326,6 @@ function Read({ state, client }: GUIProps<typeof app>) {
 				)}
 			</section>
 		</main>
-	)
-}
-
-function DeleteItem({
-	title,
-	onDelete
-}: {
-	title: string
-	onDelete: () => Promise<unknown>
-}) {
-	const [confirming, setConfirming] = useState(false)
-	if (!confirming)
-		return (
-			<button
-				type="button"
-				data-danger
-				onClick={() => setConfirming(true)}
-				aria-label="Delete item"
-			>
-				Delete
-			</button>
-		)
-
-	return (
-		<span className="delete-confirm" role="group" aria-label={`Delete ${title}?`}>
-			<span>Delete this item?</span>
-			<button type="button" onClick={() => setConfirming(false)}>
-				Cancel
-			</button>
-			<button type="button" data-danger onClick={() => void onDelete()}>
-				Delete
-			</button>
-		</span>
 	)
 }
 

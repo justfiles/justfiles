@@ -45,6 +45,8 @@ export function Window({
 	focused,
 	zIndex,
 	fullscreen = false,
+	modal = false,
+	escapeBlocked = false,
 	onClose,
 	onFocus,
 	onRectCommit,
@@ -56,6 +58,8 @@ export function Window({
 	focused?: boolean
 	zIndex?: number
 	fullscreen?: boolean
+	modal?: boolean
+	escapeBlocked?: boolean
 	onClose: () => void
 	onFocus?: () => void
 	onRectCommit: (rect: WindowRect) => void
@@ -65,6 +69,7 @@ export function Window({
 	const [live, setLive] = useState<WindowRect>(() => clampToViewport(rect))
 	const dragRef = useRef<{ dx: number; dy: number } | null>(null)
 	const resizeRef = useRef<{ x: number; y: number; rect: WindowRect; dir: ResizeDir } | null>(null)
+	const raisedZIndex = (zIndex ?? 0) + (modal ? 2000 : fullscreen ? 1000 : 0)
 
 	// Re-sync when the committed rect changes from outside (boot restore, etc).
 	// A drag commits the same value back, so this is a no-op for our own edits.
@@ -76,14 +81,14 @@ export function Window({
 	useEffect(() => {
 		if (!focused || !fullscreen || !onFullscreenToggle) return
 		const handler = (event: KeyboardEvent) => {
-			if (event.key === 'Escape') {
+			if (event.key === 'Escape' && !escapeBlocked) {
 				event.preventDefault()
 				onFullscreenToggle()
 			}
 		}
 		window.addEventListener('keydown', handler, { capture: true })
 		return () => window.removeEventListener('keydown', handler, { capture: true })
-	}, [focused, fullscreen, onFullscreenToggle])
+	}, [escapeBlocked, focused, fullscreen, onFullscreenToggle])
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
 		if (fullscreen) return
@@ -140,8 +145,8 @@ export function Window({
 			data-focused={focused ? 'true' : 'false'}
 			style={
 				fullscreen
-					? { zIndex: (zIndex ?? 0) + 1000 }
-					: { left: live.x, top: live.y, width: live.w, height: live.h, zIndex }
+					? { zIndex: raisedZIndex }
+					: { left: live.x, top: live.y, width: live.w, height: live.h, zIndex: raisedZIndex }
 			}
 		>
 			<div

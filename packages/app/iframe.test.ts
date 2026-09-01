@@ -53,6 +53,56 @@ test('the GUI invokes the host and receives state through its port', async () =>
 	port2.close()
 })
 
+test('the GUI requests a validated dialog and receives its result', async () => {
+	const { port1, port2 } = new MessageChannel()
+	const request = {
+		kind: 'choose' as const,
+		title: 'File exists',
+		actions: [
+			{ id: 'cancel', label: 'Cancel', role: 'cancel' as const },
+			{ id: 'keep-both', label: 'Keep Both' }
+		]
+	}
+	guiHost(port1 as unknown as MessagePort, {
+		invoke: async () => undefined,
+		dialog: async (received) => {
+			expect(received).toEqual(request)
+			return 'keep-both'
+		}
+	})
+
+	const response = nextMessage(port2)
+	port2.postMessage({ type: 'dialog', id: 'dialog-1', request })
+	expect(await response).toEqual({
+		type: 'dialogResult',
+		id: 'dialog-1',
+		result: 'keep-both'
+	})
+	port1.close()
+	port2.close()
+})
+
+test('the host rejects malformed dialog requests', async () => {
+	const { port1, port2 } = new MessageChannel()
+	const dialog = vi.fn()
+	guiHost(port1 as unknown as MessagePort, { invoke: async () => undefined, dialog })
+
+	const response = nextMessage(port2)
+	port2.postMessage({
+		type: 'dialog',
+		id: 'dialog-2',
+		request: { kind: 'choose', title: 'Too many', actions: [{}, {}, {}, {}] }
+	})
+	expect(await response).toEqual({
+		type: 'dialogError',
+		id: 'dialog-2',
+		error: { message: 'Dialog request is not supported' }
+	})
+	expect(dialog).not.toHaveBeenCalled()
+	port1.close()
+	port2.close()
+})
+
 test('the host reports invoke errors and passes host messages to its caller', async () => {
 	const { port1, port2 } = new MessageChannel()
 	const errors: string[] = []
