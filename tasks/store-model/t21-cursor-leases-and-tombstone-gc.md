@@ -17,7 +17,7 @@ const DEFAULT_SYNC_POLICY = {
 	maxWriteDurationMs: minutes(5),
 	tombstoneFenceAgeMs: days(30),
 	tombstoneGraceMs: days(10),
-	sweepBatch: 128
+	deleteBatch: 128
 } as const
 ```
 
@@ -240,15 +240,22 @@ type PendingFence = {
 
 The bounded sweep has two stages.
 
-**Fence:** when no checkpoint is pending, select at most `sweepBatch` tombstones older
-than `tombstoneFenceAgeMs`. In one transaction, advance `feedFloor` immediately past
-the highest selected position and record `{ through, fencedAt: now }`. Keep every
-tombstone row.
+**Fence:** when no checkpoint is pending, use one indexed boundary query to find the
+highest feed position of any tombstone older than `tombstoneFenceAgeMs`. In one
+transaction, advance `feedFloor` immediately past that position and record
+`{ through, fencedAt: now }`. This fences the entire currently eligible range without
+loading or deleting every row. Keep every tombstone row.
 
-**Delete:** only after `fencedAt + tombstoneGraceMs`, delete at most `sweepBatch`
+**Delete:** only after `fencedAt + tombstoneGraceMs`, delete at most `deleteBatch`
 tombstones below `through`. Keep the checkpoint until no matching tombstones remain,
 then clear it. A late first sweep still performs only the fence stage; it never treats
 age alone as proof that the grace period happened.
+
+The grace period applies once to the fenced range, not once per deletion batch. After
+grace, repeated `gc()` calls drain all tombstones below `through` at normal bounded-batch
+speed. Newer tombstones wait for the next fence generation after the checkpoint clears.
+Reclamation capacity is therefore governed by deletion-call throughput, not
+`deleteBatch / tombstoneGrace`.
 
 This removes the validation/deletion timing race without coupling row commits to GC:
 
@@ -327,15 +334,16 @@ Implement one vertical red-green slice at a time:
 5. **L05 — mid-transfer expiry.** Accept one blob put under a valid lease, advance the
    clock past expiry, and prove the next put and row commit are refused. The first blob
    is unreachable and the blob reachability sweep can reclaim it.
-6. **G01 — fence first.** An old tombstone advances the floor and creates a checkpoint
-   but remains physically present with live and recent rows unchanged.
+6. **G01 — fence full range.** More than `deleteBatch` old tombstones produce one
+   checkpoint beyond the highest eligible position while every tombstone remains
+   physically present and live and recent rows stay unchanged.
 7. **G02 — atomic fence.** A failure leaves both floor and checkpoint unchanged; retry
    creates both once.
 8. **G03 — grace barrier.** Mint a write lease just before fencing. During grace, its old
    live row still meets the tombstone and cannot land; the lease and maximum request
    lifetime expire before deletion eligibility.
-9. **G04 — delayed deletion.** After grace, remove only tombstones below the checkpoint
-   in bounded batches, then clear it.
+9. **G04 — delayed deletion.** After one grace period, repeated bounded calls remove all
+   tombstones below the checkpoint, then clear it; no extra grace is paid per batch.
 10. **G05 — late first sweep.** Advance the clock beyond the nominal 40-day minimum
    before running GC for the first time. It fences but does not delete until ten actual
    grace days pass.
@@ -376,6 +384,8 @@ Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to 
   accepted while valid; no row references them and blob GC can reclaim them.
 - Bootstrap uses a fresh local store and preserves unacknowledged work before switching.
 - All retention and batch values come from one validated receiver policy object.
+- One fence covers the full currently eligible tombstone range; only physical deletion
+  is batch-limited, and all batches share one grace period.
 - With defaults, a tombstone is fenced at 30 days and remains for at least ten actual
   grace days before bounded physical deletion; recent tombstones and live rows remain.
 - Feed-floor advancement and its pending checkpoint are atomic. Deletion requires the
