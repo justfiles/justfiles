@@ -9,6 +9,10 @@ use vitest as the test runner.
 
 use tab for indentation.
 
+Documentation-only changes do not require formatting, linting, typechecking, or tests.
+Run verification only when the change affects code, configuration, generated artifacts,
+or executable examples.
+
 # Coding Rules
 
 ## Simplicity First.
