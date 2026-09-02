@@ -67,7 +67,7 @@ These are the accesses a real disk FS cannot serve well. This is the
 | content transfer | `has` / `get` / `put` by hash | dedupe before upload; no upload on move |
 | effective path of a node | walk `parent` links upward | pure reads; cacheable; needed for watch scoping and event paths |
 | tombstones | deleted rows stay in the table and appear in the feed | no separate tombstone store |
-| engine state (peer cursors) | host-local durable slot, outside the replicated table | may only lag the applied rows; idempotent apply makes a stale cursor harmless |
+| engine state (peer cursors) | `/private/state`, outside the replicated table | may only lag applied rows; expired state bootstraps into a fresh store |
 | push conflict / authority accept | edit/edit is last-writer-wins; the authority enforces tree rules | a tree-rule rejection is a commit failure |
 
 ### C. Maintenance
@@ -75,7 +75,7 @@ These are the accesses a real disk FS cannot serve well. This is the
 | Operation | Access pattern | Notes |
 | --- | --- | --- |
 | blob GC | sweep stored hashes not referenced by any row | backend-internal; must not race commits |
-| tombstone prune | delete rows below a horizon all peers passed | optional, later |
+| tombstone prune | delete rows older than the signed-cursor lifetime and advance the feed floor | bounded backend maintenance |
 | backup / export | changes-since scan from empty cursor | same primitive as bootstrap |
 
 **Summary.** The superset beyond POSIX is exactly five things: lookup by
@@ -93,7 +93,7 @@ else is stored.
 type NodeId = string   // UUID. Minted once, never rebound. Root is a well-known constant.
 type Hash = string     // SHA-256 of content bytes, hex.
 type Version = string  // Opaque to storage. The engine owns its meaning.
-type Cursor = string   // Opaque, per replica. Never crosses the wire.
+type Cursor = string   // Opaque, minted by the store whose feed it resumes.
 
 type Node = {
 	id: NodeId
@@ -205,13 +205,15 @@ interface Store {
    order, so a resumed cursor can see a node again with newer state, but can
    never permanently miss one. This makes the feed resumable, crash-safe,
    and self-compacting. No journal ever grows.
-5. Node rows are replica-identical. `Cursor` is replica-private.
+5. Node rows are replica-identical. A `Cursor` belongs to the store whose
+   feed it resumes. A peer-facing cursor is a receiver-signed token; its
+   encoding remains private to that receiver.
 6. The root id is a fixed constant. `get(ROOT)` always returns a live
    directory.
 7. Blobs are immutable. A local caller is trusted on `put(hash, data)`; a
    store that accepts writes from a peer must verify the hash.
 8. `subscribe` is a latency optimization over polling `since`. `gc` must not
-   race an open commit.
+   race cursor validation plus the commit it authorizes.
 9. Tree invariants (no cycles, no duplicate names, every parent a live
    directory) are enforced by the **authority's** commit via guards — not
    by every store.
@@ -224,10 +226,12 @@ interface Store {
    A crash can then leave only an orphan blob — never a committed row whose
    bytes were lost. A row whose blob is absent by *choice* is a lazy stub
    (selective content), not corruption.
-11. Lineage (taken from sol-design): a `Cursor` is bound to the store's
-   lineage. A reset or replaced store starts a new lineage and rejects
-   foreign cursors; the caller restarts from the empty cursor. This fences
-   a stale replica after a server reset.
+11. Lineage and bounded history: a `Cursor` is bound to the store's lineage.
+   A peer-facing cursor also carries a receiver-owned expiry and feed
+   position. A reset, expired cursor, or position below the retained feed
+   floor requires read-only bootstrap into a fresh local store. It must not
+   merge a current snapshot into stale rows, because a swept tombstone is
+   now represented by absence.
 
 ### The two consumers, on top of the seam
 
@@ -249,6 +253,13 @@ pull: remote.since(cursor) → local.commit(rows) → advance cursor
 push: local.since(cursor)  → remote.commit(rows) → advance cursor
 blobs: for each new content hash — has? skip : transfer (lazy where allowed)
 ```
+
+The seam stays unchanged over a peer connection. A relationship-bound
+remote `Store` adapter attaches the last receiver-issued cursor to each
+wire operation; the receiver validates that token before it calls its raw
+store. Local calls carry no token. HTTP uses a private header and in-process
+P2P passes the same envelope directly — neither introduces a second
+storage-shaped interface.
 
 - **Idempotent**: same-version upserts make retries and echo loops
   harmless. No origin tags, no echo suppression machinery.
@@ -274,10 +285,12 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   is `sync(a, b)` both ways. The seam does not know the topology; only the
   meaning of `Version` (single authority counter vs. version vector) changes,
   and `Version` is opaque to every store.
-- **Engine state**: the peer cursor lives in a host-local slot outside the
-  replicated table. It may only lag the applied rows; idempotent apply makes
-  a lost or stale cursor cost a re-scan, never corruption. Nothing
-  engine-owned ever enters the user namespace or any feed.
+- **Engine state**: the two cursors live under `/private/state`, in the
+  host's local mounted store and outside the replicated table. A cursor may
+  only lag the rows it covers. A missing cursor starts read-only bootstrap;
+  an expired or swept-behind cursor replaces the stale store from the
+  winner selected by sync policy. Nothing engine-owned enters the shared
+  namespace or its feed.
 
 #### The namespace: local data without ignore rules
 
@@ -310,6 +323,12 @@ blobs: for each new content hash — has? skip : transfer (lazy where allowed)
   PR-494 problem class. Creating or removing a mount is one ordinary
   guarded row write that syncs everywhere; who may commit mount rows is
   authority policy.
+- **Private host state**: `/private/state/clientid` holds the install's
+  stable peer id. `/private/state/sync.json` holds its changing relationship
+  cursors. The id is also the version author and the input to a P2P winner
+  selector, but its write-once file stays separate from the frequently
+  written sync record. Both live behind the private mount; neither needs a
+  path ignore rule.
 - **Silent mounts — invisible local folders**: an announced mount reserves
   a name everywhere, but it also discloses that the name exists. When even
   the existence must stay private (`/.special`), the replica adds a
@@ -421,7 +440,7 @@ Attempt to remove every member. Result of each attempt:
 | `size` on the row | no — stat must not fetch content | keep |
 | `ctime`, `uid`, `gid` | yes | dropped |
 | ignore projection module | yes | replaced by mounts — local data is a separate mounted store |
-| engine-state system subtree | yes | engine state moved outside the replicated table entirely |
+| engine-state system subtree | yes | relationship state moved into the separate private mount |
 
 Final form: **one table, two lookups, one order, one guarded atomic write,
 one hash-keyed blob map. The same seam is the storage API and the wire.**
@@ -439,8 +458,9 @@ now a pure module behind the seam, not a seam:
   kernel-style shadowing under silent mounts, which UX must explain.
 - Conflict policy (last-writer-wins for edits, settle tree-rule refusals) —
   engine module. Detecting edit conflicts later needs a base cache.
-- Tombstone retention — tombstones must outlive the longest-offline replica;
-  pruning needs a horizon every peer has passed.
+- Tombstone retention — a receiver signs expiring cursors, retains tombstones
+  for at least that cursor lifetime, and rejects positions below its swept
+  feed floor. The policy and collector stay behind the seam.
 - Native FS reconciliation — one adapter's private problem.
 - Blob GC vs. in-flight commits — one backend method's private problem.
 
@@ -463,7 +483,7 @@ stored fact:
 | search index, backup, audit trail | new subscribers of `since` | nothing — the feed is already the integration point |
 | a new backend (Postgres, R2, …) | one `Store` implementation | the conformance suite proves it |
 | signed rows for untrusted peers | an optional signature field on the row | additive field; verification in the engine |
-| tombstone pruning | a maintenance walk, once a horizon protocol exists | optional method beside `gc` |
+| tombstone pruning | signed cursor horizon + bounded maintenance walk | backend policy behind `gc` |
 | `uid`/`gid`, ACLs, birth time | optional row fields or xattrs, when a product need defines them | additive fields |
 
 One risk on this list is legitimately structural, and the kill criterion at
