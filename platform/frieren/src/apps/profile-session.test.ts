@@ -1,3 +1,5 @@
+import { memStore } from '@justfiles/fs/mem'
+import { receiver } from '@justfiles/fs/peer'
 import { type Node, ROOT, type Store } from '@justfiles/fs/store'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
@@ -131,7 +133,7 @@ describe('profile session switching', () => {
 		H.opened.mockReset()
 		H.synced.mockReset()
 		H.destroyed.mockReset()
-		H.peer = {}
+		H.peer = receiver(memStore())
 		H.stores.clear()
 		handshakeIs(1)
 		vi.useFakeTimers()
@@ -297,13 +299,7 @@ describe('profile session switching', () => {
 		await remote.commit([remoteRow])
 		const peer = receiver(remote, {
 			clock: () => now,
-			policy: {
-				cursorLeaseMs: 100,
-				writeLeaseMs: 20,
-				maxWriteDurationMs: 10,
-				tombstoneFenceAgeMs: 100,
-				tombstoneGraceMs: 31
-			}
+			policy: { tombstoneRetentionMs: 100 }
 		})
 		const expired = (await peer.since()).next
 		now = 101

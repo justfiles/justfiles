@@ -6,7 +6,7 @@ import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import {
 	BootstrapRequiredError,
-	type Peer,
+	bindCursor,
 	type SyncStateLock,
 	syncStateLock
 } from '@justfiles/fs/peer'
@@ -21,11 +21,11 @@ import {
 	authorOf,
 	bootstrap,
 	type CursorSlot,
-	type DiscardSlot,
 	type SyncStatus as StoreSyncStatus,
 	synced,
 	versions
 } from '@justfiles/fs/synced'
+import { type PrivateSyncState, privateSyncState } from '@justfiles/fs/syncState'
 import { FileType } from '@justfiles/fs/types'
 import { PRIVATE_MOUNT } from '../shared/private'
 
@@ -60,7 +60,7 @@ export function createFsClient(getToken: GetToken): FsClient {
 // tables and this serves the one table the model has. The token is minted per REQUEST
 // — Clerk's expires — so it goes in through the injected `fetch` rather than through
 // the static header bag, which is read once at construction.
-function remoteStore(getToken: GetToken): Peer {
+function remoteStore(getToken: GetToken): Store {
 	return httpStore('/store', {
 		fetch: async (url, init) => {
 			const token = await getToken()
@@ -75,42 +75,16 @@ function remoteStore(getToken: GetToken): Peer {
 	})
 }
 
-// ── The host's slots ─────────────────────────────────────────────────────────
-// Engine state — two cursors, an unfinished-discard bit, and this replica's id — kept
-// where the profile registry already lives. It may not go in the replicated table (it
-// is not the user's data) nor in the user's tree (the old engine's mistake), and
-// `localStorage` is the one place this host has that is neither.
-
-const slot = (key: string): CursorSlot => ({
-	async load() {
-		return localStorage.getItem(key) ?? undefined
-	},
-	async save(cursor) {
-		if (cursor === undefined) localStorage.removeItem(key)
-		else localStorage.setItem(key, cursor)
+// Values from the former localStorage layout seed the private files once. The files
+// become authoritative as soon as they exist.
+const legacySyncState = (profileId: string) => ({
+	peerId: localStorage.getItem(`frieren-replica-${profileId}`) ?? undefined,
+	relationship: {
+		pull: localStorage.getItem(`frieren-fs-${profileId}-pull`) ?? undefined,
+		push: localStorage.getItem(`frieren-fs-${profileId}-push`) ?? undefined,
+		discard: localStorage.getItem(`frieren-fs-${profileId}-discard`) === '1'
 	}
 })
-
-const discardSlot = (key: string): DiscardSlot => ({
-	async load() {
-		return localStorage.getItem(key) === '1'
-	},
-	async save(unfinished) {
-		if (unfinished) localStorage.setItem(key, '1')
-		else localStorage.removeItem(key)
-	}
-})
-
-// Stable across restarts, or the push filter stops recognising this replica's own work
-// and every row it ever wrote is offered again.
-function replicaId(profileId: string): string {
-	const key = `frieren-replica-${profileId}`
-	const held = localStorage.getItem(key)
-	if (held) return held
-	const minted = crypto.randomUUID()
-	localStorage.setItem(key, minted)
-	return minted
-}
 
 async function forgetSlots(profileId: string): Promise<void> {
 	await profileSyncStateLock(profileId)(async () => {
@@ -319,6 +293,8 @@ type Active = {
 	local: Store
 	/** This browser's own data, joined at `/private`: credentials, the app cache. */
 	private: Store
+	/** Stable identity and relationship cursors in the private mount. */
+	syncState: PrivateSyncState
 	/**
 	 * The volume this profile answers on before — and beside — any sync. It mints under
 	 * the profile's replica id, so a write made while auth is still resolving is still
@@ -445,8 +421,7 @@ async function preserveUnacknowledged(
 
 async function replaceStaleProfile(
 	entry: Active,
-	peer: Peer,
-	pull: CursorSlot,
+	peer: Store,
 	push: CursorSlot,
 	lock: SyncStateLock
 ): Promise<Active> {
@@ -465,13 +440,15 @@ async function replaceStaleProfile(
 	}
 	await Promise.all([fresh.close?.(), recovery.close?.()])
 	await release({ flush: false })
-	const profile = await lock(async () => {
-		const switched = finishBootstrap(entry.profileId, pending.oldDb, pending.freshDb)
-		await push.save(undefined)
-		await pull.save(nextPull.value())
-		return switched
+	const profile = await lock(async () =>
+		finishBootstrap(entry.profileId, pending.oldDb, pending.freshDb)
+	)
+	const next = await setActive(profile)
+	await lock(async () => {
+		await next.syncState.cursor('push').save(undefined)
+		await next.syncState.cursor('pull').save(nextPull.value())
 	})
-	return setActive(profile)
+	return next
 }
 
 async function startSync(entry: Active, getToken: GetToken): Promise<Active> {
@@ -485,15 +462,17 @@ async function startSync(entry: Active, getToken: GetToken): Promise<Active> {
 	entry.reconnect = () => recoverStale(entry, getToken)
 	entry.unsubscribeSyncStatus?.()
 	setActiveStatus(entry, 'connecting')
-	const pull = slot(`frieren-fs-${entry.profileId}-pull`)
-	const push = slot(`frieren-fs-${entry.profileId}-push`)
+	const pull = entry.syncState.cursor('pull')
+	const push = entry.syncState.cursor('push')
 	const lock = profileSyncStateLock(entry.profileId)
 	const remote = remoteStore(getToken)
 	try {
-		await remote.open(await pull.load())
+		const cursor = await pull.load()
+		if (cursor === undefined) throw new BootstrapRequiredError()
+		await bindCursor(remote, pull).since(cursor)
 	} catch (error) {
 		if (error instanceof BootstrapRequiredError) {
-			const replacement = await replaceStaleProfile(entry, remote, pull, push, lock)
+			const replacement = await replaceStaleProfile(entry, remote, push, lock)
 			return startSync(replacement, getToken)
 		}
 		// Local-first keeps serving its existing replica while an offline peer retries.
@@ -509,7 +488,7 @@ async function startSync(entry: Active, getToken: GetToken): Promise<Active> {
 		// A discard that stopped half-done is finished before the first cycle, which is
 		// the only way it can be: `synced` starts its loop before it returns, so
 		// nothing the app could call afterwards is early enough.
-		discard: discardSlot(`frieren-fs-${entry.profileId}-discard`),
+		discard: entry.syncState.discard,
 		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, entry.private]])]]),
 		lazyContent: true,
 		localFirst: true
@@ -557,7 +536,6 @@ async function readGeneration(
 
 async function setActive(profile: LocalProfile): Promise<Active> {
 	await recoverProfileSwitch(profile.id)
-	const replica = replicaId(profile.id)
 	// The channel is the DATABASE's name in both cases: what a wake has to be scoped to
 	// is the store it is telling other tabs about.
 	const local = sharedStore(idbStore(storeDb(profile.id)), storeDb(profile.id))
@@ -578,10 +556,17 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		await migrateIdb(legacyDb(profile.id), local, new Map([[PRIVATE_MOUNT, privateStore]]))
 		recordAdopted(profile.id)
 	})
+	const bindings = new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]])
+	const syncState = privateSyncState(
+		volume(local, { bindings }),
+		undefined,
+		legacySyncState(profile.id)
+	)
+	const replica = await syncState.peerId()
 
 	let entry: Active
 	const plain = volume(local, {
-		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]]),
+		bindings,
 		mintVersion: versions(replica)
 	})
 	const managed = createProfileVolume(plain, () => entry)
@@ -611,6 +596,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		replica,
 		local,
 		private: privateStore,
+		syncState,
 		plain,
 		sync: null,
 		volume: managed,

@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import { httpStore } from '../../fs/http'
 import { memStore } from '../../fs/mem'
-import { BootstrapRequiredError, receiver } from '../../fs/peer'
+import { BootstrapRequiredError, bindCursor } from '../../fs/peer'
 import { type Cursor, type Node, ROOT } from '../../fs/store'
 import { storeApi } from './store.api'
 
@@ -27,21 +27,32 @@ const caughtUp = async (peer: ReturnType<typeof httpStore>): Promise<Cursor> => 
 	}
 }
 
-describe('leased store HTTP protocol', () => {
-	it('carries the receiver lease on blob writes and commits', async () => {
+describe('store HTTP cursor protocol', () => {
+	it('carries the receiver cursor on every write', async () => {
 		const store = memStore()
-		const app = new Hono().route('/store', storeApi(receiver(store)))
+		const app = new Hono().route('/store', storeApi(store))
 		const peer = httpStore('http://peer.test/store', {
 			fetch: async (url, init) => app.request(url, init)
 		})
-		const lease = await peer.open(await caughtUp(peer))
+		const cursor = await caughtUp(peer)
 
-		await peer.commit(lease, [node('accepted')])
+		await peer.commit([node('accepted')])
 		expect(await store.get('accepted')).toEqual(node('accepted'))
 
-		await expect(peer.commit(`${lease}x`, [node('refused')])).rejects.toThrow(
-			BootstrapRequiredError
-		)
+		const changed = bindCursor(peer, { load: async () => `${cursor}x` })
+		await expect(changed.commit([node('refused')])).rejects.toThrow(BootstrapRequiredError)
+		expect(await store.get('refused')).toBeNull()
+	})
+
+	it('rejects peer operations which carry no cursor', async () => {
+		const store = memStore()
+		const app = new Hono().route('/store', storeApi(store))
+		const peer = httpStore('http://peer.test/store', {
+			fetch: async (url, init) => app.request(url, init)
+		})
+
+		await expect(peer.get(ROOT)).rejects.toThrow(BootstrapRequiredError)
+		await expect(peer.commit([node('refused')])).rejects.toThrow(BootstrapRequiredError)
 		expect(await store.get('refused')).toBeNull()
 	})
 })

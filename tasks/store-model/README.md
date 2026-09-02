@@ -142,7 +142,7 @@ without them.
 
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
-| T21 | [Expire feed cursors and sweep tombstones](t21-cursor-leases-and-tombstone-gc.md) | T8, T12, T13, T17 | in progress |
+| T21 | [Expire feed cursors and sweep tombstones](t21-cursor-leases-and-tombstone-gc.md) | T8, T12, T13, T17 | done |
 
 ## Dependency map
 

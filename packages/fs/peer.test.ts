@@ -3,20 +3,22 @@ import { bootstrap, type CursorSlot, sync, versions } from './engine'
 import { memStore } from './mem'
 import {
 	BootstrapRequiredError,
-	type ReceiverStore,
+	bindCursor,
+	type ReceiverBackend,
 	receiver,
 	receiverBackend,
 	syncStateLock
 } from './peer'
-import { type Cursor, type Node, ROOT, sha256Hex } from './store'
+import { type Cursor, type Guard, type Node, ROOT, type Store, sha256Hex } from './store'
 
-const slot = (initial?: Cursor): CursorSlot => {
+const slot = (initial?: Cursor): CursorSlot & { value(): Cursor | undefined } => {
 	let cursor = initial
 	return {
 		load: async () => cursor,
 		save: async (next) => {
 			cursor = next
-		}
+		},
+		value: () => cursor
 	}
 }
 
@@ -30,10 +32,17 @@ const caughtUp = async (peer: ReturnType<typeof receiver>): Promise<Cursor> => {
 	}
 }
 
-const node = (version: string): Node => ({
-	id: 'note',
+const claims = (cursor: Cursor): { expiresAt: number; mode: string } => {
+	const payload = cursor.split('.')[0]
+	if (!payload) throw new Error('missing cursor payload')
+	const base64 = payload.replaceAll('-', '+').replaceAll('_', '/')
+	return JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')))
+}
+
+const node = (version: string, id = 'note'): Node => ({
+	id,
 	parent: ROOT,
-	name: 'note.txt',
+	name: `${id}.txt`,
 	type: 'file',
 	mode: 0o100644,
 	mtimeNs: 1n,
@@ -46,13 +55,12 @@ const deferred = () => {
 	return { promise: new Promise<void>((done) => (resolve = done)), resolve }
 }
 
-describe('leased peer cursors', () => {
+describe('receiver cursor tokens', () => {
 	it('round-trips a signed cursor and rejects any alteration', async () => {
 		const peer = receiver(memStore())
 		const first = await peer.since()
 
 		expect(first.nodes.map((row) => row.id)).toEqual([ROOT])
-		expect(first.next).toBeDefined()
 		expect((await peer.since(first.next)).nodes).toEqual([])
 
 		const cursor = first.next as string
@@ -60,47 +68,33 @@ describe('leased peer cursors', () => {
 		await expect(peer.since(changed)).rejects.toThrow(BootstrapRequiredError)
 	})
 
-	it('opens a lease before a sync push and exposes no unleased writer', async () => {
-		const local = memStore()
-		const remote = memStore()
-		const peer = receiver(remote)
-		const cursor = await caughtUp(peer)
-		const mint = versions('local')
-		await local.commit([node(mint())])
+	it('uses the durable pull cursor for writes and rejects a missing token', async () => {
+		const raw = memStore()
+		const protectedStore = receiver(raw)
+		const missing = bindCursor(protectedStore, slot())
 
-		await expect(peer.commit('', [node(mint())])).rejects.toThrow(BootstrapRequiredError)
-		await expect(peer.commit(cursor, [node(mint())])).rejects.toThrow(BootstrapRequiredError)
-		expect(await remote.get('note')).toBeNull()
-		await sync(local, peer, {
-			replica: 'local',
-			pull: slot(cursor),
-			push: slot(),
-			retries: 0
-		})
+		await expect(missing.commit([node('local:1')])).rejects.toThrow(BootstrapRequiredError)
+		expect(await raw.get('note')).toBeNull()
 
-		expect(await remote.get('note')).toEqual(node((await local.get('note'))?.version as string))
+		const cursor = await caughtUp(protectedStore)
+		await bindCursor(protectedStore, slot(cursor)).commit([node('local:2')])
+		expect(await raw.get('note')).toEqual(node('local:2'))
 	})
 
-	it('refuses an expired cursor before transferring blobs or committing rows', async () => {
+	it('refuses an expired cursor before transferring blobs or rows', async () => {
 		let now = 0
 		const local = memStore()
-		const remote = memStore()
-		const peer = receiver(remote, {
+		const raw = memStore()
+		const peer = receiver(raw, {
 			clock: () => now,
-			policy: {
-				cursorLeaseMs: 100,
-				writeLeaseMs: 20,
-				maxWriteDurationMs: 10,
-				tombstoneFenceAgeMs: 100,
-				tombstoneGraceMs: 31
-			}
+			policy: { tombstoneRetentionMs: 100 }
 		})
 		const cursor = await caughtUp(peer)
 		const data = new TextEncoder().encode('offline work')
 		const hash = await sha256Hex(data)
 		await local.blobs.put(hash, data)
 		await local.commit([{ ...node(versions('local')()), content: hash, size: BigInt(data.length) }])
-		now = 101
+		now = 100
 
 		await expect(
 			sync(local, peer, {
@@ -109,78 +103,53 @@ describe('leased peer cursors', () => {
 				push: slot(),
 				retries: 0
 			})
-		).rejects.toThrow(BootstrapRequiredError)
-		expect(await remote.get('note')).toBeNull()
-		expect(await remote.blobs.has(hash)).toBe(false)
+		).rejects.toMatchObject({ peerId: expect.any(String), winnerId: expect.any(String) })
+		expect(await raw.get('note')).toBeNull()
+		expect(await raw.blobs.has(hash)).toBe(false)
 	})
 
-	it('renews a caught-up cursor even when the feed is quiet', async () => {
+	it('renews expiry only after reaching the feed head', async () => {
 		let now = 0
-		const peer = receiver(memStore(), {
+		const raw = memStore()
+		await raw.commit(Array.from({ length: 257 }, (_, at) => node(`seed:${at}`, `seed-${at}`)))
+		const peer = receiver(raw, {
 			clock: () => now,
-			policy: {
-				cursorLeaseMs: 100,
-				writeLeaseMs: 20,
-				maxWriteDurationMs: 10,
-				tombstoneFenceAgeMs: 100,
-				tombstoneGraceMs: 31
-			}
+			policy: { tombstoneRetentionMs: 100 }
 		})
-		const original = await caughtUp(peer)
+		const first = await peer.since()
+		expect(first.nodes).toHaveLength(128)
+		expect(claims(first.next as Cursor)).toMatchObject({ expiresAt: 100, mode: 'bootstrap' })
+
 		now = 90
-		const renewed = (await peer.since(original)).next as Cursor
-		now = 101
+		const second = await peer.since(first.next)
+		expect(second.nodes).toHaveLength(128)
+		expect(claims(second.next as Cursor)).toMatchObject({ expiresAt: 100, mode: 'bootstrap' })
+		const last = await peer.since(second.next)
+		expect(claims(last.next as Cursor)).toMatchObject({ expiresAt: 190, mode: 'resume' })
 
-		await expect(peer.open(original)).rejects.toThrow(BootstrapRequiredError)
-		await expect(peer.open(renewed)).resolves.toBeDefined()
-	})
-
-	it('revalidates a lease for every blob put and again for row commit', async () => {
-		let now = 0
-		const remote = memStore()
-		const peer = receiver(remote, {
-			clock: () => now,
-			policy: {
-				cursorLeaseMs: 100,
-				writeLeaseMs: 20,
-				maxWriteDurationMs: 10,
-				tombstoneFenceAgeMs: 100,
-				tombstoneGraceMs: 31
-			}
-		})
-		const lease = await peer.open(await caughtUp(peer))
-		const first = new TextEncoder().encode('first')
-		const second = new TextEncoder().encode('second')
-		const firstHash = await sha256Hex(first)
-		const secondHash = await sha256Hex(second)
-
-		await peer.blobs.put(lease, firstHash, first)
-		now = 21
-		await expect(peer.blobs.put(lease, secondHash, second)).rejects.toThrow(BootstrapRequiredError)
-		await expect(peer.commit(lease, [node(versions('local')())])).rejects.toThrow(
+		now = 100
+		await expect(bindCursor(peer, slot(second.next)).commit([node('old:1')])).rejects.toThrow(
 			BootstrapRequiredError
 		)
-
-		expect(await remote.blobs.has(firstHash)).toBe(true)
-		expect(await remote.blobs.has(secondHash)).toBe(false)
-		expect(await remote.get('note')).toBeNull()
+		await expect(bindCursor(peer, slot(last.next)).commit([node('new:1')])).resolves.toBeUndefined()
 	})
 
-	it('linearizes final commit validation with a destructive state change', async () => {
+	it('serializes final write validation with destructive state changes', async () => {
 		const raw = memStore()
 		const entered = deferred()
 		const release = deferred()
-		let floor = 0
-		const backend = raw[receiverBackend]
-		const paused: ReceiverStore = {
+		let reset = false
+		const backend = (raw as Store & { [receiverBackend]: ReceiverBackend })[receiverBackend]
+		const paused = {
 			...raw,
 			[receiverBackend]: {
 				...backend,
 				async state() {
-					return { ...(await backend.state()), feedFloor: floor }
+					const state = await backend.state()
+					return reset ? { ...state, lineage: `${state.lineage}-reset` } : state
 				}
 			},
-			async commit(writes, guards) {
+			async commit(writes: Node[], guards?: Guard[]) {
 				entered.resolve()
 				await release.promise
 				await raw.commit(writes, guards)
@@ -188,12 +157,14 @@ describe('leased peer cursors', () => {
 		}
 		const lock = syncStateLock()
 		const peer = receiver(paused, { lock })
-		const lease = await peer.open(await caughtUp(peer))
+		const cursor = await caughtUp(peer)
+		const bound = bindCursor(peer, slot(cursor))
 
-		const committing = peer.commit(lease, [node(versions('local')())])
+		const committing = bound.commit([node('local:1')])
 		await entered.promise
 		let resetRan = false
 		const resetting = lock(async () => {
+			reset = true
 			resetRan = true
 		})
 		await Promise.resolve()
@@ -201,111 +172,59 @@ describe('leased peer cursors', () => {
 		release.resolve()
 		await committing
 		await resetting
-		expect(await raw.get('note')).not.toBeNull()
 
-		const staleLease = await peer.open(await caughtUp(peer))
-		await raw.commit([{ ...node(versions('other')()), id: 'later', name: 'later.txt' }])
-		const holdingReset = lock(async () => {
-			floor = (await backend.state()).feedHead
-			await Promise.resolve()
-		})
-		const refused = peer.commit(staleLease, [{ ...node(versions('local')()), id: 'refused' }])
-		await holdingReset
-		await expect(refused).rejects.toThrow(BootstrapRequiredError)
+		await expect(bound.commit([node('local:2', 'refused')])).rejects.toThrow(BootstrapRequiredError)
 		expect(await raw.get('refused')).toBeNull()
 	})
 
-	it('keeps bootstrap cursors read-only until the scan reaches the feed head', async () => {
-		const store = memStore()
-		await store.commit(
-			Array.from({ length: 129 }, (_, at) => ({
-				...node(`seed:${at}`),
-				id: `seed-${at}`,
-				name: `seed-${at}.txt`
-			}))
-		)
-		const peer = receiver(store)
-		const first = await peer.since()
-
-		expect(first.nodes).toHaveLength(128)
-		await expect(peer.open(first.next)).rejects.toThrow(BootstrapRequiredError)
-		await expect(peer.commit(first.next as Cursor, [node('local:1')])).rejects.toThrow(
-			BootstrapRequiredError
-		)
-		const second = await peer.since(first.next)
-		await expect(peer.open(second.next)).resolves.toBeDefined()
-	})
-
-	it('bootstraps authority state into a fresh store without merging stale rows', async () => {
-		let now = 0
+	it('bootstraps into a fresh store without merging stale rows', async () => {
 		const authority = memStore()
-		await authority.commit([{ ...node('authority:1'), id: 'theirs', name: 'theirs.txt' }])
-		const peer = receiver(authority, {
-			clock: () => now,
-			policy: {
-				cursorLeaseMs: 100,
-				writeLeaseMs: 20,
-				maxWriteDurationMs: 10,
-				tombstoneFenceAgeMs: 100,
-				tombstoneGraceMs: 31
-			}
-		})
-		const expired = await caughtUp(peer)
+		await authority.commit([node('authority:1', 'theirs')])
+		const peer = receiver(authority)
 		const stale = memStore()
-		await stale.commit([{ ...node('local:1'), id: 'stale', name: 'stale.txt' }])
-		now = 101
-		await expect(
-			sync(stale, peer, {
-				replica: 'local',
-				pull: slot(expired),
-				push: slot(),
-				retries: 0
-			})
-		).rejects.toThrow(BootstrapRequiredError)
-
+		await stale.commit([node('local:1', 'stale')])
 		const fresh = memStore()
 		const pull = slot()
+
 		await bootstrap(fresh, peer, pull, { lazyContent: true })
+
 		expect(await fresh.get('theirs')).toEqual(await authority.get('theirs'))
 		expect(await fresh.get('stale')).toBeNull()
 		expect(await stale.get('stale')).not.toBeNull()
-		await expect(peer.open(await pull.load())).resolves.toBeDefined()
+		await expect(bindCursor(peer, pull).commit([node('local:1')])).resolves.toBeUndefined()
 	})
 
-	it('lets symmetric peers expire and bootstrap independently', async () => {
+	it('accepts a viewpoint-independent winner and rejects any other id', async () => {
 		let now = 0
-		const policy = {
-			cursorLeaseMs: 100,
-			writeLeaseMs: 20,
-			maxWriteDurationMs: 10,
-			tombstoneFenceAgeMs: 100,
-			tombstoneGraceMs: 31
-		}
-		const a = memStore()
-		const b = memStore()
-		await a.commit([{ ...node('a:1'), id: 'a', name: 'a.txt' }])
-		await b.commit([{ ...node('b:1'), id: 'b', name: 'b.txt' }])
-		const aPeer = receiver(a, { clock: () => now, policy })
-		const bPeer = receiver(b, { clock: () => now, policy })
-		const cursorFromA = await caughtUp(aPeer)
-		const cursorFromB = await caughtUp(bPeer)
-		now = 101
+		const peer = receiver(memStore(), {
+			clock: () => now,
+			policy: { tombstoneRetentionMs: 100 }
+		})
+		const cursor = await caughtUp(peer)
+		now = 100
+		const local = memStore()
+		await local.commit([node('local:1')])
 
-		await expect(aPeer.open(cursorFromA)).rejects.toThrow(BootstrapRequiredError)
-		await expect(bPeer.open(cursorFromB)).rejects.toThrow(BootstrapRequiredError)
+		const selected = await sync(local, peer, {
+			replica: 'local',
+			pull: slot(cursor),
+			push: slot(),
+			chooseWinner: (localId, remoteId) => [localId, remoteId].sort()[0] as string,
+			retries: 0
+		}).catch((error: unknown) => error as BootstrapRequiredError)
+		expect(selected).toBeInstanceOf(BootstrapRequiredError)
+		if (!(selected instanceof BootstrapRequiredError))
+			throw new Error('sync did not require bootstrap')
+		expect(selected.winnerId).toBe(['local', selected.peerId as string].sort()[0])
 
-		const freshA = memStore()
-		const freshB = memStore()
-		const nextFromA = slot()
-		const nextFromB = slot()
-		await Promise.all([
-			bootstrap(freshB, aPeer, nextFromA, { lazyContent: true }),
-			bootstrap(freshA, bPeer, nextFromB, { lazyContent: true })
-		])
-
-		expect(await freshA.get('b')).toEqual(await b.get('b'))
-		expect(await freshB.get('a')).toEqual(await a.get('a'))
-		await expect(aPeer.open(await nextFromA.load())).resolves.toBeDefined()
-		await expect(bPeer.open(await nextFromB.load())).resolves.toBeDefined()
+		await expect(
+			sync(local, peer, {
+				replica: 'local',
+				pull: slot(cursor),
+				push: slot(),
+				chooseWinner: () => 'stranger',
+				retries: 0
+			})
+		).rejects.toThrow('winner must be one of the two peer ids')
 	})
 })

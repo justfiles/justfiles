@@ -1,6 +1,6 @@
 ---
 project: packages/fs
-status: in progress
+status: done
 ---
 
 # T21: expire feed cursors and sweep tombstones
@@ -216,7 +216,7 @@ The winner selector is viewpoint-independent:
 type ChooseWinner = (localId: string, remoteId: string) => string
 ```
 
-Sync rejects a returned id which is neither participant. The current product injects:
+Sync rejects a returned id which is neither participant. The current product defaults to:
 
 ```ts
 const chooseRemote: ChooseWinner = (_localId, remoteId) => remoteId

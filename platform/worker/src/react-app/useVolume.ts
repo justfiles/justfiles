@@ -3,7 +3,8 @@ import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
-import type { Peer } from '@justfiles/fs/peer'
+import { bindCursor } from '@justfiles/fs/peer'
+import type { Store } from '@justfiles/fs/store'
 import { bootstrap, type CursorSlot, synced } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
 import {
@@ -362,7 +363,7 @@ function replicaId(): string {
 
 // The seam, over the wire. The token is minted per REQUEST — Clerk's expires — so it
 // goes in through the injected `fetch` rather than a static header bag read once.
-function remoteStore(getToken: GetToken): Peer {
+function remoteStore(getToken: GetToken): Store {
 	return httpStore('/store', {
 		fetch: async (url, init) => {
 			const token = await getToken()
@@ -394,7 +395,7 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 	const remote = remoteStore(getToken)
 	const volume = await synced({
 		local,
-		remote: initialPeer(remote, local, pull),
+		remote: initialStore(remote, local, pull),
 		replica: replicaId(),
 		pull,
 		push: slot('justfiles-store-push'),
@@ -688,18 +689,31 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 	}
 }
 
-function initialPeer(peer: Peer, local: ReturnType<typeof idbStore>, pull: CursorSlot): Peer {
-	let bootstrapping: Promise<void> | undefined
+function initialStore(peer: Store, local: Store, pull: CursorSlot): Store {
+	const bound = bindCursor(peer, pull)
+	let preparing: Promise<void> | undefined
+	const ready = async (): Promise<void> => {
+		if ((await pull.load()) !== undefined) return
+		preparing ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
+			preparing = undefined
+			throw error
+		})
+		await preparing
+	}
+	const after = async <T>(body: () => Promise<T>): Promise<T> => {
+		await ready()
+		return body()
+	}
 	return {
-		...peer,
-		async open(cursor) {
-			if (cursor !== undefined) return peer.open(cursor)
-			bootstrapping ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
-				bootstrapping = undefined
-				throw error
-			})
-			await bootstrapping
-			return peer.open(await pull.load())
+		get: (id) => after(() => bound.get(id)),
+		child: (parent, name) => after(() => bound.child(parent, name)),
+		children: (parent, cursor) => after(() => bound.children(parent, cursor)),
+		since: (cursor) => after(() => bound.since(cursor)),
+		commit: (writes, guards) => after(() => bound.commit(writes, guards)),
+		blobs: {
+			has: (hash) => after(() => bound.blobs.has(hash)),
+			get: (hash) => after(() => bound.blobs.get(hash)),
+			put: (hash, data) => after(() => bound.blobs.put(hash, data))
 		}
 	}
 }

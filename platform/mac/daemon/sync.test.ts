@@ -5,7 +5,6 @@ import type { Kernel } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { memStore } from '@justfiles/fs/mem'
-import { receiver } from '@justfiles/fs/peer'
 import type { Cursor, Node, Store } from '@justfiles/fs/store'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
@@ -33,7 +32,7 @@ async function temp(): Promise<string> {
 function backend() {
 	const store = authority(memStore())
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(receiver(store))
+	const app = storeApi(store)
 	let online = true
 	const requests: { url: string; authorization: string | null }[] = []
 	return {
@@ -158,14 +157,20 @@ test('keeps cursors and uses a fresh token for every request', async () => {
 	await first.close()
 	open.splice(open.indexOf(first), 1)
 
-	const state = JSON.parse(
-		await readFile(join(support, 'volume-v2', 'sync.json'), 'utf8')
+	const owner = JSON.parse(
+		await readFile(join(support, 'volume-v2', 'owner.json'), 'utf8')
 	) as Record<string, unknown>
-	expect(state).toMatchObject({ ownerId: 'user-a', discard: false })
-	expect(typeof state.replica).toBe('string')
+	const state = JSON.parse(
+		await readFile(join(support, 'volume-v2', 'private', 'state', 'sync.json'), 'utf8')
+	) as Record<string, unknown>
+	const peerId = JSON.parse(
+		await readFile(join(support, 'volume-v2', 'private', 'state', 'clientid'), 'utf8')
+	) as unknown
+	expect(owner).toEqual({ ownerId: 'user-a' })
+	expect(typeof peerId).toBe('string')
 	expect(typeof state.pull).toBe('string')
 	expect(typeof state.push).toBe('string')
-	await expect(access(join(support, 'volume-v2', 'sync.json.tmp'))).rejects.toThrow()
+	await expect(access(join(support, 'volume-v2', 'owner.json.tmp'))).rejects.toThrow()
 
 	token = 'token-b'
 	await hub.fs.writeFile('/after-restart.txt', enc.encode('next'))

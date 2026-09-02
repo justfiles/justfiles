@@ -78,8 +78,9 @@ import {
 import { coreMigrations } from '@justfiles/core/migrations'
 import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
-import { type Peer, type ReceiverStore, receiver, syncStateLock } from '@justfiles/fs/peer'
+import { syncStateLock } from '@justfiles/fs/peer'
 import { ROOT, type Store } from '@justfiles/fs/store'
+import { privateSyncState } from '@justfiles/fs/syncState'
 import { Hono } from 'hono'
 import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { guardCapability } from './accounts/guard.ts'
@@ -182,7 +183,6 @@ export class Frieren extends DurableObject<Env> {
 	// the authority: rule 9's invariants, one commit at a time, and the poke.
 	private readonly store: Store
 	private readonly tree: Store
-	private readonly peer: Peer
 	private readonly syncState = syncStateLock()
 	// The DO's own local store, joined at `/private`. It is not `storeApi`'s, so no
 	// request can name a row in it — the credentials and the sealed provider records are
@@ -256,13 +256,13 @@ export class Frieren extends DurableObject<Env> {
 		this.store = sqliteStore(this.sync, undefined, { blobs, lock: this.syncState })
 		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT, { blobs }))
 		this.tree = notifying(authority(this.store))
-		this.peer = receiver(this.tree as ReceiverStore, { lock: this.syncState })
 		this.tree.subscribe?.(poke)
 		// Constructing a Volume touches no storage; the migration barrier below still runs
 		// before any request can call a method on it.
 		this.volume = volume(this.tree, {
 			bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, this.local]])]])
 		})
+		const hostState = privateSyncState(this.volume)
 		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
 
 		const { models, model, apiKey, generateImage } = this.createPlatformAi()
@@ -327,7 +327,13 @@ export class Frieren extends DurableObject<Env> {
 				})
 			)
 			// The seam, as routes, over the synced store alone.
-			.route('/store', storeApi(this.peer))
+			.route(
+				'/store',
+				storeApi(this.tree, {
+					issuer: hostState.peerId,
+					lock: this.syncState
+				})
+			)
 			// The one route beside it, for the callers that are not replicas: a CLI
 			// reading one file, for which the seam is a walk and a fetch. Over the synced
 			// tree UNBOUND — not `this.volume` — for the same reason `storeApi` is handed

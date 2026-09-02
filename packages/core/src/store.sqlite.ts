@@ -18,13 +18,13 @@
  */
 
 import {
+	type HistoryPolicy,
+	historyPolicy,
+	type ReceiverBackend,
 	type ReceiverState,
-	type ReceiverStore,
 	rawCursor,
 	receiverBackend,
-	type SyncPolicy,
 	type SyncStateLock,
-	syncPolicy,
 	syncStateLock
 } from '@justfiles/fs/peer'
 import {
@@ -36,6 +36,7 @@ import {
 	type Node,
 	type NodeId,
 	ROOT,
+	type Store,
 	same
 } from '@justfiles/fs/store'
 import type { SqlValue, SyncDb } from './db'
@@ -246,17 +247,15 @@ export function sqliteStore(
 		inline?: number
 		clock?: () => number
 		lock?: SyncStateLock
-		outboundCursors?: () => Promise<readonly (Cursor | undefined)[]>
-		policy?: Partial<SyncPolicy>
+		policy?: Partial<HistoryPolicy>
 	} = {}
-): ReceiverStore {
+): Store {
 	let opened: Opened | undefined
 	const external = opts.blobs
 	const inline = opts.inline ?? INLINE
 	const clock = opts.clock ?? Date.now
 	const lock = opts.lock ?? syncStateLock()
-	const gcLock: SyncStateLock = opts.outboundCursors ? lock : (body) => body()
-	const policy = syncPolicy(opts.policy)
+	const policy = historyPolicy(opts.policy)
 	// Content-addressed, and the store's id is in it: two stores over one database
 	// never share an object, which is the same boundary `sid` draws on the table.
 	const keyFor = (hash: Hash): string => `${id}/${hash}`
@@ -325,6 +324,10 @@ export function sqliteStore(
 				sid,
 				crypto.randomUUID()
 			])
+			db.exec("INSERT OR IGNORE INTO meta(sid, key, value) VALUES (?, 'issuer', ?)", [
+				sid,
+				crypto.randomUUID()
+			])
 			db.exec(SEED, bind(sid, ROOT_ROW, 0, observedNow(sid, clock())))
 			db.exec("INSERT OR IGNORE INTO meta(sid, key, value) VALUES (?, 'signing_secret', ?)", [
 				sid,
@@ -349,6 +352,7 @@ export function sqliteStore(
 	const receiverState = (): ReceiverState => {
 		const { sid, lineage } = open()
 		return {
+			issuer: meta(sid, 'issuer'),
 			lineage,
 			signingSecret: meta(sid, 'signing_secret'),
 			feedHead: Number(meta(sid, 'feed_head')),
@@ -391,89 +395,43 @@ export function sqliteStore(
 		return (found ? String(found.version) : null) === guard.version.is
 	}
 
-	type PendingFence = { through: number; fencedAt: number }
-	const pendingFence = (sid: number): PendingFence | undefined => {
-		const [row] = db.query<Row>(
-			"SELECT value FROM meta WHERE sid = ? AND key = 'pending_fence' LIMIT 1",
-			[sid]
-		)
-		return row?.value == null ? undefined : (JSON.parse(String(row.value)) as PendingFence)
-	}
-	const outboundBoundary = async (lineage: string, head: number): Promise<number | undefined> => {
-		if (!opts.outboundCursors) return Number.POSITIVE_INFINITY
-		const cursors = await opts.outboundCursors()
-		if (cursors.some((cursor) => cursor === undefined)) return undefined
-		try {
-			const boundary = Math.min(
-				Number.POSITIVE_INFINITY,
-				...cursors.map((cursor) => position(cursor, lineage))
-			)
-			return Number.isSafeInteger(boundary) && boundary >= 0 && boundary <= head
-				? boundary
-				: undefined
-		} catch {
-			return undefined
-		}
-	}
 	const sweepTombstones = (): Promise<{ reclaimed: number; done: boolean }> =>
-		gcLock(async () => {
-			const { sid, lineage } = open()
+		lock(async () => {
+			const { sid } = open()
 			const now = observedNow(sid, clock())
-			const pending = pendingFence(sid)
-			const boundary = await outboundBoundary(lineage, Number(meta(sid, 'feed_head')))
-			if (boundary === undefined) return { reclaimed: 0, done: true }
-
-			if (!pending) {
-				db.transactionSync(() => {
-					const args: SqlValue[] = [sid, now - policy.tombstoneFenceAgeMs]
-					if (Number.isFinite(boundary)) args.push(boundary)
-					const [found] = db.query<Row>(
-						`SELECT MAX(seq) AS through FROM nodes
-							WHERE sid = ? AND deleted = 1 AND committed_ms < ?${
-								Number.isFinite(boundary) ? ' AND seq < ?' : ''
-							}`,
-						args
-					)
-					if (found?.through == null) return
-					const through = toNumber(found.through)
-					setMeta(sid, 'feed_floor', String(Math.max(Number(meta(sid, 'feed_floor')), through + 1)))
-					setMeta(sid, 'pending_fence', JSON.stringify({ through, fencedAt: now }))
-				})
-				return { reclaimed: 0, done: true }
-			}
-
-			if (now < pending.fencedAt + policy.tombstoneGraceMs || boundary <= pending.through)
-				return { reclaimed: 0, done: true }
-
 			let reclaimed = 0
 			let done = true
 			db.transactionSync(() => {
 				const rows = db.query<Row>(
-					`SELECT id FROM nodes
-						WHERE sid = ? AND deleted = 1 AND seq <= ?
-						ORDER BY seq LIMIT ${policy.deleteBatch}`,
-					[sid, pending.through]
+					`SELECT id, seq FROM nodes
+						WHERE sid = ? AND deleted = 1 AND committed_ms < ?
+						ORDER BY seq LIMIT ${policy.deleteBatch + 1}`,
+					[sid, now - policy.tombstoneRetentionMs]
 				)
-				for (const row of rows) {
-					db.exec('DELETE FROM nodes WHERE sid = ? AND id = ? AND deleted = 1 AND seq <= ?', [
+				const batch = rows.slice(0, policy.deleteBatch)
+				for (const row of batch) {
+					db.exec('DELETE FROM nodes WHERE sid = ? AND id = ? AND deleted = 1 AND seq = ?', [
 						sid,
 						String(row.id),
-						pending.through
+						toNumber(row.seq)
 					])
 					reclaimed++
 				}
-				done =
-					db.query(
-						'SELECT 1 AS found FROM nodes WHERE sid = ? AND deleted = 1 AND seq <= ? LIMIT 1',
-						[sid, pending.through]
-					).length === 0
-				if (done) db.exec("DELETE FROM meta WHERE sid = ? AND key = 'pending_fence'", [sid])
+				const last = batch.at(-1)
+				if (last)
+					setMeta(
+						sid,
+						'feed_floor',
+						String(Math.max(Number(meta(sid, 'feed_floor')), toNumber(last.seq) + 1))
+					)
+				done = rows.length <= policy.deleteBatch
 			})
 			return { reclaimed, done }
 		})
 
 	return {
 		[receiverBackend]: {
+			lock,
 			state: async () => receiverState(),
 			async observe(now) {
 				return observedNow(open().sid, now)
@@ -484,7 +442,7 @@ export function sqliteStore(
 			position(cursor) {
 				return position(cursor, open().lineage)
 			}
-		},
+		} satisfies ReceiverBackend,
 		async get(id) {
 			const { sid } = open()
 			return byId(sid, id)
@@ -733,7 +691,7 @@ export function sqliteStore(
 				)
 			}
 		}
-	}
+	} as Store
 }
 
 /**

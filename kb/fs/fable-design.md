@@ -249,8 +249,8 @@ rows (the moved node, both parents) — still independent of subtree size.
 **`sync(local: Store, remote: Store)`** — the engine. Its whole loop:
 
 ```text
-pull: remote.since(cursor) → local.commit(rows) → advance cursor
 push: local.since(cursor)  → remote.commit(rows) → advance cursor
+pull: remote.since(cursor) → local.commit(rows) → advance cursor
 blobs: for each new content hash — has? skip : transfer (lazy where allowed)
 ```
 

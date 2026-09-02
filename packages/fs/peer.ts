@@ -1,55 +1,39 @@
-import {
-	type Cursor,
-	ForeignCursorError,
-	type Guard,
-	type Hash,
-	HashMismatchError,
-	type Node,
-	type Page,
-	type Store,
-	sha256Hex
-} from './store'
+import { type Cursor, HashMismatchError, type Page, type Store, sha256Hex } from './store'
 
 const SEP = String.fromCharCode(0)
 
-const minutes = (count: number): number => count * 60 * 1_000
 const days = (count: number): number => count * 24 * 60 * 60 * 1_000
 
-export const DEFAULT_SYNC_POLICY = {
-	cursorLeaseMs: days(30),
-	writeLeaseMs: minutes(15),
-	maxWriteDurationMs: minutes(5),
-	tombstoneFenceAgeMs: days(30),
-	tombstoneGraceMs: days(10),
+export const DEFAULT_HISTORY_POLICY = {
+	tombstoneRetentionMs: days(30),
 	deleteBatch: 128
 } as const
 
-export type SyncPolicy = {
-	[key in keyof typeof DEFAULT_SYNC_POLICY]: number
+export type HistoryPolicy = {
+	[key in keyof typeof DEFAULT_HISTORY_POLICY]: number
 }
 
-export function syncPolicy(overrides: Partial<SyncPolicy> = {}): SyncPolicy {
-	const policy = { ...DEFAULT_SYNC_POLICY, ...overrides }
-	for (const [name, value] of Object.entries(policy))
-		if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${name} must be positive`)
-	if (policy.tombstoneFenceAgeMs < policy.cursorLeaseMs)
-		throw new TypeError('tombstoneFenceAgeMs must be at least cursorLeaseMs')
-	if (policy.tombstoneGraceMs <= policy.writeLeaseMs + policy.maxWriteDurationMs)
-		throw new TypeError('tombstoneGraceMs must exceed writeLeaseMs plus maxWriteDurationMs')
-	if (policy.deleteBatch < 1 || !Number.isInteger(policy.deleteBatch))
+export function historyPolicy(overrides: Partial<HistoryPolicy> = {}): HistoryPolicy {
+	const policy = { ...DEFAULT_HISTORY_POLICY, ...overrides }
+	if (!Number.isFinite(policy.tombstoneRetentionMs) || policy.tombstoneRetentionMs <= 0)
+		throw new TypeError('tombstoneRetentionMs must be positive')
+	if (!Number.isInteger(policy.deleteBatch) || policy.deleteBatch < 1)
 		throw new TypeError('deleteBatch must be a positive integer')
 	return policy
 }
 
+const maxOfflineMs = (policy: HistoryPolicy): number => policy.tombstoneRetentionMs
+
 type CursorClaims = {
+	issuer: string
 	lineage: string
 	position: number
-	issuedAt: number
 	expiresAt: number
 	mode: 'resume' | 'bootstrap'
 }
 
 export type ReceiverState = {
+	issuer: string
 	lineage: string
 	signingSecret: string
 	feedHead: number
@@ -61,30 +45,11 @@ export type ReceiverBackend = {
 	observe(now: number): Promise<number>
 	cursor(position: number): Cursor
 	position(cursor: Cursor): number
+	lock?: SyncStateLock
 }
 
 /** Private backend capability. It deliberately does not widen `Store`. */
 export const receiverBackend = Symbol('receiver backend')
-
-export type ReceiverStore = Store & { [receiverBackend]: ReceiverBackend }
-
-export type Peer = Pick<Store, 'get' | 'child' | 'children'> & {
-	since(cursor?: Cursor): Promise<Page>
-	open(cursor?: Cursor): Promise<WriteLease>
-	commit(lease: WriteLease, writes: Node[], guards?: Guard[]): Promise<void>
-	blobs: Pick<Store['blobs'], 'has' | 'get'> & {
-		put(lease: WriteLease, hash: Hash, data: Uint8Array): Promise<void>
-	}
-}
-
-export type WriteLease = string
-
-type LeaseClaims = {
-	lineage: string
-	position: number
-	issuedAt: number
-	expiresAt: number
-}
 
 export type SyncStateLock = <T>(body: () => Promise<T>) => Promise<T>
 
@@ -98,120 +63,141 @@ export function syncStateLock(): SyncStateLock {
 }
 
 export class BootstrapRequiredError extends Error {
-	constructor() {
+	readonly peerId?: string
+	readonly winnerId?: string
+
+	constructor(peerId?: string, winnerId?: string) {
 		super('bootstrap required')
 		this.name = 'BootstrapRequiredError'
+		this.peerId = peerId
+		this.winnerId = winnerId
 	}
 }
 
-/** A short-lived direct writer for trusted tools which do not keep a replica. */
-export async function openPeerStore(peer: Peer): Promise<Store> {
+export type CursorSource = { load(): Promise<Cursor | undefined> }
+
+const binders = new WeakMap<Store, (source: CursorSource) => Store>()
+
+/** Bind a remote store to the durable cursor for one sync relationship. */
+export const bindCursor = (store: Store, source: CursorSource): Store =>
+	binders.get(store)?.(source) ?? store
+
+/** Register transport plumbing for `bindCursor` without adding to `Store`. */
+export const cursorBound = (store: Store, bind: (source: CursorSource) => Store): Store => {
+	binders.set(store, bind)
+	return store
+}
+
+/** Advance a short-lived direct client to a writable receiver cursor. */
+export async function currentStore(store: Store): Promise<Store> {
 	let cursor: Cursor | undefined
 	for (;;) {
-		const page = await peer.since(cursor)
+		const page = await store.since(cursor)
 		if (page.next === undefined) throw new Error('receiver did not return a feed cursor')
 		cursor = page.next
-		if (page.nodes.length === 0) break
-	}
-	const lease = await peer.open(cursor)
-	return {
-		get: (id) => peer.get(id),
-		child: (parent, name) => peer.child(parent, name),
-		children: (parent, at) => peer.children(parent, at),
-		async since(at) {
-			try {
-				return await peer.since(at)
-			} catch (error) {
-				if (error instanceof BootstrapRequiredError) throw new ForeignCursorError()
-				throw error
-			}
-		},
-		commit: (writes, guards) => peer.commit(lease, writes, guards),
-		blobs: {
-			has: (hash) => peer.blobs.has(hash),
-			get: (hash) => peer.blobs.get(hash),
-			put: (hash, data) => peer.blobs.put(lease, hash, data)
-		}
+		if (page.nodes.length === 0) return store
 	}
 }
 
-export function receiver(
-	store: ReceiverStore,
-	opts: { clock?: () => number; lock?: SyncStateLock; policy?: Partial<SyncPolicy> } = {}
-): Peer {
-	const backend = store[receiverBackend]
-	const policy = syncPolicy(opts.policy)
+/** Protect a raw store with receiver-issued cursor tokens without widening `Store`. */
+export type ReceiverOptions = {
+	clock?: () => number
+	issuer?: () => Promise<string>
+	lock?: SyncStateLock
+	policy?: Partial<HistoryPolicy>
+}
+
+export function receiver(store: Store, opts: ReceiverOptions = {}): Store {
+	const backend = (store as Store & { [receiverBackend]?: ReceiverBackend })[receiverBackend]
+	if (!backend) throw new TypeError('store does not provide receiver cursor state')
+	const policy = historyPolicy(opts.policy)
 	const clock = opts.clock ?? Date.now
-	const lock = opts.lock ?? syncStateLock()
+	const lock = opts.lock ?? backend.lock ?? syncStateLock()
+	const state = async (): Promise<ReceiverState> => {
+		const current = await backend.state()
+		return opts.issuer ? { ...current, issuer: await opts.issuer() } : current
+	}
 
-	return {
-		get: (id) => store.get(id),
-		child: (parent, name) => store.child(parent, name),
-		children: (parent, cursor) => store.children(parent, cursor),
-		blobs: {
-			has: (hash) => store.blobs.has(hash),
-			get: (hash) => store.blobs.get(hash),
-			async put(lease, hash, data) {
-				await validateLease(lease)
-				const held = new Uint8Array(data)
-				if ((await sha256Hex(held)) !== hash) throw new HashMismatchError(hash)
-				await validateLease(lease)
-				await store.blobs.put(hash, held)
-			}
-		},
-		async open(cursor) {
-			const now = await backend.observe(clock())
-			const state = await backend.state()
-			if (cursor === undefined) throw new BootstrapRequiredError()
-			const parent = await verifyCursor(cursor, state, now)
-			if (parent.mode !== 'resume') throw new BootstrapRequiredError()
-			return sign(
-				{
-					lineage: state.lineage,
-					position: parent.position,
-					issuedAt: now,
-					expiresAt: Math.min(now + policy.writeLeaseMs, parent.expiresAt)
-				},
-				state.signingSecret,
-				'lease'
-			)
-		},
-		commit: (lease, writes, guards) =>
-			lock(async () => {
-				await validateLease(lease)
-				await store.commit(writes, guards)
-			}),
-		async since(cursor) {
-			const now = await backend.observe(clock())
-			const state = await backend.state()
-			const claims =
-				cursor === undefined
-					? bootstrapClaims(state, now, policy)
-					: await verifyCursor(cursor, state, now)
-			const page = await store.since(
-				claims.position === 0 ? undefined : backend.cursor(claims.position)
-			)
-			if (page.next === undefined) throw new Error('receiver store did not return a feed cursor')
-			const position = backend.position(page.next)
-			const next: CursorClaims =
-				position >= state.feedHead
-					? { ...bootstrapClaims(state, now, policy), position, mode: 'resume' }
-					: { ...claims, position }
-			return { nodes: page.nodes, next: await sign(next, state.signingSecret, 'cursor') }
+	const relationship = (source?: CursorSource): Store => {
+		let readCursor: Cursor | undefined
+
+		const readToken = async (): Promise<Cursor | undefined> => readCursor ?? (await source?.load())
+		const writeToken = (): Promise<Cursor | undefined> =>
+			source ? source.load() : Promise.resolve(readCursor)
+		const read = async <T>(body: () => Promise<T>): Promise<T> => {
+			await validate(await readToken(), 'read')
+			return body()
 		}
+		const write = <T>(body: () => Promise<T>): Promise<T> =>
+			lock(async () => {
+				await validate(await writeToken(), 'write')
+				return body()
+			})
+
+		const peer: Store = {
+			get: (id) => read(() => store.get(id)),
+			child: (parent, name) => read(() => store.child(parent, name)),
+			children: (parent, cursor) => read(() => store.children(parent, cursor)),
+			async since(cursor) {
+				const page = await lock(() => scan(cursor))
+				readCursor = page.next
+				return page
+			},
+			commit: (writes, guards) => write(() => store.commit(writes, guards)),
+			blobs: {
+				has: (hash) => read(() => store.blobs.has(hash)),
+				get: (hash) => read(() => store.blobs.get(hash)),
+				async put(hash, data) {
+					const held = new Uint8Array(data)
+					if ((await sha256Hex(held)) !== hash) throw new HashMismatchError(hash)
+					await write(() => store.blobs.put(hash, held))
+				}
+			}
+		}
+		return cursorBound(peer, (next) => relationship(next))
 	}
 
-	async function validateLease(lease: WriteLease): Promise<void> {
-		const observed = await backend.observe(clock())
-		await verifyLease(lease, await backend.state(), observed)
+	const scan = async (cursor?: Cursor): Promise<Page> => {
+		const now = await backend.observe(clock())
+		const before = await state()
+		const claims =
+			cursor === undefined
+				? bootstrapClaims(before, now, policy)
+				: await verifyCursor(cursor, before, now)
+		const page = await store.since(
+			claims.position === 0 ? undefined : backend.cursor(claims.position)
+		)
+		if (page.next === undefined) throw new Error('receiver store did not return a feed cursor')
+		const after = await state()
+		const position = backend.position(page.next)
+		const next: CursorClaims =
+			position >= after.feedHead
+				? { ...bootstrapClaims(after, now, policy), position, mode: 'resume' }
+				: { ...claims, position }
+		return { nodes: page.nodes, next: await sign(next, after.signingSecret) }
 	}
+
+	const validate = async (token: Cursor | undefined, mode: 'read' | 'write'): Promise<void> => {
+		const now = await backend.observe(clock())
+		const current = await state()
+		if (token === undefined) throw new BootstrapRequiredError(current.issuer)
+		const claims = await verifyCursor(token, current, now)
+		if (mode === 'write' && claims.mode !== 'resume')
+			throw new BootstrapRequiredError(current.issuer)
+	}
+
+	return relationship()
 }
 
-const bootstrapClaims = (state: ReceiverState, now: number, policy: SyncPolicy): CursorClaims => ({
+const bootstrapClaims = (
+	state: ReceiverState,
+	now: number,
+	policy: HistoryPolicy
+): CursorClaims => ({
+	issuer: state.issuer,
 	lineage: state.lineage,
 	position: 0,
-	issuedAt: now,
-	expiresAt: now + policy.cursorLeaseMs,
+	expiresAt: now + maxOfflineMs(policy),
 	mode: 'bootstrap'
 })
 
@@ -221,13 +207,13 @@ const verifyCursor = async (
 	now: number
 ): Promise<CursorClaims> => {
 	try {
-		const claims = await verifiedClaims<CursorClaims>(token, state.signingSecret, 'cursor')
+		const claims = await verifiedClaims<CursorClaims>(token, state.signingSecret)
 		if (
+			claims.issuer !== state.issuer ||
 			claims.lineage !== state.lineage ||
 			!Number.isInteger(claims.position) ||
 			claims.position < 0 ||
 			claims.position > state.feedHead ||
-			!Number.isFinite(claims.issuedAt) ||
 			!Number.isFinite(claims.expiresAt) ||
 			claims.expiresAt <= now ||
 			(claims.mode !== 'resume' && claims.mode !== 'bootstrap') ||
@@ -236,53 +222,24 @@ const verifyCursor = async (
 			throw new Error()
 		return claims
 	} catch {
-		throw new BootstrapRequiredError()
+		throw new BootstrapRequiredError(state.issuer)
 	}
 }
 
-const verifyLease = async (
-	token: string,
-	state: ReceiverState,
-	now: number
-): Promise<LeaseClaims> => {
-	try {
-		const claims = await verifiedClaims<LeaseClaims>(token, state.signingSecret, 'lease')
-		if (
-			claims.lineage !== state.lineage ||
-			!Number.isInteger(claims.position) ||
-			claims.position < state.feedFloor ||
-			claims.position > state.feedHead ||
-			!Number.isFinite(claims.issuedAt) ||
-			!Number.isFinite(claims.expiresAt) ||
-			claims.expiresAt <= now
-		)
-			throw new Error()
-		return claims
-	} catch {
-		throw new BootstrapRequiredError()
-	}
-}
-
-type TokenKind = 'cursor' | 'lease'
-
-const sign = async (
-	claims: CursorClaims | LeaseClaims,
-	secret: string,
-	kind: TokenKind
-): Promise<string> => {
+const sign = async (claims: CursorClaims, secret: string): Promise<string> => {
 	const payload = base64url(new TextEncoder().encode(JSON.stringify(claims)))
-	return `${payload}.${await signatureOf(payload, secret, kind)}`
+	return `${payload}.${await signatureOf(payload, secret)}`
 }
 
-const verifiedClaims = async <T>(token: string, secret: string, kind: TokenKind): Promise<T> => {
+const verifiedClaims = async <T>(token: string, secret: string): Promise<T> => {
 	const [payload, signature, extra] = token.split('.')
 	if (!payload || !signature || extra !== undefined) throw new Error()
-	const expected = await signatureOf(payload, secret, kind)
+	const expected = await signatureOf(payload, secret)
 	if (!sameText(signature, expected)) throw new Error()
 	return JSON.parse(new TextDecoder().decode(unbase64url(payload))) as T
 }
 
-const signatureOf = async (payload: string, secret: string, kind: TokenKind): Promise<string> => {
+const signatureOf = async (payload: string, secret: string): Promise<string> => {
 	const key = await crypto.subtle.importKey(
 		'raw',
 		new TextEncoder().encode(secret),
@@ -292,7 +249,7 @@ const signatureOf = async (payload: string, secret: string, kind: TokenKind): Pr
 	)
 	return base64url(
 		new Uint8Array(
-			await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${kind}${SEP}${payload}`))
+			await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`cursor${SEP}${payload}`))
 		)
 	)
 }
@@ -322,4 +279,18 @@ export const rawCursor = (lineage: string, position: number): Cursor =>
 export const rawPosition = (cursor: Cursor, lineage: string): number => {
 	if (!cursor.startsWith(lineage + SEP)) throw new BootstrapRequiredError()
 	return Number(cursor.slice(lineage.length + SEP.length))
+}
+
+export const cursorIssuer = (cursor: Cursor): string => {
+	try {
+		const payload = cursor.split('.')[0]
+		if (!payload) throw new Error()
+		const claims = JSON.parse(new TextDecoder().decode(unbase64url(payload))) as {
+			issuer?: unknown
+		}
+		if (typeof claims.issuer !== 'string') throw new Error()
+		return claims.issuer
+	} catch {
+		throw new BootstrapRequiredError()
+	}
 }

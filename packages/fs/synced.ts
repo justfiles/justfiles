@@ -27,8 +27,15 @@
  *   would be stranded on this device by the very cursor the reset saves.
  */
 
-import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
-import { BootstrapRequiredError, type Peer, type SyncStateLock } from './peer'
+import {
+	authorOf,
+	type ChooseWinner,
+	type CursorSlot,
+	hydratingBlobs,
+	sync,
+	versions
+} from './engine'
+import { BootstrapRequiredError, bindCursor, type SyncStateLock } from './peer'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
 import { type Bindings, type Volume, volume } from './volume'
 
@@ -84,8 +91,8 @@ export type DiscardSlot = {
 export type SyncedProps = {
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
-	/** The peer: a local store or a leased receiver. */
-	remote: Store | Peer
+	/** The peer, with the same seam as the local store. */
+	remote: Store
 	/**
 	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.ts`).
 	 * Only the local store is synced — a bound store is joined at a name and is nobody
@@ -106,8 +113,10 @@ export type SyncedProps = {
 	push: CursorSlot
 	/** Host-private exclusion shared by durable cursor saves and local-store GC. */
 	lock?: SyncStateLock
+	/** Chooses the surviving stable peer id when incremental sync is fenced. */
+	chooseWinner?: ChooseWinner
 	/** Lets a host replace the stale backing store after an incremental cycle is fenced. */
-	onBootstrapRequired?: () => void
+	onBootstrapRequired?: (winnerId?: string) => void
 	/**
 	 * Where it keeps "a discard stopped half-done". An app without one keeps that
 	 * bit in memory and cannot recover the crash the type above describes — which is
@@ -178,7 +187,8 @@ export type SyncLifecycle = {
 }
 
 export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle> {
-	const { local, remote, replica } = props
+	const { local, replica } = props
+	const remote = bindCursor(props.remote, props.pull)
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
 	const opts = {
@@ -186,7 +196,8 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		pull: props.pull,
 		push: props.push,
 		lock: props.lock,
-		lazyContent: props.lazyContent
+		lazyContent: props.lazyContent,
+		chooseWinner: props.chooseWinner
 	}
 
 	// The volume reads through `hydratingBlobs` whether or not the pull is lazy.
@@ -283,7 +294,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			failures = 0
 			setStatus('synced')
 		} catch (error) {
-			if (error instanceof BootstrapRequiredError) props.onBootstrapRequired?.()
+			if (error instanceof BootstrapRequiredError) props.onBootstrapRequired?.(error.winnerId)
 			if (!(destroyed && error instanceof Error && error.name === 'AbortError'))
 				console.error(error)
 			failures++

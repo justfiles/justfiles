@@ -9,7 +9,7 @@ import {
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import { authority } from '@justfiles/fs/authority'
-import { receiver, syncStateLock } from '@justfiles/fs/peer'
+import { syncStateLock } from '@justfiles/fs/peer'
 import { createWorkerApiApp, type WorkerApiType } from './app'
 
 /**
@@ -41,7 +41,7 @@ export class MemoryObject extends DurableObject<Env> {
 		// Every served path goes through the authority: rule 9's invariants, one commit at
 		// a time, and a hash this server verifies rather than takes a peer's word for.
 		const tree = authority(store)
-		this.app = createWorkerApiApp({ store: tree, peer: receiver(tree, { lock }) })
+		this.app = createWorkerApiApp({ store: tree, receiver: { lock } })
 		// The one initialization seam: no request runs until the schema exists and the old
 		// tree has been adopted, so nothing else needs a readiness gate. The pass writes
 		// into the RAW store, past the authority — nothing else is running, the rows come

@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import { volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { memStore } from '@justfiles/fs/mem'
-import { receiver } from '@justfiles/fs/peer'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
 import { storeApi } from '../../../packages/core/src/store.api'
@@ -58,7 +57,7 @@ function child(
 async function backend(fault: { method: string; path: RegExp; body?: string }) {
 	const store = authority(memStore())
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(receiver(store))
+	const app = storeApi(store)
 	let stop = false
 	let hit!: () => void
 	const reached = new Promise<void>((resolve) => {

@@ -29,7 +29,9 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	migrateIdb: async () => {}
 }))
 vi.mock('@justfiles/core', () => ({ createFsClient: () => ({}) }))
-vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
+vi.mock('@justfiles/fs/http', () => ({
+	httpStore: () => ({ since: async () => ({ nodes: [], next: 'cursor' }) })
+}))
 
 // The loop, stood down — everything below is about what the OFFER reads and copies,
 // and a running cycle would only add a peer. The volume under it is real, so
@@ -66,6 +68,8 @@ type StoredProfile = {
 
 function stubBrowser(registry: StoredProfile[]): Map<string, string> {
 	const data = new Map([[REGISTRY_KEY, JSON.stringify(registry)]])
+	for (const profile of registry)
+		if (profile.remoteUserId) data.set(`frieren-fs-${profile.id}-pull`, 'cursor')
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => data.get(key) ?? null,
 		setItem: (key: string, value: string) => data.set(key, value),

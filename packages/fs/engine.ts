@@ -35,7 +35,7 @@
  * conflict policy; it changes no seam signature.
  */
 
-import { BootstrapRequiredError, type Peer, type SyncStateLock } from './peer'
+import { BootstrapRequiredError, bindCursor, cursorIssuer, type SyncStateLock } from './peer'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -118,6 +118,8 @@ class Replan extends Error {
  */
 export type CursorSlot = {
 	load(): Promise<Cursor | undefined>
+	/** Persist the authenticated receiver identity beside this relationship. */
+	identify?(peerId: string): Promise<void>
 	/**
 	 * `undefined` is a position too — the empty cursor, where every scan starts
 	 * and where a `load` that has nothing yet already answers. Saving one is how
@@ -127,6 +129,11 @@ export type CursorSlot = {
 	 */
 	save(cursor: Cursor | undefined): Promise<void>
 }
+
+export type ChooseWinner = (localId: string, remoteId: string) => string
+
+/** The present product policy. Equal peers can inject a stable id comparator. */
+export const chooseRemote: ChooseWinner = (_localId, remoteId) => remoteId
 
 export type SyncOptions = {
 	/** This replica's id: the author tag inside every version it mints. */
@@ -150,6 +157,8 @@ export type SyncOptions = {
 	 * answers for the rest, at either setting.
 	 */
 	lazyContent?: boolean
+	/** Select which peer survives when incremental sync can no longer resume. */
+	chooseWinner?: ChooseWinner
 }
 
 /**
@@ -170,7 +179,8 @@ export type SyncOptions = {
  * died halfway left nothing to unwind: re-running the cycle is both the recovery
  * and the retry.
  */
-export async function sync(local: Store, remote: Store | Peer, opts: SyncOptions): Promise<void> {
+export async function sync(local: Store, remote: Store, opts: SyncOptions): Promise<void> {
+	remote = bindCursor(remote, opts.pull)
 	// The push filter, in a bootstrap exactly as in the steady state: to a reset
 	// peer this replica restores its own work and not the rows it merely holds,
 	// since a replica that re-seeded an authority with everything it had seen
@@ -182,7 +192,7 @@ export async function sync(local: Store, remote: Store | Peer, opts: SyncOptions
 	const backoff = opts.backoffMs ?? BACKOFF_MS
 	let failures = 0
 	let replans = 0
-	let writer: Pick<Store, 'commit' | 'blobs'>
+	const writer: Pick<Store, 'commit' | 'blobs'> = remote
 	// The two directions differ only in where the bytes go, and rule 10 is why they
 	// are not symmetric. Pushing, this replica may hold the only copy, so the peer
 	// takes the bytes BEFORE the row that names them — a crash then leaves an orphan
@@ -262,17 +272,6 @@ export async function sync(local: Store, remote: Store | Peer, opts: SyncOptions
 	}
 	for (;;) {
 		try {
-			if ('open' in remote) {
-				const lease = await remote.open(await opts.pull.load())
-				writer = {
-					commit: (writes, guards) => remote.commit(lease, writes, guards),
-					blobs: {
-						has: (hash) => remote.blobs.has(hash),
-						get: (hash) => remote.blobs.get(hash),
-						put: (hash, data) => remote.blobs.put(lease, hash, data)
-					}
-				}
-			} else writer = remote
 			try {
 				await drain(local, push, opts.push, mine, opts.lock)
 			} catch (err) {
@@ -281,7 +280,7 @@ export async function sync(local: Store, remote: Store | Peer, opts: SyncOptions
 				continue
 			}
 			try {
-				await drain(remote, pull, opts.pull, undefined, opts.lock)
+				await drain(remote, pull, opts.pull, undefined, opts.lock, true)
 			} catch (err) {
 				if (!(err instanceof ForeignCursorError) || !(await reset(opts.pull, opts.push, opts.lock)))
 					throw err
@@ -289,7 +288,13 @@ export async function sync(local: Store, remote: Store | Peer, opts: SyncOptions
 			}
 			return
 		} catch (err) {
-			if (err instanceof BootstrapRequiredError) throw err
+			if (err instanceof BootstrapRequiredError) {
+				if (err.peerId === undefined) throw err
+				const winnerId = (opts.chooseWinner ?? chooseRemote)(opts.replica, err.peerId)
+				if (winnerId !== opts.replica && winnerId !== err.peerId)
+					throw new TypeError('winner must be one of the two peer ids')
+				throw new BootstrapRequiredError(err.peerId, winnerId)
+			}
 			if (err instanceof Replan) {
 				if (replans++ < REPLANS) continue
 				throw err
@@ -311,10 +316,11 @@ export async function sync(local: Store, remote: Store | Peer, opts: SyncOptions
  */
 export async function bootstrap(
 	local: Store,
-	remote: Peer,
+	remote: Store,
 	pull: CursorSlot,
 	opts: { lazyContent?: boolean; lock?: SyncStateLock } = {}
 ): Promise<void> {
+	remote = bindCursor(remote, pull)
 	await saveCursor(pull, undefined, opts.lock)
 	await drain(
 		remote,
@@ -324,10 +330,9 @@ export async function bootstrap(
 		},
 		pull,
 		undefined,
-		opts.lock
+		opts.lock,
+		true
 	)
-	// The last bootstrap page must have crossed the feed head and become resumable.
-	await remote.open(await pull.load())
 }
 
 /**
@@ -384,7 +389,8 @@ async function drain(
 	apply: (rows: Node[]) => Promise<void>,
 	slot: CursorSlot,
 	mine?: (row: Node) => boolean,
-	lock?: SyncStateLock
+	lock?: SyncStateLock,
+	identify = false
 ): Promise<number> {
 	let cursor = await slot.load()
 	let moved = 0
@@ -401,7 +407,7 @@ async function drain(
 		// resume from, so this scan is as far as the drain goes.
 		if (page.next === undefined) return moved
 		cursor = page.next
-		await saveCursor(slot, cursor, lock)
+		await saveCursor(slot, cursor, lock, identify)
 		// An empty page means caught up, and the saved cursor is where to start next.
 		if (page.nodes.length === 0) return moved
 	}
@@ -413,8 +419,13 @@ const locked = <T>(lock: SyncStateLock | undefined, body: () => Promise<T>): Pro
 const saveCursor = (
 	slot: CursorSlot,
 	cursor: Cursor | undefined,
-	lock?: SyncStateLock
-): Promise<void> => locked(lock, () => slot.save(cursor))
+	lock?: SyncStateLock,
+	identify = false
+): Promise<void> =>
+	locked(lock, async () => {
+		await slot.save(cursor)
+		if (identify && cursor !== undefined) await slot.identify?.(cursorIssuer(cursor))
+	})
 
 /**
  * The versions the local store holds for rows pulled from the peer. A commit

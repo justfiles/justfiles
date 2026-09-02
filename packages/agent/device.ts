@@ -9,25 +9,23 @@
 // consumers (AGENTS.md — stingy interfaces).
 
 import type { Volume } from '@justfiles/fs'
-import { type PersistedState, persistedState } from '@justfiles/fs/persistedState'
-
-const CLIENTID_PATH = '/private/state/clientid'
+import { type PrivateSyncState, privateSyncState } from '@justfiles/fs/syncState'
 
 // Memoised per Volume instance so repeated calls reuse the same cell (and its
 // in-memory cache) instead of re-reading the file every time.
-const cells = new WeakMap<Volume, PersistedState<string>>()
+const cells = new WeakMap<Volume, PrivateSyncState>()
 
-function cell(vol: Volume): PersistedState<string> {
+function state(vol: Volume): PrivateSyncState {
 	let c = cells.get(vol)
 	if (!c) {
-		c = persistedState<string>(vol, CLIENTID_PATH, () => crypto.randomUUID())
+		c = privateSyncState(vol)
 		cells.set(vol, c)
 	}
 	return c
 }
 
 export async function deviceId(vol: Volume): Promise<string> {
-	return shorten(await cell(vol).get())
+	return shorten(await state(vol).peerId())
 }
 
 // Deterministic, filename-safe, short: a uuid's hex digits are already lowercase, so

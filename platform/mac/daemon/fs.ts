@@ -6,16 +6,10 @@ import { join } from 'node:path'
 import { announceMount, type Bindings, type Volume, volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
 import { httpStore } from '@justfiles/fs/http'
-import type { Peer } from '@justfiles/fs/peer'
+import { bindCursor } from '@justfiles/fs/peer'
 import { ROOT, type Store } from '@justfiles/fs/store'
-import {
-	bootstrap,
-	type CursorSlot,
-	type DiscardSlot,
-	type SyncStatus,
-	synced,
-	versions
-} from '@justfiles/fs/synced'
+import { bootstrap, type CursorSlot, type SyncStatus, synced, versions } from '@justfiles/fs/synced'
+import { privateSyncState } from '@justfiles/fs/syncState'
 import { SHIPPED } from './resources'
 
 const supportDir = (): string =>
@@ -26,6 +20,7 @@ const lockPath = (): string => join(supportDir(), 'daemon.lock')
 const PRIVATE = 'private'
 const VOLUME = 'volume-v2'
 const SYNC_STATE = 'sync.json'
+const OWNER_STATE = 'owner.json'
 const PROD_ORIGIN = 'https://justcomputer.app'
 const DEV_ORIGIN = 'https://staging.justcomputer.app'
 export const platformOrigin = (): string =>
@@ -111,35 +106,41 @@ function trackVolume(source: Volume): { volume: Volume; drain(): Promise<void> }
 export async function createNativeStorage(options: NativeStorageOptions): Promise<NativeStorage> {
 	const root = join(options.supportDir, VOLUME)
 	const statePath = join(root, SYNC_STATE)
+	const ownerPath = join(root, OWNER_STATE)
 	await mkdir(root, { recursive: true })
 
 	const savedState = await readSyncState(statePath)
+	const savedOwner = (await readOwner(ownerPath)) ?? savedState?.ownerId
 	const requestedOwner = options.ownerId
-	if (savedState && requestedOwner && savedState.ownerId !== requestedOwner) {
+	if (savedOwner !== undefined && requestedOwner && savedOwner !== requestedOwner) {
 		await rm(root, { recursive: true, force: true })
 		throw new OwnerChangedError()
 	}
 	// A signed-out process still owns its existing local replica. Keep sync wired to
 	// that owner with a dynamic token source; it stays offline until the same owner
 	// signs in again. Only a different signed-in owner replaces the volume.
-	const ownerId = savedState?.ownerId ?? requestedOwner ?? null
-	const state: SyncState = savedState ?? {
-		replica: randomUUID(),
-		discard: false,
-		ownerId
-	}
-	if (!savedState) await atomicWrite(statePath, state)
-	const saved = stateFile(statePath, state)
+	const ownerId = savedOwner ?? requestedOwner ?? null
+	await atomicWrite(ownerPath, { ownerId })
 
 	const mainRoot = join(root, 'main')
 	const privateRoot = join(root, PRIVATE)
 	await Promise.all([mkdir(mainRoot, { recursive: true }), mkdir(privateRoot, { recursive: true })])
 
+	const privateStore = fsStore(privateRoot)
+	const saved = privateSyncState(volume(privateStore), '/state', {
+		peerId: savedState?.replica ?? randomUUID(),
+		relationship: {
+			pull: savedState?.pull,
+			push: savedState?.push,
+			discard: savedState?.discard
+		}
+	})
+	const replica = await saved.peerId()
+	if (savedState) await rm(statePath, { force: true })
 	const mainStore = fsStore(mainRoot, {
 		mounts: [PRIVATE],
-		mintVersion: versions(state.replica)
+		mintVersion: versions(replica)
 	})
-	const privateStore = fsStore(privateRoot)
 	let sync: SyncVolume | undefined
 	let abortRemote: (() => void) | undefined
 	let offStatus: (() => void) | undefined
@@ -153,7 +154,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		if (ownerId === null) {
 			source = volume(mainStore, {
 				bindings,
-				mintVersion: versions(state.replica)
+				mintVersion: versions(replica)
 			})
 		} else {
 			if (!options.getToken) throw new Error('authenticated storage needs a token source')
@@ -162,8 +163,8 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			const pull = saved.cursor('pull')
 			sync = await synced({
 				local: mainStore,
-				remote: initialPeer(remote.store, mainStore, pull),
-				replica: state.replica,
+				remote: initialStore(remote.store, mainStore, pull),
+				replica,
 				pull,
 				push: saved.cursor('push'),
 				discard: saved.discard,
@@ -252,18 +253,31 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	}
 }
 
-function initialPeer(peer: Peer, local: Store, pull: CursorSlot): Peer {
-	let bootstrapping: Promise<void> | undefined
+function initialStore(peer: Store, local: Store, pull: CursorSlot): Store {
+	const bound = bindCursor(peer, pull)
+	let preparing: Promise<void> | undefined
+	const ready = async (): Promise<void> => {
+		if ((await pull.load()) !== undefined) return
+		preparing ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
+			preparing = undefined
+			throw error
+		})
+		await preparing
+	}
+	const after = async <T>(body: () => Promise<T>): Promise<T> => {
+		await ready()
+		return body()
+	}
 	return {
-		...peer,
-		async open(cursor) {
-			if (cursor !== undefined) return peer.open(cursor)
-			bootstrapping ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
-				bootstrapping = undefined
-				throw error
-			})
-			await bootstrapping
-			return peer.open(await pull.load())
+		get: (id) => after(() => bound.get(id)),
+		child: (parent, name) => after(() => bound.child(parent, name)),
+		children: (parent, cursor) => after(() => bound.children(parent, cursor)),
+		since: (cursor) => after(() => bound.since(cursor)),
+		commit: (writes, guards) => after(() => bound.commit(writes, guards)),
+		blobs: {
+			has: (hash) => after(() => bound.blobs.has(hash)),
+			get: (hash) => after(() => bound.blobs.get(hash)),
+			put: (hash, data) => after(() => bound.blobs.put(hash, data))
 		}
 	}
 }
@@ -272,7 +286,7 @@ function remoteStore(
 	getToken: () => Promise<string | null>,
 	origin = platformOrigin(),
 	send: Send = fetch
-): { store: Peer; abort(): void } {
+): { store: Store; abort(): void } {
 	const controller = new AbortController()
 	return {
 		store: httpStore(new URL('/store', origin).toString(), {
@@ -284,43 +298,6 @@ function remoteStore(
 		}),
 		abort: () => controller.abort()
 	}
-}
-
-function stateFile(path: string, initial: SyncState) {
-	let state = initial
-	let tail: Promise<unknown> = Promise.resolve()
-	const save = (change: (held: SyncState) => SyncState): Promise<void> => {
-		const run = tail.then(async () => {
-			state = change(state)
-			await atomicWrite(path, state)
-		})
-		tail = run.catch(() => {})
-		return run
-	}
-	const cursor = (key: 'pull' | 'push'): CursorSlot => ({
-		async load() {
-			await tail
-			return state[key]
-		},
-		save(value) {
-			return save((held) => {
-				const next = { ...held }
-				if (value === undefined) delete next[key]
-				else next[key] = value
-				return next
-			})
-		}
-	})
-	const discard: DiscardSlot = {
-		async load() {
-			await tail
-			return state.discard
-		},
-		save(value) {
-			return save((held) => ({ ...held, discard: value }))
-		}
-	}
-	return { cursor, discard }
 }
 
 async function readSyncState(path: string): Promise<SyncState | null> {
@@ -344,7 +321,19 @@ async function readSyncState(path: string): Promise<SyncState | null> {
 	return value as SyncState
 }
 
-async function atomicWrite(path: string, state: SyncState): Promise<void> {
+async function readOwner(path: string): Promise<string | null | undefined> {
+	try {
+		const value = JSON.parse(await readFile(path, 'utf8')) as { ownerId?: unknown }
+		if (value.ownerId !== null && typeof value.ownerId !== 'string')
+			throw new Error('invalid native owner state')
+		return value.ownerId
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+		throw error
+	}
+}
+
+async function atomicWrite(path: string, state: unknown): Promise<void> {
 	const temp = `${path}.tmp`
 	await writeFile(temp, JSON.stringify(state), { mode: 0o600 })
 	await rename(temp, path)

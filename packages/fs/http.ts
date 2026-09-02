@@ -1,6 +1,6 @@
 /**
- * A leased peer over HTTP. Reads mirror `Store`; writes carry a lease minted
- * from the receiver's signed feed cursor.
+ * A peer `Store` over HTTP. Each operation carries the receiver's signed feed
+ * cursor without widening the seam.
  *
  * The file owns the wire FORMAT in both directions, because the two halves of a
  * codec must not drift: the server (`packages/core/src/store.api.ts`) imports
@@ -10,8 +10,8 @@
  * `fetch` and nothing else, so this runs in a browser, a worker, or node.
  */
 
-import { BootstrapRequiredError, type Peer, type WriteLease } from './peer'
-import { type Guard, GuardError, type Hash, type Node, type Page } from './store'
+import { BootstrapRequiredError, type CursorSource, cursorBound } from './peer'
+import { type Guard, GuardError, type Hash, type Node, type Page, type Store } from './store'
 
 /**
  * A `Node` as JSON. Two fields change shape and no others do: the 64-bit counts
@@ -105,7 +105,7 @@ export type HttpStoreOptions = {
 	fetch?: (url: string, init?: RequestInit) => Promise<Response>
 }
 
-export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
+export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 	const base = baseUrl.replace(/\/+$/, '')
 	const send = opts.fetch ?? ((url, init) => fetch(url, init))
 
@@ -117,7 +117,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
 	const call = async (path: string, init?: Init): Promise<Response> => {
 		const headers: Record<string, string> = { ...opts.headers }
 		if (init?.type !== undefined) headers['content-type'] = init.type
-		if (init?.lease !== undefined) headers['x-sync-lease'] = init.lease
+		if (init?.cursor !== undefined) headers['x-sync-cursor'] = init.cursor
 		const res = await send(base + path, {
 			method: init?.method,
 			body: init?.body,
@@ -127,7 +127,10 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
 		// A refusal, not a failure: a guard did not hold, and the body says which.
 		if (res.status === 409) throw new GuardError(await refusal(res))
 		// Expired, swept, malformed, and wrong-lineage cursors have one public answer.
-		if (res.status === 410) throw new BootstrapRequiredError()
+		if (res.status === 410) {
+			const body = (await res.json().catch(() => null)) as { peerId?: unknown } | null
+			throw new BootstrapRequiredError(typeof body?.peerId === 'string' ? body.peerId : undefined)
+		}
 		return res
 	}
 
@@ -139,8 +142,8 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
 	}
 
 	/** A blob route's answer, or `null` for the 404 that means "not here". */
-	const blob = async (hash: Hash, method?: string): Promise<Response | null> => {
-		const res = await call(blobPath(hash), { method })
+	const blob = async (hash: Hash, method?: string, cursor?: string): Promise<Response | null> => {
+		const res = await call(blobPath(hash), { method, cursor })
 		// Rule 7's ordinary miss, which a lazy replica meets on every stub it has
 		// not fetched yet. It is the only 404 this API gives.
 		if (res.status === 404) return null
@@ -148,59 +151,70 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
 		return res
 	}
 
-	return {
-		get: async (id) => nodeOrNull(await answer(`/node/${encodeURIComponent(id)}`)),
-		child: async (parent, name) => nodeOrNull(await answer(`/child?${query({ parent, name })}`)),
-		children: async (parent, cursor) =>
-			page(await answer(`/children?${query({ parent, cursor })}`)),
-		since: async (cursor) => page(await answer(`/since?${query({ cursor })}`)),
-		async open(cursor) {
-			const got = fields(
-				await answer('/open', {
-					method: 'POST',
-					body: JSON.stringify({ cursor }),
-					type: 'application/json'
-				}),
-				'an open response'
-			)
-			return text(got.lease, 'lease')
-		},
+	const relationship = (source?: CursorSource): Store => {
+		let readCursor: string | undefined
+		const readToken = async (): Promise<string | undefined> => readCursor ?? (await source?.load())
+		const writeToken = (): Promise<string | undefined> =>
+			source ? source.load() : Promise.resolve(readCursor)
 
-		async commit(lease, writes, guards) {
-			// Rule 3: the batch is taken at the CALL. `JSON.stringify` runs before
-			// this function's first await, which is where the caller gets control back
-			// and may edit a row it just handed over.
-			const body = JSON.stringify({ writes: writes.map(encodeNode), guards })
-			await answer('/commit', { method: 'POST', body, type: 'application/json', lease })
-		},
-
-		blobs: {
-			// A HEAD, so the question the engine actually asks — is this content
-			// there? — does not drag the bytes across to be thrown away.
-			has: async (hash) => (await blob(hash, 'HEAD')) !== null,
-			async get(hash) {
-				const res = await blob(hash)
-				return res === null ? null : new Uint8Array(await res.arrayBuffer())
+		const peer: Store = {
+			get: async (id) =>
+				nodeOrNull(await answer(`/node/${encodeURIComponent(id)}`, { cursor: await readToken() })),
+			child: async (parent, name) =>
+				nodeOrNull(
+					await answer(`/child?${query({ parent, name })}`, { cursor: await readToken() })
+				),
+			children: async (parent, cursor) =>
+				page(
+					await answer(`/children?${query({ parent, cursor })}`, {
+						cursor: await readToken()
+					})
+				),
+			async since(cursor) {
+				const found = page(await answer(`/since?${query({ cursor })}`, { cursor }))
+				readCursor = found.next
+				return found
 			},
-			async put(lease, hash, data) {
-				// Held before the first await, for the reason `commit` stringifies early. As
-				// a plain `ArrayBuffer`, which is both what a body takes everywhere and a
-				// copy that cannot alias the caller's array.
-				const body = new Uint8Array(data).buffer
-				await answer(blobPath(hash), {
-					method: 'PUT',
+			async commit(writes, guards) {
+				// Rule 3: the batch is taken at the CALL. `JSON.stringify` runs before
+				// this function's first await, which is where the caller gets control back
+				// and may edit a row it just handed over.
+				const body = JSON.stringify({ writes: writes.map(encodeNode), guards })
+				await answer('/commit', {
+					method: 'POST',
 					body,
-					type: 'application/octet-stream',
-					lease
+					type: 'application/json',
+					cursor: await writeToken()
 				})
-			}
-		}
+			},
 
-		// No `subscribe`: rule 8 makes it optional, and a client that polls `since`
-		// sees every writer's commits. A push channel is a latency optimization this
-		// wire can grow later — with no seam change, which is the point of it being
-		// optional.
+			blobs: {
+				// A HEAD, so the question the engine actually asks — is this content
+				// there? — does not drag the bytes across to be thrown away.
+				has: async (hash) => (await blob(hash, 'HEAD', await readToken())) !== null,
+				async get(hash) {
+					const res = await blob(hash, undefined, await readToken())
+					return res === null ? null : new Uint8Array(await res.arrayBuffer())
+				},
+				async put(hash, data) {
+					// Held before the first await, for the reason `commit` stringifies early.
+					const body = new Uint8Array(data).buffer
+					await answer(blobPath(hash), {
+						method: 'PUT',
+						body,
+						type: 'application/octet-stream',
+						cursor: await writeToken()
+					})
+				}
+			}
+
+			// No `subscribe`: rule 8 makes it optional, and a client that polls `since`
+			// sees every writer's commits.
+		}
+		return cursorBound(peer, (next) => relationship(next))
 	}
+
+	return relationship()
 }
 
 /**
@@ -208,7 +222,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
  * rather than as `BodyInit`, which is a DOM name — this package is `platform:
  * neutral` and its consumers compile it under whatever lib they have.
  */
-type Init = { method?: string; body?: string | ArrayBuffer; type?: string; lease?: WriteLease }
+type Init = { method?: string; body?: string | ArrayBuffer; type?: string; cursor?: string }
 
 const blobPath = (hash: Hash): string => `/blob/${encodeURIComponent(hash)}`
 
