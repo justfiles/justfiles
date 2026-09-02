@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Cabinet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+<style>img{max-width:100%}</style>
+</head>
+<body>
+<style>
+:root{
+	--bg:#f7f6fa; --bg-2:#ffffff;
+	--ink:#191822; --ink-2:#565167; --ink-3:#8a8499;
+	--rule:#e2dfe9; --rule-2:#cbc7d6;
+	--gold:#856517; --gold-mark:#c9a03e;
+	--good:#2c7a58; --bad:#a8331f;
+	--stage:#141320; --stage-2:#1d1b2b; --stage-ink-2:#9b95ae;
+	--os-surface:#2b2937; --os-window:#201e2a; --os-text:#ecebf4;
+	--os-muted:#9c96ad; --os-rule:#3b3849; --os-edge:#100e1b;
+	--os-gold:#e0bd72; --os-green:#63c79a;
+	--maxw:1060px; --prose:66ch;
+}
+@media (prefers-color-scheme: dark){
+	:root:not([data-theme="light"]){
+		--bg:#111019; --bg-2:#191823;
+		--ink:#eae7f3; --ink-2:#a6a1b7; --ink-3:#746f86;
+		--rule:#282634; --rule-2:#3a3749;
+		--gold:#e0bd72; --good:#5ec296; --bad:#e08070;
+	}
+}
+:root[data-theme="dark"]{
+	--bg:#111019; --bg-2:#191823;
+	--ink:#eae7f3; --ink-2:#a6a1b7; --ink-3:#746f86;
+	--rule:#282634; --rule-2:#3a3749;
+	--gold:#e0bd72; --good:#5ec296; --bad:#e08070;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+	font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+	font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+@media (max-width:640px){.wrap{padding:0 18px}}
+
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:400}
+h1{font-family:"Instrument Serif",Georgia,serif;font-size:clamp(40px,6vw,68px);line-height:1.03;letter-spacing:-.01em}
+h2{font-family:"Instrument Serif",Georgia,serif;font-size:clamp(26px,3.3vw,36px);line-height:1.12}
+h3{font-size:15px;font-weight:600}
+p{margin:0}
+a{color:var(--gold)}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+.serif-em{font-family:"Instrument Serif",Georgia,serif;font-style:italic;color:var(--gold)}
+code,.mono{font-family:"IBM Plex Mono",monospace;font-size:.88em}
+code{color:var(--ink-2)}
+.lede{max-width:var(--prose);font-size:17px;color:var(--ink-2)}
+
+.masthead{padding:62px 0 40px;border-bottom:1px solid var(--rule)}
+.masthead h1{margin:14px 0 20px}
+section{padding:52px 0;border-bottom:1px solid var(--rule)}
+.section-head{display:flex;flex-direction:column;gap:11px;max-width:var(--prose)}
+
+/* ── cross-section figures ─────────────────────────────────────────────── */
+.xsec{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:30px;margin-top:30px}
+.xsec figure{margin:0;display:flex;flex-direction:column;gap:11px}
+.xsec svg{width:100%;height:auto;display:block;border-radius:4px;
+	background:var(--bg-2);border:1px solid var(--rule)}
+.xsec figcaption{font-size:13.5px;color:var(--ink-2);line-height:1.5}
+.xsec figcaption b{display:block;font-weight:600;color:var(--ink);margin-bottom:3px;font-size:13.5px}
+.xsec [data-bad] b{color:var(--bad)}
+.xsec [data-good] b{color:var(--good)}
+.xs-label{font-family:"IBM Plex Mono",monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;fill:var(--ink-3)}
+.xs-depth{font-family:"IBM Plex Mono",monospace;font-size:9px;fill:var(--gold-mark)}
+
+.verdict{margin-top:26px;padding:18px 20px;border-radius:4px;background:var(--bg-2);
+	border:1px solid var(--rule);box-shadow:inset 3px 0 0 var(--gold-mark)}
+.verdict .tag{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold)}
+.verdict p{margin-top:7px;font-size:15px;max-width:var(--prose)}
+.verdict p + p{margin-top:10px;color:var(--ink-2);font-size:14px}
+
+.cols{display:grid;gap:0 32px;margin-top:28px;grid-template-columns:repeat(2,1fr)}
+@media (max-width:620px){.cols{grid-template-columns:1fr}}
+.cols > div{padding-top:14px;border-top:1px solid var(--rule-2)}
+.cols h3{margin-bottom:8px}
+.cols p,.cols li{font-size:14px;color:var(--ink-2);line-height:1.55}
+
+/* ── code block ────────────────────────────────────────────────────────── */
+pre{margin:22px 0 0;padding:18px 20px;border-radius:4px;overflow-x:auto;
+	background:var(--stage);border:1px solid #000;color:#d8d4e6;
+	font-family:"IBM Plex Mono",monospace;font-size:12.5px;line-height:1.65}
+pre .c{color:#7b7492}
+pre .k{color:var(--os-gold)}
+pre .d{color:#e08070;text-decoration:line-through;opacity:.65}
+pre .n{color:var(--os-green)}
+
+/* ── stage + screen ────────────────────────────────────────────────────── */
+.stage{margin:0;padding:22px;border-radius:6px;
+	background:linear-gradient(180deg,var(--stage-2),var(--stage));border:1px solid #000;
+	box-shadow:0 24px 60px -30px rgba(0,0,0,.7)}
+.stage figcaption{margin-top:14px;font-family:"IBM Plex Mono",monospace;font-size:11px;
+	color:var(--stage-ink-2);letter-spacing:.04em}
+.stage figcaption em{font-style:normal;color:var(--os-gold)}
+.controls{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.toggle{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:12.5px;
+	padding:6px 13px;border-radius:7px;cursor:pointer;
+	border:1px solid rgba(255,255,255,.16);background:#2b2937;color:#e8e5f2;
+	box-shadow:0 1.5px 0 #0c0a14;transition:transform 70ms ease,box-shadow 70ms ease,background-color 120ms ease}
+.toggle:hover{background:#35323f}
+.toggle:active{transform:translateY(1.5px);box-shadow:0 0 0 #0c0a14}
+.toggle[aria-pressed="true"]{background:#100e1b;box-shadow:inset 0 2px 4px rgba(0,0,0,.6);transform:translateY(1.5px)}
+.toggle:focus-visible{outline:2px solid var(--os-gold);outline-offset:2px}
+
+.screen{container-type:inline-size;position:relative;aspect-ratio:16/10;width:100%;
+	border-radius:5px;overflow:hidden;color:var(--os-text);
+	font-size:calc(var(--u)*1.34);line-height:1.35;background:var(--os-edge);display:flex;--u:1cqw}
+.screen *{box-sizing:border-box}
+.frame{flex:1;min-width:0;display:flex;flex-direction:column}
+.menubar{height:calc(var(--u)*3.1);flex:none;display:flex;align-items:center;justify-content:space-between;
+	padding:0 calc(var(--u)*1.4);background:rgba(20,18,30,.62);backdrop-filter:blur(10px);
+	border-bottom:1px solid rgba(255,255,255,.07);font-size:calc(var(--u)*1.22)}
+.menubar .mb-r{display:flex;align-items:center;gap:calc(var(--u)*1.2);color:var(--os-muted)}
+.dot{width:calc(var(--u)*.7);height:calc(var(--u)*.7);border-radius:50%;background:var(--os-green);display:inline-block;flex:none}
+.deck{position:relative;flex:1;min-height:0;overflow:hidden;
+	background:radial-gradient(90% 70% at 82% 8%,#574d80 0%,transparent 58%),
+		radial-gradient(70% 60% at 8% 100%,#6a4a4f 0%,transparent 55%),
+		linear-gradient(178deg,#211e3d 0%,#2b3f5b 58%,#3a5a6e 100%)}
+.win{position:absolute;border-radius:calc(var(--u)*.8);overflow:hidden;background:var(--os-window);
+	border:1px solid rgba(0,0,0,.5);box-shadow:0 calc(var(--u)*2) calc(var(--u)*4) rgba(0,0,0,.42)}
+.win-bar{height:calc(var(--u)*2.6);background:var(--os-surface);border-bottom:1px solid var(--os-rule);
+	display:flex;align-items:center;gap:calc(var(--u)*.5);padding:0 calc(var(--u)*.9);
+	font-size:calc(var(--u)*1.15);color:var(--os-muted)}
+.tl{width:calc(var(--u)*.72);height:calc(var(--u)*.72);border-radius:50%;flex:none}
+.win-bar .title{margin-left:calc(var(--u)*.8)}
+.win-body{padding:calc(var(--u)*1.1)}
+.row{display:flex;align-items:center;gap:calc(var(--u)*.8);padding:calc(var(--u)*.42) 0}
+.row .ic{width:calc(var(--u)*1.3);height:calc(var(--u)*1.3);border-radius:calc(var(--u)*.25);background:#4d4a63;flex:none}
+.bar-line{height:calc(var(--u)*.5);border-radius:calc(var(--u)*.25);background:#413e54}
+.dock{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--u)*2);
+	display:flex;align-items:center;gap:calc(var(--u)*.8);height:calc(var(--u)*5.2);
+	padding:calc(var(--u)*.75);border-radius:calc(var(--u)*1.9);
+	background:rgb(8 11 16 / .16);backdrop-filter:blur(calc(var(--u)*2.3)) saturate(130%) brightness(.65);
+	border:1px solid rgb(0 0 0 / .34);border-bottom-color:rgb(255 255 255 / .16);
+	box-shadow:inset 0 calc(var(--u)*.34) calc(var(--u)*.67) calc(var(--u)*-.17) rgb(0 0 0/.5),
+		inset 0 1px 0 rgb(0 0 0/.3),inset 0 -1px 0 rgb(255 255 255/.12)}
+.dock-field{width:calc(var(--u)*11);height:calc(var(--u)*2.85);border-radius:calc(var(--u)*.92);
+	display:flex;align-items:center;padding:0 calc(var(--u)*1);gap:calc(var(--u)*.5);
+	background:rgb(0 0 0/.26);border:1px solid rgb(0 0 0/.3);border-bottom-color:rgb(255 255 255/.12);
+	box-shadow:inset 0 2px 4px rgb(0 0 0/.34);color:rgba(242,245,249,.55);font-size:calc(var(--u)*1.1)}
+.dock-app{width:calc(var(--u)*3.7);height:calc(var(--u)*3.7);border-radius:24%;flex:none;position:relative;
+	display:grid;place-items:center;box-shadow:inset 0 1px 0 rgb(255 255 255/.3),0 1px 2px rgb(0 0 0/.4)}
+.dock-app i{width:44%;height:44%;border-radius:2px;background:rgba(255,255,255,.85);display:block}
+.dock-app[data-running]::after{content:"";position:absolute;bottom:calc(var(--u)*-.62);left:50%;
+	transform:translateX(-50%);width:calc(var(--u)*.42);height:calc(var(--u)*.42);border-radius:50%;
+	background:rgba(242,245,249,.8)}
+
+/* ══ THE CABINET — one slab, one seam ═══════════════════════════════════ */
+.cabinet{
+	flex:0 0 auto;display:flex;position:relative;z-index:3;
+	/* the sunk slab: ONE background for drawer and rail together */
+	background:#26242e;
+	/* the seam, painted once, at the desktop's edge — and the lip, running the
+	   full width of the slab so drawer and rail share one piece of material */
+	box-shadow:
+		inset 1px 0 0 rgb(255 255 255/.2),
+		inset 2px 0 0 rgb(0 0 0/.45),
+		inset calc(var(--u)*1.2) 0 calc(var(--u)*1.8) calc(var(--u)*-1) rgb(0 0 0/.45),
+		inset 0 calc(var(--u)*1.6) calc(var(--u)*2) calc(var(--u)*-1.6) rgb(0 0 0/.5),
+		inset 0 calc(var(--u)*-1.6) calc(var(--u)*2) calc(var(--u)*-1.6) rgb(0 0 0/.5);
+}
+.drawer{
+	flex:0 0 0;position:relative;overflow:hidden;background:none;box-shadow:none;
+	transition:flex-basis 460ms cubic-bezier(.32,.72,0,1);
+}
+[data-open="true"] .drawer{flex-basis:calc(var(--u)*30)}
+.drawer-in{position:absolute;inset:0 0 0 auto;width:calc(var(--u)*30);height:100%;
+	display:flex;flex-direction:column;padding:calc(var(--u)*1.2);gap:calc(var(--u)*.9)}
+[data-open="true"] .drawer-in{animation:slide 460ms cubic-bezier(.32,.72,0,1) 40ms both,fade 280ms ease 40ms both}
+@keyframes slide{from{transform:translateX(calc(var(--u)*1.6))}}
+@keyframes fade{from{opacity:0}}
+.dr-head{display:flex;align-items:center;gap:calc(var(--u)*.9);padding-bottom:calc(var(--u)*.9);
+	border-bottom:1px solid rgba(255,255,255,.09);flex:none}
+.dr-head .face{width:calc(var(--u)*2.8);height:calc(var(--u)*2.8);border-radius:calc(var(--u)*.5);flex:none}
+.dr-head b{font-size:calc(var(--u)*1.32);font-weight:600}
+.dr-head small{display:block;color:var(--os-muted);font-size:calc(var(--u)*1)}
+.dr-log{flex:1;display:flex;flex-direction:column;gap:calc(var(--u)*.75);overflow:hidden;padding-top:calc(var(--u)*.3)}
+.msg{max-width:88%;padding:calc(var(--u)*.68) calc(var(--u)*.95);border-radius:calc(var(--u)*.95);
+	background:rgba(255,255,255,.07);font-size:calc(var(--u)*1.15);line-height:1.4}
+.msg[data-me]{margin-left:auto;background:rgba(255,255,255,.16)}
+.composer{display:flex;align-items:center;height:calc(var(--u)*2.8);padding:0 calc(var(--u)*1);flex:none;
+	border-radius:calc(var(--u)*1.4);background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);
+	color:var(--os-muted);font-size:calc(var(--u)*1.12)}
+
+/* the rail: no material of its own. Just a hairline where it meets the drawer. */
+.rail{
+	flex:0 0 calc(var(--u)*6.4);position:relative;
+	display:flex;flex-direction:column;align-items:center;gap:calc(var(--u)*.85);
+	padding:calc(var(--u)*1.2) 0;background:none;box-shadow:none;
+	border-left:1px solid rgb(255 255 255 / .11);
+	transition:border-left-color 300ms ease 120ms;
+}
+/* Shut, the divider would sit a hair from the seam and read as a doubled edge.
+   So it only exists while there is a drawer to divide from. */
+[data-open="false"] .rail{border-left-color:transparent;transition-delay:0ms}
+
+.cap{position:relative;width:calc(var(--u)*4.4);height:calc(var(--u)*4.4);flex:none;
+	border:1px solid rgba(255,255,255,.13);border-radius:calc(var(--u)*1);
+	background:#34313f;padding:calc(var(--u)*.45);cursor:pointer;
+	box-shadow:0 calc(var(--u)*.3) 0 var(--os-edge);
+	transition:transform 80ms ease,box-shadow 80ms ease,background-color 120ms ease}
+.cap .face{width:100%;height:100%;border-radius:calc(var(--u)*.55)}
+.cap:hover{background:#3e3a4d}
+.cap[aria-pressed="true"]{
+	transform:translateY(calc(var(--u)*.3));background:#100e1b;
+	box-shadow:0 0 0 var(--os-edge),inset 0 calc(var(--u)*.25) calc(var(--u)*.5) rgba(0,0,0,.65);
+	/* the one place the divider is allowed to break: the cap whose drawer is out */
+	border-left-color:transparent;border-top-left-radius:0;border-bottom-left-radius:0;
+	margin-left:calc(var(--u)*-.9);padding-left:calc(var(--u)*.85);width:calc(var(--u)*5.3);
+}
+[data-open="false"] .cap[aria-pressed="true"]{margin-left:0;padding-left:calc(var(--u)*.45);
+	width:calc(var(--u)*4.4);border-radius:calc(var(--u)*1);border-left-color:rgba(255,255,255,.13)}
+.cap:focus-visible{outline:2px solid var(--os-gold);outline-offset:2px}
+.cap .badge{position:absolute;top:calc(var(--u)*-.4);right:calc(var(--u)*-.4);min-width:calc(var(--u)*1.5);
+	height:calc(var(--u)*1.5);border-radius:999px;background:var(--os-gold);color:#221a08;
+	font-size:calc(var(--u)*.95);font-weight:600;display:grid;place-items:center;
+	padding:0 calc(var(--u)*.35);border:1.5px solid #14121e}
+.cap[data-state="work"]::after{content:"";position:absolute;inset:calc(var(--u)*-.35);
+	border-radius:calc(var(--u)*1.3);border:1.5px solid var(--os-green);opacity:.6;
+	animation:breathe 2.6s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.22}50%{opacity:.8}}
+.cap-sep{width:calc(var(--u)*2.6);height:1px;flex:none;background:rgba(255,255,255,.14);margin:calc(var(--u)*.15) 0}
+.cap[data-kind="new"]{display:grid;place-items:center;color:var(--os-muted);font-size:calc(var(--u)*2)}
+
+/* ── the BEFORE state: the rail gets its own seam back ─────────────────── */
+[data-layers="3"] .cabinet{background:none;box-shadow:none}
+[data-layers="3"] .drawer{
+	background:#26242e;
+	box-shadow:
+		inset 1px 0 0 rgb(255 255 255/.2),
+		inset 2px 0 0 rgb(0 0 0/.45),
+		inset calc(var(--u)*1.2) 0 calc(var(--u)*1.8) calc(var(--u)*-1) rgb(0 0 0/.45),
+		inset 0 calc(var(--u)*1.6) calc(var(--u)*2) calc(var(--u)*-1.6) rgb(0 0 0/.5),
+		inset 0 calc(var(--u)*-1.6) calc(var(--u)*2) calc(var(--u)*-1.6) rgb(0 0 0/.5);
+}
+[data-layers="3"] .rail{
+	background:#25232f;border-left-color:transparent;
+	box-shadow:inset 1px 0 0 rgb(255 255 255/.16),inset 2px 0 0 rgb(0 0 0/.45),
+		inset calc(var(--u)*1) 0 calc(var(--u)*1.6) calc(var(--u)*-.9) rgb(0 0 0/.5);
+}
+
+.face{--tint:#888;display:block;flex:none;border-radius:4px;overflow:hidden;
+	background:color-mix(in srgb,var(--tint) 26%,#191727);
+	box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--tint) 34%,transparent)}
+.face svg{display:block;width:100%;height:100%}
+
+/* ── detail list ───────────────────────────────────────────────────────── */
+/* Four details, so step 4 → 2 → 1. auto-fit lands on three here and strands the
+   fourth on a row of its own. */
+.details{list-style:none;margin:28px 0 0;padding:0;display:grid;
+	grid-template-columns:repeat(4,1fr);gap:0 32px}
+@media (max-width:940px){.details{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:560px){.details{grid-template-columns:1fr}}
+.details li{padding:15px 0;border-top:1px solid var(--rule);display:flex;gap:12px;align-items:baseline}
+.details .n{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--gold);flex:none;width:16px}
+.details b{font-weight:600;display:block;font-size:14.5px;margin-bottom:2px}
+.details span{font-size:13.5px;color:var(--ink-2);line-height:1.5}
+footer{padding:26px 0 50px;color:var(--ink-3);font-size:12.5px}
+
+[hidden]{display:none !important}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important}}
+</style>
+
+<header class="masthead">
+	<div class="wrap">
+		<p class="eyebrow">platform/frieren · design 01 · revision</p>
+		<h1>Two layers,<br>not <span class="serif-em">three</span>.</h1>
+		<p class="lede">
+			You are right, and it is my bug. I gave the rail its own edge, its own groove and its own
+			cast — a second complete seam — so it reads as sunk below the drawer, which is sunk below
+			the desktop. Three planes. The fix is to stop treating them as two objects.
+		</p>
+	</div>
+</header>
+
+<main>
+
+<section id="why">
+	<div class="wrap">
+		<div class="section-head">
+			<p class="eyebrow">what you're seeing</p>
+			<h2>Two seams make three planes</h2>
+			<p class="lede">
+				A seam is an expensive mark: an edge, a groove and a cast together say
+				<em>this surface has been cut, and what's behind it is deeper</em>. I spent that mark
+				twice. Here is the screen in cross-section, looking at it edge-on.
+			</p>
+		</div>
+
+		<div class="xsec">
+			<figure data-bad>
+				<svg viewBox="0 0 420 140" role="img" aria-label="Cross-section: the surface steps down three times, from desktop to drawer to rail.">
+					<defs>
+						<pattern id="hatchA" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+							<line x1="0" y1="0" x2="0" y2="6" stroke="var(--rule-2)" stroke-width="1.4"></line>
+						</pattern>
+					</defs>
+					<path d="M0,38 H206 V70 H322 V102 H420 V140 H0 Z" fill="url(#hatchA)"></path>
+					<path d="M0,38 H206 V70 H322 V102 H420" fill="none" stroke="var(--ink)" stroke-width="2"></path>
+					<text class="xs-label" x="14" y="28">desktop</text>
+					<text class="xs-label" x="220" y="60">drawer</text>
+					<text class="xs-label" x="336" y="92">rail</text>
+					<text class="xs-depth" x="206" y="126" text-anchor="middle">seam 1</text>
+					<text class="xs-depth" x="322" y="126" text-anchor="middle">seam 2</text>
+					<line x1="206" y1="38" x2="206" y2="118" stroke="var(--gold-mark)" stroke-width="1" stroke-dasharray="3 3"></line>
+					<line x1="322" y1="70" x2="322" y2="118" stroke="var(--gold-mark)" stroke-width="1" stroke-dasharray="3 3"></line>
+				</svg>
+				<figcaption><b>Before — three planes</b>The rail carries a full seam of its own, so the eye reads a second step down. Nothing in the product is actually deeper than the drawer, so the third plane is a lie the material is telling.</figcaption>
+			</figure>
+
+			<figure data-good>
+				<svg viewBox="0 0 420 140" role="img" aria-label="Cross-section: the surface steps down once, and a hairline scores the lower surface.">
+					<defs>
+						<pattern id="hatchB" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+							<line x1="0" y1="0" x2="0" y2="6" stroke="var(--rule-2)" stroke-width="1.4"></line>
+						</pattern>
+					</defs>
+					<path d="M0,38 H206 V70 H420 V140 H0 Z" fill="url(#hatchB)"></path>
+					<path d="M0,38 H206 V70 H420" fill="none" stroke="var(--ink)" stroke-width="2"></path>
+					<line x1="322" y1="70" x2="322" y2="80" stroke="var(--ink)" stroke-width="1.6"></line>
+					<text class="xs-label" x="14" y="28">desktop</text>
+					<text class="xs-label" x="220" y="60">drawer</text>
+					<text class="xs-label" x="336" y="60">rail</text>
+					<text class="xs-depth" x="206" y="126" text-anchor="middle">the only seam</text>
+					<text class="xs-depth" x="360" y="126" text-anchor="middle">a scored line</text>
+					<line x1="206" y1="38" x2="206" y2="118" stroke="var(--gold-mark)" stroke-width="1" stroke-dasharray="3 3"></line>
+					<line x1="322" y1="80" x2="322" y2="118" stroke="var(--gold-mark)" stroke-width="1" stroke-dasharray="3 3"></line>
+				</svg>
+				<figcaption><b>After — two planes</b>One cut, at the desktop's edge. Past it, drawer and rail are one continuous slab, scored by a hairline that separates two regions without claiming a depth change.</figcaption>
+			</figure>
+		</div>
+
+		<div class="verdict">
+			<p class="tag">the rule</p>
+			<p>
+				<strong>One slot, one seam, one slab.</strong> The desktop is cut; everything behind the
+				cut is the same piece of material. A boundary <em>inside</em> that material is a scored
+				line — one hairline, no groove, no cast, no second background.
+			</p>
+			<p>
+				This also settles a question the three-plane version left open: what is the rail
+				<em>for</em>? Sunk below the drawer, it looked like a separate mechanism. Flush with it,
+				it is obviously what it should be — the front of the cabinet, with the drawer pulled out
+				beside it.
+			</p>
+		</div>
+	</div>
+</section>
+
+<section id="mock">
+	<div class="wrap">
+		<div class="section-head">
+			<p class="eyebrow">the revision</p>
+			<h2>The same shell, one mark cheaper</h2>
+			<p class="lede">
+				Toggle the material to see the plane appear and disappear. Nothing else changes — same
+				layout, same travel, same caps.
+			</p>
+		</div>
+
+		<figure class="stage" style="margin-top:26px">
+			<div class="controls">
+				<button class="toggle" type="button" data-layer-toggle aria-pressed="false">Show the old three-layer material</button>
+				<button class="toggle" type="button" data-shut-toggle>Push the drawer in</button>
+			</div>
+
+			<div class="screen" data-scope="a" data-open="true" data-picked="fern" data-layers="2">
+				<div class="frame">
+					<div class="menubar"><span>Notes</span><span class="mb-r"><span>Synced</span><span class="dot"></span><span>Wed 21:14</span></span></div>
+					<div class="deck">
+						<div class="win" style="left:8%;top:9%;width:60%;height:56%">
+							<div class="win-bar"><i class="tl" style="background:#ff5f57"></i><i class="tl" style="background:#febc2e"></i><i class="tl" style="background:#28c840"></i><span class="title">Notes — inbox</span></div>
+							<div class="win-body">
+								<div class="row"><i class="ic"></i><span class="bar-line" style="width:58%"></span></div>
+								<div class="row"><i class="ic"></i><span class="bar-line" style="width:44%"></span></div>
+								<div class="row"><i class="ic"></i><span class="bar-line" style="width:66%"></span></div>
+								<div class="row"><i class="ic"></i><span class="bar-line" style="width:37%"></span></div>
+							</div>
+						</div>
+						<div class="dock">
+							<span class="dock-field"><span class="dot" style="background:rgba(242,245,249,.45)"></span>Search</span>
+							<span class="dock-app" style="background:#6f8fc9" data-running><i></i></span>
+							<span class="dock-app" style="background:#c98b5b"><i style="border-radius:50%"></i></span>
+							<span class="dock-app" style="background:#6fae86" data-running><i></i></span>
+							<span class="dock-app" style="background:#a87fc9"><i style="border-radius:50%"></i></span>
+						</div>
+					</div>
+				</div>
+
+				<div class="cabinet">
+					<div class="drawer">
+						<div class="drawer-in">
+							<div class="dr-head" data-panel="fern"><span class="face" data-agent="fern"></span><span><b>Fern</b><small>Online · filing</small></span></div>
+							<div class="dr-head" data-panel="frieren" hidden><span class="face" data-agent="frieren"></span><span><b>Frieren</b><small>Online · main</small></span></div>
+							<div class="dr-head" data-panel="stark" hidden><span class="face" data-agent="stark"></span><span><b>Stark</b><small>Working · 22 min in</small></span></div>
+							<div class="dr-head" data-panel="heiter" hidden><span class="face" data-agent="heiter"></span><span><b>Heiter</b><small>Needs you · 2 waiting</small></span></div>
+							<div class="dr-head" data-panel="eisen" hidden><span class="face" data-agent="eisen"></span><span><b>Eisen</b><small>Online · watching</small></span></div>
+							<div class="dr-log">
+								<div data-panel="fern" style="display:contents">
+									<div class="msg" data-me>tidy the notes I dumped in /inbox</div>
+									<div class="msg">14 filed into three folders. Two looked like tasks, so I left them on top.</div>
+									<div class="msg">One wants a long build. Hand it to Stark?</div>
+								</div>
+								<div data-panel="frieren" hidden style="display:contents">
+									<div class="msg" data-me>we're going in March, not April</div>
+									<div class="msg">Noted. It's in memory now — everyone has it.</div>
+								</div>
+								<div data-panel="stark" hidden style="display:contents">
+									<div class="msg">3 of 11 volumes. No conflicts yet.</div>
+									<div class="msg">About forty minutes. I'll wake you if one needs a call.</div>
+								</div>
+								<div data-panel="heiter" hidden style="display:contents">
+									<div class="msg">Three replies drafted in your voice.</div>
+									<div class="msg">The one to the landlord says no — read it first?</div>
+								</div>
+								<div data-panel="eisen" hidden style="display:contents">
+									<div class="msg">Snapshot done at 18:00. Nothing to report.</div>
+									<div class="msg">Volume at 41%. I'll speak at 80, not before.</div>
+								</div>
+							</div>
+							<div class="composer" data-panel="fern">Message Fern</div>
+							<div class="composer" data-panel="frieren" hidden>Message Frieren</div>
+							<div class="composer" data-panel="stark" hidden>Message Stark</div>
+							<div class="composer" data-panel="heiter" hidden>Message Heiter</div>
+							<div class="composer" data-panel="eisen" hidden>Message Eisen</div>
+						</div>
+					</div>
+
+					<nav class="rail" aria-label="Household">
+						<button class="cap" data-pick="frieren" aria-pressed="false" aria-label="Frieren"><span class="face" data-agent="frieren"></span></button>
+						<button class="cap" data-pick="fern" aria-pressed="true" aria-label="Fern"><span class="face" data-agent="fern"></span></button>
+						<button class="cap" data-pick="stark" aria-pressed="false" data-state="work" aria-label="Stark, working"><span class="face" data-agent="stark"></span></button>
+						<button class="cap" data-pick="heiter" aria-pressed="false" aria-label="Heiter, 2 waiting"><span class="face" data-agent="heiter"></span><span class="badge">2</span></button>
+						<button class="cap" data-pick="eisen" aria-pressed="false" aria-label="Eisen"><span class="face" data-agent="eisen"></span></button>
+						<span class="cap-sep"></span>
+						<button class="cap" data-kind="new" aria-label="Summon a new agent">+</button>
+					</nav>
+				</div>
+			</div>
+			<figcaption><em>Live</em> — press a cap to swap drawers; press the pressed one to push it in.</figcaption>
+		</figure>
+	</div>
+</section>
+
+<section id="details">
+	<div class="wrap">
+		<div class="section-head">
+			<p class="eyebrow">what falls out of the rule</p>
+			<h2>Four details the one-slab model decides for you</h2>
+		</div>
+		<ul class="details">
+			<li><span class="n">01</span><span><b>The divider disappears when the drawer is shut</b><span>With nothing pulled out, the hairline would sit a pixel from the seam and read as a doubled edge. So it fades out on close and back in on open — it exists to divide two regions, and when there is only one region there is nothing to divide.</span></span></li>
+			<li><span class="n">02</span><span><b>The lip runs across both</b><span>The top-and-bottom shading that makes the drawer sit <em>in a slot</em> now belongs to the cabinet, not the drawer. Shading only half the slab was the other thing splitting it in two.</span></span></li>
+			<li><span class="n">03</span><span><b>The pressed cap is the only thing allowed to break the line</b><span>A cap whose drawer is out squares its left corners and slides over the hairline. That is the connective mark — this cap opens into this drawer — and it earns its place precisely because nothing else interrupts the line.</span></span></li>
+			<li><span class="n">04</span><span><b>One background, not two</b><span><code>#25232f</code> and <code>#26242e</code> were close enough to look like a mistake and far enough apart to read as two objects. One slab, one value, derived from <code>--surface</code> exactly as the panel already does.</span></span></li>
+		</ul>
+	</div>
+</section>
+
+<section id="code">
+	<div class="wrap">
+		<div class="section-head">
+			<p class="eyebrow">the change</p>
+			<h2>The shell goes back to two children</h2>
+			<p class="lede">
+				Which is the part I like most: the fix makes the tree shallower, not deeper. The cabinet
+				is the flex sibling that used to be the chat panel; the panel and the rail move inside
+				it and stop owning any material.
+			</p>
+		</div>
+
+		<pre><span class="c">/* .frn-shell — two children, two planes */</span>
+.frn-shell            <span class="c">display:flex</span>
+├─ .frn-desktop-frame <span class="c">flex:1      — menubar + desktop, squishes</span>
+└─ .frn-cabinet       <span class="c">flex:none   — <span class="k">paints the seam and the lip, once</span></span>
+   ├─ .frn-chat-panel <span class="c">0 → width   — travels; no material of its own</span>
+   └─ .frn-agent-rail <span class="c">64px        — a hairline, nothing else</span>
+
+<span class="c">/* the cabinet takes what the panel used to paint */</span>
+.frn-cabinet {
+  display: flex;
+  height: 100vh;
+  z-index: 9001;
+  background: light-dark(
+    color-mix(in srgb, var(--surface) 90%, black),
+    color-mix(in srgb, var(--surface) 84%, black));
+  box-shadow:
+    inset 1px 0 0 var(--seam-edge),      <span class="c">/* the cut face   */</span>
+    inset 2px 0 0 var(--seam-groove),    <span class="c">/* behind it      */</span>
+    inset 12px 0 18px -10px var(--seam-cast),
+    inset 0 16px 20px -16px var(--drawer-lip),
+    inset 0 -16px 20px -16px var(--drawer-lip);
+}
+
+.frn-chat-panel {
+  flex: 0 0 auto;
+  transition: width 460ms var(--drawer-ease);
+  <span class="d">background: …;</span>  <span class="c">← moved to .frn-cabinet</span>
+  <span class="d">box-shadow: …;</span>  <span class="c">← moved to .frn-cabinet</span>
+}
+
+.frn-agent-rail {
+  flex: 0 0 var(--rail-w);
+  <span class="n">border-left: 1px solid var(--cabinet-score);</span>
+  transition: border-left-color 300ms ease 120ms;
+}
+<span class="c">/* nothing to divide from when the drawer is in */</span>
+.frn-cabinet[data-open="false"] .frn-agent-rail {
+  border-left-color: transparent;
+  transition-delay: 0ms;
+}</pre>
+
+		<div class="cols">
+			<div>
+				<h3>One new token</h3>
+				<p><code>--cabinet-score: light-dark(rgb(0 0 0 / .11), rgb(255 255 255 / .11))</code> — a scored line, deliberately <em>not</em> <code>--rule</code>. It sits on the sunk slab, not on window chrome, and it must stay quieter than the seam it lives behind.</p>
+			</div>
+			<div>
+				<h3>What the resizer does</h3>
+				<p>Nothing changes. The grab handle stays at the drawer's left edge, on the seam, where <code>.frn-chat-resizer</code> already puts it. The hairline between drawer and rail is a mark, not a splitter — the rail is a fixed width and there is nothing there to drag.</p>
+			</div>
+		</div>
+	</div>
+</section>
+
+</main>
+
+<footer>
+	<div class="wrap">
+		Mockup is stylized — UI drawn oversized to read at this scale. The seam recipe, the token names
+		and the 460ms travel are from <code>src/app.css</code>; the tree is
+		<code>src/shell/DesktopShell.tsx</code>.
+	</div>
+</footer>
+
+<script>
+const AGENTS = {
+	frieren:{tint:"#a08ce0",hair:"#ded7f2",skin:"#f3dcc8",cloth:"#efe7d8",mouth:"#c07f72",grid:[
+		"..hhhhhh..",".hhhhhhhh.","hhhhhhhhhh","hhsssssshh","hhsesseshh","hhsssssshh","hhssmmsshh","hh.ssss.hh","hhcccccchh",".cccccccc."]},
+	fern:{tint:"#5fae86",hair:"#4b3d63",skin:"#f2d8c4",cloth:"#3f6b52",mouth:"#b4705f",grid:[
+		"...hhhh...","..hhhhhh..",".hhhhhhhh.","hhsssssshh","hhsesseshh","hhsssssshh",".hssmmssh.","..ssssss..","..cccccc..",".cccccccc."]},
+	stark:{tint:"#5b86c9",hair:"#bc5745",skin:"#eac6a8",cloth:"#2f4f7d",mouth:"#a9614f",grid:[
+		"..h.hh.h..",".hhhhhhhh.","hhhhhhhhhh",".hssssssh.",".hsessesh.",".hssssssh.","..ssmmss..","..ssssss..",".cccccccc.","cccccccccc"]},
+	heiter:{tint:"#d99a52",hair:"#e9dcae",skin:"#f3dcc8",cloth:"#8c6a34",mouth:"#b4705f",grid:[
+		"...hhhh...","..hhhhhh..",".hhhhhhhh.",".hssssssh.",".hsllsllh.",".hssssssh.","..ssmmss..","..ssssss..",".cccccccc.","cccccccccc"]},
+	eisen:{tint:"#b5654a",hair:"#9298a2",skin:"#dcb191",cloth:"#5c4636",mouth:"#8f5344",grid:[
+		"...hhhh...","..hhhhhh..",".hhhhhhhh.",".hssssssh.",".hsessesh.",".hshhhhsh.",".hhhmmhhh.","..hhhhhh..","..chhhhc..",".cccccccc."]}
+};
+
+function faceSVG(id){
+	const a = AGENTS[id];
+	const c = {h:a.hair, s:a.skin, e:"#2b2436", l:"#2b2436", m:a.mouth, c:a.cloth};
+	let r = "";
+	a.grid.forEach((row, y) => {
+		[...row].forEach((ch, x) => {
+			if (ch === ".") return;
+			r += '<rect x="' + x + '" y="' + y + '" width="1" height="1" fill="' + c[ch] + '"/>';
+		});
+	});
+	return '<svg viewBox="0 0 10 10" shape-rendering="crispEdges" aria-hidden="true">' + r + '</svg>';
+}
+
+document.querySelectorAll(".face[data-agent]").forEach(el => {
+	const a = AGENTS[el.dataset.agent];
+	if (!a) return;
+	el.style.setProperty("--tint", a.tint);
+	el.innerHTML = faceSVG(el.dataset.agent);
+});
+
+const screen = document.querySelector('[data-scope="a"]');
+const shutBtn = document.querySelector("[data-shut-toggle]");
+const setOpen = (open) => {
+	screen.dataset.open = String(open);
+	screen.querySelectorAll("[data-pick]").forEach(b => {
+		b.setAttribute("aria-pressed", String(open && b.dataset.pick === screen.dataset.picked));
+	});
+	shutBtn.textContent = open ? "Push the drawer in" : "Pull the drawer out";
+};
+
+screen.querySelectorAll("[data-pick]").forEach(btn => {
+	btn.addEventListener("click", () => {
+		const val = btn.dataset.pick;
+		const open = screen.dataset.open !== "false";
+		const next = !(open && screen.dataset.picked === val);
+		screen.dataset.picked = val;
+		screen.querySelectorAll("[data-panel]").forEach(p => { p.hidden = p.dataset.panel !== val; });
+		setOpen(next);
+	});
+});
+
+shutBtn.addEventListener("click", () => setOpen(screen.dataset.open === "false"));
+
+document.querySelector("[data-layer-toggle]").addEventListener("click", (e) => {
+	const three = screen.dataset.layers === "3";
+	screen.dataset.layers = three ? "2" : "3";
+	e.currentTarget.setAttribute("aria-pressed", String(!three));
+	e.currentTarget.textContent = three ? "Show the old three-layer material" : "Back to two layers";
+});
+</script>
+</body>
+</html>
