@@ -1,4 +1,0 @@
-{
-	"extends": "@justfiles/tsconfig/dom.json",
-	"include": ["src"]
-}

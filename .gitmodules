@@ -26,6 +26,10 @@
 	path = apps/paint
 	url = https://github.com/justfiles/app-paint.git
 	ignore = untracked
+[submodule "apps/read"]
+	path = apps/read
+	url = https://github.com/justfiles/app-read.git
+	ignore = untracked
 [submodule "apps/settings"]
 	path = apps/settings
 	url = https://github.com/justfiles/app-settings.git

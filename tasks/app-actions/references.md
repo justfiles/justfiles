@@ -85,7 +85,7 @@ there is a real need.
   already owns a controller over the user's Durable Object volume.
 - [Frieren auth routing](../../platform/frieren/worker/index.ts) already maps a
   Clerk user to the correct Durable Object.
-- [Read's `save` procedure](../../apps/read/src/app.ts) already accepts a URL or
+- [Read's `save` procedure](https://github.com/justfiles/app-read/blob/main/src/app.ts) already accepts a URL or
   Markdown and owns duplicate handling.
 - [The internal generic `app` command](../../packages/agent/justbash/app.ts)
   already demonstrates the agent interaction this external surface should

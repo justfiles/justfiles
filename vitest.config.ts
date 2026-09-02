@@ -4,7 +4,6 @@ export default defineConfig({
 	test: {
 		include: [
 			'apps/crossword/**/*.test.ts',
-			'apps/read/**/*.test.ts',
 			'apps/doom/**/*.test.ts',
 			'apps/pixel/**/*.test.ts',
 			'platform/shared/**/*.test.ts',
