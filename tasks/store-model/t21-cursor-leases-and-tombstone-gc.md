@@ -73,7 +73,8 @@ Add one small protocol above `Store`, like the existing reset protocol:
 1. A receiver signs its feed cursors and gives them an expiry.
 2. Sync validates the saved receiver cursor before transferring blobs or pushing rows.
 3. Every push carries a short-lived lease derived from that validated cursor.
-4. A receiver validates the lease on every blob write and again on row commit. A
+4. A receiver validates the lease on every blob write and again on row commit. Final
+   validation and row commit are mutually excluded with a destructive lineage reset. A
    refused commit changes no rows; already accepted content-addressed blobs may remain
    unreachable until blob GC.
 5. A stale peer bootstraps into a fresh local store; it never merges a snapshot into its
@@ -100,6 +101,10 @@ one signing secret, one lineage, one feed floor, and one pending fence checkpoin
   existing daily maintenance cadence is sufficient; deleting later is safe.
 - Adding a lock method to `Store`. Cursor ownership and cross-tab/process exclusion are
   host concerns, so the host supplies them privately when constructing a GC-capable backend.
+- Making legacy `takeMine()` production-compatible with leased bootstrap. It remains a
+  debugging/troubleshooting command and will not ship as a final product workflow.
+  Leased hosts reject it as unsupported before any reset instead of adding a special
+  adopt-mine protocol.
 - Using client `mtimeNs` to decide retention. Only receiver time is trusted.
 - Making T20 depend on this task. T20 may safely retain canonical tombstones before this
   lands; T21 makes their storage bounded.
@@ -118,7 +123,8 @@ one signing secret, one lineage, one feed floor, and one pending fence checkpoin
   the peer accepts a page and proves which local feed positions no longer need to be
   retained as unacknowledged work.
 - **Sync-state lock** — one host-private exclusive lock per immutable backing-store id.
-  It serializes durable cursor changes with GC decisions made from those cursors.
+  It serializes durable cursor changes with GC decisions made from those cursors, and
+  leased row commits with destructive lineage resets.
 
 ## Leased cursor
 
@@ -177,6 +183,20 @@ it accepts bytes; once the lease expires or falls behind the floor, later puts a
 refused. `commit` verifies again, so expiry or floor advancement before commit writes no
 rows.
 
+The receiver holds the backing store's sync-state lock continuously across that final
+lease validation and the row commit transaction. Any destructive reset holds the same
+lock across emptying the store and rotating its lineage. The two possible orders are
+therefore safe:
+
+```text
+commit first -> valid rows land -> reset removes them and rotates lineage
+reset first  -> lineage rotates -> old lease fails final validation
+```
+
+`open` and blob puts need not hold this lock. If reset follows an accepted blob put, the
+final row commit is refused and the unreachable blob follows ordinary blob GC. The lock
+belongs to the receiver wrapper/reset host and does not extend `Store`.
+
 Blob and row storage are deliberately not one transaction. Bytes accepted while the
 lease was valid are not rolled back if a later `commit` is refused. They are unreachable
 content-addressed blobs: no shared row points to them, and the ordinary blob
@@ -228,6 +248,11 @@ The host performs:
 
 A crash before the switch leaves the old profile active. A crash after the switch leaves
 the fresh profile active. The host records the pending switch outside both databases.
+
+The legacy debugging-only `takeMine()` command is not this bootstrap path. Once leased
+cursors are enabled, its host entry point returns unsupported before resetting anything.
+It does not justify a production adopt-mine exception which can republish under a
+replaced lineage.
 
 ## Tombstone retention and sweep
 
@@ -358,6 +383,9 @@ all active replicas acknowledge a tombstone. That storage trade is deliberate.
 - A lease invalid at `open` changes no rows, blobs, cursor, or floor.
 - A lease becoming invalid during transfer stops later blob puts and changes no rows at
   commit. Blobs accepted earlier while valid may remain unreachable until blob GC.
+- A destructive reset and leased row commit are linearized by their shared sync-state
+  lock. Reset-first refuses the old lease; commit-first writes before reset empties the
+  store.
 - Bootstrap preservation failure keeps the old local store active and surfaces sync
   error.
 - Fence failure commits neither floor nor checkpoint. Delete failure retains the
@@ -383,42 +411,46 @@ Implement one vertical red-green slice at a time:
 5. **L05 — mid-transfer expiry.** Accept one blob put under a valid lease, advance the
    clock past expiry, and prove the next put and row commit are refused. The first blob
    is unreachable and the blob reachability sweep can reclaim it.
-6. **G01 — fence full range.** More than `deleteBatch` old tombstones produce one
+6. **L06 — reset/commit exclusion.** Pause a leased commit after its final validation
+   and race a destructive reset. Prove both use the same backing-store lock: commit-first
+   finishes before reset empties it; reset-first rotates lineage before validation and
+   the old lease writes no row.
+7. **G01 — fence full range.** More than `deleteBatch` old tombstones produce one
    checkpoint beyond the highest eligible position while every tombstone remains
    physically present and live and recent rows stay unchanged.
-7. **G02 — atomic fence.** A failure leaves both floor and checkpoint unchanged; retry
+8. **G02 — atomic fence.** A failure leaves both floor and checkpoint unchanged; retry
    creates both once.
-8. **G03 — grace barrier.** Mint a write lease just before fencing. During grace, its old
+9. **G03 — grace barrier.** Mint a write lease just before fencing. During grace, its old
    live row still meets the tombstone and cannot land; the lease and maximum request
    lifetime expire before deletion eligibility.
-9. **G04 — delayed inclusive deletion.** After one grace period, repeated bounded calls
+10. **G04 — delayed inclusive deletion.** After one grace period, repeated bounded calls
    remove all tombstones at or below the checkpoint, including the boundary row, then
    clear it; no extra grace is paid per batch.
-10. **G05 — late first sweep.** Advance the clock beyond the nominal 40-day minimum
+11. **G05 — late first sweep.** Advance the clock beyond the nominal 40-day minimum
    before running GC for the first time. It fences but does not delete until ten actual
    grace days pass.
-11. **G06 — daily grace check.** Before eligibility, `gc()` returns `done: true` and the
+12. **G06 — daily grace check.** Before eligibility, `gc()` returns `done: true` and the
    daily routine does not start minute continuations. The first daily run after grace
    starts bounded deletion and returns `done: false` until the checkpoint drains.
-12. **G07 — retain unpushed work.** A locally authored old tombstone after the durable
+13. **G07 — retain unpushed work.** A locally authored old tombstone after the durable
    push cursor is not fenced. After the peer accepts it and the cursor saves beyond it,
    the next daily run may fence it.
-13. **G08 — outbound rewind.** Rewind the push cursor during grace to model peer reset.
+14. **G08 — outbound rewind.** Rewind the push cursor during grace to model peer reset.
    Deletion waits with `done: true` until the tombstone is pushed again and the durable
    cursor passes `through`.
-14. **G09 — reset/delete exclusion.** Pause deletion after it reads an acknowledged
+15. **G09 — reset/delete exclusion.** Pause deletion after it reads an acknowledged
    cursor, then race a reset which clears that cursor. Prove both operations use the same
    backing-store lock: when reset wins, deletion observes the empty cursor and retains
    the row; when deletion wins, reset cannot save until the delete transaction commits.
-15. **G10 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
+16. **G10 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
    row, and prove an already-issued cursor sees that row rather than skipping a reused
    seq.
-16. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
+17. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
    cursors cannot authorise a push.
-17. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
+18. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
    work, builds a fresh IndexedDB replica, switches only after complete bootstrap, and
    does not retain an authority-absent stale row.
-18. **P01 — symmetric peers.** Two in-process peers independently expire each other's
+19. **P01 — symmetric peers.** Two in-process peers independently expire each other's
     cursors and recover by bootstrap without either storing a replica list.
 
 After each GREEN, refactor only while the focused test and existing conformance tests are
@@ -431,7 +463,7 @@ green. Do not write all tests before implementation.
 - `packages/core/src/migrations` — receiver-private commit time, signing, and floor state;
 - `platform/frieren/src/fs.ts` — injects the durable push-cursor provider and performs
   fresh IndexedDB bootstrap with a crash-safe profile switch and shared sync-state lock;
-- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G10, B01–B02,
+- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L06, G01–G10, B01–B02,
   and P01.
 
 Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to `Node`.
@@ -446,6 +478,8 @@ Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to 
   change.
 - Every peer blob put validates its lease. Mid-transfer expiry may leave only blobs
   accepted while valid; no row references them and blob GC can reclaim them.
+- Final lease validation and its row commit share the backing-store sync-state lock with
+  destructive empty-and-rotate reset. Old-lineage rows cannot land after reset.
 - Bootstrap uses a fresh local store and preserves unacknowledged work before switching.
 - All retention and batch values come from one validated receiver policy object.
 - One fence covers the full currently eligible tombstone range; only physical deletion
