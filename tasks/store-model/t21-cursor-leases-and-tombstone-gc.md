@@ -79,7 +79,7 @@ Add one small protocol above `Store`, like the existing reset protocol:
 5. A stale peer bootstraps into a fresh local store; it never merges a snapshot into its
    stale table.
 6. A bounded two-stage sweep first fences old tombstones, then removes them only after
-   the configured grace period.
+   the configured grace period and durable outbound acknowledgement.
 
 No receiver stores a row per replica. State is constant-size apart from retained rows:
 one signing secret, one lineage, one feed floor, and one pending fence checkpoint.
@@ -112,6 +112,9 @@ one signing secret, one lineage, one feed floor, and one pending fence checkpoin
   below it require bootstrap even if their token has not expired.
 - **Bootstrap cursor** — read-only cursor used to scan from empty after history was
   swept. It can read below the feed floor but cannot authorise a push.
+- **Outbound checkpoint** — the sender-local durable push cursor. It advances only after
+  the peer accepts a page and proves which local feed positions no longer need to be
+  retained as unacknowledged work.
 
 ## Leased cursor
 
@@ -227,6 +230,20 @@ the fresh profile active. The host records the pending switch outside both datab
 Receiver storage records commit time as backend-private metadata. User `mtimeNs` is never
 used. The receiver also keeps a global `feedFloor`.
 
+A store with an outbound role receives a read-only provider for its existing durable
+push cursor when the GC-capable backend is constructed. This is private constructor
+wiring, not a new `Store.gc()` parameter. A receiver-only authority has no provider. If
+several configured outbound relationships must receive local work, the provider returns
+all their durable cursors and the backend decodes its own opaque cursors to find the
+minimum position. This state belongs to the sender; the receiver still keeps no replica
+registry.
+
+The push cursor advances only after `remote.commit(rows)` succeeds. If any required
+cursor is empty, no local feed position is acknowledged by every relationship, so no
+tombstone may be fenced. Non-empty cursors allow fencing only positions strictly before
+their minimum. Pulled rows do not weaken safety: the push scan advances over them, while
+every locally authored row in the same range is sent before that cursor is saved.
+
 The feed head is a persisted high-water counter, not `MAX(seq)` over surviving rows.
 Sweeping the newest stored tombstone must never let a later write reuse its sequence and
 fall behind an already-issued cursor.
@@ -243,18 +260,22 @@ type PendingFence = {
 The bounded sweep has two stages.
 
 **Fence:** when no checkpoint is pending, use one indexed boundary query to find the
-highest feed position of any tombstone older than `tombstoneFenceAgeMs`. In one
-transaction, advance `feedFloor` immediately past that position and record
-`{ through, fencedAt: now }`. This fences the entire currently eligible range without
-loading or deleting every row. Keep every tombstone row.
+highest feed position of any tombstone older than `tombstoneFenceAgeMs` and, for a store
+with an outbound role, strictly before its durable push cursor. In one transaction,
+advance `feedFloor` immediately past that position and record `{ through, fencedAt: now }`.
+This fences the entire currently eligible and acknowledged range without loading or
+deleting every row. Keep every tombstone row.
 
 **Delete:** only after `fencedAt + tombstoneGraceMs`, delete at most `deleteBatch`
-tombstones below `through`. Keep the checkpoint until no matching tombstones remain,
-then clear it. A late first sweep still performs only the fence stage; it never treats
-age alone as proof that the grace period happened.
+tombstones at or below `through`. For an outbound store, re-read the durable push cursor
+first; if it is empty or no longer past `through`, retain the checkpoint and rows until a
+later daily check. This handles a peer reset which rewinds the push cursor during grace.
+Keep the checkpoint until no matching tombstones remain, then clear it. A late first
+sweep still performs only the fence stage; it never treats age alone as proof that the
+grace period happened.
 
 The grace period applies once to the fenced range, not once per deletion batch. After
-grace, repeated `gc()` calls drain all tombstones below `through` at normal bounded-batch
+grace, repeated `gc()` calls drain all tombstones at or below `through` at normal bounded-batch
 speed. Newer tombstones wait for the next fence generation after the checkpoint clears.
 Reclamation capacity is therefore governed by deletion-call throughput, not
 `deleteBatch / tombstoneGrace`.
@@ -272,20 +293,22 @@ physical deletion is safe
 ```
 
 The fence transaction atomically stores the floor and checkpoint. The later delete is
-safe only for positions below that persisted checkpoint. A crash can delay cleanup but
-cannot skip the grace barrier.
+safe only for positions at or below that persisted checkpoint and still acknowledged by
+the outbound cursor when applicable. A crash or cursor rewind can delay cleanup but
+cannot skip either barrier.
 
 Live rows remain, including live rows below the floor. An empty bootstrap can still scan
 them. Incremental cursors below the floor are refused because they may have missed a
 deleted tombstone.
 
 `gc()` keeps its existing `{ reclaimed, done }` result. While a checkpoint is waiting
-for grace, it returns `{ reclaimed: 0, done: true }`: there is no immediate work, so the
-ordinary daily maintenance run checks the date again. Once deletion is eligible, each
-bounded batch returns `done: false` while more rows below the checkpoint remain; the
-existing one-minute continuation drains them. Deletion may begin up to one daily cycle
-after eligibility, which is safe because retention only becomes longer. No timer or new
-`Store` interface is introduced.
+for grace or for a rewound outbound cursor to pass `through` again, it returns
+`{ reclaimed: 0, done: true }`: there is no immediate work, so the ordinary daily
+maintenance run checks again. Once deletion is eligible, each bounded batch returns
+`done: false` while more rows at or below the checkpoint remain; the existing one-minute
+continuation drains them. Deletion may begin up to one daily cycle after eligibility,
+which is safe because retention only becomes longer. No timer or new `Store` interface
+is introduced.
 
 Blob sweeping remains a separate reachability pass: removing a tombstone does not prove
 its old content hash is unreferenced.
@@ -350,23 +373,30 @@ Implement one vertical red-green slice at a time:
 8. **G03 — grace barrier.** Mint a write lease just before fencing. During grace, its old
    live row still meets the tombstone and cannot land; the lease and maximum request
    lifetime expire before deletion eligibility.
-9. **G04 — delayed deletion.** After one grace period, repeated bounded calls remove all
-   tombstones below the checkpoint, then clear it; no extra grace is paid per batch.
+9. **G04 — delayed inclusive deletion.** After one grace period, repeated bounded calls
+   remove all tombstones at or below the checkpoint, including the boundary row, then
+   clear it; no extra grace is paid per batch.
 10. **G05 — late first sweep.** Advance the clock beyond the nominal 40-day minimum
    before running GC for the first time. It fences but does not delete until ten actual
    grace days pass.
 11. **G06 — daily grace check.** Before eligibility, `gc()` returns `done: true` and the
    daily routine does not start minute continuations. The first daily run after grace
    starts bounded deletion and returns `done: false` until the checkpoint drains.
-12. **G07 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
+12. **G07 — retain unpushed work.** A locally authored old tombstone after the durable
+   push cursor is not fenced. After the peer accepts it and the cursor saves beyond it,
+   the next daily run may fence it.
+13. **G08 — outbound rewind.** Rewind the push cursor during grace to model peer reset.
+   Deletion waits with `done: true` until the tombstone is pushed again and the durable
+   cursor passes `through`.
+14. **G09 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
    row, and prove an already-issued cursor sees that row rather than skipping a reused
    seq.
-13. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
+15. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
    cursors cannot authorise a push.
-14. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
+16. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
    work, builds a fresh IndexedDB replica, switches only after complete bootstrap, and
    does not retain an authority-absent stale row.
-15. **P01 — symmetric peers.** Two in-process peers independently expire each other's
+17. **P01 — symmetric peers.** Two in-process peers independently expire each other's
     cursors and recover by bootstrap without either storing a replica list.
 
 After each GREEN, refactor only while the focused test and existing conformance tests are
@@ -377,8 +407,9 @@ green. Do not write all tests before implementation.
 - `packages/fs` — peer lease capability, bootstrap-required error, engine preflight;
 - `packages/core` — signed HTTP cursor/lease handling and SQLite floor metadata;
 - `packages/core/src/migrations` — receiver-private commit time, signing, and floor state;
-- `platform/frieren/src/fs.ts` — fresh IndexedDB bootstrap and crash-safe profile switch;
-- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G07, B01–B02,
+- `platform/frieren/src/fs.ts` — injects the durable push-cursor provider and performs
+  fresh IndexedDB bootstrap with a crash-safe profile switch;
+- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G09, B01–B02,
   and P01.
 
 Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to `Node`.
@@ -397,13 +428,16 @@ Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to 
 - All retention and batch values come from one validated receiver policy object.
 - One fence covers the full currently eligible tombstone range; only physical deletion
   is batch-limited, and all batches share one grace period.
+- A sender never fences a tombstone at or after its durable outbound push cursor. An
+  empty or rewound cursor retains the row until acknowledgement is durable again.
 - Grace waiting returns `done: true` and relies on daily maintenance; eligible deletion
   alone uses `done: false` for immediate bounded continuations. No timer or GC deadline
   field is added.
 - With defaults, a tombstone is fenced at 30 days and remains for at least ten actual
   grace days before bounded physical deletion; recent tombstones and live rows remain.
 - Feed-floor advancement and its pending checkpoint are atomic. Deletion requires the
-  persisted checkpoint to have completed its grace period.
+  persisted checkpoint to have completed its grace period and includes its `through`
+  boundary row.
 - Write leases never outlive their parent cursor, and configured grace exceeds the
   maximum write lease plus receiver write duration.
 - A commit admitted immediately before fencing cannot overlap physical deletion; the
