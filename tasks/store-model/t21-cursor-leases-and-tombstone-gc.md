@@ -96,6 +96,8 @@ one signing secret, one lineage, one feed floor, and one pending fence checkpoin
   safe and handled by the existing reachability GC boundary.
 - Serializing every row commit with physical tombstone deletion. The retained grace
   barrier makes a pre-fence write lease expire before deletion becomes eligible.
+- Creating a timer or extending `Store.gc()` with a per-fence wake-up timestamp. The
+  existing daily maintenance cadence is sufficient; deleting later is safe.
 - Using client `mtimeNs` to decide retention. Only receiver time is trusted.
 - Making T20 depend on this task. T20 may safely retain canonical tombstones before this
   lands; T21 makes their storage bounded.
@@ -277,10 +279,16 @@ Live rows remain, including live rows below the floor. An empty bootstrap can st
 them. Incremental cursors below the floor are refused because they may have missed a
 deleted tombstone.
 
-`gc()` stays bounded and reports whether immediate work remains. While a checkpoint is
-waiting for grace, the host schedules the next run for its eligibility time. Blob
-sweeping remains a separate reachability pass: removing a tombstone does not prove its
-old content hash is unreferenced.
+`gc()` keeps its existing `{ reclaimed, done }` result. While a checkpoint is waiting
+for grace, it returns `{ reclaimed: 0, done: true }`: there is no immediate work, so the
+ordinary daily maintenance run checks the date again. Once deletion is eligible, each
+bounded batch returns `done: false` while more rows below the checkpoint remain; the
+existing one-minute continuation drains them. Deletion may begin up to one daily cycle
+after eligibility, which is safe because retention only becomes longer. No timer or new
+`Store` interface is introduced.
+
+Blob sweeping remains a separate reachability pass: removing a tombstone does not prove
+its old content hash is unreferenced.
 
 Replica row equality becomes equality modulo safely pruned tombstones. A peer may still
 hold a tombstone another peer swept; normal incremental cursors have already passed it.
@@ -347,15 +355,18 @@ Implement one vertical red-green slice at a time:
 10. **G05 — late first sweep.** Advance the clock beyond the nominal 40-day minimum
    before running GC for the first time. It fences but does not delete until ten actual
    grace days pass.
-11. **G06 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
+11. **G06 — daily grace check.** Before eligibility, `gc()` returns `done: true` and the
+   daily routine does not start minute continuations. The first daily run after grace
+   starts bounded deletion and returns `done: false` until the checkpoint drains.
+12. **G07 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
    row, and prove an already-issued cursor sees that row rather than skipping a reused
    seq.
-12. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
+13. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
    cursors cannot authorise a push.
-13. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
+14. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
    work, builds a fresh IndexedDB replica, switches only after complete bootstrap, and
    does not retain an authority-absent stale row.
-14. **P01 — symmetric peers.** Two in-process peers independently expire each other's
+15. **P01 — symmetric peers.** Two in-process peers independently expire each other's
     cursors and recover by bootstrap without either storing a replica list.
 
 After each GREEN, refactor only while the focused test and existing conformance tests are
@@ -367,7 +378,7 @@ green. Do not write all tests before implementation.
 - `packages/core` — signed HTTP cursor/lease handling and SQLite floor metadata;
 - `packages/core/src/migrations` — receiver-private commit time, signing, and floor state;
 - `platform/frieren/src/fs.ts` — fresh IndexedDB bootstrap and crash-safe profile switch;
-- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G06, B01–B02,
+- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G07, B01–B02,
   and P01.
 
 Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to `Node`.
@@ -386,6 +397,9 @@ Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to 
 - All retention and batch values come from one validated receiver policy object.
 - One fence covers the full currently eligible tombstone range; only physical deletion
   is batch-limited, and all batches share one grace period.
+- Grace waiting returns `done: true` and relies on daily maintenance; eligible deletion
+  alone uses `done: false` for immediate bounded continuations. No timer or GC deadline
+  field is added.
 - With defaults, a tombstone is fenced at 30 days and remains for at least ten actual
   grace days before bounded physical deletion; recent tombstones and live rows remain.
 - Feed-floor advancement and its pending checkpoint are atomic. Deletion requires the
