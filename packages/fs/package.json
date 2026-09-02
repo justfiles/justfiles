@@ -8,6 +8,7 @@
 		"./synced": "./synced.ts",
 		"./authority": "./authority.ts",
 		"./mem": "./mem.ts",
+		"./mem-leased": "./mem-leased.ts",
 		"./idb": "./idb.ts",
 		"./fs": "./fs.ts",
 		"./http": "./http.ts",
@@ -51,6 +52,11 @@
 				"import": "./dist/mem.js",
 				"default": "./dist/mem.js"
 			},
+			"./mem-leased": {
+				"types": "./dist/mem-leased.d.ts",
+				"import": "./dist/mem-leased.js",
+				"default": "./dist/mem-leased.js"
+			},
 			"./idb": {
 				"types": "./dist/idb.d.ts",
 				"import": "./dist/idb.js",
@@ -65,6 +71,21 @@
 				"types": "./dist/http.d.ts",
 				"import": "./dist/http.js",
 				"default": "./dist/http.js"
+			},
+			"./lease": {
+				"types": "./dist/lease.d.ts",
+				"import": "./dist/lease.js",
+				"default": "./dist/lease.js"
+			},
+			"./leased-http": {
+				"types": "./dist/leased-http.d.ts",
+				"import": "./dist/leased-http.js",
+				"default": "./dist/leased-http.js"
+			},
+			"./sync-policy": {
+				"types": "./dist/sync-policy.d.ts",
+				"import": "./dist/sync-policy.js",
+				"default": "./dist/sync-policy.js"
 			},
 			"./migrate": {
 				"types": "./dist/migrate.d.ts",

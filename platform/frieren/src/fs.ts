@@ -1,11 +1,15 @@
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
 import { announceMount, type Volume, volume } from '@justfiles/fs'
-import { httpStore } from '@justfiles/fs/http'
+import { encodeNode } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
+import { BootstrapRequiredError, mutexLock, type SyncLock } from '@justfiles/fs/lease'
+import { type LeasedRemote, leasedHttpStore } from '@justfiles/fs/leased-http'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
-import { ROOT, type Store } from '@justfiles/fs/store'
+import { forwarded, ROOT, type Store, sha256Hex } from '@justfiles/fs/store'
 import {
+	authorOf,
+	bootstrap,
 	type CursorSlot,
 	type DiscardSlot,
 	type SyncStatus as StoreSyncStatus,
@@ -46,8 +50,8 @@ export function createFsClient(getToken: GetToken): FsClient {
 // tables and this serves the one table the model has. The token is minted per REQUEST
 // — Clerk's expires — so it goes in through the injected `fetch` rather than through
 // the static header bag, which is read once at construction.
-function remoteStore(getToken: GetToken): Store {
-	return httpStore('/store', {
+function remoteStore(getToken: GetToken): LeasedRemote {
+	return leasedHttpStore('/store', {
 		fetch: async (url, init) => {
 			const token = await getToken()
 			return fetch(url, {
@@ -67,14 +71,24 @@ function remoteStore(getToken: GetToken): Store {
 // is not the user's data) nor in the user's tree (the old engine's mistake), and
 // `localStorage` is the one place this host has that is neither.
 
-const slot = (key: string): CursorSlot => ({
+const slot = (profileId: string, side: 'pull' | 'push', lock: SyncLock): CursorSlot => ({
 	async load() {
-		return localStorage.getItem(key) ?? undefined
+		const profile = readRegistry().find((entry) => entry.id === profileId)
+		return (
+			profile?.sync?.[side] ?? localStorage.getItem(`frieren-fs-${profileId}-${side}`) ?? undefined
+		)
 	},
 	async save(cursor) {
-		if (cursor === undefined) localStorage.removeItem(key)
-		else localStorage.setItem(key, cursor)
-	}
+		const profiles = readRegistry()
+		const profile = profiles.find((entry) => entry.id === profileId)
+		if (!profile) throw new Error('sync profile is missing')
+		profile.sync ??= {}
+		if (cursor === undefined) delete profile.sync[side]
+		else profile.sync[side] = cursor
+		writeRegistry(profiles)
+		localStorage.removeItem(`frieren-fs-${profileId}-${side}`)
+	},
+	lock
 })
 
 const discardSlot = (key: string): DiscardSlot => ({
@@ -103,6 +117,13 @@ function forgetSlots(profileId: string): void {
 		localStorage.removeItem(
 			suffix === 'replica' ? `frieren-replica-${profileId}` : `frieren-fs-${profileId}-${suffix}`
 		)
+	const profiles = readRegistry()
+	const profile = profiles.find((entry) => entry.id === profileId)
+	if (!profile) return
+	delete profile.storeId
+	delete profile.sync
+	delete profile.pendingBootstrap
+	writeRegistry(profiles)
 }
 
 // Local profiles own local storage, not Clerk users. A profile is a browser-local
@@ -123,6 +144,9 @@ export type LocalProfile = {
 	// A remote wipe whose acknowledgement/local deletion has not completed. Kept
 	// outside the IDB being deleted so a 503 retry reuses the committed operation.
 	pendingFactoryReset?: { operationId: string; fromGeneration: number }
+	storeId?: string
+	sync?: { pull?: string; push?: string }
+	pendingBootstrap?: { storeId: string; cursor?: string }
 }
 
 const REGISTRY_KEY = 'frieren-profiles'
@@ -220,11 +244,36 @@ function legacyDb(profileId: string): string {
 // holds are two names. Different from `legacyDb` on purpose: the pass copies rather
 // than upgrading in place, and the swap is which name the host opens.
 function storeDb(profileId: string): string {
-	return `frieren-store-${profileId}`
+	const storeId = readRegistry().find((profile) => profile.id === profileId)?.storeId ?? profileId
+	return `frieren-store-${storeId}`
 }
 
 function privateDb(profileId: string): string {
 	return `frieren-store-${profileId}-${PRIVATE_MOUNT}`
+}
+
+const localLocks = new Map<string, SyncLock>()
+
+function storeLock(backing: string): SyncLock {
+	if (typeof navigator !== 'undefined' && navigator.locks) {
+		return {
+			run: (fn) => navigator.locks.request(`frieren-sync:${backing}`, () => Promise.resolve(fn()))
+		}
+	}
+	let lock = localLocks.get(backing)
+	if (!lock) {
+		lock = mutexLock()
+		localLocks.set(backing, lock)
+	}
+	return lock
+}
+
+function lockedStore(store: Store, lock: SyncLock): Store {
+	return {
+		...forwarded(store),
+		commit: (writes, guards) => lock.run(() => store.commit(writes, guards)),
+		close: () => store.close?.() ?? Promise.resolve()
+	}
 }
 
 type Active = {
@@ -244,7 +293,9 @@ type Active = {
 	sync: SyncVolume | null
 	volume: ProfileVolume
 	status: SyncStatus
+	lock: SyncLock
 	unsubscribeSyncStatus?: () => void
+	bootstrapping?: boolean
 	teardown: () => void
 }
 
@@ -316,6 +367,122 @@ function stopSync(entry: Active): void {
 	setActiveStatus(entry, 'local-only')
 }
 
+function requestBootstrap(entry: Active, getToken: GetToken): void {
+	if (entry.bootstrapping) return
+	entry.bootstrapping = true
+	void alone(async () => {
+		if (active !== entry) return
+		stopSync(entry)
+		await startSync(entry, getToken)
+	})
+		.catch(() => {
+			if (active === entry) setActiveStatus(entry, 'error')
+		})
+		.finally(() => {
+			entry.bootstrapping = false
+		})
+}
+
+async function bootstrapProfile(
+	entry: Active,
+	remote: LeasedRemote,
+	push: CursorSlot,
+	restarted = false
+): Promise<void> {
+	const profiles = readRegistry()
+	const profile = profiles.find((item) => item.id === entry.profileId)
+	if (!profile) throw new Error('bootstrap profile is missing')
+	profile.pendingBootstrap ??= {
+		storeId: `${profile.id}-bootstrap-${crypto.randomUUID()}`
+	}
+	writeRegistry(profiles)
+
+	const pending = profile.pendingBootstrap
+	const backing = `frieren-store-${pending.storeId}`
+	const lock = storeLock(backing)
+	const fresh = lockedStore(sharedStore(idbStore(backing), backing), lock)
+	await announceMount(fresh, ROOT, PRIVATE_MOUNT)
+
+	let cursor: string
+	try {
+		cursor = await bootstrap(
+			fresh,
+			remote,
+			async (next) => {
+				const current = readRegistry()
+				const held = current.find((item) => item.id === entry.profileId)?.pendingBootstrap
+				if (!held || held.storeId !== pending.storeId) throw new Error('bootstrap switch changed')
+				held.cursor = next
+				writeRegistry(current)
+			},
+			pending.cursor
+		)
+	} catch (error) {
+		await fresh.close?.()
+		if (!(error instanceof BootstrapRequiredError) || restarted) throw error
+		await deleteIdb(backing)
+		const current = readRegistry()
+		const held = current.find((item) => item.id === entry.profileId)
+		if (held) delete held.pendingBootstrap
+		writeRegistry(current)
+		return bootstrapProfile(entry, remote, push, true)
+	}
+
+	await entry.lock.run(async () => {
+		await preservePending(entry, await push.load())
+		const current = readRegistry()
+		const held = current.find((item) => item.id === entry.profileId)
+		if (!held?.pendingBootstrap || held.pendingBootstrap.storeId !== pending.storeId)
+			throw new Error('bootstrap switch changed')
+		held.storeId = pending.storeId
+		held.sync = { pull: cursor }
+		delete held.pendingBootstrap
+		writeRegistry(current)
+	})
+
+	const old = entry.local
+	entry.local = fresh
+	entry.lock = lock
+	entry.plain = volume(fresh, {
+		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, entry.private]])]]),
+		mintVersion: versions(entry.replica)
+	})
+	entry.volume = createProfileVolume(entry.plain, () => entry)
+	await old.close?.()
+	emitStatus()
+}
+
+async function preservePending(entry: Active, cursor?: string): Promise<void> {
+	const rows = [] as ReturnType<typeof encodeNode>[]
+	const blobs = new Map<string, Uint8Array>()
+	for (;;) {
+		const page = await entry.local.since(cursor)
+		for (const row of page.nodes) {
+			if (row.id === ROOT || authorOf(row.version) !== entry.replica) continue
+			rows.push(encodeNode(row))
+			if (row.deleted || row.content === undefined || blobs.has(row.content)) continue
+			const data = await entry.local.blobs.get(row.content)
+			if (data === null || (await sha256Hex(data)) !== row.content)
+				throw new Error(`cannot preserve pending content ${row.content}`)
+			blobs.set(row.content, data)
+		}
+		if (page.next === undefined) throw new Error('local store returned no recovery cursor')
+		cursor = page.next
+		if (page.nodes.length === 0) break
+	}
+	if (rows.length === 0) return
+	const recovery = volume(entry.private)
+	const root = `/sync-recovery/${crypto.randomUUID()}`
+	await recovery.mkdir('/sync-recovery', { recursive: true })
+	await recovery.mkdir(root)
+	await recovery.mkdir(`${root}/blobs`)
+	for (const [hash, data] of blobs) await recovery.writeFile(`${root}/blobs/${hash}`, data)
+	await recovery.writeFile(
+		`${root}/manifest.json`,
+		new TextEncoder().encode(JSON.stringify({ schema: 'frieren/sync-recovery/v1', rows }))
+	)
+}
+
 async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	// This profile is already syncing, so there is nothing to start. The auth effect
 	// re-runs whenever Clerk hands out a new token getter, and each getter is a
@@ -327,12 +494,21 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	entry.unsubscribeSyncStatus?.()
 	setActiveStatus(entry, 'connecting')
 	const client = createFsClient(getToken)
+	const remote = remoteStore(getToken)
+	const pull = slot(entry.profileId, 'pull', entry.lock)
+	const push = slot(entry.profileId, 'push', entry.lock)
+	try {
+		await remote.open(await pull.load())
+	} catch (error) {
+		if (!(error instanceof BootstrapRequiredError)) throw error
+		await bootstrapProfile(entry, remote, push)
+	}
 	const syncVolume = await synced({
 		local: entry.local,
-		remote: remoteStore(getToken),
+		remote,
 		replica: entry.replica,
-		pull: slot(`frieren-fs-${entry.profileId}-pull`),
-		push: slot(`frieren-fs-${entry.profileId}-push`),
+		pull: slot(entry.profileId, 'pull', entry.lock),
+		push: slot(entry.profileId, 'push', entry.lock),
 		// A discard that stopped half-done is finished before the first cycle, which is
 		// the only way it can be: `synced` starts its loop before it returns, so
 		// nothing the app could call afterwards is early enough.
@@ -340,6 +516,10 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 		bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, entry.private]])]]),
 		lazyContent: true,
 		localFirst: true,
+		bootstrapRequired: () => {
+			requestBootstrap(entry, getToken)
+			return false
+		},
 		// "Take mine" asks the authority to start a new lineage. The epoch is READ from
 		// the server rather than remembered here — nothing in the seam carries one.
 		reset: async () => {
@@ -381,7 +561,9 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	const replica = replicaId(profile.id)
 	// The channel is the DATABASE's name in both cases: what a wake has to be scoped to
 	// is the store it is telling other tabs about.
-	const local = sharedStore(idbStore(storeDb(profile.id)), storeDb(profile.id))
+	const backing = storeDb(profile.id)
+	const lock = storeLock(backing)
+	const local = lockedStore(sharedStore(idbStore(backing), backing), lock)
 	const privateStore = sharedStore(idbStore(privateDb(profile.id)), privateDb(profile.id))
 	// The name is claimed before anything reads the tree: the row is derived from its
 	// position, so every replica writes a byte-identical one and none of them ever sends
@@ -432,6 +614,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		sync: null,
 		volume: managed,
 		status: 'local-only',
+		lock,
 		teardown: () => {
 			entry.unsubscribeSyncStatus?.()
 			window.removeEventListener('online', onOnline)
@@ -550,10 +733,11 @@ export function forgetActiveProfile(): Promise<void> {
 		const prev = active
 		if (!prev) return
 		const { profileId } = prev
+		const databases = profileDbs(profileId)
 		await release({ flush: false })
 		forgetProfileEntry(profileId)
 		forgetSlots(profileId)
-		await deleteProfileDbs(profileId)
+		await deleteProfileDbs(databases)
 	})
 }
 
@@ -727,10 +911,19 @@ async function replacesSeededIdentity(src: Volume, dst: Volume, path: string): P
 	return (await isPersonalized(src, path)) && !(await isPersonalized(dst, path))
 }
 
-/** Both databases a profile holds, and the old one the pass copied out of. */
-async function deleteProfileDbs(profileId: string): Promise<void> {
-	for (const name of [storeDb(profileId), privateDb(profileId), legacyDb(profileId)])
-		await deleteIdb(name)
+/** Every database a profile may hold, including an interrupted bootstrap target. */
+function profileDbs(profileId: string): string[] {
+	const profile = readRegistry().find((entry) => entry.id === profileId)
+	return [
+		storeDb(profileId),
+		privateDb(profileId),
+		legacyDb(profileId),
+		...(profile?.pendingBootstrap ? [`frieren-store-${profile.pendingBootstrap.storeId}`] : [])
+	]
+}
+
+async function deleteProfileDbs(databases: string[]): Promise<void> {
+	for (const name of new Set(databases)) await deleteIdb(name)
 }
 
 function deleteIdb(name: string): Promise<void> {
@@ -805,9 +998,10 @@ export function factoryReset(getToken: GetToken): Promise<void> {
 			}
 		}
 		const { profileId } = prev
+		const databases = profileDbs(profileId)
 		await release({ flush: false })
 		forgetSlots(profileId)
-		await deleteProfileDbs(profileId)
+		await deleteProfileDbs(databases)
 		if (operation) clearFactoryResetOperation(profileId)
 		location.reload()
 	})

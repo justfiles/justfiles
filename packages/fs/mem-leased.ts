@@ -4,8 +4,8 @@
  */
 
 import {
+	type LeasedPeer,
 	leasedPeer,
-	type LeasedStore,
 	mutexLock,
 	newSecret,
 	type PushCursorProvider,
@@ -15,12 +15,12 @@ import {
 	type SyncLock
 } from './lease'
 import { memStore } from './mem'
+import { forwarded, type Store } from './store'
 import { DEFAULT_SYNC_POLICY, type SyncPolicy } from './sync-policy'
-import type { Store } from './store'
 
 export type MemLeased = {
 	local: Store
-	peer: LeasedStore
+	peer: LeasedPeer
 	state: ReceiverState
 	clock: ReceiverClock & { advance(ms: number): void }
 }
@@ -30,7 +30,7 @@ export function memLeased(opts?: {
 	lock?: SyncLock
 	pushCursor?: PushCursorProvider
 }): MemLeased {
-	const local = memStore()
+	const base = memStore()
 	const clock = fakeClock()
 	const state: ReceiverState = {
 		lineage: '',
@@ -46,8 +46,26 @@ export function memLeased(opts?: {
 		policy: opts?.policy ?? DEFAULT_SYNC_POLICY,
 		pushCursor: opts?.pushCursor
 	}
+	const local: Store = {
+		...forwarded(base),
+		async commit(writes, guards) {
+			await base.commit(writes, guards)
+			await updateHead(base, state)
+		}
+	}
 	const peer = leasedPeer(local, ctx)
 	return { local, peer, state, clock }
+}
+
+async function updateHead(store: Store, state: ReceiverState): Promise<void> {
+	let cursor = state.lineage + String.fromCharCode(0) + state.feedHead
+	for (;;) {
+		const page = await store.since(cursor)
+		if (page.next === undefined) return
+		cursor = page.next
+		state.feedHead = Number(cursor.slice(state.lineage.length + 1))
+		if (page.nodes.length === 0) return
+	}
 }
 
 const seedLineage = async (store: Store, state: ReceiverState): Promise<void> => {

@@ -1,6 +1,6 @@
 ---
 project: packages/fs
-status: in_progress
+status: done
 ---
 
 # T21: expire feed cursors and sweep tombstones

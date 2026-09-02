@@ -4,9 +4,9 @@
 
 import { decodeNode, encodeNode, type HttpStoreOptions } from './http'
 import { BootstrapRequiredError, type LeasedPeer, type WriteLease } from './lease'
-import { ForeignCursorError, GuardError, type Guard, type Node, type Page, type Store } from './store'
+import { ForeignCursorError, type Guard, GuardError, type Node, type Page } from './store'
 
-export type LeasedRemote = LeasedPeer & Pick<Store, 'get' | 'child' | 'children' | 'since' | 'blobs'>
+export type LeasedRemote = LeasedPeer
 
 export function leasedHttpStore(baseUrl: string, opts: HttpStoreOptions = {}): LeasedRemote {
 	const base = baseUrl.replace(/\/+$/, '')
@@ -41,15 +41,18 @@ export function leasedHttpStore(baseUrl: string, opts: HttpStoreOptions = {}): L
 			page(await answer(`/children?${query({ parent, cursor })}`)),
 		since: async (cursor) => page(await answer(`/since?${query({ cursor })}`)),
 		blobs: {
-			has: async (hash) => (await call(`/blob/${encodeURIComponent(hash)}`, { method: 'HEAD' })).ok,
+			async has(hash) {
+				const path = `/blob/${encodeURIComponent(hash)}`
+				const res = await call(path, { method: 'HEAD' })
+				if (res.status === 404) return false
+				if (!res.ok) throw await failed(res, 'HEAD', path)
+				return true
+			},
 			get: async (hash) => {
 				const res = await call(`/blob/${encodeURIComponent(hash)}`)
 				if (res.status === 404) return null
 				if (!res.ok) throw await failed(res, 'GET', `/blob/${hash}`)
 				return new Uint8Array(await res.arrayBuffer())
-			},
-			put: async () => {
-				throw new Error('leased remote blobs.put requires a write lease; use put(lease, hash, data)')
 			}
 		},
 		async open(saved) {

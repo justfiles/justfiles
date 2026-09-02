@@ -3,10 +3,12 @@
  */
 
 import { describe, expect, test } from 'vitest'
+import { bootstrap, type CursorSlot, sync, versions } from './engine'
 import { BootstrapRequiredError } from './lease'
+import { memStore } from './mem'
 import { openMemLeased } from './mem-leased'
+import { type Node, ROOT } from './store'
 import { DEFAULT_SYNC_POLICY, minutes } from './sync-policy'
-import { ROOT, type Node } from './store'
 
 const file = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 	parent: ROOT,
@@ -17,6 +19,17 @@ const file = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 	version: 'a:1',
 	...over
 })
+
+const slot = (start?: string): CursorSlot & { value(): string | undefined } => {
+	let cursor = start
+	return {
+		load: async () => cursor,
+		save: async (next) => {
+			cursor = next
+		},
+		value: () => cursor
+	}
+}
 
 async function scan(
 	peer: { since(cursor?: string): Promise<{ nodes: Node[]; next?: string }> },
@@ -34,7 +47,9 @@ async function scan(
 	return { rows, cursor: cursor! }
 }
 
-async function caughtUp(peer: { since(cursor?: string): Promise<{ nodes: Node[]; next?: string }> }) {
+async function caughtUp(peer: {
+	since(cursor?: string): Promise<{ nodes: Node[]; next?: string }>
+}) {
 	return scan(peer)
 }
 
@@ -86,6 +101,20 @@ describe('L02 lease before push', () => {
 		)
 		expect(await local.child(ROOT, 'q.txt')).toBeNull()
 	})
+
+	test('the public sync cycle opens a lease before it pushes', async () => {
+		const { peer, local: authority } = await openMemLeased()
+		const local = memStore()
+		const pull = slot(await bootstrap(local, peer))
+		const push = slot()
+		const mint = versions('client')
+		await local.commit([file({ id: 'p', name: 'p.txt', version: mint() })])
+
+		await sync(local, peer, { replica: 'client', pull, push, retries: 0 })
+
+		expect(await authority.child(ROOT, 'p.txt')).toMatchObject({ id: 'p' })
+		expect(push.value()).toBeDefined()
+	})
 })
 
 describe('L03 expiry', () => {
@@ -95,6 +124,37 @@ describe('L03 expiry', () => {
 		const page = await peer.since()
 		clock.advance(DEFAULT_SYNC_POLICY.cursorLeaseMs + 1)
 		await expect(peer.open(page.next)).rejects.toBeInstanceOf(BootstrapRequiredError)
+	})
+
+	test('stale preflight refuses before blob transfer or row commit', async () => {
+		const held = await openMemLeased()
+		const local = memStore()
+		const pull = slot(await bootstrap(local, held.peer))
+		const push = slot()
+		const hash = 'pending-hash'
+		await local.blobs.put(hash, new Uint8Array([1]))
+		await local.commit([
+			file({ id: 'pending', name: 'pending.txt', version: versions('client')(), content: hash })
+		])
+		held.clock.advance(DEFAULT_SYNC_POLICY.cursorLeaseMs + 1)
+		let puts = 0
+		let commits = 0
+		const peer = {
+			...held.peer,
+			put: async (...args: Parameters<typeof held.peer.put>) => {
+				puts++
+				return held.peer.put(...args)
+			},
+			commit: async (...args: Parameters<typeof held.peer.commit>) => {
+				commits++
+				return held.peer.commit(...args)
+			}
+		}
+
+		await expect(
+			sync(local, peer, { replica: 'client', pull, push, retries: 0 })
+		).rejects.toBeInstanceOf(BootstrapRequiredError)
+		expect({ puts, commits, push: push.value() }).toEqual({ puts: 0, commits: 0, push: undefined })
 	})
 })
 
@@ -152,5 +212,56 @@ describe('L06 reset/commit exclusion', () => {
 		expect(lock.held).toBe(true)
 		await commit
 		expect(await local.child(ROOT, 'x.txt')).toBeTruthy()
+	})
+})
+
+describe('B01 bootstrap is read-only', () => {
+	test('a bootstrap page below the floor cannot mint a write lease', async () => {
+		const { local, peer, state } = await openMemLeased()
+		await local.commit(
+			Array.from({ length: 140 }, (_, index) => file({ id: `n${index}`, name: `n${index}.txt` }))
+		)
+		state.feedFloor = 100
+		const first = await peer.since()
+		expect(first.nodes.length).toBeGreaterThan(0)
+		await expect(peer.open(first.next)).rejects.toBeInstanceOf(BootstrapRequiredError)
+		const fresh = memStore()
+		const resume = await bootstrap(fresh, peer)
+		await expect(peer.open(resume)).resolves.toBeTruthy()
+	})
+
+	test('fencing invalidates a lease minted from the old floor', async () => {
+		const { local, peer, state } = await openMemLeased()
+		const cursor = await bootstrap(memStore(), peer)
+		const lease = await peer.open(cursor)
+		await local.commit([file({ id: 'later', name: 'later.txt' })])
+		state.feedFloor = 2
+		await expect(peer.commit(lease, [file({ id: 'old', name: 'old.txt' })])).rejects.toBeInstanceOf(
+			BootstrapRequiredError
+		)
+	})
+})
+
+describe('P01 symmetric peers', () => {
+	test('each peer expires and bootstraps the other without a replica registry', async () => {
+		const a = await openMemLeased()
+		const b = await openMemLeased()
+		await a.local.commit([file({ id: 'a', name: 'a.txt' })])
+		await b.local.commit([file({ id: 'b', name: 'b.txt' })])
+		const cursorFromA = await bootstrap(memStore(), a.peer)
+		const cursorFromB = await bootstrap(memStore(), b.peer)
+
+		b.clock.advance(DEFAULT_SYNC_POLICY.cursorLeaseMs + 1)
+		await expect(b.peer.open(cursorFromB)).rejects.toBeInstanceOf(BootstrapRequiredError)
+		await expect(a.peer.open(cursorFromA)).resolves.toBeTruthy()
+		a.clock.advance(DEFAULT_SYNC_POLICY.cursorLeaseMs + 1)
+		await expect(a.peer.open(cursorFromA)).rejects.toBeInstanceOf(BootstrapRequiredError)
+
+		const freshA = memStore()
+		const freshB = memStore()
+		await bootstrap(freshA, b.peer)
+		await bootstrap(freshB, a.peer)
+		expect(await freshA.get('b')).not.toBeNull()
+		expect(await freshB.get('a')).not.toBeNull()
 	})
 })

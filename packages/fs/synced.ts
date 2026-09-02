@@ -27,7 +27,17 @@
  *   would be stranded on this device by the very cursor the reset saves.
  */
 
-import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
+import {
+	authorOf,
+	type CursorSlot,
+	hydratingBlobs,
+	isLeasedPeer,
+	type SyncPeer,
+	saveCursor,
+	sync,
+	versions
+} from './engine'
+import { BootstrapRequiredError } from './lease'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
 import { type Bindings, type Volume, volume } from './volume'
 
@@ -40,7 +50,7 @@ export type { CursorSlot } from './engine'
  * replica AUTHORED, so a volume minting under any other tag writes rows no cycle will
  * ever send.
  */
-export { versions } from './engine'
+export { authorOf, bootstrap, versions } from './engine'
 
 /** How often the loop runs when nothing has asked it to run sooner. */
 const INTERVAL_MS = 30_000
@@ -84,7 +94,7 @@ export type SyncedProps = {
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
 	/** The peer. A `Store`, so a folder, a server and another replica all fit. */
-	remote: Store
+	remote: SyncPeer
 	/**
 	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.ts`).
 	 * Only the local store is synced — a bound store is joined at a name and is nobody
@@ -136,6 +146,7 @@ export type SyncedProps = {
 	 * The epoch it returns is the only thing this wrapper ever learns about one.
 	 */
 	reset?: () => Promise<number | undefined>
+	bootstrapRequired?: () => boolean | Promise<boolean>
 }
 
 export type SyncLifecycle = {
@@ -265,16 +276,28 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	async function cycle(): Promise<void> {
 		cancelPush()
 		setStatus('syncing')
-		try {
-			await sync(local, remote, opts)
-			failures = 0
-			setStatus('synced')
-		} catch (error) {
-			if (!(destroyed && error instanceof Error && error.name === 'AbortError'))
-				console.error(error)
-			failures++
-			setStatus('error')
-			throw error
+		let recovered = false
+		for (;;) {
+			try {
+				await sync(local, remote, opts)
+				failures = 0
+				setStatus('synced')
+				return
+			} catch (error) {
+				if (
+					!recovered &&
+					error instanceof BootstrapRequiredError &&
+					(await props.bootstrapRequired?.()) === true
+				) {
+					recovered = true
+					continue
+				}
+				if (!(destroyed && error instanceof Error && error.name === 'AbortError'))
+					console.error(error)
+				failures++
+				setStatus('error')
+				throw error
+			}
 		}
 	}
 
@@ -481,7 +504,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 				const scan = await feed()
 				const live = living(scan.rows)
 				if (live.length === 0) {
-					await props.push.save(scan.tip)
+					await saveCursor(props.push, scan.tip)
 					break
 				}
 				if (left === 0) throw new Error('take theirs cannot keep up with the writes under it')
@@ -497,7 +520,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// too — the peer's rows are all BEHIND the cursor this replaces, so a
 			// loop left running over a store that lost this step would never bring
 			// one of them back, and would look perfectly healthy doing it.
-			await props.pull.save(undefined)
+			await saveCursor(props.pull, undefined)
 			await discarding(false)
 		})
 	}
@@ -510,6 +533,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	 * this replica still holds.
 	 */
 	async function takeMine(): Promise<void> {
+		if (isLeasedPeer(remote)) throw new Error('take mine is unsupported by a leased peer')
 		const reset = props.reset
 		if (!reset) throw new Error('take mine needs a peer that can start a new lineage')
 		// A half-done discard is the one state this must not start from: the tree
@@ -557,7 +581,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// nothing fences this cursor into rewinding by itself. A failure here
 			// costs a partial republish that another `takeMine` completes; it cannot
 			// delete anything, which is why this one needs no fence.
-			await props.push.save(undefined)
+			await saveCursor(props.push, undefined)
 		})
 	}
 

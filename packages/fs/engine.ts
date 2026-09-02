@@ -35,6 +35,7 @@
  * conflict policy; it changes no seam signature.
  */
 
+import { BootstrapRequiredError, type LeasedPeer, type SyncLock, type WriteLease } from './lease'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -49,7 +50,6 @@ import {
 	type Version,
 	verifiedBlobs
 } from './store'
-import { type LeasedPeer, type WriteLease } from './lease'
 
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
@@ -126,6 +126,7 @@ export type CursorSlot = {
 	 * in the peer's feed was about.
 	 */
 	save(cursor: Cursor | undefined): Promise<void>
+	lock?: SyncLock
 }
 
 export type SyncOptions = {
@@ -150,6 +151,29 @@ export type SyncOptions = {
 	lazyContent?: boolean
 }
 
+export type SyncPeer = Store | LeasedPeer
+
+/** Fill a hidden fresh store from a leased peer without authorising a push. */
+export async function bootstrap(
+	local: Store,
+	remote: LeasedPeer,
+	save: (cursor: Cursor) => Promise<void> = async () => {},
+	start?: Cursor
+): Promise<Cursor> {
+	let cursor = start
+	for (;;) {
+		const page = await remote.since(cursor)
+		if (page.nodes.length > 0) await local.commit(page.nodes)
+		if (page.next === undefined) throw new Error('leased peer returned no bootstrap cursor')
+		cursor = page.next
+		await save(cursor)
+		if (page.nodes.length === 0) {
+			await remote.open(cursor)
+			return cursor
+		}
+	}
+}
+
 /**
  * One cycle: offer this replica's own rows to the peer, then take the peer's.
  *
@@ -168,7 +192,7 @@ export type SyncOptions = {
  * died halfway left nothing to unwind: re-running the cycle is both the recovery
  * and the retry.
  */
-export async function sync(local: Store, remote: Store, opts: SyncOptions): Promise<void> {
+export async function sync(local: Store, remote: SyncPeer, opts: SyncOptions): Promise<void> {
 	const mine = (row: Node): boolean => authorOf(row.version) === opts.replica
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
@@ -176,15 +200,18 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	let replans = 0
 	const peer = asLeased(remote)
 	let writeLease: WriteLease | undefined
-	if (peer) writeLease = await peer.open(await opts.pull.load())
 	const push = async (rows: Node[]): Promise<void> => {
-		if (writeLease !== undefined && peer !== undefined) {
-			await transfer(rows, local.blobs, remote.blobs, PROBE_ABOVE, writeLease, peer)
-			await send(rows, () => peer.commit(writeLease!, rows))
+		const lease = writeLease
+		if (lease !== undefined && peer !== undefined) {
+			await transfer(rows, local.blobs, peer.blobs, PROBE_ABOVE, (hash, data) =>
+				peer.put(lease, hash, data)
+			)
+			await send(rows, () => peer.commit(lease, rows))
 			return
 		}
-		await transfer(rows, local.blobs, remote.blobs, PROBE_ABOVE)
-		await send(rows, () => remote.commit(rows))
+		const store = remote as Store
+		await transfer(rows, local.blobs, store.blobs, PROBE_ABOVE, store.blobs.put)
+		await send(rows, () => store.commit(rows))
 	}
 	const send = async (rows: Node[], commit: () => Promise<void>): Promise<void> => {
 		try {
@@ -247,10 +274,14 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 		//
 		// Every hash asked about, however small: on this side the question is a local read
 		// and what it saves is a download. The push's arithmetic runs the other way round.
-		if (!opts.lazyContent) await transfer(rows, remote.blobs, verifiedBlobs(local.blobs), 0n)
+		if (!opts.lazyContent) {
+			const blobs = verifiedBlobs(local.blobs)
+			await transfer(rows, remote.blobs, blobs, 0n, blobs.put)
+		}
 	}
 	for (;;) {
 		try {
+			if (peer) writeLease = await peer.open(await opts.pull.load())
 			try {
 				await drain(local, push, opts.push, mine)
 			} catch (err) {
@@ -265,6 +296,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			}
 			return
 		} catch (err) {
+			if (err instanceof BootstrapRequiredError) throw err
 			if (err instanceof Replan) {
 				if (replans++ < REPLANS) continue
 				throw err
@@ -284,10 +316,20 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
  */
 async function reset(fenced: CursorSlot, other: CursorSlot): Promise<boolean> {
 	if ((await fenced.load()) === undefined) return false
-	await other.save(undefined)
-	await fenced.save(undefined)
+	if (fenced.lock !== undefined && fenced.lock === other.lock) {
+		await fenced.lock.run(async () => {
+			await other.save(undefined)
+			await fenced.save(undefined)
+		})
+	} else {
+		await saveCursor(other, undefined)
+		await saveCursor(fenced, undefined)
+	}
 	return true
 }
+
+export const saveCursor = (slot: CursorSlot, cursor: Cursor | undefined): Promise<void> =>
+	slot.lock ? slot.lock.run(() => slot.save(cursor)) : slot.save(cursor)
 
 /**
  * The design's `Version` — `{author, counter}` — encoded as the one opaque
@@ -321,7 +363,7 @@ export function versions(replica: string): () => Version {
  * from "this replica wrote something the peer has not seen".
  */
 async function drain(
-	from: Store,
+	from: Pick<Store, 'since'>,
 	apply: (rows: Node[]) => Promise<void>,
 	slot: CursorSlot,
 	mine?: (row: Node) => boolean
@@ -341,7 +383,7 @@ async function drain(
 		// resume from, so this scan is as far as the drain goes.
 		if (page.next === undefined) return moved
 		cursor = page.next
-		await slot.save(cursor)
+		await saveCursor(slot, cursor)
 		// An empty page means caught up, and the saved cursor is where to start next.
 		if (page.nodes.length === 0) return moved
 	}
@@ -402,7 +444,7 @@ async function fanned<T, R>(items: T[], work: (item: T) => Promise<R>): Promise<
  */
 async function settle(
 	local: Store,
-	remote: Store,
+	remote: Pick<Store, 'get' | 'child'>,
 	rows: Node[],
 	replica: string
 ): Promise<boolean> {
@@ -592,11 +634,10 @@ async function settle(
  */
 async function transfer(
 	rows: Node[],
-	from: Store['blobs'],
-	into: Store['blobs'],
+	from: Pick<Store['blobs'], 'get'>,
+	into: Pick<Store['blobs'], 'has'>,
 	probeAbove: bigint,
-	lease?: WriteLease,
-	peer?: LeasedPeer
+	put: (hash: Hash, data: Uint8Array) => Promise<void>
 ): Promise<void> {
 	const sizes = new Map<Hash, bigint>()
 	for (const row of rows) {
@@ -606,8 +647,7 @@ async function transfer(
 		if (size > probeAbove && (await into.has(hash))) return
 		const data = await from.get(hash)
 		if (data === null) return
-		if (lease !== undefined && peer !== undefined) await peer.put(lease, hash, data)
-		else await into.put(hash, data)
+		await put(hash, data)
 	})
 }
 
@@ -625,7 +665,10 @@ async function transfer(
  * decides a transfer; a wrapper that answered for the peer too would talk this
  * replica out of fetching anything.
  */
-export function hydratingBlobs(local: Store, remote: Store): Store {
+export function hydratingBlobs(
+	local: Store,
+	remote: { blobs: Pick<Store['blobs'], 'get'> }
+): Store {
 	const verified = verifiedBlobs(local.blobs)
 	return {
 		...forwarded(local),
@@ -659,11 +702,12 @@ export const authorOf = (version: Version): string => {
 	return cut === -1 ? version : version.slice(0, cut)
 }
 
-const asLeased = (store: Store): LeasedPeer | undefined => {
+export const isLeasedPeer = (store: SyncPeer): store is LeasedPeer => {
 	const maybe = store as unknown as Record<string, unknown>
 	return typeof maybe.open === 'function' && typeof maybe.put === 'function'
-		? (store as unknown as LeasedPeer)
-		: undefined
 }
+
+const asLeased = (store: SyncPeer): LeasedPeer | undefined =>
+	isLeasedPeer(store) ? store : undefined
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

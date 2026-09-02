@@ -3,12 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Kernel } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
-import { authority } from '@justfiles/fs/authority'
-import { memStore } from '@justfiles/fs/mem'
+import { openMemLeased } from '@justfiles/fs/mem-leased'
 import type { Cursor, Node, Store } from '@justfiles/fs/store'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
-import { storeApi } from '../../../packages/core/src/store.api'
+import { leasedStoreApi } from '../../../packages/core/src/leased-api'
 import { createNativeStorage, type NativeStorage, OwnerChangedError } from './fs'
 import { runtimeRefresh } from './refresh'
 
@@ -29,10 +28,17 @@ async function temp(): Promise<string> {
 	return root
 }
 
-function backend() {
-	const store = authority(memStore())
+async function mainPath(support: string, name: string): Promise<string> {
+	const state = JSON.parse(await readFile(join(support, 'volume-v2', 'sync.json'), 'utf8')) as {
+		storeId?: string
+	}
+	return join(support, 'volume-v2', state.storeId ?? 'main', name)
+}
+
+async function backend() {
+	const { local: store, peer } = await openMemLeased()
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(store)
+	const app = leasedStoreApi(peer)
 	let online = true
 	const requests: { url: string; authorization: string | null }[] = []
 	return {
@@ -67,7 +73,7 @@ async function rows(store: Store): Promise<Node[]> {
 
 async function storage(
 	supportDir: string,
-	hub: ReturnType<typeof backend>,
+	hub: Awaited<ReturnType<typeof backend>>,
 	ownerId = 'user-a',
 	getToken: () => Promise<string | null> = async () => 'token-a',
 	send = hub.fetch
@@ -94,26 +100,22 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 8_000): Promis
 
 test('syncs both ways, uploads Finder edits, and keeps private data local', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	await hub.fs.writeFile('/from-backend.txt', enc.encode('remote'))
 	const local = await storage(support, hub)
 
 	expect(await local.flush()).toBe(true)
 	expect(dec.decode(await local.volume.readFile('/from-backend.txt'))).toBe('remote')
-	expect(await readFile(join(support, 'volume-v2', 'main', 'from-backend.txt'), 'utf8')).toBe(
-		'remote'
-	)
+	expect(await readFile(await mainPath(support, 'from-backend.txt'), 'utf8')).toBe('remote')
 
-	await writeFile(join(support, 'volume-v2', 'main', 'finder.txt'), 'finder')
+	await writeFile(await mainPath(support, 'finder.txt'), 'finder')
 	await waitFor(async () => await hub.fs.exists('/finder.txt'))
 	expect(dec.decode(await hub.fs.readFile('/finder.txt'))).toBe('finder')
 
 	await hub.fs.writeFile('/from-backend.txt', enc.encode('changed'))
 	expect(await local.flush()).toBe(true)
 	expect(dec.decode(await local.volume.readFile('/from-backend.txt'))).toBe('changed')
-	expect(await readFile(join(support, 'volume-v2', 'main', 'from-backend.txt'), 'utf8')).toBe(
-		'changed'
-	)
+	expect(await readFile(await mainPath(support, 'from-backend.txt'), 'utf8')).toBe('changed')
 
 	await local.volume.writeFile('/private/secret.txt', enc.encode('local'))
 	expect(await local.flush()).toBe(true)
@@ -123,7 +125,7 @@ test('syncs both ways, uploads Finder edits, and keeps private data local', asyn
 
 test('keeps every private Volume mutation out of the remote Store', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	const local = await storage(support, hub)
 	await local.flush()
 	const before = await rows(hub.store)
@@ -147,7 +149,7 @@ test('keeps every private Volume mutation out of the remote Store', async () => 
 
 test('keeps cursors and uses a fresh token for every request', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	let token = 'token-a'
 	const getToken = async () => token
 	let first = await storage(support, hub, 'user-a', getToken)
@@ -178,7 +180,7 @@ test('keeps cursors and uses a fresh token for every request', async () => {
 
 test('retries with a refreshed token after the old token expires', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	await hub.fs.writeFile('/remote.txt', enc.encode('remote'))
 	let calls = 0
 	const getToken = async () => (++calls === 1 ? 'expired' : 'fresh')
@@ -195,7 +197,7 @@ test('retries with a refreshed token after the old token expires', async () => {
 
 test('uses the signed-out token state when sign-out races an active request', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	let token: string | null = 'token-a'
 	let asked!: () => void
 	let release!: () => void
@@ -238,7 +240,7 @@ test('uses the signed-out token state when sign-out races an active request', as
 
 test('uploads offline work after the backend returns', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	const local = await storage(support, hub)
 	await local.flush()
 
@@ -254,7 +256,7 @@ test('uploads offline work after the backend returns', async () => {
 
 test('reports the first successful remote cycle without blocking local work', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	hub.setOnline(false)
 	const local = await storage(support, hub)
 	let ready: boolean | undefined
@@ -274,7 +276,7 @@ test('reports the first successful remote cycle without blocking local work', as
 
 test('wipes the old owner before a new owner can connect', async () => {
 	const support = await temp()
-	const firstHub = backend()
+	const firstHub = await backend()
 	const first = await storage(support, firstHub)
 	await first.volume.writeFile('/old-owner.txt', enc.encode('private to a'))
 	await first.flush()
@@ -294,7 +296,7 @@ test('wipes the old owner before a new owner can connect', async () => {
 	expect(firstHub.requests).toHaveLength(before)
 	await expect(access(join(support, 'volume-v2'))).rejects.toThrow()
 
-	const secondHub = backend()
+	const secondHub = await backend()
 	const second = await storage(support, secondHub, 'user-b', async () => 'token-b')
 	await second.flush()
 	expect(await second.volume.exists('/old-owner.txt')).toBe(false)
@@ -303,7 +305,7 @@ test('wipes the old owner before a new owner can connect', async () => {
 
 test('keeps the saved owner when identity is unresolved offline', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	let local = await storage(support, hub)
 	await local.volume.writeFile('/offline-boot.txt', enc.encode('keep'))
 	await local.close()
@@ -323,7 +325,7 @@ test('keeps the saved owner when identity is unresolved offline', async () => {
 
 test('keeps the saved owner while signed out and resumes for the same owner', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	let local = await storage(support, hub)
 	await local.volume.writeFile('/local.txt', enc.encode('keep'))
 	await local.flush()
@@ -355,7 +357,7 @@ test('keeps the saved owner while signed out and resumes for the same owner', as
 
 test('uses the Mac origin override', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	process.env.KODAMA_STORE_ORIGIN = 'http://override.test/base'
 	const local = await createNativeStorage({
 		supportDir: support,
@@ -373,7 +375,7 @@ test('uses the Mac origin override', async () => {
 
 test('refreshes a running app after an HTTP pull', async () => {
 	const support = await temp()
-	const hub = backend()
+	const hub = await backend()
 	await hub.fs.mkdir('/state', { recursive: true })
 	await hub.fs.mkdir('/applications/app.one', { recursive: true })
 	await hub.fs.writeFile('/state/app.one.json', enc.encode('{"count":1}'))

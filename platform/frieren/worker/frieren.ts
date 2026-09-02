@@ -63,6 +63,7 @@ import {
 	type DbAdapter,
 	type DestructiveResetBody,
 	fileApi,
+	leasedStoreApi,
 	migrateSqlite,
 	migrateSync,
 	type ResetResult,
@@ -70,14 +71,16 @@ import {
 	readGenerationState,
 	readResetStatus,
 	resetStore,
+	type SqliteLeased,
 	type SyncDb,
 	scopedBlobs,
-	sqliteStore,
-	storeApi
+	sqliteLeasedStore,
+	sqliteStore
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
+import { mutexLock, type SyncLock } from '@justfiles/fs/lease'
 import { ROOT, type Store } from '@justfiles/fs/store'
 import { Hono } from 'hono'
 import { PRIVATE_MOUNT } from '../shared/private.ts'
@@ -181,6 +184,8 @@ export class Frieren extends DurableObject<Env> {
 	// the authority: rule 9's invariants, one commit at a time, and the poke.
 	private readonly store: Store
 	private readonly tree: Store
+	private readonly peer: SqliteLeased
+	private readonly syncLock: SyncLock
 	// The DO's own local store, joined at `/private`. It is not `storeApi`'s, so no
 	// request can name a row in it — the credentials and the sealed provider records are
 	// simply not in the table a client pulls.
@@ -250,9 +255,15 @@ export class Frieren extends DurableObject<Env> {
 		// than that at all. The old backend sent every binary there for the same reason.
 		// Absent locally (no bucket bound), so dev runs on rows alone.
 		const blobs = env.FS_BLOBS && scopedBlobs(env.FS_BLOBS, namespace)
-		this.store = sqliteStore(this.sync, undefined, { blobs })
+		this.syncLock = mutexLock()
+		this.peer = sqliteLeasedStore(this.sync, undefined, {
+			blobs,
+			lock: this.syncLock,
+			wrap: (store) => notifying(authority(store))
+		})
+		this.store = this.peer.source
 		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT, { blobs }))
-		this.tree = notifying(authority(this.store))
+		this.tree = this.peer.local
 		this.tree.subscribe?.(poke)
 		// Constructing a Volume touches no storage; the migration barrier below still runs
 		// before any request can call a method on it.
@@ -323,7 +334,7 @@ export class Frieren extends DurableObject<Env> {
 				})
 			)
 			// The seam, as routes, over the synced store alone.
-			.route('/store', storeApi(this.tree))
+			.route('/store', leasedStoreApi(this.peer))
 			// The one route beside it, for the callers that are not replicas: a CLI
 			// reading one file, for which the seam is a walk and a fetch. Over the synced
 			// tree UNBOUND — not `this.volume` — for the same reason `storeApi` is handed
@@ -393,20 +404,22 @@ export class Frieren extends DurableObject<Env> {
 	// survives to report, a stale CAS or an idempotent replay, comes back as a value.
 	public async resetAndRestart(request: DestructiveResetBody): Promise<ResetResult> {
 		return this.ctx.blockConcurrencyWhile(() =>
-			commitReset(request, {
-				// A wipe means "delete everything", so it names the bound store too; an
-				// adopt-mine names only the synced tree, and the credentials survive by
-				// never having been in it.
-				reset: async (body) => resetStore(this.sync, body, { local: [PRIVATE_MOUNT] }),
-				sync: () => this.ctx.storage.sync(),
-				terminate: (reason) => {
-					this.ctx.abort(reason)
-					// Belt and braces: if `abort()` ever returns, throwing out of
-					// `blockConcurrencyWhile` terminates and resets the object anyway, so the
-					// instance cannot survive its own reset either way.
-					throw new Error('DurableObjectState.abort() returned')
-				}
-			})
+			this.syncLock.run(() =>
+				commitReset(request, {
+					// A wipe means "delete everything", so it names the bound store too; an
+					// adopt-mine names only the synced tree, and the credentials survive by
+					// never having been in it.
+					reset: async (body) => resetStore(this.sync, body, { local: [PRIVATE_MOUNT] }),
+					sync: () => this.ctx.storage.sync(),
+					terminate: (reason) => {
+						this.ctx.abort(reason)
+						// Belt and braces: if `abort()` ever returns, throwing out of
+						// `blockConcurrencyWhile` terminates and resets the object anyway, so the
+						// instance cannot survive its own reset either way.
+						throw new Error('DurableObjectState.abort() returned')
+					}
+				})
+			)
 		)
 	}
 

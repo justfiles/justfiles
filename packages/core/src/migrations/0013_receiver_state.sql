@@ -1,5 +1,4 @@
--- Receiver-private metadata for leased cursors and tombstone retention.
-ALTER TABLE nodes ADD COLUMN commit_ms INTEGER;
-
-CREATE INDEX IF NOT EXISTS nodes_tombstone_seq ON nodes(sid, deleted, seq, commit_ms)
-	WHERE deleted = 1;
+-- Reserved for receiver-state rollout. The store tables are backend-owned and are
+-- created after host migrations, so sqliteLeasedStore upgrades that private schema
+-- when it opens the store.
+SELECT 1;

@@ -3,7 +3,6 @@
  * public stale answer — `BootstrapRequiredError`.
  */
 
-import { type SyncPolicy, validateSyncPolicy } from './sync-policy'
 import {
 	type Cursor,
 	forwarded,
@@ -13,6 +12,7 @@ import {
 	type Page,
 	type Store
 } from './store'
+import { type SyncPolicy, validateSyncPolicy } from './sync-policy'
 
 export type WriteLease = string
 
@@ -40,7 +40,7 @@ export const mutexLock = (): SyncLock => {
 	}
 }
 
-export type PushCursorProvider = () => Promise<number | undefined>
+export type PushCursorProvider = () => Promise<Cursor | readonly Cursor[] | undefined>
 
 export type ReceiverClock = {
 	now(): number
@@ -64,21 +64,26 @@ export type ReceiverContext = {
 }
 
 export type LeasedPeer = {
+	get(id: string): Promise<Node | null>
+	child(parent: string, name: string): Promise<Node | null>
+	children(parent: string, cursor?: Cursor): Promise<Page>
+	blobs: Pick<Store['blobs'], 'has' | 'get'>
 	open(saved?: Cursor): Promise<WriteLease>
 	put(lease: WriteLease, hash: Hash, data: Uint8Array): Promise<void>
 	since(cursor?: Cursor): Promise<Page>
 	commit(lease: WriteLease, writes: Node[], guards?: Guard[]): Promise<void>
 }
 
-export type LeasedStore = Omit<Store, 'commit'> & LeasedPeer
-
-export function leasedPeer(store: Store, ctx: ReceiverContext): LeasedStore {
+export function leasedPeer(store: Store, ctx: ReceiverContext): LeasedPeer {
 	validateSyncPolicy(ctx.policy)
 	const read = forwarded(store)
 
 	return {
-		...read,
-		open: (saved) => open(store, ctx, saved),
+		get: read.get,
+		child: read.child,
+		children: read.children,
+		blobs: { has: read.blobs.has, get: read.blobs.get },
+		open: (saved) => open(ctx, saved),
 		since: (cursor) => scan(store, ctx, cursor),
 		put: (lease, hash, data) => put(store, ctx, lease, hash, data),
 		commit: (lease, writes, guards) => commit(store, ctx, lease, writes, guards)
@@ -97,13 +102,14 @@ const now = (ctx: ReceiverContext): number => {
 	return at
 }
 
-async function open(_store: Store, ctx: ReceiverContext, saved?: Cursor): Promise<WriteLease> {
+async function open(ctx: ReceiverContext, saved?: Cursor): Promise<WriteLease> {
 	const at = now(ctx)
-	if (saved === undefined) reject()
-	const claims = await readCursor(ctx, saved!, at)
-	if (claims.mode !== 'resume') reject()
+	if (saved === undefined) return reject()
+	const claims = await readCursor(ctx, saved, at)
+	if (claims.mode !== 'resume') return reject()
+	if (claims.position < ctx.state.feedFloor) return reject()
 	return signLease(ctx.state.secret, {
-		cursor: saved!,
+		cursor: saved,
 		issuedAt: at,
 		expiresAt: Math.min(at + ctx.policy.writeLeaseMs, claims.expiresAt)
 	})
@@ -113,24 +119,29 @@ async function scan(store: Store, ctx: ReceiverContext, cursor?: Cursor): Promis
 	const at = now(ctx)
 	let mode: CursorMode = 'bootstrap'
 	let position = 0
+	let expiresAt = at + ctx.policy.cursorLeaseMs
 	if (cursor !== undefined) {
 		const claims = await readCursor(ctx, cursor, at)
 		mode = claims.mode
 		position = claims.position
+		expiresAt = claims.expiresAt
 		if (mode === 'resume' && claims.position < ctx.state.feedFloor) reject()
 	}
 	const page = await store.since(
 		mode === 'bootstrap' && position === 0 ? undefined : rawCursor(ctx, position)
 	)
 	const nextPos = page.next === undefined ? ctx.state.feedHead : rawPosition(ctx, page.next)
+	const nextMode = nextPos >= ctx.state.feedHead ? 'resume' : mode
+	if (nextMode === 'resume' && nextPos >= ctx.state.feedHead)
+		expiresAt = at + ctx.policy.cursorLeaseMs
 	return {
 		nodes: page.nodes,
 		next: await signCursor(ctx.state.secret, {
 			lineage: ctx.state.lineage,
 			position: nextPos,
 			issuedAt: at,
-			expiresAt: at + ctx.policy.cursorLeaseMs,
-			mode: nextPos >= ctx.state.feedHead ? 'resume' : mode
+			expiresAt,
+			mode: nextMode
 		})
 	}
 }
@@ -160,28 +171,34 @@ async function commit(
 }
 
 async function readCursor(ctx: ReceiverContext, token: string, at: number): Promise<CursorClaims> {
-	const claims = await unpack<CursorClaims>(ctx.state.secret, token)
-	if (claims === null) reject()
-	const held = claims as CursorClaims
+	const claims = await unpack(ctx.state.secret, token)
+	if (!cursorClaims(claims)) return reject()
+	const held = claims
 	if (held.lineage !== ctx.state.lineage) reject()
+	if (held.issuedAt > at || held.expiresAt <= held.issuedAt) reject()
 	if (held.expiresAt <= at) reject()
 	if (held.position > ctx.state.feedHead) reject()
 	return held
 }
 
 async function readLease(ctx: ReceiverContext, lease: WriteLease, at: number): Promise<void> {
-	const claims = await unpack<LeaseClaims>(ctx.state.secret, lease)
-	if (claims === null) reject()
-	const held = claims as LeaseClaims
+	const claims = await unpack(ctx.state.secret, lease)
+	if (!leaseClaims(claims)) return reject()
+	const held = claims
+	if (held.issuedAt > at || held.expiresAt <= held.issuedAt) reject()
 	if (held.expiresAt <= at) reject()
-	await readCursor(ctx, held.cursor, at)
+	if (at >= held.issuedAt + ctx.policy.maxWriteDurationMs) reject()
+	const cursor = await readCursor(ctx, held.cursor, at)
+	if (cursor.mode !== 'resume' || cursor.position < ctx.state.feedFloor) reject()
 }
 
 const rawCursor = (ctx: ReceiverContext, position: number): Cursor =>
 	ctx.state.lineage + String.fromCharCode(0) + position
 
 const rawPosition = (ctx: ReceiverContext, cursor: Cursor): number =>
-	Number(cursor.slice(ctx.state.lineage.length + 1))
+	cursor.startsWith(ctx.state.lineage + String.fromCharCode(0))
+		? Number(cursor.slice(ctx.state.lineage.length + 1))
+		: reject()
 
 type CursorMode = 'resume' | 'bootstrap'
 
@@ -195,9 +212,30 @@ type CursorClaims = {
 
 type LeaseClaims = { cursor: string; issuedAt: number; expiresAt: number }
 
+const record = (value: unknown): value is Record<string, unknown> =>
+	typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const stamp = (value: unknown): value is number =>
+	typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+
+const cursorClaims = (value: unknown): value is CursorClaims =>
+	record(value) &&
+	typeof value.lineage === 'string' &&
+	stamp(value.position) &&
+	stamp(value.issuedAt) &&
+	stamp(value.expiresAt) &&
+	(value.mode === 'resume' || value.mode === 'bootstrap')
+
+const leaseClaims = (value: unknown): value is LeaseClaims =>
+	record(value) &&
+	typeof value.cursor === 'string' &&
+	stamp(value.issuedAt) &&
+	stamp(value.expiresAt)
+
 const TOKEN = 'v1'
 
-const signCursor = (secret: Uint8Array, claims: CursorClaims): Promise<string> => sign(secret, claims)
+const signCursor = (secret: Uint8Array, claims: CursorClaims): Promise<string> =>
+	sign(secret, claims)
 const signLease = (secret: Uint8Array, claims: LeaseClaims): Promise<string> => sign(secret, claims)
 
 const sign = async (secret: Uint8Array, claims: object): Promise<string> => {
@@ -206,34 +244,42 @@ const sign = async (secret: Uint8Array, claims: object): Promise<string> => {
 }
 
 const hmac = async (secret: Uint8Array, payload: string): Promise<Uint8Array> => {
-	const key = await crypto.subtle.importKey(
-		'raw',
-		secret as BufferSource,
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign']
-	)
-	return new Uint8Array(
-		await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload) as unknown as ArrayBuffer)
-	)
+	const key = await hmacKey(secret)
+	return new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload)))
 }
 
-const unpack = async <T>(secret: Uint8Array, token: string): Promise<T | null> => {
+const hmacKey = (secret: Uint8Array): Promise<CryptoKey> =>
+	crypto.subtle.importKey(
+		'raw',
+		new Uint8Array(secret).buffer,
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign', 'verify']
+	)
+
+const unpack = async (secret: Uint8Array, token: string): Promise<unknown | null> => {
 	const parts = token.split('.')
 	if (parts.length !== 3 || parts[0] !== TOKEN) return null
 	const [, body, sig] = parts as [string, string, string]
-	const expected = b64url(await hmac(secret, body))
-	if (sig.length !== expected.length) return null
-	for (let i = 0; i < sig.length; i++) if (sig[i] !== expected[i]) return null
 	try {
-		return JSON.parse(new TextDecoder().decode(unb64url(body))) as T
+		const valid = await crypto.subtle.verify(
+			'HMAC',
+			await hmacKey(secret),
+			new Uint8Array(unb64url(sig)).buffer,
+			new TextEncoder().encode(body)
+		)
+		if (!valid) return null
+		return JSON.parse(new TextDecoder().decode(unb64url(body))) as unknown
 	} catch {
 		return null
 	}
 }
 
 const b64url = (data: Uint8Array): string =>
-	btoa(String.fromCharCode(...data)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+	btoa(String.fromCharCode(...data))
+		.replace(/\+/g, '-')
+		.replace(/\//g, '_')
+		.replace(/=+$/, '')
 
 const unb64url = (value: string): Uint8Array => {
 	const padded = value.replace(/-/g, '+').replace(/_/g, '/')

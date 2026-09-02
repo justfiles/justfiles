@@ -23,6 +23,10 @@ export type SyncPolicy = {
 }
 
 export function validateSyncPolicy(policy: SyncPolicy): void {
+	for (const [name, value] of Object.entries(policy)) {
+		if (!Number.isSafeInteger(value) || value <= 0)
+			throw new Error(`${name} must be a positive integer`)
+	}
 	if (policy.tombstoneFenceAgeMs < policy.cursorLeaseMs) {
 		throw new Error('tombstoneFenceAge must be >= cursorLease')
 	}

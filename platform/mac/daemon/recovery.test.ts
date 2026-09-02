@@ -5,11 +5,10 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { volume } from '@justfiles/fs'
-import { authority } from '@justfiles/fs/authority'
-import { memStore } from '@justfiles/fs/mem'
+import { openMemLeased } from '@justfiles/fs/mem-leased'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
-import { storeApi } from '../../../packages/core/src/store.api'
+import { leasedStoreApi } from '../../../packages/core/src/leased-api'
 import { createNativeStorage } from './fs'
 
 const roots: string[] = []
@@ -55,9 +54,9 @@ function child(
 }
 
 async function backend(fault: { method: string; path: RegExp; body?: string }) {
-	const store = authority(memStore())
+	const { local: store, peer } = await openMemLeased()
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(store)
+	const app = leasedStoreApi(peer)
 	let stop = false
 	let hit!: () => void
 	const reached = new Promise<void>((resolve) => {

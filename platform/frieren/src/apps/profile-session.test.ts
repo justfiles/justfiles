@@ -10,7 +10,10 @@ const H = vi.hoisted(() => ({
 	// One profile is one replica, whoever asks for it and however often.
 	opened: vi.fn(),
 	synced: vi.fn(),
-	destroyed: vi.fn()
+	destroyed: vi.fn(),
+	leaseOpen: vi.fn(),
+	leaseSince: vi.fn(),
+	stores: new Map<string, unknown>()
 }))
 
 vi.mock('@justfiles/core', () => ({
@@ -22,7 +25,7 @@ vi.mock('@justfiles/core', () => ({
 // the stub. `memStore` is the same seam `idbStore` implements.
 vi.mock('@justfiles/fs/idb', async () => {
 	const { memStore } = await import('@justfiles/fs/mem')
-	const stores = new Map<string, ReturnType<typeof memStore>>()
+	const stores = H.stores as Map<string, ReturnType<typeof memStore>>
 	return {
 		idbStore: (name: string) => {
 			H.opened(name)
@@ -44,7 +47,9 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
 	migrateIdb: H.migrateIdb
 }))
-vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
+vi.mock('@justfiles/fs/leased-http', () => ({
+	leasedHttpStore: () => ({ open: H.leaseOpen, since: H.leaseSince })
+}))
 
 vi.mock('@justfiles/fs/synced', async (original) => ({
 	...(await original<Record<string, unknown>>()),
@@ -129,6 +134,9 @@ describe('profile session switching', () => {
 		H.opened.mockReset()
 		H.synced.mockReset()
 		H.destroyed.mockReset()
+		H.leaseOpen.mockReset().mockResolvedValue('lease')
+		H.leaseSince.mockReset()
+		H.stores.clear()
 		handshakeIs(1)
 		vi.useFakeTimers()
 		vi.setSystemTime(new Date('2026-05-31T00:00:00Z'))
@@ -265,6 +273,51 @@ describe('profile session switching', () => {
 		// leaves a loop that is already there alone.
 		expect(H.destroyed).toHaveBeenCalledTimes(1)
 		expect(H.synced).toHaveBeenCalledTimes(2)
+	})
+
+	test('a stale account profile is replaced from bootstrap after pending work is preserved', async () => {
+		H.leaseSince
+			.mockResolvedValueOnce({
+				nodes: [
+					{
+						id: 'authority-row',
+						parent: '00000000-0000-0000-0000-000000000000',
+						name: 'authority.txt',
+						type: 'file',
+						mode: 0o100644,
+						mtimeNs: 0n,
+						size: 0n,
+						version: 'server:1'
+					}
+				],
+				next: 'bootstrap-1'
+			})
+			.mockResolvedValueOnce({ nodes: [], next: 'resume-2' })
+		const { data, fs } = await loadFs([
+			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 2 }
+		])
+		let uuid = 0
+		vi.stubGlobal('crypto', {
+			randomUUID: () => `uuid-${++uuid}`,
+			subtle: globalThis.crypto.subtle
+		})
+		const { BootstrapRequiredError } = await import('@justfiles/fs/lease')
+		H.leaseOpen.mockRejectedValueOnce(new BootstrapRequiredError()).mockResolvedValue('lease')
+		const stale = await fs.openProfile()
+		await stale.writeFile('/offline.txt', new TextEncoder().encode('mine'))
+
+		const fresh = await fs.attachRemoteUser('user-1', async () => 'token')
+
+		expect(await fresh.exists('/offline.txt')).toBe(false)
+		expect(await fresh.exists('/authority.txt')).toBe(true)
+		const registry = JSON.parse(data.get(REGISTRY_KEY) ?? '[]') as StoredProfile[] &
+			Array<{ storeId?: string; sync?: { pull?: string }; pendingBootstrap?: unknown }>
+		expect(registry[0]?.storeId).toMatch(/^account-profile-bootstrap-uuid-/)
+		expect(registry[0]?.sync).toEqual({ pull: 'resume-2' })
+		expect(registry[0]?.pendingBootstrap).toBeUndefined()
+		const privateStore = H.stores.get('frieren-store-account-profile-private')
+		const { volume } = await import('@justfiles/fs')
+		expect(await volume(privateStore as never).exists('/sync-recovery')).toBe(true)
 	})
 
 	test('factory reset reuses an operation after ambiguous confirmation failure', async () => {

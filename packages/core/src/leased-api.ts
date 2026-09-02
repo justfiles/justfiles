@@ -4,7 +4,7 @@
  */
 
 import { decodeCommit, encodeNode } from '@justfiles/fs/http'
-import { BootstrapRequiredError, type LeasedStore } from '@justfiles/fs/lease'
+import { BootstrapRequiredError, type LeasedPeer } from '@justfiles/fs/lease'
 import {
 	ForeignCursorError,
 	GuardError,
@@ -17,7 +17,7 @@ import { HTTPException } from 'hono/http-exception'
 
 const LEASE = 'x-write-lease'
 
-export function leasedStoreApi(store: LeasedStore): Hono {
+export function leasedStoreApi(store: LeasedPeer): Hono {
 	const app = new Hono()
 	app.use('*', async (c, next) => {
 		c.header('cache-control', 'no-store')
@@ -28,7 +28,8 @@ export function leasedStoreApi(store: LeasedStore): Hono {
 		if (err instanceof BootstrapRequiredError) return c.json({ error: 'bootstrap' }, 428)
 		if (err instanceof GuardError) return c.json({ error: 'guard', reason: err.reason }, 409)
 		if (err instanceof ForeignCursorError) return c.json({ error: 'lineage' }, 410)
-		if (err instanceof HashMismatchError) return c.json({ error: 'hash', message: err.message }, 400)
+		if (err instanceof HashMismatchError)
+			return c.json({ error: 'hash', message: err.message }, 400)
 		if (err instanceof HTTPException) return err.getResponse()
 		return c.json({ error: 'store', message: err.message }, 500)
 	})

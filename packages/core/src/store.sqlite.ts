@@ -157,6 +157,7 @@ const SCHEMA = [
 		link TEXT,
 		version TEXT NOT NULL,
 		deleted INTEGER NOT NULL DEFAULT 0,
+		commit_ms INTEGER,
 		-- INTEGER, because this one IS compared and taken the MAX of in SQL. It
 		-- counts row writes, so it stays a JS number for the life of the store.
 		seq INTEGER NOT NULL,
@@ -603,6 +604,10 @@ export function emptyStore(db: SyncDb, id: string = MAIN, opts?: { content?: 'ke
 	db.exec('DELETE FROM nodes WHERE sid = ? AND id <> ?', [sid, ROOT])
 	if (opts?.content === 'drop') db.exec('DELETE FROM blobs WHERE sid = ?', [sid])
 	db.exec("UPDATE meta SET value = ? WHERE sid = ? AND key = 'lineage'", [crypto.randomUUID(), sid])
+	db.exec(
+		"DELETE FROM meta WHERE sid = ? AND key IN ('signing_secret', 'feed_floor', 'feed_head', 'pending_fence', 'receiver_clock')",
+		[sid]
+	)
 }
 
 // ── The row codec: one table row ↔ one `Node` ────────────────────────────────

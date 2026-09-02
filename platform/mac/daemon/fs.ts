@@ -5,9 +5,13 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { announceMount, type Bindings, type Volume, volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
-import { httpStore } from '@justfiles/fs/http'
-import { ROOT, type Store } from '@justfiles/fs/store'
+import { encodeNode } from '@justfiles/fs/http'
+import { BootstrapRequiredError } from '@justfiles/fs/lease'
+import { type LeasedRemote, leasedHttpStore } from '@justfiles/fs/leased-http'
+import { ROOT, type Store, sha256Hex } from '@justfiles/fs/store'
 import {
+	authorOf,
+	bootstrap,
 	type CursorSlot,
 	type DiscardSlot,
 	type SyncStatus,
@@ -50,6 +54,7 @@ interface SyncState {
 	push?: string
 	discard: boolean
 	ownerId: string | null
+	storeId?: string
 }
 
 export interface NativeStorageOptions {
@@ -106,6 +111,46 @@ function trackVolume(source: Volume): { volume: Volume; drain(): Promise<void> }
 	}
 }
 
+type StoreListener = Parameters<NonNullable<Store['subscribe']>>[0]
+
+function switchableStore(initial: Store) {
+	let current = initial
+	const listeners = new Map<StoreListener, () => void>()
+	const store: Store = {
+		get: (id) => current.get(id),
+		child: (parent, name) => current.child(parent, name),
+		children: (parent, cursor) => current.children(parent, cursor),
+		since: (cursor) => current.since(cursor),
+		commit: (writes, guards) => current.commit(writes, guards),
+		blobs: {
+			has: (hash) => current.blobs.has(hash),
+			get: (hash) => current.blobs.get(hash),
+			put: (hash, data) => current.blobs.put(hash, data)
+		},
+		subscribe(listener) {
+			listeners.set(listener, current.subscribe?.(listener) ?? (() => {}))
+			return () => {
+				listeners.get(listener)?.()
+				listeners.delete(listener)
+			}
+		},
+		gc: () => current.gc?.() ?? Promise.resolve({ reclaimed: 0, done: true }),
+		close: () => current.close?.() ?? Promise.resolve()
+	}
+	return {
+		store,
+		current: () => current,
+		swap(next: Store) {
+			const old = current
+			for (const off of listeners.values()) off()
+			current = next
+			for (const listener of listeners.keys())
+				listeners.set(listener, current.subscribe?.(listener) ?? (() => {}))
+			return old
+		}
+	}
+}
+
 export async function createNativeStorage(options: NativeStorageOptions): Promise<NativeStorage> {
 	const root = join(options.supportDir, VOLUME)
 	const statePath = join(root, SYNC_STATE)
@@ -129,14 +174,16 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	if (!savedState) await atomicWrite(statePath, state)
 	const saved = stateFile(statePath, state)
 
-	const mainRoot = join(root, 'main')
+	const mainRoot = join(root, state.storeId ?? 'main')
 	const privateRoot = join(root, PRIVATE)
 	await Promise.all([mkdir(mainRoot, { recursive: true }), mkdir(privateRoot, { recursive: true })])
 
-	const mainStore = fsStore(mainRoot, {
-		mounts: [PRIVATE],
-		mintVersion: versions(state.replica)
-	})
+	const main = switchableStore(
+		fsStore(mainRoot, {
+			mounts: [PRIVATE],
+			mintVersion: versions(state.replica)
+		})
+	)
 	const privateStore = fsStore(privateRoot)
 	let sync: SyncVolume | undefined
 	let abortRemote: (() => void) | undefined
@@ -145,11 +192,11 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	let offFirstSync: (() => void) | undefined
 
 	try {
-		await announceMount(mainStore, ROOT, PRIVATE)
+		await announceMount(main.store, ROOT, PRIVATE)
 		const bindings: Bindings = new Map([[ROOT, new Map([[PRIVATE, privateStore]])]])
 		let source: Volume
 		if (ownerId === null) {
-			source = volume(mainStore, {
+			source = volume(main.store, {
 				bindings,
 				mintVersion: versions(state.replica)
 			})
@@ -157,8 +204,48 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			if (!options.getToken) throw new Error('authenticated storage needs a token source')
 			const remote = remoteStore(options.getToken, options.origin, options.fetch)
 			abortRemote = remote.abort
+			let recovering: Promise<void> | undefined
+			const recover = (): Promise<boolean> => {
+				recovering ??= (async () => {
+					const old = main.current()
+					await preserveNative(old, privateStore, state.replica, await saved.cursor('push').load())
+					const storeId = `main-bootstrap-${randomUUID()}`
+					const freshRoot = join(root, storeId)
+					await mkdir(freshRoot, { recursive: true })
+					const fresh = fsStore(freshRoot, {
+						mounts: [PRIVATE],
+						mintVersion: versions(state.replica)
+					})
+					await announceMount(fresh, ROOT, PRIVATE)
+					try {
+						const pull = await bootstrap(fresh, remote.store)
+						await saved.update((held) => {
+							const next = { ...held, storeId, pull }
+							delete next.push
+							return next
+						})
+						main.swap(fresh)
+						await closeStore(old)
+					} catch (failure) {
+						await closeStore(fresh)
+						throw failure
+					}
+				})().finally(() => {
+					recovering = undefined
+				})
+				return recovering.then(() => true)
+			}
+			const preflight = remote.store.open(await saved.cursor('pull').load()).then<unknown>(
+				() => undefined,
+				(error) => error
+			)
+			const result = await Promise.race([
+				preflight,
+				new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 25))
+			])
+			if (result instanceof BootstrapRequiredError) await recover()
 			sync = await synced({
-				local: mainStore,
+				local: main.store,
 				remote: remote.store,
 				replica: state.replica,
 				pull: saved.cursor('pull'),
@@ -167,6 +254,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 				bindings,
 				lazyContent: true,
 				localFirst: true,
+				bootstrapRequired: recover,
 				interval: options.interval
 			})
 			console.info(`sync: ${sync.status()}`)
@@ -211,7 +299,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			closeOnce ??= (async () => {
 				await stopSync()
 				await tracked.drain()
-				await Promise.all([closeStore(mainStore), closeStore(privateStore)])
+				await Promise.all([closeStore(main.store), closeStore(privateStore)])
 			})()
 			return closeOnce
 		}
@@ -244,7 +332,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		sync?.destroy()
 		abortRemote?.()
 		await sync?.drain()
-		await Promise.allSettled([closeStore(mainStore), closeStore(privateStore)])
+		await Promise.allSettled([closeStore(main.store), closeStore(privateStore)])
 		throw error
 	}
 }
@@ -253,10 +341,10 @@ function remoteStore(
 	getToken: () => Promise<string | null>,
 	origin = platformOrigin(),
 	send: Send = fetch
-): { store: Store; abort(): void } {
+): { store: LeasedRemote; abort(): void } {
 	const controller = new AbortController()
 	return {
-		store: httpStore(new URL('/store', origin).toString(), {
+		store: leasedHttpStore(new URL('/store', origin).toString(), {
 			fetch: async (url, init) => {
 				const headers = new Headers(init?.headers)
 				headers.set('authorization', `Bearer ${(await getToken()) ?? ''}`)
@@ -301,7 +389,7 @@ function stateFile(path: string, initial: SyncState) {
 			return save((held) => ({ ...held, discard: value }))
 		}
 	}
-	return { cursor, discard }
+	return { cursor, discard, update: save }
 }
 
 async function readSyncState(path: string): Promise<SyncState | null> {
@@ -317,6 +405,7 @@ async function readSyncState(path: string): Promise<SyncState | null> {
 		typeof value.replica !== 'string' ||
 		(value.pull !== undefined && typeof value.pull !== 'string') ||
 		(value.push !== undefined && typeof value.push !== 'string') ||
+		(value.storeId !== undefined && typeof value.storeId !== 'string') ||
 		typeof value.discard !== 'boolean' ||
 		(value.ownerId !== null && typeof value.ownerId !== 'string')
 	) {
@@ -332,6 +421,42 @@ async function atomicWrite(path: string, state: SyncState): Promise<void> {
 }
 
 const closeStore = (store: Store): Promise<void> => store.close?.() ?? Promise.resolve()
+
+async function preserveNative(
+	local: Store,
+	privateStore: Store,
+	replica: string,
+	cursor?: string
+): Promise<void> {
+	const rows = [] as ReturnType<typeof encodeNode>[]
+	const blobs = new Map<string, Uint8Array>()
+	for (;;) {
+		const page = await local.since(cursor)
+		for (const row of page.nodes) {
+			if (row.id === ROOT || authorOf(row.version) !== replica) continue
+			rows.push(encodeNode(row))
+			if (row.deleted || row.content === undefined || blobs.has(row.content)) continue
+			const data = await local.blobs.get(row.content)
+			if (data === null || (await sha256Hex(data)) !== row.content)
+				throw new Error(`cannot preserve pending content ${row.content}`)
+			blobs.set(row.content, data)
+		}
+		if (page.next === undefined) throw new Error('local store returned no recovery cursor')
+		cursor = page.next
+		if (page.nodes.length === 0) break
+	}
+	if (rows.length === 0) return
+	const recovery = volume(privateStore)
+	const root = `/sync-recovery/${randomUUID()}`
+	await recovery.mkdir('/sync-recovery', { recursive: true })
+	await recovery.mkdir(root)
+	await recovery.mkdir(`${root}/blobs`)
+	for (const [hash, data] of blobs) await recovery.writeFile(`${root}/blobs/${hash}`, data)
+	await recovery.writeFile(
+		`${root}/manifest.json`,
+		new TextEncoder().encode(JSON.stringify({ schema: 'frieren/sync-recovery/v1', rows }))
+	)
+}
 
 let storageOnce: Promise<NativeStorage> | undefined
 
