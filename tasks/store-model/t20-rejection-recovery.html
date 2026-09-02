@@ -238,17 +238,17 @@ for (;;) {
 			<div class="diagram">
 				<svg viewBox="0 0 1000 560" role="img" aria-labelledby="decision-title decision-desc">
 					<title id="decision-title">Pure conflict recovery decision graph</title>
-					<desc id="decision-desc">Conflict facts enter the first matching rule. Semantic and root rules return repair. Known structural rules return preserve. The unmatched default returns unresolved.</desc>
+					<desc id="decision-desc">Conflict facts enter the first matching rule. Semantic rules return repair. Root and known structural rules return preserve. The unmatched default returns unresolved.</desc>
 					<rect class="boundary" x="24" y="32" width="952" height="460" rx="18"/>
 					<text class="boundary-label" x="48" y="62">PURE · decideRecovery(facts)</text>
 					<g class="node blue" transform="translate(65 225)"><rect width="170" height="78" rx="12"/><text class="name" x="85" y="34">Conflict facts</text><text class="sub" x="85" y="57">plain immutable data</text></g>
 					<g class="node purple" transform="translate(345 225)"><rect width="210" height="78" rx="12"/><text class="name" x="105" y="34">First matching rule</text><text class="sub" x="105" y="57">ordered, total policy</text></g>
-					<g class="node green" transform="translate(720 90)"><rect width="200" height="86" rx="12"/><text class="name" x="100" y="35">Repair</text><text class="sub" x="100" y="59">revive · rename · root</text></g>
+					<g class="node green" transform="translate(720 90)"><rect width="200" height="86" rx="12"/><text class="name" x="100" y="35">Repair</text><text class="sub" x="100" y="59">revive · rename</text></g>
 					<g class="node amber" transform="translate(720 225)"><rect width="200" height="86" rx="12"/><text class="name" x="100" y="35">Preserve</text><text class="sub" x="100" y="59">known structural case</text></g>
 					<g class="node purple" transform="translate(720 360)"><rect width="200" height="86" rx="12"/><text class="name" x="100" y="35">Unresolved</text><text class="sub" x="100" y="59">catch-all · never missing</text></g>
 					<path class="edge" d="M235 264H345"/>
-					<path class="edge green" d="M555 248H620V133H720"/><text class="edge-label" x="584" y="119">M01–M04</text>
-					<path class="edge amber" d="M555 264H720"/><text class="edge-label" x="595" y="251">M05–M08</text>
+					<path class="edge green" d="M555 248H620V133H720"/><text class="edge-label" x="584" y="119">M01–M03</text>
+					<path class="edge amber" d="M555 264H720"/><text class="edge-label" x="595" y="251">M04–M08</text>
 					<path class="edge purple" d="M555 280H620V403H720"/><text class="edge-label" x="584" y="421">M09 default</text>
 					<text class="edge-label" x="65" y="526">Every input exits through exactly one decision. Unknown policy is data, not an exception.</text>
 				</svg>
@@ -282,7 +282,7 @@ for (;;) {
 						<tr><td>M01</td><td>Dead id with a live local edit</td><td><code>repair: revive-row</code></td></tr>
 						<tr><td>M02</td><td>Missing parent was an authority directory</td><td><code>repair: revive-ancestors</code></td></tr>
 						<tr><td>M03</td><td>Duplicate or taken sibling name</td><td><code>repair: rename</code></td></tr>
-						<tr><td>M04</td><td>Invalid local root</td><td><code>repair: restore-authority-root</code></td></tr>
+						<tr><td>M04</td><td>Invalid local root</td><td><code>preserve</code> local root; restore authority root</td></tr>
 						<tr><td>M05</td><td>Child below file, symlink, or mount</td><td><code>preserve</code> rejected branch</td></tr>
 						<tr><td>M06</td><td>Directory retyped with authority children</td><td><code>preserve</code> local replacement</td></tr>
 						<tr><td>M07</td><td>Parent cycle</td><td><code>preserve</code> locally moved branch</td></tr>

@@ -230,13 +230,23 @@ recovery.backing !== local.backing && recovery.backing !== remote.backing
 Matching backing ids fail safely even when all three `Store` objects are different.
 Storage adapters and store wrappers gain conformance tests for this rule.
 
-`recover()` does four things:
+`recover()` does five things:
 
 1. collect immutable facts from the authority conflict and the affected local graph;
-2. call the pure decision machine once;
-3. execute the returned decision with guarded store operations; and
-4. return `applied` only after the decision is durable, `raced` after a lost guard, or
+2. resume a matching verified recovery operation when the authority already holds its
+   planned settlement tombstone;
+3. otherwise call the pure decision machine once;
+4. execute the returned decision with guarded store operations; and
+5. return `applied` only after the decision is durable, `raced` after a lost guard, or
    `failed` when lossless recovery cannot finish.
+
+Step 2 is crash recovery, not a new policy decision. A match requires the authority
+tombstone `(id, version)` recorded in a verified private operation manifest. If the
+local row still has the recorded source version, recovery installs the tombstone under
+that guard. If the local row changed after the first preservation, recovery first copies
+and verifies that newer version privately, then installs the same tombstone under the
+new guard. It never revives a settlement id into the shared namespace. Without a
+matching authority tombstone manifest, M01 remains the ordinary edit/delete policy.
 
 ## Pure recovery decision machine
 
@@ -350,9 +360,11 @@ states to the decision machine.
 
 Both decisions use the same data-safe executor:
 
-1. Capture the bounded affected local graph and its source versions.
+1. Capture the bounded affected local graph, its source versions, and each planned
+   settlement tombstone with its once-minted version.
 2. Copy all available rows, metadata, and bytes to the private recovery store.
-3. Attach the complete operation below the owned `Recovered items` root.
+3. Attach the complete operation, including the settlement map, below the owned
+   `Recovered items` root.
 4. Read the recovered rows and hashes back through `Store` and verify them.
 5. For every captured id the authority already holds, guard-restore that exact
    authority row locally.
@@ -371,8 +383,9 @@ For a lazy stub, recovery fetches and verifies the required blob from the author
 before cleanup; if neither store can supply it, recovery returns `failed`.
 
 The operation manifest records whether the decision was `preserve` or `unresolved`,
-the structured conflict fingerprint, and any edge or name rewritten while producing a
-valid recovered forest. Copied user xattrs remain byte-for-byte unchanged.
+the structured conflict fingerprint, each source and planned settlement tombstone
+version, and any edge or name rewritten while producing a valid recovered forest.
+Copied user xattrs remain byte-for-byte unchanged.
 
 The tombstone settlement uses the existing `Store.commit(writes, guards)` interface.
 It needs no `forget()`, physical-purge primitive, local-only row type, or durable engine
@@ -383,10 +396,13 @@ recollect facts. It can never delete a newly arrived authority row.
 
 Authority-first ordering makes the tombstone canonical before local cleanup. If the
 local guard then races or the process crashes, the next recovery observes the authority
-tombstone and safely retries; the verified private copy already exists. Once both
-stores hold the same tombstone, ordinary cursor progress handles it like any other
-replicated row. T20 keeps it. T21 bounds its lifetime using leased cursors, a feed floor,
-and atomic tombstone sweeping.
+tombstone and matches its exact version to the verified private manifest before M01. An
+unchanged source is already safe to retire. A concurrently changed source is copied and
+verified as another private recovery operation before retirement. A foreign tombstone
+with no matching manifest follows normal conflict policy. Once both stores hold the
+same tombstone, ordinary cursor progress handles it like any other replicated row. T20
+keeps it. T21 bounds its lifetime using leased cursors, a feed floor, and atomic
+tombstone sweeping.
 
 Recovery never writes recovered rows, manifests, paths, or blobs to the shared remote;
 its only new shared write is the guarded settlement tombstone. The existing push order
@@ -430,7 +446,7 @@ internal calls or states.
 
 ### Decision-machine tests
 
-- **M01** — dead id selects row revival.
+- **M01** — dead id selects row revival when no interrupted settlement was resumed.
 - **M02** — deleted directory parent selects ancestor revival.
 - **M03** — duplicate name selects conflict rename.
 - **M04** — invalid root selects private preservation before authority-root restoration.
@@ -468,6 +484,10 @@ internal calls or states.
   returns `raced`; no local-only row remains.
 - **R13** — a root retyped as a file, including its bytes and user xattrs, is copied and
   verified in `Recovered items` before the authority directory replaces it locally.
+- **R14** — after the authority accepts a recorded settlement tombstone, a crash with
+  the original source version adopts it directly. A local guard race preserves and
+  verifies the newer source version before adopting it. Neither path invokes M01 or
+  returns the branch to the shared namespace.
 
 ### Sync-lifecycle tests
 
@@ -486,6 +506,8 @@ internal calls or states.
   immediately with the source preserved instead of executing recovery twice.
 - **S08** — changing conflicts stop after 4,096 recovery attempts; completed private
   operations remain durable and the next rejected source remains untouched.
+- **S09** — public sync resumes an interrupted tombstone settlement and completes
+  without returning the preserved malformed branch to the shared namespace.
 
 ### Host and privacy tests
 
@@ -507,15 +529,15 @@ Implement one behavior at a time:
 2. M05 → R02 proves known structural preservation.
 3. M09 → R03 → S03 proves the unresolved catch-all.
 4. Add M02–M04 and M06–M08 one branch at a time.
-5. Add R04–R13 one safety invariant at a time.
-6. Finish S01, S04–S08 and H01–H05, then run existing conformance suites.
+5. Add R04–R14 one safety invariant at a time.
+6. Finish S01, S04–S09 and H01–H05, then run existing conformance suites.
 
 ## Expected file map
 
 - `packages/fs/recovery.ts` — `recover()` and package-private decision machine;
-- `packages/fs/recovery.test.ts` — M01–M09 and R01–R13;
+- `packages/fs/recovery.test.ts` — M01–M09 and R01–R14;
 - `packages/fs/engine.ts` — the conflict branch which calls `recover()`;
-- `packages/fs/engine.conflicts.test.ts` — S01–S08;
+- `packages/fs/engine.conflicts.test.ts` — S01–S09;
 - `packages/fs/store.ts`, `authority.ts`, and `http.ts` — backing identity forwarding
   and structured conflict payload;
 - `packages/fs/synced.ts` — forwards the optional recovery store into `sync()`;
@@ -538,6 +560,9 @@ introduced.
   locally authored field, user xattr, and required blob.
 - An authority-absent rejected id converges through an ordinary replicated tombstone
   committed under a null-version authority guard; no local-only tombstone is used.
+- An interrupted settlement recognizes the exact authority tombstone from a verified
+  private manifest. It preserves any newer local source version before adoption and
+  never falls into M01.
 - T20 adds no purge interface. T21 safely sweeps the canonical tombstone after its
   retention window.
 - Recovery-store isolation compares immutable backing ids, not JavaScript object

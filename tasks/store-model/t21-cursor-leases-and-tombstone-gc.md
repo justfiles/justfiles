@@ -46,8 +46,9 @@ Add one small protocol above `Store`, like the existing reset protocol:
 1. A receiver signs its feed cursors and gives them an expiry.
 2. Sync validates the saved receiver cursor before transferring blobs or pushing rows.
 3. Every push carries a short-lived lease derived from that validated cursor.
-4. A receiver rejects missing, forged, expired, wrong-lineage, or swept-behind leases
-   before changing rows or blobs.
+4. A receiver validates the lease on every blob write and again on row commit. A
+   refused commit changes no rows; already accepted content-addressed blobs may remain
+   unreachable until blob GC.
 5. A stale peer bootstraps into a fresh local store; it never merges a snapshot into its
    stale table.
 6. A bounded sweep atomically advances a global feed floor and removes old tombstones.
@@ -63,6 +64,8 @@ one signing secret, one lineage, one feed floor, and bounded time checkpoints.
 - Three-way merging offline edits. Stale work is preserved privately before bootstrap;
   later policy may offer it as new ids.
 - Pruning live rows, recovery-store contents, or user-visible history.
+- Staging blobs or making blob promotion atomic with row commit. Unreachable blobs are
+  safe and handled by the existing reachability GC boundary.
 - Using client `mtimeNs` to decide retention. Only receiver time is trusted.
 - Making T20 depend on this task. T20 may safely retain canonical tombstones before this
   lands; T21 makes their storage bounded.
@@ -116,22 +119,31 @@ the lineage rotates or invalidates it. No token or secret enters `Node`.
 ## Minimal peer protocol
 
 Keep lease state above `Store`; do not add replica identity or expiry fields to the seam.
-The HTTP host and an in-process P2P adapter expose the same three operations:
+The HTTP host and an in-process P2P adapter expose the same leased operations:
 
 ```text
 open(saved receiver cursor) -> write lease | bootstrap-required
+put(lease, hash, bytes)      -> accepted | bootstrap-required
 since(cursor)               -> page + renewed signed cursor
 commit(lease, rows, guards)  -> accepted | bootstrap-required
 ```
 
 `open` runs before blob probing or transfer. A stale client therefore cannot leave new
-orphan blobs before learning it must bootstrap. `commit` verifies the lease again, so a
-lease expiring or a floor advancing between `open` and `commit` still writes nothing.
+orphan blobs before learning it must bootstrap. Every blob `put` verifies the lease when
+it accepts bytes; once the lease expires or falls behind the floor, later puts are
+refused. `commit` verifies again, so expiry or floor advancement before commit writes no
+rows.
+
+Blob and row storage are deliberately not one transaction. Bytes accepted while the
+lease was valid are not rolled back if a later `commit` is refused. They are unreachable
+content-addressed blobs: no shared row points to them, and the ordinary blob
+reachability sweep may reclaim them. This matches the existing rejected-push behavior
+without adding a staging protocol to the core store.
 
 The exact wrapper type is implementation detail. Required boundaries are:
 
 - raw `Store` remains usable for local volume writes;
-- peer-facing writes cannot bypass lease verification;
+- peer-facing blob and row writes cannot bypass lease verification;
 - the receiver, not the caller, verifies all token claims;
 - direct P2P uses the same receiver wrapper as HTTP, without a central service.
 
@@ -144,7 +156,9 @@ receiver validates signature, expiry, lineage, and floor
         ↓
 receiver returns short-lived write lease
         ↓
-client pushes its pending rows
+client transfers pending blobs through leased puts
+        ↓
+client commits its pending rows under the same lease
         ↓
 client drains receiver feed and saves renewed cursor
 ```
@@ -224,7 +238,9 @@ all active replicas acknowledge a tombstone. That storage trade is deliberate.
 
 - Forged, malformed, expired, wrong-lineage, and below-floor tokens all produce one
   public `bootstrap-required` result. Do not reveal signing details.
-- Lease refusal changes no rows, blobs, cursor, or floor.
+- A lease invalid at `open` changes no rows, blobs, cursor, or floor.
+- A lease becoming invalid during transfer stops later blob puts and changes no rows at
+  commit. Blobs accepted earlier while valid may remain unreachable until blob GC.
 - Bootstrap preservation failure keeps the old local store active and surfaces sync
   error.
 - Sweep failure commits neither row deletion nor floor advancement.
@@ -246,20 +262,23 @@ Implement one vertical red-green slice at a time:
    before blob transfer or commit.
 4. **L04 — renewal.** A caught-up empty `since()` page renews the cursor; the renewed
    cursor remains usable after the old one expires.
-5. **G01 — first sweep.** An old tombstone is removed while a live row and recent
+5. **L05 — mid-transfer expiry.** Accept one blob put under a valid lease, advance the
+   clock past expiry, and prove the next put and row commit are refused. The first blob
+   is unreachable and the blob reachability sweep can reclaim it.
+6. **G01 — first sweep.** An old tombstone is removed while a live row and recent
    tombstone remain. `gc()` reports bounded progress.
-6. **G02 — atomic floor.** A failure during sweep leaves both tombstone and floor as they
+7. **G02 — atomic floor.** A failure during sweep leaves both tombstone and floor as they
    were; retry removes it once.
-7. **G03 — resurrection fence.** A cursor from before the swept tombstone cannot push its
+8. **G03 — resurrection fence.** A cursor from before the swept tombstone cannot push its
    old live row. Authority state stays absent.
-8. **G04 — monotonic head.** Sweep the tombstone at the feed tail, commit a new live row,
+9. **G04 — monotonic head.** Sweep the tombstone at the feed tail, commit a new live row,
    and prove an already-issued cursor sees that row rather than skipping a reused seq.
-9. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
+10. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
    cursors cannot authorise a push.
-10. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
+11. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
    work, builds a fresh IndexedDB replica, switches only after complete bootstrap, and
    does not retain an authority-absent stale row.
-11. **P01 — symmetric peers.** Two in-process peers independently expire each other's
+12. **P01 — symmetric peers.** Two in-process peers independently expire each other's
     cursors and recover by bootstrap without either storing a replica list.
 
 After each GREEN, refactor only while the focused test and existing conformance tests are
@@ -271,7 +290,7 @@ green. Do not write all tests before implementation.
 - `packages/core` — signed HTTP cursor/lease handling and SQLite floor metadata;
 - `packages/core/src/migrations` — receiver-private commit time, signing, and floor state;
 - `platform/frieren/src/fs.ts` — fresh IndexedDB bootstrap and crash-safe profile switch;
-- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L04, G01–G03, B01–B02,
+- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G04, B01–B02,
   and P01.
 
 Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to `Node`.
@@ -282,7 +301,10 @@ Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to 
 - Peer-facing push is impossible without a receiver-verified current lease.
 - Signed cursor claims cannot be altered or extended by the caller.
 - A healthy peer renews its cursor and keeps normal push-first behavior.
-- An expired, foreign, or below-floor peer is rejected before blobs or rows change.
+- An expired, foreign, or below-floor peer is rejected at `open` before blobs or rows
+  change.
+- Every peer blob put validates its lease. Mid-transfer expiry may leave only blobs
+  accepted while valid; no row references them and blob GC can reclaim them.
 - Bootstrap uses a fresh local store and preserves unacknowledged work before switching.
 - Old tombstones are removed in bounded transactions; recent tombstones and live rows
   remain.
