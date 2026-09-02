@@ -176,32 +176,37 @@
 					<g class="node blue" transform="translate(435 95)"><rect width="240" height="82" rx="12"/><text class="name" x="120" y="34">drain(remote, pull)</text><text class="sub" x="120" y="59">pull(rows) for each Page</text></g>
 					<g class="node green" transform="translate(830 95)"><rect width="210" height="82" rx="12"/><text class="name" x="105" y="34">Synced</text><text class="sub" x="105" y="59">both feeds caught up</text></g>
 					<g class="node purple" transform="translate(250 245)"><rect width="210" height="82" rx="12"/><text class="name" x="105" y="34">recover()</text><text class="sub" x="105" y="59">structured SyncConflict only</text></g>
-					<g class="node amber" transform="translate(565 245)"><rect width="210" height="82" rx="12"/><text class="name" x="105" y="34">Replan</text><text class="sub" x="105" y="59">async continue · progress bit</text></g>
-					<g class="node red" transform="translate(830 245)"><rect width="210" height="82" rx="12"/><text class="name" x="105" y="34">Sync error</text><text class="sub" x="105" y="59">operational / protocol failure</text></g>
+					<g class="node amber" transform="translate(565 245)"><rect width="210" height="82" rx="12"/><text class="name" x="105" y="34">Replan</text><text class="sub" x="105" y="59">async continue · bounded</text></g>
+					<g class="node red" transform="translate(830 245)"><rect width="210" height="82" rx="12"/><text class="name" x="105" y="34">Sync error</text><text class="sub" x="105" y="59">duplicate · budget · failure</text></g>
 					<path class="edge green" d="M290 136H435"/><text class="edge-label" x="332" y="123">local feed caught up</text>
 					<path class="edge green" d="M675 136H830"/><text class="edge-label" x="721" y="123">remote feed caught up</text>
 					<path class="edge" d="M105 95V70H235V95"/><text class="edge-label" x="112" y="62">accepted → next Page</text>
 					<path class="edge purple" d="M170 177V215H355V245"/><text class="edge-label" x="184" y="207">structured conflict</text>
-					<path class="edge amber" d="M460 286H565"/><text class="edge-label" x="512" y="274">retry</text>
+					<path class="edge amber" d="M460 286H565"/><text class="edge-label" x="492" y="274">applied / raced</text>
 					<path class="edge amber" d="M670 327V377H25V136H50"/><text class="edge-label" x="298" y="397">caught by sync() → continue outer loop</text>
 					<path class="edge red" d="M460 266H500V205H1065V286H1040"/><text class="edge-label" x="895" y="197">failed</text>
 					<text class="edge-label" x="50" y="354">Page = Node[] + next cursor · a change-feed batch, not a file or the whole volume</text>
 				</svg>
 			</div>
-			<pre><code>class Replan extends Error {
-	constructor(readonly progress = false) {
-		super('sync replanned')
-	}
-}
+			<pre><code>class Replan extends Error {}
+
+const RECOVERIES = 4096
+const recovered = new Set&lt;string&gt;()
+let recoveries = 0
 
 const push = async (rows: Node[]) =&gt; {
 	await transfer(rows, local.blobs, remote.blobs)
 	try {
 		await remote.commit(rows)
-		replans = 0
 	} catch (error) {
 		if (!(error instanceof GuardError)) throw error
 		if (!isSyncConflict(error.reason)) throw error
+
+		const fingerprint = conflictFingerprint(error.reason, rows)
+		if (recovered.has(fingerprint)) throw new RecoveryLoopError(fingerprint)
+		if (recoveries === RECOVERIES) throw new RecoveryLimitError(RECOVERIES)
+		recoveries++
+
 		const outcome = await recover({
 			conflict: error.reason,
 			rows,
@@ -211,7 +216,8 @@ const push = async (rows: Node[]) =&gt; {
 			replica: opts.replica,
 		})
 		if (outcome.kind === 'applied') {
-			throw new Replan(true)
+			recovered.add(fingerprint)
+			throw new Replan()
 		}
 		if (outcome.kind === 'raced') throw new Replan()
 		throw outcome.error
@@ -225,8 +231,6 @@ for (;;) {
 		return
 	} catch (error) {
 		if (!(error instanceof Replan)) throw error
-		if (error.progress) replans = 0
-		else if (replans++ &gt;= REPLANS) throw error
 		continue
 	}
 }</code></pre>
@@ -293,7 +297,7 @@ for (;;) {
 			</div>
 
 			<div class="test-group">
-				<div class="group-head"><h3>Recovery subroutine</h3><p>11 observable store behaviors</p></div>
+				<div class="group-head"><h3>Recovery subroutine</h3><p>14 observable store behaviors</p></div>
 				<div class="table-wrap"><table>
 					<thead><tr><th>Id</th><th>Behavior</th></tr></thead>
 					<tbody>
@@ -308,25 +312,32 @@ for (;;) {
 						<tr><td>R09</td><td>A concurrent local edit returns <code>raced</code>; the next call recovers its new version.</td></tr>
 						<tr><td>R10</td><td>An authority row arriving after refusal is never deleted by local cleanup.</td></tr>
 						<tr><td>R11</td><td>Reaching the raw-feed row limit returns <code>failed</code> without cleanup, even while writes extend the feed.</td></tr>
+						<tr><td>R12</td><td>An authority-absent rejected row converges to one guarded ordinary tombstone in both stores.</td></tr>
+						<tr><td>R13</td><td>A retyped root's bytes and user xattrs are verified privately before authority-root restoration.</td></tr>
+						<tr><td>R14</td><td>An interrupted settlement adopts its recorded tombstone; a raced source is preserved again before adoption.</td></tr>
 					</tbody>
 				</table></div>
 			</div>
 
 			<div class="test-group">
-				<div class="group-head"><h3>Sync lifecycle and host</h3><p>10 public behavior tests</p></div>
+				<div class="group-head"><h3>Sync lifecycle and host</h3><p>14 public behavior tests</p></div>
 				<div class="table-wrap"><table>
 					<thead><tr><th>Id</th><th>Behavior</th></tr></thead>
 					<tbody>
 						<tr><td>S01</td><td>Accepted page completes without constructing recovery facts.</td></tr>
 						<tr><td>S02</td><td>Known conflict recovers, retries, and completes in one <code>sync()</code> call.</td></tr>
 						<tr><td>S03</td><td>Unknown conflict creates a private unresolved item, retries, and completes without user input.</td></tr>
-						<tr><td>S04</td><td>Many independent productive recoveries converge; only no-progress repetitions consume the guard.</td></tr>
+						<tr><td>S04</td><td>One thousand distinct productive fingerprints recover and converge in one sync call.</td></tr>
 						<tr><td>S05</td><td>Operational recovery failure leaves the source intact and becomes sync error.</td></tr>
 						<tr><td>S06</td><td>Malformed or legacy unstructured authority refusal remains a protocol error with the source intact.</td></tr>
+						<tr><td>S07</td><td>A fingerprint repeated after <code>applied</code> fails before executing recovery twice.</td></tr>
+						<tr><td>S08</td><td>Changing conflicts stop after 4,096 attempts with completed private operations durable.</td></tr>
+						<tr><td>S09</td><td>Public sync resumes interrupted tombstone settlement without returning the branch to shared storage.</td></tr>
 						<tr><td>H01</td><td>Frieren passes <code>entry.private</code> as recovery storage.</td></tr>
 						<tr><td>H02</td><td>The recovery executor never writes recovered rows, manifests, paths, or blobs to shared remote storage.</td></tr>
 						<tr><td>H03</td><td>A host without private recovery can repair semantically, but preservation fails safely without cleanup.</td></tr>
-						<tr><td>H04</td><td>Using <code>local</code> or <code>remote</code> itself as recovery storage is rejected before any store changes.</td></tr>
+						<tr><td>H04</td><td>A distinct recovery wrapper sharing local or remote backing is rejected before any store changes.</td></tr>
+						<tr><td>H05</td><td>Frieren databases expose different backing ids while wrappers preserve the wrapped id.</td></tr>
 					</tbody>
 				</table></div>
 			</div>

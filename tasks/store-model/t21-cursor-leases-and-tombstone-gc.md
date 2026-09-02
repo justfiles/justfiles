@@ -5,6 +5,33 @@ status: todo
 
 # T21: expire feed cursors and sweep tombstones
 
+## Receiver policy
+
+Keep every timing and batch knob in one receiver-owned configuration. Do not scatter
+duration literals through cursor, HTTP, database, or GC code:
+
+```ts
+const DEFAULT_SYNC_POLICY = {
+	cursorLeaseMs: days(30),
+	writeLeaseMs: minutes(15),
+	maxWriteDurationMs: minutes(5),
+	tombstoneFenceAgeMs: days(30),
+	tombstoneGraceMs: days(10),
+	sweepBatch: 128
+} as const
+```
+
+Configuration validation requires:
+
+```text
+tombstoneFenceAge >= cursorLease
+tombstoneGrace > writeLease + maxWriteDuration
+```
+
+A write lease also expires no later than its parent cursor. With defaults, a tombstone
+is fenced after 30 days and physically retained for at least 10 more days. If cleanup
+runs late, it remains longer than 40 days, never less.
+
 ## Context
 
 The change feed compacts every node id to its latest row, but a tombstone is that
@@ -33,7 +60,7 @@ The product policy is:
 > inside that receiver's retention window. An older peer preserves unacknowledged local
 > work, bootstraps into a fresh store, then resumes from current authority state.
 
-Default retention is 30 days. It is receiver policy, not a replicated setting.
+Retention uses the centralized receiver policy above. It is not replicated state.
 
 Read [the store-model overview](README.md), [the minimal model](../../kb/fs/fable-design.md),
 [engine core](../../packages/fs/engine.ts), and [the HTTP seam](../../packages/fs/http.ts)
@@ -51,10 +78,11 @@ Add one small protocol above `Store`, like the existing reset protocol:
    unreachable until blob GC.
 5. A stale peer bootstraps into a fresh local store; it never merges a snapshot into its
    stale table.
-6. A bounded sweep atomically advances a global feed floor and removes old tombstones.
+6. A bounded two-stage sweep first fences old tombstones, then removes them only after
+   the configured grace period.
 
 No receiver stores a row per replica. State is constant-size apart from retained rows:
-one signing secret, one lineage, one feed floor, and bounded time checkpoints.
+one signing secret, one lineage, one feed floor, and one pending fence checkpoint.
 
 ## Non-goals
 
@@ -66,6 +94,8 @@ one signing secret, one lineage, one feed floor, and bounded time checkpoints.
 - Pruning live rows, recovery-store contents, or user-visible history.
 - Staging blobs or making blob promotion atomic with row commit. Unreachable blobs are
   safe and handled by the existing reachability GC boundary.
+- Serializing every row commit with physical tombstone deletion. The retained grace
+  barrier makes a pre-fence write lease expire before deletion becomes eligible.
 - Using client `mtimeNs` to decide retention. Only receiver time is trusted.
 - Making T20 depend on this task. T20 may safely retain canonical tombstones before this
   lands; T21 makes their storage bounded.
@@ -115,6 +145,10 @@ is empty. A healthy quiet peer therefore keeps its lease without manufacturing r
 
 The signing secret is receiver-private and persisted beside the store lineage. Replacing
 the lineage rotates or invalidates it. No token or secret enters `Node`.
+
+A write lease expires at `min(now + writeLeaseMs, cursor.expiresAt)`. The receiver also
+enforces `maxWriteDurationMs`, so no accepted operation can outlive the tombstone grace
+window after the floor fences its cursor.
 
 ## Minimal peer protocol
 
@@ -195,24 +229,51 @@ The feed head is a persisted high-water counter, not `MAX(seq)` over surviving r
 Sweeping the newest stored tombstone must never let a later write reuse its sequence and
 fall behind an already-issued cursor.
 
-One bounded sweep transaction:
+Cleanup uses one persistent pending fence checkpoint:
 
-1. Select at most `SWEEP` tombstones committed before `now - retention`.
-2. Calculate one position immediately after the highest selected tombstone.
-3. Advance `feedFloor` to at least that position.
-4. Physically delete the selected tombstone rows.
-5. Commit the floor and deletes atomically.
+```ts
+type PendingFence = {
+	through: number
+	fencedAt: number
+}
+```
 
-Advancing the floor first without deleting is safe but unnecessarily fences cursors.
-Deleting without advancing the floor is unsafe. They are one transaction or neither.
+The bounded sweep has two stages.
+
+**Fence:** when no checkpoint is pending, select at most `sweepBatch` tombstones older
+than `tombstoneFenceAgeMs`. In one transaction, advance `feedFloor` immediately past
+the highest selected position and record `{ through, fencedAt: now }`. Keep every
+tombstone row.
+
+**Delete:** only after `fencedAt + tombstoneGraceMs`, delete at most `sweepBatch`
+tombstones below `through`. Keep the checkpoint until no matching tombstones remain,
+then clear it. A late first sweep still performs only the fence stage; it never treats
+age alone as proof that the grace period happened.
+
+This removes the validation/deletion timing race without coupling row commits to GC:
+
+```text
+tombstone exists
+        ↓ fence: floor advances
+old cursor cannot mint another write lease
+        ↓ grace: existing write lease and request lifetime expire
+tombstone still rejects any in-flight old live row
+        ↓
+physical deletion is safe
+```
+
+The fence transaction atomically stores the floor and checkpoint. The later delete is
+safe only for positions below that persisted checkpoint. A crash can delay cleanup but
+cannot skip the grace barrier.
 
 Live rows remain, including live rows below the floor. An empty bootstrap can still scan
 them. Incremental cursors below the floor are refused because they may have missed a
 deleted tombstone.
 
-`gc()` stays bounded and reports whether more work remains. Blob sweeping remains a
-separate reachability pass: removing a tombstone does not prove its old content hash is
-unreferenced.
+`gc()` stays bounded and reports whether immediate work remains. While a checkpoint is
+waiting for grace, the host schedules the next run for its eligibility time. Blob
+sweeping remains a separate reachability pass: removing a tombstone does not prove its
+old content hash is unreferenced.
 
 Replica row equality becomes equality modulo safely pruned tombstones. A peer may still
 hold a tombstone another peer swept; normal incremental cursors have already passed it.
@@ -243,7 +304,8 @@ all active replicas acknowledge a tombstone. That storage trade is deliberate.
   commit. Blobs accepted earlier while valid may remain unreachable until blob GC.
 - Bootstrap preservation failure keeps the old local store active and surfaces sync
   error.
-- Sweep failure commits neither row deletion nor floor advancement.
+- Fence failure commits neither floor nor checkpoint. Delete failure retains the
+  checkpoint and remaining tombstones for retry.
 - Cursor validation and retention use a persisted, nondecreasing receiver observation of
   wall time. Clock rollback cannot extend a token.
 
@@ -265,20 +327,27 @@ Implement one vertical red-green slice at a time:
 5. **L05 — mid-transfer expiry.** Accept one blob put under a valid lease, advance the
    clock past expiry, and prove the next put and row commit are refused. The first blob
    is unreachable and the blob reachability sweep can reclaim it.
-6. **G01 — first sweep.** An old tombstone is removed while a live row and recent
-   tombstone remain. `gc()` reports bounded progress.
-7. **G02 — atomic floor.** A failure during sweep leaves both tombstone and floor as they
-   were; retry removes it once.
-8. **G03 — resurrection fence.** A cursor from before the swept tombstone cannot push its
-   old live row. Authority state stays absent.
-9. **G04 — monotonic head.** Sweep the tombstone at the feed tail, commit a new live row,
-   and prove an already-issued cursor sees that row rather than skipping a reused seq.
-10. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
+6. **G01 — fence first.** An old tombstone advances the floor and creates a checkpoint
+   but remains physically present with live and recent rows unchanged.
+7. **G02 — atomic fence.** A failure leaves both floor and checkpoint unchanged; retry
+   creates both once.
+8. **G03 — grace barrier.** Mint a write lease just before fencing. During grace, its old
+   live row still meets the tombstone and cannot land; the lease and maximum request
+   lifetime expire before deletion eligibility.
+9. **G04 — delayed deletion.** After grace, remove only tombstones below the checkpoint
+   in bounded batches, then clear it.
+10. **G05 — late first sweep.** Advance the clock beyond the nominal 40-day minimum
+   before running GC for the first time. It fences but does not delete until ten actual
+   grace days pass.
+11. **G06 — monotonic head.** Delete the tombstone at the feed tail, commit a new live
+   row, and prove an already-issued cursor sees that row rather than skipping a reused
+   seq.
+12. **B01 — bootstrap is read-only.** Empty bootstrap pages can cross the floor, but their
    cursors cannot authorise a push.
-11. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
+13. **B02 — fresh-store replacement.** An expired Frieren profile preserves pending local
    work, builds a fresh IndexedDB replica, switches only after complete bootstrap, and
    does not retain an authority-absent stale row.
-12. **P01 — symmetric peers.** Two in-process peers independently expire each other's
+14. **P01 — symmetric peers.** Two in-process peers independently expire each other's
     cursors and recover by bootstrap without either storing a replica list.
 
 After each GREEN, refactor only while the focused test and existing conformance tests are
@@ -290,7 +359,7 @@ green. Do not write all tests before implementation.
 - `packages/core` — signed HTTP cursor/lease handling and SQLite floor metadata;
 - `packages/core/src/migrations` — receiver-private commit time, signing, and floor state;
 - `platform/frieren/src/fs.ts` — fresh IndexedDB bootstrap and crash-safe profile switch;
-- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G04, B01–B02,
+- existing engine, HTTP, SQLite, synced, and Frieren tests — L01–L05, G01–G06, B01–B02,
   and P01.
 
 Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to `Node`.
@@ -306,9 +375,15 @@ Do not add replica ids, acknowledgement rows, token claims, or GC timestamps to 
 - Every peer blob put validates its lease. Mid-transfer expiry may leave only blobs
   accepted while valid; no row references them and blob GC can reclaim them.
 - Bootstrap uses a fresh local store and preserves unacknowledged work before switching.
-- Old tombstones are removed in bounded transactions; recent tombstones and live rows
-  remain.
-- Tombstone deletion and feed-floor advancement are atomic.
+- All retention and batch values come from one validated receiver policy object.
+- With defaults, a tombstone is fenced at 30 days and remains for at least ten actual
+  grace days before bounded physical deletion; recent tombstones and live rows remain.
+- Feed-floor advancement and its pending checkpoint are atomic. Deletion requires the
+  persisted checkpoint to have completed its grace period.
+- Write leases never outlive their parent cursor, and configured grace exceeds the
+  maximum write lease plus receiver write duration.
+- A commit admitted immediately before fencing cannot overlap physical deletion; the
+  tombstone remains authoritative throughout its bounded lifetime.
 - Feed sequence numbers never rewind or get reused after physical deletion.
 - No valid incremental cursor can predate a swept tombstone.
 - A year-old peer cannot resurrect a deleted id; it must bootstrap.
