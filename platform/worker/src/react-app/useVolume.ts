@@ -3,8 +3,8 @@ import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
-import type { Store } from '@justfiles/fs/store'
-import { type CursorSlot, synced } from '@justfiles/fs/synced'
+import type { Peer } from '@justfiles/fs/peer'
+import { bootstrap, type CursorSlot, synced } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
 import {
 	createContext,
@@ -362,7 +362,7 @@ function replicaId(): string {
 
 // The seam, over the wire. The token is minted per REQUEST — Clerk's expires — so it
 // goes in through the injected `fetch` rather than a static header bag read once.
-function remoteStore(getToken: GetToken): Store {
+function remoteStore(getToken: GetToken): Peer {
 	return httpStore('/store', {
 		fetch: async (url, init) => {
 			const token = await getToken()
@@ -390,11 +390,13 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 	// a device whose local replica is empty records "loaded" over an empty workspace and
 	// keeps showing it. `flush()` never rejects, so an offline boot still gets its volume;
 	// it just gets `error` status and the local tree, which is what shipped.
+	const pull = slot('justfiles-store-pull')
+	const remote = remoteStore(getToken)
 	const volume = await synced({
 		local,
-		remote: remoteStore(getToken),
+		remote: initialPeer(remote, local, pull),
 		replica: replicaId(),
-		pull: slot('justfiles-store-pull'),
+		pull,
 		push: slot('justfiles-store-push'),
 		lazyContent: true
 	})
@@ -683,6 +685,22 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 		writeAssetFile,
 		resolveAssetUrl,
 		readAssetBlob
+	}
+}
+
+function initialPeer(peer: Peer, local: ReturnType<typeof idbStore>, pull: CursorSlot): Peer {
+	let bootstrapping: Promise<void> | undefined
+	return {
+		...peer,
+		async open(cursor) {
+			if (cursor !== undefined) return peer.open(cursor)
+			bootstrapping ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
+				bootstrapping = undefined
+				throw error
+			})
+			await bootstrapping
+			return peer.open(await pull.load())
+		}
 	}
 }
 

@@ -1,8 +1,6 @@
 /**
- * The seam as routes, over any injected `Store`. One route per seam call and
- * nothing else — this is the wire the design means when it says the storage API
- * and the wire are the same thing, so an addition here needs a design review
- * that starts with "why can this not be rows?".
+ * The leased peer routes. Reads expose the store seam; writes require a lease
+ * minted from a current signed cursor.
  *
  * It routes and it sets status codes. It does not decide policy: the tree
  * invariants, the serialization and the blob verification all belong to the
@@ -16,7 +14,7 @@
  *
  * - **409** a commit was refused — a guard, or an invariant no `Guard` states.
  *   The body names it, and `httpStore` turns it back into `GuardError`.
- * - **410** the cursor belongs to another lineage (rule 11).
+ * - **410** incremental sync must stop and bootstrap into a fresh store.
  * - **400** the request contradicts itself: a malformed row, or bytes that do
  *   not hash to the key they were offered under.
  *
@@ -25,18 +23,12 @@
  */
 
 import { decodeCommit, encodeNode } from '@justfiles/fs/http'
-import {
-	ForeignCursorError,
-	GuardError,
-	HashMismatchError,
-	type Node,
-	type Page,
-	type Store
-} from '@justfiles/fs/store'
+import { BootstrapRequiredError, type Peer } from '@justfiles/fs/peer'
+import { GuardError, HashMismatchError, type Node, type Page } from '@justfiles/fs/store'
 import { type Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 
-export function storeApi(store: Store): Hono {
+export function storeApi(store: Peer): Hono {
 	const app = new Hono()
 	app.use('*', async (c, next) => {
 		c.header('cache-control', 'no-store')
@@ -47,7 +39,7 @@ export function storeApi(store: Store): Hono {
 		// A refusal is not a failure. The reason travels because the caller acts on
 		// it — read again and replan — rather than reporting it.
 		if (err instanceof GuardError) return c.json({ error: 'guard', reason: err.reason }, 409)
-		if (err instanceof ForeignCursorError) return c.json({ error: 'lineage' }, 410)
+		if (err instanceof BootstrapRequiredError) return c.json({ error: 'bootstrap-required' }, 410)
 		if (err instanceof HashMismatchError)
 			return c.json({ error: 'hash', message: err.message }, 400)
 		if (err instanceof HTTPException) return err.getResponse()
@@ -66,13 +58,19 @@ export function storeApi(store: Store): Hono {
 	// The one ordering. An absent `cursor` is the empty cursor — where every scan
 	// starts — so it is missing rather than blank.
 	app.get('/since', async (c) => c.json(page(await store.since(c.req.query('cursor')))))
+	app.post('/open', async (c) => {
+		const body = (await c.req.json().catch(badRequest)) as { cursor?: unknown }
+		if (body.cursor !== undefined && typeof body.cursor !== 'string')
+			return badRequest('cursor must be a string')
+		return c.json({ lease: await store.open(body.cursor) })
+	})
 
 	// The one write. Strictly decoded, on the same reasoning that makes a
 	// peer-facing store verify a hash (rule 7): a peer's rows are the one way a
 	// malformed row could enter the table everyone converges on.
 	app.post('/commit', async (c) => {
 		const batch = await c.req.json().then(decodeCommit).catch(badRequest)
-		await store.commit(batch.writes, batch.guards)
+		await store.commit(lease(c), batch.writes, batch.guards)
 		return c.body(null, 204)
 	})
 
@@ -91,7 +89,7 @@ export function storeApi(store: Store): Hono {
 		// Whether the bytes must hash to the key is the STORE's business: a
 		// peer-facing one is wrapped in `verifiedBlobs` and says so with a
 		// `HashMismatchError`, which is the 400 above.
-		await store.blobs.put(c.req.param('hash'), new Uint8Array(await c.req.arrayBuffer()))
+		await store.blobs.put(lease(c), c.req.param('hash'), new Uint8Array(await c.req.arrayBuffer()))
 		return c.body(null, 204)
 	})
 
@@ -105,6 +103,8 @@ const page = (found: Page) => ({ nodes: found.nodes.map(encodeNode), next: found
 
 const need = (c: Context, name: string): string =>
 	c.req.query(name) ?? badRequest(`missing query parameter ${name}`)
+
+const lease = (c: Context): string => c.req.header('x-sync-lease') ?? ''
 
 const badRequest = (reason: unknown): never => {
 	throw new HTTPException(400, {

@@ -5,6 +5,7 @@ import { createClerkClient } from '@clerk/backend'
 import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
+import { openPeerStore } from '@justfiles/fs/peer'
 import { chromium } from '@playwright/test'
 
 const DEFAULT_EMAIL = 'llm+clerk_test@example.com'
@@ -107,7 +108,11 @@ async function createAuthedVolume(token: string) {
 	const { baseUrl } = config()
 	// The seam is the wire, so a script needs no client library — just the store the
 	// server serves, and a volume over it.
-	return volume(httpStore(`${baseUrl}/store`, { headers: { Authorization: `Bearer ${token}` } }))
+	return volume(
+		await openPeerStore(
+			httpStore(`${baseUrl}/store`, { headers: { Authorization: `Bearer ${token}` } })
+		)
+	)
 }
 
 async function seedOnboarding(token: string) {

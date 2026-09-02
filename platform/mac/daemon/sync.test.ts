@@ -5,6 +5,7 @@ import type { Kernel } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { memStore } from '@justfiles/fs/mem'
+import { receiver } from '@justfiles/fs/peer'
 import type { Cursor, Node, Store } from '@justfiles/fs/store'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
@@ -32,7 +33,7 @@ async function temp(): Promise<string> {
 function backend() {
 	const store = authority(memStore())
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(store)
+	const app = storeApi(receiver(store))
 	let online = true
 	const requests: { url: string; authorization: string | null }[] = []
 	return {

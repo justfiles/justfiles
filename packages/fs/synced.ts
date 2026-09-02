@@ -28,6 +28,7 @@
  */
 
 import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
+import { BootstrapRequiredError, type Peer, type SyncStateLock } from './peer'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
 import { type Bindings, type Volume, volume } from './volume'
 
@@ -40,7 +41,7 @@ export type { CursorSlot } from './engine'
  * replica AUTHORED, so a volume minting under any other tag writes rows no cycle will
  * ever send.
  */
-export { versions } from './engine'
+export { authorOf, bootstrap, versions } from './engine'
 
 /** How often the loop runs when nothing has asked it to run sooner. */
 const INTERVAL_MS = 30_000
@@ -83,8 +84,8 @@ export type DiscardSlot = {
 export type SyncedProps = {
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
-	/** The peer. A `Store`, so a folder, a server and another replica all fit. */
-	remote: Store
+	/** The peer: a local store or a leased receiver. */
+	remote: Store | Peer
 	/**
 	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.ts`).
 	 * Only the local store is synced — a bound store is joined at a name and is nobody
@@ -103,6 +104,10 @@ export type SyncedProps = {
 	pull: CursorSlot
 	/** Where it keeps its position in its own. */
 	push: CursorSlot
+	/** Host-private exclusion shared by durable cursor saves and local-store GC. */
+	lock?: SyncStateLock
+	/** Lets a host replace the stale backing store after an incremental cycle is fenced. */
+	onBootstrapRequired?: () => void
 	/**
 	 * Where it keeps "a discard stopped half-done". An app without one keeps that
 	 * bit in memory and cannot recover the crash the type above describes — which is
@@ -176,7 +181,13 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	const { local, remote, replica } = props
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
-	const opts = { replica, pull: props.pull, push: props.push, lazyContent: props.lazyContent }
+	const opts = {
+		replica,
+		pull: props.pull,
+		push: props.push,
+		lock: props.lock,
+		lazyContent: props.lazyContent
+	}
 
 	// The volume reads through `hydratingBlobs` whether or not the pull is lazy.
 	// A row naming content this replica does not hold is the same row either way
@@ -241,6 +252,8 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		await props.discard?.save(on)
 		unfinished = on
 	}
+	const withSyncState = <T>(body: () => Promise<T>): Promise<T> =>
+		props.lock ? props.lock(body) : body()
 
 	/** May the loop act? Every way it must not, in one place. */
 	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfinished
@@ -270,6 +283,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			failures = 0
 			setStatus('synced')
 		} catch (error) {
+			if (error instanceof BootstrapRequiredError) props.onBootstrapRequired?.()
 			if (!(destroyed && error instanceof Error && error.name === 'AbortError'))
 				console.error(error)
 			failures++
@@ -477,11 +491,12 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// a writer that reaches this store directly can put one back. Asking the
 			// rows what they ARE, rather than remembering which ones were handled,
 			// answers both.
+			let cutoff: Cursor | undefined
 			for (let left = MAX_ATTEMPTS; ; left--) {
 				const scan = await feed()
 				const live = living(scan.rows)
 				if (live.length === 0) {
-					await props.push.save(scan.tip)
+					cutoff = scan.tip
 					break
 				}
 				if (left === 0) throw new Error('take theirs cannot keep up with the writes under it')
@@ -497,7 +512,10 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// too — the peer's rows are all BEHIND the cursor this replaces, so a
 			// loop left running over a store that lost this step would never bring
 			// one of them back, and would look perfectly healthy doing it.
-			await props.pull.save(undefined)
+			await withSyncState(async () => {
+				await props.push.save(cutoff)
+				await props.pull.save(undefined)
+			})
 			await discarding(false)
 		})
 	}
@@ -552,12 +570,10 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 				}
 			}
 			// Offer the whole feed again, not just what changed since the last push.
-			// The authority is empty, so "already sent" is true of nothing — and a
-			// reset keeps the store's lineage (`packages/core/src/reset.ts`), so
-			// nothing fences this cursor into rewinding by itself. A failure here
+			// The authority is empty, so "already sent" is true of nothing. A failure here
 			// costs a partial republish that another `takeMine` completes; it cannot
 			// delete anything, which is why this one needs no fence.
-			await props.push.save(undefined)
+			await withSyncState(() => props.push.save(undefined))
 		})
 	}
 

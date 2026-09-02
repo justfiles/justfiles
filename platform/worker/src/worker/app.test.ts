@@ -9,12 +9,13 @@
 
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
+import { receiver } from '@justfiles/fs/peer'
 import { expect, test } from 'vitest'
 import { createWorkerApiApp } from './app'
 
 test('a file written through the seam reads back through the one-request route', async () => {
 	const store = memStore()
-	const app = createWorkerApiApp({ store })
+	const app = createWorkerApiApp({ store, peer: receiver(store) })
 	const vol = volume(store)
 	await vol.mkdir('/notes')
 	await vol.writeFile('/notes/hello.md', new TextEncoder().encode('# hi'))

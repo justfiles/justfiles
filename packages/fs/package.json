@@ -11,6 +11,7 @@
 		"./idb": "./idb.ts",
 		"./fs": "./fs.ts",
 		"./http": "./http.ts",
+		"./peer": "./peer.ts",
 		"./migrate": "./migrate.ts",
 		"./migrate.idb": "./migrate.idb.ts",
 		"./migrate.legacy": "./migrate.legacy.ts",
@@ -62,6 +63,11 @@
 				"types": "./dist/http.d.ts",
 				"import": "./dist/http.js",
 				"default": "./dist/http.js"
+			},
+			"./peer": {
+				"types": "./dist/peer.d.ts",
+				"import": "./dist/peer.js",
+				"default": "./dist/peer.js"
 			},
 			"./migrate": {
 				"types": "./dist/migrate.d.ts",

@@ -1,3 +1,4 @@
+import { type Node, ROOT, type Store } from '@justfiles/fs/store'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const H = vi.hoisted(() => ({
@@ -10,7 +11,9 @@ const H = vi.hoisted(() => ({
 	// One profile is one replica, whoever asks for it and however often.
 	opened: vi.fn(),
 	synced: vi.fn(),
-	destroyed: vi.fn()
+	destroyed: vi.fn(),
+	peer: {} as unknown,
+	stores: new Map<string, unknown>()
 }))
 
 vi.mock('@justfiles/core', () => ({
@@ -22,12 +25,11 @@ vi.mock('@justfiles/core', () => ({
 // the stub. `memStore` is the same seam `idbStore` implements.
 vi.mock('@justfiles/fs/idb', async () => {
 	const { memStore } = await import('@justfiles/fs/mem')
-	const stores = new Map<string, ReturnType<typeof memStore>>()
 	return {
 		idbStore: (name: string) => {
 			H.opened(name)
-			const held = stores.get(name) ?? memStore()
-			stores.set(name, held)
+			const held = H.stores.get(name) ?? memStore()
+			H.stores.set(name, held)
 			return held
 		},
 		// The cross-tab wake is a latency optimization over polling `since`, and
@@ -44,7 +46,7 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
 	migrateIdb: H.migrateIdb
 }))
-vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
+vi.mock('@justfiles/fs/http', () => ({ httpStore: () => H.peer }))
 
 vi.mock('@justfiles/fs/synced', async (original) => ({
 	...(await original<Record<string, unknown>>()),
@@ -129,6 +131,8 @@ describe('profile session switching', () => {
 		H.opened.mockReset()
 		H.synced.mockReset()
 		H.destroyed.mockReset()
+		H.peer = {}
+		H.stores.clear()
 		handshakeIs(1)
 		vi.useFakeTimers()
 		vi.setSystemTime(new Date('2026-05-31T00:00:00Z'))
@@ -265,6 +269,70 @@ describe('profile session switching', () => {
 		// leaves a loop that is already there alone.
 		expect(H.destroyed).toHaveBeenCalledTimes(1)
 		expect(H.synced).toHaveBeenCalledTimes(2)
+	})
+
+	test('an expired cursor switches to a fresh store and keeps offline work private', async () => {
+		const { data, fs } = await loadFs([
+			{
+				id: 'account-profile',
+				remoteUserId: 'user-1',
+				lastOpenedAt: 1,
+				adopted: true
+			}
+		])
+		const { memStore } = await import('@justfiles/fs/mem')
+		const { receiver } = await import('@justfiles/fs/peer')
+		let now = 0
+		const remote = memStore()
+		const remoteRow: Node = {
+			id: 'remote',
+			parent: ROOT,
+			name: 'remote.txt',
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: 0n,
+			version: 'remote:1'
+		}
+		await remote.commit([remoteRow])
+		const peer = receiver(remote, {
+			clock: () => now,
+			policy: {
+				cursorLeaseMs: 100,
+				writeLeaseMs: 20,
+				maxWriteDurationMs: 10,
+				tombstoneFenceAgeMs: 100,
+				tombstoneGraceMs: 31
+			}
+		})
+		const expired = (await peer.since()).next
+		now = 101
+		H.peer = peer
+		data.set('frieren-fs-account-profile-pull', expired as string)
+		await fs.openProfile()
+		const old = H.stores.get('frieren-store-account-profile') as Store
+		const staleRow: Node = {
+			...remoteRow,
+			id: 'offline',
+			name: 'offline.txt',
+			version: 'account-profile:offline'
+		}
+		await old.commit([staleRow])
+
+		await fs.attachRemoteUser('user-1', async () => 'token')
+
+		const profile = JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0] as StoredProfile & {
+			storeDb?: string
+			pendingBootstrap?: unknown
+			retiredStoreDbs?: string[]
+		}
+		const fresh = H.stores.get(profile.storeDb as string) as Store
+		const recovery = H.stores.get('frieren-recovery-account-profile') as Store
+		expect(await fresh.get('remote')).toEqual(remoteRow)
+		expect(await fresh.get('offline')).toBeNull()
+		expect(await recovery.get('offline')).toEqual(staleRow)
+		expect(profile.pendingBootstrap).toBeUndefined()
+		expect(profile.retiredStoreDbs).toBeUndefined()
 	})
 
 	test('factory reset reuses an operation after ambiguous confirmation failure', async () => {

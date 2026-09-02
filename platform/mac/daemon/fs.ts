@@ -6,8 +6,10 @@ import { join } from 'node:path'
 import { announceMount, type Bindings, type Volume, volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
 import { httpStore } from '@justfiles/fs/http'
+import type { Peer } from '@justfiles/fs/peer'
 import { ROOT, type Store } from '@justfiles/fs/store'
 import {
+	bootstrap,
 	type CursorSlot,
 	type DiscardSlot,
 	type SyncStatus,
@@ -157,11 +159,12 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			if (!options.getToken) throw new Error('authenticated storage needs a token source')
 			const remote = remoteStore(options.getToken, options.origin, options.fetch)
 			abortRemote = remote.abort
+			const pull = saved.cursor('pull')
 			sync = await synced({
 				local: mainStore,
-				remote: remote.store,
+				remote: initialPeer(remote.store, mainStore, pull),
 				replica: state.replica,
-				pull: saved.cursor('pull'),
+				pull,
 				push: saved.cursor('push'),
 				discard: saved.discard,
 				bindings,
@@ -249,11 +252,27 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	}
 }
 
+function initialPeer(peer: Peer, local: Store, pull: CursorSlot): Peer {
+	let bootstrapping: Promise<void> | undefined
+	return {
+		...peer,
+		async open(cursor) {
+			if (cursor !== undefined) return peer.open(cursor)
+			bootstrapping ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
+				bootstrapping = undefined
+				throw error
+			})
+			await bootstrapping
+			return peer.open(await pull.load())
+		}
+	}
+}
+
 function remoteStore(
 	getToken: () => Promise<string | null>,
 	origin = platformOrigin(),
 	send: Send = fetch
-): { store: Store; abort(): void } {
+): { store: Peer; abort(): void } {
 	const controller = new AbortController()
 	return {
 		store: httpStore(new URL('/store', origin).toString(), {

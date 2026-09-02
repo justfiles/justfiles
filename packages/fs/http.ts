@@ -1,11 +1,6 @@
 /**
- * The seam over HTTP: a `Store` whose one table lives behind a URL.
- *
- * There is no protocol here beyond the seam — five node calls, three content
- * calls, one route each, rows verbatim. A cursor does travel, and rule 5 is not
- * bent by it: the cursor this client sends is one this very store minted, handed
- * back to the only store that means anything by it. A handle has exactly one
- * feed, so the two sides cannot be mixed up.
+ * A leased peer over HTTP. Reads mirror `Store`; writes carry a lease minted
+ * from the receiver's signed feed cursor.
  *
  * The file owns the wire FORMAT in both directions, because the two halves of a
  * codec must not drift: the server (`packages/core/src/store.api.ts`) imports
@@ -15,15 +10,8 @@
  * `fetch` and nothing else, so this runs in a browser, a worker, or node.
  */
 
-import {
-	ForeignCursorError,
-	type Guard,
-	GuardError,
-	type Hash,
-	type Node,
-	type Page,
-	type Store
-} from './store'
+import { BootstrapRequiredError, type Peer, type WriteLease } from './peer'
+import { type Guard, GuardError, type Hash, type Node, type Page } from './store'
 
 /**
  * A `Node` as JSON. Two fields change shape and no others do: the 64-bit counts
@@ -117,7 +105,7 @@ export type HttpStoreOptions = {
 	fetch?: (url: string, init?: RequestInit) => Promise<Response>
 }
 
-export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
+export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Peer {
 	const base = baseUrl.replace(/\/+$/, '')
 	const send = opts.fetch ?? ((url, init) => fetch(url, init))
 
@@ -129,6 +117,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 	const call = async (path: string, init?: Init): Promise<Response> => {
 		const headers: Record<string, string> = { ...opts.headers }
 		if (init?.type !== undefined) headers['content-type'] = init.type
+		if (init?.lease !== undefined) headers['x-sync-lease'] = init.lease
 		const res = await send(base + path, {
 			method: init?.method,
 			body: init?.body,
@@ -137,8 +126,8 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 		})
 		// A refusal, not a failure: a guard did not hold, and the body says which.
 		if (res.status === 409) throw new GuardError(await refusal(res))
-		// Rule 11: no position in that store will ever answer to that cursor.
-		if (res.status === 410) throw new ForeignCursorError()
+		// Expired, swept, malformed, and wrong-lineage cursors have one public answer.
+		if (res.status === 410) throw new BootstrapRequiredError()
 		return res
 	}
 
@@ -165,13 +154,24 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 		children: async (parent, cursor) =>
 			page(await answer(`/children?${query({ parent, cursor })}`)),
 		since: async (cursor) => page(await answer(`/since?${query({ cursor })}`)),
+		async open(cursor) {
+			const got = fields(
+				await answer('/open', {
+					method: 'POST',
+					body: JSON.stringify({ cursor }),
+					type: 'application/json'
+				}),
+				'an open response'
+			)
+			return text(got.lease, 'lease')
+		},
 
-		async commit(writes, guards) {
+		async commit(lease, writes, guards) {
 			// Rule 3: the batch is taken at the CALL. `JSON.stringify` runs before
 			// this function's first await, which is where the caller gets control back
 			// and may edit a row it just handed over.
 			const body = JSON.stringify({ writes: writes.map(encodeNode), guards })
-			await answer('/commit', { method: 'POST', body, type: 'application/json' })
+			await answer('/commit', { method: 'POST', body, type: 'application/json', lease })
 		},
 
 		blobs: {
@@ -182,7 +182,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 				const res = await blob(hash)
 				return res === null ? null : new Uint8Array(await res.arrayBuffer())
 			},
-			async put(hash, data) {
+			async put(lease, hash, data) {
 				// Held before the first await, for the reason `commit` stringifies early. As
 				// a plain `ArrayBuffer`, which is both what a body takes everywhere and a
 				// copy that cannot alias the caller's array.
@@ -190,7 +190,8 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 				await answer(blobPath(hash), {
 					method: 'PUT',
 					body,
-					type: 'application/octet-stream'
+					type: 'application/octet-stream',
+					lease
 				})
 			}
 		}
@@ -207,7 +208,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
  * rather than as `BodyInit`, which is a DOM name — this package is `platform:
  * neutral` and its consumers compile it under whatever lib they have.
  */
-type Init = { method?: string; body?: string | ArrayBuffer; type?: string }
+type Init = { method?: string; body?: string | ArrayBuffer; type?: string; lease?: WriteLease }
 
 const blobPath = (hash: Hash): string => `/blob/${encodeURIComponent(hash)}`
 

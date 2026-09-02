@@ -13,6 +13,7 @@
 
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
+import { receiver } from '@justfiles/fs/peer'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 // The pass itself has its own tests (`migrate.idb.test.ts`); what matters here is how
@@ -24,7 +25,8 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	}
 }))
 
-const peer = memStore()
+const peerStore = memStore()
+const peer = receiver(peerStore)
 let adoptions = 0
 
 // The two stores this runtime opens by name. The local one is shared across the "tabs"
@@ -63,7 +65,7 @@ beforeEach(() => {
 })
 
 test('the boot listing already holds what only the peer had', async () => {
-	await volume(peer).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
+	await volume(peerStore).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
 
 	const runtime = await createVolumeRuntime(async () => 'token')
 

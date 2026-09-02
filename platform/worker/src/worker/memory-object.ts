@@ -9,6 +9,7 @@ import {
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import { authority } from '@justfiles/fs/authority'
+import { receiver, syncStateLock } from '@justfiles/fs/peer'
 import { createWorkerApiApp, type WorkerApiType } from './app'
 
 /**
@@ -32,12 +33,15 @@ export class MemoryObject extends DurableObject<Env> {
 		const namespace = ctx.id.toString()
 		// Bytes too big for a row go to R2: a Workers SQLite ROW is capped at 2 MB — hard
 		// — so a store that inlined everything could not hold a larger file at all.
+		const lock = syncStateLock()
 		const store = sqliteStore(createDoSyncDb(ctx.storage), undefined, {
+			lock,
 			blobs: scopedBlobs(env.ASSETS, namespace)
 		})
 		// Every served path goes through the authority: rule 9's invariants, one commit at
 		// a time, and a hash this server verifies rather than takes a peer's word for.
-		this.app = createWorkerApiApp({ store: authority(store) })
+		const tree = authority(store)
+		this.app = createWorkerApiApp({ store: tree, peer: receiver(tree, { lock }) })
 		// The one initialization seam: no request runs until the schema exists and the old
 		// tree has been adopted, so nothing else needs a readiness gate. The pass writes
 		// into the RAW store, past the authority — nothing else is running, the rows come

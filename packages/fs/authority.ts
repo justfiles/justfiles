@@ -25,6 +25,7 @@
  * loser, recreate under a new id — out of the server entirely.
  */
 
+import type { ReceiverStore } from './peer'
 import {
 	type Cursor,
 	forwarded,
@@ -53,6 +54,8 @@ const holdsRows = (row: Node): boolean => row.type === 'dir'
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
 
+export function authority(store: ReceiverStore): ReceiverStore
+export function authority(store: Store): Store
 export function authority(store: Store): Store {
 	let queue: Promise<unknown> = Promise.resolve()
 

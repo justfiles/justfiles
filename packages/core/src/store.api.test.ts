@@ -19,19 +19,17 @@
 import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import { authority } from '../../fs/authority'
-import { storeConformance } from '../../fs/conformance'
 import { type CursorSlot, sync, versions } from '../../fs/engine'
 import { httpStore } from '../../fs/http'
 import { memStore } from '../../fs/mem'
 import {
-	type Cursor,
-	ForeignCursorError,
-	GuardError,
-	type Node,
-	ROOT,
-	type Store,
-	sha256Hex
-} from '../../fs/store'
+	BootstrapRequiredError,
+	type Peer,
+	type ReceiverStore,
+	receiver,
+	type WriteLease
+} from '../../fs/peer'
+import { type Cursor, GuardError, type Node, ROOT, sha256Hex } from '../../fs/store'
 import { volume } from '../../fs/volume'
 import { storeApi } from './store.api'
 
@@ -44,8 +42,8 @@ const dec = new TextDecoder()
  * mock of it. Mounted under a path, as a host mounts it — the client's base URL
  * is the only place that knows where.
  */
-const served = (store: Store): { ask: Ask; client: Store } => {
-	const host = new Hono().route('/store', storeApi(store))
+const served = (store: ReceiverStore): { ask: Ask; client: Peer } => {
+	const host = new Hono().route('/store', storeApi(receiver(store)))
 	// `app.request` may answer synchronously; a fetch never does.
 	const ask: Ask = async (path, init) => host.request(`/store${path}`, init)
 	return {
@@ -56,10 +54,18 @@ const served = (store: Store): { ask: Ask; client: Store } => {
 	}
 }
 
+const caughtUp = async (peer: Peer): Promise<Cursor> => {
+	let cursor: Cursor | undefined
+	for (;;) {
+		const page = await peer.since(cursor)
+		if (!page.next) throw new Error('peer did not return a cursor')
+		cursor = page.next
+		if (page.nodes.length === 0) return cursor
+	}
+}
+
 /** A raw request at the mounted API, for the cases that are about the STATUS. */
 type Ask = (path: string, init?: RequestInit) => Promise<Response>
-
-storeConformance('httpStore over memStore', async () => served(memStore()).client)
 
 const node = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 	parent: ROOT,
@@ -76,11 +82,14 @@ const wire = (...writes: Node[]) => ({
 	writes: writes.map((row) => ({ ...row, mtimeNs: String(row.mtimeNs), size: String(row.size) }))
 })
 
-const post = (ask: Ask, body: unknown) =>
+const post = (ask: Ask, body: unknown, lease?: WriteLease) =>
 	ask('/commit', {
 		method: 'POST',
 		body: JSON.stringify(body),
-		headers: { 'content-type': 'application/json' }
+		headers: {
+			'content-type': 'application/json',
+			...(lease === undefined ? {} : { 'x-sync-lease': lease })
+		}
 	})
 
 describe('storeApi: what the wire answers', () => {
@@ -88,9 +97,14 @@ describe('storeApi: what the wire answers', () => {
 		const store = memStore()
 		const { ask, client } = served(store)
 		await store.commit([node({ id: 'held', name: 'taken.txt' })])
+		const lease = await client.open(await caughtUp(client))
 
 		const guard = { free: { parent: ROOT, name: 'taken.txt' } }
-		const res = await post(ask, { ...wire(node({ id: 'a', name: 'a.txt' })), guards: [guard] })
+		const res = await post(
+			ask,
+			{ ...wire(node({ id: 'a', name: 'a.txt' })), guards: [guard] },
+			lease
+		)
 		// A refusal is not a failure: 409, and the body says which guard did not
 		// hold, so a caller can tell "read again and replan" from "this peer is
 		// broken" without parsing a message.
@@ -101,7 +115,7 @@ describe('storeApi: what the wire answers', () => {
 		expect(await store.get('a')).toBeNull()
 
 		// The client turns that status back into the seam's typed refusal.
-		await expect(client.commit([node({ id: 'a', name: 'a.txt' })], [guard])).rejects.toThrow(
+		await expect(client.commit(lease, [node({ id: 'a', name: 'a.txt' })], [guard])).rejects.toThrow(
 			GuardError
 		)
 	})
@@ -117,13 +131,14 @@ describe('storeApi: what the wire answers', () => {
 		const res = await other.ask(`/since?cursor=${encodeURIComponent(cursor)}`)
 		expect(res.status).toBe(410)
 		expect(res.headers.get('cache-control')).toBe('no-store')
-		await expect(other.client.since(cursor)).rejects.toThrow(ForeignCursorError)
+		await expect(other.client.since(cursor)).rejects.toThrow(BootstrapRequiredError)
 		expect((await other.client.since()).nodes.map((n) => n.id)).toEqual([ROOT])
 	})
 
 	it('refuses a malformed row with a 400 and writes nothing', async () => {
 		const store = memStore()
-		const { ask } = served(store)
+		const { ask, client } = served(store)
+		const lease = await client.open(await caughtUp(client))
 
 		// The same reasoning as verifying a blob's hash (rule 7): this store takes
 		// writes from a peer, and nothing under it type-checks a row — the authority
@@ -136,7 +151,7 @@ describe('storeApi: what the wire answers', () => {
 			{ writes: 'not an array' },
 			{ ...wire(node({ id: 'x', name: 'x.txt' })), guards: [{ nothing: true }] }
 		]) {
-			expect((await post(ask, body)).status).toBe(400)
+			expect((await post(ask, body, lease)).status).toBe(400)
 			expect(await store.get('x')).toBeNull()
 		}
 	})
@@ -144,19 +159,22 @@ describe('storeApi: what the wire answers', () => {
 	it('carries a pre-epoch mtime, and still refuses a negative size', async () => {
 		const store = memStore()
 		const { ask, client } = served(store)
+		const lease = await client.open(await caughtUp(client))
 
 		// A time before 1970 is an ordinary POSIX time: `utimes` puts the caller's
 		// bigint straight into the row, and every other backend keeps it. A wire that
 		// refused one would be the only store with a narrower contract than the seam.
 		const old = node({ id: 'old', name: 'old.txt', mtimeNs: -1_000_000_000n })
-		await client.commit([old])
+		await client.commit(lease, [old])
 		expect(await client.get('old')).toEqual(old)
 		expect(await store.get('old')).toEqual(old)
 
 		// A size cannot be negative, and a store is better off saying so.
-		const res = await post(ask, {
-			writes: [{ ...wire(node({ id: 'x', name: 'x.txt' })).writes[0], size: '-1' }]
-		})
+		const res = await post(
+			ask,
+			{ writes: [{ ...wire(node({ id: 'x', name: 'x.txt' })).writes[0], size: '-1' }] },
+			lease
+		)
 		expect(res.status).toBe(400)
 		expect(await store.get('x')).toBeNull()
 	})
@@ -167,32 +185,38 @@ describe('storeApi: what the wire answers', () => {
 		// error it is: the request was wrong, not the store.
 		const store = memStore()
 		const { ask, client } = served(authority(store))
+		const lease = await client.open(await caughtUp(client))
 		const hash = await sha256Hex(enc.encode('hello'))
 
-		const res = await ask(`/blob/${hash}`, { method: 'PUT', body: enc.encode('goodbye') })
+		const res = await ask(`/blob/${hash}`, {
+			method: 'PUT',
+			body: enc.encode('goodbye'),
+			headers: { 'x-sync-lease': lease }
+		})
 		expect(res.status).toBe(400)
 		expect(await store.blobs.has(hash)).toBe(false)
-		await expect(client.blobs.put(hash, enc.encode('goodbye'))).rejects.toThrow()
+		await expect(client.blobs.put(lease, hash, enc.encode('goodbye'))).rejects.toThrow()
 		expect(await client.blobs.has(hash)).toBe(false)
 
 		// The honest bytes land, and come back by hash.
-		await client.blobs.put(hash, enc.encode('hello'))
+		await client.blobs.put(lease, hash, enc.encode('hello'))
 		expect(await client.blobs.get(hash)).toEqual(enc.encode('hello'))
 	})
 
 	it('answers an invariant-breaking commit with a 409, over the same route as a guard', async () => {
 		const hub = authority(memStore())
 		const { ask, client } = served(hub)
+		const lease = await client.open(await caughtUp(client))
 		const file = node({ id: 'f', name: 'f.txt' })
 		await hub.commit([file])
 
 		// Rule 9 lives at the authority, and no `Guard` states it. It still reaches
 		// the client as the same event: the commit was refused, read again and replan.
-		const res = await post(ask, wire(node({ id: 'kid', name: 'kid.txt', parent: 'f' })))
+		const res = await post(ask, wire(node({ id: 'kid', name: 'kid.txt', parent: 'f' })), lease)
 		expect(res.status).toBe(409)
 		expect(await res.json()).toMatchObject({ error: 'guard' })
 		await expect(
-			client.commit([node({ id: 'kid', name: 'kid.txt', parent: 'f' })])
+			client.commit(lease, [node({ id: 'kid', name: 'kid.txt', parent: 'f' })])
 		).rejects.toThrow(GuardError)
 		expect(await client.get('kid')).toBeNull()
 	})
@@ -234,7 +258,7 @@ function replica(id: string) {
 	}
 }
 
-const read = async (store: Store, path: string): Promise<string> =>
+const read = async (store: ReceiverStore, path: string): Promise<string> =>
 	dec.decode(await volume(store).readFile(path))
 
 describe('sync over the wire', () => {
@@ -251,6 +275,8 @@ describe('sync over the wire', () => {
 		const fromB = served(hub).client
 		const a = replica('a')
 		const b = replica('b')
+		await a.opts.pull.save(await caughtUp(fromA))
+		await b.opts.pull.save(await caughtUp(fromB))
 		await a.vol.writeFile('/note.txt', enc.encode('from a'))
 		await b.vol.writeFile('/note.txt', enc.encode('from b'))
 

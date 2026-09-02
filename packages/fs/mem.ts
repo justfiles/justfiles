@@ -1,3 +1,4 @@
+import { type ReceiverStore, rawCursor, rawPosition, receiverBackend } from './peer'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -7,7 +8,6 @@ import {
 	type Node,
 	type NodeId,
 	ROOT,
-	type Store,
 	same
 } from './store'
 
@@ -27,7 +27,7 @@ const copy = (n: Node): Node => structuredClone(n)
  * order, and a third map for content. Everything else in the design is derived
  * from these.
  */
-export function memStore(): Store {
+export function memStore(): ReceiverStore {
 	const byId = new Map<NodeId, Node>()
 	const byName = new Map<string, Set<NodeId>>() // live rows only
 	// The feed, and no journal behind it: one entry per row, holding its latest
@@ -38,6 +38,8 @@ export function memStore(): Store {
 	const listeners = new Set<(writes: Node[]) => void>()
 	/** Rule 11: cursors mean nothing outside the store instance that minted them. */
 	const lineage = crypto.randomUUID()
+	const signingSecret = crypto.randomUUID()
+	let observed = 0
 	let next = 0
 
 	byId.set(ROOT, {
@@ -94,6 +96,17 @@ export function memStore(): Store {
 	}
 
 	return {
+		[receiverBackend]: {
+			async state() {
+				return { lineage, signingSecret, feedHead: next, feedFloor: 0 }
+			},
+			async observe(now) {
+				observed = Math.max(observed, now)
+				return observed
+			},
+			cursor: (position) => rawCursor(lineage, position),
+			position: (cursor) => rawPosition(cursor, lineage)
+		},
 		async get(id) {
 			const n = byId.get(id)
 			return n ? copy(n) : null
