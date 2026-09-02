@@ -138,6 +138,12 @@ without them.
 | --- | --- | --- | --- |
 | T20 | [Self-heal rejected sync pages](t20-rejection-recovery.md) · [decision graph](t20-rejection-recovery.html) | T10, T11, T15 | todo |
 
+### Follow-up — bounded history
+
+| # | Task | Depends on | Status |
+| --- | --- | --- | --- |
+| T21 | [Expire feed cursors and sweep tombstones](t21-cursor-leases-and-tombstone-gc.md) | T8, T12, T13, T17 | todo |
+
 ## Dependency map
 
 ```
@@ -150,6 +156,7 @@ T6 + T13 → T15 (mounts)
 T12 + T4 → T16 (migration)
 T11 + T13 + T15 + T16 → T17 (swap) → T18 (retire)
 T10 + T11 + T15 → T20 (self-heal rejected pages)
+T8 + T12 + T13 + T17 → T21 (leased cursors + tombstone GC)
 ```
 
 ## The seam, for reference
