@@ -12,7 +12,7 @@ import { describe, expect, test } from 'vitest'
 // and historical design/plan docs legitimately record the old name), and neither are tests
 // (the indexer's reservation tests need legacy fixtures).
 const ROOT = join(import.meta.dirname, '..', '..', '..')
-const SCAN_DIRS = ['platform', 'apps/crossword', 'apps/doom', 'apps/pixel', 'apps/read', 'packages']
+const SCAN_DIRS = ['platform', 'apps/crossword', 'apps/doom', 'apps/pixel', 'packages']
 const SCAN_ROOT_FILES = ['turbo.json', 'vitest.config.ts', 'package.json', 'pnpm-workspace.yaml']
 const RETIRED =
 	/(spud|kodama|computer\.spud\.|app\.spud\.|app\.frieren\.|app\.justfiles\.frieren\.(?!host\b|ext\.))/i

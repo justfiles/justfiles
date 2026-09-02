@@ -12,7 +12,7 @@ decisions that implementation tasks should not reopen.
 - [`platform/frieren/worker/index.ts`](../../platform/frieren/worker/index.ts)
   already authenticates `/api/*` with Clerk and routes the request to the
   Durable Object named by the Clerk user ID.
-- [`apps/read/src/app.ts`](../../apps/read/src/app.ts) already exposes a `save`
+- [Read's `src/app.ts`](https://github.com/justfiles/app-read/blob/main/src/app.ts) already exposes a `save`
   procedure with `{ input: string }`; no Read-only endpoint is needed.
 - [`packages/agent/justbash/app.ts`](../../packages/agent/justbash/app.ts) proves
   the useful generic interaction: list apps, inspect actions, then run one.
