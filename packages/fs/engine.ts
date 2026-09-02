@@ -49,6 +49,7 @@ import {
 	type Version,
 	verifiedBlobs
 } from './store'
+import { type LeasedPeer, type WriteLease } from './lease'
 
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
@@ -168,44 +169,36 @@ export type SyncOptions = {
  * and the retry.
  */
 export async function sync(local: Store, remote: Store, opts: SyncOptions): Promise<void> {
-	// The push filter, in a bootstrap exactly as in the steady state: to a reset
-	// peer this replica restores its own work and not the rows it merely holds,
-	// since a replica that re-seeded an authority with everything it had seen
-	// would decide, alone and silently, whose view of the tree survives. Doing it
-	// wholesale is T11's `takeMine`, which re-authors the rows first — and that
-	// makes them this replica's, so this same filter carries them.
 	const mine = (row: Node): boolean => authorOf(row.version) === opts.replica
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
 	let failures = 0
 	let replans = 0
-	// The two directions differ only in where the bytes go, and rule 10 is why they
-	// are not symmetric. Pushing, this replica may hold the only copy, so the peer
-	// takes the bytes BEFORE the row that names them — a crash then leaves an orphan
-	// blob instead of a row whose content was never stored. Pulling, the peer still
-	// holds them, so a row may land ahead of its content and a gap is a fetch away,
-	// which is what lets a lazy replica skip the fetch entirely.
+	const peer = asLeased(remote)
+	let writeLease: WriteLease | undefined
+	if (peer) writeLease = await peer.open(await opts.pull.load())
 	const push = async (rows: Node[]): Promise<void> => {
+		if (writeLease !== undefined && peer !== undefined) {
+			await transfer(rows, local.blobs, remote.blobs, PROBE_ABOVE, writeLease, peer)
+			await send(rows, () => peer.commit(writeLease!, rows))
+			return
+		}
 		await transfer(rows, local.blobs, remote.blobs, PROBE_ABOVE)
+		await send(rows, () => remote.commit(rows))
+	}
+	const send = async (rows: Node[], commit: () => Promise<void>): Promise<void> => {
 		try {
-			await remote.commit(rows)
-			replans = 0 // a page landed: whatever the last rejection was, it is behind us
+			await commit()
+			replans = 0
 		} catch (err) {
-			// What the refusal MEANT is decided here, where the rows still are: the
-			// error cannot carry them, since a peer refuses a whole batch and for
-			// reasons — a taken name, a dead id — that no `Guard` states.
 			if (!(err instanceof GuardError)) throw err
 			let changed: boolean
 			try {
 				changed = await settle(local, remote, rows, opts.replica)
 			} catch (settling) {
-				// A local write raced the settlement's guards. Re-read the page and
-				// settle the current row instead of replacing it with the stale fix.
 				if (settling instanceof GuardError) throw new Replan()
 				throw settling
 			}
-			// No local write changed the refused page, so offering it again now
-			// cannot produce a different answer.
 			if (!changed) throw err
 			throw new Replan()
 		}
@@ -601,21 +594,20 @@ async function transfer(
 	rows: Node[],
 	from: Store['blobs'],
 	into: Store['blobs'],
-	probeAbove: bigint
+	probeAbove: bigint,
+	lease?: WriteLease,
+	peer?: LeasedPeer
 ): Promise<void> {
 	const sizes = new Map<Hash, bigint>()
 	for (const row of rows) {
-		// A tombstone keeps whatever fields it had, and none of them mean anything any
-		// more (rule 8) — moving bytes for a dead row is pure waste.
 		if (row.content !== undefined && !row.deleted) sizes.set(row.content, row.size)
 	}
-	// In lanes, for the same reason as the pull's base reads: each hash is up to three
-	// round trips at a peer, and one blob's latency is nothing for the next blob to
-	// wait on. Content is keyed by hash, so no two of these are about the same bytes.
 	await fanned([...sizes], async ([hash, size]) => {
 		if (size > probeAbove && (await into.has(hash))) return
 		const data = await from.get(hash)
-		if (data !== null) await into.put(hash, data)
+		if (data === null) return
+		if (lease !== undefined && peer !== undefined) await peer.put(lease, hash, data)
+		else await into.put(hash, data)
 	})
 }
 
@@ -665,6 +657,13 @@ export function hydratingBlobs(local: Store, remote: Store): Store {
 export const authorOf = (version: Version): string => {
 	const cut = version.lastIndexOf(':')
 	return cut === -1 ? version : version.slice(0, cut)
+}
+
+const asLeased = (store: Store): LeasedPeer | undefined => {
+	const maybe = store as unknown as Record<string, unknown>
+	return typeof maybe.open === 'function' && typeof maybe.put === 'function'
+		? (store as unknown as LeasedPeer)
+		: undefined
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

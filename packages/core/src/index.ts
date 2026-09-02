@@ -26,4 +26,6 @@ export {
 // The server half of the seam, unexported until the first consumer arrived: half a
 // server surface is no use to anyone.
 export { storeApi } from './store.api'
+export { leasedStoreApi } from './leased-api'
 export { type BlobStore, emptyStore, scopedBlobs, sqliteStore } from './store.sqlite'
+export { type SqliteLeased, type SqliteLeasedOpts, sqliteLeasedStore } from './leased-sqlite'
