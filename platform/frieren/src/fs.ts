@@ -60,17 +60,19 @@ export function createFsClient(getToken: GetToken): FsClient {
 // tables and this serves the one table the model has. The token is minted per REQUEST
 // — Clerk's expires — so it goes in through the injected `fetch` rather than through
 // the static header bag, which is read once at construction.
-function remoteStore(getToken: GetToken): Store {
+function remoteStore(getToken: GetToken, lock?: SyncStateLock): Store {
 	return httpStore('/store', {
 		fetch: async (url, init) => {
 			const token = await getToken()
-			return fetch(url, {
-				...init,
-				headers: {
-					...(init?.headers as Record<string, string>),
-					Authorization: `Bearer ${token ?? ''}`
-				}
-			})
+			const send = () =>
+				fetch(url, {
+					...init,
+					headers: {
+						...(init?.headers as Record<string, string>),
+						Authorization: `Bearer ${token ?? ''}`
+					}
+				})
+			return lock ? lock(send) : send()
 		}
 	})
 }
@@ -269,16 +271,18 @@ function finishBootstrap(profileId: string, oldDb: string, freshDb: string): Loc
 }
 
 async function recoverProfileSwitch(profileId: string): Promise<void> {
-	const profiles = readRegistry()
-	const profile = profiles.find((entry) => entry.id === profileId)
-	if (!profile) return
-	if (profile.pendingBootstrap) {
-		await deleteIdb(profile.pendingBootstrap.freshDb)
-		delete profile.pendingBootstrap
-	}
-	for (const retired of profile.retiredStoreDbs ?? []) await deleteIdb(retired)
-	delete profile.retiredStoreDbs
-	writeRegistry(profiles)
+	await profileSyncStateLock(profileId)(async () => {
+		const profiles = readRegistry()
+		const profile = profiles.find((entry) => entry.id === profileId)
+		if (!profile) return
+		if (profile.pendingBootstrap) {
+			await deleteIdb(profile.pendingBootstrap.freshDb)
+			delete profile.pendingBootstrap
+		}
+		for (const retired of profile.retiredStoreDbs ?? []) await deleteIdb(retired)
+		delete profile.retiredStoreDbs
+		writeRegistry(profiles)
+	})
 }
 
 function privateDb(profileId: string): string {
@@ -288,6 +292,7 @@ function privateDb(profileId: string): string {
 type Active = {
 	profileId: string
 	remoteUserId?: string
+	store: string
 	replica: string
 	/** The synced tree. What the volume reads and what a peer is offered. */
 	local: Store
@@ -307,6 +312,23 @@ type Active = {
 	unsubscribeSyncStatus?: () => void
 	reconnect?: () => void
 	teardown: () => void
+}
+
+function activeCursor(entry: Active, name: 'pull' | 'push'): CursorSlot {
+	const cursor = entry.syncState.cursor(name)
+	const current = (): void => {
+		if (storeDb(entry.profileId) !== entry.store) throw new BootstrapRequiredError()
+	}
+	return {
+		load: async () => {
+			current()
+			return cursor.load()
+		},
+		save: async (next) => {
+			current()
+			await cursor.save(next)
+		}
+	}
 }
 
 let active: Active | null = null
@@ -425,24 +447,27 @@ async function replaceStaleProfile(
 	push: CursorSlot,
 	lock: SyncStateLock
 ): Promise<Active> {
-	const pending = await lock(async () => beginBootstrap(entry.profileId))
-	const recovery = idbStore(recoveryDb(entry.profileId))
-	const fresh = idbStore(pending.freshDb)
 	const nextPull = memoryCursor()
-	try {
-		await preserveUnacknowledged(entry.local, recovery, await push.load(), entry.replica)
-		await bootstrap(fresh, peer, nextPull, { lazyContent: true })
-	} catch (error) {
-		await Promise.allSettled([fresh.close?.(), recovery.close?.()])
-		await deleteIdb(pending.freshDb)
-		await lock(async () => cancelBootstrap(entry.profileId))
-		throw error
-	}
-	await Promise.all([fresh.close?.(), recovery.close?.()])
-	await release({ flush: false })
-	const profile = await lock(async () =>
-		finishBootstrap(entry.profileId, pending.oldDb, pending.freshDb)
-	)
+	// Keep `pendingBootstrap` owned until the same tab publishes the finished switch.
+	// A second tab waits; if this one dies, the browser releases the lock and recovery
+	// can then delete the abandoned database.
+	const profile = await lock(async () => {
+		const pending = beginBootstrap(entry.profileId)
+		const recovery = idbStore(recoveryDb(entry.profileId))
+		const fresh = idbStore(pending.freshDb)
+		try {
+			await preserveUnacknowledged(entry.local, recovery, await push.load(), entry.replica)
+			await bootstrap(fresh, peer, nextPull, { lazyContent: true })
+		} catch (error) {
+			await Promise.allSettled([fresh.close?.(), recovery.close?.()])
+			await deleteIdb(pending.freshDb)
+			cancelBootstrap(entry.profileId)
+			throw error
+		}
+		await Promise.all([fresh.close?.(), recovery.close?.()])
+		await release({ flush: false })
+		return finishBootstrap(entry.profileId, pending.oldDb, pending.freshDb)
+	})
 	const next = await setActive(profile)
 	await lock(async () => {
 		await next.syncState.cursor('push').save(undefined)
@@ -458,21 +483,35 @@ async function startSync(entry: Active, getToken: GetToken): Promise<Active> {
 	// Building a second loop over the same store is not free and not idempotent: a
 	// `destroy` cannot take back the cycle the old loop already has in flight, so the
 	// two of them push the same rows at the same time.
+	if (storeDb(entry.profileId) !== entry.store) {
+		location.reload()
+		return entry
+	}
 	if (entry.sync) return entry
 	entry.reconnect = () => recoverStale(entry, getToken)
 	entry.unsubscribeSyncStatus?.()
 	setActiveStatus(entry, 'connecting')
-	const pull = entry.syncState.cursor('pull')
-	const push = entry.syncState.cursor('push')
+	const pull = activeCursor(entry, 'pull')
+	const push = activeCursor(entry, 'push')
 	const lock = profileSyncStateLock(entry.profileId)
-	const remote = remoteStore(getToken)
+	const peer = remoteStore(getToken)
+	const remote = remoteStore(getToken, (body) =>
+		lock(async () => {
+			if (storeDb(entry.profileId) !== entry.store) throw new BootstrapRequiredError()
+			return body()
+		})
+	)
 	try {
 		const cursor = await pull.load()
 		if (cursor === undefined) throw new BootstrapRequiredError()
-		await remote.since(cursor)
+		await peer.since(cursor)
 	} catch (error) {
 		if (error instanceof BootstrapRequiredError) {
-			const replacement = await replaceStaleProfile(entry, remote, push, lock)
+			if (storeDb(entry.profileId) !== entry.store) {
+				location.reload()
+				return entry
+			}
+			const replacement = await replaceStaleProfile(entry, peer, push, lock)
 			return startSync(replacement, getToken)
 		}
 		// Local-first keeps serving its existing replica while an offline peer retries.
@@ -538,8 +577,10 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	await recoverProfileSwitch(profile.id)
 	// The channel is the DATABASE's name in both cases: what a wake has to be scoped to
 	// is the store it is telling other tabs about.
-	const local = sharedStore(idbStore(storeDb(profile.id)), storeDb(profile.id))
-	const privateStore = sharedStore(idbStore(privateDb(profile.id)), privateDb(profile.id))
+	const name = storeDb(profile.id)
+	const privateName = privateDb(profile.id)
+	const local = sharedStore(idbStore(name), name)
+	const privateStore = sharedStore(idbStore(privateName), privateName)
 	// The name is claimed before anything reads the tree: the row is derived from its
 	// position, so every replica writes a byte-identical one and none of them ever sends
 	// it — the whole of how this browser reserves `/private` with no coordination.
@@ -549,7 +590,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	// over rows this tab's volume had already pulled or written (see `adoptOnce`). The
 	// registry is re-read rather than trusting the `profile` this was called with, which is
 	// a snapshot taken before the wait.
-	await adoptOnce(storeDb(profile.id), async () => {
+	await adoptOnce(name, async () => {
 		if (readRegistry().find((entry) => entry.id === profile.id)?.adopted) return
 		// `/private` was a path the old engine filtered; here its subtree lands in the
 		// store bound at that name, hanging off that store's own root.
@@ -593,6 +634,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	entry = {
 		profileId: profile.id,
 		remoteUserId: profile.remoteUserId,
+		store: name,
 		replica,
 		local,
 		private: privateStore,

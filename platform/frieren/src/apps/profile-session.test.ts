@@ -74,6 +74,8 @@ type StoredProfile = {
 	remoteUserId?: string
 	lastOpenedAt: number
 	adopted?: true
+	storeDb?: string
+	pendingBootstrap?: { freshDb: string }
 	pendingFactoryReset?: { operationId: string; fromGeneration: number }
 }
 
@@ -81,6 +83,7 @@ const REGISTRY_KEY = 'frieren-profiles-v2'
 
 function stubBrowser(registry: StoredProfile[] = []) {
 	const data = new Map([[REGISTRY_KEY, JSON.stringify(registry)]])
+	const locks = new Map<string, Promise<unknown>>()
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => data.get(key) ?? null,
 		setItem: (key: string, value: string) => data.set(key, value),
@@ -89,6 +92,18 @@ function stubBrowser(registry: StoredProfile[] = []) {
 	vi.stubGlobal('window', {
 		addEventListener: vi.fn(),
 		removeEventListener: vi.fn()
+	})
+	vi.stubGlobal('navigator', {
+		locks: {
+			request: <T>(name: string, body: () => Promise<T>): Promise<T> => {
+				const run = (locks.get(name) ?? Promise.resolve()).then(body)
+				locks.set(
+					name,
+					run.catch(() => undefined)
+				)
+				return run
+			}
+		}
 	})
 	vi.stubGlobal('document', {
 		visibilityState: 'visible',
@@ -326,6 +341,61 @@ describe('profile session switching', () => {
 		expect(await recovery.get('offline')).toEqual(staleRow)
 		expect(profile.pendingBootstrap).toBeUndefined()
 		expect(profile.retiredStoreDbs).toBeUndefined()
+	})
+
+	test('another tab waits for the tab that owns a pending bootstrap', async () => {
+		const freshDb = 'frieren-store-v2-account-profile-bootstrap-other-tab'
+		const { fs } = await loadFs([
+			{
+				id: 'account-profile',
+				remoteUserId: 'user-1',
+				lastOpenedAt: 1,
+				adopted: true,
+				pendingBootstrap: { freshDb }
+			}
+		])
+		let resume!: () => void
+		let locked!: () => void
+		const acquired = new Promise<void>((resolve) => {
+			locked = resolve
+		})
+		const held = new Promise<void>((resolve) => {
+			resume = resolve
+		})
+		const owner = navigator.locks.request('frieren-sync-state-account-profile', async () => {
+			locked()
+			await held
+		})
+		await acquired
+
+		const opening = fs.openProfile()
+		await Promise.resolve()
+		expect(H.deleteDatabase).not.toHaveBeenCalled()
+
+		resume()
+		await owner
+		await opening
+		expect(H.deleteDatabase).toHaveBeenCalledWith(freshDb)
+	})
+
+	test('an old tab does not start sync after another tab switches stores', async () => {
+		const { data, fs } = await loadFs([
+			{
+				id: 'account-profile',
+				remoteUserId: 'user-1',
+				lastOpenedAt: 1,
+				adopted: true
+			}
+		])
+		await fs.openProfile()
+		const profiles = JSON.parse(data.get(REGISTRY_KEY) ?? '[]') as StoredProfile[]
+		profiles[0]!.storeDb = 'frieren-store-v2-account-profile-new'
+		data.set(REGISTRY_KEY, JSON.stringify(profiles))
+
+		await fs.attachRemoteUser('user-1', async () => 'token')
+
+		expect(H.synced).not.toHaveBeenCalled()
+		expect(H.reload).toHaveBeenCalledOnce()
 	})
 
 	test('factory reset reuses an operation after ambiguous confirmation failure', async () => {

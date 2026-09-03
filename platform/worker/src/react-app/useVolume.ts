@@ -2,8 +2,10 @@ import { useAuth } from '@clerk/clerk-react'
 import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
+import { BootstrapRequiredError } from '@justfiles/fs/peer'
 import type { Store } from '@justfiles/fs/store'
 import { bootstrap, type CursorSlot, synced } from '@justfiles/fs/synced'
+import { type SyncStateLock, syncStateLock } from '@justfiles/fs/syncState'
 import { FileType } from '@justfiles/fs/types'
 import {
 	createContext,
@@ -342,12 +344,22 @@ function storeState(): StoreState {
 	return state
 }
 
-const slot = (name: 'pull' | 'push'): CursorSlot => ({
+const localStoreLock = syncStateLock()
+const storeLock: SyncStateLock = (body) =>
+	globalThis.navigator?.locks?.request(STORE_STATE_KEY, body) ?? localStoreLock(body)
+
+function activeState(store: string): StoreState {
+	const state = storeState()
+	if (state.store !== store) throw new BootstrapRequiredError()
+	return state
+}
+
+const slot = (store: string, name: 'pull' | 'push'): CursorSlot => ({
 	async load() {
-		return storeState()[name]
+		return activeState(store)[name]
 	},
 	async save(cursor) {
-		const state = storeState()
+		const state = activeState(store)
 		if (cursor === undefined) delete state[name]
 		else state[name] = cursor
 		localStorage.setItem(STORE_STATE_KEY, JSON.stringify(state))
@@ -367,16 +379,21 @@ const memoryCursor = (): CursorSlot & { value(): string | undefined } => {
 
 // The seam, over the wire. The token is minted per REQUEST — Clerk's expires — so it
 // goes in through the injected `fetch` rather than a static header bag read once.
-function remoteStore(getToken: GetToken): Store {
+function remoteStore(getToken: GetToken, store: string): Store {
 	return httpStore('/store', {
 		fetch: async (url, init) => {
 			const token = await getToken()
-			return fetch(url, {
-				...init,
-				headers: {
-					...(init?.headers as Record<string, string>),
-					Authorization: `Bearer ${token ?? ''}`
-				}
+			return storeLock(async () => {
+				// The switch and every send share this lock. Once the new store is
+				// published, an old tab fails here before its old cursor reaches the peer.
+				activeState(store)
+				return fetch(url, {
+					...init,
+					headers: {
+						...(init?.headers as Record<string, string>),
+						Authorization: `Bearer ${token ?? ''}`
+					}
+				})
 			})
 		}
 	})
@@ -396,15 +413,18 @@ async function replaceStore(activeStore: string, remote: Store): Promise<void> {
 	await fresh.close?.()
 	const cursor = pull.value()
 	if (cursor === undefined) throw new Error('bootstrap did not produce a cursor')
-	const state = storeState()
-	if (state.store !== activeStore) {
+	const switched = await storeLock(async () => {
+		const state = storeState()
+		if (state.store !== activeStore) return false
+		state.store = name
+		state.pull = cursor
+		delete state.push
+		localStorage.setItem(STORE_STATE_KEY, JSON.stringify(state))
+		return true
+	})
+	if (!switched) {
 		indexedDB.deleteDatabase(name)
-		return
 	}
-	state.store = name
-	state.pull = cursor
-	delete state.push
-	localStorage.setItem(STORE_STATE_KEY, JSON.stringify(state))
 }
 
 export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRuntime> {
@@ -416,8 +436,8 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 	// a device whose local replica is empty records "loaded" over an empty workspace and
 	// keeps showing it. `flush()` never rejects, so an offline boot still gets its volume;
 	// it just gets `error` status and the local tree, which is what shipped.
-	const pull = slot('pull')
-	const remote = remoteStore(getToken)
+	const pull = slot(state.store, 'pull')
+	const remote = remoteStore(getToken, state.store)
 	let sync: Awaited<ReturnType<typeof synced>> | undefined
 	let replacing = false
 	let replaceNeeded = false
@@ -431,7 +451,8 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 			.catch((error) => {
 				replacing = false
 				console.error('sync: store replacement failed', error)
-				sync?.resume()
+				if (storeState().store === state.store) sync?.resume()
+				else location.reload()
 			})
 	}
 	sync = await synced({
@@ -439,7 +460,8 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 		remote,
 		replica: state.replica,
 		pull,
-		push: slot('push'),
+		push: slot(state.store, 'push'),
+		lock: storeLock,
 		onBootstrapRequired: replace,
 		lazyContent: true
 	})
