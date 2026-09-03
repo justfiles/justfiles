@@ -210,6 +210,23 @@ Cursor saves, clears, and bootstrap switches use the host's existing lock. The s
 receiver metadata remains backend-private: signing secret, lineage, feed head, feed
 floor, observed time, commit times, and retention policy never enter `/private/state`.
 
+## One browser owner
+
+A browser host is one replica, not one replica per tab. Before it opens any of that
+host's stores, it acquires one exclusive browser lock and holds it until every store and
+sync loop is closed. A second tab waits for the owner; it does not open the same
+IndexedDB databases or build another sync loop.
+
+The owner spans profile switches, stale-cursor replacement, and destructive reset. It
+is released only when the host shuts down, after its stores are closed and any deletion
+is done. A closed or crashed tab loses the browser lock, so the next waiting tab can
+open the durable relationship and resume it.
+
+This is host policy, not a `Store` capability. Native hosts already have one process,
+and browser hosts use the platform lock without changing `Store`, `synced`, or the wire
+protocol. Seamless simultaneous browser tabs are a separate feature: it would need one
+leader plus follower messaging, not several stateful sync loops over one cursor pair.
+
 ## Expired or swept-behind relationship
 
 Forged, malformed, expired, wrong-lineage, and below-floor tokens all yield the same
@@ -254,6 +271,7 @@ relationship.
 
 - A replica registry, per-device acknowledgement table, or presence service.
 - Proving that an authorized caller applied every page it requested.
+- Seamless simultaneous use of one browser filesystem from several tabs.
 - Three-way merging stale offline edits.
 - Replicating `/private/state` or any token metadata as `Node` rows.
 - Adding retention, token, lock, or winner methods to `Store`.
@@ -301,6 +319,8 @@ Use injected receiver clocks; never sleep.
     replacement and never appear in its feed.
 14. **S03 — winner.** The selected id must name one participant; remote-wins and a stable
     symmetric comparator choose the expected store.
+15. **S04 — one browser owner.** A second tab opens no store and starts no sync loop until
+    the first owner closes; ownership survives profile replacement and reset cleanup.
 
 ## Acceptance criteria
 
@@ -314,6 +334,7 @@ Use injected receiver clocks; never sleep.
 - Tombstone retention and cursor lifetime come from one backend-owned policy.
 - Tombstone deletion is bounded and feed positions are never reused.
 - Relationship state lives in the private mount and reuses the stable client id.
+- A browser host opens its filesystem and runs sync in at most one tab at a time.
 - Winner selection returns and validates a participant id.
 - HTTP and in-process P2P preserve the same `Store` seam and token rules.
 - Existing store, sync, authority, migration, reset, and lifecycle tests pass.
