@@ -11,7 +11,7 @@
 export type NodeId = string // UUID. Minted once, never rebound. Root is a constant.
 export type Hash = string // SHA-256 of content bytes, hex.
 export type Version = string // Opaque to storage. The engine owns its meaning.
-export type Cursor = string // Opaque, per replica. Never crosses the wire.
+export type Cursor = string // Opaque. A peer transport may carry a receiver-signed value.
 
 export type Node = {
 	id: NodeId

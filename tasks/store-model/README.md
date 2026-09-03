@@ -142,7 +142,7 @@ without them.
 
 | # | Task | Depends on | Status |
 | --- | --- | --- | --- |
-| T21 | [Expire feed cursors and sweep tombstones](t21-cursor-leases-and-tombstone-gc.md) | T8, T12, T13, T17 | todo |
+| T21 | [Expire feed cursors and sweep tombstones](t21-cursor-leases-and-tombstone-gc.md) | T8, T12, T13, T17 | done |
 
 ## Dependency map
 
@@ -156,7 +156,7 @@ T6 + T13 → T15 (mounts)
 T12 + T4 → T16 (migration)
 T11 + T13 + T15 + T16 → T17 (swap) → T18 (retire)
 T10 + T11 + T15 → T20 (self-heal rejected pages)
-T8 + T12 + T13 + T17 → T21 (leased cursors + tombstone GC)
+T8 + T12 + T13 + T17 → T21 (signed cursors + tombstone GC)
 ```
 
 ## The seam, for reference
@@ -168,7 +168,7 @@ file can point at one place:
 type NodeId = string   // UUID. Minted once, never rebound. Root is a constant.
 type Hash = string     // SHA-256 of content bytes, hex.
 type Version = string  // Opaque to storage. The engine owns its meaning.
-type Cursor = string   // Opaque, per replica. Never crosses the wire.
+type Cursor = string   // Opaque, minted by the store whose feed it resumes.
 
 type Node = {
 	id: NodeId

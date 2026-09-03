@@ -14,10 +14,12 @@
  */
 
 import 'fake-indexeddb/auto'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { storeConformance } from './conformance'
-import { idbStore } from './idb'
+import { acquireStoreOwner, idbStore } from './idb'
 import { type Guard, type Node, ROOT } from './store'
+
+afterEach(() => vi.unstubAllGlobals())
 
 /** A fresh database per store, so two `open()` calls are two lineages. */
 const fresh = () => idbStore(`t04-${crypto.randomUUID()}`)
@@ -41,6 +43,36 @@ const fresh100 = (rows: Node[]): Guard[] =>
 	rows.map((row) => ({ version: { id: row.id, is: null } }))
 
 storeConformance('idbStore', async () => fresh())
+
+test('only one tab owns a store namespace at a time', async () => {
+	const tails = new Map<string, Promise<unknown>>()
+	vi.stubGlobal('navigator', {
+		locks: {
+			request: (name: string, body: () => Promise<unknown>) => {
+				const run = (tails.get(name) ?? Promise.resolve()).then(body)
+				tails.set(
+					name,
+					run.catch(() => undefined)
+				)
+				return run
+			}
+		}
+	})
+
+	const releaseFirst = await acquireStoreOwner('one-store')
+	let secondOwns = false
+	const second = acquireStoreOwner('one-store').then((release) => {
+		secondOwns = true
+		return release
+	})
+	await Promise.resolve()
+	expect(secondOwns).toBe(false)
+
+	releaseFirst()
+	const releaseSecond = await second
+	expect(secondOwns).toBe(true)
+	releaseSecond()
+})
 
 describe('idbStore: guarded atomic batches inside IDB transaction rules', () => {
 	test('all guards and all writes land in ONE readwrite transaction', async () => {
@@ -225,6 +257,23 @@ describe('idbStore: guarded atomic batches inside IDB transaction rules', () => 
 		// other connection's commits.
 		await two.commit([node({ id: 'a', name: 'a.txt' })])
 		expect((await one.since()).nodes.map((n) => n.id)).toContain('a')
+	})
+
+	test('open connections do not block database deletion', async () => {
+		const name = `t04-${crypto.randomUUID()}`
+		const one = idbStore(name)
+		const two = idbStore(name)
+		await Promise.all([one.get(ROOT), two.get(ROOT)])
+
+		const deleted = new Promise<void>((resolve, reject) => {
+			const request = indexedDB.deleteDatabase(name)
+			request.onsuccess = () => resolve()
+			request.onerror = () => reject(request.error)
+			request.onblocked = () => reject(new Error('database deletion was blocked'))
+		})
+
+		await expect(deleted).resolves.toBeUndefined()
+		await expect(one.get(ROOT)).rejects.toMatchObject({ name: 'InvalidStateError' })
 	})
 
 	test('the feed survives a reopen: rows, order and cursor outlive the connection', async () => {

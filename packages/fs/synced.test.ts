@@ -437,6 +437,31 @@ function racing(store: Store): Store & { armWith: (rows: Node[]) => void } {
 }
 
 describe('synced: take theirs', () => {
+	it('saves the discard fence under the host sync-state lock', async () => {
+		let locked = false
+		const saved: boolean[] = []
+		const { vol } = await replica(memStore(), {
+			lock: async (body) => {
+				locked = true
+				try {
+					return await body()
+				} finally {
+					locked = false
+				}
+			},
+			discard: {
+				load: async () => false,
+				save: async (value) => {
+					expect(locked).toBe(true)
+					saved.push(value)
+				}
+			}
+		})
+
+		await vol.takeTheirs()
+		expect(saved).toEqual([true, false])
+	})
+
 	it('throws this replica’s work away and takes the peer’s tree', async () => {
 		const remote = memStore()
 		const there = peerVolume(remote)

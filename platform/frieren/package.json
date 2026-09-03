@@ -9,7 +9,6 @@
 		"build": "tsc -b && vite build",
 		"lint": "eslint .",
 		"auth:token": "tsx scripts/frieren-auth.ts token",
-		"seed:llm-user": "tsx scripts/frieren-auth.ts seed",
 		"auth:bootstrap": "tsx scripts/frieren-auth.ts bootstrap",
 		"verify:ui": "tsx scripts/frieren-auth.ts ui",
 		"verify:devkit-worker": "tsx scripts/devkit-worker-probe.ts",

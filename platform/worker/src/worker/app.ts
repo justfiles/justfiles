@@ -1,5 +1,6 @@
-import { fileApi, storeApi } from '@justfiles/core'
+import { fileApi, syncStoreApi } from '@justfiles/core'
 import { volume } from '@justfiles/fs'
+import type { ReceiverOptions } from '@justfiles/fs/peer'
 import type { Store } from '@justfiles/fs/store'
 import { Hono } from 'hono'
 
@@ -16,10 +17,12 @@ import { Hono } from 'hono'
  * the DO is already one user's, so a name in the row would say nothing the object does
  * not already say by existing.
  */
-export function createWorkerApiApp(args: { store: Store }) {
+export function createWorkerApiApp(args: { store: Store; receiver?: ReceiverOptions }) {
 	const { store } = args
 
-	return new Hono().route('/store', storeApi(store)).route('/store', fileApi(volume(store)))
+	return new Hono()
+		.route('/store', syncStoreApi(store, args.receiver))
+		.route('/store', fileApi(volume(store)))
 }
 
 export type WorkerApiType = ReturnType<typeof createWorkerApiApp>

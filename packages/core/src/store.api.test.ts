@@ -19,21 +19,13 @@
 import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import { authority } from '../../fs/authority'
-import { storeConformance } from '../../fs/conformance'
 import { type CursorSlot, sync, versions } from '../../fs/engine'
 import { httpStore } from '../../fs/http'
 import { memStore } from '../../fs/mem'
-import {
-	type Cursor,
-	ForeignCursorError,
-	GuardError,
-	type Node,
-	ROOT,
-	type Store,
-	sha256Hex
-} from '../../fs/store'
+import { BootstrapRequiredError } from '../../fs/peer'
+import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from '../../fs/store'
 import { volume } from '../../fs/volume'
-import { storeApi } from './store.api'
+import { storeApi, syncStoreApi } from './store.api'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -45,7 +37,7 @@ const dec = new TextDecoder()
  * is the only place that knows where.
  */
 const served = (store: Store): { ask: Ask; client: Store } => {
-	const host = new Hono().route('/store', storeApi(store))
+	const host = new Hono().route('/store', syncStoreApi(store))
 	// `app.request` may answer synchronously; a fetch never does.
 	const ask: Ask = async (path, init) => host.request(`/store${path}`, init)
 	return {
@@ -56,10 +48,18 @@ const served = (store: Store): { ask: Ask; client: Store } => {
 	}
 }
 
+const caughtUp = async (peer: Store): Promise<Cursor> => {
+	let cursor: Cursor | undefined
+	for (;;) {
+		const page = await peer.since(cursor)
+		if (!page.next) throw new Error('peer did not return a cursor')
+		cursor = page.next
+		if (page.nodes.length === 0) return cursor
+	}
+}
+
 /** A raw request at the mounted API, for the cases that are about the STATUS. */
 type Ask = (path: string, init?: RequestInit) => Promise<Response>
-
-storeConformance('httpStore over memStore', async () => served(memStore()).client)
 
 const node = (over: Partial<Node> & Pick<Node, 'id' | 'name'>): Node => ({
 	parent: ROOT,
@@ -76,21 +76,42 @@ const wire = (...writes: Node[]) => ({
 	writes: writes.map((row) => ({ ...row, mtimeNs: String(row.mtimeNs), size: String(row.size) }))
 })
 
-const post = (ask: Ask, body: unknown) =>
+const post = (ask: Ask, body: unknown, cursor?: Cursor) =>
 	ask('/commit', {
 		method: 'POST',
 		body: JSON.stringify(body),
-		headers: { 'content-type': 'application/json' }
+		headers: {
+			'content-type': 'application/json',
+			...(cursor === undefined ? {} : { 'x-sync-cursor': cursor })
+		}
 	})
 
 describe('storeApi: what the wire answers', () => {
+	it('keeps the primitive wire usable without sync cursors', async () => {
+		const store = memStore()
+		const host = new Hono().route('/store', storeApi(store))
+		const client = httpStore('http://host.test/store', {
+			fetch: async (url, init) => host.request(url, init)
+		})
+		const write = node({ id: 'direct', name: 'direct.txt' })
+
+		await client.commit([write])
+
+		expect(await client.get(write.id)).toEqual(write)
+	})
+
 	it('answers a refused guard with a 409 that names the guard', async () => {
 		const store = memStore()
 		const { ask, client } = served(store)
 		await store.commit([node({ id: 'held', name: 'taken.txt' })])
+		const cursor = await caughtUp(client)
 
 		const guard = { free: { parent: ROOT, name: 'taken.txt' } }
-		const res = await post(ask, { ...wire(node({ id: 'a', name: 'a.txt' })), guards: [guard] })
+		const res = await post(
+			ask,
+			{ ...wire(node({ id: 'a', name: 'a.txt' })), guards: [guard] },
+			cursor
+		)
 		// A refusal is not a failure: 409, and the body says which guard did not
 		// hold, so a caller can tell "read again and replan" from "this peer is
 		// broken" without parsing a message.
@@ -117,13 +138,14 @@ describe('storeApi: what the wire answers', () => {
 		const res = await other.ask(`/since?cursor=${encodeURIComponent(cursor)}`)
 		expect(res.status).toBe(410)
 		expect(res.headers.get('cache-control')).toBe('no-store')
-		await expect(other.client.since(cursor)).rejects.toThrow(ForeignCursorError)
+		await expect(other.client.since(cursor)).rejects.toThrow(BootstrapRequiredError)
 		expect((await other.client.since()).nodes.map((n) => n.id)).toEqual([ROOT])
 	})
 
 	it('refuses a malformed row with a 400 and writes nothing', async () => {
 		const store = memStore()
-		const { ask } = served(store)
+		const { ask, client } = served(store)
+		const cursor = await caughtUp(client)
 
 		// The same reasoning as verifying a blob's hash (rule 7): this store takes
 		// writes from a peer, and nothing under it type-checks a row — the authority
@@ -136,7 +158,7 @@ describe('storeApi: what the wire answers', () => {
 			{ writes: 'not an array' },
 			{ ...wire(node({ id: 'x', name: 'x.txt' })), guards: [{ nothing: true }] }
 		]) {
-			expect((await post(ask, body)).status).toBe(400)
+			expect((await post(ask, body, cursor)).status).toBe(400)
 			expect(await store.get('x')).toBeNull()
 		}
 	})
@@ -144,6 +166,7 @@ describe('storeApi: what the wire answers', () => {
 	it('carries a pre-epoch mtime, and still refuses a negative size', async () => {
 		const store = memStore()
 		const { ask, client } = served(store)
+		const cursor = await caughtUp(client)
 
 		// A time before 1970 is an ordinary POSIX time: `utimes` puts the caller's
 		// bigint straight into the row, and every other backend keeps it. A wire that
@@ -154,9 +177,11 @@ describe('storeApi: what the wire answers', () => {
 		expect(await store.get('old')).toEqual(old)
 
 		// A size cannot be negative, and a store is better off saying so.
-		const res = await post(ask, {
-			writes: [{ ...wire(node({ id: 'x', name: 'x.txt' })).writes[0], size: '-1' }]
-		})
+		const res = await post(
+			ask,
+			{ writes: [{ ...wire(node({ id: 'x', name: 'x.txt' })).writes[0], size: '-1' }] },
+			cursor
+		)
 		expect(res.status).toBe(400)
 		expect(await store.get('x')).toBeNull()
 	})
@@ -167,9 +192,14 @@ describe('storeApi: what the wire answers', () => {
 		// error it is: the request was wrong, not the store.
 		const store = memStore()
 		const { ask, client } = served(authority(store))
+		const cursor = await caughtUp(client)
 		const hash = await sha256Hex(enc.encode('hello'))
 
-		const res = await ask(`/blob/${hash}`, { method: 'PUT', body: enc.encode('goodbye') })
+		const res = await ask(`/blob/${hash}`, {
+			method: 'PUT',
+			body: enc.encode('goodbye'),
+			headers: { 'x-sync-cursor': cursor }
+		})
 		expect(res.status).toBe(400)
 		expect(await store.blobs.has(hash)).toBe(false)
 		await expect(client.blobs.put(hash, enc.encode('goodbye'))).rejects.toThrow()
@@ -183,12 +213,13 @@ describe('storeApi: what the wire answers', () => {
 	it('answers an invariant-breaking commit with a 409, over the same route as a guard', async () => {
 		const hub = authority(memStore())
 		const { ask, client } = served(hub)
+		const cursor = await caughtUp(client)
 		const file = node({ id: 'f', name: 'f.txt' })
 		await hub.commit([file])
 
 		// Rule 9 lives at the authority, and no `Guard` states it. It still reaches
 		// the client as the same event: the commit was refused, read again and replan.
-		const res = await post(ask, wire(node({ id: 'kid', name: 'kid.txt', parent: 'f' })))
+		const res = await post(ask, wire(node({ id: 'kid', name: 'kid.txt', parent: 'f' })), cursor)
 		expect(res.status).toBe(409)
 		expect(await res.json()).toMatchObject({ error: 'guard' })
 		await expect(
@@ -244,13 +275,14 @@ describe('sync over the wire', () => {
 		// call the engine makes — `since`, `commit` with its guards, the `child`
 		// probes a settlement takes, the blob transfer — over HTTP.
 		const hub = authority(memStore())
-		// A client each, as two devices hold them: a `Store` handle carries no state
-		// of its own, so what makes them two replicas is their cursors, not their
-		// connections.
+		// A client each, as two devices hold them. Their durable cursor slots make
+		// them two relationships; the adapter's in-memory read cursor is transient.
 		const fromA = served(hub).client
 		const fromB = served(hub).client
 		const a = replica('a')
 		const b = replica('b')
+		await a.opts.pull.save(await caughtUp(fromA))
+		await b.opts.pull.save(await caughtUp(fromB))
 		await a.vol.writeFile('/note.txt', enc.encode('from a'))
 		await b.vol.writeFile('/note.txt', enc.encode('from b'))
 

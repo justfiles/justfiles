@@ -5,7 +5,7 @@ import type { Volume } from './volume'
  *
  * - Loads from disk lazily on the first get(), then stays in memory.
  * - Every set() / patch() updates the in-memory value before writing.
- * - patch() merges a partial update, so unrelated fields are never lost.
+ * - patch() rereads the file before merging, so serialized writers keep each other's fields.
  * - patch() is only callable when T is an object type.
  */
 export type PersistedState<T> = {
@@ -78,7 +78,8 @@ export function persistedState<T>(
 	}
 
 	async function patch(partial: Partial<T>): Promise<void> {
-		await set({ ...(await get()), ...partial } as T)
+		const current = (await vol.exists(path)) ? await read() : await get()
+		await set({ ...current, ...partial } as T)
 	}
 
 	return { get, set, patch } as PersistedState<T>

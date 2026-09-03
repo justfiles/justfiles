@@ -10,6 +10,7 @@ const H = vi.hoisted(() => ({ stores: new Map<string, unknown>() }))
 vi.mock('@justfiles/fs/idb', async () => {
 	const { memStore } = await import('@justfiles/fs/mem')
 	return {
+		acquireStoreOwner: async () => () => {},
 		idbStore: (name: string) => {
 			const held = H.stores.get(name) ?? memStore()
 			H.stores.set(name, held)
@@ -29,7 +30,9 @@ vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
 	migrateIdb: async () => {}
 }))
 vi.mock('@justfiles/core', () => ({ createFsClient: () => ({}) }))
-vi.mock('@justfiles/fs/http', () => ({ httpStore: () => ({}) }))
+vi.mock('@justfiles/fs/http', () => ({
+	httpStore: () => ({ since: async () => ({ nodes: [], next: 'cursor' }) })
+}))
 
 // The loop, stood down — everything below is about what the OFFER reads and copies,
 // and a running cycle would only add a peer. The volume under it is real, so
@@ -53,7 +56,7 @@ vi.mock('@justfiles/fs/synced', async (original) => {
 	}
 })
 
-const REGISTRY_KEY = 'frieren-profiles'
+const REGISTRY_KEY = 'frieren-profiles-v2'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
@@ -66,6 +69,8 @@ type StoredProfile = {
 
 function stubBrowser(registry: StoredProfile[]): Map<string, string> {
 	const data = new Map([[REGISTRY_KEY, JSON.stringify(registry)]])
+	for (const profile of registry)
+		if (profile.remoteUserId) data.set(`frieren-fs-${profile.id}-pull`, 'cursor')
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => data.get(key) ?? null,
 		setItem: (key: string, value: string) => data.set(key, value),
@@ -118,8 +123,8 @@ async function seedProfile(id: string, files: Record<string, string>): Promise<v
 	const { idbStore } = await import('@justfiles/fs/idb')
 	const { ROOT } = await import('@justfiles/fs/store')
 	const { announceMount, volume } = await import('@justfiles/fs')
-	const tree = idbStore(`frieren-store-${id}`)
-	const local = idbStore(`frieren-store-${id}-${PRIVATE_MOUNT}`)
+	const tree = idbStore(`frieren-store-v2-${id}`)
+	const local = idbStore(`frieren-store-v2-${id}-${PRIVATE_MOUNT}`)
 	await announceMount(tree, ROOT, PRIVATE_MOUNT)
 	const vol = volume(tree, { bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, local]])]]) })
 	for (const [path, body] of Object.entries(files)) {
@@ -133,7 +138,7 @@ async function seedProfile(id: string, files: Record<string, string>): Promise<v
 async function accountVolume() {
 	const { idbStore } = await import('@justfiles/fs/idb')
 	const { volume } = await import('@justfiles/fs')
-	return volume(idbStore('frieren-store-account-profile'))
+	return volume(idbStore('frieren-store-v2-account-profile'))
 }
 
 async function listAccountFiles(): Promise<Set<string>> {

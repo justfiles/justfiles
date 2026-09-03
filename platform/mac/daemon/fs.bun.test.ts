@@ -328,8 +328,8 @@ test.skipIf(process.platform !== 'darwin')(
 			winner.kill('SIGKILL')
 			await winner.exited
 
-			const mainRoot = join(support, 'volume-v2', 'main')
-			const privateRoot = join(support, 'volume-v2', 'private')
+			const mainRoot = join(support, 'volume-v3', 'main')
+			const privateRoot = join(support, 'volume-v3', 'private')
 			expect(await readFile(join(mainRoot, 'note.txt'), 'utf8')).toBe('main')
 			await expect(access(join(privateRoot, 'note.txt'))).rejects.toThrow()
 			for (const path of privateFiles)

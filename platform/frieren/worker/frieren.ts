@@ -73,12 +73,13 @@ import {
 	type SyncDb,
 	scopedBlobs,
 	sqliteStore,
-	storeApi
+	syncStoreApi
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { ROOT, type Store } from '@justfiles/fs/store'
+import { privateSyncState, syncStateLock } from '@justfiles/fs/syncState'
 import { Hono } from 'hono'
 import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { guardCapability } from './accounts/guard.ts'
@@ -181,6 +182,7 @@ export class Frieren extends DurableObject<Env> {
 	// the authority: rule 9's invariants, one commit at a time, and the poke.
 	private readonly store: Store
 	private readonly tree: Store
+	private readonly syncState = syncStateLock()
 	// The DO's own local store, joined at `/private`. It is not `storeApi`'s, so no
 	// request can name a row in it — the credentials and the sealed provider records are
 	// simply not in the table a client pulls.
@@ -250,7 +252,7 @@ export class Frieren extends DurableObject<Env> {
 		// than that at all. The old backend sent every binary there for the same reason.
 		// Absent locally (no bucket bound), so dev runs on rows alone.
 		const blobs = env.FS_BLOBS && scopedBlobs(env.FS_BLOBS, namespace)
-		this.store = sqliteStore(this.sync, undefined, { blobs })
+		this.store = sqliteStore(this.sync, undefined, { blobs, lock: this.syncState })
 		this.local = notifying(sqliteStore(this.sync, PRIVATE_MOUNT, { blobs }))
 		this.tree = notifying(authority(this.store))
 		this.tree.subscribe?.(poke)
@@ -259,6 +261,7 @@ export class Frieren extends DurableObject<Env> {
 		this.volume = volume(this.tree, {
 			bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, this.local]])]])
 		})
+		const hostState = privateSyncState(this.volume)
 		this.meter = createAiMeter(this.db, ctx.storage, DEV_TIER_OVERRIDE)
 
 		const { models, model, apiKey, generateImage } = this.createPlatformAi()
@@ -323,7 +326,13 @@ export class Frieren extends DurableObject<Env> {
 				})
 			)
 			// The seam, as routes, over the synced store alone.
-			.route('/store', storeApi(this.tree))
+			.route(
+				'/store',
+				syncStoreApi(this.tree, {
+					issuer: hostState.peerId,
+					lock: this.syncState
+				})
+			)
 			// The one route beside it, for the callers that are not replicas: a CLI
 			// reading one file, for which the seam is a walk and a fetch. Over the synced
 			// tree UNBOUND — not `this.volume` — for the same reason `storeApi` is handed
@@ -397,7 +406,8 @@ export class Frieren extends DurableObject<Env> {
 				// A wipe means "delete everything", so it names the bound store too; an
 				// adopt-mine names only the synced tree, and the credentials survive by
 				// never having been in it.
-				reset: async (body) => resetStore(this.sync, body, { local: [PRIVATE_MOUNT] }),
+				reset: (body) =>
+					this.syncState(async () => resetStore(this.sync, body, { local: [PRIVATE_MOUNT] })),
 				sync: () => this.ctx.storage.sync(),
 				terminate: (reason) => {
 					this.ctx.abort(reason)

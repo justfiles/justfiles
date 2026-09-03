@@ -471,7 +471,7 @@ export async function startDaemon(
 		terminated = true
 		options.terminate?.()
 	}
-	const close = (remove = false): Promise<void> => {
+	const close = (remove = false, flush = true): Promise<void> => {
 		removeVolume ||= remove
 		if (remove) void storage?.stopSync()
 		closeOnce ??= (async () => {
@@ -480,7 +480,7 @@ export async function startDaemon(
 				server?.stop(true)
 			} finally {
 				try {
-					if (!removeVolume) {
+					if (!removeVolume && flush) {
 						const flushed = await storage?.flush()
 						if (flushed === false) console.warn('daemon: final sync did not finish')
 					}
@@ -511,7 +511,8 @@ export async function startDaemon(
 		try {
 			storage = await startStorage({
 				ownerId,
-				getToken: () => auth.getToken()
+				getToken: () => auth.getToken(),
+				restart: () => void close(false, false).finally(terminate)
 			})
 		} catch (error) {
 			if (!(error instanceof OwnerChangedError)) throw error

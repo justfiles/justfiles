@@ -29,10 +29,30 @@ import {
 	type Store,
 	same
 } from '@justfiles/fs/store'
+import { type SyncStateLock, syncStateLock } from '@justfiles/fs/syncState'
+import { type ReceiverBackend, type ReceiverState, receiverBackend } from '../../fs/peer.internal'
 import type { SqlValue, SyncDb } from './db'
 
 /** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128
+
+const DEFAULT_HISTORY_POLICY = {
+	tombstoneRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+	deleteBatch: 128
+} as const
+
+type HistoryPolicy = {
+	[key in keyof typeof DEFAULT_HISTORY_POLICY]: number
+}
+
+const historyPolicy = (overrides: Partial<HistoryPolicy> = {}): HistoryPolicy => {
+	const policy = { ...DEFAULT_HISTORY_POLICY, ...overrides }
+	if (!Number.isFinite(policy.tombstoneRetentionMs) || policy.tombstoneRetentionMs <= 0)
+		throw new TypeError('tombstoneRetentionMs must be positive')
+	if (!Number.isInteger(policy.deleteBatch) || policy.deleteBatch < 1)
+		throw new TypeError('deleteBatch must be a positive integer')
+	return policy
+}
 
 /**
  * Blobs per `gc` pass. The sweep shares one Durable Object event with every other
@@ -113,7 +133,7 @@ const MAIN = 'main'
 const SEP = String.fromCharCode(0)
 
 const COLUMNS =
-	'sid, id, parent, name, type, mode, mtime_ns, size, xattrs, content, link, version, deleted, seq'
+	'sid, id, parent, name, type, mode, mtime_ns, size, xattrs, content, link, version, deleted, seq, committed_ms'
 const PLACEHOLDERS = COLUMNS.split(', ')
 	.map(() => '?')
 	.join(', ')
@@ -160,6 +180,8 @@ const SCHEMA = [
 		-- INTEGER, because this one IS compared and taken the MAX of in SQL. It
 		-- counts row writes, so it stays a JS number for the life of the store.
 		seq INTEGER NOT NULL,
+		-- Receiver time, private to this backend. Retention never trusts mtime_ns.
+		committed_ms INTEGER NOT NULL,
 		-- An id is minted once and never rebound (rule 6) -- within its store. Two
 		-- stores share the constant they both spell their root with, so identity
 		-- here is the pair.
@@ -201,7 +223,8 @@ const REPLACE = `INSERT INTO nodes(${COLUMNS}) VALUES (${PLACEHOLDERS})
 		parent = excluded.parent, name = excluded.name, type = excluded.type,
 		mode = excluded.mode, mtime_ns = excluded.mtime_ns, size = excluded.size,
 		xattrs = excluded.xattrs, content = excluded.content, link = excluded.link,
-		version = excluded.version, deleted = excluded.deleted, seq = excluded.seq`
+		version = excluded.version, deleted = excluded.deleted, seq = excluded.seq,
+		committed_ms = excluded.committed_ms`
 
 const SEED = `INSERT OR IGNORE INTO nodes(${COLUMNS}) VALUES (${PLACEHOLDERS})`
 
@@ -229,11 +252,20 @@ const ROOT_ROW: Node = {
 export function sqliteStore(
 	db: SyncDb,
 	id: string = MAIN,
-	opts: { blobs?: BlobStore; inline?: number } = {}
+	opts: {
+		blobs?: BlobStore
+		inline?: number
+		clock?: () => number
+		lock?: SyncStateLock
+		policy?: Partial<HistoryPolicy>
+	} = {}
 ): Store {
 	let opened: Opened | undefined
 	const external = opts.blobs
 	const inline = opts.inline ?? INLINE
+	const clock = opts.clock ?? Date.now
+	const lock = opts.lock ?? syncStateLock()
+	const policy = historyPolicy(opts.policy)
 	// Content-addressed, and the store's id is in it: two stores over one database
 	// never share an object, which is the same boundary `sid` draws on the table.
 	const keyFor = (hash: Hash): string => `${id}/${hash}`
@@ -251,11 +283,43 @@ export function sqliteStore(
 	 * promise, one batch long, awaited only on the path that has a key at all.
 	 */
 	let sweeping: Promise<unknown> | undefined
+	const meta = (sid: number, name: string): string => {
+		const [row] = db.query<Row>('SELECT value FROM meta WHERE sid = ? AND key = ? LIMIT 1', [
+			sid,
+			name
+		])
+		if (row?.value == null) throw new Error(`store metadata ${name} is missing`)
+		return String(row.value)
+	}
+	const setMeta = (sid: number, name: string, value: string): void => {
+		db.exec(
+			`INSERT INTO meta(sid, key, value) VALUES (?, ?, ?)
+				ON CONFLICT(sid, key) DO UPDATE SET value = excluded.value`,
+			[sid, name, value]
+		)
+	}
+	const observedNow = (sid: number, candidate: number): number => {
+		const [row] = db.query<Row>(
+			"SELECT value FROM meta WHERE sid = ? AND key = 'observed_ms' LIMIT 1",
+			[sid]
+		)
+		const observed = Math.max(Number(row?.value ?? 0), candidate)
+		setMeta(sid, 'observed_ms', String(observed))
+		return observed
+	}
 
 	const start = (): Opened => {
 		let sid = 0
 		db.transactionSync(() => {
 			for (const statement of SCHEMA) db.exec(statement)
+			const columns = new Set(
+				db.query<Row>('PRAGMA table_info(nodes)').map((row) => String(row.name))
+			)
+			if (!columns.has('committed_ms'))
+				db.exec('ALTER TABLE nodes ADD COLUMN committed_ms INTEGER NOT NULL DEFAULT 0')
+			db.exec(
+				'CREATE INDEX IF NOT EXISTS nodes_tombstone_age ON nodes(sid, deleted, committed_ms, seq)'
+			)
 			// The store itself, then the lineage (rule 11) and the root row (rule 6),
 			// each only where it is missing. A reopen finds all three and keeps them —
 			// a restart is not a reset, so it must not fence the replicas whose cursors
@@ -270,7 +334,21 @@ export function sqliteStore(
 				sid,
 				crypto.randomUUID()
 			])
-			db.exec(SEED, bind(sid, ROOT_ROW, 0))
+			db.exec("INSERT OR IGNORE INTO meta(sid, key, value) VALUES (?, 'issuer', ?)", [
+				sid,
+				crypto.randomUUID()
+			])
+			db.exec(SEED, bind(sid, ROOT_ROW, 0, observedNow(sid, clock())))
+			db.exec("INSERT OR IGNORE INTO meta(sid, key, value) VALUES (?, 'signing_secret', ?)", [
+				sid,
+				crypto.randomUUID()
+			])
+			db.exec("INSERT OR IGNORE INTO meta(sid, key, value) VALUES (?, 'feed_floor', '0')", [sid])
+			const [top] = db.query<Row>('SELECT MAX(seq) AS top FROM nodes WHERE sid = ?', [sid])
+			db.exec("INSERT OR IGNORE INTO meta(sid, key, value) VALUES (?, 'feed_head', ?)", [
+				sid,
+				String(toNumber(top?.top ?? -1) + 1)
+			])
 		})
 		const [row] = db.query<Row>(
 			"SELECT value FROM meta WHERE sid = ? AND key = 'lineage' LIMIT 1",
@@ -280,6 +358,18 @@ export function sqliteStore(
 	}
 
 	const open = (): Opened => (opened ??= start())
+
+	const receiverState = (): ReceiverState => {
+		const { sid, lineage } = open()
+		return {
+			issuer: meta(sid, 'issuer'),
+			lineage,
+			signingSecret: meta(sid, 'signing_secret'),
+			feedHead: Number(meta(sid, 'feed_head')),
+			feedFloor: Number(meta(sid, 'feed_floor')),
+			maxOfflineMs: policy.tombstoneRetentionMs
+		}
+	}
 
 	const position = (cursor: Cursor | undefined, lineage: string): number => {
 		if (cursor === undefined) return 0
@@ -316,7 +406,54 @@ export function sqliteStore(
 		return (found ? String(found.version) : null) === guard.version.is
 	}
 
+	const sweepTombstones = (): Promise<{ reclaimed: number; done: boolean }> =>
+		lock(async () => {
+			const { sid } = open()
+			const now = observedNow(sid, clock())
+			let reclaimed = 0
+			let done = true
+			db.transactionSync(() => {
+				const rows = db.query<Row>(
+					`SELECT id, seq FROM nodes
+						WHERE sid = ? AND deleted = 1 AND committed_ms < ?
+						ORDER BY seq LIMIT ${policy.deleteBatch + 1}`,
+					[sid, now - policy.tombstoneRetentionMs]
+				)
+				const batch = rows.slice(0, policy.deleteBatch)
+				for (const row of batch) {
+					db.exec('DELETE FROM nodes WHERE sid = ? AND id = ? AND deleted = 1 AND seq = ?', [
+						sid,
+						String(row.id),
+						toNumber(row.seq)
+					])
+					reclaimed++
+				}
+				const last = batch.at(-1)
+				if (last)
+					setMeta(
+						sid,
+						'feed_floor',
+						String(Math.max(Number(meta(sid, 'feed_floor')), toNumber(last.seq) + 1))
+					)
+				done = rows.length <= policy.deleteBatch
+			})
+			return { reclaimed, done }
+		})
+
 	return {
+		[receiverBackend]: {
+			lock,
+			state: async () => receiverState(),
+			async observe(now) {
+				return observedNow(open().sid, now)
+			},
+			cursor(position) {
+				return `${open().lineage}${SEP}${position}`
+			},
+			position(cursor) {
+				return position(cursor, open().lineage)
+			}
+		} satisfies ReceiverBackend,
 		async get(id) {
 			const { sid } = open()
 			return byId(sid, id)
@@ -373,16 +510,16 @@ export function sqliteStore(
 		async since(cursor) {
 			const { sid, lineage } = open()
 			const from = position(cursor, lineage)
+			const head = Number(meta(sid, 'feed_head'))
 			const rows = db.query<Row>(
 				`SELECT * FROM nodes WHERE sid = ? AND seq >= ? ORDER BY seq LIMIT ${PAGE + 1}`,
 				[sid, from]
 			)
 			const page = rows.slice(0, PAGE)
 			const overflow = rows[PAGE]
-			const last = page[page.length - 1]
 			// Always a cursor back: a full page resumes AT the row that did not fit,
 			// and a short one resumes past the last row it carried.
-			const next = overflow ? toNumber(overflow.seq) : last ? toNumber(last.seq) + 1 : from
+			const next = overflow ? toNumber(overflow.seq) : head
 			return { nodes: page.map(decode), next: lineage + SEP + next }
 		},
 
@@ -401,21 +538,23 @@ export function sqliteStore(
 			const checks = structuredClone(guards)
 
 			const { sid } = open()
+			const candidateTime = clock()
 			db.transactionSync(() => {
+				const committedAt = observedNow(sid, candidateTime)
 				for (const guard of checks ?? []) if (!passes(sid, guard)) throw new GuardError(guard)
 
-				// The next position, read from the table rather than counted in
-				// memory: another process commits into this same database, and two
+				// The next position is persisted rather than counted in memory: another
+				// process commits into this same database, and two
 				// rows sharing a seq would let a resumed cursor step over one of them.
 				// Per store, so one store's writes never move another's feed.
-				const [top] = db.query<Row>('SELECT MAX(seq) AS top FROM nodes WHERE sid = ?', [sid])
-				let seq = toNumber(top?.top ?? -1) + 1
+				let seq = Number(meta(sid, 'feed_head'))
 
 				for (const write of batch) {
 					const old = byId(sid, write.id)
 					if (old && same(old, write)) continue // rule 3: a row the store already holds is a no-op
-					db.exec(REPLACE, bind(sid, write, seq++))
+					db.exec(REPLACE, bind(sid, write, seq++, committedAt))
 				}
+				setMeta(sid, 'feed_head', String(seq))
 			})
 		},
 
@@ -462,7 +601,11 @@ export function sqliteStore(
 				await sweeping
 				sweeping = undefined
 			}
-			return { reclaimed, done }
+			const tombstones = await sweepTombstones()
+			return {
+				reclaimed: tombstones.reclaimed + reclaimed,
+				done: tombstones.done && done
+			}
 		},
 
 		// No `subscribe`. Rule 8 makes it optional, and a consumer takes it INSTEAD
@@ -559,7 +702,7 @@ export function sqliteStore(
 				)
 			}
 		}
-	}
+	} as Store
 }
 
 /**
@@ -603,6 +746,12 @@ export function emptyStore(db: SyncDb, id: string = MAIN, opts?: { content?: 'ke
 	db.exec('DELETE FROM nodes WHERE sid = ? AND id <> ?', [sid, ROOT])
 	if (opts?.content === 'drop') db.exec('DELETE FROM blobs WHERE sid = ?', [sid])
 	db.exec("UPDATE meta SET value = ? WHERE sid = ? AND key = 'lineage'", [crypto.randomUUID(), sid])
+	db.exec("UPDATE meta SET value = ? WHERE sid = ? AND key = 'signing_secret'", [
+		crypto.randomUUID(),
+		sid
+	])
+	db.exec("UPDATE meta SET value = '0' WHERE sid = ? AND key = 'feed_floor'", [sid])
+	db.exec("DELETE FROM meta WHERE sid = ? AND key = 'pending_fence'", [sid])
 }
 
 // ── The row codec: one table row ↔ one `Node` ────────────────────────────────
@@ -645,7 +794,7 @@ const decodeXattrs = (json: string): Record<string, Uint8Array> =>
 		])
 	)
 
-const bind = (sid: number, node: Node, seq: number): SqlValue[] => [
+const bind = (sid: number, node: Node, seq: number, committedAt: number): SqlValue[] => [
 	sid,
 	node.id,
 	node.parent,
@@ -662,7 +811,8 @@ const bind = (sid: number, node: Node, seq: number): SqlValue[] => [
 	node.link ?? null,
 	node.version,
 	node.deleted ? 1 : 0,
-	seq
+	seq,
+	committedAt
 ]
 
 const decode = (row: Row): Node => {

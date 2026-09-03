@@ -2,9 +2,6 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { createClerkClient } from '@clerk/backend'
-import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
-import { volume } from '@justfiles/fs'
-import { httpStore } from '@justfiles/fs/http'
 import { chromium } from '@playwright/test'
 
 const DEFAULT_EMAIL = 'llm+clerk_test@example.com'
@@ -12,8 +9,6 @@ const DEFAULT_BASE_URL = 'http://localhost:5173'
 const DEFAULT_AUTH_STATE = '.auth/frieren-llm.json'
 const DEFAULT_SESSION = 'frieren'
 const TOKEN_EXPIRES_SECONDS = 60 * 60
-
-const encoder = new TextEncoder()
 
 type BrowserClerk = {
 	client?: {
@@ -103,48 +98,6 @@ async function createSessionToken(): Promise<string> {
 	return token.jwt
 }
 
-async function createAuthedVolume(token: string) {
-	const { baseUrl } = config()
-	// The seam is the wire, so a script needs no client library — just the store the
-	// server serves, and a volume over it.
-	return volume(httpStore(`${baseUrl}/store`, { headers: { Authorization: `Bearer ${token}` } }))
-}
-
-async function seedOnboarding(token: string) {
-	const vol = await createAuthedVolume(token)
-	// FIRST: nothing seeds `/system` any more (identity defaults are resolved from an absent
-	// file), so a brand-new test user's volume has no such directory and the profile write
-	// below fails with ENOENT before it can create one.
-	await vol.mkdir('/system/agents/main', { recursive: true })
-	await vol.writeFile(
-		PROFILE_PATH,
-		encoder.encode(
-			[
-				'---',
-				'schema: frieren/user-profile/v1',
-				'name: LLM Tester',
-				'birth_date: 1990-01-01',
-				'---',
-				''
-			].join('\n')
-		)
-	)
-	await vol.writeFile(
-		SOUL_PATH,
-		encoder.encode(
-			[
-				'---',
-				'schema: frieren/agent-soul/v1',
-				'agent_name: Frieren',
-				'---',
-				'',
-				'Frieren is a concise, reliable assistant for local UI verification.',
-				''
-			].join('\n')
-		)
-	)
-}
-
 async function bootstrapBrowserAuth() {
 	const { baseUrl, authState, headless } = config()
 	const { client, user } = await ensureTestUser()
@@ -200,12 +153,11 @@ async function main() {
 	await loadEnv()
 	const command = process.argv[2]
 	if (!command || command === 'help' || command === '--help') {
-		console.log(`Usage: node scripts/frieren-auth.ts <token|seed|bootstrap|ui>
+		console.log(`Usage: node scripts/frieren-auth.ts <token|bootstrap|ui>
 
 Commands:
   token      Print a fresh Clerk session JWT for the LLM test user.
-  seed       Seed /system/user.md and /system/agents/main/soul.md through the local app.
-  bootstrap  Create user, seed onboarding, and write Playwright auth state.
+  bootstrap  Create the user and write Playwright auth state.
   ui         Run bootstrap, then open an authenticated playwright-cli session.
 
 Env overrides:
@@ -223,22 +175,12 @@ Env overrides:
 		return
 	}
 
-	if (command === 'seed') {
-		await seedOnboarding(await createSessionToken())
-		log('Seeded Frieren onboarding files')
-		return
-	}
-
 	if (command === 'bootstrap') {
-		const token = await createSessionToken()
-		await seedOnboarding(token)
 		await bootstrapBrowserAuth()
 		return
 	}
 
 	if (command === 'ui') {
-		const token = await createSessionToken()
-		await seedOnboarding(token)
 		await bootstrapBrowserAuth()
 		await openPlaywrightCli()
 		return

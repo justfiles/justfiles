@@ -1,8 +1,6 @@
 /**
- * The seam as routes, over any injected `Store`. One route per seam call and
- * nothing else — this is the wire the design means when it says the storage API
- * and the wire are the same thing, so an addition here needs a design review
- * that starts with "why can this not be rows?".
+ * The Store routes. `storeApi` is the primitive wire; `syncStoreApi` composes the
+ * receiver whose reads and writes carry its current signed cursor.
  *
  * It routes and it sets status codes. It does not decide policy: the tree
  * invariants, the serialization and the blob verification all belong to the
@@ -16,7 +14,7 @@
  *
  * - **409** a commit was refused — a guard, or an invariant no `Guard` states.
  *   The body names it, and `httpStore` turns it back into `GuardError`.
- * - **410** the cursor belongs to another lineage (rule 11).
+ * - **410** incremental sync must stop and bootstrap into a fresh store.
  * - **400** the request contradicts itself: a malformed row, or bytes that do
  *   not hash to the key they were offered under.
  *
@@ -24,9 +22,8 @@
  * dependency-free.
  */
 
-import { decodeCommit, encodeNode } from '@justfiles/fs/http'
+import { BootstrapRequiredError, type ReceiverOptions, receiver } from '@justfiles/fs/peer'
 import {
-	ForeignCursorError,
 	GuardError,
 	HashMismatchError,
 	type Node,
@@ -35,8 +32,23 @@ import {
 } from '@justfiles/fs/store'
 import { type Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
+import { withSyncCursor } from '../../fs/peer.internal'
+import { decodeCommit, encodeNode } from '../../fs/wire.internal'
 
+/** The Store wire, without sync policy. */
 export function storeApi(store: Store): Hono {
+	return routes(() => store)
+}
+
+/** Add the signed-cursor protocol required by a syncing peer. */
+export function syncStoreApi(raw: Store, opts?: ReceiverOptions): Hono {
+	const store = receiver(raw, opts)
+	return routes((c) => withSyncCursor(store, { load: async () => c.req.header('x-sync-cursor') }))
+}
+
+type RequestStore = (context: Context) => Store
+
+function routes(requestStore: RequestStore): Hono {
 	const app = new Hono()
 	app.use('*', async (c, next) => {
 		c.header('cache-control', 'no-store')
@@ -47,7 +59,8 @@ export function storeApi(store: Store): Hono {
 		// A refusal is not a failure. The reason travels because the caller acts on
 		// it — read again and replan — rather than reporting it.
 		if (err instanceof GuardError) return c.json({ error: 'guard', reason: err.reason }, 409)
-		if (err instanceof ForeignCursorError) return c.json({ error: 'lineage' }, 410)
+		if (err instanceof BootstrapRequiredError)
+			return c.json({ error: 'bootstrap-required', peerId: err.peerId }, 410)
 		if (err instanceof HashMismatchError)
 			return c.json({ error: 'hash', message: err.message }, 400)
 		if (err instanceof HTTPException) return err.getResponse()
@@ -57,22 +70,24 @@ export function storeApi(store: Store): Hono {
 	// The two lookups over the one table. `null` is an answer, not a 404: the
 	// store's own answer to "is there a row" is `null`, and the one 404 on this
 	// API is a blob that is not here.
-	app.get('/node/:id', async (c) => c.json(row(await store.get(c.req.param('id')))))
-	app.get('/child', async (c) => c.json(row(await store.child(need(c, 'parent'), need(c, 'name')))))
+	app.get('/node/:id', async (c) => c.json(row(await requestStore(c).get(c.req.param('id')))))
+	app.get('/child', async (c) =>
+		c.json(row(await requestStore(c).child(need(c, 'parent'), need(c, 'name'))))
+	)
 	app.get('/children', async (c) =>
-		c.json(page(await store.children(need(c, 'parent'), c.req.query('cursor'))))
+		c.json(page(await requestStore(c).children(need(c, 'parent'), c.req.query('cursor'))))
 	)
 
 	// The one ordering. An absent `cursor` is the empty cursor — where every scan
 	// starts — so it is missing rather than blank.
-	app.get('/since', async (c) => c.json(page(await store.since(c.req.query('cursor')))))
+	app.get('/since', async (c) => c.json(page(await requestStore(c).since(c.req.query('cursor')))))
 
 	// The one write. Strictly decoded, on the same reasoning that makes a
 	// peer-facing store verify a hash (rule 7): a peer's rows are the one way a
 	// malformed row could enter the table everyone converges on.
 	app.post('/commit', async (c) => {
 		const batch = await c.req.json().then(decodeCommit).catch(badRequest)
-		await store.commit(batch.writes, batch.guards)
+		await requestStore(c).commit(batch.writes, batch.guards)
 		return c.body(null, 204)
 	})
 
@@ -81,8 +96,9 @@ export function storeApi(store: Store): Hono {
 		const hash = c.req.param('hash')
 		// Hono answers a HEAD by running the GET and dropping the body, so `has` is
 		// answered HERE — before anything reads bytes the caller does not want.
-		if (c.req.method === 'HEAD') return c.body(null, (await store.blobs.has(hash)) ? 200 : 404)
-		const data = await store.blobs.get(hash)
+		const blobs = requestStore(c).blobs
+		if (c.req.method === 'HEAD') return c.body(null, (await blobs.has(hash)) ? 200 : 404)
+		const data = await blobs.get(hash)
 		if (data === null) return c.body(null, 404)
 		return c.body(buffer(data), 200, { 'content-type': 'application/octet-stream' })
 	})
@@ -91,7 +107,7 @@ export function storeApi(store: Store): Hono {
 		// Whether the bytes must hash to the key is the STORE's business: a
 		// peer-facing one is wrapped in `verifiedBlobs` and says so with a
 		// `HashMismatchError`, which is the 400 above.
-		await store.blobs.put(c.req.param('hash'), new Uint8Array(await c.req.arrayBuffer()))
+		await requestStore(c).blobs.put(c.req.param('hash'), new Uint8Array(await c.req.arrayBuffer()))
 		return c.body(null, 204)
 	})
 

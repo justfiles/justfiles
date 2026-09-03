@@ -25,5 +25,5 @@ export {
 } from './reset'
 // The server half of the seam, unexported until the first consumer arrived: half a
 // server surface is no use to anyone.
-export { storeApi } from './store.api'
+export { storeApi, syncStoreApi } from './store.api'
 export { type BlobStore, emptyStore, scopedBlobs, sqliteStore } from './store.sqlite'

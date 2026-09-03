@@ -27,8 +27,19 @@
  *   would be stranded on this device by the very cursor the reset saves.
  */
 
-import { authorOf, type CursorSlot, hydratingBlobs, sync, versions } from './engine'
+import {
+	authorOf,
+	bootstrap,
+	type ChooseWinner,
+	type CursorSlot,
+	hydratingBlobs,
+	sync,
+	versions
+} from './engine'
+import { BootstrapRequiredError } from './peer'
+import { withSyncCursor } from './peer.internal'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
+import type { SyncStateLock } from './syncState'
 import { type Bindings, type Volume, volume } from './volume'
 
 /** A host that keeps a cursor for this wrapper needs its type, and nothing else of the engine's. */
@@ -40,7 +51,7 @@ export type { CursorSlot } from './engine'
  * replica AUTHORED, so a volume minting under any other tag writes rows no cycle will
  * ever send.
  */
-export { versions } from './engine'
+export { authorOf, bootstrap, versions } from './engine'
 
 /** How often the loop runs when nothing has asked it to run sooner. */
 const INTERVAL_MS = 30_000
@@ -83,7 +94,7 @@ export type DiscardSlot = {
 export type SyncedProps = {
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
-	/** The peer. A `Store`, so a folder, a server and another replica all fit. */
+	/** The peer, with the same seam as the local store. */
 	remote: Store
 	/**
 	 * The host's fstab: which of ITS OWN stores stands at which name (`volume.ts`).
@@ -103,6 +114,12 @@ export type SyncedProps = {
 	pull: CursorSlot
 	/** Where it keeps its position in its own. */
 	push: CursorSlot
+	/** Host-private exclusion shared by durable cursor saves and local-store GC. */
+	lock?: SyncStateLock
+	/** Chooses the surviving stable peer id when incremental sync is fenced. */
+	chooseWinner?: ChooseWinner
+	/** Lets a host replace the backing store when no incremental relationship is usable. */
+	onBootstrapRequired?: (winnerId?: string) => void
 	/**
 	 * Where it keeps "a discard stopped half-done". An app without one keeps that
 	 * bit in memory and cannot recover the crash the type above describes — which is
@@ -173,10 +190,18 @@ export type SyncLifecycle = {
 }
 
 export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle> {
-	const { local, remote, replica } = props
+	const { local, replica } = props
+	const remote = readyStore(props.remote, local, props.pull, props.lazyContent, props.lock)
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
-	const opts = { replica, pull: props.pull, push: props.push, lazyContent: props.lazyContent }
+	const opts = {
+		replica,
+		pull: props.pull,
+		push: props.push,
+		lock: props.lock,
+		lazyContent: props.lazyContent,
+		chooseWinner: props.chooseWinner
+	}
 
 	// The volume reads through `hydratingBlobs` whether or not the pull is lazy.
 	// A row naming content this replica does not hold is the same row either way
@@ -236,9 +261,12 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	 */
 	let unfinished = false
 
+	const withSyncState = <T>(body: () => Promise<T>): Promise<T> =>
+		props.lock ? props.lock(body) : body()
+
 	/** Raise or lower the flag, durably first: a bit only this process knows fences nothing. */
 	const discarding = async (on: boolean): Promise<void> => {
-		await props.discard?.save(on)
+		await withSyncState(() => props.discard?.save(on) ?? Promise.resolve())
 		unfinished = on
 	}
 
@@ -270,6 +298,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			failures = 0
 			setStatus('synced')
 		} catch (error) {
+			if (error instanceof BootstrapRequiredError) props.onBootstrapRequired?.(error.winnerId)
 			if (!(destroyed && error instanceof Error && error.name === 'AbortError'))
 				console.error(error)
 			failures++
@@ -477,11 +506,12 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// a writer that reaches this store directly can put one back. Asking the
 			// rows what they ARE, rather than remembering which ones were handled,
 			// answers both.
+			let cutoff: Cursor | undefined
 			for (let left = MAX_ATTEMPTS; ; left--) {
 				const scan = await feed()
 				const live = living(scan.rows)
 				if (live.length === 0) {
-					await props.push.save(scan.tip)
+					cutoff = scan.tip
 					break
 				}
 				if (left === 0) throw new Error('take theirs cannot keep up with the writes under it')
@@ -497,7 +527,10 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// too — the peer's rows are all BEHIND the cursor this replaces, so a
 			// loop left running over a store that lost this step would never bring
 			// one of them back, and would look perfectly healthy doing it.
-			await props.pull.save(undefined)
+			await withSyncState(async () => {
+				await props.push.save(cutoff)
+				await props.pull.save(undefined)
+			})
 			await discarding(false)
 		})
 	}
@@ -552,12 +585,10 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 				}
 			}
 			// Offer the whole feed again, not just what changed since the last push.
-			// The authority is empty, so "already sent" is true of nothing — and a
-			// reset keeps the store's lineage (`packages/core/src/reset.ts`), so
-			// nothing fences this cursor into rewinding by itself. A failure here
+			// The authority is empty, so "already sent" is true of nothing. A failure here
 			// costs a partial republish that another `takeMine` completes; it cannot
 			// delete anything, which is why this one needs no fence.
-			await props.push.save(undefined)
+			await withSyncState(() => props.push.save(undefined))
 		})
 	}
 
@@ -600,5 +631,42 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		takeTheirs,
 		takeMine,
 		generation: () => epoch
+	}
+}
+
+/** Establish a relationship only over a store that has never held user data. */
+function readyStore(
+	peer: Store,
+	local: Store,
+	pull: CursorSlot,
+	lazyContent = false,
+	lock?: SyncStateLock
+): Store {
+	const remote = withSyncCursor(peer, pull)
+	if (remote === peer) return peer
+	let preparing: Promise<void> | undefined
+	const ready = async (): Promise<void> => {
+		if ((await pull.load()) !== undefined) return
+		preparing ??= bootstrap(local, peer, pull, { lazyContent, lock }).catch((error) => {
+			preparing = undefined
+			throw error
+		})
+		await preparing
+	}
+	const after = async <T>(body: () => Promise<T>): Promise<T> => {
+		await ready()
+		return body()
+	}
+	return {
+		get: (id) => after(() => remote.get(id)),
+		child: (parent, name) => after(() => remote.child(parent, name)),
+		children: (parent, cursor) => after(() => remote.children(parent, cursor)),
+		since: (cursor) => after(() => remote.since(cursor)),
+		commit: (writes, guards) => after(() => remote.commit(writes, guards)),
+		blobs: {
+			has: (hash) => after(() => remote.blobs.has(hash)),
+			get: (hash) => after(() => remote.blobs.get(hash)),
+			put: (hash, data) => after(() => remote.blobs.put(hash, data))
+		}
 	}
 }

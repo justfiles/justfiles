@@ -7,31 +7,32 @@
  * workspace on a fresh device until the user happens to click away and back. That is what
  * `localFirst` would buy, and it is why this runtime does not pass it.
  *
- * And the boot that runs the one pass out of the old model runs it once per origin, not
- * once per tab.
+ * Legacy databases are intentionally left alone: this version starts from a new store
+ * namespace and performs a full remote bootstrap.
  */
 
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
+import { receiver } from '@justfiles/fs/peer'
 import { beforeEach, expect, test, vi } from 'vitest'
 
-// The pass itself has its own tests (`migrate.idb.test.ts`); what matters here is how
-// many times this host runs it. `adoptOnce` is NOT mocked — it is the thing under test.
-vi.mock('@justfiles/fs/migrate.idb', async (original) => ({
-	...(await original<typeof import('@justfiles/fs/migrate.idb')>()),
-	migrateIdb: async () => {
-		adoptions += 1
-	}
+const H = vi.hoisted(() => ({
+	acquire: vi.fn<() => Promise<() => void>>(),
+	opened: vi.fn()
 }))
 
-const peer = memStore()
-let adoptions = 0
+const peerStore = memStore()
+const peer = receiver(peerStore)
 
 // The two stores this runtime opens by name. The local one is shared across the "tabs"
 // below, because two tabs of one origin open the same database.
 const tree = memStore()
 vi.mock('@justfiles/fs/idb', () => ({
-	idbStore: () => tree,
+	acquireStoreOwner: H.acquire,
+	idbStore: () => {
+		H.opened()
+		return tree
+	},
 	sharedStore: (store: unknown) => store
 }))
 vi.mock('@justfiles/fs/http', () => ({ httpStore: () => peer }))
@@ -39,47 +40,46 @@ vi.mock('@justfiles/fs/http', () => ({ httpStore: () => peer }))
 import { createVolumeRuntime } from './useVolume'
 
 beforeEach(() => {
-	adoptions = 0
+	H.acquire.mockReset()
+	H.acquire.mockResolvedValue(() => {})
+	H.opened.mockReset()
 	const held = new Map<string, string>()
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => held.get(key) ?? null,
 		setItem: (key: string, value: string) => held.set(key, value),
 		removeItem: (key: string) => held.delete(key)
 	})
-	// A real mutex, which is all `adoptOnce` asks of `navigator.locks`.
-	let chain = Promise.resolve()
-	vi.stubGlobal('navigator', {
-		locks: {
-			request: <T>(_name: string, fn: () => Promise<T>) => {
-				const run = chain.then(fn)
-				chain = run.then(
-					() => {},
-					() => {}
-				)
-				return run
-			}
-		}
-	})
 })
 
 test('the boot listing already holds what only the peer had', async () => {
-	await volume(peer).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
+	await volume(peerStore).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
+	let own!: () => void
+	H.acquire.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				own = () => resolve(() => {})
+			})
+	)
 
-	const runtime = await createVolumeRuntime(async () => 'token')
+	const creating = createVolumeRuntime(async () => 'token')
+	await Promise.resolve()
+	expect(H.acquire).toHaveBeenCalledWith('justfiles-store-owner')
+	expect(H.opened).not.toHaveBeenCalled()
+	own()
+	const runtime = await creating
 
 	expect(runtime.getSnapshot().entries.map((entry) => entry.path)).toEqual([
 		'from-another-device.md'
 	])
-})
 
-// Two tabs opened on the same upgrade both read "not adopted" unless the marker check is
-// inside the lock. `migrate` commits WITHOUT guards, so a second pass would write the old
-// tree over rows the first tab's volume had already pulled.
-test('two tabs racing the upgrade adopt the old database once', async () => {
-	await Promise.all([
-		createVolumeRuntime(async () => 'token'),
-		createVolumeRuntime(async () => 'token')
-	])
-
-	expect(adoptions).toBe(1)
+	const state = JSON.parse(localStorage.getItem('justfiles-store-v2-state') ?? '{}') as {
+		store: string
+	}
+	localStorage.setItem(
+		'justfiles-store-v2-state',
+		JSON.stringify({ ...state, store: 'replacement' })
+	)
+	await expect(
+		runtime.volume.writeFile('/retired.md', new TextEncoder().encode('stale'))
+	).rejects.toMatchObject({ name: 'BootstrapRequiredError' })
 })
