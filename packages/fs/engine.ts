@@ -35,7 +35,8 @@
  * conflict policy; it changes no seam signature.
  */
 
-import { BootstrapRequiredError, bindCursor, cursorIssuer, type SyncStateLock } from './peer'
+import { BootstrapRequiredError } from './peer'
+import { readCursorIssuer, withSyncCursor } from './peer.internal'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -50,6 +51,7 @@ import {
 	type Version,
 	verifiedBlobs
 } from './store'
+import type { SyncStateLock } from './syncState'
 
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
@@ -133,9 +135,9 @@ export type CursorSlot = {
 export type ChooseWinner = (localId: string, remoteId: string) => string
 
 /** The present product policy. Equal peers can inject a stable id comparator. */
-export const chooseRemote: ChooseWinner = (_localId, remoteId) => remoteId
+const chooseRemote: ChooseWinner = (_localId, remoteId) => remoteId
 
-export type SyncOptions = {
+type SyncOptions = {
 	/** This replica's id: the author tag inside every version it mints. */
 	replica: string
 	/** This replica's position in the peer's feed. */
@@ -180,7 +182,7 @@ export type SyncOptions = {
  * and the retry.
  */
 export async function sync(local: Store, remote: Store, opts: SyncOptions): Promise<void> {
-	remote = bindCursor(remote, opts.pull)
+	remote = withSyncCursor(remote, opts.pull)
 	// The push filter, in a bootstrap exactly as in the steady state: to a reset
 	// peer this replica restores its own work and not the rows it merely holds,
 	// since a replica that re-seeded an authority with everything it had seen
@@ -320,7 +322,7 @@ export async function bootstrap(
 	pull: CursorSlot,
 	opts: { lazyContent?: boolean; lock?: SyncStateLock } = {}
 ): Promise<void> {
-	remote = bindCursor(remote, pull)
+	remote = withSyncCursor(remote, pull)
 	await saveCursor(pull, undefined, opts.lock)
 	await drain(
 		remote,
@@ -423,8 +425,12 @@ const saveCursor = (
 	identify = false
 ): Promise<void> =>
 	locked(lock, async () => {
+		const identifyPeer = identify ? slot.identify : undefined
+		const peerId = identifyPeer && cursor !== undefined ? readCursorIssuer(cursor) : undefined
+		if (identifyPeer && cursor !== undefined && peerId === undefined)
+			throw new BootstrapRequiredError()
 		await slot.save(cursor)
-		if (identify && cursor !== undefined) await slot.identify?.(cursorIssuer(cursor))
+		if (peerId !== undefined) await identifyPeer?.(peerId)
 	})
 
 /**

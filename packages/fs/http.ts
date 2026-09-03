@@ -2,97 +2,16 @@
  * A peer `Store` over HTTP. Each operation carries the receiver's signed feed
  * cursor without widening the seam.
  *
- * The file owns the wire FORMAT in both directions, because the two halves of a
- * codec must not drift: the server (`packages/core/src/store.api.ts`) imports
- * the halves it needs from here rather than restating the shape. What the server
- * owns is routing and status codes.
+ * `wire.internal.ts` owns the wire format in both directions, so its two halves
+ * cannot drift. This file owns the client transport.
  *
  * `fetch` and nothing else, so this runs in a browser, a worker, or node.
  */
 
-import { BootstrapRequiredError, type CursorSource, cursorBound } from './peer'
-import { type Guard, GuardError, type Hash, type Node, type Page, type Store } from './store'
-
-/**
- * A `Node` as JSON. Two fields change shape and no others do: the 64-bit counts
- * become decimal strings, since JSON has no bigint, and an xattr value becomes
- * base64, since JSON has no bytes. Absent fields stay absent — a row must come
- * back EQUAL to the row that was sent (rule 3), and `{}` is not nothing.
- */
-export type WireNode = Omit<Node, 'mtimeNs' | 'size' | 'xattrs'> & {
-	mtimeNs: string
-	size: string
-	xattrs?: Record<string, string>
-}
-
-export const encodeNode = ({ mtimeNs, size, xattrs, ...rest }: Node): WireNode => {
-	const wire: WireNode = { ...rest, mtimeNs: String(mtimeNs), size: String(size) }
-	if (xattrs !== undefined)
-		wire.xattrs = Object.fromEntries(
-			Object.entries(xattrs).map(([name, value]) => [name, base64(value)])
-		)
-	return wire
-}
-
-/**
- * The untrusting direction, and both sides use it. The server because a peer's
- * rows are the one way a malformed row could enter the table every replica
- * converges on — nothing under it type-checks a row, since the authority checks
- * the TREE and a store just stores — and the client because a wire answering
- * something other than this API should say so where it happened.
- */
-export const decodeNode = (value: unknown): Node => {
-	const row = fields(value, 'a node')
-	const node: Node = {
-		id: text(row.id, 'id'),
-		parent: text(row.parent, 'parent'),
-		name: text(row.name, 'name'),
-		type: kind(row.type),
-		mode: whole(row.mode, 'mode'),
-		mtimeNs: digits(row.mtimeNs, 'mtimeNs', SIGNED),
-		size: digits(row.size, 'size', UNSIGNED),
-		version: text(row.version, 'version')
-	}
-	if (row.xattrs !== undefined)
-		node.xattrs = Object.fromEntries(
-			Object.entries(fields(row.xattrs, 'xattrs')).map(([name, value]) => [
-				name,
-				unbase64(text(value, `xattr ${name}`))
-			])
-		)
-	if (row.content !== undefined) node.content = text(row.content, 'content')
-	if (row.link !== undefined) node.link = text(row.link, 'link')
-	// Rule 8: a tombstone is `true` or the field is not there. Nothing else.
-	if (row.deleted !== undefined) node.deleted = row.deleted === true ? true : bad('deleted')
-	return node
-}
-
-/** The one body this API takes: what a commit writes, and what it stands on. */
-export const decodeCommit = (value: unknown): { writes: Node[]; guards?: Guard[] } => {
-	const body = fields(value, 'a commit')
-	const writes = list(body.writes, 'writes').map(decodeNode)
-	if (body.guards === undefined) return { writes }
-	return { writes, guards: list(body.guards, 'guards').map(decodeGuard) }
-}
-
-const decodeGuard = (value: unknown): Guard => {
-	const guard = fields(value, 'a guard')
-	if (guard.free !== undefined) {
-		const free = fields(guard.free, 'a free guard')
-		return {
-			free: { parent: text(free.parent, 'free.parent'), name: text(free.name, 'free.name') }
-		}
-	}
-	const version = fields(guard.version, 'a version guard')
-	return {
-		version: {
-			id: text(version.id, 'version.id'),
-			// `null` is the guard that says "must not exist", so it is a value here
-			// and not a missing field.
-			is: version.is === null ? null : text(version.is, 'version.is')
-		}
-	}
-}
+import { BootstrapRequiredError } from './peer'
+import { type SyncCursor, syncCursor } from './peer.internal'
+import { type Guard, GuardError, type Hash, type Node, type Store } from './store'
+import { decodeNode, decodePage, encodeNode } from './wire.internal'
 
 export type HttpStoreOptions = {
 	/** Sent with every request. An authorization header is the expected use. */
@@ -151,13 +70,14 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 		return res
 	}
 
-	const relationship = (source?: CursorSource): Store => {
+	const relationship = (source?: SyncCursor): Store => {
 		let readCursor: string | undefined
 		const readToken = async (): Promise<string | undefined> => readCursor ?? (await source?.load())
 		const writeToken = (): Promise<string | undefined> =>
 			source ? source.load() : Promise.resolve(readCursor)
 
-		const peer: Store = {
+		const peer: Store & { [syncCursor]: (cursor: SyncCursor) => Store } = {
+			[syncCursor]: (cursor) => relationship(cursor),
 			get: async (id) =>
 				nodeOrNull(await answer(`/node/${encodeURIComponent(id)}`, { cursor: await readToken() })),
 			child: async (parent, name) =>
@@ -165,13 +85,13 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 					await answer(`/child?${query({ parent, name })}`, { cursor: await readToken() })
 				),
 			children: async (parent, cursor) =>
-				page(
+				decodePage(
 					await answer(`/children?${query({ parent, cursor })}`, {
 						cursor: await readToken()
 					})
 				),
 			async since(cursor) {
-				const found = page(await answer(`/since?${query({ cursor })}`, { cursor }))
+				const found = decodePage(await answer(`/since?${query({ cursor })}`, { cursor }))
 				readCursor = found.next
 				return found
 			},
@@ -211,7 +131,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 			// No `subscribe`: rule 8 makes it optional, and a client that polls `since`
 			// sees every writer's commits.
 		}
-		return cursorBound(peer, (next) => relationship(next))
+		return peer
 	}
 
 	return relationship()
@@ -240,12 +160,6 @@ const query = (params: Record<string, string | undefined>): string =>
 
 const nodeOrNull = (value: unknown): Node | null => (value === null ? null : decodeNode(value))
 
-const page = (value: unknown): Page => {
-	const got = fields(value, 'a page')
-	const nodes = list(got.nodes, 'nodes').map(decodeNode)
-	return got.next === undefined ? { nodes } : { nodes, next: text(got.next, 'next') }
-}
-
 /** Which guard the peer refused on. A 409 that names none is still a refusal. */
 const refusal = async (res: Response): Promise<Guard | string> => {
 	const body = (await res.json().catch(() => null)) as { reason?: Guard | string } | null
@@ -256,48 +170,3 @@ const failed = async (res: Response, method: string | undefined, path: string): 
 	new Error(
 		`store: ${method ?? 'GET'} ${path} answered ${res.status} ${(await res.text()).slice(0, 200)}`
 	)
-
-const bad = (what: string): never => {
-	throw new TypeError(`malformed ${what} on the wire`)
-}
-
-const fields = (value: unknown, what: string): Record<string, unknown> =>
-	typeof value === 'object' && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: bad(what)
-
-const list = (value: unknown, what: string): unknown[] => (Array.isArray(value) ? value : bad(what))
-
-const text = (value: unknown, what: string): string =>
-	typeof value === 'string' ? value : bad(what)
-
-const whole = (value: unknown, what: string): number =>
-	typeof value === 'number' && Number.isInteger(value) ? value : bad(what)
-
-/**
- * A 64-bit count, as the decimal digits JSON can carry.
- *
- * A time is SIGNED: a pre-epoch stamp is an ordinary POSIX time, `utimes` passes
- * the caller's bigint straight into the row, and every other backend keeps it —
- * so a wire that refused one would be the only store with a narrower contract
- * than the seam. A size cannot be negative, and a store is better off saying so.
- */
-const digits = (value: unknown, what: string, pattern: RegExp): bigint =>
-	typeof value === 'string' && pattern.test(value) ? BigInt(value) : bad(what)
-
-const SIGNED = /^-?\d+$/
-const UNSIGNED = /^\d+$/
-
-const kind = (value: unknown): Node['type'] =>
-	value === 'file' || value === 'dir' || value === 'symlink' || value === 'mount'
-		? value
-		: bad('type')
-
-const base64 = (data: Uint8Array): string => {
-	let binary = ''
-	for (const byte of data) binary += String.fromCharCode(byte)
-	return btoa(binary)
-}
-
-const unbase64 = (value: string): Uint8Array =>
-	Uint8Array.from(atob(value), (character) => character.charCodeAt(0))

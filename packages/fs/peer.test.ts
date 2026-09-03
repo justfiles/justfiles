@@ -1,15 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { bootstrap, type CursorSlot, sync, versions } from './engine'
 import { memStore } from './mem'
-import {
-	BootstrapRequiredError,
-	bindCursor,
-	type ReceiverBackend,
-	receiver,
-	receiverBackend,
-	syncStateLock
-} from './peer'
+import { BootstrapRequiredError, receiver } from './peer'
+import { type ReceiverBackend, receiverBackend, withSyncCursor } from './peer.internal'
 import { type Cursor, type Guard, type Node, ROOT, type Store, sha256Hex } from './store'
+import { syncStateLock } from './syncState'
+
+const MAX_OFFLINE_MS = 30 * 24 * 60 * 60 * 1_000
 
 const slot = (initial?: Cursor): CursorSlot & { value(): Cursor | undefined } => {
 	let cursor = initial
@@ -30,13 +27,6 @@ const caughtUp = async (peer: ReturnType<typeof receiver>): Promise<Cursor> => {
 		cursor = page.next
 		if (page.nodes.length === 0) return cursor
 	}
-}
-
-const claims = (cursor: Cursor): { expiresAt: number; mode: string } => {
-	const payload = cursor.split('.')[0]
-	if (!payload) throw new Error('missing cursor payload')
-	const base64 = payload.replaceAll('-', '+').replaceAll('_', '/')
-	return JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')))
 }
 
 const node = (version: string, id = 'note'): Node => ({
@@ -71,30 +61,40 @@ describe('receiver cursor tokens', () => {
 	it('uses the durable pull cursor for writes and rejects a missing token', async () => {
 		const raw = memStore()
 		const protectedStore = receiver(raw)
-		const missing = bindCursor(protectedStore, slot())
 
-		await expect(missing.commit([node('local:1')])).rejects.toThrow(BootstrapRequiredError)
+		await expect(protectedStore.commit([node('local:1')])).rejects.toThrow(BootstrapRequiredError)
 		expect(await raw.get('note')).toBeNull()
 
 		const cursor = await caughtUp(protectedStore)
-		await bindCursor(protectedStore, slot(cursor)).commit([node('local:2')])
-		expect(await raw.get('note')).toEqual(node('local:2'))
+		const local = memStore()
+		const write = node(versions('local')())
+		await local.commit([write])
+		let remoteId: string | undefined
+		const pull = slot(cursor)
+		pull.identify = async (id) => {
+			remoteId = id
+		}
+		await sync(local, protectedStore, {
+			replica: 'local',
+			pull,
+			push: slot(),
+			retries: 0
+		})
+		expect(await raw.get('note')).toEqual(write)
+		expect(remoteId).toMatch(/^[0-9a-f-]{36}$/)
 	})
 
 	it('refuses an expired cursor before transferring blobs or rows', async () => {
 		let now = 0
 		const local = memStore()
 		const raw = memStore()
-		const peer = receiver(raw, {
-			clock: () => now,
-			policy: { tombstoneRetentionMs: 100 }
-		})
+		const peer = receiver(raw, { clock: () => now })
 		const cursor = await caughtUp(peer)
 		const data = new TextEncoder().encode('offline work')
 		const hash = await sha256Hex(data)
 		await local.blobs.put(hash, data)
 		await local.commit([{ ...node(versions('local')()), content: hash, size: BigInt(data.length) }])
-		now = 100
+		now = MAX_OFFLINE_MS
 
 		await expect(
 			sync(local, peer, {
@@ -112,26 +112,39 @@ describe('receiver cursor tokens', () => {
 		let now = 0
 		const raw = memStore()
 		await raw.commit(Array.from({ length: 257 }, (_, at) => node(`seed:${at}`, `seed-${at}`)))
-		const peer = receiver(raw, {
-			clock: () => now,
-			policy: { tombstoneRetentionMs: 100 }
-		})
+		const peer = receiver(raw, { clock: () => now })
 		const first = await peer.since()
 		expect(first.nodes).toHaveLength(128)
-		expect(claims(first.next as Cursor)).toMatchObject({ expiresAt: 100, mode: 'bootstrap' })
 
-		now = 90
+		now = MAX_OFFLINE_MS - 10
 		const second = await peer.since(first.next)
 		expect(second.nodes).toHaveLength(128)
-		expect(claims(second.next as Cursor)).toMatchObject({ expiresAt: 100, mode: 'bootstrap' })
 		const last = await peer.since(second.next)
-		expect(claims(last.next as Cursor)).toMatchObject({ expiresAt: 190, mode: 'resume' })
 
-		now = 100
-		await expect(bindCursor(peer, slot(second.next)).commit([node('old:1')])).rejects.toThrow(
-			BootstrapRequiredError
-		)
-		await expect(bindCursor(peer, slot(last.next)).commit([node('new:1')])).resolves.toBeUndefined()
+		now = MAX_OFFLINE_MS
+		const old = memStore()
+		await old.commit([node(versions('old')())])
+		await expect(
+			sync(old, peer, {
+				replica: 'old',
+				pull: slot(second.next),
+				push: slot(),
+				retries: 0
+			})
+		).rejects.toThrow(BootstrapRequiredError)
+
+		const fresh = memStore()
+		const write = node(versions('new')(), 'new')
+		await fresh.commit([write])
+		await expect(
+			sync(fresh, peer, {
+				replica: 'new',
+				pull: slot(last.next),
+				push: slot(),
+				retries: 0
+			})
+		).resolves.toBeUndefined()
+		expect(await raw.get('new')).toEqual(write)
 	})
 
 	it('serializes final write validation with destructive state changes', async () => {
@@ -157,8 +170,8 @@ describe('receiver cursor tokens', () => {
 		}
 		const lock = syncStateLock()
 		const peer = receiver(paused, { lock })
-		const cursor = await caughtUp(peer)
-		const bound = bindCursor(peer, slot(cursor))
+		const pull = slot(await caughtUp(peer))
+		const bound = withSyncCursor(peer, pull)
 
 		const committing = bound.commit([node('local:1')])
 		await entered.promise
@@ -191,17 +204,24 @@ describe('receiver cursor tokens', () => {
 		expect(await fresh.get('theirs')).toEqual(await authority.get('theirs'))
 		expect(await fresh.get('stale')).toBeNull()
 		expect(await stale.get('stale')).not.toBeNull()
-		await expect(bindCursor(peer, pull).commit([node('local:1')])).resolves.toBeUndefined()
+		const write = node(versions('local')(), 'local')
+		await fresh.commit([write])
+		await expect(
+			sync(fresh, peer, {
+				replica: 'local',
+				pull,
+				push: slot(),
+				retries: 0
+			})
+		).resolves.toBeUndefined()
+		expect(await authority.get('local')).toEqual(write)
 	})
 
 	it('accepts a viewpoint-independent winner and rejects any other id', async () => {
 		let now = 0
-		const peer = receiver(memStore(), {
-			clock: () => now,
-			policy: { tombstoneRetentionMs: 100 }
-		})
+		const peer = receiver(memStore(), { clock: () => now })
 		const cursor = await caughtUp(peer)
-		now = 100
+		now = MAX_OFFLINE_MS
 		const local = memStore()
 		await local.commit([node('local:1')])
 

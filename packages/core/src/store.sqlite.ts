@@ -18,16 +18,6 @@
  */
 
 import {
-	type HistoryPolicy,
-	historyPolicy,
-	type ReceiverBackend,
-	type ReceiverState,
-	rawCursor,
-	receiverBackend,
-	type SyncStateLock,
-	syncStateLock
-} from '@justfiles/fs/peer'
-import {
 	type Cursor,
 	ForeignCursorError,
 	type Guard,
@@ -39,10 +29,30 @@ import {
 	type Store,
 	same
 } from '@justfiles/fs/store'
+import { type SyncStateLock, syncStateLock } from '@justfiles/fs/syncState'
+import { type ReceiverBackend, type ReceiverState, receiverBackend } from '../../fs/peer.internal'
 import type { SqlValue, SyncDb } from './db'
 
 /** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128
+
+const DEFAULT_HISTORY_POLICY = {
+	tombstoneRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+	deleteBatch: 128
+} as const
+
+type HistoryPolicy = {
+	[key in keyof typeof DEFAULT_HISTORY_POLICY]: number
+}
+
+const historyPolicy = (overrides: Partial<HistoryPolicy> = {}): HistoryPolicy => {
+	const policy = { ...DEFAULT_HISTORY_POLICY, ...overrides }
+	if (!Number.isFinite(policy.tombstoneRetentionMs) || policy.tombstoneRetentionMs <= 0)
+		throw new TypeError('tombstoneRetentionMs must be positive')
+	if (!Number.isInteger(policy.deleteBatch) || policy.deleteBatch < 1)
+		throw new TypeError('deleteBatch must be a positive integer')
+	return policy
+}
 
 /**
  * Blobs per `gc` pass. The sweep shares one Durable Object event with every other
@@ -356,7 +366,8 @@ export function sqliteStore(
 			lineage,
 			signingSecret: meta(sid, 'signing_secret'),
 			feedHead: Number(meta(sid, 'feed_head')),
-			feedFloor: Number(meta(sid, 'feed_floor'))
+			feedFloor: Number(meta(sid, 'feed_floor')),
+			maxOfflineMs: policy.tombstoneRetentionMs
 		}
 	}
 
@@ -437,7 +448,7 @@ export function sqliteStore(
 				return observedNow(open().sid, now)
 			},
 			cursor(position) {
-				return rawCursor(open().lineage, position)
+				return `${open().lineage}${SEP}${position}`
 			},
 			position(cursor) {
 				return position(cursor, open().lineage)

@@ -29,14 +29,17 @@
 
 import {
 	authorOf,
+	bootstrap,
 	type ChooseWinner,
 	type CursorSlot,
 	hydratingBlobs,
 	sync,
 	versions
 } from './engine'
-import { BootstrapRequiredError, bindCursor, type SyncStateLock } from './peer'
+import { BootstrapRequiredError } from './peer'
+import { withSyncCursor } from './peer.internal'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
+import type { SyncStateLock } from './syncState'
 import { type Bindings, type Volume, volume } from './volume'
 
 /** A host that keeps a cursor for this wrapper needs its type, and nothing else of the engine's. */
@@ -188,7 +191,7 @@ export type SyncLifecycle = {
 
 export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle> {
 	const { local, replica } = props
-	const remote = bindCursor(props.remote, props.pull)
+	const remote = readyStore(props.remote, local, props.pull, props.lazyContent, props.lock)
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
 	const opts = {
@@ -627,5 +630,41 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		takeTheirs,
 		takeMine,
 		generation: () => epoch
+	}
+}
+
+function readyStore(
+	peer: Store,
+	local: Store,
+	pull: CursorSlot,
+	lazyContent = false,
+	lock?: SyncStateLock
+): Store {
+	const remote = withSyncCursor(peer, pull)
+	if (remote === peer) return peer
+	let preparing: Promise<void> | undefined
+	const ready = async (): Promise<void> => {
+		if ((await pull.load()) !== undefined) return
+		preparing ??= bootstrap(local, peer, pull, { lazyContent, lock }).catch((error) => {
+			preparing = undefined
+			throw error
+		})
+		await preparing
+	}
+	const after = async <T>(body: () => Promise<T>): Promise<T> => {
+		await ready()
+		return body()
+	}
+	return {
+		get: (id) => after(() => remote.get(id)),
+		child: (parent, name) => after(() => remote.child(parent, name)),
+		children: (parent, cursor) => after(() => remote.children(parent, cursor)),
+		since: (cursor) => after(() => remote.since(cursor)),
+		commit: (writes, guards) => after(() => remote.commit(writes, guards)),
+		blobs: {
+			has: (hash) => after(() => remote.blobs.has(hash)),
+			get: (hash) => after(() => remote.blobs.get(hash)),
+			put: (hash, data) => after(() => remote.blobs.put(hash, data))
+		}
 	}
 }

@@ -4,12 +4,7 @@ import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
-import {
-	BootstrapRequiredError,
-	bindCursor,
-	type SyncStateLock,
-	syncStateLock
-} from '@justfiles/fs/peer'
+import { BootstrapRequiredError } from '@justfiles/fs/peer'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -25,7 +20,12 @@ import {
 	synced,
 	versions
 } from '@justfiles/fs/synced'
-import { type PrivateSyncState, privateSyncState } from '@justfiles/fs/syncState'
+import {
+	type PrivateSyncState,
+	privateSyncState,
+	type SyncStateLock,
+	syncStateLock
+} from '@justfiles/fs/syncState'
 import { FileType } from '@justfiles/fs/types'
 import { PRIVATE_MOUNT } from '../shared/private'
 
@@ -469,7 +469,7 @@ async function startSync(entry: Active, getToken: GetToken): Promise<Active> {
 	try {
 		const cursor = await pull.load()
 		if (cursor === undefined) throw new BootstrapRequiredError()
-		await bindCursor(remote, pull).since(cursor)
+		await remote.since(cursor)
 	} catch (error) {
 		if (error instanceof BootstrapRequiredError) {
 			const replacement = await replaceStaleProfile(entry, remote, push, lock)

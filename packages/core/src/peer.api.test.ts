@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import { httpStore } from '../../fs/http'
 import { memStore } from '../../fs/mem'
-import { BootstrapRequiredError, bindCursor } from '../../fs/peer'
+import { BootstrapRequiredError } from '../../fs/peer'
 import { type Cursor, type Node, ROOT } from '../../fs/store'
 import { storeApi } from './store.api'
 
@@ -31,16 +31,23 @@ describe('store HTTP cursor protocol', () => {
 	it('carries the receiver cursor on every write', async () => {
 		const store = memStore()
 		const app = new Hono().route('/store', storeApi(store))
+		let alter = false
 		const peer = httpStore('http://peer.test/store', {
-			fetch: async (url, init) => app.request(url, init)
+			fetch: async (url, init) => {
+				if (!alter) return app.request(url, init)
+				const headers = new Headers(init?.headers)
+				const cursor = headers.get('x-sync-cursor')
+				if (cursor) headers.set('x-sync-cursor', `${cursor}x`)
+				return app.request(url, { ...init, headers })
+			}
 		})
-		const cursor = await caughtUp(peer)
+		await caughtUp(peer)
 
 		await peer.commit([node('accepted')])
 		expect(await store.get('accepted')).toEqual(node('accepted'))
 
-		const changed = bindCursor(peer, { load: async () => `${cursor}x` })
-		await expect(changed.commit([node('refused')])).rejects.toThrow(BootstrapRequiredError)
+		alter = true
+		await expect(peer.commit([node('refused')])).rejects.toThrow(BootstrapRequiredError)
 		expect(await store.get('refused')).toBeNull()
 	})
 

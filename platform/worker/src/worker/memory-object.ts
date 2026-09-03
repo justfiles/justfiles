@@ -9,7 +9,7 @@ import {
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import { authority } from '@justfiles/fs/authority'
-import { syncStateLock } from '@justfiles/fs/peer'
+import { syncStateLock } from '@justfiles/fs/syncState'
 import { createWorkerApiApp, type WorkerApiType } from './app'
 
 /**

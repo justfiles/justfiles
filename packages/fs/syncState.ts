@@ -2,7 +2,18 @@ import { persistedState } from './persistedState'
 import type { Cursor } from './store'
 import type { Volume } from './volume'
 
-export type RelationshipState = {
+export type SyncStateLock = <T>(body: () => Promise<T>) => Promise<T>
+
+export function syncStateLock(): SyncStateLock {
+	let tail: Promise<unknown> = Promise.resolve()
+	return <T>(body: () => Promise<T>): Promise<T> => {
+		const next = tail.then(body)
+		tail = next.catch(() => undefined)
+		return next
+	}
+}
+
+type RelationshipState = {
 	remoteId?: string
 	pull?: Cursor
 	push?: Cursor

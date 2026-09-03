@@ -1,4 +1,4 @@
-import { type ReceiverBackend, rawCursor, rawPosition, receiverBackend } from './peer'
+import { type ReceiverBackend, receiverBackend } from './peer.internal'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -14,6 +14,8 @@ import {
 
 /** Rows per page. Big enough to list a normal directory in one page. */
 const PAGE = 128
+
+const MAX_OFFLINE_MS = 30 * 24 * 60 * 60 * 1_000
 
 /** NUL — the one byte a name can never hold, so composed keys never collide. */
 const SEP = String.fromCharCode(0)
@@ -100,14 +102,21 @@ export function memStore(): Store {
 	return {
 		[receiverBackend]: {
 			async state() {
-				return { issuer, lineage, signingSecret, feedHead: next, feedFloor: 0 }
+				return {
+					issuer,
+					lineage,
+					signingSecret,
+					feedHead: next,
+					feedFloor: 0,
+					maxOfflineMs: MAX_OFFLINE_MS
+				}
 			},
 			async observe(now) {
 				observed = Math.max(observed, now)
 				return observed
 			},
-			cursor: (position) => rawCursor(lineage, position),
-			position: (cursor) => rawPosition(cursor, lineage)
+			cursor: mark,
+			position
 		} satisfies ReceiverBackend,
 		async get(id) {
 			const n = byId.get(id)

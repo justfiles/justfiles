@@ -297,12 +297,9 @@ describe('profile session switching', () => {
 			version: 'remote:1'
 		}
 		await remote.commit([remoteRow])
-		const peer = receiver(remote, {
-			clock: () => now,
-			policy: { tombstoneRetentionMs: 100 }
-		})
+		const peer = receiver(remote, { clock: () => now })
 		const expired = (await peer.since()).next
-		now = 101
+		now = 30 * 24 * 60 * 60 * 1_000
 		H.peer = peer
 		data.set('frieren-fs-account-profile-pull', expired as string)
 		await fs.openProfile()

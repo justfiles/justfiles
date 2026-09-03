@@ -21,13 +21,7 @@
  * dependency-free.
  */
 
-import { decodeCommit, encodeNode } from '@justfiles/fs/http'
-import {
-	BootstrapRequiredError,
-	bindCursor,
-	type ReceiverOptions,
-	receiver
-} from '@justfiles/fs/peer'
+import { BootstrapRequiredError, type ReceiverOptions, receiver } from '@justfiles/fs/peer'
 import {
 	GuardError,
 	HashMismatchError,
@@ -37,6 +31,8 @@ import {
 } from '@justfiles/fs/store'
 import { type Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
+import { withSyncCursor } from '../../fs/peer.internal'
+import { decodeCommit, encodeNode } from '../../fs/wire.internal'
 
 export function storeApi(raw: Store, opts?: ReceiverOptions): Hono {
 	const store: Store = receiver(raw, opts)
@@ -105,7 +101,7 @@ export function storeApi(raw: Store, opts?: ReceiverOptions): Hono {
 	return app
 
 	function requestStore(c: Context): Store {
-		return bindCursor(store, { load: async () => c.req.header('x-sync-cursor') })
+		return withSyncCursor(store, { load: async () => c.req.header('x-sync-cursor') })
 	}
 }
 

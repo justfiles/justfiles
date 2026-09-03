@@ -3,9 +3,8 @@ import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
-import { bindCursor } from '@justfiles/fs/peer'
 import type { Store } from '@justfiles/fs/store'
-import { bootstrap, type CursorSlot, synced } from '@justfiles/fs/synced'
+import { type CursorSlot, synced } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
 import {
 	createContext,
@@ -395,7 +394,7 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 	const remote = remoteStore(getToken)
 	const volume = await synced({
 		local,
-		remote: initialStore(remote, local, pull),
+		remote,
 		replica: replicaId(),
 		pull,
 		push: slot('justfiles-store-push'),
@@ -686,35 +685,6 @@ export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRun
 		writeAssetFile,
 		resolveAssetUrl,
 		readAssetBlob
-	}
-}
-
-function initialStore(peer: Store, local: Store, pull: CursorSlot): Store {
-	const bound = bindCursor(peer, pull)
-	let preparing: Promise<void> | undefined
-	const ready = async (): Promise<void> => {
-		if ((await pull.load()) !== undefined) return
-		preparing ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
-			preparing = undefined
-			throw error
-		})
-		await preparing
-	}
-	const after = async <T>(body: () => Promise<T>): Promise<T> => {
-		await ready()
-		return body()
-	}
-	return {
-		get: (id) => after(() => bound.get(id)),
-		child: (parent, name) => after(() => bound.child(parent, name)),
-		children: (parent, cursor) => after(() => bound.children(parent, cursor)),
-		since: (cursor) => after(() => bound.since(cursor)),
-		commit: (writes, guards) => after(() => bound.commit(writes, guards)),
-		blobs: {
-			has: (hash) => after(() => bound.blobs.has(hash)),
-			get: (hash) => after(() => bound.blobs.get(hash)),
-			put: (hash, data) => after(() => bound.blobs.put(hash, data))
-		}
 	}
 }
 

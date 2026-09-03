@@ -6,9 +6,8 @@ import { join } from 'node:path'
 import { announceMount, type Bindings, type Volume, volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
 import { httpStore } from '@justfiles/fs/http'
-import { bindCursor } from '@justfiles/fs/peer'
 import { ROOT, type Store } from '@justfiles/fs/store'
-import { bootstrap, type CursorSlot, type SyncStatus, synced, versions } from '@justfiles/fs/synced'
+import { type SyncStatus, synced, versions } from '@justfiles/fs/synced'
 import { privateSyncState } from '@justfiles/fs/syncState'
 import { SHIPPED } from './resources'
 
@@ -163,7 +162,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			const pull = saved.cursor('pull')
 			sync = await synced({
 				local: mainStore,
-				remote: initialStore(remote.store, mainStore, pull),
+				remote: remote.store,
 				replica,
 				pull,
 				push: saved.cursor('push'),
@@ -250,35 +249,6 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		await sync?.drain()
 		await Promise.allSettled([closeStore(mainStore), closeStore(privateStore)])
 		throw error
-	}
-}
-
-function initialStore(peer: Store, local: Store, pull: CursorSlot): Store {
-	const bound = bindCursor(peer, pull)
-	let preparing: Promise<void> | undefined
-	const ready = async (): Promise<void> => {
-		if ((await pull.load()) !== undefined) return
-		preparing ??= bootstrap(local, peer, pull, { lazyContent: true }).catch((error) => {
-			preparing = undefined
-			throw error
-		})
-		await preparing
-	}
-	const after = async <T>(body: () => Promise<T>): Promise<T> => {
-		await ready()
-		return body()
-	}
-	return {
-		get: (id) => after(() => bound.get(id)),
-		child: (parent, name) => after(() => bound.child(parent, name)),
-		children: (parent, cursor) => after(() => bound.children(parent, cursor)),
-		since: (cursor) => after(() => bound.since(cursor)),
-		commit: (writes, guards) => after(() => bound.commit(writes, guards)),
-		blobs: {
-			has: (hash) => after(() => bound.blobs.has(hash)),
-			get: (hash) => after(() => bound.blobs.get(hash)),
-			put: (hash, data) => after(() => bound.blobs.put(hash, data))
-		}
 	}
 }
 

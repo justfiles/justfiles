@@ -1,11 +1,23 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { authority } from '../../fs/authority'
-import { BootstrapRequiredError, bindCursor, receiver } from '../../fs/peer'
+import { type CursorSlot, sync, versions } from '../../fs/engine'
+import { memStore } from '../../fs/mem'
+import { BootstrapRequiredError, receiver } from '../../fs/peer'
 import { type Cursor, type Node, ROOT, type Store } from '../../fs/store'
 import type { SyncDb } from './db'
 import { createSqliteSyncDb } from './db.sqlite'
 import { emptyStore, sqliteStore } from './store.sqlite'
+
+const slot = (initial?: Cursor): CursorSlot => {
+	let cursor = initial
+	return {
+		load: async () => cursor,
+		save: async (next) => {
+			cursor = next
+		}
+	}
+}
 
 const adapter = (database: DatabaseSync): SyncDb => {
 	const db = {
@@ -115,16 +127,21 @@ describe('SQLite tombstone retention', () => {
 			policy: { tombstoneRetentionMs: 100 }
 		})
 		await raw.commit([node('gone')])
-		const peer = receiver(authority(raw), {
-			clock: () => now,
-			policy: { tombstoneRetentionMs: 100 }
-		})
+		const peer = receiver(authority(raw), { clock: () => now })
 		const cursor = await caughtUp(peer)
 
 		now = 101
 		expect(await raw.gc?.()).toEqual({ reclaimed: 1, done: true })
-		const stale = bindCursor(peer, { load: async () => cursor })
-		await expect(stale.commit([node('gone', false)])).rejects.toThrow(BootstrapRequiredError)
+		const stale = memStore()
+		await stale.commit([{ ...node('gone', false), version: versions('stale')() }])
+		await expect(
+			sync(stale, peer, {
+				replica: 'stale',
+				pull: slot(cursor),
+				push: slot(),
+				retries: 0
+			})
+		).rejects.toThrow(BootstrapRequiredError)
 		expect(await raw.get('gone')).toBeNull()
 	})
 
