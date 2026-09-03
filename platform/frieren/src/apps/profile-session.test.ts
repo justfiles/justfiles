@@ -1,6 +1,6 @@
 import { memStore } from '@justfiles/fs/mem'
 import { receiver } from '@justfiles/fs/peer'
-import { type Node, ROOT, type Store } from '@justfiles/fs/store'
+import { type Cursor, type Node, ROOT, type Store } from '@justfiles/fs/store'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const H = vi.hoisted(() => ({
@@ -288,7 +288,7 @@ describe('profile session switching', () => {
 		expect(H.synced).toHaveBeenCalledTimes(2)
 	})
 
-	test('an expired cursor switches to a fresh store and keeps offline work private', async () => {
+	test('an expired cursor switches stores without accepting late writes on the old one', async () => {
 		const { data, fs } = await loadFs([
 			{
 				id: 'account-profile',
@@ -315,9 +315,26 @@ describe('profile session switching', () => {
 		const peer = receiver(remote, { clock: () => now })
 		const expired = (await peer.since()).next
 		now = 30 * 24 * 60 * 60 * 1_000
-		H.peer = peer
+		let continueBootstrap!: () => void
+		let bootstrapStarted!: () => void
+		const bootstrap = new Promise<void>((resolve) => {
+			bootstrapStarted = resolve
+		})
+		const blocked = new Promise<void>((resolve) => {
+			continueBootstrap = resolve
+		})
+		H.peer = {
+			...peer,
+			since: async (cursor?: Cursor) => {
+				if (cursor === undefined) {
+					bootstrapStarted()
+					await blocked
+				}
+				return peer.since(cursor)
+			}
+		}
 		data.set('frieren-fs-account-profile-pull', expired as string)
-		await fs.openProfile()
+		const volume = await fs.openProfile()
 		const old = H.stores.get('frieren-store-v2-account-profile') as Store
 		const staleRow: Node = {
 			...remoteRow,
@@ -327,7 +344,15 @@ describe('profile session switching', () => {
 		}
 		await old.commit([staleRow])
 
-		await fs.attachRemoteUser('user-1', async () => 'token')
+		const attaching = fs.attachRemoteUser('user-1', async () => 'token')
+		await bootstrap
+		const lateWrite = volume.writeFile('/late.txt', new TextEncoder().encode('late'))
+		continueBootstrap()
+		const replacement = await attaching
+		await expect(lateWrite).rejects.toMatchObject({
+			name: 'BootstrapRequiredError',
+			message: 'bootstrap required'
+		})
 
 		const profile = JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0] as StoredProfile & {
 			storeDb?: string
@@ -338,6 +363,7 @@ describe('profile session switching', () => {
 		const recovery = H.stores.get('frieren-recovery-v2-account-profile') as Store
 		expect(await fresh.get('remote')).toEqual(remoteRow)
 		expect(await fresh.get('offline')).toBeNull()
+		expect(await replacement.exists('/late.txt')).toBe(false)
 		expect(await recovery.get('offline')).toEqual(staleRow)
 		expect(profile.pendingBootstrap).toBeUndefined()
 		expect(profile.retiredStoreDbs).toBeUndefined()
