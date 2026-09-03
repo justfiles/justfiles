@@ -2,7 +2,6 @@ import { resolve } from 'node:path'
 import { type Volume, volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
 import { httpStore } from '@justfiles/fs/http'
-import { currentStore } from '@justfiles/fs/peer'
 import type { CliConfig, RemoteVolumeConfig, VolumeConfig } from './config.ts'
 import { CliUsageError } from './errors.ts'
 
@@ -98,7 +97,7 @@ async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 	const token = resolveRemoteToken(config)
 	const baseUrl = resolveStoreBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL)
 	const headers = { Authorization: `Bearer ${token}` }
-	const baseVolume = volume(await currentStore(httpStore(baseUrl, { headers })))
+	const baseVolume = volume(httpStore(baseUrl, { headers }))
 	return {
 		...baseVolume,
 		async readFile(path) {

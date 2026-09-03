@@ -30,17 +30,6 @@ export class BootstrapRequiredError extends Error {
 	}
 }
 
-/** Advance a short-lived direct client to a writable receiver cursor. */
-export async function currentStore(store: Store): Promise<Store> {
-	let cursor: Cursor | undefined
-	for (;;) {
-		const page = await store.since(cursor)
-		if (page.next === undefined) throw new Error('receiver did not return a feed cursor')
-		cursor = page.next
-		if (page.nodes.length === 0) return store
-	}
-}
-
 /** Protect a raw store with receiver-issued cursor tokens without widening `Store`. */
 export type ReceiverOptions = {
 	clock?: () => number

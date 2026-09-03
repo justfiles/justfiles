@@ -38,7 +38,7 @@ In a second shell, open the authenticated test session:
 pnpm --filter frieren run verify:ui
 ```
 
-This command creates or reuses a Clerk development user, seeds onboarding, and opens `http://localhost:5173` in the `frieren` session. Inspect only the changed flow. Use commands such as:
+This command creates or reuses a Clerk development user, signs in, and opens `http://localhost:5173` in the `frieren` session. Inspect only the changed flow. Use commands such as:
 
 ```sh
 pnpm --filter frieren exec playwright-cli -s=frieren snapshot
