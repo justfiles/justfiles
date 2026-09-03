@@ -47,7 +47,7 @@ export function receiver(store: Store, opts: ReceiverOptions = {}): Store {
 		return opts.issuer ? { ...current, issuer: await opts.issuer() } : current
 	}
 
-	const relationship = (source?: SyncCursor): Store => {
+	const storeForCursor = (source?: SyncCursor): Store => {
 		let readCursor: Cursor | undefined
 
 		const readToken = async (): Promise<Cursor | undefined> => readCursor ?? (await source?.load())
@@ -64,7 +64,7 @@ export function receiver(store: Store, opts: ReceiverOptions = {}): Store {
 			})
 
 		const peer: Store & { [syncCursor]: (cursor: SyncCursor) => Store } = {
-			[syncCursor]: (cursor) => relationship(cursor),
+			[syncCursor]: (cursor) => storeForCursor(cursor),
 			get: (id) => read(() => store.get(id)),
 			child: (parent, name) => read(() => store.child(parent, name)),
 			children: (parent, cursor) => read(() => store.children(parent, cursor)),
@@ -114,7 +114,7 @@ export function receiver(store: Store, opts: ReceiverOptions = {}): Store {
 			throw new BootstrapRequiredError(current.issuer)
 	}
 
-	return relationship()
+	return storeForCursor()
 }
 
 const bootstrapClaims = (state: ReceiverState, now: number): CursorClaims => ({
