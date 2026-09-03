@@ -73,7 +73,7 @@ import {
 	type SyncDb,
 	scopedBlobs,
 	sqliteStore,
-	storeApi
+	syncStoreApi
 } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import { announceMount, type Volume, volume } from '@justfiles/fs'
@@ -328,7 +328,7 @@ export class Frieren extends DurableObject<Env> {
 			// The seam, as routes, over the synced store alone.
 			.route(
 				'/store',
-				storeApi(this.tree, {
+				syncStoreApi(this.tree, {
 					issuer: hostState.peerId,
 					lock: this.syncState
 				})

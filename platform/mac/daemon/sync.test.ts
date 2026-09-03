@@ -8,7 +8,7 @@ import { memStore } from '@justfiles/fs/mem'
 import type { Cursor, Node, Store } from '@justfiles/fs/store'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
-import { storeApi } from '../../../packages/core/src/store.api'
+import { syncStoreApi } from '../../../packages/core/src/store.api'
 import { createNativeStorage, type NativeStorage, OwnerChangedError } from './fs'
 import { runtimeRefresh } from './refresh'
 
@@ -32,7 +32,7 @@ async function temp(): Promise<string> {
 function backend() {
 	const store = authority(memStore())
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(store)
+	const app = syncStoreApi(store)
 	let online = true
 	const requests: { url: string; authorization: string | null }[] = []
 	return {
@@ -100,18 +100,18 @@ test('syncs both ways, uploads Finder edits, and keeps private data local', asyn
 
 	expect(await local.flush()).toBe(true)
 	expect(dec.decode(await local.volume.readFile('/from-backend.txt'))).toBe('remote')
-	expect(await readFile(join(support, 'volume-v2', 'main', 'from-backend.txt'), 'utf8')).toBe(
+	expect(await readFile(join(support, 'volume-v3', 'main', 'from-backend.txt'), 'utf8')).toBe(
 		'remote'
 	)
 
-	await writeFile(join(support, 'volume-v2', 'main', 'finder.txt'), 'finder')
+	await writeFile(join(support, 'volume-v3', 'main', 'finder.txt'), 'finder')
 	await waitFor(async () => await hub.fs.exists('/finder.txt'))
 	expect(dec.decode(await hub.fs.readFile('/finder.txt'))).toBe('finder')
 
 	await hub.fs.writeFile('/from-backend.txt', enc.encode('changed'))
 	expect(await local.flush()).toBe(true)
 	expect(dec.decode(await local.volume.readFile('/from-backend.txt'))).toBe('changed')
-	expect(await readFile(join(support, 'volume-v2', 'main', 'from-backend.txt'), 'utf8')).toBe(
+	expect(await readFile(join(support, 'volume-v3', 'main', 'from-backend.txt'), 'utf8')).toBe(
 		'changed'
 	)
 
@@ -152,25 +152,26 @@ test('keeps cursors and uses a fresh token for every request', async () => {
 	const getToken = async () => token
 	let first = await storage(support, hub, 'user-a', getToken)
 
+	await first.flush()
 	await first.volume.writeFile('/local.txt', enc.encode('kept'))
 	await first.flush()
 	await first.close()
 	open.splice(open.indexOf(first), 1)
 
 	const owner = JSON.parse(
-		await readFile(join(support, 'volume-v2', 'owner.json'), 'utf8')
+		await readFile(join(support, 'volume-v3', 'owner.json'), 'utf8')
 	) as Record<string, unknown>
 	const state = JSON.parse(
-		await readFile(join(support, 'volume-v2', 'private', 'state', 'sync.json'), 'utf8')
+		await readFile(join(support, 'volume-v3', 'private', 'state', 'sync.json'), 'utf8')
 	) as Record<string, unknown>
 	const peerId = JSON.parse(
-		await readFile(join(support, 'volume-v2', 'private', 'state', 'clientid'), 'utf8')
+		await readFile(join(support, 'volume-v3', 'private', 'state', 'clientid'), 'utf8')
 	) as unknown
 	expect(owner).toEqual({ ownerId: 'user-a' })
 	expect(typeof peerId).toBe('string')
 	expect(typeof state.pull).toBe('string')
 	expect(typeof state.push).toBe('string')
-	await expect(access(join(support, 'volume-v2', 'owner.json.tmp'))).rejects.toThrow()
+	await expect(access(join(support, 'volume-v3', 'owner.json.tmp'))).rejects.toThrow()
 
 	token = 'token-b'
 	await hub.fs.writeFile('/after-restart.txt', enc.encode('next'))
@@ -258,24 +259,38 @@ test('uploads offline work after the backend returns', async () => {
 	expect(dec.decode(await hub.fs.readFile('/offline.txt'))).toBe('saved here')
 }, 15_000)
 
-test('reports the first successful remote cycle without blocking local work', async () => {
+test('replaces an offline first replica without merging its local rows', async () => {
 	const support = await temp()
 	const hub = backend()
 	hub.setOnline(false)
-	const local = await storage(support, hub)
-	let ready: boolean | undefined
-	void local.firstSync.then((value) => {
-		ready = value
+	let restart!: () => void
+	const restarting = new Promise<void>((resolve) => {
+		restart = resolve
 	})
+	let local = await createNativeStorage({
+		supportDir: support,
+		ownerId: 'user-a',
+		getToken: async () => 'token-a',
+		origin: 'http://hub.test',
+		fetch: hub.fetch,
+		interval: 60_000,
+		restart
+	})
+	open.push(local)
 
 	await local.volume.writeFile('/offline.txt', enc.encode('local'))
 	expect(dec.decode(await local.volume.readFile('/offline.txt'))).toBe('local')
-	await new Promise((resolve) => setTimeout(resolve, 100))
-	expect(ready).toBeUndefined()
 
 	hub.setOnline(true)
+	expect(await local.flush()).toBe(false)
+	await restarting
+	await local.close()
+	open.splice(open.indexOf(local), 1)
+	expect(await readFile(join(support, 'volume-v3', 'main', 'offline.txt'), 'utf8')).toBe('local')
+
+	local = await storage(support, hub)
 	expect(await local.flush()).toBe(true)
-	expect(await local.firstSync).toBe(true)
+	expect(await local.volume.exists('/offline.txt')).toBe(false)
 }, 15_000)
 
 test('wipes the old owner before a new owner can connect', async () => {
@@ -298,7 +313,7 @@ test('wipes the old owner before a new owner can connect', async () => {
 		})
 	).rejects.toBeInstanceOf(OwnerChangedError)
 	expect(firstHub.requests).toHaveLength(before)
-	await expect(access(join(support, 'volume-v2'))).rejects.toThrow()
+	await expect(access(join(support, 'volume-v3'))).rejects.toThrow()
 
 	const secondHub = backend()
 	const second = await storage(support, secondHub, 'user-b', async () => 'token-b')
@@ -311,6 +326,7 @@ test('keeps the saved owner when identity is unresolved offline', async () => {
 	const support = await temp()
 	const hub = backend()
 	let local = await storage(support, hub)
+	await local.flush()
 	await local.volume.writeFile('/offline-boot.txt', enc.encode('keep'))
 	await local.close()
 	open.splice(open.indexOf(local), 1)
@@ -331,6 +347,7 @@ test('keeps the saved owner while signed out and resumes for the same owner', as
 	const support = await temp()
 	const hub = backend()
 	let local = await storage(support, hub)
+	await local.flush()
 	await local.volume.writeFile('/local.txt', enc.encode('keep'))
 	await local.flush()
 	await local.close()

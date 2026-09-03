@@ -217,6 +217,17 @@ describe('receiver cursor tokens', () => {
 		expect(await authority.get('local')).toEqual(write)
 	})
 
+	it('refuses to bootstrap into a store that already has user rows', async () => {
+		const authority = receiver(memStore())
+		const local = memStore()
+		await local.commit([node('local:1', 'mine')])
+
+		await expect(bootstrap(local, authority, slot(), { lazyContent: true })).rejects.toThrow(
+			BootstrapRequiredError
+		)
+		expect(await local.get('mine')).not.toBeNull()
+	})
+
 	it('accepts a viewpoint-independent winner and rejects any other id', async () => {
 		let now = 0
 		const peer = receiver(memStore(), { clock: () => now })

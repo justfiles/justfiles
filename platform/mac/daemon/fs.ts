@@ -7,7 +7,7 @@ import { announceMount, type Bindings, type Volume, volume } from '@justfiles/fs
 import { fsStore } from '@justfiles/fs/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { ROOT, type Store } from '@justfiles/fs/store'
-import { type SyncStatus, synced, versions } from '@justfiles/fs/synced'
+import { bootstrap, type CursorSlot, type SyncStatus, synced, versions } from '@justfiles/fs/synced'
 import { privateSyncState } from '@justfiles/fs/syncState'
 import { SHIPPED } from './resources'
 
@@ -17,7 +17,7 @@ const supportDir = (): string =>
 const runtimePath = (): string => join(supportDir(), 'runtime.json')
 const lockPath = (): string => join(supportDir(), 'daemon.lock')
 const PRIVATE = 'private'
-const VOLUME = 'volume-v2'
+const VOLUME = 'volume-v3'
 const SYNC_STATE = 'sync.json'
 const OWNER_STATE = 'owner.json'
 const PROD_ORIGIN = 'https://justcomputer.app'
@@ -48,6 +48,12 @@ interface SyncState {
 	ownerId: string | null
 }
 
+interface OwnerState {
+	ownerId: string | null
+	store?: string
+	pending?: { store: string; pull: string }
+}
+
 export interface NativeStorageOptions {
 	supportDir: string
 	ownerId?: string | null
@@ -55,6 +61,8 @@ export interface NativeStorageOptions {
 	origin?: string
 	fetch?: Send
 	interval?: number
+	/** Restart the daemon after a freshly bootstrapped store is ready to become active. */
+	restart?: () => void
 }
 
 export interface NativeStorage {
@@ -109,7 +117,8 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	await mkdir(root, { recursive: true })
 
 	const savedState = await readSyncState(statePath)
-	const savedOwner = (await readOwner(ownerPath)) ?? savedState?.ownerId
+	const ownerState = await readOwner(ownerPath)
+	const savedOwner = ownerState?.ownerId ?? savedState?.ownerId
 	const requestedOwner = options.ownerId
 	if (savedOwner !== undefined && requestedOwner && savedOwner !== requestedOwner) {
 		await rm(root, { recursive: true, force: true })
@@ -119,9 +128,9 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	// that owner with a dynamic token source; it stays offline until the same owner
 	// signs in again. Only a different signed-in owner replaces the volume.
 	const ownerId = savedOwner ?? requestedOwner ?? null
-	await atomicWrite(ownerPath, { ownerId })
+	const mainName = ownerState?.pending?.store ?? ownerState?.store ?? 'main'
 
-	const mainRoot = join(root, 'main')
+	const mainRoot = join(root, mainName)
 	const privateRoot = join(root, PRIVATE)
 	await Promise.all([mkdir(mainRoot, { recursive: true }), mkdir(privateRoot, { recursive: true })])
 
@@ -135,6 +144,11 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		}
 	})
 	const replica = await saved.peerId()
+	if (ownerState?.pending) {
+		await saved.cursor('push').save(undefined)
+		await saved.cursor('pull').save(ownerState.pending.pull)
+	}
+	await atomicWrite(ownerPath, { ownerId, ...(mainName === 'main' ? {} : { store: mainName }) })
 	if (savedState) await rm(statePath, { force: true })
 	const mainStore = fsStore(mainRoot, {
 		mounts: [PRIVATE],
@@ -145,6 +159,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	let offStatus: (() => void) | undefined
 	let finishFirstSync: ((synced: boolean) => void) | undefined
 	let offFirstSync: (() => void) | undefined
+	let replacement: Promise<void> | undefined
 
 	try {
 		await announceMount(mainStore, ROOT, PRIVATE)
@@ -160,6 +175,16 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 			const remote = remoteStore(options.getToken, options.origin, options.fetch)
 			abortRemote = remote.abort
 			const pull = saved.cursor('pull')
+			const replace = (): void => {
+				sync?.pause()
+				replacement ??= replaceStore(root, ownerPath, ownerId, remote.store)
+					.then(() => options.restart?.())
+					.catch((error) => {
+						replacement = undefined
+						console.error('sync: store replacement failed', error)
+						sync?.resume()
+					})
+			}
 			sync = await synced({
 				local: mainStore,
 				remote: remote.store,
@@ -170,6 +195,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 				bindings,
 				lazyContent: true,
 				localFirst: true,
+				onBootstrapRequired: replace,
 				interval: options.interval
 			})
 			console.info(`sync: ${sync.status()}`)
@@ -213,6 +239,7 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		const close = (): Promise<void> => {
 			closeOnce ??= (async () => {
 				await stopSync()
+				await replacement
 				await tracked.drain()
 				await Promise.all([closeStore(mainStore), closeStore(privateStore)])
 			})()
@@ -249,6 +276,41 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 		await sync?.drain()
 		await Promise.allSettled([closeStore(mainStore), closeStore(privateStore)])
 		throw error
+	}
+}
+
+async function replaceStore(
+	root: string,
+	ownerPath: string,
+	ownerId: string,
+	remote: Store
+): Promise<void> {
+	const name = `main-${randomUUID()}`
+	const path = join(root, name)
+	await mkdir(path, { recursive: true })
+	const fresh = fsStore(path)
+	const pull = memoryCursor()
+	try {
+		await bootstrap(fresh, remote, pull, { lazyContent: true })
+	} catch (error) {
+		await closeStore(fresh)
+		await rm(path, { recursive: true, force: true })
+		throw error
+	}
+	await closeStore(fresh)
+	const cursor = pull.value()
+	if (cursor === undefined) throw new Error('bootstrap did not produce a cursor')
+	await atomicWrite(ownerPath, { ownerId, pending: { store: name, pull: cursor } })
+}
+
+function memoryCursor(): CursorSlot & { value(): string | undefined } {
+	let cursor: string | undefined
+	return {
+		load: async () => cursor,
+		save: async (next) => {
+			cursor = next
+		},
+		value: () => cursor
 	}
 }
 
@@ -291,17 +353,27 @@ async function readSyncState(path: string): Promise<SyncState | null> {
 	return value as SyncState
 }
 
-async function readOwner(path: string): Promise<string | null | undefined> {
+async function readOwner(path: string): Promise<OwnerState | undefined> {
 	try {
-		const value = JSON.parse(await readFile(path, 'utf8')) as { ownerId?: unknown }
+		const value = JSON.parse(await readFile(path, 'utf8')) as Partial<OwnerState>
 		if (value.ownerId !== null && typeof value.ownerId !== 'string')
 			throw new Error('invalid native owner state')
-		return value.ownerId
+		if (value.store !== undefined && !storeName(value.store))
+			throw new Error('invalid native owner state')
+		if (
+			value.pending !== undefined &&
+			(!storeName(value.pending.store) || typeof value.pending.pull !== 'string')
+		)
+			throw new Error('invalid native owner state')
+		return value as OwnerState
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
 		throw error
 	}
 }
+
+const storeName = (value: unknown): value is string =>
+	value === 'main' || (typeof value === 'string' && /^main-[0-9a-f-]{36}$/.test(value))
 
 async function atomicWrite(path: string, state: unknown): Promise<void> {
 	const temp = `${path}.tmp`

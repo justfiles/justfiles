@@ -1,5 +1,6 @@
 /**
- * The peer routes. Reads and writes carry the receiver's current signed cursor.
+ * The Store routes. `storeApi` is the primitive wire; `syncStoreApi` composes the
+ * receiver whose reads and writes carry its current signed cursor.
  *
  * It routes and it sets status codes. It does not decide policy: the tree
  * invariants, the serialization and the blob verification all belong to the
@@ -34,8 +35,20 @@ import { HTTPException } from 'hono/http-exception'
 import { withSyncCursor } from '../../fs/peer.internal'
 import { decodeCommit, encodeNode } from '../../fs/wire.internal'
 
-export function storeApi(raw: Store, opts?: ReceiverOptions): Hono {
-	const store: Store = receiver(raw, opts)
+/** The Store wire, without sync policy. */
+export function storeApi(store: Store): Hono {
+	return routes(() => store)
+}
+
+/** Add the signed-cursor protocol required by a syncing peer. */
+export function syncStoreApi(raw: Store, opts?: ReceiverOptions): Hono {
+	const store = receiver(raw, opts)
+	return routes((c) => withSyncCursor(store, { load: async () => c.req.header('x-sync-cursor') }))
+}
+
+type RequestStore = (context: Context) => Store
+
+function routes(requestStore: RequestStore): Hono {
 	const app = new Hono()
 	app.use('*', async (c, next) => {
 		c.header('cache-control', 'no-store')
@@ -99,10 +112,6 @@ export function storeApi(raw: Store, opts?: ReceiverOptions): Hono {
 	})
 
 	return app
-
-	function requestStore(c: Context): Store {
-		return withSyncCursor(store, { load: async () => c.req.header('x-sync-cursor') })
-	}
 }
 
 const row = (node: Node | null) => (node === null ? null : encodeNode(node))

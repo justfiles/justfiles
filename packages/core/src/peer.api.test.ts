@@ -4,7 +4,7 @@ import { httpStore } from '../../fs/http'
 import { memStore } from '../../fs/mem'
 import { BootstrapRequiredError } from '../../fs/peer'
 import { type Cursor, type Node, ROOT } from '../../fs/store'
-import { storeApi } from './store.api'
+import { syncStoreApi } from './store.api'
 
 const node = (id: string): Node => ({
 	id,
@@ -30,7 +30,7 @@ const caughtUp = async (peer: ReturnType<typeof httpStore>): Promise<Cursor> => 
 describe('store HTTP cursor protocol', () => {
 	it('carries the receiver cursor on every write', async () => {
 		const store = memStore()
-		const app = new Hono().route('/store', storeApi(store))
+		const app = new Hono().route('/store', syncStoreApi(store))
 		let alter = false
 		const peer = httpStore('http://peer.test/store', {
 			fetch: async (url, init) => {
@@ -53,7 +53,7 @@ describe('store HTTP cursor protocol', () => {
 
 	it('rejects peer operations which carry no cursor', async () => {
 		const store = memStore()
-		const app = new Hono().route('/store', storeApi(store))
+		const app = new Hono().route('/store', syncStoreApi(store))
 		const peer = httpStore('http://peer.test/store', {
 			fetch: async (url, init) => app.request(url, init)
 		})

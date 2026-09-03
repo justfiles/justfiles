@@ -9,7 +9,7 @@ import { authority } from '@justfiles/fs/authority'
 import { memStore } from '@justfiles/fs/mem'
 import { versions } from '@justfiles/fs/synced'
 import { afterEach, expect, test } from 'vitest'
-import { storeApi } from '../../../packages/core/src/store.api'
+import { syncStoreApi } from '../../../packages/core/src/store.api'
 import { createNativeStorage } from './fs'
 
 const roots: string[] = []
@@ -57,7 +57,7 @@ function child(
 async function backend(fault: { method: string; path: RegExp; body?: string }) {
 	const store = authority(memStore())
 	const fs = volume(store, { mintVersion: versions('backend') })
-	const app = storeApi(store)
+	const app = syncStoreApi(store)
 	let stop = false
 	let hit!: () => void
 	const reached = new Promise<void>((resolve) => {
@@ -325,7 +325,7 @@ test.skipIf(process.platform !== 'darwin')(
 		const done = await finishing
 
 		expect(done).toContain('__APP_CLOSED__')
-		await expect(access(join(support, 'volume-v2'))).rejects.toThrow()
+		await expect(access(join(support, 'volume-v3'))).rejects.toThrow()
 		await expect(access(join(support, 'runtime.json'))).rejects.toThrow()
 	},
 	20_000

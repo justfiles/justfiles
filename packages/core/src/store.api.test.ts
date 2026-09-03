@@ -25,7 +25,7 @@ import { memStore } from '../../fs/mem'
 import { BootstrapRequiredError } from '../../fs/peer'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from '../../fs/store'
 import { volume } from '../../fs/volume'
-import { storeApi } from './store.api'
+import { storeApi, syncStoreApi } from './store.api'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -37,7 +37,7 @@ const dec = new TextDecoder()
  * is the only place that knows where.
  */
 const served = (store: Store): { ask: Ask; client: Store } => {
-	const host = new Hono().route('/store', storeApi(store))
+	const host = new Hono().route('/store', syncStoreApi(store))
 	// `app.request` may answer synchronously; a fetch never does.
 	const ask: Ask = async (path, init) => host.request(`/store${path}`, init)
 	return {
@@ -87,6 +87,19 @@ const post = (ask: Ask, body: unknown, cursor?: Cursor) =>
 	})
 
 describe('storeApi: what the wire answers', () => {
+	it('keeps the primitive wire usable without sync cursors', async () => {
+		const store = memStore()
+		const host = new Hono().route('/store', storeApi(store))
+		const client = httpStore('http://host.test/store', {
+			fetch: async (url, init) => host.request(url, init)
+		})
+		const write = node({ id: 'direct', name: 'direct.txt' })
+
+		await client.commit([write])
+
+		expect(await client.get(write.id)).toEqual(write)
+	})
+
 	it('answers a refused guard with a 409 that names the guard', async () => {
 		const store = memStore()
 		const { ask, client } = served(store)

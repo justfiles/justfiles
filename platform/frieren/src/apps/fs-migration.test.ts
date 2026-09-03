@@ -55,7 +55,7 @@ vi.mock('@justfiles/fs/synced', async (original) => {
 	}
 })
 
-const REGISTRY_KEY = 'frieren-profiles'
+const REGISTRY_KEY = 'frieren-profiles-v2'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
@@ -122,8 +122,8 @@ async function seedProfile(id: string, files: Record<string, string>): Promise<v
 	const { idbStore } = await import('@justfiles/fs/idb')
 	const { ROOT } = await import('@justfiles/fs/store')
 	const { announceMount, volume } = await import('@justfiles/fs')
-	const tree = idbStore(`frieren-store-${id}`)
-	const local = idbStore(`frieren-store-${id}-${PRIVATE_MOUNT}`)
+	const tree = idbStore(`frieren-store-v2-${id}`)
+	const local = idbStore(`frieren-store-v2-${id}-${PRIVATE_MOUNT}`)
 	await announceMount(tree, ROOT, PRIVATE_MOUNT)
 	const vol = volume(tree, { bindings: new Map([[ROOT, new Map([[PRIVATE_MOUNT, local]])]]) })
 	for (const [path, body] of Object.entries(files)) {
@@ -137,7 +137,7 @@ async function seedProfile(id: string, files: Record<string, string>): Promise<v
 async function accountVolume() {
 	const { idbStore } = await import('@justfiles/fs/idb')
 	const { volume } = await import('@justfiles/fs')
-	return volume(idbStore('frieren-store-account-profile'))
+	return volume(idbStore('frieren-store-v2-account-profile'))
 }
 
 async function listAccountFiles(): Promise<Set<string>> {

@@ -77,7 +77,7 @@ type StoredProfile = {
 	pendingFactoryReset?: { operationId: string; fromGeneration: number }
 }
 
-const REGISTRY_KEY = 'frieren-profiles'
+const REGISTRY_KEY = 'frieren-profiles-v2'
 
 function stubBrowser(registry: StoredProfile[] = []) {
 	const data = new Map([[REGISTRY_KEY, JSON.stringify(registry)]])
@@ -224,8 +224,8 @@ describe('profile session switching', () => {
 
 		expect(one).toBe(two)
 		expect(H.opened.mock.calls.map(([name]) => name)).toEqual([
-			'frieren-store-local',
-			'frieren-store-local-private'
+			'frieren-store-v2-local',
+			'frieren-store-v2-local-private'
 		])
 	})
 
@@ -303,7 +303,7 @@ describe('profile session switching', () => {
 		H.peer = peer
 		data.set('frieren-fs-account-profile-pull', expired as string)
 		await fs.openProfile()
-		const old = H.stores.get('frieren-store-account-profile') as Store
+		const old = H.stores.get('frieren-store-v2-account-profile') as Store
 		const staleRow: Node = {
 			...remoteRow,
 			id: 'offline',
@@ -320,7 +320,7 @@ describe('profile session switching', () => {
 			retiredStoreDbs?: string[]
 		}
 		const fresh = H.stores.get(profile.storeDb as string) as Store
-		const recovery = H.stores.get('frieren-recovery-account-profile') as Store
+		const recovery = H.stores.get('frieren-recovery-v2-account-profile') as Store
 		expect(await fresh.get('remote')).toEqual(remoteRow)
 		expect(await fresh.get('offline')).toBeNull()
 		expect(await recovery.get('offline')).toEqual(staleRow)
@@ -355,8 +355,8 @@ describe('profile session switching', () => {
 		expect(JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0].pendingFactoryReset).toBeUndefined()
 		// Both stores this profile holds, and the old model's database the pass copied
 		// out of: a reset that left any of the three would come back on the next boot.
-		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-store-account-profile')
-		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-store-account-profile-private')
+		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-store-v2-account-profile')
+		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-store-v2-account-profile-private')
 		expect(H.deleteDatabase).toHaveBeenCalledWith('frieren-fs-profile-account-profile')
 		expect(H.reload).toHaveBeenCalledOnce()
 	})

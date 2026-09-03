@@ -1,4 +1,4 @@
-import { fileApi, storeApi } from '@justfiles/core'
+import { fileApi, syncStoreApi } from '@justfiles/core'
 import { volume } from '@justfiles/fs'
 import type { ReceiverOptions } from '@justfiles/fs/peer'
 import type { Store } from '@justfiles/fs/store'
@@ -21,7 +21,7 @@ export function createWorkerApiApp(args: { store: Store; receiver?: ReceiverOpti
 	const { store } = args
 
 	return new Hono()
-		.route('/store', storeApi(store, args.receiver))
+		.route('/store', syncStoreApi(store, args.receiver))
 		.route('/store', fileApi(volume(store)))
 }
 

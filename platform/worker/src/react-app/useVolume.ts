@@ -2,9 +2,8 @@ import { useAuth } from '@clerk/clerk-react'
 import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
 import { idbStore, sharedStore } from '@justfiles/fs/idb'
-import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import type { Store } from '@justfiles/fs/store'
-import { type CursorSlot, synced } from '@justfiles/fs/synced'
+import { bootstrap, type CursorSlot, synced } from '@justfiles/fs/synced'
 import { FileType } from '@justfiles/fs/types'
 import {
 	createContext,
@@ -327,37 +326,43 @@ async function loadInitialEntries(
 // has opened one database for the whole browser since it shipped, and a per-user key
 // over a shared store would only make the incoherence harder to see.
 
-/** The old twin model's database, read once by the adoption pass and never written. */
-const LEGACY_DB = 'justfiles-fs'
-/** A store is a whole database here, named by the store's id. */
-const STORE_DB = 'justfiles-store'
-/**
- * Where the one pass is recorded. Copy-then-swap, so re-running it costs a re-read —
- * but a pass that ran again after the volume was live would copy stale rows over live
- * ones, since rule 3 only makes an IDENTICAL row a no-op.
- */
-const ADOPTED_KEY = 'justfiles-store-adopted'
+/** A new namespace deliberately starts legacy installs with a full remote bootstrap. */
+const STORE_DB = 'justfiles-store-v2'
+const STORE_STATE_KEY = 'justfiles-store-v2-state'
+
+type StoreState = { store: string; replica: string; pull?: string; push?: string }
 
 type GetToken = () => Promise<string | null>
 
-const slot = (key: string): CursorSlot => ({
+function storeState(): StoreState {
+	const raw = localStorage.getItem(STORE_STATE_KEY)
+	if (raw) return JSON.parse(raw) as StoreState
+	const state = { store: STORE_DB, replica: crypto.randomUUID() }
+	localStorage.setItem(STORE_STATE_KEY, JSON.stringify(state))
+	return state
+}
+
+const slot = (name: 'pull' | 'push'): CursorSlot => ({
 	async load() {
-		return localStorage.getItem(key) ?? undefined
+		return storeState()[name]
 	},
 	async save(cursor) {
-		if (cursor === undefined) localStorage.removeItem(key)
-		else localStorage.setItem(key, cursor)
+		const state = storeState()
+		if (cursor === undefined) delete state[name]
+		else state[name] = cursor
+		localStorage.setItem(STORE_STATE_KEY, JSON.stringify(state))
 	}
 })
 
-// Stable across restarts, or the push filter stops recognising this replica's own work
-// and every row it ever wrote is offered again.
-function replicaId(): string {
-	const held = localStorage.getItem('justfiles-replica')
-	if (held) return held
-	const minted = crypto.randomUUID()
-	localStorage.setItem('justfiles-replica', minted)
-	return minted
+const memoryCursor = (): CursorSlot & { value(): string | undefined } => {
+	let cursor: string | undefined
+	return {
+		load: async () => cursor,
+		save: async (next) => {
+			cursor = next
+		},
+		value: () => cursor
+	}
 }
 
 // The seam, over the wire. The token is minted per REQUEST — Clerk's expires — so it
@@ -377,29 +382,69 @@ function remoteStore(getToken: GetToken): Store {
 	})
 }
 
+async function replaceStore(activeStore: string, remote: Store): Promise<void> {
+	const name = `${STORE_DB}-${crypto.randomUUID()}`
+	const fresh = idbStore(name)
+	const pull = memoryCursor()
+	try {
+		await bootstrap(fresh, remote, pull, { lazyContent: true })
+	} catch (error) {
+		await fresh.close?.()
+		indexedDB.deleteDatabase(name)
+		throw error
+	}
+	await fresh.close?.()
+	const cursor = pull.value()
+	if (cursor === undefined) throw new Error('bootstrap did not produce a cursor')
+	const state = storeState()
+	if (state.store !== activeStore) {
+		indexedDB.deleteDatabase(name)
+		return
+	}
+	state.store = name
+	state.pull = cursor
+	delete state.push
+	localStorage.setItem(STORE_STATE_KEY, JSON.stringify(state))
+}
+
 export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRuntime> {
-	const local = sharedStore(idbStore(STORE_DB), STORE_DB)
-	await adoptOnce(STORE_DB, async () => {
-		if (localStorage.getItem(ADOPTED_KEY)) return
-		await migrateIdb(LEGACY_DB, local)
-		localStorage.setItem(ADOPTED_KEY, '1')
-	})
+	const state = storeState()
+	const local = sharedStore(idbStore(state.store), state.store)
 	// NO `localFirst`. This runtime lists the whole tree ONCE, here, and then serves that
 	// listing from memory until something asks it to refresh — and the only thing that does
 	// is a window focus. So the first cycle has to have run before the listing is taken, or
 	// a device whose local replica is empty records "loaded" over an empty workspace and
 	// keeps showing it. `flush()` never rejects, so an offline boot still gets its volume;
 	// it just gets `error` status and the local tree, which is what shipped.
-	const pull = slot('justfiles-store-pull')
+	const pull = slot('pull')
 	const remote = remoteStore(getToken)
-	const volume = await synced({
+	let sync: Awaited<ReturnType<typeof synced>> | undefined
+	let replacing = false
+	let replaceNeeded = false
+	const replace = (): void => {
+		replaceNeeded = true
+		if (!sync || replacing) return
+		replacing = true
+		sync.pause()
+		void replaceStore(state.store, remote)
+			.then(() => location.reload())
+			.catch((error) => {
+				replacing = false
+				console.error('sync: store replacement failed', error)
+				sync?.resume()
+			})
+	}
+	sync = await synced({
 		local,
 		remote,
-		replica: replicaId(),
+		replica: state.replica,
 		pull,
-		push: slot('justfiles-store-push'),
+		push: slot('push'),
+		onBootstrapRequired: replace,
 		lazyContent: true
 	})
+	if (replaceNeeded) replace()
+	const volume = sync
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
 	const initialEntries = await loadInitialEntries(volume)

@@ -121,7 +121,7 @@ export type LocalProfile = {
 	retiredStoreDbs?: string[]
 }
 
-const REGISTRY_KEY = 'frieren-profiles'
+const REGISTRY_KEY = 'frieren-profiles-v2'
 
 const localSyncLocks = new Map<string, SyncStateLock>()
 function profileSyncStateLock(profileId: string): SyncStateLock {
@@ -231,18 +231,18 @@ function legacyDb(profileId: string): string {
 function storeDb(profileId: string): string {
 	return (
 		readRegistry().find((profile) => profile.id === profileId)?.storeDb ??
-		`frieren-store-${profileId}`
+		`frieren-store-v2-${profileId}`
 	)
 }
 
-const recoveryDb = (profileId: string): string => `frieren-recovery-${profileId}`
+const recoveryDb = (profileId: string): string => `frieren-recovery-v2-${profileId}`
 
 function beginBootstrap(profileId: string): { oldDb: string; freshDb: string } {
 	const profiles = readRegistry()
 	const profile = profiles.find((entry) => entry.id === profileId)
 	if (!profile) throw new Error('bootstrap profile is missing')
-	const oldDb = profile.storeDb ?? `frieren-store-${profileId}`
-	const freshDb = `frieren-store-${profileId}-bootstrap-${crypto.randomUUID()}`
+	const oldDb = profile.storeDb ?? `frieren-store-v2-${profileId}`
+	const freshDb = `frieren-store-v2-${profileId}-bootstrap-${crypto.randomUUID()}`
 	profile.pendingBootstrap = { freshDb }
 	writeRegistry(profiles)
 	return { oldDb, freshDb }
@@ -282,7 +282,7 @@ async function recoverProfileSwitch(profileId: string): Promise<void> {
 }
 
 function privateDb(profileId: string): string {
-	return `frieren-store-${profileId}-${PRIVATE_MOUNT}`
+	return `frieren-store-v2-${profileId}-${PRIVATE_MOUNT}`
 }
 
 type Active = {

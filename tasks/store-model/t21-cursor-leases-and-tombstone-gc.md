@@ -112,6 +112,11 @@ Store call
 HTTP carries the token in a private request header. An in-process P2P adapter passes the
 same envelope directly. Neither transport adds a storage interface.
 
+`storeApi(store)` remains the primitive HTTP projection of a `Store`.
+`syncStoreApi(store, options)` composes the receiver and cursor header around that
+primitive for a peer-facing endpoint. Hosts choose the protected form only where the
+endpoint participates in sync.
+
 Every peer-facing operation carries a token. Feed bootstrap is the sole tokenless entry:
 `since(undefined)`. Read operations accept `bootstrap` cursors; row and blob writes
 require `resume` cursors.
@@ -229,16 +234,21 @@ crafted to win.
 When remote wins, the host:
 
 1. Stops incremental sync before any peer write.
-2. Preserves unacknowledged locally authored work in the private recovery store.
+2. Retains the old local store as the recovery copy.
 3. Creates a fresh empty local store and fresh cursors.
 4. Drains remote through read-only bootstrap cursors.
 5. Reaches the feed head and saves the first resumable cursor.
 6. Atomically switches the profile to the fresh store.
-7. Keeps recovered work private; later policy may restore it under new ids.
+7. Leaves recovered work outside sync; later policy may restore it under new ids.
 
 The sync engine cannot replace storage it did not construct. It reports the winner and
 the host owns this crash-safe replacement. A crash before the switch leaves the old
 profile active; a crash after it leaves the new profile active.
+
+The first release deliberately versions each host's local store and relationship-state
+namespace. Existing unsigned cursors and stores are left untouched and signed-in users
+start with a full remote bootstrap; there is no compatibility migration into the new
+relationship.
 
 ## Non-goals
 

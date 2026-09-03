@@ -322,6 +322,7 @@ export async function bootstrap(
 	pull: CursorSlot,
 	opts: { lazyContent?: boolean; lock?: SyncStateLock } = {}
 ): Promise<void> {
+	await requireFresh(local)
 	remote = withSyncCursor(remote, pull)
 	await saveCursor(pull, undefined, opts.lock)
 	await drain(
@@ -335,6 +336,18 @@ export async function bootstrap(
 		opts.lock,
 		true
 	)
+}
+
+/** A bootstrap replaces a replica; merging it into existing rows would revive stale state. */
+async function requireFresh(store: Store): Promise<void> {
+	let cursor: Cursor | undefined
+	for (;;) {
+		const page = await store.since(cursor)
+		if (page.nodes.some((row) => row.id !== ROOT && row.type !== 'mount'))
+			throw new BootstrapRequiredError()
+		if (page.next === undefined || page.nodes.length === 0) return
+		cursor = page.next
+	}
 }
 
 /**

@@ -118,7 +118,7 @@ export type SyncedProps = {
 	lock?: SyncStateLock
 	/** Chooses the surviving stable peer id when incremental sync is fenced. */
 	chooseWinner?: ChooseWinner
-	/** Lets a host replace the stale backing store after an incremental cycle is fenced. */
+	/** Lets a host replace the backing store when no incremental relationship is usable. */
 	onBootstrapRequired?: (winnerId?: string) => void
 	/**
 	 * Where it keeps "a discard stopped half-done". An app without one keeps that
@@ -633,6 +633,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	}
 }
 
+/** Establish a relationship only over a store that has never held user data. */
 function readyStore(
 	peer: Store,
 	local: Store,
