@@ -75,6 +75,28 @@ const ROOT_ROW: Node = {
 
 type Opened = { db: IDBPDatabase<Schema>; lineage: string }
 
+/**
+ * Wait until this tab owns a browser store namespace.
+ *
+ * The returned function gives it up. Closing the page does the same without a call.
+ */
+export function acquireStoreOwner(name: string): Promise<() => void> {
+	const locks = globalThis.navigator?.locks
+	if (!locks) throw new Error('exclusive browser storage requires Web Locks')
+	return new Promise((resolve, reject) => {
+		void locks
+			.request(name, async () => {
+				let release!: () => void
+				const held = new Promise<void>((done) => {
+					release = done
+				})
+				resolve(release)
+				await held
+			})
+			.catch(reject)
+	})
+}
+
 /** The browser `Store`. One database per name; reopening one is not a reset. */
 export function idbStore(name: string): Store {
 	let opening: Promise<Opened> | null = null

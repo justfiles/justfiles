@@ -2,7 +2,7 @@ import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
 import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
-import { idbStore, sharedStore } from '@justfiles/fs/idb'
+import { acquireStoreOwner, idbStore, sharedStore } from '@justfiles/fs/idb'
 import { adoptOnce, migrateIdb } from '@justfiles/fs/migrate.idb'
 import { BootstrapRequiredError } from '@justfiles/fs/peer'
 import {
@@ -124,6 +124,15 @@ export type LocalProfile = {
 }
 
 const REGISTRY_KEY = 'frieren-profiles-v2'
+const OWNER_LOCK = 'frieren-fs-owner'
+
+// A browser tab is not a peer. Hold one owner across every profile switch and
+// destructive pass; closing the page releases the Web Lock for the next tab.
+let owning: Promise<void> | undefined
+function ownBrowser(): Promise<void> {
+	if (!owning) owning = acquireStoreOwner(OWNER_LOCK).then(() => undefined)
+	return owning
+}
 
 const localSyncLocks = new Map<string, SyncStateLock>()
 function profileSyncStateLock(profileId: string): SyncStateLock {
@@ -331,6 +340,18 @@ function activeCursor(entry: Active, name: 'pull' | 'push'): CursorSlot {
 	}
 }
 
+function fenceCommits(store: Store, profileId: string, name: string): Store {
+	const lock = profileSyncStateLock(profileId)
+	return {
+		...store,
+		commit: (writes, guards) =>
+			lock(async () => {
+				if (storeDb(profileId) !== name) throw new BootstrapRequiredError()
+				await store.commit(writes, guards)
+			})
+	}
+}
+
 let active: Active | null = null
 const statusListeners = new Set<() => void>()
 
@@ -352,7 +373,10 @@ const statusListeners = new Set<() => void>()
 let switching: Promise<unknown> = Promise.resolve()
 function alone<T>(body: () => Promise<T>): Promise<T> {
 	// What the next switch waits on is this one having FINISHED, not having worked.
-	const next = switching.then(body)
+	const next = switching.then(async () => {
+		await ownBrowser()
+		return body()
+	})
 	switching = next.catch(() => undefined)
 	return next
 }
@@ -367,29 +391,10 @@ function setActiveStatus(entry: Active, status: SyncStatus): void {
 	emitStatus()
 }
 
-function createProfileVolume(plain: Volume, of: () => Active, lock: SyncStateLock): ProfileVolume {
+function createProfileVolume(plain: Volume, of: () => Active): ProfileVolume {
 	const sync = () => of().sync
-	// Replacement holds this lock from its recovery snapshot through the store switch.
-	// Writes either finish before that snapshot or wake after the old store is stale.
-	const write = <T>(body: () => Promise<T>): Promise<T> =>
-		lock(() => {
-			const entry = of()
-			if (storeDb(entry.profileId) !== entry.store) throw new BootstrapRequiredError()
-			return body()
-		})
 	return {
 		...plain,
-		setXattr: (...args) => write(() => plain.setXattr(...args)),
-		removeXattr: (...args) => write(() => plain.removeXattr(...args)),
-		writeFile: (...args) => write(() => plain.writeFile(...args)),
-		appendFile: (...args) => write(() => plain.appendFile(...args)),
-		mkdir: (...args) => write(() => plain.mkdir(...args)),
-		rm: (...args) => write(() => plain.rm(...args)),
-		rename: (...args) => write(() => plain.rename(...args)),
-		cp: (...args) => write(() => plain.cp(...args)),
-		symlink: (...args) => write(() => plain.symlink(...args)),
-		chmod: (...args) => write(() => plain.chmod(...args)),
-		utimes: (...args) => write(() => plain.utimes(...args)),
 		// The synced volume reads through `hydratingBlobs`, so a row this replica holds
 		// only as a stub still reads: the bytes are fetched from the peer on demand.
 		// Everything else is the same tree over the same store, so it stays on `plain`.
@@ -598,12 +603,12 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 	// is the store it is telling other tabs about.
 	const name = storeDb(profile.id)
 	const privateName = privateDb(profile.id)
-	const local = sharedStore(idbStore(name), name)
+	const openedLocal = sharedStore(idbStore(name), name)
 	const privateStore = sharedStore(idbStore(privateName), privateName)
 	// The name is claimed before anything reads the tree: the row is derived from its
 	// position, so every replica writes a byte-identical one and none of them ever sends
 	// it — the whole of how this browser reserves `/private` with no coordination.
-	await announceMount(local, ROOT, PRIVATE_MOUNT)
+	await announceMount(openedLocal, ROOT, PRIVATE_MOUNT)
 	// Held against every other tab, and the marker READ inside it: a second tab that
 	// checked `adopted` before this one recorded it would copy the old tree a second time,
 	// over rows this tab's volume had already pulled or written (see `adoptOnce`). The
@@ -613,9 +618,10 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		if (readRegistry().find((entry) => entry.id === profile.id)?.adopted) return
 		// `/private` was a path the old engine filtered; here its subtree lands in the
 		// store bound at that name, hanging off that store's own root.
-		await migrateIdb(legacyDb(profile.id), local, new Map([[PRIVATE_MOUNT, privateStore]]))
+		await migrateIdb(legacyDb(profile.id), openedLocal, new Map([[PRIVATE_MOUNT, privateStore]]))
 		recordAdopted(profile.id)
 	})
+	const local = fenceCommits(openedLocal, profile.id, name)
 	const bindings = new Map([[ROOT, new Map([[PRIVATE_MOUNT, privateStore]])]])
 	const syncState = privateSyncState(
 		volume(local, { bindings }),
@@ -629,7 +635,7 @@ async function setActive(profile: LocalProfile): Promise<Active> {
 		bindings,
 		mintVersion: versions(replica)
 	})
-	const managed = createProfileVolume(plain, () => entry, profileSyncStateLock(profile.id))
+	const managed = createProfileVolume(plain, () => entry)
 
 	// Online-aware sync: stop pushing when the network drops, resume when it
 	// returns, and flush pending writes to the backend before the tab goes away.

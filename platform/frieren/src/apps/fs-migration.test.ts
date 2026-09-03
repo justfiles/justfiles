@@ -10,6 +10,7 @@ const H = vi.hoisted(() => ({ stores: new Map<string, unknown>() }))
 vi.mock('@justfiles/fs/idb', async () => {
 	const { memStore } = await import('@justfiles/fs/mem')
 	return {
+		acquireStoreOwner: async () => () => {},
 		idbStore: (name: string) => {
 			const held = H.stores.get(name) ?? memStore()
 			H.stores.set(name, held)

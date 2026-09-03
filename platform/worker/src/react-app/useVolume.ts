@@ -1,7 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { decodeXattr, GHOSTORE_XATTR, type Volume } from '@justfiles/fs'
 import { httpStore } from '@justfiles/fs/http'
-import { idbStore, sharedStore } from '@justfiles/fs/idb'
+import { acquireStoreOwner, idbStore, sharedStore } from '@justfiles/fs/idb'
 import { BootstrapRequiredError } from '@justfiles/fs/peer'
 import type { Store } from '@justfiles/fs/store'
 import { bootstrap, type CursorSlot, synced } from '@justfiles/fs/synced'
@@ -331,6 +331,7 @@ async function loadInitialEntries(
 /** A new namespace deliberately starts legacy installs with a full remote bootstrap. */
 const STORE_DB = 'justfiles-store-v2'
 const STORE_STATE_KEY = 'justfiles-store-v2-state'
+const OWNER_LOCK = 'justfiles-store-owner'
 
 type StoreState = { store: string; replica: string; pull?: string; push?: string }
 
@@ -348,10 +349,29 @@ const localStoreLock = syncStateLock()
 const storeLock: SyncStateLock = (body) =>
 	globalThis.navigator?.locks?.request(STORE_STATE_KEY, body) ?? localStoreLock(body)
 
+// This host has one replica, regardless of how many tabs point at it. The owner
+// lasts until the page closes, when the browser hands the lock to the next tab.
+let owning: Promise<void> | undefined
+function ownBrowser(): Promise<void> {
+	if (!owning) owning = acquireStoreOwner(OWNER_LOCK).then(() => undefined)
+	return owning
+}
+
 function activeState(store: string): StoreState {
 	const state = storeState()
 	if (state.store !== store) throw new BootstrapRequiredError()
 	return state
+}
+
+function fenceCommits(store: Store, name: string): Store {
+	return {
+		...store,
+		commit: (writes, guards) =>
+			storeLock(async () => {
+				activeState(name)
+				await store.commit(writes, guards)
+			})
+	}
 }
 
 const slot = (store: string, name: 'pull' | 'push'): CursorSlot => ({
@@ -428,8 +448,9 @@ async function replaceStore(activeStore: string, remote: Store): Promise<void> {
 }
 
 export async function createVolumeRuntime(getToken: GetToken): Promise<VolumeRuntime> {
+	await ownBrowser()
 	const state = storeState()
-	const local = sharedStore(idbStore(state.store), state.store)
+	const local = fenceCommits(sharedStore(idbStore(state.store), state.store), state.store)
 	// NO `localFirst`. This runtime lists the whole tree ONCE, here, and then serves that
 	// listing from memory until something asks it to refresh — and the only thing that does
 	// is a window focus. So the first cycle has to have run before the listing is taken, or

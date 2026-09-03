@@ -26,8 +26,11 @@ vi.mock('@justfiles/core', () => ({
 // and builds a volume over what this hands back, so a hand-rolled stub would only test
 // the stub. `memStore` is the same seam `idbStore` implements.
 vi.mock('@justfiles/fs/idb', async () => {
+	const { acquireStoreOwner } =
+		await vi.importActual<typeof import('@justfiles/fs/idb')>('@justfiles/fs/idb')
 	const { memStore } = await import('@justfiles/fs/mem')
 	return {
+		acquireStoreOwner,
 		idbStore: (name: string) => {
 			H.opened(name)
 			const held = H.stores.get(name) ?? memStore()
@@ -95,8 +98,13 @@ function stubBrowser(registry: StoredProfile[] = []) {
 	})
 	vi.stubGlobal('navigator', {
 		locks: {
-			request: <T>(name: string, body: () => Promise<T>): Promise<T> => {
-				const run = (locks.get(name) ?? Promise.resolve()).then(body)
+			request: <T>(
+				name: string,
+				optionsOrBody: object | (() => Promise<T>),
+				maybeBody?: () => Promise<T>
+			): Promise<T> => {
+				const body = (maybeBody ?? optionsOrBody) as () => Promise<T>
+				const run = (locks.get(name) ?? Promise.resolve()).then(() => body())
 				locks.set(
 					name,
 					run.catch(() => undefined)
@@ -244,6 +252,34 @@ describe('profile session switching', () => {
 		])
 	})
 
+	test('a second tab opens no store until the browser owner closes', async () => {
+		const { data, fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		const before = data.get(REGISTRY_KEY)
+		let close!: () => void
+		let opened!: () => void
+		const firstOwns = new Promise<void>((resolve) => {
+			opened = resolve
+		})
+		const staysOpen = new Promise<void>((resolve) => {
+			close = resolve
+		})
+		const firstTab = navigator.locks.request('frieren-fs-owner', async () => {
+			opened()
+			await staysOpen
+		})
+		await firstOwns
+
+		const secondTab = fs.openProfile()
+		await Promise.resolve()
+		expect(data.get(REGISTRY_KEY)).toBe(before)
+		expect(H.opened).not.toHaveBeenCalled()
+
+		close()
+		await firstTab
+		await secondTab
+		expect(H.opened).toHaveBeenCalledTimes(2)
+	})
+
 	test('two attaches in one tick leave one sync loop running', async () => {
 		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
 		await fs.openProfile()
@@ -346,13 +382,15 @@ describe('profile session switching', () => {
 
 		const attaching = fs.attachRemoteUser('user-1', async () => 'token')
 		await bootstrap
-		const lateWrite = volume.writeFile('/late.txt', new TextEncoder().encode('late'))
-		continueBootstrap()
-		const replacement = await attaching
-		await expect(lateWrite).rejects.toMatchObject({
+		const lateWrite = expect(
+			volume.writeFile('/late.txt', new TextEncoder().encode('late'))
+		).rejects.toMatchObject({
 			name: 'BootstrapRequiredError',
 			message: 'bootstrap required'
 		})
+		continueBootstrap()
+		const replacement = await attaching
+		await lateWrite
 
 		const profile = JSON.parse(data.get(REGISTRY_KEY) ?? '[]')[0] as StoredProfile & {
 			storeDb?: string

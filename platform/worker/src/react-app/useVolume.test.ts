@@ -16,6 +16,11 @@ import { memStore } from '@justfiles/fs/mem'
 import { receiver } from '@justfiles/fs/peer'
 import { beforeEach, expect, test, vi } from 'vitest'
 
+const H = vi.hoisted(() => ({
+	acquire: vi.fn<() => Promise<() => void>>(),
+	opened: vi.fn()
+}))
+
 const peerStore = memStore()
 const peer = receiver(peerStore)
 
@@ -23,7 +28,11 @@ const peer = receiver(peerStore)
 // below, because two tabs of one origin open the same database.
 const tree = memStore()
 vi.mock('@justfiles/fs/idb', () => ({
-	idbStore: () => tree,
+	acquireStoreOwner: H.acquire,
+	idbStore: () => {
+		H.opened()
+		return tree
+	},
 	sharedStore: (store: unknown) => store
 }))
 vi.mock('@justfiles/fs/http', () => ({ httpStore: () => peer }))
@@ -31,6 +40,9 @@ vi.mock('@justfiles/fs/http', () => ({ httpStore: () => peer }))
 import { createVolumeRuntime } from './useVolume'
 
 beforeEach(() => {
+	H.acquire.mockReset()
+	H.acquire.mockResolvedValue(() => {})
+	H.opened.mockReset()
 	const held = new Map<string, string>()
 	vi.stubGlobal('localStorage', {
 		getItem: (key: string) => held.get(key) ?? null,
@@ -41,10 +53,33 @@ beforeEach(() => {
 
 test('the boot listing already holds what only the peer had', async () => {
 	await volume(peerStore).writeFile('/from-another-device.md', new TextEncoder().encode('# hi'))
+	let own!: () => void
+	H.acquire.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				own = () => resolve(() => {})
+			})
+	)
 
-	const runtime = await createVolumeRuntime(async () => 'token')
+	const creating = createVolumeRuntime(async () => 'token')
+	await Promise.resolve()
+	expect(H.acquire).toHaveBeenCalledWith('justfiles-store-owner')
+	expect(H.opened).not.toHaveBeenCalled()
+	own()
+	const runtime = await creating
 
 	expect(runtime.getSnapshot().entries.map((entry) => entry.path)).toEqual([
 		'from-another-device.md'
 	])
+
+	const state = JSON.parse(localStorage.getItem('justfiles-store-v2-state') ?? '{}') as {
+		store: string
+	}
+	localStorage.setItem(
+		'justfiles-store-v2-state',
+		JSON.stringify({ ...state, store: 'replacement' })
+	)
+	await expect(
+		runtime.volume.writeFile('/retired.md', new TextEncoder().encode('stale'))
+	).rejects.toMatchObject({ name: 'BootstrapRequiredError' })
 })
