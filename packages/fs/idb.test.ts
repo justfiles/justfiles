@@ -227,6 +227,23 @@ describe('idbStore: guarded atomic batches inside IDB transaction rules', () => 
 		expect((await one.since()).nodes.map((n) => n.id)).toContain('a')
 	})
 
+	test('open connections do not block database deletion', async () => {
+		const name = `t04-${crypto.randomUUID()}`
+		const one = idbStore(name)
+		const two = idbStore(name)
+		await Promise.all([one.get(ROOT), two.get(ROOT)])
+
+		const deleted = new Promise<void>((resolve, reject) => {
+			const request = indexedDB.deleteDatabase(name)
+			request.onsuccess = () => resolve()
+			request.onerror = () => reject(request.error)
+			request.onblocked = () => reject(new Error('database deletion was blocked'))
+		})
+
+		await expect(deleted).resolves.toBeUndefined()
+		await expect(one.get(ROOT)).rejects.toMatchObject({ name: 'InvalidStateError' })
+	})
+
 	test('the feed survives a reopen: rows, order and cursor outlive the connection', async () => {
 		const name = `t04-${crypto.randomUUID()}`
 		const store = idbStore(name)

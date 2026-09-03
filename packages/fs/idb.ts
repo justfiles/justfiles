@@ -87,6 +87,11 @@ export function idbStore(name: string): Store {
 				nodes.createIndex('seq', 'seq')
 				db.createObjectStore('blobs', { keyPath: 'hash' })
 				db.createObjectStore('meta')
+			},
+			blocking(_currentVersion, _requestedVersion, event) {
+				// A delete or schema upgrade waits until every tab closes this database.
+				const connection = event.target as IDBDatabase | null
+				connection?.close()
 			}
 		})
 		// Bootstrap, and only on a database that has neither: the root row (rule 6)
