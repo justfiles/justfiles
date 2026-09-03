@@ -261,13 +261,14 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	 */
 	let unfinished = false
 
-	/** Raise or lower the flag, durably first: a bit only this process knows fences nothing. */
-	const discarding = async (on: boolean): Promise<void> => {
-		await props.discard?.save(on)
-		unfinished = on
-	}
 	const withSyncState = <T>(body: () => Promise<T>): Promise<T> =>
 		props.lock ? props.lock(body) : body()
+
+	/** Raise or lower the flag, durably first: a bit only this process knows fences nothing. */
+	const discarding = async (on: boolean): Promise<void> => {
+		await withSyncState(() => props.discard?.save(on) ?? Promise.resolve())
+		unfinished = on
+	}
 
 	/** May the loop act? Every way it must not, in one place. */
 	const mayRun = (): boolean => !paused && !destroyed && !resetting && !unfinished

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { memStore } from './mem'
 import { ROOT } from './store'
-import { privateSyncState } from './syncState'
+import { privateSyncState, syncStateLock } from './syncState'
 import { announceMount, volume } from './volume'
 
 describe('private sync state', () => {
@@ -27,5 +27,20 @@ describe('private sync state', () => {
 		)
 		const feed = await shared.since()
 		expect(feed.nodes.map((row) => row.name)).not.toContain('state')
+	})
+
+	it('merges a tab update with the latest shared relationship state', async () => {
+		const backing = memStore()
+		const first = privateSyncState(volume(backing))
+		const second = privateSyncState(volume(backing))
+		const lock = syncStateLock()
+
+		await lock(() => second.cursor('push').load())
+		await lock(() => first.discard.save(true))
+		await lock(() => second.cursor('push').save('push'))
+
+		const saved = privateSyncState(volume(backing))
+		expect(await saved.discard.load()).toBe(true)
+		expect(await saved.cursor('push').load()).toBe('push')
 	})
 })
