@@ -19,6 +19,7 @@
 import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import { authority } from '../../fs/authority'
+import { SyncConflictError } from '../../fs/conflict.internal'
 import { type CursorSlot, sync, versions } from '../../fs/engine'
 import { httpStore } from '../../fs/http'
 import { memStore } from '../../fs/mem'
@@ -221,7 +222,7 @@ describe('storeApi: what the wire answers', () => {
 		// the client as the same event: the commit was refused, read again and replan.
 		const res = await post(ask, wire(node({ id: 'kid', name: 'kid.txt', parent: 'f' })), cursor)
 		expect(res.status).toBe(409)
-		expect(await res.json()).toMatchObject({ error: 'guard' })
+		expect(await res.json()).toMatchObject({ error: 'conflict' })
 		await expect(
 			client.commit([node({ id: 'kid', name: 'kid.txt', parent: 'f' })])
 		).rejects.toThrow(GuardError)
@@ -301,4 +302,71 @@ describe('sync over the wire', () => {
 			expect(await read(store, '/note.txt (conflict b)')).toBe('from b')
 		}
 	})
+})
+
+it('structured refusals preserve authority rows and binary xattrs over HTTP', async () => {
+	const raw = memStore()
+	const held = node({
+		id: 'parent',
+		name: 'parent',
+		mtimeNs: 9007199254740993n,
+		xattrs: { 'user.binary': new Uint8Array([0, 255, 128]) }
+	})
+	await raw.commit([held])
+	const { client } = served(authority(raw))
+	await caughtUp(client)
+	await expect(
+		client.commit([node({ id: 'child', name: 'child', parent: 'parent' })])
+	).rejects.toMatchObject({
+		conflict: {
+			kind: 'invalid-parent',
+			authority: expect.arrayContaining([
+				{ id: 'parent', row: held },
+				{ id: 'child', row: null }
+			])
+		}
+	})
+})
+
+it.each([
+	{},
+	{ reason: 'old unstructured refusal' },
+	{ conflict: { kind: 'unknown' } }
+])('malformed HTTP refusal %j is a protocol error', async (body) => {
+	const client = httpStore('http://test', {
+		fetch: async () => Response.json(body, { status: 409 })
+	})
+	await expect(client.commit([node({ id: 'x', name: 'x' })])).rejects.toThrow(
+		'malformed sync refusal'
+	)
+})
+
+it('an unknown structured HTTP conflict reaches unresolved preservation', async () => {
+	const raw = memStore()
+	const remote = authority(raw)
+	const { client: peer } = served({
+		...remote,
+		commit: async (rows, guards) => {
+			const trigger = rows.find((row) => row.id === 'x' && !row.deleted)
+			if (trigger)
+				throw new SyncConflictError({
+					kind: 'future-policy',
+					trigger: { id: trigger.id, parent: trigger.parent, version: trigger.version },
+					authority: [
+						{ id: trigger.id, row: null },
+						{ id: ROOT, row: await raw.get(ROOT) }
+					]
+				})
+			await remote.commit(rows, guards)
+		}
+	})
+	const pull = slot()
+	await pull.save(await caughtUp(peer))
+	const local = memStore(),
+		recovery = memStore()
+	await local.commit([node({ id: 'x', name: 'displaced', version: 'b:1' })])
+	await sync(local, peer, { replica: 'b', pull, push: slot(), recovery, retries: 0 })
+	expect(await local.get('x')).toMatchObject({ deleted: true })
+	expect(await remote.get('x')).toEqual(await local.get('x'))
+	expect((await volume(recovery).readdir('/')).map((row) => row.name)).toContain('Recovered items')
 })

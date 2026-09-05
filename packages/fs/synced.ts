@@ -92,6 +92,8 @@ export type DiscardSlot = {
 }
 
 export type SyncedProps = {
+	/** Physically separate private storage, retained across restarts and shared-store replacements. */
+	recovery?: Store
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
 	/** The peer, with the same seam as the local store. */
@@ -195,6 +197,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
 	const opts = {
+		recovery: props.recovery,
 		replica,
 		pull: props.pull,
 		push: props.push,
@@ -595,7 +598,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	// A committed local write arms that push. Only this replica's own writes:
 	// a pulled row is authored by the peer, and answering it with a push would
 	// spend a cycle offering that peer its own rows back, for ever. There is
-	// nothing else to filter out — this engine writes no state into the store.
+	// no risk in arming for an adopted row: the engine checks its durable receipt.
 	const stop = local.subscribe?.((rows) => {
 		if (rows.some((row) => authorOf(row.version) === replica)) armPush()
 	})

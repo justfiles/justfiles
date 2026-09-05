@@ -82,7 +82,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([file({ id: 'second', name: 'note.txt' })])
 
-		expect(error.message).toMatch(/note\.txt/)
+		expect(error).toMatchObject({ conflict: { kind: 'taken-name' } })
 		// Rule 1 is what makes the twin's acceptance safe: two live rows for one
 		// name resolve to the lowest id on EVERY replica, so replicas agree on what
 		// is visible even while they converge.
@@ -116,7 +116,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([file({ id: 'child', name: 'inside.txt', parent: 'notadir' })])
 
-		expect(error.message).toMatch(/live directory/)
+		expect(error).toMatchObject({ conflict: { kind: 'invalid-parent' } })
 	})
 
 	it('refuses a parent that is a tombstone', async () => {
@@ -183,7 +183,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([file({ id: 'leaked', name: 'secret.env', parent: 'private' })])
 
-		expect(error.message).toMatch(/live directory/)
+		expect(error).toMatchObject({ conflict: { kind: 'invalid-parent' } })
 		// And the root itself is never a junction, which would hide the whole tree
 		// behind an unbound mount that reads as empty.
 		await refused([dir({ id: ROOT, name: '', parent: ROOT, type: 'mount', version: '2' })])
@@ -288,7 +288,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([dir({ id: 'top', name: 'top', parent: 'inner', version: '2' })])
 
-		expect(error.message).toMatch(/ancestor/)
+		expect(error).toMatchObject({ conflict: { kind: 'parent-cycle' } })
 	})
 
 	it('refuses a cycle built out of rows nobody can see', async () => {

@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
 import { memStore } from './mem'
-import { type Cursor, GuardError, type Node, ROOT, type Store } from './store'
+import { type Cursor, type Node, ROOT, type Store } from './store'
 import type { Volume } from './volume'
 import { volume } from './volume'
 
@@ -606,7 +606,9 @@ describe('sync: an unresolved refusal', () => {
 			}
 		}
 
-		await expect(sync(b.store, refusing, { ...b.opts, retries: 0 })).rejects.toThrow(GuardError)
+		await expect(sync(b.store, refusing, { ...b.opts, retries: 0 })).rejects.toThrow(
+			'preservation requires private recovery storage'
+		)
 
 		// A row under a mount has no conflict copy or other useful settlement. The
 		// unchanged batch cannot succeed on an immediate retry.

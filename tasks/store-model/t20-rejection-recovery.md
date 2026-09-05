@@ -1,6 +1,6 @@
 ---
 project: packages/fs
-status: todo
+status: done
 ---
 
 # T20: recover rejected sync rows

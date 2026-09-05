@@ -542,6 +542,7 @@ async function startSync(entry: Active, getToken: GetToken): Promise<Active> {
 	}
 	const syncVolume = await synced({
 		local: entry.local,
+		recovery: entry.private,
 		remote,
 		replica: entry.replica,
 		pull,
