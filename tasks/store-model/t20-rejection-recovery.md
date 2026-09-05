@@ -3,577 +3,256 @@ project: packages/fs
 status: todo
 ---
 
-# T20: self-heal rejected sync pages
+# T20: recover rejected sync rows
 
-## Context
+## Policy
 
-The authority owns the canonical shared namespace. It rejects a pushed page when the
-resulting tree would violate a structural invariant: the root must remain a directory,
-every live row needs a live directory parent, sibling names must be unique, a directory
-with children cannot be retyped, and parent links cannot form a cycle.
+Keep `Store` and `Volume` unchanged. Sync and recovery use their existing primitives;
+backends need no sync-specific tables, baseline/pending model, or checkpoint API.
 
-Ordinary conflicts already have semantic repairs such as conflict rename, edit/delete
-revival, and ancestor revival. A rejection without one of those settlements currently
-leaves Frieren in `Sync error`, even when the server tree is healthy and only one local
-branch is malformed.
+Keep rename/revival repairs and edit/edit last-writer-wins. For other conflicts, the
+authority wins: preserve displaced local data in private `Recovered items`, then
+restore authority rows in place. Unknown conflicts follow this path as `unresolved`.
+Recovered data never syncs. No merge engine or user prompt during sync.
 
-The product policy is:
+Settle authority-absent ids with guarded tombstones. T21 bounds their retention and
+safely collects them. Extra tombstones are acceptable; incorrect deletions are not.
 
-> The server wins the shared namespace. Local data is preserved before it is removed
-> from that namespace.
+Resume the existing cursors after recovery; no historical rollback or second shared
+volume is needed. Only affected rows and required recovery bytes are copied. Invalid
+cursors still use T21's fresh-store bootstrap; do not merge across expired history.
 
-Structural conflicts which displace local user data are preserved under
-`Recovered items` in Frieren's private store. Any future or unclassifiable conflict
-takes the same safe path and is marked `unresolved` for later user triage. Recovered
-items never sync to the authority or to another device.
+Authority rules allow children to arrive before their parent. An absent parent is
+therefore different from an empty directory. Recovery must not strand authority data.
+If safe settlement is impossible, preserve locally, leave shared rows unchanged, and
+report the error.
 
-A rejected shared row is different from its recovered private copy. If the authority
-has no row for that id, recovery retires the shared row with an ordinary replicated
-tombstone. The authority accepts it only while the id is still absent. Both replicas
-then hold the same canonical row; no local-only tombstone or physical purge is
-introduced. [T21](t21-cursor-leases-and-tombstone-gc.md) later sweeps old tombstones
-after stale cursors have been fenced.
+References: [model](../../kb/fs/fable-design.md),
+[conflict policy](../../kb/fs/sync-conflict-policy.md),
+[cursor fencing and GC](t21-cursor-leases-and-tombstone-gc.md).
 
-Read [the store-model overview](README.md),
-[the minimal model](../../kb/fs/fable-design.md), and
-[the conflict-policy research](../../kb/fs/sync-conflict-policy.md) first.
+## Interface
 
-## Goal
+Add `recovery?: Store` to `SyncOptions` and `SyncedProps`. Frieren passes
+`entry.private`. Hosts without it retain semantic repairs; preservation fails safely.
 
-Keep the interface small:
+The host supplies physically separate recovery storage and retains it across shared
+store replacements. Frieren constructs a separate private database per profile.
+Storage separation is the host's responsibility; object identity cannot prove it.
+Missing or unreadable required recovery state blocks sync.
 
-1. `sync()` drains change-feed pages, calls one recovery subroutine after a refused
-   push, and retries when that subroutine made safe progress.
-2. The recovery subroutine contains one pure, total decision machine. Every conflict
-   produces `repair`, `preserve`, or the catch-all `unresolved` decision.
-3. `Store` exposes one opaque backing identity so recovery can prove that its private
-   destination does not share a database with either replicated store.
+Keep `decide(facts)` pure and package-internal. `recover(input)` owns reads,
+preservation, guards, and crash recovery; it returns `applied`, `raced`, or `failed`.
+Unknown policy is not a failure; unavailable bytes or unsafe settlement is.
+Examples below are pseudocode.
 
-The state machine decides policy only. Store reads, copying, verification, guarded
-writes, and retries are ordinary implementation details behind the recovery subroutine.
-They are not machine states.
+## Decision rules
 
-## Non-goals
+Resume an interrupted settlement before applying policy. Otherwise, take the first
+matching rule for the reported conflict:
 
-- A state machine for the whole sync lifecycle.
-- Exposing recovery-machine states, events, or commands publicly.
-- Adding a base cache, content-aware merging, or changing edit/edit from
-  last-writer-wins in this task. The recovery boundary remains open to that later work.
-- Uploading recovered items, automatically deleting them, or asking the user to make a
-  decision during sync.
-- Hiding an operational failure which makes lossless preservation impossible.
+| Test | Conflict | Decision |
+|---|---|---|
+| M01 | Live edit of a tombstoned id | Revive under a new id |
+| M02 | Parent directory was deleted | Revive ancestors |
+| M03 | Duplicate or taken sibling name | Rename |
+| M04 | Invalid root | Preserve; restore authority root |
+| M05 | Child below file, symlink, or mount | Preserve branch |
+| M06 | Non-directory row would strand authority children | Preserve replacement |
+| M07 | Parent cycle | Preserve moved branch |
+| M08 | Other known structural conflict | Preserve affected graph |
+| M09 | Unmatched kind | Preserve as `unresolved` |
 
-## The whole lifecycle
+Select every local row cleanup would displace. Include descendants when retiring a
+branch; restoring the root alone does not displace its children. M09 selects all
+authored rows in the rejected page and their descendants. Capture from the raw feed,
+since visible tree walks can miss duplicates and cycles. Deduplicate by id,
+retain captured versions, and enforce a total scan limit. Guard captured directories
+as well as files; structural writers must bump affected parent versions. A changed
+selection requires recapture before cleanup.
 
-There is no new `syncPage()` function. Sync already pages through each store's change
-feed with `drain()`. A `Page` is a bounded batch of filesystem rows plus the cursor for
-the next batch:
+## Conflict facts
 
-```ts
-type Page = { nodes: Node[]; next?: Cursor }
-```
-
-A page is not a file and not the whole volume. Its nodes may describe files,
-directories, symlinks, mounts, or tombstones. One `sync()` call drains every currently
-pending local page to the authority, then every pending authority page into the local
-store. Starting without a cursor visits the store's current feed from the beginning,
-one page at a time, until it catches up. The current IndexedDB and filesystem stores
-use 128 rows per page; the `Store` contract intentionally does not fix a page size.
-
-The lifecycle keeps its existing `drain → push(rows) → commit` structure. Recovery is
-one addition to the existing `GuardError` branch:
+The refusal carries facts collected inside the authority's serialized commit path:
 
 ```ts
-class Replan extends Error {}
-
-const RECOVERIES = 4096
-const recovered = new Set<string>()
-let recoveries = 0
-
-const push = async (rows: Node[]): Promise<void> => {
-	await transfer(rows, local.blobs, remote.blobs)
-	try {
-		await remote.commit(rows)
-	} catch (error) {
-		if (!(error instanceof GuardError)) throw error
-		if (!isSyncConflict(error.reason)) throw error
-
-		const fingerprint = conflictFingerprint(error.reason, rows)
-		if (recovered.has(fingerprint)) throw new RecoveryLoopError(fingerprint)
-		if (recoveries === RECOVERIES) throw new RecoveryLimitError(RECOVERIES)
-		recoveries++
-
-		const recovery = await recover({
-			conflict: error.reason,
-			rows,
-			local,
-			remote,
-			recovery: opts.recovery,
-			replica: opts.replica,
-		})
-		if (recovery.kind === 'applied') {
-			recovered.add(fingerprint)
-			throw new Replan()
-		}
-		if (recovery.kind === 'raced') throw new Replan()
-
-		throw recovery.error
-	}
-}
-
-for (;;) {
-	try {
-		await drain(local, push, opts.push, mine)
-		await drain(remote, pull, opts.pull)
-		return
-	} catch (error) {
-		if (!(error instanceof Replan)) throw error
-		continue
-	}
-}
-```
-
-`Replan` is an internal control-flow exception, not a user-facing failure. A nested
-page handler cannot directly `continue` the outer `sync()` loop, so it throws `Replan`
-after guarded local progress or a guard race. The outer loop catches it and starts again
-from current rows. Cursors lag committed work and row commits are idempotent, so there
-is nothing to roll back.
-
-For this task, `recover()` is called only after `remote.commit(rows)` returns a
-structured authority conflict. Before calling it, sync calculates the conflict fingerprint.
-After an `applied` outcome, that fingerprint is marked recovered. Seeing it again means
-recovery did not retire the exact blocking state and fails before executing it twice. A
-`raced` outcome is not marked because it made no claim of progress. All recovery
-attempts, including races, count toward the limit of 4,096 per call. This permits large
-finite cleanups while bounding repeated races, a changing repair cycle, or a writer
-producing malformed rows forever.
-
-The cap is an operational termination budget, not a correctness threshold. If reached,
-previously verified recovery operations remain durable and the currently rejected
-source stays untouched. A later sync may continue after the underlying cause is fixed.
-
-The only app-visible outcomes remain:
-
-- sync completes, including after automatic repair or private preservation; or
-- sync fails because the recovery store or required bytes were unavailable, a guard
-  repeated an identical conflict, the recovery budget was exhausted, or another
-  operational invariant prevented lossless recovery.
-
-An unknown conflict is not an operational failure. It is the `unresolved` policy
-decision and is preserved privately before sync continues.
-
-## Recovery subroutine
-
-Add one optional private store to the existing sync options:
-
-```ts
-type SyncOptions = {
-	// existing properties
-	recovery?: Store
-}
-
-type SyncedProps = {
-	// existing properties
-	recovery?: Store
-}
-
-type RecoveryOutcome =
-	| { kind: 'applied'; decision: RecoveryDecision['kind'] }
-	| { kind: 'raced' }
-	| { kind: 'failed'; error: Error }
-
-type RecoveryInput = {
-	conflict: SyncConflict
-	rows: Node[]
-	local: Store
-	remote: Store
-	recovery?: Store
-	replica: string
-}
-
-async function recover(input: RecoveryInput): Promise<RecoveryOutcome>
-```
-
-`RecoveryDecision` answers policy (`repair`, `preserve`, `unresolved`).
-`RecoveryOutcome` answers execution (`applied`, `raced`, `failed`). An `unresolved`
-decision which is copied and verified successfully produces the ordinary `applied`
-outcome, not `failed`.
-
-Frieren supplies the profile's private store. Keeping the option optional preserves the
-package's current behavior for hosts which have no private store: semantic repairs still
-work, while a decision requiring preservation returns `failed` without changing the
-source.
-
-Object identity does not prove isolation: two different wrappers may forward `commit()`
-and blob writes into the same database. Every `Store` therefore exposes one opaque,
-immutable backing id:
-
-```ts
-type Store = {
-	readonly backing: string
-	// existing Store members
-}
-```
-
-The id names storage, not the wrapper. Opening the same IndexedDB database twice yields
-the same id; a wrapper such as `hydratingBlobs()` forwards its wrapped store's id; and a
-different physical database has a different id. Frieren derives the synced and private
-ids from their distinct database names. The value is not a secret and has no sync
-meaning.
-
-Before recovery reads or writes anything, `sync()` requires:
-
-```ts
-recovery.backing !== local.backing && recovery.backing !== remote.backing
-```
-
-Matching backing ids fail safely even when all three `Store` objects are different.
-Storage adapters and store wrappers gain conformance tests for this rule.
-
-`recover()` does five things:
-
-1. collect immutable facts from the authority conflict and the affected local graph;
-2. resume a matching verified recovery operation when the authority already holds its
-   planned settlement tombstone;
-3. otherwise call the pure decision machine once;
-4. execute the returned decision with guarded store operations; and
-5. return `applied` only after the decision is durable, `raced` after a lost guard, or
-   `failed` when lossless recovery cannot finish.
-
-Step 2 is crash recovery, not a new policy decision. A match requires the authority
-tombstone `(id, version)` recorded in a verified private operation manifest. If the
-local row still has the recorded source version, recovery installs the tombstone under
-that guard. If the local row changed after the first preservation, recovery first copies
-and verifies that newer version privately, then installs the same tombstone under the
-new guard. It never revives a settlement id into the shared namespace. Without a
-matching authority tombstone manifest, M01 remains the ordinary edit/delete policy.
-
-## Pure recovery decision machine
-
-The machine is deliberately smaller than the subroutine around it:
-
-```ts
-type RecoveryDecision =
-	| {
-		kind: 'repair'
-		action: 'revive-row' | 'revive-ancestors' | 'rename'
-	}
-	| { kind: 'preserve'; selection: RecoverySelection; reason: SyncConflict['kind'] }
-	| { kind: 'unresolved'; selection: RecoverySelection; reason: 'unknown-conflict' }
-
-function decideRecovery(facts: RecoveryFacts): RecoveryDecision
-```
-
-`RecoveryFacts` is a read-only package-internal record containing the structured
-conflict, rejected rows, relevant local and authority rows, and a bounded
-`RecoverySelection`. The selection contains captured `Node` values, their source
-versions, and the selected graph roots. The executor receives the same facts beside
-the returned decision, so the decision only needs to name policy and action; it does
-not need to copy store data into a command object.
-
-`decideRecovery()` is package-internal, synchronous, and pure. It receives plain data
-and returns plain data. It does not receive a `Store`, clock, cursor, retry counter, or
-callback. It cannot throw for an unknown conflict because its final rule is the total
-catch-all.
-
-The rules are ordered. The first match wins:
-
-| Test | Match                                             | Decision                                         |
-|------|---------------------------------------------------|--------------------------------------------------|
-| M01  | dead row id with a live local edit                | `repair: revive-row`                             |
-| M02  | missing parent which was an authority directory   | `repair: revive-ancestors`                       |
-| M03  | duplicate or taken sibling name                   | `repair: rename`                                 |
-| M04  | invalid local root                                | preserve local root; restore authority root      |
-| M05  | child below a file, symlink, or mount             | `preserve` the rejected branch                   |
-| M06  | directory retyped while authority children remain | `preserve` the local replacement                 |
-| M07  | parent cycle                                      | `preserve` the locally moved branch              |
-| M08  | any other known structural conflict               | `preserve` the affected local graph              |
-| M09  | no earlier rule matched                           | `unresolved` with a conservative local selection |
-
-The [compact decision graph](t20-rejection-recovery.html) is the visual companion to
-this table. These nine edges are the entire state-machine test surface. Adding a future
-policy means inserting one rule above M09 and adding its matching branch test; the
-catch-all cannot accidentally disappear.
-
-### Exact conflict facts
-
-The authority returns a structured conflict created inside the same serialized
-transaction which rejected the page. Independent HTTP reads cannot reconstruct that
-snapshot coherently and are advisory only.
-
-```ts
+type Observation = { id: NodeId; row: Node | null }
 type SyncConflict = {
 	kind: string
 	trigger: { id: NodeId; parent: NodeId; version: Version }
-	authority: Array<
-		| { id: NodeId; version: null }
-		| { id: NodeId; version: Version; row: Node }
-	>
+	authority: Observation[]
 }
 ```
 
-The refused `rows` are already in `RecoveryInput`, so the authority does not echo them.
-The payload may be compressed without changing its semantics. `GuardError.reason` and
-the HTTP 409 body gain this structured variant. An unknown structured `kind` reaches
-M09; a malformed or legacy unstructured refusal is a protocol failure. Recovery never
-parses an error string. When more than one row violates an invariant, authority
-validation selects the trigger in canonical `(id, version)` order so the same rejected
-transaction has a stable fingerprint.
+Include the trigger's prior row, its parent, and each row used to establish the
+violation: name holder, stranded child, or cycle chain. Explicit `null` means absent;
+omission means unknown. Choose violations in canonical `(id, version, kind)` order.
+Encode embedded rows through the existing node wire codec. Malformed or unstructured
+refusals are protocol errors; unknown structured kinds reach M09.
 
-### Future three-way merge
+This snapshot explains the refusal. It does not cover the later local selection.
+Read every selected id from the authority before planning cleanup; freeze those
+observations for that attempt. These reads may span commits. They are not a second
+coherent snapshot: null guards protect absent ids, and adoption receipts prevent
+observed rows from being pushed back. Never infer absence from an omitted fact.
 
-This task leaves edit/edit as last-writer-wins and adds no base cache, but it does not
-close the recovery boundary around structural conflicts. A later sync engine may detect
-that both sides changed from a saved base and call the same subroutine with richer
-`RecoveryFacts`. A clean three-way merge becomes another `repair` action above M09.
-An overlapping edit, missing base, or unsupported file type falls through to
-`unresolved` and private preservation. A server-version guard race recollects facts and
-tries the decision again against current data.
+```ts
+// Refusal names x; capture also finds descendant y.
+const y = await remote.get('y')
+// y === null: plan a guarded tombstone.
+// y !== null: plan local adoption, never a write of y to remote.
+```
 
-The future work needs a last-synced base and an authority-version guard; it does not
-need a new lifecycle or a new top-level decision kind. `SyncConflict.kind` stays
-extensible, `RecoveryFacts` remains package-internal, and `repair` may gain new actions.
+## Preservation and settlement
 
-### Conservative selection for `unresolved`
+For one captured selection:
 
-An unknown conflict still needs a bounded answer. The selection contains every
-locally-authored row in the rejected page plus its local descendant closure from the
-raw feed. This may preserve more data than strictly necessary, but it cannot silently
-omit the rows the authority rejected. A scan limit, unavailable required blob, or
-unavailable recovery store is an operational failure: the shared source remains
-untouched and `sync()` reports an error.
+1. Read authority rows. Mint each absent id's settlement tombstone once.
+2. Copy source rows, metadata, and required bytes into a private operation. Record
+   source versions, authority observations, planned tombstones, and graph rewrites.
+3. Read back and verify every copied row and blob hash. Fetch lazy bytes from the
+   authority when needed. Missing bytes, quota errors, or verification failure stop
+   before shared writes.
+4. Commit all planned tombstones to the authority in one batch, each guarded by
+   `{ version: { id, is: null } }`. Apply the child check below in the same serialized
+   path. A version race writes nothing and returns `raced`; unsafe settlement fails.
+5. Durably record adoption receipts for every authority row and accepted tombstone
+   that will replace a local row.
+6. Install those exact rows locally in one commit, guarded by all captured source
+   versions. A lost guard returns `raced`; success returns `applied`.
 
-This is the important boundary:
+If there are no absent ids, step 4 writes nothing. Complete authority settlement
+before any local cleanup. Once authority settlement succeeds, a later failure may
+leave durable progress; retries resume it. Never claim cross-store atomicity.
 
-- **unknown policy** → `unresolved` → preserve privately → server wins → retry;
-- **cannot preserve safely** → `failed` → keep source untouched → surface the error.
+Recovered rows form a valid forest under fresh private ids. External, missing, or
+non-directory parents become operation roots; break cycles at the lowest source id;
+number duplicate names in source-id order. Preserve original fields and edge/name
+rewrites in the manifest. Keep user xattrs unchanged. Tombstone source records belong
+in the manifest, not as invisible recovered files.
 
-## Executing a decision
+The owned recovery root has a fixed id and marker. A user-owned name gets a numbered
+alternative; an occupied fixed id without the marker fails safely. Destination writes
+use null guards for creation, reuse identical rows, and choose a new attempt for
+changed rows. Never overwrite a user's recovered copy.
 
-### `repair`
+### Absent does not mean childless
 
-Apply the selected semantic repair with guards and return `applied`. A lost guard
-returns `raced`; `sync()` rereads current rows and calls recovery again. It does not add more
-states to the decision machine.
+```ts
+const authority = { C: { parent: 'D' }, D: null }
+const rejected = { id: 'D', type: 'file' }
+await remote.commit([tombstone('D')], [absent('D')])
+// Reject: C still needs D. The absence guard alone would pass.
+```
 
-### `preserve` and `unresolved`
+For a tombstone submitted with an explicit null-version guard, the authority must
+also reject any live child remaining under that id after the batch. Check this inside
+the serialized commit path, not with a client-side preflight. Normal recursive-delete
+commits retain their existing behavior.
 
-Both decisions use the same data-safe executor:
+Return `settlement-has-children`; the executor stops without invoking recovery again.
+The private copy remains, and this attempt changes neither replicated store. Moving
+or deleting authority children is outside T20. A later valid parent arrival may allow
+recovery to continue by adopting that parent instead.
 
-1. Capture the bounded affected local graph, its source versions, and each planned
-   settlement tombstone with its once-minted version.
-2. Copy all available rows, metadata, and bytes to the private recovery store.
-3. Attach the complete operation, including the settlement map, below the owned
-   `Recovered items` root.
-4. Read the recovered rows and hashes back through `Store` and verify them.
-5. For every captured id the authority already holds, guard-restore that exact
-   authority row locally.
-6. For every captured id absent from the authority, create one ordinary tombstone and
-   commit it to the authority with `{ version: { id, is: null } }`.
-7. After that commit succeeds, install the identical tombstone locally under the
-   captured source-version guard.
-8. Return `applied`.
+### Adoption must not become a local edit
 
-The captured graph need not already be a valid tree. The executor deterministically
-turns it into a valid recovered forest: a row with a missing, external, or
-non-directory parent becomes an operation root; each cycle is broken at its lowest
-node id; and duplicate sibling names are numbered in source-id order. Rewrites are
-recorded only in the synthetic operation manifest, never by replacing user xattrs.
-For a lazy stub, recovery fetches and verifies the required blob from the authority
-before cleanup; if neither store can supply it, recovery returns `failed`.
+```ts
+const observed = await remote.get('x') // A:1
+await remote.commit([editByB])        // B:2 arrives during preservation
+await saveReceipt(observed)
+await local.commit([observed], sourceGuards)
+await sync(local, remote, opts)       // skip A:1; pull B:2
+```
 
-The operation manifest records whether the decision was `preserve` or `unresolved`,
-the structured conflict fingerprint, each source and planned settlement tombstone
-version, and any edge or name rewritten while producing a valid recovered forest.
-Copied user xattrs remain byte-for-byte unchanged.
+Persist an adoption receipt **before** installing an authority row. A receipt records
+`(replica, remoteId, id, version)` in the profile's private recovery state, using the
+existing peer identities. It marks this exact state as adopted, even if authored here.
 
-The tombstone settlement uses the existing `Store.commit(writes, guards)` interface.
-It needs no `forget()`, physical-purge primitive, local-only row type, or durable engine
-suppression. A tombstone is harmless only while the authority id is absent, so the
-null-version guard is mandatory. If any row appeared after the refusal, the whole
-authority commit loses its guard, writes nothing, and recovery returns `raced` to
-recollect facts. It can never delete a newly arrived authority row.
+Push requires both conditions, on every entry path including pull's nested drain:
 
-Authority-first ordering makes the tombstone canonical before local cleanup. If the
-local guard then races or the process crashes, the next recovery observes the authority
-tombstone and matches its exact version to the verified private manifest before M01. An
-unchanged source is already safe to retire. A concurrently changed source is copied and
-verified as another private recovery operation before retirement. A foreign tombstone
-with no matching manifest follows normal conflict policy. Once both stores hold the
-same tombstone, ordinary cursor progress handles it like any other replicated row. T20
-keeps it. T21 bounds its lifetime using leased cursors, a feed floor, and atomic
-tombstone sweeping.
+```ts
+const outgoing = authoredHere(row) && !await adopted(row.id, row.version)
+```
 
-Recovery never writes recovered rows, manifests, paths, or blobs to the shared remote;
-its only new shared write is the guarded settlement tombstone. The existing push order
-still transfers source blobs before `remote.commit(rows)` so the peer cannot receive a
-row whose content is missing. A blob transferred before the authority rejects that row
-may therefore remain as an unreachable content-addressed blob. Avoiding that narrow
-pre-existing behavior requires a validate/reserve protocol and is outside this task;
-no shared path points to the blob.
+Receipts survive restarts and cursor resets. New edits mint new versions and remain
+outgoing. Never use an in-memory skip set, advance past unrelated pending rows, or
+re-author the restored row. Pull eventually replaces a stale adopted row with the
+current authority version.
 
-## Idempotence and concurrency
+Keep receipts with operation manifests, outside user-editable recovered files. Retain
+them in T20; GC of shared tombstones does not remove them. Index exact lookups without
+scanning every operation for every row. Hosts using preservation must retain this
+private state across restarts; losing access blocks sync rather than disabling the
+filter.
 
-These constraints belong to the recovery executor, not to its decision machine:
+### Interrupted settlement
 
-- The private recovery root has a fixed id and ownership marker. A user-owned
-  `Recovered items` name is left alone and the system chooses a numbered display name.
-  If the fixed id already exists without the exact marker, recovery fails safely rather
-  than adopting or overwriting it.
-- A conflict fingerprint is the canonical encoding of conflict kind, trigger
-  `(id, version)`, sorted authority `(id, version | null)` pairs, and sorted rejected
-  source `(id, version)` pairs. Row and page order cannot change it. Hashing that
-  encoding is optional and is not a security boundary; bytes are excluded because row
-  versions identify the captured state.
-- The operation fingerprint extends that input with the deterministic decision and all
-  captured selection `(id, version)` pairs. It remains the private-store idempotence
-  key, while the conflict fingerprint is the per-sync loop guard.
-- Before every destination write: absent means null-guarded create, identical means
-  reuse, and different means preserve the existing row and choose the next attempt.
-- Source cleanup is guarded by captured versions. A concurrent local edit causes a
-  fresh recovery call rather than losing the edit.
-- Raw-feed capture is chunked and has a total row limit, so continuous writes cannot
-  trap one call forever.
-- Copy and verification always precede cleanup. A crash or quota failure leaves the
-  shared source recoverable.
+Find the planned tombstone by exact `(id, version)` in the verified operation, even
+when the new refusal names a child of that id. Reverify the preserved copy before
+cleanup; an old verification flag is insufficient if the copy was edited or deleted.
 
-## TDD plan
+If source versions changed, recapture and preserve the current affected graph,
+including new descendants, before adoption. Never revive a recorded settlement id.
+A foreign tombstone with no matching operation still follows M01/M02. Receipt writes
+and local adoption are idempotent; a crash between them safely resumes.
 
-Tests describe behavior through the smallest relevant interface. The nine decision
-tests call the pure function. Recovery tests call `recover()` with real `memStore`
-instances. Lifecycle tests call public `sync()` or `synced()`; they do not assert on
-internal calls or states.
+## Sync and bounds
 
-### Decision-machine tests
+Keep the current push → pull lifecycle, cursor locks, transport retries, and T21
+bootstrap handling. Add receipt filtering and one `recover()` call after a structured
+push refusal. Transfer source blobs before pushing as today; rejection may leave an
+unreachable remote blob. Recovery uploads no private content.
 
-- **M01** — dead id selects row revival when no interrupted settlement was resumed.
-- **M02** — deleted directory parent selects ancestor revival.
-- **M03** — duplicate name selects conflict rename.
-- **M04** — invalid root selects private preservation before authority-root restoration.
-- **M05** — child below file, symlink, or mount selects private preservation.
-- **M06** — directory retype with authority children selects private preservation.
-- **M07** — cycle selects private preservation of the moved branch.
-- **M08** — another known structural kind selects private preservation.
-- **M09** — every unmatched kind returns `unresolved`; it never throws or returns
-  `undefined`.
+Use distinct internal restart signals. Recovery restarts must not consume or reset
+the existing ordinary replan budget:
 
-### Recovery-subroutine tests
+```ts
+if (error instanceof RecoveryReplan) continue
+if (error instanceof Replan) {
+	if (replans++ < REPLANS) continue
+	throw error
+}
+```
 
-- **R01** — a semantic decision commits its guarded repair and returns `applied`.
-- **R02** — a known structural decision preserves the exact affected graph and user
-  xattrs privately, keeps rewrite annotations in the manifest, applies server-wins
-  locally, and returns `applied`.
-- **R03** — an unknown conflict preserves the conservative graph as `unresolved`,
-  applies server-wins locally, and returns `applied`.
-- **R04** — verification failure occurs before cleanup and leaves every source row
-  intact.
-- **R05** — a required blob missing from both stores returns `failed` with the source
-  intact.
-- **R06** — retry after a crash reuses an identical recovery operation without showing
-  a duplicate; a different canonical trigger produces a different operation.
-- **R07** — a user-edited recovered row is never overwritten; a later attempt is used.
-- **R08** — a user-owned root name and concurrent root creator cannot be adopted as the
-  system root.
-- **R09** — a concurrent local source edit returns `raced`; the next call recovers its
-  new version.
-- **R10** — an authority row arriving after refusal is never deleted by local cleanup.
-- **R11** — a raw-feed capture which reaches its total row limit returns `failed`
-  without cleanup, even while writes keep extending the feed.
-- **R12** — an authority-absent rejected row becomes the same ordinary tombstone in
-  both stores. A row racing into the authority fails the null guard, remains live, and
-  returns `raced`; no local-only row remains.
-- **R13** — a root retyped as a file, including its bytes and user xattrs, is copied and
-  verified in `Recovered items` before the authority directory replaces it locally.
-- **R14** — after the authority accepts a recorded settlement tombstone, a crash with
-  the original source version adopts it directly. A local guard race preserves and
-  verifies the newer source version before adopting it. Neither path invokes M01 or
-  returns the branch to the shared namespace.
+Count every recovery call, including races, toward 4,096 attempts per `sync()`. Mark
+its conflict fingerprint only after `applied`. A repeated applied fingerprint or an
+exhausted budget fails immediately, without another recovery call. These terminal
+errors bypass transport retries. Successful pages retain existing replan resets.
 
-### Sync-lifecycle tests
+A conflict fingerprint canonically encodes kind, trigger, refusal authority
+`(id, version | null)` pairs, and rejected `(id, version)` pairs. An operation key adds
+decision and captured selection pairs. Sort inputs; exclude bytes. Persist minted
+settlement versions on first creation and reuse them on retry. Neither key depends
+on page order.
 
-- **S01** — an accepted page completes without constructing recovery facts.
-- **S02** — a known conflict is recovered, retried, and completes in the same `sync()`
-  call.
-- **S03** — an unknown conflict creates an `unresolved` private item, retries, and
-  completes without asking the user.
-- **S04** — 1,000 distinct productive conflict fingerprints recover and converge in one
-  sync call.
-- **S05** — an operational recovery failure leaves the source intact and becomes the
-  app's sync error.
-- **S06** — a malformed or legacy unstructured authority refusal stays a protocol
-  error; the source remains intact.
-- **S07** — a conflict fingerprint appearing again after an `applied` recovery fails
-  immediately with the source preserved instead of executing recovery twice.
-- **S08** — changing conflicts stop after 4,096 recovery attempts; completed private
-  operations remain durable and the next rejected source remains untouched.
-- **S09** — public sync resumes an interrupted tombstone settlement and completes
-  without returning the preserved malformed branch to the shared namespace.
+## Required tests
 
-### Host and privacy tests
+Use pure tests for M01–M09, real stores for recovery, and public `sync()`/`synced()` for
+lifecycle behavior. Test rule precedence as well as individual branches.
 
-- **H01** — Frieren passes `entry.private` as the recovery store.
-- **H02** — the recovery executor never writes recovered rows, manifests, paths, or
-  blobs to the shared remote.
-- **H03** — a host without a recovery store can still apply semantic repairs, but a
-  preservation decision fails safely without cleanup.
-- **H04** — a distinct recovery wrapper over the local or remote backing is rejected
-  before sync changes any store.
-- **H05** — Frieren's synced and private stores expose different backing ids, while
-  `hydratingBlobs()` and other wrappers preserve the wrapped id.
+| Area | Required behavior |
+|---|---|
+| Preservation | Exact rows, xattrs, bytes, root replacement, malformed forest, and unresolved fallback |
+| Failure | Missing bytes, quota, verification, scan limit, and unavailable private state prevent unsafe cleanup |
+| Ownership | Root collisions, concurrent creation, and edited/deleted recovered copies are safe |
+| Crash | Reuse operation and minted versions; resume before/after receipts and local adoption |
+| Local race | Recapture changed rows and newly added descendants before retirement |
+| Authority race | An id appearing before settlement fails the null guard; never delete it |
+| Detached child | Existing or racing child blocks absent-parent settlement atomically; ordinary recursive delete still works |
+| Snapshot coverage | Selected descendants outside the refused page receive explicit authority reads |
+| Adoption | A concurrent remote edit survives restore/retry, restart, cursor reset, and nested push; a fresh local edit still pushes |
+| Settlement resume | Recognize own tombstones through child refusals; never revive them; foreign deletes retain repair policy |
+| Bounds | 1,000 recoveries before page success; repeated fingerprints; 4,096 attempts including races; ordinary pull races remain bounded |
+| Protocol | Structured conflict round-trip preserves bigint/xattrs; malformed refusal fails; unknown kind reaches M09 |
+| Privacy | Host constructs separate private storage and retains it across shared-store replacement; no recovery uploads |
+| Store seam | Recovery works through existing Store methods on memory and IndexedDB; no backend-specific recovery path |
+| Incremental recovery | Ordinary refusals retain the shared store and cursors; settlement tombstones follow T21 GC; invalid cursors still require bootstrap |
+| Existing behavior | Accepted pages, semantic repair without private storage, cursors, bootstrap, and lifecycle conformance |
 
-### Vertical implementation order
+Implement semantic recovery first, then preservation, receipts, settlement guards,
+and crash/race cases. Keep tests behavioral; the table is the acceptance checklist.
 
-Implement one behavior at a time:
-
-1. M01 → R01 → S02 proves the smallest end-to-end semantic recovery.
-2. M05 → R02 proves known structural preservation.
-3. M09 → R03 → S03 proves the unresolved catch-all.
-4. Add M02–M04 and M06–M08 one branch at a time.
-5. Add R04–R14 one safety invariant at a time.
-6. Finish S01, S04–S09 and H01–H05, then run existing conformance suites.
-
-## Expected file map
-
-- `packages/fs/recovery.ts` — `recover()` and package-private decision machine;
-- `packages/fs/recovery.test.ts` — M01–M09 and R01–R14;
-- `packages/fs/engine.ts` — the conflict branch which calls `recover()`;
-- `packages/fs/engine.conflicts.test.ts` — S01–S09;
-- `packages/fs/store.ts`, `authority.ts`, and `http.ts` — backing identity forwarding
-  and structured conflict payload;
-- `packages/fs/synced.ts` — forwards the optional recovery store into `sync()`;
-- `packages/fs/synced.test.ts` and Frieren lifecycle tests — H01–H05;
-- `platform/frieren/src/fs.ts` — supplies `entry.private` from `startSync()`.
-
-No public recovery-machine module, command interpreter, or lifecycle state hierarchy is
-introduced.
-
-## Acceptance criteria
-
-- `sync()` has one recovery call in its conflict branch and otherwise keeps its current
-  lifecycle.
-- The pure decision function has exactly three outcome kinds: `repair`, `preserve`, and
-  `unresolved`.
-- Every known rule and the catch-all have a named unit test matching the visual graph.
-- Unknown conflicts are preserved privately and do not ask the user for a decision.
-- Cleanup runs only after private verification and never deletes authority data.
-- Before restoring the authority root, recovery preserves and verifies every displaced
-  locally authored field, user xattr, and required blob.
-- An authority-absent rejected id converges through an ordinary replicated tombstone
-  committed under a null-version authority guard; no local-only tombstone is used.
-- An interrupted settlement recognizes the exact authority tombstone from a verified
-  private manifest. It preserves any newer local source version before adoption and
-  never falls into M01.
-- T20 adds no purge interface. T21 safely sweeps the canonical tombstone after its
-  retention window.
-- Recovery-store isolation compares immutable backing ids, not JavaScript object
-  identity. Every wrapper forwards the id of the storage it actually writes.
-- A `sync()` call never applies recovery twice to the same canonical conflict
-  fingerprint and makes at most 4,096 recovery attempts, including guard races.
-- Recovery never writes its private rows, manifests, paths, or blobs to the remote;
-  pre-rejection orphan source blobs remain the existing push-order limitation.
-- Operational preservation failures keep shared source rows intact and remain visible
-  as sync errors.
-- The internal facts and `repair` action can grow to support a future guarded
-  three-way merge without changing `sync()` or the three top-level decision kinds.
-- All existing store, sync, authority, HTTP, cursor, and lifecycle tests continue to
-  pass.
+Files: `packages/fs/{recovery,engine,authority,http,wire.internal,synced}.ts`,
+`packages/core/src/store.api.ts`, `platform/frieren/src/fs.ts`, and their tests.
+No Store/Volume signature changes or backend-specific recovery implementation.
