@@ -1,0 +1,12 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "frieren-codex-poc",
+	"main": "worker/codex-poc.ts",
+	"compatibility_date": "2026-04-10",
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": { "enabled": false },
+	"vars": { "PROXY_URL": "https://frieren-codex-proxy-poc.xiaoxing-hu9889.workers.dev" },
+	"secrets": { "required": ["POC_KEY"] }
+}
