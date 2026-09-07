@@ -6,7 +6,7 @@
 // which is gated on first-party app identity. No Cloudflare imports, no provider
 // clients — app-safe.
 
-export type CapabilityId = 'email' | 'calendar' | 'ai'
+export type CapabilityId = 'email' | 'calendar' | 'ai' | 'image'
 
 export interface CredentialField {
 	type: 'string'

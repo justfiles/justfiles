@@ -95,9 +95,9 @@ type ActiveAi = { account: Account; model?: string }
 // file is therefore the built-in account, not a missing one — which is what lets a host
 // boot, and a wiped volume resolve AI, without writing anything first. A host with no
 // builtin AI provider (the Mac) has no floor at all.
-function floorAccount(registry: Registry): Account | undefined {
+function floorAccount(registry: Registry, capability: 'ai' | 'image' = 'ai'): Account | undefined {
 	for (const provider of registry.values())
-		if (provider.builtin && provider.capabilities.ai)
+		if (provider.builtin && provider.capabilities[capability])
 			return { id: provider.id, provider: provider.id, creds: {} }
 	return undefined
 }
@@ -226,7 +226,8 @@ function toAccountInfo(
 	account: Account,
 	active: ActiveAi | undefined,
 	registry: Registry,
-	origin: AccountOrigin | undefined
+	origin: AccountOrigin | undefined,
+	imageAccountId?: string
 ): AccountInfo {
 	const provider = registry.get(account.provider)
 	const enabled: CapabilityId[] = []
@@ -238,6 +239,7 @@ function toAccountInfo(
 	}
 	const isActiveAi = active?.account.id === account.id
 	if (isActiveAi) enabled.push('ai')
+	if (account.id === imageAccountId) enabled.push('image')
 	const config: Partial<Record<CapabilityId, unknown>> = {}
 	if (isActiveAi) config.ai = aiConfig(provider, active?.model)
 	const info: AccountInfo = { accountId: account.id, providerId: account.provider, enabled, config }
@@ -260,6 +262,7 @@ export function hostAccounts(
 	const store = volumeAccountStore(volume, opts)
 	const activeAi = volumeActiveAi(volume)
 	const floor = floorAccount(registry)
+	const imageFloor = floorAccount(registry, 'image')
 	const origin = opts.origin
 
 	// Seal every account record still sitting in the clear, with this host's key.
@@ -301,12 +304,12 @@ export function hostAccounts(
 	// reseal sweep has exactly one trigger.
 	const list = async (): Promise<Account[]> => {
 		seal()
-		return withFloor(await store.list(), floor)
+		return withFloor(withFloor(await store.list(), floor), imageFloor)
 	}
 	const get = async (id: string): Promise<Account | undefined> =>
-		floor?.id === id ? floor : store.get(id)
+		floor?.id === id ? floor : imageFloor?.id === id ? imageFloor : store.get(id)
 
-	// THE active-AI answer — admin projection, image and text all read this one, so "which AI
+	// THE active-AI answer — admin projection and text both read this one, so "which AI
 	// is on?" cannot differ by call path. A selection that cannot mint a backend (the account
 	// is gone, or its creds are sealed under a key this host lost) falls back to the platform
 	// floor, so the user is never left with no AI at all; the broken record stays listed, with
@@ -329,15 +332,12 @@ export function hostAccounts(
 		new CapabilityError('CAPABILITY_INVALID_INPUT', 'accounts', method)
 
 	return {
-		// `image` rides the same active-AI selection — switching the AI account swaps text
-		// and image together. The account's provider backs it or it's unavailable; the model
-		// choice lives with the binding (no image entry on the pointer yet).
+		// Images keep their built-in provider when the user selects another text account.
 		image: implementCapability(image, {
 			generateImage: async (_c, i) => {
-				const current = await active()
 				const impl =
-					current &&
-					bound(store, current.account, registry.get(current.account.provider)?.capabilities.image)
+					imageFloor &&
+					bound(store, imageFloor, registry.get(imageFloor.provider)?.capabilities.image)
 				if (!impl) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'image')
 				return impl.generateImage(i)
 			}
@@ -368,7 +368,7 @@ export function hostAccounts(
 						id: p.id,
 						name: p.name,
 						authKind: ui.kind,
-						capabilities: (['email', 'calendar', 'ai'] as const).filter(
+						capabilities: (['email', 'calendar', 'ai', 'image'] as const).filter(
 							(k) => p.capabilities[k] !== undefined
 						)
 					}
@@ -379,7 +379,9 @@ export function hostAccounts(
 			},
 			listAccounts: async () => {
 				const [all, current] = await Promise.all([list(), active()])
-				return all.map((account) => toAccountInfo(account, current, registry, origin))
+				return all.map((account) =>
+					toAccountInfo(account, current, registry, origin, imageFloor?.id)
+				)
 			},
 			connect: async ({ providerId, credentials }) => {
 				const provider = registry.get(providerId)
@@ -404,6 +406,10 @@ export function hostAccounts(
 			setEnabled: async ({ accountId, capability, enabled, config }) => {
 				const account = await get(accountId)
 				if (!account) throw invalid('setEnabled')
+				if (capability === 'image') {
+					if (account.id !== imageFloor?.id) throw invalid('setEnabled')
+					return
+				}
 				// ai is single-active: the selection pointer, not a scope.
 				if (capability === 'ai') {
 					if (enabled) {

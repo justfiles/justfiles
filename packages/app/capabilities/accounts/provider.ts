@@ -73,8 +73,7 @@ export interface Provider {
 		calendar?: Binding<CalendarCapability>
 		// ai optionally carries a model catalogue for the Settings picker.
 		ai?: Binding<AiCapability> & { models?(): AiModel[]; defaultModel?(): string }
-		// image is ai's engine sibling (its own models, its own binding). It resolves
-		// through the active-AI account; a provider without it simply can't make images.
+		// Image generation uses its own provider, independent of the text selection.
 		image?: Binding<ImageCapability>
 	}
 }
