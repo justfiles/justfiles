@@ -1,8 +1,8 @@
 # ChatGPT accounts for Frieren and Mac
 
-Proposed design, 2026-09-08. Based on the current account/capability implementation
-and the successful [container POC](CODEX-POC.md). This document describes the
-implementation to build; these changes are not deployed.
+Implementation design, 2026-09-08, based on the successful [container POC](CODEX-POC.md).
+The feature is implemented in separate changesets on `codex/frieren-codex-poc`.
+The dedicated proxy is deployed; the Frieren and Mac feature has not been released.
 
 ## Outcome
 
@@ -79,8 +79,8 @@ The Settings admin contract gains three operations:
 | Operation | Input | Result |
 | --- | --- | --- |
 | `accounts.beginConnect` | provider ID, client-generated operation ID | Pending sign-in projection |
-| `accounts.readConnect` | operation ID | Pending, connected, cancelled, expired, or failed |
-| `accounts.cancelConnect` | operation ID | Acknowledgement |
+| `accounts.readConnect` | provider ID, operation ID | Pending, connected, cancelled, expired, or failed |
+| `accounts.cancelConnect` | provider ID, operation ID | Acknowledgement |
 
 A pending projection contains the operation ID, verification URL, user code,
 expiry, and suggested polling interval. Connected contains the account ID. Failure
@@ -311,3 +311,82 @@ Put the small shared inference transport types/client beside `AgentBackend` in
 The older `apps/settings/DESIGN.md` describes replicated credentials and a retired
 integration architecture. This proposal follows the current host-private account
 implementation instead; replace that obsolete guidance when implementation lands.
+
+
+## Implementation and rollout
+
+The implementation uses the existing account store. `CredentialAccess.read/modify`
+reads the current encrypted record and serializes refresh under the account's
+existing update chain. Reconnection writes a new UUID revision; ordinary refresh
+preserves it. A descriptor pins the account, model and revision, and inference
+checks that reference against the authenticated user's store again. Removing an
+account invalidates the reference. An unreadable credential remains selected and
+reports an error rather than spending the built-in allowance.
+
+`GET /api/ai/backend` returns a versioned model descriptor without credentials,
+headers or an upstream URL. `POST /api/ai/infer` accepts Pi context and a small
+allowlist of generation options, then streams Pi events as NDJSON. It performs
+one inference call. Mac runs the agent loop, tools, compaction and file access.
+The existing `/api/ai/model` and `/api/ai/v1/chat/completions` routes remain for
+released Mac clients until those clients migrate.
+
+Mac Settings composes local Google/iCloud accounts with cloud AI accounts through
+the existing capability WebSocket. OpenAI loopback authentication and the local
+Codex backend are removed. Old local ChatGPT records are hidden from selection;
+a successful cloud account listing retires them only after a cloud ChatGPT
+connection exists. Signing out of Just Computer leaves the cloud grant intact.
+
+The container service is `frieren-codex-proxy`, configured by
+`wrangler.codex-proxy-service.jsonc`. Its public entry requires `PROXY_KEY`, and
+Frieren sends that same value using `CODEX_PROXY_KEY`. `CODEX_PROXY_URL` is the
+proxy origin, with **no `/backend-api` suffix**. The container accepts only the
+fixed Codex inference path and a health check; it forwards no proxy key or
+Cloudflare Worker header to OpenAI. Request logging is disabled on this service.
+
+Release order:
+
+1. Deploy the proxy config and set its `PROXY_KEY` secret. This is completed for
+   the development verification service at
+   `https://frieren-codex-proxy.xiaoxing-hu9889.workers.dev`.
+2. Configure the matching `CODEX_PROXY_KEY` secret on each Frieren environment
+   before deployment. The checked-in config requires it and supplies the proxy
+   origin. Keep `ENCRYPTION_KEY` stable; losing it requires users to reconnect.
+3. Publish the updated app SDK before publishing Settings, and publish the
+   Settings submodule branch `codex/chatgpt-accounts`. Build Settings against the
+   SDK version containing the new Accounts operations and image capability.
+4. Deploy Frieren, then release the Mac daemon. A new daemon against an old
+   server reports that Frieren needs an update instead of reverting to local auth.
+5. In Settings, connect ChatGPT, enable **AI text**, and choose a Codex model.
+   **Images** stays enabled on Just Computer. Existing Mac users sign in once
+   through the new flow; cloud account identity and text selection are shared.
+
+Local development uses the worktree's ignored `.dev.vars` for the proxy key and
+sealing key. Test credentials are never checked into Git. Production user account
+records are not touched by development verification.
+
+## Verification status
+
+Verified in the implementation worktree on 2026-09-08:
+
+- Root suite: 2,179 passed, four skipped; Settings submodule: 10 passed.
+- All 18 workspace typechecks pass. Formatting and lint pass; the two existing
+  `platform/mac/TUTORIAL.html` CSS warnings remain.
+- Frieren production Worker/browser build and Mac standalone application build pass.
+- Provider tests exercise real Pi device-auth and inference adapters against mock
+  HTTP responses, encrypted persistence, one refresh across concurrent backends,
+  refresh rejection, and unknown model rejection.
+- Transport tests cover text and tool results, credential/reference invalidation,
+  forbidden upstream options, truncated streams, and cancellation propagation.
+- Browser smoke verifies the ChatGPT entry, device-code progress, cancellation,
+  and opening OpenAI's login page. The Mac capability client reads the same cloud
+  provider/account catalogue against the running development Worker.
+- The deployed proxy rejects missing ingress credentials and returns its Linux
+  Node health response to an authorized request.
+
+The previous POC verified live OpenAI streaming, tool execution, and token refresh.
+The final integrated live test needs fresh OpenAI authorization because that POC
+intentionally discarded its grant. It will verify Luna access, a client-side tool
+round-trip over the Mac inference adapter, the web text capability, and independent
+image selection. The development check is prepared; no production account was
+connected or migrated as part of implementation. Native UI sign-in has not been
+manually exercised.
