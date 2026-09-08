@@ -369,10 +369,7 @@ describe('the built-in platform account is derived', () => {
 		).toEqual(['image'])
 	})
 
-	test('a selected account whose credentials are unreadable stays listed, but AI falls back', async () => {
-		// The key rotated (or was never deployed): the record reads back with `creds: undefined`
-		// and mints nothing, so honouring the selection would strand the user with a dead agent.
-		// The record itself is untouched — its sealed bytes wait for the restored key.
+	test('an unreadable credential stays selected and requires reconnection', async () => {
 		const vol = volume(memStore())
 		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
 			id: 'u@openai',
@@ -383,12 +380,12 @@ describe('the built-in platform account is derived', () => {
 		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
 		const caps = hostAccounts(testProviders(), vol, { secretCodec: aesGcmSecretCodec('host-key') })
 
-		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('chatgpt')
 		const list = await caps.admin.listAccounts({})
 		expect(list.find((a) => a.accountId === 'u@openai')?.lastError).toBeTruthy()
-		expect(list.find((a) => a.accountId === 'frieren')?.enabled).toContain('ai')
+		expect(list.find((a) => a.accountId === 'frieren')?.enabled).not.toContain('ai')
 		expect(await vol.readFile('/private/accounts/u%40openai.json')).toEqual(sealed)
-		// The dangling selection is left alone too: re-selecting is a click once the key is back.
+		await expect(caps.resolveAi((lease) => lease.credentials.read())).rejects.toThrow('Reconnect')
 		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'u@openai', model: 'gpt' })
 	})
 

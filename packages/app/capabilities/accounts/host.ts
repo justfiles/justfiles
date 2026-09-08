@@ -340,17 +340,14 @@ export function hostAccounts(
 	const get = async (id: string): Promise<Account | undefined> =>
 		floor?.id === id ? floor : imageFloor?.id === id ? imageFloor : store.get(id)
 
-	// THE active-AI answer — admin projection and text both read this one, so "which AI
-	// is on?" cannot differ by call path. A selection that cannot mint a backend (the account
-	// is gone, or its creds are sealed under a key this host lost) falls back to the platform
-	// floor, so the user is never left with no AI at all; the broken record stays listed, with
-	// its own `lastError`, for a re-connect. Nothing here writes.
+	// A connected selection stays selected when its credential fails. Only removing
+	// the account returns inference to the built-in provider.
 	const active = async (): Promise<ActiveAi | undefined> => {
 		seal()
 		const selected = await activeAi.get()
 		if (selected) {
 			const account = await get(selected.accountId)
-			if (account && account.creds !== undefined) return { account, model: selected.model }
+			if (account) return { account, model: selected.model }
 		}
 		return floor && { account: floor }
 	}

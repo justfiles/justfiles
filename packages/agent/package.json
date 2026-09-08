@@ -7,7 +7,8 @@
 		"./defaults": "./agent-defaults.ts",
 		"./expression": "./expression.ts",
 		"./avatars": "./avatars.ts",
-		"./protocol": "./protocol.ts"
+		"./protocol": "./protocol.ts",
+		"./remote": "./remote.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -32,6 +33,10 @@
 			"./protocol": {
 				"types": "./dist/protocol.d.ts",
 				"default": "./dist/protocol.js"
+			},
+			"./remote": {
+				"types": "./dist/remote.d.ts",
+				"default": "./dist/remote.js"
 			}
 		}
 	},

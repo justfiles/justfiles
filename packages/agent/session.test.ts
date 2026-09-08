@@ -1330,3 +1330,23 @@ test('a failed build is evicted so later access retries', async () => {
 	await expect(session.systemPrompt()).rejects.toThrow('build failed')
 	await expect(session.systemPrompt()).resolves.toContain('You are Computer.')
 })
+
+test('ChatGPT allowance errors identify the subscription rather than platform quota', () => {
+	expect(classifyFailure(new Error('You have hit your ChatGPT usage limit'))).toMatchObject({
+		body: expect.stringContaining('ChatGPT usage limit'),
+		route: { kind: 'settings', pane: 'accounts' }
+	})
+})
+
+test('ChatGPT reconnection errors direct the user to Accounts', () => {
+	expect(
+		classifyFailure(new Error('ChatGPT needs a fresh sign-in. Reconnect it in Settings.'))
+	).toMatchObject({ route: { kind: 'settings', pane: 'accounts' } })
+})
+
+test('Pi OAuth refresh failures require reconnection', () => {
+	expect(classifyFailure(new Error('OAuth refresh failed for openai-codex'))).toMatchObject({
+		body: expect.stringContaining('Reconnect'),
+		route: { kind: 'settings', pane: 'accounts' }
+	})
+})
