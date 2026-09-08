@@ -27,9 +27,7 @@
 //  • MUTATING BY OWNER. The merged list can show an account this side does NOT
 //    own, so mutating one (`setEnabled`/`disconnect`) first checks whether the
 //    local store actually has it — local if so, `remote` if not (D1: administer an
-//    account where it lives). `connect` needs no such check: it creates a NEW
-//    account, always on this side. With only one lane configured, every check above
-//    is a no-op — unchanged from before any of this existed.
+//    account where it lives). Sign-in operations run where the provider is registered.
 
 import {
 	fileStem,
@@ -44,6 +42,8 @@ import type {
 	AccountsAdmin,
 	AgentSoul,
 	AvatarInfo,
+	ConnectRef,
+	ConnectState,
 	GeneratedSoul,
 	ProviderInfo,
 	SettingsCapability,
@@ -141,6 +141,7 @@ export interface AppearanceDeps {
 
 export interface SettingsHostDeps {
 	accounts?: AccountsAdmin
+	openUrl?: (url: string) => void | Promise<void>
 	usage?: GetUsage
 	user?: GetUser
 	// Which build this host is, already composed (see the contract). A constant and not a
@@ -166,6 +167,9 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 			'accounts.listProviders': (i) => accounts.listProviders(i),
 			'accounts.listAccounts': (i) => accounts.listAccounts(i),
 			'accounts.connect': (i) => accounts.connect(i),
+			'accounts.beginConnect': (i) => accounts.beginConnect(i),
+			'accounts.readConnect': (i) => accounts.readConnect(i),
+			'accounts.cancelConnect': (i) => accounts.cancelConnect(i),
 			'accounts.setEnabled': (i) => accounts.setEnabled(i),
 			'accounts.disconnect': (i) => accounts.disconnect(i)
 		}),
@@ -186,6 +190,38 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 	return {
 		invoke: async (call) => {
 			if (!SETTINGS_ALLOWLIST.has(call.appId)) throw unavailable(call.method)
+			if (call.method === 'accounts.openConnect') {
+				if (!deps.openUrl) throw unavailable(call.method)
+				const input = call.args[0] as ConnectRef
+				const local =
+					accounts && (await accounts.listProviders({})).some((p) => p.id === input.providerId)
+				const state = local
+					? await accounts.readConnect(input)
+					: remote
+						? ((await remote.invoke({
+								...call,
+								method: 'accounts.readConnect'
+							})) as ConnectState)
+						: undefined
+				if (state?.status !== 'pending' || !state.prompt) throw unavailable(call.method)
+				const url = new URL(state.prompt.verificationUrl)
+				if (url.protocol !== 'https:') throw unavailable(call.method)
+				return deps.openUrl(url.href)
+			}
+			if (
+				accounts &&
+				remote &&
+				[
+					'accounts.connect',
+					'accounts.beginConnect',
+					'accounts.readConnect',
+					'accounts.cancelConnect'
+				].includes(call.method)
+			) {
+				const { providerId } = call.args[0] as { providerId: string }
+				if (!(await accounts.listProviders({})).some((p) => p.id === providerId))
+					return remote.invoke(call)
+			}
 			// The read union (see the file header): both lanes configured ⇒ both queried.
 			// One lane configured ⇒ that lane alone, unchanged from before this existed
 			// (the DO has no `remote`; the browser has no `accounts`).

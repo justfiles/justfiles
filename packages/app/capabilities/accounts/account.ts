@@ -23,6 +23,7 @@ export interface SecretCodec {
 }
 
 export interface Account {
+	revision?: string
 	id: string
 	// Provider id — 'google' | 'icloud' | 'chatgpt' today; open for new providers.
 	provider: string

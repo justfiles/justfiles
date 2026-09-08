@@ -21,6 +21,7 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
+import { connections } from './connect.ts'
 import type {
 	AccountInfo,
 	AccountOrigin,
@@ -28,7 +29,13 @@ import type {
 	CapabilityId,
 	ProviderInfo
 } from './contract.ts'
-import type { Binding, Provider } from './provider.ts'
+import type {
+	AcquiredAccount,
+	Binding,
+	BoundAccount,
+	CredentialAccess,
+	Provider
+} from './provider.ts'
 
 export type { SecretCodec } from './account.ts'
 // The at-rest seal for the creds lane, re-exported for hosts: each supplies its own root
@@ -58,11 +65,17 @@ export interface AccountsOptions {
 // closure; `persist` is the only writeback (rotated tokens on refresh). The generic `T`
 // keeps @justfiles/app free of any agent/pi-ai dependency; `providerId` lets the caller
 // branch on which ai provider is active.
-export interface AiAccountLease {
-	creds: unknown
-	config: unknown // { model } for the active selection
+export interface AiSelection {
+	accountId: string
+	model?: string
+	revision: string
+}
+
+export interface AiAccountLease extends BoundAccount {
+	accountId: string
+	revision: string
+	config: unknown
 	providerId: string
-	persist(creds: unknown): Promise<void>
 }
 
 // One host instance's accounts, in one object. Callers get facets and answers — never the
@@ -75,7 +88,10 @@ export interface HostAccounts {
 	readonly admin: AccountsAdmin
 	// The text `ai` capability is host-owned (each host builds it over its own model), so it
 	// resolves the active account through here rather than through a capability.
-	resolveAi<T>(mint: (lease: AiAccountLease) => T | Promise<T>): Promise<T | null>
+	resolveAi<T>(
+		mint: (lease: AiAccountLease) => T | Promise<T>,
+		selection?: AiSelection
+	): Promise<T | null>
 }
 
 type Registry = Map<string, Provider>
@@ -130,6 +146,7 @@ function bound<T>(
 		return undefined
 	return binding.bind({
 		creds: account.creds,
+		credentials: credentialAccess(accounts, account),
 		config,
 		persist: writebackFor(accounts, account)
 	})
@@ -264,6 +281,20 @@ export function hostAccounts(
 	const floor = floorAccount(registry)
 	const imageFloor = floorAccount(registry, 'image')
 	const origin = opts.origin
+	const save = async (providerId: string, acquired: AcquiredAccount, signal?: AbortSignal) => {
+		await store.update(acquired.accountId, (prev) => {
+			signal?.throwIfAborted()
+			const scopes = [...new Set([...(prev?.scopes ?? []), ...(acquired.scopes ?? [])])]
+			return {
+				id: acquired.accountId,
+				provider: providerId,
+				creds: acquired.creds,
+				revision: crypto.randomUUID(),
+				...(scopes.length > 0 ? { scopes } : {})
+			}
+		})
+	}
+	const connect = connections({ providers: registry, save, waitUntil: opts.waitUntil })
 
 	// Seal every account record still sitting in the clear, with this host's key.
 	//
@@ -361,6 +392,7 @@ export function hostAccounts(
 		// surface reaches apps only through the `settings` capability, which gates on
 		// first-party app identity once, for every method (see settings/host.ts).
 		admin: {
+			...connect,
 			listProviders: async () => {
 				return providers.map((p) => {
 					const ui = p.auth.ui
@@ -395,12 +427,7 @@ export function hostAccounts(
 					fields: credentials,
 					scopes: []
 				})
-				await store.update(accountId, (prev) => {
-					const merged = [...new Set([...(prev?.scopes ?? []), ...(scopes ?? [])])]
-					const account: Account = { id: accountId, provider: providerId, creds }
-					if (merged.length > 0) account.scopes = merged
-					return account
-				})
+				await save(providerId, { accountId, creds, scopes })
 				return { accountId }
 			},
 			setEnabled: async ({ accountId, capability, enabled, config }) => {
@@ -471,17 +498,54 @@ export function hostAccounts(
 			}
 		},
 
-		async resolveAi<T>(mint: (lease: AiAccountLease) => T | Promise<T>): Promise<T | null> {
-			const current = await active()
+		async resolveAi<T>(
+			mint: (lease: AiAccountLease) => T | Promise<T>,
+			selection?: AiSelection
+		): Promise<T | null> {
+			const current = selection
+				? { account: await get(selection.accountId), model: selection.model }
+				: await active()
+			if (
+				selection &&
+				(!current?.account || (current.account.revision ?? '') !== selection.revision)
+			)
+				throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			// Only on a host with no builtin AI and nothing usable selected: the caller surfaces
 			// "turn on AI in Settings", and a broken record's own lastError says why.
-			if (!current) return null
+			if (!current?.account) return null
+			const account = current.account
+			if (!registry.get(account.provider)?.capabilities.ai) throw invalid('resolveAi')
+
 			return mint({
+				accountId: account.id,
+				revision: account.revision ?? '',
+				credentials: credentialAccess(store, account),
 				creds: current.account.creds,
 				config: current.model !== undefined ? { model: current.model } : {},
 				providerId: current.account.provider,
 				persist: writebackFor(store, current.account)
 			})
+		}
+	}
+}
+
+function credentialAccess(store: AccountStore, account: Account): CredentialAccess {
+	const check = (value: Account | undefined): Account => {
+		if (!value || value.creds === undefined || value.revision !== account.revision)
+			throw new Error('Account changed or disconnected. Reconnect in Settings.')
+		return value
+	}
+	return {
+		read: async () => check(await store.get(account.id)).creds,
+		modify: async (change) => {
+			let result: unknown
+			await store.update(account.id, async (stored) => {
+				const latest = check(stored)
+				const next = await change(latest.creds)
+				result = next ?? latest.creds
+				return next === undefined ? undefined : { ...latest, creds: next }
+			})
+			return result
 		}
 	}
 }

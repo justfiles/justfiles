@@ -63,6 +63,7 @@ function host(client: GoogleClient | null = CLIENT, flow: AuthFlow = neverFlow) 
 	const persisted: unknown[] = []
 	const account = (creds: GoogleCreds): BoundAccount => ({
 		creds,
+		credentials: { read: async () => creds, modify: async (change) => (await change(creds)) ?? creds },
 		persist: async (next) => {
 			persisted.push(next)
 		}
