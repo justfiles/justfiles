@@ -1,86 +1,28 @@
-import { createModels, createProvider, type Model, type Models } from '@earendil-works/pi-ai'
-import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
-import { type AgentBackend, modelsBackend, text } from '@justfiles/agent'
-import type { AiAccountLease } from '@justfiles/app/capabilities/accounts/host'
-import type { Provider } from '@justfiles/app/capabilities/accounts/providers'
-
-const ID = 'kodama'
-
-type ModelDescriptor = Omit<Model<'openai-completions'>, 'api' | 'provider' | 'baseUrl'>
+import type { AgentBackend } from '@justfiles/agent'
+import { type BackendDescriptor, remoteBackend } from '@justfiles/agent/remote'
 
 export function createPlatformAi(deps: { origin: string; getToken: () => Promise<string | null> }) {
-	const baseUrl = new URL('/api/ai/v1', deps.origin).toString().replace(/\/$/, '')
-	const models = createModels()
-	models.setProvider(
-		createProvider({
-			id: ID,
-			name: 'Just Computer',
-			baseUrl,
-			auth: {
-				apiKey: {
-					name: 'Just Computer',
-					resolve: async () => {
-						const token = await deps.getToken()
-						return token ? { auth: { apiKey: token }, source: 'Just Computer' } : undefined
-					}
-				}
-			},
-			models: [],
-			fetchModels: async ({ credential, signal }) => {
-				const token = credential?.type === 'api_key' ? credential.key : undefined
-				if (!token) return []
-				const response = await fetch(new URL('/api/ai/model', deps.origin), {
-					headers: { authorization: `Bearer ${token}` },
-					signal
-				})
-				if (!response.ok) throw await responseError(response)
-				const model = (await response.json()) as ModelDescriptor
-				return [{ ...model, api: 'openai-completions', provider: ID, baseUrl }]
-			},
-			api: openAICompletionsApi()
+	return async (): Promise<AgentBackend | null> => {
+		const token = await deps.getToken()
+		if (!token) return null
+		const response = await fetch(new URL('/api/ai/backend', deps.origin), {
+			headers: { authorization: `Bearer ${token}` },
+			signal: AbortSignal.timeout(15_000)
 		})
-	)
-
-	const getBackend = () => platformBackend(models)
-	const provider: Provider = {
-		id: ID,
-		name: 'Just Computer',
-		builtin: true,
-		auth: {
-			ui: { kind: 'none' },
-			acquire: async () => ({ accountId: ID, creds: {} })
-		},
-		capabilities: {
-			ai: {
-				bind: () => ({
-					generateText: async ({ system, prompt }) => {
-						const backend = await getBackend()
-						if (!backend) throw new Error('No AI provider is turned on for this Mac')
-						return {
-							text: await text(backend).gen(typeof system === 'string' ? system : '', prompt)
-						}
-					}
-				})
-			}
-		}
+		if (!response.ok)
+			throw new Error(`Cloud AI is unavailable (${response.status}). Check Settings.`)
+		const descriptor = (await response.json()) as BackendDescriptor
+		if (descriptor.version !== 1 || !descriptor.selection || !descriptor.model?.id)
+			throw new Error('Update Frieren to use cloud AI on this Mac.')
+		return remoteBackend(descriptor, async (body, signal) => {
+			const current = await deps.getToken()
+			if (!current) throw new Error('Sign in to Just Computer in Settings.')
+			return fetch(new URL('/api/ai/infer', deps.origin), {
+				method: 'POST',
+				headers: { authorization: `Bearer ${current}`, 'content-type': 'application/json' },
+				body: JSON.stringify(body),
+				signal
+			})
+		})
 	}
-	return {
-		provider,
-		backend: ({ providerId }: AiAccountLease) =>
-			providerId === ID ? getBackend() : Promise.resolve(null)
-	}
-}
-
-async function platformBackend(models: Models): Promise<AgentBackend | null> {
-	const refreshed = await models.refresh()
-	const model = models.getModels(ID)[0]
-	if (model) return modelsBackend(models, model)
-	const failure = refreshed.errors.get(ID)
-	if (failure) throw failure
-	return null
-}
-
-async function responseError(response: Response): Promise<Error> {
-	const body = await response.text().catch(() => '')
-	return new Error(`Just Computer AI request failed (${response.status})${body ? `: ${body}` : ''}`)
 }

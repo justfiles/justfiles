@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import { hostname } from 'node:os'
 import {
 	type AgentBackend,
@@ -9,7 +10,7 @@ import {
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import { materialise, reconcile } from '@justfiles/app/appstore'
-import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
+import { type Capabilities, CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	type HostAccounts,
 	hostAccounts,
@@ -26,7 +27,7 @@ import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/justapps'
 import { migrateFirstPartyAppIds } from '../../shared/migrate-app-ids'
 import { appAssets } from './app-assets'
 import { builtinStore } from './builtins'
-import { chatgptProvider, codexBackend } from './chatgpt'
+import { cloudCapabilities } from './cloud-capabilities'
 import { coalesce } from './coalesce'
 import { getStorage, getVolume, platformOrigin } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
@@ -47,11 +48,12 @@ const systemAllowlist = ['justfiles.files']
 
 const accountProviders = () => [
 	googleProvider({ flow: loopbackAuthFlow(), client: googleClient() }),
-	icloudProvider(),
-	chatgptProvider()
+	icloudProvider()
 ]
 
 interface DaemonAccounts extends HostAccounts {
+	remote: Capabilities
+	dispose(): void
 	resolveBackend(): Promise<AgentBackend | null>
 }
 
@@ -67,23 +69,52 @@ export function daemonAccounts(
 		origin?: string
 	} = {}
 ): DaemonAccounts {
-	const platform = createPlatformAi({
+	const cloud = {
 		origin: opts.origin ?? platformOrigin(),
 		getToken: opts.getToken ?? (() => identity.getToken())
-	})
-	const accounts = hostAccounts([...accountProviders(), platform.provider], fs, {
+	}
+	const remote = cloudCapabilities(cloud)
+	const accounts = hostAccounts(accountProviders(), fs, {
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
 		// hostname so Settings can tell two Macs apart once E1/E2 land.
 		origin: { kind: 'device', label: hostname() },
 		...(opts.secretCodec && { secretCodec: opts.secretCodec })
 	})
-	return Object.assign(accounts, {
-		resolveBackend: () =>
-			accounts.resolveAi((lease) =>
-				lease.providerId === platform.provider.id ? platform.backend(lease) : codexBackend(lease)
-			)
-	})
+	const admin = accounts.admin
+	return {
+		...accounts,
+		admin: {
+			...admin,
+			// The cloud owns ChatGPT now. Keep old local credentials until a cloud
+			// connection succeeds, but never offer the retired local provider.
+			listAccounts: async (input) =>
+				(await admin.listAccounts(input)).filter((a) => a.providerId !== 'chatgpt')
+		},
+		remote: {
+			...remote,
+			invoke: async (call) => {
+				let result = await remote.invoke(call)
+				// Email/calendar still execute locally on this Mac. Only cloud AI accounts
+				// belong in its Settings list until those capabilities also have a remote host.
+				if (call.method === 'accounts.listAccounts' && Array.isArray(result))
+					result = result.filter((account) => ['chatgpt', 'frieren'].includes(account.providerId))
+				if (
+					call.method === 'accounts.listAccounts' &&
+					Array.isArray(result) &&
+					result.some((a) => a.providerId === 'chatgpt')
+				) {
+					for (const account of await admin.listAccounts({})) {
+						if (account.providerId === 'chatgpt')
+							await admin.disconnect({ accountId: account.accountId })
+					}
+				}
+				return result
+			}
+		},
+		dispose: remote.dispose,
+		resolveBackend: createPlatformAi(cloud)
+	}
 }
 
 // The daemon's ONE account module. Settings, the `ai` capability, soul generation and the
@@ -134,6 +165,7 @@ export async function closeKernel(): Promise<void> {
 	await appBoot
 	const active = await kernelOnce?.catch(() => undefined)
 	active?.dispose()
+	;(await accountsOnce)?.dispose()
 }
 
 // Build the kernel over a given Volume + that Volume's account module: the capability
@@ -193,6 +225,11 @@ async function makeKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel>
 			// pane still works and you write the soul yourself.
 			settings: settingsHost({
 				accounts: accounts.admin,
+				remote: accounts.remote,
+				openUrl: (url) =>
+					new Promise<void>((resolve, reject) =>
+						execFile('open', [url], (error) => (error ? reject(error) : resolve()))
+					),
 				user: () => identity.currentUser(),
 				agent: {
 					volume: fs,
