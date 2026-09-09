@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.22.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.21.0...frieren-v0.22.0) (2026-09-09)
+
+
+### Features
+
+* **fs:** recover rejected sync rows in private storage ([#637](https://github.com/xiaoxinghu/justfiles/issues/637)) ([b223ad1](https://github.com/xiaoxinghu/justfiles/commit/b223ad1c1bf8de946814c8e5f25fb87dfa0f83e1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.13.1
+    * @justfiles/fs bumped to 0.8.0
+
 ## [0.21.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.20.1...frieren-v0.21.0) (2026-08-31)
 
 

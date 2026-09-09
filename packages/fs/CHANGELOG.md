@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.7.1...fs-v0.8.0) (2026-09-09)
+
+
+### Features
+
+* **fs:** recover rejected sync rows in private storage ([#637](https://github.com/xiaoxinghu/justfiles/issues/637)) ([b223ad1](https://github.com/xiaoxinghu/justfiles/commit/b223ad1c1bf8de946814c8e5f25fb87dfa0f83e1))
+
 ## [0.7.1](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.7.0...fs-v0.7.1) (2026-08-25)
 
 
