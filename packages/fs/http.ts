@@ -8,10 +8,11 @@
  * `fetch` and nothing else, so this runs in a browser, a worker, or node.
  */
 
+import { RecoveryError, SyncConflictError } from './conflict.internal'
 import { BootstrapRequiredError } from './peer'
 import { type SyncCursor, syncCursor } from './peer.internal'
-import { type Guard, GuardError, type Hash, type Node, type Store } from './store'
-import { decodeNode, decodePage, encodeNode } from './wire.internal'
+import { GuardError, type Hash, type Node, type Store } from './store'
+import { decodeConflict, decodeNode, decodePage, decodeRefusal, encodeNode } from './wire.internal'
 
 export type HttpStoreOptions = {
 	/** Sent with every request. An authorization header is the expected use. */
@@ -44,7 +45,7 @@ export function httpStore(baseUrl: string, opts: HttpStoreOptions = {}): Store {
 			cache: 'no-store'
 		})
 		// A refusal, not a failure: a guard did not hold, and the body says which.
-		if (res.status === 409) throw new GuardError(await refusal(res))
+		if (res.status === 409) throw await refusal(res)
 		// Expired, swept, malformed, and wrong-lineage cursors have one public answer.
 		if (res.status === 410) {
 			const body = (await res.json().catch(() => null)) as { peerId?: unknown } | null
@@ -160,10 +161,15 @@ const query = (params: Record<string, string | undefined>): string =>
 
 const nodeOrNull = (value: unknown): Node | null => (value === null ? null : decodeNode(value))
 
-/** Which guard the peer refused on. A 409 that names none is still a refusal. */
-const refusal = async (res: Response): Promise<Guard | string> => {
-	const body = (await res.json().catch(() => null)) as { reason?: Guard | string } | null
-	return body?.reason ?? 'the peer refused the commit without naming a guard'
+const refusal = async (res: Response): Promise<Error> => {
+	try {
+		const body = (await res.json()) as { conflict?: unknown; reason?: unknown }
+		return body.conflict !== undefined
+			? new SyncConflictError(decodeConflict(body.conflict))
+			: new GuardError(decodeRefusal(body.reason))
+	} catch (cause) {
+		return new RecoveryError('malformed sync refusal', { cause })
+	}
 }
 
 const failed = async (res: Response, method: string | undefined, path: string): Promise<Error> =>

@@ -12,11 +12,11 @@
  * the POSIX view until a later row reattaches it. No cleanup, no repair pass.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
 import { memStore } from './mem'
-import { type Cursor, GuardError, type Node, ROOT } from './store'
+import { type Cursor, GuardError, type Node, ROOT, sha256Hex } from './store'
 import { volume } from './volume'
 
 const enc = new TextEncoder()
@@ -82,7 +82,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([file({ id: 'second', name: 'note.txt' })])
 
-		expect(error.message).toMatch(/note\.txt/)
+		expect(error).toMatchObject({ conflict: { kind: 'taken-name' } })
 		// Rule 1 is what makes the twin's acceptance safe: two live rows for one
 		// name resolve to the lowest id on EVERY replica, so replicas agree on what
 		// is visible even while they converge.
@@ -116,7 +116,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([file({ id: 'child', name: 'inside.txt', parent: 'notadir' })])
 
-		expect(error.message).toMatch(/live directory/)
+		expect(error).toMatchObject({ conflict: { kind: 'invalid-parent' } })
 	})
 
 	it('refuses a parent that is a tombstone', async () => {
@@ -183,7 +183,7 @@ describe('authority: the tree invariants', () => {
 
 		const error = await refused([file({ id: 'leaked', name: 'secret.env', parent: 'private' })])
 
-		expect(error.message).toMatch(/live directory/)
+		expect(error).toMatchObject({ conflict: { kind: 'invalid-parent' } })
 		// And the root itself is never a junction, which would hide the whole tree
 		// behind an unbound mount that reads as empty.
 		await refused([dir({ id: ROOT, name: '', parent: ROOT, type: 'mount', version: '2' })])
@@ -261,6 +261,24 @@ describe('authority: the tree invariants', () => {
 		).resolves.toBeUndefined()
 	})
 
+	it('ordinary tombstone pages need no row or child fact reads', async () => {
+		const store = memStore()
+		const server = authority(store)
+		const rows = Array.from({ length: 128 }, (_, i) => file({ id: `node-${i}`, name: `node-${i}` }))
+		await server.commit(rows)
+		const get = vi.spyOn(store, 'get')
+		const children = vi.spyOn(store, 'children')
+		const tombstones = rows.map((row) => ({ ...row, deleted: true as const, version: '2' }))
+
+		await server.commit(tombstones)
+
+		expect(get).not.toHaveBeenCalled()
+		expect(children).not.toHaveBeenCalled()
+		get.mockRestore()
+		children.mockRestore()
+		for (const row of tombstones) expect(await store.get(row.id)).toEqual(row)
+	})
+
 	it('takes a recursive delete that does not fit in one page', async () => {
 		// The same decision, end to end, and the reason it is not negotiable: the
 		// tombstones are one local commit and several pushed pages, so an authority
@@ -282,13 +300,62 @@ describe('authority: the tree invariants', () => {
 		expect(await volume(server).readdir('/')).toEqual([])
 	})
 
+	it.each([
+		4, 32
+	])('content edits at depth %i do not read above their unchanged parent', async (depth) => {
+		const store = memStore()
+		const server = authority(store)
+		const directories = Array.from({ length: depth }, (_, i) =>
+			dir({ id: `dir-${i}`, name: `dir-${i}`, parent: i === 0 ? ROOT : `dir-${i - 1}` })
+		)
+		const parent = `dir-${depth - 1}`
+		const files = Array.from({ length: 8 }, (_, i) =>
+			file({ id: `file-${i}`, name: `file-${i}`, parent })
+		)
+		await server.commit([...directories, ...files])
+		const bytes = enc.encode('edited')
+		const content = await sha256Hex(bytes)
+		await store.blobs.put(content, bytes)
+		const reads = vi.spyOn(store, 'get')
+		const edits = files.map((row) => ({ ...row, content, size: 6n, version: '2' }))
+
+		await server.commit(edits)
+
+		expect(reads.mock.calls.length).toBeLessThanOrEqual(files.length * 2)
+		for (const ancestor of directories.slice(0, -1))
+			expect(reads).not.toHaveBeenCalledWith(ancestor.id)
+		reads.mockRestore()
+		for (const row of edits) expect(await store.get(row.id)).toEqual(row)
+	})
+
+	it.each([
+		'file',
+		'symlink',
+		'mount'
+	] as const)('editing a page of existing %s rows does not scan children', async (type) => {
+		const store = memStore()
+		const server = authority(store)
+		const rows = Array.from({ length: 128 }, (_, i) =>
+			file({ id: `node-${i}`, name: `node-${i}`, type })
+		)
+		await server.commit(rows)
+		const children = vi.spyOn(store, 'children')
+		const edits = rows.map((row) => ({ ...row, mtimeNs: 1n, version: '2' }))
+
+		await server.commit(edits)
+
+		expect(children).not.toHaveBeenCalled()
+		children.mockRestore()
+		for (const row of edits) expect(await store.get(row.id)).toEqual(row)
+	})
+
 	it('refuses a move that puts a directory under its own descendant', async () => {
 		const { seed, refused } = hub()
 		await seed(dir({ id: 'top', name: 'top' }), dir({ id: 'inner', name: 'inner', parent: 'top' }))
 
 		const error = await refused([dir({ id: 'top', name: 'top', parent: 'inner', version: '2' })])
 
-		expect(error.message).toMatch(/ancestor/)
+		expect(error).toMatchObject({ conflict: { kind: 'parent-cycle' } })
 	})
 
 	it('refuses a cycle built out of rows nobody can see', async () => {

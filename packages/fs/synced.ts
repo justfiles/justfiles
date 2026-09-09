@@ -38,6 +38,7 @@ import {
 } from './engine'
 import { BootstrapRequiredError } from './peer'
 import { withSyncCursor } from './peer.internal'
+import { recoveryFor } from './recovery.state.internal'
 import { type Cursor, type Guard, GuardError, type Node, ROOT, type Store } from './store'
 import type { SyncStateLock } from './syncState'
 import { type Bindings, type Volume, volume } from './volume'
@@ -92,6 +93,8 @@ export type DiscardSlot = {
 }
 
 export type SyncedProps = {
+	/** Physically separate private storage, retained across restarts and shared-store replacements. */
+	recovery?: Store
 	/** This replica's own store: the working copy, and what the volume reads. */
 	local: Store
 	/** The peer, with the same seam as the local store. */
@@ -195,6 +198,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	const interval = props.interval ?? INTERVAL_MS
 	const mint = versions(replica)
 	const opts = {
+		recovery: props.recovery,
 		replica,
 		pull: props.pull,
 		push: props.push,
@@ -551,17 +555,11 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 		if (unfinished)
 			throw new Error('take mine cannot start: a discard did not finish, so run take theirs again')
 		await alone('take mine', async () => {
+			const recovery = await recoveryFor(remote, opts)
 			epoch = await reset()
-			// A replica pushes what it AUTHORED, not what it holds, so the emptied
-			// authority would otherwise get back only the part of the volume this
-			// replica happened to write — and the rest would sit here for ever, held
-			// by a replica that never offers it. Re-authoring what came from
-			// elsewhere is what makes the whole tree this replica's to publish.
-			//
-			// Until a scan finds nothing foreign, for the reason the discard loops:
-			// this wrapper's loop is stood off, the app's writers are not, and a row
-			// that arrived after the last pass is filtered out of every push from here
-			// on. A row already ours needs no rewrite, which is what ends the walk.
+			// Publishing needs fresh versions for foreign and adopted rows, including
+			// adopted versions authored here. Receipts for their old versions stay intact.
+			// Repeat while writers can add rows or race the guarded rewrite.
 			//
 			// The last scan is the last word this reset has, and a row landing after
 			// it is not this replica's to publish — T8's standing rule, which the
@@ -572,13 +570,17 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 			// rather than its life — it stays visible here, and the first write that
 			// touches it re-authors it into the next push.
 			for (let left = MAX_ATTEMPTS; ; left--) {
-				const theirs = living((await feed()).rows).filter(
-					(row) => authorOf(row.version) !== replica
+				const rows = living((await feed()).rows)
+				const needed = await Promise.all(
+					rows.map(
+						async (row) => authorOf(row.version) !== replica || (await recovery?.adopted(row))
+					)
 				)
-				if (theirs.length === 0) break
+				const pending = rows.filter((_, i) => needed[i])
+				if (pending.length === 0) break
 				if (left === 0) throw new Error('take mine cannot keep up with the writes under it')
 				try {
-					await rewrite(theirs, (row) => ({ ...row, version: mint() }))
+					await rewrite(pending, (row) => ({ ...row, version: mint() }))
 				} catch (e) {
 					// Somebody wrote one of these rows in between: read them again.
 					if (!(e instanceof GuardError)) throw e
@@ -595,7 +597,7 @@ export async function synced(props: SyncedProps): Promise<Volume & SyncLifecycle
 	// A committed local write arms that push. Only this replica's own writes:
 	// a pulled row is authored by the peer, and answering it with a push would
 	// spend a cycle offering that peer its own rows back, for ever. There is
-	// nothing else to filter out — this engine writes no state into the store.
+	// no risk in arming for an adopted row: the engine checks its durable receipt.
 	const stop = local.subscribe?.((rows) => {
 		if (rows.some((row) => authorOf(row.version) === replica)) armPush()
 	})

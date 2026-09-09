@@ -1,3 +1,4 @@
+import type { SyncConflict } from './conflict.internal'
 import type { Guard, Node, Page } from './store'
 
 export type WireNode = Omit<Node, 'mtimeNs' | 'size' | 'xattrs'> & {
@@ -106,3 +107,40 @@ const base64 = (data: Uint8Array): string => {
 
 const unbase64 = (value: string): Uint8Array =>
 	Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
+
+export const encodeConflict = (conflict: SyncConflict) => ({
+	...conflict,
+	authority: conflict.authority.map(({ id, row }) => ({
+		id,
+		row: row === null ? null : encodeNode(row)
+	}))
+})
+
+export const decodeConflict = (value: unknown): SyncConflict => {
+	const conflict = fields(value, 'conflict')
+	const trigger = fields(conflict.trigger, 'trigger')
+	const seen = new Set<string>()
+	return {
+		kind: text(conflict.kind, 'kind'),
+		trigger: {
+			id: text(trigger.id, 'id'),
+			parent: text(trigger.parent, 'parent'),
+			version: text(trigger.version, 'version')
+		},
+		authority: list(conflict.authority, 'authority').map((value) => {
+			const observation = fields(value, 'observation')
+			const id = text(observation.id, 'id')
+			const row = observation.row === null ? null : decodeNode(observation.row)
+			if (seen.has(id) || (row !== null && row.id !== id)) bad('observation')
+			seen.add(id)
+			return { id, row }
+		})
+	}
+}
+
+export const decodeRefusal = (value: unknown): Guard | string => {
+	if (typeof value === 'string') return value
+	const guard = fields(value, 'refusal')
+	if (guard.free === undefined && guard.version === undefined) bad('refusal')
+	return decodeGuard(guard)
+}

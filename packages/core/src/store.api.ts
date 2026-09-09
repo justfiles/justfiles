@@ -32,8 +32,9 @@ import {
 } from '@justfiles/fs/store'
 import { type Context, Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
+import { SyncConflictError } from '../../fs/conflict.internal'
 import { withSyncCursor } from '../../fs/peer.internal'
-import { decodeCommit, encodeNode } from '../../fs/wire.internal'
+import { decodeCommit, encodeConflict, encodeNode } from '../../fs/wire.internal'
 
 /** The Store wire, without sync policy. */
 export function storeApi(store: Store): Hono {
@@ -58,6 +59,8 @@ function routes(requestStore: RequestStore): Hono {
 	app.onError((err, c) => {
 		// A refusal is not a failure. The reason travels because the caller acts on
 		// it — read again and replan — rather than reporting it.
+		if (err instanceof SyncConflictError)
+			return c.json({ error: 'conflict', conflict: encodeConflict(err.conflict) }, 409)
 		if (err instanceof GuardError) return c.json({ error: 'guard', reason: err.reason }, 409)
 		if (err instanceof BootstrapRequiredError)
 			return c.json({ error: 'bootstrap-required', peerId: err.peerId }, 410)

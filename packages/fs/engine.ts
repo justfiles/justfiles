@@ -1,39 +1,7 @@
-/**
- * The sync engine. It is the seam's second consumer, beside the POSIX volume,
- * and its whole loop is two scans of the same feed in opposite directions:
- *
- *     push: local.since(cursor)  → remote.commit(rows)        → advance cursor
- *     pull: remote.since(cursor) → local.commit(rows, bases)  → advance cursor
- *
- * There is no journal, no snapshot session, no handoff, and no wire ordering:
- * a peer is just another `Store`, a bootstrap is `since()` from the empty
- * cursor, and rule 4 makes a row that changes mid-scan come round again rather
- * than be missed.
- *
- * Three things carry the design, and everything else here is plumbing:
- *
- * - **The author tag inside a `Version`.** Push sends only rows THIS replica
- *   authored, so a pulled row is never sent back and the steady state is
- *   silent. Idempotence is the safety net, not the traffic.
- * - **Rule 3, a row the store already holds is a no-op.** That is what makes a
- *   lost cursor, a crash, a replayed page and a fenced lineage all cost the
- *   same thing: a re-scan that writes nothing.
- * - **The cursor is host-local and always lags.** It is saved only after its
- *   batch commits, it lives in a slot the caller injects, and it never enters
- *   the replicated table or the user's tree.
- *
- * Content moves separately from the rows and is keyed by hash: `transfer` asks the
- * other side about a blob when the bytes it may save are worth the round trip the
- * question costs, and `lazyContent` with `hydratingBlobs` lets a replica take every
- * row and fetch bytes only when a read asks for them.
- *
- * Edit conflicts are last-writer-wins at the authority. The push has no stale
- * base to name, so it does not pretend to guard one. `authority.ts` still refuses
- * tree changes that would break its rules, and `settle` turns those refusals into
- * local writes the next push carries: a renamed loser, a recreated file, or
- * nothing at all. A later three-way field merge needs a base cache and a user-facing
- * conflict policy; it changes no seam signature.
- */
+import { RecoveryError, SyncConflictError } from './conflict.internal'
+import { fingerprint, recover } from './recovery'
+import { recoveryFor } from './recovery.state.internal'
+/** Push authored, unadopted rows, then pull authority rows. Cursors lag committed pages. */
 
 import { BootstrapRequiredError } from './peer'
 import { readCursorIssuer, withSyncCursor } from './peer.internal'
@@ -41,7 +9,6 @@ import {
 	type Cursor,
 	ForeignCursorError,
 	forwarded,
-	type Guard,
 	GuardError,
 	type Hash,
 	type Node,
@@ -52,9 +19,6 @@ import {
 	verifiedBlobs
 } from './store'
 import type { SyncStateLock } from './syncState'
-
-/** NUL — the one byte a name can never hold, so composed keys never collide. */
-const SEP = String.fromCharCode(0)
 
 /** How many extra attempts a cycle gets before the failure becomes the caller's. */
 const RETRIES = 3
@@ -105,6 +69,8 @@ const REPLANS = 8
  * Start the cycle over because local work has to be offered before the page in
  * hand may be applied over it.
  */
+class RecoveryReplan extends Error {}
+
 class Replan extends Error {
 	constructor() {
 		super('sync replanned after local progress')
@@ -138,6 +104,8 @@ export type ChooseWinner = (localId: string, remoteId: string) => string
 const chooseRemote: ChooseWinner = (_localId, remoteId) => remoteId
 
 type SyncOptions = {
+	/** Physically separate private storage, retained across restarts and shared-store replacements. */
+	recovery?: Store
 	/** This replica's id: the author tag inside every version it mints. */
 	replica: string
 	/** This replica's position in the peer's feed. */
@@ -173,7 +141,7 @@ type SyncOptions = {
  *
  * The directions have different race rules. Push writes without version guards,
  * so two edits to one row are last-writer-wins at the authority. The authority may
- * still refuse a tree change; `settle` handles those refusals. Pull reads the local
+ * still refuse a tree change; `recover` handles those refusals. Pull reads the local
  * rows it will replace and guards its commit, so a local write that lands during
  * the cycle sends the loop back through push instead of being overwritten.
  *
@@ -189,7 +157,11 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	// would decide, alone and silently, whose view of the tree survives. Doing it
 	// wholesale is T11's `takeMine`, which re-authors the rows first — and that
 	// makes them this replica's, so this same filter carries them.
-	const mine = (row: Node): boolean => authorOf(row.version) === opts.replica
+	const state = await recoveryFor(remote, opts)
+	const mine = async (row: Node): Promise<boolean> =>
+		authorOf(row.version) === opts.replica && !(await state?.adopted(row))
+	let recoveries = 0
+	const applied = new Set<string>()
 	const retries = opts.retries ?? RETRIES
 	const backoff = opts.backoffMs ?? BACKOFF_MS
 	let failures = 0
@@ -207,23 +179,27 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 			await writer.commit(rows)
 			replans = 0 // a page landed: whatever the last rejection was, it is behind us
 		} catch (err) {
-			// What the refusal MEANT is decided here, where the rows still are: the
-			// error cannot carry them, since a peer refuses a whole batch and for
-			// reasons — a taken name, a dead id — that no `Guard` states.
 			if (!(err instanceof GuardError)) throw err
-			let changed: boolean
-			try {
-				changed = await settle(local, remote, rows, opts.replica)
-			} catch (settling) {
-				// A local write raced the settlement's guards. Re-read the page and
-				// settle the current row instead of replacing it with the stale fix.
-				if (settling instanceof GuardError) throw new Replan()
-				throw settling
-			}
-			// No local write changed the refused page, so offering it again now
-			// cannot produce a different answer.
-			if (!changed) throw err
-			throw new Replan()
+			if (!(err instanceof SyncConflictError))
+				throw new RecoveryError('unstructured sync refusal', { cause: err })
+			if (err.conflict.kind === 'settlement-has-children')
+				throw new RecoveryError('settlement-has-children')
+			const key = fingerprint(err.conflict, rows)
+			if (applied.has(key)) throw new RecoveryError('repeated applied recovery conflict')
+			if (recoveries >= 4096) throw new RecoveryError('recovery attempt limit exceeded')
+			recoveries++
+			const result = await recover({
+				local,
+				remote,
+				rows,
+				conflict: err.conflict,
+				replica: opts.replica,
+				recovery: opts.recovery,
+				state
+			})
+			if (result.status === 'failed') throw result.error
+			if (result.status === 'applied') applied.add(key)
+			throw new RecoveryReplan()
 		}
 	}
 	const pull = async (rows: Node[]): Promise<void> => {
@@ -297,6 +273,8 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 					throw new TypeError('winner must be one of the two peer ids')
 				throw new BootstrapRequiredError(err.peerId, winnerId)
 			}
+			if (err instanceof RecoveryError) throw err
+			if (err instanceof RecoveryReplan) continue
 			if (err instanceof Replan) {
 				if (replans++ < REPLANS) continue
 				throw err
@@ -403,7 +381,7 @@ async function drain(
 	from: Pick<Store, 'since'>,
 	apply: (rows: Node[]) => Promise<void>,
 	slot: CursorSlot,
-	mine?: (row: Node) => boolean,
+	mine?: (row: Node) => Promise<boolean>,
 	lock?: SyncStateLock,
 	identify = false
 ): Promise<number> {
@@ -411,7 +389,8 @@ async function drain(
 	let moved = 0
 	for (;;) {
 		const page = await from.since(cursor)
-		const rows = mine ? page.nodes.filter(mine) : page.nodes
+		const outgoing = mine ? await Promise.all(page.nodes.map(mine)) : undefined
+		const rows = outgoing ? page.nodes.filter((_, i) => outgoing[i]) : page.nodes
 		// Nothing to send is the steady state, and an empty commit is still a round
 		// trip to a peer that may be a network away.
 		if (rows.length > 0) {
@@ -482,185 +461,6 @@ async function fanned<T, R>(items: T[], work: (item: T) => Promise<R>): Promise<
 	}
 	await Promise.all(Array.from({ length: Math.min(LANES, items.length) }, lane))
 	return answers
-}
-
-/**
- * What a refused push MEANT, and what this replica does about it. v1 policy,
- * three outcomes, no merges — a field-level merge needs a base cache of
- * last-synced rows, which stays a future engine module and changes no seam type.
- *
- * The peer is the arbiter, so the peer is what gets read: asking the local store
- * would ask a replica holding two live rows for one name (rule 1) which of them
- * won, and the answer has to be the one every replica will converge on.
- *
- * Each outcome is a LOCAL write, and the push behind it needs no special path —
- * a written row moves to the end of the local feed (rule 4), so the re-scan
- * offers the fix and no longer offers what was refused. A page refused for a
- * reason none of these covers writes nothing and becomes the caller's error;
- * retrying the same rows immediately cannot change the peer's answer.
- */
-async function settle(
-	local: Store,
-	remote: Pick<Store, 'get' | 'child'>,
-	rows: Node[],
-	replica: string
-): Promise<boolean> {
-	// A minter per refusal, which is a minter this replica hardly ever draws. Two
-	// minters for one replica are the supported case, and each draws its own nonce.
-	const mint = versions(replica)
-	const fixes: Node[] = []
-	const guards: Guard[] = []
-	/**
-	 * A buried id, and the id its content carries on under — for THIS settlement
-	 * and no further. Rows share containers, so without it a page of a hundred
-	 * rows would stand up a hundred copies of the one directory they all sit in.
-	 *
-	 * It deliberately goes no further. Carrying it between settlements bought one
-	 * directory instead of two for a subtree too wide for a page, and cost two
-	 * silent-loss bugs to get there — a settlement that is refused wrote nothing,
-	 * so the id it picked names a row that does not exist, and the settlement after
-	 * it reads that id as already dealt with and buries the content instead. The
-	 * split is the honest failure: `docs` and `docs (conflict b)`, nothing lost,
-	 * which is the shape v1 already ships for a name conflict.
-	 */
-	const revived = new Map<NodeId, NodeId>()
-
-	/**
-	 * Write `next`, but only while `seen` is still what the local store holds.
-	 *
-	 * Every row a settlement rewrites came off the feed BEFORE the push, and
-	 * deciding what to do with it takes reads at the peer. A local write in that
-	 * window makes it stale, and writing the rewrite blind would put the old
-	 * content back under the new name — sync reporting success while the user's
-	 * newest edit disappears. The guard turns that into one more refusal, which is
-	 * a replan, which re-reads the row and settles it again on what is there now.
-	 *
-	 * `seen` is not always the row being written: a revival writes a NEW id, and
-	 * what has to have held still is the row it was copied from.
-	 */
-	const fix = (seen: Node, next: Node): void => {
-		fixes.push(next)
-		guards.push({ version: { id: seen.id, is: seen.version } })
-	}
-
-	/** Names this settlement has already given out, and nothing else can see yet. */
-	const handed = new Set<string>()
-
-	/**
-	 * Rule 1's tie-break, applied to the PAGE: of two live rows claiming one
-	 * `(parent, name)`, the lowest id keeps it. The rule is the stores' own, so
-	 * every replica settling this page would keep the same one — and it has to be
-	 * settled here, because a duplicate the peer has no part in is one the peer
-	 * cannot be asked about: it answers "nobody holds that name" for both rows.
-	 */
-	const keeps = new Map<string, NodeId>()
-	for (const row of rows) {
-		if (row.deleted) continue
-		const key = row.parent + SEP + row.name
-		const best = keeps.get(key)
-		if (best === undefined || row.id < best) keeps.set(key, row.id)
-	}
-
-	/**
-	 * A name for this row that nobody holds, found in ONE settlement.
-	 *
-	 * Probing matters as much as the name does. Adding a suffix and letting the
-	 * refusal come back would spend a replan on every name already taken, and the
-	 * budget is not restored by a local rename — only by a page that reaches the
-	 * peer — so a chain of them never lands at all. Both sides hold finitely many
-	 * rows, so the search ends; the counter keeps the answer short, since a name
-	 * that grew a suffix per collision would replicate everywhere at that length.
-	 *
-	 * BOTH sides, because the peer is the arbiter but cannot see what has not
-	 * reached it. A name free there and taken by an unpushed row here is the one
-	 * name this rename must not pick: the next push would claim it twice in one
-	 * batch, the authority refuses a batch that does, and no settlement could say
-	 * why — neither name is taken where it looks.
-	 */
-	const free = async (row: Node): Promise<string> => {
-		const taken = async (name: string): Promise<boolean> => {
-			// Handed to an earlier row of this same settlement, whose rename is still
-			// only in `fixes` and so invisible to both stores. Rule 1 lets a replica
-			// hold two live rows for one name — it says which one is VISIBLE, not that
-			// it cannot happen — so one page can carry two rows losing the same name,
-			// and answering both with the same new one claims it twice in one batch.
-			if (handed.has(row.parent + SEP + name)) return true
-			if (await remote.child(row.parent, name)) return true
-			const here = await local.child(row.parent, name)
-			return here !== null && here.id !== row.id
-		}
-		let name = `${row.name} (conflict ${replica})`
-		for (let n = 2; await taken(name); n++) name = `${row.name} (conflict ${replica} ${n})`
-		handed.add(row.parent + SEP + name)
-		return name
-	}
-
-	/**
-	 * Where a row can actually live: its own id, if the peer still has it —
-	 * otherwise a new one, standing under a new one for its parent, and so on up.
-	 * The walk is what a single replacement misses: a row parented on a tombstone
-	 * is refused for ever, so reviving a node without reviving the chain it hangs
-	 * from just moves the refusal one level up. ROOT is never buried, so it ends.
-	 *
-	 * Only what this replica AUTHORED gets here, because the push filter is what
-	 * built the page. That is the whole of who rescues what: this replica keeps
-	 * its own work, and the peer's delete takes everything else with it.
-	 */
-	const living = async (id: NodeId, seen = new Set<NodeId>()): Promise<NodeId> => {
-		// Rule 9 lets a replica hold a cycle mid-sync, so the walk bounds itself.
-		if (id === ROOT || seen.has(id)) return id
-		const already = revived.get(id)
-		if (already !== undefined) return already
-		if (!(await remote.get(id))?.deleted) return id
-		const mine = await local.get(id)
-		if (!mine) return id // nothing here to carry over
-		seen.add(id)
-		// Recorded before the walk goes up, so the id answers for itself while its own
-		// ancestors are still being stood up.
-		const replacement = crypto.randomUUID()
-		revived.set(id, replacement)
-		const parent = await living(mine.parent, seen)
-		fix(mine, { ...mine, id: replacement, parent, version: mint() })
-		return replacement
-	}
-
-	for (const row of rows) {
-		if (row.deleted) continue // a tombstone the peer refused has nothing to save
-		const theirs = await remote.get(row.id)
-		if (theirs?.deleted) {
-			// EDIT vs DELETE. The id is gone for good, so the content carries on under
-			// a new one — this is the case a plain create cannot express, and tombstones
-			// plus versions are what tell the two apart. The peer's tombstone is adopted
-			// in the same commit, or the next push offers the edit again and is refused
-			// again.
-			await living(row.id)
-			fix(row, theirs)
-			continue
-		}
-		// The same conflict, one level out: what the peer buried is the DIRECTORY
-		// this row sits in. The row itself is untouched and still perfectly good —
-		// it just has nowhere to be until its container is standing again.
-		if ((await remote.get(row.parent))?.deleted) {
-			fix(row, { ...row, parent: await living(row.parent), version: mint() })
-			continue
-		}
-		// CREATE vs CREATE. Another node holds the name, and WHO says so is ordered,
-		// not combined: the peer decides wherever it has an opinion, and the page's
-		// own tie-break answers only where the peer has none. Both at once would
-		// rename the peer's own holder for losing the page and the other row for
-		// losing to the peer, leaving the name to nobody.
-		const holder = await remote.child(row.parent, row.name)
-		const lost = holder ? holder.id !== row.id : keeps.get(row.parent + SEP + row.name) !== row.id
-		// The loser takes a name derived from the replica it belongs to — so two
-		// replicas conflicting over one name never pick the same answer, and every
-		// file survives everywhere.
-		if (lost) fix(row, { ...row, name: await free(row), version: mint() })
-		// EDIT vs EDIT needs no fix. Pushes carry no version guards, so the last write
-		// the authority accepts wins.
-	}
-	if (fixes.length === 0) return false
-	await local.commit(fixes, guards)
-	return true
 }
 
 /**
