@@ -126,18 +126,21 @@ async function check(store: Store, writes: Node[], guards: Guard[] = []): Promis
 			await read(holder.id)
 			refuse('taken-name')
 		}
-		const seen = new Set<NodeId>([row.id])
-		let at = row.parent
-		while (at !== ROOT) {
-			if (seen.has(at)) {
-				refuse('parent-cycle')
-				break
+		// Only a new parent edge can introduce a cycle.
+		if (!held || held.parent !== row.parent) {
+			const seen = new Set<NodeId>([row.id])
+			let at = row.parent
+			while (at !== ROOT) {
+				if (seen.has(at)) {
+					refuse('parent-cycle')
+					break
+				}
+				seen.add(at)
+				const prior = await read(at)
+				const up = batch.get(at) ?? prior
+				if (!up) break
+				at = up.parent
 			}
-			seen.add(at)
-			const prior = await read(at)
-			const up = batch.get(at) ?? prior
-			if (!up) break
-			at = up.parent
 		}
 		const conflict = conflicts.sort((a, b) => compare(a.kind, b.kind))[0]
 		if (conflict) throw new SyncConflictError(conflict)

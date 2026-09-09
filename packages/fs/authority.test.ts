@@ -12,11 +12,11 @@
  * the POSIX view until a later row reattaches it. No cleanup, no repair pass.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { authority } from './authority'
 import { type CursorSlot, sync, versions } from './engine'
 import { memStore } from './mem'
-import { type Cursor, GuardError, type Node, ROOT } from './store'
+import { type Cursor, GuardError, type Node, ROOT, sha256Hex } from './store'
 import { volume } from './volume'
 
 const enc = new TextEncoder()
@@ -280,6 +280,34 @@ describe('authority: the tree invariants', () => {
 		await sync(store, server, opts)
 
 		expect(await volume(server).readdir('/')).toEqual([])
+	})
+
+	it.each([
+		4, 32
+	])('content edits at depth %i do not read above their unchanged parent', async (depth) => {
+		const store = memStore()
+		const server = authority(store)
+		const directories = Array.from({ length: depth }, (_, i) =>
+			dir({ id: `dir-${i}`, name: `dir-${i}`, parent: i === 0 ? ROOT : `dir-${i - 1}` })
+		)
+		const parent = `dir-${depth - 1}`
+		const files = Array.from({ length: 8 }, (_, i) =>
+			file({ id: `file-${i}`, name: `file-${i}`, parent })
+		)
+		await server.commit([...directories, ...files])
+		const bytes = enc.encode('edited')
+		const content = await sha256Hex(bytes)
+		await store.blobs.put(content, bytes)
+		const reads = vi.spyOn(store, 'get')
+		const edits = files.map((row) => ({ ...row, content, size: 6n, version: '2' }))
+
+		await server.commit(edits)
+
+		expect(reads.mock.calls.length).toBeLessThanOrEqual(files.length * 2)
+		for (const ancestor of directories.slice(0, -1))
+			expect(reads).not.toHaveBeenCalledWith(ancestor.id)
+		reads.mockRestore()
+		for (const row of edits) expect(await store.get(row.id)).toEqual(row)
 	})
 
 	it('refuses a move that puts a directory under its own descendant', async () => {
