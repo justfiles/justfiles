@@ -273,18 +273,26 @@ export function hostAccounts(
 	const floor = floorAccount(registry)
 	const imageFloor = floorAccount(registry, 'image')
 	const origin = opts.origin
-	const save = async (providerId: string, acquired: AcquiredAccount, signal?: AbortSignal) => {
-		await store.update(acquired.accountId, (prev) => {
-			signal?.throwIfAborted()
-			const scopes = [...new Set([...(prev?.scopes ?? []), ...(acquired.scopes ?? [])])]
-			return {
-				id: acquired.accountId,
-				provider: providerId,
-				creds: acquired.creds,
-				revision: crypto.randomUUID(),
-				...(scopes.length > 0 ? { scopes } : {})
-			}
-		})
+	const save = async (
+		providerId: string,
+		acquired: AcquiredAccount,
+		commit?: Parameters<AccountStore['update']>[2]
+	) => {
+		await store.update(
+			acquired.accountId,
+			(prev) => {
+				commit?.signal.throwIfAborted()
+				const scopes = [...new Set([...(prev?.scopes ?? []), ...(acquired.scopes ?? [])])]
+				return {
+					id: acquired.accountId,
+					provider: providerId,
+					creds: acquired.creds,
+					revision: crypto.randomUUID(),
+					...(scopes.length > 0 ? { scopes } : {})
+				}
+			},
+			commit
+		)
 	}
 	const connect = connections({ providers: registry, save, waitUntil: opts.waitUntil })
 

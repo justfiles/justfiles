@@ -45,6 +45,8 @@ export type AccountChange = (
 	current: Account | undefined
 ) => Account | undefined | Promise<Account | undefined>
 
+type Commit = { signal: AbortSignal; finish(): void }
+
 export interface AccountStore {
 	// Reads take their record's chain too, so they see one write or the other and never the
 	// middle of one: overwriting a file is deliberately NOT atomic (see `Volume.writeFile`),
@@ -57,7 +59,9 @@ export interface AccountStore {
 	// runs with nothing else touching the SAME account, so a token refresh that lands late
 	// simply sees the newer grant (or the deletion) and declines, instead of overwriting it.
 	// `change` therefore must not call back into the store for the account it is changing.
-	update(id: string, change: AccountChange): Promise<void>
+	// Interactive sign-in can be cancelled until finish runs. An interrupted write
+	// restores the previous bytes before releasing the account's chain.
+	update(id: string, change: AccountChange, commit?: Commit): Promise<void>
 	delete(id: string): Promise<void>
 	// Seal every record still in the clear (see `hostAccounts` in host.ts for why a lazy
 	// "encrypt on next write" is not enough). Idempotent: already-sealed records are
@@ -125,7 +129,7 @@ export function volumeAccountStore(
 					}))
 			: []
 	// Publish a record. Always called from inside that account's chain.
-	const write = async (account: Account): Promise<void> => {
+	const write = async (account: Account, commit?: Commit): Promise<void> => {
 		await fs.mkdir(DIR, { recursive: true })
 		const path = pathFor(account.id)
 		// `creds: undefined` means "this host could not read them" (see `read`), NEVER "there
@@ -143,7 +147,20 @@ export function volumeAccountStore(
 				? (await readStored(path))?.creds
 				: await codec.encode(account.creds, account.id)
 		const stored = { ...account, creds }
-		await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
+		commit?.signal.throwIfAborted()
+		const before = commit && (await fs.exists(path)) ? await fs.readFile(path) : undefined
+		commit?.signal.throwIfAborted()
+		try {
+			await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
+			commit?.signal.throwIfAborted()
+			commit?.finish()
+		} catch (error) {
+			if (commit) {
+				if (before) await fs.writeFile(path, before)
+				else await fs.rm(path, { force: true })
+			}
+			throw error
+		}
 	}
 	return {
 		// Each read waits for that account's writes and refreshes. Browser sign-in
@@ -157,10 +174,10 @@ export function volumeAccountStore(
 			return out
 		},
 		get: (id) => serial(id, () => read(pathFor(id))),
-		update: (id, change) =>
+		update: (id, change, commit) =>
 			serial(id, async () => {
 				const next = await change(await read(pathFor(id)))
-				if (next) await write(next)
+				if (next) await write(next, commit)
 			}),
 		reseal: async () => {
 			let failure: unknown

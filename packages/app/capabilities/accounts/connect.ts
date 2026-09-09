@@ -9,7 +9,11 @@ type Attempt = {
 
 export function connections(deps: {
 	providers: Map<string, Provider>
-	save(providerId: string, account: AcquiredAccount, signal: AbortSignal): Promise<void>
+	save(
+		providerId: string,
+		account: AcquiredAccount,
+		commit: { signal: AbortSignal; finish(): void }
+	): Promise<void>
 	waitUntil?: (work: Promise<unknown>) => void
 }) {
 	const attempts = new Map<string, Attempt>()
@@ -57,8 +61,18 @@ export function connections(deps: {
 				.then(() => provider.auth.acquire({ scopes: [], signal: abort.signal, notify }))
 				.then(async (account) => {
 					abort.signal.throwIfAborted()
-					await deps.save(ref.providerId, account, abort.signal)
-					attempt.state = { ...ref, status: 'connected', expiresAt, accountId: account.accountId }
+					await deps.save(ref.providerId, account, {
+						signal: abort.signal,
+						finish: () => {
+							clearTimeout(timer)
+							attempt.state = {
+								...ref,
+								status: 'connected',
+								expiresAt,
+								accountId: account.accountId
+							}
+						}
+					})
 				})
 				.catch(() => {
 					if (!abort.signal.aborted) {

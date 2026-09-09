@@ -54,6 +54,9 @@ local. Only HTTPS verification URLs from pending operations can be opened.
 
 Pending operations are held in the DO's memory. Duplicate starts return the same
 operation, and cancellation prevents a late grant from replacing the account.
+Cancellation during a write restores the previous stored bytes before releasing
+the account lock. The operation becomes connected within the successful commit,
+so a later cancellation cannot undo a completed connection.
 Closing the panel requests cancellation. A DO restart expires the operation and
 requires another attempt; completed credentials are durable.
 
