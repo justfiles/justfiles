@@ -1,0 +1,456 @@
+.wp {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+}
+
+/* The simulation. Everything inside scales off the container's width, so the same
+   markup works at any pane width — it is never the real menubar or omnibar. */
+.wp-mini {
+	container-type: inline-size;
+	position: relative;
+	width: 100%;
+	aspect-ratio: 16 / 10;
+	overflow: hidden;
+	border-radius: 10px;
+	border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+	user-select: none;
+	--dock-scale: 0.3;
+}
+/* The type scale is on the CHILDREN, not on the container: a container query unit used ON
+   the container it would query resolves against the viewport instead (the spec breaks that
+   circularity), which sized this simulation off the window rather than off itself. */
+.wp-mini > * {
+	font-size: 2.6cqw;
+}
+.wp-field {
+	position: absolute;
+	inset: 0;
+	background: var(--desktop-bg);
+	background-size: cover;
+	background-position: center;
+}
+.wp-bar {
+	position: relative;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	height: 5.5cqw;
+	padding: 0 2cqw;
+	background: var(--surface);
+	color: var(--text);
+	border-bottom: 1px solid var(--rule);
+}
+.wp-bar-group {
+	display: flex;
+	align-items: center;
+	gap: 1.8cqw;
+}
+.wp-bar-title {
+	font-weight: 500;
+}
+.wp-quiet {
+	opacity: 0.6;
+}
+.wp-dot {
+	width: 0.5em;
+	height: 0.5em;
+	border-radius: 999px;
+	background: #22c55e;
+}
+.wp-avatar {
+	width: 1.3em;
+	height: 1.3em;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 25%, transparent);
+}
+.wp-windows {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	transition:
+		transform 250ms ease,
+		filter 250ms ease;
+}
+.wp-mini[data-open="true"] .wp-windows {
+	transform: scale(0.985);
+	filter: brightness(0.65) saturate(0.85);
+}
+.wp-win {
+	position: absolute;
+	border-radius: 0.5em;
+	overflow: hidden;
+	border: 1px solid rgba(255, 255, 255, 0.28);
+	background: var(--window-bg);
+	box-shadow: 0 0.5em 1.4em rgba(0, 0, 0, 0.3);
+}
+.wp-win[data-i="0"] {
+	left: 8%;
+	top: 22%;
+	width: 40%;
+}
+.wp-win[data-i="1"] {
+	left: 34%;
+	top: 38%;
+	width: 44%;
+}
+.wp-win-bar {
+	display: flex;
+	align-items: center;
+	gap: 0.3em;
+	height: 1.6em;
+	padding: 0 0.4em;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
+}
+.wp-win-bar i {
+	width: 0.45em;
+	height: 0.45em;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 30%, transparent);
+}
+.wp-win-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4em;
+	padding: 0.6em;
+}
+.wp-win-body b {
+	display: block;
+	height: 0.35em;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--text) 16%, transparent);
+}
+.wp-win-body b:nth-child(2) {
+	width: 70%;
+}
+.wp-win-body b:nth-child(3) {
+	width: 85%;
+}
+.wp-win-body b:nth-child(4) {
+	width: 45%;
+}
+.wp-dock {
+	position: absolute;
+	left: 50%;
+	bottom: 3.4cqw;
+	z-index: 2;
+	display: flex;
+	width: 72%;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0;
+	transform: translateX(-50%);
+	border: 0;
+	appearance: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: default;
+}
+.wp-dock-bar {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	padding: 0.5em;
+	border-radius: 0.85em;
+}
+.wp-dock-field {
+	display: flex;
+	width: 42%;
+	height: 2.1em;
+	flex: none;
+	align-items: center;
+	padding: 0 0.6em;
+	overflow: hidden;
+	border: 1px solid rgb(0 0 0 / 0.3);
+	border-bottom-color: rgb(255 255 255 / 0.12);
+	border-radius: 0.55em;
+	background: rgb(0 0 0 / 0.26);
+	box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.34);
+	color: rgb(242 245 249 / 0.62);
+	white-space: nowrap;
+	transition: width 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.wp-dock[data-open="true"] .wp-dock-field {
+	width: 100%;
+	flex: 1;
+}
+.wp-dock-apps {
+	display: flex;
+	align-items: center;
+	gap: 0.4em;
+}
+.wp-dock[data-open="true"] .wp-dock-apps {
+	display: none;
+}
+.wp-dock-key {
+	display: grid;
+	width: 2.6em;
+	height: 2.6em;
+	place-items: center;
+	border-radius: 0.65em;
+	background: var(--key);
+	box-shadow:
+		inset 0 0 0 1px rgb(0 0 0 / 0.12),
+		0 2px 5px rgb(0 0 0 / 0.38);
+	color: #fff;
+	font-size: 0.85em;
+	font-weight: 650;
+}
+.wp-dock-face {
+	width: 2.6em;
+	height: 2.6em;
+	border: 1px solid rgb(0 0 0 / 0.3);
+	border-radius: 50%;
+	background: #f0e2d0;
+	box-shadow: 0 2px 5px rgb(0 0 0 / 0.38);
+}
+.wp-dock-sheet {
+	overflow: hidden;
+	border-radius: 0.85em;
+}
+.wp-dock[data-open="false"] .wp-dock-sheet {
+	display: none;
+}
+.wp-dock-sheet-label {
+	padding: 0.6em 0.9em 0.45em;
+	border-bottom: 1px solid rgb(255 255 255 / 0.12);
+	color: rgb(242 245 249 / 0.62);
+	font-size: 0.72em;
+	font-weight: 650;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+}
+.wp-dock-grid {
+	display: grid;
+	grid-template-columns: repeat(5, 1fr);
+	gap: 0.7em;
+	padding: 0.8em 0.9em;
+}
+.wp-dock-grid span {
+	display: block;
+	aspect-ratio: 1;
+	border-radius: 0.6em;
+	background: var(--key);
+	box-shadow:
+		inset 0 0 0 1px rgb(0 0 0 / 0.12),
+		0 2px 5px rgb(0 0 0 / 0.38);
+}
+.wp-hint {
+	margin: -5px 0 0;
+	font-size: 11px;
+	text-align: center;
+	opacity: 0.45;
+}
+
+/* The tray: one frosted row, off the wallpaper. Dark in both themes on purpose — it
+   reads as an instrument rather than as part of the page. */
+.wp-tray {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-radius: 14px;
+	color: #fff;
+	background: rgba(28, 28, 30, 0.55);
+	border: 1px solid rgba(255, 255, 255, 0.22);
+	box-shadow: 0 10px 26px rgba(0, 0, 0, 0.3);
+	backdrop-filter: blur(18px) saturate(180%);
+}
+.wp-chips {
+	display: flex;
+	gap: 6px;
+}
+.wp-tile {
+	position: relative;
+	flex: none;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border-radius: 8px;
+	border: 1px solid rgba(255, 255, 255, 0.32);
+	background-size: cover;
+	background-position: center;
+}
+.wp-tile[aria-pressed="true"],
+.wp-pick[data-on="true"] {
+	box-shadow:
+		0 0 0 2px rgba(0, 0, 0, 0.4),
+		0 0 0 3.5px #fff;
+}
+.wp-check {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	font-size: 13px;
+	color: #fff;
+	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+	opacity: 0;
+}
+.wp-tile[aria-pressed="true"] .wp-check {
+	opacity: 1;
+}
+/* A tick on a pale swatch has to go dark. */
+.wp-tile[data-light="true"] .wp-check {
+	color: #2b2b2b;
+	text-shadow: none;
+}
+.wp-sep {
+	flex: none;
+	width: 1px;
+	height: 26px;
+	background: rgba(255, 255, 255, 0.42);
+}
+/* The conic ring says "any colour" so the well needs no label; the native input does the work. */
+.wp-well {
+	position: relative;
+	flex: none;
+	width: 30px;
+	height: 30px;
+	padding: 2px;
+	overflow: hidden;
+	border-radius: 8px;
+	background: conic-gradient(#ff6b6b, #ffd93d, #6bcb77, #4d96ff, #b57bff, #ff6b6b);
+}
+.wp-well input {
+	width: 100%;
+	height: 100%;
+	padding: 0;
+	border: 0;
+	border-radius: 6px;
+	background: none;
+}
+.wp-well input::-webkit-color-swatch-wrapper {
+	padding: 0;
+}
+.wp-well input::-webkit-color-swatch {
+	border: none;
+	border-radius: 6px;
+}
+.wp-well[data-on="true"] {
+	outline: 2px solid #fff;
+	outline-offset: 2px;
+}
+/* Your picture: a dashed tile until one is set, then it IS the thumbnail. */
+.wp-pick {
+	display: grid;
+	place-items: center;
+	border-style: dashed;
+	border-color: rgba(255, 255, 255, 0.5);
+	background: rgba(255, 255, 255, 0.12);
+	font-size: 15px;
+	cursor: default;
+}
+.wp-pick[data-has="true"] {
+	border-style: solid;
+}
+.wp-pick input {
+	display: none;
+}
+.wp-caption {
+	font-size: 11px;
+	opacity: 0.55;
+	font-variant-numeric: tabular-nums;
+}
+.wp-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
+	margin-top: 10px;
+}
+.mat-row {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: 8px;
+}
+.mat-tile {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	gap: 5px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: center;
+}
+.mat-sample {
+	position: relative;
+	height: 88px;
+	overflow: hidden;
+	border: 1px solid rgb(0 0 0 / 0.2);
+	border-radius: 8px;
+	background: var(--desktop-bg);
+	background-position: center;
+	background-size: cover;
+}
+.mat-bar {
+	position: absolute;
+	right: 8px;
+	bottom: 12px;
+	left: 8px;
+	display: flex;
+	height: 62px;
+	align-items: center;
+	gap: 8px;
+	padding: 9px;
+	border-radius: 14px;
+}
+.mat-field {
+	height: 34px;
+	flex: 1;
+	border: 1px solid rgb(0 0 0 / 0.3);
+	border-bottom-color: rgb(255 255 255 / 0.12);
+	border-radius: 9px;
+	background: rgb(0 0 0 / 0.26);
+	box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.34);
+}
+.mat-key {
+	display: grid;
+	width: 40px;
+	height: 40px;
+	flex: none;
+	place-items: center;
+	border-radius: 11px;
+	background: #e0a13c;
+	box-shadow:
+		inset 0 0 0 1px rgb(0 0 0 / 0.12),
+		0 2px 5px rgb(0 0 0 / 0.38);
+	color: #fff;
+	font-weight: 650;
+}
+.mat-label {
+	overflow: hidden;
+	font-size: 11px;
+	opacity: 0.55;
+	text-overflow: ellipsis;
+}
+.mat-tile[aria-pressed="true"] .mat-sample,
+.mat-tile:focus-visible .mat-sample {
+	outline: 2px solid var(--focus);
+	outline-offset: 2px;
+}
+.mat-tile[aria-pressed="true"] .mat-label {
+	font-weight: 600;
+	opacity: 1;
+}
+.mat-caption {
+	min-height: 2.4em;
+	margin: 0;
+	font-size: 11.5px;
+	opacity: 0.6;
+}
+@media (prefers-reduced-motion: reduce) {
+	.wp-windows,
+	.wp-dock-field {
+		transition-duration: 0s;
+	}
+}

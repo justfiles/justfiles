@@ -1,4 +1,5 @@
 import { escalatesCapabilities, semverGte } from '@justfiles/app/appstore'
+import { settingsCategory } from '@justfiles/ui/settings/types'
 import {
 	ArrowClockwiseIcon,
 	ArrowSquareOutIcon,
@@ -35,7 +36,6 @@ import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
 import { MigrationSheet } from './MigrationSheet'
 import { useDockMaterial } from './wallpaper'
 
-const SETTINGS_APP_ID = 'justfiles.settings'
 const MIGRATION_THREAD = 'local-migration'
 const APP_UPDATES_THREAD = 'held-app-updates'
 const DOCK_FIXED_WIDTH = 213
@@ -302,7 +302,7 @@ export function Omnibar({
 	const dispatchRoute = (route: Route) => {
 		if (route.kind === 'chat') openConversation()
 		else if (route.kind === 'app') dispatch({ type: 'app.open', appId: route.id })
-		else dispatch({ type: 'app.open', appId: SETTINGS_APP_ID })
+		else dispatch({ type: 'settings.open', category: settingsCategory(route.pane) })
 	}
 	const runNotification = (entry: NotificationEntry) => {
 		if (entry.notification.threadId === MIGRATION_THREAD) {

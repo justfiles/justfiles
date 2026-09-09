@@ -1,3 +1,4 @@
+import type { Category } from '@justfiles/ui/settings/types'
 export type WindowRect = { x: number; y: number; w: number; h: number }
 
 export type WindowMode = 'floating' | 'minimized' | 'fullscreen'
@@ -19,7 +20,8 @@ export const initialAttachedAgentState: AttachedAgentState = {
 // window entry describes only the running session (kind/appId/title/mode).
 export type OsWindow = {
 	id: string
-	kind: 'app' | 'agent'
+	kind: 'app' | 'agent' | 'settings'
+	category?: Category
 	appId?: string
 	title?: string
 	mode: WindowMode
@@ -27,6 +29,7 @@ export type OsWindow = {
 
 // The conversation window is a singleton view of the one current session.
 export const AGENT_WINDOW_ID = 'agent'
+export const SETTINGS_WINDOW_ID = 'settings'
 
 export type OsState = {
 	version: 1
@@ -49,6 +52,7 @@ export type OsAction =
 	// server (which would loop, since the server broadcasts to all clients).
 	| { type: 'app.open'; appId: string; title?: string; remote?: boolean }
 	| { type: 'agent.openWindow' }
+	| { type: 'settings.open'; category?: Category }
 	| { type: 'window.close'; id: string; remote?: boolean }
 	| { type: 'window.focus'; id: string }
 	| { type: 'window.rectUpdated'; id: string; rect: WindowRect }

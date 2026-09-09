@@ -5,6 +5,7 @@ import {
 	type OsAction,
 	type OsState,
 	type OsWindow,
+	SETTINGS_WINDOW_ID,
 	type WindowRect
 } from './state'
 
@@ -67,6 +68,30 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 				// Reuse a remembered placement (relaunch resumes where it was); a
 				// first-ever open falls back to the cascade default. Every open window
 				// thus has a placement, so the renderer never lacks a rect.
+				placements: {
+					...state.placements,
+					[id]: state.placements[id] ?? defaultRect(state.openOrder.length)
+				}
+			}
+		}
+
+		case 'settings.open': {
+			const id = SETTINGS_WINDOW_ID
+			const existing = state.windows[id]
+			return {
+				...state,
+				windows: {
+					...state.windows,
+					[id]: {
+						id,
+						kind: 'settings',
+						title: 'Settings',
+						mode: existing?.mode === 'fullscreen' ? 'fullscreen' : 'floating',
+						category: action.category ?? existing?.category ?? 'agent'
+					}
+				},
+				openOrder: existing ? state.openOrder : [...state.openOrder, id],
+				focusStack: bringToFront(state.focusStack, id),
 				placements: {
 					...state.placements,
 					[id]: state.placements[id] ?? defaultRect(state.openOrder.length)

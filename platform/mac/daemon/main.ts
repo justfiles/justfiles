@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
 import type { SessionClientMessage, SessionServerMessage } from '@justfiles/agent/protocol'
 import type { AppManifest } from '@justfiles/app/runtime'
+import { serveSettings } from '@justfiles/ui/settings/http'
 import type { Server, ServerWebSocket } from 'bun'
 import type { AttachedAgentClientMessage, AttachedAgentServerMessage } from '../attached-agent'
 import {
@@ -24,7 +25,7 @@ import {
 	writeRuntime
 } from './fs'
 import { type Identity, identity } from './identity'
-import { closeKernel, getKernel } from './kernel'
+import { closeKernel, getKernel, getSettings } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
 import type { ClientMessage, ServerMessage } from './protocol'
@@ -93,6 +94,7 @@ const agentTopic = (appId?: string): string =>
 export interface ServerOptions {
 	// TCP port; default OS-ephemeral shipped (0) / a fixed 3000 in dev, honoring PORT.
 	port?: number
+	token?: string
 	// OS `.app` projection; default reconciles the real bundles. Tests pass a no-op so a run
 	// never touches ~/Applications (or runs codesign/lsregister).
 	projectApps?: (apps: ProjectionApp[]) => Promise<void>
@@ -142,6 +144,18 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 			// The App Store, likewise — the native launcher has its own AppKit grid, so the store
 			// reaches it as a page rather than as part of the web launcher.
 			'/launcher/store': () => serveClient('launcher/store.html'),
+			'/launcher/settings': () => serveClient('launcher/settings.html'),
+			'/settings/:method': {
+				POST: async (req) => {
+					if (
+						crossOrigin(req) ||
+						!options.token ||
+						req.headers.get('authorization') !== `Bearer ${options.token}`
+					)
+						return new Response('Forbidden', { status: 403 })
+					return serveSettings(req, await getSettings())
+				}
+			},
 			'/app/:id': () => serveClient('app/shell.html'),
 			'/app/:id/gui.js': async (req) => {
 				try {
@@ -536,7 +550,7 @@ export async function startDaemon(
 				.catch((error) => console.error('daemon: failed to close after identity change', error))
 				.finally(terminate)
 		})
-		server = serve(options, identityCommands)
+		server = serve({ ...options, token }, identityCommands)
 		const port = server.port
 		if (port === undefined) throw new Error('daemon: server has no TCP port')
 		await writeRuntime({ port, token, pid: process.pid })

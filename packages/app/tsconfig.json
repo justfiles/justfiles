@@ -5,6 +5,6 @@
 		"outDir": "./dist",
 		"rootDir": "."
 	},
-	"include": ["*.ts", "capabilities/**/*.ts"],
+	"include": ["*.ts", "capabilities/**/*.ts", "accounts/**/*.ts"],
 	"exclude": ["node_modules", "dist", "**/*.test.ts", "test-bundle"]
 }

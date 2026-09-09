@@ -2,7 +2,7 @@
 // so this drives `buildKernel` over a throwaway temp Volume: the kernel + the shared
 // reducer sandbox pool + `volumeCapability` over a real native-FS Volume. Files declares
 // the `volume` capability with the `system` scope (the daemon's one systemAllowlist entry), so
-// dispatching `refresh` scans the actual volume root — proving a capability-using reducer
+// calling `listDirectories` reads an actual volume folder — proving a capability-using reducer
 // reaches real files, not a stub. The per-app `/data/<id>` chroot and non-allowlisted
 // `system` denial live in the package-level capability tests; here we lock in the daemon's
 // own wiring. Bun-only (`bun test`): the reducer sandbox uses blob-URL Workers.
@@ -11,11 +11,11 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/capabilities/accounts/host'
-import type { Kernel, Message } from '@justfiles/app/runtime'
+import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/accounts/host'
+import type { Kernel } from '@justfiles/app/runtime'
 import { volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
-import { buildKernel, daemonAccounts } from './kernel.ts'
+import { buildKernel, daemonAccounts, daemonSettings } from './kernel.ts'
 import { sandboxes } from './sandbox.ts'
 
 const FILES = 'justfiles.files'
@@ -51,74 +51,51 @@ async function poll<T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T
 	throw new Error('poll timed out')
 }
 
-type FilesState = { files: Array<{ path: string }> }
-
 test('seeds the builtin catalog into the fresh Volume', async () => {
 	const ids = (await kernel.list()).map((app) => app.id)
 	// reconcile ran during buildKernel — the launcher's catalog is populated.
 	expect(ids).toContain(FILES)
-	expect(ids).toContain(SETTINGS)
+	expect(ids).not.toContain(SETTINGS)
 	// Code is NOT seeded (see builtins.ts): it installs from the App Store tile.
 	expect(ids).not.toContain('justfiles.code')
 })
 
 test('Files reads the real volume through the system-scoped volume capability', async () => {
-	sandboxes.retain(FILES) // pin its reducer worker the way an open window would
-	await kernel.dispatch(FILES, { type: 'refresh', params: {} } as Message)
-
-	// refresh emits a coalesced `volume.scan` over the `system` scope; its result
-	// folds back as `filesLoaded`, populating `files`. Poll until the scan lands.
-	const state = await poll(
-		() => kernel.state(FILES) as Promise<FilesState>,
-		(s) => s.files.length > 0
-	)
-
-	// The scan walked the seeded volume — every built-in bundle lives under
-	// /applications, so the root scope sees real, on-disk files.
-	expect(state.files.length).toBeGreaterThan(0)
-	expect(state.files.some((f) => f.path.startsWith('/applications/'))).toBe(true)
-
-	sandboxes.release(FILES)
+	sandboxes.retain(FILES)
+	try {
+		const result = (await kernel.dispatch(FILES, {
+			type: 'listDirectories',
+			params: { paths: ['/applications'] }
+		})) as { path: string; entries: { name: string }[] }[]
+		expect(result[0]?.path).toBe('/applications')
+		expect(result[0]?.entries.map((entry) => entry.name)).toContain(FILES)
+	} finally {
+		sandboxes.release(FILES)
+	}
 })
 
-test('soul preview keeps the capability error when no AI account is enabled', async () => {
+test('soul preview reports unavailable when no AI account is enabled', async () => {
 	const fs = volume(fsStore(await tempRoot('no-ai')))
-	const offline = await buildKernel(fs, daemonAccounts(fs, { getToken: async () => null }))
-
-	await expect(
-		offline.dispatch(SETTINGS, {
-			type: 'generateSoul',
-			params: { name: 'Fern', gender: 'female', archetype: 'companion' }
-		} as Message)
-	).rejects.toThrow('CAPABILITY_UNAVAILABLE')
+	const settings = daemonSettings(fs, daemonAccounts(fs, { getToken: async () => null }))
+	await expect(settings.generateSoul({ name: 'Fern', gender: 'female' })).rejects.toThrow(
+		'SETTINGS_UNAVAILABLE'
+	)
 })
 
-test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)', async () => {
+test('a secretCodec passed to the host seals the accounts store at rest (A4)', async () => {
 	const sealedRoot = await tempRoot('sealed')
 	const sealedFs = volume(fsStore(sealedRoot))
-	const sealed = await buildKernel(
+	const sealed = daemonSettings(
 		sealedFs,
 		daemonAccounts(sealedFs, { secretCodec: aesGcmSecretCodec('a-test-root-secret') })
 	)
 
-	// A form provider (iCloud) round-tripped through the daemon's REAL wiring: the
-	// settings app's `connectAccount` procedure invoking the `settings` capability's
-	// `accounts.connect`, which is `buildKernel`'s own `accountsCapabilities(...)`.
-	await sealed.dispatch(SETTINGS, {
-		type: 'connectAccount',
-		params: {
-			providerId: 'icloud',
-			credentials: { username: 'me@example.com', password: 'SEKRIT-APP-PASSWORD' }
-		}
-	} as Message)
+	await sealed.connectAccount({
+		providerId: 'icloud',
+		credentials: { username: 'me@example.com', password: 'SEKRIT-APP-PASSWORD' }
+	})
 
-	// It reads back through the SAME kernel/codec — the round trip. Polled first, because
-	// `connectAccount` completes asynchronously: the account surfacing in state is what proves
-	// the record has been written, so the raw file below is there to read.
-	const state = await poll(
-		() => sealed.state(SETTINGS) as Promise<{ accounts: Array<{ accountId: string }> }>,
-		(s) => s.accounts.length > 0
-	)
+	const state = { accounts: await sealed.listAccounts({}) }
 	expect(state.accounts.map((a) => a.accountId)).toContain('me@example.com')
 
 	// And the raw file on disk carries no plaintext credential substring.
@@ -129,27 +106,24 @@ test('a secretCodec passed to buildKernel seals the accounts store at rest (A4)'
 	expect(raw).not.toContain('SEKRIT-APP-PASSWORD')
 })
 
-test('a secretCodec passed to buildKernel seals PRE-EXISTING plaintext accounts on boot (upgrade path)', async () => {
+test('a secretCodec passed to the host seals PRE-EXISTING plaintext accounts on boot (upgrade path)', async () => {
 	const upgradeRoot = await tempRoot('upgrade')
 
 	// Connect an account with no codec — exactly what every account on disk before this
 	// feature landed looks like.
 	const clearFs = volume(fsStore(upgradeRoot))
-	const clear = await buildKernel(clearFs, daemonAccounts(clearFs))
-	await clear.dispatch(SETTINGS, {
-		type: 'connectAccount',
-		params: {
-			providerId: 'icloud',
-			credentials: { username: 'old@example.com', password: 'PRE-EXISTING-PW' }
-		}
-	} as Message)
+	const clear = daemonSettings(clearFs, daemonAccounts(clearFs))
+	await clear.connectAccount({
+		providerId: 'icloud',
+		credentials: { username: 'old@example.com', password: 'PRE-EXISTING-PW' }
+	})
 	const accountPath = join(
 		upgradeRoot,
 		'private',
 		'accounts',
 		`${encodeURIComponent('old@example.com')}.json`
 	)
-	// Polled, not read once: `connectAccount` completes asynchronously.
+	// Wait for the asynchronous credential reseal sweep.
 	await poll(
 		() => readFile(accountPath, 'utf8').catch(() => ''),
 		(raw) => raw.includes('PRE-EXISTING-PW')
@@ -172,14 +146,11 @@ test('a kernel whose key can never be read still boots — the creds lane degrad
 	const deadRoot = await tempRoot('nokey')
 	// A pre-A4 plaintext record, so the boot reseal sweep has work to do — and hits the wall.
 	const clearFs = volume(fsStore(deadRoot))
-	const clear = await buildKernel(clearFs, daemonAccounts(clearFs))
-	await clear.dispatch(SETTINGS, {
-		type: 'connectAccount',
-		params: {
-			providerId: 'icloud',
-			credentials: { username: 'old@example.com', password: 'STILL-HERE-PW' }
-		}
-	} as Message)
+	const clear = daemonSettings(clearFs, daemonAccounts(clearFs))
+	await clear.connectAccount({
+		providerId: 'icloud',
+		credentials: { username: 'old@example.com', password: 'STILL-HERE-PW' }
+	})
 	const oldPath = join(
 		deadRoot,
 		'private',
@@ -211,15 +182,14 @@ test('a kernel whose key can never be read still boots — the creds lane degrad
 	expect(await readFile(oldPath, 'utf8')).toContain('STILL-HERE-PW')
 
 	// And a NEW connect fails closed — no plaintext credential on disk, no daemon crash.
-	await dead
-		.dispatch(SETTINGS, {
-			type: 'connectAccount',
-			params: {
-				providerId: 'icloud',
-				credentials: { username: 'x@example.com', password: 'UNSEALABLE-PW' }
-			}
-		} as Message)
-		.catch(() => {})
+	const settings = daemonSettings(deadFs, daemonAccounts(deadFs, { secretCodec: locked }))
+	await expect(
+		settings.connectAccount({
+			providerId: 'icloud',
+			credentials: { username: 'x@example.com', password: 'UNSEALABLE-PW' }
+		})
+	).rejects.toThrow()
+
 	const raw = await readFile(
 		join(deadRoot, 'private', 'accounts', `${encodeURIComponent('x@example.com')}.json`),
 		'utf8'

@@ -9,25 +9,21 @@ import {
 } from '@justfiles/agent'
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
+import { type HostAccounts, hostAccounts, type SecretCodec } from '@justfiles/app/accounts/host'
+import { googleProvider, icloudProvider } from '@justfiles/app/accounts/providers'
 import { materialise, reconcile } from '@justfiles/app/appstore'
-import { type Capabilities, CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
-import {
-	type HostAccounts,
-	hostAccounts,
-	type SecretCodec
-} from '@justfiles/app/capabilities/accounts/host'
-import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
+import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
-import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
+import { createSettingsHost } from '@justfiles/ui/settings/host'
 import { UPDATE_CHECK_INTERVAL_MS } from '../../shared/justapps'
 import { migrateFirstPartyAppIds } from '../../shared/migrate-app-ids'
 import { appAssets } from './app-assets'
 import { builtinStore } from './builtins'
-import { cloudCapabilities } from './cloud-capabilities'
+import { cloudAccounts } from './cloud-accounts'
 import { coalesce } from './coalesce'
 import { getStorage, getVolume, platformOrigin } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
@@ -52,8 +48,6 @@ const accountProviders = () => [
 ]
 
 interface DaemonAccounts extends HostAccounts {
-	remote: Capabilities
-	dispose(): void
 	resolveBackend(): Promise<AgentBackend | null>
 }
 
@@ -73,7 +67,6 @@ export function daemonAccounts(
 		origin: opts.origin ?? platformOrigin(),
 		getToken: opts.getToken ?? (() => identity.getToken())
 	}
-	const remote = cloudCapabilities(cloud)
 	const accounts = hostAccounts(accountProviders(), fs, {
 		// Every account this daemon holds was connected directly on this Mac (D1) — the
 		// `device` lane in the "one account, many hosts" design (#296). Labelled by
@@ -81,36 +74,9 @@ export function daemonAccounts(
 		origin: { kind: 'device', label: hostname() },
 		...(opts.secretCodec && { secretCodec: opts.secretCodec })
 	})
-	const admin = accounts.admin
 	return {
 		...accounts,
-		admin: {
-			...admin,
-			// The cloud owns ChatGPT now. Keep old local credentials until a cloud
-			// connection succeeds, but never offer the retired local provider.
-			listAccounts: async (input) =>
-				(await admin.listAccounts(input)).filter((a) => a.providerId !== 'chatgpt')
-		},
-		remote: {
-			...remote,
-			invoke: async (call) => {
-				const result = await remote.invoke(call)
-				if (call.method !== 'accounts.listAccounts' || !Array.isArray(result)) return result
-				// Email/calendar still execute locally on this Mac. Only cloud AI accounts
-				// belong in its Settings list until those capabilities also have a remote host.
-				const visible = result.filter((account) =>
-					['chatgpt', 'frieren'].includes(account.providerId)
-				)
-				if (visible.some((a) => a.providerId === 'chatgpt')) {
-					for (const account of await admin.listAccounts({})) {
-						if (account.providerId === 'chatgpt')
-							await admin.disconnect({ accountId: account.accountId })
-					}
-				}
-				return visible
-			}
-		},
-		dispose: remote.dispose,
+		admin: cloudAccounts(accounts.admin, cloud),
 		resolveBackend: createPlatformAi(cloud)
 	}
 }
@@ -126,6 +92,44 @@ export function getAccounts(): Promise<DaemonAccounts> {
 		daemonAccounts(fs, { secretCodec: accountsSecretCodec })
 	)
 	return accountsOnce
+}
+
+let settingsOnce: Promise<ReturnType<typeof createSettingsHost>> | undefined
+export function getSettings() {
+	settingsOnce ??= Promise.all([getVolume(), getAccounts()]).then(([fs, accounts]) =>
+		daemonSettings(fs, accounts)
+	)
+	return settingsOnce
+}
+
+export function daemonSettings(fs: Volume, accounts: DaemonAccounts) {
+	return createSettingsHost({
+		accounts: accounts.admin,
+		openUrl: (url) =>
+			new Promise<void>((resolve, reject) =>
+				execFile('open', [url], (error) => (error ? reject(error) : resolve()))
+			),
+		user: () => identity.currentUser(),
+		agent: {
+			volume: fs,
+			paths: IDENTITY_PATHS,
+			defaults: IDENTITY_DEFAULTS,
+			// This Mac serves its own avatar list, built-ins included — the art is in the
+			// daemon's own bundle, so a picker here needs nothing from the cloud.
+			builtins: BUILTIN_AVATARS,
+			generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
+				const backend = await accounts.resolveBackend()
+				if (!backend) throw new Error('SETTINGS_UNAVAILABLE')
+				return generateSoul(backend, {
+					agentName: name,
+					agentGender: gender,
+					archetype: archetype as SoulGenerationInput['archetype'],
+					userAge,
+					userGender
+				})
+			}
+		}
+	})
 }
 
 export function getKernel(): Promise<Kernel> {
@@ -163,11 +167,10 @@ export async function closeKernel(): Promise<void> {
 	await appBoot
 	const active = await kernelOnce?.catch(() => undefined)
 	active?.dispose()
-	;(await accountsOnce)?.dispose()
 }
 
 // Build the kernel over a given Volume + that Volume's account module: the capability
-// registry (volume/devkit/settings/email/calendar/ai/notify), the reducer sandbox pool, and
+// registry (volume/devkit/email/calendar/ai/notify), the reducer sandbox pool, and
 // the seeded builtin catalog. `getKernel` memoises this over the process Volume; tests build
 // a throwaway kernel over a temp Volume (so they never touch the real support tree or share
 // the daemon's singleton).
@@ -214,41 +217,6 @@ async function makeKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel>
 					overwrite: true
 				})
 			},
-			// The host admin surface, reachable only by the first-party Settings app. No
-			// usage meter here (its pane hides itself); `host.user` answers the daemon's own
-			// Platform identity (E1) — null, i.e. "Local user", until someone runs `/sign-in`.
-			// `agent.*` is where this Mac finally gets personalization: the identity files are
-			// on the native Volume, and the soul generator is the active AI account's model —
-			// absent (signed out, or nothing turned on) makes only Rewrite UNAVAILABLE, so the
-			// pane still works and you write the soul yourself.
-			settings: settingsHost({
-				accounts: accounts.admin,
-				remote: accounts.remote,
-				openUrl: (url) =>
-					new Promise<void>((resolve, reject) =>
-						execFile('open', [url], (error) => (error ? reject(error) : resolve()))
-					),
-				user: () => identity.currentUser(),
-				agent: {
-					volume: fs,
-					paths: IDENTITY_PATHS,
-					defaults: IDENTITY_DEFAULTS,
-					// This Mac serves its own avatar list, built-ins included — the art is in the
-					// daemon's own bundle, so a picker here needs nothing from the cloud.
-					builtins: BUILTIN_AVATARS,
-					generateSoul: async ({ name, gender, archetype, userAge, userGender }) => {
-						const backend = await accounts.resolveBackend()
-						if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'settings')
-						return generateSoul(backend, {
-							agentName: name,
-							agentGender: gender,
-							archetype: archetype as SoulGenerationInput['archetype'],
-							userAge,
-							userGender
-						})
-					}
-				}
-			}),
 			email: accounts.email,
 			calendar: accounts.calendar,
 			ai,

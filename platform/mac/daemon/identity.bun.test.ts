@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AuthFlow } from '@justfiles/app/capabilities/accounts/providers'
+import type { AuthFlow } from '@justfiles/app/accounts/providers'
 import { createIdentity, custodyAccount, type IdentityDeps } from './identity.ts'
 import { keychainStore, type SecretStore } from './keychain.ts'
 

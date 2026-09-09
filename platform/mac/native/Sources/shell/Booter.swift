@@ -3,8 +3,8 @@ import WebKit
 
 // The booter: a dumb window with an OS identity. It holds no app logic and no
 // assets — it ensures daemon is running, then opens a WKWebView at
-// http://127.0.0.1:PORT/app/<id>?token=… (Slice 7), where daemon serves the shell +
-// the app's real gui.js and a token-scoped Cap'n Web berth. A `--url`/TargetURL
+// http://127.0.0.1:PORT/app/<id>, where the daemon serves the shell +
+// the app's real gui.js. A `--url`/TargetURL
 // override is kept for dev; without daemon it shows a placeholder.
 
 final class BooterDelegate: NSObject, NSApplicationDelegate {
@@ -124,14 +124,13 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 		}
 	}
 
-	// The localhost shell URL for this app on a running daemon: token-scoped to one app.
+	// App windows do not receive the launcher’s host token.
 	private static func appURL(_ runtime: Daemon.Runtime, appId: String) -> URL {
 		var components = URLComponents()
 		components.scheme = "http"
 		components.host = "127.0.0.1"
 		components.port = runtime.port
 		components.path = "/app/\(appId)"
-		components.queryItems = [URLQueryItem(name: "token", value: runtime.token)]
 		return components.url!
 	}
 

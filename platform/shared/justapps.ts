@@ -6,6 +6,7 @@ import {
 	type StoreApp
 } from '../../packages/app/appstore.protocol.ts'
 import type { AppStore, CatalogApp } from '../../packages/app/appstore.ts'
+import { RETIRED_SETTINGS_IDS } from './migrate-app-ids'
 
 export const RUNNER_STORE_URL = 'https://justapps.run/store.json'
 export { MANIFEST_SCHEMA as RUNNER_MANIFEST_SCHEMA, STORE_SCHEMA as RUNNER_STORE_SCHEMA }
@@ -15,7 +16,6 @@ export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 const BUILTIN_IDS = [
 	'justfiles.code',
 	'justfiles.files',
-	'justfiles.settings',
 	'justfiles.notes',
 	'justfiles.paint',
 	'justfiles.dictionary',
@@ -75,7 +75,7 @@ export async function runnerAppStore(
 		if (!response.ok) return null
 		const index: unknown = await response.json()
 		if (!isRecord(index) || index.schema !== STORE_SCHEMA || !Array.isArray(index.apps)) return null
-		entries = index.apps.filter(isStoreEntry)
+		entries = index.apps.filter(isStoreEntry).filter((app) => !RETIRED_SETTINGS_IDS.has(app.id))
 	} catch {
 		return null
 	}

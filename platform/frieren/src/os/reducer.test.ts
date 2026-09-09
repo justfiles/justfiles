@@ -223,3 +223,14 @@ describe('osReducer', () => {
 		expect(new Set(state.focusStack).size).toBe(state.focusStack.length)
 	})
 })
+
+test('Settings opens as a shell window and reopens on the requested pane', () => {
+	const opened = osReducer(initialState, { type: 'settings.open', category: 'appearance' })
+	expect(opened.windows.settings).toMatchObject({ kind: 'settings', category: 'appearance' })
+	expect(opened.windows.settings?.appId).toBeUndefined()
+	const minimized = osReducer(opened, { type: 'window.setMode', id: 'settings', mode: 'minimized' })
+	const reopened = osReducer(minimized, { type: 'settings.open', category: 'accounts' })
+	expect(reopened.windows.settings).toMatchObject({ mode: 'floating', category: 'accounts' })
+	expect(reopened.openOrder).toEqual(['settings'])
+	expect(reopened.focusStack.at(-1)).toBe('settings')
+})

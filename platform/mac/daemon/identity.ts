@@ -57,8 +57,8 @@
 // is at least loud and recoverable: `invalid_grant` clears custody and the UI says sign in
 // again.
 
-import type { AuthFlow } from '@justfiles/app/capabilities/accounts/providers'
-import type { UserProfile } from '@justfiles/app/capabilities/settings'
+import type { AuthFlow } from '@justfiles/app/accounts/providers'
+import type { UserProfile } from '@justfiles/ui/settings/types'
 import { loopbackAuthFlow } from './google/oauth'
 import { keychainStore, type SecretStore } from './keychain'
 import { SHIPPED } from './resources'

@@ -43,19 +43,17 @@ import {
 	snapshotMessage,
 	updateMessages
 } from '@justfiles/agent/protocol'
-import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	type AiAccountLease,
 	aesGcmSecretCodec,
 	type HostAccounts,
 	hostAccounts,
 	type SecretCodec
-} from '@justfiles/app/capabilities/accounts/host'
+} from '@justfiles/app/accounts/host'
+import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import { readerHost } from '@justfiles/app/capabilities/reader/host'
-import type { UsageSnapshot } from '@justfiles/app/capabilities/settings'
-import { settingsHost } from '@justfiles/app/capabilities/settings/host'
 import {
 	clearReset,
 	createDoAdapter,
@@ -81,6 +79,9 @@ import { announceMount, type Volume, volume } from '@justfiles/fs'
 import { authority } from '@justfiles/fs/authority'
 import { ROOT, type Store } from '@justfiles/fs/store'
 import { privateSyncState, syncStateLock } from '@justfiles/fs/syncState'
+import { createSettingsHost } from '@justfiles/ui/settings/host'
+import { serveSettings } from '@justfiles/ui/settings/http'
+import type { UsageSnapshot } from '@justfiles/ui/settings/types'
 import { Hono } from 'hono'
 import { PRIVATE_MOUNT } from '../shared/private.ts'
 import { chatgptAccount } from './accounts/chatgpt.ts'
@@ -299,6 +300,7 @@ export class Frieren extends DurableObject<Env> {
 				'/api/v1/apps',
 				createAppActionsGateway({ controller: () => this.getApps().controller })
 			)
+			.post('/api/settings/:method', (c) => serveSettings(c.req.raw, this.getSettings()))
 			.post('/api/agent/face', async (c) => {
 				const body = await c.req.json<{ avatar?: string; expression?: string; hash?: string }>()
 				const expression = EXPRESSIONS.find((name) => name === body?.expression)
@@ -324,10 +326,6 @@ export class Frieren extends DurableObject<Env> {
 				// cosmetic, so "you are out of AI budget" is not worth saying for it.
 				return face ? c.json(face) : c.json({ skipped: true })
 			})
-			// The metered usage + plan caps are NOT an HTTP route: they are served as `host.usage`
-			// on the settings capability (see `settingsHost` below), which is the contract the
-			// Settings app renders on every host. A second, differently-shaped surface for the same
-			// counters is how the two drift.
 			// C1 (#297): the metered inference gateway a signed-in daemon (C2) hits directly,
 			// same model + same meter the in-process agent backend uses below — one source of
 			// truth for what "the platform's AI" means, on the web or on the Mac.
@@ -507,27 +505,33 @@ export class Frieren extends DurableObject<Env> {
 			image: caps.image,
 			email: guardCapability(caps.email, { capability: 'email', audit, rateLimit }),
 			calendar: guardCapability(caps.calendar, { capability: 'calendar', audit, rateLimit }),
-			reader: readerHost(),
-			settings: settingsHost({
-				accounts: caps.admin,
-				usage: () => this.usageSnapshot(),
-				agent: {
-					volume: this.volume,
-					paths: IDENTITY_PATHS,
-					defaults: IDENTITY_DEFAULTS,
-					timezone: () => resolveTimezone(this.volume, this.cfTimezone),
-					generateSoul: ({ name, gender, archetype, userAge, userGender }) =>
-						this.generateSoul({
-							agentName: name,
-							agentGender: gender,
-							archetype: archetype as SoulGenerationInput['archetype'],
-							userAge,
-							userGender
-						})
-				}
-			})
+			reader: readerHost()
 		})
 		return this.apps
+	}
+
+	private settingsHost: ReturnType<typeof createSettingsHost> | undefined
+
+	private getSettings() {
+		this.settingsHost ??= createSettingsHost({
+			accounts: this.getAccounts().admin,
+			usage: () => this.usageSnapshot(),
+			agent: {
+				volume: this.volume,
+				paths: IDENTITY_PATHS,
+				defaults: IDENTITY_DEFAULTS,
+				timezone: () => resolveTimezone(this.volume, this.cfTimezone),
+				generateSoul: ({ name, gender, archetype, userAge, userGender }) =>
+					this.generateSoul({
+						agentName: name,
+						agentGender: gender,
+						archetype: archetype as SoulGenerationInput['archetype'],
+						userAge,
+						userGender
+					})
+			}
+		})
+		return this.settingsHost
 	}
 
 	private getSession(agentId?: string): AgentSession {

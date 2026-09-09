@@ -63,18 +63,20 @@ describe('migrateFirstPartyAppIds', () => {
 
 	test('uses an exact map for every existing first-party app', () => {
 		expect(FIRST_PARTY_APP_ID_RENAMES).toEqual(
-			[
-				'code',
-				'crossword',
-				'dictionary',
-				'doom',
-				'draw',
-				'files',
-				'notes',
-				'paint',
-				'pixel',
-				'settings'
-			].map((id) => [`app.justfiles.frieren.${id}`, `justfiles.${id}`])
+			['code', 'crossword', 'dictionary', 'doom', 'draw', 'files', 'notes', 'paint', 'pixel'].map(
+				(id) => [`app.justfiles.frieren.${id}`, `justfiles.${id}`]
+			)
 		)
 	})
+})
+
+test('retires Settings bundles while keeping personalization files', async () => {
+	const fs = volume(memStore())
+	for (const id of ['app.justfiles.frieren.settings', 'justfiles.settings']) await seedApp(fs, id)
+	await fs.mkdir('/system', { recursive: true })
+	await fs.writeFile('/system/wallpaper', new TextEncoder().encode('keep'))
+	await migrateFirstPartyAppIds(fs)
+	expect(await fs.exists('/applications/justfiles.settings')).toBe(false)
+	expect(await fs.exists('/applications/app.justfiles.frieren.settings')).toBe(false)
+	expect(new TextDecoder().decode(await fs.readFile('/system/wallpaper'))).toBe('keep')
 })

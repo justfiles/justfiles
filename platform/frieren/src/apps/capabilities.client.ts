@@ -1,5 +1,3 @@
-import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
-import { IDENTITY_DEFAULTS, IDENTITY_PATHS } from '@justfiles/agent/defaults'
 import {
 	type Capabilities,
 	type Capability,
@@ -14,14 +12,12 @@ import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devk
 import type { Channel } from '@justfiles/app/capabilities/notify'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { type ReaderCapability, reader } from '@justfiles/app/capabilities/reader'
-import { type GetUser, settingsHost } from '@justfiles/app/capabilities/settings/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { notificationStore } from '../notifications/store.ts'
-import { DOCK_MATERIAL_PATH, WALLPAPER_PATH } from '../shell/wallpaper.ts'
 import {
 	frierenCompile,
 	frierenImports,
@@ -31,11 +27,6 @@ import {
 } from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
-
-// Which build this is, stamped in at build time (see vite.config.ts). Undefined only under
-// a bare config with no stamp — a test run — where `host.version` then reports itself
-// UNAVAILABLE, exactly as it does on a host that doesn't know its own build.
-const VERSION = import.meta.env.VITE_FRIEREN_VERSION as string | undefined
 
 // App notifications run entirely in the browser: `notifyHost` stamps `source =
 // appId` (kernel-trusted, unspoofable), then this channel writes straight to the
@@ -47,58 +38,15 @@ const browserNotifyChannel: Channel = (notification) =>
 		route: notification.route ?? { kind: 'app', id: notification.source }
 	})
 
-// The browser kernel's capability seam. `volume`, `devkit`, `settings` and `notify`
-// run locally on this thread. `reader.open` is local because only this thread can open
-// a tab, while `reader.read` uses the same server fallback as ai/email/calendar/image.
-// `settings` is local
-// so identity comes from where the session is (Clerk in the browser) with no
-// round-trip; its `accounts.*`/`host.usage` methods have no dep here, so they ride the
-// same fallback to the DO — credentials live under `/private/**`, which never
-// replicates. Its `agent.*` methods DO run here: the identity files are on the synced
-// Volume this thread already holds, so personalizing is a local write that syncs like
-// any other — only `agent.generateSoul` (a model call) rides the fallback. Only
-// `devkit` needs the kernel — a per-entry factory the kernel resolves with ITSELF, so
-// it reads sysroots + installs into the exact kernel it lives in.
 export function clientCapabilities(
 	fs: Volume,
-	getToken: GetToken,
-	getUser: GetUser = () => null
+	getToken: GetToken
 ): (kernel: Kernel) => Capabilities {
 	const fallback = networkFallback(getToken)
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }),
 			reader: browserReader(fallback),
-			settings: settingsHost({
-				openUrl: (url) => {
-					const opened = window.open(url, '_blank')
-					if (!opened) throw new Error('Browser blocked sign-in. Copy the address in Settings.')
-					opened.opener = null
-				},
-				user: getUser,
-				// Served here for the same reason `user` is: the build the user is running is
-				// THIS bundle, and only it knows what it is. Asking the DO would answer for the
-				// server half, which a stale service worker can leave a version behind.
-				version: VERSION,
-				// The built-in art rides along because `agent.listAvatars` is served HERE: the
-				// shell already has these bytes in its bundle, so offering them costs nothing.
-				agent: {
-					volume: fs,
-					paths: IDENTITY_PATHS,
-					defaults: IDENTITY_DEFAULTS,
-					builtins: BUILTIN_AVATARS
-				},
-				// The wallpaper is served here too, and for the same reason: it is a file on this
-				// thread's Volume, at the path the desktop already watches — so Settings writing a
-				// colour or a photo repaints the desktop through the watch, offline, with no
-				// round-trip and no second way for a wallpaper to arrive.
-				appearance: {
-					volume: fs,
-					wallpaper: WALLPAPER_PATH,
-					dockMaterial: DOCK_MATERIAL_PATH
-				},
-				remote: fallback
-			}),
 			notify: notifyHost(browserNotifyChannel),
 			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},

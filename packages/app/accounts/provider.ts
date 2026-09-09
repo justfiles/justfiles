@@ -6,10 +6,10 @@
 // creds, the platform LLM) — and handed to `hostAccounts` (host.ts), which
 // is generic over them: the host never names a provider.
 
-import type { AiCapability } from '../ai/index.ts'
-import type { CalendarCapability } from '../calendar/index.ts'
-import type { EmailCapability } from '../email/index.ts'
-import type { ImageCapability } from '../image/index.ts'
+import type { AiCapability } from '../capabilities/ai/index.ts'
+import type { CalendarCapability } from '../capabilities/calendar/index.ts'
+import type { EmailCapability } from '../capabilities/email/index.ts'
+import type { ImageCapability } from '../capabilities/image/index.ts'
 import type { CredentialsSchema, SignInPrompt } from './contract.ts'
 
 // Platform seam for interactive (delegated) auth: the provider hands over a URL
@@ -42,6 +42,7 @@ export interface Auth {
 		scopes: string[]
 		signal?: AbortSignal
 		notify?: (prompt: SignInPrompt) => void
+		authorize?: (url: string, validate: (callback: URL) => void) => Promise<URL>
 	}): Promise<AcquiredAccount>
 }
 

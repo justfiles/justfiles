@@ -5,7 +5,7 @@
 // redirect, returned whole for the provider to validate (state, code, error). Runs in
 // the daemon because a sandboxed reducer can't bind a port or open a browser. All
 // protocol logic (PKCE, exchange, scopes) lives with the provider
-// (@justfiles/app/capabilities/accounts/providers/google).
+// (@justfiles/app/accounts/providers/google).
 //
 // The OAuth client id/secret come from the environment — a Desktop client's
 // "secret" isn't truly confidential, but Google still wants it on the token call,
@@ -13,7 +13,7 @@
 
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:http'
-import type { AuthFlow, GoogleClient } from '@justfiles/app/capabilities/accounts/providers'
+import type { AuthFlow, GoogleClient } from '@justfiles/app/accounts/providers'
 
 const FLOW_TIMEOUT_MS = 5 * 60_000
 

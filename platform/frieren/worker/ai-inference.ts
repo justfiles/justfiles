@@ -1,7 +1,7 @@
 import type { Context } from '@earendil-works/pi-ai'
 import type { AgentBackend } from '@justfiles/agent'
 import { describeBackend, failureMessage, inferenceRequest } from '@justfiles/agent/remote'
-import type { AiSelection } from '@justfiles/app/capabilities/accounts/host'
+import type { AiSelection } from '@justfiles/app/accounts/host'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { stream } from 'hono/streaming'

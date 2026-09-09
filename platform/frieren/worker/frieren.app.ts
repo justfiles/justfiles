@@ -36,8 +36,6 @@ interface FrierenAppsDeps {
 	email: Capability
 	calendar: Capability
 	reader: Capability
-	// The host admin surface (the first-party Settings app's back-channel).
-	settings: Capability
 }
 
 export interface FrierenApps {
@@ -79,22 +77,18 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
-		reader: deps.reader,
-		settings: deps.settings
+		reader: deps.reader
 	})
 	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
 	// always served locally by the browser kernel against the synced volume and so
 	// must never be re-served here. A `volume` frame misses this registry and comes
 	// back as CAPABILITY_UNAVAILABLE — the old explicit rejection, now structural.
-	// `settings` is here because the browser half delegates the methods only this side
-	// can serve (`accounts.*`, `host.usage`) to it.
 	const proxied: Capabilities = capabilityRegistry({
 		ai,
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
-		reader: deps.reader,
-		settings: deps.settings
+		reader: deps.reader
 	})
 
 	function getKernel(): Kernel {

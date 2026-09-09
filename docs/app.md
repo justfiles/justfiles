@@ -93,7 +93,7 @@ export default defineConfig(({ mode }) => ({
 
 A React GUI adds `react()` from `@vitejs/plugin-react`, `resolve: { dedupe: ['react',
 'react-dom'] }`, and a `.tsx` `gui` entry — see
-[`justfiles/app-settings`](https://github.com/justfiles/app-settings).
+[`apps/draw`](../apps/draw).
 
 To load a browser dependency from esm.sh instead, declare each bare import in `kernelHost`:
 
@@ -192,7 +192,6 @@ The platform supplies these bare imports:
 @justfiles/app/capabilities/ai
 @justfiles/app/capabilities/reader
 @justfiles/app/capabilities/devkit
-@justfiles/app/capabilities/settings
 valibot
 ```
 
@@ -529,6 +528,10 @@ capability results sent to the GUI as disclosed to the publisher. For portable a
 
 ## Capabilities
 
+Settings is host UI shared by Frieren and mac through `@justfiles/ui/Settings`. Account
+administration, personalization, usage and appearance are direct host services; apps cannot
+declare a settings or accounts administration capability.
+
 Declare every capability before using it:
 
 ```ts
@@ -569,7 +572,6 @@ Availability differs by host and user configuration:
 | Email | `capabilities/email`: `email` | Account-dependent | Account-dependent | Yes |
 | Calendar | `capabilities/calendar`: `calendar` | Account-dependent | Account-dependent | Yes |
 | Notifications | `capabilities/notify`: `notify` | Yes | Yes | Yes |
-| Host settings (accounts, plan usage, current user) | `capabilities/settings`: `settings` | First-party Settings only | First-party Settings only | Importable, but not granted to drafts |
 | App compiler/installer | `capabilities/devkit`: `devkit` | First-party Code only | Yes | Yes; Frieren denies authored apps at runtime |
 
 The standalone Vite development host always implements `volume`. It implements `ai` when the app
@@ -739,84 +741,6 @@ notify(input: {
 Privileged capability signatures:
 
 ```ts
-// settings — the host admin surface, gated on first-party app identity (not on a
-// declared scope). Methods are area-prefixed.
-'accounts.listProviders'(input: {}): Promise<ProviderInfo[]>
-'accounts.listAccounts'(input: {}): Promise<AccountInfo[]>
-'accounts.connect'(input: {
-	providerId: string
-	credentials?: Record<string, string>
-}): Promise<{ accountId: string }>
-'accounts.setEnabled'(input: {
-	accountId: string
-	capability: 'email' | 'calendar' | 'ai'
-	enabled: boolean
-	config?: unknown
-}): Promise<void>
-'accounts.disconnect'(input: { accountId: string }): Promise<void>
-// UNAVAILABLE on a host with no meter (the Mac app).
-'host.usage'(input: {}): Promise<{
-	tier: string
-	aiBurst: UsageWindow
-	aiWeekly: UsageWindow
-	storage: UsageResource
-	aiTokens: number
-	aiRequests: number
-}>
-// Null when no one is signed in — a valid state, not an error.
-'host.user'(input: {}): Promise<{
-	id: string
-	name?: string
-	avatarUrl?: string
-} | null>
-// Which build the host is, as one opaque string to print verbatim (frieren's staging
-// carries the head commit; production carries the version number). UNAVAILABLE on a host
-// that doesn't know its own build.
-'host.version'(input: {}): Promise<string>
-// The desktop wallpaper, as the bytes at the shell's one well-known path — a flat colour
-// is bytes too (the tiny SVG Settings writes for one). Reading null means unset; writing
-// null puts the shell back on its own default. UNAVAILABLE on a host whose shell has no
-// wallpaper (the Mac app today).
-'appearance.readWallpaper'(input: {}): Promise<Uint8Array | null>
-'appearance.writeWallpaper'(input: { bytes: Uint8Array | null }): Promise<void>
-'appearance.readDockMaterial'(input: {}): Promise<'clear' | 'frosted' | 'smoked' | 'solid' | null>
-'appearance.writeDockMaterial'(input: {
-	material: 'clear' | 'frosted' | 'smoked' | 'solid'
-}): Promise<void>
-
-type UsageResource = {
-	used: number
-	limit: number | null
-	remaining: number | null
-	exceeded: boolean
-	fraction: number
-}
-type UsageWindow = UsageResource & { resetsAt: number | null }
-
-type ProviderInfo = {
-	id: string
-	name: string
-	authKind: 'form' | 'interactive' | 'none'
-	builtin?: boolean
-	capabilities: ('email' | 'calendar' | 'ai')[]
-	credentialsSchema?: {
-		type: 'object'
-		properties: Record<string, {
-			type: 'string'
-			minLength?: number
-			description?: string
-		}>
-		required?: string[]
-	}
-}
-type AccountInfo = {
-	accountId: string
-	providerId: string
-	enabled: ('email' | 'calendar' | 'ai')[]
-	config: Partial<Record<'email' | 'calendar' | 'ai', unknown>>
-	lastError?: string
-}
-
 // devkit — used by the Code app, not by an app being authored
 compile(input: { slug: string }): Promise<{
 	outputs: { path: string; text: string }[]

@@ -30,7 +30,3 @@
 	path = apps/read
 	url = https://github.com/justfiles/app-read.git
 	ignore = untracked
-[submodule "apps/settings"]
-	path = apps/settings
-	url = https://github.com/justfiles/app-settings.git
-	ignore = untracked

@@ -1,5 +1,4 @@
 import { type Kernel, kernel } from '@justfiles/app'
-import type { GetUser } from '@justfiles/app/capabilities/settings/host'
 import type { Volume } from '@justfiles/fs'
 import { RUNNER_CACHE_NAME } from '../../shared/appstore'
 import { clientCapabilities } from './capabilities.client'
@@ -9,7 +8,6 @@ import { browserSandbox } from './sandbox.worker'
 export function createClientKernel(options: {
 	fs: Volume
 	getToken: () => Promise<string | null>
-	getUser?: GetUser
 }): Kernel {
 	const fetchAsset = Object.assign(
 		async (url: string) => {
@@ -30,7 +28,7 @@ export function createClientKernel(options: {
 		// A hosted app's payload is mounted with plain fetch. Built-ins are precached;
 		// Runner's immutable release URLs use the service worker runtime cache.
 		fetchAsset,
-		capabilities: clientCapabilities(options.fs, options.getToken, options.getUser)
+		capabilities: clientCapabilities(options.fs, options.getToken)
 	})
 	// A devkit install/uninstall mutates this kernel's catalog; the OS launcher
 	// caches the list, so re-notify it. Subscribed here (post-construction) rather

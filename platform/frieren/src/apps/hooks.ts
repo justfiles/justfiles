@@ -1,3 +1,4 @@
+import type { Category } from '@justfiles/ui/settings/types'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
 	type RunnerCatalogApp,
@@ -76,18 +77,13 @@ export function useRunnerCatalog(enabled: boolean): {
 	return { apps: apps ?? [], loading: enabled && apps === null }
 }
 
-// The first-party Settings app, which the shell opens by id: it is the only place the
-// agent can be personalized now (the `settings` capability's `agent.*` methods), and two
-// shell affordances point at it — the desktop menu and the omnibar's whisper.
-const SETTINGS_APP = { id: 'justfiles.settings', name: 'Settings' }
-
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
 	/**
 	 * Open Settings ON a pane. Defaults to the Agent pane — most callers are a
 	 * personalize affordance; the desktop's "Change Wallpaper…" asks for 'appearance'.
 	 */
-	openSettings: (category?: 'agent' | 'appearance') => void
+	openSettings: (category?: Category) => void
 	installApp: () => Promise<void>
 	installRunner: (app: RunnerCatalogApp) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
@@ -172,21 +168,8 @@ export function useAppCommands(): AppCommands {
 			})()
 		}
 
-		const openSettings = (category: 'agent' | 'appearance' = 'agent') => {
-			dispatch({ type: 'app.open', appId: SETTINGS_APP.id, title: SETTINGS_APP.name })
-			// Selecting the pane is PART of opening it: the category persists, so someone who
-			// last looked at Accounts would otherwise land back there from a button that said
-			// "Personalize". The kernel is the same one the window subscribes to, so this
-			// arrives whether Settings is booting, already open, or not running at all.
-			void localKernel()
-				.then((kernel) =>
-					kernel.dispatch(SETTINGS_APP.id, {
-						type: 'selectCategory',
-						params: { category }
-					})
-				)
-				.catch((error: unknown) => console.error('[settings] open on', category, 'failed:', error))
-		}
+		const openSettings = (category: Category = 'agent') =>
+			dispatch({ type: 'settings.open', category })
 
 		return { launchApp, openSettings, installApp, installRunner, uninstallApp }
 	}, [client, dispatch, localKernel, volume])

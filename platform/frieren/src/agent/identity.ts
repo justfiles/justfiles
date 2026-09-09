@@ -6,7 +6,7 @@ import type { Volume } from '../fs'
 
 // How the SHELL reads the agent's identity off the volume: the name to greet by, and the
 // avatar it is wearing. Read-only on purpose — writing these files is Settings' Agent pane
-// (the `settings` capability's `agent.*` methods), so there is one writer and this side only
+// (the shared Settings UI), so there is one writer and this side only
 // ever reacts to the files changing.
 export const PATHS = {
 	soul: SOUL_PATH,
@@ -147,7 +147,7 @@ async function fromVolume(volume: Volume, ref: string): Promise<Avatar | null> {
 /**
  * Call `onChange` whenever the agent's identity changes on the volume: the soul (a rename, a
  * rewritten prose, a different avatar worn) or the avatars themselves. The shell has no other
- * way to hear about it — the writes happen in Settings' app frame, and a soul edited on
+ * way to hear about it — writes may come from Settings or another device, and a soul edited on
  * ANOTHER DEVICE arrives as sync, which nothing could have told us about before this existed.
  *
  * Wearing and installing are BOTH file events now, so the avatars directory is watched
