@@ -138,7 +138,8 @@ export const decodeConflict = (value: unknown): SyncConflict => {
 	}
 }
 
-export const decodeRefusal = (value: unknown): Guard => {
+export const decodeRefusal = (value: unknown): Guard | string => {
+	if (typeof value === 'string') return value
 	const guard = fields(value, 'refusal')
 	if (guard.free === undefined && guard.version === undefined) bad('refusal')
 	return decodeGuard(guard)

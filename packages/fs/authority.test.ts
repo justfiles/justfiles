@@ -310,6 +310,27 @@ describe('authority: the tree invariants', () => {
 		for (const row of edits) expect(await store.get(row.id)).toEqual(row)
 	})
 
+	it.each([
+		'file',
+		'symlink',
+		'mount'
+	] as const)('editing a page of existing %s rows does not scan children', async (type) => {
+		const store = memStore()
+		const server = authority(store)
+		const rows = Array.from({ length: 128 }, (_, i) =>
+			file({ id: `node-${i}`, name: `node-${i}`, type })
+		)
+		await server.commit(rows)
+		const children = vi.spyOn(store, 'children')
+		const edits = rows.map((row) => ({ ...row, mtimeNs: 1n, version: '2' }))
+
+		await server.commit(edits)
+
+		expect(children).not.toHaveBeenCalled()
+		children.mockRestore()
+		for (const row of edits) expect(await store.get(row.id)).toEqual(row)
+	})
+
 	it('refuses a move that puts a directory under its own descendant', async () => {
 		const { seed, refused } = hub()
 		await seed(dir({ id: 'top', name: 'top' }), dir({ id: 'inner', name: 'inner', parent: 'top' }))

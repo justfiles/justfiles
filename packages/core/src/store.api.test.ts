@@ -330,7 +330,7 @@ it('structured refusals preserve authority rows and binary xattrs over HTTP', as
 
 it.each([
 	{},
-	{ reason: 'old unstructured refusal' },
+	{ reason: 42 },
 	{ conflict: { kind: 'unknown' } }
 ])('malformed HTTP refusal %j is a protocol error', async (body) => {
 	const client = httpStore('http://test', {
@@ -369,4 +369,29 @@ it('an unknown structured HTTP conflict reaches unresolved preservation', async 
 	expect(await local.get('x')).toMatchObject({ deleted: true })
 	expect(await remote.get('x')).toEqual(await local.get('x'))
 	expect((await volume(recovery).readdir('/')).map((row) => row.name)).toContain('Recovered items')
+})
+
+it('the Store wire preserves string guard reasons while sync rejects unstructured refusals', async () => {
+	const raw = memStore()
+	let commits = 0
+	const reason = 'the store refused this write'
+	const app = storeApi({
+		...raw,
+		commit: async () => {
+			commits++
+			throw new GuardError(reason)
+		}
+	})
+	const peer = httpStore('http://test', { fetch: async (url, init) => app.request(url, init) })
+	const row = node({ id: 'x', name: 'x', version: 'b:1' })
+	const error = await peer.commit([row]).catch((error: unknown) => error)
+	expect(error).toBeInstanceOf(GuardError)
+	expect(error).toMatchObject({ reason })
+	const local = memStore()
+	await local.commit([row])
+	await expect(
+		sync(local, peer, { replica: 'b', pull: slot(), push: slot(), retries: 3, backoffMs: 0 })
+	).rejects.toThrow('unstructured sync refusal')
+	expect(commits).toBe(2)
+	expect(await local.get(row.id)).toEqual(row)
 })

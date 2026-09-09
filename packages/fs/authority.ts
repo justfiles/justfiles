@@ -109,7 +109,8 @@ async function check(store: Store, writes: Node[], guards: Guard[] = []): Promis
 		const parent = row.id === ROOT ? null : (batch.get(row.parent) ?? (await read(row.parent)))
 		if (parent?.deleted) refuse('deleted-parent')
 		if (parent && !holdsRows(parent)) refuse('invalid-parent')
-		if (!holdsRows(row) && (await child())) refuse('has-children')
+		if (!holdsRows(row) && (held === null || holdsRows(held)) && (await child()))
+			refuse('has-children')
 		const twin = ordered.find(
 			(other) =>
 				other.id !== row.id &&
