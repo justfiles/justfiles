@@ -146,10 +146,8 @@ export function volumeAccountStore(
 		await fs.writeFile(path, enc.encode(JSON.stringify(stored, null, 2)))
 	}
 	return {
-		// One record at a time, each on its own chain: a list is a read of every account, so it
-		// is ordered against each account's writes and against none of the others'. The chains
-		// only ever hold local file work — `change` does its waiting outside — so this queues
-		// behind a write, never behind a browser redirect.
+		// Each read waits for that account's writes and refreshes. Browser sign-in
+		// happens outside the chain, so waiting for user input never holds up a read.
 		list: async () => {
 			const out: Account[] = []
 			for (const { path, id } of await entries()) {

@@ -50,27 +50,19 @@ export interface AccountsOptions {
 	// The DO passes `{ kind: 'cloud' }`; the mac daemon passes `{ kind: 'device', label:
 	// <hostname> }`. Omitted → `AccountInfo.origin` stays undefined.
 	origin?: AccountOrigin
-	// How this host keeps best-effort background work alive past the call that started it.
-	// The one such piece of work is the reseal sweep, which no caller awaits — on a Worker
-	// that means the runtime may end the event (or hibernate the Durable Object) before it
-	// finishes, and the plaintext it exists to close would survive, since nothing else ever
-	// rewrites those records. The DO passes `ctx.waitUntil`; a long-lived process (the mac
-	// daemon) has an event loop that outlives every request and needs nothing here.
+	// Retains sign-in and credential sealing past the request that started them.
+	// The DO passes ctx.waitUntil; the Mac daemon's event loop needs no extra retention.
 	waitUntil?: (work: Promise<unknown>) => void
 }
 
-// A short-lived borrow of the active-AI account, for building the agent's own LLM
-// runtime — the one consumer that legitimately needs the creds (to *construct* a
-// runtime), so it gets a lease, not the store. `creds` stay inside the caller's `mint`
-// closure; `persist` is the only writeback (rotated tokens on refresh). The generic `T`
-// keeps @justfiles/app free of any agent/pi-ai dependency; `providerId` lets the caller
-// branch on which ai provider is active.
+// Pins inference to one account/model. Reconnecting changes the revision; refresh does not.
 export interface AiSelection {
 	accountId: string
 	model?: string
 	revision: string
 }
 
+// Host-only provider access. `credentials.modify` holds the account lock across refresh.
 export interface AiAccountLease extends BoundAccount {
 	accountId: string
 	revision: string
@@ -420,12 +412,12 @@ export function hostAccounts(
 				// needs to derive accountId. Acquisition is external I/O, so it runs OUTSIDE the
 				// account's chain; only the merge that preserves prior grants (so a re-connect,
 				// e.g. a token refresh, keeps enabled services on) is serialized.
-				const { accountId, creds, scopes } = await provider.auth.acquire({
+				const acquired = await provider.auth.acquire({
 					fields: credentials,
 					scopes: []
 				})
-				await save(providerId, { accountId, creds, scopes })
-				return { accountId }
+				await save(providerId, acquired)
+				return { accountId: acquired.accountId }
 			},
 			setEnabled: async ({ accountId, capability, enabled, config }) => {
 				const account = await get(accountId)
@@ -517,10 +509,10 @@ export function hostAccounts(
 				accountId: account.id,
 				revision: account.revision ?? '',
 				credentials: credentialAccess(store, account),
-				creds: current.account.creds,
+				creds: account.creds,
 				config: current.model !== undefined ? { model: current.model } : {},
-				providerId: current.account.provider,
-				persist: writebackFor(store, current.account)
+				providerId: account.provider,
+				persist: writebackFor(store, account)
 			})
 		}
 	}

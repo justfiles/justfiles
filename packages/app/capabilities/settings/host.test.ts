@@ -844,7 +844,7 @@ test('a non-allowlisted app is refused the wallpaper too', async () => {
 	).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 })
 
-test('remote-only provider sign-in stays remote, while opening its page stays local', async () => {
+test.each(['web', 'mac'])('opens cloud sign-in locally on %s', async (platform) => {
 	const ref = { providerId: 'chatgpt', operationId: 'new-login' }
 	const invoke = vi.fn(async (c: CapabilityCall) =>
 		c.method === 'accounts.readConnect'
@@ -856,7 +856,8 @@ test('remote-only provider sign-in stays remote, while opening its page stays lo
 			: {}
 	)
 	const openUrl = vi.fn()
-	const caps = host({ remote: { invoke, subscribe: async () => () => {} }, openUrl })
+	const deps = { remote: { invoke, subscribe: async () => () => {} }, openUrl }
+	const caps = platform === 'mac' ? host(deps) : settingsHost(deps)
 	for (const method of [
 		'accounts.beginConnect',
 		'accounts.readConnect',

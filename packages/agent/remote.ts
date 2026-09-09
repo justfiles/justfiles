@@ -126,16 +126,13 @@ export function remoteBackend(
 						const { done, value } = await reader.read()
 						if (done) break
 						pending += value
-						let end = pending.indexOf('\n')
-						while (end >= 0) {
-							const line = pending.slice(0, end)
-							pending = pending.slice(end + 1)
-							if (line) {
-								const event = JSON.parse(line) as AssistantMessageEvent
-								output.push(event)
-								if (event.type === 'done' || event.type === 'error') return
-							}
-							end = pending.indexOf('\n')
+						const lines = pending.split('\n')
+						pending = lines.pop() ?? ''
+						for (const line of lines) {
+							if (!line) continue
+							const event = JSON.parse(line) as AssistantMessageEvent
+							output.push(event)
+							if (event.type === 'done' || event.type === 'error') return
 						}
 					}
 					throw new Error('AI stream ended before completing. Please retry.')

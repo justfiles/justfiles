@@ -42,7 +42,6 @@ import type {
 	AccountsAdmin,
 	AgentSoul,
 	AvatarInfo,
-	ConnectRef,
 	ConnectState,
 	GeneratedSoul,
 	ProviderInfo,
@@ -187,22 +186,15 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 	// this side doesn't own, so a mutation checks before running — see the file header.
 	const ownsLocally = async (accountId: string): Promise<boolean> =>
 		!!accounts && (await accounts.listAccounts({})).some((a) => a.accountId === accountId)
-	return {
+	const capability: Capability = {
 		invoke: async (call) => {
 			if (!SETTINGS_ALLOWLIST.has(call.appId)) throw unavailable(call.method)
 			if (call.method === 'accounts.openConnect') {
 				if (!deps.openUrl) throw unavailable(call.method)
-				const input = call.args[0] as ConnectRef
-				const local =
-					accounts && (await accounts.listProviders({})).some((p) => p.id === input.providerId)
-				const state = local
-					? await accounts.readConnect(input)
-					: remote
-						? ((await remote.invoke({
-								...call,
-								method: 'accounts.readConnect'
-							})) as ConnectState)
-						: undefined
+				const state = (await capability.invoke({
+					...call,
+					method: 'accounts.readConnect'
+				})) as ConnectState
 				if (state?.status !== 'pending' || !state.prompt) throw unavailable(call.method)
 				const url = new URL(state.prompt.verificationUrl)
 				if (url.protocol !== 'https:') throw unavailable(call.method)
@@ -264,6 +256,7 @@ export function settingsHost(deps: SettingsHostDeps): Capability {
 			throw unavailable(call.method)
 		}
 	}
+	return capability
 }
 
 // ── the agent's identity files ────────────────────────────────────────────

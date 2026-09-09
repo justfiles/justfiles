@@ -94,22 +94,20 @@ export function daemonAccounts(
 		remote: {
 			...remote,
 			invoke: async (call) => {
-				let result = await remote.invoke(call)
+				const result = await remote.invoke(call)
+				if (call.method !== 'accounts.listAccounts' || !Array.isArray(result)) return result
 				// Email/calendar still execute locally on this Mac. Only cloud AI accounts
 				// belong in its Settings list until those capabilities also have a remote host.
-				if (call.method === 'accounts.listAccounts' && Array.isArray(result))
-					result = result.filter((account) => ['chatgpt', 'frieren'].includes(account.providerId))
-				if (
-					call.method === 'accounts.listAccounts' &&
-					Array.isArray(result) &&
-					result.some((a) => a.providerId === 'chatgpt')
-				) {
+				const visible = result.filter((account) =>
+					['chatgpt', 'frieren'].includes(account.providerId)
+				)
+				if (visible.some((a) => a.providerId === 'chatgpt')) {
 					for (const account of await admin.listAccounts({})) {
 						if (account.providerId === 'chatgpt')
 							await admin.disconnect({ accountId: account.accountId })
 					}
 				}
-				return result
+				return visible
 			}
 		},
 		dispose: remote.dispose,

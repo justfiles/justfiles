@@ -121,6 +121,32 @@ test('a truncated stream settles with an error rather than hanging', async () =>
 	expect(result.errorMessage).toContain('before completing')
 })
 
+test.each([1, 17, Infinity])('reads NDJSON in %s-byte chunks', async (size) => {
+	const { getBackend } = setup()
+	const remote = (await getBackend())!
+	const message: AssistantMessage = { ...answer, content: [{ type: 'text', text: 'hello 🌱' }] }
+	const events = [
+		{ type: 'text_delta', contentIndex: 0, delta: 'hello 🌱', partial: message },
+		{ type: 'done', reason: 'stop', message }
+	]
+	const bytes = new TextEncoder().encode(`\n${events.map((e) => JSON.stringify(e)).join('\n\n')}\n`)
+	vi.stubGlobal(
+		'fetch',
+		async () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						for (let offset = 0; offset < bytes.length; offset += size)
+							controller.enqueue(bytes.slice(offset, offset + size))
+						controller.close()
+					}
+				}),
+				{ headers: { 'content-type': 'application/x-ndjson' } }
+			)
+	)
+	expect(await text(remote).gen('', 'Hello')).toBe('hello 🌱')
+})
+
 test('gateway rejects client-supplied credentials and upstream overrides', async () => {
 	const { gateway } = setup()
 	const response = await gateway.request('http://test/infer', {
