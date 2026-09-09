@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.13.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.13.0...app-v0.13.1) (2026-09-09)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.8.0
+
 ## [0.13.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.12.0...app-v0.13.0) (2026-08-31)
 
 
