@@ -76,6 +76,7 @@ async function check(store: Store, writes: Node[], guards: Guard[] = []): Promis
 		if (await store.get(id)) throw new GuardError({ version: { id, is: null } })
 	}
 	for (const row of ordered) {
+		if (row.deleted && row.id !== ROOT && !absent.has(row.id)) continue
 		const facts = new Map<NodeId, Node | null>()
 		const read = async (id: NodeId): Promise<Node | null> => {
 			if (!facts.has(id)) facts.set(id, await store.get(id))

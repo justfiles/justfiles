@@ -261,6 +261,24 @@ describe('authority: the tree invariants', () => {
 		).resolves.toBeUndefined()
 	})
 
+	it('ordinary tombstone pages need no row or child fact reads', async () => {
+		const store = memStore()
+		const server = authority(store)
+		const rows = Array.from({ length: 128 }, (_, i) => file({ id: `node-${i}`, name: `node-${i}` }))
+		await server.commit(rows)
+		const get = vi.spyOn(store, 'get')
+		const children = vi.spyOn(store, 'children')
+		const tombstones = rows.map((row) => ({ ...row, deleted: true as const, version: '2' }))
+
+		await server.commit(tombstones)
+
+		expect(get).not.toHaveBeenCalled()
+		expect(children).not.toHaveBeenCalled()
+		get.mockRestore()
+		children.mockRestore()
+		for (const row of tombstones) expect(await store.get(row.id)).toEqual(row)
+	})
+
 	it('takes a recursive delete that does not fit in one page', async () => {
 		// The same decision, end to end, and the reason it is not negotiable: the
 		// tombstones are one local commit and several pushed pages, so an authority

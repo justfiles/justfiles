@@ -1,15 +1,10 @@
 import { RecoveryError, SyncConflictError } from './conflict.internal'
 import { fingerprint, recover } from './recovery'
-import { recoveryState } from './recovery.state.internal'
+import { recoveryFor } from './recovery.state.internal'
 /** Push authored, unadopted rows, then pull authority rows. Cursors lag committed pages. */
 
 import { BootstrapRequiredError } from './peer'
-import {
-	type ReceiverBackend,
-	readCursorIssuer,
-	receiverBackend,
-	withSyncCursor
-} from './peer.internal'
+import { readCursorIssuer, withSyncCursor } from './peer.internal'
 import {
 	type Cursor,
 	ForeignCursorError,
@@ -162,15 +157,7 @@ export async function sync(local: Store, remote: Store, opts: SyncOptions): Prom
 	// would decide, alone and silently, whose view of the tree survives. Doing it
 	// wholesale is T11's `takeMine`, which re-authors the rows first — and that
 	// makes them this replica's, so this same filter carries them.
-	const state = opts.recovery
-		? await recoveryState(
-				opts.recovery,
-				opts.replica,
-				await remoteIdentity(remote, opts.pull)
-			).catch((cause) => {
-				throw new RecoveryError('required recovery state is unavailable', { cause })
-			})
-		: undefined
+	const state = await recoveryFor(remote, opts)
 	const mine = async (row: Node): Promise<boolean> =>
 		authorOf(row.version) === opts.replica && !(await state?.adopted(row))
 	let recoveries = 0
@@ -576,14 +563,3 @@ export const authorOf = (version: Version): string => {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
-async function remoteIdentity(remote: Store, pull: CursorSlot): Promise<string> {
-	const cursor = await pull.load()
-	const issuer = cursor === undefined ? undefined : readCursorIssuer(cursor)
-	if (issuer !== undefined) return issuer
-	const backend = (remote as Store & { [receiverBackend]?: ReceiverBackend })[receiverBackend]
-	if (backend) return (await backend.state()).issuer
-	const next = (await remote.since()).next
-	if (next === undefined) throw new RecoveryError('recovery requires a peer identity')
-	return readCursorIssuer(next) ?? (next.split(String.fromCharCode(0))[0] as string)
-}

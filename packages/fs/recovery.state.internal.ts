@@ -1,5 +1,11 @@
 import { RecoveryError } from './conflict.internal'
 import { versions } from './engine'
+import {
+	type ReceiverBackend,
+	readCursorIssuer,
+	receiverBackend,
+	type SyncCursor
+} from './peer.internal'
 import { type Cursor, GuardError, type Node, ROOT, type Store, same, sha256Hex } from './store'
 import { decodeNode, encodeNode, type WireNode } from './wire.internal'
 
@@ -28,6 +34,18 @@ export type Operation = {
 export const pair = (row: Pick<Node, 'id' | 'version'>): string =>
 	JSON.stringify([row.id, row.version])
 export const hashKey = (value: string): Promise<string> => sha256Hex(encoder.encode(value))
+
+export async function recoveryFor(
+	remote: Store,
+	opts: { recovery?: Store; replica: string; pull: SyncCursor }
+): Promise<RecoveryState | undefined> {
+	if (!opts.recovery) return undefined
+	return recoveryState(opts.recovery, opts.replica, await remoteIdentity(remote, opts.pull)).catch(
+		(cause) => {
+			throw new RecoveryError('required recovery state is unavailable', { cause })
+		}
+	)
+}
 
 /** Detached records hold manifests and receipts outside the user-editable forest. */
 export async function recoveryState(store: Store, replica: string, remoteId: string) {
@@ -217,3 +235,14 @@ export async function scan(store: Store, limit = 100_000): Promise<Node[]> {
 
 export const encodeRows = (rows: Node[]): WireNode[] => rows.map(encodeNode)
 export const decodeRows = (rows: WireNode[]): Node[] => rows.map(decodeNode)
+
+async function remoteIdentity(remote: Store, pull: SyncCursor): Promise<string> {
+	const cursor = await pull.load()
+	const issuer = cursor === undefined ? undefined : readCursorIssuer(cursor)
+	if (issuer !== undefined) return issuer
+	const backend = (remote as Store & { [receiverBackend]?: ReceiverBackend })[receiverBackend]
+	if (backend) return (await backend.state()).issuer
+	const next = (await remote.since()).next
+	if (next === undefined) throw new RecoveryError('recovery requires a peer identity')
+	return readCursorIssuer(next) ?? (next.split(String.fromCharCode(0))[0] as string)
+}

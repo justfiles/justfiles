@@ -15,6 +15,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { authority } from './authority'
 import { type CursorSlot, versions } from './engine'
 import { memStore } from './mem'
 import { type Cursor, type Node, ROOT, type Store } from './store'
@@ -778,6 +779,52 @@ describe('synced: take theirs', () => {
 })
 
 describe('synced: take mine', () => {
+	it('re-authors adopted same-author rows when publishing to a reset authority', async () => {
+		const hub = authorityPeer()
+		// The peer identity survives replacement of its storage lineage.
+		const remote = authority({ ...memStore(), ...hub.store })
+		const local = memStore()
+		const recovery = memStore()
+		const directory: Node = { ...row('docs', 'docs', 'a:accepted'), type: 'dir', mode: 0o40755 }
+		const child = { ...row('child', 'child.txt', 'b:child'), parent: directory.id }
+		const own = row('own', 'own.txt', 'a:own')
+		await remote.commit([directory, child])
+		await local.commit([{ ...directory, type: 'file', mode: 0o100644, version: 'a:rejected' }, own])
+		const { vol } = await replica(remote, { local, recovery, reset: hub.reset })
+		expect(vol.status()).toBe('synced')
+		expect(await local.get(directory.id)).toEqual(directory)
+
+		await vol.takeMine()
+
+		const published = await remote.get(directory.id)
+		expect(published).toMatchObject({ id: directory.id, type: 'dir' })
+		expect(published?.version).not.toBe(directory.version)
+		expect(published?.version.startsWith('a:')).toBe(true)
+		expect(await local.get(directory.id)).toEqual(published)
+		expect(await remote.get(own.id)).toEqual(own)
+		expect(await tree(volume(remote))).toEqual(await tree(vol))
+		await vol.takeMine()
+		expect(await remote.get(directory.id)).toEqual(published)
+		await local.commit([directory])
+		await vol.flush()
+		expect(await remote.get(directory.id)).toEqual(published)
+	})
+
+	it('does not reset the authority when required recovery state is unreadable', async () => {
+		const hub = authorityPeer()
+		const recovery = memStore()
+		const reset = vi.fn(hub.reset)
+		const { vol } = await replica(hub.store, { recovery, reset })
+		await vol.writeFile('/keep.txt', enc.encode('keep'))
+		await vol.flush()
+		vi.spyOn(recovery, 'get').mockRejectedValue(new Error('private storage unavailable'))
+
+		await expect(vol.takeMine()).rejects.toThrow('required recovery state is unavailable')
+
+		expect(reset).not.toHaveBeenCalled()
+		expect(await tree(volume(hub.store))).toEqual({ '/keep.txt': 'keep' })
+	})
+
 	it('publishes this volume to a reset authority, and the other replica converges', async () => {
 		const hub = authorityPeer()
 		const a = await replica(hub.store, { replica: 'a', reset: hub.reset })
