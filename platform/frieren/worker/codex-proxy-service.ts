@@ -1,6 +1,9 @@
-import { CodexProxy } from './codex-proxy.ts'
+import { Container } from '@cloudflare/containers'
 
-export { CodexProxy }
+export class CodexProxy extends Container {
+	defaultPort = 8080
+	sleepAfter = '2m'
+}
 
 export default {
 	async fetch(
