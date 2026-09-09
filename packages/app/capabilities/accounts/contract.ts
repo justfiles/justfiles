@@ -6,7 +6,25 @@
 // which is gated on first-party app identity. No Cloudflare imports, no provider
 // clients — app-safe.
 
-export type CapabilityId = 'email' | 'calendar' | 'ai'
+export type CapabilityId = 'email' | 'calendar' | 'ai' | 'image'
+
+export interface ConnectRef {
+	providerId: string
+	operationId: string
+}
+
+export interface SignInPrompt {
+	verificationUrl: string
+	userCode?: string
+	intervalMs?: number
+}
+
+export type ConnectState = ConnectRef & { expiresAt: number } & (
+		| { status: 'pending'; prompt?: SignInPrompt }
+		| { status: 'connected'; accountId: string }
+		| { status: 'cancelled' | 'expired' }
+		| { status: 'failed'; message: string }
+	)
 
 export interface CredentialField {
 	type: 'string'
@@ -60,6 +78,9 @@ export interface AccountInfo {
 // The admin methods, as `hostAccounts` hands them to `settingsHost`. Not a
 // capability: a plain impl, so composing it needs no second contract.
 export interface AccountsAdmin {
+	beginConnect(input: ConnectRef): Promise<ConnectState>
+	readConnect(input: ConnectRef): Promise<ConnectState>
+	cancelConnect(input: ConnectRef): Promise<void>
 	listProviders(input: Record<string, never>): Promise<ProviderInfo[]>
 	listAccounts(input: Record<string, never>): Promise<AccountInfo[]>
 	// `form` providers: pass `credentials`. `interactive` providers: omit — the host

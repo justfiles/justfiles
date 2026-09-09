@@ -45,6 +45,7 @@ import {
 } from '@justfiles/agent/protocol'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
+	type AiAccountLease,
 	aesGcmSecretCodec,
 	type HostAccounts,
 	hostAccounts,
@@ -82,9 +83,11 @@ import { ROOT, type Store } from '@justfiles/fs/store'
 import { privateSyncState, syncStateLock } from '@justfiles/fs/syncState'
 import { Hono } from 'hono'
 import { PRIVATE_MOUNT } from '../shared/private.ts'
+import { chatgptAccount } from './accounts/chatgpt.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { createAiGateway } from './ai-gateway.ts'
+import { createAiInference } from './ai-inference.ts'
 import { createAppActionsGateway } from './app-actions-gateway.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
@@ -214,6 +217,7 @@ export class Frieren extends DurableObject<Env> {
 	private readonly meter: AiMeter
 	// Filesystem-derived resources, built on first use and kept for the instance's lifetime.
 	private accounts?: HostAccounts
+	private readonly chatgpt?: ReturnType<typeof chatgptAccount>
 	private apps?: FrierenApps
 	private readonly agents: AgentSessions
 	private readonly agentSubscriptions = new Map<string, () => void>()
@@ -227,6 +231,8 @@ export class Frieren extends DurableObject<Env> {
 		super(ctx, env)
 		if (env.ENCRYPTION_KEY) this.secretCodec = aesGcmSecretCodec(env.ENCRYPTION_KEY)
 		else console.warn('ENCRYPTION_KEY is not set — account credentials are stored in the clear')
+		if (this.secretCodec && env.CODEX_PROXY_URL && env.CODEX_PROXY_KEY)
+			this.chatgpt = chatgptAccount({ url: env.CODEX_PROXY_URL, key: env.CODEX_PROXY_KEY })
 		const namespace = ctx.id.toString()
 		// The async seam, for the two readers that are not the store: the generation row,
 		// and the one pass that reads the old tables.
@@ -271,6 +277,24 @@ export class Frieren extends DurableObject<Env> {
 		this.platformText = text(this.meteredBackend(models, model))
 		this.agents = createAgentSessions(() => this.agentOptions())
 		this.app = new Hono()
+			.route(
+				'/api/ai',
+				createAiInference(async (selection) => {
+					const resolved = await this.getAccounts().resolveAi((lease) => {
+						const backend = this.textBackend(lease)
+						return {
+							backend,
+							selection: {
+								accountId: lease.accountId,
+								model: backend.model.id,
+								revision: lease.revision
+							}
+						}
+					}, selection)
+					if (!resolved) throw new Error('Enable an AI text provider in Settings.')
+					return resolved
+				})
+			)
 			.route(
 				'/api/v1/apps',
 				createAppActionsGateway({ controller: () => this.getApps().controller })
@@ -446,7 +470,11 @@ export class Frieren extends DurableObject<Env> {
 	private getAccounts(): HostAccounts {
 		if (this.accounts) return this.accounts
 		this.accounts = hostAccounts(
-			buildProviders({ text: this.platformText, generateImage: this.generateImage }),
+			buildProviders({
+				text: this.platformText,
+				generateImage: this.generateImage,
+				chatgpt: this.chatgpt?.provider
+			}),
 			this.volume,
 			{
 				secretCodec: this.secretCodec,
@@ -470,7 +498,11 @@ export class Frieren extends DurableObject<Env> {
 			fs: this.volume,
 			loader: this.env.LOADER,
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
-			text: this.platformText,
+			text: {
+				gen: async (...args) => text(await this.resolveText()).gen(...args),
+				takeNotes: async (...args) => text(await this.resolveText()).takeNotes(...args),
+				summarise: async (...args) => text(await this.resolveText()).summarise(...args)
+			},
 			broadcast: (msg) => this.broadcastControl(msg),
 			image: caps.image,
 			email: guardCapability(caps.email, { capability: 'email', audit, rateLimit }),
@@ -559,6 +591,22 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
+	private textBackend(lease: AiAccountLease): AgentBackend {
+		if (lease.providerId === 'frieren') {
+			const chosen = (lease.config as { model?: string }).model
+			if (chosen && chosen !== this.model.id) throw new Error('AI model changed. Please retry.')
+			return this.meteredBackend(this.models, this.model)
+		}
+		if (lease.providerId === 'chatgpt' && this.chatgpt) return this.chatgpt.backend(lease)
+		throw new Error('Enable an AI text provider in Settings.')
+	}
+
+	private async resolveText(): Promise<AgentBackend> {
+		const backend = await this.getAccounts().resolveAi((lease) => this.textBackend(lease))
+		if (!backend) throw new Error('Enable an AI text provider in Settings.')
+		return backend
+	}
+
 	private agentOptions(): AgentSessionOptions {
 		const apps = this.getApps()
 		const image = this.getAccounts().image
@@ -569,13 +617,7 @@ export class Frieren extends DurableObject<Env> {
 		return {
 			volume: this.volume,
 			capabilities,
-			backend: async () => {
-				const backend = await this.getAccounts().resolveAi(({ providerId }) =>
-					providerId === 'frieren' ? this.meteredBackend(this.models, this.model) : null
-				)
-				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
-				return backend
-			},
+			backend: () => this.resolveText(),
 			apps: apps.controller,
 			osState: async () => ({ windows: await apps.windows() }),
 			timezone: () => resolveTimezone(this.volume, this.cfTimezone),
@@ -633,7 +675,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async generateSoul(input: SoulGenerationInput): ReturnType<typeof generateAgentSoul> {
-		return generateAgentSoul(this.meteredBackend(this.models, this.model), input, {
+		return generateAgentSoul(await this.resolveText(), input, {
 			firstWords: true
 		})
 	}

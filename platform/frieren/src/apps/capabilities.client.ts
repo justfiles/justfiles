@@ -70,6 +70,11 @@ export function clientCapabilities(
 			volume: volumeCapability(fs, { systemAllowlist: ['justfiles.files'] }),
 			reader: browserReader(fallback),
 			settings: settingsHost({
+				openUrl: (url) => {
+					const opened = window.open(url, '_blank')
+					if (!opened) throw new Error('Browser blocked sign-in. Copy the address in Settings.')
+					opened.opener = null
+				},
 				user: getUser,
 				// Served here for the same reason `user` is: the build the user is running is
 				// THIS bundle, and only it knows what it is. Asking the DO would answer for the

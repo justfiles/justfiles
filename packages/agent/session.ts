@@ -542,13 +542,26 @@ function sameEntries(left: readonly SessionEntry[], right: readonly SessionEntry
 // account pane; a blown context window → back to chat; a network failure → retry from chat.
 export function classifyFailure(error: unknown): { body: string; route: Route } {
 	const raw = error instanceof Error ? error.message : String(error)
+	if (/chatgpt.*(usage limit|quota|allowance)/i.test(raw)) {
+		return {
+			body: 'Your ChatGPT usage limit is reached. Wait for it to reset, or select built-in AI text in Settings → Accounts.',
+			route: { kind: 'settings', pane: 'accounts' }
+		}
+	}
+	if (/reconnect.*settings|account changed|choose another model/i.test(raw)) {
+		return { body: raw, route: { kind: 'settings', pane: 'accounts' } }
+	}
 	if (/no ai (backend|provider)|ai is turned off|enable an ai provider/i.test(raw)) {
 		return {
 			body: 'No AI is turned on. Enable an AI provider in Settings → Accounts to start chatting.',
 			route: { kind: 'settings', pane: 'accounts' }
 		}
 	}
-	if (/\b401\b|unauthor|invalid[_ ]?api[_ ]?key|authentic|expired|account[_ -]?id/i.test(raw)) {
+	if (
+		/\b401\b|unauthor|invalid[_ ]?api[_ ]?key|oauth.*refresh.*fail|authentic|expired|account[_ -]?id/i.test(
+			raw
+		)
+	) {
 		return {
 			body: 'Your sign-in expired. Reconnect in Settings → Accounts.',
 			route: { kind: 'settings', pane: 'accounts' }

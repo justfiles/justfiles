@@ -10,7 +10,7 @@ import type { AiCapability } from '../ai/index.ts'
 import type { CalendarCapability } from '../calendar/index.ts'
 import type { EmailCapability } from '../email/index.ts'
 import type { ImageCapability } from '../image/index.ts'
-import type { CredentialsSchema } from './contract.ts'
+import type { CredentialsSchema, SignInPrompt } from './contract.ts'
 
 // Platform seam for interactive (delegated) auth: the provider hands over a URL
 // builder, the platform picks the redirect URI it can catch (an ephemeral loopback
@@ -37,14 +37,25 @@ export interface AcquiredAccount {
 // A new protocol (device grant, …) is a new `acquire` implementation, not a new kind.
 export interface Auth {
 	ui: { kind: 'form'; schema: CredentialsSchema } | { kind: 'interactive' } | { kind: 'none' }
-	acquire(input: { fields?: Record<string, string>; scopes: string[] }): Promise<AcquiredAccount>
+	acquire(input: {
+		fields?: Record<string, string>
+		scopes: string[]
+		signal?: AbortSignal
+		notify?: (prompt: SignInPrompt) => void
+	}): Promise<AcquiredAccount>
 }
 
 // A stored account as handed to `bind`. `creds` are opaque to everything but the
 // owning provider; `persist` writes rotated creds back to the store (a provider
 // whose tokens refresh mid-use MUST call it, or a later mint reuses a consumed
 // grant). `config` carries per-capability settings (e.g. `{ model }` for ai).
+export interface CredentialAccess {
+	read(): Promise<unknown>
+	modify(change: (creds: unknown) => Promise<unknown>): Promise<unknown>
+}
+
 export interface BoundAccount {
+	credentials: CredentialAccess
 	creds: unknown
 	config?: unknown
 	persist(creds: unknown): Promise<void>
@@ -73,8 +84,7 @@ export interface Provider {
 		calendar?: Binding<CalendarCapability>
 		// ai optionally carries a model catalogue for the Settings picker.
 		ai?: Binding<AiCapability> & { models?(): AiModel[]; defaultModel?(): string }
-		// image is ai's engine sibling (its own models, its own binding). It resolves
-		// through the active-AI account; a provider without it simply can't make images.
+		// Image generation uses its own provider, independent of the text selection.
 		image?: Binding<ImageCapability>
 	}
 }

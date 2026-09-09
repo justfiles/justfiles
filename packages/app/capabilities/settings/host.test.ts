@@ -19,6 +19,10 @@ const METHODS = [
 	'accounts.listProviders',
 	'accounts.listAccounts',
 	'accounts.connect',
+	'accounts.beginConnect',
+	'accounts.readConnect',
+	'accounts.cancelConnect',
+	'accounts.openConnect',
 	'accounts.setEnabled',
 	'accounts.disconnect',
 	'host.usage',
@@ -838,4 +842,31 @@ test('a non-allowlisted app is refused the wallpaper too', async () => {
 	await expect(
 		caps.invoke(call('appearance.readWallpaper', {}, 'app.someone.else'))
 	).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+})
+
+test.each(['web', 'mac'])('opens cloud sign-in locally on %s', async (platform) => {
+	const ref = { providerId: 'chatgpt', operationId: 'new-login' }
+	const invoke = vi.fn(async (c: CapabilityCall) =>
+		c.method === 'accounts.readConnect'
+			? {
+					...ref,
+					status: 'pending',
+					prompt: { verificationUrl: 'https://auth.openai.com/codex/device' }
+				}
+			: {}
+	)
+	const openUrl = vi.fn()
+	const deps = { remote: { invoke, subscribe: async () => () => {} }, openUrl }
+	const caps = platform === 'mac' ? host(deps) : settingsHost(deps)
+	for (const method of [
+		'accounts.beginConnect',
+		'accounts.readConnect',
+		'accounts.cancelConnect'
+	]) {
+		await caps.invoke(call(method, ref))
+		expect(invoke).toHaveBeenLastCalledWith(call(method, ref))
+	}
+	await caps.invoke(call('accounts.openConnect', ref))
+	expect(invoke).toHaveBeenLastCalledWith(call('accounts.readConnect', ref))
+	expect(openUrl).toHaveBeenCalledWith('https://auth.openai.com/codex/device')
 })

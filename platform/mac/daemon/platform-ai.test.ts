@@ -1,194 +1,258 @@
-import { createServer, type Server } from 'node:http'
-import { classifyFailure, text } from '@justfiles/agent'
-import { hostAccounts } from '@justfiles/app/capabilities/accounts/host'
+import { type AssistantMessage, createAssistantMessageEventStream } from '@earendil-works/pi-ai'
+import { type AgentBackend, text } from '@justfiles/agent'
+import { describeBackend, failureMessage } from '@justfiles/agent/remote'
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
+import { createAiInference } from '../../frieren/worker/ai-inference.ts'
 import { daemonAccounts } from './kernel.ts'
 import { createPlatformAi } from './platform-ai.ts'
 
-type Request = { path: string; authorization: string | undefined; body?: unknown }
-
-const descriptor = {
+const model: AgentBackend['model'] = {
 	id: 'test/model',
-	name: 'Just Computer AI',
+	api: 'openai-completions',
+	provider: 'frieren',
+	name: 'Test',
 	reasoning: false,
-	input: ['text'] as const,
-	contextWindow: 128_000,
-	maxTokens: 8_192,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+	input: ['text'],
+	contextWindow: 10000,
+	maxTokens: 1000,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	baseUrl: 'https://private-upstream',
+	headers: { authorization: 'secret' }
 }
+const selection = { accountId: 'frieren', model: model.id, revision: '' }
+const answer: AssistantMessage = {
+	...failureMessage(model, ''),
+	stopReason: 'stop',
+	content: [{ type: 'text', text: 'hello' }],
+	errorMessage: undefined
+}
+const backend: AgentBackend = {
+	model,
+	revision: 'v1',
+	streamFn: () => {
+		const stream = createAssistantMessageEventStream()
+		stream.push({ type: 'text_delta', contentIndex: 0, delta: 'hello', partial: answer })
+		stream.push({ type: 'done', reason: 'stop', message: answer })
+		stream.end()
+		return stream
+	},
+	completeFn: async () => answer
+}
+afterEach(() => vi.unstubAllGlobals())
 
-let server: Server | undefined
-
-afterEach(
-	() =>
-		new Promise<void>((resolve, reject) => {
-			if (!server) return resolve()
-			server.close((error) => (error ? reject(error) : resolve()))
-			server = undefined
-		})
-)
-
-async function gateway(
-	requests: Request[],
-	completion: (call: number) => { status?: number; body?: unknown } = () => ({})
-): Promise<string> {
-	let calls = 0
-	server = createServer((req, res) => {
-		const chunks: Buffer[] = []
-		req.on('data', (chunk) => chunks.push(chunk))
-		req.on('end', () => {
-			const raw = Buffer.concat(chunks).toString()
-			requests.push({
-				path: req.url ?? '',
-				authorization: req.headers.authorization,
-				...(raw && { body: JSON.parse(raw) })
+function setup(resolve = async () => ({ backend, selection })) {
+	const gateway = createAiInference(resolve)
+	const calls: { path: string; token: string | null; body?: unknown }[] = []
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (url: string | URL, init?: RequestInit) => {
+			const path = new URL(url).pathname.replace('/api/ai', '')
+			calls.push({
+				path,
+				token: new Headers(init?.headers).get('authorization'),
+				body: init?.body ? JSON.parse(String(init.body)) : undefined
 			})
-			if (req.url === '/api/ai/model') {
-				res.setHeader('content-type', 'application/json')
-				res.end(JSON.stringify(descriptor))
-				return
-			}
-			calls++
-			const answer = completion(calls)
-			if (answer.status) {
-				res.statusCode = answer.status
-				res.setHeader('content-type', 'application/json')
-				res.end(JSON.stringify(answer.body))
-				return
-			}
-			res.setHeader('content-type', 'text/event-stream')
-			res.end(
-				[
-					'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"test/model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}',
-					'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"test/model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
-					'data: [DONE]',
-					''
-				].join('\n\n')
-			)
+			return gateway.request(`http://test${path}`, init)
 		})
-	})
-	await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve))
-	const address = server.address()
-	if (!address || typeof address === 'string') throw new Error('missing gateway address')
-	return `http://127.0.0.1:${address.port}`
+	)
+	let n = 0
+	return {
+		calls,
+		gateway,
+		getBackend: createPlatformAi({
+			origin: 'https://cloud.example',
+			getToken: async () => `token-${++n}`
+		})
+	}
 }
 
-describe('Just Computer AI', () => {
-	test('is the daemon fallback without replacing a selected ChatGPT account', async () => {
-		const requests: Request[] = []
-		const origin = await gateway(requests)
-		const fs = volume(memStore())
-		const accounts = daemonAccounts(fs, { origin, getToken: async () => 'token' })
+test('uses cloud selection and fresh platform tokens without exposing provider secrets', async () => {
+	const { getBackend, calls } = setup()
+	const remote = (await getBackend())!
+	expect(remote.model.baseUrl).toBe('')
+	expect(remote.model.headers).toBeUndefined()
+	expect(await text(remote).gen('Be brief', 'Hello')).toBe('hello')
+	expect(await text(remote).gen('Be brief', 'Again')).toBe('hello')
+	expect(calls.map((r) => r.token)).toEqual(['Bearer token-1', 'Bearer token-2', 'Bearer token-3'])
+	expect(calls[1].body).toMatchObject({ selection, context: { systemPrompt: 'Be brief' } })
+	expect(JSON.stringify(describeBackend(backend, selection))).not.toContain('secret')
+})
 
-		expect((await accounts.resolveBackend())?.model.provider).toBe('kodama')
+test('signed-out Mac keeps local accounts and has no inference backend', async () => {
+	const accounts = daemonAccounts(volume(memStore()), { getToken: async () => null })
+	expect(await accounts.resolveBackend()).toBeNull()
+	expect((await accounts.admin.listProviders({})).map((p) => p.id)).toEqual(['google', 'icloud'])
+	expect(
+		await accounts.remote.invoke({
+			appId: 'justfiles.settings',
+			capability: 'settings',
+			method: 'accounts.listAccounts',
+			args: [{}],
+			scopes: []
+		})
+	).toEqual([])
+	accounts.dispose()
+})
 
-		await fs.mkdir('/private/accounts', { recursive: true })
-		await fs.writeFile(
-			'/private/accounts/user%40example.com.json',
-			new TextEncoder().encode(
-				JSON.stringify({
-					id: 'user@example.com',
-					provider: 'chatgpt',
-					creds: {
-						type: 'oauth',
-						access: 'access',
-						refresh: 'refresh',
-						expires: Date.now() + 60_000,
-						accountId: 'user@example.com'
+test('a removed credential rejects a pinned request instead of selecting the built-in provider', async () => {
+	let removed = false
+	const { getBackend } = setup(async () => {
+		if (removed) throw new Error('removed')
+		return { backend, selection }
+	})
+	const remote = (await getBackend())!
+	removed = true
+	const result = await remote.completeFn(remote.model, { messages: [] })
+	expect(result.stopReason).toBe('error')
+	expect(result.errorMessage).toContain('account changed')
+})
+
+test('a truncated stream settles with an error rather than hanging', async () => {
+	const { getBackend } = setup()
+	const remote = (await getBackend())!
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async () => new Response('', { headers: { 'content-type': 'application/x-ndjson' } }))
+	)
+	const result = await remote.completeFn(remote.model, { messages: [] })
+	expect(result.stopReason).toBe('error')
+	expect(result.errorMessage).toContain('before completing')
+})
+
+test.each([1, 17, Infinity])('reads NDJSON in %s-byte chunks', async (size) => {
+	const { getBackend } = setup()
+	const remote = (await getBackend())!
+	const message: AssistantMessage = { ...answer, content: [{ type: 'text', text: 'hello 🌱' }] }
+	const events = [
+		{ type: 'text_delta', contentIndex: 0, delta: 'hello 🌱', partial: message },
+		{ type: 'done', reason: 'stop', message }
+	]
+	const bytes = new TextEncoder().encode(`\n${events.map((e) => JSON.stringify(e)).join('\n\n')}\n`)
+	vi.stubGlobal(
+		'fetch',
+		async () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						for (let offset = 0; offset < bytes.length; offset += size)
+							controller.enqueue(bytes.slice(offset, offset + size))
+						controller.close()
 					}
-				})
+				}),
+				{ headers: { 'content-type': 'application/x-ndjson' } }
 			)
-		)
-		await fs.writeFile(
-			'/private/active-ai.json',
-			new TextEncoder().encode(JSON.stringify({ accountId: 'user@example.com' }))
-		)
+	)
+	expect(await text(remote).gen('', 'Hello')).toBe('hello 🌱')
+})
 
-		expect((await accounts.resolveBackend())?.model.provider).toBe('openai-codex')
-	})
-
-	test('uses the gateway model and resolves a fresh bearer token for each request', async () => {
-		const requests: Request[] = []
-		const origin = await gateway(requests)
-		let token = 0
-		const kodama = createPlatformAi({
-			origin,
-			getToken: async () => `token-${++token}`
+test('gateway rejects client-supplied credentials and upstream overrides', async () => {
+	const { gateway } = setup()
+	const response = await gateway.request('http://test/infer', {
+		method: 'POST',
+		body: JSON.stringify({
+			version: 1,
+			selection,
+			context: { messages: [] },
+			options: { headers: { authorization: 'bad' }, apiKey: 'bad' }
 		})
-		const accounts = hostAccounts([kodama.provider], volume(memStore()))
-		const backend = await accounts.resolveAi(kodama.backend)
-
-		expect(backend?.model).toMatchObject({
-			id: descriptor.id,
-			name: descriptor.name,
-			provider: 'kodama',
-			baseUrl: `${origin}/api/ai/v1`
-		})
-		expect(await text(backend!).gen('Be brief.', 'Hello')).toBe('hello')
-		expect(await text(backend!).gen('Be brief.', 'Again')).toBe('hello')
-
-		const completions = requests.filter((request) => request.path === '/api/ai/v1/chat/completions')
-		expect(completions.map((request) => request.authorization)).toEqual([
-			'Bearer token-2',
-			'Bearer token-3'
-		])
-		expect(completions.map((request) => (request.body as { model: string }).model)).toEqual([
-			descriptor.id,
-			descriptor.id
-		])
 	})
+	expect(response.status).toBe(400)
+})
 
-	test('has no backend while signed out', async () => {
-		const kodama = createPlatformAi({
-			origin: 'http://127.0.0.1:1',
-			getToken: async () => null
-		})
-		const accounts = hostAccounts([kodama.provider], volume(memStore()))
-
-		expect(await accounts.resolveAi(kodama.backend)).toBeNull()
-	})
-
-	test('keeps the last model when a later descriptor refresh fails', async () => {
-		const requests: Request[] = []
-		const origin = await gateway(requests)
-		const kodama = createPlatformAi({ origin, getToken: async () => 'token' })
-		const accounts = hostAccounts([kodama.provider], volume(memStore()))
-
-		expect((await accounts.resolveAi(kodama.backend))?.model.id).toBe(descriptor.id)
-		await new Promise<void>((resolve, reject) =>
-			server?.close((error) => (error ? reject(error) : resolve()))
-		)
-		server = undefined
-
-		expect((await accounts.resolveAi(kodama.backend))?.model.id).toBe(descriptor.id)
-	})
-
-	test.each([
-		{
-			status: 429,
-			body: { error: { code: 'quota_exceeded', message: 'weekly limit reached' } },
-			message: /limit reached/i,
-			route: { kind: 'settings', pane: 'accounts' }
-		},
-		{
-			status: 401,
-			body: { error: { code: 'unauthorized', message: 'expired' } },
-			message: /sign-in expired/i,
-			route: { kind: 'settings', pane: 'accounts' }
+test('tool calls and results cross the transport; execution stays with the caller', async () => {
+	const tool: AssistantMessage = {
+		...answer,
+		stopReason: 'toolUse',
+		content: [{ type: 'toolCall', id: 'call-1', name: 'read_file', arguments: { path: '/notes' } }]
+	}
+	const received: unknown[] = []
+	const harness: AgentBackend = {
+		...backend,
+		streamFn: (_model, context) => {
+			received.push(context)
+			const message = context.messages.some((m) => m.role === 'toolResult') ? answer : tool
+			const stream = createAssistantMessageEventStream()
+			stream.push({ type: 'done', reason: message.stopReason as 'stop' | 'toolUse', message })
+			stream.end()
+			return stream
 		}
-	])('classifies a $status gateway response', async ({ status, body, message, route }) => {
-		const origin = await gateway([], () => ({ status, body }))
-		const kodama = createPlatformAi({ origin, getToken: async () => 'token' })
-		const accounts = hostAccounts([kodama.provider], volume(memStore()))
-		const backend = await accounts.resolveAi(kodama.backend)
-		const response = await backend!.completeFn(backend!.model, {
-			messages: [{ role: 'user', content: 'Hello', timestamp: Date.now() }]
-		})
-
-		const failure = classifyFailure(new Error(response.errorMessage))
-		expect(failure.route).toEqual(route)
-		expect(failure.body).toMatch(message)
+	}
+	const { getBackend } = setup(async () => ({ backend: harness, selection }))
+	const remote = (await getBackend())!
+	const first = await remote.completeFn(remote.model, {
+		messages: [{ role: 'user', content: 'Read my note', timestamp: 1 }]
 	})
+	expect(first.content).toEqual(tool.content)
+	const final = await remote.completeFn(remote.model, {
+		messages: [
+			first,
+			{
+				role: 'toolResult',
+				toolCallId: 'call-1',
+				toolName: 'read_file',
+				content: [{ type: 'text', text: 'local contents' }],
+				isError: false,
+				timestamp: 2
+			}
+		]
+	})
+	expect(final.content).toEqual(answer.content)
+	expect(received[1]).toMatchObject({
+		messages: [
+			JSON.parse(JSON.stringify(tool)),
+			{ role: 'toolResult', content: [{ text: 'local contents' }] }
+		]
+	})
+})
+
+test('cancelling the response body aborts the upstream inference', async () => {
+	let upstream: AbortSignal | undefined
+	const pending: AgentBackend = {
+		...backend,
+		streamFn: (_model, _context, options) => {
+			upstream = options?.signal
+			const events = createAssistantMessageEventStream()
+			events.push({ type: 'start', partial: answer })
+			upstream?.addEventListener(
+				'abort',
+				() => {
+					events.push({
+						type: 'error',
+						reason: 'aborted',
+						error: { ...answer, stopReason: 'aborted' }
+					})
+					events.end()
+				},
+				{ once: true }
+			)
+			return events
+		}
+	}
+	const { gateway } = setup(async () => ({ backend: pending, selection }))
+	const response = await gateway.request('http://test/infer', {
+		method: 'POST',
+		body: JSON.stringify({ version: 1, selection, context: { messages: [] } })
+	})
+	const reader = response.body!.getReader()
+	await reader.read()
+	await reader.cancel()
+	await vi.waitFor(() => expect(upstream?.aborted).toBe(true))
+})
+
+test('an already-aborted caller settles with the aborted stop reason', async () => {
+	const { getBackend } = setup()
+	const remote = (await getBackend())!
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (_url, options: RequestInit) => {
+			options.signal!.throwIfAborted()
+			throw new Error('unexpected')
+		})
+	)
+	const abort = new AbortController()
+	abort.abort()
+	const result = await remote.completeFn(remote.model, { messages: [] }, { signal: abort.signal })
+	expect(result.stopReason).toBe('aborted')
 })

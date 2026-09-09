@@ -23,9 +23,12 @@ export type {
 	AccountOrigin,
 	AccountsAdmin,
 	CapabilityId,
+	ConnectRef,
+	ConnectState,
 	CredentialField,
 	CredentialsSchema,
-	ProviderInfo
+	ProviderInfo,
+	SignInPrompt
 } from '../accounts/contract.ts'
 
 // ── host.usage ────────────────────────────────────────────────────────────
@@ -153,6 +156,10 @@ export interface SettingsCapability {
 	'accounts.listProviders': AccountsAdmin['listProviders']
 	'accounts.listAccounts': AccountsAdmin['listAccounts']
 	'accounts.connect': AccountsAdmin['connect']
+	'accounts.beginConnect': AccountsAdmin['beginConnect']
+	'accounts.readConnect': AccountsAdmin['readConnect']
+	'accounts.cancelConnect': AccountsAdmin['cancelConnect']
+	'accounts.openConnect'(input: import('../accounts/contract.ts').ConnectRef): Promise<void>
 	'accounts.setEnabled': AccountsAdmin['setEnabled']
 	'accounts.disconnect': AccountsAdmin['disconnect']
 	// The signed-in user's metered usage against their plan. CAPABILITY_UNAVAILABLE on

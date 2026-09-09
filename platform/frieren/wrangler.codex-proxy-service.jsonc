@@ -1,0 +1,21 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "frieren-codex-proxy",
+	"main": "worker/codex-proxy-service.ts",
+	"compatibility_date": "2026-04-10",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": { "enabled": false },
+	"secrets": { "required": ["PROXY_KEY"] },
+	"containers": [
+		{
+			"class_name": "CodexProxy",
+			"image": "./scripts/codex-proxy/Dockerfile",
+			"instance_type": "lite",
+			"max_instances": 1
+		}
+	],
+	"durable_objects": { "bindings": [{ "name": "PROXY", "class_name": "CodexProxy" }] },
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["CodexProxy"] }]
+}

@@ -1,12 +1,3 @@
-// frieren's account providers. Google/iCloud/platform are the shared modules — the
-// Worker differs from the daemon only in constructor args:
-//   - the platform provider binds `ai` over the host's own env-keyed LLM (the platform owns
-//     the vendor/model), and
-//   - interactive acquisition is refused clearly — those accounts are signed in on
-//     the Mac app and sync here (DESIGN §9) — until a web-redirect
-//     AuthFlow lands. ChatGPT is a local marker so Settings lists it; its runtime
-//     (pi-ai) lives only in the daemon.
-
 import type { LLMText } from '@justfiles/agent'
 import {
 	type AuthFlow,
@@ -19,10 +10,11 @@ import type { GeneratedImage } from '@justfiles/app/capabilities/image'
 
 export interface ProviderDeps {
 	text: LLMText
+	chatgpt?: Provider
 	generateImage?: (prompt: string) => Promise<GeneratedImage[]>
 }
 
-const DESKTOP_MESSAGE = 'Sign in to this account from Just Computer for Mac — it will sync here.'
+const DESKTOP_MESSAGE = 'Connect this account on Just Computer for Mac.'
 
 // The Worker has no browser/loopback to run an interactive flow; refuse before the
 // provider even builds its authorize URL.
@@ -36,30 +28,10 @@ export function buildProviders(deps: ProviderDeps): Provider[] {
 	return [
 		googleProvider({ flow: acquireOnDesktop, client: null }),
 		icloudProvider(),
-		chatgptOnDesktop(),
+		...(deps.chatgpt ? [deps.chatgpt] : []),
 		platformProvider({
 			generate: (system, prompt) => deps.text.gen(system, prompt),
 			generateImage: deps.generateImage
 		})
 	]
-}
-
-function chatgptOnDesktop(): Provider {
-	return {
-		id: 'chatgpt',
-		name: 'ChatGPT',
-		auth: {
-			ui: { kind: 'interactive' },
-			acquire: async () => {
-				throw new Error(DESKTOP_MESSAGE)
-			}
-		},
-		capabilities: {
-			ai: {
-				bind: () => {
-					throw new Error('ChatGPT is used from Just Computer for Mac')
-				}
-			}
-		}
-	}
 }

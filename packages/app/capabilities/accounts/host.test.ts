@@ -336,7 +336,7 @@ describe('the built-in platform account is derived', () => {
 		expect(absent).toBe('frieren')
 	})
 
-	test('a live user selection overrides the floor, and image follows it', async () => {
+	test('a text selection leaves the built-in image provider active', async () => {
 		const { caps, accounts, activeAi } = await setup(
 			testProviders({
 				platform: platformProvider({
@@ -351,20 +351,25 @@ describe('the built-in platform account is derived', () => {
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
 		).resolves.toEqual({ images: [{ data: 'b64:a red panda', mimeType: 'image/png' }] })
 
-		// Selecting the user's own AI takes BOTH over — this provider backs no image engine,
-		// so images go with it rather than quietly falling back to the platform's.
 		await put(accounts, { id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai' })
 		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('chatgpt')
 		await expect(
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
-		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', capability: 'image' })
+		).resolves.toEqual({ images: [{ data: 'b64:a red panda', mimeType: 'image/png' }] })
+		const listed = await caps.admin.listAccounts({})
+		expect(listed.find((a) => a.accountId === 'frieren')?.enabled).toEqual(['image'])
+		expect(listed.find((a) => a.accountId === 'u@openai')?.enabled).toEqual(['ai'])
+		expect(
+			(await caps.admin.listProviders({})).find((p) => p.id === 'frieren')?.capabilities
+		).toEqual(['ai', 'image'])
+		await caps.admin.setEnabled({ accountId: 'frieren', capability: 'image', enabled: false })
+		expect(
+			(await caps.admin.listAccounts({})).find((a) => a.accountId === 'frieren')?.enabled
+		).toEqual(['image'])
 	})
 
-	test('a selected account whose credentials are unreadable stays listed, but AI falls back', async () => {
-		// The key rotated (or was never deployed): the record reads back with `creds: undefined`
-		// and mints nothing, so honouring the selection would strand the user with a dead agent.
-		// The record itself is untouched — its sealed bytes wait for the restored key.
+	test('an unreadable credential stays selected and requires reconnection', async () => {
 		const vol = volume(memStore())
 		await put(volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }), {
 			id: 'u@openai',
@@ -375,12 +380,12 @@ describe('the built-in platform account is derived', () => {
 		await volumeActiveAi(vol).set({ accountId: 'u@openai', model: 'gpt' })
 		const caps = hostAccounts(testProviders(), vol, { secretCodec: aesGcmSecretCodec('host-key') })
 
-		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('frieren')
+		await expect(caps.resolveAi((l) => l.providerId)).resolves.toBe('chatgpt')
 		const list = await caps.admin.listAccounts({})
 		expect(list.find((a) => a.accountId === 'u@openai')?.lastError).toBeTruthy()
-		expect(list.find((a) => a.accountId === 'frieren')?.enabled).toContain('ai')
+		expect(list.find((a) => a.accountId === 'frieren')?.enabled).not.toContain('ai')
 		expect(await vol.readFile('/private/accounts/u%40openai.json')).toEqual(sealed)
-		// The dangling selection is left alone too: re-selecting is a click once the key is back.
+		await expect(caps.resolveAi((lease) => lease.credentials.read())).rejects.toThrow('Reconnect')
 		expect(await volumeActiveAi(vol).get()).toEqual({ accountId: 'u@openai', model: 'gpt' })
 	})
 
@@ -431,9 +436,7 @@ describe('the built-in platform account is derived', () => {
 })
 
 describe('use-facet dispatch', () => {
-	test('image is UNAVAILABLE when the active AI provider has no image binding', async () => {
-		// The default platform provider carries no image engine; chatgpt never does. Either
-		// way the active account decides — image swaps (or vanishes) with the AI switch.
+	test('image is UNAVAILABLE when there is no built-in image provider', async () => {
 		const { caps } = await setup()
 		await expect(
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
@@ -586,7 +589,7 @@ describe('use-facet dispatch', () => {
 
 // `resolveAi` is the account lease the text `ai` capability is built on (host-owned, not
 // an accounts capability). It resolves the active AI — the SAME answer the admin
-// projection and `image` read — into a caller-minted backend, forwarding the selected
+// projection reads — into a caller-minted backend, forwarding the selected
 // model and a `persist` that writes rotated credentials back to the shared account.
 describe('resolveAi', () => {
 	test('leases the active selection with its model + provider to the caller', async () => {

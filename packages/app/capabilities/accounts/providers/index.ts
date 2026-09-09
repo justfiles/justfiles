@@ -8,6 +8,7 @@ export type {
 	AuthFlow,
 	Binding,
 	BoundAccount,
+	CredentialAccess,
 	Provider
 } from '../provider.ts'
 export {

@@ -21,6 +21,7 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
+import { connections } from './connect.ts'
 import type {
 	AccountInfo,
 	AccountOrigin,
@@ -28,7 +29,13 @@ import type {
 	CapabilityId,
 	ProviderInfo
 } from './contract.ts'
-import type { Binding, Provider } from './provider.ts'
+import type {
+	AcquiredAccount,
+	Binding,
+	BoundAccount,
+	CredentialAccess,
+	Provider
+} from './provider.ts'
 
 export type { SecretCodec } from './account.ts'
 // The at-rest seal for the creds lane, re-exported for hosts: each supplies its own root
@@ -43,26 +50,24 @@ export interface AccountsOptions {
 	// The DO passes `{ kind: 'cloud' }`; the mac daemon passes `{ kind: 'device', label:
 	// <hostname> }`. Omitted → `AccountInfo.origin` stays undefined.
 	origin?: AccountOrigin
-	// How this host keeps best-effort background work alive past the call that started it.
-	// The one such piece of work is the reseal sweep, which no caller awaits — on a Worker
-	// that means the runtime may end the event (or hibernate the Durable Object) before it
-	// finishes, and the plaintext it exists to close would survive, since nothing else ever
-	// rewrites those records. The DO passes `ctx.waitUntil`; a long-lived process (the mac
-	// daemon) has an event loop that outlives every request and needs nothing here.
+	// Retains sign-in and credential sealing past the request that started them.
+	// The DO passes ctx.waitUntil; the Mac daemon's event loop needs no extra retention.
 	waitUntil?: (work: Promise<unknown>) => void
 }
 
-// A short-lived borrow of the active-AI account, for building the agent's own LLM
-// runtime — the one consumer that legitimately needs the creds (to *construct* a
-// runtime), so it gets a lease, not the store. `creds` stay inside the caller's `mint`
-// closure; `persist` is the only writeback (rotated tokens on refresh). The generic `T`
-// keeps @justfiles/app free of any agent/pi-ai dependency; `providerId` lets the caller
-// branch on which ai provider is active.
-export interface AiAccountLease {
-	creds: unknown
-	config: unknown // { model } for the active selection
+// Pins inference to one account/model. Reconnecting changes the revision; refresh does not.
+export interface AiSelection {
+	accountId: string
+	model?: string
+	revision: string
+}
+
+// Host-only provider access. `credentials.modify` holds the account lock across refresh.
+export interface AiAccountLease extends BoundAccount {
+	accountId: string
+	revision: string
+	config: unknown
 	providerId: string
-	persist(creds: unknown): Promise<void>
 }
 
 // One host instance's accounts, in one object. Callers get facets and answers — never the
@@ -75,7 +80,10 @@ export interface HostAccounts {
 	readonly admin: AccountsAdmin
 	// The text `ai` capability is host-owned (each host builds it over its own model), so it
 	// resolves the active account through here rather than through a capability.
-	resolveAi<T>(mint: (lease: AiAccountLease) => T | Promise<T>): Promise<T | null>
+	resolveAi<T>(
+		mint: (lease: AiAccountLease) => T | Promise<T>,
+		selection?: AiSelection
+	): Promise<T | null>
 }
 
 type Registry = Map<string, Provider>
@@ -95,9 +103,9 @@ type ActiveAi = { account: Account; model?: string }
 // file is therefore the built-in account, not a missing one — which is what lets a host
 // boot, and a wiped volume resolve AI, without writing anything first. A host with no
 // builtin AI provider (the Mac) has no floor at all.
-function floorAccount(registry: Registry): Account | undefined {
+function floorAccount(registry: Registry, capability: 'ai' | 'image' = 'ai'): Account | undefined {
 	for (const provider of registry.values())
-		if (provider.builtin && provider.capabilities.ai)
+		if (provider.builtin && provider.capabilities[capability])
 			return { id: provider.id, provider: provider.id, creds: {} }
 	return undefined
 }
@@ -130,6 +138,7 @@ function bound<T>(
 		return undefined
 	return binding.bind({
 		creds: account.creds,
+		credentials: credentialAccess(accounts, account),
 		config,
 		persist: writebackFor(accounts, account)
 	})
@@ -226,7 +235,8 @@ function toAccountInfo(
 	account: Account,
 	active: ActiveAi | undefined,
 	registry: Registry,
-	origin: AccountOrigin | undefined
+	origin: AccountOrigin | undefined,
+	imageAccountId?: string
 ): AccountInfo {
 	const provider = registry.get(account.provider)
 	const enabled: CapabilityId[] = []
@@ -238,6 +248,7 @@ function toAccountInfo(
 	}
 	const isActiveAi = active?.account.id === account.id
 	if (isActiveAi) enabled.push('ai')
+	if (account.id === imageAccountId) enabled.push('image')
 	const config: Partial<Record<CapabilityId, unknown>> = {}
 	if (isActiveAi) config.ai = aiConfig(provider, active?.model)
 	const info: AccountInfo = { accountId: account.id, providerId: account.provider, enabled, config }
@@ -260,7 +271,30 @@ export function hostAccounts(
 	const store = volumeAccountStore(volume, opts)
 	const activeAi = volumeActiveAi(volume)
 	const floor = floorAccount(registry)
+	const imageFloor = floorAccount(registry, 'image')
 	const origin = opts.origin
+	const save = async (
+		providerId: string,
+		acquired: AcquiredAccount,
+		commit?: Parameters<AccountStore['update']>[2]
+	) => {
+		await store.update(
+			acquired.accountId,
+			(prev) => {
+				commit?.signal.throwIfAborted()
+				const scopes = [...new Set([...(prev?.scopes ?? []), ...(acquired.scopes ?? [])])]
+				return {
+					id: acquired.accountId,
+					provider: providerId,
+					creds: acquired.creds,
+					revision: crypto.randomUUID(),
+					...(scopes.length > 0 ? { scopes } : {})
+				}
+			},
+			commit
+		)
+	}
+	const connect = connections({ providers: registry, save, waitUntil: opts.waitUntil })
 
 	// Seal every account record still sitting in the clear, with this host's key.
 	//
@@ -301,22 +335,19 @@ export function hostAccounts(
 	// reseal sweep has exactly one trigger.
 	const list = async (): Promise<Account[]> => {
 		seal()
-		return withFloor(await store.list(), floor)
+		return withFloor(withFloor(await store.list(), floor), imageFloor)
 	}
 	const get = async (id: string): Promise<Account | undefined> =>
-		floor?.id === id ? floor : store.get(id)
+		floor?.id === id ? floor : imageFloor?.id === id ? imageFloor : store.get(id)
 
-	// THE active-AI answer — admin projection, image and text all read this one, so "which AI
-	// is on?" cannot differ by call path. A selection that cannot mint a backend (the account
-	// is gone, or its creds are sealed under a key this host lost) falls back to the platform
-	// floor, so the user is never left with no AI at all; the broken record stays listed, with
-	// its own `lastError`, for a re-connect. Nothing here writes.
+	// A connected selection stays selected when its credential fails. Only removing
+	// the account returns inference to the built-in provider.
 	const active = async (): Promise<ActiveAi | undefined> => {
 		seal()
 		const selected = await activeAi.get()
 		if (selected) {
 			const account = await get(selected.accountId)
-			if (account && account.creds !== undefined) return { account, model: selected.model }
+			if (account) return { account, model: selected.model }
 		}
 		return floor && { account: floor }
 	}
@@ -329,15 +360,12 @@ export function hostAccounts(
 		new CapabilityError('CAPABILITY_INVALID_INPUT', 'accounts', method)
 
 	return {
-		// `image` rides the same active-AI selection — switching the AI account swaps text
-		// and image together. The account's provider backs it or it's unavailable; the model
-		// choice lives with the binding (no image entry on the pointer yet).
+		// Images keep their built-in provider when the user selects another text account.
 		image: implementCapability(image, {
 			generateImage: async (_c, i) => {
-				const current = await active()
 				const impl =
-					current &&
-					bound(store, current.account, registry.get(current.account.provider)?.capabilities.image)
+					imageFloor &&
+					bound(store, imageFloor, registry.get(imageFloor.provider)?.capabilities.image)
 				if (!impl) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'image')
 				return impl.generateImage(i)
 			}
@@ -361,6 +389,7 @@ export function hostAccounts(
 		// surface reaches apps only through the `settings` capability, which gates on
 		// first-party app identity once, for every method (see settings/host.ts).
 		admin: {
+			...connect,
 			listProviders: async () => {
 				return providers.map((p) => {
 					const ui = p.auth.ui
@@ -368,7 +397,7 @@ export function hostAccounts(
 						id: p.id,
 						name: p.name,
 						authKind: ui.kind,
-						capabilities: (['email', 'calendar', 'ai'] as const).filter(
+						capabilities: (['email', 'calendar', 'ai', 'image'] as const).filter(
 							(k) => p.capabilities[k] !== undefined
 						)
 					}
@@ -379,7 +408,9 @@ export function hostAccounts(
 			},
 			listAccounts: async () => {
 				const [all, current] = await Promise.all([list(), active()])
-				return all.map((account) => toAccountInfo(account, current, registry, origin))
+				return all.map((account) =>
+					toAccountInfo(account, current, registry, origin, imageFloor?.id)
+				)
 			},
 			connect: async ({ providerId, credentials }) => {
 				const provider = registry.get(providerId)
@@ -389,21 +420,20 @@ export function hostAccounts(
 				// needs to derive accountId. Acquisition is external I/O, so it runs OUTSIDE the
 				// account's chain; only the merge that preserves prior grants (so a re-connect,
 				// e.g. a token refresh, keeps enabled services on) is serialized.
-				const { accountId, creds, scopes } = await provider.auth.acquire({
+				const acquired = await provider.auth.acquire({
 					fields: credentials,
 					scopes: []
 				})
-				await store.update(accountId, (prev) => {
-					const merged = [...new Set([...(prev?.scopes ?? []), ...(scopes ?? [])])]
-					const account: Account = { id: accountId, provider: providerId, creds }
-					if (merged.length > 0) account.scopes = merged
-					return account
-				})
-				return { accountId }
+				await save(providerId, acquired)
+				return { accountId: acquired.accountId }
 			},
 			setEnabled: async ({ accountId, capability, enabled, config }) => {
 				const account = await get(accountId)
 				if (!account) throw invalid('setEnabled')
+				if (capability === 'image') {
+					if (account.id !== imageFloor?.id) throw invalid('setEnabled')
+					return
+				}
 				// ai is single-active: the selection pointer, not a scope.
 				if (capability === 'ai') {
 					if (enabled) {
@@ -465,17 +495,54 @@ export function hostAccounts(
 			}
 		},
 
-		async resolveAi<T>(mint: (lease: AiAccountLease) => T | Promise<T>): Promise<T | null> {
-			const current = await active()
+		async resolveAi<T>(
+			mint: (lease: AiAccountLease) => T | Promise<T>,
+			selection?: AiSelection
+		): Promise<T | null> {
+			const current = selection
+				? { account: await get(selection.accountId), model: selection.model }
+				: await active()
+			if (
+				selection &&
+				(!current?.account || (current.account.revision ?? '') !== selection.revision)
+			)
+				throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			// Only on a host with no builtin AI and nothing usable selected: the caller surfaces
 			// "turn on AI in Settings", and a broken record's own lastError says why.
-			if (!current) return null
+			if (!current?.account) return null
+			const account = current.account
+			if (!registry.get(account.provider)?.capabilities.ai) throw invalid('resolveAi')
+
 			return mint({
-				creds: current.account.creds,
+				accountId: account.id,
+				revision: account.revision ?? '',
+				credentials: credentialAccess(store, account),
+				creds: account.creds,
 				config: current.model !== undefined ? { model: current.model } : {},
-				providerId: current.account.provider,
-				persist: writebackFor(store, current.account)
+				providerId: account.provider,
+				persist: writebackFor(store, account)
 			})
+		}
+	}
+}
+
+function credentialAccess(store: AccountStore, account: Account): CredentialAccess {
+	const check = (value: Account | undefined): Account => {
+		if (!value || value.creds === undefined || value.revision !== account.revision)
+			throw new Error('Account changed or disconnected. Reconnect in Settings.')
+		return value
+	}
+	return {
+		read: async () => check(await store.get(account.id)).creds,
+		modify: async (change) => {
+			let result: unknown
+			await store.update(account.id, async (stored) => {
+				const latest = check(stored)
+				const next = await change(latest.creds)
+				result = next ?? latest.creds
+				return next === undefined ? undefined : { ...latest, creds: next }
+			})
+			return result
 		}
 	}
 }
