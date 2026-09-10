@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/create-app-v0.1.3...create-app-v0.2.0) (2026-09-10)
+
+
+### Features
+
+* **create-app:** scaffold apps with agent guidance and checks ([#643](https://github.com/xiaoxinghu/justfiles/issues/643)) ([573df67](https://github.com/xiaoxinghu/justfiles/commit/573df67160ba8c9ba4bc16b1bbe92801c159bd75))
+
 ## [0.1.3](https://github.com/xiaoxinghu/justfiles/compare/create-app-v0.1.2...create-app-v0.1.3) (2026-09-10)
 
 

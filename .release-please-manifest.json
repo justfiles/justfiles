@@ -4,5 +4,5 @@
 	"packages/design": "0.4.0",
 	"packages/app": "0.14.0",
 	"packages/avatar": "0.1.0",
-	"packages/create-app": "0.1.3"
+	"packages/create-app": "0.2.0"
 }
