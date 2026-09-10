@@ -1,0 +1,23 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+	"root": true,
+	"files": {
+		"includes": ["src/**", "vite.config.ts", "package.json", "tsconfig.json", "biome.json"]
+	},
+	"formatter": {
+		"indentStyle": "tab",
+		"lineWidth": 100
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "single",
+			"semicolons": "asNeeded",
+			"trailingCommas": "none"
+		}
+	},
+	"linter": {
+		"rules": {
+			"recommended": true
+		}
+	}
+}

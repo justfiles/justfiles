@@ -19,5 +19,5 @@
 		"noUncheckedIndexedAccess": true,
 		"erasableSyntaxOnly": true
 	},
-	"include": ["src"]
+	"include": ["src", "vite.config.ts"]
 }

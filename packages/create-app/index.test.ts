@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,11 +56,99 @@ test.each(['vanilla', 'react'])('creates an installable %s package', (template) 
 		moduleResolution: 'bundler',
 		strict: true
 	})
+	expect(tsconfig.include).toContain('vite.config.ts')
+	for (const file of [
+		'AGENTS.md',
+		'CLAUDE.md',
+		'README.md',
+		'biome.json',
+		'src/app.test.ts',
+		'.gitignore'
+	]) {
+		expect(existsSync(join(dir, file)), file).toBe(true)
+	}
+	expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf8').trim()).toBe('@AGENTS.md')
+	expect(readFileSync(join(dir, 'vite.config.ts'), 'utf8')).toContain("id: 'local.counter'")
+	expect(result.stdout).toContain('AGENTS.md')
+	for (const script of ['format', 'lint', 'typecheck', 'test', 'build', 'check']) {
+		expect(pkg.scripts[script], script).toBeTruthy()
+	}
 })
 
-function run(args: string[]) {
+test.each(['vanilla', 'react'])('sets the %s app identity without prompts', (template) => {
+	const { root, result } = run(['My Notes', '--template', template, '--id', 'alice.notes'])
+	const dir = join(root, 'My Notes')
+
+	expect(result.status).toBe(0)
+	expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name).toBe('my-notes')
+	const config = readFileSync(join(dir, 'vite.config.ts'), 'utf8')
+	expect(config).toContain("id: 'alice.notes'")
+	expect(config).toContain("name: 'my-notes'")
+	expect(config).not.toContain('__APP_')
+})
+
+test('accepts --id=owner.app', () => {
+	const { root, result } = run(['counter', '--id=alice.counter'])
+
+	expect(result.status).toBe(0)
+	expect(readFileSync(join(root, 'counter/vite.config.ts'), 'utf8')).toContain(
+		"id: 'alice.counter'"
+	)
+})
+
+test('accepts hyphens within owner and app names', () => {
+	const { root, result } = run(['counter', '--id=my-team.my-notes'])
+
+	expect(result.status).toBe(0)
+	expect(readFileSync(join(root, 'counter/vite.config.ts'), 'utf8')).toContain(
+		"id: 'my-team.my-notes'"
+	)
+})
+
+test.each(['My--Notes', 'My - Notes'])('creates a usable default identity from %s', (directory) => {
+	const { root, result } = run([directory])
+	const dir = join(root, directory)
+
+	expect(result.status).toBe(0)
+	expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name).toBe('my-notes')
+	expect(readFileSync(join(dir, 'vite.config.ts'), 'utf8')).toContain("id: 'local.my-notes'")
+})
+
+test.each([
+	'--id',
+	'--id=',
+	'--id=counter',
+	'--id=Alice.counter',
+	'--id=alice-.notes',
+	'--id=alice.notes-',
+	'--id=alice--team.notes',
+	'--id=alice.my--notes',
+	"--id=alice.counter'bad"
+])('rejects invalid %s before overwriting files', (option) => {
+	const { root, result } = run(['counter', '--force', option], (root) => {
+		mkdirSync(join(root, 'counter'))
+		writeFileSync(join(root, 'counter/keep.txt'), 'keep')
+	})
+
+	expect(result.status).toBe(1)
+	expect(result.stderr).toContain('Invalid app id')
+	expect(readFileSync(join(root, 'counter/keep.txt'), 'utf8')).toBe('keep')
+})
+
+test('refuses to overwrite an existing app without --force', () => {
+	const { root, result } = run(['counter'], (root) => {
+		mkdirSync(join(root, 'counter'))
+		writeFileSync(join(root, 'counter/AGENTS.md'), 'custom instructions')
+	})
+
+	expect(result.status).toBe(1)
+	expect(readFileSync(join(root, 'counter/AGENTS.md'), 'utf8')).toBe('custom instructions')
+})
+
+function run(args: string[], setup?: (root: string) => void) {
 	const root = mkdtempSync(join(tmpdir(), 'create-app-'))
 	roots.push(root)
+	setup?.(root)
 	const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, encoding: 'utf8' })
 	return { root, result }
 }
