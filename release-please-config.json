@@ -2,7 +2,9 @@
 	"packages": {
 		"platform/frieren": {
 			"release-type": "node",
-			"component": "frieren"
+			"component": "frieren",
+			"bump-minor-pre-major": true,
+			"prerelease": true
 		},
 		"packages/fs": {
 			"release-type": "node",
