@@ -1,5 +1,5 @@
-import { Settings } from '@justfiles/ui/Settings'
-import type { Category, SettingsHost } from '@justfiles/ui/settings/types'
+import { Settings, type SettingsOptions } from '@justfiles/ui/Settings'
+import type { Category } from '@justfiles/ui/settings/types'
 import { useCallback, useEffect, useState } from 'react'
 import { Window } from '../components/Window'
 import { useOsDispatch, useOsRuntime, useOsStore } from '../os/hooks'
@@ -9,7 +9,7 @@ import { SETTINGS_WINDOW_ID as id } from '../os/state'
 export function SettingsWindow() {
 	const dispatch = useOsDispatch()
 	const { settings } = useOsRuntime()
-	const [host, setHost] = useState<SettingsHost | null>(null)
+	const [options, setOptions] = useState<SettingsOptions | null>(null)
 	const [error, setError] = useState<string | null>(null)
 	const window = useOsStore((state) => state.windows[id])
 	const rect = useOsStore((state) => state.placements[id])
@@ -22,8 +22,8 @@ export function SettingsWindow() {
 	useEffect(() => {
 		let live = true
 		void settings.then(
-			(host) => {
-				if (live) setHost(host)
+			(options) => {
+				if (live) setOptions(options)
 			},
 			(error: unknown) => {
 				if (live) setError(String(error))
@@ -52,8 +52,8 @@ export function SettingsWindow() {
 				})
 			}
 		>
-			{host ? (
-				<Settings host={host} category={window.category} onCategoryChange={selectCategory} />
+			{options ? (
+				<Settings {...options} category={window.category} onCategoryChange={selectCategory} />
 			) : (
 				<p>{error ?? 'Loading settings…'}</p>
 			)}

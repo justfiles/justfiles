@@ -145,7 +145,7 @@ function serve(options: ServerOptions, identityCommands?: IdentityCommands): Ser
 			// reaches it as a page rather than as part of the web launcher.
 			'/launcher/store': () => serveClient('launcher/store.html'),
 			'/launcher/settings': () => serveClient('launcher/settings.html'),
-			'/settings/:method': {
+			'/api/settings/:method': {
 				POST: async (req) => {
 					if (
 						crossOrigin(req) ||

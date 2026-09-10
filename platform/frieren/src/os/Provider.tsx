@@ -6,7 +6,6 @@ import * as appHost from '../apps/host'
 import { createClientKernel } from '../apps/kernel.client'
 import type { InstalledApp } from '../apps/types'
 import { openProfile } from '../fs'
-import { createBrowserSettings } from '../shell/settings'
 import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
 import { startOsRuntime } from './runtime'
@@ -88,7 +87,10 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			))
 	})
 	const [settings] = useState(() =>
-		volumePromise.then((fs) => createBrowserSettings(fs, readyGetToken, readyGetUser))
+		volumePromise.then((volume) => ({
+			getToken: readyGetToken,
+			local: { volume, user: readyGetUser, version: import.meta.env.VITE_FRIEREN_VERSION }
+		}))
 	)
 	const [client] = useState(() =>
 		createFrierenClient({

@@ -1,7 +1,7 @@
 import type { Kernel } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
 import { useStore } from '@justfiles/state/react'
-import type { SettingsHost } from '@justfiles/ui/settings/types'
+import type { SettingsOptions } from '@justfiles/ui/Settings'
 import { createContext, useContext } from 'react'
 import type { Volume } from '../fs'
 import type { AgentClient, FrierenClient } from './client'
@@ -12,7 +12,7 @@ export interface OsContextValue {
 	client: FrierenClient
 	localKernel: () => Promise<Kernel>
 	volume: Promise<Volume>
-	settings: Promise<SettingsHost>
+	settings: Promise<SettingsOptions>
 }
 
 export const OsContext = createContext<OsContextValue | null>(null)

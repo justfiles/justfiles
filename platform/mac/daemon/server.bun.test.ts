@@ -477,7 +477,7 @@ test('POST /store/:id installs the listed release, not the one the pointer moved
 })
 
 test('Settings requires the host token and rejects cross-origin requests', async () => {
-	const url = new URL('/settings/readSoul', server.url)
+	const url = new URL('/api/settings/readSoul', server.url)
 	const cases: Record<string, string>[] = [
 		{ 'content-type': 'application/json' },
 		{ 'content-type': 'application/json', authorization: 'Bearer wrong' },

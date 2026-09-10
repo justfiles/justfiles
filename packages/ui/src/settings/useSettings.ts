@@ -1,5 +1,6 @@
 import { imageDataUrl } from '@justfiles/app/image-type'
 import { useEffect, useMemo, useState } from 'react'
+import { createClient, type SettingsOptions } from './client.ts'
 import {
 	type Category,
 	colorWallpaper,
@@ -7,28 +8,28 @@ import {
 	type SettingsState,
 	wallpaperColor
 } from './model.ts'
-import type { SettingsHost } from './types.ts'
 
 export type SettingsActions = ReturnType<typeof useSettings>['actions']
 
 export function useSettings(
-	host: SettingsHost,
+	{ getToken, local }: SettingsOptions,
 	category: Category,
 	onCategoryChange?: (category: Category) => void
 ) {
+	const api = useMemo(() => createClient({ getToken, local }), [getToken, local])
 	const [state, setState] = useState<SettingsState>({ ...initialState, category })
 	useEffect(() => setState((state) => ({ ...state, category })), [category])
 	const actions = useMemo(() => {
 		const patch = (value: Partial<SettingsState>) => setState((state) => ({ ...state, ...value }))
-		const loadAccounts = async () => patch({ accounts: await host.listAccounts({}) })
-		const loadSoul = async () => patch({ soul: await host.readSoul({}) })
-		const loadFacts = async () => patch({ facts: await host.readProfile({}) })
+		const loadAccounts = async () => patch({ accounts: await api.listAccounts({}) })
+		const loadSoul = async () => patch({ soul: await api.readSoul({}) })
+		const loadFacts = async () => patch({ facts: await api.readProfile({}) })
 		return {
 			loadAccounts,
-			beginAccountConnection: host.beginAccountConnection,
-			readAccountConnection: host.readAccountConnection,
-			cancelAccountConnection: host.cancelAccountConnection,
-			openAccountConnection: host.openAccountConnection,
+			beginAccountConnection: api.beginAccountConnection,
+			readAccountConnection: api.readAccountConnection,
+			cancelAccountConnection: api.cancelAccountConnection,
+			openAccountConnection: api.openAccountConnection,
 			selectCategory: ({ category }: { category: Category }) => {
 				patch({ category, error: null })
 				onCategoryChange?.(category)
@@ -36,7 +37,7 @@ export function useSettings(
 			clearError: (_input: Record<string, never>) => patch({ error: null }),
 			loadUsage: async (_input: Record<string, never>) => {
 				try {
-					patch({ usage: await host.readUsage({}), usageAvailable: true, usageError: null })
+					patch({ usage: await api.readUsage({}), usageAvailable: true, usageError: null })
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error)
 					patch(
@@ -44,42 +45,42 @@ export function useSettings(
 					)
 				}
 			},
-			connectAccount: async (input: Parameters<SettingsHost['connectAccount']>[0]) => {
-				await host.connectAccount(input)
+			connectAccount: async (input: Parameters<(typeof api)['connectAccount']>[0]) => {
+				await api.connectAccount(input)
 				await loadAccounts()
 			},
-			setAccountEnabled: async (input: Parameters<SettingsHost['setAccountEnabled']>[0]) => {
-				await host.setAccountEnabled(input)
+			setAccountEnabled: async (input: Parameters<(typeof api)['setAccountEnabled']>[0]) => {
+				await api.setAccountEnabled(input)
 				await loadAccounts()
 			},
-			disconnectAccount: async (input: Parameters<SettingsHost['disconnectAccount']>[0]) => {
-				await host.disconnectAccount(input)
+			disconnectAccount: async (input: Parameters<(typeof api)['disconnectAccount']>[0]) => {
+				await api.disconnectAccount(input)
 				await loadAccounts()
 			},
-			saveSoul: async (input: Parameters<SettingsHost['writeSoul']>[0]) => {
-				await host.writeSoul(input)
+			saveSoul: async (input: Parameters<(typeof api)['writeSoul']>[0]) => {
+				await api.writeSoul(input)
 				await loadSoul()
 			},
-			saveFacts: async (input: Parameters<SettingsHost['writeProfile']>[0]) => {
-				await host.writeProfile(input)
+			saveFacts: async (input: Parameters<(typeof api)['writeProfile']>[0]) => {
+				await api.writeProfile(input)
 				await loadFacts()
 			},
-			generateSoul: host.generateSoul,
-			readVersion: host.readVersion,
+			generateSoul: api.generateSoul,
+			readVersion: api.readVersion,
 			readWallpaper: async (_input: Record<string, never>) => {
-				const bytes = await host.readWallpaper({})
+				const bytes = await api.readWallpaper({})
 				const color = bytes ? wallpaperColor(bytes) : null
 				return { color, image: bytes && !color ? imageDataUrl(bytes) : null }
 			},
 			setWallpaperColor: ({ color }: { color: string }) =>
-				host.writeWallpaper({ bytes: colorWallpaper(color) }),
-			setWallpaperImage: host.writeWallpaper,
-			clearWallpaper: (_input: Record<string, never>) => host.writeWallpaper({ bytes: null }),
+				api.writeWallpaper({ bytes: colorWallpaper(color) }),
+			setWallpaperImage: api.writeWallpaper,
+			clearWallpaper: (_input: Record<string, never>) => api.writeWallpaper({ bytes: null }),
 			readDockMaterial: async (_input: Record<string, never>) =>
-				(await host.readDockMaterial({})) ?? 'smoked',
-			setDockMaterial: host.writeDockMaterial
+				(await api.readDockMaterial({})) ?? 'smoked',
+			setDockMaterial: api.writeDockMaterial
 		}
-	}, [host, onCategoryChange])
+	}, [api, onCategoryChange])
 
 	useEffect(() => {
 		let live = true
@@ -99,11 +100,11 @@ export function useSettings(
 			}
 		}
 		void Promise.all([
-			load('user', () => host.readUser({})),
-			load('providers', () => host.listProviders({})),
-			load('accounts', () => host.listAccounts({})),
-			load('soul', () => host.readSoul({})),
-			load('facts', () => host.readProfile({}))
+			load('user', () => api.readUser({})),
+			load('providers', () => api.listProviders({})),
+			load('accounts', () => api.listAccounts({})),
+			load('soul', () => api.readSoul({})),
+			load('facts', () => api.readProfile({}))
 		]).then(() => {
 			if (live) setState((state) => ({ ...state, loading: false }))
 		})
@@ -111,6 +112,6 @@ export function useSettings(
 		return () => {
 			live = false
 		}
-	}, [host, actions])
+	}, [api, actions])
 	return { state, actions }
 }

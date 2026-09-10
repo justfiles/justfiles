@@ -1,4 +1,6 @@
-import type { SettingsHost } from './types.ts'
+import type { createSettingsHost } from './host.ts'
+
+type SettingsApi = ReturnType<typeof createSettingsHost>
 
 const methods = [
 	'listProviders',
@@ -25,7 +27,7 @@ const methods = [
 	'writeWallpaper',
 	'readDockMaterial',
 	'writeDockMaterial'
-] as const satisfies readonly (keyof SettingsHost)[]
+] as const satisfies readonly (keyof SettingsApi)[]
 
 const encode = (value: unknown): string =>
 	JSON.stringify(value, (_key, value) =>
@@ -41,7 +43,7 @@ const decode = (text: string): unknown =>
 export function settingsClient(
 	url: string,
 	headers: () => Promise<Record<string, string>>
-): SettingsHost {
+): SettingsApi {
 	return Object.fromEntries(
 		methods.map((method) => [
 			method,
@@ -55,17 +57,17 @@ export function settingsClient(
 				return decode(await response.text())
 			}
 		])
-	) as unknown as SettingsHost
+	) as unknown as SettingsApi
 }
 
 // The host authenticates the request before handing it to this handler.
 export async function serveSettings(
 	request: Request,
-	host: Partial<SettingsHost>
+	host: Partial<SettingsApi>
 ): Promise<Response> {
 	const method = new URL(request.url).pathname.split('/').pop()
 	if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-	if (!methods.some((name) => name === method) || !Object.hasOwn(host, method!))
+	if (!method || !methods.some((name) => name === method) || !Object.hasOwn(host, method))
 		return new Response('Not found', { status: 404 })
 	if (!request.headers.get('content-type')?.startsWith('application/json'))
 		return new Response('JSON required', { status: 415 })
@@ -73,7 +75,7 @@ export async function serveSettings(
 		const input = decode(await request.text())
 		if (!input || typeof input !== 'object' || Array.isArray(input))
 			return new Response('Object required', { status: 400 })
-		const run = host[method as keyof SettingsHost] as (input: unknown) => Promise<unknown>
+		const run = host[method as keyof SettingsApi] as (input: unknown) => Promise<unknown>
 		return new Response(encode((await run(input)) ?? null), {
 			headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
 		})

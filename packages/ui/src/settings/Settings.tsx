@@ -2,6 +2,7 @@ import { GameboyAvatar } from '@justfiles/avatar/react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AgentPane, useDrafting } from './agent-pane.tsx'
 import { AppearancePane } from './appearance-pane.tsx'
+import type { SettingsOptions } from './client.ts'
 import {
 	type Category,
 	hasBothOrigins,
@@ -16,10 +17,11 @@ import type {
 	ConnectRef,
 	ConnectState,
 	ProviderInfo,
-	SettingsHost,
 	UsageResource
 } from './types.ts'
 import { useSettings } from './useSettings.ts'
+
+export type { SettingsOptions } from './client.ts'
 import './gui.css'
 type AiConfig = { model: string; models: { id: string; name: string }[] }
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
@@ -36,15 +38,15 @@ const CAP_LABEL: Record<CapabilityId, string> = {
 }
 
 export function Settings({
-	host,
+	getToken,
+	local,
 	category = 'agent',
 	onCategoryChange
-}: {
-	host: SettingsHost
+}: SettingsOptions & {
 	category?: Category
 	onCategoryChange?: (category: Category) => void
 }) {
-	const { state, actions: client } = useSettings(host, category, onCategoryChange)
+	const { state, actions: client } = useSettings({ getToken, local }, category, onCategoryChange)
 	const drafting = useDrafting(client, state.facts)
 	return (
 		<div className="settings">

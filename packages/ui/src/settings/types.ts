@@ -5,8 +5,6 @@ export function settingsCategory(value?: string): Category {
 		: 'agent'
 }
 
-import type { AccountsAdmin } from '@justfiles/app/accounts'
-
 export type {
 	AccountInfo,
 	AccountOrigin,
@@ -68,43 +66,5 @@ export interface GeneratedSoul {
 export const DOCK_MATERIAL_NAMES = ['clear', 'frosted', 'smoked', 'solid'] as const
 export type DockMaterial = (typeof DOCK_MATERIAL_NAMES)[number]
 
-export interface SettingsHost {
-	listProviders: AccountsAdmin['listProviders']
-	listAccounts: AccountsAdmin['listAccounts']
-	connectAccount: AccountsAdmin['connect']
-	beginAccountConnection: AccountsAdmin['beginConnect']
-	completeAccountConnection: AccountsAdmin['completeConnect']
-	readAccountConnection: AccountsAdmin['readConnect']
-	cancelAccountConnection: AccountsAdmin['cancelConnect']
-	openAccountConnection(input: Parameters<AccountsAdmin['readConnect']>[0]): Promise<void>
-	setAccountEnabled: AccountsAdmin['setEnabled']
-	disconnectAccount: AccountsAdmin['disconnect']
-	readUsage(input: Record<string, never>): Promise<UsageSnapshot>
-	readUser(input: Record<string, never>): Promise<UserProfile | null>
-	readVersion(input: Record<string, never>): Promise<string>
-	readSoul(input: Record<string, never>): Promise<AgentSoul>
-	writeSoul(input: {
-		name?: string
-		gender?: 'female' | 'male'
-		body?: string
-		avatar?: string
-	}): Promise<void>
-	listAvatars(input: Record<string, never>): Promise<AvatarInfo[]>
-	putAvatarFile(input: { avatar: string; name: string; bytes: Uint8Array | null }): Promise<void>
-	readProfile(input: Record<string, never>): Promise<UserFacts>
-	writeProfile(input: {
-		name?: string
-		birthDate?: string
-		gender?: 'female' | 'male' | null
-	}): Promise<void>
-	generateSoul(input: {
-		name: string
-		gender: 'female' | 'male'
-		archetype?: string
-		user?: { birthDate?: string; gender?: 'female' | 'male' | null }
-	}): Promise<GeneratedSoul>
-	readWallpaper(input: Record<string, never>): Promise<Uint8Array | null>
-	writeWallpaper(input: { bytes: Uint8Array | null }): Promise<void>
-	readDockMaterial(input: Record<string, never>): Promise<DockMaterial | null>
-	writeDockMaterial(input: { material: DockMaterial }): Promise<void>
-}
+export const WALLPAPER_PATH = '/system/wallpaper'
+export const DOCK_MATERIAL_PATH = '/system/dock-material'

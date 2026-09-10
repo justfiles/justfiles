@@ -38,7 +38,14 @@ require reconnection; the two services do not share a transaction.
 
 ## Sign-in and Settings
 
-The shell renders shared Settings UI from `packages/ui`. Its direct host service exposes:
+The shell renders shared Settings UI from `packages/ui`. The component creates its
+own API client for `/api/settings` on both platforms; the shell supplies only its
+token getter and, on Frieren, the local volume, user getter, and build version.
+Local file edits use the shared file handlers so they remain available offline.
+Mac serves those same operations through its authenticated daemon endpoint.
+The API types are inferred from the service implementation.
+
+The service exposes:
 
 | Operation | Behaviour |
 | --- | --- |
