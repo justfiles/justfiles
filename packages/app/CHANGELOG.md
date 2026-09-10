@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.13.1...app-v0.14.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **settings:** Remove the Settings capability SDK exports. Account host and provider imports move from @justfiles/app/capabilities/accounts/* to @justfiles/app/accounts/*.
+
+### Features
+
+* **frieren:** use ChatGPT subscriptions for text inference on web and Mac ([#639](https://github.com/xiaoxinghu/justfiles/issues/639)) ([e6f6edf](https://github.com/xiaoxinghu/justfiles/commit/e6f6edf81ee5d9bd55c82afd0953b63caed65983))
+* **settings:** move settings into the desktop shells ([#641](https://github.com/xiaoxinghu/justfiles/issues/641)) ([522a7f7](https://github.com/xiaoxinghu/justfiles/commit/522a7f76f96fc2903cf7f70ecc014cf378074597))
+
 ## [0.13.1](https://github.com/xiaoxinghu/justfiles/compare/app-v0.13.0...app-v0.13.1) (2026-09-09)
 
 
