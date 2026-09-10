@@ -56,7 +56,15 @@ export function useDrafting(client: SettingsActions, facts: UserFacts | null): D
 	return { writing, error, ask, dismiss: () => setError(null) }
 }
 
-function Gendered({ value, onPick }: { value: Gender; onPick: (next: Gender) => void }) {
+function Gendered({
+	value,
+	onPick,
+	disabled
+}: {
+	value: Gender
+	onPick: (next: Gender) => void
+	disabled?: boolean
+}) {
 	return (
 		<div className="agent-seg">
 			{(['female', 'male'] as const).map((option) => (
@@ -65,6 +73,7 @@ function Gendered({ value, onPick }: { value: Gender; onPick: (next: Gender) => 
 					type="button"
 					className="agent-seg-button"
 					data-on={value === option}
+					disabled={disabled}
 					onClick={() => onPick(option)}
 				>
 					{option === 'female' ? 'Female' : 'Male'}
@@ -194,6 +203,7 @@ function CharacterSheet({
 						className="agent-name"
 						value={name}
 						aria-label="Name"
+						disabled={busy}
 						onFocus={() => {
 							typing.current = true
 						}}
@@ -204,7 +214,11 @@ function CharacterSheet({
 						}}
 					/>
 					<div className="agent-meta">
-						<Gendered value={gender} onPick={(next) => void save({ gender: next })} />
+						<Gendered
+							value={gender}
+							onPick={(next) => void save({ gender: next })}
+							disabled={busy}
+						/>
 						<span className="agent-pill" data-bound="true">
 							Bound
 						</span>
@@ -235,7 +249,7 @@ function CharacterSheet({
 							You renamed them — the prose still says <b>{written}</b>.
 						</span>
 						<span className="agent-note-grow" />
-						<button type="button" data-size="sm" onClick={rewrite}>
+						<button type="button" data-size="sm" disabled={busy || writing} onClick={rewrite}>
 							Rewrite
 						</button>
 					</div>
@@ -308,7 +322,7 @@ function CharacterSheet({
 			</section>
 
 			<div className="agent-row">
-				<button type="button" data-size="sm" onClick={onResummon}>
+				<button type="button" data-size="sm" disabled={busy} onClick={onResummon}>
 					Summon again…
 				</button>
 				<span className="settings-card-copy">
@@ -347,8 +361,10 @@ function Summoning({
 	const [body, setBody] = useState('')
 	const [firstWords, setFirstWords] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
 	const writing = drafting.writing
 	const draft = (seed: string) => {
+		setError(null)
 		drafting.ask({ name: name.trim(), gender, archetype: seed }, (drafted) => {
 			setBody(drafted.body)
 			setFirstWords(drafted.firstWords ?? null)
@@ -366,16 +382,19 @@ function Summoning({
 
 	const bind = async () => {
 		setBusy(true)
+		setError(null)
 		try {
 			await client.saveSoul({
 				name: name.trim(),
 				gender,
 				body: body.trim()
 			})
+			onBound()
+		} catch (error) {
+			setError(error instanceof Error ? error.message : String(error))
 		} finally {
 			setBusy(false)
 		}
-		onBound()
 	}
 
 	const crumbs = (
@@ -481,6 +500,7 @@ function Summoning({
 										aria-label="Soul"
 										spellCheck={false}
 										placeholder="Write who they are."
+										disabled={busy}
 										onChange={(event) => setBody(event.target.value)}
 									/>
 								</div>
@@ -522,6 +542,11 @@ function Summoning({
 									{busy ? 'Binding…' : `Bind ${name.trim()}`}
 								</button>
 							</div>
+							{error ? (
+								<p className="settings-card-error" role="alert">
+									Could not bind: {error}
+								</p>
+							) : null}
 							{crumbs}
 						</>
 					) : null}

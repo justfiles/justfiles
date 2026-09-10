@@ -284,6 +284,8 @@ function AboutYou({ state, client }: { state: SettingsState; client: SettingsAct
 	const [name, setName] = useState('')
 	const [birthDate, setBirthDate] = useState('')
 	const [saved, setSaved] = useState(false)
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
 	const editing = useRef(false)
 	useEffect(() => {
 		if (editing.current || !facts) return
@@ -291,9 +293,18 @@ function AboutYou({ state, client }: { state: SettingsState; client: SettingsAct
 		setBirthDate(facts.birthDate)
 	}, [facts])
 	const save = async (patch: { name?: string; birthDate?: string; gender?: 'female' | 'male' }) => {
-		await client.saveFacts(patch)
-		setSaved(true)
-		setTimeout(() => setSaved(false), 1200)
+		setBusy(true)
+		setError(null)
+		setSaved(false)
+		try {
+			await client.saveFacts(patch)
+			setSaved(true)
+			setTimeout(() => setSaved(false), 1200)
+		} catch (error) {
+			setError(error instanceof Error ? error.message : String(error))
+		} finally {
+			setBusy(false)
+		}
 	}
 
 	return (
@@ -308,6 +319,7 @@ function AboutYou({ state, client }: { state: SettingsState; client: SettingsAct
 				<span className="settings-field-title">Your name</span>
 				<input
 					id="about-name"
+					disabled={busy}
 					className="settings-select"
 					value={name}
 					onFocus={() => {
@@ -324,6 +336,7 @@ function AboutYou({ state, client }: { state: SettingsState; client: SettingsAct
 				<span className="settings-field-title">Birth date — a date, never an age</span>
 				<input
 					id="about-birth"
+					disabled={busy}
 					className="settings-select"
 					type="date"
 					value={birthDate}
@@ -342,6 +355,7 @@ function AboutYou({ state, client }: { state: SettingsState; client: SettingsAct
 							type="button"
 							className="agent-seg-button"
 							data-on={facts?.gender === option}
+							disabled={busy}
 							onClick={() => void save({ gender: option })}
 						>
 							{option === 'female' ? 'Female' : 'Male'}
@@ -353,6 +367,11 @@ function AboutYou({ state, client }: { state: SettingsState; client: SettingsAct
 				Written to your volume as <span style={{ fontFamily: 'var(--font-mono)' }}>user.md</span>.
 				Only what you put here — nothing is inferred.
 			</p>
+			{error ? (
+				<p className="settings-card-error" role="alert">
+					Could not save changes: {error}
+				</p>
+			) : null}
 		</section>
 	)
 }
