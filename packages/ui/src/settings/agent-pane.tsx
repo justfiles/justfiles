@@ -147,6 +147,7 @@ function CharacterSheet({
 	const [name, setName] = useState(soul.name)
 	const [busy, setBusy] = useState(false)
 	const [saved, setSaved] = useState(false)
+	const [error, setError] = useState<string | null>(null)
 	const gender: Gender = soul.gender ?? 'female'
 	const written = nameInSoul(soul)
 	const renamed = written !== null && written !== soul.name
@@ -158,10 +159,15 @@ function CharacterSheet({
 	}, [soul, editing])
 	const save = async (patch: { name?: string; gender?: Gender; body?: string }) => {
 		setBusy(true)
+		setError(null)
 		try {
 			await client.saveSoul(patch)
 			setSaved(true)
 			setTimeout(() => setSaved(false), 1200)
+			return true
+		} catch (error) {
+			setError(error instanceof Error ? error.message : String(error))
+			return false
 		} finally {
 			setBusy(false)
 		}
@@ -211,6 +217,12 @@ function CharacterSheet({
 				</div>
 			</section>
 
+			{error ? (
+				<p className="settings-error" role="alert">
+					Could not save changes: {error}
+				</p>
+			) : null}
+
 			<section className="settings-card">
 				<div className="agent-row">
 					<h2 className="settings-card-title">Soul</h2>
@@ -241,6 +253,7 @@ function CharacterSheet({
 								onClick={() => {
 									setEditing(false)
 									setBody(soul.body)
+									setError(null)
 								}}
 							>
 								Cancel
@@ -250,10 +263,10 @@ function CharacterSheet({
 							type="button"
 							data-size="sm"
 							disabled={busy || writing}
-							onClick={() => {
+							onClick={async () => {
 								if (!editing) return setEditing(true)
+								if (body.trim() && body !== soul.body && !(await save({ body }))) return
 								setEditing(false)
-								if (body.trim() && body !== soul.body) void save({ body })
 							}}
 						>
 							{editing ? 'Done' : 'Edit'}
@@ -273,6 +286,7 @@ function CharacterSheet({
 							<textarea
 								value={body}
 								aria-label="Soul"
+								disabled={busy}
 								spellCheck={false}
 								onChange={(event) => setBody(event.target.value)}
 							/>
