@@ -1,5 +1,5 @@
 {
-	"platform/frieren": "1.0.0",
+	"platform/frieren": "0.23.0",
 	"packages/fs": "0.8.0",
 	"packages/design": "0.4.0",
 	"packages/app": "0.14.0",

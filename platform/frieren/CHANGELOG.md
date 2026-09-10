@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.22.0...frieren-v1.0.0) (2026-09-10)
+## [0.23.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.22.0...frieren-v0.23.0) (2026-09-10)
 
 
 ### ⚠ BREAKING CHANGES
