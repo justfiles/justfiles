@@ -84,16 +84,7 @@ test('signed-out Mac keeps local accounts and has no inference backend', async (
 	const accounts = daemonAccounts(volume(memStore()), { getToken: async () => null })
 	expect(await accounts.resolveBackend()).toBeNull()
 	expect((await accounts.admin.listProviders({})).map((p) => p.id)).toEqual(['google', 'icloud'])
-	expect(
-		await accounts.remote.invoke({
-			appId: 'justfiles.settings',
-			capability: 'settings',
-			method: 'accounts.listAccounts',
-			args: [{}],
-			scopes: []
-		})
-	).toEqual([])
-	accounts.dispose()
+	expect(await accounts.admin.listAccounts({})).toEqual([])
 })
 
 test('a removed credential rejects a pinned request instead of selecting the built-in provider', async () => {

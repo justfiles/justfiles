@@ -7,8 +7,8 @@
 // CLIENT credentials (a Desktop client's "secret" isn't confidential, but Google
 // still wants it on the token call).
 
-import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
-import type { EmailCapability, EmailDetail, EmailSummary } from '../../email/index.ts'
+import type { CalendarCapability, CalendarEvent } from '../../capabilities/calendar/index.ts'
+import type { EmailCapability, EmailDetail, EmailSummary } from '../../capabilities/email/index.ts'
 import type { AcquiredAccount, AuthFlow, BoundAccount, Provider } from '../provider.ts'
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'

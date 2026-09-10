@@ -1,5 +1,5 @@
 import { useAuth, useUser } from '@clerk/clerk-react'
-import type { UserProfile } from '@justfiles/app/capabilities/settings'
+import type { UserProfile } from '@justfiles/ui/settings/types'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
@@ -10,42 +10,6 @@ import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
 import { startOsRuntime } from './runtime'
 import { createOsStore } from './store'
-
-// Clerk serves avatars from img.clerk.com. An app renders the signed-in user's
-// avatar through the `user` capability, but the app frame's CSP blocks remote
-// images (`img-src data: blob:`). Convert the avatar to a `data:` URL on the host
-// so the frame can render it without a remote image request. Sized down + cached
-// by source URL to stay small in the app's synced state; any
-// failure (e.g. no CORS) drops the avatar and the app shows its placeholder. Host
-// chrome (banner/omnibar) is unaffected — it isn't inside a CSP'd frame.
-const avatarCache = new Map<string, Promise<string | undefined>>()
-function avatarDataUrl(imageUrl: string): Promise<string | undefined> {
-	let cached = avatarCache.get(imageUrl)
-	if (!cached) {
-		cached = (async () => {
-			try {
-				const url = new URL(imageUrl)
-				url.searchParams.set('width', '80')
-				url.searchParams.set('height', '80')
-				url.searchParams.set('fit', 'crop')
-				const res = await fetch(url, { credentials: 'omit' })
-				if (!res.ok) return undefined
-				const blob = await res.blob()
-				return await new Promise<string | undefined>((resolve) => {
-					const reader = new FileReader()
-					reader.onload = () =>
-						resolve(typeof reader.result === 'string' ? reader.result : undefined)
-					reader.onerror = () => resolve(undefined)
-					reader.readAsDataURL(blob)
-				})
-			} catch {
-				return undefined
-			}
-		})()
-		avatarCache.set(imageUrl, cached)
-	}
-	return cached
-}
 
 const ICON_MIME: Record<string, string> = {
 	png: 'image/png',
@@ -78,8 +42,7 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
-	// The signed-in user for the local `user` capability. Held in a ref (like
-	// getToken) so the kernel — created once — always reads the CURRENT Clerk session.
+	// Read the current Clerk session when Settings asks for the user.
 	const { user, isLoaded: userLoaded } = useUser()
 	const getUserRef = useRef<() => UserProfile | null>(() => null)
 	getUserRef.current = () =>
@@ -88,7 +51,7 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			: null
 
 	// frieren boots the OS before Clerk resolves (local-first), so a resumed window's
-	// first capability calls can race auth: `getToken`/`getUser` would return null and
+	// first host calls can race auth: `getToken`/`getUser` would return null and
 	// the app would latch a signed-out view (Settings showing "Local user", a socket
 	// CAPABILITY_UNAVAILABLE). Gate both on Clerk being loaded so those reads WAIT for
 	// the resolved session instead of capturing a null. Signed-out then resolves to a
@@ -110,11 +73,7 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	}
 	const readyGetUser = async (): Promise<UserProfile | null> => {
 		await clerkReadyRef.current?.promise
-		const profile = getUserRef.current()
-		// Hand apps a data: URL avatar (CSP-renderable inside the sandboxed frame),
-		// not the remote img.clerk.com URL their frame can't fetch.
-		if (!profile?.avatarUrl) return profile
-		return { ...profile, avatarUrl: await avatarDataUrl(profile.avatarUrl) }
+		return getUserRef.current()
 	}
 
 	// The current profile volume is opened at boot (App); the singleton hands back
@@ -124,9 +83,15 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		let kernelPromise: Promise<ReturnType<typeof createClientKernel>> | undefined
 		return () =>
 			(kernelPromise ??= volumePromise.then((fs) =>
-				createClientKernel({ fs, getToken: readyGetToken, getUser: readyGetUser })
+				createClientKernel({ fs, getToken: readyGetToken })
 			))
 	})
+	const [settings] = useState(() =>
+		volumePromise.then((volume) => ({
+			getToken: readyGetToken,
+			local: { volume, user: readyGetUser, version: import.meta.env.VITE_FRIEREN_VERSION }
+		}))
+	)
 	const [client] = useState(() =>
 		createFrierenClient({
 			getToken: readyGetToken,
@@ -187,8 +152,8 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	}, [client, isLoaded, isSignedIn, userId])
 
 	const value = useMemo(
-		() => ({ store, client, localKernel, volume: volumePromise }),
-		[store, client, localKernel, volumePromise]
+		() => ({ store, client, localKernel, volume: volumePromise, settings }),
+		[store, client, localKernel, volumePromise, settings]
 	)
 
 	return <OsContext.Provider value={value}>{children}</OsContext.Provider>

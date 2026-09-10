@@ -1,14 +1,10 @@
-import {
-	type Credential,
-	type CredentialStore,
-	createModels,
-	type OAuthCredential
-} from '@earendil-works/pi-ai'
+import { type Credential, type CredentialStore, createModels } from '@earendil-works/pi-ai'
 import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { type AgentBackend, modelsBackend, text } from '@justfiles/agent'
-import type { AiAccountLease } from '@justfiles/app/capabilities/accounts/host'
-import type { BoundAccount, Provider } from '@justfiles/app/capabilities/accounts/providers'
+import type { AiAccountLease } from '@justfiles/app/accounts/host'
+import type { BoundAccount, Provider } from '@justfiles/app/accounts/providers'
+import { browserLogin, refresh } from './chatgpt-oauth.ts'
 
 registerBunOAuthFlows()
 
@@ -25,23 +21,25 @@ export function chatgptAccount(proxy: { url: string; key: string }) {
 		name: 'ChatGPT',
 		auth: {
 			ui: { kind: 'interactive' },
-			acquire: async ({ signal, notify }) => {
+			acquire: async ({ signal, notify, authorize }) => {
 				if (!notify) throw new Error('Start ChatGPT sign-in from Settings.')
-				const creds = await oauth.login({
-					signal,
-					prompt: async (prompt) => {
-						if (prompt.type !== 'select') throw new Error('Unexpected login prompt')
-						return 'device_code'
-					},
-					notify: (event) => {
-						if (event.type === 'device_code')
-							notify({
-								verificationUrl: event.verificationUri,
-								userCode: event.userCode,
-								intervalMs: (event.intervalSeconds ?? 5) * 1000
-							})
-					}
-				})
+				const creds = authorize
+					? await browserLogin(authorize, signal)
+					: await oauth.login({
+							signal,
+							prompt: async (prompt) => {
+								if (prompt.type !== 'select') throw new Error('Unexpected login prompt')
+								return 'device_code'
+							},
+							notify: (event) => {
+								if (event.type === 'device_code')
+									notify({
+										verificationUrl: event.verificationUri,
+										userCode: event.userCode,
+										intervalMs: (event.intervalSeconds ?? 5) * 1000
+									})
+							}
+						})
 				if (typeof creds.accountId !== 'string' || !creds.accountId)
 					throw new Error('Missing account identity')
 				return { accountId: `chatgpt:${creds.accountId}`, creds }
@@ -97,49 +95,5 @@ export function chatgptAccount(proxy: { url: string; key: string }) {
 	return {
 		provider,
 		backend: (lease: AiAccountLease) => backend(lease, `${lease.accountId}:${lease.revision}`)
-	}
-}
-
-async function refresh(
-	credential: OAuthCredential,
-	signal?: AbortSignal
-): Promise<OAuthCredential> {
-	const timeout = AbortSignal.timeout(30_000)
-	const response = await fetch('https://auth.openai.com/oauth/token', {
-		method: 'POST',
-		headers: { 'content-type': 'application/x-www-form-urlencoded' },
-		body: new URLSearchParams({
-			grant_type: 'refresh_token',
-			refresh_token: credential.refresh,
-			client_id: 'app_EMoamEEZ73f0CkXaXp7hrann'
-		}),
-		signal: signal ? AbortSignal.any([signal, timeout]) : timeout
-	})
-	if (!response.ok)
-		throw new Error(
-			response.status === 400 || response.status === 401
-				? 'ChatGPT needs a fresh sign-in. Reconnect it in Settings.'
-				: 'ChatGPT sign-in service is unavailable. Please retry shortly.'
-		)
-	const token = (await response.json()) as {
-		access_token?: string
-		refresh_token?: string
-		expires_in?: number
-	}
-	if (
-		typeof token.access_token !== 'string' ||
-		!token.access_token ||
-		typeof token.refresh_token !== 'string' ||
-		!token.refresh_token ||
-		typeof token.expires_in !== 'number' ||
-		!Number.isFinite(token.expires_in) ||
-		token.expires_in <= 0
-	)
-		throw new Error('ChatGPT returned an invalid credential. Reconnect it in Settings.')
-	return {
-		...credential,
-		access: token.access_token,
-		refresh: token.refresh_token,
-		expires: Date.now() + token.expires_in * 1000
 	}
 }

@@ -1,7 +1,7 @@
 import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import type { CapabilityCall } from '../types.ts'
+import type { CapabilityCall } from '../capabilities/types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
 import { aesGcmSecretCodec, hostAccounts } from './host.ts'
@@ -14,8 +14,6 @@ import { platformProvider } from './providers/platform.ts'
 // `hostAccounts` over a real in-memory Volume. State the admin surface can't express
 // (pre-granted scopes, a specific active selection) is written straight to the account
 // store / active-AI pointer — the same Volume the module reads.
-// The admin impl is a plain object (it reaches apps only through the gated `settings`
-// capability — see settings/host.test.ts for the gate), so it is called directly here.
 
 // Real providers with fake acquisition: a provider is data, so a test swaps its
 // `auth` by spread. Google's `acquire` echoes the requested scopes as granted

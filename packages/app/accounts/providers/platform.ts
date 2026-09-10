@@ -3,7 +3,7 @@
 // offers toggles, never connect/disconnect. Kept as a bare function so this package
 // needs no @justfiles/agent dependency.
 
-import type { GeneratedImage } from '../../image/index.ts'
+import type { GeneratedImage } from '../../capabilities/image/index.ts'
 import type { Provider } from '../provider.ts'
 
 export function platformProvider(deps: {

@@ -1,4 +1,5 @@
 interface MigrationVolume {
+	rm(path: string, options: { recursive: boolean; force: boolean }): Promise<void>
 	exists(path: string): Promise<boolean>
 	readFile(path: string): Promise<Uint8Array>
 	rename(oldPath: string, newPath: string): Promise<void>
@@ -16,8 +17,7 @@ export const FIRST_PARTY_APP_ID_RENAMES: ReadonlyArray<readonly [string, string]
 	['app.justfiles.frieren.files', 'justfiles.files'],
 	['app.justfiles.frieren.notes', 'justfiles.notes'],
 	['app.justfiles.frieren.paint', 'justfiles.paint'],
-	['app.justfiles.frieren.pixel', 'justfiles.pixel'],
-	['app.justfiles.frieren.settings', 'justfiles.settings']
+	['app.justfiles.frieren.pixel', 'justfiles.pixel']
 ]
 
 function appPaths(id: string): [string, string, string] {
@@ -31,6 +31,11 @@ function rewriteIds(text: string): string {
 	}
 	return next
 }
+
+export const RETIRED_SETTINGS_IDS = new Set([
+	'app.justfiles.frieren.settings',
+	'justfiles.settings'
+])
 
 const runs = new WeakMap<MigrationVolume, Promise<boolean>>()
 
@@ -47,6 +52,10 @@ export function migrateFirstPartyAppIds(fs: MigrationVolume): Promise<boolean> {
 }
 
 async function migrate(fs: MigrationVolume): Promise<boolean> {
+	for (const id of RETIRED_SETTINGS_IDS) {
+		if (await fs.exists(`/applications/${id}`))
+			await fs.rm(`/applications/${id}`, { recursive: true, force: true })
+	}
 	for (const [oldId, newId] of FIRST_PARTY_APP_ID_RENAMES) {
 		const oldPaths = appPaths(oldId)
 		const newPaths = appPaths(newId)

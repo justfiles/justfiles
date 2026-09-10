@@ -58,6 +58,10 @@ export function Launcher() {
 						<StoreSurface installed={apps} onClose={() => setStoreOpen(false)} />
 					) : connection === 'ready' || filtered.length > 0 ? (
 						<div className="app-grid">
+							<a className="app-cell" href={`/launcher/settings${location.search}`}>
+								<span className="app-icon">⚙</span>
+								<span className="app-name">Settings</span>
+							</a>
 							{filtered.map((app) => (
 								<a className="app-cell" href={appUrl(app.id)} key={app.id} title={app.name}>
 									<AppIcon app={app} />

@@ -37,8 +37,6 @@
 		"./capabilities/volume/host": "./capabilities/volume/host.ts",
 		"./capabilities/notify": "./capabilities/notify/index.ts",
 		"./capabilities/notify/host": "./capabilities/notify/host.ts",
-		"./capabilities/settings": "./capabilities/settings/index.ts",
-		"./capabilities/settings/host": "./capabilities/settings/host.ts",
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/devkit/host": "./capabilities/devkit/host.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
@@ -46,10 +44,11 @@
 		"./capabilities/reader": "./capabilities/reader/index.ts",
 		"./capabilities/reader/host": "./capabilities/reader/host.ts",
 		"./capabilities/image": "./capabilities/image/index.ts",
-		"./capabilities/accounts/host": "./capabilities/accounts/host.ts",
-		"./capabilities/accounts/providers": "./capabilities/accounts/providers/index.ts",
-		"./capabilities/accounts/providers/google": "./capabilities/accounts/providers/google.ts",
-		"./capabilities/accounts/providers/icloud": "./capabilities/accounts/providers/icloud.ts"
+		"./accounts/host": "./accounts/host.ts",
+		"./accounts/providers": "./accounts/providers/index.ts",
+		"./accounts/providers/google": "./accounts/providers/google.ts",
+		"./accounts/providers/icloud": "./accounts/providers/icloud.ts",
+		"./accounts": "./accounts/contract.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -191,29 +190,25 @@
 				"types": "./dist/capabilities/image/index.d.ts",
 				"default": "./dist/capabilities/image/index.js"
 			},
-			"./capabilities/accounts/host": {
-				"types": "./dist/capabilities/accounts/host.d.ts",
-				"default": "./dist/capabilities/accounts/host.js"
+			"./accounts/host": {
+				"types": "./dist/accounts/host.d.ts",
+				"default": "./dist/accounts/host.js"
 			},
-			"./capabilities/accounts/providers": {
-				"types": "./dist/capabilities/accounts/providers/index.d.ts",
-				"default": "./dist/capabilities/accounts/providers/index.js"
+			"./accounts/providers": {
+				"types": "./dist/accounts/providers/index.d.ts",
+				"default": "./dist/accounts/providers/index.js"
 			},
-			"./capabilities/accounts/providers/google": {
-				"types": "./dist/capabilities/accounts/providers/google.d.ts",
-				"default": "./dist/capabilities/accounts/providers/google.js"
+			"./accounts/providers/google": {
+				"types": "./dist/accounts/providers/google.d.ts",
+				"default": "./dist/accounts/providers/google.js"
 			},
-			"./capabilities/accounts/providers/icloud": {
-				"types": "./dist/capabilities/accounts/providers/icloud.d.ts",
-				"default": "./dist/capabilities/accounts/providers/icloud.js"
+			"./accounts/providers/icloud": {
+				"types": "./dist/accounts/providers/icloud.d.ts",
+				"default": "./dist/accounts/providers/icloud.js"
 			},
-			"./capabilities/settings": {
-				"types": "./dist/capabilities/settings/index.d.ts",
-				"default": "./dist/capabilities/settings/index.js"
-			},
-			"./capabilities/settings/host": {
-				"types": "./dist/capabilities/settings/host.d.ts",
-				"default": "./dist/capabilities/settings/host.js"
+			"./accounts": {
+				"types": "./dist/accounts/contract.d.ts",
+				"default": "./dist/accounts/contract.js"
 			}
 		}
 	},

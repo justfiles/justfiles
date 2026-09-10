@@ -34,7 +34,7 @@ beforeAll(async () => {
 	// Sandbox the daemon's Volume/agent singletons to the temp dir before the first use.
 	process.env.FRIEREN_SUPPORT_DIR = root
 	// Ephemeral port; a no-op projection so the run never writes ~/Applications/Just Computer Apps.
-	server = createServer({ port: 0, projectApps: async () => {} })
+	server = createServer({ port: 0, token: 'host-test-token', projectApps: async () => {} })
 	if (server.port === undefined) throw new Error('server has no TCP port')
 	port = server.port
 })
@@ -474,4 +474,28 @@ test('POST /store/:id installs the listed release, not the one the pointer moved
 		const installed = await (await getKernel()).app(PINNED)
 		expect(installed.manifest.capabilities).toEqual(REVIEWED)
 	})
+})
+
+test('Settings requires the host token and rejects cross-origin requests', async () => {
+	const url = new URL('/api/settings/readSoul', server.url)
+	const cases: Record<string, string>[] = [
+		{ 'content-type': 'application/json' },
+		{ 'content-type': 'application/json', authorization: 'Bearer wrong' },
+		{
+			'content-type': 'application/json',
+			authorization: 'Bearer host-test-token',
+			origin: 'https://untrusted.example'
+		}
+	]
+	for (const headers of cases) {
+		const response = await fetch(url, { method: 'POST', headers, body: '{}' })
+		expect(response.status).toBe(403)
+	}
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', authorization: 'Bearer host-test-token' },
+		body: '{}'
+	})
+	expect(response.status).toBe(200)
+	expect(await response.json()).toMatchObject({ seeded: true })
 })

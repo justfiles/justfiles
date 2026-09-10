@@ -33,6 +33,7 @@ import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from
 import type { OsWindow } from '../os/state'
 import { DialogHost } from './Dialog'
 import { Omnibar } from './Omnibar'
+import { SettingsWindow } from './SettingsWindow'
 import { Stickies } from './Stickies'
 import { useWallpaper } from './wallpaper'
 
@@ -177,7 +178,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const wallpaper = useWallpaper()
 
 	const desktopMenuItems: ContextMenuItem[] = [
-		{ label: 'Personalize…', onSelect: () => openSettings() },
+		{ label: 'Settings…', onSelect: () => openSettings() },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
 		{ separator: true },
 		// The wallpaper is Settings' to change now — one writer, one pane, and a preview
@@ -331,7 +332,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					<div className="frn-desktop-windows">
 						<Stickies />
 						{windows.map((window) =>
-							window.appId ? (
+							window.kind === 'settings' ? (
+								<SettingsWindow key={window.id} />
+							) : window.appId ? (
 								<AppWindow
 									key={window.id}
 									id={window.id}

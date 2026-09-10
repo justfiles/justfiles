@@ -3,7 +3,7 @@
 // VEVENT data into normalized `CalendarEvent` DTOs and never lets credentials
 // or raw iCalendar payloads leak into the result.
 
-import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
+import type { CalendarCapability, CalendarEvent } from '../../capabilities/calendar/index.ts'
 import type { CredentialsSchema } from '../contract.ts'
 import type { Provider } from '../provider.ts'
 import { type CalDavClient, createCalDavClient } from './icloud/caldav.ts'

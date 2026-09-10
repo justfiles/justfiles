@@ -1,10 +1,12 @@
-import { CapabilityError } from '../error.ts'
-import type { ConnectRef, ConnectState, SignInPrompt } from './contract.ts'
+import { CapabilityError } from '../capabilities/error.ts'
+import type { AccountsAdmin, ConnectRef, ConnectState, SignInPrompt } from './contract.ts'
 import type { AcquiredAccount, Provider } from './provider.ts'
 
 type Attempt = {
 	state: ConnectState
 	abort: AbortController
+	callback?: (url: URL) => void
+	work?: Promise<void>
 }
 
 export function connections(deps: {
@@ -26,7 +28,9 @@ export function connections(deps: {
 	const expired = (ref: ConnectRef): ConnectState => ({ ...ref, status: 'expired', expiresAt: 0 })
 
 	return {
-		async beginConnect(ref: ConnectRef): Promise<ConnectState> {
+		async beginConnect(input: Parameters<AccountsAdmin['beginConnect']>[0]): Promise<ConnectState> {
+			const ref = { providerId: input.providerId, operationId: input.operationId }
+			if (input.method && !['browser', 'device_code'].includes(input.method)) throw invalid()
 			if (!/^[a-zA-Z0-9-]{1,80}$/.test(ref.operationId)) throw invalid()
 			for (const [id, attempt] of attempts) {
 				if (attempt.state.expiresAt <= Date.now()) {
@@ -57,8 +61,31 @@ export function connections(deps: {
 			const notify = (prompt: SignInPrompt) => {
 				if (!abort.signal.aborted) attempt.state = { ...ref, status: 'pending', expiresAt, prompt }
 			}
+			const authorize = (url: string, validate: (callback: URL) => void): Promise<URL> => {
+				abort.signal.throwIfAborted()
+				return new Promise((resolve, reject) => {
+					const cancel = () => {
+						attempt.callback = undefined
+						reject(abort.signal.reason)
+					}
+					abort.signal.addEventListener('abort', cancel, { once: true })
+					attempt.callback = (callback) => {
+						validate(callback)
+						abort.signal.removeEventListener('abort', cancel)
+						resolve(callback)
+					}
+					notify({ verificationUrl: url })
+				})
+			}
 			const work = Promise.resolve()
-				.then(() => provider.auth.acquire({ scopes: [], signal: abort.signal, notify }))
+				.then(() =>
+					provider.auth.acquire({
+						scopes: [],
+						signal: abort.signal,
+						notify,
+						authorize: input.method === 'browser' ? authorize : undefined
+					})
+				)
 				.then(async (account) => {
 					abort.signal.throwIfAborted()
 					await deps.save(ref.providerId, account, {
@@ -85,7 +112,20 @@ export function connections(deps: {
 					}
 				})
 				.finally(() => clearTimeout(timer))
+			attempt.work = work
 			deps.waitUntil?.(work)
+			return attempt.state
+		},
+		async completeConnect(input: ConnectRef & { callbackUrl: string }): Promise<ConnectState> {
+			const ref = { providerId: input.providerId, operationId: input.operationId }
+			const attempt = get(ref)
+			if (!attempt || attempt.state.status !== 'pending') return attempt?.state ?? expired(ref)
+			const receive = attempt.callback
+			if (!receive || typeof input.callbackUrl !== 'string' || input.callbackUrl.length > 8192)
+				throw invalid()
+			receive(new URL(input.callbackUrl))
+			attempt.callback = undefined
+			await attempt.work
 			return attempt.state
 		},
 		async readConnect(ref: ConnectRef): Promise<ConnectState> {

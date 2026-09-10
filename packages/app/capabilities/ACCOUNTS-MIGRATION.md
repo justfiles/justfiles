@@ -61,7 +61,7 @@ closure (proven by the spike below).
 ## Target architecture (end state)
 
 ```
-@justfiles/app/capabilities/accounts/
+@justfiles/app/accounts/
   store.ts      volumeAccountsStore(volume, { secretCodec? })   ← INTERNAL, not exported
   host.ts       accountsCapabilities(providers, volume, { firstParty }) → { ai, email, calendar, accounts }
                 resolveAiAccount<T>(volume, mint)               ← the agent-backend borrow

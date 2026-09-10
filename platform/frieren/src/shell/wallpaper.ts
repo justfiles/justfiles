@@ -1,5 +1,10 @@
-import { DOCK_MATERIAL_NAMES, type DockMaterial } from '@justfiles/app/capabilities/settings'
 import { imageType } from '@justfiles/app/image-type'
+import {
+	DOCK_MATERIAL_NAMES,
+	DOCK_MATERIAL_PATH,
+	type DockMaterial,
+	WALLPAPER_PATH
+} from '@justfiles/ui/settings/types'
 import { useEffect, useState } from 'react'
 import type { Volume } from '../fs'
 import { useOsRuntime } from '../os/hooks'
@@ -10,11 +15,7 @@ import { useOsRuntime } from '../os/hooks'
 // pane, an app, the agent, sync from another device) updates the desktop through
 // the watch below.
 //
-// THE SHELL ONLY READS IT. Writing is the `settings` capability's
-// `appearance.writeWallpaper`, so there is one writer, one validation of what an
-// image is, and one place a wallpaper can come from — Settings, on every device.
-export const WALLPAPER_PATH = '/system/wallpaper'
-export const DOCK_MATERIAL_PATH = '/system/dock-material'
+// Settings writes these files; the desktop watches them for local and synced changes.
 
 // The wallpaper as a blob URL (bytes come straight from the local replica — no
 // network, works offline), or null when unset. Bytes that are not an image this

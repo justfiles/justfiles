@@ -13,12 +13,12 @@
 // resolves AI, with no seeding step for a republish to race.
 
 import type { Volume } from '@justfiles/fs'
-import { calendar } from '../calendar/index.ts'
-import { email } from '../email/index.ts'
-import { CapabilityError } from '../error.ts'
-import { image } from '../image/index.ts'
-import { implementCapability } from '../implement.ts'
-import type { Capability } from '../types.ts'
+import { calendar } from '../capabilities/calendar/index.ts'
+import { email } from '../capabilities/email/index.ts'
+import { CapabilityError } from '../capabilities/error.ts'
+import { image } from '../capabilities/image/index.ts'
+import { implementCapability } from '../capabilities/implement.ts'
+import type { Capability } from '../capabilities/types.ts'
 import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
 import { connections } from './connect.ts'
@@ -76,7 +76,7 @@ export interface HostAccounts {
 	readonly image: Capability
 	readonly email: Capability
 	readonly calendar: Capability
-	// Not a capability: the admin impl `settingsHost` exposes as `accounts.*`.
+	// Called directly by the host Settings UI.
 	readonly admin: AccountsAdmin
 	// The text `ai` capability is host-owned (each host builds it over its own model), so it
 	// resolves the active account through here rather than through a capability.
@@ -385,9 +385,6 @@ export function hostAccounts(
 				fanOut(list, 'calendar', calendarClient, i.accountId, (impl) => impl.listToday(i))
 		}),
 
-		// Every admin method is privileged, but the identity gate is NOT here: the admin
-		// surface reaches apps only through the `settings` capability, which gates on
-		// first-party app identity once, for every method (see settings/host.ts).
 		admin: {
 			...connect,
 			listProviders: async () => {

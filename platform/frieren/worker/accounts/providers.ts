@@ -5,7 +5,7 @@ import {
 	icloudProvider,
 	type Provider,
 	platformProvider
-} from '@justfiles/app/capabilities/accounts/providers'
+} from '@justfiles/app/accounts/providers'
 import type { GeneratedImage } from '@justfiles/app/capabilities/image'
 
 export interface ProviderDeps {

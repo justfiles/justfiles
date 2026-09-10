@@ -38,17 +38,36 @@ require reconnection; the two services do not share a transaction.
 
 ## Sign-in and Settings
 
-The shared Settings app uses these privileged host operations:
+The shell renders shared Settings UI from `packages/ui`. The component creates its
+own API client for `/api/settings` on both platforms; the shell supplies only its
+token getter and, on Frieren, the local volume, user getter, and build version.
+Local file edits use the shared file handlers so they remain available offline.
+Mac serves those same operations through its authenticated daemon endpoint.
+The API types are inferred from the service implementation.
+
+The service exposes:
 
 | Operation | Behaviour |
 | --- | --- |
-| `accounts.beginConnect` | Start or return an operation identified by provider and client-generated ID |
-| `accounts.readConnect` | Read pending, connected, cancelled, expired, or failed status |
-| `accounts.cancelConnect` | Cancel a pending operation |
-| `accounts.openConnect` | Read its verification URL and open it in the local browser |
+| `beginAccountConnection` | Start or return an operation identified by provider and client-generated ID |
+| `completeAccountConnection` | Validate and consume a browser callback, then return the committed result |
+| `readAccountConnection` | Read pending, connected, cancelled, expired, or failed status |
+| `cancelAccountConnection` | Cancel a pending operation |
+| `openAccountConnection` | Read its verification URL and open it in the local browser |
 
-The provider uses Pi's device-code OAuth flow. The GUI displays the code and link,
-polls at the requested interval, and offers cancellation, expiry, and retry.
+Mac starts browser OAuth and opens the system browser automatically. OpenAI
+redirects to `http://localhost:1455/auth/callback`; the daemon relays that one-time
+code to the authenticated cloud operation. The DO validates state and the callback
+address, exchanges the code with its PKCE verifier, and stores the credentials.
+The loopback listener closes on completion, cancellation, or expiry. If its port
+is busy, sign-in falls back to a device code. **Use a code instead** also starts
+that fallback explicitly.
+
+Frieren uses Pi's device-code flow. **Copy code and continue** copies the code and
+opens OpenAI in one click; the user still pastes the code on OpenAI. Both UIs
+poll for completion and offer cancellation, expiry, reopening, and retry.
+The flow follows [OpenAI's authentication documentation](https://learn.chatgpt.com/docs/auth);
+the authenticated Mac-to-cloud callback relay is our implementation.
 Operations route to the host registering the provider; browser navigation stays
 local. Only HTTPS verification URLs from pending operations can be opened.
 
@@ -61,13 +80,14 @@ Closing the panel requests cancellation. A DO restart expires the operation and
 requires another attempt; completed credentials are durable.
 
 Mac composes its local Google/iCloud accounts with cloud AI accounts through the
-existing capability WebSocket. It uses the cloud text selection and no longer
-runs local ChatGPT OAuth or refresh. Legacy local ChatGPT records are hidden and
+authenticated `/api/settings/:method` service. It uses the cloud text selection and no longer
+exchanges or refreshes ChatGPT tokens locally. Legacy local ChatGPT records are hidden and
 retired only after a cloud ChatGPT connection exists. Cloud account IDs use the
 `chatgpt:` prefix so they cannot collide with legacy local IDs. Signing out of
 Frieren on a device leaves the cloud connection intact.
 
-Settings remains an app in this release. Moving it into the shell is separate.
+Settings runs in the Frieren shell and Mac UI. It has no app manifest, reducer,
+capability grant, or independent release.
 
 ## Inference
 
@@ -129,23 +149,23 @@ third-party subscription API. Model references checked 2026-09-08:
 2. Configure the same key as `CODEX_PROXY_KEY` in each Frieren environment.
    `CODEX_PROXY_URL` is the proxy origin, with no `/backend-api` suffix. Keep
    `ENCRYPTION_KEY` stable; losing it requires users to reconnect.
-3. Publish the updated app SDK, update Settings' dependency and lockfile, and
-   publish Settings. Its standalone CI currently uses an older SDK without the
-   new account operations and image capability. Advance the host's submodule to
-   the final Settings commit.
-4. Deploy Frieren before releasing Mac. A new daemon against an old server asks
-   for an update instead of reverting to local ChatGPT auth.
+3. Deploy Frieren with the shared Settings UI and browser callback exchange before
+   releasing Mac.
 
 Automated checks cover encrypted persistence, concurrent refresh, revoked grants,
 unknown models, cancellation, credential invalidation, tool results, transport
 validation, interrupted streams, and independent image resolution. Frieren and
-Mac builds passed. Browser smoke covered the sign-in entry, code progress,
-cancellation, and opening OpenAI. The Mac capability client read the same cloud
+Mac builds passed. Browser smoke covered copying the device code and opening OpenAI in one click, code progress,
+cancellation, and opening OpenAI. The Mac Settings client reads the same cloud
 provider/account catalogue.
 
 An earlier standalone probe passed live streaming, a Worker tool round-trip,
 and token refresh, then discarded its grant. Its source and deployment configs
 have been removed from this change. The production adapter still needs fresh
 authorization for the integrated model-access, web text, and Mac tool checks.
-Native Mac UI sign-in also remains to be exercised. No production account has
+The Mac Settings bundle passed a browser smoke check with mocked account
+transport: automatic opening, reopening, device fallback, clipboard errors, and
+completion. The loopback relay passed HTTP integration tests, and the development
+Worker accepted a denied browser callback. A complete native Mac sign-in with
+OpenAI remains to be exercised. No production account has
 been connected or migrated during development verification.

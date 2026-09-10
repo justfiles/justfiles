@@ -4,7 +4,7 @@ import {
 	createAssistantMessageEventStream,
 	type SimpleStreamOptions
 } from '@earendil-works/pi-ai'
-import type { AiSelection } from '@justfiles/app/capabilities/accounts/host'
+import type { AiSelection } from '@justfiles/app/accounts/host'
 import { z } from 'zod'
 import type { AgentBackend } from './llm.ts'
 

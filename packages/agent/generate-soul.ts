@@ -1,7 +1,11 @@
-import type { GeneratedSoul } from '@justfiles/app/capabilities/settings'
 import { text } from './llm.text.ts'
 import type { AgentBackend } from './llm.ts'
 import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
+
+interface GeneratedSoul {
+	body: string
+	firstWords?: string
+}
 
 const FIRST_WORDS_PROMPT =
 	'Return one short opening sentence spoken by this agent. No label, explanation, or quotation marks.'

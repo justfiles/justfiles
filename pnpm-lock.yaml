@@ -467,52 +467,6 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.6(vitest@4.1.6))(vite@8.2.2(@types/node@26.3.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0))
 
-  apps/settings:
-    dependencies:
-      '@justfiles/app':
-        specifier: link:../../packages/app
-        version: link:../../packages/app
-      '@justfiles/avatar':
-        specifier: ^0.1.0
-        version: link:../../packages/avatar
-      valibot:
-        specifier: ^1.4.2
-        version: 1.4.2(typescript@6.0.3)
-    devDependencies:
-      '@biomejs/biome':
-        specifier: ^2.5.10
-        version: 2.5.10
-      '@types/node':
-        specifier: ^26.3.0
-        version: 26.3.0
-      '@types/react':
-        specifier: ^19.2.18
-        version: 19.2.18
-      '@types/react-dom':
-        specifier: ^19.2.5
-        version: 19.2.5(@types/react@19.2.18)
-      '@vitejs/plugin-react':
-        specifier: ^6.1.0
-        version: 6.1.0(vite@8.2.2(@types/node@26.3.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0))
-      esbuild:
-        specifier: ^0.27.7
-        version: 0.27.7
-      react:
-        specifier: ^19.2.8
-        version: 19.2.8
-      react-dom:
-        specifier: ^19.2.8
-        version: 19.2.8(react@19.2.8)
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: ^8.2.2
-        version: 8.2.2(@types/node@26.3.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0)
-      vitest:
-        specifier: ^4.1.11
-        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.6(vitest@4.1.6))(vite@8.2.2(@types/node@26.3.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.50.0)(tsx@4.21.0)(yaml@2.9.0))
-
   packages/agent:
     dependencies:
       '@earendil-works/pi-agent-core':
@@ -732,6 +686,12 @@ importers:
       '@justfiles/agent':
         specifier: workspace:*
         version: link:../agent
+      '@justfiles/app':
+        specifier: link:../app
+        version: link:../app
+      '@justfiles/avatar':
+        specifier: workspace:*
+        version: link:../avatar
       react:
         specifier: 19.2.5
         version: 19.2.5
@@ -745,6 +705,9 @@ importers:
         specifier: ^4.0.1
         version: 4.0.1(supports-color@10.2.2)
     devDependencies:
+      '@justfiles/fs':
+        specifier: workspace:*
+        version: link:../fs
       '@justfiles/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -22260,7 +22223,7 @@ snapshots:
 
   react-devtools-core@6.1.5(bufferutil@4.1.0)(utf-8-validate@6.0.6):
     dependencies:
-      shell-quote: 1.8.4
+      shell-quote: 1.10.0
       ws: 7.5.13(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     transitivePeerDependencies:
       - bufferutil

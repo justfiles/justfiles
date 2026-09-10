@@ -1,3 +1,4 @@
+import { RETIRED_SETTINGS_IDS } from '../../../shared/migrate-app-ids'
 import type { Volume } from '../fs'
 import {
 	initialAttachedAgentState,
@@ -32,6 +33,7 @@ function normalize(state: OsState): OsState {
 	const placements: Record<string, WindowRect> = { ...(state.placements ?? {}) }
 	const windows: Record<string, OsWindow> = {}
 	for (const [id, window] of Object.entries(state.windows)) {
+		if (RETIRED_SETTINGS_IDS.has(id)) continue
 		const { rect, ...rest } = window as OsWindow & { rect?: WindowRect }
 		if (rect && !placements[id]) placements[id] = rect
 		windows[id] = rest.kind ? rest : { ...rest, kind: 'app' as const, appId: rest.appId ?? id }
@@ -44,7 +46,14 @@ function normalize(state: OsState): OsState {
 		},
 		open: saved?.open ?? {}
 	} as const
-	return { ...state, windows, placements, assistant }
+	return {
+		...state,
+		windows,
+		placements,
+		assistant,
+		openOrder: state.openOrder.filter((id) => !!windows[id]),
+		focusStack: state.focusStack.filter((id) => !!windows[id])
+	}
 }
 
 // Read the persisted snapshot. Any failure falls back to a fresh state rather

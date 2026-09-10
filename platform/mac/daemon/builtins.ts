@@ -2,7 +2,7 @@ import { type AppStore, builtinStoreFromFs } from '@justfiles/app/appstore/fs'
 import { runnerAppStore } from '../../shared/justapps'
 
 // The hosted apps this Mac seeds on a fresh Volume.
-const SEEDED = ['justfiles.files', 'justfiles.settings', 'justfiles.notes', 'justfiles.paint']
+const SEEDED = ['justfiles.files', 'justfiles.notes', 'justfiles.paint']
 
 export async function builtinStore(): Promise<AppStore> {
 	const runner = await runnerAppStore()

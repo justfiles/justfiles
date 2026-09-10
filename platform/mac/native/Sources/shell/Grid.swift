@@ -197,6 +197,7 @@ final class GridCell: NSView {
 
 private func nativeAppIcon(_ app: CatalogApp) -> NSImage? {
 	let ws = NSWorkspace.shared
+	if app.id == settingsTileId { return NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings") }
 	if app.id == storeTileId,
 		let url = Bundle.main.url(forResource: "AppStore", withExtension: "svg") {
 		return NSImage(contentsOf: url)

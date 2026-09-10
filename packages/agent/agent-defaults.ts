@@ -38,7 +38,7 @@ export const avatarDir = (id: string): string => `${AVATARS_DIR}/${id}`
 // The three identity files as ONE symbol, for a host that has to be told where they
 // live: `settings`' `agent.*` methods edit them, and that capability is in
 // `@justfiles/app` — which this package depends on, so it cannot import back. Passing
-// this keeps one definition of where a soul lives (see `settingsHost`'s `AgentDeps`).
+// this keeps one definition of where a soul lives (see the shared Settings host).
 export const IDENTITY_PATHS = {
 	soul: SOUL_PATH,
 	avatars: AVATARS_DIR,
@@ -87,7 +87,7 @@ seeded: true
 `
 
 // The defaults keyed like IDENTITY_PATHS, for a host that has to be told BOTH: the `settings`
-// capability resolves a missing file through these (see `settingsHost`'s `AgentDeps`), so the
+// Settings host resolves a missing file through these (see the shared Settings host), so the
 // pane and the running agent read one identity. Passed for the same reason the paths are —
 // `@justfiles/app` cannot import back into this package.
 export const IDENTITY_DEFAULTS = {

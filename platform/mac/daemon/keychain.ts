@@ -11,7 +11,7 @@
 // already degrades a record to "re-connect" — not the kernel, which also carries files,
 // apps, devkit and notify.
 
-import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/capabilities/accounts/host'
+import { aesGcmSecretCodec, type SecretCodec } from '@justfiles/app/accounts/host'
 
 const SERVICE = 'app.justfiles.kodama'
 const ACCOUNT = 'accounts-key'

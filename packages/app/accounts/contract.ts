@@ -1,11 +1,3 @@
-// The accounts model's ADMIN surface and its UI projections. The user connects a
-// provider account once, then toggles which capabilities (email/calendar/ai) that
-// account backs — the macOS "Internet Accounts" shape. The use facets are separate
-// capabilities (`email`/`calendar`/`ai`) any app may call; administration is NOT a
-// capability of its own — it reaches apps only through `settings` (`accounts.*`),
-// which is gated on first-party app identity. No Cloudflare imports, no provider
-// clients — app-safe.
-
 export type CapabilityId = 'email' | 'calendar' | 'ai' | 'image'
 
 export interface ConnectRef {
@@ -75,10 +67,10 @@ export interface AccountInfo {
 	origin?: AccountOrigin
 }
 
-// The admin methods, as `hostAccounts` hands them to `settingsHost`. Not a
-// capability: a plain impl, so composing it needs no second contract.
+// Account administration is called by the host UI.
 export interface AccountsAdmin {
-	beginConnect(input: ConnectRef): Promise<ConnectState>
+	beginConnect(input: ConnectRef & { method?: 'browser' | 'device_code' }): Promise<ConnectState>
+	completeConnect(input: ConnectRef & { callbackUrl: string }): Promise<ConnectState>
 	readConnect(input: ConnectRef): Promise<ConnectState>
 	cancelConnect(input: ConnectRef): Promise<void>
 	listProviders(input: Record<string, never>): Promise<ProviderInfo[]>

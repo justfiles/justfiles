@@ -23,9 +23,6 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// transcript, so switching between them never resizes the panel (each scrolls within it).
 	// The panel's bottom edge stays pinned, so its on-screen position never shifts.
 	private static let surfaceHeight: CGFloat = 460
-	// The Settings mini-app's catalog id — the target a `settings` route opens. The route
-	// carries only `kind`/`pane`, so the launcher (which knows the host catalog) names the app.
-	private static let settingsAppId = "justfiles.settings"
 
 	// What sits above the composer right now. The launcher rests in `grid` (the app
 	// springboard — every app on summon, filtered as you type); when a query matches no app
@@ -40,6 +37,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// reload is what makes a second visit show newly published apps rather than a stale snapshot.
 	private var storeView: WKWebView!
 	private var storeOpen = false
+	private var settingsWindow: NSWindow?
+	private var settingsView: WKWebView?
 	private let composer = Composer()
 	private let results = Results() // the `/` command menu
 	private let grid = AppGrid() // the app springboard
@@ -58,6 +57,15 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	func applicationDidFinishLaunching(_: Notification) {
 		buildPanel()
+		let menu = NSMenu()
+		let item = NSMenuItem()
+		let appMenu = NSMenu()
+		let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+		settingsItem.target = self
+		appMenu.addItem(settingsItem)
+		item.submenu = appMenu
+		menu.addItem(item)
+		NSApp.mainMenu = menu
 		// Own the daemon: a daemon we spawn (below, via the catalog client) watches this
 		// PID and exits when the app quits or is killed, so it never lingers in the
 		// background. Set before connect() so the spawn picks it up.
@@ -144,7 +152,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		results.onPick = { [weak self] in self?.runCommand($0) }
 		// The springboard's last tile is the store, not an app (see storeTile).
 		grid.onPick = { [weak self] id in
-			id == storeTileId ? self?.openStore() : self?.launch(id)
+			if id == storeTileId { self?.openStore() }
+			else if id == settingsTileId { self?.openSettings() }
+			else { self?.launch(id) }
 		}
 		container.addSubview(results)
 		container.addSubview(grid)
@@ -247,7 +257,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 			if storeOpen { return present(.store) }
 			// The store rides along as the springboard's last tile — the way in to every app
 			// that is not installed yet. Not while filtering, where the grid is a result list.
-			grid.setItems(apps + [storeTile], selectFirst: false)
+			grid.setItems(apps + [settingsTile, storeTile], selectFirst: false)
 			return present(.grid)
 		}
 		let matches = filtered(query)
@@ -279,7 +289,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	private func filtered(_ query: String) -> [CatalogApp] {
 		let needle = query.lowercased()
-		return apps.filter { $0.name.lowercased().contains(needle) }
+		return (apps + [settingsTile]).filter { $0.name.lowercased().contains(needle) }
 	}
 
 	// The `/` menu's matches: everything after the slash filters command names. An empty
@@ -304,14 +314,11 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		notifier.post(n)
 	}
 
-	// A banner click (or its Reconnect action): resolve the route. `chat` reveals the
-	// transcript; `settings` opens the Settings mini-app in its own bundle (the `pane`
-	// is a hint — the app has a single accounts pane today); anything else just summons
-	// the launcher. `app` lands in a later slice.
+	// Notification routes open host surfaces directly.
 	private func handleRoute(_ route: NotifyMessage.Route?) {
 		switch route?.kind {
 		case "settings":
-			openMiniApp(Self.settingsAppId)
+			openSettings(pane: route?.pane)
 		case "chat":
 			show()
 			enterChat(send: nil)
@@ -369,8 +376,35 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	}
 
 	private func launch(_ id: String) {
+		if id == settingsTileId { return openSettings() }
 		hide()
 		openMiniApp(id)
+	}
+
+	@objc private func showSettings() { openSettings() }
+
+	private func openSettings(pane: String? = nil) {
+		guard let r = runtime else { return }
+		if settingsWindow == nil {
+			let view = WKWebView(frame: .zero)
+			view.uiDelegate = self
+			let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 580),
+				styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+			window.title = "Settings"
+			window.isReleasedWhenClosed = false
+			window.contentView = view
+			window.center()
+			settingsWindow = window
+			settingsView = view
+		}
+		var url = URLComponents(url: launcherURL("/launcher/settings", port: r.port, token: r.token), resolvingAgainstBaseURL: false)!
+		url.fragment = pane ?? "agent"
+		if settingsView?.url != url.url || settingsWindow?.isVisible != true {
+			settingsView?.load(URLRequest(url: url.url!))
+		}
+		NSApp.activate(ignoringOtherApps: true)
+		settingsWindow?.makeKeyAndOrderFront(nil)
+		hide()
 	}
 
 	// Reveal the App Store over the springboard. Reloaded on every open, so each visit browses a
@@ -437,6 +471,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// The store page is loaded per open, so a daemon that moved needs nothing here — unless
 		// the store is on screen right now, which would otherwise leave a dead surface up.
 		if storeOpen { loadStore() }
+		if settingsWindow?.isVisible == true { openSettings() }
 	}
 
 	private func launcherURL(_ path: String, port: Int, token: String) -> URL {

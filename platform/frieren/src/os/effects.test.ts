@@ -236,3 +236,18 @@ describe('makePersistEffect', () => {
 		expect(saveSnapshot).not.toHaveBeenCalled()
 	})
 })
+
+test('opening and closing Settings never mounts an app or sends an app message', () => {
+	const { effect, appHost, send } = setup()
+	const opened: OsState = {
+		...initialState,
+		windows: { settings: { id: 'settings', kind: 'settings', mode: 'floating' } },
+		openOrder: ['settings']
+	}
+	effect({ type: 'settings.open' }, initialState, opened, ctx(opened))
+	effect({ type: 'boot/loaded', state: opened }, initialState, opened, ctx(opened))
+	effect({ type: 'window.close', id: 'settings' }, opened, initialState, ctx(initialState))
+	expect(appHost.open).not.toHaveBeenCalled()
+	expect(appHost.close).not.toHaveBeenCalled()
+	expect(send).not.toHaveBeenCalled()
+})

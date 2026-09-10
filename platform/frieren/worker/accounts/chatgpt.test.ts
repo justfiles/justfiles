@@ -1,4 +1,4 @@
-import { aesGcmSecretCodec, hostAccounts } from '@justfiles/app/capabilities/accounts/host'
+import { aesGcmSecretCodec, hostAccounts } from '@justfiles/app/accounts/host'
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, expect, test, vi } from 'vitest'
@@ -122,4 +122,81 @@ test('refresh failure preserves the selected account and never calls inference',
 		accountId: 'chatgpt:account',
 		enabled: ['ai']
 	})
+})
+
+test('browser sign-in validates state and PKCE, then stores tokens only in the cloud', async () => {
+	const { accounts, calls, fs } = await setup()
+	calls.length = 0
+	const ref = { providerId: 'chatgpt', operationId: 'browser' }
+	await accounts.admin.beginConnect({ ...ref, method: 'browser' })
+	let url!: URL
+	await vi.waitFor(async () => {
+		const state = await accounts.admin.readConnect(ref)
+		expect(state).toMatchObject({
+			status: 'pending',
+			prompt: { verificationUrl: expect.any(String) }
+		})
+		if (state.status === 'pending' && state.prompt) url = new URL(state.prompt.verificationUrl)
+	})
+	expect(url.origin + url.pathname).toBe('https://auth.openai.com/oauth/authorize')
+	expect(url.searchParams.get('code_challenge_method')).toBe('S256')
+	const callback = new URL(url.searchParams.get('redirect_uri')!)
+	callback.search = new URLSearchParams({ code: 'one-time-code', state: 'wrong-state' }).toString()
+	await expect(
+		accounts.admin.completeConnect({ ...ref, callbackUrl: callback.href })
+	).rejects.toThrow()
+	expect(calls).toHaveLength(0)
+	callback.searchParams.set('state', url.searchParams.get('state')!)
+	await expect(
+		accounts.admin.completeConnect({
+			...ref,
+			callbackUrl: callback.href.replace('localhost:1455', 'attacker.example')
+		})
+	).rejects.toThrow()
+	expect(calls).toHaveLength(0)
+	const result = await accounts.admin.completeConnect({ ...ref, callbackUrl: callback.href })
+	expect(result).toMatchObject({ status: 'connected', accountId: 'chatgpt:account' })
+	expect(calls).toHaveLength(1)
+	const exchange = new URLSearchParams(String(calls[0]!.init?.body))
+	expect(exchange.get('code')).toBe('one-time-code')
+	expect(exchange.get('redirect_uri')).toBe('http://localhost:1455/auth/callback')
+	const challenge = Buffer.from(
+		await crypto.subtle.digest('SHA-256', new TextEncoder().encode(exchange.get('code_verifier')!))
+	).toString('base64url')
+	expect(challenge).toBe(url.searchParams.get('code_challenge'))
+	await accounts.admin.completeConnect({ ...ref, callbackUrl: callback.href })
+	expect(calls).toHaveLength(1)
+	const visible = JSON.stringify([
+		result,
+		await accounts.admin.listAccounts({}),
+		await fs.readFile('/private/accounts/chatgpt%3Aaccount.json')
+	])
+	for (const secret of ['refresh-secret', jwt('old'), exchange.get('code_verifier')!])
+		expect(visible).not.toContain(secret)
+})
+
+test.each([
+	'cancel',
+	'deny'
+] as const)('%s browser sign-in never exchanges a credential', async (action) => {
+	const { accounts, calls } = await setup()
+	calls.length = 0
+	const ref = { providerId: 'chatgpt', operationId: 'browser' }
+	await accounts.admin.beginConnect({ ...ref, method: 'browser' })
+	let url!: URL
+	await vi.waitFor(async () => {
+		const state = await accounts.admin.readConnect(ref)
+		expect(state).toMatchObject({ status: 'pending', prompt: expect.any(Object) })
+		if (state.status === 'pending' && state.prompt) url = new URL(state.prompt.verificationUrl)
+	})
+	const callback = new URL(url.searchParams.get('redirect_uri')!)
+	callback.search = new URLSearchParams({
+		state: url.searchParams.get('state')!,
+		...(action === 'deny' ? { error: 'access_denied' } : { code: 'late-code' })
+	}).toString()
+	if (action === 'cancel') await accounts.admin.cancelConnect(ref)
+	expect(
+		await accounts.admin.completeConnect({ ...ref, callbackUrl: callback.href })
+	).toMatchObject({ status: action === 'cancel' ? 'cancelled' : 'failed' })
+	expect(calls).toHaveLength(0)
 })
