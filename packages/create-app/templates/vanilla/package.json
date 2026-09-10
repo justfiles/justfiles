@@ -13,14 +13,24 @@
 		"dev": "vite",
 		"build": "vite build",
 		"typecheck": "tsc --noEmit",
-		"preview": "vite preview",
-		"prepublishOnly": "pnpm build"
+		"prepublishOnly": "pnpm build",
+		"format": "biome format --write .",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"test": "vitest run",
+		"check": "biome check . && tsc --noEmit && vitest run && vite build"
 	},
 	"dependencies": {
 		"valibot": "^1.1.0"
 	},
 	"devDependencies": {
 		"typescript": "^5.9.3",
-		"vite": "^8.0.12"
+		"vite": "^8.0.12",
+		"@biomejs/biome": "2.4.15",
+		"@types/node": "^22",
+		"vitest": "^4.0.18"
+	},
+	"engines": {
+		"node": "^20.19.0 || >=22.12.0"
 	}
 }

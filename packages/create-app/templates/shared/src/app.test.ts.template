@@ -1,0 +1,16 @@
+import { expect, test } from 'vitest'
+import { app } from './app.ts'
+
+test('increments saved state without changing the input', async () => {
+	const state = { count: 5 }
+	const result = await app.dispatch({ type: 'increment', params: { amount: 2 } }, { state })
+
+	expect(result.state).toEqual({ count: 7 })
+	expect(state).toEqual({ count: 5 })
+})
+
+test('rejects invalid action input', async () => {
+	await expect(
+		app.dispatch({ type: 'increment', params: { amount: 'two' } }, { state: app.initialState })
+	).rejects.toThrow()
+})
