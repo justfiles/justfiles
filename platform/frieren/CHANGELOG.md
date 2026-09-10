@@ -1,5 +1,58 @@
 # Changelog
 
+## [2.0.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.0...frieren-v2.0.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **settings:** Remove the Settings capability SDK exports. Account host and provider imports move from @justfiles/app/capabilities/accounts/* to @justfiles/app/accounts/*.
+
+### Features
+
+* add persistent Read app ([#620](https://github.com/xiaoxinghu/justfiles/issues/620)) ([3b24c51](https://github.com/xiaoxinghu/justfiles/commit/3b24c513ce9d29cdc6047f80524b639533c56d35))
+* **agent:** record completed activity runs ([b1fb639](https://github.com/xiaoxinghu/justfiles/commit/b1fb6396c42c47ad0a92e076dc69074da1886f8c))
+* **agent:** record completed activity runs ([8d2bdda](https://github.com/xiaoxinghu/justfiles/commit/8d2bdda4f738aaa5418a299f83b531d7bc623a0c))
+* **agent:** render transcript activity creases ([0a255df](https://github.com/xiaoxinghu/justfiles/commit/0a255dfbad9dd7f3c4c62ef3441c9bbdab9d2846))
+* **agent:** render transcript activity creases ([c14f5b8](https://github.com/xiaoxinghu/justfiles/commit/c14f5b87c7254ae412cb2890a52ef50082ff72c2))
+* **agent:** share settled transcript projection ([4504c6d](https://github.com/xiaoxinghu/justfiles/commit/4504c6d8db9c2eb1362154c5382d9e3212e367e3))
+* **agent:** share settled transcript projection ([41d4d9a](https://github.com/xiaoxinghu/justfiles/commit/41d4d9a01f1896f29b76b377c2e4b180bdb9f185))
+* **agent:** use disposable transcript status ([acd6935](https://github.com/xiaoxinghu/justfiles/commit/acd6935c60a2becf06ff62441d120399090829dc))
+* **app:** map browser imports to CDN URLs ([#614](https://github.com/xiaoxinghu/justfiles/issues/614)) ([d1c6638](https://github.com/xiaoxinghu/justfiles/commit/d1c663858f2666e8f7b2aeec9ae796712d8a6574))
+* **avatar:** add shared avatar rendering package ([#613](https://github.com/xiaoxinghu/justfiles/issues/613)) ([440265c](https://github.com/xiaoxinghu/justfiles/commit/440265c8ac7352a49022be1c4bd042312de247cb))
+* **browser-extension:** add Clerk auth shell ([#625](https://github.com/xiaoxinghu/justfiles/issues/625)) ([909378d](https://github.com/xiaoxinghu/justfiles/commit/909378d602e1f41aa94af78e846def1e34debd6c))
+* finish app-attached agents phase 7 ([#612](https://github.com/xiaoxinghu/justfiles/issues/612)) ([02a3d2f](https://github.com/xiaoxinghu/justfiles/commit/02a3d2fe44b7827c1f7073ddfc58bdbf3e7d03ed))
+* **frieren:** add app action gateway ([#626](https://github.com/xiaoxinghu/justfiles/issues/626)) ([852237a](https://github.com/xiaoxinghu/justfiles/commit/852237a13b47c8952b6bab207c5904cf1ef8cd6c))
+* **frieren:** add expanding app dock ([#606](https://github.com/xiaoxinghu/justfiles/issues/606)) ([2d903ad](https://github.com/xiaoxinghu/justfiles/commit/2d903ad450ae89d147cc1974f5b10aacaebeb2b0))
+* **frieren:** connect app-attached agents ([7c814a6](https://github.com/xiaoxinghu/justfiles/commit/7c814a6bbf4cad2d7c9f68f592b2a7349530cc7b))
+* **frieren:** connect app-attached agents ([684c09e](https://github.com/xiaoxinghu/justfiles/commit/684c09e9617dfb1da42257e1278627dc91e5ba28))
+* **frieren:** rebrand to Just Computer ([#603](https://github.com/xiaoxinghu/justfiles/issues/603)) ([3f11dfc](https://github.com/xiaoxinghu/justfiles/commit/3f11dfc099034881147e8dfead7f31bfd0052ebe))
+* **frieren:** refine liquid glass dock ([#609](https://github.com/xiaoxinghu/justfiles/issues/609)) ([fdde1d1](https://github.com/xiaoxinghu/justfiles/commit/fdde1d1512b01d07b36cc6ded6787adb5359acf0))
+* **frieren:** serve workspace apps in local development ([c5f8f94](https://github.com/xiaoxinghu/justfiles/commit/c5f8f94694db0a4b3f2a49fc8b7cf873e3d238be))
+* **frieren:** serve workspace apps in local development ([13dc158](https://github.com/xiaoxinghu/justfiles/commit/13dc158c4e4190abe5e1f0f0abed02866de29ab6))
+* **frieren:** use ChatGPT subscriptions for text inference on web and Mac ([#639](https://github.com/xiaoxinghu/justfiles/issues/639)) ([e6f6edf](https://github.com/xiaoxinghu/justfiles/commit/e6f6edf81ee5d9bd55c82afd0953b63caed65983))
+* **fs:** recover rejected sync rows in private storage ([#637](https://github.com/xiaoxinghu/justfiles/issues/637)) ([b223ad1](https://github.com/xiaoxinghu/justfiles/commit/b223ad1c1bf8de946814c8e5f25fb87dfa0f83e1))
+* implement dock material design ([#629](https://github.com/xiaoxinghu/justfiles/issues/629)) ([8056baf](https://github.com/xiaoxinghu/justfiles/commit/8056baf1940a0ab5f0673fced1d25505d21d8c92))
+* **settings:** move settings into the desktop shells ([#641](https://github.com/xiaoxinghu/justfiles/issues/641)) ([522a7f7](https://github.com/xiaoxinghu/justfiles/commit/522a7f76f96fc2903cf7f70ecc014cf378074597))
+
+
+### Bug Fixes
+
+* **agent:** bound activity detail maintenance ([8c45411](https://github.com/xiaoxinghu/justfiles/commit/8c4541154cfd444f7eefb068f3bd22cdeb9d76e7))
+* **agent:** make active turns authoritative ([ab1e116](https://github.com/xiaoxinghu/justfiles/commit/ab1e116b144a96ad7582b1c5746ee86ced854d61))
+* **agent:** preserve ordered session state ([7ae969b](https://github.com/xiaoxinghu/justfiles/commit/7ae969b2c8959d487e9322cd4b0d025cda2126ce))
+* **agent:** preserve settled activity state ([715e861](https://github.com/xiaoxinghu/justfiles/commit/715e861b6d0de43181a81097cd5b1e7da63409ef))
+* align app workspace tooling ([dfab314](https://github.com/xiaoxinghu/justfiles/commit/dfab314025537a06ad3ff65c7cc9dd5950fc201e))
+* **frieren:** address attached agent review ([4ba32bb](https://github.com/xiaoxinghu/justfiles/commit/4ba32bbb3d8e4135eb96835a3d0274b92cd305f8))
+* **frieren:** isolate worker test typecheck ([#627](https://github.com/xiaoxinghu/justfiles/issues/627)) ([269781b](https://github.com/xiaoxinghu/justfiles/commit/269781bd8adf00117cafebf50470446e4468d614))
+* **frieren:** keep live app turns during history load ([dc8c0e8](https://github.com/xiaoxinghu/justfiles/commit/dc8c0e8c9a0aade16dc69f702b4b03b33f99a0f0))
+* **frieren:** model keyed agent work as one phase ([4a38fa0](https://github.com/xiaoxinghu/justfiles/commit/4a38fa02089ddca72519521a362207a273ddac11))
+* **frieren:** prevent whole-window text selection ([#623](https://github.com/xiaoxinghu/justfiles/issues/623)) ([5852ab8](https://github.com/xiaoxinghu/justfiles/commit/5852ab84a750b572c7fec053471392ae53916e1b))
+* **frieren:** restore question options ([c44deb4](https://github.com/xiaoxinghu/justfiles/commit/c44deb46463b8e60fa01b30990efac5bcf7dadb1))
+* **frieren:** retire legacy rebrand routes ([#604](https://github.com/xiaoxinghu/justfiles/issues/604)) ([0b81917](https://github.com/xiaoxinghu/justfiles/commit/0b819178a9123f782a35c2fa111faf2e3273187f))
+* **frieren:** send prompt admission before alarm ([5be4a77](https://github.com/xiaoxinghu/justfiles/commit/5be4a77635882530812f890f346f68e65c7e54b3))
+* **frieren:** synchronize attached agent turns ([edf6e4e](https://github.com/xiaoxinghu/justfiles/commit/edf6e4e5afc17db97bf2d225587914571f845a6e))
+* **ui:** address transcript crease review ([d576735](https://github.com/xiaoxinghu/justfiles/commit/d576735a81f23a97d30542ecf465dcc788e82e32))
+
 ## [1.0.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.22.0...frieren-v1.0.0) (2026-09-10)
 
 
