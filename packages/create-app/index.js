@@ -41,7 +41,7 @@ const templateDir = path.join(packageDir, 'templates', template)
 const targetDir = path.resolve(process.cwd(), targetArg ?? 'justfiles-app')
 const name = toPackageName(path.basename(targetDir))
 id ??= `local.${name}`
-if (!/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/.test(id)) {
+if (!/^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
 	exit('Invalid app id. Use --id owner.app with lowercase letters, numbers, and hyphens.')
 }
 
@@ -113,7 +113,7 @@ function toPackageName(name) {
 		name
 			.trim()
 			.toLowerCase()
-			.replace(/[^a-z\d-]+/g, '-')
+			.replace(/[^a-z\d]+/g, '-')
 			.replace(/^-+|-+$/g, '') || 'justfiles-app'
 	)
 }

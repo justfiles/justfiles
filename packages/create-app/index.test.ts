@@ -96,11 +96,33 @@ test('accepts --id=owner.app', () => {
 	)
 })
 
+test('accepts hyphens within owner and app names', () => {
+	const { root, result } = run(['counter', '--id=my-team.my-notes'])
+
+	expect(result.status).toBe(0)
+	expect(readFileSync(join(root, 'counter/vite.config.ts'), 'utf8')).toContain(
+		"id: 'my-team.my-notes'"
+	)
+})
+
+test.each(['My--Notes', 'My - Notes'])('creates a usable default identity from %s', (directory) => {
+	const { root, result } = run([directory])
+	const dir = join(root, directory)
+
+	expect(result.status).toBe(0)
+	expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name).toBe('my-notes')
+	expect(readFileSync(join(dir, 'vite.config.ts'), 'utf8')).toContain("id: 'local.my-notes'")
+})
+
 test.each([
 	'--id',
 	'--id=',
 	'--id=counter',
 	'--id=Alice.counter',
+	'--id=alice-.notes',
+	'--id=alice.notes-',
+	'--id=alice--team.notes',
+	'--id=alice.my--notes',
 	"--id=alice.counter'bad"
 ])('rejects invalid %s before overwriting files', (option) => {
 	const { root, result } = run(['counter', '--force', option], (root) => {
