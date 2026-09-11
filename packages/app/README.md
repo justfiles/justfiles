@@ -143,6 +143,13 @@ a framework plugin you add works normally. The headless `app.ts` runs
 through Vite's `kernel` server environment, so app edits hot-reload
 without restarting the dev server.
 
+The dev host persists its volume in `.justfiles/dev/` under the Vite project root.
+App-scoped files live in `data/<appId>/` and reducer state in `state/<appId>.json`
+inside that folder, so both survive a dev-server restart. Files are ordinary local
+files and can be edited with external tools; leave the store's `.jfs/` metadata alone.
+Add `.justfiles/dev/` to your `.gitignore` (new app templates already do this).
+To reset local data, stop the dev server and delete that folder.
+
 Keep the framework out of `app.ts`: the reducer runs headless in a Worker
 with no document, so anything that touches the DOM belongs in the GUI.
 

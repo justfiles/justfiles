@@ -18,6 +18,11 @@ pnpm check      # format/lint checks, types, tests, and production build
 behavior changes. Use `pnpm test --watch` while developing and `pnpm format` / `pnpm lint:fix` to
 fix style issues. After checks, exercise the changed GUI flow in the local host.
 
+The dev host saves files and reducer state in the git-ignored `.justfiles/dev/` folder,
+so they survive restarts. App-scoped files are ordinary files under `data/<appId>/` inside
+that folder; you can inspect and edit them with local tools. Leave the `.jfs/` metadata
+alone. To reset local data, stop the dev server and delete `.justfiles/dev/`.
+
 The package name comes from the directory. Set the app's name, description, and permanent
 `<publisher>.<app>` id in `vite.config.ts`. A generated `local.*` id is for development;
 choose your publisher id before distributing the app. Changing an installed app's id starts

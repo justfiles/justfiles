@@ -207,3 +207,4 @@ dist
 .playwright-mcp/
 
 .zed
+**/.justfiles/dev/

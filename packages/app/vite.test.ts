@@ -66,7 +66,8 @@ test('kernelHost rejects unpinned browser imports', () => {
 })
 
 test('dev closes its host through the Vite lifecycle', async () => {
-	const close = vi.fn()
+	const pending = Promise.withResolvers<void>()
+	const close = vi.fn(() => pending.promise)
 	const middleware = Object.assign(vi.fn(), { close })
 	const use = vi.fn()
 	const plugin = (
@@ -78,16 +79,22 @@ test('dev closes its host through the Vite lifecycle', async () => {
 		}) as Plugin[]
 	).find(({ name }) => name === 'kernel-host-dev')
 	if (!plugin) throw new Error('missing kernel-host-dev plugin')
-	const configure = plugin.configureServer as (server: ViteDevServer) => () => Promise<void>
-	const after = configure({
+	const configure = plugin.configureServer as (server: ViteDevServer) => Promise<() => void>
+	const after = await configure({
 		middlewares: { use },
 		ssrLoadModule: async () => ({ createDevServer: async () => middleware })
 	} as unknown as ViteDevServer)
 
 	await after()
 	expect(use).toHaveBeenCalledWith(middleware)
-	await (plugin.closeBundle as () => Promise<void>)()
+	const closed = vi.fn()
+	const closing = (plugin.closeBundle as () => Promise<void>)().then(closed)
+	await Promise.resolve()
 	expect(close).toHaveBeenCalledOnce()
+	expect(closed).not.toHaveBeenCalled()
+	pending.resolve()
+	await closing
+	expect(closed).toHaveBeenCalledOnce()
 })
 
 test('watch builds emit the reducer and manifest again', async () => {

@@ -1,7 +1,8 @@
 import { existsSync, globSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { extname, join, relative, resolve } from 'node:path'
 import { volume } from '@justfiles/fs'
-import { memStore } from '@justfiles/fs/mem'
+import { fsStore } from '@justfiles/fs/fs'
 import type { Connect, RunnableDevEnvironment, ViteDevServer } from 'vite'
 import { isRunnableDevEnvironment } from 'vite'
 import { appBundleFromMemory } from './app.ts'
@@ -118,7 +119,7 @@ function includedAssets(root: string, patterns: string[] = []): Record<string, U
 export async function createDevServer(
 	server: ViteDevServer,
 	opts: DevServerOptions
-): Promise<Connect.NextHandleFunction & { close(): void }> {
+): Promise<Connect.NextHandleFunction & { close(): Promise<void> }> {
 	const root = server.config.root
 	const appEntry = resolve(root, opts.app)
 	const appUrl = `/${relative(root, appEntry).split('\\').join('/')}`
@@ -133,7 +134,12 @@ export async function createDevServer(
 	const aiBackend = (aiPlugin?.api as { backend?: AiBackend } | undefined)?.backend
 	const devAi = await devAiForApp(opts.id, declared, aiBackend)
 	if (devAi.message) server.config.logger.info(devAi.message)
-	const fs = volume(memStore())
+	const dataRoot = resolve(root, '.justfiles/dev')
+	await mkdir(dataRoot, { recursive: true })
+	const store = fsStore(dataRoot)
+	// Keep the file index current even when the app has no volume subscriptions.
+	store.subscribe?.(() => {})
+	const fs = volume(store)
 	const devkit = devkitHost(fs)
 	const k = kernel({
 		fs,
@@ -164,8 +170,16 @@ export async function createDevServer(
 			...includedAssets(root, opts.include)
 		}
 	})
-	const appId = await k.install(bundle)
-	const installed = await k.app(appId)
+	const installed = await k
+		.install(bundle)
+		.then((id) => k.app(id))
+		.catch(async (error) => {
+			k.dispose()
+			devkit.close()
+			await store.close?.()
+			throw error
+		})
+	const appId = installed.manifest.id
 
 	// Headless-app HMR. Vite re-evaluates the module on the next sandbox load, but
 	// the kernel memoizes the procedure set + declared capabilities per install —
@@ -173,10 +187,11 @@ export async function createDevServer(
 	// re-warm subscriptions. State is keyed by appId, so it survives the reload.
 	// Chained + deferred past the sync watcher batch so Vite invalidates first.
 	let reload: Promise<unknown> = Promise.resolve()
-	server.watcher.on('change', (file) => {
+	const onChange = (file: string) => {
 		if (!kernelGraphFiles(env, appEntry).has(file)) return
 		reload = reload.then(() => k.install(bundle)).catch(() => {})
-	})
+	}
+	server.watcher.on('change', onChange)
 
 	const handle: Connect.NextHandleFunction = async (req, res, next) => {
 		try {
@@ -197,5 +212,13 @@ export async function createDevServer(
 			next(err)
 		}
 	}
-	return Object.assign(handle, { close: devkit.close })
+	return Object.assign(handle, {
+		async close() {
+			server.watcher.off('change', onChange)
+			await reload
+			k.dispose()
+			devkit.close()
+			await store.close?.()
+		}
+	})
 }
