@@ -10,7 +10,7 @@ import type {
 	RuntimeContext,
 	Subscription
 } from './app.ts'
-import type { Capabilities } from './capabilities/types.ts'
+import type { Capabilities, CapabilityCall } from './capabilities/types.ts'
 import { apps, type FetchAsset } from './kernel.app.ts'
 import { capabilityResolver } from './kernel.capability.ts'
 import { commandRuntime } from './kernel.command.ts'
@@ -191,7 +191,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 	// waits on (via `commands.pending`).
 	const commands = commandRuntime({
 		resolve: resolver.resolve,
-		invoke: caps?.invoke,
+		invoke: caps ? invoke : undefined,
 		dispatch,
 		onError: backgroundError
 	})
@@ -282,13 +282,26 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		const declared = await resolver.resolve(appId, capability)
 		if (!declared) throw new Error(`undeclared capability: ${capability}`)
 		if (!caps) throw new Error('capability execution unavailable')
-		return caps.invoke({
+		return invoke({
 			appId,
 			capability: declared.id,
 			method,
 			args,
 			scopes: declared.scopes,
 			actor
+		})
+	}
+
+	async function invoke(call: CapabilityCall): Promise<unknown> {
+		assertActive()
+		if (!caps) throw new Error('capability execution unavailable')
+		if (call.capability !== 'ai' || call.method !== 'runAgent') return caps.invoke(call)
+		return caps.invoke({
+			...call,
+			app: {
+				bindings: await resolver.all(call.appId),
+				invoke: (name, method, args) => invokeCapability(call.appId, name, method, args, call.actor)
+			}
 		})
 	}
 

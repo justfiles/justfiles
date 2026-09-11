@@ -23,6 +23,7 @@ interface WireCall {
 	method: string
 	args: readonly unknown[]
 	scopes?: readonly string[]
+	app?: CapabilityCall['app']
 }
 
 type InvokeResult = { ok: true; value: unknown } | { ok: false; error: WireError }
@@ -39,7 +40,8 @@ const toCall = (w: WireCall): CapabilityCall => ({
 	capability: w.capability,
 	method: w.method,
 	args: w.args,
-	scopes: w.scopes ?? []
+	scopes: w.scopes ?? [],
+	app: w.app
 })
 
 const toWireCall = (c: CapabilityCall): WireCall => ({
@@ -47,7 +49,8 @@ const toWireCall = (c: CapabilityCall): WireCall => ({
 	capability: c.capability,
 	method: c.method,
 	args: c.args,
-	scopes: c.scopes
+	scopes: c.scopes,
+	app: c.app
 })
 
 // Cap'n Web disposes stubs via `Symbol.dispose`, falling back to `Symbol.for` the
@@ -119,10 +122,9 @@ function capsServer(local: Capabilities): CapsServer {
 	}
 }
 
-// Provider side: serve `local` over the transport. There is no server->client
-// call path (the volume poke rides the session `/ws` socket, not this capability
-// session), so nothing is returned; the session self-retains via its transport
-// receive loop.
+// Provider side: serve `local` over the transport. Delegated calls can invoke
+// the app callback while the original call is pending; Cap’n Web releases its
+// parameter stubs when that call returns.
 export function serveCapabilitiesRpc(transport: RpcTransport, local: Capabilities): void {
 	void new RpcSession(transport, capsServer(local))
 }

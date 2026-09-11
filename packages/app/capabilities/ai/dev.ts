@@ -73,6 +73,12 @@ export async function resolveDevAi(backend: AiBackend, use: Deps = deps): Promis
 
 export function devAiCapability(generate: GenerateText): Capability {
 	return implementCapability(ai, {
+		runAgent: () => {
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'runAgent')
+		},
+		cancelAgent: () => {
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'cancelAgent')
+		},
 		generateText: async (ctx, input) => {
 			if (!input || typeof input.prompt !== 'string')
 				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', 'generateText')

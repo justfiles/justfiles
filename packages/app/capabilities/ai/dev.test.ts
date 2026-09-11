@@ -189,3 +189,19 @@ test('a missing plugin reports the installed backends', async () => {
 			'    Found `pi` and `codex`. Add `devAi()` to the plugins in vite.config.ts.'
 	)
 })
+
+test.each([
+	'runAgent',
+	'cancelAgent'
+])('text-only dev AI explicitly declines %s', async (method) => {
+	const capability = devAiCapability(async () => 'text')
+	await expect(
+		capability.invoke({
+			appId: 'app.test',
+			capability: 'ai',
+			method,
+			args: [{ requestId: 'one', prompt: 'task' }],
+			scopes: ['agent']
+		})
+	).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', method })
+})

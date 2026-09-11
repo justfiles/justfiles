@@ -14,6 +14,11 @@ export interface CapabilityCall {
 	args: readonly unknown[]
 	scopes: readonly string[]
 	actor?: string
+	// Calls return to the executing kernel with the app's existing bindings.
+	app?: {
+		bindings: Record<string, { id: string; scopes: readonly string[] }>
+		invoke(capability: string, method: string, args: readonly unknown[]): Promise<unknown>
+	}
 }
 
 export type Emit = (event: unknown) => void

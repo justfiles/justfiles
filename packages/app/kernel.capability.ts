@@ -12,6 +12,7 @@ export type Declared = { id: string; scopes: readonly string[] }
 // declared. Declarations are read from the bundle once and memoized; the memo is
 // dropped on (re)install/uninstall, since a new bundle may declare differently.
 export interface CapabilityResolver {
+	all(appId: AppId): Promise<Record<string, Declared>>
 	// The trusted { id, scopes } for a local name, or undefined if the app never
 	// declared it (the caller surfaces that as an undeclared-capability error).
 	resolve(appId: AppId, name: string): Promise<Declared | undefined>
@@ -40,8 +41,10 @@ export function capabilityResolver(
 	}
 
 	return {
+		all,
 		async resolve(appId, name) {
-			return (await all(appId))[name]
+			const bindings = await all(appId)
+			return Object.hasOwn(bindings, name) ? bindings[name] : undefined
 		},
 		forget(appId) {
 			declared.delete(appId)

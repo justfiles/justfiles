@@ -5,12 +5,13 @@
 
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import Type from 'typebox'
+import type { Fetch } from './fetch.ts'
 
 const searchParams = Type.Object({
 	query: Type.String({ description: 'Search query' })
 })
 
-export function createSearchTool(): AgentTool<typeof searchParams> {
+export function createSearchTool(fetch: Fetch = globalThis.fetch): AgentTool<typeof searchParams> {
 	return {
 		name: 'search',
 		label: 'Web Search',

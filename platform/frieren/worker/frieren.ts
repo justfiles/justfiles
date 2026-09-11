@@ -496,6 +496,8 @@ export class Frieren extends DurableObject<Env> {
 			fs: this.volume,
 			loader: this.env.LOADER,
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
+			backend: () => this.resolveText(),
+			keepAlive: (work) => this.ctx.waitUntil(work),
 			text: {
 				gen: async (...args) => text(await this.resolveText()).gen(...args),
 				takeNotes: async (...args) => text(await this.resolveText()).takeNotes(...args),

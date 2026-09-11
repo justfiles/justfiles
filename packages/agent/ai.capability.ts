@@ -18,6 +18,9 @@ import { CapabilityError, implementCapability } from '@justfiles/app/capabilitie
 import { ai } from '@justfiles/app/capabilities/ai'
 import type { Volume } from '@justfiles/fs'
 import { learningContext } from './learning-context.ts'
+import type { AgentBackend } from './llm.ts'
+import { runAgent } from './run-agent.ts'
+import type { Fetch } from './tools/fetch.ts'
 
 // The raw text backend the capability generates over. `system` is the FINAL,
 // host-composed system prompt; the fn never sees the `context` selector.
@@ -32,13 +35,85 @@ export type GenerateText = (input: {
 // request has the host-composed learning fragment prepended to the app system
 // prompt; without one, or for context-free calls, generation is a plain
 // pass-through.
-export function aiCapability(deps: { generate: GenerateText; volume?: Volume }) {
+export function aiCapability(deps: {
+	generate: GenerateText
+	volume?: Volume
+	agent?: {
+		backend(signal: AbortSignal): Promise<AgentBackend | null>
+		fetch: Fetch
+		keepAlive?(work: Promise<unknown>): void
+	}
+}) {
 	const { generate, volume } = deps
+	const active = new Map<string, { requestId: string; stop: AbortController }>()
 	const learning = volume
 		? learningContext({ volume, gen: (system, prompt) => generate({ system, prompt }) }).compose
 		: undefined
 
 	return implementCapability(ai, {
+		runAgent: (ctx, input) => {
+			if (!ctx.scopes.includes('agent'))
+				throw new CapabilityError('CAPABILITY_DENIED', 'ai', 'runAgent')
+			if (
+				!input ||
+				typeof input.requestId !== 'string' ||
+				!input.requestId.trim() ||
+				typeof input.prompt !== 'string' ||
+				!input.prompt.trim()
+			)
+				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', 'runAgent')
+			const agent = deps.agent
+			const app = ctx.app
+			if (!agent || !app) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'runAgent')
+			if (active.has(ctx.appId)) throw new CapabilityError('CAPABILITY_FAILED', 'ai', 'runAgent')
+			const stop = new AbortController()
+			active.set(ctx.appId, { requestId: input.requestId, stop })
+			const timer = setTimeout(() => stop.abort(new Error('Agent exceeded ten minutes')), 600_000)
+			let onAbort!: () => void
+			const aborted = new Promise<never>((_, reject) => {
+				onAbort = () => reject(stop.signal.reason)
+				stop.signal.addEventListener('abort', onAbort, { once: true })
+			})
+			const work = (async () => {
+				try {
+					stop.signal.throwIfAborted()
+					// Account lookup may ignore abort; its late result must not start a task.
+					const backend = await Promise.race([agent.backend(stop.signal), aborted])
+					stop.signal.throwIfAborted()
+					if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'runAgent')
+					const text = await runAgent({
+						prompt: input.prompt,
+						backend,
+						app,
+						signal: stop.signal,
+						fetch: agent.fetch
+					})
+					stop.signal.throwIfAborted()
+					return { text }
+				} catch (error) {
+					if (stop.signal.reason === 'cancelled') return { cancelled: true as const }
+					if (error instanceof CapabilityError) throw error
+					throw new CapabilityError('CAPABILITY_FAILED', 'ai', 'runAgent')
+				} finally {
+					stop.signal.removeEventListener('abort', onAbort)
+					clearTimeout(timer)
+					active.delete(ctx.appId)
+				}
+			})()
+			agent.keepAlive?.(work.catch(() => {}))
+			return work
+		},
+		cancelAgent: (ctx, input) => {
+			if (!ctx.scopes.includes('agent'))
+				throw new CapabilityError('CAPABILITY_DENIED', 'ai', 'cancelAgent')
+			if (!input || typeof input.requestId !== 'string' || !input.requestId.trim())
+				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', 'cancelAgent')
+			if (!deps.agent) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'cancelAgent')
+			const entry = active.get(ctx.appId)
+			if (!entry || entry.requestId !== input.requestId) return false
+			if (!entry.stop.signal.aborted) entry.stop.abort('cancelled')
+			return entry.stop.signal.reason === 'cancelled'
+		},
 		generateText: async (ctx, input) => {
 			if (typeof input.prompt !== 'string')
 				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', 'generateText')

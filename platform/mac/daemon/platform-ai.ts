@@ -2,12 +2,16 @@ import type { AgentBackend } from '@justfiles/agent'
 import { type BackendDescriptor, remoteBackend } from '@justfiles/agent/remote'
 
 export function createPlatformAi(deps: { origin: string; getToken: () => Promise<string | null> }) {
-	return async (): Promise<AgentBackend | null> => {
+	return async (signal?: AbortSignal): Promise<AgentBackend | null> => {
+		signal?.throwIfAborted()
 		const token = await deps.getToken()
+		signal?.throwIfAborted()
 		if (!token) return null
 		const response = await fetch(new URL('/api/ai/backend', deps.origin), {
 			headers: { authorization: `Bearer ${token}` },
-			signal: AbortSignal.timeout(15_000)
+			signal: signal
+				? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+				: AbortSignal.timeout(15_000)
 		})
 		if (!response.ok)
 			throw new Error(`Cloud AI is unavailable (${response.status}). Check Settings.`)

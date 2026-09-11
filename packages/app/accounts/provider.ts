@@ -84,7 +84,10 @@ export interface Provider {
 		email?: Binding<EmailCapability>
 		calendar?: Binding<CalendarCapability>
 		// ai optionally carries a model catalogue for the Settings picker.
-		ai?: Binding<AiCapability> & { models?(): AiModel[]; defaultModel?(): string }
+		ai?: Binding<Pick<AiCapability, 'generateText'>> & {
+			models?(): AiModel[]
+			defaultModel?(): string
+		}
 		// Image generation uses its own provider, independent of the text selection.
 		image?: Binding<ImageCapability>
 	}
