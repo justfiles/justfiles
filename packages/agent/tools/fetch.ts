@@ -12,6 +12,11 @@ import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { StringEnum } from '@earendil-works/pi-ai'
 import Type from 'typebox'
 
+export type Fetch = (
+	input: string | URL | Request,
+	init?: RequestInit & { credentials?: 'omit' | 'include' | 'same-origin' }
+) => Promise<Response>
+
 const READABLE_MD_ENDPOINT = 'https://readable.page/md'
 const DEFAULT_MAX_LENGTH = 50_000
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -69,7 +74,10 @@ const fetchParams = Type.Object({
 	)
 })
 
-export function createFetchTool(): AgentTool<typeof fetchParams> {
+export function createFetchTool(
+	options: { fetch?: Fetch; direct?: boolean } = {}
+): AgentTool<typeof fetchParams> {
+	const fetch = options.fetch ?? globalThis.fetch
 	return {
 		name: 'fetch',
 		label: 'Fetch',
@@ -176,11 +184,13 @@ export function createFetchTool(): AgentTool<typeof fetchParams> {
 			const readableUrl = new URL(READABLE_MD_ENDPOINT)
 			readableUrl.searchParams.set('url', target.href)
 
-			const { response: mdResponse, cancelled } = await doFetch(readableUrl, { method: 'GET' })
-			if (cancelled) return { content: [{ type: 'text', text: 'Cancelled' }], details: {} }
+			const markdown = options.direct ? undefined : await doFetch(readableUrl, { method: 'GET' })
+			if (markdown?.cancelled)
+				return { content: [{ type: 'text', text: 'Cancelled' }], details: {} }
 
-			const mdContentType = mdResponse.headers.get('content-type') ?? ''
-			if (mdResponse.ok && /text\/markdown/i.test(mdContentType)) {
+			const mdResponse = markdown?.response
+			const mdContentType = mdResponse?.headers.get('content-type') ?? ''
+			if (mdResponse?.ok && /text\/markdown/i.test(mdContentType)) {
 				const markdown = await mdResponse.text()
 				return finish(
 					[`Source: ${target.href}`, 'Format: Markdown (via readable.page)'],

@@ -1,12 +1,13 @@
-// The `ai` capability is a single USE facet any app may call. Setup (sign-in,
-// model pick) is no longer a sibling `ai/admin` facet — it folded into the
-// `accounts` model, where ChatGPT is just an oauth provider that backs `ai` and
-// the selected model rides as that capability's per-account config. A host serves
-// `generateText` over whatever backend the user connected (frieren over its LLM
-// text service; quay over the resolved accounts provider).
+// App-facing text generation and foreground delegation. Both use the host-selected backend.
 
-// USE facet — exposed to every app via `@justfiles/app/capabilities/ai`.
 export interface AiCapability {
+	runAgent(input: {
+		requestId: string
+		prompt: string
+		workspace?: { capability: string; path: string }
+	}): Promise<{ text: string } | { cancelled: true }>
+	cancelAgent(input: { requestId: string }): Promise<boolean>
+
 	generateText(input: {
 		system?: string
 		prompt: string

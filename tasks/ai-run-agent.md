@@ -1,6 +1,6 @@
 ---
 project: platform/ai
-status: todo
+status: done
 ---
 
 # AI capability: run a delegated task
@@ -66,4 +66,13 @@ Completed writes survive cancellation/failure; multi-file authoring is not trans
 
 Add streaming progress, background handles, follow-up messages, concurrent runs, or configurable tools/model individually. Do not expose recursive delegation, agent teams, durable sessions, or scheduling in v1. Domain workflows and file layouts remain app instructions.
 
-**Expected size:** a contained platform addition. The main work is scoped workspace delegation, cancellation across existing transports, and resource cleanup; the model loop and tools already exist. Documentation only at this stage.
+**Expected size:** a contained platform addition. The main work is scoped workspace delegation, cancellation across existing transports, and resource cleanup; the model loop and tools already exist. Implementation is complete; SDK publication follows the normal release-please merge and tag workflow.
+
+
+## Implementation notes
+
+Implemented the foreground runner, trusted workspace grants through procedure/command RPC, shared cancellation slots, public read-only research tools, and both host integrations. See [AI capability](../docs/ai.md) for the app-facing contract and lifecycle.
+
+Restricted workspace views refuse symlink traversal at filesystem resolution, including links in the workspace root. Watches and in-flight file operations finish before a request releases its slot. Mac storage wrappers preserve that restriction and keep delegated file operations in their shutdown drain.
+
+Verification: repository formatting, linting and typechecking; 2,324 Vitest tests passed (four skipped); SDK build; a native Mac daemon/kernel smoke test; and a local Frieren Durable Object smoke test through real WebSocket capability RPC and an app procedure. The smoke tests cover responsiveness, final output, workspace writes and cancellation during setup. Package publication remains pending the normal release workflow.

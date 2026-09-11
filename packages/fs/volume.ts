@@ -72,6 +72,9 @@ export const WATCH_BURST_MS = 50
  *   thrown as plain Error objects with the code at the start of the message.
  */
 export interface Volume {
+	/** Narrow access without changing the backing store. Restricted views refuse symlink traversal. */
+	restrict?(access: Access): Volume
+
 	// --- metadata ---
 
 	/**
@@ -538,10 +541,36 @@ const derivedId = async (parent: NodeId, name: string): Promise<NodeId> => {
 	].join('-')
 }
 
+type Access = { deny?: readonly string[]; signal?: AbortSignal }
+
 export function volume(
 	store: Store,
 	opts?: { bindings?: Bindings; mintVersion?: () => Version }
 ): Volume {
+	return buildVolume(store, opts)
+}
+
+function buildVolume(
+	store: Store,
+	opts?: { bindings?: Bindings; mintVersion?: () => Version },
+	access?: Access
+): Volume {
+	const denied = (path: string) =>
+		access?.deny?.some((prefix) => {
+			const full = normalizePath(path) || '/'
+			return full === prefix || full.startsWith(`${prefix}/`)
+		}) ?? false
+	const check = (path: string) => {
+		access?.signal?.throwIfAborted()
+		if (denied(path)) throw new Error(`EACCES: ${path}`)
+	}
+	const checkTree = (path: string) => {
+		check(path)
+		if (!access?.deny?.length) return
+		const full = normalizePath(path)
+		if (access?.deny?.some((prefix) => prefix.startsWith(`${full}/`)))
+			throw new Error(`EACCES: ${path} contains a denied path`)
+	}
 	const mint = opts?.mintVersion ?? localVersions()
 	const bindings = opts?.bindings
 	const now = (): bigint => BigInt(Date.now()) * 1_000_000n
@@ -594,12 +623,14 @@ export function volume(
 	 * crosses a mount reads rows no one commit can guard together.
 	 */
 	async function resolve(path: string, followLast: boolean, walked?: At[]): Promise<At> {
+		check(path)
 		const queue = path.split('/').filter((s) => s !== '')
 		const up: Step[] = []
 		let at: Step = { store, node: null }
 		let hops = 0
 
 		for (let i = 0; i < queue.length; i++) {
+			access?.signal?.throwIfAborted()
 			const name = queue[i]
 			if (name === undefined || name === '.') continue
 			if (name === '..') {
@@ -632,6 +663,8 @@ export function volume(
 
 			const isLast = i === queue.length - 1
 			if (found.type === 'symlink' && (!isLast || followLast)) {
+				// Refuse traversal at the row we actually resolved, without a check/use gap.
+				if (access) throw new Error(`EACCES: symlink traversal: ${path}`)
 				if (++hops > MAX_SYMLINK_HOPS) throw new Error('ELOOP: too many levels of symbolic links')
 				if (!found.link) throw new Error('EINVAL: symlink has no target')
 				if (found.link.startsWith('/')) {
@@ -674,6 +707,7 @@ export function volume(
 		path: string,
 		walked?: At[]
 	): Promise<{ store: Store; dir: Node; name: string }> {
+		check(path)
 		const full = path.replace(/\/+$/, '')
 		const cut = full.lastIndexOf('/')
 		const name = full.slice(cut + 1)
@@ -692,6 +726,7 @@ export function volume(
 	async function* childrenOf(st: Store, parent: NodeId): AsyncGenerator<Node> {
 		let cursor: Cursor | undefined
 		do {
+			access?.signal?.throwIfAborted()
 			const page = await st.children(parent, cursor)
 			yield* page.nodes
 			cursor = page.next
@@ -724,6 +759,7 @@ export function volume(
 	 */
 	async function retry<T>(attempt: () => Promise<T>): Promise<T> {
 		for (let left = MAX_ATTEMPTS; ; left--) {
+			access?.signal?.throwIfAborted()
 			try {
 				return await attempt()
 			} catch (e) {
@@ -788,6 +824,7 @@ export function volume(
 	/** Whole-row replace (rule 3: no partial patch), guarded on what we read. */
 	const swap = async (st: Store, node: Node, payload: Payload, bytes?: Bytes): Promise<void> => {
 		await durable(st, payload.content, bytes)
+		access?.signal?.throwIfAborted()
 		await st.commit(
 			[
 				{
@@ -825,6 +862,7 @@ export function volume(
 		}
 		await durable(st, payload.content, bytes)
 		try {
+			access?.signal?.throwIfAborted()
 			await st.commit([row, stamp(dir)], [{ free: { parent: dir.id, name } }, unchanged(dir)])
 		} catch (e) {
 			if (!(e instanceof GuardError)) throw e
@@ -881,6 +919,7 @@ export function volume(
 	const edit = (path: string, change: (row: Node) => Node): Promise<void> =>
 		retry(async () => {
 			const at = await resolve(path, true)
+			access?.signal?.throwIfAborted()
 			await at.store.commit([{ ...change(at.node), version: mint() }], [unchanged(at.node)])
 		})
 
@@ -934,6 +973,8 @@ export function volume(
 	 * `moveAcross` does not go through it.
 	 */
 	async function copy(src: string, dest: string, recursive: boolean): Promise<void> {
+		checkTree(src)
+		checkTree(dest)
 		const at = await resolve(src, false)
 		const payload: Payload = {
 			type: at.node.type,
@@ -1017,6 +1058,7 @@ export function volume(
 			const to = await parentOf(newPath)
 			const row = reparent(src.node, to.dir.id, to.name)
 			await durable(to.store, row.content, src.store)
+			access?.signal?.throwIfAborted()
 			await to.store.commit(
 				[row, stamp(to.dir)],
 				[{ free: { parent: to.dir.id, name: to.name } }, unchanged(to.dir)]
@@ -1031,6 +1073,7 @@ export function volume(
 		await retry(async () => {
 			const dir = await src.store.get(src.node.parent)
 			if (dir === null) throw new Error(`ENOENT: ${oldPath}`)
+			access?.signal?.throwIfAborted()
 			await src.store.commit([tomb(src.node), stamp(dir)], [unchanged(src.node), unchanged(dir)])
 		})
 	}
@@ -1139,6 +1182,7 @@ export function volume(
 				writes.push(stamp(to.dir))
 				guards.push(unchanged(to.dir))
 			}
+			access?.signal?.throwIfAborted()
 			await from.store.commit(writes, guards)
 		})
 
@@ -1658,11 +1702,13 @@ export function volume(
 			// the way a POSIX inode number is unique within a device, and this model
 			// has no `st_dev` to tell two of them apart.
 			for await (const entry of entriesOf(at.store, at.node.id))
-				entries.push({ ino: entry.node.id, name: entry.name, type: TYPE[entry.node.type] })
+				if (!denied(join(path, entry.name)))
+					entries.push({ ino: entry.node.id, name: entry.name, type: TYPE[entry.node.type] })
 			return entries
 		},
 
 		async rm(path, opts) {
+			checkTree(path)
 			const recursive = opts?.recursive ?? false
 			const force = opts?.force ?? false
 			await retry(async () => {
@@ -1696,6 +1742,7 @@ export function volume(
 				// included. A directory's version moves on every create inside it, so an
 				// entry this walk never saw fails the commit, and the attempt enumerates
 				// again.
+				access?.signal?.throwIfAborted()
 				await at.store.commit(
 					[...dead.map(tomb), stamp(dir)],
 					[...dead.map(unchanged), unchanged(dir)]
@@ -1704,6 +1751,8 @@ export function volume(
 		},
 
 		async rename(oldPath, newPath) {
+			checkTree(oldPath)
+			checkTree(newPath)
 			try {
 				await moveRow(oldPath, newPath)
 			} catch (e) {
@@ -1767,6 +1816,7 @@ export function volume(
 						seen.add(entry.node.id)
 					}
 					const childPath = join(dirPath, entry.name)
+					if (denied(childPath)) continue
 					await visitor(childPath, statOf(entry.node))
 					if (isDir(entry.node))
 						await walk(
@@ -1785,6 +1835,14 @@ export function volume(
 		}
 	}
 
+	vol.restrict = (policy) =>
+		buildVolume(store, opts, {
+			deny: [...(access?.deny ?? []), ...(policy.deny ?? [])],
+			signal:
+				access?.signal && policy.signal
+					? AbortSignal.any([access.signal, policy.signal])
+					: (access?.signal ?? policy.signal)
+		})
 	return vol
 }
 
@@ -1814,12 +1872,18 @@ function normalizePath(path: string): string {
 }
 
 function chrootPath(root: string, path: string): string {
-	return `${root}${normalizePath(path)}` || root
+	return `${root}${normalizePath(path)}` || '/'
 }
 
-export function chroot(fs: Volume, root: string): Volume {
+export function chroot(fs: Volume, root: string, access?: Access): Volume {
+	if (access) {
+		const build = fs.restrict
+		if (!build) throw new Error('Volume does not support restricted access')
+		fs = build(access)
+	}
+	root = normalizePath(root)
 	const at = (path: string) => chrootPath(root, path)
-	return {
+	const view: Volume = {
 		stat: (path) => fs.stat(at(path)),
 		lstat: (path) => fs.lstat(at(path)),
 		exists: (path) => fs.exists(at(path)),
@@ -1847,4 +1911,6 @@ export function chroot(fs: Volume, root: string): Volume {
 			}),
 		watch: (path, listener, opts) => fs.watch(at(path), listener, opts)
 	}
+	if (fs.restrict) view.restrict = (policy) => chroot(fs.restrict!(policy), root || '/')
+	return view
 }

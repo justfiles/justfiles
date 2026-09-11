@@ -1,4 +1,24 @@
+import { CapabilityError } from './capabilities/error.ts'
+import type { CapabilityCall } from './capabilities/types.ts'
+
 type AppId = string
+
+export async function workspaceGrant(
+	resolve: CapabilityResolver['resolve'],
+	appId: string,
+	id: string,
+	method: string,
+	args: readonly unknown[]
+): Promise<CapabilityCall['workspace']> {
+	if (id !== 'ai' || method !== 'runAgent') return undefined
+	const input = args[0] as { workspace?: { capability?: unknown } } | undefined
+	if (input?.workspace === undefined) return undefined
+	const name = input.workspace?.capability
+	if (typeof name !== 'string') throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', method)
+	const grant = await resolve(appId, name)
+	if (grant?.id !== 'volume') throw new CapabilityError('CAPABILITY_DENIED', 'ai', method)
+	return { capability: name, scopes: grant.scopes }
+}
 
 // A capability's trusted identity: the host capability `id` and the DECLARED
 // scopes the kernel attaches to every call. Resolved from the app's bundle —

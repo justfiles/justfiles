@@ -31,6 +31,7 @@ import { identity } from './identity'
 import { accountsSecretCodec } from './keychain'
 import { notificationChannel } from './notify'
 import { createPlatformAi } from './platform-ai'
+import { publicFetch } from './public-fetch'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
 
@@ -48,7 +49,7 @@ const accountProviders = () => [
 ]
 
 interface DaemonAccounts extends HostAccounts {
-	resolveBackend(): Promise<AgentBackend | null>
+	resolveBackend(signal?: AbortSignal): Promise<AgentBackend | null>
 }
 
 // One account module over a Volume. `getAccounts` memoises this for the daemon process;
@@ -188,6 +189,11 @@ async function makeKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel>
 	// composes purpose-scoped context (learning) from the Volume internally.
 	const ai = aiCapability({
 		volume: fs,
+		agent: {
+			backend: (signal) => accounts.resolveBackend(signal),
+			fetch: publicFetch,
+			systemAllowlist
+		},
 		generate: async ({ system, prompt }) => {
 			const backend = await accounts.resolveBackend()
 			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')

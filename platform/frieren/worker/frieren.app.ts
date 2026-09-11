@@ -1,4 +1,10 @@
-import { type AppController, aiCapability, type LLMText, type OsWindowInfo } from '@justfiles/agent'
+import {
+	type AgentBackend,
+	type AppController,
+	aiCapability,
+	type LLMText,
+	type OsWindowInfo
+} from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
 import {
 	type Capabilities,
@@ -28,6 +34,8 @@ interface FrierenAppsDeps {
 	loader: Parameters<typeof workerSandbox>[0] | undefined
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
+	backend(signal: AbortSignal): Promise<AgentBackend>
+	keepAlive(work: Promise<unknown>): void
 	broadcast: (msg: AppBroadcast) => void
 	// The account-backed capabilities, built from the Volume store by the DO (which
 	// also guards email/calendar with audit + rate-limit) and shared with the agent.
@@ -69,6 +77,12 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// resolved text service.
 	const ai = aiCapability({
 		volume: deps.fs,
+		agent: {
+			backend: deps.backend,
+			fetch: globalThis.fetch,
+			systemAllowlist: ['justfiles.files'],
+			keepAlive: deps.keepAlive
+		},
 		generate: ({ system, prompt }) => deps.text.gen(system, prompt)
 	})
 	const capabilities: Capabilities = capabilityRegistry({

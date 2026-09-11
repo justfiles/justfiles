@@ -12,7 +12,7 @@ import type {
 } from './app.ts'
 import type { Capabilities } from './capabilities/types.ts'
 import { apps, type FetchAsset } from './kernel.app.ts'
-import { capabilityResolver } from './kernel.capability.ts'
+import { capabilityResolver, workspaceGrant } from './kernel.capability.ts'
 import { commandRuntime } from './kernel.command.ts'
 import { stateStore } from './kernel.state.ts'
 import { subscriptionRuntime } from './kernel.subscription.ts'
@@ -288,6 +288,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 			method,
 			args,
 			scopes: declared.scopes,
+			workspace: await workspaceGrant(resolver.resolve, appId, declared.id, method, args),
 			actor
 		})
 	}

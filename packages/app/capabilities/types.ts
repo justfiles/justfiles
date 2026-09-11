@@ -14,6 +14,7 @@ export interface CapabilityCall {
 	args: readonly unknown[]
 	scopes: readonly string[]
 	actor?: string
+	workspace?: { capability: string; scopes: readonly string[] }
 }
 
 export type Emit = (event: unknown) => void

@@ -25,7 +25,7 @@ import type { Capability, CapabilityCall, Unsubscribe } from './types.ts'
 
 // The trusted metadata the kernel already attached. Scope→resource resolution
 // lives here (e.g. `resolveVolume`); capabilities that don't need it ignore it.
-type Ctx = { appId: string; scopes: readonly string[]; actor?: string }
+type Ctx = Pick<CapabilityCall, 'appId' | 'scopes' | 'actor' | 'workspace'>
 
 // Pull the phantom `Methods`/`Streams` back out of a `defineCapability` factory.
 type MethodsOf<C> = C extends (...a: never[]) => { __methods?: infer M } ? M : never
@@ -61,7 +61,12 @@ export function implementCapability<C>(_contract: C, impl: Impl<C>): Capability 
 			throw new CapabilityError('CAPABILITY_UNAVAILABLE', c.capability, c.method)
 		return f as (...a: unknown[]) => unknown
 	}
-	const ctx = (c: CapabilityCall): Ctx => ({ appId: c.appId, scopes: c.scopes, actor: c.actor })
+	const ctx = (c: CapabilityCall): Ctx => ({
+		appId: c.appId,
+		scopes: c.scopes,
+		actor: c.actor,
+		workspace: c.workspace
+	})
 	return {
 		invoke: async (c) => fn(c)(ctx(c), ...c.args),
 		subscribe: async (c, emit) => (await fn(c)(ctx(c), emit, ...c.args)) as Unsubscribe

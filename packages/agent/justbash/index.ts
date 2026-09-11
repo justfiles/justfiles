@@ -52,7 +52,10 @@ const bashParams = Type.Object({
  * deny-list); `commands` becomes its `customCommands`; the description lists the
  * custom commands' summaries plus a note that standard unix commands work.
  */
-export function createJustBashTool(options: JustBashToolOptions): AgentTool<typeof bashParams> {
+export function createJustBashTool(options: JustBashToolOptions): AgentTool<typeof bashParams> & {
+	ready: Promise<void>
+	dispose(): Promise<void>
+} {
 	const { volume, commands = [], disable, cwd = '/', env } = options
 	// `disable` is a deny-list over the built-ins; just-bash takes an allow-list,
 	// so we hand it every built-in minus the disabled names. Omitting it entirely
@@ -67,21 +70,29 @@ export function createJustBashTool(options: JustBashToolOptions): AgentTool<type
 	// The credential trees are denied at the fs seam, not asked for in the prompt: the
 	// agent reads untrusted text (fetch/search), so a prompt instruction is not a boundary.
 	// There is exactly ONE policy, so it is imported rather than made an option.
-	const bash = new Bash({
-		fs: volumeFs(volume, SECRET_PREFIXES),
-		cwd,
-		env,
-		commands: allow,
-		customCommands: commands
-	})
+	const fs = volumeFs(volume, SECRET_PREFIXES)
+	const startup = fs.ready.then(
+		() =>
+			new Bash({
+				fs,
+				cwd,
+				env,
+				commands: allow,
+				customCommands: commands
+			})
+	)
+	const ready = startup.then(() => {})
+	void ready.catch(() => {})
 	const description = describe(commands)
 	return {
+		ready,
+		dispose: fs.dispose,
 		name: 'bash',
 		label: 'Bash',
 		description,
 		parameters: bashParams,
 		async execute(_toolCallId, params, signal) {
-			return formatResult(await run(bash, params.command, signal))
+			return formatResult(await run(await startup, params.command, signal))
 		}
 	}
 }

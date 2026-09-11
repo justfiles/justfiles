@@ -23,6 +23,7 @@ interface WireCall {
 	method: string
 	args: readonly unknown[]
 	scopes?: readonly string[]
+	workspace?: CapabilityCall['workspace']
 }
 
 type InvokeResult = { ok: true; value: unknown } | { ok: false; error: WireError }
@@ -39,7 +40,8 @@ const toCall = (w: WireCall): CapabilityCall => ({
 	capability: w.capability,
 	method: w.method,
 	args: w.args,
-	scopes: w.scopes ?? []
+	scopes: w.scopes ?? [],
+	workspace: w.workspace
 })
 
 const toWireCall = (c: CapabilityCall): WireCall => ({
@@ -47,7 +49,8 @@ const toWireCall = (c: CapabilityCall): WireCall => ({
 	capability: c.capability,
 	method: c.method,
 	args: c.args,
-	scopes: c.scopes
+	scopes: c.scopes,
+	workspace: c.workspace
 })
 
 // Cap'n Web disposes stubs via `Symbol.dispose`, falling back to `Symbol.for` the

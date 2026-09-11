@@ -27,7 +27,13 @@ import type { BufferEncoding, FileContent, FsStat, IFileSystem } from 'just-bash
  * command (cat, find, tar, sqlite3, jq…) reaches the Volume through this one object,
  * denying here cannot be routed around by a cleverer command line.
  */
-export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem {
+export function volumeFs(
+	vol: Volume,
+	deny: readonly string[] = []
+): IFileSystem & {
+	ready: Promise<void>
+	dispose(): Promise<void>
+} {
 	const denied = (p: string) => deny.some((d) => p === d || p.startsWith(`${d}/`))
 	const eacces = (p: string) =>
 		Promise.reject(Object.assign(new Error(`EACCES: permission denied, ${p}`), { code: 'EACCES' }))
@@ -36,33 +42,51 @@ export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem
 	let paths = new Set<string>(['/'])
 	let refreshing = false
 	let dirty = false
-	async function refresh(): Promise<void> {
+	let stopped = false
+	let refreshWork = Promise.resolve()
+	function refresh(): Promise<void> {
+		if (stopped) return refreshWork
 		if (refreshing) {
 			dirty = true
-			return
+			return refreshWork
 		}
 		refreshing = true
-		try {
-			do {
-				dirty = false
-				const next = new Set<string>()
-				await vol.scan('/', async (p) => {
-					next.add(p)
-				})
-				paths = next
-			} while (dirty)
-		} finally {
-			refreshing = false
-		}
+		refreshWork = (async () => {
+			try {
+				do {
+					dirty = false
+					const next = new Set<string>()
+					await vol.scan('/', async (p) => {
+						next.add(p)
+					})
+					paths = next
+				} while (dirty && !stopped)
+			} finally {
+				refreshing = false
+			}
+		})()
+		return refreshWork
 	}
-	void refresh()
-	void vol.watch(
+	const firstScan = refresh()
+	const watch = vol.watch(
 		'/',
 		() => {
-			void refresh()
+			void refresh().catch(() => {})
 		},
 		{ recursive: true }
 	)
+	const ready = Promise.all([firstScan, watch]).then(() => {})
+	void ready.catch(() => {})
+	let cleanup: Promise<void> | undefined
+	function dispose(): Promise<void> {
+		stopped = true
+		cleanup ??= (async () => {
+			const off = await watch.catch(() => undefined)
+			off?.()
+			await refreshWork.catch(() => {})
+		})()
+		return cleanup
+	}
 
 	async function realpath(input: string): Promise<string> {
 		const queue = input.split('/').filter((p) => p !== '')
@@ -136,7 +160,7 @@ export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem
 		utimes: (path, _atime, mtime) =>
 			guard(path, () => vol.utimes(path, BigInt(mtime.getTime()) * 1_000_000n))
 	}
-	return fs
+	return Object.assign(fs, { ready, dispose })
 }
 
 /** Join a directory path and an entry name (no normalisation needed — `name` is a leaf). */
