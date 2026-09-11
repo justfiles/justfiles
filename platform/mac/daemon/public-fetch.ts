@@ -64,21 +64,23 @@ export async function publicFetch(
 				}
 			},
 			(response) => {
-				const status = response.statusCode ?? 502
-				if (init?.redirect === 'error' && [301, 302, 303, 307, 308].includes(status)) {
+				try {
+					const status = response.statusCode ?? 502
+					if (init?.redirect === 'error' && [301, 302, 303, 307, 308].includes(status))
+						throw new Error('Unexpected redirect')
+					const headers = new Headers()
+					for (let i = 0; i < response.rawHeaders.length; i += 2)
+						headers.append(response.rawHeaders[i]!, response.rawHeaders[i + 1]!)
+					const body =
+						init?.method === 'HEAD' || [204, 205, 304].includes(status)
+							? null
+							: (Readable.toWeb(response) as ReadableStream<Uint8Array>)
+					if (!body) response.resume()
+					resolve(new Response(body, { status, headers }))
+				} catch (error) {
 					response.destroy()
-					reject(new Error('Unexpected redirect'))
-					return
+					reject(error)
 				}
-				const headers = new Headers()
-				for (let i = 0; i < response.rawHeaders.length; i += 2)
-					headers.append(response.rawHeaders[i]!, response.rawHeaders[i + 1]!)
-				const body =
-					init?.method === 'HEAD' || [204, 205, 304].includes(status)
-						? null
-						: (Readable.toWeb(response) as ReadableStream<Uint8Array>)
-				if (!body) response.resume()
-				resolve(new Response(body, { status, headers }))
 			}
 		)
 		request.on('error', reject)

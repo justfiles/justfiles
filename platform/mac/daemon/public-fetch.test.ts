@@ -88,3 +88,20 @@ test('hands the checked DNS result directly to the socket and returns a readable
 	expect(await (await publicFetch('http://example.com')).text()).toBe('public page')
 	expect(lookup).toHaveBeenCalledTimes(1)
 })
+
+test.each([
+	600, 999
+])('rejects status %s without throwing from the response callback', async (statusCode) => {
+	let receive!: (response: PassThrough) => void
+	vi.mocked(http).mockImplementation(((...args: unknown[]) => {
+		receive = args[2] as typeof receive
+		const req = new EventEmitter()
+		Object.assign(req, { end: vi.fn() })
+		return req
+	}) as typeof http)
+	const response = Object.assign(new PassThrough(), { statusCode, rawHeaders: [] })
+	const result = publicFetch('http://example.com')
+	expect(() => receive(response)).not.toThrow()
+	await expect(result).rejects.toThrow(RangeError)
+	expect(response.destroyed).toBe(true)
+})
