@@ -208,11 +208,14 @@ defineApp({
 		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	}, 30_000)
 
-	test('app.cap reserves then even when the capability contract declares it', async () => {
+	test.each([
+		'{ then(): string; read(): string }',
+		'Record<string, () => string>'
+	])('app.cap reserves then for %s', async (methods) => {
 		const src = `import { defineApp } from '@justfiles/app'
 import { defineCapability } from '@justfiles/app/capabilities'
 import * as v from 'valibot'
-const service = defineCapability<'service', { then(): string; read(): string }>('service')
+const service = defineCapability<'service', ${methods}>('service')
 export const app = defineApp({
 	init: {},
 	capabilities: { service: service({ scopes: [] }) },

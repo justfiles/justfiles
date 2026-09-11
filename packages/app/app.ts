@@ -234,7 +234,7 @@ export interface AppHandle<State, Caps extends CapabilityRequests = NoCapabiliti
 	// Local capability names. Calls return to the caller; the kernel checks scopes.
 	// `then` is reserved so services cannot be mistaken for promises.
 	readonly cap: {
-		readonly [C in keyof Caps & string]: {
+		readonly [C in keyof Caps & string]: { readonly then?: never } & {
 			readonly [M in Exclude<keyof MethodsOf<Caps[C]> & string, 'then'>]: (
 				...args: MethodArgs<MethodsOf<Caps[C]>, M>
 			) => Promise<MethodOutput<MethodsOf<Caps[C]>, M>>
