@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.14.0...app-v0.15.0) (2026-09-11)
+
+
+### Features
+
+* **app:** share sandboxed GUI runtime across hosts ([#646](https://github.com/xiaoxinghu/justfiles/issues/646)) ([dbc77c4](https://github.com/xiaoxinghu/justfiles/commit/dbc77c4e100ecfc0651df673eb076efa20cb6383))
+
 ## [0.14.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.13.1...app-v0.14.0) (2026-09-10)
 
 

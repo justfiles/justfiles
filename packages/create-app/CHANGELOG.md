@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/create-app-v0.2.0...create-app-v0.3.0) (2026-09-11)
+
+
+### Features
+
+* **app:** share sandboxed GUI runtime across hosts ([#646](https://github.com/xiaoxinghu/justfiles/issues/646)) ([dbc77c4](https://github.com/xiaoxinghu/justfiles/commit/dbc77c4e100ecfc0651df673eb076efa20cb6383))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @justfiles/app bumped from ^0.14.0 to ^0.15.0
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/create-app-v0.1.3...create-app-v0.2.0) (2026-09-10)
 
 

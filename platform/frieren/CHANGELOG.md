@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.24.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.23.0...frieren-v0.24.0) (2026-09-11)
+
+
+### Features
+
+* **app:** share sandboxed GUI runtime across hosts ([#646](https://github.com/xiaoxinghu/justfiles/issues/646)) ([dbc77c4](https://github.com/xiaoxinghu/justfiles/commit/dbc77c4e100ecfc0651df673eb076efa20cb6383))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.15.0
+
 ## [0.23.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.22.0...frieren-v0.23.0) (2026-09-10)
 
 
