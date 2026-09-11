@@ -18,6 +18,18 @@ pnpm check      # format/lint checks, types, tests, and production build
 behavior changes. Use `pnpm test --watch` while developing and `pnpm format` / `pnpm lint:fix` to
 fix style issues. After checks, exercise the changed GUI flow in the local host.
 
+The dev host watches the production GUI build and loads it in the same sandboxed iframe as
+Frieren and Mac, including bundled CSS/assets and mapped imports. A successful rebuild replaces
+the GUI from current reducer state; unfinished input and other GUI-local state may reset. A build
+error appears outside the frame and leaves the last working GUI usable. Storage writes do not
+rebuild the GUI. Use declared capabilities for host services; the frame cannot access host DOM,
+cookies, or fetch arbitrary URLs. Generated material can use a nested sandboxed `srcdoc` iframe
+with a blob module, but should never receive the app client.
+
+GUI parity does not change the headless runtimes: development uses Vite/Node, Frieren uses browser
+Workers, and Mac uses Bun Workers. Check host capabilities and native shortcuts/downloads in the
+real hosts around releases.
+
 The dev host saves files and reducer state in the git-ignored `.justfiles/dev/` folder,
 so they survive restarts. App-scoped files are ordinary files under `data/<appId>/` inside
 that folder; you can inspect and edit them with local tools. Leave the `.jfs/` metadata

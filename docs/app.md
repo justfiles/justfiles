@@ -110,7 +110,7 @@ kernelHost({
 ```
 
 The production build leaves those packages out of `gui.js` and writes their URLs into its ESM
-imports. Local development still uses the installed packages through Vite. Each URL must use an
+imports. Local development loads the same bundled GUI and mapped URLs. Each URL must use an
 exact version on `https://esm.sh`, and each imported subpath needs its own entry. A mapped app needs
 network access the first time the browser loads those modules.
 
@@ -519,12 +519,20 @@ own class so they do not inherit the keycap press motion.
 `Client<A>`, `createClient<A>(transport)`, and `Transport` are exported from `@justfiles/app` for
 low-level adapters. Regular GUIs should use the client supplied by `defineGUI`.
 
-Both hosts sandbox reducers. Frieren also runs every GUI in an opaque-origin iframe. This protects
+Development, Frieren, and Mac run the built GUI in the same opaque-origin iframe. This protects
 the host DOM, credentials, and storage. The frame CSP blocks normal fetch and subresource paths, but
 not all browser network egress. CSP `connect-src` does not control WebRTC. Treat all state and
 capability results sent to the GUI as disclosed to the publisher. For portable apps, do not use
 `fetch`, cookies, host DOM access, or ambient credentials. Use declared capabilities; use `data:` or
-`blob:` URLs for generated media.
+`blob:` URLs for generated media. A nested `sandbox="allow-scripts"` iframe with `srcdoc` can
+render generated blob modules under the inherited CSP; it must receive no app client. Validate
+messages from that document by source and shape.
+
+A successful dev GUI rebuild replaces its frame using current reducer state. GUI-local state may
+reset. A failed build shows a host error while retaining the working GUI; storage writes do not
+trigger rebuilds. The headless runtimes remain different: Vite/Node in development, browser Workers
+in Frieren, and Bun Workers on Mac. Verify host capabilities and native shortcuts/downloads around
+releases.
 
 ## Capabilities
 

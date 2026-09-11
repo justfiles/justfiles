@@ -1,6 +1,6 @@
 ---
 project: platform/apps
-status: todo
+status: active
 ---
 
 # Share the app GUI runtime across hosts
@@ -9,7 +9,7 @@ status: todo
 
 Standalone apps should be developed against the same GUI environment they receive in Frieren and Mac, without needing a platform checkout. The immediate consumer is Learn: its GUI will render generated MDX as JavaScript inside a second, sandboxed material iframe. This is a generic app-host improvement, not a Learn-specific renderer.
 
-Today the [dev bootstrap](../packages/app/vite.ts) mounts Vite source modules directly into its page. [Mac](../platform/mac/ui/app/main.tsx) mounts built `gui.js` directly into the WKWebView page. [Frieren](../platform/frieren/src/apps/host.ts) loads that bundle into an opaque-origin iframe with a [restrictive CSP](../platform/frieren/src/apps/gui-frame.ts). Consequently, code that works locally can fail when installed: different DOM access, script loading, networking, and nested-document restrictions.
+At planning time, the [dev bootstrap](../packages/app/vite.ts) mounted Vite source modules directly into its page. [Mac](../platform/mac/ui/app/main.tsx) mounted built `gui.js` directly into the WKWebView page. [Frieren](../platform/frieren/src/apps/host.ts) loaded that bundle into an opaque-origin iframe with a restrictive CSP, now in the [shared frame](../packages/app/iframe.ts). Consequently, code that worked locally could fail when installed: different DOM access, script loading, networking, and nested-document restrictions.
 
 Deliver GUI parity only. Keep the existing kernels, capability implementations, backend transports, and headless execution: Vite/Node in development, browser Workers in Frieren, Bun Workers on Mac. Headless parity, new capabilities, and agent execution are separate work. Persistent dev storage is covered by [PR #645](https://github.com/xiaoxinghu/justfiles/pull/645); preserve it when integrating.
 
@@ -33,3 +33,20 @@ The app's existing `gui.mount` interface stays unchanged. Each host retains its 
 4. Run repository-required checks and relevant host smoke checks. Document rebuild behavior and remaining headless/native differences in the SDK/scaffold guidance. Verify both standalone templates outside the monorepo, then release through the normal SDK process.
 
 Done when all three hosts use the shared GUI frame, a standalone repo can reproduce its permissions and module-loading behavior, and existing app interactions survive migration. This is a moderate platform change; compatibility verification is the main work. Routine app development should then be self-contained, with occasional native smoke checks around releases.
+
+## Implementation and verification
+
+Implemented on `codex/gui-runtime-parity`, incorporating PR #645's storage changes. The shared
+frame, all three adapters, production GUI watcher, rebuild recovery, and SDK/scaffold guidance
+are in place. Frieren's sandbox flags and CSP are unchanged.
+
+The [fixture and smoke-check notes](../packages/app/test-frame/README.md) cover standalone
+Chromium/WebKit, Frieren's browser-kernel window, and the native Mac Booter/WKWebView. Controls,
+selection, parent isolation, styles/assets, dialogs, titles, downloads, native shortcuts, and
+close/reopen state were exercised. Both standalone templates also passed checks outside the
+monorepo with the packed SDK; React rebuild recovery and pinned imports were verified in both
+browsers. Repository formatting, linting, all 17 typecheck tasks, and 2,273 tests passed.
+
+PR #645 is merged. Remaining: merge this implementation, then publish through the normal
+release-please and `app-v*` tag workflow. No SDK version or release tag has been created by this
+implementation.

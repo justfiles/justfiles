@@ -3,6 +3,7 @@ import '@justfiles/design/mac.css'
 import { BUILTIN_AVATARS } from '@justfiles/agent/avatars'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import { mountDialogHost } from '@justfiles/app/dialog-host'
+import { mountAppFrame } from '@justfiles/app/iframe'
 import { AttachedAgent, type AttachedAgentMode } from '@justfiles/ui/AttachedAgent'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -137,10 +138,11 @@ function connect(appId: string) {
 }
 
 const connection = connect(appId)
-// The gui.js is served by the daemon at this absolute URL at runtime; @vite-ignore stops
-// Vite from trying to statically analyze (and warn about) the dynamic specifier.
-const [app, state, savedAssistant] = await Promise.all([
-	import(/* @vite-ignore */ `/app/${appId}/gui.js`),
+const [guiCode, state, savedAssistant] = await Promise.all([
+	fetch(`/app/${encodeURIComponent(appId)}/gui.js`).then(async (response) => {
+		if (!response.ok) throw new Error(await response.text())
+		return response.text()
+	}),
 	connection.first,
 	connection.assistant
 ])
@@ -151,13 +153,32 @@ function AppRoot() {
 	useEffect(() => {
 		if (!root.current) return
 		const dialog = mountDialogHost(document.body, { source: appId, sourceId: appId })
-		const mounted = app.gui.mount(root.current, state, {
-			transport: connection.transport,
-			dialog
+		const mounted = mountAppFrame(root.current, guiCode, state, {
+			invoke: connection.transport.invoke,
+			dialog: dialog.request,
+			onError: (message) => {
+				const error = document.createElement('p')
+				error.textContent = `Failed to load app: ${message}`
+				root.current?.replaceChildren(error)
+			},
+			onMessage: (message) => {
+				if (
+					message.type === 'title' &&
+					typeof message.title === 'string' &&
+					message.title.length <= 200
+				)
+					document.title = message.title
+				if (message.type === 'escape')
+					root.current?.dispatchEvent(
+						new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+					)
+			}
 		})
+		const unsubscribe = connection.transport.subscribe(mounted.update)
 		return () => {
+			unsubscribe()
+			mounted.dispose()
 			dialog.unmount()
-			void mounted.unmount()
 		}
 	}, [])
 

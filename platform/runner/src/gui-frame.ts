@@ -1,4 +1,4 @@
-import { guiFrameScript } from '@justfiles/app/iframe'
+import { guiFrameScript } from '../../../packages/app/iframe-bridge'
 
 // This CSP blocks normal request paths. It is not total egress isolation because
 // `connect-src` does not control WebRTC. Never send credentials or host handles

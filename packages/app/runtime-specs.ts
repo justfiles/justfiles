@@ -2,7 +2,7 @@
 //
 // An app artifact bundles everything it uses into `app.js`/`gui.js`. No host serves
 // framework bytes; the only thing a host injects is the platform stylesheet (see
-// Frieren's `gui-frame.ts`). A draft gets the platform SDK, including the optional
+// `iframe.ts`). A draft gets the platform SDK, including the optional
 // React GUI adapter. The adapter's React imports still come from the draft's pinned
 // import map, so no framework bytes live in the SDK.
 
