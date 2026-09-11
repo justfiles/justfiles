@@ -152,7 +152,7 @@ export const guiFrameScript = `(function () {
 			new MutationObserver(title).observe(document.head, { subtree: true, childList: true, characterData: true })
 			window.addEventListener('keydown', function (event) {
 				if (event.key === 'Escape') port.postMessage({ type: 'escape' })
-			})
+			}, true)
 			await module.gui.mount(document.getElementById('root'), client.state(), {
 				transport: client,
 				dialog: client

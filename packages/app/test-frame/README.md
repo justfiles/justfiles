@@ -11,7 +11,8 @@ The first command checks Chromium and WebKit. The second keeps the standalone fi
 manual inspection. The fixture includes imported CSS and an SVG, host state, dialogs, a blob
 download, a changing window title, and a second opaque-origin `srcdoc` iframe. That document
 imports a blob module, keeps its own counter, and sends selected text to the GUI. It receives no
-kernel client. Both documents report whether parent DOM access is blocked.
+kernel client. Both documents report whether parent DOM access is blocked. The browser check also
+verifies that the host receives Escape when a GUI control stops keydown propagation.
 
 For host smoke checks, build these same `app.ts` and `gui.ts` entries and install their bundles in
 a test Frieren profile or a Mac daemon with a temporary `FRIEREN_SUPPORT_DIR`. Keep the daemon's

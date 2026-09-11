@@ -82,8 +82,39 @@ try {
 				await expect(gui.locator('#increment')).toHaveText(`Host count: ${count + 2}`)
 				await page.reload()
 				await expect(gui.locator('#increment')).toHaveText(`Host count: ${count + 2}`)
+				await page.locator('body').evaluate(
+					async (body, url) => {
+						const { mountAppFrame } = await import(url)
+						body.replaceChildren()
+						body.dataset.escapes = '0'
+						mountAppFrame(
+							body,
+							`export const gui = { mount(root) {
+							const input = document.createElement('input')
+							input.onkeydown = event => { event.stopPropagation(); root.dataset.key = event.key }
+							root.append(input)
+						} }`,
+							null,
+							{
+								invoke: async () => null,
+								onMessage(message: Record<string, unknown>) {
+									if (message.type === 'escape')
+										body.dataset.escapes = String(Number(body.dataset.escapes) + 1)
+								}
+							}
+						)
+					},
+					`/@fs/${fileURLToPath(new URL('../../../packages/app/iframe.ts', import.meta.url))}`
+				)
+				const shortcut = page.frameLocator('body > iframe')
+				await shortcut.locator('input').press('Enter')
+				await expect(shortcut.locator('#root')).toHaveAttribute('data-key', 'Enter')
+				await expect(page.locator('body')).toHaveAttribute('data-escapes', '0')
+				await shortcut.locator('input').press('Escape')
+				await expect(shortcut.locator('#root')).toHaveAttribute('data-key', 'Escape')
+				await expect(page.locator('body')).toHaveAttribute('data-escapes', '1')
 				console.log(
-					`${engine.name()}: GUI, material, selection, isolation, styles, asset, dialog, download, title, reload, reattachment passed`
+					`${engine.name()}: GUI, material, selection, isolation, styles, asset, dialog, download, title, reload, reattachment, Escape capture passed`
 				)
 			} finally {
 				await browser.close()
