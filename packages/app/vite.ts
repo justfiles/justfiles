@@ -167,7 +167,13 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
-						server: { watch: { ignored: ['**/.justfiles/dev/**'] } },
+						server: {
+							watch: { ignored: ['**/.justfiles/dev/**'] },
+							fs: {
+								// Supplying deny replaces Vite's defaults; retain them alongside app data.
+								deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/.justfiles/dev/**']
+							}
+						},
 						// The generated page does not expose the GUI to Vite's startup scan. Scan its
 						// real entry once so coupled dependencies optimize in the same pass.
 						optimizeDeps: { entries: [guiPath] },

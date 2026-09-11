@@ -42,7 +42,7 @@ async function project() {
 	return root
 }
 
-async function start(root: string) {
+async function start(root: string, deny?: string[]) {
 	const cwd = vi.spyOn(process, 'cwd').mockReturnValue(root)
 	const plugins = kernelHost({ id: 'app.test', name: 'Test', app: 'src/app.ts', gui: 'src/gui.ts' })
 	cwd.mockRestore()
@@ -56,7 +56,7 @@ async function start(root: string) {
 			}
 		},
 		logLevel: 'silent',
-		server: { host: '127.0.0.1', port: 0 },
+		server: { host: '127.0.0.1', port: 0, fs: { deny } },
 		optimizeDeps: { noDiscovery: true, include: [] }
 	})
 	servers.add(server)
@@ -66,6 +66,9 @@ async function start(root: string) {
 	const base = `http://127.0.0.1:${address.port}`
 	expect((await fetch(`${base}/_state`)).status).toBe(200)
 	return {
+		get(path: string) {
+			return fetch(`${base}${path}`)
+		},
 		async state() {
 			return fetch(`${base}/_state`).then((response) => response.json())
 		},
@@ -116,4 +119,32 @@ test('projects with the same app id have separate storage', async () => {
 	expect(await second.dispatch('increment')).toEqual({ count: 1 })
 	expect(await first.dispatch('read', { path: '/note.md' })).toBe('First project')
 	expect(await second.dispatch('read', { path: '/note.md' })).toBe('Second project')
+}, 30_000)
+
+test('persisted data is not served as static files or raw modules', async () => {
+	const root = await project()
+	await mkdir(join(root, 'public'))
+	await writeFile(join(root, 'public/hello.txt'), 'Public asset')
+	await writeFile(join(root, '.env.private'), 'PRIVATE_VALUE=hidden')
+	await writeFile(join(root, 'private.txt'), 'Custom deny')
+	const server = await start(root, ['**/private.txt'])
+	await server.dispatch('increment')
+	await server.dispatch('write', { path: '/note.md', text: 'Private note' })
+
+	for (const path of [
+		'.justfiles/dev/data/app.test/note.md',
+		'.justfiles/dev/state/app.test.json',
+		'.justfiles/dev/.jfs/index.json',
+		'.env.private',
+		'private.txt'
+	]) {
+		for (const url of [`/${path}`, `/@fs/${join(root, path)}`, `/${path}?raw`]) {
+			const response = await server.get(url)
+			expect(response.status, url).toBe(403)
+		}
+	}
+	expect(await server.dispatch('read', { path: '/note.md' })).toBe('Private note')
+	expect(await server.state()).toEqual({ count: 1 })
+	expect(await server.get('/hello.txt').then((response) => response.text())).toBe('Public asset')
+	expect((await server.get('/src/gui.ts')).status).toBe(200)
 }, 30_000)
