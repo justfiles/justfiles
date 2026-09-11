@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.15.0...app-v0.16.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **app:** procedure handles expose app.cap.<name>.<method>(...args) instead of app.invoke(name, method, ...args). The internal RawAppHandle transport keeps invoke.
+
+### Features
+
+* **app:** namespace procedure capability calls under app.cap ([#648](https://github.com/xiaoxinghu/justfiles/issues/648)) ([5520525](https://github.com/xiaoxinghu/justfiles/commit/55205252475d79d78cbfe8ed5bb204328b9fb136))
+
 ## [0.15.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.14.0...app-v0.15.0) (2026-09-11)
 
 
