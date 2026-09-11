@@ -13,11 +13,13 @@ afterEach(async () => {
 	for (const server of servers) await server.close()
 	servers.clear()
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+	vi.unstubAllEnvs()
 })
 
 async function project() {
 	const root = await mkdtemp(join(tmpdir(), 'app-dev-storage-'))
 	roots.push(root)
+	await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'app-test', type: 'module' }))
 	await mkdir(join(root, 'src'))
 	await writeFile(join(root, 'src/gui.ts'), 'export const gui = {}')
 	await writeFile(
@@ -68,6 +70,13 @@ async function start(root: string, deny?: string[]) {
 	return {
 		get(path: string) {
 			return fetch(`${base}${path}`)
+		},
+		async gui() {
+			return fetch(`${base}/_kernel-host/gui`).then((response) => response.json()) as Promise<{
+				version: number
+				code?: string
+				error?: string
+			}>
 		},
 		async state() {
 			return fetch(`${base}/_state`).then((response) => response.json())
@@ -147,4 +156,36 @@ test('persisted data is not served as static files or raw modules', async () => 
 	expect(await server.state()).toEqual({ count: 1 })
 	expect(await server.get('/hello.txt').then((response) => response.text())).toBe('Public asset')
 	expect((await server.get('/src/gui.ts')).status).toBe(200)
+}, 30_000)
+
+test('GUI builds embed assets and CSS, recover from errors, and ignore data writes', async () => {
+	vi.stubEnv('NODE_ENV', 'development')
+	const root = await project()
+	const entry = join(root, 'src/gui.ts')
+	await writeFile(join(root, 'src/style.css'), 'h1 { color: #123456 }')
+	await writeFile(join(root, 'src/icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>')
+	const source = `import './style.css'; import icon from './icon.svg'; export const gui = { icon, marker: 'first', production: import.meta.env.PROD }`
+	await writeFile(entry, source)
+	const host = await start(root)
+	await expect.poll(() => host.gui().then((bundle) => bundle.code)).toContain('first')
+	const first = await host.gui()
+	expect(process.env.NODE_ENV).toBe('development')
+	const { gui } = await import(`data:text/javascript,${encodeURIComponent(first.code!)}`)
+	expect(gui.production).toBe(true)
+	expect(first.code).toContain('data:image/svg+xml')
+	expect(first.code).toContain('data-app-style')
+	expect(first.code).toContain('#123456')
+	await host.dispatch('increment')
+	await host.dispatch('write', { path: '/note.md', text: 'no rebuild' })
+	await writeFile(entry, 'export const gui = { broken: ')
+	await expect.poll(() => host.gui().then((bundle) => bundle.error)).toBeTruthy()
+	expect((await host.gui()).version).toBe(first.version + 1)
+	await writeFile(entry, source.replace('first', 'recovered'))
+	await expect.poll(() => host.gui().then((bundle) => bundle.code)).toContain('recovered')
+	expect((await host.gui()).error).toBeUndefined()
+	expect(await host.state()).toEqual({ count: 1 })
+	await expect(readFile(join(root, 'dist/gui.js'))).rejects.toMatchObject({ code: 'ENOENT' })
+	await host.close()
+	// Closing the server must also close the build watcher before this directory is removed.
+	await rm(root, { recursive: true, force: true })
 }, 30_000)

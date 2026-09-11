@@ -1,0 +1,14 @@
+#root {
+	padding: 16px;
+	box-sizing: border-box;
+	overflow: auto;
+}
+h1 {
+	color: rgb(21, 83, 145);
+}
+output,
+label,
+iframe {
+	display: block;
+	margin-top: 12px;
+}

@@ -1,11 +1,3 @@
-/* The dev shell's stylesheet. It loads exactly what the real host injects into an
-   app frame — the platform sheet (see gui-channel.ts's FRAME_SRCDOC) — so a bare
-   `<button>` or `<input>` renders here the way it will on the desktop. mac.css
-   pulls the design tokens in itself.
-
-   Deliberately nothing else: no reset beyond the shell's own layout. The frame
-   ships no global `box-sizing` either, so adding one here would make `pnpm dev`
-   disagree with the host, which is the one thing this file must not do. */
 @import "@justfiles/design/mac.css";
 
 html,
@@ -18,4 +10,19 @@ body {
 
 #app {
 	height: 100%;
+}
+
+#build-error {
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	max-height: 40vh;
+	overflow: auto;
+	white-space: pre-wrap;
+	margin: 0;
+	padding: 16px;
+	background: var(--window-bg);
+	color: var(--text);
+	border-top: 2px solid #c33;
 }

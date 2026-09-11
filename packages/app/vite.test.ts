@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type Plugin, resolveConfig, type ViteDevServer } from 'vite'
+import { type Plugin, resolveConfig } from 'vite'
 import { expect, test, vi } from 'vitest'
 import { devAi, kernelHost } from './vite.ts'
 
@@ -13,7 +13,7 @@ test('devAi is a serve-only backend descriptor', () => {
 	})
 })
 
-test('dev scans the GUI hidden behind the generated page', async () => {
+test('dev keeps GUI source out of the outer page module graph', async () => {
 	const config = await resolveConfig(
 		{
 			configFile: false,
@@ -27,7 +27,7 @@ test('dev scans the GUI hidden behind the generated page', async () => {
 		'serve'
 	)
 
-	expect(config.optimizeDeps.entries).toEqual(['src/gui.tsx'])
+	expect(config.optimizeDeps.entries).toEqual([])
 })
 
 test('build maps declared browser imports to pinned URLs', async () => {
@@ -63,38 +63,6 @@ test('kernelHost rejects unpinned browser imports', () => {
 			imports: { react: 'https://esm.sh/react' }
 		})
 	).toThrow('kernelHost() import must use a pinned https://esm.sh URL: react')
-})
-
-test('dev closes its host through the Vite lifecycle', async () => {
-	const pending = Promise.withResolvers<void>()
-	const close = vi.fn(() => pending.promise)
-	const middleware = Object.assign(vi.fn(), { close })
-	const use = vi.fn()
-	const plugin = (
-		kernelHost({
-			id: 'app.test',
-			name: 'Test',
-			app: 'src/app.ts',
-			gui: 'src/gui.ts'
-		}) as Plugin[]
-	).find(({ name }) => name === 'kernel-host-dev')
-	if (!plugin) throw new Error('missing kernel-host-dev plugin')
-	const configure = plugin.configureServer as (server: ViteDevServer) => Promise<() => void>
-	const after = await configure({
-		middlewares: { use },
-		ssrLoadModule: async () => ({ createDevServer: async () => middleware })
-	} as unknown as ViteDevServer)
-
-	await after()
-	expect(use).toHaveBeenCalledWith(middleware)
-	const closed = vi.fn()
-	const closing = (plugin.closeBundle as () => Promise<void>)().then(closed)
-	await Promise.resolve()
-	expect(close).toHaveBeenCalledOnce()
-	expect(closed).not.toHaveBeenCalled()
-	pending.resolve()
-	await closing
-	expect(closed).toHaveBeenCalledOnce()
 })
 
 test('watch builds emit the reducer and manifest again', async () => {

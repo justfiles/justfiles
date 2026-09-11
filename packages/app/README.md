@@ -113,11 +113,16 @@ import { ai } from '@justfiles/app/capabilities/ai'
 - `@justfiles/app/vite` — Vite build/dev plugin.
 - `@justfiles/app/capabilities/*` — capability contracts and broker helpers.
 
-`@justfiles/app/iframe` supplies the shared message-port host and the iframe boot script. The host
-still owns the iframe document, CSP, `sandbox` tokens, styles, and optional host UI. Use
-`form-action 'none'` when `allow-forms` is set so form event handlers work without permitting native
-form navigation. Boot with `guiUrl` to keep a hosted GUI's `import.meta.url`, or with `guiCode` when
-the host supplies private bytes.
+`@justfiles/app/iframe` supplies `mountAppFrame(container, guiCode, state, host)`. It owns the
+iframe document, fixed CSP, sandbox flags, design stylesheet, and message-port lifecycle. The
+returned `update(state)` keeps the snapshot current; `dispose()` closes the port and removes the
+frame. Reloading or reattaching boots a fresh document from the latest snapshot. Hosts provide
+`invoke`, optional `dialog`, `onError`, and `onMessage` callbacks and keep their own window and
+agent UI outside the frame. Title messages carry at most 200 characters; Escape messages let the
+Mac host close its attached sheet. `gui.mount` and app authoring APIs are unchanged.
+
+The lower-level `guiHost` and `guiFrameScript` remain available for hosted runners. Their `guiUrl`
+boot path preserves a hosted module's URL; the three app hosts load bundle bytes with `guiCode`.
 
 The iframe protects the host DOM, credentials, storage, and capability handles. Its CSP can block
 normal fetch and subresource paths, but it does not guarantee total network egress isolation.
@@ -137,11 +142,24 @@ Whatever the GUI uses must resolve to one React instance. For a bundled GUI,
 set `resolve.dedupe` in the app's Vite config. For a mapped GUI, pin React,
 its JSX runtime, and React DOM to the same version.
 
-In standalone dev (`pnpm dev`), the GUI is served as ordinary Vite
-browser modules — Vite owns the transform, HMR, source maps, and CSS, and
-a framework plugin you add works normally. The headless `app.ts` runs
-through Vite's `kernel` server environment, so app edits hot-reload
-without restarting the dev server.
+In standalone dev (`pnpm dev`), a watched production GUI build supplies `gui.js` to the same
+opaque-origin frame used by Frieren and Mac. CSS imports and imported assets are embedded, and
+mapped imports load their pinned URLs. Vite's connection stays in the outer page. Successful
+builds replace the frame using current reducer state; GUI-local input, selection, and scroll may
+reset. Build errors appear in the outer page while the last working GUI stays usable. The watcher
+closes with Vite, and storage writes do not trigger GUI rebuilds.
+
+Only the GUI environment is shared. The headless `app.ts` still runs through Vite's `kernel`
+server environment in Node and updates without restarting the dev server. Frieren uses browser
+Workers and Mac uses Bun Workers; host capabilities, native shortcuts, and downloads still need
+occasional host smoke checks around releases.
+
+For generated JavaScript, use a second `sandbox="allow-scripts"` iframe with `srcdoc` and a blob
+module. Local documents inherit the GUI CSP. Keep its client-free renderer separate from the app
+client and validate selected-text messages by `event.source` and shape. The shared policy allows
+this fixture without `unsafe-eval`, `allow-same-origin`, or extra network permissions. Remote
+frames, fetch, and native form navigation remain blocked. Import assets into the GUI or read
+installed files through capabilities; relative host URLs are unavailable inside the frame.
 
 The dev host persists its volume in `.justfiles/dev/` under the Vite project root.
 App-scoped files live in `data/<appId>/` and reducer state in `state/<appId>.json`

@@ -8,25 +8,21 @@
 // re-boots from the persisted snapshot on every load. True teardown is close().
 
 import type { Kernel } from '@justfiles/app'
-import { guiHost } from '@justfiles/app/iframe'
+import { mountAppFrame } from '@justfiles/app/iframe'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
 import { closeAllDialogs, closeDialog, openDialog } from './dialogs'
-import { FRAME_SRCDOC } from './gui-frame'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
 	id: string
 	wrapper: HTMLDivElement
-	frame: HTMLIFrameElement
+	gui?: ReturnType<typeof mountAppFrame>
 	errorEl: HTMLDivElement
 	unsubscribe?: () => void
 	unwatch?: () => void
 	unwatchBundle?: () => void
-	port?: MessagePort
 	postState?: (state: unknown) => void
-	boot?: () => void
-	pendingBoot?: boolean
 	local?: boolean
 	cancelled: boolean
 }
@@ -119,7 +115,7 @@ export function close(id: string): void {
 	stage.unsubscribe?.()
 	stage.unwatch?.()
 	stage.unwatchBundle?.()
-	stage.port?.close()
+	stage.gui?.dispose()
 	// Last window of a local app closed — reclaim its Web Worker. Removing the
 	// wrapper discards the iframe's browsing context, tearing down the GUI realm.
 	if (stage.local) terminateAppWorker(id)
@@ -153,38 +149,12 @@ function createStage(id: string): Stage {
 	wrapper.dataset.appId = id
 	wrapper.className = 'frn-stage'
 
-	// The GUI lives in an opaque-origin sandboxed iframe: `allow-scripts` runs the
-	// app but withholds `allow-same-origin`, so it gets no cookies, no host DOM,
-	// and cannot read the token. The port handed off at boot is its only host API.
-	// Data sent through that API is disclosed to the publisher because CSP
-	// `connect-src` does not control WebRTC. `allow-forms` lets an
-	// app handle submit events. The frame CSP blocks native form requests.
-	// `allow-downloads` lets an app hand a file to the user (app-draw's "Export
-	// image" — an `<a download>` on a blob URL); without it the browser drops the
-	// download silently. It grants no read access, so isolation holds.
-	const frame = document.createElement('iframe')
-	frame.className = 'frn-stage-frame'
-	frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-downloads')
-	frame.srcdoc = FRAME_SRCDOC
-	wrapper.appendChild(frame)
-
 	const errorEl = document.createElement('div')
 	errorEl.className = 'frn-stage-error'
 	errorEl.style.display = 'none'
 	wrapper.appendChild(errorEl)
 
-	const stage: Stage = { id, wrapper, frame, errorEl, cancelled: false }
-	// Detaching the iframe (window minimize → AppViewport unmount) discards its
-	// browsing context; reattaching reloads `srcdoc`. So (re)boot the GUI from the
-	// current persisted snapshot on every load, not just the first. `pendingBoot`
-	// latches the load so `boot()` runs exactly once per load — whether the load
-	// fires here or is caught by the tail of `bootLocal` — never both (a double boot
-	// would open two channels and close the live one, freezing the mounted GUI).
-	frame.addEventListener('load', () => {
-		stage.pendingBoot = true
-		stage.boot?.()
-	})
-	return stage
+	return { id, wrapper, errorEl, cancelled: false }
 }
 
 function setError(stage: Stage, message: string | null): void {
@@ -242,6 +212,14 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	const guiCode = new TextDecoder().decode(await installed.read(guiPath))
 	if (stage.cancelled) return
 
+	let current: unknown
+	let updated = false
+	stage.postState = (state) => {
+		current = state
+		updated = true
+		stage.gui?.update(state)
+	}
+
 	// Register both state sources before boot can read its first snapshot. A local
 	// dispatch pushes through the kernel. A server dispatch arrives as a remote
 	// write and only needs the watch to tell this window to read again.
@@ -264,43 +242,16 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	}
 	stage.unwatch = unwatchState
 
-	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel
-	// per boot: the host keeps `port1` and dispatches; the frame receives `port2`
-	// and mounts. `state()` resolves to the reducer's initialState for a never-run
-	// app, so the GUI always mounts on a non-null frame.
-	stage.boot = () => {
-		if (!stage.pendingBoot) return
-		stage.pendingBoot = false
-		void (async () => {
-			try {
-				stage.port?.close()
-				const { port1, port2 } = new MessageChannel()
-				stage.port = port1
-				stage.postState = guiHost(port1, {
-					invoke: (action) => kernel.dispatch(stage.id, action),
-					dialog: (request) => {
-						requestWindow({ type: 'focus', id: stage.id })
-						return openDialog(stage.id, request)
-					},
-					onError: (message) => {
-						if (!stage.cancelled) setError(stage, message)
-					}
-				})
-				// Wire the port before the read. A watch event that arrives during the read
-				// is queued on the channel and lands after the frame boots from its snapshot.
-				const snapshot = await kernel.state(stage.id)
-				if (stage.cancelled) {
-					port2.close()
-					return
-				}
-				stage.frame.contentWindow?.postMessage({ type: 'boot', guiCode, state: snapshot }, '*', [
-					port2
-				])
-			} catch (e) {
-				if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
-			}
-		})()
-	}
+	const snapshot = await kernel.state(stage.id)
+	if (stage.cancelled) return
+	stage.gui = mountAppFrame(stage.wrapper, guiCode, updated ? current : snapshot, {
+		invoke: (action) => kernel.dispatch(stage.id, action),
+		dialog: (request) => {
+			requestWindow({ type: 'focus', id: stage.id })
+			return openDialog(stage.id, request)
+		},
+		onError: (message) => setError(stage, message)
+	})
 
 	// Quiesce: a synced-down bundle change (REMOTE_SOURCE write to
 	// /applications/<id>/*) must reboot the GUI. Watch the manifest — the atomic
@@ -327,8 +278,5 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		})
 	})
 
-	// The frame may have loaded during the awaits above; `boot()` is a no-op until
-	// a load has latched `pendingBoot`, and self-guards so a load caught here and
-	// one caught by the listener never double-boot the same document.
-	stage.boot()
+	if (stage.cancelled) stage.unwatchBundle()
 }

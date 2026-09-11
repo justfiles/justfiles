@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { relative, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Plugin, PluginOption } from 'vite'
 import { build, createRunnableDevEnvironment } from 'vite'
@@ -7,6 +7,7 @@ import type { AppManifest } from './app.ts'
 import type { AiBackend } from './capabilities/ai/dev.ts'
 import { validateImportMap } from './capabilities/devkit/imports.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
+import { guiBuild, watchGui } from './vite.gui.ts'
 import { localStore } from './vite.local-store.ts'
 
 export type { AiBackend, GenerateText } from './capabilities/ai/dev.ts'
@@ -16,24 +17,10 @@ const DEV_STYLE_ID = '\0kernel-host:dev-style'
 const DEV_STYLE_CSS = `/@fs/${new URL('./dev-server.css', import.meta.url).pathname}`
 const DEV_BOOTSTRAP_URL = '/_kernel-host/bootstrap.js'
 const DEV_BOOTSTRAP_ID = '\0kernel-host:bootstrap'
-const VIRTUAL_GUI_ID = 'virtual:justfiles-app/gui'
-const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 
 export function devAi(backend: AiBackend = 'auto'): Plugin {
 	return { name: 'kernel-host:ai', apply: 'serve', api: { backend } }
 }
-
-// `kernelHost` is the app package's only build wiring. It has two modes:
-//
-//   serve  — local dev only. Boots an in-memory kernel that emulates the
-//            real host (frieren), via ./dev-server loaded through vite.
-//   build  — emits the production artifact: Vite builds the browser `gui.js`;
-//            closeBundle emits the headless `app.js` and manifest. Hosts seed
-//            built-ins by reading the emitted files directly.
-//
-// Only bare specifiers + type-only imports here: the config loader
-// externalizes this plugin and resolves it with native Node, which can't
-// load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
 
 // Compile the reducer (`app.js`) with Vite itself, so this plugin carries no bundler
 // of its own — the app already has Vite, and Vite ships no esbuild. `configFile: false`
@@ -105,59 +92,25 @@ async function readManifestCapabilities(
 	}
 }
 
-function devBootstrapEntry(): string {
-	return `import { gui as initialGui } from ${JSON.stringify(VIRTUAL_GUI_ID)}
-
-const root = document.getElementById('app')
-if (!root) throw new Error('missing app root')
-let latestState = await fetch('/_state').then((r) => r.json())
-const transport = {
-	invoke: (action) =>
-		fetch('/_dispatch', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify(action)
-		}).then(async (r) => {
-			if (!r.ok) throw new Error(await r.text())
-			return r.json()
-		}),
-	subscribe: (onState) => {
-		const es = new EventSource('/_subscribe')
-		es.onmessage = (e) => {
-			latestState = JSON.parse(e.data)
-			onState(latestState)
-		}
-		return () => es.close()
-	}
-}
-let instance = initialGui.mount(root, latestState, { transport })
-
-if (import.meta.hot) {
-	import.meta.hot.accept(${JSON.stringify(VIRTUAL_GUI_ID)}, async (next) => {
-		if (!next?.gui) return
-		await instance.unmount()
-		instance = next.gui.mount(root, latestState, { transport })
-	})
-	import.meta.hot.dispose(() => {
-		void instance.unmount()
-	})
-}
-`
-}
-
 export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
 	const imports = validateImportMap(opts.imports, 'kernelHost()')
 	const appEntry = resolve(root, opts.app)
 	const guiEntry = resolve(root, opts.gui)
-	const guiPath = relative(root, guiEntry).split('\\').join('/')
+	const { plugins: guiPlugins, ...guiConfig } = guiBuild(opts.id, guiEntry, imports)
+
 	let emitted = false
+	let production = true
+	let closeGui: (() => Promise<void>) | undefined
 	let closeDevServer: (() => Promise<void>) | undefined
 	return [
 		{
 			name: 'kernel-host',
 			buildStart() {
 				emitted = false
+			},
+			configResolved(config) {
+				production = config.command === 'build'
 			},
 			config(_, env) {
 				if (env.command === 'serve') {
@@ -174,9 +127,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 								deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/.justfiles/dev/**']
 							}
 						},
-						// The generated page does not expose the GUI to Vite's startup scan. Scan its
-						// real entry once so coupled dependencies optimize in the same pass.
-						optimizeDeps: { entries: [guiPath] },
+						optimizeDeps: { entries: [] },
 						environments: {
 							kernel: {
 								consumer: 'server',
@@ -188,46 +139,26 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 						}
 					}
 				}
-				return {
-					base: './',
-					// Bundled packages often pick a dev or production branch from NODE_ENV.
-					// Do not ship their development checks and warnings in gui.js.
-					define: { 'process.env.NODE_ENV': JSON.stringify('production') },
-					build: {
-						outDir: 'dist',
-						emptyOutDir: true,
-						// Library mode: preserve the entry's `export { gui }` (an app
-						// build tree-shakes it away — the sdk is sideEffects:false).
-						// The SDK and unmapped packages stay in gui.js. Mapped browser packages
-						// remain ESM imports whose specifiers Rollup rewrites to pinned URLs.
-						lib: {
-							entry: guiEntry,
-							formats: ['es'],
-							fileName: () => 'gui.js'
-						},
-						rollupOptions:
-							Object.keys(imports).length > 0
-								? { external: Object.keys(imports), output: { paths: imports } }
-								: undefined
-					}
-				}
+				return guiConfig
 			},
 			resolveId(id) {
 				if (id === DEV_STYLE_URL) return DEV_STYLE_ID
 				if (id === DEV_BOOTSTRAP_URL) return DEV_BOOTSTRAP_ID
-				if (id === VIRTUAL_GUI_ID) return RESOLVED_VIRTUAL_GUI_ID
 				return null
 			},
 			load(id) {
 				if (id === DEV_STYLE_ID) return `import ${JSON.stringify(DEV_STYLE_CSS)}`
-				if (id === DEV_BOOTSTRAP_ID) return devBootstrapEntry()
-				if (id === RESOLVED_VIRTUAL_GUI_ID) {
-					return `export { gui } from ${JSON.stringify(`/${guiPath}`)}\n`
+				if (id === DEV_BOOTSTRAP_ID) {
+					const file = new URL(
+						import.meta.url.endsWith('.ts') ? './dev-frame.ts' : './dev-frame.js',
+						import.meta.url
+					)
+					return `import ${JSON.stringify(`/@fs/${file.pathname}`)}`
 				}
 				return null
 			},
 			async closeBundle() {
-				if (emitted) return
+				if (!production || emitted) return
 				emitted = true
 				const out = resolve(root, 'dist')
 				mkdirSync(out, { recursive: true })
@@ -253,51 +184,31 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 			name: 'kernel-host-dev',
 			apply: 'serve',
 			async configureServer(server) {
-				const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
-					createDevServer: typeof createDevServer
-				}
-				const middleware = await mod.createDevServer(server, opts)
-				closeDevServer = middleware.close
-				return () => {
-					server.middlewares.use(middleware)
+				closeGui = await watchGui(server, opts)
+				try {
+					const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
+						createDevServer: typeof createDevServer
+					}
+					const middleware = await mod.createDevServer(server, opts)
+					closeDevServer = middleware.close
+					return () => {
+						server.middlewares.use(middleware)
+					}
+				} catch (error) {
+					await closeGui()
+					closeGui = undefined
+					throw error
 				}
 			},
 			async closeBundle() {
 				const close = closeDevServer
 				closeDevServer = undefined
+				await closeGui?.()
+				closeGui = undefined
 				await close?.()
 			}
 		},
-		{
-			// `import './x.css'` in a GUI is extracted by the lib build into a side
-			// asset the host never links. Fold every CSS asset back into gui.js as a
-			// runtime <style> so the bundle stays self-contained (browser.ts) and the
-			// authored import reads like any web project. Build-only — `vite dev`
-			// injects CSS itself.
-			name: 'kernel-host-css',
-			apply: 'build',
-			enforce: 'post',
-			generateBundle(_, bundle) {
-				let css = ''
-				for (const [file, output] of Object.entries(bundle)) {
-					if (output.type === 'asset' && file.endsWith('.css')) {
-						css +=
-							typeof output.source === 'string'
-								? output.source
-								: new TextDecoder().decode(output.source)
-						delete bundle[file]
-					}
-				}
-				if (!css) return
-				const entry = Object.values(bundle).find((o) => o.type === 'chunk' && o.isEntry)
-				if (entry?.type !== 'chunk') return
-				const selector = JSON.stringify(`style[data-app-style="${opts.id}"]`)
-				entry.code =
-					`(function(){if(typeof document==="undefined"||document.querySelector(${selector}))return;` +
-					`var s=document.createElement("style");s.setAttribute("data-app-style",${JSON.stringify(opts.id)});` +
-					`s.textContent=${JSON.stringify(css)};document.head.appendChild(s)})();\n${entry.code}`
-			}
-		},
+		...(guiPlugins ?? []),
 		localStore()
 	]
 }
