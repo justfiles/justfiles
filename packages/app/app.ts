@@ -51,10 +51,10 @@ type CapabilityRequest<
 	Events = unknown
 > = ReturnType<CapabilityFactory<Id, Methods, Events>>
 type CapabilityRequests = Record<string, CapabilityRequest>
-type NoCapabilities = Record<string, never>
+type NoCapabilities = Record<never, never>
 type NoProcedures = Record<string, never>
 
-// Per-capability method map, used to type `t.cmd`/`t.fromResult`/`app.invoke`.
+// Per-capability method map, used to type `t.cmd`/`t.fromResult`/`app.cap`.
 type MethodsOf<C> = C extends CapabilityRequest<string, infer M, infer _S> ? M : never
 // Per-capability stream map (Part D), used to type `sub.capability`/`t.fromEvent`.
 type StreamsOf<C> = C extends CapabilityRequest<string, infer _M, infer S> ? S : never
@@ -131,9 +131,9 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: { message: 
 
 // Per-capability method args/output, derived from the contract interface. A
 // method is ANY function `(...args) => R`; `MethodArgs` is its full positional
-// argument tuple (spread into `t.cmd`/`app.invoke`) and `MethodOutput` is
+// argument tuple (spread into `t.cmd`/`app.cap` methods) and `MethodOutput` is
 // `Awaited<R>` — the capability boundary is always async, so a synchronous
-// contract return still arrives as a Promise (`invoke`) or Result (`fromResult`).
+// contract return still arrives as a Promise (`app.cap`) or Result (`fromResult`).
 type MethodArgs<M, K extends keyof M> = M[K] extends (...args: infer A) => unknown ? A : never
 type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => infer R
 	? Awaited<R>
@@ -226,31 +226,24 @@ export interface Subs<Caps extends CapabilityRequests> {
 // tool). Optional — an app with none still works through the dispatch default
 // (a plain agent dispatch resolves with the settled state).
 
-// What a procedure receives to drive the app. Data-only against the kernel:
-// `dispatch` and `read` round-trip through the kernel (which owns trust), so a
-// procedure stays imperative without ever holding a capability or touching
-// reducer purity. Procedures are never serialized — they suspend at `settled`.
+// Procedures call host services through the kernel; reducers stay pure.
 export interface AppHandle<State, Caps extends CapabilityRequests = NoCapabilities> {
 	readonly state: State
 	dispatch(message: Message): Promise<{ seq: number }>
 	settled(seq: number, opts?: { timeout?: number }): Promise<State>
-	// Kernel-mediated, scope-checked capability invocation — the procedure-side
-	// parallel to the reducer's `cmd`: `cmd` routes the result back INTO state,
-	// `invoke` returns it TO the caller. `capability` is the app's LOCAL name;
-	// the kernel resolves the trusted id + scopes; `args` and the result are
-	// typed from the contract (same machinery as `cmd`).
-	invoke<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
-		capability: C,
-		method: M,
-		...args: MethodArgs<MethodsOf<Caps[C]>, M>
-	): Promise<MethodOutput<MethodsOf<Caps[C]>, M>>
+	// Local capability names. Calls return to the caller; the kernel checks scopes.
+	// `then` is reserved so services cannot be mistaken for promises.
+	readonly cap: {
+		readonly [C in keyof Caps & string]: { readonly then?: never } & {
+			readonly [M in Exclude<keyof MethodsOf<Caps[C]> & string, 'then'>]: (
+				...args: MethodArgs<MethodsOf<Caps[C]>, M>
+			) => Promise<MethodOutput<MethodsOf<Caps[C]>, M>>
+		}
+	}
 }
 
-// The Caps-erased handle the kernel builds and forwards across the sandbox
-// boundary (RPC / postMessage). The infra calls `invoke` with plain strings
-// (the kernel resolves the trusted id + scopes at runtime); the bundle re-types
-// it as the per-app `AppHandle<State, Caps>` so the typed capability surface
-// lives at the author's `run`, not in this generic plumbing.
+// The sandbox transport carries generic calls. The SDK builds the typed
+// `AppHandle.cap` inside the sandbox, so no proxy crosses the boundary.
 export interface RawAppHandle {
 	readonly state: unknown
 	dispatch(message: Message): Promise<{ seq: number }>
@@ -312,10 +305,8 @@ export interface App<
 	// public edge as `(params) => Promise<State>`.
 	readonly __edges?: Edges_
 	dispatch: (message: Message, ctx: RuntimeContext<State>) => Promise<DispatchResult<State>>
-	// Run a declared procedure: validate params, then call its `run` with the
-	// handle. The kernel hands in a `RawAppHandle` across the (dynamic) sandbox
-	// boundary; the bundle sees it as the typed `AppHandle<State, Caps>`.
-	runProcedure: (name: string, params: unknown, app: AppHandle<State, Caps>) => Promise<unknown>
+	// Validate params and build the typed handle before running the procedure.
+	runProcedure: (name: string, params: unknown, app: RawAppHandle) => Promise<unknown>
 	// The streams the given state declares (Part D). Pure: the kernel calls this
 	// after every commit, diffs the result against the running set, and starts/
 	// stops host streams accordingly. Empty (`[]`) when the app declares none.

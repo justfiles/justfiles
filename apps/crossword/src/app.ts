@@ -269,7 +269,7 @@ export const app = defineApp({
 			async run({ theme }, app) {
 				const t = theme.trim()
 				if (!t) throw new Error('theme is required')
-				const generate: Ai = { generateText: (input) => app.invoke('ai', 'generateText', input) }
+				const generate = app.cap.ai
 				const seeds = await generateSeeds(generate, t)
 				if (seeds.length === 0) throw new Error('AI returned no usable words')
 				const built = buildPuzzle(seeds, SIZE)

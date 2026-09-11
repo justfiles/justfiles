@@ -82,7 +82,7 @@ export const SUB_EVENT_PREFIX = '__sub/'
 
 export function defineApp<
 	State,
-	Caps extends Capabilities = Record<string, never>,
+	Caps extends Capabilities = Record<never, never>,
 	Procs extends ProcedureDefs<State, Caps> = Record<string, never>,
 	E extends Record<string, Edge<State>> = Record<string, never>
 >(spec: AppSpec<State, Caps, Procs, E>): App<State, Caps, Procs, E> {
@@ -226,7 +226,23 @@ export function defineApp<
 				throw new Error(`invalid params for ${name}: ${r.issues.map((i) => i.message).join('; ')}`)
 			// The kernel can't default `state` to `init` (init lives here, in the
 			// bundle), so fold it in — matching the machine's `state ?? init`.
-			const handle = app.state == null ? { ...app, state: machine.init } : app
+			const handle = {
+				state: app.state ?? machine.init,
+				dispatch: app.dispatch,
+				settled: app.settled,
+				cap: Object.fromEntries(
+					Object.keys(declaredCapabilities).map((name) => [
+						name,
+						new Proxy(Object.create(null), {
+							get(_target, method) {
+								// A service must not become a thenable when awaited or returned.
+								if (typeof method !== 'string' || method === 'then') return undefined
+								return (...args: unknown[]) => app.invoke(name, method, ...args)
+							}
+						})
+					])
+				)
+			} as AppHandle<State, Caps>
 			return def.run(r.value as never, handle)
 		},
 		// A pure reduce over `state` via the machine: it returns the next state and

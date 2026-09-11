@@ -365,7 +365,7 @@ procedures: (p) => ({
 		audience: 'both',
 		schema: v.object({ prompt: v.string() }),
 		async run({ prompt }, app) {
-			const { text } = await app.invoke('ai', 'generateText', { prompt })
+			const { text } = await app.cap.ai.generateText({ prompt })
 			const { seq } = await app.dispatch({
 				type: 'generated',
 				params: { text }
@@ -386,7 +386,7 @@ The `app` handle provides every procedure-side API:
 | API | Meaning |
 | --- | --- |
 | `app.state` | State snapshot supplied when the procedure starts |
-| `app.invoke(capability, method, ...args)` | Call a declared capability and return its value |
+| `app.cap.<name>.<method>(...args)` | Call a declared capability and return its value |
 | `app.dispatch({ type, params })` | Dispatch an edge; returns `{ seq }` |
 | `app.settled(seq, { timeout? })` | Wait for that commit, queued work, and commands to become idle |
 
@@ -552,12 +552,21 @@ capabilities: {
 }
 ```
 
-The object key is the app-local name passed to `t.cmd`, `t.fromResult`,
-`sub.capability`, and `app.invoke`. The factory records the platform capability id and requested
+The object key is the app-local name used under `app.cap` and passed to `t.cmd`, `t.fromResult`,
+and `sub.capability`. The factory records the platform capability id and requested
 scopes; the host decides whether the app is allowed to use it.
 
-Use `t.cmd` when the result belongs in state. Use `app.invoke` in a procedure when the result belongs
+Use `t.cmd` when the result belongs in state. Use `app.cap` in a procedure when the result belongs
 to that caller or is one step in a workflow.
+
+Only declared capabilities appear under `app.cap`. Method arguments and results are typed from the
+contract; every call returns a promise. Local aliases work: declaring
+`files: volume({ scopes: ['app'] })` exposes `app.cap.files.readFile('/note.txt')`. Streams such as
+`volume.watch` use `subscriptions`, not `app.cap`. The SDK forwards calls through the kernel, which
+checks the app's declared scopes.
+
+The method name `then` is reserved under `app.cap`, even if a capability contract declares it.
+This prevents JavaScript from treating a service as a promise when it is awaited or returned.
 
 Capability failures use:
 
