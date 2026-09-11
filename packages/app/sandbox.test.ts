@@ -1,7 +1,9 @@
 import { Worker } from 'node:worker_threads'
+import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import type { Message, RawAppHandle } from './index.ts'
 import { sandboxClient, sandboxWorkerSource } from './sandbox.ts'
+import procedureSource from './test-bundle/procedure.ts?raw'
 
 // Boots a real `node:worker_thread` from `sandboxWorkerSource(..., 'node')` and
 // drives it through `sandboxClient` — the exact Node-host path — so the shared
@@ -25,8 +27,11 @@ function dataUrl(source: string): string {
 	return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
 }
 
-function boot(): { sandbox: ReturnType<typeof sandboxClient>['sandbox']; worker: Worker } {
-	const worker = new Worker(new URL(dataUrl(sandboxWorkerSource(dataUrl(APP), 'node'))))
+function boot(source = APP): {
+	sandbox: ReturnType<typeof sandboxClient>['sandbox']
+	worker: Worker
+} {
+	const worker = new Worker(new URL(dataUrl(sandboxWorkerSource(dataUrl(source), 'node'))))
 	const { sandbox, fail } = sandboxClient({
 		post: (message) => worker.postMessage(message),
 		onMessage: (handler) => worker.on('message', handler)
@@ -58,6 +63,40 @@ test('node worker sandbox: procedure host-call bridge', async () => {
 		expect(await sandbox.runProcedure?.('echo', { value: 'hi' }, handle)).toEqual({
 			echoed: 'test.ping:hi'
 		})
+	} finally {
+		await worker.terminate()
+	}
+})
+
+test('app.cap in a bundled procedure forwards through the worker host-call bridge', async () => {
+	const code = buildSync({
+		stdin: {
+			contents: procedureSource,
+			loader: 'ts',
+			resolveDir: new URL('./test-bundle', import.meta.url).pathname
+		},
+		bundle: true,
+		write: false,
+		format: 'esm'
+	}).outputFiles[0].text
+	const { sandbox, worker } = boot(code)
+	const handle: RawAppHandle = {
+		state: undefined,
+		dispatch: async () => ({ seq: 1 }),
+		settled: async () => undefined,
+		invoke: async (capability, method, ...args) => {
+			expect([capability, method, ...args]).toEqual(['files', 'readFile', '/note.txt'])
+			return new TextEncoder().encode('hello')
+		}
+	}
+	try {
+		expect(await sandbox.runProcedure?.('readFile', { path: '/note.txt' }, handle)).toBe('hello')
+		handle.invoke = async () => {
+			throw new Error('read denied')
+		}
+		await expect(sandbox.runProcedure?.('readFile', { path: '/note.txt' }, handle)).rejects.toThrow(
+			'read denied'
+		)
 	} finally {
 		await worker.terminate()
 	}

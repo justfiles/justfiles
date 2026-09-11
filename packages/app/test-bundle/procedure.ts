@@ -2,11 +2,8 @@ import * as v from 'valibot'
 import { volume } from '../capabilities/volume/index.ts'
 import { defineApp } from '../sdk.ts'
 
-// Part C sample: the same pure-core `refresh` edge as `core.ts`, plus
-// procedures (the imperative facade) exercising all three handle methods —
-// `read` (caller-scoped capability read), `dispatch` + `settled` (drive the
-// reducer and report by value), and an `audience: 'gui'` procedure that the
-// kernel keeps off the agent's tool surface.
+// Procedures can read capabilities without committing, or dispatch and wait for
+// reducer updates. Includes a GUI-only procedure to test action visibility.
 type State = {
 	files: Array<{ path: string }>
 	loading: boolean
@@ -19,13 +16,13 @@ const decoder = new TextDecoder()
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { volume: volume({ scopes: ['system'] }) },
+	capabilities: { files: volume({ scopes: ['system'] }) },
 	update: (t) => ({
 		refresh: t.on(v.object({}), (state) => [
 			{ ...state, loading: true, error: null },
-			t.cmd('volume', 'scan', { path: '/', recursive: true }).to('filesLoaded')
+			t.cmd('files', 'scan', { path: '/', recursive: true }).to('filesLoaded')
 		]),
-		filesLoaded: t.fromResult('volume', 'scan', (state, r) =>
+		filesLoaded: t.fromResult('files', 'scan', (state, r) =>
 			r.ok
 				? {
 						...state,
@@ -41,9 +38,8 @@ export const app = defineApp({
 		readFile: p.procedure({
 			description: 'Read a file as text.',
 			schema: v.object({ path: v.string() }),
-			// `invoke` is typed from the volume contract — returns Uint8Array, no cast.
 			async run({ path }, app) {
-				return decoder.decode(await app.invoke('volume', 'readFile', path))
+				return decoder.decode(await app.cap.files.readFile(path))
 			}
 		}),
 		// drive the reducer, then report the outcome by value (the settled count)

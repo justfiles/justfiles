@@ -268,7 +268,7 @@ export function kernel({ fs, sandbox, capabilities, fetchAsset }: System): Kerne
 		return cached
 	}
 
-	// Kernel-mediated capability invocation for a procedure's `app.invoke(...)`.
+	// Kernel-mediated capability invocation for a procedure's `app.cap` methods.
 	// Same trust boundary as the command executor: the app names a LOCAL
 	// capability, the kernel resolves the trusted id + declared scopes — never
 	// the isolate.

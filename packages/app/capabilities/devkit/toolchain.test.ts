@@ -126,19 +126,25 @@ export const gui = defineGUI({ mount: (el, state) => (void app, { update() {}, u
 		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	}, 30_000)
 
-	test('a declared capability compiles and types its invoke methods', async () => {
+	test('declared capabilities compile with typed methods under app.cap', async () => {
 		// Authors declare a capability with the real factory, not a `{ id, scopes }`
 		// stub — so it ships in the draft runtime AND carries the method contract.
 		const src = `import { defineApp } from '@justfiles/app'
 import { volume } from '@justfiles/app/capabilities/volume'
+import { notify } from '@justfiles/app/capabilities/notify'
 import * as v from 'valibot'
 export const app = defineApp({
 	init: {},
-	capabilities: { volume: volume({ scopes: ['app'] }) },
+	capabilities: { files: volume({ scopes: ['app'] }), notify: notify({ scopes: [] }) },
 	update: () => ({}),
 	procedures: (p) => ({
 		go: p.procedure({ description: '', schema: v.object({}), async run(_, app) {
-			await app.invoke('volume', 'mkdir', '/Notes')
+			await app.cap.files.mkdir('/Notes')
+			await app.cap.files.mkdir('/Notes', { recursive: true })
+			const bytes: Uint8Array = await app.cap.files.readFile('/Notes/a.txt')
+			await app.cap.files.writeFile('/Notes/b.txt', bytes, { parents: false })
+			const sent: Promise<void> = app.cap.notify.notify({ id: 'saved', kind: 'info', title: 'Saved', body: '' })
+			await sent
 			return app.state
 		} })
 	})
@@ -151,13 +157,11 @@ export const app = defineApp({
 		// Compiles (the factory resolves from the draft runtime, not node_modules)…
 		const compiled = await toolchain.compile(input)
 		expect(compiled.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
-		// …and typechecks: `invoke`'s method arg resolves to the volume contract, so
-		// `'mkdir'` is valid (a stub would collapse it to `never` → TS2345).
 		const { diagnostics } = await toolchain.typecheck(input)
 		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	}, 30_000)
 
-	test('an unknown capability method is a type error', async () => {
+	test('app.cap rejects undeclared services, streams, invalid args and invalid result types', async () => {
 		const src = `import { defineApp } from '@justfiles/app'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
@@ -167,8 +171,32 @@ export const app = defineApp({
 	update: () => ({}),
 	procedures: (p) => ({
 		go: p.procedure({ description: '', schema: v.object({}), async run(_, app) {
-			await app.invoke('volume', 'nope', '/Notes')
+			// @ts-expect-error Unknown method.
+			await app.cap.volume.nope('/Notes')
+			// @ts-expect-error Undeclared capability.
+			await app.cap.ai.generateText({ prompt: 'hello' })
+			// @ts-expect-error Streams use subscriptions.
+			app.cap.volume.watch({ path: '/Notes' })
+			// @ts-expect-error A path is required.
+			app.cap.volume.readFile()
+			// @ts-expect-error Writes take bytes.
+			app.cap.volume.writeFile('/Notes/a.txt', 'hello')
+			// @ts-expect-error Reads return bytes.
+			const text: string = await app.cap.volume.readFile('/Notes/a.txt')
+			// @ts-expect-error Calls always return promises.
+			const bytes: Uint8Array = app.cap.volume.readFile('/Notes/a.txt')
+			// @ts-expect-error Generic invocation belongs to the internal transport.
+			app.invoke('volume', 'readFile', '/Notes/a.txt')
 			return app.state
+		} })
+	})
+})
+defineApp({
+	init: {},
+	procedures: (p) => ({
+		go: p.procedure({ schema: v.object({}), run(_, app) {
+			// @ts-expect-error No capabilities were declared.
+			return app.cap.volume
 		} })
 	})
 })`
@@ -177,7 +205,7 @@ export const app = defineApp({
 			entries: { app: 'src/app.ts' },
 			tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts' })
 		})
-		expect(diagnostics.some((d) => d.code === 'TS2345')).toBe(true)
+		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	}, 30_000)
 
 	test('typecheck reports a type error against the draft file', async () => {
