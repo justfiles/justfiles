@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.16.0...app-v0.17.0) (2026-09-11)
+
+
+### Features
+
+* **app:** add foreground delegated agent tasks ([#650](https://github.com/xiaoxinghu/justfiles/issues/650)) ([c95340c](https://github.com/xiaoxinghu/justfiles/commit/c95340c6ba22f40e1d5d63f9c3ad69b7acf3ee20))
+
 ## [0.16.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.15.0...app-v0.16.0) (2026-09-11)
 
 

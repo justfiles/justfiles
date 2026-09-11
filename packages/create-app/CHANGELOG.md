@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2](https://github.com/xiaoxinghu/justfiles/compare/create-app-v0.3.1...create-app-v0.3.2) (2026-09-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @justfiles/app bumped from ^0.16.0 to ^0.17.0
+
 ## [0.3.1](https://github.com/xiaoxinghu/justfiles/compare/create-app-v0.3.0...create-app-v0.3.1) (2026-09-11)
 
 
