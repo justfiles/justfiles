@@ -565,6 +565,9 @@ contract; every call returns a promise. Local aliases work: declaring
 `volume.watch` use `subscriptions`, not `app.cap`. The SDK forwards calls through the kernel, which
 checks the app's declared scopes.
 
+The method name `then` is reserved under `app.cap`, even if a capability contract declares it.
+This prevents JavaScript from treating a service as a promise when it is awaited or returned.
+
 Capability failures use:
 
 ```text

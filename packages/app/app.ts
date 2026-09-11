@@ -232,9 +232,10 @@ export interface AppHandle<State, Caps extends CapabilityRequests = NoCapabiliti
 	dispatch(message: Message): Promise<{ seq: number }>
 	settled(seq: number, opts?: { timeout?: number }): Promise<State>
 	// Local capability names. Calls return to the caller; the kernel checks scopes.
+	// `then` is reserved so services cannot be mistaken for promises.
 	readonly cap: {
 		readonly [C in keyof Caps & string]: {
-			readonly [M in keyof MethodsOf<Caps[C]> & string]: (
+			readonly [M in Exclude<keyof MethodsOf<Caps[C]> & string, 'then'>]: (
 				...args: MethodArgs<MethodsOf<Caps[C]>, M>
 			) => Promise<MethodOutput<MethodsOf<Caps[C]>, M>>
 		}

@@ -208,6 +208,28 @@ defineApp({
 		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	}, 30_000)
 
+	test('app.cap reserves then even when the capability contract declares it', async () => {
+		const src = `import { defineApp } from '@justfiles/app'
+import { defineCapability } from '@justfiles/app/capabilities'
+import * as v from 'valibot'
+const service = defineCapability<'service', { then(): string; read(): string }>('service')
+export const app = defineApp({
+	init: {},
+	capabilities: { service: service({ scopes: [] }) },
+	procedures: (p) => ({
+		go: p.procedure({ schema: v.object({}), async run(_, app) {
+			const service = await app.cap.service
+			const result: Promise<string> = service.read()
+			// @ts-expect-error Reserved so services are not treated as promises.
+			app.cap.service.then()
+			return result
+		} })
+	})
+})`
+		const { diagnostics } = await toolchain.typecheck(project({ 'app.ts': src }))
+		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+	}, 30_000)
+
 	test('typecheck reports a type error against the draft file', async () => {
 		const BAD = `export const app = { init: { count: 0 } }
 const wrong: number = 'not a number'
