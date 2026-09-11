@@ -152,7 +152,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const guiEntry = resolve(root, opts.gui)
 	const guiPath = relative(root, guiEntry).split('\\').join('/')
 	let emitted = false
-	let closeDevServer: (() => void) | undefined
+	let closeDevServer: (() => Promise<void>) | undefined
 	return [
 		{
 			name: 'kernel-host',
@@ -167,6 +167,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
+						server: { watch: { ignored: ['**/.justfiles/dev/**'] } },
 						// The generated page does not expose the GUI to Vite's startup scan. Scan its
 						// real entry once so coupled dependencies optimize in the same pass.
 						optimizeDeps: { entries: [guiPath] },
@@ -245,19 +246,20 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 		{
 			name: 'kernel-host-dev',
 			apply: 'serve',
-			configureServer(server) {
-				return async () => {
-					const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
-						createDevServer: typeof createDevServer
-					}
-					const middleware = await mod.createDevServer(server, opts)
-					closeDevServer = middleware.close
+			async configureServer(server) {
+				const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
+					createDevServer: typeof createDevServer
+				}
+				const middleware = await mod.createDevServer(server, opts)
+				closeDevServer = middleware.close
+				return () => {
 					server.middlewares.use(middleware)
 				}
 			},
-			closeBundle() {
-				closeDevServer?.()
+			async closeBundle() {
+				const close = closeDevServer
 				closeDevServer = undefined
+				await close?.()
 			}
 		},
 		{
