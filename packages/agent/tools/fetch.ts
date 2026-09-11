@@ -20,6 +20,7 @@ export type Fetch = (
 const READABLE_MD_ENDPOINT = 'https://readable.page/md'
 const DEFAULT_MAX_LENGTH = 50_000
 const DEFAULT_TIMEOUT_MS = 30_000
+const MAX_PAGE_BYTES = 1024 * 1024
 
 // Strip HTML down to readable-ish plain text (direct-fetch fallback only).
 function htmlToText(html: string): string {
@@ -138,7 +139,10 @@ export function createFetchTool(
 					.filter(Boolean)
 					.join('\n')
 				const text = out ? `${header}\n\n${out}` : header
-				return { content: [{ type: 'text' as const, text }], details: { ...details, truncated } }
+				return {
+					content: [{ type: 'text' as const, text }],
+					details: { ...details, truncated: truncated || details.sourceTruncated === true }
+				}
 			}
 
 			// ---- Raw mode: direct fetch, unmodified body ----------------------
@@ -213,7 +217,10 @@ export function createFetchTool(
 			if (fbCancelled) return { content: [{ type: 'text', text: 'Cancelled' }], details: {} }
 
 			const fbContentType = fb.headers.get('content-type') ?? ''
-			const fbBody = await fb.text()
+			const source = options.direct
+				? await readPageBody(fb)
+				: { text: await fb.text(), truncated: false }
+			const fbBody = source.text
 			const isHtml = /text\/html|application\/xhtml\+xml/i.test(fbContentType)
 			const converted = isHtml && fbBody.length > 0
 			const body = converted ? htmlToText(fbBody) : fbBody
@@ -224,6 +231,7 @@ export function createFetchTool(
 					'Format: direct fetch (readable.page extraction failed)',
 					`Status: ${fb.status} ${fb.statusText}`,
 					`Content-Type: ${fbContentType || '(none)'}`,
+					source.truncated ? `Response truncated at ${MAX_PAGE_BYTES} bytes` : null,
 					converted ? 'Body: HTML converted to text' : null
 				],
 				body,
@@ -234,9 +242,31 @@ export function createFetchTool(
 					status: fb.status,
 					contentType: fbContentType,
 					converted,
+					sourceTruncated: source.truncated,
 					bytes: fbBody.length
 				}
 			)
 		}
+	}
+}
+
+async function readPageBody(response: Response): Promise<{ text: string; truncated: boolean }> {
+	const reader = response.body?.getReader()
+	if (!reader) return { text: '', truncated: false }
+	const decoder = new TextDecoder()
+	let text = ''
+	let bytes = 0
+	try {
+		while (bytes < MAX_PAGE_BYTES) {
+			const { value, done } = await reader.read()
+			if (done) return { text: text + decoder.decode(), truncated: false }
+			const chunk = value.subarray(0, MAX_PAGE_BYTES - bytes)
+			text += decoder.decode(chunk, { stream: true })
+			bytes += chunk.byteLength
+		}
+		return { text: text + decoder.decode(), truncated: true }
+	} finally {
+		await reader.cancel().catch(() => {})
+		reader.releaseLock()
 	}
 }

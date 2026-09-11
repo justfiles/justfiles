@@ -123,7 +123,8 @@ function networkFallback(getToken: GetToken): Capabilities {
 				// first mutation after an idle window. The close handler clears `shared`,
 				// so a cleared singleton means the socket broke: reconnect and retry once.
 				// A still-live socket means a genuine capability error — rethrow it.
-				if (shared) throw error
+				// A lost reply can follow completed agent work; replay would repeat its effects.
+				if (shared || (call.capability === 'ai' && call.method === 'runAgent')) throw error
 				guard(call)
 				return (await sharedSocket(getToken)).caps.invoke(call)
 			}

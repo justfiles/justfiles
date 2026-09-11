@@ -35,7 +35,7 @@ Each invocation starts with fresh messages and the prompt supplied by the app. I
 
 There is no workspace argument or additional filesystem policy. A path in the prompt guides the task; the agent can explore other paths and volume bindings available to the app. For example, it can read another workspace as a template before writing the requested report. File writes use the existing volume capability, including its parent-directory creation behavior.
 
-The runner also offers web search and public HTTP(S) page reading. Page requests use GET, exclude credentials, and check redirects. Human chat and global memory are not automatically loaded. Include relevant context and desired output in the prompt; the app collects missing information before another invocation.
+The runner also offers web search and public HTTP(S) page reading. Page requests use GET, exclude credentials, and check redirects. Page downloads stop at 1 MiB before text conversion and output truncation. Human chat and global memory are not automatically loaded. Include relevant context and desired output in the prompt; the app collects missing information before another invocation.
 
 One delegated request may be active per app. Overlap, model failures, and the fixed limits of ten minutes or 50 tool executions reject with `CAPABILITY_FAILED`; missing scopes use `CAPABILITY_DENIED`, invalid arguments use `CAPABILITY_INVALID_INPUT`, and unavailable backends use `CAPABILITY_UNAVAILABLE`. `devAi()` remains text-only and reports unavailable for both agent methods. Human chat and `generateText` remain independent of this slot.
 

@@ -217,18 +217,22 @@ test.each([
 	})
 })
 
-test('registers before backend setup and keeps the busy slot until cancelled setup stops', async () => {
+test.each([
+	'resolve',
+	'reject'
+] as const)('cancels backend setup even if the host ignores abort and later %ss', async (settle) => {
 	const gate = deferred<AgentBackend>()
 	const seen = deferred<AbortSignal>()
+	const late = backend([])
+	const resolveBackend = vi
+		.fn(async (_signal: AbortSignal) => backend([]))
+		.mockImplementationOnce(async (signal: AbortSignal) => {
+			seen.resolve(signal)
+			return gate.promise
+		})
 	const cap = aiCapability({
 		generate: async () => '',
-		agent: {
-			backend: async (signal) => {
-				seen.resolve(signal)
-				return gate.promise
-			},
-			fetch: vi.fn()
-		}
+		agent: { backend: resolveBackend, fetch: vi.fn() }
 	})
 	const running = cap.invoke(call())
 	const signal = await seen.promise
@@ -237,16 +241,19 @@ test('registers before backend setup and keeps the busy slot until cancelled set
 		false
 	)
 	expect(await cap.invoke(call('cancelAgent', { requestId: 'stale' }))).toBe(false)
-	expect(await cap.invoke(call('cancelAgent', { requestId: 'one' }))).toBe(true)
-	expect(await cap.invoke(call('cancelAgent', { requestId: 'one' }))).toBe(true)
+	const cancel = cap.invoke(call('cancelAgent', { requestId: 'one' }))
+	const repeat = cap.invoke(call('cancelAgent', { requestId: 'one' }))
+	expect(await Promise.all([cancel, repeat])).toEqual([true, true])
 	expect(signal.aborted).toBe(true)
-	await expect(cap.invoke(call())).rejects.toMatchObject({ code: 'CAPABILITY_FAILED' })
-	gate.resolve(backend([]))
 	expect(await running).toEqual({ cancelled: true })
 	expect(await cap.invoke(call('cancelAgent', { requestId: 'one' }))).toBe(false)
 	expect(await cap.invoke(call('runAgent', { requestId: 'two', prompt: 'next' }))).toEqual({
 		text: 'done'
 	})
+	if (settle === 'resolve') gate.resolve(late)
+	else gate.reject(new Error('late setup failure'))
+	await Promise.resolve()
+	expect(late.streamFn).not.toHaveBeenCalled()
 })
 
 test('cancels an active tool, keeps completed writes, and starts no further tool', async () => {
@@ -293,10 +300,9 @@ test('the ten-minute deadline is failure, not user cancellation', async () => {
 	const cap = aiCapability({
 		generate: async () => '',
 		agent: {
-			backend: (signal) =>
-				new Promise((_, reject) => {
+			backend: () =>
+				new Promise(() => {
 					started.resolve()
-					signal.addEventListener('abort', () => reject(signal.reason), { once: true })
 				}),
 			fetch: vi.fn()
 		}

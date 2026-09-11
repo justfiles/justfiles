@@ -9,7 +9,11 @@ import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { afterEach, expect, test, vi } from 'vitest'
 import { notificationStore } from '../notifications/store.ts'
-import { capsProxyOverSocket, clientCapabilities } from './capabilities.client.ts'
+import {
+	capsProxyOverSocket,
+	clientCapabilities,
+	resetCapabilitySocket
+} from './capabilities.client.ts'
 
 const call = (capability: string, method: string, input: unknown): CapabilityCall => ({
 	appId: 'app',
@@ -21,13 +25,18 @@ const call = (capability: string, method: string, input: unknown): CapabilityCal
 
 const echo: Capability = { invoke: async (c) => c.args[0], subscribe: async () => () => {} }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+	resetCapabilitySocket()
+	vi.unstubAllGlobals()
+})
 
 // A minimal in-memory WebSocket-shaped duplex — just enough for the caps wire:
 // addEventListener('message'|'close') + send. send() reaches the peer's message
 // listeners on a microtask; close() fires both ends' close listeners.
 class FakeWs {
 	peer!: FakeWs
+	readyState = 1
+	private readonly onOpen: Array<() => void> = []
 	private readonly onMessage: Array<(e: { data: string }) => void> = []
 	private readonly onClose: Array<() => void> = []
 	send(frame: string): void {
@@ -35,13 +44,23 @@ class FakeWs {
 			for (const cb of this.peer.onMessage) cb({ data: frame })
 		})
 	}
-	addEventListener(type: 'message' | 'close' | 'error', cb: (e: { data: string }) => void): void {
+	addEventListener(
+		type: 'message' | 'close' | 'error' | 'open',
+		cb: (e: { data: string }) => void
+	): void {
 		if (type === 'message') this.onMessage.push(cb)
 		else if (type === 'close') this.onClose.push(cb as () => void)
+		else if (type === 'open') this.onOpen.push(cb as () => void)
 		// 'error' is registered by the wire but never simulated here.
 	}
 	close(): void {
-		for (const ws of [this, this.peer]) for (const cb of ws.onClose) cb()
+		for (const ws of [this, this.peer]) {
+			ws.readyState = 3
+			for (const cb of ws.onClose) cb()
+		}
+	}
+	open(): void {
+		for (const cb of this.onOpen) cb()
 	}
 }
 
@@ -80,6 +99,59 @@ test('a socket close rejects an in-flight invoke so the caller can self-heal', a
 	clientWs.close()
 
 	await expect(pending).rejects.toMatchObject({ code: 'CAPABILITY_OFFLINE' })
+})
+
+test.each([
+	'runAgent',
+	'generateText'
+])('a lost %s reply preserves the method’s retry policy', async (method) => {
+	let connections = 0
+	const executed: unknown[] = []
+	vi.stubGlobal('navigator', { onLine: true })
+	vi.stubGlobal('window', { location: { protocol: 'https:', host: 'example.com' } })
+	vi.stubGlobal(
+		'WebSocket',
+		class extends FakeWs {
+			static OPEN = 1
+			constructor() {
+				super()
+				const connection = ++connections
+				this.peer = new FakeWs()
+				this.peer.peer = this
+				const server = this.peer as unknown as WebSocket
+				const { transport, feed } = wsFeedTransport(server)
+				server.addEventListener('message', (event) => feed(event.data as string))
+				serveCapabilitiesRpc(transport, {
+					invoke: async (call) => {
+						executed.push(call.args[0])
+						if (connection === 1) server.close()
+						return { text: 'finished' }
+					},
+					subscribe: async () => () => {}
+				})
+				queueMicrotask(() => this.open())
+			}
+		}
+	)
+	const caps = clientCapabilities(
+		undefined as unknown as Volume,
+		async () => 'token'
+	)(undefined as unknown as Kernel)
+	const input = { requestId: 'one', prompt: 'write a report' }
+	const work = caps.invoke(call('ai', method, input))
+	if (method === 'runAgent') {
+		await expect(work).rejects.toMatchObject({ code: 'CAPABILITY_OFFLINE' })
+		expect(executed).toEqual([input])
+		expect(connections).toBe(1)
+		await expect(caps.invoke(call('ai', method, { ...input, requestId: 'two' }))).resolves.toEqual({
+			text: 'finished'
+		})
+		expect(executed).toEqual([input, { ...input, requestId: 'two' }])
+	} else {
+		await expect(work).resolves.toEqual({ text: 'finished' })
+		expect(executed).toEqual([input, input])
+	}
+	expect(connections).toBe(2)
 })
 
 test('reader opens web URLs in the browser host', async () => {

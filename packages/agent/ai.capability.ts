@@ -69,10 +69,16 @@ export function aiCapability(deps: {
 			const stop = new AbortController()
 			active.set(ctx.appId, { requestId: input.requestId, stop })
 			const timer = setTimeout(() => stop.abort(new Error('Agent exceeded ten minutes')), 600_000)
+			let onAbort!: () => void
+			const aborted = new Promise<never>((_, reject) => {
+				onAbort = () => reject(stop.signal.reason)
+				stop.signal.addEventListener('abort', onAbort, { once: true })
+			})
 			const work = (async () => {
 				try {
 					stop.signal.throwIfAborted()
-					const backend = await agent.backend(stop.signal)
+					// Account lookup may ignore abort; its late result must not start a task.
+					const backend = await Promise.race([agent.backend(stop.signal), aborted])
 					stop.signal.throwIfAborted()
 					if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'runAgent')
 					const text = await runAgent({
@@ -89,6 +95,7 @@ export function aiCapability(deps: {
 					if (error instanceof CapabilityError) throw error
 					throw new CapabilityError('CAPABILITY_FAILED', 'ai', 'runAgent')
 				} finally {
+					stop.signal.removeEventListener('abort', onAbort)
 					clearTimeout(timer)
 					active.delete(ctx.appId)
 				}
