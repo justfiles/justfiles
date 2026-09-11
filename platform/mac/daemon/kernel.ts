@@ -191,8 +191,7 @@ async function makeKernel(fs: Volume, accounts: DaemonAccounts): Promise<Kernel>
 		volume: fs,
 		agent: {
 			backend: (signal) => accounts.resolveBackend(signal),
-			fetch: publicFetch,
-			systemAllowlist
+			fetch: publicFetch
 		},
 		generate: async ({ system, prompt }) => {
 			const backend = await accounts.resolveBackend()

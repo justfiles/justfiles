@@ -29,8 +29,12 @@ function scripted(): AgentBackend {
 							{
 								type: 'toolCall',
 								id: 'write',
-								name: 'bash',
-								arguments: { command: 'echo report > report.md' }
+								name: 'capability',
+								arguments: {
+									capability: 'files',
+									method: 'writeFile',
+									args: ['/report/report.md', { $bytes: 'report\n' }]
+								}
 							}
 						]
 					: [{ type: 'text', text: 'finished' }]
@@ -93,8 +97,7 @@ test('Mac procedures await agent output on native storage and can cancel backend
 		)
 		const params = {
 			requestId: 'one',
-			prompt: 'write report',
-			workspace: { capability: 'files', path: '/report' }
+			prompt: 'write a report in /report'
 		}
 		expect(await k.dispatch(appId, { type: 'work', params })).toEqual({ text: 'finished' })
 		expect(new TextDecoder().decode(await fs.readFile(`/data/${appId}/report/report.md`))).toBe(

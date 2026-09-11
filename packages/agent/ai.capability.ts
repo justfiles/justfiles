@@ -16,11 +16,9 @@
 
 import { CapabilityError, implementCapability } from '@justfiles/app/capabilities'
 import { ai } from '@justfiles/app/capabilities/ai'
-import { resolveVolume } from '@justfiles/app/capabilities/volume/host'
-import { chroot, type Volume } from '@justfiles/fs'
+import type { Volume } from '@justfiles/fs'
 import { learningContext } from './learning-context.ts'
 import type { AgentBackend } from './llm.ts'
-import { SECRET_PREFIXES } from './paths.ts'
 import { runAgent } from './run-agent.ts'
 import type { Fetch } from './tools/fetch.ts'
 
@@ -43,7 +41,6 @@ export function aiCapability(deps: {
 	agent?: {
 		backend(signal: AbortSignal): Promise<AgentBackend | null>
 		fetch: Fetch
-		systemAllowlist?: readonly string[]
 		keepAlive?(work: Promise<unknown>): void
 	}
 }) {
@@ -62,40 +59,18 @@ export function aiCapability(deps: {
 				typeof input.requestId !== 'string' ||
 				!input.requestId.trim() ||
 				typeof input.prompt !== 'string' ||
-				!input.prompt.trim() ||
-				(input.workspace !== undefined &&
-					(!input.workspace ||
-						typeof input.workspace.capability !== 'string' ||
-						typeof input.workspace.path !== 'string' ||
-						!input.workspace.path.startsWith('/') ||
-						input.workspace.path.includes('\0') ||
-						input.workspace.path.split('/').includes('..')))
+				!input.prompt.trim()
 			)
 				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', 'runAgent')
 			const agent = deps.agent
-			if (!agent) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'runAgent')
+			const app = ctx.app
+			if (!agent || !app) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai', 'runAgent')
 			if (active.has(ctx.appId)) throw new CapabilityError('CAPABILITY_FAILED', 'ai', 'runAgent')
 			const stop = new AbortController()
 			active.set(ctx.appId, { requestId: input.requestId, stop })
 			const timer = setTimeout(() => stop.abort(new Error('Agent exceeded ten minutes')), 600_000)
 			const work = (async () => {
 				try {
-					let workspace: Volume | undefined
-					if (input.workspace) {
-						if (!volume || ctx.workspace?.capability !== input.workspace.capability)
-							throw new CapabilityError('CAPABILITY_DENIED', 'ai', 'runAgent')
-						const { vol } = resolveVolume(
-							volume,
-							ctx.appId,
-							ctx.workspace.scopes,
-							new Set(agent.systemAllowlist)
-						)
-						workspace = chroot(vol, input.workspace.path, {
-							deny: SECRET_PREFIXES,
-							signal: stop.signal
-						})
-						await workspace.mkdir('/', { recursive: true })
-					}
 					stop.signal.throwIfAborted()
 					const backend = await agent.backend(stop.signal)
 					stop.signal.throwIfAborted()
@@ -103,7 +78,7 @@ export function aiCapability(deps: {
 					const text = await runAgent({
 						prompt: input.prompt,
 						backend,
-						volume: workspace,
+						app,
 						signal: stop.signal,
 						fetch: agent.fetch
 					})

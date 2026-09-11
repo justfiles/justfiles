@@ -80,7 +80,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		agent: {
 			backend: deps.backend,
 			fetch: globalThis.fetch,
-			systemAllowlist: ['justfiles.files'],
 			keepAlive: deps.keepAlive
 		},
 		generate: ({ system, prompt }) => deps.text.gen(system, prompt)

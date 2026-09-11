@@ -1,6 +1,6 @@
 import type { Command, Message, Result } from './app.ts'
 import type { Capabilities } from './capabilities/types.ts'
-import { type Declared, workspaceGrant } from './kernel.capability.ts'
+import type { Declared } from './kernel.capability.ts'
 import { CMD_RESULT_PREFIX } from './sdk.ts'
 
 type AppId = string
@@ -164,7 +164,6 @@ export function commandRuntime({ resolve, invoke, dispatch, onError }: CommandDe
 				method: command.method,
 				args: command.args,
 				scopes: declared.scopes,
-				workspace: await workspaceGrant(resolve, appId, declared.id, command.method, command.args),
 				actor
 			})
 			await deliver(appId, command.to, { ok: true, value }, from)

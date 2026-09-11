@@ -87,25 +87,22 @@ export class OwnerChangedError extends Error {
 function trackVolume(source: Volume): { volume: Volume; drain(): Promise<void> } {
 	const active = new Set<Promise<unknown>>()
 	let closing = false
-	const track = (source: Volume): Volume =>
-		new Proxy(source, {
-			get(target, key, receiver) {
-				const value = Reflect.get(target, key, receiver)
-				if (typeof value !== 'function') return value
-				if (key === 'restrict')
-					return (...args: unknown[]) => track(Reflect.apply(value, target, args))
-				return (...args: unknown[]) => {
-					if (closing) return Promise.reject(new Error('storage is closing'))
-					const run = Reflect.apply(value, target, args) as Promise<unknown>
-					active.add(run)
-					const done = (): void => void active.delete(run)
-					void run.then(done, done)
-					return run
-				}
+	const volume = new Proxy(source, {
+		get(target, key, receiver) {
+			const value = Reflect.get(target, key, receiver)
+			if (typeof value !== 'function') return value
+			return (...args: unknown[]) => {
+				if (closing) return Promise.reject(new Error('storage is closing'))
+				const run = Reflect.apply(value, target, args) as Promise<unknown>
+				active.add(run)
+				const done = (): void => void active.delete(run)
+				void run.then(done, done)
+				return run
 			}
-		})
+		}
+	})
 	return {
-		volume: track(source),
+		volume,
 		async drain() {
 			closing = true
 			await Promise.allSettled(active)

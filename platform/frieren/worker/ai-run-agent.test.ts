@@ -15,6 +15,7 @@ import {
 	proxyCapabilitiesRpc,
 	serveCapabilitiesRpc
 } from '@justfiles/app/capabilities'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { kernel } from '@justfiles/app/runtime'
 import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { volume } from '@justfiles/fs'
@@ -44,37 +45,41 @@ const code = buildSync({
 	format: 'esm'
 }).outputFiles[0].text
 
-function model(): AgentBackend {
+const steps: Array<{ name: string; arguments: Record<string, unknown> }> = [
+	{ name: 'fetch', arguments: { url: 'https://example.com' } },
+	{
+		name: 'capability',
+		arguments: { capability: 'examples', method: 'readFile', args: ['/template.md'] }
+	},
+	{
+		name: 'capability',
+		arguments: {
+			capability: 'files',
+			method: 'writeFile',
+			args: ['/report/report.md', { $bytes: 'report\n' }]
+		}
+	},
+	{
+		name: 'capability',
+		arguments: { capability: 'inbox', method: 'listUnread', args: [{ limit: 2 }] }
+	}
+]
+function model(actions: typeof steps): AgentBackend {
 	let step = 0
 	return {
 		model: { id: 'script' } as Model<Api>,
 		revision: 'script',
 		completeFn: vi.fn(),
 		streamFn: () => {
-			const content: AssistantMessage['content'] =
-				step++ === 0
-					? [
-							{
-								type: 'toolCall',
-								id: 'read',
-								name: 'fetch',
-								arguments: { url: 'https://example.com' }
-							}
-						]
-					: step === 2
-						? [
-								{
-									type: 'toolCall',
-									id: 'write',
-									name: 'bash',
-									arguments: { command: 'echo report > report.md' }
-								}
-							]
-						: [{ type: 'text', text: 'finished' }]
+			const action = actions[step++]
+			const content: AssistantMessage['content'] = action
+				? [{ type: 'toolCall', id: String(step), ...action }]
+				: [{ type: 'text', text: 'finished' }]
+
 			const message: AssistantMessage = {
 				role: 'assistant',
 				content,
-				stopReason: step <= 2 ? 'toolUse' : 'stop',
+				stopReason: action ? 'toolUse' : 'stop',
 				api: 'script',
 				provider: 'script',
 				model: 'script',
@@ -96,16 +101,17 @@ function model(): AgentBackend {
 	}
 }
 
-async function setup(fetch: typeof globalThis.fetch) {
+async function setup(fetch: typeof globalThis.fetch, actions = steps) {
 	const host = volume(memStore())
 	const calls: CapabilityCall[] = []
 	const keepAlive = vi.fn()
 	const cap = aiCapability({
 		volume: host,
 		generate: async () => '',
-		agent: { backend: async () => model(), fetch, keepAlive }
+		agent: { backend: async () => model(actions), fetch, keepAlive }
 	})
-	const served = capabilityRegistry({ ai: cap })
+	const email = vi.fn(async () => [{ subject: 'hello' }])
+	const served = capabilityRegistry({ ai: cap, email: { invoke: email, subscribe: vi.fn() } })
 	const [client, server] = transportPair()
 	serveCapabilitiesRpc(server, {
 		...served,
@@ -121,17 +127,28 @@ async function setup(fetch: typeof globalThis.fetch) {
 		onMessage: (handler) => worker.on('message', handler)
 	})
 	worker.on('error', fail)
+	const local = volume(memStore())
+	await local.mkdir('/examples')
+	await local.writeFile('/examples/template.md', new TextEncoder().encode('template'))
+	const files = volumeCapability(local)
+	const fileCalls = vi.fn(files.invoke)
 	const k = kernel({
-		fs: volume(memStore()),
+		fs: local,
 		sandbox: async () => sandbox,
 		clock: {},
-		capabilities: proxy.caps
+		capabilities: capabilityRegistry(
+			{ volume: { ...files, invoke: fileCalls } },
+			{ fallback: proxy.caps }
+		)
 	})
 	const appId = await k.install(appBundleFromMemory({ id: 'test.agent', name: 'Agent', app: code }))
 	return {
 		k,
 		appId,
 		host,
+		local,
+		email,
+		fileCalls,
 		calls,
 		cap,
 		keepAlive,
@@ -145,8 +162,7 @@ async function setup(fetch: typeof globalThis.fetch) {
 
 const params = {
 	requestId: 'one',
-	prompt: 'write a report',
-	workspace: { capability: 'files', path: '/report' }
+	prompt: 'write in /report, following other workspaces as examples'
 }
 
 test.each([
@@ -160,7 +176,7 @@ test.each([
 		await release.promise
 		return new Response('research')
 	})
-	const { k, appId, host, calls, keepAlive } = testHost
+	const { k, appId, host, local, email, fileCalls, calls, keepAlive } = testHost
 	try {
 		const work = k.dispatch(appId, { type, params, actor: 'agent' })
 		await started.promise
@@ -169,7 +185,13 @@ test.each([
 		expect(calls[0]).toMatchObject({
 			appId,
 			scopes: ['agent'],
-			workspace: { capability: 'files', scopes: ['app'] }
+			app: {
+				bindings: {
+					files: { id: 'volume', scopes: ['app'] },
+					examples: { id: 'volume', scopes: ['/examples'] },
+					inbox: { id: 'email', scopes: ['read'] }
+				}
+			}
 		})
 		expect(keepAlive).toHaveBeenCalledTimes(1)
 		release.resolve()
@@ -177,8 +199,27 @@ test.each([
 		expect(result).toEqual(
 			type === 'work' ? { text: 'finished' } : { ticks: 1, result: 'finished' }
 		)
-		expect(new TextDecoder().decode(await host.readFile('/data/test.agent/report/report.md'))).toBe(
-			'report\n'
+		expect(
+			new TextDecoder().decode(await local.readFile('/data/test.agent/report/report.md'))
+		).toBe('report\n')
+		expect(await host.exists('/data/test.agent/report/report.md')).toBe(false)
+		expect(fileCalls).toHaveBeenCalledWith(
+			expect.objectContaining({
+				appId,
+				capability: 'volume',
+				method: 'readFile',
+				scopes: ['/examples'],
+				args: ['/template.md']
+			})
+		)
+		expect(email).toHaveBeenCalledWith(
+			expect.objectContaining({
+				appId,
+				capability: 'email',
+				scopes: ['read'],
+				method: 'listUnread',
+				args: [{ limit: 2 }]
+			})
 		)
 	} finally {
 		release.resolve()
@@ -202,22 +243,46 @@ test('Stop runs as a second procedure across RPC while the original procedure is
 			await testHost.k.dispatch(testHost.appId, { type: 'stop', params: { requestId: 'one' } })
 		).toBe(true)
 		expect(await work).toEqual({ cancelled: true })
-		expect(await testHost.host.exists('/data/test.agent/report/report.md')).toBe(false)
+		expect(await testHost.local.exists('/data/test.agent/report/report.md')).toBe(false)
 	} finally {
 		await testHost.close()
 	}
 })
 
-test('the executing bundle must declare the selected volume, even if the serving host has it', async () => {
-	const testHost = await setup(vi.fn())
+test('inherited calls cannot name an undeclared capability or supply broader scopes', async () => {
+	const testHost = await setup(vi.fn(), [
+		{
+			name: 'capability',
+			arguments: {
+				capability: 'volume',
+				method: 'writeFile',
+				args: ['/escape', { $bytes: 'secret' }]
+			}
+		},
+		{
+			name: 'capability',
+			arguments: {
+				capability: '__proto__',
+				method: 'writeFile',
+				args: ['/escape', { $bytes: 'secret' }]
+			}
+		},
+		{
+			name: 'capability',
+			arguments: {
+				capability: 'files',
+				method: 'writeFile',
+				args: ['/own', { $bytes: 'allowed' }, { scopes: ['system'] }]
+			}
+		}
+	])
 	try {
-		await expect(
-			testHost.k.dispatch(testHost.appId, {
-				type: 'work',
-				params: { ...params, workspace: { capability: 'undeclared', path: '/' } }
-			})
-		).rejects.toThrow('CAPABILITY_DENIED')
-		expect(testHost.calls).toEqual([])
+		await testHost.k.dispatch(testHost.appId, { type: 'work', params })
+		expect(testHost.fileCalls).toHaveBeenCalledTimes(1)
+		expect(testHost.fileCalls).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['app'] }))
+		expect(await testHost.local.exists('/escape')).toBe(false)
+		expect(await testHost.local.exists('/own')).toBe(false)
+		expect(await testHost.local.exists('/data/test.agent/own')).toBe(true)
 	} finally {
 		await testHost.close()
 	}

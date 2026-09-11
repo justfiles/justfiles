@@ -4,7 +4,6 @@ export interface AiCapability {
 	runAgent(input: {
 		requestId: string
 		prompt: string
-		workspace?: { capability: string; path: string }
 	}): Promise<{ text: string } | { cancelled: true }>
 	cancelAgent(input: { requestId: string }): Promise<boolean>
 

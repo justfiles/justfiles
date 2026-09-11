@@ -1,16 +1,21 @@
 import * as v from 'valibot'
 import { ai } from '../capabilities/ai/index.ts'
+import { email } from '../capabilities/email/index.ts'
 import { volume } from '../capabilities/volume/index.ts'
 import { defineApp } from '../sdk.ts'
 
 const request = v.object({
 	requestId: v.string(),
-	prompt: v.string(),
-	workspace: v.optional(v.object({ capability: v.string(), path: v.string() }))
+	prompt: v.string()
 })
 export const app = defineApp({
 	init: { ticks: 0, result: '' },
-	capabilities: { model: ai({ scopes: ['agent'] }), files: volume({ scopes: ['app'] }) },
+	capabilities: {
+		model: ai({ scopes: ['agent'] }),
+		files: volume({ scopes: ['app'] }),
+		examples: volume({ scopes: ['/examples'] }),
+		inbox: email({ scopes: ['read'] })
+	},
 	update: (t) => ({
 		tick: t.on(v.object({}), (state) => ({ ...state, ticks: state.ticks + 1 })),
 		command: t.on(request, (state, input) => [state, t.cmd('model', 'runAgent', input).to('done')]),

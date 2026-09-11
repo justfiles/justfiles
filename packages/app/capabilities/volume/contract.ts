@@ -25,7 +25,7 @@ export interface VolumeEntry {
 //   - `watch(path, listener)` → a `Stream` (see `VolumeStreams` below)
 // Note: `stat`/`lstat`/`utimes` carry `bigint` and reads carry `Uint8Array`,
 // neither of which survives a JSON wire — so volume binds as a LOCAL capability.
-export type VolumeCapability = Omit<Volume, 'watch' | 'scan' | 'writeFile' | 'restrict'> & {
+export type VolumeCapability = Omit<Volume, 'watch' | 'scan' | 'writeFile'> & {
 	scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
 	// The one place the capability ADDS to `Volume`, because the addition is the host's
 	// and not the filesystem's: the host creates missing parent directories for a write,
