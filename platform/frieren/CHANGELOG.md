@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.24.1...frieren-v0.25.0) (2026-09-11)
+
+
+### Features
+
+* **app:** add foreground delegated agent tasks ([#650](https://github.com/xiaoxinghu/justfiles/issues/650)) ([c95340c](https://github.com/xiaoxinghu/justfiles/commit/c95340c6ba22f40e1d5d63f9c3ad69b7acf3ee20))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/app bumped to 0.17.0
+
 ## [0.24.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.24.0...frieren-v0.24.1) (2026-09-11)
 
 
