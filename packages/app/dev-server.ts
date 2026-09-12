@@ -1,4 +1,4 @@
-import { existsSync, globSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, globSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { extname, join, relative, resolve } from 'node:path'
 import { volume } from '@justfiles/fs'
@@ -61,6 +61,7 @@ function kernelGraphFiles(env: RunnableDevEnvironment, entry: string): Set<strin
 		files.add(node.file)
 		queue.push(...node.importedModules)
 	}
+	files.add(entry)
 	return files
 }
 
@@ -122,6 +123,7 @@ export async function createDevServer(
 ): Promise<Connect.NextHandleFunction & { close(): Promise<void> }> {
 	const root = server.config.root
 	const appEntry = resolve(root, opts.app)
+	const graphEntry = realpathSync(appEntry)
 	const appUrl = `/${relative(root, appEntry).split('\\').join('/')}`
 	const env = server.environments.kernel
 	if (!env || !isRunnableDevEnvironment(env))
@@ -174,6 +176,7 @@ export async function createDevServer(
 		.install(bundle)
 		.then((id) => k.app(id))
 		.catch(async (error) => {
+			await devAi.capability?.dispose()
 			k.dispose()
 			devkit.close()
 			await store.close?.()
@@ -188,8 +191,17 @@ export async function createDevServer(
 	// Chained + deferred past the sync watcher batch so Vite invalidates first.
 	let reload: Promise<unknown> = Promise.resolve()
 	const onChange = (file: string) => {
-		if (!kernelGraphFiles(env, appEntry).has(file)) return
-		reload = reload.then(() => k.install(bundle)).catch(() => {})
+		if (file !== appEntry && !kernelGraphFiles(env, graphEntry).has(file)) return
+		reload = reload
+			.then(async () => {
+				await devAi.capability?.dispose()
+				try {
+					await k.install(bundle)
+				} finally {
+					devAi.capability?.resume()
+				}
+			})
+			.catch((error) => server.config.logger.error(String(error)))
 	}
 	server.watcher.on('change', onChange)
 
@@ -215,7 +227,9 @@ export async function createDevServer(
 	return Object.assign(handle, {
 		async close() {
 			server.watcher.off('change', onChange)
+			await devAi.capability?.dispose()
 			await reload
+			await devAi.capability?.dispose()
 			k.dispose()
 			devkit.close()
 			await store.close?.()

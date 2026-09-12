@@ -1,11 +1,10 @@
-import type { AgentTool } from '@earendil-works/pi-agent-core'
-import type { CapabilityCall } from '@justfiles/app/capabilities'
+import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
 import Type from 'typebox'
+import type { CapabilityCall } from '../../types.ts'
 import { appTool } from './app-tool.ts'
-import { createAgent } from './llm.agent.ts'
-import type { AgentBackend } from './llm.ts'
-import { createFetchTool, type Fetch } from './tools/fetch.ts'
-import { createSearchTool } from './tools/search.ts'
+import type { AgentBackend } from './backend.ts'
+import { createFetchTool, type Fetch } from './fetch.ts'
+import { createSearchTool } from './search.ts'
 
 export async function runAgent(input: {
 	prompt: string
@@ -17,7 +16,10 @@ export async function runAgent(input: {
 }): Promise<string> {
 	const { signal } = input
 	signal.throwIfAborted()
-	const agent = createAgent(input.backend)
+	const agent = new Agent({
+		initialState: { model: input.backend.model },
+		streamFn: input.backend.streamFn
+	})
 	const abort = () => agent.abort()
 	signal.addEventListener('abort', abort, { once: true })
 	let toolCount = 0

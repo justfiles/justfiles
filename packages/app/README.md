@@ -189,3 +189,84 @@ agent uses it to know what an action might trigger. Even if the host
 grants you broad access today, declaring keeps `app actions` honest —
 the TUI surface for the agent — and surfaces accidental escapes when a
 new host enforces tighter scopes.
+
+### Local AI agents
+
+Add `devAi()` next to `kernelHost()` in Vite's plugins to enable local AI. Select a
+backend explicitly with `devAi('claude-cli')`, `devAi('pi-cli')`,
+`devAi('codex-cli')`, an OpenAI-compatible HTTP base URL, or a text function.
+Existing `generateText` calls and text discovery keep their selection behavior.
+
+An app that declares `ai({ scopes: ['agent'] })` can await
+`runAgent({ requestId, prompt })` and stop it with `cancelAgent({ requestId })`.
+JustFiles' internal Pi agent executes research and capability operations with
+all of the calling app's declared bindings, identity and scopes. Paths in a
+prompt are task instructions, not extra restrictions on those grants. Each
+request starts with a fresh conversation; the app supplies any saved history.
+
+Agent readiness is checked on first use with a synthetic operation and its
+unpredictable result. Successful selection and ordinary readiness failures are
+cached until the dev server restarts, including across GUI refreshes and
+headless reloads. Automatic selection tries Pi, Claude, Codex, Ollama, then
+LM Studio, logging each skipped candidate. Explicit selection reports that
+backend's failure. Cancellation during readiness is retryable. After a task
+starts, failures never move it to another backend or replay completed work.
+
+The authenticated round trip passed with Claude Code 2.1.263 and its Sonnet
+model. The installed default Opus 5 rejected this fixture with a
+`reasoning_extraction` safeguard error, which readiness reports without starting
+app work. To select a model for a dev run without changing saved settings, use
+`ANTHROPIC_MODEL=sonnet pnpm dev`.
+
+Claude Code's isolated print mode requires `--safe-mode`, `--tools ''`,
+`--strict-mcp-config`, and `--no-session-persistence` (checked with installed
+CLI help). Each invocation runs in a new temporary directory. The CLI retains
+its own login and model selection; JustFiles neither reads nor stores its
+credentials. Pi 0.84.4 exposed suitable isolation flags but failed the login
+smoke check; Codex 0.153.4 had no verified mode that disabled all its tools.
+These two remain text-only. CLI agent process cleanup currently supports macOS
+and Linux. HTTP and abort-aware custom backends use the same readiness check
+and response codec.
+
+To opt a custom text function into agent support, attach an `agent` function:
+
+```ts
+import type { GenerateText } from '@justfiles/app/capabilities/ai/dev'
+
+const generate: GenerateText = async ({ system, prompt }) => yourTextCall({ system, prompt })
+generate.agent = async ({ system, prompt, schema, signal }) => {
+	// Forward signal to the transport and settle only after it has stopped.
+	return yourTextCall({ system, prompt, schema, signal })
+}
+// Use devAi(generate) in the Vite plugins.
+```
+
+The agent function receives the entire task context as JSON in `prompt`, output
+instructions in `system`, a JSON response `schema`, and an `AbortSignal`. It must
+return exactly `{"type":"tool_call","name":...,"arguments":{...}}` or
+`{"type":"final","text":...}`. It must not execute tools itself. A plain text
+function is not assumed interruptible and cannot run agents. Cancellation must
+abort the underlying work, discard late responses, and settle its promise;
+racing an uninterruptible request against a timer does not satisfy this contract.
+
+The codec preserves text roles, operation IDs, results/errors, and the SDK's
+bytes/bigint representation. It rejects malformed JSON, unknown operations,
+invalid arguments and unsupported content (including images and reasoning
+blocks). Input context and decoded output each have a 1 MiB limit; captured
+transport output has a 2 MiB limit. It never truncates the task context. Model
+identity, token counts, costs and context limits are unreported by this text
+adapter; required numeric Pi metadata uses zero placeholders.
+
+One task per app may run at a time, including backend setup. Stop waits for any
+capability operation already running; completed writes remain saved. User
+cancellation returns `{ cancelled: true }`, while failure, the ten-minute
+limit, and the 50-operation limit reject. Headless reload and server shutdown
+cancel and drain active work. Restart restores `.justfiles/dev/` files and state
+with no active requests and no replay. A normal GUI refresh leaves work running.
+
+This protocol starts a subprocess and resends context for each model turn. It
+adds startup cost and depends on model adherence to JSON. The
+[test fixture](./test-dev-agent/README.md) documents the explicit authenticated
+smoke check and how to verify an installed SDK tarball outside the monorepo.
+Releases use the existing release-please App version/tag and `publish-app`
+workflow; application consumers should upgrade to that exact published version.

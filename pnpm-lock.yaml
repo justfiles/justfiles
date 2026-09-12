@@ -503,6 +503,12 @@ importers:
 
   packages/app:
     dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: ^0.80.10
+        version: 0.80.10(bufferutil@4.1.0)(supports-color@10.2.2)(utf-8-validate@6.0.6)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.4.3)
+      '@earendil-works/pi-ai':
+        specifier: ^0.80.10
+        version: 0.80.10(bufferutil@4.1.0)(supports-color@10.2.2)(utf-8-validate@6.0.6)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.4.3)
       '@justfiles/design':
         specifier: workspace:^
         version: link:../design
@@ -524,6 +530,9 @@ importers:
       type-fest:
         specifier: ^5.6.0
         version: 5.6.0
+      typebox:
+        specifier: ^1.1.33
+        version: 1.1.38
     devDependencies:
       '@justfiles/tsconfig':
         specifier: workspace:*

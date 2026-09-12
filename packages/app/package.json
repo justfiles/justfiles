@@ -48,7 +48,9 @@
 		"./accounts/providers": "./accounts/providers/index.ts",
 		"./accounts/providers/google": "./accounts/providers/google.ts",
 		"./accounts/providers/icloud": "./accounts/providers/icloud.ts",
-		"./accounts": "./accounts/contract.ts"
+		"./accounts": "./accounts/contract.ts",
+		"./capabilities/ai/host": "./capabilities/ai/host.ts",
+		"./capabilities/ai/node": "./capabilities/ai/node.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -209,6 +211,14 @@
 			"./accounts": {
 				"types": "./dist/accounts/contract.d.ts",
 				"default": "./dist/accounts/contract.js"
+			},
+			"./capabilities/ai/host": {
+				"types": "./dist/capabilities/ai/host.d.ts",
+				"default": "./dist/capabilities/ai/host.js"
+			},
+			"./capabilities/ai/node": {
+				"types": "./dist/capabilities/ai/node.d.ts",
+				"default": "./dist/capabilities/ai/node.js"
 			}
 		}
 	},
@@ -216,7 +226,7 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "rm -rf dist && tsc && node scripts/verify-source-maps.ts && node scripts/build-devkit-sysroot.ts && cp dev-server.html dev-server.css dist/",
+		"build": "rm -rf dist && node scripts/build-ai-references.ts && tsc && node scripts/verify-source-maps.ts && node scripts/build-devkit-sysroot.ts && cp dev-server.html dev-server.css dist/",
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
@@ -264,6 +274,9 @@
 		"capnweb": "^0.8.0",
 		"es-module-lexer": "^2.3.2",
 		"fflate": "^0.8.3",
-		"type-fest": "^5.6.0"
+		"type-fest": "^5.6.0",
+		"@earendil-works/pi-agent-core": "^0.80.10",
+		"@earendil-works/pi-ai": "^0.80.10",
+		"typebox": "^1.1.33"
 	}
 }

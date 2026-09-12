@@ -1,6 +1,6 @@
 ---
 project: platform/ai
-status: todo
+status: active
 ---
 
 # Dev host: CLI-backed model providers for the JustFiles agent
@@ -111,3 +111,34 @@ Use Vitest with fake text/process boundaries for deterministic coverage. Keep au
 - Run repository checks appropriate to the implementation and verify the published SDK contains the shared runner and provider code without workspace-only imports or a dependency cycle.
 
 Done means a standalone app can research, inspect its data, author files, stop an invocation, and reopen saved results through the released dev host. The developer's CLI supplies model responses and owns authentication; JustFiles' Pi agent owns the task. Learn's lesson formats, prompts, candidate validation, MDX renderer, and publication behavior remain Learn implementation work.
+
+
+## Implementation verification (2026-09-12)
+
+The implementation lives in the SDK's `capabilities/ai/host.ts`, with the shared
+runner under `capabilities/ai/agent/`. Platform hosts retain their learning
+projection wrapper. Node transport and public-address fetch are separate from
+app and GUI entry points. API references are generated from the contracts and
+included in the SDK build, with no dependency on `@justfiles/agent` or a platform
+checkout.
+
+Deterministic tests cover the codec and real Pi tool loop, readiness and abort,
+identity and scopes through procedures/commands, subprocess descendants, and
+dev-server persistence, shutdown, and entry/dependency reload. The existing
+harness tests retain the deadline and tool limit checks.
+
+An installed SDK tarball was verified in a standalone fixture with Claude Code
+2.1.263 and `ANTHROPIC_MODEL=sonnet`, using the existing login. The GUI stayed
+responsive while the agent fetched example.com and wrote its title and source
+URL through the app volume. Stop returned cancelled; restarting restored the
+file and reducer state without replay. The fixture is in
+`packages/app/test-dev-agent/`.
+
+The installed default Opus 5 returned a `reasoning_extraction` safeguard failure
+for the readiness conversation. This is reported without starting app work;
+saved CLI settings were not changed. Pi 0.84.4 failed OAuth refresh, and Codex
+0.153.4 has no verified tool-free mode, so both remain text-only.
+
+The remaining release step is the normal App release-please version/tag and
+`publish-app` workflow after the implementation is merged. No npm version has
+been published from this branch.
