@@ -1,16 +1,7 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
-import type { CapabilityCall } from '@justfiles/app/capabilities'
 import Type from 'typebox'
-import ai from '../app/capabilities/ai/contract.ts?raw'
-import calendar from '../app/capabilities/calendar/contract.ts?raw'
-import devkit from '../app/capabilities/devkit/contract.ts?raw'
-import email from '../app/capabilities/email/contract.ts?raw'
-import image from '../app/capabilities/image/contract.ts?raw'
-import notify from '../app/capabilities/notify/index.ts?raw'
-import notifications from '../app/capabilities/notify/types.ts?raw'
-import reader from '../app/capabilities/reader/contract.ts?raw'
-import volume from '../app/capabilities/volume/contract.ts?raw'
-import fs from '../fs/volume.ts?raw'
+import type { CapabilityCall } from '../../types.ts'
+import { references } from './references.ts'
 
 const params = Type.Object({
 	capability: Type.String({ description: 'The app-local binding name.' }),
@@ -49,18 +40,6 @@ export function appTool(app: NonNullable<CapabilityCall['app']>): AgentTool<type
 			}
 		}
 	}
-}
-
-// Read the contracts themselves so the tool's reference follows SDK changes.
-const references: Record<string, string> = {
-	ai,
-	calendar,
-	devkit,
-	email,
-	image,
-	reader,
-	notify: `${notify}\n${notifications}`,
-	volume: `${fs.slice(fs.indexOf('export interface Volume {')).split('\n}')[0]}\n}\n${volume}`
 }
 
 function decode(_key: string, value: unknown): unknown {

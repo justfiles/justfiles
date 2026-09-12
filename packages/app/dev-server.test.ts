@@ -2,9 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Context } from '@earendil-works/pi-ai'
 import { createServer, type ViteDevServer } from 'vite'
 import { afterEach, expect, test, vi } from 'vitest'
-import { kernelHost } from './vite.ts'
+import type { AiBackend, GenerateText } from './capabilities/ai/dev.ts'
+import { devAi, kernelHost } from './vite.ts'
 
 const roots: string[] = []
 const servers = new Set<ViteDevServer>()
@@ -44,14 +46,14 @@ async function project() {
 	return root
 }
 
-async function start(root: string, deny?: string[]) {
+async function start(root: string, deny?: string[], backend?: AiBackend) {
 	const cwd = vi.spyOn(process, 'cwd').mockReturnValue(root)
 	const plugins = kernelHost({ id: 'app.test', name: 'Test', app: 'src/app.ts', gui: 'src/gui.ts' })
 	cwd.mockRestore()
 	const server = await createServer({
 		root,
 		configFile: false,
-		plugins,
+		plugins: [...plugins, ...(backend ? [devAi(backend)] : [])],
 		resolve: {
 			alias: {
 				'@justfiles/app/dev-server': fileURLToPath(new URL('./dev-server.ts', import.meta.url))
@@ -188,4 +190,146 @@ test('GUI builds embed assets and CSS, recover from errors, and ignore data writ
 	await host.close()
 	// Closing the server must also close the build watcher before this directory is removed.
 	await rm(root, { recursive: true, force: true })
+}, 30_000)
+
+async function agentProject() {
+	const root = await project()
+	const entry = join(root, 'src/app.ts')
+	let source = await readFile(entry, 'utf8')
+	source = source.replace(
+		'capabilities: { files:',
+		"capabilities: { model: { id: 'ai', scopes: ['agent'] }, files:"
+	)
+	source = source.replace(
+		'actions: { increment:',
+		"actions: { work: { kind: 'procedure' }, stop: { kind: 'procedure' }, increment:"
+	)
+	source = source.replace(
+		"if (name === 'write')",
+		"if (name === 'work') return app.invoke('model', 'runAgent', params); if (name === 'stop') return app.invoke('model', 'cancelAgent', params); if (name === 'write')"
+	)
+	await writeFile(entry, source)
+	return root
+}
+
+function agentText(run: (context: Context, signal: AbortSignal) => Promise<unknown>): GenerateText {
+	return Object.assign(async () => 'text', {
+		agent: async ({ prompt, signal }) => {
+			const context = JSON.parse(prompt)
+			const last = context.messages.at(-1)
+			if (context.tools[0]?.name === 'lookupFixture')
+				return JSON.stringify(
+					last.role === 'toolResult'
+						? { type: 'final', text: last.content[0].text }
+						: { type: 'tool_call', name: 'lookupFixture', arguments: {} }
+				)
+			return JSON.stringify(await run(context, signal))
+		}
+	})
+}
+
+test('dev agent writes through app capabilities, stays responsive, stops and reopens without replay', async () => {
+	const root = await agentProject()
+	const started = Promise.withResolvers<void>()
+	let turns = 0
+	const backend = agentText(async (context, signal) => {
+		turns++
+		if (
+			(typeof context.messages[0].content === 'string'
+				? context.messages[0].content
+				: context.messages[0].content[0].text) === 'wait'
+		) {
+			started.resolve()
+			await new Promise((_, reject) =>
+				signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+			)
+		}
+		return context.messages.at(-1).role === 'toolResult'
+			? { type: 'final', text: 'saved' }
+			: {
+					type: 'tool_call',
+					name: 'capability',
+					arguments: {
+						capability: 'files',
+						method: 'writeFile',
+						args: ['/agent.md', { $bytes: 'Agent wrote this' }]
+					}
+				}
+	})
+	const first = await start(root, undefined, backend)
+	expect(await first.dispatch('work', { requestId: 'write', prompt: 'write' })).toEqual({
+		text: 'saved'
+	})
+	expect(await first.dispatch('read', { path: '/agent.md' })).toBe('Agent wrote this')
+	const running = first.dispatch('work', { requestId: 'wait', prompt: 'wait' })
+	await started.promise
+	expect(await first.dispatch('increment')).toEqual({ count: 1 })
+	expect(await first.dispatch('stop', { requestId: 'stale' })).toBe(false)
+	expect(await first.dispatch('stop', { requestId: 'wait' })).toBe(true)
+	expect(await running).toEqual({ cancelled: true })
+	await first.close()
+	const before = turns
+	const second = await start(root, undefined, backend)
+	expect(await second.dispatch('read', { path: '/agent.md' })).toBe('Agent wrote this')
+	expect(await second.dispatch('stop', { requestId: 'wait' })).toBe(false)
+	expect(turns).toBe(before)
+}, 30_000)
+
+test.each([
+	'reload',
+	'dependency',
+	'close'
+])('headless %s aborts active agent work and drains before replacing context', async (action) => {
+	const root = await agentProject()
+	if (action === 'dependency') {
+		await writeFile(join(root, 'src/settings.ts'), 'export const initial = 0')
+		const entry = join(root, 'src/app.ts')
+		await writeFile(
+			entry,
+			`import { initial } from './settings.ts';\n${(await readFile(entry, 'utf8')).replace('count: 0', 'count: initial')}`
+		)
+	}
+	const started = Promise.withResolvers<void>()
+	const stopped = Promise.withResolvers<void>()
+	const release = Promise.withResolvers<void>()
+	let waits = true
+	const backend = agentText(async (_, signal) => {
+		if (waits) {
+			started.resolve()
+			signal.addEventListener('abort', () => stopped.resolve(), { once: true })
+			await release.promise
+		}
+		return { type: 'final', text: 'ready' }
+	})
+	const host = await start(root, undefined, backend)
+	const running = host
+		.dispatch('work', { requestId: 'one', prompt: 'wait' })
+		.catch((error) => ({ error }))
+	await started.promise
+	let closing: Promise<void> | undefined
+	if (action === 'dependency') {
+		await writeFile(join(root, 'src/settings.ts'), 'export const initial = 10')
+	} else if (action === 'reload') {
+		const entry = join(root, 'src/app.ts')
+		await writeFile(entry, (await readFile(entry, 'utf8')).replace('count: 0', 'count: 10'))
+	} else closing = host.close()
+	try {
+		await stopped.promise
+		let settled = false
+		void (closing ?? running).then(() => {
+			settled = true
+		})
+		await new Promise((done) => setTimeout(done, 20))
+		expect(settled).toBe(false)
+	} finally {
+		waits = false
+		release.resolve()
+	}
+	if (action !== 'close') expect(await running).toEqual({ cancelled: true })
+	else await running
+	await closing
+	if (action !== 'close')
+		await expect
+			.poll(() => host.dispatch('work', { requestId: 'two', prompt: 'go' }))
+			.toEqual({ text: 'ready' })
 }, 30_000)
