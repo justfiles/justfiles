@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.17.0...app-v0.18.0) (2026-09-12)
+
+
+### Features
+
+* **app:** run dev agents through local model backends ([#652](https://github.com/xiaoxinghu/justfiles/issues/652)) ([8dabe00](https://github.com/xiaoxinghu/justfiles/commit/8dabe0044a576666264d3f6521cfc3720222d373))
+
 ## [0.17.0](https://github.com/xiaoxinghu/justfiles/compare/app-v0.16.0...app-v0.17.0) (2026-09-11)
 
 
