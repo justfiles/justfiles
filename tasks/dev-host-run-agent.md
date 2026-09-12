@@ -3,9 +3,31 @@ project: platform/ai
 status: todo
 ---
 
-# Dev host: delegated tasks using the developer's AI tools
+# Dev host: CLI-backed model providers for the JustFiles agent
 
-Plan updated 2026-09-12. Extend the standalone Vite dev host so apps can use `ai.runAgent` and `ai.cancelAgent` with the developer's existing AI tools. Learn is the first consumer: research a topic, read existing learning files, write a candidate lesson, and return a final reply. Keep the published app API and `generateText` behavior unchanged.
+Plan updated 2026-09-12. Extend the standalone Vite dev host so apps can use `ai.runAgent` and `ai.cancelAgent` through JustFiles' internal Pi agent. A developer-installed CLI supplies one model response at a time and manages its own authentication. Learn is the first consumer: research a topic, read learning files, write a candidate lesson, and return a final reply. Keep the published app API and existing `generateText` behavior unchanged.
+
+## Architecture and decisions
+
+The AI capability is the app's access to AI infrastructure. `runAgent` is a harness operation: JustFiles defines the tools, executes them, and owns the conversation, permissions, limits, and cancellation. The CLI-backed provider adapts request/response text into Pi's model interface.
+
+```text
+App calls ai.runAgent
+  JustFiles creates an internal Pi agent
+    provider encodes conversation + tool schemas
+      selected CLI produces one response using its existing login
+    provider decodes final text or a requested tool call
+  Pi executes requested tools and repeats until finished
+App receives the final reply
+```
+
+- Preserve `runAgent({ requestId, prompt })` and `cancelAgent({ requestId })`. No workspace argument, new scopes, durable sessions, jobs, polling, or public streaming API.
+- A delegated task inherits all of the calling app's declared capability bindings, with that app's identity and scopes. It may inspect other folders and use other capabilities the app already has. A path in a prompt does not reduce those permissions.
+- Apps own task instructions and file layouts. Learn asks the agent to put teaching proposals in a candidate folder and leave learner notes/progress alone, then validates and publishes candidates itself. These are app workflow rules, not a platform filesystem sandbox.
+- Run the harness and provider adapter on the developer's machine. Use the CLI's existing login and model configuration; the CLI owns credential storage and refresh. No credential extraction, shared token store, separate model account, or JustFiles-hosted service is required.
+- Reuse existing backend discovery, explicit selection, and one-shot text adapters. Keep CLI-specific launch details contained; share the conversation/response codec across backends.
+- The CLI must run with its own tools and ambient customizations disabled, with fresh context for each request. App tools are described in the prompt and executed only by the internal Pi agent. No MCP callback bridge, CLI extension, or app capability endpoint is needed.
+- HTTP endpoints and custom text functions can also feed this provider codec. They do not need their own agent loop. Preserve their existing text support; advertise agent support when the response protocol and cancellation contract are verified. A native model adapter can be added independently if useful, but is not required for this change.
 
 ## Existing implementation
 
@@ -13,79 +35,79 @@ The local text workflow was introduced in commit `c28798921`, **feat(app): add l
 
 | Source | Existing responsibility |
 | --- | --- |
-| [devAi](../packages/app/vite.ts) | Opt-in Vite plugin; defaults to automatic backend selection. |
-| [Dev AI adapter](../packages/app/capabilities/ai/dev.ts) | Detects Pi, Claude Code, Codex, Ollama, and LM Studio; accepts an explicit CLI, HTTP URL, or text function. Launches CLIs with the developer's environment and collects final output. |
-| [Dev adapter tests](../packages/app/capabilities/ai/dev.test.ts) | Backend order, missing-backend guidance, subprocess errors, HTTP completion, and text capability behavior. |
-| [Dev server](../packages/app/dev-server.ts) | Registers the AI capability with the kernel and provides persistent `.justfiles/dev/` storage. |
-| [AI capability](../packages/agent/ai.capability.ts) | Existing delegated-request admission, scope checks, cancellation, timeout, and cleanup semantics. |
-| [Delegated runner](../packages/agent/run-agent.ts) and [app tool](../packages/agent/app-tool.ts) | Fresh context, research tools, bounded execution, and invocation of the calling app's capabilities. |
-| [Capability call](../packages/app/capabilities/types.ts) | Trusted app identity, bindings, and an invocation callback supplied by the executing kernel. |
+| [devAi](../packages/app/vite.ts) | Opt-in Vite plugin with automatic or explicit backend selection. |
+| [Dev AI adapter](../packages/app/capabilities/ai/dev.ts) | Finds Pi, Claude Code, Codex, Ollama, and LM Studio; accepts a CLI, HTTP URL, or text function. Spawns CLIs with the developer's environment and collects final output. |
+| [Dev adapter tests](../packages/app/capabilities/ai/dev.test.ts) | Discovery order, custom functions, subprocess errors, HTTP completion, and text capability behavior. |
+| [Dev server](../packages/app/dev-server.ts) | Registers capabilities with the kernel and persists `.justfiles/dev/` storage. |
+| [AgentBackend](../packages/agent/llm.ts) and [Pi construction](../packages/agent/llm.agent.ts) | Inject model operations through `streamFn` and `completeFn`; the agent object does not need credentials. |
+| [AI capability](../packages/agent/ai.capability.ts) | Request admission, scope checks, cancellation, timeout, and cleanup. |
+| [Delegated runner](../packages/agent/run-agent.ts) and [app tool](../packages/agent/app-tool.ts) | Fresh context, research tools, execution limits, and invocation of the app's bindings. |
+| [Capability call](../packages/app/capabilities/types.ts) | Trusted app identity, bindings, and invocation callback supplied by the kernel. |
 
-The current CLI path already uses developer-installed tools and their normal authentication. Pi text calls disable tools; Codex uses an ephemeral read-only invocation and a final-message file. The shared subprocess helper has no cancellation or tool bridge. The HTTP path performs one chat-completion request. In SDK 0.17.0 the dev capability explicitly returns unavailable for both agent methods.
+In SDK 0.17.0 the dev capability returns unavailable for both agent methods. The existing text transport lacks cancellation and a structured tool-response codec. Its automatic CLI selection checks PATH availability, not authentication or model readiness. Pi text calls already disable tools; the existing Claude invocation needs stronger isolation, and Codex's read-only sandbox alone does not disable tool execution.
 
-## Decisions
+## Feasibility proof
 
-- Preserve `runAgent({ requestId, prompt })` and `cancelAgent({ requestId })`. No workspace argument, new scopes, durable sessions, jobs, polling, or streaming API.
-- A delegated task inherits all of the calling app's declared capability bindings, with that app's identity and scopes. It may inspect other folders and use other capabilities the app already has. A path in a prompt does not reduce those permissions.
-- Apps own task instructions and file layouts. Learn asks the agent to put teaching proposals in a candidate folder and leave learner notes/progress alone, then validates and publishes candidates itself. These are app workflow rules, not a platform filesystem sandbox.
-- Reuse CLI discovery, explicit selection, developer authentication, and final-output handling. Do not copy authentication into app files or require a separate model account for development.
-- Support agent execution through the existing Pi, Claude Code, and Codex choices. Keep HTTP URLs and custom `GenerateText` functions text-only initially; they do not supply an agent/tool loop. Report this limitation clearly rather than treating a text completion as an agent task.
-- Keep the core small: one capability adapter, one active-request map, and contained CLI-specific launch/transport code. The CLI supplies its agent loop. Reuse lifecycle/tool behavior from the host implementation without adding a dependency cycle from `@justfiles/app` back to the whole `@justfiles/agent` package.
+A temporary end-to-end test on 2026-09-12 used the installed Claude CLI as the text backend for an in-memory Pi `Agent`. Each subprocess used print mode, an empty built-in tool set, strict MCP configuration, safe mode, and disabled session persistence. The request carried the conversation and a synthetic `lookupFixture` tool schema; a prompt specified the JSON response protocol. Authentication stayed inside Claude.
+
+The first CLI response requested the tool. The internal Pi agent executed it and generated an unpredictable fixture value. A second, fresh CLI invocation received the updated conversation and tool result, then returned that exact value as its final answer. Assertions passed: two model requests, one tool execution, and a matching final answer. This proved the text-provider loop; it did not verify real app permissions, cancellation, or the packaged dev server.
+
+Pi was found first on PATH but its saved login failed to refresh with `invalid_refresh_token`. Claude was usable. This demonstrates why agent backend resolution must check readiness. Pi and Codex still need the same authenticated round-trip proof before their adapters are advertised as supported. The temporary test made no repository code changes.
 
 ## Implementation
 
-### 1. Prove a CLI can call back into the app
+### 1. Adapt one-shot text into Pi model responses
 
-Start with one installed CLI and a tiny fixture app. Inspect the CLI's current supported noninteractive tool-extension interface before choosing flags or a transport. Prove a fresh process can read through one app volume binding, write through another, research a public page, and return final text. Do not infer write support from a successful text response.
+Wrap the resolved text backend at the existing `AgentBackend` boundary. Implement a shared codec and Pi-compatible `streamFn`; retain `completeFn` where required by that contract. Keep the public `generateText` path unchanged.
 
-Expose the existing app capability tool through the CLI's supported tool mechanism, such as MCP or a bundled extension. Keep the transport internal to the dev adapter. The bridge must:
+- Encode the system prompt, ordered conversation, tool names/descriptions, and parameter schemas into each request. Preserve roles, tool-call IDs, results, and errors. Treat retrieved content as data within the conversation. Each CLI invocation receives the full current context; it never resumes a developer session.
+- Use a minimal discriminated JSON response: `{ type: "tool_call", name, arguments }` or `{ type: "final", text }`. Start with one tool call per response, matching the runner's sequential execution. The provider returns a request to use a tool; it never executes that tool.
+- Parse and validate the response before emitting Pi content. Map a valid request to a `toolCall` with an adapter-generated unique ID and `stopReason: "toolUse"`; map a final answer to text with `stopReason: "stop"`. Validate names against the supplied tools and arguments against their schemas. Reject malformed or ambiguous output without executing it or replaying the task.
+- Where a CLI supports a final-output JSON schema, use it to improve reliability. A CLI's JSON event-output mode alone is not this response protocol; decode its result envelope separately. Never infer tool calls from ordinary prose or execute model-generated shell text.
+- A buffered response is sufficient: return Pi's event stream with a terminal message after the subprocess finishes. Encode transport failures and aborts as Pi error/aborted events, following the `StreamFn` contract. Token-by-token streaming is not required for the app API.
+- Support the text conversation and tool results needed by Learn first. Preserve the existing app tool's bytes/bigint encoding. Reject unsupported content types clearly instead of silently losing information. Bound input and captured output; do not silently truncate context or claim model metadata the CLI does not expose.
 
-- Take bindings and the invocation callback from `ctx.app`, supplied by the kernel. Tool requests provide the binding name, method, and arguments; they cannot choose another app identity or invent grants.
-- Preserve the app tool's API-reference discovery and encoding for bytes and bigint values.
-- Route app data operations through `ctx.app.invoke`, so reads/writes use the existing capability implementations and the same persistent dev volume. Do not write directly into storage internals or create a second filesystem copy.
-- Provide research tools with the existing public-page retrieval behavior. Keep unrelated ambient CLI plugins, project instructions, and host filesystem tools out of the app tool surface; CLI authentication is separate from the task's authority.
-- Bind any temporary IPC endpoint/configuration to the active invocation and dispose it afterwards. If loopback transport is needed, restrict and authenticate it; it must not become an unprotected capability endpoint on the Vite server.
+The tradeoffs are subprocess startup on every model turn, repeated context serialization, and model adherence to the JSON protocol. These are acceptable for the initial local workflow; the adapter boundary leaves room for a native model provider later.
 
-The acceptance case must read two folders accessible to the app, including one outside the prompt's suggested output folder. This establishes permission inheritance while still demonstrating that the task follows the requested output layout.
+### 2. Resolve a usable backend and contain CLI behavior
 
-### 2. Extend backend resolution and capability dispatch
+Keep the public `devAi()` selection forms and existing text behavior. Reuse the candidate order for agent requests, adding a bounded readiness check when the agent backend is first needed. Cache the result for the dev-server lifetime rather than running inference on every GUI refresh.
 
-Keep the existing public `devAi()` options and text backend selection order. Add an optional agent execution function to the internal resolved backend, taking the prompt, trusted app tool context, and an abort signal. Keep CLI arguments for text generation and agent execution separate.
+- In automatic mode, skip unusable candidates with a concise reason, then try the next candidate. In explicit mode, report the selected backend's error. Distinguish missing executable, unsupported flags/mode, login failure, and model/response failure. Keep one selected backend for the active task; do not restart a partially completed task on another backend.
+- Confirm version-specific one-shot flags for Pi, Claude Code, and Codex. Disable CLI-owned tools, MCP servers, extensions/plugins, hooks, skills, and project-context loading while retaining authentication and necessary model configuration. Use a neutral temporary working directory and ephemeral invocation. A prompt asking the CLI not to use tools, or a read-only sandbox, is insufficient by itself.
+- Begin with the Claude mode exercised by the proof. Verify equivalent Pi and Codex modes rather than assuming the existing text flags provide isolation. If a CLI version cannot supply the required behavior, report it as unavailable for agent requests and continue automatic selection.
+- Extend the subprocess/HTTP boundary with abort support without breaking existing text callers. Custom functions need an explicit abort-aware agent path; do not advertise cancellation for an uninterruptible function. Keep HTTP and custom-function support behind the same codec and contract tests, without introducing a second agent loop.
+- Package any required local assets with the released SDK. Developers should select an installed backend or supply an existing configuration/function, without a platform checkout or manually managed credentials in app files.
 
-Complete adapters for Pi, Claude Code, and Codex using the transport established above. Package their bridge/extension assets with the released SDK; standalone apps must not need a platform checkout. Verify each CLI can run without interactive terminal questions using its existing login and explicitly supplied app tools. If a required CLI feature/version is missing, name it in the error rather than silently changing backend or permissions.
+### 3. Share the JustFiles harness and lifecycle
 
-Replace the dev capability's agent-method stubs. Check the `agent` AI scope, validate inputs, and require trusted app context. An unsupported backend still returns `CAPABILITY_UNAVAILABLE`; rejected overlapping requests use the existing capability error semantics. Startup diagnostics distinguish text support from agent support. Missing CLI/login errors should remain actionable.
+Replace the dev capability stubs with the shared AI capability and delegated runner, supplying the CLI-backed model backend and the dev host's research fetch implementation. Keep one implementation of request admission, tool execution, and lifecycle behavior.
 
-### 3. Match request lifetime and cancellation
+Resolve the package boundary before wiring it: `@justfiles/agent` already depends on `@justfiles/app`. Use the smallest shared runner extraction or separate dev integration package that avoids a reverse dependency cycle. A new subpath export alone does not remove that cycle. Keep CLI process code in the Node dev-server path and out of app/GUI bundles.
 
-Follow the existing host lifecycle, sharing small reusable pieces where practical:
+- Check the `agent` scope and inputs, and take app metadata from trusted `ctx.app`. Tool invocations use the supplied bindings and `ctx.app.invoke`; the model cannot select another app identity or invent grants. Preserve API-reference discovery, capability argument encoding, and public-page retrieval restrictions.
+- Register one active request per app before asynchronous backend setup. Keep execution state in memory, reject overlaps, and retain fresh context for each `runAgent` call. Learn supplies any relevant saved history in its prompt.
+- Preserve cancellation by app identity and request ID. Repeated cancellation is safe; unknown, stale, and other-app IDs cannot stop new work. Abort backend setup, model transport, and research. Stop scheduling tools and wait for in-flight capability operations to settle before releasing the slot.
+- Preserve the ten-minute deadline and 50-tool-execution limit in the JustFiles runner. The original call resolves with `{ cancelled: true }` for user cancellation; ordinary failures and timeouts reject. Completed capability writes survive failure/cancellation.
+- Terminate and reap active subprocesses, including descendants where needed, and clear timers and temporary files in `finally`. Bound diagnostics and return only the completed assistant reply to the app.
 
-- Register one active request per app before asynchronous setup. Keep the request ID, abort controller, child process, and bridge handles only in memory. Reject overlaps; do not queue or automatically retry tasks.
-- Every invocation starts with fresh model context. Do not resume a developer conversation or automatically load Learn's saved conversations; Learn supplies relevant history in its prompt.
-- `cancelAgent` only affects the matching active request for the calling app. Repeated cancellation is safe; unknown, stale, and other-app IDs cannot stop new work.
-- Abort setup, research, and the subprocess. Stop accepting new tool calls immediately, terminate child processes as needed, and wait for in-flight capability operations to settle before releasing the app's slot. Cancellation resolves the original call with `{ cancelled: true }`; ordinary failures and timeouts reject.
-- Apply the existing ten-minute and 50-tool-execution limits. Count tools at the bridge so CLI defaults cannot silently evade the limit. Bound captured output and preserve a useful final error without dumping credentials or tool traces into the app response.
-- Close bridges, timers, temporary configuration/output files, and process handles in `finally`. Return the completed assistant reply only. Completed capability writes survive failure/cancellation.
+### 4. Integrate, document, and release
 
-### 4. Integrate dev-server lifecycle and package the change
+Wire the provider through the current dev server's capability registration and persistent volume. Add disposal on server shutdown and headless-app reload: stop active work and drain operations before replacing the kernel context. Restarting the server must show saved files with no active requests and must never replay an interrupted call. Preserve normal GUI refresh behavior.
 
-Wire the adapter through the current dev server's capability registration. The trusted app callback already points back to the executing kernel; do not introduce an agent-specific volume grant or let the prompt select a disk root.
-
-Add explicit disposal for server shutdown and headless-app reload. Stop active children and reject new bridge calls before disposing/replacing their kernel context; drain in-flight operations. Restarting the server must show saved files with no active requests and must never replay an interrupted call. Preserve ordinary GUI refresh behavior and persistent storage.
-
-Document backend prerequisites and unsupported text-only backends in the standalone authoring docs and template README. Verify package contents from an installed/tarball SDK in a standalone fixture, then release through the normal SDK publication workflow. Learn can upgrade to the exact released version afterwards.
+Document selection, supported CLI versions/modes, readiness failures, response/cancellation requirements for custom backends, and the text-protocol tradeoffs. Verify the SDK from an installed tarball in a standalone fixture, then use the normal publication workflow. Learn can upgrade to the exact released version afterwards.
 
 ## Verification and acceptance
 
-Use Vitest with fake process/transport boundaries for deterministic coverage; keep real authenticated CLI smoke tests explicit and outside unattended unit tests.
+Use Vitest with fake text/process boundaries for deterministic coverage. Keep authenticated CLI smoke tests explicit and outside unattended unit tests.
 
-- Existing `generateText`, backend selection, and error tests still pass unchanged in behavior.
-- Each CLI adapter sends a fresh request, registers the app tools, returns only the final reply, and cleans up on success, launch failure, malformed output, and cancellation.
-- Through real app procedure and command dispatch, tool calls retain the calling app's identity and scopes. Test multiple volume bindings, access across folders, an inherited non-filesystem capability, undeclared-binding rejection, and two apps with different grants.
-- Exercise busy handling, cancellation during setup/model/tool execution, stale IDs, timeout/tool limits, and cancellation racing completion. A slow write must settle before a replacement request can start.
-- Under the real dev server, research a public source and write a file through the app capability. The GUI must read it through its normal procedure, remain responsive, and expose Stop.
-- Restart the server after a completed write and after cancellation. Verify file persistence, empty execution state, and no replay. Verify shutdown/reload leaves no child process or bridge serving a stale app callback.
-- Smoke-test each advertised CLI backend using the developer's existing login. A model server or text function must continue to support text and explain why agent execution is unavailable.
-- Run the repository checks appropriate to the implementation and verify the published SDK bundle has all required bridge assets, with no workspace-only imports.
+- Existing `generateText`, explicit selection, and text discovery/error behavior remain compatible.
+- Test the provider's full context encoding and JSON decoding, including multiline/escaped text, tool results/errors, unknown tools, invalid arguments, malformed output, unsupported content, output bounds, and Pi terminal/error events. Invalid responses must cause no tool execution.
+- Reproduce the proof with the real Pi agent: a fake or real text backend requests a tool, only Pi executes it, the next model request includes its result, and the final answer uses it. Verify each advertised CLI with its own tools/customizations disabled and its existing login.
+- Test automatic selection past an installed but unusable CLI, explicit-backend errors, cached readiness, and cancellation during readiness checks. Do not switch backends or replay a task after tool execution begins.
+- Through real app procedure/command dispatch, verify inherited identity and scopes across multiple volume bindings, a folder outside the prompt's suggested output directory, an inherited non-filesystem capability, undeclared-binding rejection, and two apps with different grants.
+- Exercise busy handling, cancellation during model/tool execution, stale IDs, timeout/tool limits, and completion races. A slow write must settle before a replacement request can start. No cancelled subprocess response may initiate a later tool call.
+- Under the real dev server, research a public source and write a file through an app capability. The GUI reads it through its normal procedure, stays responsive, and exposes Stop. Restart after completion and cancellation to verify persistence, empty execution state, and no replay or orphan processes.
+- Run repository checks appropriate to the implementation and verify the published SDK contains the shared runner and provider code without workspace-only imports or a dependency cycle.
 
-Done means a standalone app can research, inspect its existing data, author files, stop an invocation, and reopen saved results using the released dev host. Learn's lesson formats, prompts, candidate validation, MDX renderer, and publication behavior remain Learn implementation work.
+Done means a standalone app can research, inspect its data, author files, stop an invocation, and reopen saved results through the released dev host. The developer's CLI supplies model responses and owns authentication; JustFiles' Pi agent owns the task. Learn's lesson formats, prompts, candidate validation, MDX renderer, and publication behavior remain Learn implementation work.
