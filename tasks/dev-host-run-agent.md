@@ -1,6 +1,6 @@
 ---
 project: platform/ai
-status: active
+status: done
 ---
 
 # Dev host: CLI-backed model providers for the JustFiles agent
@@ -139,6 +139,9 @@ for the readiness conversation. This is reported without starting app work;
 saved CLI settings were not changed. Pi 0.84.4 failed OAuth refresh, and Codex
 0.153.4 has no verified tool-free mode, so both remain text-only.
 
-The remaining release step is the normal App release-please version/tag and
-`publish-app` workflow after the implementation is merged. No npm version has
-been published from this branch.
+Released as `@justfiles/app@0.18.0` through the normal release-please and
+`publish-app` workflow. Implementation PR #652 and release PR #653 are merged.
+All 2,359 repository tests, local typechecks, Linux CI checks, and the SDK build
+passed. The published package was installed in the standalone fixture.
+
+Release: https://github.com/xiaoxinghu/justfiles/releases/tag/app-v0.18.0
