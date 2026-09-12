@@ -1,26 +1,32 @@
 ---
 name: testing
-description: Test and verify changes in the Justfiles monorepo. Use after any file change, when a user asks to run tests or verify work, after a Frieren UI change, or after a change to the browser sandbox worker or reducer frame.
+description: Verify Justfiles code, configuration, generated artifacts, and executable examples. Use for these changes or explicitly requested checks.
 ---
 
 # Test changes
 
-During development, run a focused test when it gives faster feedback:
+Choose checks for the affected packages and behavior. Use package typecheck scripts,
+Biome on changed files, and focused tests. Include affected dependents when shared
+contracts change. For example, run a focused test from the repository root:
 
 ```sh
 pnpm run test packages/fs/watch.test.ts
 ```
 
-Before completion, run all required checks from the repository root:
+Broaden verification when shared impact, failures, or unresolved concerns justify it.
+Before opening a code PR, complete the repository-wide checks required by
+`.github/workflows/ci.yml` from the repository root:
 
 ```sh
-pnpm run format
 pnpm run typecheck
-pnpm run lint:fix
+pnpm run lint
 pnpm run test
 ```
 
-Review changes from `format` and `lint:fix`. Fix each failure, then run the failed command again.
+Fix failures caused by the requested change and rerun affected checks. Report unrelated
+failures. Repeat passing checks only after relevant changes. Scope formatting and
+autofixes to changed files and review their diffs; the root `format` and `lint:fix`
+scripts rewrite files across the repository.
 
 ## Check the Frieren UI
 

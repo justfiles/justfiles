@@ -1,32 +1,39 @@
-IMPORTANT: keep code minimal
-It's very important to keep the core mechanic simple and lean. We can write complex code, as long as it is contained, e.g. complex UI logic. The core of how things work should be as lean as possible.
+# Design
+
+Implement the smallest solution that fully satisfies the request. Keep core mechanics
+and exported APIs small; contain necessary complexity within the relevant module.
+Avoid speculative features and abstractions. Introduce an abstraction only when it
+makes the current implementation easier to understand or maintain.
 
 # Tools
-use pnpm for package management.
-use node as the JS runtime (node directly runs TypeScript via the built-in
-strip-types loader; package.json scripts go through `pnpm run`/`pnpm dlx`).
-use vitest as the test runner.
 
-use tab for indentation.
+Use pnpm for package management and `pnpm run` for package.json scripts.
+Use node as the JS runtime; it runs TypeScript directly via built-in type stripping.
+Use `pnpm dlx` for one-off package commands and vitest as the test runner.
+
+Use tabs for indentation.
+
+# Verification and completion
 
 Documentation-only changes do not require formatting, linting, typechecking, or tests.
-Run verification only when the change affects code, configuration, generated artifacts,
-or executable examples.
+For code, configuration, generated artifacts, or executable examples, run checks
+appropriate to the affected packages and behavior. Complete mandatory checks.
+Broaden verification when shared impact, failures, or unresolved concerns justify it;
+repeat passing checks only after relevant changes.
 
-# Coding Rules
+For implementation requests, continue until the requested behavior works and relevant
+verification is complete. Fix failures caused by your changes and rerun affected
+checks. If blocked, report the specific blocker and what remains unfinished.
 
-## Simplicity First.
-Minimum code that solves the problem. No speculative features. No abstractions for single-use code. If a senior engineer would call it overcomplicated — simplify.
+# Worktrees
 
-## Be Very Stingy on interfaces
-Keep the module surface to the absolutely minimal. think: do we absolutely have to expose this? Only add to interface when it will break the design otherwise.
+Before editing repository files, inspect the current branch and existing worktrees.
+Reuse the worktree for the task's branch when available; otherwise create a branch
+and worktree. Never edit directly on `main`.
 
-## Create a worktree
-Once we are ready to make changes to the code, create a branch and a worktree and make changes in there. Unless it's a change to an existing branch, then switch to that worktree. Check whether the branch/worktree exists before creating. Do not change directly on main.
-
-After creating a worktree, seed the git-ignored local dev files — `git worktree`
-only checks out tracked files, so these are missing and local runs break without
-them. Copy each from the main checkout into the same path in the new worktree:
+Seed newly created worktrees with the git-ignored local dev files below; `git worktree`
+only checks out tracked files. Copy them from the main checkout into the same paths,
+copying only files missing from the destination:
 
 - platform/frieren/.env
 - platform/frieren/.dev.vars
@@ -35,21 +42,21 @@ them. Copy each from the main checkout into the same path in the new worktree:
 - platform/worker/.dev.vars
 - platform/worker/.agent
 
-## About Pull Requests
-After addressed a PR feedback left by @codex, tag codex for re-review at the end of the comment, like so: "@codex review".
+# Pull requests
+
+After addressing PR feedback from @codex, end the response comment with `@codex review`.
 
 # Building an app
 
-The app should follow this path convention: apps/<name>. See existing apps as examples.
-If trying to create a new app, use the packages/create-app/ template.
+Consult `docs/app.md` when the task depends on app structure, behavior, or integration
+contracts. Apps live in `apps/<name>`; use existing apps as examples.
+For a new app, use the `packages/create-app/` template:
+
 ```
 node packages/create-app/index.js apps/<name>
 ```
 
-Before making changes to the app, read docs/app.md to learn how to make an app.
-ONLY read the doc when you are asked to create/modify an app.
-
-# TypeScript config
+# Adding packages or changing TypeScript configuration
 
 Every package extends a shared base from `packages/tsconfig`, and gets its own
 `typecheck` script — turbo runs them all (`pnpm typecheck`), so a new package is
