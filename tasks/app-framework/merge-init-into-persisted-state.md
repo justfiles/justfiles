@@ -23,10 +23,16 @@ const hydrate = (saved: unknown): State =>
 	: isPlainObject(init) && isPlainObject(saved) ? { ...init, ...saved } as State
 	: saved as State
 
-dispatch(message, ctx)        → machine.step(hydrate(ctx.state), message)
+dispatch(message, ctx)        → next = hydrate(machine.step(hydrate(ctx.state), message).state)
+                                 subscriptions = computeSubs(next); return { state: next, ... }
 runProcedure(name, params, h) → handle.state = hydrate(h.state)
 subscriptions(state)          → computeSubs(hydrate(state))
 ```
+
+Both ends of a transition are hydrated. Input, so the edge never sees a missing field; output, so a
+transition that builds a fresh object and omits an `init` field cannot publish, persist, or feed
+the subscription diff with that field absent. The persisted file therefore always carries every
+`init` key after its first commit.
 
 Breaking, bundle and sandbox contract (`app.ts`, `kernel.ts`, `sandbox.ts`): the snapshot path
 must hydrate too, or a GUI mounted from `kernel.state()` sees the raw saved object until the

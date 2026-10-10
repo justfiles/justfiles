@@ -39,7 +39,7 @@ Additive, design:
 ```css
 /* @justfiles/design/mac.css */
 :where(dialog) { /* panel: surface, rule, radius, shadow, typography */ }
-:where(dialog::backdrop) { /* dim */ }
+:where(dialog)::backdrop { /* dim; a pseudo-element cannot sit inside :where() */ }
 :where(dialog form[method="dialog"] menu) { /* button row */ }
 ```
 

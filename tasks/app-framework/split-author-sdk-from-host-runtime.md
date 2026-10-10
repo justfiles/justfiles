@@ -56,7 +56,10 @@ The root `index.ts` of the author package stops re-exporting `kernel`, `createAp
 
 Dependencies follow the code: `capnweb`, `fflate`, `es-module-lexer`, `pi-agent-core`, `pi-ai`,
 `typebox`, and `vite` as a peer move to the host package. The author package keeps
-`@standard-schema/spec`, `@justfiles/design`, `type-fest`, and the optional `react` peers.
+`@standard-schema/spec`, `@justfiles/design`, `@justfiles/fs`, `type-fest`, and the optional
+`react` peers. `@justfiles/fs` stays because the author-facing volume contract is defined as a
+`Pick` over its `Volume` type and `capabilities/core.ts` names it in exported types; making those
+contracts self-contained is a separate change.
 
 ## Why
 
