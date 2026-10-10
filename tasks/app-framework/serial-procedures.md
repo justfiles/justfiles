@@ -74,6 +74,12 @@ writeFile(path, data, opts?: {
 // `stat(path).contentHash` already returns the value to pass.
 ```
 
+Host side (`capabilities/volume/host.ts`): `writeFile` creates missing parents unless `update` is
+set or `parents` is `false`. A non-null `ifHash` means "the file must still exist", so it is an edit
+for that purpose too: no parent creation. Otherwise a conditional write whose parent another writer
+has just removed would recreate the directory and then fail with `ESTALE`, mutating the tree on a
+write that did not land.
+
 ## Why
 
 - **Ordering belongs next to the operation it protects.** A procedure that appends to a file or

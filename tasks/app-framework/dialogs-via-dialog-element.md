@@ -29,6 +29,17 @@ mount(el, state, ctx: { transport: Transport })                 // no `dialog?: 
 // iframe bridge
 interface FrameHost { invoke; onError?; onMessage? }            // no `dialog`
 // removed wire messages: 'dialog', 'dialogResult', 'dialogError'
+
+// guiFrameScript: Escape is forwarded to the host only when no modal dialog is open.
+// Today the host dialog keeps focus outside the frame, so Escape never reaches
+// this listener while a dialog is up. With <dialog> inside the frame, the same
+// keypress would close the dialog AND post 'escape', and the Mac host turns that
+// into a keydown that closes the attached-agent sheet.
+window.addEventListener('keydown', (event) => {
+	if (event.key !== 'Escape') return
+	if (document.querySelector('dialog:modal')) return   // the dialog owns this Escape
+	port.postMessage({ type: 'escape' })
+}, true)
 ```
 
 Breaking, hosts: remove only the per-app path. Frieren's dialog store also serves the shell's own
