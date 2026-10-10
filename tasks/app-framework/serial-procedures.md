@@ -47,14 +47,22 @@ Docs (`docs/app.md`), new short section "Concurrency":
   state.
 - Procedures run concurrently with each other and with dispatches, and `app.state` is a snapshot.
   Mark read-modify-write procedures `serial`, or make them idempotent and use exclusive writes.
-- In Frieren a browser kernel and a server kernel can act on the same app. Serialization is per
-  kernel. Cross-kernel safety comes from the volume: `exclusive: true` for a create that must not
-  replace, and a conditional overwrite for a read-modify-write.
+- In Frieren a browser kernel and a server kernel can act on the same app, and they do not share
+  a volume: the browser kernel writes a synced local replica, the server kernel writes the
+  authority, and sync merges the two last-writer-wins. Serialization, `serial`, `exclusive`, and
+  `ifHash` are all per kernel. None of them orders a write on one replica against a write on the
+  other. The framework offers no cross-kernel lock or compare-and-swap today, and this task does
+  not add one. Procedures that both kernels may run should therefore be idempotent, write
+  distinct files, or accept that a true concurrent edit of one file across kernels resolves
+  last-writer-wins. An authority-mediated CAS would be a sync-layer change and belongs in its own
+  task if a real case appears.
 
-Additive, volume contract (`capabilities/volume/contract.ts`): the conditional overwrite is not
-reachable from an app today. The underlying `Volume.writeFile` accepts `ifHash`, and the kernel's
-own state store uses it, but the app-facing options expose only `exclusive`, `update`, and
-`parents`. Expose it, otherwise the guidance above asks for something authors cannot do:
+Additive, volume contract (`capabilities/volume/contract.ts`): within one kernel, the conditional
+overwrite that a read-modify-write needs is not reachable from an app today. The underlying
+`Volume.writeFile` accepts `ifHash`, and the kernel's own state store uses it against the same
+volume, but the app-facing options expose only `exclusive`, `update`, and `parents`. Expose it,
+with its scope stated: it guards the row this kernel sees, which covers the GUI and agent racing
+on the same kernel, and nothing across replicas.
 
 ```ts
 writeFile(path, data, opts?: {

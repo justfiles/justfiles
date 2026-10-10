@@ -38,7 +38,11 @@ AppInspection.state: unknown      // no `?? null`
 ```
 
 Host contract, written down in `docs/app.md`: a host mounts a GUI only with a value obtained from
-`kernel.state()` or a state push, never with `null`.
+`kernel.state()` or a state push, never with `undefined` and never with a sentinel of its own. The
+guarantee is "never missing", not "never null": `State` is unconstrained, so an app whose own state
+type includes `null` can legitimately persist and receive `null`, and `GUIState<A>` then includes
+it because the app said so. What this task removes is the framework's extra `| null`, which the
+app did not declare and which no host ever produces.
 
 Docs: drop the "state is nullable" paragraphs from the README, `docs/app.md`, and the authoring
 skill. Templates lose `state?.count ?? 0` in favour of `state.count`.

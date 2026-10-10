@@ -63,7 +63,10 @@ if (msg.type === 'hydrate')
 ```
 
 The legacy branch tests `!== undefined`, not `??`: a bundle whose state is JSON `null` must keep
-`null`, as the kernel distinguishes absence by `undefined` today.
+`null`, as the kernel distinguishes absence by `undefined` today. The same rule applies inside the
+machine: `buildMachine.step` currently runs the transition on `state ?? init`, which would turn a
+legitimate `null` state back into `init` on the first dispatch after a snapshot. It changes to
+`state === undefined ? init : state`. `undefined` is the only value that means "nothing saved".
 
 The fallback is not optional. Installed bundles carry the SDK they were built with, in the volume,
 and a host upgrade does not rebuild them. A bundle built before this change exposes `initialState`
