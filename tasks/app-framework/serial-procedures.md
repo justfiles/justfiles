@@ -24,10 +24,20 @@ p.procedure({
 	audience?,
 	serial?: boolean   // default false
 })
-// ActionMeta is unchanged; `serial` is execution policy, not interface metadata.
+
+// ActionMeta — the kernel learns about procedures only through Sandbox.actions(),
+// so the flag has to ride here to cross the sandbox boundary.
+interface ActionMeta {
+	kind: 'handler' | 'procedure'
+	audience?: ProcedureAudience
+	serial?: true        // procedures only; the agent command ignores it
+	...
+}
 ```
 
-Kernel (`kernel.ts`): a second per-app lane for serial procedures. A serial procedure waits for
+Kernel (`kernel.ts`): `proceduresOf(appId)` already reads the action meta once per app; it
+records the serial set alongside the procedure set, and `dispatch` routes a serial procedure onto
+a second per-app lane. A serial procedure waits for
 the previous serial procedure of the same app to settle, never for reducer dispatches or for
 non-serial procedures, so it cannot deadlock against its own `app.dispatch` or `app.settled`.
 

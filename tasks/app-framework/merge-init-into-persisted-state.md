@@ -14,10 +14,10 @@ before it reaches a transition, a procedure, or `subscriptions`.
 
 ## Proposed change
 
-Behavioural change inside `defineApp` (`sdk.ts`), no type change:
+One hydrate function, owned by the bundle because only the bundle knows `init`:
 
 ```ts
-// one hydrate, applied at the three places state enters app code
+// sdk.ts — inside defineApp
 const hydrate = (saved: unknown): State =>
 	saved === undefined ? init
 	: isPlainObject(init) && isPlainObject(saved) ? { ...init, ...saved } as State
@@ -27,6 +27,25 @@ dispatch(message, ctx)        → machine.step(hydrate(ctx.state), message)
 runProcedure(name, params, h) → handle.state = hydrate(h.state)
 subscriptions(state)          → computeSubs(hydrate(state))
 ```
+
+Breaking, bundle and sandbox contract (`app.ts`, `kernel.ts`, `sandbox.ts`): the snapshot path
+must hydrate too, or a GUI mounted from `kernel.state()` sees the raw saved object until the
+first commit.
+
+```ts
+// App (bundle surface)
+hydrate(saved: unknown): State          // replaces `initialState`; hydrate(undefined) === init
+
+// Sandbox
+hydrate?(saved: unknown): Promise<unknown>   // replaces `initialState?()`
+
+// kernel.state(appId)
+return sandbox.hydrate(persisted.value)      // was: persisted ?? initialState()
+```
+
+`kernel.state()` already made one sandbox call when nothing was persisted; it now makes that call
+on every read. `app.update` pushes carry the transition's output, which is hydrated by
+construction, so the hot path is unchanged.
 
 The merge is shallow and object-only. Nested shapes and renamed fields remain the app's migration
 work. A transition that returns the merged object persists the new defaults on its next commit,

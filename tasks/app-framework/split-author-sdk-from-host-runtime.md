@@ -23,21 +23,40 @@ Breaking for hosts and the dev tooling, not for apps.
   ./react                  defineReactGUI
   ./capabilities           core types, defineCapability
   ./capabilities/<id>      contracts only (volume, ai, notify, email, calendar, reader, image, devkit)
-  ./vite                   kernelHost, devAi
 
 @justfiles/kernel         (host runtime; name open)
   ./kernel  ./sandbox  ./iframe  ./dev-server  ./appstore  ./appstore/fs  ./appstore/protocol
+  ./vite                   kernelHost, devAi   (the dev host IS a host)
   ./toolchain/*  ./devkit-runtime  ./runtime-specs  ./image-type  ./accounts/*
   ./capabilities/<id>/host  ./capabilities/ai/dev  ./capabilities/ai/node
   createAppController, sweepTrash, bundleFromZip
 ```
 
+The author package must not depend on the host package, or every app installs the host and its
+dependencies anyway. The Vite plugin runs the dev host, so it moves with the host, and an app
+takes it as a `devDependency`:
+
+```diff
+ // vite.config.ts
+-import { kernelHost } from '@justfiles/app/vite'
++import { kernelHost } from '@justfiles/kernel/vite'
+
+ // package.json
+ "dependencies":    { "@justfiles/app": "…" }
+-"devDependencies": { "vite": "…" }
++"devDependencies": { "vite": "…", "@justfiles/kernel": "…" }
+```
+
+The `create-app` templates and `docs/app.md` change accordingly. A third package holding only the
+Vite plugin would also work; it is not worth a package until something other than the dev host
+needs it.
+
 The root `index.ts` of the author package stops re-exporting `kernel`, `createAppController`,
-`sweepTrash`, and `bundleFromZip`. `@justfiles/app/vite` keeps importing the dev server from the
-host package, so an app's `vite.config.ts` does not change.
+`sweepTrash`, and `bundleFromZip`.
 
 Dependencies follow the code: `capnweb`, `fflate`, `es-module-lexer`, `pi-agent-core`, `pi-ai`,
-and `typebox` move to the host package.
+`typebox`, and `vite` as a peer move to the host package. The author package keeps
+`@standard-schema/spec`, `@justfiles/design`, `type-fest`, and the optional `react` peers.
 
 ## Why
 
