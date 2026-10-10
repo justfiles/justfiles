@@ -78,7 +78,10 @@ Host side (`capabilities/volume/host.ts`): `writeFile` creates missing parents u
 set or `parents` is `false`. A non-null `ifHash` means "the file must still exist", so it is an edit
 for that purpose too: no parent creation. Otherwise a conditional write whose parent another writer
 has just removed would recreate the directory and then fail with `ESTALE`, mutating the tree on a
-write that did not land.
+write that did not land. The same rule applies one level up: `bind(ctx)` recreates a missing scoped
+root (`/notes`, `/data/<appId>`) before every call, so a conditional write must also skip that
+step. A non-null `ifHash` disables both the root and the parent creation; the write either lands
+on the file as it was, or fails and leaves the tree exactly as it found it.
 
 ## Why
 
