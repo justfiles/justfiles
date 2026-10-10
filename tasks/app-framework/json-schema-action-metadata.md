@@ -22,37 +22,60 @@ interface ActionMeta {
 	audience?: ProcedureAudience
 	description?: string
 	examples?: ActionExample[]
-	schema?: Record<string, unknown>   // JSON Schema (draft 2020-12) for the params object
+	// JSON Schema for the params object, describing the INPUT the validator accepts.
+	// Draft 2020-12 or draft-07; consumers accept either, since converters differ.
+	schema?: Record<string, unknown>
 	// removed: schemaHint
 }
 ```
 
-Derivation in `defineApp`, in this order:
+Derivation in `defineApp`, per schema, never throwing:
 
 ```ts
 defineApp({
 	init, update, procedures,
-	// optional app-level converter for validators that do not carry Standard JSON Schema
-	jsonSchema?: (schema: StandardSchemaV1) => Record<string, unknown>
+	// optional app-level converter for validators without Standard JSON Schema
+	jsonSchema?: (schema: StandardSchemaV1) => Record<string, unknown> | undefined
 })
 
-const toJson = (schema) =>
-	schema['~standard'].jsonSchema?.input({ target: 'draft-2020-12' })   // Standard JSON Schema
-	?? spec.jsonSchema?.(schema)                                          // app-level converter
-	?? undefined                                                          // no metadata
+const toJson = (name, schema) => {
+	try {
+		return (
+			schema['~standard'].jsonSchema?.input({ target: 'draft-2020-12' })   // Standard JSON Schema
+			?? spec.jsonSchema?.(schema)                                          // app-level converter
+		)
+	} catch (error) {
+		// Both paths may throw for an unsupported target, schema, or action. One
+		// unconvertible action must not fail the whole bundle at module load;
+		// it just ships without parameter metadata, and says so once in dev.
+		warnOnce(`${name}: no JSON Schema (${message(error)})`)
+		return undefined
+	}
+}
 ```
 
 A raw Valibot schema does not implement the Standard JSON Schema interface (checked against
 Valibot 1.4.0: `~standard.jsonSchema` is undefined). Valibot ships it through the separate
-`@valibot/to-json-schema` package. So the templates add that package and pass its converter once:
+`@valibot/to-json-schema` package. Its converter must be asked for the input representation,
+because the default mode ignores transformations and would advertise parameters the validator
+does not accept; and it emits draft-07, which is why `ActionMeta.schema` admits both drafts.
 
 ```ts
 import { toJsonSchema } from '@valibot/to-json-schema'
-export const app = defineApp({ ..., jsonSchema: toJsonSchema })
+export const app = defineApp({
+	...,
+	jsonSchema: (schema) => toJsonSchema(schema, { typeMode: 'input', errorMode: 'ignore' })
+})
 ```
 
-One line per app, not one wrapper per schema. Without it every action would lose its parameter
-metadata the moment `schemaHint` is removed.
+One line per app, not one wrapper per schema. Confirm the option names against the installed
+converter version when implementing.
+
+Every `defineApp` that uses Valibot gets the dependency and the hook in the same change as the
+`schemaHint` removal, not only the templates: the in-repo apps (pixel and crossword among them,
+whose agent-facing actions would otherwise lose all parameter metadata), the test bundles, and the
+public `justfiles/app-*` repositories as part of `sync-public-apps-and-skill.md`. An app that is
+not migrated still loads and runs; its actions simply carry no `schema`.
 
 Consumers:
 
