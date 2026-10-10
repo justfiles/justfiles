@@ -1,0 +1,54 @@
+---
+project: packages/app
+status: todo
+---
+
+# Shallow-merge `init` under persisted state
+
+## TL;DR
+
+Persisted state is loaded verbatim and `init` is used only on first run. Every field added after
+an app ships is therefore `T | undefined` forever, and every app grows a normaliser or scatters
+`?? 0` defaults. Make `init` the defaults layer: hydrate persisted state as `{ ...init, ...saved }`
+before it reaches a transition, a procedure, or `subscriptions`.
+
+## Proposed change
+
+Behavioural change inside `defineApp` (`sdk.ts`), no type change:
+
+```ts
+// one hydrate, applied at the three places state enters app code
+const hydrate = (saved: unknown): State =>
+	saved === undefined ? init
+	: isPlainObject(init) && isPlainObject(saved) ? { ...init, ...saved } as State
+	: saved as State
+
+dispatch(message, ctx)        → machine.step(hydrate(ctx.state), message)
+runProcedure(name, params, h) → handle.state = hydrate(h.state)
+subscriptions(state)          → computeSubs(hydrate(state))
+```
+
+The merge is shallow and object-only. Nested shapes and renamed fields remain the app's migration
+work. A transition that returns the merged object persists the new defaults on its next commit,
+which is the desired outcome.
+
+Docs: replace "init is only the first-run state; it is not merged into old state" with "init is
+the schema default; a field present in init and absent from saved state reads as the init value".
+Remove the normaliser advice from `docs/app.md` and the authoring skill.
+
+## Why
+
+- **One place for defaults.** A reducer's `init` already states what every field means when
+  nothing has happened yet. Making it also the fallback for fields that did not exist when the state
+  was saved is the natural reading of a default, and it removes a second mechanism (per-app
+  normalisers) that restates the same values.
+- **Robustness by construction.** Without the merge, a transition that does `state.count + 1` on a
+  field added later yields `NaN` and persists it. The framework can prevent that class of bug for
+  every app with one line; relying on every author to remember a guard cannot.
+- **Backward compatibility becomes cheap.** Adding a field is the most common evolution of a
+  persisted shape. It should cost one line in `init`, not a line in `init` plus a default at every
+  read site plus a test for the missing case.
+- **The limit is honest.** Shallow merge is what settings systems do and what authors expect; deep
+  migrations are rare enough and specific enough to stay in app code.
+- **Indicator.** Seven of nine public apps carry defaulting code for this reason, including a
+  normaliser in a two-field reducer.
