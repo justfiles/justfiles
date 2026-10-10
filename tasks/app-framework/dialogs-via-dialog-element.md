@@ -43,6 +43,9 @@ frame. So:
 - Runner (`platform/runner/src/client/main.ts`): the same change. It mounts `dialog-host` and
   hands its request callback to `guiHost`; drop both and the import, since the runner has no
   host-originated dialogs of its own.
+- Vite dev host (`packages/app/dev-frame.ts`, bundled by `vite.ts`): the same change. It
+  mounts `dialog-host` and passes `dialog.request` to `mountAppFrame`; drop the mount, the
+  callback, and its cleanup.
 - SDK: `@justfiles/app/dialog-host` goes with the contract. Frieren's system dialog is a
   shell-local React component and does not need it.
 
