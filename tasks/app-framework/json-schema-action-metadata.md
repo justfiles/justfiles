@@ -46,9 +46,12 @@ const toJson = (name, schema) => {
 		const json =
 			schema['~standard'].jsonSchema?.input({ target: 'draft-2020-12' })   // Standard JSON Schema
 			?? spec.jsonSchema?.(schema)                                          // app-level converter
-		// A converter that gives up quietly returns an empty or shapeless schema
-		// ({} or one with no `type`/`properties`/`$ref`/`anyOf`). That is
-		// "anything goes", which is worse than nothing for a tool definition.
+		// A converter that gives up quietly returns an empty or shapeless schema,
+		// which means "anything goes" and is worse than nothing for a tool
+		// definition. `hasShape` accepts `type`, `properties`, `enum`, `const`,
+		// `$ref`, and composition (`allOf`/`anyOf`/`oneOf` whose branches have
+		// shape, checked recursively); converters do emit top-level `allOf` for
+		// intersections, and that is a full description, not a shapeless one.
 		if (!hasShape(json)) throw new Error('converter returned no shape')
 		return json
 	} catch (error) {

@@ -46,8 +46,16 @@ hydrate(saved: unknown): State          // replaces `initialState`; hydrate(unde
 hydrate?(saved: unknown): Promise<unknown>   // replaces `initialState?()`
 
 // kernel.state(appId)
-return sandbox.hydrate(persisted.value)      // was: persisted ?? initialState()
+const sb = await loadSandbox(appId)
+return sb.hydrate
+	? sb.hydrate(persisted.value)                              // new bundle
+	: persisted.value ?? (await sb.initialState?.())          // bundle built on an older SDK
 ```
+
+The fallback is not optional. Installed bundles carry the SDK they were built with, in the volume,
+and a host upgrade does not rebuild them. A bundle built before this change exposes `initialState`
+and not `hydrate`; without the fallback every snapshot read of such an app would fail and the app
+could not open. Old bundles therefore keep today's behaviour until they are rebuilt.
 
 `kernel.state()` already made one sandbox call when nothing was persisted; it now makes that call
 on every read. `app.update` pushes carry the transition's output, which is hydrated by

@@ -32,6 +32,9 @@ state(appId): Promise<unknown>   // persisted state, or the bundle's init; never
 
 // app-controller.ts
 AppInspection.state: unknown      // no `?? null`
+// inspect() stops catching kernel.state() rejections into `undefined`. A reducer
+// that cannot load is an error the caller must see, not an inspection with a hole
+// where the state should be; the agent's `app inspect` prints the failure.
 ```
 
 Host contract, written down in `docs/app.md`: a host mounts a GUI only with a value obtained from
