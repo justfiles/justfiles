@@ -48,7 +48,23 @@ Docs (`docs/app.md`), new short section "Concurrency":
 - Procedures run concurrently with each other and with dispatches, and `app.state` is a snapshot.
   Mark read-modify-write procedures `serial`, or make them idempotent and use exclusive writes.
 - In Frieren a browser kernel and a server kernel can act on the same app. Serialization is per
-  kernel. Cross-kernel safety comes from the volume's exclusive and conditional writes.
+  kernel. Cross-kernel safety comes from the volume: `exclusive: true` for a create that must not
+  replace, and a conditional overwrite for a read-modify-write.
+
+Additive, volume contract (`capabilities/volume/contract.ts`): the conditional overwrite is not
+reachable from an app today. The underlying `Volume.writeFile` accepts `ifHash`, and the kernel's
+own state store uses it, but the app-facing options expose only `exclusive`, `update`, and
+`parents`. Expose it, otherwise the guidance above asks for something authors cannot do:
+
+```ts
+writeFile(path, data, opts?: {
+	exclusive?: boolean
+	update?: boolean
+	parents?: boolean
+	ifHash?: string | null    // land only while the path still holds this content hash; null = must not exist
+})
+// `stat(path).contentHash` already returns the value to pass.
+```
 
 ## Why
 

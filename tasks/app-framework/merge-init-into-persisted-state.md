@@ -39,23 +39,38 @@ must hydrate too, or a GUI mounted from `kernel.state()` sees the raw saved obje
 first commit.
 
 ```ts
-// App (bundle surface)
-hydrate(saved: unknown): State          // replaces `initialState`; hydrate(undefined) === init
+// App (bundle surface) — additive; `initialState` stays for the compatibility window
+hydrate(saved: unknown): State          // hydrate(undefined) === init
 
-// Sandbox
-hydrate?(saved: unknown): Promise<unknown>   // replaces `initialState?()`
+// Sandbox — additive; `initialState?()` stays
+hydrate(saved: unknown): Promise<unknown>
 
-// kernel.state(appId)
-const sb = await loadSandbox(appId)
-return sb.hydrate
-	? sb.hydrate(persisted.value)                              // new bundle
-	: persisted.value ?? (await sb.initialState?.())          // bundle built on an older SDK
+// kernel.state(appId) — one call, no probing
+return (await loadSandbox(appId)).hydrate(persisted.value)
 ```
+
+Compatibility lives in the sandbox adapters, not in the kernel. The postMessage adapter builds one
+uniform proxy whatever the bundle exports, so the kernel cannot learn from `sb.hydrate` whether the
+imported `app.js` has it. The isolate runtime can, because it holds the module:
+
+```ts
+// sandbox worker source (web and node), dev-server viteSandbox, and the DO sandbox
+if (msg.type === 'hydrate')
+	return send({ type: 'result', id: msg.id, result:
+		typeof app.hydrate === 'function' ? app.hydrate(msg.saved)
+		: msg.saved !== undefined ? msg.saved            // legacy bundle, saved state as today
+		: app.initialState })                             // legacy bundle, first run
+```
+
+The legacy branch tests `!== undefined`, not `??`: a bundle whose state is JSON `null` must keep
+`null`, as the kernel distinguishes absence by `undefined` today.
 
 The fallback is not optional. Installed bundles carry the SDK they were built with, in the volume,
 and a host upgrade does not rebuild them. A bundle built before this change exposes `initialState`
-and not `hydrate`; without the fallback every snapshot read of such an app would fail and the app
-could not open. Old bundles therefore keep today's behaviour until they are rebuilt.
+and not `hydrate`; without the adapter-side branch every snapshot read of such an app would fail
+and the app could not open. Old bundles keep today's behaviour until they are rebuilt. Remove
+`initialState` from the bundle and sandbox contracts only once installed bundles are known to
+have been rebuilt.
 
 `kernel.state()` already made one sandbox call when nothing was persisted; it now makes that call
 on every read. `app.update` pushes carry the transition's output, which is hydrated by

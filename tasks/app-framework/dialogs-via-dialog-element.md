@@ -40,6 +40,9 @@ frame. So:
   owner branch, the `DialogHost` in `AppWindow`, and the `dialog` callback passed to
   `mountAppFrame`.
 - Mac: remove `mountDialogHost` from the app window; it exists there only to answer app requests.
+- Runner (`platform/runner/src/client/main.ts`): the same change. It mounts `dialog-host` and
+  hands its request callback to `guiHost`; drop both and the import, since the runner has no
+  host-originated dialogs of its own.
 - SDK: `@justfiles/app/dialog-host` goes with the contract. Frieren's system dialog is a
   shell-local React component and does not need it.
 
