@@ -27,10 +27,32 @@ interface ActionMeta {
 }
 ```
 
-Derivation in `defineApp`: use the Standard JSON Schema interface
-(`schema['~standard'].jsonSchema.input({ target: 'draft-2020-12' })`) when the validator
-implements it; otherwise omit `schema`. Verify the pinned Valibot version implements it before
-relying on it; the template already depends on Valibot.
+Derivation in `defineApp`, in this order:
+
+```ts
+defineApp({
+	init, update, procedures,
+	// optional app-level converter for validators that do not carry Standard JSON Schema
+	jsonSchema?: (schema: StandardSchemaV1) => Record<string, unknown>
+})
+
+const toJson = (schema) =>
+	schema['~standard'].jsonSchema?.input({ target: 'draft-2020-12' })   // Standard JSON Schema
+	?? spec.jsonSchema?.(schema)                                          // app-level converter
+	?? undefined                                                          // no metadata
+```
+
+A raw Valibot schema does not implement the Standard JSON Schema interface (checked against
+Valibot 1.4.0: `~standard.jsonSchema` is undefined). Valibot ships it through the separate
+`@valibot/to-json-schema` package. So the templates add that package and pass its converter once:
+
+```ts
+import { toJsonSchema } from '@valibot/to-json-schema'
+export const app = defineApp({ ..., jsonSchema: toJsonSchema })
+```
+
+One line per app, not one wrapper per schema. Without it every action would lose its parameter
+metadata the moment `schemaHint` is removed.
 
 Consumers:
 
