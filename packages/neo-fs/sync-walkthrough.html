@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<link rel="icon" href="data:,">
+	<meta name="description" content="An illustrated walkthrough of neo-fs: accepted state, pending operations, authority rebasing, conflicts, recovery, and the startup contract.">
+	<title>How neo-fs sync works</title>
+	<style>
+		:root {
+			color-scheme: light;
+			--paper: #f7f8fa;
+			--surface: #fff;
+			--ink: #202b3d;
+			--muted: #536278;
+			--line: #dbe2eb;
+			--blue: #245d9e;
+			--blue-bg: #edf4fd;
+			--amber: #86570b;
+			--amber-bg: #fff5df;
+			--green: #176655;
+			--green-bg: #eaf6f1;
+			--purple: #6547a0;
+			--purple-bg: #f3eefb;
+			--red: #a03746;
+			--red-bg: #fff0f2;
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			font-size: 16px;
+		}
+		* { box-sizing: border-box; }
+		html { scroll-behavior: smooth; scroll-padding-top: 28px; }
+		body { margin: 0; background: var(--paper); color: var(--ink); line-height: 1.65; }
+		a { color: var(--blue); text-underline-offset: 3px; }
+		a:hover { text-decoration-thickness: 2px; }
+		button, select { font: inherit; }
+		button, a, select, summary, [tabindex] { -webkit-tap-highlight-color: transparent; }
+		:focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
+		.skip { position: absolute; top: -100px; left: 12px; padding: 12px; background: white; z-index: 5; }
+		.skip:focus { top: 10px; }
+		.layout { max-width: 1390px; margin: 0 auto; padding: 52px 42px 72px; display: grid; grid-template-columns: 185px minmax(0, 950px); gap: 54px; }
+		aside { position: sticky; top: 35px; align-self: start; }
+		.brand { margin: 0 0 24px; font-size: 14px; font-weight: 750; letter-spacing: .09em; }
+		.brand-part { color: var(--muted); font-weight: 450; }
+		nav { display: grid; gap: 5px; }
+		nav a { padding: 7px 10px; margin-left: -10px; color: var(--muted); text-decoration: none; border-radius: 6px; font-size: 14px; line-height: 1.45; }
+		nav a span { display: inline-block; width: 25px; color: #788497; font-size: 12px; font-variant-numeric: tabular-nums; }
+		nav a:hover, nav a[aria-current] { color: var(--blue); background: var(--blue-bg); }
+		.aside-note { border-top: 1px solid var(--line); margin-top: 23px; padding-top: 17px; font-size: 12px; color: var(--muted); }
+		main { min-width: 0; }
+		header { margin-bottom: 52px; }
+		.eyebrow { font-size: 12px; font-weight: 750; color: var(--blue); letter-spacing: .1em; text-transform: uppercase; margin: 0 0 14px; }
+		h1 { font-size: clamp(34px, 4vw, 52px); letter-spacing: -.04em; line-height: 1.12; margin: 0 0 22px; font-weight: 730; }
+		.lead { max-width: 720px; font-size: 20px; line-height: 1.5; color: var(--muted); margin: 0 0 24px; }
+		.badges { display: flex; flex-wrap: wrap; gap: 8px; }
+		.badge { display: inline-block; font-size: 12px; padding: 3px 10px; border-radius: 5px; color: var(--muted); background: #e9edf3; font-weight: 650; }
+		.badge.open { background: var(--amber-bg); color: var(--amber); }
+		section { margin-top: 56px; padding-top: 34px; border-top: 1px solid var(--line); scroll-margin-top: 20px; }
+		.section-top { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; }
+		.number { color: var(--blue); font: 600 13px ui-monospace, monospace; }
+		h2 { font-size: 28px; line-height: 1.25; letter-spacing: -.025em; margin: 0; }
+		h3 { font-size: 18px; line-height: 1.4; margin: 0 0 9px; }
+		p { margin: 12px 0; }
+		.intro { font-size: 17px; max-width: 790px; margin: 0 0 24px; }
+		.small, figcaption { color: var(--muted); font-size: 14px; }
+		.small p { margin: 8px 0; }
+		strong { font-weight: 680; }
+		.columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+		.columns.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+		.card { background: var(--surface); border: 1px solid var(--line); padding: 22px; border-radius: 10px; min-width: 0; }
+		.card p:last-child { margin-bottom: 0; }
+		.card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .055em; margin-bottom: 8px; }
+		.note { margin: 20px 0; padding: 16px 20px; border-left: 3px solid var(--blue); background: var(--blue-bg); border-radius: 0 7px 7px 0; }
+		.note p { margin: 0; }
+		.note.pending { border-color: var(--amber); background: var(--amber-bg); }
+		.note.danger { border-color: var(--red); background: var(--red-bg); }
+		code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .87em; background: #eaf0f5; padding: 2px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+		pre { margin: 12px 0 0; padding: 18px; background: #f3f6fa; border-radius: 7px; overflow-x: auto; line-height: 1.6; font-size: 14px; tab-size: 2; }
+		pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; }
+		.table-scroll { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+		table { width: 100%; border-collapse: collapse; font-size: 14px; }
+		th, td { padding: 12px 15px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+		th { background: #f0f3f7; font-size: 12px; font-weight: 700; color: var(--muted); }
+		tr:last-child td { border-bottom: 0; }
+		td:first-child { min-width: 140px; }
+		ul, ol { padding-left: 22px; margin: 12px 0; }
+		li { margin: 7px 0; }
+		details { border: 1px solid var(--line); padding: 14px 18px; border-radius: 8px; margin: 16px 0; background: var(--surface); }
+		summary { cursor: pointer; font-size: 14px; font-weight: 650; }
+		figure { margin: 24px 0; }
+		.diagram { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 11px; padding: 12px; }
+		.diagram svg { display: block; width: 100%; height: auto; min-width: 900px; }
+		figcaption { padding: 10px 2px 0; line-height: 1.5; }
+		.legend { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; color: var(--muted); margin: 18px 0 0; }
+		.legend span { display: inline-flex; align-items: center; gap: 7px; }
+		.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+		svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--ink); font-size: 15px; }
+		svg .title { font-size: 18px; font-weight: 680; }
+		svg .sub { fill: var(--muted); font-size: 14px; }
+		svg .micro { fill: var(--muted); font-size: 12px; letter-spacing: .055em; }
+		svg .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 14px; }
+		svg .large { font-size: 35px; font-weight: 650; }
+		svg .box { fill: #fff; stroke: var(--line); stroke-width: 1.5; rx: 9px; }
+		svg .accepted { fill: var(--blue-bg); stroke: #b2cae8; }
+		svg .pending { fill: var(--amber-bg); stroke: #dfc58e; }
+		svg .remote { fill: var(--purple-bg); stroke: #cebee8; }
+		svg .view { fill: var(--green-bg); stroke: #abd6c9; }
+		svg .conflict { fill: var(--red-bg); stroke: #e1adb6; }
+		svg .line { fill: none; stroke: #7c8b9f; stroke-width: 1.6; marker-end: url(#arrow); }
+		svg .dashed { stroke-dasharray: 5 5; }
+		svg .lane { stroke: #dbe2eb; stroke-dasharray: 5 5; }
+		.defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+		.step-buttons { display: flex; flex-wrap: wrap; gap: 7px; margin: 18px 0 14px; }
+		.step-buttons button { background: white; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px; cursor: pointer; font-size: 13px; }
+		.step-buttons button[aria-pressed="true"] { color: white; background: var(--blue); border-color: var(--blue); }
+		.step-buttons button:hover { border-color: var(--blue); }
+		.timeline-copy { min-height: 104px; padding: 18px 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+		.timeline-copy h3 { font-size: 16px; margin: 0 0 5px; }
+		.timeline-copy p { margin: 0; color: var(--muted); font-size: 14px; }
+		.file-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0; }
+		.file-list .card { padding: 18px; }
+		.file-list h3 { font: 600 14px ui-monospace, monospace; color: var(--blue); overflow-wrap: anywhere; }
+		.file-list p { font-size: 14px; }
+		footer { margin-top: 50px; border-top: 1px solid var(--line); padding-top: 23px; font-size: 13px; color: var(--muted); }
+		footer ul { padding-left: 18px; }
+		@media (max-width: 1100px) {
+			.layout { padding: 32px 24px 60px; gap: 30px; grid-template-columns: 155px minmax(0, 1fr); }
+		}
+		@media (max-width: 800px) {
+			.layout { display: block; max-width: 760px; padding: 24px 18px 48px; }
+			aside { position: static; margin-bottom: 35px; }
+			.brand { margin-bottom: 14px; }
+			nav { display: flex; flex-wrap: wrap; gap: 3px 10px; }
+			nav a { margin: 0; padding: 5px 0; font-size: 12px; }
+			nav a span { width: 20px; }
+			.aside-note { display: none; }
+			header { margin-bottom: 30px; }
+			.lead { font-size: 18px; }
+			h2 { font-size: 24px; }
+			section { margin-top: 38px; padding-top: 28px; }
+			.columns.three { grid-template-columns: 1fr; }
+			.card { padding: 18px; }
+			.diagram { padding: 8px; }
+		}
+		@media (max-width: 560px) {
+			.columns, .file-list { grid-template-columns: 1fr; }
+			.step-buttons { gap: 6px; }
+			.step-buttons button { flex: 1 1 29%; padding: 10px 4px; min-height: 44px; }
+			.timeline-copy { min-height: 160px; }
+			.table-scroll table { min-width: 560px; }
+		}
+		@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+		@media print {
+			@page { margin: 14mm; }
+			body { background: white; font-size: 11px; }
+			.layout { display: block; padding: 0; max-width: none; }
+			aside, .skip, .step-buttons { display: none; }
+			header { margin-bottom: 20px; }
+			h1 { font-size: 32px; }
+			h2 { font-size: 23px; }
+			section { margin-top: 25px; padding-top: 20px; }
+			.diagram svg { min-width: 0; }
+			.table-scroll, .diagram { overflow: visible; }
+			figure, .card, .note, tr { break-inside: avoid; }
+			pre { white-space: pre-wrap; }
+			a { color: inherit; }
+			.table-scroll table { min-width: 0; }
+		}
+	</style>
+</head>
+<body>
+	<a class="skip" href="#main">Skip to walkthrough</a>
+	<svg class="defs" aria-hidden="true"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7c8b9f"/></marker></defs></svg>
+	<div class="layout">
+		<aside>
+			<p class="brand">neo-fs <span class="brand-part">/ sync</span></p>
+			<nav aria-label="Walkthrough sections">
+				<a href="#model"><span>01</span> The model</a>
+				<a href="#records"><span>02</span> The data</a>
+				<a href="#local"><span>03</span> A local save</a>
+				<a href="#exchange"><span>04</span> Submit &amp; catch up</a>
+				<a href="#rebase"><span>05</span> Filesystem rebasing</a>
+				<a href="#conflicts"><span>06</span> Conflicts</a>
+				<a href="#storage"><span>07</span> What lives on disk</a>
+				<a href="#recovery"><span>08</span> Crash &amp; restart</a>
+				<a href="#startup"><span>09</span> Startup and binding</a>
+			</nav>
+			<p class="aside-note">Design walkthrough<br>10 October 2026<br><br>SVG diagrams and local interactions. No external assets or network required.</p>
+		</aside>
+		<main id="main">
+			<header>
+				<p class="eyebrow">Filesystem sync · Interface design</p>
+				<h1>How neo-fs sync works</h1>
+				<p class="lead">A pure filesystem underneath. A durable local overlay above it. One authority decides the shared tree.</p>
+				<div class="badges"><span class="badge">Agreed model</span><span class="badge">Not implemented</span><span class="badge open">Interface design in progress</span></div>
+				<p class="small">Read in order for the complete flow, or use the section links. Wide diagrams scroll horizontally on small screens. A, B, C, R and S denote file contents; F and D denote stable entity IDs. Hashes and IDs in examples are abbreviated.</p>
+			</header>
+
+			<section id="model">
+				<div class="section-top"><span class="number">01</span><h2>One visible filesystem, two local ingredients</h2></div>
+				<p class="intro">Consumers use <code>engine.volume</code>. Its view combines the last installed authority state with ordered pending intent and local timestamps. A local save changes that view immediately after durable local publication.</p>
+				<div class="legend"><span><i class="swatch" style="background:var(--blue)"></i>Accepted locally</span><span><i class="swatch" style="background:var(--amber)"></i>Pending / private state</span><span><i class="swatch" style="background:var(--green)"></i>Consumer view</span><span><i class="swatch" style="background:var(--purple)"></i>Authority</span></div>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: filesystem and sync responsibilities">
+						<svg viewBox="0 0 900 440" role="img" aria-labelledby="model-title model-desc">
+							<title id="model-title">The client projects a filesystem from accepted files and pending state</title>
+							<desc id="model-desc">Applications call engine.volume. The engine reads accepted files from the storage root and private state from its hidden .sync directory, writes pending work there, and exchanges proposals and canonical changes with a filesystem-aware authority. Store and Volume remain ordinary filesystem abstractions.</desc>
+							<rect class="box" x="12" y="12" width="566" height="411" fill="#fafbfd"/>
+							<text class="micro" x="34" y="39">LOCAL REPLICA</text>
+							<rect class="box" x="62" y="59" width="466" height="58"/>
+							<text class="title" x="295" y="94" text-anchor="middle">Application / editor</text>
+							<path class="line" d="M295 117 V154"/>
+							<text class="sub" x="310" y="142">ordinary filesystem calls</text>
+							<rect class="box view" x="62" y="156" width="466" height="81"/>
+							<text class="title" x="86" y="186">engine.volume</text>
+							<text class="sub" x="86" y="213">Sync engine resolves the visible tree and bytes</text>
+							<rect class="box accepted" x="34" y="309" width="244" height="87"/>
+							<text class="title" x="54" y="341">storage: Volume</text>
+							<text class="sub" x="54" y="367">Accepted tree at the root</text>
+							<rect class="box pending" x="311" y="309" width="242" height="87"/>
+							<text class="title" x="331" y="341">storage/.sync</text>
+							<text class="sub" x="331" y="367">Journal, bytes, recovery (hidden)</text>
+							<path class="line" d="M155 309 V238"/>
+							<text class="sub" x="72" y="279">read baseline</text>
+							<path class="line" d="M395 309 V238"/>
+							<path class="line" d="M485 238 V308"/>
+							<text class="sub" x="323" y="279">overlay</text>
+							<text class="sub" x="455" y="293">save</text>
+							<rect class="box remote" x="664" y="125" width="220" height="218"/>
+							<text class="title" x="685" y="158">Authority</text>
+							<text class="sub" x="685" y="188">Filesystem-aware rebase</text>
+							<text class="sub" x="685" y="216">Validate the whole tree</text>
+							<text class="sub" x="685" y="244">Atomic decisions</text>
+							<text class="sub" x="685" y="272">Ordered change history</text>
+							<text class="sub" x="685" y="300">Immutable content</text>
+							<path class="line" d="M528 177 H663"/>
+							<text class="sub" x="594" y="165" text-anchor="middle">proposals</text>
+							<path class="line" d="M664 217 H529"/>
+							<text class="sub" x="598" y="244" text-anchor="middle">shared results</text>
+							<text class="micro" x="682" y="374">NETWORK ONLY DURING SYNC()</text>
+						</svg>
+					</div>
+					<figcaption>One engine-owned storage Volume: accepted files at its root, private state under the reserved hidden entry <code>.sync</code>. Startup is in section 09.</figcaption>
+				</figure>
+				<div class="columns">
+					<div class="card"><h3>Pure filesystem responsibilities</h3><p><code>Volume</code> handles paths, links and change notification. <code>Store</code> supplies primitives over local node IDs. Neither knows about authority cursors, proposals, conflicts, or tombstones.</p></div>
+					<div class="card"><h3>Sync responsibilities</h3><p>The engine owns the overlay, global identity mapping, pending work, transfers and recovery. The authority owns acceptance, semantic rebasing and shared ordering. They are not symmetric peers.</p></div>
+				</div>
+				<p class="small">One active engine owns storage, enforced by a lease at <code>.sync/lock</code>; a second opener rejects with <code>LOCKED</code>. The view hides <code>.sync</code> and the authority refuses the name, so neither consumers nor incoming changes can reach it. Direct storage access sees accepted files and that hidden directory, never pending work; importing external edits is a separate integration.</p>
+				<details>
+					<summary>What does the SyncEngine controller expose?</summary>
+					<p class="small"><code>sync()</code> runs one serialized exchange pass; completion does not mean all pending edits were accepted. <code>status()</code> reads the phase (uninitialized, idle, syncing or closed) and unretired edit count. <code>issues()</code> lists errors and preserved versions; neither blocks sync. <code>conflict(id)</code> returns a preserved version; <code>dismiss(id)</code> releases it.</p>
+					<p class="small"><code>close()</code> finishes local work and releases engine-owned resources while retaining pending changes. It neither waits for server acceptance nor closes the supplied storage. State readers do not require network access.</p>
+					<p class="small"><code>engine.volume.watch</code> wakes watchers with source <code>local</code> once a write is persisted, and <code>remote</code> for entries whose visible state changed once an installation completes, never during a partial batch.</p>
+				</details>
+			</section>
+
+			<section id="records">
+				<div class="section-top"><span class="number">02</span><h2>The data: identity, intent and accepted results</h2></div>
+				<p class="intro">A file has a stable identity and a changing state. A path describes where it is now. File bytes are separate immutable objects addressed by their hash.</p>
+				<div class="columns">
+					<div class="card">
+						<div class="label">Replicated state · EntityData</div>
+						<pre><code>{
+	id: "F",
+	type: "file",
+	parent: "D",
+	name: "a.txt",
+	mode: 0o644,
+	content: hashA
+}</code></pre>
+						<p class="small">A directory has no content hash; a symlink has a target. All share <code>NodeSpec</code>. An accepted <code>Entity</code> adds its <code>revision</code>.</p>
+					</div>
+					<div class="card">
+						<div class="label">Intent · Operation</div>
+						<pre><code>{
+	type: "update",
+	id: "F",
+	changes: { content: hashB }
+}</code></pre>
+						<p class="small">The same vocabulary serves local pending edits and authority submissions: <code>create</code>, partial <code>update</code>, or <code>delete</code>. Updates can change location, content, target or mode without replacing untouched fields.</p>
+					</div>
+				</div>
+				<div class="table-scroll" tabindex="0" aria-label="Identity and version vocabulary">
+					<table>
+						<thead><tr><th>Name</th><th>Meaning</th><th>Does not mean</th></tr></thead>
+						<tbody>
+							<tr><td><code>NodeId</code></td><td>Identity inside a Store or Volume. The engine maps it to a global ID; view IDs survive acceptance.</td><td>A shared identity across devices.</td></tr>
+							<tr><td><code>EntityId</code></td><td>Global identity, preserved through moves. Recreating a deleted path uses a new ID.</td><td>A path or content hash.</td></tr>
+							<tr><td><code>Hash</code></td><td>SHA-256 of file bytes. Identical bytes share a hash.</td><td>The file's name, mode or location.</td></tr>
+							<tr><td><code>Revision</code></td><td>SHA-256 of the complete replicated entity state, including ID, location and mode.</td><td>An ordered counter. Returning to the same state returns the same revision.</td></tr>
+							<tr><td>Journal sequence / edit ID</td><td>Local event order. An edit's sequence is its durable reference.</td><td>An authority version, or evidence of acceptance.</td></tr>
+							<tr><td><code>Cursor</code></td><td>Opaque position in one authority tree's ordered history.</td><td>A per-file revision or a number the client increments.</td></tr>
+							<tr><td><code>replicaId</code></td><td>Persistent local participant identity, stored privately.</td><td>A shared tree ID. The authority root identifies that tree.</td></tr>
+							<tr><td><code>Generation</code> + proposal ID</td><td>Authority-issued submission scope plus the identity of one immutable request. Together they make retries safe.</td><td>Permission to replay an old request after its generation expires.</td></tr>
+						</tbody>
+					</table>
+				</div>
+				<details>
+					<summary>What exactly is hashed, and which metadata is shared?</summary>
+					<p class="small">Revision encoding is SHA-256, lowercase hex, over the UTF-8 JSON encoding of this ordered array:</p>
+					<pre><code>["neo-fs:entity:1", id, type, parent, name, mode, value]</code></pre>
+					<p class="small"><code>value</code> is a file's content hash, a symlink's target, or null for a directory. Directory revisions do not hash their descendants. Mode is <code>0..0o777</code>; symlinks have fixed mode <code>0o777</code>. Timestamps remain local, and size is derived from contents or the backend. Mode does not model ownership or promise host access enforcement. The local <code>Node</code> still reports <code>mtimeNs</code> and <code>size</code>.</p>
+				</details>
+				<div class="note"><p><strong>Three levels, not three competing models.</strong> An edit journals local intent. A <code>Proposal</code> wraps that intent for submission. A <code>ChangeBatch</code> reports what the authority actually committed.</p></div>
+			</section>
+
+			<section id="local">
+				<div class="section-top"><span class="number">03</span><h2>A local save does not overwrite accepted</h2></div>
+				<p class="intro">Start with file F containing A. Saving B through <code>engine.volume.writeFile()</code> stores B's bytes and an edit in private state. Reads then return B even when the network is unavailable.</p>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: local write publication">
+						<svg viewBox="0 0 900 190" role="img" aria-labelledby="save-title save-desc">
+							<title id="save-title">Durable publication of a local save</title>
+							<desc id="save-desc">Resolve the path and validate against the visible tree, persist the new content by hash, publish an edit record with before-state and dependencies, then expose the new view and return. The accepted file still contains A.</desc>
+							<rect class="box view" x="16" y="38" width="190" height="91"/>
+							<text class="micro" x="33" y="62">1 · VALIDATE</text><text x="33" y="89">Resolve path to F</text><text class="sub" x="33" y="112">Use the current view</text>
+							<path class="line" d="M206 83 H238"/>
+							<rect class="box pending" x="240" y="38" width="190" height="91"/>
+							<text class="micro" x="257" y="62">2 · PERSIST BYTES</text><text class="mono" x="257" y="89">content/hashB</text><text class="sub" x="257" y="112">Flush before the edit</text>
+							<path class="line" d="M430 83 H462"/>
+							<rect class="box pending" x="464" y="38" width="196" height="91"/>
+							<text class="micro" x="481" y="62">3 · PUBLISH EDIT</text><text x="481" y="89">Operation + before-state</text><text class="sub" x="481" y="112">Record dependencies</text>
+							<path class="line" d="M660 83 H692"/>
+							<rect class="box view" x="694" y="38" width="190" height="91"/>
+							<text class="micro" x="711" y="62">4 · RETURN</text><text x="711" y="89">The view now reads B</text><text class="sub" x="711" y="112">Accepted still holds A</text>
+							<text class="sub" x="450" y="163" text-anchor="middle">Save completion means local durability, not server acceptance.</text>
+						</svg>
+					</div>
+				</figure>
+				<div class="columns">
+					<div class="card"><h3>The edit record</h3><p>Stores <code>Operation[]</code>, <code>before: StoredEntries</code>, and <code>dependsOn: number[]</code>. Before-state captures affected entities, their paths and hashes immediately before this edit—not the whole tree.</p></div>
+					<div class="card"><h3>The visible result</h3><p>Reads use pending bytes for changed content and accepted bytes elsewhere. Listings, moves, deletes, links and metadata use the same view. <code>chmod</code> is pending work; <code>utimes</code> is local metadata.</p></div>
+				</div>
+				<h3>Follow two saves through acceptance</h3>
+				<p class="small">Select a step. This illustrates ordered events, not a running sync implementation. Cursor labels c₀, c₁ and c₂ are readable stand-ins for opaque tokens.</p>
+				<div class="step-buttons" role="group" aria-label="Choose timeline step">
+					<button type="button" data-step="0" aria-pressed="true">1 · Clean</button>
+					<button type="button" data-step="1" aria-pressed="false">2 · Save B</button>
+					<button type="button" data-step="2" aria-pressed="false">3 · Save C</button>
+					<button type="button" data-step="3" aria-pressed="false">4 · B accepted</button>
+					<button type="button" data-step="4" aria-pressed="false">5 · B installed</button>
+					<button type="button" data-step="5" aria-pressed="false">6 · C installed</button>
+				</div>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable timeline state diagram">
+						<svg viewBox="0 0 900 226" role="img" aria-labelledby="timeline-title timeline-desc">
+							<title id="timeline-title">A file's accepted, pending, visible and authority states</title>
+							<desc id="timeline-desc">Initially accepted and authority both contain A, there are no pending edits, and reads return A.</desc>
+							<rect class="box accepted" x="16" y="18" width="190" height="124"/><text class="micro" x="35" y="45">ACCEPTED LOCALLY</text><text class="large" id="t-accepted" x="35" y="91">A</text><text class="sub" id="t-cursor" x="35" y="123">installed at c₀</text>
+							<rect class="box pending" x="237" y="18" width="203" height="124"/><text class="micro" x="256" y="45">PENDING EDITS</text><text class="title" id="t-pending" x="256" y="83">None</text><text class="sub" id="t-pending-note" x="256" y="115">0 unretired edits</text>
+							<rect class="box view" x="471" y="18" width="191" height="124"/><text class="micro" x="490" y="45">READFILE RETURNS</text><text class="large" id="t-view" x="490" y="91">A</text><text class="sub" x="490" y="123">view content</text>
+							<rect class="box remote" x="693" y="18" width="191" height="124"/><text class="micro" x="712" y="45">AUTHORITY</text><text class="large" id="t-authority" x="712" y="91">A</text><text class="sub" id="t-authority-cursor" x="712" y="123">committed at c₀</text>
+							<path class="line" d="M111 142 V175 H566 V143"/><path class="line" d="M339 142 V175"/>
+							<text class="sub" x="339" y="205" text-anchor="middle">Accepted state + pending intent = visible filesystem</text>
+						</svg>
+					</div>
+				</figure>
+				<div class="timeline-copy" aria-live="polite" aria-atomic="true"><h3 id="t-heading">1. The replica is synchronized</h3><p id="t-description">Accepted and authority both contain A. No pending operation changes the view.</p></div>
+				<noscript><p>The sequence is: clean A → save B → save C → authority accepts B while local accepted stays A → install B and retire edit 1 while C stays visible → submit, accept and install C, then retire edit 2.</p></noscript>
+				<div class="note"><p><strong>Dependencies preserve meaning.</strong> Edit 2 (B → C) waits for edit 1 (A → B) to be installed before submission. Its base stays B. Pending includes accepted edits whose canonical results have not yet been installed.</p></div>
+			</section>
+
+			<section id="exchange">
+				<div class="section-top"><span class="number">04</span><h2>Submit intent; install the authority's result</h2></div>
+				<p class="intro">The client persists an exact request before sending it. The authority rebases it against current state and accepts all operations or rejects all. The ordered change feed supplies the actual accepted result.</p>
+				<div class="columns">
+					<div class="card"><div class="label">Outgoing · Proposal</div><pre><code>{
+	id: "m1",
+	generation: "e1",
+	base: { F: beforeF },
+	operations: [{
+		type: "update",
+		id: "F",
+		changes: { content: hashB }
+	}]
+}</code></pre><p class="small"><code>beforeF</code> is complete EntityData with content hash A. Base contains exactly the operated IDs: null for creates, complete before-state for updates/deletes. It is merge input, not a strict whole-entity revision guard.</p></div>
+					<div class="card"><div class="label">Incoming · ChangeBatch</div><pre><code>{
+	cursor: "c1",
+	proposalId: "m1",
+	changes: [{
+		type: "put",
+		node: acceptedEntityF
+	}]
+}</code></pre><p class="small"><code>acceptedEntityF</code> includes the full canonical metadata and revision. Deletes are explicit <code>{ type: "delete", id }</code> records. These results can differ from the proposal.</p></div>
+				</div>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: submission and canonical installation">
+						<svg viewBox="0 0 900 606" role="img" aria-labelledby="exchange-title exchange-desc">
+							<title id="exchange-title">Acknowledgment is followed by canonical catch-up and durable installation</title>
+							<desc id="exchange-desc">The client uploads content and submits a persisted proposal. The authority atomically records its decision and change batch, acknowledges with a cursor, and supplies canonical changes through the feed. The client installs and flushes those changes before advancing its cursor and retiring the corresponding pending edit.</desc>
+							<rect class="box pending" x="20" y="18" width="222" height="54"/><text class="title" x="131" y="52" text-anchor="middle">Client engine / state</text>
+							<rect class="box remote" x="375" y="18" width="245" height="54"/><text class="title" x="498" y="52" text-anchor="middle">Authority</text>
+							<rect class="box accepted" x="690" y="18" width="190" height="54"/><text class="title" x="785" y="52" text-anchor="middle">Accepted Volume</text>
+							<line class="lane" x1="131" y1="72" x2="131" y2="565"/><line class="lane" x1="498" y1="72" x2="498" y2="565"/><line class="lane" x1="785" y1="72" x2="785" y2="565"/>
+							<path class="line" d="M131 120 H497"/><text x="156" y="106">Upload and verify proposed bytes</text>
+							<path class="line" d="M131 176 H497"/><text x="156" y="162">submit(exact persisted Proposal)</text>
+							<rect class="box remote" x="377" y="201" width="241" height="95"/><text x="395" y="230">Rebase + validate</text><text class="sub" x="395" y="256">Commit state, outcome and</text><text class="sub" x="395" y="278">one batch atomically</text>
+							<path class="line" d="M498 333 H132"/><text x="157" y="319">accepted(cursor) — keep pending</text>
+							<path class="line" d="M131 383 H497"/><text x="156" y="369">changes(after installed cursor)</text>
+							<path class="line" d="M498 433 H132"/><text x="156" y="419">Canonical batches, in order</text>
+							<path class="line" d="M131 487 H784"/><text x="156" y="473">Prepare recovery, then install and flush canonical effects</text>
+							<path class="line" d="M785 543 H132"/><text x="156" y="529">Journal completion → advance cursor → retire matching edit</text>
+							<text class="sub" x="450" y="588" text-anchor="middle">Illustrated acceptance path. Other clients' batches can arrive between these steps.</text>
+						</svg>
+					</div>
+					<figcaption><code>changes()</code> returns a contiguous prefix, never splits a batch, and returns an empty list when caught up. Refused local work becomes a preserved version and never blocks later work.</figcaption>
+				</figure>
+				<div class="columns three">
+					<div class="card"><h3>Lost response?</h3><p>Retry the same <code>(generation, id)</code> and identical payload. The server returns the recorded outcome. Changed payload under the same identity is an error.</p></div>
+					<div class="card"><h3>Rejected?</h3><p>The shared tree is unchanged. Persist the reason and decision cursor. Catch up to that point or later before capturing the preserved version.</p></div>
+					<div class="card"><h3>Expired?</h3><p>An expired generation or history cursor requires bootstrap. Preserve pending work. Do not blindly resend ambiguous old submissions under new IDs.</p></div>
+				</div>
+				<p class="small">Even an accepted no-op produces a batch, possibly with no changes. A lost acknowledgment cannot make retry apply the proposal twice. Existing interfaces return <code>conflict</code>, <code>invalid-tree</code> or <code>missing-content</code> for expected rejections; transport, authorization and storage failures reject the call.</p>
+			</section>
+
+			<section id="rebase">
+				<div class="section-top"><span class="number">05</span><h2>Rebase filesystem intent by identity</h2></div>
+				<p class="intro">A write targets F, not the string <code>/notes/a.txt</code>. Renaming directory D changes D's name; F still has parent D. This removes much of the complexity that comes from transforming historical paths.</p>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: edit, move and edit with stable IDs">
+						<svg viewBox="0 0 900 230" role="img" aria-labelledby="rebase-title rebase-desc">
+							<title id="rebase-title">Edit F, rename D, then edit F again</title>
+							<desc id="rebase-desc">The first write to notes/a.txt changes file F's content to B. Renaming notes to text changes directory D's name, without changing F's parent. The next write to text/a.txt still targets F, now changing its content to C.</desc>
+							<rect class="box pending" x="16" y="20" width="262" height="167"/><text class="micro" x="35" y="46">1 · WRITE /NOTES/A.TXT</text><text class="title" x="35" y="79">D · notes</text><path d="M43 91 V117 H70" fill="none" stroke="#8c9aac"/><text x="82" y="123">F · a.txt</text><text class="mono" x="35" y="163">update F { content: hashB }</text>
+							<path class="line" d="M278 104 H317"/>
+							<rect class="box remote" x="319" y="20" width="262" height="167"/><text class="micro" x="338" y="46">2 · RENAME /NOTES TO /TEXT</text><text class="title" x="338" y="79">D · text</text><path d="M346 91 V117 H373" fill="none" stroke="#8c9aac"/><text x="385" y="123">F · a.txt</text><text class="mono" x="338" y="163">update D { name: "text" }</text>
+							<path class="line" d="M581 104 H620"/>
+							<rect class="box pending" x="622" y="20" width="262" height="167"/><text class="micro" x="641" y="46">3 · WRITE /TEXT/A.TXT</text><text class="title" x="641" y="79">D · text</text><path d="M649 91 V117 H676" fill="none" stroke="#8c9aac"/><text x="688" y="123">F · a.txt</text><text class="mono" x="641" y="163">update F { content: hashC }</text>
+							<text class="sub" x="450" y="217" text-anchor="middle">The directory rename does not require rewriting any descendant operations.</text>
+						</svg>
+					</div>
+				</figure>
+				<div class="table-scroll" tabindex="0" aria-label="Authority merge components">
+					<table><thead><tr><th>Compare separately</th><th>Rule</th></tr></thead><tbody>
+						<tr><td>Content hash</td><td>Whole-file replacement. Different competing hashes conflict; no text OT or automatic byte merge in v1.</td></tr>
+						<tr><td>Location</td><td><code>(parent, name)</code> is one value. A partial update derives the complete intended pair from its original base.</td></tr>
+						<tr><td>Symlink target</td><td>Compare the stored target, without traversing it.</td></tr>
+						<tr><td>Mode</td><td>Compare the whole <code>0o777</code> value. Content and mode changes can combine; competing modes conflict.</td></tr>
+					</tbody></table>
+				</div>
+				<p>For each touched component: <strong>current = base</strong> means apply the proposed value; <strong>current = intended</strong> means no-op; otherwise, reject the competing values. Independent components can combine.</p>
+				<p>The authority then validates the complete result: one valid root, directory parents, unique sibling names and no cycles. Removal is a detach: a location update to a null parent, with the subtree untouched. Deletion is a purge of an entity without children. Replacing a name explicitly detaches or moves the known occupant.</p>
+				<div class="note"><p><strong>Keep the author's base.</strong> If entity state B is accepted as M—for example, combined with a remote move—the later B → C edit keeps B as its base. M does not retroactively become the state the author edited. Here B, C and M denote full entity states; v1 rebasing combines fields, not text.</p></div>
+				<p class="small">Each entity appears at most once in a proposal; its operation array is an atomic change, not a sequence of intermediate states. Dependent edits remain separate journal records. When a proposal is prepared, consecutive edits to one entity may collapse into one operation with the earliest base, and a connected group of new entities may share one proposal; an edit to a pre-existing entity waits for its prerequisites to be installed. An ancestor rename alone is not a dependency of an ID-based content write.</p>
+			</section>
+			<section id="conflicts">
+				<div class="section-top"><span class="number">06</span><h2>Remote wins; the local version is preserved</h2></div>
+				<p class="intro">F started at A. We saved B; another client committed R. Distinct competing content hashes cannot merge in v1, so the authority rejects our proposal. The client installs R, removes B from the view, and preserves it with its bytes for optional recovery. Nothing waits for a person.</p>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: conflict preservation and continued sync">
+						<svg viewBox="0 0 900 340" role="img" aria-labelledby="conflict-title conflict-desc">
+							<title id="conflict-title">Accepted moves to R while local B is preserved</title>
+							<desc id="conflict-desc">A preserved version records base A, local B and remote R as frozen metadata with shared content references. Accepted state, the view and the incoming cursor advance to R. A later remote S installs normally; the preserved version is immutable and still reads A, B and R until dismissed.</desc>
+							<rect class="box" x="18" y="20" width="264" height="99"/><text class="micro" x="39" y="47">BASE · AUTHOR'S INPUT</text><text class="large" x="39" y="90">A</text><text class="sub" x="95" y="87">before the local edit</text>
+							<rect class="box pending" x="318" y="20" width="264" height="99"/><text class="micro" x="339" y="47">LOCAL · PRESERVED VERSION</text><text class="large" x="339" y="90">B</text><text class="sub" x="395" y="87">the work that lost</text>
+							<rect class="box remote" x="618" y="20" width="264" height="99"/><text class="micro" x="639" y="47">REMOTE · KNOWN AUTHORITY</text><text class="large" x="639" y="90">R</text><text class="sub" x="695" y="87">already installed locally</text>
+							<path class="line" d="M150 119 V154 H450 V179"/><path class="line" d="M450 119 V179"/><path class="line" d="M750 119 V154 H450"/>
+							<rect class="box conflict" x="198" y="181" width="504" height="61"/><text class="title" x="450" y="218" text-anchor="middle">Preserved version k1 · frozen A / B / R</text>
+							<path class="line" d="M450 242 V279"/>
+							<text x="450" y="302" text-anchor="middle">Later remote S: install S, advance cursor; k1 is unchanged</text>
+							<text class="sub" x="450" y="327" text-anchor="middle">Retain A, B and R until k1 is dismissed, then collect what nothing else references.</text>
+						</svg>
+					</div>
+				</figure>
+				<div class="columns">
+					<div class="card"><div class="label">Private · serializable</div><h3>StoredConflict</h3><pre><code>{
+	id: "k1",
+	message: "Competing file contents",
+	editIds: [101],
+	base:   { F: { path, node: baseF } },
+	local:  { F: { path, node: localF } },
+	remote: { F: { path, node: remoteF } }
+}</code></pre><p class="small">Each <code>node</code> is EntityData, including its mode and content hash. Paths are captured for historical meaning. No functions and no embedded file bytes.</p></div>
+					<div class="card"><div class="label">Public · hydrated</div><h3>Conflict</h3><p><code>engine.conflict("k1")</code> returns the preserved sides and the operations that lost. Each snapshot offers <code>readFile(EntityId)</code>, reading preserved bytes locally.</p><p class="small"><code>editIds</code> supplies the operation list; it is not needed to reconstruct snapshot metadata. Known sides cover the same IDs. A null entry means absent; a null base means unknown.</p></div>
+				</div>
+				<div class="table-scroll" tabindex="0" aria-label="Conflict behavior">
+					<table><thead><tr><th>While preserved</th><th>What happens</th></tr></thead><tbody>
+						<tr><td>Incoming authority changes</td><td>Keep installing and advancing the cursor, including changes to the same entity. The preserved version never changes.</td></tr>
+						<tr><td>Other outgoing work</td><td>Unaffected. The losing edit and its dependents left pending together, so nothing waits.</td></tr>
+						<tr><td>Visible filesystem</td><td>Shows the authority state. Work the authority refused is never visible.</td></tr>
+						<tr><td>Retention</td><td>No automatic TTL yet; a local retention period is a later knob. Losing <code>.sync</code> loses preserved versions; the authority remains canonical.</td></tr>
+					</tbody></table>
+				</div>
+				<div class="columns">
+					<div class="card"><h3>Restore</h3><p>No engine operation. Read the preserved bytes and write them back through the view: a <code>writeFile</code> for lost content, a <code>rename</code> for a lost move. That is ordinary pending work and may lose again.</p></div>
+					<div class="card"><h3>Dismiss</h3><p><code>dismiss(id)</code> releases the preserved version and its retained bytes. Unknown IDs are a no-op. Errors are not dismissed; they clear when the failed operation succeeds.</p></div>
+				</div>
+				<p class="small">Capture is one local transition: preserve the version, drop its edits, install the authority state. Snapshot reads require a preserved version and an open engine. Missing/corrupt content and transport/storage errors never cause a capture; they are retried.</p>
+				<div class="note"><p><strong>Capture before displacement.</strong> An incoming deletion or move can invalidate pending work before the server decides our proposal. Preserve its local state in the same transition that installs the change, so the version is captured while its bytes are still at hand.</p></div>
+			</section>
+
+			<section id="storage">
+				<div class="section-top"><span class="number">07</span><h2>On disk: events, a checkpoint, and shared bytes</h2></div>
+				<p class="intro">The storage root holds the installed tree and clean file bytes. The hidden <code>.sync</code> directory holds enough information to rebuild the overlay, retry requests, preserve lost versions and finish interrupted installations.</p>
+				<div class="file-list">
+					<div class="card"><h3>/journal/&lt;first&gt;-&lt;last&gt;.json</h3><p>Immutable segments containing ordered event arrays. New events create new segments; saves do not rewrite one growing JSON file. Sequence ranges are contiguous and never renumbered.</p></div>
+					<div class="card"><h3>/checkpoint.json</h3><p>A periodic recovery snapshot through a complete journal segment. Stores accumulated state and still-needed old records, not a second mutable source of truth.</p></div>
+					<div class="card"><h3>/content/&lt;sha256&gt;</h3><p>Whole-file bytes for pending writes, incoming installation and retained versions. Identical content shares one file. Clean accepted bytes are not automatically duplicated.</p></div>
+					<div class="card"><h3>/tmp/&lt;temporary-id&gt;</h3><p>Unpublished files. Publish bytes or segments by writing, flushing, renaming to their final path, then flushing the affected directories.</p></div>
+				</div>
+				<div class="table-scroll" tabindex="0" aria-label="Journal events and their responsibilities">
+					<table><thead><tr><th>Journal event</th><th>What it remembers</th></tr></thead><tbody>
+						<tr><td>Edit</td><td>Operations, affected before-state and causal dependencies.</td></tr>
+						<tr><td>Submission / outcome</td><td>The exact immutable Proposal, its edit reference, and the accepted/rejected/bootstrap-required result.</td></tr>
+						<tr><td>Target / installed</td><td>Incoming target revisions and content references, retained old state, any displaced local work; then batches of entities whose storage entries match, and on completion new ID bindings and retired edits.</td></tr>
+						<tr><td>Preserved / dismissed</td><td>Frozen versions with the edits they capture, and releases.</td></tr>
+						<tr><td>Local metadata / issue</td><td>Local timestamps and actionable errors. Timestamps do not become pending sync operations.</td></tr>
+					</tbody></table>
+				</div>
+				<p class="small">These are responsibilities and field sketches; exact internal event tags and installation records are not yet implemented. Related events can publish in one segment. Bigint metadata is stored as decimal strings.</p>
+				<h3>The two positions must never be confused</h3>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: local checkpoint versus authority cursor">
+						<svg viewBox="0 0 900 279" role="img" aria-labelledby="cursor-title cursor-desc">
+							<title id="cursor-title">A local checkpoint can contain edits that have not synchronized</title>
+							<desc id="cursor-desc">Local events 101 and 102 are edits, 103 submits the first edit, and 104 records its accepted outcome. The recovery checkpoint covers through 103, so 104 is replayed on restart. The authority has committed cursor c1, but accepted still holds c0 until installation finishes. Both edits remain pending.</desc>
+							<text class="micro" x="22" y="30">LOCAL JOURNAL · EVENT ORDER</text>
+							<rect class="box pending" x="22" y="49" width="194" height="63"/><text class="title" x="39" y="76">101 · save B</text><text class="sub" x="39" y="99">pending edit 1</text>
+							<path class="line" d="M216 79 H243"/>
+							<rect class="box pending" x="245" y="49" width="194" height="63"/><text class="title" x="262" y="76">102 · save C</text><text class="sub" x="262" y="99">pending edit 2</text>
+							<path class="line" d="M439 79 H466"/>
+							<rect class="box" x="468" y="49" width="194" height="63"/><text class="title" x="485" y="76">103 · submit m1</text><text class="sub" x="485" y="99">immutable request</text>
+							<path class="line" d="M662 79 H689"/>
+							<rect class="box" x="691" y="49" width="187" height="63"/><text class="title" x="708" y="76">104 · accepted</text><text class="sub" x="708" y="99">outcome, not installed</text>
+							<path d="M22 123 V136 H662 V123" fill="none" stroke="#86631d" stroke-width="1.4"/>
+							<text class="sub" x="341" y="158" text-anchor="middle">checkpoint.through = 103 · pending = [101, 102]</text>
+							<text class="sub" x="784" y="151" text-anchor="middle">replay on restart</text>
+							<text class="micro" x="22" y="203">AUTHORITY HISTORY · SHARED ORDER</text>
+							<rect class="box accepted" x="22" y="218" width="377" height="44"/><text x="40" y="246">Installed cursor c₀ · accepted bytes A</text>
+							<path class="line dashed" d="M400 240 H499"/>
+							<rect class="box remote" x="501" y="218" width="377" height="44"/><text x="518" y="246">Server is at c₁ · bytes B committed</text>
+						</svg>
+					</div>
+					<figcaption><code>through</code> determines replay. <code>accepted.cursor</code> determines catch-up. Neither tells you which local edits remain pending; their lifecycle records do.</figcaption>
+				</figure>
+				<details>
+					<summary>What is inside checkpoint.json?</summary>
+					<div class="table-scroll"><table><thead><tr><th>Fields</th><th>Purpose</th></tr></thead><tbody>
+						<tr><td><code>formatVersion</code>, <code>replicaId</code>, <code>through</code></td><td>Interpretation, local identity and replay position.</td></tr>
+						<tr><td><code>accepted</code></td><td>Authority root, generation, installed cursor and entity metadata/revisions/hashes; absent until initialized.</td></tr>
+						<tr><td><code>nodes</code></td><td>Global IDs mapped to stable view IDs and optional accepted-backend IDs.</td></tr>
+						<tr><td><code>pending</code>, <code>records</code>, <code>conflicts</code></td><td>Unretired edit references, still-required old records, and current conflict references.</td></tr>
+						<tr><td><code>reconcile</code>, <code>localMetadata</code>, <code>errors</code></td><td>Entities not yet matching their targets, timestamp overrides, and actionable diagnostics.</td></tr>
+					</tbody></table></div>
+					<p class="small">Included old records are retained lookup data, not events to execute again. Startup reads the checkpoint and replays only later segments.</p>
+				</details>
+				<div class="note"><p><strong>Storage grows with outstanding work, not every clean file.</strong> For accepted A and pending B, B lives in state. Before incoming R overwrites A, pin A if a retained base needs it. A conflict can then read A/B/R offline. Snapshot maps duplicate small metadata; file bytes are shared by hash.</p></div>
+				<p class="small">Compaction publishes and flushes a replacement checkpoint before removing covered segments. Keep all records and content referenced by pending work, conflicts, uncovered events or recovery. Temporary incoming copies can add space during installation; the design does not require a permanent second copy of every accepted file.</p>
+				<p class="small">Removal is detachment: one update sets the entity's parent to null, the subtree rides along untouched, and the engine keeps it under <code>.sync/trash</code> until the authority purges it. Deletions come from purges and live in the authority's retained history and the client's journal. Accepted simply removes the entry: no tombstone Node or placeholder file. When authority history is too old to serve a client, require bootstrap instead of keeping every deletion forever.</p>
+			</section>
+
+			<section id="recovery">
+				<div class="section-top"><span class="number">08</span><h2>Install safely without a cross-Volume transaction</h2></div>
+				<p class="intro">A server batch is atomic at the authority. Applying it to local files takes multiple writes. The engine records the target in <code>.sync</code>, reconciles storage toward it idempotently, and records installation only after those changes are durable.</p>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: crash-safe incoming batch installation">
+						<svg viewBox="0 0 900 306" role="img" aria-labelledby="recovery-title recovery-desc">
+							<title id="recovery-title">Fetch, reconcile, then record installation</title>
+							<desc id="recovery-desc">First fetch content per hash, resumably, and persist required old versions, displaced local entries and the target revisions. Next reconcile: make every differing storage entry match its target, flushing and recording progress in batches; every step is idempotent. Finally record installation, advance the authority cursor and retire accepted edits. A crash anywhere reruns the reconcile before exposing the filesystem.</desc>
+							<rect class="box pending" x="18" y="24" width="265" height="137"/><text class="micro" x="38" y="49">1 · FETCH + TARGET</text><text x="38" y="79">Content per hash, resumable</text><text x="38" y="105">Capture displaced local work</text><text x="38" y="131">Persist target revisions</text>
+							<path class="line" d="M283 92 H316"/>
+							<rect class="box accepted" x="318" y="24" width="264" height="137"/><text class="micro" x="338" y="49">2 · RECONCILE</text><text x="338" y="79">Make entries match targets</text><text x="338" y="105">Flush; record progress in batches</text><text x="338" y="131">Idempotent, no network</text>
+							<path class="line" d="M582 92 H615"/>
+							<rect class="box view" x="617" y="24" width="265" height="137"/><text class="micro" x="637" y="49">3 · RECORD INSTALLED</text><text x="637" y="79">Advance the authority cursor</text><text x="637" y="105">Retire matching pending edits</text><text x="637" y="131">Publish view + conflict updates</text>
+							<path class="line dashed" d="M450 161 V203"/>
+							<rect class="box" x="230" y="205" width="439" height="65"/><text class="title" x="450" y="233" text-anchor="middle">Crash → recover before exposing Volume</text><text class="sub" x="450" y="255" text-anchor="middle">Read checkpoint, replay tail, rerun reconcile</text>
+							<path class="line dashed" d="M669 238 H856 V163"/>
+							<text class="sub" x="450" y="295" text-anchor="middle">The recovery data is local. Reopening an initialized replica needs no network.</text>
+						</svg>
+					</div>
+				</figure>
+				<div class="columns">
+					<div class="card"><h3>Readers see complete local transitions</h3><p>Serialize view reads and writes with installation so they cannot observe a partial batch. Do not hold that serialization during network waits. Captures never delay cursor advancement.</p></div>
+					<div class="card"><h3>Recovery is not blind replay</h3><p>Rerun the reconcile; every step is idempotent, so at most the unrecorded tail repeats. Do not resend requests during local recovery. A later <code>sync()</code> retries persisted identities and resumes exchange.</p></div>
+				</div>
+				<div class="table-scroll" tabindex="0" aria-label="Failure recovery rules">
+					<table><thead><tr><th>Interruption or failure</th><th>Required behavior</th></tr></thead><tbody>
+						<tr><td>Save interrupted</td><td>Only a published, durable edit changes the recovered view. Unpublished temporary content is not an edit. Resolve uncertain publication before assigning more sequences.</td></tr>
+						<tr><td>Accepted files partially installed</td><td>Keep the old installed cursor until completion is durable. Rerun the reconcile before serving the Volume.</td></tr>
+						<tr><td>Final segment corrupt / sequence gap</td><td>Stop for recovery. Do not treat missing state, inaccessible storage or unreadable content as deletions.</td></tr>
+						<tr><td>Authority outcome unknown</td><td>Retain the exact request. Retry within its generation; an expired request is settled by comparing the fresh snapshot with the edit, never by automatic duplication.</td></tr>
+					</tbody></table>
+				</div>
+				<p class="small">Core Volume writes need not flush automatically; the engine explicitly publishes durable local saves. Guarantees are bounded by the supplied Volumes' file/directory flush behavior and storage lifetime. No physical append primitive or native tombstone file is required.</p>
+			</section>
+
+			<section id="startup">
+				<div class="section-top"><span class="number">09</span><h2>Opening never touches the network. Bootstrap runs inside sync().</h2></div>
+				<p class="intro">Bootstrap provides a consistent authority snapshot and a place to resume the feed. A fresh replica reaches it through the same sync pass that handles expired history, and reports the gap as a phase rather than hiding it.</p>
+				<figure>
+					<div class="diagram" tabindex="0" aria-label="Scrollable diagram: authority bootstrap protocol">
+						<svg viewBox="0 0 900 214" role="img" aria-labelledby="bootstrap-title bootstrap-desc">
+							<title id="bootstrap-title">Bootstrap a snapshot at S, then catch up after S</title>
+							<desc id="bootstrap-desc">Call bootstrap with the replica ID to receive root identity, generation, cursor S and full entity states. Retrieve and verify required content, install the snapshot through the recovery protocol, then read changes after S without a history gap.</desc>
+							<rect class="box remote" x="16" y="26" width="199" height="112"/><text class="title" x="34" y="56">bootstrap(replicaId)</text><text class="sub" x="34" y="84">root, generation, cursor S,</text><text class="sub" x="34" y="108">complete Entity[]</text>
+							<path class="line" d="M215 81 H240"/>
+							<rect class="box pending" x="242" y="26" width="199" height="112"/><text class="title" x="260" y="56">Fetch content</text><text class="sub" x="260" y="84">Download required bytes</text><text class="sub" x="260" y="108">Verify hashes; prepare</text>
+							<path class="line" d="M441 81 H466"/>
+							<rect class="box accepted" x="468" y="26" width="199" height="112"/><text class="title" x="486" y="56">Install snapshot</text><text class="sub" x="486" y="84">One idempotent reconcile</text><text class="sub" x="486" y="108">Installed cursor = S</text>
+							<path class="line" d="M667 81 H692"/>
+							<rect class="box view" x="694" y="26" width="190" height="112"/><text class="title" x="712" y="56">changes(after S)</text><text class="sub" x="712" y="84">Continue ordered history</text><text class="sub" x="712" y="108">No snapshot/feed gap</text>
+							<text class="sub" x="450" y="174" text-anchor="middle">Rebootstrap preserves pending bases and local work; it does not silently relabel or erase them.</text>
+							<text class="sub" x="450" y="198" text-anchor="middle">Snapshot content is retained until the issued generation expires; expired access requires a fresh bootstrap.</text>
+						</svg>
+					</div>
+				</figure>
+				<div class="note"><p><strong>Adopted.</strong> The signature is <code>synced({ storage, authority })</code>. Opening is local-only; the first <code>sync()</code> bootstraps. <code>Authority.root</code> binds the connection to one tree, and <code>.sync</code> is a protocol-reserved root name.</p></div>
+				<div class="table-scroll" tabindex="0" aria-label="Startup and binding decisions">
+					<table><thead><tr><th>Question</th><th>Decision</th></tr></thead><tbody>
+						<tr><td>What happens before the first bootstrap?</td><td>Empty storage opens as an <code>uninitialized</code> replica. Every <code>engine.volume</code> call rejects with <code>UNINITIALIZED</code>; <code>sync()</code> bootstraps, resuming if interrupted. There is one bootstrap path, shared with expired history.</td></tr>
+						<tr><td>What do pre-existing local files mean?</td><td>Nothing to the engine. It never touches entries it does not own, so they stay on disk, unsynced and invisible to the view. A migration tool copies files through <code>engine.volume</code> after bootstrap; a host may also route a private Volume at such a directory.</td></tr>
+						<tr><td>Who pairs accepted and state?</td><td>Nobody has to. The engine owns one storage Volume: accepted files at the root, private state under hidden <code>.sync</code>, hidden by the view and refused by the authority.</td></tr>
+						<tr><td>How is the target tree verified?</td><td>Saved state records the root and an engine-generated replica ID. Opening compares the saved root with <code>Authority.root</code> and rejects a mismatch with <code>TREE_MISMATCH</code>, offline included.</td></tr>
+					</tbody></table>
+				</div>
+				<p class="small">This leaves accepted + pending, shared Operation types, authority rebasing, and conflict retention unchanged. Retention guarantees are in the main design; internal installation algorithms follow during implementation.</p>
+			</section>
+			<footer>
+				<p><strong>Source of truth:</strong> this page explains the adopted design. It implements only the explanatory timeline.</p>
+				<ul>
+					<li><a href="../../tasks/fs-sync-design.md">Filesystem and sync design</a> · <a href="./sync-state.md">Sync state storage</a></li>
+					<li><a href="./node.ts">Node</a> · <a href="./store.ts">Store</a> · <a href="./volume.ts">Volume</a> · <a href="./sync.authority.ts">Authority types</a> · <a href="./sync.engine.ts">Engine and conflict types</a></li>
+				</ul>
+			</footer>
+		</main>
+	</div>
+	<script>
+		const stages = [
+			{
+				accepted: 'A', cursor: 'c₀', pending: 'None', pendingNote: '0 unretired edits', view: 'A', authority: 'A', authorityCursor: 'c₀',
+				heading: '1. The replica is synchronized',
+				description: 'Accepted and authority both contain A. No pending operation changes the view.'
+			},
+			{
+				accepted: 'A', cursor: 'c₀', pending: 'A → B', pendingNote: '1 unretired edit', view: 'B', authority: 'A', authorityCursor: 'c₀',
+				heading: '2. Save B locally',
+				description: 'Persist B’s bytes, then edit 1 with base A and intended content B. The save returns after local publication. Accepted and authority still contain A.'
+			},
+			{
+				accepted: 'A', cursor: 'c₀', pending: 'A → B; B → C', pendingNote: '2 unretired edits', view: 'C', authority: 'A', authorityCursor: 'c₀',
+				heading: '3. Save C before B is installed',
+				description: 'Edit 2 records B → C and depends on edit 1. It stays local until that prerequisite is installed. Reads already return C; accepted still contains A.'
+			},
+			{
+				accepted: 'A', cursor: 'c₀', pending: 'A → B; B → C', pendingNote: 'B acknowledged; both kept', view: 'C', authority: 'B', authorityCursor: 'c₁',
+				heading: '4. The authority accepts B',
+				description: 'The acknowledgment records a decision, not canonical effects. Keep both edits and the old installed cursor c₀. C remains visible while the client catches up.'
+			},
+			{
+				accepted: 'B', cursor: 'c₁', pending: 'B → C', pendingNote: '1 unretired edit', view: 'C', authority: 'B', authorityCursor: 'c₁',
+				heading: '5. Install B, then retire edit 1',
+				description: 'Apply and flush the canonical batch, then journal completion. Accepted is B and the installed cursor is c₁. C stays visible, and edit 2 is now eligible to submit with its original base B.'
+			},
+			{
+				accepted: 'C', cursor: 'c₂', pending: 'None', pendingNote: '0 unretired edits', view: 'C', authority: 'C', authorityCursor: 'c₂',
+				heading: '6. Submit, accept and install C',
+				description: 'After edit 2 follows the same submission and installation flow, retire it. Accepted and authority both contain C. Unreferenced old content can be collected after durable compaction.'
+			}
+		]
+		const stepButtons = [...document.querySelectorAll('[data-step]')]
+		function showStage(index) {
+			const stage = stages[index]
+			const text = {
+				't-accepted': stage.accepted,
+				't-cursor': `installed at ${stage.cursor}`,
+				't-pending': stage.pending,
+				't-pending-note': stage.pendingNote,
+				't-view': stage.view,
+				't-authority': stage.authority,
+				't-authority-cursor': `committed at ${stage.authorityCursor}`,
+				't-heading': stage.heading,
+				't-description': stage.description,
+				'timeline-desc': `Accepted ${stage.accepted} at ${stage.cursor}. Pending: ${stage.pending}. Read returns ${stage.view}. Authority ${stage.authority} at ${stage.authorityCursor}. ${stage.description}`
+			}
+			for (const [id, value] of Object.entries(text)) document.getElementById(id).textContent = value
+			for (const button of stepButtons) button.setAttribute('aria-pressed', String(Number(button.dataset.step) === index))
+		}
+		for (const button of stepButtons) button.addEventListener('click', () => showStage(Number(button.dataset.step)))
+		if ('IntersectionObserver' in window) {
+			const navigation = [...document.querySelectorAll('nav a')]
+			const observer = new IntersectionObserver((entries) => {
+				for (const entry of entries) {
+					if (!entry.isIntersecting) continue
+					for (const link of navigation) {
+						if (link.hash === `#${entry.target.id}`) link.setAttribute('aria-current', 'location')
+						else link.removeAttribute('aria-current')
+					}
+				}
+			}, { rootMargin: '-5% 0px -70% 0px', threshold: 0 })
+			for (const section of document.querySelectorAll('main section')) observer.observe(section)
+		}
+	</script>
+</body>
+</html>

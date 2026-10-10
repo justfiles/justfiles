@@ -1,0 +1,15 @@
+{
+	"name": "@justfiles/neo-fs",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./index.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@justfiles/tsconfig": "workspace:*",
+		"typescript": "catalog:"
+	}
+}
