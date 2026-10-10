@@ -29,7 +29,10 @@ interface ActionMeta {
 }
 ```
 
-Derivation in `defineApp`, per schema, never throwing:
+Derivation in `defineApp`, per schema, never throwing. The contract for `schema` is: the
+parameter **shape** is required; **constraints** are best-effort and may be dropped when the
+converter cannot express them; the validator stays authoritative at dispatch. A result that
+carries no shape is treated as a failure and omitted.
 
 ```ts
 defineApp({
@@ -40,10 +43,14 @@ defineApp({
 
 const toJson = (name, schema) => {
 	try {
-		return (
+		const json =
 			schema['~standard'].jsonSchema?.input({ target: 'draft-2020-12' })   // Standard JSON Schema
 			?? spec.jsonSchema?.(schema)                                          // app-level converter
-		)
+		// A converter that gives up quietly returns an empty or shapeless schema
+		// ({} or one with no `type`/`properties`/`$ref`/`anyOf`). That is
+		// "anything goes", which is worse than nothing for a tool definition.
+		if (!hasShape(json)) throw new Error('converter returned no shape')
+		return json
 	} catch (error) {
 		// Both paths may throw for an unsupported target, schema, or action. One
 		// unconvertible action must not fail the whole bundle at module load;
@@ -70,6 +77,14 @@ export const app = defineApp({
 
 One line per app, not one wrapper per schema. Confirm the option names against the installed
 converter version when implementing.
+
+`errorMode: 'ignore'` is deliberate. In the throwing mode the converter rejects any schema that
+contains an action it cannot express, and `v.check` is exactly that: code, files, and notes all use
+it on their path parameters, so the throwing mode would strip metadata from the actions that need
+it most. The ignore mode keeps the shape and drops the predicate, which is the right answer for a
+constraint JSON Schema cannot state anyway; the validator still enforces it. What the ignore mode
+must not be allowed to do is return `{}` for an unsupported schema, and the shape check above
+turns that case into the omit-and-warn path.
 
 Every `defineApp` that uses Valibot gets the dependency and the hook in the same change as the
 `schemaHint` removal, not only the templates: the in-repo apps (pixel and crossword among them,
