@@ -103,7 +103,7 @@ export const app = defineApp({
 
 				await commit('begin', { query, requestId })
 				try {
-					const { text } = await app.invoke('ai', 'generateText', {
+					const { text } = await app.cap.ai.generateText({
 						context: 'learning',
 						system: systemPrompt(),
 						prompt: lookupPrompt(query)

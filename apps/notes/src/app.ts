@@ -103,11 +103,11 @@ async function claimPath(wanted: string, create: (path: string) => Promise<void>
 // spelling cannot answer it — `Archive.md` is a legal folder name — and the two callers
 // that care (`rename`, `mkdir`) both used to be wrong about it.
 async function isFolder(
-	app: { invoke: (cap: 'volume', method: 'scan', input: { path: string }) => Promise<unknown> },
+	app: { cap: { volume: { scan: (input: { path: string }) => Promise<unknown> } } },
 	path: string
 ): Promise<boolean> {
 	try {
-		await app.invoke('volume', 'scan', { path })
+		await app.cap.volume.scan({ path })
 		return true
 	} catch (thrown) {
 		if (/^ENOTDIR/.test((thrown as Error).message)) return false
@@ -308,7 +308,7 @@ export const app = defineApp({
 				'List the knowledge base: every note (newest first as of this call) plus every folder, with path, title and mtime.',
 			schema: v.object({}),
 			async run(_params, app) {
-				const entries = await app.invoke('volume', 'scan', { path: '/', recursive: true })
+				const entries = await app.cap.volume.scan({ path: '/', recursive: true })
 				const out: Entry[] = []
 				for (const entry of entries) {
 					if (entry.type === 'file' && !isNotePath(entry.path)) continue
@@ -342,7 +342,7 @@ export const app = defineApp({
 				// deleted a moment ago still looks live in it — and the host would otherwise
 				// rebuild the folder around the note. The write is the only check with no gap.
 				const path = await claimPath(wanted, (probe) =>
-					app.invoke('volume', 'writeFile', probe, enc.encode(text), {
+					app.cap.volume.writeFile(probe, enc.encode(text), {
 						exclusive: true,
 						parents: false
 					})
@@ -390,8 +390,8 @@ export const app = defineApp({
 				const path = await claimPath(target, async (probe) => {
 					// The check POSIX `rename` will not make for us. Inside `claimPath`'s chain, so
 					// no other claim of this app's can land between it and the move.
-					if (await app.invoke('volume', 'exists', probe)) throw new Error(`EEXIST: ${probe}`)
-					await app.invoke('volume', 'rename', from, probe)
+					if (await app.cap.volume.exists(probe)) throw new Error(`EEXIST: ${probe}`)
+					await app.cap.volume.rename(from, probe)
 				})
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
 				await app.settled(seq)
@@ -408,7 +408,7 @@ export const app = defineApp({
 			description: 'Create a folder, e.g. "/Trips".',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
-				await app.invoke('volume', 'mkdir', path, { recursive: true })
+				await app.cap.volume.mkdir(path, { recursive: true })
 			}
 		}),
 
@@ -436,7 +436,7 @@ export const app = defineApp({
 					const wanted = joinPath(dir ?? '/', file.path)
 					try {
 						const path = await claimPath(wanted, (probe) =>
-							app.invoke('volume', 'writeFile', probe, enc.encode(file.text), { exclusive: true })
+							app.cap.volume.writeFile(probe, enc.encode(file.text), { exclusive: true })
 						)
 						if (path !== wanted) renamed++
 						written++
@@ -464,7 +464,7 @@ export const app = defineApp({
 			schema: v.object({}),
 			async run(_params, app) {
 				try {
-					return { text: dec.decode(await app.invoke('private', 'readFile', SCRATCH_FILE)) }
+					return { text: dec.decode(await app.cap.private.readFile(SCRATCH_FILE)) }
 				} catch (thrown) {
 					// Never written = empty, not broken. Every other failure is real and thrown, so a
 					// buffer that could not be READ is never silently replaced by a blank one that the
@@ -484,7 +484,7 @@ export const app = defineApp({
 			audience: 'gui',
 			schema: v.object({ text: v.string() }),
 			async run({ text }, app) {
-				await app.invoke('private', 'writeFile', SCRATCH_FILE, enc.encode(text))
+				await app.cap.private.writeFile(SCRATCH_FILE, enc.encode(text))
 			}
 		}),
 
@@ -525,10 +525,10 @@ export const app = defineApp({
 						// something in the same instant would otherwise both create it and one would
 						// overwrite the other. EEXIST is then the ordinary case — append. (EISDIR is not:
 						// a folder holding that name is a real problem, so it is thrown.)
-						await app.invoke('volume', 'writeFile', path, enc.encode(text), { exclusive: true })
+						await app.cap.volume.writeFile(path, enc.encode(text), { exclusive: true })
 					} catch (thrown) {
 						if (!/^EEXIST/.test((thrown as Error).message)) throw thrown
-						await app.invoke('volume', 'appendFile', path, enc.encode(`\n\n${text}`))
+						await app.cap.volume.appendFile(path, enc.encode(`\n\n${text}`))
 					}
 					return { path }
 				})
@@ -598,10 +598,10 @@ export const app = defineApp({
 					if (base !== undefined) {
 						// The read is also `update: true`'s check: a note that is gone still says ENOENT
 						// here, so the buffer still detaches instead of forking a duplicate.
-						const disk = dec.decode(await app.invoke('volume', 'readFile', path))
+						const disk = dec.decode(await app.cap.volume.readFile(path))
 						if (disk !== base) return { path, wrote: false, disk }
 					}
-					await app.invoke('volume', 'writeFile', path, enc.encode(text), { update: true })
+					await app.cap.volume.writeFile(path, enc.encode(text), { update: true })
 					return { path, wrote: true }
 				})
 			}
@@ -619,7 +619,7 @@ export const app = defineApp({
 			description: 'Read a note’s body as text, e.g. path "/Remember the milk.md".',
 			schema: v.object({ path: noteSchema }),
 			async run({ path }, app) {
-				return { path, text: dec.decode(await app.invoke('volume', 'readFile', path)) }
+				return { path, text: dec.decode(await app.cap.volume.readFile(path)) }
 			}
 		}),
 
@@ -630,7 +630,7 @@ export const app = defineApp({
 			audience: 'gui',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
-				await app.invoke('volume', 'rm', path, { force: true, recursive: true })
+				await app.cap.volume.rm(path, { force: true, recursive: true })
 				const { seq } = await app.dispatch({ type: 'deleted', params: { path } })
 				await app.settled(seq)
 			}

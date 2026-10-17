@@ -129,7 +129,7 @@ export const app = defineApp({
 		})
 	}),
 	// A caller-scoped read (Part C): the bytes return to the caller, never into
-	// state. The kernel attaches the declared scopes to `app.invoke`.
+	// state. The kernel attaches the declared scopes to `app.cap`.
 	procedures: (p) => ({
 		listDirectories: p.procedure({
 			description: 'List the direct children of one or more folders.',
@@ -139,7 +139,7 @@ export const app = defineApp({
 				return Promise.all(
 					[...new Set(paths)].map(async (path) => {
 						try {
-							return { path, entries: await app.invoke('volume', 'readdir', path) }
+							return { path, entries: await app.cap.volume.readdir(path) }
 						} catch (error) {
 							return {
 								path,
@@ -155,7 +155,7 @@ export const app = defineApp({
 				'Read a file: images return a data URL, everything else text (capped at the preview limit).',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
-				const bytes = await app.invoke('volume', 'readFile', path)
+				const bytes = await app.cap.volume.readFile(path)
 				const mime = imageMime(path)
 				if (mime) {
 					// Too large to inline: report the size but skip the data URL so the
@@ -188,7 +188,7 @@ export const app = defineApp({
 			audience: 'gui',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
-				await app.invoke('volume', 'rm', path, { recursive: true, force: true })
+				await app.cap.volume.rm(path, { recursive: true, force: true })
 			}
 		})
 	})

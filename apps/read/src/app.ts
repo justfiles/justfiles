@@ -246,7 +246,7 @@ export const app = defineApp({
 			audience: 'gui',
 			description: 'Open a web URL outside the app.',
 			schema: v.object({ url: v.pipe(v.string(), v.maxLength(8192)) }),
-			run: ({ url }, handle) => handle.invoke('reader', 'open', { url })
+			run: ({ url }, handle) => handle.cap.reader.open({ url })
 		}),
 		save: p.procedure({
 			description: 'Save a web URL or pasted Markdown to the reading library.',
@@ -271,7 +271,7 @@ export const app = defineApp({
 				if (url) await handle.dispatch({ type: 'saveStarted', params: { url, startedAt } })
 				try {
 					const read = url
-						? await handle.invoke('reader', 'read', { url })
+						? await handle.cap.reader.read({ url })
 						: {
 								url: null,
 								title: markdownTitle(pasted),
@@ -304,15 +304,15 @@ export const app = defineApp({
 						kind,
 						key
 					}
-					await handle.invoke('volume', 'writeFile', `/${slug}/content.md`, encode(savedMarkdown), {
+					await handle.cap.volume.writeFile(`/${slug}/content.md`, encode(savedMarkdown), {
 						parents: false
 					})
-					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
+					await handle.cap.volume.writeFile(`/${slug}/info.json`, encode(info(item)), {
 						parents: false
 					})
 					const saved = await claimIdentity(handle, item)
 					if (saved.slug !== item.slug)
-						await handle.invoke('volume', 'rm', `/${item.slug}`, {
+						await handle.cap.volume.rm(`/${item.slug}`, {
 							recursive: true,
 							force: true
 						})
@@ -323,9 +323,7 @@ export const app = defineApp({
 					return handle.settled(seq)
 				} catch (error) {
 					if (slug)
-						await handle
-							.invoke('volume', 'rm', `/${slug}`, { recursive: true, force: true })
-							.catch(() => {})
+						await handle.cap.volume.rm(`/${slug}`, { recursive: true, force: true }).catch(() => {})
 					if (!url) throw error
 					const { seq } = await handle.dispatch({
 						type: 'saveFailed',
@@ -365,24 +363,22 @@ export const app = defineApp({
 					key
 				}
 				try {
-					await handle.invoke('volume', 'writeFile', `/${slug}/${doc}`, bytes, {
+					await handle.cap.volume.writeFile(`/${slug}/${doc}`, bytes, {
 						parents: false
 					})
-					await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
+					await handle.cap.volume.writeFile(`/${slug}/info.json`, encode(info(item)), {
 						parents: false
 					})
 					const saved = await claimIdentity(handle, item)
 					if (saved.slug !== item.slug)
-						await handle.invoke('volume', 'rm', `/${item.slug}`, {
+						await handle.cap.volume.rm(`/${item.slug}`, {
 							recursive: true,
 							force: true
 						})
 					const { seq } = await handle.dispatch({ type: 'saved', params: { item: saved } })
 					return handle.settled(seq)
 				} catch (error) {
-					await handle
-						.invoke('volume', 'rm', `/${slug}`, { recursive: true, force: true })
-						.catch(() => {})
+					await handle.cap.volume.rm(`/${slug}`, { recursive: true, force: true }).catch(() => {})
 					throw error
 				}
 			}
@@ -394,14 +390,14 @@ export const app = defineApp({
 				if (stateOf(handle.state).pending.length)
 					await handle.dispatch({ type: 'pendingFailed', params: {} })
 
-				let entries = await handle.invoke('volume', 'scan', { path: '/', recursive: true })
+				let entries = await handle.cap.volume.scan({ path: '/', recursive: true })
 				const loose = entries.filter(
 					(entry) => entry.type === 'file' && /^\/[^/]+$/.test(entry.path)
 				)
 				for (const entry of loose) {
 					const doc = entry.path.slice(1)
 					if (!supported(doc)) continue
-					const stat = await handle.invoke('volume', 'stat', entry.path)
+					const stat = await handle.cap.volume.stat(entry.path)
 					const slug = await claimSlug(handle, fileTitle(doc))
 					const item: Item = {
 						slug,
@@ -413,18 +409,15 @@ export const app = defineApp({
 						words: 0
 					}
 					try {
-						await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)), {
+						await handle.cap.volume.writeFile(`/${slug}/info.json`, encode(info(item)), {
 							parents: false
 						})
-						await handle.invoke('volume', 'rename', entry.path, `/${slug}/${doc}`)
+						await handle.cap.volume.rename(entry.path, `/${slug}/${doc}`)
 					} catch {
-						await handle
-							.invoke('volume', 'rm', `/${slug}`, { recursive: true, force: true })
-							.catch(() => {})
+						await handle.cap.volume.rm(`/${slug}`, { recursive: true, force: true }).catch(() => {})
 					}
 				}
-				if (loose.length)
-					entries = await handle.invoke('volume', 'scan', { path: '/', recursive: true })
+				if (loose.length) entries = await handle.cap.volume.scan({ path: '/', recursive: true })
 
 				const folders = entries
 					.filter((entry) => entry.type === 'dir' && /^\/[^/]+$/.test(entry.path))
@@ -441,8 +434,8 @@ export const app = defineApp({
 										!entry.path.slice(slug.length + 2).includes('/')
 								)
 								.map((entry) => entry.path.slice(slug.length + 2))
-							const sidecar = await handle
-								.invoke('volume', 'readFile', `/${slug}/info.json`)
+							const sidecar = await handle.cap.volume
+								.readFile(`/${slug}/info.json`)
 								.then((bytes) => parseInfo(decode(bytes)))
 								.catch(() => null)
 							const doc =
@@ -452,9 +445,7 @@ export const app = defineApp({
 							if (!doc) return null
 							const savedAt =
 								sidecar?.savedAt ||
-								Number(
-									(await handle.invoke('volume', 'stat', `/${slug}/${doc}`)).mtimeNs / 1_000_000n
-								)
+								Number((await handle.cap.volume.stat(`/${slug}/${doc}`)).mtimeNs / 1_000_000n)
 							const item = await identifyItem(handle, {
 								slug,
 								title: sidecar?.title || fileTitle(doc),
@@ -467,7 +458,7 @@ export const app = defineApp({
 								key: sidecar?.key
 							})
 							if (!sameInfo(sidecar, item))
-								await handle.invoke('volume', 'writeFile', `/${slug}/info.json`, encode(info(item)))
+								await handle.cap.volume.writeFile(`/${slug}/info.json`, encode(info(item)))
 							return claimIdentity(handle, item)
 						})
 					)
@@ -492,7 +483,7 @@ export const app = defineApp({
 				const fromItem = async (item: Item): Promise<string> => {
 					if (item.doc.toLowerCase().endsWith('.pdf'))
 						throw new Error('This PDF has no processed text')
-					return decode(await handle.invoke('volume', 'readFile', `/${item.slug}/${item.doc}`))
+					return decode(await handle.cap.volume.readFile(`/${item.slug}/${item.doc}`))
 				}
 				if (!url) return fromItem(itemFor(state, slug))
 
@@ -500,7 +491,7 @@ export const app = defineApp({
 				if (!source) throw new Error('URL must use HTTP or HTTPS')
 				const saved = await itemByIndexedUrl(handle, state.items, source)
 				if (saved) return fromItem(saved)
-				return stripImages((await handle.invoke('reader', 'read', { url: source })).markdown)
+				return stripImages((await handle.cap.reader.read({ url: source })).markdown)
 			}
 		}),
 		load: p.procedure({
@@ -508,7 +499,7 @@ export const app = defineApp({
 			schema: v.object({ slug: slugSchema }),
 			async run({ slug }, handle): Promise<ReadDocument> {
 				const item = itemFor(stateOf(handle.state), slug)
-				const bytes = await handle.invoke('volume', 'readFile', `/${slug}/${item.doc}`)
+				const bytes = await handle.cap.volume.readFile(`/${slug}/${item.doc}`)
 				return item.doc.toLowerCase().endsWith('.pdf')
 					? { kind: 'pdf', bytes }
 					: { kind: 'markdown', text: decode(bytes) }
@@ -634,9 +625,9 @@ async function itemByIndexedUrl(
 	if (indexed) return indexed
 
 	const old = itemByUrl(items, url)
-	if (!old || !(await handle.invoke('volume', 'exists', `/${old.slug}/${old.doc}`))) return null
+	if (!old || !(await handle.cap.volume.exists(`/${old.slug}/${old.doc}`))) return null
 	const item = { ...old, source: url, kind: 'url' as const, key }
-	await handle.invoke('volume', 'writeFile', `/${item.slug}/info.json`, encode(info(item)))
+	await handle.cap.volume.writeFile(`/${item.slug}/info.json`, encode(info(item)))
 	return claimIdentity(handle, item)
 }
 
@@ -650,7 +641,7 @@ async function itemByIndexedKey(
 	if (indexed) return indexed
 
 	const old = items.find((item) => item.kind === kind && item.key === key)
-	if (!old || !(await handle.invoke('volume', 'exists', `/${old.slug}/${old.doc}`))) return null
+	if (!old || !(await handle.cap.volume.exists(`/${old.slug}/${old.doc}`))) return null
 	return claimIdentity(handle, old)
 }
 
@@ -661,17 +652,17 @@ async function indexedItem(
 	identity: string
 ): Promise<Item | null> {
 	const path = indexPath(kind, key)
-	const bytes = await handle.invoke('volume', 'readFile', path).catch(() => null)
+	const bytes = await handle.cap.volume.readFile(path).catch(() => null)
 	if (!bytes) return null
 	const entry = parseIndex(decode(bytes))
 	if (!entry) {
-		await handle.invoke('volume', 'rm', path, { force: true }).catch(() => {})
+		await handle.cap.volume.rm(path, { force: true }).catch(() => {})
 		return null
 	}
 	if (entry.identity !== identity) throw new Error(`Hash collision in ${path}`)
 
-	const sidecar = await handle
-		.invoke('volume', 'readFile', `/${entry.slug}/info.json`)
+	const sidecar = await handle.cap.volume
+		.readFile(`/${entry.slug}/info.json`)
 		.then((bytes) => parseInfo(decode(bytes)))
 		.catch(() => null)
 	if (
@@ -679,9 +670,9 @@ async function indexedItem(
 		sidecar.kind !== kind ||
 		sidecar.key !== key ||
 		(kind === 'url' && asUrl(sidecar.source ?? '') !== identity) ||
-		!(await handle.invoke('volume', 'exists', `/${entry.slug}/${sidecar.doc}`))
+		!(await handle.cap.volume.exists(`/${entry.slug}/${sidecar.doc}`))
 	) {
-		await handle.invoke('volume', 'rm', path, { force: true }).catch(() => {})
+		await handle.cap.volume.rm(path, { force: true }).catch(() => {})
 		return null
 	}
 	return { slug: entry.slug, ...sidecar }
@@ -693,7 +684,7 @@ async function identifyItem(handle: ReadHandle, item: Item): Promise<Item> {
 
 	const kind = item.doc.toLowerCase().endsWith('.pdf') ? 'pdf' : 'text'
 	if (item.kind === kind && isKey(item.key)) return item
-	const bytes = await handle.invoke('volume', 'readFile', `/${item.slug}/${item.doc}`)
+	const bytes = await handle.cap.volume.readFile(`/${item.slug}/${item.doc}`)
 	return { ...item, kind, key: sha256(bytes) }
 }
 
@@ -707,7 +698,7 @@ async function claimIdentity(handle: ReadHandle, item: Item): Promise<Item> {
 	const data = encode(`${JSON.stringify({ slug: item.slug, identity }, null, '\t')}\n`)
 	for (;;) {
 		try {
-			await handle.invoke('volume', 'writeFile', path, data, { exclusive: true })
+			await handle.cap.volume.writeFile(path, data, { exclusive: true })
 			return item
 		} catch (error) {
 			if (!errorText(error).startsWith('EEXIST')) throw error
@@ -768,7 +759,7 @@ async function claimSlug(handle: ReadHandle, title: string): Promise<string> {
 	for (let index = 1; ; index++) {
 		const slug = index === 1 ? base : `${base}-${index}`
 		try {
-			await handle.invoke('volume', 'mkdir', `/${slug}`)
+			await handle.cap.volume.mkdir(`/${slug}`)
 			return slug
 		} catch (error) {
 			if (!errorText(error).startsWith('EEXIST')) throw error

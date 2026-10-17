@@ -112,19 +112,19 @@ const openedSchema = v.object({
 
 type CodeCaps = { volume: ReturnType<typeof volume>; devkit: ReturnType<typeof devkit> }
 
-// Adapt the kernel-mediated `app.invoke` into the `VolumeApi` shape the disk
+// Adapt the kernel-mediated `app.cap.volume` into the `VolumeApi` shape the disk
 // helpers (readSource/seed/…) expect — same trust path, typed surface. Args are
 // spread positionally now; only `scan` keeps an object (it is the bespoke,
 // listing-returning method, not part of `Volume`).
 function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeApi {
 	return {
-		readFile: (path) => app.invoke('volume', 'readFile', path),
-		writeFile: (path, data) => app.invoke('volume', 'writeFile', path, data),
-		mkdir: (path, opts) => app.invoke('volume', 'mkdir', path, opts),
-		scan: (input) => app.invoke('volume', 'scan', input),
-		exists: (path) => app.invoke('volume', 'exists', path),
-		rm: (path, opts) => app.invoke('volume', 'rm', path, opts),
-		rename: (oldPath, newPath) => app.invoke('volume', 'rename', oldPath, newPath)
+		readFile: (path) => app.cap.volume.readFile(path),
+		writeFile: (path, data) => app.cap.volume.writeFile(path, data),
+		mkdir: (path, opts) => app.cap.volume.mkdir(path, opts),
+		scan: (input) => app.cap.volume.scan(input),
+		exists: (path) => app.cap.volume.exists(path),
+		rm: (path, opts) => app.cap.volume.rm(path, opts),
+		rename: (oldPath, newPath) => app.cap.volume.rename(oldPath, newPath)
 	}
 }
 
@@ -325,7 +325,7 @@ export const app = defineApp({
 			async run({ reset }, app): Promise<CodeRunResult> {
 				const slug = reqSlug(app)
 				const hash = hashSource(await readSource(volumeApi(app), slug))
-				const { diagnostics, preview } = await app.invoke('devkit', 'run', { slug, reset })
+				const { diagnostics, preview } = await app.cap.devkit.run({ slug, reset })
 				const { seq } = await app.dispatch({
 					type: 'recordBuild',
 					params: { build: buildRecord(hash, diagnostics) }
@@ -339,7 +339,7 @@ export const app = defineApp({
 		typecheck: p.procedure({
 			description: 'Type-check the current app source and return diagnostics.',
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'typecheck', { slug: reqSlug(app) })
+			run: (_, app) => app.cap.devkit.typecheck({ slug: reqSlug(app) })
 		}),
 		// Compile the current source via the engine; returns structured outputs +
 		// diagnostics. The GUI/agent reads the diagnostics; outputs are for callers
@@ -347,21 +347,21 @@ export const app = defineApp({
 		compile: p.procedure({
 			description: 'Compile the current app source and return outputs + diagnostics.',
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'compile', { slug: reqSlug(app) })
+			run: (_, app) => app.cap.devkit.compile({ slug: reqSlug(app) })
 		}),
 		// Internal cleanup only (unmount); `previewId` is a pure function of the slug.
 		stop: p.procedure({
 			description: 'Tear down the running App.',
 			schema: v.object({}),
 			async run(_, app) {
-				await app.invoke('devkit', 'stop', { previewId: previewIdFor(reqSlug(app)) })
+				await app.cap.devkit.stop({ previewId: previewIdFor(reqSlug(app)) })
 			}
 		}),
 		readFile: p.procedure({
 			description: 'Read a source file as text.',
 			schema: v.object({ path: srcPathSchema }),
 			async run({ path }, app) {
-				return decoder.decode(await app.invoke('volume', 'readFile', SRC(reqSlug(app), `/${path}`)))
+				return decoder.decode(await app.cap.volume.readFile(SRC(reqSlug(app), `/${path}`)))
 			}
 		}),
 		// The project's app icon as an image data URL, or null if unset. Drives the
@@ -371,8 +371,8 @@ export const app = defineApp({
 			schema: v.object({}),
 			async run(_, app): Promise<string | null> {
 				const path = ICON(reqSlug(app))
-				if (!(await app.invoke('volume', 'exists', path))) return null
-				return decoder.decode(await app.invoke('volume', 'readFile', path))
+				if (!(await app.cap.volume.exists(path))) return null
+				return decoder.decode(await app.cap.volume.readFile(path))
 			}
 		}),
 		// Set the project's app icon from an image data URL (verbatim — no resize).
@@ -380,7 +380,7 @@ export const app = defineApp({
 			description: "Set the project's app icon from an image data URL.",
 			schema: v.object({ dataUrl: v.pipe(v.string(), v.startsWith('data:image/')) }),
 			async run({ dataUrl }, app) {
-				await app.invoke('volume', 'writeFile', ICON(reqSlug(app)), encoder.encode(dataUrl))
+				await app.cap.volume.writeFile(ICON(reqSlug(app)), encoder.encode(dataUrl))
 			}
 		}),
 		// Ship: promote the project to the real `/applications` as a standalone app.
@@ -390,14 +390,14 @@ export const app = defineApp({
 		install: p.procedure({
 			description: 'Compile the current source and install it as a real app.',
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'install', { slug: reqSlug(app) })
+			run: (_, app) => app.cap.devkit.install({ slug: reqSlug(app) })
 		}),
 		// Share: compile fresh and return a downloadable `.zip` of the bundle; the
 		// gui turns the bytes into a file download.
 		pack: p.procedure({
 			description: 'Compile the current source and return a downloadable .zip bundle.',
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'pack', { slug: reqSlug(app) })
+			run: (_, app) => app.cap.devkit.pack({ slug: reqSlug(app) })
 		})
 	})
 })

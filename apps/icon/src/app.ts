@@ -88,7 +88,7 @@ export const app = defineApp({
 			description: 'List saved icon projects (path, title).',
 			schema: v.object({}),
 			async run(_params, app): Promise<IconProject[]> {
-				const entries = await app.invoke('volume', 'scan', { path: '/' })
+				const entries = await app.cap.volume.scan({ path: '/' })
 				return entries
 					.filter((e) => e.type === 'file' && e.path.endsWith(EXT) && e.path !== DRAFT_PATH)
 					.map((e) => ({ path: e.path, title: e.path.slice(1, -EXT.length) }))
@@ -102,8 +102,8 @@ export const app = defineApp({
 			audience: 'gui',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app): Promise<{ path: string; json: string }> {
-				if (!(await app.invoke('volume', 'exists', path))) return { path, json: '' }
-				return { path, json: dec.decode(await app.invoke('volume', 'readFile', path)) }
+				if (!(await app.cap.volume.exists(path))) return { path, json: '' }
+				return { path, json: dec.decode(await app.cap.volume.readFile(path)) }
 			}
 		}),
 
@@ -116,9 +116,9 @@ export const app = defineApp({
 			audience: 'gui',
 			schema: v.object({ name: v.string(), json: v.string() }),
 			async run({ name, json }, app): Promise<{ path: string }> {
-				const path = await freePath(slug(name), (probe) => app.invoke('volume', 'exists', probe))
-				await app.invoke('volume', 'writeFile', path, enc.encode(json))
-				await app.invoke('volume', 'rm', DRAFT_PATH, { force: true })
+				const path = await freePath(slug(name), (probe) => app.cap.volume.exists(probe))
+				await app.cap.volume.writeFile(path, enc.encode(json))
+				await app.cap.volume.rm(DRAFT_PATH, { force: true })
 				return { path }
 			}
 		})
