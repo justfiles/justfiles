@@ -1,8 +1,0 @@
-# TEMPORARY. Delete this file when these releases are more than 24 hours old.
-# pnpm 11 checks lockfiles against its minimumReleaseAge policy.
-minimumReleaseAgeExclude:
-  - '@justfiles/app@0.8.0'
-  - '@justfiles/fs@0.7.0'
-# esbuild ships a platform binary and needs its install script.
-allowBuilds:
-  esbuild: true

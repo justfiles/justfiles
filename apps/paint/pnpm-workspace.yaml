@@ -1,3 +1,0 @@
-# @justfiles/app 0.4.3 is newer than pnpm 11's default 24-hour release-age window.
-minimumReleaseAgeExclude:
-  - '@justfiles/app@0.4.3'

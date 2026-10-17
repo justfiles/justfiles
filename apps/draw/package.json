@@ -2,7 +2,6 @@
 	"name": "app-draw",
 	"version": "0.4.4",
 	"private": true,
-	"packageManager": "pnpm@11.24.0",
 	"description": "A freeform sketchpad backed by Excalidraw.",
 	"type": "module",
 	"license": "MIT",
@@ -16,10 +15,7 @@
 		"preview": "vite preview",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
-		"test:watch": "vitest",
-		"format": "biome format --write .",
-		"lint": "biome ci .",
-		"lint:fix": "biome check --write ."
+		"test:watch": "vitest"
 	},
 	"dependencies": {
 		"@excalidraw/excalidraw": "^0.18.0",
@@ -31,13 +27,13 @@
 		"react-dom": "^19"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.4.15",
+		"@justfiles/tsconfig": "workspace:*",
 		"@types/react": "^19",
 		"@types/react-dom": "^19",
 		"@vitejs/plugin-react": "^5",
 		"react": "^19",
 		"react-dom": "^19",
-		"typescript": "6.0.3",
+		"typescript": "catalog:",
 		"vite": "^8.0.12",
 		"vitest": "^4.1.6"
 	}

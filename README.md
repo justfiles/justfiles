@@ -7,8 +7,8 @@ The workspace has three top-level groups:
 | Directory | Contents |
 | --- | --- |
 | `platform/` | JustFiles hosts, services, CLI, and documentation |
-| `apps/` | Installable apps, stored locally or as Git submodules |
-| `packages/` | Shared libraries and tooling, stored locally or as Git submodules |
+| `apps/` | Installable apps |
+| `packages/` | Shared libraries and tooling |
 
 ## Creating an app package
 
@@ -61,14 +61,12 @@ Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet
 ## Development
 
 ```sh
-git submodule update --init --recursive
 pnpm install
 pnpm dev
 ```
 
 Run pnpm commands from the repository root. The root workspace replaces every
-`@justfiles/app` dependency with the local `packages/app`. The app repositories
-keep their published version ranges when you use them on their own.
+`@justfiles/app` dependency with the local `packages/app`.
 
 `pnpm dev` builds the apps present under `apps/`, serves their artifacts from one
 local app store, and rebuilds them when their source changes. Frieren seeds its
@@ -76,9 +74,8 @@ built-ins from that store and uses it in place of justapps.run for other apps th
 are already installed. Set `VITE_FRIEREN_DEV_APP_STORE` to keep using an external
 development store instead.
 
-Turbo builds and type-checks local packages and submodules together. Root format,
-lint, and test commands check only source owned by this repository. Each submodule
-keeps its own format, lint, and test rules.
+Turbo builds and type-checks every package. Root format, lint, and test commands
+cover `platform/`, `apps/`, and `packages/`.
 
 ### Environment and secrets
 

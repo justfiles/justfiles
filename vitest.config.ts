@@ -3,8 +3,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
 	test: {
 		include: [
-			'apps/crossword/**/*.test.ts',
-			'apps/pixel/**/*.test.ts',
+			'apps/*/**/*.test.ts',
 			'platform/shared/**/*.test.ts',
 			'platform/browser-extension/**/*.test.ts',
 			'platform/frieren/scripts/**/*.test.ts',

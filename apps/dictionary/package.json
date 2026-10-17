@@ -2,7 +2,6 @@
 	"name": "app-dictionary",
 	"version": "0.1.0",
 	"private": true,
-	"packageManager": "pnpm@11.24.0",
 	"description": "A learning-aware dictionary for JustFiles.",
 	"type": "module",
 	"license": "MIT",
@@ -16,18 +15,15 @@
 		"preview": "vite preview",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
-		"test:watch": "vitest",
-		"format": "biome format --write .",
-		"lint": "biome ci .",
-		"lint:fix": "biome check --write ."
+		"test:watch": "vitest"
 	},
 	"dependencies": {
 		"@justfiles/app": "^0.7.0",
 		"valibot": "^1.4.2"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.10",
-		"typescript": "6.0.3",
+		"@justfiles/tsconfig": "workspace:*",
+		"typescript": "catalog:",
 		"vite": "^8.2.2",
 		"vitest": "^4.1.11"
 	}

@@ -10,10 +10,15 @@ describe('folderPathInput', () => {
 		expect(folderPathInput(input)).toBe(expected)
 	})
 
-	test.each(['', '/', '.', '..', '../Trips', 'Trips//Japan', 'Trips\\Japan'])(
-		'refuses %j',
-		(input) => {
-			expect(folderPathInput(input)).toBeNull()
-		}
-	)
+	test.each([
+		'',
+		'/',
+		'.',
+		'..',
+		'../Trips',
+		'Trips//Japan',
+		'Trips\\Japan'
+	])('refuses %j', (input) => {
+		expect(folderPathInput(input)).toBeNull()
+	})
 })
