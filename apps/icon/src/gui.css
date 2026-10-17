@@ -1,0 +1,343 @@
+.icon-app {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	width: 100%;
+	background: var(--window-bg);
+	color: var(--text);
+}
+
+.icon-bar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
+}
+.icon-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 13px;
+	font-weight: 600;
+}
+.icon-name[data-draft="true"] {
+	font-weight: 400;
+	opacity: 0.6;
+}
+.icon-spacer {
+	flex: 1;
+}
+.icon-bar button[aria-pressed="true"] {
+	border-color: #6965db;
+	background: #6965db;
+	color: #fff;
+}
+.icon-bar input {
+	flex: 1;
+	min-width: 0;
+	box-sizing: border-box;
+}
+.icon-error,
+.icon-preview-error {
+	font-size: 12px;
+	color: var(--danger);
+}
+.icon-error {
+	flex: none;
+	max-width: 35%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.icon-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+.icon-workspace {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+}
+.icon-editor {
+	position: relative;
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+/* The output window is host UI, not an Excalidraw element. It stays fixed in
+   the viewport while the canvas pans and zooms behind it. */
+.icon-output-frame {
+	position: absolute;
+	z-index: 3;
+	box-sizing: border-box;
+	visibility: hidden;
+	pointer-events: none;
+	border: 2px solid #6965db;
+	box-shadow:
+		0 0 0 100vmax rgb(15 18 30 / 32%),
+		inset 0 0 0 1px rgb(255 255 255 / 55%);
+}
+/* Apple's app icon keyline grid. `inset: -2px` cancels the frame's border so the
+   overlay covers exactly the region that gets exported, and `pointer-events: none`
+   keeps drawing, selection, and panning behaving as if it were not there. */
+.icon-grid-overlay {
+	position: absolute;
+	inset: -2px;
+	overflow: visible;
+	pointer-events: none;
+	filter: drop-shadow(0 0 1px rgb(255 255 255 / 65%));
+}
+.icon-grid-overlay > g {
+	fill: none;
+	stroke: #6965db;
+	stroke-width: 1;
+	stroke-opacity: 0.7;
+	vector-effect: non-scaling-stroke;
+}
+.icon-grid-overlay .icon-grid-squircle {
+	stroke-width: 1.5;
+	stroke-opacity: 0.9;
+}
+
+.icon-output-frame > span {
+	position: absolute;
+	top: -25px;
+	left: -2px;
+	padding: 3px 7px;
+	border-radius: 4px 4px 0 0;
+	background: #6965db;
+	color: #fff;
+	font:
+		600 11px / 18px system-ui,
+		sans-serif;
+	white-space: nowrap;
+}
+
+/* Isolate Excalidraw's controls from the platform sheet. The host styles bare
+   controls; Excalidraw supplies its own complete control styling. */
+.excalidraw :where(button, input, textarea, select) {
+	all: revert;
+}
+
+.icon-previews {
+	flex: 0 0 clamp(190px, 23vw, 260px);
+	min-width: 0;
+	overflow-y: auto;
+	box-sizing: border-box;
+	padding: 14px;
+	border-left: 1px solid var(--rule);
+	background: var(--surface);
+}
+.icon-previews-heading {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding-bottom: 12px;
+	border-bottom: 1px solid var(--rule);
+}
+.icon-previews-heading > div:first-child {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+}
+.icon-previews-heading strong {
+	font-size: 13px;
+}
+.icon-previews-heading span,
+.icon-previews-heading > label,
+.icon-previews > p {
+	font-size: 11px;
+	opacity: 0.65;
+}
+.icon-previews-heading > label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+}
+.icon-previews-heading > label input {
+	margin: 0;
+}
+.icon-background-palette {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+.icon-background-palette > legend {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+.icon-color-swatch,
+.icon-color-custom {
+	position: relative;
+	flex: none;
+	box-sizing: border-box;
+	width: 26px;
+	height: 26px;
+	margin: 0;
+	border: 1px solid rgb(0 0 0 / 20%);
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgb(255 255 255 / 45%);
+	cursor: pointer;
+}
+.icon-color-swatch[data-selected="true"],
+.icon-color-custom[data-selected="true"] {
+	outline: 2px solid #6965db;
+	outline-offset: 2px;
+}
+.icon-color-custom {
+	overflow: hidden;
+	background: conic-gradient(
+		from 90deg,
+		#ff3b30,
+		#ffcc00,
+		#34c759,
+		#00c7be,
+		#007aff,
+		#af52de,
+		#ff2d55,
+		#ff3b30
+	);
+}
+.icon-color-custom input {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	opacity: 0;
+	cursor: pointer;
+}
+.icon-preview-error {
+	padding-top: 10px;
+}
+.icon-preview-list {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 18px;
+	padding: 18px 0;
+}
+.icon-preview-tile {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 5px;
+}
+.icon-preview-tile > span {
+	font-size: 10px;
+	opacity: 0.55;
+	font-variant-numeric: tabular-nums;
+}
+.icon-preview-stage,
+.icon-thumb {
+	background-color: #fff;
+	background-image:
+		linear-gradient(45deg, #e9ecef 25%, transparent 25%),
+		linear-gradient(-45deg, #e9ecef 25%, transparent 25%),
+		linear-gradient(45deg, transparent 75%, #e9ecef 75%),
+		linear-gradient(-45deg, transparent 75%, #e9ecef 75%);
+	background-position:
+		0 0,
+		0 8px,
+		8px -8px,
+		-8px 0;
+	background-size: 16px 16px;
+}
+.icon-preview-stage {
+	flex: none;
+	overflow: hidden;
+	border: 1px solid var(--rule);
+	border-radius: 22%;
+	box-shadow: 0 1px 4px rgb(0 0 0 / 12%);
+}
+.icon-preview-graphic,
+.icon-preview-graphic svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+.icon-gallery {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 16px;
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 16px;
+	align-content: start;
+	background: var(--window-bg);
+}
+.icon-gallery-empty {
+	padding: 24px;
+	opacity: 0.5;
+	font-size: 13px;
+}
+.icon-tile {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+	border: 1px solid var(--rule);
+	border-radius: 8px;
+	background: var(--surface);
+	color: inherit;
+	cursor: pointer;
+}
+.icon-tile:hover {
+	border-color: var(--text);
+}
+.icon-thumb {
+	aspect-ratio: 1;
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	border-radius: 22%;
+}
+.icon-thumb svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+.icon-tile-name {
+	font-size: 12px;
+	text-align: center;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+	.icon-bar {
+		gap: 5px;
+		padding-inline: 6px;
+	}
+	.icon-previews {
+		flex-basis: 170px;
+		padding: 10px;
+	}
+	.icon-preview-list {
+		gap: 14px;
+	}
+}
